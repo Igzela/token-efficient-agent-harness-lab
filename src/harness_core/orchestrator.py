@@ -195,3 +195,32 @@ class Stage1Orchestrator:
             artifact_result,
             task_score=score,
         )
+
+    def advisor_preflight(
+        self,
+        item_id: str,
+        task_dir: Path,
+        advisor=None,
+    ) -> Any:
+        """Optional Stage 3 advisor preflight hook. Does not mutate event log."""
+        from .advisor import AdvisorBroker, AdvisorBudget, AdvisorContextPack, StubAdvisorProvider
+
+        if advisor is None:
+            broker = AdvisorBroker(StubAdvisorProvider(), AdvisorBudget())
+        else:
+            broker = advisor
+
+        store = TaskRecordStore(task_dir.parent if self.task_root is None else self.task_root)
+        bundle = store.load_task_bundle(task_dir)
+
+        context = AdvisorContextPack(
+            task_id=item_id,
+            call_type="preflight",
+            task_spec=bundle.task_spec,
+            completion=bundle.completion,
+            handoff_pack=bundle.handoff_pack,
+            run_log_text=bundle.run_log_text,
+            failure_code=bundle.task_spec.get("failure_code"),
+            project_context=None,
+        )
+        return broker.preflight(context)

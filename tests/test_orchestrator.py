@@ -276,6 +276,33 @@ class OrchestratorQualityHookTests(unittest.TestCase):
         self.assertEqual("run_ready_item", result.action)
         self.assertEqual("review", result.next_status)
 
+    def test_advisor_preflight_returns_response(self):
+        with tempfile.TemporaryDirectory() as td:
+            task_dir = Path(td) / TASK_005.name
+            shutil.copytree(TASK_005, task_dir)
+            events_log = Path(td) / "events.jsonl"
+            events_log.write_text("[]", encoding="utf-8")
+            orch = Stage1Orchestrator(str(events_log), task_root=td)
+            response = orch.advisor_preflight(
+                item_id="stage0_task_005",
+                task_dir=task_dir,
+            )
+            self.assertEqual("preflight", response.call_type)
+            self.assertIn("proceed", response.recommended_action.lower())
+
+    def test_advisor_preflight_uses_stub_by_default(self):
+        with tempfile.TemporaryDirectory() as td:
+            task_dir = Path(td) / TASK_005.name
+            shutil.copytree(TASK_005, task_dir)
+            events_log = Path(td) / "events.jsonl"
+            events_log.write_text("[]", encoding="utf-8")
+            orch = Stage1Orchestrator(str(events_log), task_root=td)
+            response = orch.advisor_preflight(
+                item_id="stage0_task_005",
+                task_dir=task_dir,
+            )
+            self.assertEqual("stub", response.provider)
+
 
 if __name__ == "__main__":
     unittest.main()
