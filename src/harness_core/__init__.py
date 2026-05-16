@@ -5,6 +5,7 @@ from .digest import BatchDigest, generate_batch_digest
 from .orchestrator import OrchestrationResult, Stage1Orchestrator
 from .artifact_gate import ArtifactCheck, ArtifactGate, ArtifactGateResult
 from .quality_gate import QualityGateDecision, QualityGateManager
+from .quality_digest import QualityDigest, QualityDigestGenerator, QualityDigestItem
 from .evaluation import EvalCase, EvalSpec, EvaluationReport, EvaluationRunner
 from .baseline import BaselineComparison, BaselineManager, BaselineRecord
 from .trajectory import TrajectoryAnomaly, TrajectoryMonitor, TrajectoryReport
@@ -81,6 +82,9 @@ __all__ = [
     "BatchRunner",
     "DependencyProjection",
     "OrchestrationResult",
+    "QualityDigest",
+    "QualityDigestGenerator",
+    "QualityDigestItem",
     "QualityGateDecision",
     "QualityGateManager",
     "RunScore",
