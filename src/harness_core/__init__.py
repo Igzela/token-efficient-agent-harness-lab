@@ -1,5 +1,7 @@
 """Core primitives for the token-efficient agent harness."""
 
+from .batch_runner import BatchRunner, RunResult
+from .digest import BatchDigest, generate_batch_digest
 from .event_store import (
     EventStore,
     ReplayPreflightReport,
@@ -53,9 +55,10 @@ from .validators import (
     validate_handoff_pack,
     validate_replay_preflight_check,
 )
-from .digest import BatchDigest, generate_batch_digest
 
 __all__ = [
+    "BatchDigest",
+    "BatchRunner",
     "DependencyProjection",
     "DependencyResolvedRecord",
     "EventStore",
@@ -68,10 +71,10 @@ __all__ = [
     "ProjectStateProjection",
     "ProjectionBundle",
     "ReplayPreflightReport",
+    "RunResult",
     "TaskQueueProjection",
     "TaskQueueEntry",
     "TaskTransitionResult",
-    "BatchDigest",
     "CANONICAL_FAILURE_CODES",
     "TransitionResult",
     "ValidationResult",
