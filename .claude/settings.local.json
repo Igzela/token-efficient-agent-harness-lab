@@ -1,8 +1,0 @@
-{
-  "permissions": {
-    "allow": [
-      "Bash(python3 -c ' *)",
-      "Bash(python3 -c \"import json; d=json.load\\(open\\('/home/igzela/Projects/token-efficient-agent-harness-lab/docs/stage0/tasks/task-003-doc-update/completion.json'\\)\\); print\\(f'status={d[\\\\\"status\\\\\"]} | _template={d.get\\(\\\\\"_template\\\\\"\\)} | node={d[\\\\\"node_id\\\\\"]}'\\)\")"
-    ]
-  }
-}
