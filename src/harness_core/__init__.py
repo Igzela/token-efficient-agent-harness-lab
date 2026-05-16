@@ -10,6 +10,14 @@ from .advisor import (
     StubAdvisorProvider,
 )
 from .batch_runner import BatchRunner, RunResult
+from .dag_manager import (
+    DAGEdge,
+    DAGManager,
+    DAGMutationProposal,
+    DAGMutationResult,
+    DAGNode,
+    DAGState,
+)
 from .model_gateway import (
     ModelCapability,
     ModelCapabilityRegistry,
@@ -133,6 +141,12 @@ __all__ = [
     "BaselineRecord",
     "BatchDigest",
     "BatchRunner",
+    "DAGEdge",
+    "DAGManager",
+    "DAGMutationProposal",
+    "DAGMutationResult",
+    "DAGNode",
+    "DAGState",
     "DependencyProjection",
     "OrchestrationResult",
     "QualityDigest",
