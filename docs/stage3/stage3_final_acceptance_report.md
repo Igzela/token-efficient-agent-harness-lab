@@ -39,8 +39,8 @@ Stage 3 introduced a Controlled Intelligence Layer on top of the deterministic S
 
 | Test Suite | Tests | Status |
 |------------|-------|--------|
-| Stage 1 tests | 128 | All passing |
-| Stage 2 tests | 53 | All passing |
+| Stage 1 tests | 116 | All passing |
+| Stage 2 tests | 47 | All passing |
 | Stage 3 advisor tests | 29 | All passing |
 | Stage 3 model gateway tests | 18 | All passing |
 | Stage 3 routing tests | 7 | All passing |
@@ -62,6 +62,7 @@ Stage 3 introduced a Controlled Intelligence Layer on top of the deterministic S
 | `efccff2` | Implement Stage 3 sampling runner |
 | `85bb076` | Implement Stage 3 skill extractor |
 | `2974fab` | Integrate Stage 3 advisor hook |
+| `6cbc386` | Document Stage 3 final acceptance |
 
 ## 6. Scope Boundaries Preserved
 
