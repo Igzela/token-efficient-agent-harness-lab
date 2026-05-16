@@ -3,6 +3,7 @@
 from .batch_runner import BatchRunner, RunResult
 from .digest import BatchDigest, generate_batch_digest
 from .orchestrator import OrchestrationResult, Stage1Orchestrator
+from .scoring import ArtifactScore, RunScore, ScoreComponent, ScoringEngine, TaskScore
 from .event_store import (
     EventStore,
     ReplayPreflightReport,
@@ -64,11 +65,16 @@ from .validators import (
 )
 
 __all__ = [
+    "ArtifactScore",
     "BatchDigest",
     "BatchRunner",
     "DependencyProjection",
     "OrchestrationResult",
+    "RunScore",
+    "ScoreComponent",
+    "ScoringEngine",
     "Stage1Orchestrator",
+    "TaskScore",
     "DependencyResolvedRecord",
     "EventStore",
     "FinalGateDecision",
