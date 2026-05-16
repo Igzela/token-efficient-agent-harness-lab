@@ -137,6 +137,16 @@ class BatchRunnerTests(unittest.TestCase):
         self.assertTrue(report.ok)
         self.assertEqual(1, result.digest.handoff_count)
 
+    def test_run_one_ready_item_projects_item_to_review(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = Path(temp_dir) / "events.jsonl"
+            write_events(path, [ready_event()])
+
+            BatchRunner(Kernel(path)).run_one_ready_item("item_ready")
+            projection = Kernel(path).project_state()
+
+        self.assertEqual("review", projection.items["item_ready"].status)
+
     def test_planned_events_validate_before_append(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             path = Path(temp_dir) / "events.jsonl"
