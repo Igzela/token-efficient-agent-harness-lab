@@ -2,6 +2,7 @@
 
 from .batch_runner import BatchRunner, RunResult
 from .digest import BatchDigest, generate_batch_digest
+from .orchestrator import OrchestrationResult, Stage1Orchestrator
 from .event_store import (
     EventStore,
     ReplayPreflightReport,
@@ -66,6 +67,8 @@ __all__ = [
     "BatchDigest",
     "BatchRunner",
     "DependencyProjection",
+    "OrchestrationResult",
+    "Stage1Orchestrator",
     "DependencyResolvedRecord",
     "EventStore",
     "FinalGateDecision",
