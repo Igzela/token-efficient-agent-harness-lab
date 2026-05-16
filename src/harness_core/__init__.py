@@ -1,5 +1,14 @@
 """Core primitives for the token-efficient agent harness."""
 
+from .advisor import (
+    AdvisorBroker,
+    AdvisorBrokerBudgetExceeded,
+    AdvisorBudget,
+    AdvisorContextPack,
+    AdvisorProtocolValidator,
+    AdvisorResponse,
+    StubAdvisorProvider,
+)
 from .batch_runner import BatchRunner, RunResult
 from .digest import BatchDigest, generate_batch_digest
 from .orchestrator import OrchestrationResult, Stage1Orchestrator
@@ -71,6 +80,13 @@ from .validators import (
 )
 
 __all__ = [
+    "AdvisorBroker",
+    "AdvisorBrokerBudgetExceeded",
+    "AdvisorBudget",
+    "AdvisorContextPack",
+    "AdvisorProtocolValidator",
+    "AdvisorResponse",
+    "StubAdvisorProvider",
     "ArtifactCheck",
     "ArtifactGate",
     "ArtifactGateResult",
