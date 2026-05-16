@@ -1,0 +1,41 @@
+# Module Map
+
+| Module | Stage | Purpose | Main public APIs | Related tests |
+| --- | --- | --- | --- | --- |
+| `event_schema.py` | Stage 1 | Minimal event schema and canonical hashing. | `validate_event`, `stable_idempotency_hash` | `test_event_store.py`, `test_validators.py` |
+| `event_store.py` | Stage 1 | Append-only JSONL Event Store and replay preflight. | `EventStore`, `validate_jsonl_file`, `replay_preflight`, `load_event_ids` | `test_event_store.py` |
+| `projection_store.py` | Stage 1 | Replays valid events into derived projections. | `replay_project_state`, `replay_task_queue_state`, `replay_dependency_state`, `replay_all` | `test_projection_store.py` |
+| `project_board.py` | Stage 1 | Project board item transitions and final gate helper. | `ProjectBoardItem`, `transition_item`, `complete_task_to_review`, `final_gate` | `test_project_board.py` |
+| `task_queue.py` | Stage 1 | Queue handoff and task status transitions. | `TaskQueueEntry`, `receive_handoff`, `transition_task` | `test_task_queue.py` |
+| `validators.py` | Stage 1 | Validation suite for events, handoffs, completions, approvals. | `ValidationResult`, `validate_events_schema`, `validate_handoff_pack`, `validate_completion_record` | `test_validators.py` |
+| `digest.py` | Stage 1 | Batch digest generation. | `BatchDigest`, `generate_batch_digest` | `test_digest.py` |
+| `cli.py` | Stage 1 | Local command entry points. | `main`, CLI subcommands | `test_cli.py` |
+| `kernel.py` | Stage 1 | Minimal event append contract. | `Kernel` | `test_kernel.py` |
+| `batch_runner.py` | Stage 1 | Deterministic batch runner. | `BatchRunner`, `RunResult` | `test_batch_runner.py` |
+| `task_records.py` | Stage 1 | Task record storage and validation. | `TaskRecordStore`, `TaskRecordBundle`, `TaskRecordValidationReport` | `test_task_records.py` |
+| `final_gate.py` | Stage 1 | Final task/project gate decision runner. | `FinalGateRunner`, `FinalGateDecision` | `test_final_gate.py` |
+| `orchestrator.py` | Stage 1 | Stage 1 orchestration primitive. | `Stage1Orchestrator`, `OrchestrationResult` | `test_orchestrator.py` |
+| `scoring.py` | Stage 2 | Deterministic scoring engine. | `ScoringEngine`, `RunScore`, `TaskScore`, `ArtifactScore` | `test_scoring.py` |
+| `artifact_gate.py` | Stage 2 | Artifact quality gate. | `ArtifactGate`, `ArtifactCheck`, `ArtifactGateResult` | `test_artifact_gate.py` |
+| `quality_gate.py` | Stage 2 | Quality gate decision manager. | `QualityGateManager`, `QualityGateDecision` | `test_quality_gate.py` |
+| `evaluation.py` | Stage 2 | Deterministic evaluation runner. | `EvaluationRunner`, `EvalSpec`, `EvalCase`, `EvaluationReport` | `test_evaluation.py` |
+| `baseline.py` | Stage 2 | Baseline comparison records. | `BaselineManager`, `BaselineRecord`, `BaselineComparison` | `test_baseline.py` |
+| `trajectory.py` | Stage 2 | Trajectory anomaly detection. | `TrajectoryMonitor`, `TrajectoryReport`, `TrajectoryAnomaly` | `test_trajectory.py` |
+| `quality_digest.py` | Stage 2 | Quality result summary. | `QualityDigestGenerator`, `QualityDigest`, `QualityDigestItem` | `test_quality_digest.py` |
+| `advisor.py` | Stage 3 | Advisor broker and stub provider. | `AdvisorBroker`, `StubAdvisorProvider`, `AdvisorProtocolValidator` | `test_advisor.py` |
+| `model_gateway.py` | Stage 3 | Stubbed model gateway and capability registry. | `ModelGateway`, `StubModelProvider`, `ModelCapabilityRegistry` | `test_model_gateway.py` |
+| `routing.py` | Stage 3 | Routing experiment records and reports. | `RoutingExperimentManager`, `RoutingExperimentSpec`, `RoutingPolicy` | `test_routing.py` |
+| `model_eval.py` | Stage 3 | Controlled model eval harness using stubs. | `ControlledModelEvalHarness`, `ModelEvalCase`, `ModelEvalReport` | `test_model_eval.py` |
+| `sampling.py` | Stage 3 | Deterministic sampling runner. | `SamplingRunner`, `SamplingCandidate`, `SamplingReport` | `test_sampling.py` |
+| `skills.py` | Stage 3 | Skill extraction and library primitives. | `SkillExtractor`, `SkillStore`, `SkillLibrary`, `SkillRecord` | `test_skills.py` |
+| `dag_manager.py` | Stage 4 | Dynamic DAG state and manager operations. | `DAGManager`, `DAGNode`, `DAGEdge`, `DAGState`, `DAGMutationProposal` | `test_dag_manager.py` |
+| `dag_mutations.py` | Stage 4 | Auditable DAG mutation records and helpers. | `DAGMutation`, `DAGMutationLimits`, `validate_dag_mutation`, `create_compensating_mutation` | `test_dag_mutations.py` |
+| `sandbox.py` | Stage 4 | Logical sandbox file-claim tracking. | `SandboxManager`, `Sandbox`, `FileClaim`, `ConflictReport` | `test_sandbox.py` |
+| `concurrency.py` | Stage 4 | Scheduling-only concurrency controller. | `ConcurrencyController`, `ScheduleBatch`, `FileOverlap` | `test_concurrency.py` |
+| `supervisor.py` | Stage 4 | Supplied worker health and checkpoint coordination. | `RuntimeSupervisor`, `WorkerHealth`, `SupervisorReport`, `ComponentHealth` | `test_supervisor.py` |
+| `checkpoint.py` | Stage 4 | JSON checkpoint persistence and recovery planning. | `CheckpointManager`, `Checkpoint`, `RecoveryPlan`, `IntegrityCheck` | `test_checkpoint.py` |
+| `artifact_lifecycle.py` | Stage 4 | Artifact transition state machine. | `ArtifactLifecycleManager`, `ArtifactRecord`, `ArtifactTransition`, `DependencyUnlock` | `test_artifact_lifecycle.py` |
+| `health.py` | Stage 4 | Component health aggregation. | `HealthMonitor`, `HealthReport` | `test_health.py` |
+| `dashboard_model.py` | Stage 4 | Read-only dashboard snapshot model. | `DashboardSnapshot` | `test_dashboard_model.py` |
+| `errors.py` | Stage 1 | Shared exception classes. | Error classes | Covered through component tests |
+| `__init__.py` | Stage 1-4 | Public package export surface. | Re-exported harness APIs | Import coverage across tests |
