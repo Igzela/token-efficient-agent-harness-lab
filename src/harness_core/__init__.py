@@ -35,6 +35,7 @@ from .model_eval import (
     ModelEvalReport,
 )
 from .sampling import SamplingCandidate, SamplingReport, SamplingRunner
+from .sandbox import ConflictReport, FileClaim, Sandbox, SandboxManager
 from .skills import SkillExtractor, SkillLibrary, SkillRecord, SkillStore
 from .digest import BatchDigest, generate_batch_digest
 from .orchestrator import OrchestrationResult, Stage1Orchestrator
@@ -122,6 +123,8 @@ __all__ = [
     "StubAdvisorProvider",
     "ArtifactCheck",
     "ControlledModelEvalHarness",
+    "ConflictReport",
+    "FileClaim",
     "ModelCapability",
     "ModelCapabilityRegistry",
     "ModelEvalCase",
@@ -163,6 +166,8 @@ __all__ = [
     "SamplingCandidate",
     "SamplingReport",
     "SamplingRunner",
+    "Sandbox",
+    "SandboxManager",
     "ScoreComponent",
     "ScoringEngine",
     "SkillExtractor",
