@@ -92,7 +92,7 @@ class ScoringEngine:
             + 0.25 * artifact_score
             + 0.10 * run_log_score
         )
-        weighted = _clamp(raw + failure_penalty)
+        weighted = round(_clamp(raw + failure_penalty), 4)
 
         return TaskScore(
             task_id=bundle.task_spec.get("task_id", "<unknown>"),
