@@ -1,0 +1,49 @@
+{
+  "_template": false,
+  "_note": "real handoff pack for stage0_task_005 — patched by Fix Loop after F008_FORMAT_ERROR failure",
+  "structured_fields": {
+    "task_id": "stage0_task_005",
+    "status": "completed",
+    "completion_type": "success",
+    "exit_code": 0,
+    "artifacts_produced": [
+      "failure_loop_trace",
+      "advisor_protocol_record"
+    ],
+    "duration_estimate": "10 min (manual sim)",
+    "board_writeback_status": "review"
+  },
+  "summary": "故意制造 handoff_pack 不完整失败（F008_FORMAT_ERROR / handoff_pack_incomplete），通过 Advisor Preflight + Correction 两次调用获取安全确认和修复指导，Fix Loop 修补 handoff_pack 后 verifier 通过。验证了 failure_code、Advisor Protocol、Fix Loop、events.jsonl、completion.json、Project Board 状态回写流程的完整性。",
+  "evidence_refs": [
+    {
+      "ref_id": "run_log",
+      "path": "docs/stage0/tasks/task-005-failure-fix-loop/run_log.md",
+      "type": "run_trace",
+      "description": "Full failure loop trace with 2 Advisor calls and Fix Loop record"
+    },
+    {
+      "ref_id": "completion_record",
+      "path": "docs/stage0/tasks/task-005-failure-fix-loop/completion.json",
+      "type": "completion_record",
+      "description": "Completion record with retry_count=1 and failure_code=F008_FORMAT_ERROR"
+    },
+    {
+      "ref_id": "task_events",
+      "path": "docs/stage0/tasks/task-005-failure-fix-loop/events.jsonl",
+      "type": "event_log",
+      "description": "10 task-level events including node_failed, 2x advisor_*, fix_loop"
+    }
+  ],
+  "full_artifact_refs": [
+    {
+      "artifact_id": "failure_loop_trace",
+      "path": "docs/stage0/tasks/task-005-failure-fix-loop/run_log.md",
+      "type": "failure_record"
+    },
+    {
+      "artifact_id": "advisor_protocol_record",
+      "path": "docs/stage0/tasks/task-005-failure-fix-loop/run_log.md",
+      "type": "advisor_record"
+    }
+  ]
+}

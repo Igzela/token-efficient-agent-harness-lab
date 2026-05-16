@@ -1,0 +1,22 @@
+{
+  "_template": false,
+  "_note": "real completion record for stage0_task_003 — README.md updated with current status, lessons learned, responsibility boundaries",
+  "node_id": "doc_writer",
+  "task_id": "stage0_task_003",
+  "status": "completed",
+  "exit_code": 0,
+  "completion_type": "success",
+  "handoff_pack_ref": "handoff_pack.json",
+  "artifact_refs": [
+    {
+      "artifact_id": "readme_updated",
+      "path": "docs/stage0/README.md",
+      "type": "design_doc",
+      "change": "added Stage 0 Current Status, Lessons Learned, Responsibility Boundaries; updated Five Task Templates table"
+    }
+  ],
+  "verifier_status": "skipped_manual",
+  "write_claims_released": true,
+  "retry_count": 0,
+  "finished_at": "2026-05-15T21:30:30+08:00"
+}

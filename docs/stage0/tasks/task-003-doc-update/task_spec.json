@@ -1,0 +1,39 @@
+{
+  "_template": true,
+  "_note": "template only, not a real runtime record — source: architecture book §10.3 task 3",
+  "project_id": "proj_2026_stage0_schema_validation",
+  "task_id": "stage0_task_003",
+  "source_project_item": "item_003",
+  "type": "doc_update",
+  "objective": "更新 README.md 的 Five Task Templates 表格，加入实际项目 item_id 和 objective",
+  "required_inputs": {
+    "target_document": "docs/stage0/README.md",
+    "change_description": "Five Task Templates 表格增加 item_id 列，填入 item_001~005 的实际 objective"
+  },
+  "success_criteria": [
+    "Document structure is clear",
+    "No existing constraints broken",
+    "Reviewer can judge completion from handoff_pack",
+    "Digest can display change summary",
+    "Project Board status writeback verified"
+  ],
+  "allowed_files": [
+    "docs/stage0/README.md",
+    "docs/stage0/tasks/task-003-doc-update/run_log.md"
+  ],
+  "forbidden_files": [
+    "src/",
+    "tests/",
+    "runtime/",
+    ".runtime/",
+    ".git/"
+  ],
+  "context_budget": {
+    "preferred_tokens": 80000,
+    "max_tokens": 200000
+  },
+  "priority": "P2",
+  "risk_level": "low",
+  "created_at": "2026-05-15T21:00:00+08:00",
+  "status": "pending"
+}

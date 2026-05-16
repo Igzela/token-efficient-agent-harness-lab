@@ -1,0 +1,16 @@
+{
+  "_template": true,
+  "_note": "template only, not a real runtime record — source: architecture book §7.5",
+  "structured_fields": {
+    "task_id": "stage0_task_003",
+    "status": "",
+    "completion_type": "",
+    "exit_code": null,
+    "artifacts_produced": [],
+    "duration_estimate": "",
+    "board_writeback_status": ""
+  },
+  "summary": "",
+  "evidence_refs": [],
+  "full_artifact_refs": []
+}
