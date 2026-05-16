@@ -20,6 +20,12 @@ from .projection_store import (
 )
 from .task_records import TaskRecordStore
 
+# Stage 2 quality components — imported lazily to avoid circular imports
+from .artifact_gate import ArtifactGate, ArtifactGateResult
+from .quality_gate import QualityGateDecision, QualityGateManager
+from .scoring import ScoringEngine, TaskScore
+from .trajectory import TrajectoryReport
+
 
 @dataclass(frozen=True)
 class OrchestrationResult:
@@ -164,3 +170,28 @@ class Stage1Orchestrator:
             )
 
         return self.run_ready_item(ready_items[0].item_id)
+
+    def evaluate_quality(
+        self,
+        item_id: str,
+        task_dir: Path,
+    ) -> QualityGateDecision:
+        """Optional Stage 2 quality evaluation. Does not mutate event log."""
+        store = TaskRecordStore(task_dir.parent if self.task_root is None else self.task_root)
+        bundle = store.load_task_bundle(task_dir)
+
+        project = self.project_state()
+        current = project.items.get(item_id)
+        if current is None:
+            raise ValueError(f"item not found in project state: {item_id}")
+
+        final_gate_decision = self.final_gate.evaluate(bundle, current_item_status=current.status)
+        artifact_result = ArtifactGate().evaluate(bundle)
+        score = ScoringEngine().score_task_bundle(bundle, final_gate_decision)
+
+        return QualityGateManager().evaluate(
+            bundle,
+            final_gate_decision,
+            artifact_result,
+            task_score=score,
+        )

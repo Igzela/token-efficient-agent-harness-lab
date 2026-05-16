@@ -244,5 +244,38 @@ class OrchestratorFullFlowTests(unittest.TestCase):
         self.assertEqual(before, after)
 
 
+class OrchestratorQualityHookTests(unittest.TestCase):
+    def test_evaluate_quality_returns_decision(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = Path(temp_dir) / "events.jsonl"
+            write_events(path, [ready_event()])
+
+            orch = Stage1Orchestrator(path)
+            orch.run_one_step(item_id="item_001")
+
+            task_dir = Path(temp_dir) / TASK_005.name
+            shutil.copytree(TASK_005, task_dir)
+
+            # Override artifact_refs to use task-dir-relative paths
+            import json as _json
+            completion_path = task_dir / "completion.json"
+            completion = _json.loads(completion_path.read_text(encoding="utf-8"))
+            completion["artifact_refs"] = [{"artifact_id": "run_log", "path": "run_log.md"}]
+            completion_path.write_text(_json.dumps(completion, indent=2), encoding="utf-8")
+
+            decision = orch.evaluate_quality("item_001", task_dir)
+        self.assertIn(decision.result, ("pass", "pass_with_notes"))
+        self.assertEqual("done", decision.next_project_status)
+
+    def test_existing_run_one_step_unchanged(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = Path(temp_dir) / "events.jsonl"
+            write_events(path, [ready_event()])
+            orch = Stage1Orchestrator(path)
+            result = orch.run_one_step(item_id="item_001")
+        self.assertEqual("run_ready_item", result.action)
+        self.assertEqual("review", result.next_status)
+
+
 if __name__ == "__main__":
     unittest.main()
