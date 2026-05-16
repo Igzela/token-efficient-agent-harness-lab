@@ -9,6 +9,12 @@ from .advisor import (
     AdvisorResponse,
     StubAdvisorProvider,
 )
+from .artifact_lifecycle import (
+    ArtifactLifecycleManager,
+    ArtifactRecord,
+    ArtifactTransition,
+    DependencyUnlock,
+)
 from .batch_runner import BatchRunner, RunResult
 from .checkpoint import (
     ArtifactRef,
@@ -27,6 +33,8 @@ from .dag_manager import (
     DAGNode,
     DAGState,
 )
+from .dashboard_model import DashboardSnapshot
+from .health import HealthMonitor, HealthReport
 from .model_gateway import (
     ModelCapability,
     ModelCapabilityRegistry,
@@ -132,7 +140,10 @@ __all__ = [
     "AdvisorResponse",
     "StubAdvisorProvider",
     "ArtifactCheck",
+    "ArtifactLifecycleManager",
+    "ArtifactRecord",
     "ArtifactRef",
+    "ArtifactTransition",
     "Checkpoint",
     "CheckpointManager",
     "CompensatingEvent",
@@ -167,7 +178,9 @@ __all__ = [
     "DAGMutationResult",
     "DAGNode",
     "DAGState",
+    "DashboardSnapshot",
     "DependencyProjection",
+    "DependencyUnlock",
     "OrchestrationResult",
     "QualityDigest",
     "QualityDigestGenerator",
@@ -209,6 +222,8 @@ __all__ = [
     "FinalGateResult",
     "HandoffRecord",
     "HandoffResult",
+    "HealthMonitor",
+    "HealthReport",
     "IntegrityCheck",
     "Kernel",
     "ProjectItemState",
