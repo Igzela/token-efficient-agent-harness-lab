@@ -6,6 +6,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from harness_core import (
+    CANONICAL_FAILURE_CODES,
     validate_advisor_protocol_events,
     validate_allowed_files_completeness,
     validate_approval_request,
@@ -117,8 +118,49 @@ class ValidatorSuiteTests(unittest.TestCase):
     def test_failure_code_validator_accepts_canonical_code(self):
         self.assertTrue(validate_failure_code("F008_FORMAT_ERROR").ok)
 
+    def test_failure_code_validator_accepts_every_documented_canonical_code(self):
+        documented_codes = {
+            "F001_TIMEOUT",
+            "F002_BUDGET_EXCEEDED",
+            "F003_DEPENDENCY_FAILED",
+            "F004_APPROVAL_REJECTED",
+            "F005_PROVIDER_UNAVAILABLE",
+            "F006_SCOPE_VIOLATION",
+            "F007_TEST_FAILURE",
+            "F008_FORMAT_ERROR",
+            "F009_POLICY_VIOLATION",
+            "F010_CANCELLED",
+        }
+
+        self.assertEqual(documented_codes, CANONICAL_FAILURE_CODES)
+        for failure_code in documented_codes:
+            self.assertTrue(validate_failure_code(failure_code).ok)
+
+    def test_failure_code_validator_rejects_removed_incorrect_code(self):
+        self.assertFalse(validate_failure_code("F002_TOOL_ERROR").ok)
+
     def test_failure_code_validator_rejects_unknown_code(self):
         self.assertFalse(validate_failure_code("some_random_string").ok)
+
+    def test_failure_subcode_remains_freeform(self):
+        result = validate_failure_code(
+            "F008_FORMAT_ERROR",
+            failure_subcode="handoff_pack_incomplete_custom_detail",
+        )
+
+        self.assertTrue(result.ok)
+
+    def test_task005_failure_code_and_subcode_fixture_passes(self):
+        record = json.loads((TASK_005 / "completion.json").read_text(encoding="utf-8"))
+
+        result = validate_failure_code(
+            record["failure_code"],
+            failure_subcode=record["failure_subcode"],
+        )
+
+        self.assertTrue(result.ok)
+        self.assertEqual("F008_FORMAT_ERROR", record["failure_code"])
+        self.assertEqual("handoff_pack_incomplete", record["failure_subcode"])
 
     def test_allowed_files_completeness_integration(self):
         result = validate_allowed_files_completeness(

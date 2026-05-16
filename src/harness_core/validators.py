@@ -13,15 +13,15 @@ from .project_board import check_allowed_files
 
 CANONICAL_FAILURE_CODES = {
     "F001_TIMEOUT",
-    "F002_TOOL_ERROR",
-    "F003_PERMISSION_DENIED",
-    "F004_SCHEMA_VIOLATION",
-    "F005_DEPENDENCY_BLOCKED",
-    "F006_BUDGET_EXCEEDED",
-    "F007_PROVIDER_ERROR",
+    "F002_BUDGET_EXCEEDED",
+    "F003_DEPENDENCY_FAILED",
+    "F004_APPROVAL_REJECTED",
+    "F005_PROVIDER_UNAVAILABLE",
+    "F006_SCOPE_VIOLATION",
+    "F007_TEST_FAILURE",
     "F008_FORMAT_ERROR",
-    "F009_TEST_FAILURE",
-    "F010_UNKNOWN",
+    "F009_POLICY_VIOLATION",
+    "F010_CANCELLED",
 }
 
 
@@ -120,7 +120,7 @@ def validate_advisor_protocol_events(
     return _result(errors)
 
 
-def validate_failure_code(failure_code: str) -> ValidationResult:
+def validate_failure_code(failure_code: str, failure_subcode: str | None = None) -> ValidationResult:
     if failure_code not in CANONICAL_FAILURE_CODES:
         return ValidationResult(ok=False, errors=(f"non-canonical failure_code: {failure_code}",))
     return ValidationResult(ok=True)
