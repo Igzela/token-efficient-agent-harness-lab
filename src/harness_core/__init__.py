@@ -43,6 +43,11 @@ from .task_queue import (
     receive_handoff,
     transition_task,
 )
+from .task_records import (
+    TaskRecordBundle,
+    TaskRecordStore,
+    TaskRecordValidationReport,
+)
 from .validators import (
     CANONICAL_FAILURE_CODES,
     ValidationResult,
@@ -75,6 +80,9 @@ __all__ = [
     "TaskQueueProjection",
     "TaskQueueEntry",
     "TaskTransitionResult",
+    "TaskRecordBundle",
+    "TaskRecordStore",
+    "TaskRecordValidationReport",
     "CANONICAL_FAILURE_CODES",
     "TransitionResult",
     "ValidationResult",
