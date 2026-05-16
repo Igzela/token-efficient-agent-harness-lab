@@ -7,7 +7,7 @@ from .artifact_gate import ArtifactCheck, ArtifactGate, ArtifactGateResult
 from .quality_gate import QualityGateDecision, QualityGateManager
 from .evaluation import EvalCase, EvalSpec, EvaluationReport, EvaluationRunner
 from .baseline import BaselineComparison, BaselineManager, BaselineRecord
-from .trajectory import TrajectoryAnomaly, TrajectoryReport
+from .trajectory import TrajectoryAnomaly, TrajectoryMonitor, TrajectoryReport
 from .scoring import ArtifactScore, RunScore, ScoreComponent, ScoringEngine, TaskScore
 from .event_store import (
     EventStore,
@@ -89,6 +89,7 @@ __all__ = [
     "Stage1Orchestrator",
     "TaskScore",
     "TrajectoryAnomaly",
+    "TrajectoryMonitor",
     "TrajectoryReport",
     "DependencyResolvedRecord",
     "EvalCase",
