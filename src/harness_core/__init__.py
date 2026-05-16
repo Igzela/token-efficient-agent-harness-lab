@@ -27,6 +27,7 @@ from .model_eval import (
     ModelEvalReport,
 )
 from .sampling import SamplingCandidate, SamplingReport, SamplingRunner
+from .skills import SkillExtractor, SkillLibrary, SkillRecord, SkillStore
 from .digest import BatchDigest, generate_batch_digest
 from .orchestrator import OrchestrationResult, Stage1Orchestrator
 from .artifact_gate import ArtifactCheck, ArtifactGate, ArtifactGateResult
@@ -145,8 +146,15 @@ __all__ = [
     "RoutingExperimentResult",
     "RoutingExperimentSpec",
     "RoutingPolicy",
+    "SamplingCandidate",
+    "SamplingReport",
+    "SamplingRunner",
     "ScoreComponent",
     "ScoringEngine",
+    "SkillExtractor",
+    "SkillLibrary",
+    "SkillRecord",
+    "SkillStore",
     "Stage1Orchestrator",
     "TaskScore",
     "TrajectoryAnomaly",
