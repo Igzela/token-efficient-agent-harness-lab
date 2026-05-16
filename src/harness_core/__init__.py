@@ -30,6 +30,13 @@ from .evaluation import EvalCase, EvalSpec, EvaluationReport, EvaluationRunner
 from .baseline import BaselineComparison, BaselineManager, BaselineRecord
 from .trajectory import TrajectoryAnomaly, TrajectoryMonitor, TrajectoryReport
 from .scoring import ArtifactScore, RunScore, ScoreComponent, ScoringEngine, TaskScore
+from .routing import (
+    RoutingExperimentManager,
+    RoutingExperimentReport,
+    RoutingExperimentResult,
+    RoutingExperimentSpec,
+    RoutingPolicy,
+)
 from .event_store import (
     EventStore,
     ReplayPreflightReport,
@@ -124,6 +131,11 @@ __all__ = [
     "QualityGateDecision",
     "QualityGateManager",
     "RunScore",
+    "RoutingExperimentManager",
+    "RoutingExperimentReport",
+    "RoutingExperimentResult",
+    "RoutingExperimentSpec",
+    "RoutingPolicy",
     "ScoreComponent",
     "ScoringEngine",
     "Stage1Orchestrator",
