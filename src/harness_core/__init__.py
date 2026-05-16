@@ -26,6 +26,7 @@ from .model_eval import (
     ModelEvalCase,
     ModelEvalReport,
 )
+from .sampling import SamplingCandidate, SamplingReport, SamplingRunner
 from .digest import BatchDigest, generate_batch_digest
 from .orchestrator import OrchestrationResult, Stage1Orchestrator
 from .artifact_gate import ArtifactCheck, ArtifactGate, ArtifactGateResult
@@ -169,6 +170,9 @@ __all__ = [
     "ProjectionBundle",
     "ReplayPreflightReport",
     "RunResult",
+    "SamplingCandidate",
+    "SamplingReport",
+    "SamplingRunner",
     "TaskQueueProjection",
     "TaskQueueEntry",
     "TaskTransitionResult",
