@@ -18,6 +18,7 @@ from .checkpoint import (
     IntegrityCheck,
     RecoveryPlan,
 )
+from .concurrency import ConcurrencyController, FileOverlap, ScheduleBatch
 from .dag_manager import (
     DAGEdge,
     DAGManager,
@@ -136,9 +137,11 @@ __all__ = [
     "CheckpointManager",
     "CompensatingEvent",
     "ComponentHealth",
+    "ConcurrencyController",
     "ControlledModelEvalHarness",
     "ConflictReport",
     "FileClaim",
+    "FileOverlap",
     "ModelCapability",
     "ModelCapabilityRegistry",
     "ModelEvalCase",
@@ -182,6 +185,7 @@ __all__ = [
     "SamplingRunner",
     "Sandbox",
     "SandboxManager",
+    "ScheduleBatch",
     "ScoreComponent",
     "ScoringEngine",
     "SkillExtractor",
