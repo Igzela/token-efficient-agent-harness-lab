@@ -12,6 +12,7 @@ from .event_store import (
     validate_jsonl_file,
 )
 from .event_schema import stable_idempotency_hash, validate_event
+from .final_gate import FinalGateDecision, FinalGateRunner
 from .kernel import Kernel
 from .projection_store import (
     DependencyProjection,
@@ -67,6 +68,8 @@ __all__ = [
     "DependencyProjection",
     "DependencyResolvedRecord",
     "EventStore",
+    "FinalGateDecision",
+    "FinalGateRunner",
     "FinalGateResult",
     "HandoffRecord",
     "HandoffResult",
