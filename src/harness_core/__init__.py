@@ -3,6 +3,7 @@
 from .batch_runner import BatchRunner, RunResult
 from .digest import BatchDigest, generate_batch_digest
 from .orchestrator import OrchestrationResult, Stage1Orchestrator
+from .artifact_gate import ArtifactCheck, ArtifactGate, ArtifactGateResult
 from .scoring import ArtifactScore, RunScore, ScoreComponent, ScoringEngine, TaskScore
 from .event_store import (
     EventStore,
@@ -65,6 +66,9 @@ from .validators import (
 )
 
 __all__ = [
+    "ArtifactCheck",
+    "ArtifactGate",
+    "ArtifactGateResult",
     "ArtifactScore",
     "BatchDigest",
     "BatchRunner",
