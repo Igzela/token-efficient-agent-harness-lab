@@ -10,6 +10,17 @@ from .advisor import (
     StubAdvisorProvider,
 )
 from .batch_runner import BatchRunner, RunResult
+from .model_gateway import (
+    ModelCapability,
+    ModelCapabilityRegistry,
+    ModelGateway,
+    ModelGatewayUnknownTier,
+    ModelResponse,
+    ModelTier,
+    StubModelProvider,
+    create_default_gateway,
+    create_default_registry,
+)
 from .digest import BatchDigest, generate_batch_digest
 from .orchestrator import OrchestrationResult, Stage1Orchestrator
 from .artifact_gate import ArtifactCheck, ArtifactGate, ArtifactGateResult
@@ -88,6 +99,15 @@ __all__ = [
     "AdvisorResponse",
     "StubAdvisorProvider",
     "ArtifactCheck",
+    "ModelCapability",
+    "ModelCapabilityRegistry",
+    "ModelGateway",
+    "ModelGatewayUnknownTier",
+    "ModelResponse",
+    "ModelTier",
+    "StubModelProvider",
+    "create_default_gateway",
+    "create_default_registry",
     "ArtifactGate",
     "ArtifactGateResult",
     "ArtifactScore",
