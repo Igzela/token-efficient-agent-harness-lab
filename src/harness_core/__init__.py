@@ -40,6 +40,19 @@ from .task_queue import (
     receive_handoff,
     transition_task,
 )
+from .validators import (
+    CANONICAL_FAILURE_CODES,
+    ValidationResult,
+    validate_advisor_protocol_events,
+    validate_allowed_files_completeness,
+    validate_approval_request,
+    validate_completion_record,
+    validate_events_schema,
+    validate_failure_code,
+    validate_handoff_pack,
+    validate_replay_preflight_check,
+)
+from .digest import BatchDigest, generate_batch_digest
 
 __all__ = [
     "DependencyProjection",
@@ -56,10 +69,14 @@ __all__ = [
     "TaskQueueProjection",
     "TaskQueueEntry",
     "TaskTransitionResult",
+    "BatchDigest",
+    "CANONICAL_FAILURE_CODES",
     "TransitionResult",
+    "ValidationResult",
     "check_allowed_files",
     "complete_task_to_review",
     "final_gate",
+    "generate_batch_digest",
     "ValidationIssue",
     "ValidationReport",
     "load_event_ids",
@@ -73,6 +90,14 @@ __all__ = [
     "stable_idempotency_hash",
     "transition_item",
     "transition_task",
+    "validate_advisor_protocol_events",
+    "validate_allowed_files_completeness",
+    "validate_approval_request",
+    "validate_completion_record",
+    "validate_events_schema",
     "validate_event",
+    "validate_failure_code",
+    "validate_handoff_pack",
     "validate_jsonl_file",
+    "validate_replay_preflight_check",
 ]
