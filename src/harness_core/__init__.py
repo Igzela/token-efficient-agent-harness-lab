@@ -10,6 +10,7 @@ from .event_store import (
     validate_jsonl_file,
 )
 from .event_schema import stable_idempotency_hash, validate_event
+from .kernel import Kernel
 from .projection_store import (
     DependencyProjection,
     DependencyResolvedRecord,
@@ -61,6 +62,7 @@ __all__ = [
     "FinalGateResult",
     "HandoffRecord",
     "HandoffResult",
+    "Kernel",
     "ProjectItemState",
     "ProjectBoardItem",
     "ProjectStateProjection",
