@@ -4,6 +4,8 @@ from .batch_runner import BatchRunner, RunResult
 from .digest import BatchDigest, generate_batch_digest
 from .orchestrator import OrchestrationResult, Stage1Orchestrator
 from .artifact_gate import ArtifactCheck, ArtifactGate, ArtifactGateResult
+from .quality_gate import QualityGateDecision, QualityGateManager
+from .trajectory import TrajectoryAnomaly, TrajectoryReport
 from .scoring import ArtifactScore, RunScore, ScoreComponent, ScoringEngine, TaskScore
 from .event_store import (
     EventStore,
@@ -74,11 +76,15 @@ __all__ = [
     "BatchRunner",
     "DependencyProjection",
     "OrchestrationResult",
+    "QualityGateDecision",
+    "QualityGateManager",
     "RunScore",
     "ScoreComponent",
     "ScoringEngine",
     "Stage1Orchestrator",
     "TaskScore",
+    "TrajectoryAnomaly",
+    "TrajectoryReport",
     "DependencyResolvedRecord",
     "EventStore",
     "FinalGateDecision",
