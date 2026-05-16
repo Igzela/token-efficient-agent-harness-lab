@@ -32,6 +32,14 @@ from .project_board import (
     final_gate,
     transition_item,
 )
+from .task_queue import (
+    HandoffResult,
+    TaskQueueEntry,
+    TaskTransitionResult,
+    map_task_status_to_project_board,
+    receive_handoff,
+    transition_task,
+)
 
 __all__ = [
     "DependencyProjection",
@@ -39,12 +47,15 @@ __all__ = [
     "EventStore",
     "FinalGateResult",
     "HandoffRecord",
+    "HandoffResult",
     "ProjectItemState",
     "ProjectBoardItem",
     "ProjectStateProjection",
     "ProjectionBundle",
     "ReplayPreflightReport",
     "TaskQueueProjection",
+    "TaskQueueEntry",
+    "TaskTransitionResult",
     "TransitionResult",
     "check_allowed_files",
     "complete_task_to_review",
@@ -52,6 +63,8 @@ __all__ = [
     "ValidationIssue",
     "ValidationReport",
     "load_event_ids",
+    "map_task_status_to_project_board",
+    "receive_handoff",
     "replay_all",
     "replay_dependency_state",
     "replay_preflight",
@@ -59,6 +72,7 @@ __all__ = [
     "replay_task_queue_state",
     "stable_idempotency_hash",
     "transition_item",
+    "transition_task",
     "validate_event",
     "validate_jsonl_file",
 ]
