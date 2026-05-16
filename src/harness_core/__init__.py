@@ -10,6 +10,14 @@ from .advisor import (
     StubAdvisorProvider,
 )
 from .batch_runner import BatchRunner, RunResult
+from .checkpoint import (
+    ArtifactRef,
+    Checkpoint,
+    CheckpointManager,
+    CompensatingEvent,
+    IntegrityCheck,
+    RecoveryPlan,
+)
 from .dag_manager import (
     DAGEdge,
     DAGManager,
@@ -37,6 +45,7 @@ from .model_eval import (
 from .sampling import SamplingCandidate, SamplingReport, SamplingRunner
 from .sandbox import ConflictReport, FileClaim, Sandbox, SandboxManager
 from .skills import SkillExtractor, SkillLibrary, SkillRecord, SkillStore
+from .supervisor import ComponentHealth, RuntimeSupervisor, SupervisorReport, WorkerHealth
 from .digest import BatchDigest, generate_batch_digest
 from .orchestrator import OrchestrationResult, Stage1Orchestrator
 from .artifact_gate import ArtifactCheck, ArtifactGate, ArtifactGateResult
@@ -122,6 +131,11 @@ __all__ = [
     "AdvisorResponse",
     "StubAdvisorProvider",
     "ArtifactCheck",
+    "ArtifactRef",
+    "Checkpoint",
+    "CheckpointManager",
+    "CompensatingEvent",
+    "ComponentHealth",
     "ControlledModelEvalHarness",
     "ConflictReport",
     "FileClaim",
@@ -175,6 +189,7 @@ __all__ = [
     "SkillRecord",
     "SkillStore",
     "Stage1Orchestrator",
+    "SupervisorReport",
     "TaskScore",
     "TrajectoryAnomaly",
     "TrajectoryMonitor",
@@ -190,12 +205,15 @@ __all__ = [
     "FinalGateResult",
     "HandoffRecord",
     "HandoffResult",
+    "IntegrityCheck",
     "Kernel",
     "ProjectItemState",
     "ProjectBoardItem",
     "ProjectStateProjection",
     "ProjectionBundle",
     "ReplayPreflightReport",
+    "RecoveryPlan",
+    "RuntimeSupervisor",
     "RunResult",
     "SamplingCandidate",
     "SamplingReport",
@@ -209,6 +227,7 @@ __all__ = [
     "CANONICAL_FAILURE_CODES",
     "TransitionResult",
     "ValidationResult",
+    "WorkerHealth",
     "check_allowed_files",
     "complete_task_to_review",
     "final_gate",
