@@ -1,0 +1,14 @@
+{
+  "task_id": "issue_001_doc_cleanup",
+  "item_id": "issue_001_doc_cleanup",
+  "project_id": "project_alpha",
+  "task_type": "documentation_cleanup",
+  "objective": "Normalize stale README references in a copied project fixture.",
+  "source": {
+    "kind": "copied_real_project_fixture",
+    "sanitized": true
+  },
+  "allowed_files": [
+    "README.md"
+  ]
+}

@@ -1,0 +1,12 @@
+{
+  "_template": false,
+  "status": "completed",
+  "exit_code": 0,
+  "artifact_refs": [
+    {
+      "artifact_id": "run_log",
+      "path": "run_log.md",
+      "type": "evidence"
+    }
+  ]
+}
