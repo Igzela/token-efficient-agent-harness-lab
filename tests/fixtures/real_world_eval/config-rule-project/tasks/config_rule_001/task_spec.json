@@ -1,0 +1,21 @@
+{
+  "task_id": "config_rule_001",
+  "item_id": "config_rule_001",
+  "project_id": "config_rule_project",
+  "task_type": "config_rule_change",
+  "objective": "Represent a copied lint rule adjustment with explicit file policy.",
+  "allowed_files": [
+    "artifacts/config-policy.json",
+    "artifacts/lint-rule-summary.md",
+    "run_log.md"
+  ],
+  "forbidden_files": [
+    "src/runtime/",
+    ".env",
+    "secrets/"
+  ],
+  "required_files": [
+    "artifacts/config-policy.json",
+    "artifacts/lint-rule-summary.md"
+  ]
+}

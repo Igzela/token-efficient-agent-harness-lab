@@ -1,0 +1,23 @@
+{
+  "_template": false,
+  "structured_fields": {
+    "task_id": "config_rule_001",
+    "item_id": "config_rule_001",
+    "project_id": "config_rule_project",
+    "read_only": true,
+    "policy": "allowed_files_only"
+  },
+  "summary": "Copied config-rule evidence with allowed and forbidden file policy.",
+  "evidence_refs": [
+    {
+      "artifact_id": "config_policy",
+      "path": "artifacts/config-policy.json",
+      "type": "config"
+    },
+    {
+      "artifact_id": "rule_summary",
+      "path": "artifacts/lint-rule-summary.md",
+      "type": "notes"
+    }
+  ]
+}

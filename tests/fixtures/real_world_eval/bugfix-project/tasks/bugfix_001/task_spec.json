@@ -1,0 +1,16 @@
+{
+  "task_id": "bugfix_001",
+  "item_id": "bugfix_001",
+  "project_id": "bugfix_project",
+  "task_type": "bugfix",
+  "objective": "Fix copied null-total handling evidence for an invoice summary path.",
+  "allowed_files": [
+    "artifacts/invoice_summary.patch",
+    "artifacts/regression_test_notes.md",
+    "run_log.md"
+  ],
+  "forbidden_files": [
+    ".env",
+    "secrets/"
+  ]
+}

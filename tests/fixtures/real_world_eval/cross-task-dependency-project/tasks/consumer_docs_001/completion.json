@@ -1,0 +1,13 @@
+{
+  "_template": false,
+  "status": "completed",
+  "exit_code": 0,
+  "artifact_refs": [
+    {
+      "artifact_id": "consumer_docs",
+      "path": "artifacts/consumer-docs.md",
+      "type": "document"
+    }
+  ],
+  "handoff_pack_ref": "handoff_pack.json"
+}

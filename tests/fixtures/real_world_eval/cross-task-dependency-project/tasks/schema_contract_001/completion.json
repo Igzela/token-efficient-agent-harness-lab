@@ -1,0 +1,13 @@
+{
+  "_template": false,
+  "status": "completed",
+  "exit_code": 0,
+  "artifact_refs": [
+    {
+      "artifact_id": "schema_contract",
+      "path": "artifacts/schema-contract.json",
+      "type": "contract"
+    }
+  ],
+  "handoff_pack_ref": "handoff_pack.json"
+}

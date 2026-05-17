@@ -1,0 +1,6 @@
+{
+  "fixture_id": "cross_task_dependency",
+  "project_id": "cross_task_dependency_project",
+  "source": "synthetic_real_world_shape",
+  "read_only": true
+}

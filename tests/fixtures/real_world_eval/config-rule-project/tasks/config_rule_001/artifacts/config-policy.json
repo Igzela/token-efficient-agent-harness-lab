@@ -1,0 +1,5 @@
+{
+  "rule": "no-floating-promises",
+  "mode": "warn",
+  "read_only_fixture": true
+}

@@ -8,7 +8,7 @@ Command:
 PYTHONPATH=src python3 -m unittest discover -s tests
 ```
 
-Current result: 344 tests pass.
+Current result: 350 tests pass.
 
 ## Test Files
 
@@ -48,6 +48,7 @@ Current result: 344 tests pass.
 | `tests/test_artifact_lifecycle.py` | ArtifactLifecycleManager transitions and dependency unlocks |
 | `tests/test_health.py` | HealthMonitor aggregation |
 | `tests/test_dashboard_model.py` | DashboardSnapshot |
+| `tests/test_real_world_eval.py` | Real-World Read-Only Evaluation Track fixtures |
 
 ## Fixture Coverage
 
@@ -55,9 +56,26 @@ Current result: 344 tests pass.
 | --- | --- |
 | `tests/fixtures/stage0_events_with_line17_issue.jsonl` | Preserves the Stage 0 known bad line 17 issue as a validator fixture. |
 | `tests/fixtures/stage0_events_sanitized.jsonl` | Valid sanitized Stage 0 event stream for replay/projection tests. |
+| `tests/fixtures/real_world_eval/project-alpha/` | First-pass copied real-project-shaped read-only evaluation fixture. |
+| `tests/fixtures/real_world_eval/doc-update-project/` | Documentation-only copied fixture shape. |
+| `tests/fixtures/real_world_eval/bugfix-project/` | Bugfix copied fixture shape with artifact and scoring evidence. |
+| `tests/fixtures/real_world_eval/config-rule-project/` | Config/rule-change copied fixture shape with file policy evidence. |
+| `tests/fixtures/real_world_eval/failure-fix-loop-project/` | Failure/fix-loop copied fixture shape with canonical failure code evidence. |
+| `tests/fixtures/real_world_eval/cross-task-dependency-project/` | Multi-item copied fixture shape with dependency resolution evidence. |
 | `tests/fixtures/README.md` | Fixture notes. |
 
 `docs/stage0/events.jsonl` is not modified by tests and remains the original known-bad source fixture.
+
+## Real-World Read-Only Evaluation Track
+
+This post-closeout optional track is covered by `tests/test_real_world_eval.py`.
+It is not Stage 5 and does not change runtime behavior.
+
+| Coverage | Details |
+| --- | --- |
+| Fixtures | `project-alpha`, `doc-update-project`, `bugfix-project`, `config-rule-project`, `failure-fix-loop-project`, `cross-task-dependency-project` |
+| Components | Replay preflight, projections, batch digest, task records, final gate, artifact gate, scoring, quality gate, quality digest, selected validators |
+| Boundaries | Read-only committed fixtures; no model calls; no task execution; no sandbox execution; no external project mutation; no `docs/stage0/events.jsonl` changes |
 
 ## Component Coverage By Stage
 

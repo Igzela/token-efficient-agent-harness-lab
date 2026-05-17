@@ -1,0 +1,6 @@
+{
+  "fixture_id": "doc_update",
+  "project_id": "doc_update_project",
+  "source": "synthetic_real_world_shape",
+  "read_only": true
+}

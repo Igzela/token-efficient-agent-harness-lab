@@ -1,0 +1,11 @@
+{
+  "task_id": "schema_contract_001",
+  "item_id": "schema_contract_001",
+  "project_id": "cross_task_dependency_project",
+  "task_type": "contract_update",
+  "objective": "Copy evidence for a schema contract update that unblocks docs.",
+  "allowed_files": [
+    "artifacts/schema-contract.json",
+    "run_log.md"
+  ]
+}

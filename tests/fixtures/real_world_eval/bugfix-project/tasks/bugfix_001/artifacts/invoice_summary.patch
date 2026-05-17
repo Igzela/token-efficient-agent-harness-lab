@@ -1,0 +1,6 @@
+diff --git a/src/invoice_summary.py b/src/invoice_summary.py
+--- a/src/invoice_summary.py
++++ b/src/invoice_summary.py
+@@ -1,3 +1,3 @@
+-total = invoice.total
++total = invoice.total or 0

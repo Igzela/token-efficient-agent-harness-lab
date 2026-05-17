@@ -1,0 +1,8 @@
+{
+  "version": "2026-05-read-only",
+  "fields": [
+    "id",
+    "status",
+    "updated_at"
+  ]
+}

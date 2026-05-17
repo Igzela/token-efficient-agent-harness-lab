@@ -1,0 +1,22 @@
+{
+  "_template": false,
+  "structured_fields": {
+    "task_id": "bugfix_001",
+    "item_id": "bugfix_001",
+    "project_id": "bugfix_project",
+    "read_only": true
+  },
+  "summary": "Copied bugfix evidence for invoice summary null-total handling.",
+  "evidence_refs": [
+    {
+      "artifact_id": "bugfix_patch",
+      "path": "artifacts/invoice_summary.patch",
+      "type": "patch"
+    },
+    {
+      "artifact_id": "regression_notes",
+      "path": "artifacts/regression_test_notes.md",
+      "type": "test_notes"
+    }
+  ]
+}

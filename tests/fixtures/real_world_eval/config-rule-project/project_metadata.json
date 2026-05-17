@@ -1,0 +1,6 @@
+{
+  "fixture_id": "config_rule",
+  "project_id": "config_rule_project",
+  "source": "synthetic_real_world_shape",
+  "read_only": true
+}

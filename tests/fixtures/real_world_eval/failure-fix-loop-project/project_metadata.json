@@ -1,0 +1,6 @@
+{
+  "fixture_id": "failure_fix_loop",
+  "project_id": "failure_fix_loop_project",
+  "source": "synthetic_real_world_shape",
+  "read_only": true
+}
