@@ -1,35 +1,84 @@
 # Agent Instructions
 
-This project is implementing Token-Efficient Agent Harness.
+This repository is the Token-Efficient Agent Harness Lab.
 
-Current phase:
-- Stage 1 Day 1 only.
-- Implement Event Store + JSONL Validator + minimal Kernel event append contract.
+## Current Status
 
-Hard rules:
-- Do not modify docs/stage0/events.jsonl. It contains a known bad line 17 and must remain unchanged as a validator fixture.
-- Do not implement all Stage 1 components.
-- Do not build Web UI.
-- Do not build model calls, provider failover, routing optimizer, skill extractor, dynamic DAG mutation, fragment integrator, real multi-agent concurrency, or build sampling.
-- Prefer Python stdlib unless an existing project stack clearly dictates otherwise.
-- Do not install dependencies without explicit approval.
-- Do not commit git changes unless explicitly instructed.
-- Keep changes small and reviewable.
+The Stage 0-4 task-book scope is complete.
 
-Stage 1 Day 1 scope:
-- Event Store
-- JSONL Validator
-- Event schema validation
-- event_id uniqueness
-- idempotency_key behavior
-- replay preflight check
-- tests for the Stage 0 line 17 issue
+- Stage 0: schema validation and manual workflow simulation complete.
+- Stage 1: deterministic local runtime complete.
+- Stage 2: quality runtime complete.
+- Stage 3: controlled intelligence stubs complete.
+- Stage 4: advanced runtime abstractions complete.
+- Project closeout complete.
+- GitHub private repository published.
 
-Event semantics:
-- event_id is globally unique. Duplicate event_id must be rejected.
-- idempotency_key may repeat.
-- Same idempotency_key + same payload hash => duplicate no-op.
-- Same idempotency_key + different payload hash => reject with conflict.
-- JSONL must be one JSON object per line.
-- Every appended line must end with newline.
-- Original docs/stage0/events.jsonl must not be fixed.
+This project is now in post-closeout maintenance mode.
+
+## Default Agent Behavior
+
+Agents must not assume a new Stage 5 exists.
+
+Before doing any work:
+
+1. Inspect the current branch and working tree.
+2. Run the test suite unless the task is documentation-only.
+3. Confirm the requested task is inside the approved scope.
+4. Ask for confirmation before starting any new product track.
+
+## Hard Boundaries
+
+Do not modify:
+
+- docs/stage0/events.jsonl
+
+Do not add without explicit human approval:
+
+- real model API calls
+- API keys or provider credentials
+- real autonomous agents
+- real sandbox/process/container/VM execution
+- real concurrent workers
+- Web UI implementation
+- provider failover
+- production deployment
+- destructive filesystem operations
+- Stage 5 implementation
+
+## Current Safe Work Categories
+
+Allowed by default:
+
+- documentation cleanup
+- README / roadmap / module map updates
+- test-only improvements
+- CI maintenance
+- GitHub issue planning
+- security review planning
+- packaging planning
+- architecture audit updates
+
+Requires explicit approval:
+
+- productionization
+- real provider integration
+- real sandbox execution
+- UI/dashboard implementation
+- benchmarking framework
+- deployment work
+- broad runtime refactors
+
+## Test Command
+
+Run:
+
+PYTHONPATH=src python3 -m unittest discover -s tests
+
+## Repository Principles
+
+- Preserve deterministic behavior.
+- Prefer small, reviewable commits.
+- Keep tests passing.
+- Do not expand architecture without documenting the new track first.
+- Treat future work as optional tracks, not automatic continuation of the completed Stage 0-4 task book.
