@@ -1,7 +1,7 @@
-# Token-Efficient Agent Harness 架构书 v1.3 — Controlled Adaptive Orchestrator Kernel Blueprint
+# Token-Efficient Agent Harness 架构书 v1.3.1 — Controlled Adaptive Orchestrator Kernel Blueprint
 
-版本：v1.3-controlled-adaptive-orchestrator  
-状态：基于 v1.2 post-closeout update、v1.2 authority/kernel addendum、Deep Research 报告后的架构演进蓝图  
+版本：v1.3.1-controlled-adaptive-orchestrator  
+状态：基于 v1.3 的一致性修正版；修复 Context Pack v2 与 v1.2 schema 的关系、rollback_plan 占位、User-Style Mutation Eval gate、cost_of_pass_group 语义、Track 9 入场条件引用。  
 定位：不替代 v1.2 的封版状态说明；本文件定义从 Orchestrator Kernel 走向 Controlled Adaptive Orchestrator Kernel 的治理路线、成熟度门槛和 Track 边界。  
 适用范围：post-closeout optional tracks、evaluation-first adaptation、policy candidate lifecycle、真实模型接入前置条件。  
 非适用范围：真实自治执行、Stage 5、无人审批自修改、自动策略部署、真实 sandbox 执行、真实多 agent 并发。
@@ -22,11 +22,11 @@ v1.2-post-closeout-update
 v1.2-authority-kernel-addendum
   = 权责边界与 Kernel 类型判定。
 
-v1.3-controlled-adaptive-orchestrator
+v1.3.1-controlled-adaptive-orchestrator
   = 从 Orchestrator Kernel 走向 Controlled Adaptive Orchestrator Kernel 的治理蓝图。
 ```
 
-本文件不推翻 v1.2。v1.2 仍是当前完成状态的基准；v1.3 只规定下一组可选 Track 如何安全推进。
+本文件不推翻 v1.2。v1.2 仍是当前完成状态的基准；v1.3.1 只规定下一组可选 Track 如何安全推进。
 
 ---
 
@@ -120,7 +120,7 @@ Memory / Optimization Plane = 经验沉淀层
 Orchestrator = deterministic coordination / state progression controller
 ```
 
-v1.3 新增约束：
+v1.3.1 新增约束：
 
 ```text
 Governance & Policy Plane = 策略候选、证据准入、审批、回滚与部署范围控制层
@@ -256,7 +256,7 @@ policy candidate evidence refs
 
 ### 4.4 Governance & Policy Plane
 
-v1.3 新增核心 Plane。
+v1.3.1 新增核心 Plane。
 
 职责：把经验转化为候选策略，并控制其评估、审批、部署和回滚。
 
@@ -288,7 +288,7 @@ policy_candidate_lifecycle
 
 ## 5. Evaluation Admission Contract
 
-v1.3 必须把证据分为 admitted evidence 和 diagnostic evidence。
+v1.3.1 必须把证据分为 admitted evidence 和 diagnostic evidence。
 
 ### 5.1 Admitted Evidence
 
@@ -432,13 +432,61 @@ policy_registry_entry:
   retired_at:
 ```
 
+### 6.5 rollback_plan
+
+`rollback_plan` 是 Policy Candidate Lifecycle 的核心结构，不再是引用占位。
+
+```yaml
+rollback_plan:
+  schema_version: rollback_plan.v1
+  rollback_plan_id:
+  candidate_id:
+  policy_id:
+  rollback_scope: docs_only | config | schema | profile | skill | eval_gate | runtime_guard
+  trigger_conditions:
+    - regression_detected
+    - cost_threshold_exceeded
+    - quality_gate_failure
+    - human_rejection
+    - unknown_error_increase
+  impacted_refs:
+    - path_or_registry_key:
+      ref_type: file | registry_entry | config_key | schema_id | skill_id | model_profile_id
+      pre_change_ref:
+      post_change_ref:
+  rollback_steps:
+    - step_id:
+      action: revert_file | restore_registry_entry | disable_policy | restore_schema | retire_skill | restore_profile
+      target_ref:
+      expected_result:
+  validation_steps:
+    - run_fixed_eval_suite
+    - run_harness_change_eval
+    - run_relevant_unit_tests
+    - verify_policy_registry_status
+  rollback_owner:
+  max_rollback_time:
+  fallback_policy:
+  status: proposed | approved | executed | failed | obsolete
+  created_at:
+```
+
+规则：
+
+```text
+rollback_plan 必须在 policy adoption 前存在。
+rollback_plan 的执行对象只限 harness-level 改动，不允许回滚真实用户项目文件。
+rollback 默认由 human-approved maintainer 或显式授权工具执行；Orchestrator 不自动执行 rollback。
+如果 rollback 失败，policy_registry_entry 必须进入 rolled_back 或 failed_review 状态并要求人工处理。
+```
+
 ---
 
 ## 7. Tool/Error Taxonomy Hardening
 
 Deep Research 的最高优先级建议是先硬化工具/错误分类，因为错误归因不清会污染所有 adaptive signal。
 
-v1.3 推荐 error domains：
+v1.3.1 推荐 error domains：
 
 ```text
 tool_contract_error
@@ -484,9 +532,60 @@ unknown_error 必须进入 human triage。
 
 ## 8. Context Pack v2 and Memory Boundary
 
+### 8.1 与 v1.2 四个 Context Pack schema 的关系
+
+v1.2 的四个 schema 仍然是 canonical wire schemas：
+
+```text
+advisor_context_pack_v2
+model_context_pack_v2
+context_retrieval_request
+context_retrieval_result
+```
+
+v1.3.1 第 8 节不替代这四个 schema。v1.3.1 的五层结构是它们之上的 **composition layout / semantic layering**，用于规定 pack 内容如何组织、裁剪、缓存、检索和写入 memory digest。
+
+关系如下：
+
+```text
+advisor_context_pack_v2
+  -> 使用五层结构组织 advisor 所需的最小上下文
+
+model_context_pack_v2
+  -> 使用五层结构组织 model / role 所需的最小上下文
+
+context_retrieval_request
+  -> 五层结构中 dynamic_refs / memory_digest / recent_evidence 的显式检索入口
+
+context_retrieval_result
+  -> 显式检索后的返回结构，必须记录 content_mode、token estimate、budget impact
+```
+
+实现规则：
+
+```text
+v1.2 四 schema = 对外协议 / wire format canonical source。
+v1.3.1 五层结构 = 对内编排布局 / pack compiler target。
+不得另行创建第五套 context_pack schema。
+如需新增字段，应作为 v1.2 advisor_context_pack_v2 / model_context_pack_v2 的 extension fields 或 nested context_layers，而不是替换原 schema。
+```
+
+建议新增嵌套字段：
+
+```yaml
+context_layers:
+  invariants:
+  task_pack:
+  dynamic_refs:
+  memory_digest:
+  recent_evidence:
+```
+
+### 8.2 五层结构
+
 Context Pack v2 不应是更大的 prompt，而应是可测试的上下文编排协议。
 
-v1.3 建议五层结构：
+v1.3.1 建议五层结构：
 
 ```text
 invariants
@@ -505,7 +604,7 @@ recent_evidence
   极短生命周期：最近 tool_result、diff、失败诊断
 ```
 
-必备字段：
+必备编排字段：
 
 ```text
 pack_id
@@ -519,6 +618,7 @@ drop_reason
 evidence_refs
 memory_digest_refs
 retrieval_policy
+context_layers
 ```
 
 关键规则：
@@ -567,6 +667,36 @@ usage_ledger:
   context_pack_id:
 ```
 
+### 9.1 cost_of_pass_group 语义
+
+`cost_of_pass_group` 定义一组可以被公平比较 cost-of-pass 的 eval rows。
+
+它不是模型 tier，也不是 fixture 名称本身。它必须绑定同一类任务分布、同一成功标准和同一评估入口。
+
+推荐格式：
+
+```text
+<eval_suite>/<task_family>/<variant_family>/<success_criterion>
+```
+
+示例：
+
+```text
+harness_change_eval/doc_update/formal_issue/final_gate_pass
+harness_change_eval/doc_update/user_style/final_gate_pass
+real_world_read_only/bugfix/terse_ticket/quality_gate_pass
+advisor_offline/config_rule/formal_issue/advisor_risk_scan_accepted
+```
+
+聚合规则：
+
+```text
+只能在同一 cost_of_pass_group 内比较 cost-of-pass。
+不同 group 之间可以看趋势，但不能直接宣称 A 比 B 更高效。
+cost_of_pass = group_total_estimated_cost / group_success_count。
+如果 group_success_count = 0，则 cost_of_pass 为 undefined，并必须报告 failure。
+```
+
 规则：
 
 ```text
@@ -579,7 +709,7 @@ usage_ledger:
 
 ## 10. Realistic User-Style Mutation Eval
 
-v1.3 需要补上 user-style mutation eval，以避免只对 formal issue 文本过拟合。
+v1.3.1 需要补上 user-style mutation eval，以避免只对 formal issue 文本过拟合。
 
 每个重要 fixture 应尽量有三种表达：
 
@@ -652,7 +782,7 @@ active routing 需要 human approval。
 
 ## 12. Skills-First Policy
 
-v1.3 采用：
+v1.3.1 采用：
 
 ```text
 skills first, specialists later
@@ -692,7 +822,7 @@ error classification rules
 
 ## 13. Advisor 策略更新
 
-v1.3 将 Advisor 默认定位为：
+v1.3.1 将 Advisor 默认定位为：
 
 ```text
 offline evaluator / critic / candidate analyst
@@ -725,7 +855,7 @@ Advisor 不允许：
 
 ## 14. Controlled Adaptive Maturity Gates
 
-v1.3 用 CA gates 判断系统是否真的进入 controlled adaptive，而不是只写了文档。
+v1.3.1 用 CA gates 判断系统是否真的进入 controlled adaptive，而不是只写了文档。
 
 ```text
 CA-0: Orchestrator Kernel sealed
@@ -737,19 +867,22 @@ CA-1: Evaluation suite stable
 CA-2: Tool/Error Taxonomy operational
   error domains defined, unknown_error requires triage, error fixtures pass.
 
-CA-3: Context Pack v2 schema and tests ready
-  pack builder / prune / retrieval policy / memory boundary tested offline.
+CA-3: User-Style Mutation Eval stable
+  formal_issue / user_style_chat_request / terse_ticket variants exist for representative fixtures and do not break admission logic.
 
-CA-4: Usage Ledger and Cost-of-Pass available
-  eval rows carry token/cost/retry/tool-call data.
+CA-4: Context Pack v2 schema and tests ready
+  v1.2 canonical schemas remain intact; v1.3.1 context_layers mapping, prune policy, retrieval policy, and memory boundary are tested offline.
 
-CA-5: Policy Candidate Lifecycle implemented
+CA-5: Usage Ledger and Cost-of-Pass available
+  eval rows carry token/cost/retry/tool-call data and valid cost_of_pass_group.
+
+CA-6: Policy Candidate Lifecycle implemented
   candidate manifest, evidence pack, approval record, rollback plan, policy registry exist.
 
-CA-6: Governance approval path enforced
-  no policy adoption without admitted evidence and human approval.
+CA-7: Governance approval path enforced
+  no policy adoption without admitted evidence, rollback plan, and human approval.
 
-CA-7: Advisor-only real model allowed
+CA-8: Advisor-only real model allowed
   model may critique/advice only; no file mutation, shell execution, sandbox execution, or PR.
 ```
 
@@ -757,18 +890,18 @@ Classification rule：
 
 ```text
 CA-0 到 CA-2：adaptive-ready
-CA-3 到 CA-4：evaluation-controlled adaptive preparation
-CA-5 到 CA-6：Controlled Adaptive Orchestrator Kernel
-CA-7：controlled real-model advisory mode
+CA-3 到 CA-5：evaluation-controlled adaptive preparation
+CA-6 到 CA-7：Controlled Adaptive Orchestrator Kernel
+CA-8：controlled real-model advisory mode
 ```
 
-未达到 CA-5 / CA-6 前，不应声称系统已是 Controlled Adaptive Orchestrator Kernel。
+未达到 CA-6 / CA-7 前，不应声称系统已是 Controlled Adaptive Orchestrator Kernel。
 
 ---
 
 ## 15. Track 顺序更新
 
-v1.3 推荐下一组 Track：
+v1.3.1 推荐下一组 Track：
 
 ```text
 1. Tool/Error Taxonomy Hardening
@@ -779,10 +912,12 @@ v1.3 推荐下一组 Track：
 6. Skills Registry and Skills-First Policy
 7. Policy Candidate Lifecycle
 8. Advisor-Only Offline Critique
-9. Advisor-Only Real Model Test
+9. Advisor-Only Real Model Test — 必须满足 Section 16 全部前置条件
 ```
 
 不推荐跳过前 7 项直接进入真实模型测试。
+
+Track 9 以 Section 16 为唯一 canonical 入场条件。若 Section 15 与 Section 16 出现冲突，以 Section 16 为准。
 
 ---
 
@@ -792,11 +927,12 @@ Advisor-only real model test 前必须满足：
 
 ```text
 Tool/Error Taxonomy 已完成并通过测试。
-Context Pack v2 已定义并通过 offline tests。
-Usage Ledger 已能记录 token/cost/retry/tool-call。
+User-Style Mutation Eval 已完成代表性 fixture 变体并通过 admission 检查。
+Context Pack v2 已定义并通过 offline tests，且与 v1.2 四个 canonical schema 关系明确。
+Usage Ledger 已能记录 token/cost/retry/tool-call，并定义有效 cost_of_pass_group。
 Model Harness Profile 已定义。
 Evaluation Admission Contract 已定义。
-Policy Candidate Lifecycle 至少文档化。
+Policy Candidate Lifecycle 至少文档化，并包含 rollback_plan schema。
 Provider credentials 不进入 repo。
 预算上限明确。
 人工 approval 明确。
@@ -826,7 +962,7 @@ PR 创建
 
 ---
 
-## 17. v1.3 明确禁止事项
+## 17. v1.3.1 明确禁止事项
 
 ```text
 不允许 Orchestrator 自己改目标。
@@ -846,15 +982,15 @@ PR 创建
 
 ## 18. 设计决定记录
 
-### 18.1 v1.3 不替代 v1.2
+### 18.1 v1.3.1 不替代 v1.2
 
-v1.2 是封版状态说明，v1.3 是后续治理蓝图。
+v1.2 是封版状态说明，v1.3.1 是后续治理蓝图。
 
 ### 18.2 Adaptive 发生在 harness policy sidecar，不发生在 runtime 自我授权
 
 自适应的对象是 context pack、tool contract、routing rule、skill package、evaluation threshold、model profile。
 
-### 18.3 Governance & Policy Plane 是 v1.3 的核心新增层
+### 18.3 Governance & Policy Plane 是 v1.3.1 的核心新增层
 
 没有 policy candidate lifecycle，系统不能声称 controlled adaptive。
 
@@ -874,15 +1010,31 @@ admitted evidence 才能参与 adoption；diagnostic evidence 只能生成候选
 
 Advisor 先作为 offline critic / evaluator，不进入 runtime 主路径。
 
-### 18.8 Controlled Adaptive 的最低门槛是 CA-5 / CA-6
+### 18.8 Controlled Adaptive 的最低门槛是 CA-6 / CA-7
 
 只有 policy candidate lifecycle 和 governance approval path 都存在，系统才进入 Controlled Adaptive Orchestrator Kernel。
+
+### 18.9 Context Pack v2 的 canonical schema 仍来自 v1.2
+
+v1.3.1 的五层结构是 composition layout，不替代 v1.2 的 advisor_context_pack_v2、model_context_pack_v2、context_retrieval_request、context_retrieval_result。
+
+### 18.10 rollback_plan 是 Policy Candidate Lifecycle 的必备结构
+
+所有可部署 policy candidate 必须在 approval 前提供 rollback_plan。
+
+### 18.11 User-Style Mutation Eval 是 CA-3 gate
+
+它不再只是 Track 顺序中的建议项，而是进入真实模型和 policy adoption 前的正式成熟度门槛。
+
+### 18.12 Track 9 以 Section 16 为 canonical 入场条件
+
+Advisor-only Real Model Test 不能只按 Track 列表启动，必须满足 Section 16 全部前置条件。
 
 ---
 
 ## 19. 下一步执行建议
 
-v1.3 之后，不要继续改总架构书。下一步应该落地第一条 Track：
+v1.3.1 之后，不要继续改总架构书。下一步应该落地第一条 Track：
 
 ```text
 Tool/Error Taxonomy Hardening Track
@@ -912,7 +1064,7 @@ Tool/Error Taxonomy Hardening Track
 
 当前项目不需要推翻 Orchestrator Kernel，也不应该直接迈向真实自治执行。
 
-v1.3 的核心结论是：
+v1.3.1 的核心结论是：
 
 ```text
 保持 deterministic Orchestrator Core。
