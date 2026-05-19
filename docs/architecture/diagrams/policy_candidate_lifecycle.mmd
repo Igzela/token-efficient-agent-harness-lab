@@ -1,0 +1,43 @@
+flowchart LR
+  Monitor["Monitor<br/>收集 traces / snapshots / tool errors / usage / feedback"]
+  Analyze["Analyze<br/>失败聚类 / 回归检测 / 机会识别"]
+  Candidate["Candidate<br/>生成受限候选<br/>policy / config / schema / profile / skill"]
+  Evaluate["Evaluate<br/>固定 fixtures + read-only eval<br/>user-style mutation + cost checks"]
+  Review["Review<br/>Quality Gate + Final Gate"]
+  Human["Human Approval<br/>必经审批"]
+  Rollback["rollback_plan exists<br/>部署前必须存在"]
+  Deploy["Deploy<br/>仅部署 harness-level policy/config"]
+  Record["Record<br/>Policy Registry + evidence refs"]
+
+  Diagnostic["Diagnostic Evidence<br/>LLM critique / advisor suggestion<br/>shadow routing / exploratory trace"]
+  Admitted["Admitted Evidence<br/>fixture result / quality gate<br/>final gate / baseline / reviewed feedback"]
+  Block["禁止路径<br/>diagnostic evidence 不得直接进入 approval"]
+
+  Monitor --> Analyze --> Candidate --> Evaluate
+  Diagnostic --> Candidate
+  Diagnostic -.cannot approve directly.-> Block
+  Block -.blocked.-> Human
+
+  Admitted --> Evaluate
+  Evaluate --> Review
+  Review --> Human
+  Human --> Rollback
+  Rollback --> Deploy
+  Deploy --> Record
+  Record --> Monitor
+
+  Evaluate -.needs more evidence.-> Analyze
+  Review -.reject / revise.-> Candidate
+  Rollback -.rollback if regression.-> Record
+
+  classDef normal fill:#e8f1ff,stroke:#2f66c5,stroke-width:1px,color:#0b1f44;
+  classDef eval fill:#fff4d6,stroke:#c78a00,stroke-width:1px,color:#3d2b00;
+  classDef gov fill:#f3e8ff,stroke:#7b2cbf,stroke-width:1px,color:#2d0a4f;
+  classDef danger fill:#ffe8e8,stroke:#c53030,stroke-width:2px,color:#4a0000;
+  classDef record fill:#e8f8ef,stroke:#2e8b57,stroke-width:1px,color:#0b3d22;
+
+  class Monitor,Analyze,Candidate normal;
+  class Evaluate,Admitted eval;
+  class Review,Human,Rollback,Deploy gov;
+  class Diagnostic,Block danger;
+  class Record record;
