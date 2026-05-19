@@ -89,6 +89,19 @@ PROHIBITED_IMPORTS = {
     "azure.storage",
 }
 
+# Paths to exclude from secret scanning (test files contain test strings
+# that intentionally look like secrets).
+SECRET_SCAN_EXCLUDE = {
+    "tests/test_security_baseline.py",
+    "tests/test_security_baseline.py",
+}
+
+# Paths to exclude from active routing guard (test fixtures contain
+# intentional active_routing_allowed values for testing).
+ACTIVE_ROUTING_EXCLUDE_PREFIXES = (
+    "tests/fixtures/",
+)
+
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -172,7 +185,10 @@ def find_json_files(repo_root: Path, tracked_files: list[str]) -> list[Path]:
 def check_secret_scan(repo_root: Path, tracked_files: list[str]) -> list[str]:
     """Scan git-tracked files for credential patterns."""
     findings = []
-    text_files = [f for f in tracked_files if is_text_file(repo_root / f)]
+    text_files = [
+        f for f in tracked_files
+        if is_text_file(repo_root / f) and f not in SECRET_SCAN_EXCLUDE
+    ]
 
     for rel_path in text_files:
         filepath = repo_root / rel_path
@@ -186,7 +202,10 @@ def check_secret_scan(repo_root: Path, tracked_files: list[str]) -> list[str]:
             # Skip comments
             if stripped.startswith("#") or stripped.startswith("//"):
                 continue
+            line_matched = False  # deduplicate: one finding per line max
             for pattern in SECRET_PATTERNS:
+                if line_matched:
+                    break
                 match = pattern.search(line)
                 if match:
                     matched_text = match.group(0)
@@ -199,6 +218,7 @@ def check_secret_scan(repo_root: Path, tracked_files: list[str]) -> list[str]:
                         findings.append(
                             f"{rel_path}:{line_num}: {matched_text}"
                         )
+                        line_matched = True
     return findings
 
 
@@ -212,25 +232,37 @@ def check_import_scan(repo_root: Path, tracked_files: list[str]) -> list[str]:
         imports = extract_import_names(filepath)
         for mod_name in imports:
             # Check exact match and prefix match (e.g., urllib covers urllib.request)
+            matched = False
             for prohibited in PROHIBITED_IMPORTS:
+                if matched:
+                    break
                 if mod_name == prohibited or mod_name.startswith(prohibited + "."):
                     findings.append(f"{rel_path}: import {mod_name}")
+                    matched = True
     return findings
 
 
 def check_active_routing(repo_root: Path, tracked_files: list[str]) -> list[str]:
-    """Scan JSON files for active_routing_allowed: true."""
+    """Scan JSON files for active_routing_allowed: true.
+
+    Excludes test fixtures (tests/fixtures/) which contain intentional
+    active_routing_allowed values for testing purposes.
+    """
     findings = []
     json_files = find_json_files(repo_root, tracked_files)
 
     for filepath in json_files:
+        rel = filepath.relative_to(repo_root)
+        # Skip test fixtures — they contain intentional test data
+        if any(str(rel).startswith(prefix) for prefix in ACTIVE_ROUTING_EXCLUDE_PREFIXES):
+            continue
+
         try:
             data = json.loads(filepath.read_text(encoding="utf-8"))
         except (json.JSONDecodeError, OSError):
             continue
 
         if _has_active_routing(data):
-            rel = filepath.relative_to(repo_root)
             findings.append(f"{str(rel)}: active_routing_allowed: true found")
     return findings
 
