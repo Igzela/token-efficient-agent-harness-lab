@@ -1,0 +1,48 @@
+{
+  "schema_version": "model_context_pack.v2",
+  "pack_id": "model-pack-001",
+  "task_id": "bugfix_001",
+  "item_id": "bugfix_001",
+  "model_tier": "strong_planner",
+  "model_harness_profile_id": "profile-default",
+  "role": "executor",
+  "task_summary": "Fix null-total handling in invoice summary",
+  "input_contract": "Provide patch file with null-guard logic",
+  "output_contract": "artifacts/invoice_summary.patch",
+  "acceptance_tests": ["patch applies cleanly", "regression test passes"],
+  "current_project_status": "Stage 4 complete",
+  "dependency_summary": "No upstream dependencies",
+  "allowed_tools": ["bash", "file_reader"],
+  "forbidden_tools": ["web_search"],
+  "allowed_files": ["artifacts/invoice_summary.patch", "run_log.md"],
+  "forbidden_files": [".env", "secrets/"],
+  "artifact_refs": [
+    {
+      "artifact_id": "invoice_summary_patch",
+      "artifact_type": "patch",
+      "path": "artifacts/invoice_summary.patch",
+      "status": "present"
+    }
+  ],
+  "evidence_refs": [
+    {
+      "ref_id": "ev-001",
+      "ref_type": "run_log",
+      "path": "run_log.md",
+      "summary": "Task execution log"
+    }
+  ],
+  "quality_warnings": [],
+  "context_budget": {
+    "max_context_tokens": 16000,
+    "preferred_context_tokens": 8000,
+    "reserved_response_tokens": 4000
+  },
+  "retrieval_policy": {
+    "allow_retrieval": true,
+    "max_retrieval_calls": 5,
+    "allowed_ref_types": ["run_log", "completion", "artifact"]
+  },
+  "switch_context": null,
+  "created_at": "2026-05-19T10:00:00Z"
+}

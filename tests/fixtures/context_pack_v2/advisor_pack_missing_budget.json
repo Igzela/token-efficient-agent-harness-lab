@@ -1,0 +1,17 @@
+{
+  "schema_version": "advisor_context_pack.v2",
+  "pack_id": "adv-pack-bad-001",
+  "task_id": "bugfix_001",
+  "item_id": "bugfix_001",
+  "call_type": "preflight",
+  "objective": "Fix null-total",
+  "current_status": "in_progress",
+  "allowed_files": [],
+  "forbidden_files": [],
+  "artifact_refs": [],
+  "evidence_refs": [],
+  "quality_signals": {},
+  "budget": null,
+  "retrieval_policy": {"allow_retrieval": true},
+  "created_at": "2026-05-19T10:00:00Z"
+}

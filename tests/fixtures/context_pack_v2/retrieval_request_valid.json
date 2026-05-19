@@ -1,0 +1,18 @@
+{
+  "request_id": "req-001",
+  "requester_id": "adv-pack-001",
+  "requester_type": "advisor",
+  "task_id": "bugfix_001",
+  "reason": "Need full run_log to verify execution steps before preflight",
+  "requested_refs": [
+    {
+      "ref_id": "ev-001",
+      "ref_type": "run_log",
+      "path": "run_log.md",
+      "requested_scope": "full"
+    }
+  ],
+  "token_budget": 2000,
+  "priority": "normal",
+  "created_at": "2026-05-19T10:01:00Z"
+}
