@@ -1,0 +1,26 @@
+{
+  "schema_version": "governance_decision.v1",
+  "decision_id": "gov-cand-ledger-001",
+  "candidate_id": "cand-ledger-001",
+  "policy_id": "pol-ledger-001",
+  "decision": "approve_activation",
+  "decision_basis": {
+    "admitted_evidence_refs": ["evidence:cand-ledger-001:unit", "usage_ledger:run-001", "usage_ledger:run-002"],
+    "diagnostic_evidence_refs": ["diagnostic:cand-ledger-001:lint"],
+    "approval_ref": "approval:cand-ledger-001",
+    "rollback_plan_ref": "rbp-cand-ledger-001",
+    "registry_entry_ref": "pol-ledger-001"
+  },
+  "gate_results": {
+    "evidence_gate": "pass",
+    "approval_gate": "pass",
+    "rollback_gate": "pass",
+    "scope_gate": "pass",
+    "unknown_error_gate": "pass"
+  },
+  "blocked_reasons": [],
+  "allowed_next_actions": ["activate_policy"],
+  "forbidden_next_actions": [],
+  "decided_by": "governance_engine",
+  "decided_at": "2026-05-19T14:45:00Z"
+}

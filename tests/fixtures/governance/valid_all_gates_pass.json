@@ -1,0 +1,26 @@
+{
+  "schema_version": "governance_decision.v1",
+  "decision_id": "gov-cand-001",
+  "candidate_id": "cand-001",
+  "policy_id": "pol-001",
+  "decision": "approve_activation",
+  "decision_basis": {
+    "admitted_evidence_refs": ["evidence:cand-001:unit", "evidence:cand-001:integration"],
+    "diagnostic_evidence_refs": ["diagnostic:cand-001:lint"],
+    "approval_ref": "approval:cand-001",
+    "rollback_plan_ref": "rbp-cand-001",
+    "registry_entry_ref": "pol-001"
+  },
+  "gate_results": {
+    "evidence_gate": "pass",
+    "approval_gate": "pass",
+    "rollback_gate": "pass",
+    "scope_gate": "pass",
+    "unknown_error_gate": "pass"
+  },
+  "blocked_reasons": [],
+  "allowed_next_actions": ["activate_policy"],
+  "forbidden_next_actions": [],
+  "decided_by": "governance_engine",
+  "decided_at": "2026-05-19T14:00:00Z"
+}

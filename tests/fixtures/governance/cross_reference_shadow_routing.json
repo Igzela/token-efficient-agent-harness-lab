@@ -1,0 +1,29 @@
+{
+  "schema_version": "governance_decision.v1",
+  "decision_id": "gov-shadow-routing",
+  "candidate_id": "cand-shadow-routing",
+  "policy_id": "pol-shadow-routing",
+  "decision": "reject_activation",
+  "decision_basis": {
+    "admitted_evidence_refs": ["evidence:cand-shadow-routing:unit"],
+    "diagnostic_evidence_refs": [],
+    "approval_ref": "",
+    "rollback_plan_ref": "",
+    "registry_entry_ref": "pol-shadow-routing"
+  },
+  "gate_results": {
+    "evidence_gate": "pass",
+    "approval_gate": "fail",
+    "rollback_gate": "fail",
+    "scope_gate": "pass",
+    "unknown_error_gate": "pass"
+  },
+  "blocked_reasons": [
+    "approval_gate failed: no approval_record provided",
+    "rollback_gate failed: no rollback_plan provided"
+  ],
+  "allowed_next_actions": ["revise_candidate"],
+  "forbidden_next_actions": ["activate_policy"],
+  "decided_by": "governance_engine",
+  "decided_at": "2026-05-19T14:55:00Z"
+}

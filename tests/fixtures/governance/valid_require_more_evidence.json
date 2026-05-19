@@ -1,0 +1,26 @@
+{
+  "schema_version": "governance_decision.v1",
+  "decision_id": "gov-cand-003",
+  "candidate_id": "cand-003",
+  "policy_id": "pol-003",
+  "decision": "require_more_evidence",
+  "decision_basis": {
+    "admitted_evidence_refs": [],
+    "diagnostic_evidence_refs": ["diagnostic:cand-003:lint", "diagnostic:cand-003:perf"],
+    "approval_ref": "approval:cand-003",
+    "rollback_plan_ref": "rbp-cand-003",
+    "registry_entry_ref": "pol-003"
+  },
+  "gate_results": {
+    "evidence_gate": "fail",
+    "approval_gate": "pass",
+    "rollback_gate": "pass",
+    "scope_gate": "pass",
+    "unknown_error_gate": "pass"
+  },
+  "blocked_reasons": ["evidence_gate failed: no admitted_evidence_refs (diagnostic-only evidence cannot drive adoption)"],
+  "allowed_next_actions": ["collect_admitted_evidence"],
+  "forbidden_next_actions": ["activate_policy"],
+  "decided_by": "governance_engine",
+  "decided_at": "2026-05-19T14:10:00Z"
+}

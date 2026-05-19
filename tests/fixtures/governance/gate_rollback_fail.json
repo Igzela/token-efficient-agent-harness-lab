@@ -1,0 +1,26 @@
+{
+  "schema_version": "governance_decision.v1",
+  "decision_id": "gov-rollback-fail",
+  "candidate_id": "cand-rollback-fail",
+  "policy_id": "pol-rollback-fail",
+  "decision": "reject_activation",
+  "decision_basis": {
+    "admitted_evidence_refs": ["evidence:cand-rollback-fail:unit"],
+    "diagnostic_evidence_refs": [],
+    "approval_ref": "approval:cand-rollback-fail",
+    "rollback_plan_ref": "rbp-cand-rollback-fail",
+    "registry_entry_ref": "pol-rollback-fail"
+  },
+  "gate_results": {
+    "evidence_gate": "pass",
+    "approval_gate": "pass",
+    "rollback_gate": "fail",
+    "scope_gate": "pass",
+    "unknown_error_gate": "pass"
+  },
+  "blocked_reasons": ["rollback_gate failed: status is 'proposed' (must be approved)"],
+  "allowed_next_actions": ["revise_candidate"],
+  "forbidden_next_actions": ["activate_policy"],
+  "decided_by": "governance_engine",
+  "decided_at": "2026-05-19T14:30:00Z"
+}

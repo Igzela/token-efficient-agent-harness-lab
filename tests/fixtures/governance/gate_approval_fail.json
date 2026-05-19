@@ -1,0 +1,26 @@
+{
+  "schema_version": "governance_decision.v1",
+  "decision_id": "gov-approval-fail",
+  "candidate_id": "cand-approval-fail",
+  "policy_id": "pol-approval-fail",
+  "decision": "reject_activation",
+  "decision_basis": {
+    "admitted_evidence_refs": ["evidence:cand-approval-fail:unit"],
+    "diagnostic_evidence_refs": [],
+    "approval_ref": "approval:cand-approval-fail",
+    "rollback_plan_ref": "rbp-cand-approval-fail",
+    "registry_entry_ref": "pol-approval-fail"
+  },
+  "gate_results": {
+    "evidence_gate": "pass",
+    "approval_gate": "fail",
+    "rollback_gate": "pass",
+    "scope_gate": "pass",
+    "unknown_error_gate": "pass"
+  },
+  "blocked_reasons": ["approval_gate failed: decision is 'rejected' (must be approved)"],
+  "allowed_next_actions": ["revise_candidate"],
+  "forbidden_next_actions": ["activate_policy"],
+  "decided_by": "governance_engine",
+  "decided_at": "2026-05-19T14:25:00Z"
+}

@@ -1,0 +1,26 @@
+{
+  "schema_version": "governance_decision.v1",
+  "decision_id": "gov-cand-004",
+  "candidate_id": "cand-004",
+  "policy_id": "pol-004",
+  "decision": "defer_activation",
+  "decision_basis": {
+    "admitted_evidence_refs": ["evidence:cand-004:unit"],
+    "diagnostic_evidence_refs": [],
+    "approval_ref": "approval:cand-004",
+    "rollback_plan_ref": "rbp-cand-004",
+    "registry_entry_ref": "pol-004"
+  },
+  "gate_results": {
+    "evidence_gate": "pass",
+    "approval_gate": "fail",
+    "rollback_gate": "pass",
+    "scope_gate": "pass",
+    "unknown_error_gate": "pass"
+  },
+  "blocked_reasons": ["approval_gate failed: decision is 'deferred' (must be approved)"],
+  "allowed_next_actions": ["await_human_review"],
+  "forbidden_next_actions": ["activate_policy"],
+  "decided_by": "governance_engine",
+  "decided_at": "2026-05-19T14:15:00Z"
+}

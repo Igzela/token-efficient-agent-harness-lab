@@ -1,0 +1,26 @@
+{
+  "schema_version": "governance_decision.v1",
+  "decision_id": "gov-scope-fail",
+  "candidate_id": "cand-scope-fail",
+  "policy_id": "pol-scope-fail",
+  "decision": "reject_activation",
+  "decision_basis": {
+    "admitted_evidence_refs": ["evidence:cand-scope-fail:unit"],
+    "diagnostic_evidence_refs": [],
+    "approval_ref": "approval:cand-scope-fail",
+    "rollback_plan_ref": "rbp-cand-scope-fail",
+    "registry_entry_ref": "pol-scope-fail"
+  },
+  "gate_results": {
+    "evidence_gate": "pass",
+    "approval_gate": "pass",
+    "rollback_gate": "pass",
+    "scope_gate": "fail",
+    "unknown_error_gate": "pass"
+  },
+  "blocked_reasons": ["scope_gate failed: impacted_ref '/src/main.py' points to user project file"],
+  "allowed_next_actions": ["revise_candidate"],
+  "forbidden_next_actions": ["activate_policy"],
+  "decided_by": "governance_engine",
+  "decided_at": "2026-05-19T14:35:00Z"
+}
