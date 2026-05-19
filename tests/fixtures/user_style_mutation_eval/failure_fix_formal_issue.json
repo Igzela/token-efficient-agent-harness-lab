@@ -1,0 +1,21 @@
+{
+  "schema_version": "user_style_mutation.v1",
+  "case_id": "failure-fix-formal-001",
+  "base_fixture_id": "failure-fix-loop-project",
+  "variant_type": "formal_issue",
+  "user_prompt": "Issue: Malformed fixture export with trailing comma\n\nObjective: Fix the JSON export that has a trailing comma causing parse failures.\n\nFailure code: F008_FORMAT_ERROR\nFailure subcode: json_export_trailing_comma\n\nRequired artifacts:\n- artifacts/fix-loop-summary.md\n- run_log.md\n- retrospective.md\n\nAcceptance: Export must be valid JSON after fix.",
+  "expected_task_family": "failure_fix_loop",
+  "expected_required_fields": ["task_id", "objective", "allowed_files", "failure_code"],
+  "expected_missing_fields": [],
+  "admission_expectation": "admitted",
+  "evidence_refs": ["fixture:failure-fix-loop-project/task-spec", "mutation:formal-issue-variant"],
+  "fixture_metadata": {
+    "fixture_id": "failure-fix-formal-001",
+    "source_type": "mutated_user_style",
+    "freshness": "2026-05-19",
+    "estimated_human_minutes": 2.0,
+    "difficulty": "easy",
+    "contamination_risk": "low",
+    "admission_scope": "admitted"
+  }
+}

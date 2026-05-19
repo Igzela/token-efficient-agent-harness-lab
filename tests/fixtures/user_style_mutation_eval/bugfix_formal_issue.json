@@ -1,0 +1,21 @@
+{
+  "schema_version": "user_style_mutation.v1",
+  "case_id": "bugfix-formal-001",
+  "base_fixture_id": "bugfix-project",
+  "variant_type": "formal_issue",
+  "user_prompt": "Issue: Null-total handling in invoice summary path\n\nObjective: Fix the null-total handling evidence for the invoice summary path.\n\nRequired artifacts:\n- artifacts/invoice_summary.patch\n- artifacts/regression_test_notes.md\n- run_log.md\n\nForbidden files:\n- .env\n- secrets/\n\nAcceptance criteria: Patch must include null-guard logic and regression test notes must demonstrate the fix.",
+  "expected_task_family": "bugfix",
+  "expected_required_fields": ["task_id", "objective", "allowed_files", "forbidden_files"],
+  "expected_missing_fields": [],
+  "admission_expectation": "admitted",
+  "evidence_refs": ["fixture:bugfix-project/task-spec", "mutation:formal-issue-variant"],
+  "fixture_metadata": {
+    "fixture_id": "bugfix-formal-001",
+    "source_type": "mutated_user_style",
+    "freshness": "2026-05-19",
+    "estimated_human_minutes": 2.0,
+    "difficulty": "easy",
+    "contamination_risk": "low",
+    "admission_scope": "admitted"
+  }
+}

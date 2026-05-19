@@ -1,0 +1,21 @@
+{
+  "schema_version": "user_style_mutation.v1",
+  "case_id": "config-rule-formal-001",
+  "base_fixture_id": "config-rule-project",
+  "variant_type": "formal_issue",
+  "user_prompt": "Task: Update lint rule configuration\n\nObjective: Adjust the lint rule configuration to enforce the new coding standard.\n\nRequired artifacts:\n- artifacts/config-policy.json\n- artifacts/lint-rule-summary.md\n- run_log.md\n\nForbidden paths:\n- src/runtime/\n- .env\n- secrets/\n\nThe config-policy.json must reflect the updated rule thresholds and the lint-rule-summary.md must document the rationale.",
+  "expected_task_family": "config_rule_change",
+  "expected_required_fields": ["task_id", "objective", "allowed_files", "forbidden_files", "required_files"],
+  "expected_missing_fields": [],
+  "admission_expectation": "admitted",
+  "evidence_refs": ["fixture:config-rule-project/task-spec", "mutation:formal-issue-variant"],
+  "fixture_metadata": {
+    "fixture_id": "config-rule-formal-001",
+    "source_type": "mutated_user_style",
+    "freshness": "2026-05-19",
+    "estimated_human_minutes": 2.0,
+    "difficulty": "easy",
+    "contamination_risk": "low",
+    "admission_scope": "admitted"
+  }
+}

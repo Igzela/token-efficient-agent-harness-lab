@@ -1,0 +1,21 @@
+{
+  "schema_version": "user_style_mutation.v1",
+  "case_id": "bugfix-chat-001",
+  "base_fixture_id": "bugfix-project",
+  "variant_type": "user_style_chat_request",
+  "user_prompt": "hey the invoice summary is blowing up when the total is null, can you fix that? also add a regression test if you can",
+  "expected_task_family": "bugfix",
+  "expected_required_fields": ["task_id", "objective"],
+  "expected_missing_fields": ["allowed_files", "forbidden_files"],
+  "admission_expectation": "needs_clarification",
+  "evidence_refs": ["fixture:bugfix-project/task-spec", "mutation:chat-request-variant"],
+  "fixture_metadata": {
+    "fixture_id": "bugfix-chat-001",
+    "source_type": "mutated_user_style",
+    "freshness": "2026-05-19",
+    "estimated_human_minutes": 3.0,
+    "difficulty": "easy",
+    "contamination_risk": "low",
+    "admission_scope": "diagnostic"
+  }
+}
