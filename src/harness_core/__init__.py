@@ -1,5 +1,6 @@
 """Core primitives for the token-efficient agent harness."""
 
+from ._version import __version__
 from .advisor import (
     AdvisorBroker,
     AdvisorBrokerBudgetExceeded,
@@ -143,6 +144,7 @@ from .validators import (
 )
 
 __all__ = [
+    "__version__",
     "AdvisorBroker",
     "AdvisorBrokerBudgetExceeded",
     "AdvisorBudget",
