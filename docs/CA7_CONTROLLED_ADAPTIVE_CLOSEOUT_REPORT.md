@@ -2,7 +2,7 @@
 
 版本：v1.0
 状态：Controlled Adaptive Orchestrator Kernel minimum threshold reached
-定位：基于 v1.3.1 架构书 CA gates 的正式完成报告；不替代现有文档。
+定位：基于 merged architecture book v1.0.1 / v1.3.2 CA gates 的正式完成报告；不替代现有文档。
 生成时间：2026-05-19
 基线 commit：`6c75220`
 测试命令：`PYTHONPATH=src python3 -m unittest discover -s tests`
@@ -28,7 +28,7 @@ Token-Efficient Agent Harness Lab 已达到 Controlled Adaptive Orchestrator Ker
 
 ## 2. Status Declaration
 
-根据 v1.3.1 架构书 Section 14 的分类规则：
+根据 v1.3.2 CA gates 的分类规则：
 
 - CA-0 至 CA-2：adaptive-ready
 - CA-3 至 CA-5：evaluation-controlled adaptive preparation
@@ -91,9 +91,9 @@ Token-Efficient Agent Harness Lab 已达到 Controlled Adaptive Orchestrator Ker
 
 | 维度 | 证据 |
 |------|------|
-| formal_issue variants | `tests/fixtures/user_style_mutation_eval/*_formal_issue.json` (5 fixtures) |
+| formal_issue variants | `tests/fixtures/user_style_mutation_eval/*_formal_issue.json` (4 fixtures) |
 | user_style_chat_request variants | `tests/fixtures/user_style_mutation_eval/*_chat_request.json` (4 fixtures) |
-| terse_ticket variants | `tests/fixtures/user_style_mutation_eval/*_terse_ticket.json` (5 fixtures) |
+| terse_ticket variants | `tests/fixtures/user_style_mutation_eval/*_terse_ticket.json` (4 fixtures) |
 | Eval module | `src/harness_core/user_style_mutation.py` |
 | Eval tests | `tests/test_user_style_mutation_eval.py` |
 | Admission logic | `user_style_mutation.py: validate_user_style_eval_result()` |
@@ -152,7 +152,7 @@ Token-Efficient Agent Harness Lab 已达到 Controlled Adaptive Orchestrator Ker
 | approval_gate | `governance.py: evaluate_approval_gate()` — approval_record.decision = approved |
 | rollback_gate | `governance.py: evaluate_rollback_gate()` — rollback_plan.status = approved |
 | scope_gate | `governance.py: evaluate_scope_gate()` — no user project file paths |
-| unknown_error_gate | `governance.py: evaluate_unknown_error_gate()` — no unknown_error or has human_review_refs |
+| unknown_error_gate | `governance.py: evaluate_unknown_error_gate()` — no unknown_error, or has human_review_refs (evidence only; activation still requires approval_record.decision = approved) |
 | decide_policy_activation | `governance.py: decide_policy_activation()` — all gates must pass |
 | Governance tests | `tests/test_governance.py` |
 | Governance fixtures | `tests/fixtures/governance/` (12 fixtures) |
@@ -165,7 +165,7 @@ Token-Efficient Agent Harness Lab 已达到 Controlled Adaptive Orchestrator Ker
 
 ## 4. Track Evidence Summary
 
-| Track | Source Module | Test File | Fixture Dir | Test Count | Boundary Confirmed |
+| Track | Source Module | Test File | Fixture Dir | Approx. Test Count | Boundary Confirmed |
 |-------|---------------|-----------|-------------|------------|-------------------|
 | Event Store / Kernel Core | `event_store.py`, `kernel.py`, `event_schema.py` | `test_event_store.py`, `test_kernel.py` | `tests/fixtures/stage0_*.jsonl` | ~60 | No real model, no real agents |
 | Projection / Board / Queue | `projection_store.py`, `project_board.py`, `task_queue.py` | `test_projection_store.py`, `test_project_board.py`, `test_task_queue.py` | — | ~50 | Deterministic state transitions |
@@ -213,6 +213,14 @@ Token-Efficient Agent Harness Lab 已达到 Controlled Adaptive Orchestrator Ker
 - 不允许真实多 agent runtime
 - 不允许真实 provider failover
 
+### Explicit Boundary Statements
+
+- **No real model calls**：本报告及 sealed baseline 中不包含任何真实模型 API 调用。
+- **No provider credentials**：本 repo 不存储任何 provider credentials。
+- **No external service access**：sealed baseline 不访问任何外部服务。
+- **No CA-8 started**：CA-8（Advisor-Only Real Model Test）尚未启动，不在当前 sealed baseline 范围内。
+- **No policy registry mutation by governance decision itself**：governance decision 本身不执行 policy registry mutation；registry 更新由 human/tool 执行。
+
 ### 项目管理
 
 - 不允许自动 PR / merge
@@ -247,16 +255,25 @@ CA-7 的通过意味着：
 
 CA-7 达成后：
 
-- **当前基线封存**：所有已实现的 harness policy、config、schema、profile、skill、eval gate 构成当前 sealed baseline。
-- **封存范围**：source modules、test suite、fixtures、docs、architecture books 均在封存范围内。
-- **未来调整路径**：可通过明确的版本化补丁调整 sealed baseline，但必须：
-  - 创建 policy_candidate_manifest
-  - 提供 candidate_evidence_pack
-  - 通过 governance approval path（五 gate）
-  - 获得 human approval
-  - 提供 rollback_plan
-  - 更新 policy_registry_entry
-- **不可绕过**：任何试图绕过 governance approval path 的改动都是对 sealed baseline 的违规。
+- **Controlled-adaptive baseline**：CA-0 ~ CA-7 的实现 evidence（source modules、test suite、fixtures、docs、architecture books）构成 controlled-adaptive baseline。这些文件在 sealed baseline 范围内。
+- **Adaptive-policy-relevant contracts sealed**：以下 contract 类型的语义变更需要 architecture amendment 或 policy candidate lifecycle：
+  - policy（policy_candidate_manifest、approval_record、rollback_plan、policy_registry_entry）
+  - config（context_pack budget/prune policy、usage_ledger schema）
+  - schema（v1.2 canonical schemas、context_pack_v2 schemas）
+  - model profile（model_profiles schema、shadow routing constraints）
+  - skill（skill extraction / prompt mutation rules）
+  - eval gate（evaluation admission contract、cost-of-pass thresholds）
+  - governance rule（governance approval path five-gate definitions）
+  - CA gate definitions（CA-0 ~ CA-8 gate criteria）
+- **Ordinary maintenance excluded**：对 source modules、test suite、fixtures、docs 的普通维护性修改（typo fix、test addition、fixture expansion、documentation clarification）不强制要求 policy candidate lifecycle，只要不改变上述 sealed contracts 的语义。
+- **Semantic change triggers**：以下变更需要 architecture amendment 或 policy candidate lifecycle：
+  - CA gate 定义的语义变更
+  - evidence admission 规则变更
+  - governance gate 变更
+  - rollback semantics 变更
+  - model profile constraint 变更
+  - active/diagnostic 边界变更
+- **不可绕过**：任何试图绕过 governance approval path 的 sealed contract 语义变更都是对 sealed baseline 的违规。
 - **版本化**：未来补丁应以版本号标记（如 baseline v1.0 → v1.1），并在 policy_registry_entry 中记录。
 
 ## 8. Remaining Future Tracks
@@ -266,7 +283,7 @@ CA-7 达成后：
 ### Track 8: Advisor-Only Real Model Test（CA-8）
 
 - 定位：controlled real-model advisory mode
-- 前置条件：必须满足 v1.3.1 Section 16 全部条件（Tool/Error Taxonomy、User-Style Mutation Eval、Context Pack v2、Usage Ledger、Model Harness Profile、Evaluation Admission Contract、Policy Candidate Lifecycle、Provider credentials 不进 repo、预算上限明确、人工 approval 明确）
+- 前置条件：必须满足 v1.3.2 Section 16 全部条件（Tool/Error Taxonomy、User-Style Mutation Eval、Context Pack v2、Usage Ledger、Model Harness Profile、Evaluation Admission Contract、Policy Candidate Lifecycle、Provider credentials 不进 repo、预算上限明确、人工 approval 明确）
 - 限制：模型只能做 Advisor Preflight、Advisor Correction、Advisor Risk Scan、Offline Critique、Candidate Ranking
 - 禁止：文件修改、shell command、sandbox execution、PR 创建、自动 merge、自动 policy adoption、自动 prompt mutation
 - 审批要求：需要单独的人工审批
@@ -302,4 +319,4 @@ CA-7 达成后：
 
 ---
 
-*本报告基于 v1.3.1 架构书 CA gates 的正式完成报告。不替代现有文档，不修改 runtime 行为，不修改 `docs/stage0/events.jsonl`。*
+*本报告基于 merged architecture book v1.0.1 / v1.3.2 CA gates 的正式完成报告。不替代现有文档，不修改 runtime 行为，不修改 `docs/stage0/events.jsonl`。*
