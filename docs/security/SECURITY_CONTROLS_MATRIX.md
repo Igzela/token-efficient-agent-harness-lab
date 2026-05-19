@@ -1,0 +1,16 @@
+# Security Controls Matrix — CA-7 Sealed Baseline
+
+| Control ID | Control | Risk Addressed | Evidence | Test Coverage | Status | Future Owner |
+|------------|---------|----------------|----------|---------------|--------|--------------|
+| SEC-001 | No real model API calls — all providers are mocked or stubbed | T-002 Accidental provider call | `src/harness_core/model_gateway.py` defines interfaces only; no HTTP client imports | `tests/test_model_gateway.py` | Active | Provider integration team (CA-8) |
+| SEC-002 | No credentials in repository | T-001 Credential leakage | Secret scan (`check_security_baseline.py`) finds no `api_key`/`secret`/`token`/`password` assignments | `tests/test_security_baseline.py` (test_secret_scan_clean) | Active | Security team |
+| SEC-003 | No external network libraries | T-002 Accidental provider call | AST import scan finds no `requests`, `httpx`, `aiohttp`, `urllib`, `socket`, `boto3`, `openai`, `anthropic`, `google.generativeai` | `tests/test_security_baseline.py` (test_import_scan_clean) | Active | Security team |
+| SEC-004 | No active routing enabled | T-004 Active routing enabled | JSON scan confirms no `active_routing_allowed: true` in any fixture or config | `tests/test_security_baseline.py` (test_active_routing_guard) | Active | Routing team (CA-8) |
+| SEC-005 | Governance gate enforcement | T-003 Diagnostic→active promotion, T-010 Rollback missing | `src/harness_core/governance.py` enforces 5-gate check; fixtures cover all gate pass/fail scenarios | `tests/test_governance.py` (multiple tests) | Active | Governance team |
+| SEC-006 | Human approval gate | T-003 Diagnostic→active promotion | Governance decision fixtures require `approval_ref` field; gate fails without it | `tests/test_governance.py` (gate_approval_fail fixture) | Active | Governance team (CA-8 workflow) |
+| SEC-007 | Rollback plan gate | T-010 Rollback missing | Governance decision fixtures require `rollback_plan_ref`; gate fails without it | `tests/test_governance.py` (gate_rollback_fail fixture) | Active | Governance team |
+| SEC-008 | Unknown-error gate | T-005 Unknown error marked retryable | Governance fixtures validate unknown-error classification consistency | `tests/test_governance.py` (gate_unknown_error_fail fixture) | Active | Error taxonomy team |
+| SEC-009 | Scope gate | T-003 Diagnostic→active promotion | Governance fixtures validate policy scope boundaries | `tests/test_governance.py` (gate_scope_fail fixture) | Active | Governance team |
+| SEC-010 | events.jsonl integrity | T-009 File mutation | Sealed baseline event log committed at `docs/stage0/events.jsonl`; checker verifies existence and stage-0 event guard | `tests/test_security_baseline.py` (test_stage0_event_guard) | Active | Harness core team |
+| SEC-011 | Secret scan checker | T-001 Credential leakage | `tools/check_security_baseline.py` scans git-tracked files for credential patterns with placeholder exception | `tests/test_security_baseline.py` (test_secret_scan_clean, test_secret_scan_detects_key) | Active | Security team |
+| SEC-012 | Import scan checker | T-002 Accidental provider call | `tools/check_security_baseline.py` performs AST-based import scan of all Python files | `tests/test_security_baseline.py` (test_import_scan_clean, test_import_scan_detects_requests) | Active | Security team |
