@@ -1,0 +1,39 @@
+flowchart LR
+  subgraph AR["adaptive-ready"]
+    CA0["CA-0<br/>Orchestrator Kernel sealed<br/>Stage 0-4 complete / CI passing"]
+    CA1["CA-1<br/>Evaluation suite stable<br/>deterministic + read-only + HCE passing"]
+    CA2["CA-2<br/>Tool/Error Taxonomy operational<br/>unknown_error requires triage"]
+  end
+
+  subgraph PREP["evaluation-controlled adaptive preparation"]
+    CA3["CA-3<br/>User-Style Mutation Eval stable<br/>formal / chat / terse variants"]
+    CA4["CA-4<br/>Context Pack v2 ready<br/>canonical schemas + context_layers tested"]
+    CA5["CA-5<br/>Usage Ledger / Cost-of-Pass available<br/>token / cost / retry / tool-call data"]
+  end
+
+  subgraph CAK["Controlled Adaptive Orchestrator Kernel"]
+    CA6["CA-6<br/>Policy Candidate Lifecycle implemented<br/>manifest / evidence / rollback / registry"]
+    CA7["CA-7<br/>Governance approval path enforced<br/>最低门槛：声称 Controlled Adaptive 前必须通过"]
+  end
+
+  subgraph REAL["controlled real-model advisory mode"]
+    CA8["CA-8<br/>Advisor-only real model allowed<br/>critique/advice only, no execution"]
+  end
+
+  CA0 --> CA1 --> CA2 --> CA3 --> CA4 --> CA5 --> CA6 --> CA7 --> CA8
+
+  Threshold["最低门槛<br/>CA-6 + CA-7 通过前<br/>不得声称 Controlled Adaptive Orchestrator Kernel"]
+  CA6 -.-> Threshold
+  CA7 -.-> Threshold
+
+  classDef ar fill:#e8f1ff,stroke:#2f66c5,stroke-width:1px,color:#0b1f44;
+  classDef prep fill:#fff4d6,stroke:#c78a00,stroke-width:1px,color:#3d2b00;
+  classDef cak fill:#f3e8ff,stroke:#7b2cbf,stroke-width:2px,color:#2d0a4f;
+  classDef real fill:#e8f8ef,stroke:#2e8b57,stroke-width:1px,color:#0b3d22;
+  classDef warn fill:#ffe8e8,stroke:#c53030,stroke-width:2px,color:#4a0000;
+
+  class CA0,CA1,CA2 ar;
+  class CA3,CA4,CA5 prep;
+  class CA6,CA7 cak;
+  class CA8 real;
+  class Threshold warn;
