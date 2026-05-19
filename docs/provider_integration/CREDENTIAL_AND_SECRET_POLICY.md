@@ -43,7 +43,7 @@ When credentials or secrets appear in any output:
 
 ```
 # Before redaction
-Authorization: Bearer sk-abc123def456...
+Authorization: Bearer <REDACTED_PROVIDER_TOKEN>
 
 # After redaction
 Authorization: Bearer [REDACTED]
