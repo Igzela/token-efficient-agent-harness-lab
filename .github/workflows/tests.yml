@@ -20,7 +20,10 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
-          python-version: "3.12"
+          python-version: "3.11"
+
+      - name: Run security baseline checker
+        run: python tools/check_security_baseline.py
 
       - name: Run unit tests
         run: PYTHONPATH=src python3 -m unittest discover -s tests
