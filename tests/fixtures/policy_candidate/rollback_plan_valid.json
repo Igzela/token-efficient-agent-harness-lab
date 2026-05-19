@@ -1,0 +1,33 @@
+{
+  "schema_version": "rollback_plan.v1",
+  "rollback_plan_id": "rbp-001",
+  "candidate_id": "cand-001",
+  "policy_id": "pol-001",
+  "rollback_scope": "config",
+  "trigger_conditions": ["regression_detected", "quality_gate_failure"],
+  "impacted_refs": [
+    {
+      "path_or_registry_key": "config/context_pack_defaults.json",
+      "ref_type": "config_key",
+      "pre_change_ref": "v1.0",
+      "post_change_ref": "v1.1"
+    }
+  ],
+  "rollback_steps": [
+    {
+      "step_id": "step-1",
+      "action": "revert_file",
+      "target_ref": "config/context_pack_defaults.json",
+      "expected_result": "config restored to v1.0"
+    }
+  ],
+  "validation_steps": [
+    "run_fixed_eval_suite",
+    "run_harness_change_eval"
+  ],
+  "rollback_owner": "harness-maintainer",
+  "max_rollback_time": "10m",
+  "fallback_policy": "revert_to_previous_config",
+  "status": "approved",
+  "created_at": "2026-05-19T10:30:00Z"
+}

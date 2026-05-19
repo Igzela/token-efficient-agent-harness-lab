@@ -1,0 +1,17 @@
+{
+  "schema_version": "candidate_evidence.v1",
+  "candidate_id": "cand-admitted-001",
+  "admitted_evidence_refs": [
+    "usage_ledger:run-001",
+    "context_pack:adv-pack-001"
+  ],
+  "diagnostic_evidence_refs": [],
+  "fixture_results": [
+    {"fixture": "bugfix_formal", "passed": true}
+  ],
+  "quality_deltas": {"bugfix": 0.05},
+  "cost_deltas": {"bugfix": -0.03},
+  "failure_cluster_refs": [],
+  "human_review_refs": [],
+  "recommendation": "accept"
+}

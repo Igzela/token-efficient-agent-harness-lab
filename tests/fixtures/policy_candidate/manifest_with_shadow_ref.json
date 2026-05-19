@@ -1,0 +1,20 @@
+{
+  "schema_version": "policy_candidate.v1",
+  "candidate_id": "cand-shadow-002",
+  "candidate_type": "model_profile",
+  "title": "Evaluate shadow routing recommendation",
+  "rationale": "Shadow routing suggests profile change",
+  "source_refs": [
+    "shadow_routing:shadow-001",
+    "model_profiles:profile-strong-planner"
+  ],
+  "proposed_change_summary": "Test strong_planner profile based on shadow recommendation",
+  "affected_components": ["model_gateway"],
+  "expected_benefit": "Potential quality improvement",
+  "expected_risk": "Cost increase",
+  "required_evidence": "Shadow routing evidence plus usage ledger validation",
+  "evaluation_plan": "Run evaluation with candidate profile",
+  "rollback_plan_ref": "",
+  "approval_required": true,
+  "created_at": "2026-05-19T10:00:00Z"
+}

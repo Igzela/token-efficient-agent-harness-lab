@@ -1,0 +1,11 @@
+{
+  "schema_version": "approval_record.v1",
+  "candidate_id": "cand-001",
+  "approver": "human-reviewer",
+  "decision": "approved",
+  "rationale": "Evidence shows 30% cost reduction with maintained quality",
+  "required_followups": ["monitor for 7 days", "review quality metrics"],
+  "deployment_scope": "context_pack_builder",
+  "rollback_required": true,
+  "approved_at": "2026-05-19T11:00:00Z"
+}

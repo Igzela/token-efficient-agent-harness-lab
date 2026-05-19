@@ -1,0 +1,87 @@
+{
+  "_description": "Complete lifecycle: candidate -> evidence -> approval -> rollback -> registry active",
+  "manifest": {
+    "schema_version": "policy_candidate.v1",
+    "candidate_id": "cand-happy-001",
+    "candidate_type": "model_profile",
+    "title": "Switch bugfix tasks to strong_planner",
+    "rationale": "Strong_planner shows higher quality on bugfix tasks",
+    "source_refs": ["usage_ledger:run-001", "shadow_routing:shadow-001"],
+    "proposed_change_summary": "Change default profile for bugfix from balanced_worker to strong_planner",
+    "affected_components": ["model_gateway", "routing_rules"],
+    "expected_benefit": "15% quality improvement",
+    "expected_risk": "20% cost increase",
+    "required_evidence": "Usage ledger comparison showing quality/cost tradeoff",
+    "evaluation_plan": "Compare before/after on bugfix fixtures",
+    "rollback_plan_ref": "rbp-happy-001",
+    "approval_required": true,
+    "created_at": "2026-05-19T10:00:00Z"
+  },
+  "evidence_pack": {
+    "schema_version": "candidate_evidence.v1",
+    "candidate_id": "cand-happy-001",
+    "admitted_evidence_refs": ["usage_ledger:compare_before", "usage_ledger:compare_after"],
+    "diagnostic_evidence_refs": ["shadow_routing:shadow-001"],
+    "fixture_results": [{"fixture": "bugfix_formal", "passed": true}],
+    "quality_deltas": {"bugfix": 0.15},
+    "cost_deltas": {"bugfix": 0.03},
+    "failure_cluster_refs": [],
+    "human_review_refs": [],
+    "recommendation": "accept"
+  },
+  "approval": {
+    "schema_version": "approval_record.v1",
+    "candidate_id": "cand-happy-001",
+    "approver": "human-reviewer",
+    "decision": "approved",
+    "rationale": "Quality improvement justifies cost increase",
+    "required_followups": ["monitor quality metrics"],
+    "deployment_scope": "model_gateway",
+    "rollback_required": true,
+    "approved_at": "2026-05-19T11:00:00Z"
+  },
+  "rollback_plan": {
+    "schema_version": "rollback_plan.v1",
+    "rollback_plan_id": "rbp-happy-001",
+    "candidate_id": "cand-happy-001",
+    "policy_id": "pol-happy-001",
+    "rollback_scope": "profile",
+    "trigger_conditions": ["quality_gate_failure", "cost_threshold_exceeded"],
+    "impacted_refs": [
+      {
+        "path_or_registry_key": "model_profiles:bugfix_default",
+        "ref_type": "model_profile_id",
+        "pre_change_ref": "profile-balanced-worker",
+        "post_change_ref": "profile-strong-planner"
+      }
+    ],
+    "rollback_steps": [
+      {
+        "step_id": "step-1",
+        "action": "restore_profile",
+        "target_ref": "model_profiles:bugfix_default",
+        "expected_result": "profile restored to balanced_worker"
+      }
+    ],
+    "validation_steps": ["run_fixed_eval_suite", "verify_policy_registry_status"],
+    "rollback_owner": "harness-maintainer",
+    "max_rollback_time": "5m",
+    "fallback_policy": "revert_to_previous_profile",
+    "status": "approved",
+    "created_at": "2026-05-19T10:30:00Z"
+  },
+  "registry": {
+    "schema_version": "policy_registry.v1",
+    "policy_id": "pol-happy-001",
+    "candidate_id": "cand-happy-001",
+    "policy_type": "model_profile",
+    "status": "active",
+    "active_scope": "bugfix_tasks",
+    "version": "1.0",
+    "evidence_pack_ref": "evidence:cand-happy-001",
+    "approval_ref": "approval:cand-happy-001",
+    "rollback_plan_ref": "rbp-happy-001",
+    "activated_at": "2026-05-19T12:00:00Z",
+    "retired_at": ""
+  }
+}

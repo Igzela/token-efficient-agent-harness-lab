@@ -1,0 +1,17 @@
+{
+  "schema_version": "policy_candidate.v1",
+  "candidate_id": "cand-bad-002",
+  "candidate_type": "unknown_type",
+  "title": "Test",
+  "rationale": "Test",
+  "source_refs": [],
+  "proposed_change_summary": "Test",
+  "affected_components": [],
+  "expected_benefit": "Test",
+  "expected_risk": "Test",
+  "required_evidence": "Test",
+  "evaluation_plan": "Test",
+  "rollback_plan_ref": "",
+  "approval_required": true,
+  "created_at": "2026-05-19T10:00:00Z"
+}

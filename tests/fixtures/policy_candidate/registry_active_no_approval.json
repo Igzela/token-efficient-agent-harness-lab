@@ -1,0 +1,14 @@
+{
+  "schema_version": "policy_registry.v1",
+  "policy_id": "pol-bad-001",
+  "candidate_id": "cand-001",
+  "policy_type": "context_pack",
+  "status": "active",
+  "active_scope": "bugfix_tasks",
+  "version": "1.0",
+  "evidence_pack_ref": "evidence:cand-001",
+  "approval_ref": "",
+  "rollback_plan_ref": "rbp-001",
+  "activated_at": "2026-05-19T12:00:00Z",
+  "retired_at": ""
+}

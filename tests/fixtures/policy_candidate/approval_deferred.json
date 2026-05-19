@@ -1,0 +1,11 @@
+{
+  "schema_version": "approval_record.v1",
+  "candidate_id": "cand-defer-001",
+  "approver": "human-reviewer",
+  "decision": "deferred",
+  "rationale": "Need more evidence",
+  "required_followups": ["collect more data"],
+  "deployment_scope": "",
+  "rollback_required": true,
+  "approved_at": "2026-05-19T11:00:00Z"
+}
