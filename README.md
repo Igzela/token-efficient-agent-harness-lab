@@ -16,7 +16,7 @@ This repository is not a production autonomous-agent runtime. It does not call r
 PYTHONPATH=src python3 -m unittest discover -s tests
 ```
 
-Current closeout result: 344 tests pass.
+Current closeout result: 751 tests pass.
 
 ## How To Run The CLI
 
@@ -60,6 +60,12 @@ docs/TEST_MATRIX.md      Test coverage matrix
 - Stage 2: scoring, gates, evaluation, baselines, trajectory, quality digest.
 - Stage 3: advisor/model gateway stubs, routing, controlled eval, sampling, skills.
 - Stage 4: DAG mutation, sandbox claims, scheduling, checkpoint/recovery planning, artifact lifecycle, health, dashboard data model.
+
+## CA-7 Sealed Baseline Status
+
+Controlled Adaptive Orchestrator Kernel minimum threshold reached (CA-0 through CA-7 all passed). The current harness policy baseline is sealed. Future policy changes require the policy candidate lifecycle and governance approval path.
+
+Full closeout report: [`docs/CA7_CONTROLLED_ADAPTIVE_CLOSEOUT_REPORT.md`](docs/CA7_CONTROLLED_ADAPTIVE_CLOSEOUT_REPORT.md)
 
 ## Next Recommended Work
 

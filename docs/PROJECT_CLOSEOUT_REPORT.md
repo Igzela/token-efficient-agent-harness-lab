@@ -84,3 +84,11 @@ These are separate future tracks, not automatic continuation of the completed ta
 ## 9. Stage 5 Statement
 
 No Stage 5 implementation was started.
+
+## 10. CA-7 Controlled Adaptive Closeout
+
+After the Stage 0-4 project closeout, the Controlled Adaptive Orchestrator Kernel minimum threshold was reached (CA-0 through CA-7). The sealed baseline report is at:
+
+- [`docs/CA7_CONTROLLED_ADAPTIVE_CLOSEOUT_REPORT.md`](CA7_CONTROLLED_ADAPTIVE_CLOSEOUT_REPORT.md)
+
+Test count at CA-7 closeout: 751 tests, OK. Any future policy changes must go through the policy candidate lifecycle and governance approval path.
