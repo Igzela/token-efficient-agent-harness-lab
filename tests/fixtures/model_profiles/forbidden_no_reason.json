@@ -1,0 +1,24 @@
+{
+  "schema_version": "model_harness_profile.v1",
+  "profile_id": "profile-no-reason",
+  "provider": "anthropic",
+  "model_id": "claude-opus-4-7",
+  "tier": "strong_planner",
+  "tool_strictness": "strict",
+  "json_tolerance": "strict_json",
+  "reasoning_effort": "high",
+  "output_format_expectation": "structured_json",
+  "parallel_tool_preference": "allowed",
+  "escaping_quirks": "none",
+  "cache_strategy": "no_cache",
+  "fallback_policy": "no_fallback",
+  "context_window": 200000,
+  "cost_metadata": {"input_cost_per_1k": 0.015, "output_cost_per_1k": 0.075},
+  "allowed_tools": [],
+  "forbidden_previous_tools": [
+    {
+      "tool_id": "web_search",
+      "tool_type": "network"
+    }
+  ]
+}

@@ -1,0 +1,20 @@
+{
+  "schema_version": "shadow_routing_recommendation.v1",
+  "recommendation_id": "shadow-001",
+  "task_family": "bugfix",
+  "variant_family": "formal_issue",
+  "success_criterion": "passes_final_gate",
+  "candidate_profile_id": "profile-strong-planner",
+  "baseline_profile_id": "profile-balanced-worker",
+  "rationale": "Strong planner shows 15% higher quality with 20% cost increase on bugfix tasks",
+  "evidence_refs": [
+    "usage_ledger:run-001",
+    "usage_ledger:run-002"
+  ],
+  "expected_quality_delta": 0.15,
+  "expected_cost_delta": 0.03,
+  "risk_level": "low",
+  "recommendation": "try_candidate",
+  "admission_scope": "diagnostic",
+  "active_routing_allowed": false
+}

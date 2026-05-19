@@ -1,0 +1,20 @@
+{
+  "schema_version": "shadow_routing_recommendation.v1",
+  "recommendation_id": "shadow-cp-001",
+  "task_family": "bugfix",
+  "variant_family": "formal_issue",
+  "success_criterion": "passes_final_gate",
+  "candidate_profile_id": "profile-strong-planner",
+  "baseline_profile_id": "profile-balanced-worker",
+  "rationale": "Context pack analysis shows improved token efficiency with strong planner",
+  "evidence_refs": [
+    "context_pack:adv-pack-001",
+    "context_pack:model-pack-001"
+  ],
+  "expected_quality_delta": 0.08,
+  "expected_cost_delta": 0.01,
+  "risk_level": "medium",
+  "recommendation": "needs_more_evidence",
+  "admission_scope": "diagnostic",
+  "active_routing_allowed": false
+}

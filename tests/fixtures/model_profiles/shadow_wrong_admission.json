@@ -1,0 +1,17 @@
+{
+  "schema_version": "shadow_routing_recommendation.v1",
+  "recommendation_id": "shadow-bad-001",
+  "task_family": "bugfix",
+  "variant_family": "formal_issue",
+  "success_criterion": "passes_final_gate",
+  "candidate_profile_id": "profile-strong-planner",
+  "baseline_profile_id": "profile-balanced-worker",
+  "rationale": "Test",
+  "evidence_refs": [],
+  "expected_quality_delta": 0.1,
+  "expected_cost_delta": 0.02,
+  "risk_level": "low",
+  "recommendation": "try_candidate",
+  "admission_scope": "admitted",
+  "active_routing_allowed": false
+}
