@@ -1,0 +1,17 @@
+{
+  "schema_version": "usage_ledger.v1",
+  "run_id": "run-mut-001",
+  "case_id": "bugfix-chat-001",
+  "input_tokens": 2800,
+  "output_tokens": 650,
+  "cached_tokens": 400,
+  "request_count": 1,
+  "tool_call_count": 2,
+  "retry_count": 0,
+  "wall_clock_ms": 3800,
+  "estimated_cost": 0.09,
+  "pass": true,
+  "cost_of_pass_group": "user_style_mutation/bugfix/user_style_chat_request/passes_final_gate",
+  "model_profile_id": "profile-default",
+  "context_pack_id": "adv-pack-mut-001"
+}

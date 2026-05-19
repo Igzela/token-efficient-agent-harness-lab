@@ -1,0 +1,17 @@
+{
+  "schema_version": "usage_ledger.v1",
+  "run_id": "run-agg-004",
+  "case_id": "case-004",
+  "input_tokens": 2800,
+  "output_tokens": 650,
+  "cached_tokens": 350,
+  "request_count": 2,
+  "tool_call_count": 3,
+  "retry_count": 0,
+  "wall_clock_ms": 3800,
+  "estimated_cost": 0.09,
+  "pass": true,
+  "cost_of_pass_group": "eval_suite/task_fam/variant_b/success",
+  "model_profile_id": "profile-default",
+  "context_pack_id": "pack-002"
+}

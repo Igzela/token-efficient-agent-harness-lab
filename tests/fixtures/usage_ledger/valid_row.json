@@ -1,0 +1,17 @@
+{
+  "schema_version": "usage_ledger.v1",
+  "run_id": "run-001",
+  "case_id": "bugfix-formal-001",
+  "input_tokens": 3500,
+  "output_tokens": 800,
+  "cached_tokens": 500,
+  "request_count": 2,
+  "tool_call_count": 3,
+  "retry_count": 0,
+  "wall_clock_ms": 4500,
+  "estimated_cost": 0.12,
+  "pass": true,
+  "cost_of_pass_group": "real_world_eval/bugfix/formal_issue/passes_final_gate",
+  "model_profile_id": "profile-default",
+  "context_pack_id": "adv-pack-001"
+}
