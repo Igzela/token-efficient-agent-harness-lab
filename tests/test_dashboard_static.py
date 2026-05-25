@@ -34,20 +34,37 @@ class DashboardStaticTests(unittest.TestCase):
         )
         self.assertIn("Refresh triage", html)
 
-    def test_mvp7_operations_debug_dashboard_copy_is_visible(self):
+    def test_mvp8_operations_console_copy_is_visible(self):
         html = (REPO_ROOT / "web" / "dashboard" / "index.html").read_text(encoding="utf-8")
 
-        self.assertIn("Operations &amp; Debug Dashboard", html)
+        self.assertNotIn("Harness App MVP5", html)
+        self.assertNotIn("Plan Review Control Plane", html)
+        self.assertIn("Harness App MVP8", html)
+        self.assertIn("Operations Console", html)
+        self.assertIn("Refresh status", html)
+        self.assertIn("Audit selected repo", html)
         self.assertIn("Component Status Matrix", html)
         self.assertIn("Data Flow Status", html)
         self.assertIn("Storage Health", html)
         self.assertIn("Recent API Errors", html)
         self.assertIn("Recommended Debug Actions", html)
+        self.assertIn("Tools", html)
+        self.assertIn("Repository Audit", html)
+        self.assertIn("Planning", html)
+        self.assertIn("Plan Review", html)
+        self.assertIn("Portfolio Triage", html)
+        self.assertIn("Review Guidance", html)
         self.assertIn(
             "Operations diagnostics are read-only. They do not approve, execute, mutate, assign, call providers, launch workers or sandboxes, or write target repositories.",
             html,
         )
-        self.assertIn("Refresh diagnostics", html)
+
+    def test_mvp8_first_screen_primary_actions_stay_minimal(self):
+        html = (REPO_ROOT / "web" / "dashboard" / "index.html").read_text(encoding="utf-8")
+        primary_actions = re.findall(r"<button[^>]*class=\"[^\"]*primary-action[^\"]*\"[^>]*>", html)
+
+        self.assertLessEqual(len(primary_actions), 3, primary_actions)
+        self.assertEqual(len(primary_actions), 2, primary_actions)
 
     def test_dashboard_button_labels_do_not_offer_execution_controls(self):
         html = (REPO_ROOT / "web" / "dashboard" / "index.html").read_text(encoding="utf-8")

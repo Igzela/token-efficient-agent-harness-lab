@@ -139,7 +139,6 @@ const elements = {
   storageHealthList: document.querySelector("#storage-health-list"),
   recentErrorsList: document.querySelector("#recent-errors-list"),
   debugActionsList: document.querySelector("#debug-actions-list"),
-  refreshRepos: document.querySelector("#refresh-repos"),
   runAudit: document.querySelector("#run-audit"),
   repoSelect: document.querySelector("#repo-select"),
   apiState: document.querySelector("#api-state"),
@@ -1187,8 +1186,7 @@ elements.resetReport.addEventListener("click", () => {
   setApiState("Static sample");
 });
 
-elements.refreshDiagnostics.addEventListener("click", refreshDiagnostics);
-elements.refreshRepos.addEventListener("click", refreshRepos);
+elements.refreshDiagnostics.addEventListener("click", refreshRepos);
 elements.runAudit.addEventListener("click", runSelectedAudit);
 elements.repoForm.addEventListener("submit", registerRepo);
 elements.planForm.addEventListener("submit", generatePlan);
