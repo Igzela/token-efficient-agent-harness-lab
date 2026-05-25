@@ -16,7 +16,7 @@ This repository is not a production autonomous-agent runtime. It does not call r
 PYTHONPATH=src python3 -m unittest discover -s tests
 ```
 
-Current result: 896 tests pass.
+Current result: 897 tests pass.
 
 ## How To Run The CLI
 
@@ -73,6 +73,7 @@ docs/TEST_MATRIX.md      Test coverage matrix
 - MVP5: non-persistent review guidance preview for stored plans, evidence requirements, and token-efficiency guidance.
 - MVP6: read-only planning portfolio triage for review priority, bottlenecks, and token hotspots.
 - MVP7: read-only operations and debug dashboard for component status, data flow, storage health, recent errors, and debug actions.
+- MVP8: operations console simplification that keeps the first screen focused on status, health, errors, and two primary actions while moving tools into collapsed sections.
 
 ## CA-7 Sealed Baseline Status
 

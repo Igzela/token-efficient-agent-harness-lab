@@ -47,6 +47,16 @@ button:hover,
   border-color: var(--accent);
 }
 
+.primary-action {
+  background: var(--accent);
+  color: #ffffff;
+}
+
+.primary-action + .primary-action {
+  background: var(--surface);
+  color: var(--ink);
+}
+
 .file-button {
   display: inline-flex;
   align-items: center;
@@ -99,13 +109,6 @@ h2 {
   flex-wrap: wrap;
   gap: 10px;
   justify-content: flex-end;
-}
-
-.summary-grid {
-  display: grid;
-  gap: 14px;
-  grid-template-columns: minmax(240px, 1.4fr) repeat(3, minmax(150px, 1fr));
-  margin-bottom: 18px;
 }
 
 .metric,
@@ -162,28 +165,60 @@ h2 {
   padding: 18px;
 }
 
+.ops-cockpit,
 .ops-panel {
   margin-bottom: 18px;
 }
 
+.cockpit-heading {
+  align-items: end;
+  border-bottom: 1px solid var(--line);
+  display: flex;
+  gap: 18px;
+  justify-content: space-between;
+  padding: 14px 18px;
+}
+
+.cockpit-repo {
+  display: grid;
+  min-width: min(100%, 280px);
+}
+
 .ops-overview {
   display: grid;
-  gap: 12px;
+  gap: 10px;
   grid-template-columns: repeat(5, minmax(0, 1fr));
-  padding: 18px;
+  padding: 14px 18px;
 }
 
 .ops-overview article {
   background: var(--surface-strong);
   border-radius: 8px;
-  min-height: 78px;
-  padding: 14px;
+  min-height: 66px;
+  padding: 12px;
 }
 
 .ops-overview strong {
   display: block;
   font-size: 1.15rem;
   overflow-wrap: anywhere;
+}
+
+.issue-summary {
+  border-top: 1px solid var(--line);
+  display: grid;
+  gap: 12px;
+  grid-template-columns: minmax(240px, 1.4fr) repeat(3, minmax(150px, 1fr));
+  padding: 18px;
+}
+
+.issue-summary .metric {
+  box-shadow: none;
+  min-height: 104px;
+}
+
+.issue-summary .metric strong {
+  font-size: 1.35rem;
 }
 
 .ops-grid {
@@ -206,6 +241,14 @@ h2 {
 .storage-health-list,
 .recent-errors-list {
   display: grid;
+}
+
+.cockpit-grid .component-status-list,
+.cockpit-grid .data-flow-list,
+.cockpit-grid .storage-health-list,
+.cockpit-grid .recent-errors-list {
+  max-height: 145px;
+  overflow: auto;
 }
 
 .component-row,
@@ -246,11 +289,67 @@ h2 {
   border-top: 1px solid var(--line);
 }
 
+.tools-area {
+  display: grid;
+  gap: 12px;
+  margin-top: 18px;
+}
+
+.tools-note {
+  color: var(--muted);
+  margin: 0;
+}
+
+.tool-section,
+.secondary-tool {
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  overflow: hidden;
+}
+
+.tool-section > summary,
+.secondary-tool > summary {
+  cursor: pointer;
+  font-weight: 760;
+  list-style-position: inside;
+  padding: 14px 18px;
+}
+
+.tool-section[open] > summary,
+.secondary-tool[open] > summary {
+  border-bottom: 1px solid var(--line);
+}
+
+.tool-section > .panel,
+.tool-section > .repo-panel,
+.tool-section > .layout {
+  border: 0;
+  border-radius: 0;
+  box-shadow: none;
+  margin-bottom: 0;
+}
+
+.secondary-tool {
+  box-shadow: none;
+}
+
+.secondary-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  padding: 14px 18px 18px;
+}
+
+.audit-detail-layout {
+  padding-top: 18px;
+}
+
 .repo-form {
   display: grid;
   gap: 10px;
-  grid-column: 1 / -1;
   grid-template-columns: minmax(110px, 0.7fr) minmax(160px, 1fr) 110px minmax(220px, 1.4fr) auto;
+  padding: 14px 18px 18px;
 }
 
 select,
@@ -881,6 +980,7 @@ textarea:focus {
   }
 
   .topbar,
+  .cockpit-heading,
   .repo-panel,
   .layout {
     display: grid;
@@ -891,14 +991,11 @@ textarea:focus {
     justify-content: start;
   }
 
-  .summary-grid {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-  }
-
   .plan-form,
   .plan-summary,
   .workbench-summary,
   .ops-overview,
+  .issue-summary,
   .triage-summary,
   .triage-detail-list,
   .comparison-list,
@@ -922,11 +1019,11 @@ textarea:focus {
   }
 
   .ops-grid {
-    grid-template-columns: 1fr;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
   .ops-section:nth-child(odd) {
-    border-right: 0;
+    border-right: 1px solid var(--line);
   }
 
   .repo-form {
@@ -937,10 +1034,6 @@ textarea:focus {
 @media (max-width: 560px) {
   h1 {
     font-size: 1.55rem;
-  }
-
-  .summary-grid {
-    grid-template-columns: 1fr;
   }
 
   .panel-heading {
@@ -956,6 +1049,7 @@ textarea:focus {
   .plan-summary,
   .workbench-summary,
   .ops-overview,
+  .issue-summary,
   .triage-summary,
   .triage-detail-list,
   .comparison-list,
@@ -965,6 +1059,14 @@ textarea:focus {
   .triage-controls,
   .guidance-controls {
     grid-template-columns: 1fr;
+  }
+
+  .ops-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .ops-section:nth-child(odd) {
+    border-right: 0;
   }
 
   .plan-form button {
