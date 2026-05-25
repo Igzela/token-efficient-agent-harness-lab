@@ -8,7 +8,7 @@ Command:
 PYTHONPATH=src python3 -m unittest discover -s tests
 ```
 
-Current result: 846 tests pass.
+Current result: 863 tests pass.
 
 ## Test Files
 
@@ -53,8 +53,9 @@ Current result: 846 tests pass.
 | `tests/test_resource_planner.py` | MVP3 deterministic non-executable resource planner |
 | `tests/test_app_api_plans.py` | MVP3 plan API and app-owned plan store boundaries |
 | `tests/test_plan_workbench.py` | MVP4 read-only plan summaries, comparisons, and review actions |
-| `tests/test_app_api_plan_workbench.py` | MVP4 plan workbench API endpoints and target-repo read-only regression |
-| `tests/test_dashboard_static.py` | Dashboard non-executable wording and button-label guard |
+| `tests/test_app_api_plan_workbench.py` | MVP4 plan workbench and MVP5 review guidance API endpoints plus target-repo read-only regression |
+| `tests/test_review_guidance.py` | MVP5 non-persistent review guidance derivation and boundary checks |
+| `tests/test_dashboard_static.py` | Dashboard non-executable guidance wording and button-label guard |
 
 ## Fixture Coverage
 
@@ -91,7 +92,7 @@ It is not Stage 5 and does not change runtime behavior.
 | Stage 2 | Scoring, artifact gate, quality gate, evaluation, baseline, trajectory, quality digest. |
 | Stage 3 | Advisor broker, model gateway stub, routing, model eval harness, sampling, skill extractor. |
 | Stage 4 | DAG manager/mutations, sandbox claims, concurrency scheduler, supervisor, checkpoint/recovery, artifact lifecycle, health, dashboard model. |
-| Harness App | Read-only local app API, deterministic non-executable planning, app-owned plan store, plan review workbench, static dashboard boundary checks. |
+| Harness App | Read-only local app API, deterministic non-executable planning, app-owned plan store, plan review workbench, non-persistent review guidance preview, static dashboard boundary checks. |
 
 ## Known Missing Production Tests
 

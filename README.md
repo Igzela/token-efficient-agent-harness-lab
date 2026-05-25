@@ -16,7 +16,7 @@ This repository is not a production autonomous-agent runtime. It does not call r
 PYTHONPATH=src python3 -m unittest discover -s tests
 ```
 
-Current result: 846 tests pass.
+Current result: 863 tests pass.
 
 ## How To Run The CLI
 
@@ -70,6 +70,7 @@ docs/TEST_MATRIX.md      Test coverage matrix
 - MVP2: local read-only control plane.
 - MVP3: deterministic non-executable planning kernel.
 - MVP4: read-only plan review workbench for plan history, summary, comparison, and advisory review actions.
+- MVP5: non-persistent review guidance preview for stored plans, evidence requirements, and token-efficiency guidance.
 
 ## CA-7 Sealed Baseline Status
 

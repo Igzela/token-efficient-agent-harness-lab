@@ -10,7 +10,7 @@
     <main class="shell">
       <header class="topbar">
         <div>
-          <p class="eyebrow">Harness App MVP4</p>
+          <p class="eyebrow">Harness App MVP5</p>
           <h1>Plan Review Control Plane</h1>
         </div>
         <div class="actions">
@@ -193,6 +193,24 @@
           </div>
           <div id="compare-output" class="compare-output"></div>
         </section>
+      </section>
+
+      <section class="guidance-panel panel" aria-label="Review guidance preview">
+        <div class="panel-heading">
+          <div>
+            <span class="metric-label">Review Guidance Preview</span>
+            <h2>Advisory Options</h2>
+          </div>
+          <button id="generate-guidance" type="button">Generate review guidance</button>
+        </div>
+        <p class="panel-note">Guidance is advisory only. It does not approve, execute, or mutate plans.</p>
+        <div class="guidance-controls">
+          <label>
+            <span class="metric-label">Stored Plan</span>
+            <select id="guidance-plan-select"></select>
+          </label>
+        </div>
+        <div id="guidance-output" class="guidance-output"></div>
       </section>
 
       <section class="layout">
