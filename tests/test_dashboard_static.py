@@ -1,0 +1,42 @@
+"""Static dashboard boundary checks."""
+
+from __future__ import annotations
+
+from pathlib import Path
+import re
+import unittest
+
+
+REPO_ROOT = Path(__file__).resolve().parent.parent
+
+
+class DashboardStaticTests(unittest.TestCase):
+    def test_mvp4_workbench_non_executable_copy_is_visible(self):
+        html = (REPO_ROOT / "web" / "dashboard" / "index.html").read_text(encoding="utf-8")
+
+        self.assertIn("Plans are non-executable. Review actions are advisory only.", html)
+        self.assertIn("Plan Review Workbench", html)
+
+    def test_dashboard_button_labels_do_not_offer_execution_controls(self):
+        html = (REPO_ROOT / "web" / "dashboard" / "index.html").read_text(encoding="utf-8")
+        labels = [re.sub(r"\s+", " ", label).strip().lower() for label in re.findall(r"<button[^>]*>(.*?)</button>", html, re.DOTALL)]
+        forbidden = {
+            "approve",
+            "run",
+            "execute",
+            "dispatch",
+            "worker",
+            "sandbox",
+            "assign worker",
+            "start task",
+            "apply plan",
+            "merge",
+            "deploy",
+        }
+
+        self.assertTrue(labels)
+        self.assertTrue(forbidden.isdisjoint(labels), labels)
+
+
+if __name__ == "__main__":
+    unittest.main()
