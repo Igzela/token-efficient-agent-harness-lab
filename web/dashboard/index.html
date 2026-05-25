@@ -195,6 +195,55 @@
         </section>
       </section>
 
+      <section class="triage-panel panel" aria-label="Planning portfolio triage">
+        <div class="panel-heading">
+          <div>
+            <span class="metric-label">Planning Portfolio Triage</span>
+            <h2>Review Queue</h2>
+          </div>
+          <button id="refresh-triage" type="button">Refresh triage</button>
+        </div>
+        <p class="panel-note">Portfolio triage is advisory only. It does not approve, execute, mutate, assign, or write target repositories.</p>
+        <div class="triage-controls">
+          <label>
+            <span class="metric-label">Repo Filter</span>
+            <select id="triage-repo-filter"></select>
+          </label>
+        </div>
+
+        <section class="triage-summary" aria-label="Portfolio triage summary">
+          <article><span class="metric-label">Total Plans</span><strong id="triage-total">0</strong></article>
+          <article><span class="metric-label">Blocked</span><strong id="triage-blocked">0</strong></article>
+          <article><span class="metric-label">Needs Review</span><strong id="triage-needs-approval">0</strong></article>
+          <article><span class="metric-label">Ready</span><strong id="triage-ready">0</strong></article>
+          <article><span class="metric-label">Token Hotspots</span><strong id="triage-token-hotspots">0</strong></article>
+          <article><span class="metric-label">Remote Limited</span><strong id="triage-remote-limited">0</strong></article>
+          <article><span class="metric-label">Budget Pressure</span><strong id="triage-budget-pressure">0</strong></article>
+        </section>
+
+        <div class="triage-table-wrap">
+          <table class="triage-table">
+            <thead>
+              <tr>
+                <th>Review Priority</th>
+                <th>Plan</th>
+                <th>Repo</th>
+                <th>Status</th>
+                <th>Review Bucket</th>
+                <th>Bottleneck</th>
+                <th>Token Budget</th>
+                <th>Gates</th>
+                <th>Blockers</th>
+                <th>Next Review Action</th>
+                <th>Detail</th>
+              </tr>
+            </thead>
+            <tbody id="triage-body"></tbody>
+          </table>
+        </div>
+        <div id="triage-detail" class="triage-detail"></div>
+      </section>
+
       <section class="guidance-panel panel" aria-label="Review guidance preview">
         <div class="panel-heading">
           <div>

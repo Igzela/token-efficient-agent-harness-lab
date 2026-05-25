@@ -24,15 +24,27 @@ class DashboardStaticTests(unittest.TestCase):
         self.assertIn("Guidance is advisory only. It does not approve, execute, or mutate plans.", html)
         self.assertIn("Generate review guidance", html)
 
+    def test_mvp6_portfolio_triage_copy_is_visible(self):
+        html = (REPO_ROOT / "web" / "dashboard" / "index.html").read_text(encoding="utf-8")
+
+        self.assertIn("Planning Portfolio Triage", html)
+        self.assertIn(
+            "Portfolio triage is advisory only. It does not approve, execute, mutate, assign, or write target repositories.",
+            html,
+        )
+        self.assertIn("Refresh triage", html)
+
     def test_dashboard_button_labels_do_not_offer_execution_controls(self):
         html = (REPO_ROOT / "web" / "dashboard" / "index.html").read_text(encoding="utf-8")
         labels = [re.sub(r"\s+", " ", label).strip().lower() for label in re.findall(r"<button[^>]*>(.*?)</button>", html, re.DOTALL)]
         forbidden = {
             "approve",
             "assign",
+            "apply",
             "run",
             "execute",
             "dispatch",
+            "launch",
             "worker",
             "sandbox",
             "assign worker",

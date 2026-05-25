@@ -16,6 +16,12 @@ from harness_core.app_registry import (
 )
 from harness_core.instance_audit import audit_instance
 from harness_core.plan_store import PlanStoreError, get_plan, load_plans, save_plan
+from harness_core.plan_triage import (
+    DEFAULT_TRIAGE_LIMIT,
+    MAX_TRIAGE_LIMIT,
+    PlanTriageError,
+    build_portfolio_triage,
+)
 from harness_core.plan_workbench import (
     PlanFilters,
     PlanWorkbenchError,
@@ -91,6 +97,9 @@ def handle_api_request(
         if route == "/api/plans/compare" and method == "GET":
             query = _parse_query(query_string)
             return _compare_plans(plan_store_path, query)
+        if route == "/api/plans/triage" and method == "GET":
+            query = _parse_query(query_string)
+            return _plans_triage(plan_store_path, query)
         if route == "/api/plans/review-guidance" and method == "GET":
             query = _parse_query(query_string)
             return _review_guidance(plan_store_path, query)
@@ -108,6 +117,8 @@ def handle_api_request(
         return _error(400, _planning_error_code(str(exc)), str(exc))
     except PlanStoreError as exc:
         return _error(500, "plan_store_error", str(exc))
+    except PlanTriageError as exc:
+        return _error(400, "invalid_plan_triage_request", str(exc))
     except PlanWorkbenchError as exc:
         return _error(400, "invalid_plan_workbench_request", str(exc))
     except json.JSONDecodeError:
@@ -230,6 +241,17 @@ def _compare_plans(plans_path: str | Path, query: dict[str, list[str]]) -> AppAp
     return _json(200, {"ok": True, "comparison": comparison})
 
 
+def _plans_triage(plans_path: str | Path, query: dict[str, list[str]]) -> AppApiResponse:
+    data = load_plans(plans_path)
+    limit = _optional_triage_limit(_single_query_value(query, "limit"))
+    triage = build_portfolio_triage(
+        data["plans"],
+        repo_id=_single_query_value(query, "repo_id"),
+        limit=limit if limit is not None else DEFAULT_TRIAGE_LIMIT,
+    )
+    return _json(200, {"ok": True, "triage": triage})
+
+
 def _review_guidance(plans_path: str | Path, query: dict[str, list[str]]) -> AppApiResponse:
     plan_id = _single_query_value(query, "plan_id")
     if not plan_id:
@@ -281,6 +303,17 @@ def _optional_positive_int(value: str | None, field_name: str, max_value: int) -
     parsed = int(value)
     if parsed > max_value:
         raise PlanWorkbenchError(f"{field_name} must be less than or equal to {max_value}")
+    return parsed
+
+
+def _optional_triage_limit(value: str | None) -> int | None:
+    if value is None:
+        return None
+    if not value.isdigit() or int(value) < 1:
+        raise PlanTriageError("limit must be a positive integer")
+    parsed = int(value)
+    if parsed > MAX_TRIAGE_LIMIT:
+        raise PlanTriageError(f"limit must be less than or equal to {MAX_TRIAGE_LIMIT}")
     return parsed
 
 
