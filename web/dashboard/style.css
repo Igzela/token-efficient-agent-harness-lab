@@ -109,6 +109,7 @@ h2 {
 }
 
 .metric,
+.repo-panel,
 .panel {
   background: var(--surface);
   border: 1px solid var(--line);
@@ -152,6 +153,39 @@ h2 {
   background: var(--surface-strong);
 }
 
+.repo-panel {
+  align-items: end;
+  display: grid;
+  gap: 14px;
+  grid-template-columns: minmax(220px, 1fr) minmax(150px, 0.5fr);
+  margin-bottom: 18px;
+  padding: 18px;
+}
+
+.repo-form {
+  display: grid;
+  gap: 10px;
+  grid-column: 1 / -1;
+  grid-template-columns: minmax(110px, 0.7fr) minmax(160px, 1fr) 110px minmax(220px, 1.4fr) auto;
+}
+
+select,
+input {
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  color: var(--ink);
+  font: inherit;
+  min-height: 38px;
+  min-width: 0;
+  padding: 0 10px;
+}
+
+select:focus,
+input:focus {
+  border-color: var(--accent);
+  outline: 2px solid var(--accent-soft);
+}
+
 .layout {
   align-items: start;
   display: grid;
@@ -192,6 +226,7 @@ h2 {
   display: inline-flex;
   font-size: 0.75rem;
   font-weight: 760;
+  justify-self: start;
   min-height: 26px;
   padding: 0 10px;
   white-space: nowrap;
@@ -230,6 +265,7 @@ h2 {
 }
 
 .check-meta {
+  align-items: start;
   display: grid;
   gap: 10px;
 }
@@ -320,6 +356,7 @@ h2 {
   }
 
   .topbar,
+  .repo-panel,
   .layout {
     display: grid;
     grid-template-columns: 1fr;
@@ -336,6 +373,10 @@ h2 {
   .check-row {
     grid-template-columns: 1fr;
   }
+
+  .repo-form {
+    grid-template-columns: 1fr 1fr;
+  }
 }
 
 @media (max-width: 560px) {
@@ -350,5 +391,9 @@ h2 {
   .panel-heading {
     align-items: start;
     display: grid;
+  }
+
+  .repo-form {
+    grid-template-columns: 1fr;
   }
 }

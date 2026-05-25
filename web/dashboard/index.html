@@ -10,10 +10,12 @@
     <main class="shell">
       <header class="topbar">
         <div>
-          <p class="eyebrow">Harness App MVP1</p>
-          <h1>Instance Audit Dashboard</h1>
+          <p class="eyebrow">Harness App MVP2</p>
+          <h1>Local Control Plane</h1>
         </div>
         <div class="actions">
+          <button id="refresh-repos" type="button">Refresh repos</button>
+          <button id="run-audit" type="button">Run read-only audit</button>
           <label class="file-button">
             <input id="report-file" type="file" accept="application/json,.json" />
             Load JSON
@@ -43,6 +45,27 @@
           <strong id="blockers-count">0</strong>
           <span class="metric-detail">must stop if present</span>
         </article>
+      </section>
+
+      <section class="repo-panel" aria-label="Repository registry">
+        <div>
+          <span class="metric-label">Repository</span>
+          <select id="repo-select"></select>
+        </div>
+        <div>
+          <span class="metric-label">API mode</span>
+          <strong id="api-state">Static sample</strong>
+        </div>
+        <form id="repo-form" class="repo-form">
+          <input id="repo-id" name="id" placeholder="repo id" autocomplete="off" />
+          <input id="repo-name" name="name" placeholder="display name" autocomplete="off" />
+          <select id="repo-kind" name="kind">
+            <option value="local">local</option>
+            <option value="remote">remote</option>
+          </select>
+          <input id="repo-location" name="location" placeholder="local path or remote url" autocomplete="off" />
+          <button type="submit">Register repo</button>
+        </form>
       </section>
 
       <section class="layout">

@@ -126,7 +126,18 @@ const elements = {
   blockersList: document.querySelector("#blockers-list"),
   reportFile: document.querySelector("#report-file"),
   resetReport: document.querySelector("#reset-report"),
+  refreshRepos: document.querySelector("#refresh-repos"),
+  runAudit: document.querySelector("#run-audit"),
+  repoSelect: document.querySelector("#repo-select"),
+  apiState: document.querySelector("#api-state"),
+  repoForm: document.querySelector("#repo-form"),
+  repoId: document.querySelector("#repo-id"),
+  repoName: document.querySelector("#repo-name"),
+  repoKind: document.querySelector("#repo-kind"),
+  repoLocation: document.querySelector("#repo-location"),
 };
+
+let registeredRepos = [];
 
 function normalizeStatus(status) {
   return String(status || "WARN").toUpperCase();
@@ -242,6 +253,105 @@ function renderReport(report) {
   appendListItems(elements.actionsList, actions, "No actions reported.");
 }
 
+function setApiState(text) {
+  elements.apiState.textContent = text;
+}
+
+function renderRepos(repos) {
+  registeredRepos = Array.isArray(repos) ? repos : [];
+  clear(elements.repoSelect);
+  if (registeredRepos.length === 0) {
+    const option = document.createElement("option");
+    option.textContent = "No repos registered";
+    option.value = "";
+    elements.repoSelect.appendChild(option);
+    elements.runAudit.disabled = true;
+    return;
+  }
+
+  for (const repo of registeredRepos) {
+    const option = document.createElement("option");
+    option.value = repo.id;
+    const location = repo.kind === "local" ? repo.path : repo.url;
+    option.textContent = `${repo.name} (${repo.kind}) - ${location}`;
+    elements.repoSelect.appendChild(option);
+  }
+  elements.runAudit.disabled = false;
+}
+
+async function fetchJson(url, options) {
+  const response = await fetch(url, options);
+  const data = await response.json();
+  if (!response.ok) {
+    const message = data?.error?.message || `Request failed with ${response.status}`;
+    throw new Error(message);
+  }
+  return data;
+}
+
+async function refreshRepos() {
+  try {
+    setApiState("Connecting");
+    const data = await fetchJson("/api/repos");
+    renderRepos(data.repos);
+    setApiState("API connected");
+  } catch (error) {
+    renderRepos([]);
+    setApiState("Static sample");
+  }
+}
+
+async function runSelectedAudit() {
+  const repoId = elements.repoSelect.value;
+  if (!repoId) return;
+  try {
+    setApiState("Running audit");
+    const data = await fetchJson(`/api/audit?repo_id=${encodeURIComponent(repoId)}`);
+    renderReport(data.audit);
+    setApiState("API connected");
+  } catch (error) {
+    renderReport({
+      ...SAMPLE_REPORT,
+      verdict: "BLOCKED",
+      target_repo: repoId,
+      blockers: [error.message],
+      warnings: [],
+      checks: [],
+      recommended_next_actions: ["Review the repository registration and retry the read-only audit."],
+    });
+    setApiState("API error");
+  }
+}
+
+async function registerRepo(event) {
+  event.preventDefault();
+  const kind = elements.repoKind.value;
+  const location = elements.repoLocation.value.trim();
+  const payload = {
+    id: elements.repoId.value.trim(),
+    name: elements.repoName.value.trim(),
+    kind,
+  };
+  if (kind === "local") {
+    payload.path = location;
+  } else {
+    payload.url = location;
+  }
+
+  try {
+    setApiState("Registering repo");
+    await fetchJson("/api/repos", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    });
+    elements.repoForm.reset();
+    await refreshRepos();
+  } catch (error) {
+    setApiState(`Registry error: ${error.message}`);
+  }
+}
+
 async function readFileAsJson(file) {
   const text = await file.text();
   return JSON.parse(text);
@@ -266,6 +376,12 @@ elements.reportFile.addEventListener("change", async (event) => {
 
 elements.resetReport.addEventListener("click", () => {
   renderReport(SAMPLE_REPORT);
+  setApiState("Static sample");
 });
 
+elements.refreshRepos.addEventListener("click", refreshRepos);
+elements.runAudit.addEventListener("click", runSelectedAudit);
+elements.repoForm.addEventListener("submit", registerRepo);
+
 renderReport(SAMPLE_REPORT);
+refreshRepos();
