@@ -1,0 +1,271 @@
+const SAMPLE_REPORT = {
+  blockers: [],
+  checks: [
+    {
+      check_id: "required_files",
+      evidence: [
+        "AGENTS.md",
+        "docs/harness/PROJECT_BOARD.md",
+        "docs/harness/TASK_QUEUE.md",
+        "docs/harness/QUALITY_GATES.md",
+        "docs/harness/DECISION_RECORD.md",
+        "docs/harness/RISK_REGISTER.md",
+      ],
+      message: "all required harness control files are present",
+      status: "PASS",
+    },
+    {
+      check_id: "optional_files",
+      evidence: ["docs/harness/FINAL_GATE.md", "docs/harness/EVIDENCE_INDEX.md"],
+      message: "optional recommended control files are present",
+      status: "PASS",
+    },
+    {
+      check_id: "agents_policy",
+      evidence: [
+        "agent is described as execution adapter",
+        "agent is not governance authority",
+        "human authority is referenced",
+        "provider integration is guarded",
+        "active state mutation is guarded",
+      ],
+      message: "AGENTS.md execution adapter policy reviewed",
+      status: "PASS_WITH_NOTES",
+    },
+    {
+      check_id: "project_board",
+      evidence: [
+        "task state vocabulary exists",
+        "phase/closeout status appears documented",
+        "approval/blocking statuses are visible",
+      ],
+      message: "project board sanity check complete",
+      status: "PASS_WITH_NOTES",
+    },
+    {
+      check_id: "task_queue",
+      evidence: [
+        "execution slices found: 100",
+        "Status fields: 100; Goal fields: 99",
+        "non-executable statuses are present",
+        "approval-gated or blocked slices detected",
+      ],
+      message: "task queue sanity check complete",
+      status: "PASS_WITH_NOTES",
+    },
+    {
+      check_id: "quality_gates",
+      evidence: [
+        "unknown_error requires human review",
+        "provider or LLM boundary present",
+        "active state mutation requires approval",
+        "auto modification is forbidden or reviewed",
+        "read-only or evidence-only boundary present",
+      ],
+      message: "quality gate sanity check complete",
+      status: "PASS",
+    },
+    {
+      check_id: "risk_register",
+      evidence: [
+        "active risks exist",
+        "mitigated risks exist",
+        "provider/LLM premature integration risk exists",
+        "scope drift risk exists",
+        "mutation/active state risk exists",
+      ],
+      message: "risk register sanity check complete",
+      status: "PASS",
+    },
+    {
+      check_id: "closeout_reports",
+      evidence: [
+        "docs/harness/P7_CLOSEOUT_REPORT.md",
+        "docs/harness/PHASE1_CLOSEOUT_REPORT.md",
+        "docs/harness/PHASE2_CLOSEOUT_REPORT.md",
+        "docs/harness/PHASE3_CLOSEOUT_REPORT.md; status=PASS_WITH_NOTES; tests=607; sealed_candidate=True",
+        "docs/harness/PHASE4_CLOSEOUT_REPORT.md; status=PASS; tests=729; sealed_candidate=True",
+        "docs/harness/PHASE5_CLOSEOUT_REPORT.md",
+      ],
+      message: "closeout reports detected",
+      status: "PASS",
+    },
+  ],
+  recommended_next_actions: [
+    "Review warnings and convert high-friction manual controls into machine-readable indexes.",
+    "Keep using the target repository as a controlled harness instance.",
+    "Do not allow the execution adapter to approve its own work.",
+    "Use human approval before active state mutation, provider integration, sandbox execution, or main-branch push.",
+  ],
+  target_repo: "../alters-lab",
+  verdict: "PASS_WITH_NOTES",
+  warnings: [
+    "AGENTS.md does not explicitly mention main/master push restrictions",
+    "PROJECT_BOARD.md has structurally suspicious table rows: line 32: P1-004 | Controlled Snapshot YAML Write | done |; line 33: P1-005 | Controlled Branches YAML Write | done |; line 34: P1-006 | Controlled Alter YAML Write | done |; line 36: P1-008 | Controlled Dialogue YAML Write | done |; line 37: P1-009 | Reality Trace / Weekly Evidence Controlled Write | done |",
+  ],
+};
+
+const statusLabel = {
+  PASS: "Pass",
+  PASS_WITH_NOTES: "Notes",
+  WARN: "Warn",
+  FAIL: "Fail",
+  BLOCKED: "Blocked",
+};
+
+const elements = {
+  verdict: document.querySelector("#verdict"),
+  targetRepo: document.querySelector("#target-repo"),
+  checksCount: document.querySelector("#checks-count"),
+  warningsCount: document.querySelector("#warnings-count"),
+  blockersCount: document.querySelector("#blockers-count"),
+  statusStrip: document.querySelector("#status-strip"),
+  checksList: document.querySelector("#checks-list"),
+  actionsList: document.querySelector("#actions-list"),
+  warningsList: document.querySelector("#warnings-list"),
+  blockersList: document.querySelector("#blockers-list"),
+  reportFile: document.querySelector("#report-file"),
+  resetReport: document.querySelector("#reset-report"),
+};
+
+function normalizeStatus(status) {
+  return String(status || "WARN").toUpperCase();
+}
+
+function statusClass(status) {
+  return `status-${normalizeStatus(status).toLowerCase().replaceAll("_", "-")}`;
+}
+
+function setText(node, value) {
+  node.textContent = value == null || value === "" ? "-" : String(value);
+}
+
+function clear(node) {
+  while (node.firstChild) node.removeChild(node.firstChild);
+}
+
+function makePill(status) {
+  const pill = document.createElement("span");
+  pill.className = `pill ${statusClass(status)}`;
+  pill.textContent = statusLabel[normalizeStatus(status)] || normalizeStatus(status);
+  return pill;
+}
+
+function appendEmpty(node, text) {
+  const empty = document.createElement("div");
+  empty.className = "empty";
+  empty.textContent = text;
+  node.appendChild(empty);
+}
+
+function appendListItems(node, items, emptyText) {
+  clear(node);
+  if (!items || items.length === 0) {
+    appendEmpty(node, emptyText);
+    return;
+  }
+  for (const item of items) {
+    const li = document.createElement("li");
+    li.textContent = item;
+    node.appendChild(li);
+  }
+}
+
+function renderStatusStrip(checks) {
+  clear(elements.statusStrip);
+  const counts = checks.reduce((acc, check) => {
+    const status = normalizeStatus(check.status);
+    acc[status] = (acc[status] || 0) + 1;
+    return acc;
+  }, {});
+  for (const [status, count] of Object.entries(counts)) {
+    const pill = makePill(status);
+    pill.textContent = `${statusLabel[status] || status}: ${count}`;
+    elements.statusStrip.appendChild(pill);
+  }
+}
+
+function renderChecks(checks) {
+  clear(elements.checksList);
+  if (!checks || checks.length === 0) {
+    appendEmpty(elements.checksList, "No checks reported.");
+    return;
+  }
+
+  for (const check of checks) {
+    const row = document.createElement("article");
+    row.className = "check-row";
+
+    const meta = document.createElement("div");
+    meta.className = "check-meta";
+    const id = document.createElement("div");
+    id.className = "check-id";
+    id.textContent = check.check_id || "unknown_check";
+    meta.append(id, makePill(check.status));
+
+    const body = document.createElement("div");
+    const message = document.createElement("p");
+    message.className = "check-message";
+    message.textContent = check.message || "No message.";
+    const evidence = document.createElement("ul");
+    evidence.className = "evidence-list";
+    for (const item of check.evidence || []) {
+      const li = document.createElement("li");
+      li.textContent = item;
+      evidence.appendChild(li);
+    }
+    body.append(message, evidence);
+    row.append(meta, body);
+    elements.checksList.appendChild(row);
+  }
+}
+
+function renderReport(report) {
+  const checks = Array.isArray(report.checks) ? report.checks : [];
+  const warnings = Array.isArray(report.warnings) ? report.warnings : [];
+  const blockers = Array.isArray(report.blockers) ? report.blockers : [];
+  const actions = Array.isArray(report.recommended_next_actions)
+    ? report.recommended_next_actions
+    : [];
+
+  setText(elements.verdict, report.verdict);
+  elements.verdict.className = statusClass(report.verdict);
+  setText(elements.targetRepo, report.target_repo);
+  setText(elements.checksCount, checks.length);
+  setText(elements.warningsCount, warnings.length);
+  setText(elements.blockersCount, blockers.length);
+
+  renderStatusStrip(checks);
+  renderChecks(checks);
+  appendListItems(elements.warningsList, warnings, "None");
+  appendListItems(elements.blockersList, blockers, "None");
+  appendListItems(elements.actionsList, actions, "No actions reported.");
+}
+
+async function readFileAsJson(file) {
+  const text = await file.text();
+  return JSON.parse(text);
+}
+
+elements.reportFile.addEventListener("change", async (event) => {
+  const [file] = event.target.files;
+  if (!file) return;
+  try {
+    renderReport(await readFileAsJson(file));
+  } catch (error) {
+    renderReport({
+      ...SAMPLE_REPORT,
+      verdict: "BLOCKED",
+      blockers: [`Invalid JSON report: ${error.message}`],
+      warnings: [],
+    });
+  } finally {
+    event.target.value = "";
+  }
+});
+
+elements.resetReport.addEventListener("click", () => {
+  renderReport(SAMPLE_REPORT);
+});
+
+renderReport(SAMPLE_REPORT);
