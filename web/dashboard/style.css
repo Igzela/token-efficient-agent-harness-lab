@@ -162,6 +162,90 @@ h2 {
   padding: 18px;
 }
 
+.ops-panel {
+  margin-bottom: 18px;
+}
+
+.ops-overview {
+  display: grid;
+  gap: 12px;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  padding: 18px;
+}
+
+.ops-overview article {
+  background: var(--surface-strong);
+  border-radius: 8px;
+  min-height: 78px;
+  padding: 14px;
+}
+
+.ops-overview strong {
+  display: block;
+  font-size: 1.15rem;
+  overflow-wrap: anywhere;
+}
+
+.ops-grid {
+  border-top: 1px solid var(--line);
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.ops-section {
+  border-bottom: 1px solid var(--line);
+  min-width: 0;
+}
+
+.ops-section:nth-child(odd) {
+  border-right: 1px solid var(--line);
+}
+
+.component-status-list,
+.data-flow-list,
+.storage-health-list,
+.recent-errors-list {
+  display: grid;
+}
+
+.component-row,
+.flow-row,
+.storage-row,
+.error-row {
+  padding: 14px 18px;
+}
+
+.component-row + .component-row,
+.flow-row + .flow-row,
+.storage-row + .storage-row,
+.error-row + .error-row {
+  border-top: 1px solid var(--line);
+}
+
+.component-head {
+  align-items: center;
+  display: flex;
+  gap: 10px;
+  justify-content: space-between;
+  margin-bottom: 8px;
+}
+
+.component-head strong,
+.error-row strong {
+  overflow-wrap: anywhere;
+}
+
+.component-row p,
+.flow-row p,
+.storage-row p,
+.error-row p {
+  margin: 0;
+}
+
+.ops-debug-actions {
+  border-top: 1px solid var(--line);
+}
+
 .repo-form {
   display: grid;
   gap: 10px;
@@ -814,6 +898,7 @@ textarea:focus {
   .plan-form,
   .plan-summary,
   .workbench-summary,
+  .ops-overview,
   .triage-summary,
   .triage-detail-list,
   .comparison-list,
@@ -834,6 +919,14 @@ textarea:focus {
 
   .check-row {
     grid-template-columns: 1fr;
+  }
+
+  .ops-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .ops-section:nth-child(odd) {
+    border-right: 0;
   }
 
   .repo-form {
@@ -862,6 +955,7 @@ textarea:focus {
   .plan-form,
   .plan-summary,
   .workbench-summary,
+  .ops-overview,
   .triage-summary,
   .triage-detail-list,
   .comparison-list,

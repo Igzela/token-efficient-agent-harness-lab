@@ -38,7 +38,8 @@
 | `health.py` | Stage 4 | Component health aggregation. | `HealthMonitor`, `HealthReport` | `test_health.py` |
 | `dashboard_model.py` | Stage 4 | Read-only dashboard snapshot model. | `DashboardSnapshot` | `test_dashboard_model.py` |
 | `app_registry.py` | Harness App | Local app-owned repository registry. | `AppRegistry`, `RepoRef` | `test_app_api.py`, `test_app_api_plans.py` |
-| `app_api.py` | Harness App | Pure local API handlers for repo audit, deterministic plans, plan review views, review guidance previews, and portfolio triage. | `handle_api_request`, `default_plan_store_path` | `test_app_api.py`, `test_app_api_plans.py`, `test_app_api_plan_workbench.py`, `test_app_api_plan_triage.py` |
+| `app_api.py` | Harness App | Pure local API handlers for repo audit, deterministic plans, plan review views, review guidance previews, portfolio triage, and app diagnostics. | `handle_api_request`, `default_plan_store_path` | `test_app_api.py`, `test_app_api_plans.py`, `test_app_api_plan_workbench.py`, `test_app_api_plan_triage.py`, `test_app_api_diagnostics.py` |
+| `app_diagnostics.py` | Harness App MVP7 | Read-only app diagnostics for component status, data flow, storage health, recent errors, and debug actions. | `build_app_status`, `build_app_diagnostics`, `derive_recent_errors` | `test_app_diagnostics.py`, `test_app_api_diagnostics.py` |
 | `instance_audit.py` | Harness App | Read-only target repository harness-instance audit. | `audit_instance`, `InstanceAuditReport` | `test_instance_audit.py`, `test_app_api.py` |
 | `resource_planner.py` | Harness App MVP3 | Deterministic non-executable resource planning. | `DeterministicResourcePlanner`, `PlanningTask`, `ResourcePlan` | `test_resource_planner.py`, `test_app_api_plans.py` |
 | `plan_store.py` | Harness App MVP3 | App-owned append-only plan store. | `load_plans`, `save_plan`, `get_plan` | `test_app_api_plans.py`, `test_app_api_plan_workbench.py` |

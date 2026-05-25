@@ -14,6 +14,7 @@ from harness_core.app_registry import (
     RepoRef,
     registry_to_dict,
 )
+from harness_core.app_diagnostics import build_app_diagnostics, build_app_status, derive_recent_errors
 from harness_core.instance_audit import audit_instance
 from harness_core.plan_store import PlanStoreError, get_plan, load_plans, save_plan
 from harness_core.plan_triage import (
@@ -78,6 +79,12 @@ def handle_api_request(
     try:
         if route == "/api/health" and method == "GET":
             return _json(200, {"status": "ok", "mode": "local_read_only_control_plane"})
+        if route == "/api/app/status" and method == "GET":
+            return _app_status(registry_path, plan_store_path)
+        if route == "/api/app/diagnostics" and method == "GET":
+            return _app_diagnostics(registry_path, plan_store_path)
+        if route == "/api/app/recent-errors" and method == "GET":
+            return _app_recent_errors(registry_path, plan_store_path)
         if route == "/api/repos" and method == "GET":
             return _list_repos(registry_path)
         if route == "/api/repos" and method == "POST":
@@ -130,6 +137,19 @@ def handle_api_request(
 def _list_repos(registry_path: str | Path) -> AppApiResponse:
     registry = AppRegistry.load(registry_path)
     return _json(200, registry_to_dict(registry))
+
+
+def _app_status(registry_path: str | Path, plans_path: str | Path) -> AppApiResponse:
+    return _json(200, {"ok": True, "status": build_app_status(registry_path, plans_path)})
+
+
+def _app_diagnostics(registry_path: str | Path, plans_path: str | Path) -> AppApiResponse:
+    return _json(200, {"ok": True, "diagnostics": build_app_diagnostics(registry_path, plans_path)})
+
+
+def _app_recent_errors(registry_path: str | Path, plans_path: str | Path) -> AppApiResponse:
+    status = build_app_status(registry_path, plans_path)
+    return _json(200, {"ok": True, "recent_errors": derive_recent_errors(status)})
 
 
 def _add_repo(body: bytes | str | None, registry_path: str | Path) -> AppApiResponse:

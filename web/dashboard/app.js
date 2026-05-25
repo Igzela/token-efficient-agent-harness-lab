@@ -128,6 +128,17 @@ const elements = {
   blockersList: document.querySelector("#blockers-list"),
   reportFile: document.querySelector("#report-file"),
   resetReport: document.querySelector("#reset-report"),
+  refreshDiagnostics: document.querySelector("#refresh-diagnostics"),
+  opsStatus: document.querySelector("#ops-status"),
+  opsComponents: document.querySelector("#ops-components"),
+  opsWarnings: document.querySelector("#ops-warnings"),
+  opsBlocked: document.querySelector("#ops-blocked"),
+  opsLastChecked: document.querySelector("#ops-last-checked"),
+  componentStatusList: document.querySelector("#component-status-list"),
+  dataFlowList: document.querySelector("#data-flow-list"),
+  storageHealthList: document.querySelector("#storage-health-list"),
+  recentErrorsList: document.querySelector("#recent-errors-list"),
+  debugActionsList: document.querySelector("#debug-actions-list"),
   refreshRepos: document.querySelector("#refresh-repos"),
   runAudit: document.querySelector("#run-audit"),
   repoSelect: document.querySelector("#repo-select"),
@@ -177,6 +188,7 @@ const elements = {
 
 let registeredRepos = [];
 let registeredPlanSummaries = [];
+let clientObservedErrors = [];
 
 function normalizeStatus(status) {
   return String(status || "WARN").toUpperCase();
@@ -219,6 +231,20 @@ function appendListItems(node, items, emptyText) {
     li.textContent = item;
     node.appendChild(li);
   }
+}
+
+function rememberClientError(source, error) {
+  const message = error && error.message ? error.message : String(error);
+  clientObservedErrors = [
+    {
+      component: source,
+      status: "blocked",
+      message,
+      last_seen: new Date().toISOString(),
+      source: "dashboard_fetch",
+    },
+    ...clientObservedErrors,
+  ].slice(0, 5);
 }
 
 function renderStatusStrip(checks) {
@@ -362,15 +388,147 @@ async function fetchJson(url, options) {
   return data;
 }
 
+function renderDiagnosticsEmpty(message) {
+  setText(elements.opsStatus, "warning");
+  setText(elements.opsComponents, 0);
+  setText(elements.opsWarnings, 0);
+  setText(elements.opsBlocked, 0);
+  setText(elements.opsLastChecked, "-");
+  renderComponentStatusList([]);
+  renderDataFlowList([]);
+  renderStorageHealthList([]);
+  renderRecentErrors(clientObservedErrors);
+  appendListItems(elements.debugActionsList, [message], "No debug actions.");
+}
+
+function renderDiagnostics(diagnostics) {
+  const overview = diagnostics.system_overview || {};
+  setText(elements.opsStatus, diagnostics.status);
+  elements.opsStatus.className = statusClass(diagnostics.status);
+  setText(elements.opsComponents, overview.component_count || 0);
+  setText(elements.opsWarnings, overview.warning_components || 0);
+  setText(elements.opsBlocked, overview.blocked_components || 0);
+  setText(elements.opsLastChecked, diagnostics.last_checked || "-");
+  renderComponentStatusList(diagnostics.components || []);
+  renderDataFlowList(diagnostics.data_flow || []);
+  renderStorageHealthList(diagnostics.storage || []);
+  renderRecentErrors([...(diagnostics.recent_errors || []), ...clientObservedErrors]);
+  appendListItems(
+    elements.debugActionsList,
+    diagnostics.recommended_debug_actions || [],
+    "No debug actions recommended.",
+  );
+}
+
+function renderComponentStatusList(components) {
+  clear(elements.componentStatusList);
+  if (!components || components.length === 0) {
+    appendEmpty(elements.componentStatusList, "No component status reported.");
+    return;
+  }
+  for (const component of components) {
+    const row = document.createElement("article");
+    row.className = "component-row";
+    const head = document.createElement("div");
+    head.className = "component-head";
+    const name = document.createElement("strong");
+    name.textContent = component.component;
+    head.append(name, makePill(component.status));
+    const message = document.createElement("p");
+    message.textContent = component.message || "No message.";
+    const action = document.createElement("p");
+    action.className = "step-meta";
+    action.textContent = component.recommended_action || "No action.";
+    row.append(head, message, action);
+    elements.componentStatusList.appendChild(row);
+  }
+}
+
+function renderDataFlowList(items) {
+  clear(elements.dataFlowList);
+  if (!items || items.length === 0) {
+    appendEmpty(elements.dataFlowList, "No data flow status reported.");
+    return;
+  }
+  for (const item of items) {
+    const row = document.createElement("article");
+    row.className = "flow-row";
+    const head = document.createElement("div");
+    head.className = "component-head";
+    const name = document.createElement("strong");
+    name.textContent = item.step;
+    head.append(name, makePill(item.status));
+    const message = document.createElement("p");
+    message.textContent = item.message || "No message.";
+    row.append(head, message);
+    elements.dataFlowList.appendChild(row);
+  }
+}
+
+function renderStorageHealthList(items) {
+  clear(elements.storageHealthList);
+  if (!items || items.length === 0) {
+    appendEmpty(elements.storageHealthList, "No storage status reported.");
+    return;
+  }
+  for (const item of items) {
+    const row = document.createElement("article");
+    row.className = "storage-row";
+    const head = document.createElement("div");
+    head.className = "component-head";
+    const name = document.createElement("strong");
+    name.textContent = `${item.name}: ${item.record_count} records`;
+    head.append(name, makePill(item.status));
+    const evidence = document.createElement("p");
+    evidence.className = "step-meta";
+    evidence.textContent = Array.isArray(item.evidence) ? item.evidence.join("; ") : "No evidence.";
+    row.append(head, evidence);
+    elements.storageHealthList.appendChild(row);
+  }
+}
+
+function renderRecentErrors(errors) {
+  clear(elements.recentErrorsList);
+  if (!errors || errors.length === 0) {
+    appendEmpty(elements.recentErrorsList, "No recent API errors.");
+    return;
+  }
+  for (const error of errors) {
+    const row = document.createElement("article");
+    row.className = "error-row";
+    const title = document.createElement("strong");
+    title.textContent = `${error.component || "app"}: ${error.status || "error"}`;
+    const message = document.createElement("p");
+    message.textContent = error.message || "No message.";
+    const meta = document.createElement("p");
+    meta.className = "step-meta";
+    meta.textContent = `${error.source || "unknown"}; ${error.last_seen || "-"}`;
+    row.append(title, message, meta);
+    elements.recentErrorsList.appendChild(row);
+  }
+}
+
+async function refreshDiagnostics() {
+  try {
+    const data = await fetchJson("/api/app/diagnostics");
+    renderDiagnostics(data.diagnostics);
+  } catch (error) {
+    rememberClientError("app_diagnostics", error);
+    renderDiagnosticsEmpty(error.message);
+  }
+}
+
 async function refreshRepos() {
   try {
     setApiState("Connecting");
     const data = await fetchJson("/api/repos");
     renderRepos(data.repos);
     setApiState("API connected");
+    await refreshDiagnostics();
     await refreshPlanWorkbench();
     await refreshPortfolioTriage();
   } catch (error) {
+    rememberClientError("repo_registry", error);
     renderRepos([]);
     renderPlanWorkbenchEmpty();
     renderPortfolioTriageEmpty("No portfolio triage available.");
@@ -387,6 +545,7 @@ async function runSelectedAudit() {
     renderReport(data.audit);
     setApiState("API connected");
   } catch (error) {
+    rememberClientError("repo_audit", error);
     renderReport({
       ...SAMPLE_REPORT,
       verdict: "BLOCKED",
@@ -425,6 +584,7 @@ async function registerRepo(event) {
     elements.repoForm.reset();
     await refreshRepos();
   } catch (error) {
+    rememberClientError("repo_registry", error);
     setApiState(`Registry error: ${error.message}`);
   }
 }
@@ -918,6 +1078,7 @@ async function refreshPlanWorkbench() {
     }
   } catch (error) {
     registeredPlanSummaries = [];
+    rememberClientError("plan_workbench", error);
     renderPlanWorkbenchEmpty();
     renderCompareEmpty(error.message);
   }
@@ -928,6 +1089,7 @@ async function refreshPortfolioTriage() {
     const data = await fetchJson(planTriageUrl());
     renderPortfolioTriage(data.triage);
   } catch (error) {
+    rememberClientError("plan_triage", error);
     renderPortfolioTriageEmpty(error.message);
   }
 }
@@ -937,6 +1099,7 @@ async function viewStoredPlan(planId) {
     const data = await fetchJson(`/api/plans/${encodeURIComponent(planId)}`);
     renderPlan(data.plan);
   } catch (error) {
+    rememberClientError("plan_detail", error);
     renderPlanError(error.message);
   }
 }
@@ -954,6 +1117,7 @@ async function compareSelectedPlans() {
     );
     renderComparison(data.comparison);
   } catch (error) {
+    rememberClientError("plan_compare", error);
     renderCompareEmpty(error.message);
   }
 }
@@ -970,6 +1134,7 @@ async function generateReviewGuidance() {
     renderGuidance(data.guidance);
     setApiState("API connected");
   } catch (error) {
+    rememberClientError("review_guidance", error);
     renderGuidanceEmpty(error.message);
     setApiState("Guidance error");
   }
@@ -989,6 +1154,7 @@ async function generatePlan(event) {
     await refreshPortfolioTriage();
     setApiState("API connected");
   } catch (error) {
+    rememberClientError("resource_planner", error);
     renderPlanError(error.message);
     setApiState("Planning error");
   }
@@ -1021,6 +1187,7 @@ elements.resetReport.addEventListener("click", () => {
   setApiState("Static sample");
 });
 
+elements.refreshDiagnostics.addEventListener("click", refreshDiagnostics);
 elements.refreshRepos.addEventListener("click", refreshRepos);
 elements.runAudit.addEventListener("click", runSelectedAudit);
 elements.repoForm.addEventListener("submit", registerRepo);
@@ -1034,6 +1201,7 @@ elements.triageRepoFilter.addEventListener("change", refreshPortfolioTriage);
 elements.generateGuidance.addEventListener("click", generateReviewGuidance);
 
 renderReport(SAMPLE_REPORT);
+renderDiagnosticsEmpty("Diagnostics not loaded.");
 renderPlanEmpty();
 renderPlanWorkbenchEmpty();
 renderPortfolioTriageEmpty("No portfolio triage available.");
