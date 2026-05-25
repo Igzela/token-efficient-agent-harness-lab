@@ -146,9 +146,23 @@ const elements = {
   planExecutionTokens: document.querySelector("#plan-execution-tokens"),
   generatePlan: document.querySelector("#generate-plan"),
   planOutput: document.querySelector("#plan-output"),
+  refreshPlans: document.querySelector("#refresh-plans"),
+  plansRepoFilter: document.querySelector("#plans-repo-filter"),
+  plansStatusFilter: document.querySelector("#plans-status-filter"),
+  plansTotal: document.querySelector("#plans-total"),
+  plansReady: document.querySelector("#plans-ready"),
+  plansNeedsApproval: document.querySelector("#plans-needs-approval"),
+  plansBlocked: document.querySelector("#plans-blocked"),
+  plansAverageBudget: document.querySelector("#plans-average-budget"),
+  planHistoryBody: document.querySelector("#plan-history-body"),
+  comparePlanA: document.querySelector("#compare-plan-a"),
+  comparePlanB: document.querySelector("#compare-plan-b"),
+  comparePlans: document.querySelector("#compare-plans"),
+  compareOutput: document.querySelector("#compare-output"),
 };
 
 let registeredRepos = [];
+let registeredPlanSummaries = [];
 
 function normalizeStatus(status) {
   return String(status || "WARN").toUpperCase();
@@ -271,6 +285,7 @@ function setApiState(text) {
 function renderRepos(repos) {
   registeredRepos = Array.isArray(repos) ? repos : [];
   clear(elements.repoSelect);
+  renderRepoFilterOptions();
   if (registeredRepos.length === 0) {
     const option = document.createElement("option");
     option.textContent = "No repos registered";
@@ -288,8 +303,23 @@ function renderRepos(repos) {
     option.textContent = `${repo.name} (${repo.kind}) - ${location}`;
     elements.repoSelect.appendChild(option);
   }
+  renderRepoFilterOptions();
   elements.runAudit.disabled = false;
   elements.generatePlan.disabled = false;
+}
+
+function renderRepoFilterOptions() {
+  clear(elements.plansRepoFilter);
+  const all = document.createElement("option");
+  all.value = "";
+  all.textContent = "all repos";
+  elements.plansRepoFilter.appendChild(all);
+  for (const repo of registeredRepos) {
+    const option = document.createElement("option");
+    option.value = repo.id;
+    option.textContent = repo.name;
+    elements.plansRepoFilter.appendChild(option);
+  }
 }
 
 async function fetchJson(url, options) {
@@ -308,8 +338,10 @@ async function refreshRepos() {
     const data = await fetchJson("/api/repos");
     renderRepos(data.repos);
     setApiState("API connected");
+    await refreshPlanWorkbench();
   } catch (error) {
     renderRepos([]);
+    renderPlanWorkbenchEmpty();
     setApiState("Static sample");
   }
 }
@@ -484,6 +516,189 @@ function renderPlan(plan) {
   appendPlanList(elements.planOutput, "Token Efficiency Notes", plan.token_efficiency_notes, "None");
 }
 
+function planListUrl() {
+  const params = new URLSearchParams();
+  if (elements.plansRepoFilter.value) {
+    params.set("repo_id", elements.plansRepoFilter.value);
+  }
+  if (elements.plansStatusFilter.value) {
+    params.set("status", elements.plansStatusFilter.value);
+  }
+  const query = params.toString();
+  return query ? `/api/plans?${query}` : "/api/plans";
+}
+
+function planSummaryUrl() {
+  const params = new URLSearchParams();
+  if (elements.plansRepoFilter.value) {
+    params.set("repo_id", elements.plansRepoFilter.value);
+  }
+  const query = params.toString();
+  return query ? `/api/plans/summary?${query}` : "/api/plans/summary";
+}
+
+function renderPlanWorkbenchEmpty() {
+  registeredPlanSummaries = [];
+  renderPlanSummary({
+    total_plans: 0,
+    by_status: { ready_for_review: 0, needs_approval: 0, blocked: 0 },
+    average_token_budget: 0,
+  });
+  renderPlanHistory([]);
+  renderCompareOptions([]);
+  renderCompareEmpty("No plans available for comparison.");
+}
+
+function renderPlanSummary(summary) {
+  const byStatus = summary.by_status || {};
+  setText(elements.plansTotal, summary.total_plans || 0);
+  setText(elements.plansReady, byStatus.ready_for_review || 0);
+  setText(elements.plansNeedsApproval, byStatus.needs_approval || 0);
+  setText(elements.plansBlocked, byStatus.blocked || 0);
+  setText(elements.plansAverageBudget, summary.average_token_budget || 0);
+}
+
+function renderPlanHistory(plans) {
+  clear(elements.planHistoryBody);
+  if (!plans || plans.length === 0) {
+    const row = document.createElement("tr");
+    const cell = document.createElement("td");
+    cell.colSpan = 9;
+    cell.className = "table-empty";
+    cell.textContent = "No stored plans match the current filters.";
+    row.appendChild(cell);
+    elements.planHistoryBody.appendChild(row);
+    return;
+  }
+
+  for (const plan of plans) {
+    const row = document.createElement("tr");
+    appendCell(row, plan.plan_id);
+    appendCell(row, plan.repo_id);
+    const statusCell = document.createElement("td");
+    statusCell.appendChild(makePill(plan.status));
+    row.appendChild(statusCell);
+    appendCell(row, String(plan.executable));
+    appendCell(row, plan.total_token_budget);
+    appendCell(row, plan.approval_gate_count);
+    appendCell(row, plan.blocker_count);
+    appendCell(row, plan.next_review_action);
+    const actionCell = document.createElement("td");
+    const button = document.createElement("button");
+    button.type = "button";
+    button.textContent = "View plan";
+    button.addEventListener("click", () => viewStoredPlan(plan.plan_id));
+    actionCell.appendChild(button);
+    row.appendChild(actionCell);
+    elements.planHistoryBody.appendChild(row);
+  }
+}
+
+function appendCell(row, value) {
+  const cell = document.createElement("td");
+  cell.textContent = value == null || value === "" ? "-" : String(value);
+  row.appendChild(cell);
+}
+
+function renderCompareOptions(plans) {
+  clear(elements.comparePlanA);
+  clear(elements.comparePlanB);
+  for (const plan of plans || []) {
+    const optionA = document.createElement("option");
+    optionA.value = plan.plan_id;
+    optionA.textContent = plan.plan_id;
+    const optionB = optionA.cloneNode(true);
+    elements.comparePlanA.appendChild(optionA);
+    elements.comparePlanB.appendChild(optionB);
+  }
+  if (plans && plans.length > 1) {
+    elements.comparePlanB.selectedIndex = 1;
+  }
+  elements.comparePlans.disabled = !plans || plans.length < 2;
+}
+
+function renderCompareEmpty(text) {
+  clear(elements.compareOutput);
+  appendEmpty(elements.compareOutput, text);
+}
+
+function renderComparison(comparison) {
+  clear(elements.compareOutput);
+  const rows = [
+    ["Status", comparison.status_delta],
+    ["Review action", comparison.next_review_action_delta],
+    ["Total budget delta", comparison.token_budget_delta],
+    ["Context delta", comparison.context_budget_delta],
+    ["Execution delta", comparison.execution_budget_delta],
+    ["Step count delta", comparison.step_count_delta],
+    ["Approval gate delta", comparison.approval_gate_delta],
+    ["Blocker delta", comparison.blocker_delta],
+  ];
+  const dl = document.createElement("dl");
+  dl.className = "comparison-list";
+  for (const [label, value] of rows) {
+    const item = document.createElement("div");
+    const dt = document.createElement("dt");
+    dt.textContent = label;
+    const dd = document.createElement("dd");
+    dd.textContent = value == null || value === "" ? "-" : String(value);
+    item.append(dt, dd);
+    dl.appendChild(item);
+  }
+  const note = document.createElement("p");
+  note.className = "step-meta";
+  note.textContent = comparison.efficiency_note || "No comparison note.";
+  elements.compareOutput.append(dl, note);
+}
+
+async function refreshPlanWorkbench() {
+  try {
+    const [listData, summaryData] = await Promise.all([
+      fetchJson(planListUrl()),
+      fetchJson(planSummaryUrl()),
+    ]);
+    registeredPlanSummaries = Array.isArray(listData.plans) ? listData.plans : [];
+    renderPlanSummary(summaryData.summary || {});
+    renderPlanHistory(registeredPlanSummaries);
+    renderCompareOptions(registeredPlanSummaries);
+    if (registeredPlanSummaries.length < 2) {
+      renderCompareEmpty("Select two stored plans to compare.");
+    } else {
+      renderCompareEmpty("Choose two stored plans and compare.");
+    }
+  } catch (error) {
+    registeredPlanSummaries = [];
+    renderPlanWorkbenchEmpty();
+    renderCompareEmpty(error.message);
+  }
+}
+
+async function viewStoredPlan(planId) {
+  try {
+    const data = await fetchJson(`/api/plans/${encodeURIComponent(planId)}`);
+    renderPlan(data.plan);
+  } catch (error) {
+    renderPlanError(error.message);
+  }
+}
+
+async function compareSelectedPlans() {
+  const first = elements.comparePlanA.value;
+  const second = elements.comparePlanB.value;
+  if (!first || !second) {
+    renderCompareEmpty("Select two stored plans to compare.");
+    return;
+  }
+  try {
+    const data = await fetchJson(
+      `/api/plans/compare?plan_id=${encodeURIComponent(first)}&plan_id=${encodeURIComponent(second)}`,
+    );
+    renderComparison(data.comparison);
+  } catch (error) {
+    renderCompareEmpty(error.message);
+  }
+}
+
 async function generatePlan(event) {
   event.preventDefault();
   try {
@@ -494,6 +709,7 @@ async function generatePlan(event) {
       body: JSON.stringify(planPayload()),
     });
     renderPlan(data.plan);
+    await refreshPlanWorkbench();
     setApiState("API connected");
   } catch (error) {
     renderPlanError(error.message);
@@ -532,7 +748,12 @@ elements.refreshRepos.addEventListener("click", refreshRepos);
 elements.runAudit.addEventListener("click", runSelectedAudit);
 elements.repoForm.addEventListener("submit", registerRepo);
 elements.planForm.addEventListener("submit", generatePlan);
+elements.refreshPlans.addEventListener("click", refreshPlanWorkbench);
+elements.plansRepoFilter.addEventListener("change", refreshPlanWorkbench);
+elements.plansStatusFilter.addEventListener("change", refreshPlanWorkbench);
+elements.comparePlans.addEventListener("click", compareSelectedPlans);
 
 renderReport(SAMPLE_REPORT);
 renderPlanEmpty();
+renderPlanWorkbenchEmpty();
 refreshRepos();

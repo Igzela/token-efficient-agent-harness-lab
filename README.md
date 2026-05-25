@@ -8,7 +8,7 @@ Current status: Stage 0-4 complete.
 
 ## What This Project Is Not
 
-This repository is not a production autonomous-agent runtime. It does not call real model providers, run real agents, isolate work in real sandboxes, spawn production concurrent workers, provide provider failover, or implement a Web UI.
+This repository is not a production autonomous-agent runtime. It does not call real model providers, run real agents, isolate work in real sandboxes, spawn production concurrent workers, provide provider failover, or ship a production Web UI. The local Harness app dashboard is read-only/non-executable over app-owned state.
 
 ## How To Run Tests
 
@@ -16,7 +16,7 @@ This repository is not a production autonomous-agent runtime. It does not call r
 PYTHONPATH=src python3 -m unittest discover -s tests
 ```
 
-Current closeout result: 751 tests pass.
+Current result: 846 tests pass.
 
 ## How To Run The CLI
 
@@ -35,7 +35,8 @@ PYTHONPATH=src python3 -m harness_core.cli validate-events docs/stage0/events.js
 - No real sandbox/process/container/VM isolation.
 - No production concurrency or real concurrent workers.
 - No provider failover.
-- No Web UI implementation.
+- No production Web UI, deployment, or remote service.
+- Local dashboard views remain non-executable and target repositories remain read-only.
 - No destructive runtime filesystem behavior.
 
 ## Repository Structure
@@ -48,6 +49,7 @@ docs/stage1/             Event store, validator, kernel, CLI, task-record docs
 docs/stage2/             Quality runtime specs and acceptance
 docs/stage3/             Controlled intelligence stub specs and acceptance
 docs/stage4/             Runtime abstraction specs and acceptance
+web/dashboard/           Local non-executable Harness app dashboard
 docs/MODULE_MAP.md       Module-to-stage reference
 docs/ROADMAP.md          Completed stages and optional future tracks
 docs/TEST_MATRIX.md      Test coverage matrix
@@ -61,6 +63,14 @@ docs/TEST_MATRIX.md      Test coverage matrix
 - Stage 3: advisor/model gateway stubs, routing, controlled eval, sampling, skills.
 - Stage 4: DAG mutation, sandbox claims, scheduling, checkpoint/recovery planning, artifact lifecycle, health, dashboard data model.
 
+## Harness App MVPs
+
+- MVP0: read-only harness instance auditor.
+- MVP1: static audit dashboard.
+- MVP2: local read-only control plane.
+- MVP3: deterministic non-executable planning kernel.
+- MVP4: read-only plan review workbench for plan history, summary, comparison, and advisory review actions.
+
 ## CA-7 Sealed Baseline Status
 
 Controlled Adaptive Orchestrator Kernel minimum threshold reached (CA-0 through CA-7 all passed). The current harness policy baseline is sealed. Future policy changes require the policy candidate lifecycle and governance approval path.
@@ -69,4 +79,4 @@ Full closeout report: [`docs/CA7_CONTROLLED_ADAPTIVE_CLOSEOUT_REPORT.md`](docs/C
 
 ## Next Recommended Work
 
-Stop here for the completed task-book scope. Any next phase should be separately approved as productionization, real model provider integration, real sandbox execution, UI/dashboard implementation, deployment packaging, benchmarking, or security review.
+Stop here for the completed Stage 0-4 task-book scope. Any next phase that adds productionization, real model provider integration, real sandbox execution, approval/run controls, deployment packaging, benchmarking, or security review should be separately approved.

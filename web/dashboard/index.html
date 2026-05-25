@@ -10,8 +10,8 @@
     <main class="shell">
       <header class="topbar">
         <div>
-          <p class="eyebrow">Harness App MVP3</p>
-          <h1>Deterministic Planning Control Plane</h1>
+          <p class="eyebrow">Harness App MVP4</p>
+          <h1>Plan Review Control Plane</h1>
         </div>
         <div class="actions">
           <button id="refresh-repos" type="button">Refresh repos</button>
@@ -84,7 +84,7 @@
           </label>
           <label class="plan-objective-field">
             <span class="metric-label">Objective</span>
-            <textarea id="plan-objective" name="objective" rows="3">Review harness docs and propose the next safe project-management slice.</textarea>
+            <textarea id="plan-objective" name="objective" rows="3">Review harness docs and propose the next safe plan-review slice.</textarea>
           </label>
           <label>
             <span class="metric-label">Task Type</span>
@@ -121,6 +121,78 @@
           <button id="generate-plan" type="submit">Generate deterministic plan</button>
         </form>
         <div id="plan-output" class="plan-output"></div>
+      </section>
+
+      <section class="workbench-panel panel" aria-label="Plan review workbench">
+        <div class="panel-heading">
+          <div>
+            <span class="metric-label">Plan Review Workbench</span>
+            <h2>Stored Plans</h2>
+          </div>
+          <button id="refresh-plans" type="button">Refresh plans</button>
+        </div>
+        <p class="panel-note">Plans are non-executable. Review actions are advisory only.</p>
+
+        <div class="workbench-filters">
+          <label>
+            <span class="metric-label">Repo Filter</span>
+            <select id="plans-repo-filter"></select>
+          </label>
+          <label>
+            <span class="metric-label">Status Filter</span>
+            <select id="plans-status-filter">
+              <option value="">all statuses</option>
+              <option value="ready_for_review">ready_for_review</option>
+              <option value="needs_approval">needs_approval</option>
+              <option value="blocked">blocked</option>
+            </select>
+          </label>
+        </div>
+
+        <section class="workbench-summary" aria-label="Plan summary">
+          <article><span class="metric-label">Plans</span><strong id="plans-total">0</strong></article>
+          <article><span class="metric-label">Ready</span><strong id="plans-ready">0</strong></article>
+          <article><span class="metric-label">Needs Review</span><strong id="plans-needs-approval">0</strong></article>
+          <article><span class="metric-label">Blocked</span><strong id="plans-blocked">0</strong></article>
+          <article><span class="metric-label">Avg Budget</span><strong id="plans-average-budget">0</strong></article>
+        </section>
+
+        <div class="plan-history-wrap">
+          <table class="plan-history">
+            <thead>
+              <tr>
+                <th>Plan</th>
+                <th>Repo</th>
+                <th>Status</th>
+                <th>Executable</th>
+                <th>Budget</th>
+                <th>Gates</th>
+                <th>Blockers</th>
+                <th>Review Action</th>
+                <th>Detail</th>
+              </tr>
+            </thead>
+            <tbody id="plan-history-body"></tbody>
+          </table>
+        </div>
+
+        <section class="compare-panel" aria-label="Plan comparison">
+          <div class="panel-heading compact-heading">
+            <h2>Compare Plans</h2>
+          </div>
+          <div class="compare-controls">
+            <label>
+              <span class="metric-label">Plan A</span>
+              <select id="compare-plan-a"></select>
+            </label>
+            <label>
+              <span class="metric-label">Plan B</span>
+              <select id="compare-plan-b"></select>
+            </label>
+            <button id="compare-plans" type="button">Compare plans</button>
+          </div>
+          <div id="compare-output" class="compare-output"></div>
+        </section>
       </section>
 
       <section class="layout">

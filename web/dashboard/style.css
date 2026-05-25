@@ -320,6 +320,134 @@ textarea:focus {
   padding: 18px;
 }
 
+.workbench-panel {
+  margin-bottom: 18px;
+}
+
+.workbench-filters,
+.compare-controls {
+  display: grid;
+  gap: 12px;
+  grid-template-columns: repeat(2, minmax(180px, 1fr)) auto;
+  padding: 18px;
+}
+
+.workbench-filters label,
+.compare-controls label {
+  display: grid;
+}
+
+.compare-controls button {
+  align-self: end;
+  min-width: 150px;
+}
+
+.workbench-summary {
+  border-top: 1px solid var(--line);
+  display: grid;
+  gap: 12px;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  padding: 18px;
+}
+
+.workbench-summary article {
+  background: var(--surface-strong);
+  border-radius: 8px;
+  min-height: 78px;
+  padding: 14px;
+}
+
+.workbench-summary strong {
+  display: block;
+  font-size: 1.35rem;
+  overflow-wrap: anywhere;
+}
+
+.plan-history-wrap {
+  border-top: 1px solid var(--line);
+  overflow-x: auto;
+}
+
+.plan-history {
+  border-collapse: collapse;
+  min-width: 980px;
+  width: 100%;
+}
+
+.plan-history th,
+.plan-history td {
+  border-bottom: 1px solid var(--line);
+  font-size: 0.88rem;
+  padding: 12px;
+  text-align: left;
+  vertical-align: middle;
+}
+
+.plan-history th {
+  color: var(--muted);
+  font-size: 0.76rem;
+  font-weight: 760;
+  text-transform: uppercase;
+}
+
+.plan-history td {
+  overflow-wrap: anywhere;
+}
+
+.plan-history button {
+  min-height: 34px;
+  white-space: nowrap;
+}
+
+.table-empty {
+  color: var(--muted);
+  text-align: center;
+}
+
+.compact-heading {
+  min-height: 46px;
+}
+
+.compare-panel {
+  border-top: 1px solid var(--line);
+}
+
+.compare-output {
+  border-top: 1px solid var(--line);
+}
+
+.comparison-list {
+  display: grid;
+  gap: 10px;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  margin: 0;
+  padding: 18px;
+}
+
+.comparison-list div {
+  background: var(--surface-strong);
+  border-radius: 8px;
+  padding: 12px;
+}
+
+.comparison-list dt {
+  color: var(--muted);
+  font-size: 0.78rem;
+  font-weight: 760;
+  margin-bottom: 6px;
+  text-transform: uppercase;
+}
+
+.comparison-list dd {
+  font-weight: 740;
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.compare-output .step-meta {
+  padding: 0 18px 18px;
+}
+
 .layout {
   align-items: start;
   display: grid;
@@ -505,8 +633,15 @@ textarea:focus {
   }
 
   .plan-form,
-  .plan-summary {
+  .plan-summary,
+  .workbench-summary,
+  .comparison-list {
     grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .workbench-filters,
+  .compare-controls {
+    grid-template-columns: 1fr 1fr;
   }
 
   .plan-objective-field {
@@ -541,7 +676,11 @@ textarea:focus {
   }
 
   .plan-form,
-  .plan-summary {
+  .plan-summary,
+  .workbench-summary,
+  .comparison-list,
+  .workbench-filters,
+  .compare-controls {
     grid-template-columns: 1fr;
   }
 

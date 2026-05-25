@@ -16,11 +16,21 @@ from harness_core.app_registry import (
 )
 from harness_core.instance_audit import audit_instance
 from harness_core.plan_store import PlanStoreError, get_plan, load_plans, save_plan
+from harness_core.plan_workbench import (
+    PlanFilters,
+    PlanWorkbenchError,
+    compare_plans,
+    list_plan_summaries,
+    summarize_plans,
+)
 from harness_core.resource_planner import (
     DeterministicResourcePlanner,
     PlanningInputError,
     PlanningTask,
 )
+
+
+MAX_PLAN_LIST_LIMIT = 100
 
 
 class AppApiInputError(ValueError):
@@ -70,9 +80,16 @@ def handle_api_request(
             repo_id = _single_query_value(query, "repo_id")
             return _audit_repo(repo_id, registry_path)
         if route == "/api/plans" and method == "GET":
-            return _list_plans(plan_store_path)
+            query = _parse_query(query_string)
+            return _list_plans(plan_store_path, query)
         if route == "/api/plans" and method == "POST":
             return _create_plan(body, registry_path, plan_store_path)
+        if route == "/api/plans/summary" and method == "GET":
+            query = _parse_query(query_string)
+            return _plans_summary(plan_store_path, query)
+        if route == "/api/plans/compare" and method == "GET":
+            query = _parse_query(query_string)
+            return _compare_plans(plan_store_path, query)
         if route.startswith("/api/plans/") and method == "GET":
             plan_id = route.removeprefix("/api/plans/")
             return _get_plan(plan_id, plan_store_path)
@@ -87,6 +104,8 @@ def handle_api_request(
         return _error(400, _planning_error_code(str(exc)), str(exc))
     except PlanStoreError as exc:
         return _error(500, "plan_store_error", str(exc))
+    except PlanWorkbenchError as exc:
+        return _error(400, "invalid_plan_workbench_request", str(exc))
     except json.JSONDecodeError:
         return _error(400, "invalid_json", "Request body must be valid JSON")
     except OSError:
@@ -134,8 +153,23 @@ def _audit_repo(repo_id: str | None, registry_path: str | Path) -> AppApiRespons
     return _json(200, {"repo": repo.to_dict(), "audit": report.to_dict()})
 
 
-def _list_plans(plans_path: str | Path) -> AppApiResponse:
-    return _json(200, load_plans(plans_path))
+def _list_plans(plans_path: str | Path, query: dict[str, list[str]]) -> AppApiResponse:
+    data = load_plans(plans_path)
+    filters = PlanFilters(
+        repo_id=_single_query_value(query, "repo_id"),
+        status=_single_query_value(query, "status"),
+        risk_level=_single_query_value(query, "risk_level"),
+        task_type=_single_query_value(query, "task_type"),
+        limit=_optional_positive_int(_single_query_value(query, "limit"), "limit", MAX_PLAN_LIST_LIMIT),
+    )
+    return _json(
+        200,
+        {
+            "ok": True,
+            "schema_version": data["schema_version"],
+            "plans": list_plan_summaries(data["plans"], filters),
+        },
+    )
 
 
 def _create_plan(body: bytes | str | None, registry_path: str | Path, plans_path: str | Path) -> AppApiResponse:
@@ -176,6 +210,22 @@ def _get_plan(plan_id: str, plans_path: str | Path) -> AppApiResponse:
     return _json(200, {"plan": plan})
 
 
+def _plans_summary(plans_path: str | Path, query: dict[str, list[str]]) -> AppApiResponse:
+    data = load_plans(plans_path)
+    summary = summarize_plans(data["plans"], repo_id=_single_query_value(query, "repo_id"))
+    return _json(200, {"ok": True, "summary": summary})
+
+
+def _compare_plans(plans_path: str | Path, query: dict[str, list[str]]) -> AppApiResponse:
+    data = load_plans(plans_path)
+    plan_ids = query.get("plan_id", [])
+    try:
+        comparison = compare_plans(data["plans"], plan_ids)
+    except KeyError as exc:
+        return _error(404, "invalid_plan_id", f"Plan id not found: {exc.args[0]}")
+    return _json(200, {"ok": True, "comparison": comparison})
+
+
 def _decode_json_object(body: bytes | str | None) -> dict[str, Any]:
     if body is None:
         raise json.JSONDecodeError("missing body", "", 0)
@@ -207,6 +257,17 @@ def _planning_error_code(message: str) -> str:
     if "token" in message or "budget" in message:
         return "invalid_budget"
     return "invalid_plan_request"
+
+
+def _optional_positive_int(value: str | None, field_name: str, max_value: int) -> int | None:
+    if value is None:
+        return None
+    if not value.isdigit() or int(value) < 1:
+        raise PlanWorkbenchError(f"{field_name} must be a positive integer")
+    parsed = int(value)
+    if parsed > max_value:
+        raise PlanWorkbenchError(f"{field_name} must be less than or equal to {max_value}")
+    return parsed
 
 
 def _single_query_value(query: dict[str, list[str]], key: str) -> str | None:
