@@ -6,7 +6,6 @@ from dataclasses import dataclass
 import json
 from pathlib import Path
 from typing import Any
-from urllib.parse import parse_qs, urlparse
 
 from harness_core.app_registry import (
     AppRegistry,
@@ -38,8 +37,7 @@ class AppApiResponse:
 def handle_api_request(method: str, path: str, body: bytes | str | None, registry_path: str | Path) -> AppApiResponse:
     """Handle one API request without starting a server."""
 
-    parsed = urlparse(path)
-    route = parsed.path
+    route, query_string = _split_path(path)
     method = method.upper()
 
     try:
@@ -50,7 +48,7 @@ def handle_api_request(method: str, path: str, body: bytes | str | None, registr
         if route == "/api/repos" and method == "POST":
             return _add_repo(body, registry_path)
         if route == "/api/audit" and method == "GET":
-            query = parse_qs(parsed.query, keep_blank_values=False)
+            query = _parse_query(query_string)
             repo_id = _single_query_value(query, "repo_id")
             return _audit_repo(repo_id, registry_path)
         if route.startswith("/api/"):
@@ -120,6 +118,27 @@ def _single_query_value(query: dict[str, list[str]], key: str) -> str | None:
     if not values:
         return None
     return values[0]
+
+
+def _split_path(path: str) -> tuple[str, str]:
+    if "?" not in path:
+        return path, ""
+    route, query_string = path.split("?", 1)
+    return route, query_string
+
+
+def _parse_query(query_string: str) -> dict[str, list[str]]:
+    result: dict[str, list[str]] = {}
+    if not query_string:
+        return result
+    for part in query_string.split("&"):
+        if not part or "=" not in part:
+            continue
+        key, value = part.split("=", 1)
+        if not key or not value:
+            continue
+        result.setdefault(key, []).append(value)
+    return result
 
 
 def _json(status_code: int, body: dict[str, Any]) -> AppApiResponse:
