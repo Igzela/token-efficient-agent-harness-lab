@@ -1,0 +1,121 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Harness Instance Audit Dashboard</title>
+    <link rel="stylesheet" href="./style.css" />
+  </head>
+  <body>
+    <main class="shell">
+      <header class="topbar">
+        <div>
+          <p class="eyebrow">Harness App MVP2</p>
+          <h1>Local Control Plane</h1>
+        </div>
+        <div class="actions">
+          <button id="refresh-repos" type="button">Refresh repos</button>
+          <button id="run-audit" type="button">Run read-only audit</button>
+          <label class="file-button">
+            <input id="report-file" type="file" accept="application/json,.json" />
+            Load JSON
+          </label>
+          <button id="reset-report" type="button">Sample</button>
+        </div>
+      </header>
+
+      <section class="summary-grid" aria-label="Audit summary">
+        <article class="metric verdict-panel">
+          <span class="metric-label">Verdict</span>
+          <strong id="verdict">-</strong>
+          <span id="target-repo" class="metric-detail">-</span>
+        </article>
+        <article class="metric">
+          <span class="metric-label">Checks</span>
+          <strong id="checks-count">0</strong>
+          <span class="metric-detail">total controls reviewed</span>
+        </article>
+        <article class="metric">
+          <span class="metric-label">Warnings</span>
+          <strong id="warnings-count">0</strong>
+          <span class="metric-detail">review before merge</span>
+        </article>
+        <article class="metric">
+          <span class="metric-label">Blockers</span>
+          <strong id="blockers-count">0</strong>
+          <span class="metric-detail">must stop if present</span>
+        </article>
+      </section>
+
+      <section class="repo-panel" aria-label="Repository registry">
+        <div>
+          <span class="metric-label">Repository</span>
+          <select id="repo-select"></select>
+        </div>
+        <div>
+          <span class="metric-label">API mode</span>
+          <strong id="api-state">Static sample</strong>
+        </div>
+        <form id="repo-form" class="repo-form">
+          <input id="repo-id" name="id" placeholder="repo id" autocomplete="off" />
+          <input id="repo-name" name="name" placeholder="display name" autocomplete="off" />
+          <select id="repo-kind" name="kind">
+            <option value="local">local</option>
+            <option value="remote">remote</option>
+          </select>
+          <input id="repo-location" name="location" placeholder="local path or remote url" autocomplete="off" />
+          <button type="submit">Register repo</button>
+        </form>
+      </section>
+
+      <section class="layout">
+        <div class="main-column">
+          <section class="panel">
+            <div class="panel-heading">
+              <h2>Control Checks</h2>
+              <div id="status-strip" class="status-strip"></div>
+            </div>
+            <div id="checks-list" class="checks-list"></div>
+          </section>
+
+          <section class="panel">
+            <div class="panel-heading">
+              <h2>Recommended Actions</h2>
+            </div>
+            <ol id="actions-list" class="action-list"></ol>
+          </section>
+        </div>
+
+        <aside class="side-column">
+          <section class="panel">
+            <div class="panel-heading">
+              <h2>Warnings</h2>
+            </div>
+            <ul id="warnings-list" class="notice-list"></ul>
+          </section>
+
+          <section class="panel">
+            <div class="panel-heading">
+              <h2>Blockers</h2>
+            </div>
+            <ul id="blockers-list" class="notice-list"></ul>
+          </section>
+
+          <section class="panel compact-panel">
+            <div class="panel-heading">
+              <h2>Boundary</h2>
+            </div>
+            <dl class="boundary-list">
+              <div><dt>Provider</dt><dd>No calls</dd></div>
+              <div><dt>Sandbox</dt><dd>No execution</dd></div>
+              <div><dt>Target repo</dt><dd>Read only</dd></div>
+              <div><dt>Approval</dt><dd>Human-owned</dd></div>
+            </dl>
+          </section>
+        </aside>
+      </section>
+    </main>
+
+    <script src="./app.js"></script>
+  </body>
+</html>
