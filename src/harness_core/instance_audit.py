@@ -182,6 +182,22 @@ def _contains_any(text: str, terms: tuple[str, ...]) -> bool:
     return any(term.lower() in lowered for term in terms)
 
 
+def _guards_main_push(text: str) -> bool:
+    lowered = text.lower()
+    guarded_phrases = (
+        "pushing directly to `main`",
+        "pushing directly to main",
+        "push directly to main",
+        "push to main",
+        "not main/master directly",
+        "not `main`/`master` directly",
+        "not main or master directly",
+        "not directly to main",
+        "not directly to `main`",
+    )
+    return _contains_any(lowered, guarded_phrases) and _contains_any(lowered, ("pause", "must not", "requires", "before", "approval", "not"))
+
+
 def _check_required_files(state: _AuditState) -> None:
     missing = [path for path in REQUIRED_FILES if not _exists(state.target_repo, path)]
     if missing:
@@ -226,11 +242,10 @@ def _check_agents_policy(state: _AuditState) -> None:
 
     if re.search(r"push(?:ing)?\s+(?:directly\s+)?to\s+`?(?:main|master)`?\s+without\s+approval", text, re.IGNORECASE):
         state.block("AGENTS.md allows pushing main/master without approval")
+    elif _guards_main_push(text):
+        evidence.append("main/master push requires pause or approval")
     elif _contains_any(text, ("pushing directly to `main`", "pushing directly to main", "push directly to main", "push to main")):
-        if _contains_any(text, ("pause", "must not", "requires", "before", "approval")):
-            evidence.append("main/master push requires pause or approval")
-        else:
-            state.block("AGENTS.md mentions main/master push without an approval guard")
+        state.block("AGENTS.md mentions main/master push without an approval guard")
     else:
         state.warn("AGENTS.md does not explicitly mention main/master push restrictions")
 
