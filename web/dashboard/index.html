@@ -47,6 +47,62 @@
         </article>
       </section>
 
+      <section class="ops-panel panel" aria-label="Operations and debug dashboard">
+        <div class="panel-heading">
+          <div>
+            <span class="metric-label">Operations &amp; Debug Dashboard</span>
+            <h2>System Overview</h2>
+          </div>
+          <button id="refresh-diagnostics" type="button">Refresh diagnostics</button>
+        </div>
+        <p class="panel-note">Operations diagnostics are read-only. They do not approve, execute, mutate, assign, call providers, launch workers or sandboxes, or write target repositories.</p>
+
+        <section class="ops-overview" aria-label="System overview">
+          <article><span class="metric-label">System Status</span><strong id="ops-status">-</strong></article>
+          <article><span class="metric-label">Components</span><strong id="ops-components">0</strong></article>
+          <article><span class="metric-label">Warnings</span><strong id="ops-warnings">0</strong></article>
+          <article><span class="metric-label">Blocked</span><strong id="ops-blocked">0</strong></article>
+          <article><span class="metric-label">Last Checked</span><strong id="ops-last-checked">-</strong></article>
+        </section>
+
+        <div class="ops-grid">
+          <section class="ops-section" aria-label="Component status matrix">
+            <div class="panel-heading compact-heading">
+              <h2>Component Status Matrix</h2>
+            </div>
+            <div id="component-status-list" class="component-status-list"></div>
+          </section>
+
+          <section class="ops-section" aria-label="Data flow status">
+            <div class="panel-heading compact-heading">
+              <h2>Data Flow Status</h2>
+            </div>
+            <div id="data-flow-list" class="data-flow-list"></div>
+          </section>
+
+          <section class="ops-section" aria-label="Storage health">
+            <div class="panel-heading compact-heading">
+              <h2>Storage Health</h2>
+            </div>
+            <div id="storage-health-list" class="storage-health-list"></div>
+          </section>
+
+          <section class="ops-section" aria-label="Recent API errors">
+            <div class="panel-heading compact-heading">
+              <h2>Recent API Errors</h2>
+            </div>
+            <div id="recent-errors-list" class="recent-errors-list"></div>
+          </section>
+        </div>
+
+        <section class="ops-debug-actions" aria-label="Recommended debug actions">
+          <div class="panel-heading compact-heading">
+            <h2>Recommended Debug Actions</h2>
+          </div>
+          <ul id="debug-actions-list" class="notice-list"></ul>
+        </section>
+      </section>
+
       <section class="repo-panel" aria-label="Repository registry">
         <div>
           <span class="metric-label">Repository</span>

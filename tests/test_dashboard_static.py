@@ -34,6 +34,21 @@ class DashboardStaticTests(unittest.TestCase):
         )
         self.assertIn("Refresh triage", html)
 
+    def test_mvp7_operations_debug_dashboard_copy_is_visible(self):
+        html = (REPO_ROOT / "web" / "dashboard" / "index.html").read_text(encoding="utf-8")
+
+        self.assertIn("Operations &amp; Debug Dashboard", html)
+        self.assertIn("Component Status Matrix", html)
+        self.assertIn("Data Flow Status", html)
+        self.assertIn("Storage Health", html)
+        self.assertIn("Recent API Errors", html)
+        self.assertIn("Recommended Debug Actions", html)
+        self.assertIn(
+            "Operations diagnostics are read-only. They do not approve, execute, mutate, assign, call providers, launch workers or sandboxes, or write target repositories.",
+            html,
+        )
+        self.assertIn("Refresh diagnostics", html)
+
     def test_dashboard_button_labels_do_not_offer_execution_controls(self):
         html = (REPO_ROOT / "web" / "dashboard" / "index.html").read_text(encoding="utf-8")
         labels = [re.sub(r"\s+", " ", label).strip().lower() for label in re.findall(r"<button[^>]*>(.*?)</button>", html, re.DOTALL)]
