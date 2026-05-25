@@ -205,3 +205,44 @@ should be reliability hardening for audit wording detection. The next
 `alters-lab` improvement, if approved, should be a small documentation cleanup
 for the `PROJECT_BOARD.md` table rows.
 
+## Final Closeout Addendum
+
+| Field | Result |
+| --- | --- |
+| Final closeout date | 2026-05-25 |
+| Harness repository | `/home/igzela/Projects/token-efficient-agent-harness-lab` |
+| Harness status | `main...origin/main`, clean |
+| Target repository | `/home/igzela/Projects/alters-lab` |
+| Target HEAD | `af86b90923eb87291f0b4fcf2a1079383361ba45` |
+| Target origin/main | `af86b90923eb87291f0b4fcf2a1079383361ba45` |
+| Target cleanup commit | `af86b90 Fix project board markdown table formatting` |
+
+After the initial Trial 0 report was captured, the target repository cleanup
+was performed with explicit human approval. The cleanup fixed the Phase 1
+Markdown table leading-pipe formatting in `docs/harness/PROJECT_BOARD.md`.
+
+The cleanup made no task status changes, no phase semantic changes, no
+`AGENTS.md` changes, and no target source-code changes.
+
+Final audit result for `/home/igzela/Projects/alters-lab`:
+
+- verdict: `PASS`
+- warnings: `[]`
+- blockers: `[]`
+- `agents_policy`: `PASS`
+- `project_board`: `PASS`
+
+The closeout preserved the project boundaries:
+
+- no provider or model API calls
+- no sandbox, process, container, or VM execution
+- no autonomous workers
+- no target repository source mutation
+- no CA-8
+- no Stage 5
+
+Final interpretation: Trial 0 is closed as successful. Harness App MVP0-MVP8
+can audit and guide a real local project instance from an initial
+`ACCEPTABLE_WITH_NOTES` finding to a clean `PASS` state without crossing the
+sealed execution, provider, sandbox, autonomous-worker, CA-8, or Stage 5
+boundaries.
