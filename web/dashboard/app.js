@@ -159,6 +159,9 @@ const elements = {
   comparePlanB: document.querySelector("#compare-plan-b"),
   comparePlans: document.querySelector("#compare-plans"),
   compareOutput: document.querySelector("#compare-output"),
+  guidancePlanSelect: document.querySelector("#guidance-plan-select"),
+  generateGuidance: document.querySelector("#generate-guidance"),
+  guidanceOutput: document.querySelector("#guidance-output"),
 };
 
 let registeredRepos = [];
@@ -547,6 +550,8 @@ function renderPlanWorkbenchEmpty() {
   renderPlanHistory([]);
   renderCompareOptions([]);
   renderCompareEmpty("No plans available for comparison.");
+  renderGuidanceOptions([]);
+  renderGuidanceEmpty("No plans available for guidance.");
 }
 
 function renderPlanSummary(summary) {
@@ -622,6 +627,29 @@ function renderCompareEmpty(text) {
   appendEmpty(elements.compareOutput, text);
 }
 
+function renderGuidanceOptions(plans) {
+  clear(elements.guidancePlanSelect);
+  for (const plan of plans || []) {
+    const option = document.createElement("option");
+    option.value = plan.plan_id;
+    option.textContent = `${plan.plan_id} (${plan.status})`;
+    elements.guidancePlanSelect.appendChild(option);
+  }
+  const hasPlans = Boolean(plans && plans.length);
+  if (!hasPlans) {
+    const option = document.createElement("option");
+    option.value = "";
+    option.textContent = "No plans available";
+    elements.guidancePlanSelect.appendChild(option);
+  }
+  elements.generateGuidance.disabled = !hasPlans;
+}
+
+function renderGuidanceEmpty(text) {
+  clear(elements.guidanceOutput);
+  appendEmpty(elements.guidanceOutput, text);
+}
+
 function renderComparison(comparison) {
   clear(elements.compareOutput);
   const rows = [
@@ -651,6 +679,82 @@ function renderComparison(comparison) {
   elements.compareOutput.append(dl, note);
 }
 
+function renderGuidanceList(section, title, items, emptyText, formatter) {
+  const wrapper = document.createElement("section");
+  wrapper.className = "guidance-subsection";
+  const heading = document.createElement("h3");
+  heading.textContent = title;
+  const list = document.createElement("ul");
+  list.className = "notice-list";
+  wrapper.append(heading, list);
+  section.appendChild(wrapper);
+  if (!items || items.length === 0) {
+    appendEmpty(list, emptyText);
+    return;
+  }
+  for (const item of items) {
+    const li = document.createElement("li");
+    li.textContent = formatter(item);
+    list.appendChild(li);
+  }
+}
+
+function renderGuidance(guidance) {
+  clear(elements.guidanceOutput);
+  if (!guidance) {
+    renderGuidanceEmpty("No guidance returned.");
+    return;
+  }
+
+  const summary = document.createElement("dl");
+  summary.className = "guidance-summary";
+  const rows = [
+    ["Plan", guidance.plan_id],
+    ["Status", guidance.status],
+    ["Recommended option", guidance.recommended_option],
+    ["Next review action", guidance.next_review_action],
+    ["Executable", String(guidance.executable)],
+    ["Preview only", String(guidance.preview_only)],
+  ];
+  for (const [label, value] of rows) {
+    const item = document.createElement("div");
+    const dt = document.createElement("dt");
+    dt.textContent = label;
+    const dd = document.createElement("dd");
+    dd.textContent = value == null || value === "" ? "-" : String(value);
+    item.append(dt, dd);
+    summary.appendChild(item);
+  }
+  elements.guidanceOutput.appendChild(summary);
+
+  renderGuidanceList(
+    elements.guidanceOutput,
+    "Advisory options",
+    guidance.options,
+    "No options returned.",
+    (option) => `${option.option}: ${option.reason} (${option.allowed_effect})`,
+  );
+  renderGuidanceList(
+    elements.guidanceOutput,
+    "Evidence requirements",
+    guidance.evidence_requirements,
+    "No evidence requirements returned.",
+    (requirement) => `${requirement.kind}: ${requirement.reason}; required=${requirement.required}`,
+  );
+  renderGuidanceList(
+    elements.guidanceOutput,
+    "Token-efficiency guidance",
+    guidance.token_efficiency_guidance,
+    "No token-efficiency guidance returned.",
+    (item) => item,
+  );
+
+  const boundary = document.createElement("p");
+  boundary.className = "guidance-boundary";
+  boundary.textContent = guidance.boundary_notice || "Guidance is advisory only.";
+  elements.guidanceOutput.appendChild(boundary);
+}
+
 async function refreshPlanWorkbench() {
   try {
     const [listData, summaryData] = await Promise.all([
@@ -661,10 +765,16 @@ async function refreshPlanWorkbench() {
     renderPlanSummary(summaryData.summary || {});
     renderPlanHistory(registeredPlanSummaries);
     renderCompareOptions(registeredPlanSummaries);
+    renderGuidanceOptions(registeredPlanSummaries);
     if (registeredPlanSummaries.length < 2) {
       renderCompareEmpty("Select two stored plans to compare.");
     } else {
       renderCompareEmpty("Choose two stored plans and compare.");
+    }
+    if (registeredPlanSummaries.length === 0) {
+      renderGuidanceEmpty("No plans available for guidance.");
+    } else {
+      renderGuidanceEmpty("Select a stored plan and generate guidance.");
     }
   } catch (error) {
     registeredPlanSummaries = [];
@@ -696,6 +806,23 @@ async function compareSelectedPlans() {
     renderComparison(data.comparison);
   } catch (error) {
     renderCompareEmpty(error.message);
+  }
+}
+
+async function generateReviewGuidance() {
+  const planId = elements.guidancePlanSelect.value;
+  if (!planId) {
+    renderGuidanceEmpty("Select a stored plan and generate guidance.");
+    return;
+  }
+  try {
+    setApiState("Reviewing plan");
+    const data = await fetchJson(`/api/plans/review-guidance?plan_id=${encodeURIComponent(planId)}`);
+    renderGuidance(data.guidance);
+    setApiState("API connected");
+  } catch (error) {
+    renderGuidanceEmpty(error.message);
+    setApiState("Guidance error");
   }
 }
 
@@ -752,6 +879,7 @@ elements.refreshPlans.addEventListener("click", refreshPlanWorkbench);
 elements.plansRepoFilter.addEventListener("change", refreshPlanWorkbench);
 elements.plansStatusFilter.addEventListener("change", refreshPlanWorkbench);
 elements.comparePlans.addEventListener("click", compareSelectedPlans);
+elements.generateGuidance.addEventListener("click", generateReviewGuidance);
 
 renderReport(SAMPLE_REPORT);
 renderPlanEmpty();

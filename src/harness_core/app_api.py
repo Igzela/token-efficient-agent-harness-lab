@@ -28,6 +28,7 @@ from harness_core.resource_planner import (
     PlanningInputError,
     PlanningTask,
 )
+from harness_core.review_guidance import build_review_guidance
 
 
 MAX_PLAN_LIST_LIMIT = 100
@@ -90,6 +91,9 @@ def handle_api_request(
         if route == "/api/plans/compare" and method == "GET":
             query = _parse_query(query_string)
             return _compare_plans(plan_store_path, query)
+        if route == "/api/plans/review-guidance" and method == "GET":
+            query = _parse_query(query_string)
+            return _review_guidance(plan_store_path, query)
         if route.startswith("/api/plans/") and method == "GET":
             plan_id = route.removeprefix("/api/plans/")
             return _get_plan(plan_id, plan_store_path)
@@ -224,6 +228,16 @@ def _compare_plans(plans_path: str | Path, query: dict[str, list[str]]) -> AppAp
     except KeyError as exc:
         return _error(404, "invalid_plan_id", f"Plan id not found: {exc.args[0]}")
     return _json(200, {"ok": True, "comparison": comparison})
+
+
+def _review_guidance(plans_path: str | Path, query: dict[str, list[str]]) -> AppApiResponse:
+    plan_id = _single_query_value(query, "plan_id")
+    if not plan_id:
+        return _error(400, "invalid_review_guidance_request", "plan_id query parameter is required")
+    plan = get_plan(plans_path, plan_id)
+    if plan is None:
+        return _error(404, "plan_not_found", "Plan id not found")
+    return _json(200, {"ok": True, "guidance": build_review_guidance(plan)})
 
 
 def _decode_json_object(body: bytes | str | None) -> dict[str, Any]:

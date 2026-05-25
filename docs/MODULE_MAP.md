@@ -38,10 +38,11 @@
 | `health.py` | Stage 4 | Component health aggregation. | `HealthMonitor`, `HealthReport` | `test_health.py` |
 | `dashboard_model.py` | Stage 4 | Read-only dashboard snapshot model. | `DashboardSnapshot` | `test_dashboard_model.py` |
 | `app_registry.py` | Harness App | Local app-owned repository registry. | `AppRegistry`, `RepoRef` | `test_app_api.py`, `test_app_api_plans.py` |
-| `app_api.py` | Harness App | Pure local API handlers for repo audit, deterministic plans, and plan review views. | `handle_api_request`, `default_plan_store_path` | `test_app_api.py`, `test_app_api_plans.py`, `test_app_api_plan_workbench.py` |
+| `app_api.py` | Harness App | Pure local API handlers for repo audit, deterministic plans, plan review views, and review guidance previews. | `handle_api_request`, `default_plan_store_path` | `test_app_api.py`, `test_app_api_plans.py`, `test_app_api_plan_workbench.py` |
 | `instance_audit.py` | Harness App | Read-only target repository harness-instance audit. | `audit_instance`, `InstanceAuditReport` | `test_instance_audit.py`, `test_app_api.py` |
 | `resource_planner.py` | Harness App MVP3 | Deterministic non-executable resource planning. | `DeterministicResourcePlanner`, `PlanningTask`, `ResourcePlan` | `test_resource_planner.py`, `test_app_api_plans.py` |
 | `plan_store.py` | Harness App MVP3 | App-owned append-only plan store. | `load_plans`, `save_plan`, `get_plan` | `test_app_api_plans.py`, `test_app_api_plan_workbench.py` |
 | `plan_workbench.py` | Harness App MVP4 | Read-only derived plan history, summary, comparison, and review actions. | `list_plan_summaries`, `summarize_plans`, `compare_plans`, `recommend_next_review_action` | `test_plan_workbench.py`, `test_app_api_plan_workbench.py` |
+| `review_guidance.py` | Harness App MVP5 | Non-persistent guidance preview derived from stored non-executable plans. | `build_review_guidance`, `derive_review_options`, `derive_evidence_requirements`, `derive_token_efficiency_guidance` | `test_review_guidance.py`, `test_app_api_plan_workbench.py` |
 | `errors.py` | Stage 1 | Shared exception classes. | Error classes | Covered through component tests |
 | `__init__.py` | Stage 1-4 | Public package export surface. | Re-exported harness APIs | Import coverage across tests |

@@ -17,11 +17,19 @@ class DashboardStaticTests(unittest.TestCase):
         self.assertIn("Plans are non-executable. Review actions are advisory only.", html)
         self.assertIn("Plan Review Workbench", html)
 
+    def test_mvp5_guidance_preview_copy_is_visible(self):
+        html = (REPO_ROOT / "web" / "dashboard" / "index.html").read_text(encoding="utf-8")
+
+        self.assertIn("Review Guidance Preview", html)
+        self.assertIn("Guidance is advisory only. It does not approve, execute, or mutate plans.", html)
+        self.assertIn("Generate review guidance", html)
+
     def test_dashboard_button_labels_do_not_offer_execution_controls(self):
         html = (REPO_ROOT / "web" / "dashboard" / "index.html").read_text(encoding="utf-8")
         labels = [re.sub(r"\s+", " ", label).strip().lower() for label in re.findall(r"<button[^>]*>(.*?)</button>", html, re.DOTALL)]
         forbidden = {
             "approve",
+            "assign",
             "run",
             "execute",
             "dispatch",

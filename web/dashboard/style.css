@@ -448,6 +448,71 @@ textarea:focus {
   padding: 0 18px 18px;
 }
 
+.guidance-panel {
+  margin-bottom: 18px;
+}
+
+.guidance-controls {
+  display: grid;
+  gap: 12px;
+  grid-template-columns: minmax(240px, 1fr);
+  padding: 18px;
+}
+
+.guidance-controls label {
+  display: grid;
+}
+
+.guidance-output {
+  border-top: 1px solid var(--line);
+}
+
+.guidance-summary {
+  display: grid;
+  gap: 10px;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  margin: 0;
+  padding: 18px;
+}
+
+.guidance-summary div {
+  background: var(--surface-strong);
+  border-radius: 8px;
+  padding: 12px;
+}
+
+.guidance-summary dt {
+  color: var(--muted);
+  font-size: 0.78rem;
+  font-weight: 760;
+  margin-bottom: 6px;
+  text-transform: uppercase;
+}
+
+.guidance-summary dd {
+  font-weight: 740;
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.guidance-subsection {
+  border-top: 1px solid var(--line);
+}
+
+.guidance-subsection h3 {
+  font-size: 0.92rem;
+  margin: 0;
+  padding: 16px 18px 0;
+}
+
+.guidance-boundary {
+  border-top: 1px solid var(--line);
+  color: var(--muted);
+  font-weight: 650;
+  margin: 0;
+  padding: 18px;
+}
+
 .layout {
   align-items: start;
   display: grid;
@@ -635,12 +700,14 @@ textarea:focus {
   .plan-form,
   .plan-summary,
   .workbench-summary,
-  .comparison-list {
+  .comparison-list,
+  .guidance-summary {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
   .workbench-filters,
-  .compare-controls {
+  .compare-controls,
+  .guidance-controls {
     grid-template-columns: 1fr 1fr;
   }
 
@@ -679,8 +746,10 @@ textarea:focus {
   .plan-summary,
   .workbench-summary,
   .comparison-list,
+  .guidance-summary,
   .workbench-filters,
-  .compare-controls {
+  .compare-controls,
+  .guidance-controls {
     grid-template-columns: 1fr;
   }
 

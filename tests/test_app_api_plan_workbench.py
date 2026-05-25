@@ -1,4 +1,4 @@
-"""Tests for MVP4 read-only plan workbench API handlers."""
+"""Tests for read-only plan workbench and review guidance API handlers."""
 
 from __future__ import annotations
 
@@ -228,6 +228,83 @@ class AppApiPlanWorkbenchTests(unittest.TestCase):
         self.assertEqual(400, response.status_code)
         self.assertEqual("invalid_plan_workbench_request", response.body_json["error"]["code"])
 
+    def test_get_review_guidance_returns_preview(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            target = root / "target"
+            target.mkdir()
+            write_instance(target)
+            registry_path = root / "registry.json"
+            plans_path = root / "plans.json"
+            register_local(registry_path, target)
+            first = create_plan(registry_path, plans_path, "target", "first")
+
+            response = handle_api_request(
+                "GET",
+                f"/api/plans/review-guidance?plan_id={first['plan_id']}",
+                None,
+                registry_path,
+                plans_path,
+            )
+
+        self.assertEqual(200, response.status_code)
+        guidance = response.body_json["guidance"]
+        self.assertFalse(guidance["executable"])
+        self.assertTrue(guidance["preview_only"])
+        self.assertEqual(first["plan_id"], guidance["plan_id"])
+
+    def test_get_review_guidance_missing_plan_id_returns_structured_400(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            response = handle_api_request(
+                "GET",
+                "/api/plans/review-guidance",
+                None,
+                Path(tmp) / "registry.json",
+                Path(tmp) / "plans.json",
+            )
+
+        self.assertEqual(400, response.status_code)
+        self.assertEqual("invalid_review_guidance_request", response.body_json["error"]["code"])
+
+    def test_get_review_guidance_unknown_plan_returns_structured_404(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            response = handle_api_request(
+                "GET",
+                "/api/plans/review-guidance?plan_id=missing",
+                None,
+                Path(tmp) / "registry.json",
+                Path(tmp) / "plans.json",
+            )
+
+        self.assertEqual(404, response.status_code)
+        self.assertEqual("plan_not_found", response.body_json["error"]["code"])
+
+    def test_review_guidance_route_is_not_treated_as_plan_id(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            response = handle_api_request(
+                "GET",
+                "/api/plans/review-guidance",
+                None,
+                Path(tmp) / "registry.json",
+                Path(tmp) / "plans.json",
+            )
+
+        self.assertEqual(400, response.status_code)
+        self.assertEqual("invalid_review_guidance_request", response.body_json["error"]["code"])
+
+    def test_review_guidance_endpoint_is_get_only(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            response = handle_api_request(
+                "POST",
+                "/api/plans/review-guidance",
+                "{}",
+                Path(tmp) / "registry.json",
+                Path(tmp) / "plans.json",
+            )
+
+        self.assertEqual(404, response.status_code)
+        self.assertEqual("not_found", response.body_json["error"]["code"])
+
     def test_get_plan_compare_unknown_plan_returns_structured_404(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -280,10 +357,19 @@ class AppApiPlanWorkbenchTests(unittest.TestCase):
             plans_path.write_text("{not-json", encoding="utf-8")
 
             response = handle_api_request("GET", "/api/plans/summary", None, root / "registry.json", plans_path)
+            guidance_response = handle_api_request(
+                "GET",
+                "/api/plans/review-guidance?plan_id=any",
+                None,
+                root / "registry.json",
+                plans_path,
+            )
 
         self.assertEqual(500, response.status_code)
         self.assertEqual("plan_store_error", response.body_json["error"]["code"])
         self.assertNotIn("Traceback", json.dumps(response.body_json))
+        self.assertEqual(500, guidance_response.status_code)
+        self.assertEqual("plan_store_error", guidance_response.body_json["error"]["code"])
 
     def test_workbench_endpoints_do_not_write_target_repo(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -307,11 +393,43 @@ class AppApiPlanWorkbenchTests(unittest.TestCase):
                 registry_path,
                 plans_path,
             )
+            guidance_response = handle_api_request(
+                "GET",
+                f"/api/plans/review-guidance?plan_id={first['plan_id']}",
+                None,
+                registry_path,
+                plans_path,
+            )
             after = target_file_set(target)
 
         self.assertEqual(200, list_response.status_code)
         self.assertEqual(200, summary_response.status_code)
         self.assertEqual(200, compare_response.status_code)
+        self.assertEqual(200, guidance_response.status_code)
+        self.assertEqual(before, after)
+
+    def test_review_guidance_does_not_change_plan_store_contents(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            target = root / "target"
+            target.mkdir()
+            write_instance(target)
+            registry_path = root / "registry.json"
+            plans_path = root / "plans.json"
+            register_local(registry_path, target)
+            first = create_plan(registry_path, plans_path, "target", "first")
+            before = plans_path.read_text(encoding="utf-8")
+
+            response = handle_api_request(
+                "GET",
+                f"/api/plans/review-guidance?plan_id={first['plan_id']}",
+                None,
+                registry_path,
+                plans_path,
+            )
+            after = plans_path.read_text(encoding="utf-8")
+
+        self.assertEqual(200, response.status_code)
         self.assertEqual(before, after)
 
 
