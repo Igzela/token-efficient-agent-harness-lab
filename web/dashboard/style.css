@@ -170,7 +170,8 @@ h2 {
 }
 
 select,
-input {
+input,
+textarea {
   border: 1px solid var(--line);
   border-radius: 6px;
   color: var(--ink);
@@ -180,10 +181,143 @@ input {
   padding: 0 10px;
 }
 
+textarea {
+  line-height: 1.45;
+  min-height: 92px;
+  padding: 10px;
+  resize: vertical;
+}
+
 select:focus,
-input:focus {
+input:focus,
+textarea:focus {
   border-color: var(--accent);
   outline: 2px solid var(--accent-soft);
+}
+
+.planning-panel {
+  margin-bottom: 18px;
+}
+
+.planning-panel .metric-label {
+  margin-bottom: 8px;
+}
+
+.execution-flag {
+  color: var(--fail);
+  font-size: 0.86rem;
+}
+
+.panel-note {
+  border-bottom: 1px solid var(--line);
+  color: var(--muted);
+  margin: 0;
+  padding: 12px 18px;
+}
+
+.plan-form {
+  display: grid;
+  gap: 12px;
+  grid-template-columns: minmax(120px, 0.7fr) minmax(260px, 2fr) repeat(4, minmax(130px, 1fr)) auto;
+  padding: 18px;
+}
+
+.plan-form label {
+  display: grid;
+  min-width: 0;
+}
+
+.plan-form button {
+  align-self: end;
+  grid-column: 1 / -1;
+  justify-self: start;
+  min-width: 260px;
+}
+
+.plan-objective-field {
+  grid-column: span 2;
+}
+
+.plan-output {
+  border-top: 1px solid var(--line);
+}
+
+.plan-summary {
+  align-items: stretch;
+  display: grid;
+  gap: 12px;
+  grid-template-columns: repeat(7, minmax(0, 1fr));
+  padding: 18px;
+}
+
+.plan-summary > div,
+.plan-summary > .pill {
+  background: var(--surface-strong);
+  border-radius: 8px;
+  min-height: 72px;
+  padding: 12px;
+}
+
+.plan-summary strong {
+  display: block;
+  overflow-wrap: anywhere;
+}
+
+.status-ready-for-review {
+  background: #e2f4eb;
+  color: var(--pass);
+}
+
+.status-needs-approval {
+  background: #fff1d8;
+  color: var(--warn);
+}
+
+.plan-subsection {
+  border-top: 1px solid var(--line);
+}
+
+.plan-subsection h3 {
+  font-size: 0.92rem;
+  margin: 0;
+  padding: 16px 18px 0;
+}
+
+.step-list {
+  display: grid;
+  gap: 10px;
+  list-style: none;
+  margin: 0;
+  padding: 18px;
+}
+
+.step-list li {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 14px;
+}
+
+.step-list p {
+  margin: 8px 0 0;
+}
+
+.step-head {
+  align-items: center;
+  display: flex;
+  gap: 12px;
+  justify-content: space-between;
+}
+
+.step-head span,
+.step-meta {
+  color: var(--muted);
+  font-size: 0.88rem;
+}
+
+.plan-error {
+  color: var(--fail);
+  font-weight: 700;
+  padding: 18px;
 }
 
 .layout {
@@ -370,6 +504,15 @@ input:focus {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
+  .plan-form,
+  .plan-summary {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .plan-objective-field {
+    grid-column: 1 / -1;
+  }
+
   .check-row {
     grid-template-columns: 1fr;
   }
@@ -395,5 +538,15 @@ input:focus {
 
   .repo-form {
     grid-template-columns: 1fr;
+  }
+
+  .plan-form,
+  .plan-summary {
+    grid-template-columns: 1fr;
+  }
+
+  .plan-form button {
+    justify-self: stretch;
+    min-width: 0;
   }
 }

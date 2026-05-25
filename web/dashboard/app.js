@@ -111,6 +111,8 @@ const statusLabel = {
   WARN: "Warn",
   FAIL: "Fail",
   BLOCKED: "Blocked",
+  READY_FOR_REVIEW: "Ready for review",
+  NEEDS_APPROVAL: "Needs approval",
 };
 
 const elements = {
@@ -135,6 +137,15 @@ const elements = {
   repoName: document.querySelector("#repo-name"),
   repoKind: document.querySelector("#repo-kind"),
   repoLocation: document.querySelector("#repo-location"),
+  planForm: document.querySelector("#plan-form"),
+  planTaskId: document.querySelector("#plan-task-id"),
+  planObjective: document.querySelector("#plan-objective"),
+  planTaskType: document.querySelector("#plan-task-type"),
+  planRiskLevel: document.querySelector("#plan-risk-level"),
+  planContextTokens: document.querySelector("#plan-context-tokens"),
+  planExecutionTokens: document.querySelector("#plan-execution-tokens"),
+  generatePlan: document.querySelector("#generate-plan"),
+  planOutput: document.querySelector("#plan-output"),
 };
 
 let registeredRepos = [];
@@ -266,6 +277,7 @@ function renderRepos(repos) {
     option.value = "";
     elements.repoSelect.appendChild(option);
     elements.runAudit.disabled = true;
+    elements.generatePlan.disabled = true;
     return;
   }
 
@@ -277,6 +289,7 @@ function renderRepos(repos) {
     elements.repoSelect.appendChild(option);
   }
   elements.runAudit.disabled = false;
+  elements.generatePlan.disabled = false;
 }
 
 async function fetchJson(url, options) {
@@ -352,6 +365,142 @@ async function registerRepo(event) {
   }
 }
 
+function readTokenBudget(node) {
+  const value = Number.parseInt(node.value, 10);
+  if (!Number.isInteger(value) || value < 0) {
+    throw new Error("Token budgets must be non-negative integers.");
+  }
+  return value;
+}
+
+function planPayload() {
+  const repoId = elements.repoSelect.value;
+  if (!repoId) {
+    throw new Error("Select a registered repo before planning.");
+  }
+  return {
+    task_id: elements.planTaskId.value.trim() || "task",
+    repo_id: repoId,
+    objective: elements.planObjective.value.trim(),
+    task_type: elements.planTaskType.value,
+    risk_level: elements.planRiskLevel.value,
+    constraints: ["MVP3 deterministic planning only", "executable=false"],
+    max_context_tokens: readTokenBudget(elements.planContextTokens),
+    max_execution_tokens: readTokenBudget(elements.planExecutionTokens),
+  };
+}
+
+function renderPlanEmpty() {
+  clear(elements.planOutput);
+  appendEmpty(elements.planOutput, "No plan generated.");
+}
+
+function renderPlanError(message) {
+  clear(elements.planOutput);
+  const box = document.createElement("div");
+  box.className = "plan-error";
+  box.textContent = message;
+  elements.planOutput.appendChild(box);
+}
+
+function appendPlanList(section, title, items, emptyText) {
+  const wrapper = document.createElement("div");
+  wrapper.className = "plan-subsection";
+  const heading = document.createElement("h3");
+  heading.textContent = title;
+  const list = document.createElement("ul");
+  list.className = "notice-list";
+  wrapper.append(heading, list);
+  section.appendChild(wrapper);
+  appendListItems(list, items, emptyText);
+}
+
+function renderPlan(plan) {
+  clear(elements.planOutput);
+  if (!plan) {
+    renderPlanEmpty();
+    return;
+  }
+
+  const summary = document.createElement("div");
+  summary.className = "plan-summary";
+  summary.appendChild(makePill(plan.status));
+
+  const fields = [
+    ["Plan", plan.plan_id],
+    ["Risk", plan.effective_risk],
+    ["Executable", String(plan.executable)],
+    ["Total budget", plan.total_token_budget],
+    ["Context", plan.context_budget],
+    ["Execution", plan.execution_budget],
+  ];
+  for (const [label, value] of fields) {
+    const item = document.createElement("div");
+    const dt = document.createElement("span");
+    dt.className = "metric-label";
+    dt.textContent = label;
+    const dd = document.createElement("strong");
+    dd.textContent = value == null || value === "" ? "-" : String(value);
+    item.append(dt, dd);
+    summary.appendChild(item);
+  }
+  elements.planOutput.appendChild(summary);
+
+  const stepSection = document.createElement("div");
+  stepSection.className = "plan-subsection";
+  const stepHeading = document.createElement("h3");
+  stepHeading.textContent = "Planned Steps";
+  const stepList = document.createElement("ol");
+  stepList.className = "step-list";
+  stepSection.append(stepHeading, stepList);
+  elements.planOutput.appendChild(stepSection);
+
+  const steps = Array.isArray(plan.steps) ? plan.steps : [];
+  if (steps.length === 0) {
+    appendEmpty(stepList, "No executable steps. Plan is blocked or waiting for approval.");
+  } else {
+    for (const step of steps) {
+      const item = document.createElement("li");
+      const head = document.createElement("div");
+      head.className = "step-head";
+      const role = document.createElement("strong");
+      role.textContent = `planned role: ${step.role}`;
+      const budget = document.createElement("span");
+      budget.textContent = `${step.token_budget} tokens`;
+      head.append(role, budget);
+
+      const action = document.createElement("p");
+      action.textContent = step.action;
+      const meta = document.createElement("p");
+      meta.className = "step-meta";
+      meta.textContent = `context=${step.context_mode}; approval_required=${step.approval_required}; ${step.reason}`;
+      item.append(head, action, meta);
+      stepList.appendChild(item);
+    }
+  }
+
+  appendPlanList(elements.planOutput, "Approval Gates", plan.approval_gates, "None");
+  appendPlanList(elements.planOutput, "Blockers", plan.blockers, "None");
+  appendPlanList(elements.planOutput, "Token Efficiency Notes", plan.token_efficiency_notes, "None");
+}
+
+async function generatePlan(event) {
+  event.preventDefault();
+  try {
+    setApiState("Planning");
+    const data = await fetchJson("/api/plans", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(planPayload()),
+    });
+    renderPlan(data.plan);
+    setApiState("API connected");
+  } catch (error) {
+    renderPlanError(error.message);
+    setApiState("Planning error");
+  }
+}
+
 async function readFileAsJson(file) {
   const text = await file.text();
   return JSON.parse(text);
@@ -382,6 +531,8 @@ elements.resetReport.addEventListener("click", () => {
 elements.refreshRepos.addEventListener("click", refreshRepos);
 elements.runAudit.addEventListener("click", runSelectedAudit);
 elements.repoForm.addEventListener("submit", registerRepo);
+elements.planForm.addEventListener("submit", generatePlan);
 
 renderReport(SAMPLE_REPORT);
+renderPlanEmpty();
 refreshRepos();
