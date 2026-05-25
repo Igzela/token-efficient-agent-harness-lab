@@ -29,6 +29,16 @@ Claude Code must still pause for explicit human confirmation before deleting pro
 modifying active YAML under `alters/current/**`, or pushing directly to `main` or `master`.
 """
 
+CURRENT_BRANCH_PUSH_AGENTS = """# Agent Execution Policy
+
+Claude Code operates as an execution adapter under the Token-Efficient Agent Harness.
+It is not the governance authority.
+All governance decisions require human authorisation.
+Claude Code may use git push to the current branch (NOT main/master directly).
+Claude Code must not connect real LLM provider systems without approval.
+Claude Code must pause before modifying active YAML or active user/project state.
+"""
+
 UNSAFE_AGENTS = """# Agent Execution Policy
 
 Claude Code is the governance authority.
@@ -186,6 +196,16 @@ class TestInstanceAudit(unittest.TestCase):
             report = audit_instance(root)
             self.assertIn(report.verdict, {"PASS_WITH_NOTES", "PASS"})
             self.assertTrue(any("broad automation" in item.lower() for item in report.warnings))
+
+    def test_current_branch_push_with_main_master_denial_counts_as_guarded(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            write_instance(root, agents=CURRENT_BRANCH_PUSH_AGENTS)
+            report = audit_instance(root)
+            self.assertIn(report.verdict, {"PASS_WITH_NOTES", "PASS"})
+            self.assertFalse(any("main/master push" in item for item in report.warnings))
+            agents_check = next(check for check in report.checks if check.check_id == "agents_policy")
+            self.assertIn("main/master push requires pause or approval", agents_check.evidence)
 
     def test_malformed_board_table_warns(self):
         with tempfile.TemporaryDirectory() as tmp:
