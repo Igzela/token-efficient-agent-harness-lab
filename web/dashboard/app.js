@@ -159,6 +159,17 @@ const elements = {
   comparePlanB: document.querySelector("#compare-plan-b"),
   comparePlans: document.querySelector("#compare-plans"),
   compareOutput: document.querySelector("#compare-output"),
+  refreshTriage: document.querySelector("#refresh-triage"),
+  triageRepoFilter: document.querySelector("#triage-repo-filter"),
+  triageTotal: document.querySelector("#triage-total"),
+  triageBlocked: document.querySelector("#triage-blocked"),
+  triageNeedsApproval: document.querySelector("#triage-needs-approval"),
+  triageReady: document.querySelector("#triage-ready"),
+  triageTokenHotspots: document.querySelector("#triage-token-hotspots"),
+  triageRemoteLimited: document.querySelector("#triage-remote-limited"),
+  triageBudgetPressure: document.querySelector("#triage-budget-pressure"),
+  triageBody: document.querySelector("#triage-body"),
+  triageDetail: document.querySelector("#triage-detail"),
   guidancePlanSelect: document.querySelector("#guidance-plan-select"),
   generateGuidance: document.querySelector("#generate-guidance"),
   guidanceOutput: document.querySelector("#guidance-output"),
@@ -289,6 +300,7 @@ function renderRepos(repos) {
   registeredRepos = Array.isArray(repos) ? repos : [];
   clear(elements.repoSelect);
   renderRepoFilterOptions();
+  renderTriageRepoFilterOptions();
   if (registeredRepos.length === 0) {
     const option = document.createElement("option");
     option.textContent = "No repos registered";
@@ -307,6 +319,7 @@ function renderRepos(repos) {
     elements.repoSelect.appendChild(option);
   }
   renderRepoFilterOptions();
+  renderTriageRepoFilterOptions();
   elements.runAudit.disabled = false;
   elements.generatePlan.disabled = false;
 }
@@ -322,6 +335,20 @@ function renderRepoFilterOptions() {
     option.value = repo.id;
     option.textContent = repo.name;
     elements.plansRepoFilter.appendChild(option);
+  }
+}
+
+function renderTriageRepoFilterOptions() {
+  clear(elements.triageRepoFilter);
+  const all = document.createElement("option");
+  all.value = "";
+  all.textContent = "all repos";
+  elements.triageRepoFilter.appendChild(all);
+  for (const repo of registeredRepos) {
+    const option = document.createElement("option");
+    option.value = repo.id;
+    option.textContent = repo.name;
+    elements.triageRepoFilter.appendChild(option);
   }
 }
 
@@ -342,9 +369,11 @@ async function refreshRepos() {
     renderRepos(data.repos);
     setApiState("API connected");
     await refreshPlanWorkbench();
+    await refreshPortfolioTriage();
   } catch (error) {
     renderRepos([]);
     renderPlanWorkbenchEmpty();
+    renderPortfolioTriageEmpty("No portfolio triage available.");
     setApiState("Static sample");
   }
 }
@@ -540,6 +569,15 @@ function planSummaryUrl() {
   return query ? `/api/plans/summary?${query}` : "/api/plans/summary";
 }
 
+function planTriageUrl() {
+  const params = new URLSearchParams();
+  if (elements.triageRepoFilter.value) {
+    params.set("repo_id", elements.triageRepoFilter.value);
+  }
+  const query = params.toString();
+  return query ? `/api/plans/triage?${query}` : "/api/plans/triage";
+}
+
 function renderPlanWorkbenchEmpty() {
   registeredPlanSummaries = [];
   renderPlanSummary({
@@ -679,6 +717,108 @@ function renderComparison(comparison) {
   elements.compareOutput.append(dl, note);
 }
 
+function renderPortfolioTriageEmpty(text) {
+  renderPortfolioTriageSummary({
+    total_plans: 0,
+    summary: {
+      blocked: 0,
+      needs_approval: 0,
+      ready_for_review: 0,
+      token_hotspot_count: 0,
+      remote_limited_count: 0,
+      budget_pressure_count: 0,
+    },
+  });
+  renderPortfolioTriageItems([]);
+  clear(elements.triageDetail);
+  appendEmpty(elements.triageDetail, text);
+}
+
+function renderPortfolioTriageSummary(triage) {
+  const summary = triage.summary || {};
+  setText(elements.triageTotal, triage.total_plans || 0);
+  setText(elements.triageBlocked, summary.blocked || 0);
+  setText(elements.triageNeedsApproval, summary.needs_approval || 0);
+  setText(elements.triageReady, summary.ready_for_review || 0);
+  setText(elements.triageTokenHotspots, summary.token_hotspot_count || 0);
+  setText(elements.triageRemoteLimited, summary.remote_limited_count || 0);
+  setText(elements.triageBudgetPressure, summary.budget_pressure_count || 0);
+}
+
+function renderPortfolioTriageItems(items) {
+  clear(elements.triageBody);
+  if (!items || items.length === 0) {
+    const row = document.createElement("tr");
+    const cell = document.createElement("td");
+    cell.colSpan = 11;
+    cell.className = "table-empty";
+    cell.textContent = "No stored plans are available for triage.";
+    row.appendChild(cell);
+    elements.triageBody.appendChild(row);
+    return;
+  }
+
+  for (const item of items) {
+    const row = document.createElement("tr");
+    appendCell(row, item.review_priority);
+    appendCell(row, item.plan_id);
+    appendCell(row, item.repo_id);
+    const statusCell = document.createElement("td");
+    statusCell.appendChild(makePill(item.status));
+    row.appendChild(statusCell);
+    appendCell(row, item.review_bucket);
+    appendCell(row, item.bottleneck);
+    appendCell(row, `${item.token_budget.total} (${item.token_budget.context}/${item.token_budget.execution})`);
+    appendCell(row, item.approval_gate_count);
+    appendCell(row, item.blockers.length);
+    appendCell(row, item.next_review_action);
+    const actionCell = document.createElement("td");
+    const button = document.createElement("button");
+    button.type = "button";
+    button.textContent = "View plan";
+    button.addEventListener("click", () => {
+      renderPortfolioTriageDetail(item);
+      viewStoredPlan(item.plan_id);
+    });
+    actionCell.appendChild(button);
+    row.appendChild(actionCell);
+    elements.triageBody.appendChild(row);
+  }
+}
+
+function renderPortfolioTriageDetail(item) {
+  clear(elements.triageDetail);
+  const fields = [
+    ["Plan", item.plan_id],
+    ["Review bucket", item.review_bucket],
+    ["Bottleneck", item.bottleneck],
+    ["Human review focus", item.recommended_human_focus],
+    ["Token hotspots", item.token_hotspots.join(", ") || "None"],
+  ];
+  const dl = document.createElement("dl");
+  dl.className = "triage-detail-list";
+  for (const [label, value] of fields) {
+    const row = document.createElement("div");
+    const dt = document.createElement("dt");
+    dt.textContent = label;
+    const dd = document.createElement("dd");
+    dd.textContent = value;
+    row.append(dt, dd);
+    dl.appendChild(row);
+  }
+  elements.triageDetail.appendChild(dl);
+}
+
+function renderPortfolioTriage(triage) {
+  renderPortfolioTriageSummary(triage || {});
+  renderPortfolioTriageItems((triage && triage.items) || []);
+  clear(elements.triageDetail);
+  const notice = document.createElement("p");
+  notice.className = "triage-boundary";
+  notice.textContent = triage?.boundary_notice || "Portfolio triage is advisory only.";
+  elements.triageDetail.appendChild(notice);
+}
+
 function renderGuidanceList(section, title, items, emptyText, formatter) {
   const wrapper = document.createElement("section");
   wrapper.className = "guidance-subsection";
@@ -783,6 +923,15 @@ async function refreshPlanWorkbench() {
   }
 }
 
+async function refreshPortfolioTriage() {
+  try {
+    const data = await fetchJson(planTriageUrl());
+    renderPortfolioTriage(data.triage);
+  } catch (error) {
+    renderPortfolioTriageEmpty(error.message);
+  }
+}
+
 async function viewStoredPlan(planId) {
   try {
     const data = await fetchJson(`/api/plans/${encodeURIComponent(planId)}`);
@@ -837,6 +986,7 @@ async function generatePlan(event) {
     });
     renderPlan(data.plan);
     await refreshPlanWorkbench();
+    await refreshPortfolioTriage();
     setApiState("API connected");
   } catch (error) {
     renderPlanError(error.message);
@@ -879,9 +1029,12 @@ elements.refreshPlans.addEventListener("click", refreshPlanWorkbench);
 elements.plansRepoFilter.addEventListener("change", refreshPlanWorkbench);
 elements.plansStatusFilter.addEventListener("change", refreshPlanWorkbench);
 elements.comparePlans.addEventListener("click", compareSelectedPlans);
+elements.refreshTriage.addEventListener("click", refreshPortfolioTriage);
+elements.triageRepoFilter.addEventListener("change", refreshPortfolioTriage);
 elements.generateGuidance.addEventListener("click", generateReviewGuidance);
 
 renderReport(SAMPLE_REPORT);
 renderPlanEmpty();
 renderPlanWorkbenchEmpty();
+renderPortfolioTriageEmpty("No portfolio triage available.");
 refreshRepos();

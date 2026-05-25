@@ -448,6 +448,120 @@ textarea:focus {
   padding: 0 18px 18px;
 }
 
+.triage-panel {
+  margin-bottom: 18px;
+}
+
+.triage-controls {
+  display: grid;
+  gap: 12px;
+  grid-template-columns: minmax(240px, 1fr);
+  padding: 18px;
+}
+
+.triage-controls label {
+  display: grid;
+}
+
+.triage-summary {
+  border-top: 1px solid var(--line);
+  display: grid;
+  gap: 12px;
+  grid-template-columns: repeat(7, minmax(0, 1fr));
+  padding: 18px;
+}
+
+.triage-summary article {
+  background: var(--surface-strong);
+  border-radius: 8px;
+  min-height: 78px;
+  padding: 14px;
+}
+
+.triage-summary strong {
+  display: block;
+  font-size: 1.2rem;
+  overflow-wrap: anywhere;
+}
+
+.triage-table-wrap {
+  border-top: 1px solid var(--line);
+  overflow-x: auto;
+}
+
+.triage-table {
+  border-collapse: collapse;
+  min-width: 1180px;
+  width: 100%;
+}
+
+.triage-table th,
+.triage-table td {
+  border-bottom: 1px solid var(--line);
+  font-size: 0.86rem;
+  padding: 12px;
+  text-align: left;
+  vertical-align: middle;
+}
+
+.triage-table th {
+  color: var(--muted);
+  font-size: 0.76rem;
+  font-weight: 760;
+  text-transform: uppercase;
+}
+
+.triage-table td {
+  overflow-wrap: anywhere;
+}
+
+.triage-table button {
+  min-height: 34px;
+  white-space: nowrap;
+}
+
+.triage-detail {
+  border-top: 1px solid var(--line);
+}
+
+.triage-detail-list {
+  display: grid;
+  gap: 10px;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  margin: 0;
+  padding: 18px;
+}
+
+.triage-detail-list div {
+  background: var(--surface-strong);
+  border-radius: 8px;
+  padding: 12px;
+}
+
+.triage-detail-list dt {
+  color: var(--muted);
+  font-size: 0.78rem;
+  font-weight: 760;
+  margin-bottom: 6px;
+  text-transform: uppercase;
+}
+
+.triage-detail-list dd,
+.triage-boundary {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.triage-detail-list dd {
+  font-weight: 740;
+}
+
+.triage-boundary {
+  color: var(--muted);
+  font-weight: 650;
+  padding: 18px;
+}
+
 .guidance-panel {
   margin-bottom: 18px;
 }
@@ -700,6 +814,8 @@ textarea:focus {
   .plan-form,
   .plan-summary,
   .workbench-summary,
+  .triage-summary,
+  .triage-detail-list,
   .comparison-list,
   .guidance-summary {
     grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -707,6 +823,7 @@ textarea:focus {
 
   .workbench-filters,
   .compare-controls,
+  .triage-controls,
   .guidance-controls {
     grid-template-columns: 1fr 1fr;
   }
@@ -745,10 +862,13 @@ textarea:focus {
   .plan-form,
   .plan-summary,
   .workbench-summary,
+  .triage-summary,
+  .triage-detail-list,
   .comparison-list,
   .guidance-summary,
   .workbench-filters,
   .compare-controls,
+  .triage-controls,
   .guidance-controls {
     grid-template-columns: 1fr;
   }
