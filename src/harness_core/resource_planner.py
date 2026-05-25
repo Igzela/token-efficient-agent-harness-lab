@@ -44,6 +44,33 @@ _HIGH_RISK_KEYWORDS = (
 )
 _READ_ONLY_KEYWORDS = ("read-only", "readonly", "audit", "inspect", "review", "docs", "document")
 _HIGH_RISK_TASK_TYPES = {"write", "code_change", "deploy", "provider", "sandbox", "worker", "mcp"}
+_NEGATED_RISK_PHRASES = (
+    "no target repo writes",
+    "no target repository writes",
+    "do not write target repo",
+    "do not write target repository",
+    "target repo remains read-only",
+    "target repository remains read-only",
+    "without target repo writes",
+    "without target repository writes",
+    "no source changes",
+    "does not modify target repo",
+    "does not modify target repository",
+    "no target repository mutation",
+    "no target repo mutation",
+    "no provider calls",
+    "no model calls",
+    "no api key",
+    "no credentials",
+    "no sandbox execution",
+    "no sandbox",
+    "no container",
+    "no worker",
+    "no autonomous workers",
+    "read-only validation",
+    "audit only",
+    "review only",
+)
 
 
 class PlanningInputError(ValueError):
@@ -261,7 +288,7 @@ def _audit_summary(audit_report: InstanceAuditReport | None) -> dict[str, Any]:
 
 def _effective_risk(task: PlanningTask, audit_report: InstanceAuditReport | None) -> str:
     risk = _RISK_ORDER[task.risk_level]
-    text = f"{task.objective} {task.task_type} {' '.join(task.constraints)}".lower()
+    text = _positive_risk_text(task)
     if any(keyword in text for keyword in _HIGH_RISK_KEYWORDS):
         risk = max(risk, _RISK_ORDER["high"])
     if task.task_type.lower() in _HIGH_RISK_TASK_TYPES:
@@ -277,7 +304,7 @@ def _effective_risk(task: PlanningTask, audit_report: InstanceAuditReport | None
 
 def _approval_gates(task: PlanningTask, effective_risk: str) -> list[str]:
     gates: list[str] = []
-    text = f"{task.objective} {task.task_type} {' '.join(task.constraints)}".lower()
+    text = _positive_risk_text(task)
     if _RISK_ORDER[effective_risk] >= _RISK_ORDER["high"]:
         gates.append("human_approval_required")
     if any(keyword in text for keyword in ("write", "modify", "delete", "remove", "push", "merge")):
@@ -355,6 +382,15 @@ def _verifier_context_mode(context_mode: str) -> str:
     if context_mode == "none":
         return "none"
     return "summary"
+
+
+def _positive_risk_text(task: PlanningTask) -> str:
+    """Return task text with common negated boundary phrases removed."""
+
+    text = f"{task.objective} {task.task_type} {' '.join(task.constraints)}".lower()
+    for phrase in _NEGATED_RISK_PHRASES:
+        text = text.replace(phrase, " ")
+    return text
 
 
 def _required_string(data: dict[str, Any], key: str) -> str:

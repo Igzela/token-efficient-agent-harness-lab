@@ -119,6 +119,11 @@ class PlanWorkbenchTests(unittest.TestCase):
             with self.subTest(expected=expected):
                 self.assertEqual(expected, recommend_next_review_action(input_plan))
 
+    def test_high_budget_ready_plan_recommends_token_budget_review(self):
+        input_plan = plan("broad", "ready_for_review", total=7800, context=6000, execution=1800, notes=[])
+
+        self.assertEqual("review_token_budget", recommend_next_review_action(input_plan))
+
     def test_list_plan_summaries_filters_status_and_limit(self):
         plans = [
             plan("a", "ready_for_review", risk="low"),

@@ -143,9 +143,34 @@ def _classification(plan: dict[str, Any]) -> tuple[str, str, int, str]:
     if status == "blocked":
         return ("blocked", "blockers", 85, "Inspect blockers before continuing review.")
     if status == "needs_approval":
-        return ("review_gates", "approval_gates", 80, "Inspect review gates before spending more context.")
+        gates = set(_approval_gates(plan))
+        if gates & {"provider_integration_gate", "execution_boundary_gate", "deployment_gate"}:
+            return (
+                "review_gates",
+                "provider_or_execution_gate",
+                min(99, 84 + _token_pressure_score(plan) + len(gates)),
+                "Inspect provider, execution, or deployment gates before spending more context.",
+            )
+        if _has_budget_pressure(plan):
+            return (
+                "token_budget_review",
+                "token_hotspot",
+                min(89, 78 + _token_pressure_score(plan) + len(gates)),
+                "Review token hotspots and gates before requesting more context.",
+            )
+        return (
+            "review_gates",
+            "approval_gates",
+            78 + len(gates) + _risk_score(plan),
+            "Inspect review gates before spending more context.",
+        )
     if status == "ready_for_review" and _has_budget_pressure(plan):
-        return ("token_budget_review", "token_hotspot", 60, "Review token hotspots before requesting more context.")
+        return (
+            "token_budget_review",
+            "token_hotspot",
+            55 + _token_pressure_score(plan),
+            "Review token hotspots before requesting more context.",
+        )
     if status == "ready_for_review" and len(steps) >= 8:
         return ("split_or_simplify", "plan_complexity", 50, "Review whether the plan should be split into smaller slices.")
     if status == "ready_for_review":
@@ -202,7 +227,31 @@ def _audit_verdict(plan: dict[str, Any]) -> str:
 
 
 def _has_budget_pressure(plan: dict[str, Any]) -> bool:
-    return any("budget pressure" in note.lower() for note in _string_list(plan.get("token_efficiency_notes")))
+    if any("budget pressure" in note.lower() for note in _string_list(plan.get("token_efficiency_notes"))):
+        return True
+    return _token_pressure_score(plan) > 0
+
+
+def _token_pressure_score(plan: dict[str, Any]) -> int:
+    total_budget = _int(plan.get("total_token_budget"))
+    context_budget = _int(plan.get("context_budget"))
+    execution_budget = _int(plan.get("execution_budget"))
+    score = 0
+    if total_budget >= 7000:
+        score += 8
+    elif total_budget >= 5000:
+        score += 5
+    if context_budget >= 5000:
+        score += 5
+    if total_budget > 0 and context_budget / total_budget >= 0.75:
+        score += 3
+    if execution_budget < 1000:
+        score += 1
+    return score
+
+
+def _risk_score(plan: dict[str, Any]) -> int:
+    return {"low": 0, "medium": 1, "high": 3, "critical": 5}.get(_string(plan.get("effective_risk")), 0)
 
 
 def _steps(plan: dict[str, Any]) -> list[dict[str, Any]]:

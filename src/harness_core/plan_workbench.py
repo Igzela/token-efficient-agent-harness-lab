@@ -265,7 +265,11 @@ def _blockers(plan: dict[str, Any]) -> list[str]:
 
 
 def _has_budget_pressure(plan: dict[str, Any]) -> bool:
-    return any("budget pressure" in note.lower() for note in _string_list(plan.get("token_efficiency_notes")))
+    if any("budget pressure" in note.lower() for note in _string_list(plan.get("token_efficiency_notes"))):
+        return True
+    total_budget = _int(plan.get("total_token_budget"))
+    context_budget = _int(plan.get("context_budget"))
+    return total_budget >= 6000 or context_budget >= 5000
 
 
 def _string_list(value: Any) -> list[str]:

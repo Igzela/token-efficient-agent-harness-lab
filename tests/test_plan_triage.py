@@ -30,12 +30,14 @@ def plan(
     context_budget: int = 1200,
     execution_budget: int = 1200,
     context_mode: str = "summary",
+    effective_risk: str = "medium",
+    task_type: str = "review",
 ) -> dict:
     return {
         "plan_id": plan_id,
         "status": status,
         "executable": False,
-        "effective_risk": "medium",
+        "effective_risk": effective_risk,
         "total_token_budget": context_budget + execution_budget,
         "context_budget": context_budget,
         "execution_budget": execution_budget,
@@ -44,7 +46,7 @@ def plan(
         "token_efficiency_notes": notes or [],
         "audit_summary": {"verdict": audit_verdict},
         "repo_snapshot": {"id": repo_id, "kind": "local"},
-        "task": {"repo_id": repo_id, "task_type": "review"},
+        "task": {"repo_id": repo_id, "task_type": task_type},
         "steps": [{"role": "planner", "context_mode": context_mode} for _ in range(step_count)],
     }
 
@@ -116,6 +118,59 @@ class PlanTriageTests(unittest.TestCase):
         )
 
         self.assertEqual(["audit", "b", "a"], [item["plan_id"] for item in triage["items"]])
+
+    def test_triage_distinguishes_budget_pressure_original_from_lower_budget_variant(self):
+        triage = build_portfolio_triage(
+            [
+                plan("low", "ready_for_review", context_budget=800, execution_budget=900),
+                plan("original", "ready_for_review", context_budget=6000, execution_budget=1800, context_mode="full"),
+            ]
+        )
+
+        self.assertEqual("original", triage["items"][0]["plan_id"])
+        self.assertGreater(triage["items"][0]["review_priority"], triage["items"][1]["review_priority"])
+
+    def test_semantic_priority_precedes_stored_index(self):
+        triage = build_portfolio_triage(
+            [
+                plan("provider", "needs_approval", gates=["provider_integration_gate"], task_type="provider"),
+                plan("low", "needs_approval", gates=["human_approval_required"]),
+            ]
+        )
+
+        self.assertEqual("provider", triage["items"][0]["plan_id"])
+
+    def test_all_needs_approval_plans_still_get_differentiated_priorities(self):
+        triage = build_portfolio_triage(
+            [
+                plan("human", "needs_approval", gates=["human_approval_required"]),
+                plan("provider", "needs_approval", gates=["provider_integration_gate"], task_type="provider"),
+                plan("budget", "needs_approval", gates=["human_approval_required"], context_budget=6000, execution_budget=1800, context_mode="full"),
+            ]
+        )
+
+        priorities = {item["plan_id"]: item["review_priority"] for item in triage["items"]}
+        self.assertGreater(len(set(priorities.values())), 1)
+        self.assertGreater(priorities["provider"], priorities["human"])
+
+    def test_provider_boundary_plan_and_budget_pressure_plan_have_explainable_bottlenecks(self):
+        provider = triage_plan(plan("provider", "needs_approval", gates=["provider_integration_gate"], task_type="provider"))
+        budget = triage_plan(
+            plan("budget", "ready_for_review", context_budget=6000, execution_budget=1800, context_mode="full")
+        )
+
+        self.assertEqual("provider_or_execution_gate", provider["bottleneck"])
+        self.assertEqual("token_hotspot", budget["bottleneck"])
+
+    def test_low_risk_ready_plan_ranks_below_true_gated_plan(self):
+        triage = build_portfolio_triage(
+            [
+                plan("ready", "ready_for_review", notes=[], effective_risk="low"),
+                plan("provider", "needs_approval", gates=["provider_integration_gate"], task_type="provider"),
+            ]
+        )
+
+        self.assertEqual("provider", triage["items"][0]["plan_id"])
 
     def test_triage_output_is_non_executable(self):
         triage = build_portfolio_triage([plan("clean", "ready_for_review")])

@@ -72,11 +72,16 @@ def derive_review_options(plan: dict[str, Any]) -> list[dict[str, str]]:
     if status == "blocked":
         return [_option("inspect_blockers", "Plan blockers must be understood before further review.", "human_review_only")]
     if status == "needs_approval":
+        if _has_budget_pressure(notes, plan) and not _has_true_boundary_gate(plan):
+            return [
+                _option("reduce_budget", "Budget pressure was detected; inspect whether lower context is acceptable.", "human_review_only"),
+                _option("compare_with_lower_budget_plan", "Compare this plan with a lower-budget variant before continuing.", "human_review_only"),
+            ]
         return [
             _option("inspect_gates", "Review gates explain why this plan is held for human review.", "human_review_only"),
             _option("continue_review", "Continue reviewing the non-executable plan details and evidence.", "human_review_only"),
         ]
-    if status == "ready_for_review" and _has_budget_pressure(notes):
+    if status == "ready_for_review" and _has_budget_pressure(notes, plan):
         return [
             _option("reduce_budget", "Budget pressure was detected; inspect whether lower context is acceptable.", "human_review_only"),
             _option("compare_with_lower_budget_plan", "Compare this plan with a lower-budget variant before continuing.", "human_review_only"),
@@ -139,7 +144,7 @@ def derive_token_efficiency_guidance(plan: dict[str, Any]) -> list[str]:
     execution_budget = _int(plan.get("execution_budget"))
     total_budget = _int(plan.get("total_token_budget"))
 
-    if _has_budget_pressure(notes):
+    if _has_budget_pressure(notes, plan):
         guidance.append("Inspect whether summary or excerpt context is sufficient before increasing context budget.")
     if context_budget == 0:
         guidance.append("Context was omitted; request more context only if review evidence is insufficient.")
@@ -163,8 +168,19 @@ def _audit_verdict(plan: dict[str, Any]) -> str:
     return _string(audit.get("verdict"))
 
 
-def _has_budget_pressure(notes: list[str]) -> bool:
-    return any("budget pressure" in note.lower() for note in notes)
+def _has_budget_pressure(notes: list[str], plan: dict[str, Any] | None = None) -> bool:
+    if any("budget pressure" in note.lower() for note in notes):
+        return True
+    if plan is None:
+        return False
+    total_budget = _int(plan.get("total_token_budget"))
+    context_budget = _int(plan.get("context_budget"))
+    return total_budget >= 6000 or context_budget >= 5000
+
+
+def _has_true_boundary_gate(plan: dict[str, Any]) -> bool:
+    gates = set(_string_list(plan.get("approval_gates")))
+    return bool(gates & {"provider_integration_gate", "execution_boundary_gate", "deployment_gate"})
 
 
 def _string_list(value: Any) -> list[str]:

@@ -19,6 +19,7 @@ def plan(
     step_count: int = 3,
     context_budget: int = 2500,
     execution_budget: int = 3000,
+    task_type: str = "review",
 ) -> dict:
     return {
         "plan_id": plan_id,
@@ -31,6 +32,7 @@ def plan(
         "approval_gates": gates or [],
         "token_efficiency_notes": notes or [],
         "audit_summary": {"verdict": audit_verdict},
+        "task": {"task_type": task_type},
         "steps": [{"role": "planner", "context_mode": "summary"} for _ in range(step_count)],
     }
 
@@ -105,6 +107,44 @@ class ReviewGuidanceTests(unittest.TestCase):
         for option in guidance["options"]:
             self.assertIn(option["option"], REVIEW_OPTION_NAMES)
             self.assertEqual("human_review_only", option["allowed_effect"])
+
+    def test_budget_pressure_without_true_risk_can_recommend_reduce_budget(self):
+        guidance = build_review_guidance(
+            plan("ready_for_review", context_budget=6000, execution_budget=1800, notes=[])
+        )
+
+        self.assertEqual("reduce_budget", guidance["recommended_option"])
+
+    def test_true_provider_or_sandbox_gate_keeps_inspect_gates(self):
+        guidance = build_review_guidance(
+            plan("needs_approval", gates=["provider_integration_gate", "execution_boundary_gate"], task_type="provider")
+        )
+
+        self.assertEqual("inspect_gates", guidance["recommended_option"])
+
+    def test_lower_budget_variant_guidance_mentions_summary_or_excerpt_sufficiency(self):
+        guidance = build_review_guidance(
+            plan(
+                "ready_for_review",
+                context_budget=800,
+                execution_budget=900,
+                notes=["Context budget pressure: excerpts reduced to summary context."],
+            )
+        )
+
+        self.assertTrue(
+            any("summary or excerpt context is sufficient" in item for item in guidance["token_efficiency_guidance"])
+        )
+
+    def test_guidance_remains_preview_only_and_human_review_only(self):
+        guidance = build_review_guidance(
+            plan("ready_for_review", notes=["Context budget pressure: full context reduced to excerpts."])
+        )
+
+        self.assertTrue(guidance["preview_only"])
+        self.assertFalse(guidance["executable"])
+        self.assertTrue(guidance["options"])
+        self.assertTrue(all(option["allowed_effect"] == "human_review_only" for option in guidance["options"]))
 
 
 if __name__ == "__main__":
