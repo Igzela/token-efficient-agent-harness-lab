@@ -319,6 +319,7 @@ class RuleBasedTaskAnalyzer:
         flags: list[str] = []
         pos_evidence: list[Evidence] = []
         neg_evidence: list[Evidence] = []
+        has_any_negation = any(phrase in text for phrase in _NEGATED_RISK_PHRASES)
 
         for flag, keywords in _RISK_KEYWORDS.items():
             detected = False
@@ -344,7 +345,7 @@ class RuleBasedTaskAnalyzer:
                     rule_id=f"risk_{flag}",
                     confidence=0.9,
                 ))
-            else:
+            elif has_any_negation:
                 neg_evidence.append(Evidence(
                     feature=flag,
                     text="[negated]",
