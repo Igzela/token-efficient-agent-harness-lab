@@ -20,6 +20,7 @@ Token-Efficient Agent Harness Lab is a local deterministic harness for studying 
 | Demo verification | Complete — all docs accurate and runnable |
 | Trial 2 candidate selection | Planned — hermes-gateway-lab recommended |
 | Trial 2 execution | Closed — `ACCEPTABLE_WITH_NOTES` (audit BLOCKED on target, generalization finding) |
+| Trial 2 final verification | Closed — `TRIAL_2_FINAL_VERIFICATION_PASS` |
 
 Tests: 914 pass.
 
@@ -40,7 +41,8 @@ Tests: 914 pass.
 3. **[docs/NEXT_DECISION.md](NEXT_DECISION.md)** — What to do next and what is disallowed by default.
 4. **[docs/MODULE_MAP.md](MODULE_MAP.md)** — Module-to-stage reference table.
 5. **[docs/trials/TRIAL_1_REPORT.md](trials/TRIAL_1_REPORT.md)** — Latest trial results and hardening closeout.
-6. **[docs/demo/README.md](demo/README.md)** — Local demo walkthrough (optional).
+6. **[docs/trials/TRIAL_2_FINAL_STATE_INDEX.md](trials/TRIAL_2_FINAL_STATE_INDEX.md)** — Trial 2 complete evidence chain and final state.
+7. **[docs/demo/README.md](demo/README.md)** — Local demo walkthrough (optional).
 
 ## Default Behavior
 
