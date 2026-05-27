@@ -1,0 +1,71 @@
+"""Tests for openai_provider.py — OpenAIProvider error mapping (no real API calls)."""
+
+import os
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
+
+import unittest
+from harness_core.dispatch.dispatch_engine import DispatchEngine
+from harness_core.dispatch.provider.audit_recorder import ProviderAuditRecorder
+from harness_core.dispatch.provider.credential_boundary import CredentialBoundary
+from harness_core.dispatch.provider.openai_provider import OpenAIProvider
+from harness_core.dispatch.provider.provider_config import CredentialRef, ProviderConfig
+
+
+class OpenAIProviderTests(unittest.TestCase):
+    def setUp(self):
+        self.config = ProviderConfig(
+            provider_id="openai-test",
+            provider_type="openai_compatible",
+            base_url="https://api.openai.com/v1",
+            model_id="gpt-4",
+            credential_ref="OPENAI_TEST_KEY",
+            timeout_ms=5000,
+        )
+        self.cred_ref = CredentialRef(
+            credential_ref_id="OPENAI_TEST_KEY",
+            storage_backend="env",
+            redacted_display="sk-***test",
+            scope="provider:openai",
+        )
+        self.boundary = CredentialBoundary(backend="env")
+        self.audit = ProviderAuditRecorder()
+
+    def test_execute_without_key_fails(self):
+        os.environ.pop("OPENAI_TEST_KEY", None)
+        provider = OpenAIProvider(self.config, self.boundary, self.cred_ref, self.audit)
+        engine = DispatchEngine()
+        bundle = engine.dispatch("Test")
+        result = provider.execute(bundle.decision, "Test", bundle.record.dispatch_id)
+        self.assertEqual(result.status, "failed")
+        self.assertEqual(result.error_domain, "provider_auth")
+
+    def test_health_check_fails_without_key(self):
+        os.environ.pop("OPENAI_TEST_KEY", None)
+        provider = OpenAIProvider(self.config, self.boundary, self.cred_ref, self.audit)
+        self.assertFalse(provider.health_check())
+
+    def test_audit_events_recorded(self):
+        os.environ.pop("OPENAI_TEST_KEY", None)
+        provider = OpenAIProvider(self.config, self.boundary, self.cred_ref, self.audit)
+        engine = DispatchEngine()
+        bundle = engine.dispatch("Test")
+        provider.execute(bundle.decision, "Test", bundle.record.dispatch_id)
+        events = self.audit.list_events(bundle.record.dispatch_id)
+        self.assertTrue(len(events) > 0)
+        event_types = [e.event_type for e in events]
+        self.assertIn("error", event_types)
+
+    def test_error_domain_mapped(self):
+        os.environ.pop("OPENAI_TEST_KEY", None)
+        provider = OpenAIProvider(self.config, self.boundary, self.cred_ref, self.audit)
+        engine = DispatchEngine()
+        bundle = engine.dispatch("Test")
+        result = provider.execute(bundle.decision, "Test", bundle.record.dispatch_id)
+        self.assertIn(result.error_domain, ("provider_auth", "provider_error", "provider_timeout"))
+
+
+if __name__ == "__main__":
+    unittest.main()
