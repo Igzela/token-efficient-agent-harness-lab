@@ -19,6 +19,7 @@ Token-Efficient Agent Harness Lab is a local deterministic harness for studying 
 | Demo packaging | Complete |
 | Demo verification | Complete — all docs accurate and runnable |
 | Trial 2 candidate selection | Planned — hermes-gateway-lab recommended |
+| Trial 2 execution | Closed — `ACCEPTABLE_WITH_NOTES` (audit BLOCKED on target, generalization finding) |
 
 Tests: 914 pass.
 

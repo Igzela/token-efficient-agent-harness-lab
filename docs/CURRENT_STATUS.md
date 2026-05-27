@@ -26,6 +26,7 @@ Last verified: 2026-05-27.
 | Demo packaging | Complete |
 | Demo verification | Complete — all docs accurate and runnable |
 | Trial 2 candidate selection | Planned — hermes-gateway-lab recommended |
+| Trial 2 execution | Closed — `ACCEPTABLE_WITH_NOTES` (audit BLOCKED on target, generalization finding) |
 
 ## Current App Capability
 
