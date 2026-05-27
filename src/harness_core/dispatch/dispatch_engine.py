@@ -34,6 +34,7 @@ class DispatchEngine:
         executor: Any | None = None,
         evaluator: EvaluationStub | None = None,
         ledger: DispatchLedger | None = None,
+        adaptive_selector: Any | None = None,
     ):
         from .executor_adapter import NoopExecutor
         self._analyzer = analyzer or RuleBasedTaskAnalyzer()
@@ -42,6 +43,7 @@ class DispatchEngine:
         self._executor = executor or NoopExecutor()
         self._evaluator = evaluator or EvaluationStub()
         self._ledger = ledger or DispatchLedger()
+        self._adaptive_selector = adaptive_selector
 
     def dispatch(
         self,
@@ -55,11 +57,20 @@ class DispatchEngine:
         analysis = self._analyzer.analyze(raw_request, request_source=request_source)
 
         # Step 2: Select model tier
-        (
-            selected_tier, selected_profile_id,
-            fallback_tier, fallback_profile_id,
-            shadow_routes, rejected_candidates, routing_reason,
-        ) = self._selector.select(analysis)
+        if self._adaptive_selector is not None:
+            (
+                selected_tier, selected_profile_id,
+                fallback_tier, fallback_profile_id,
+                shadow_routes, rejected_candidates, routing_reason,
+            ) = self._adaptive_selector.select(analysis)
+            routing_mode = "adaptive"
+        else:
+            (
+                selected_tier, selected_profile_id,
+                fallback_tier, fallback_profile_id,
+                shadow_routes, rejected_candidates, routing_reason,
+            ) = self._selector.select(analysis)
+            routing_mode = "static"
 
         # Step 3: Reserve budget
         reservation = self._budget.create_reservation(decision_id, analysis, selected_tier)
@@ -92,6 +103,7 @@ class DispatchEngine:
             execution_policy=execution_policy,
             execution_gates=tuple(execution_gates),
             decision_status=self._determine_decision_status(execution_gates),
+            routing_mode=routing_mode,
             created_at=datetime.now(timezone.utc).isoformat(),
         )
 

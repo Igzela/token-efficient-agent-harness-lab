@@ -230,6 +230,8 @@ class DispatchDecision:
     max_input_tokens: int = 4000
     max_output_tokens: int = 3000
     execution_gates: tuple[ExecutionGate, ...] = ()
+    routing_mode: str = "static"
+    routing_experiment_id: str | None = None
     schema_version: str = DISPATCH_DECISION_SCHEMA_VERSION
 
     def to_dict(self) -> dict[str, Any]:
@@ -256,6 +258,8 @@ class DispatchDecision:
             "budget_reservation": self.budget_reservation.to_dict(),
             "execution_policy": self.execution_policy,
             "execution_gates": [eg.to_dict() for eg in self.execution_gates],
+            "routing_mode": self.routing_mode,
+            "routing_experiment_id": self.routing_experiment_id,
             "decision_status": self.decision_status,
             "created_at": self.created_at,
         }

@@ -51,6 +51,20 @@ from .model_selector import DispatchRoutingPolicy, ModelSelector
 from .pasteback_parser import PASTEBACK_SUBMISSION_SCHEMA_VERSION, PastebackParser, PastebackSubmission
 from .prompt_pack_gen import PROMPT_PACK_SCHEMA_VERSION, PromptPack, PromptPackGenerator
 from .task_analyzer import TASK_ANALYSIS_SCHEMA_VERSION, RuleBasedTaskAnalyzer, TaskAnalysis
+from .routing import (
+    AutoDowngradePolicy,
+    AutoUpgradePolicy,
+    CostOfPassRouter,
+    DynamicTierSelector,
+    FeedbackIntegrator,
+    PromotionGate,
+    PromotionVerdict,
+    RoutingArm,
+    RoutingExperiment,
+    RoutingHistoryStore,
+    RoutingObservation,
+    RoutingObservationStore,
+)
 
 __all__ = [
     "BUDGET_RESERVATION_SCHEMA_VERSION",
@@ -113,4 +127,16 @@ __all__ = [
     "TASK_DOMAINS",
     "TASK_INTENTS",
     "TaskAnalysis",
+    "AutoDowngradePolicy",
+    "AutoUpgradePolicy",
+    "CostOfPassRouter",
+    "DynamicTierSelector",
+    "FeedbackIntegrator",
+    "PromotionGate",
+    "PromotionVerdict",
+    "RoutingArm",
+    "RoutingExperiment",
+    "RoutingHistoryStore",
+    "RoutingObservation",
+    "RoutingObservationStore",
 ]
