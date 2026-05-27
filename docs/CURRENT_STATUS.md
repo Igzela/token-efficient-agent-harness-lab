@@ -24,6 +24,8 @@ Last verified: 2026-05-27.
 | Trial 1 — Multi-task budget validation | Closed — `ACCEPTABLE_FOR_MULTI_TASK_TRIAL_AFTER_HARDENING` |
 | Reliability Hardening 1 — Negated risk and triage | Complete |
 | Demo packaging | Complete |
+| Demo verification | Complete — all docs accurate and runnable |
+| Trial 2 candidate selection | Planned — hermes-gateway-lab recommended |
 
 ## Current App Capability
 
