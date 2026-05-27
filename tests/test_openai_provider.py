@@ -332,6 +332,26 @@ class OpenAIProviderMockedTests(unittest.TestCase):
         self.assertEqual(counting.calls, 0)
         self.assertEqual(bundle.execution_result.status, "not_executed")
 
+    def test_disabled_provider_no_network_call(self):
+        config = ProviderConfig(
+            provider_id="openai-disabled",
+            provider_type="openai_compatible",
+            base_url="https://api.openai.com/v1",
+            model_id="gpt-4",
+            credential_ref="OPENAI_DISABLED_KEY",
+            timeout_ms=5000,
+            enabled=False,
+        )
+        provider = OpenAIProvider(config, self.boundary, self.cred_ref, self.audit)
+        engine = DispatchEngine()
+        bundle = engine.dispatch("Test")
+        result = provider.execute(bundle.decision, "Test", bundle.record.dispatch_id)
+        self.assertEqual(result.status, "not_executed")
+        self.assertEqual(result.error_domain, "provider_disabled")
+        self.assertEqual(result.attempt_number, 0)
+        events = self.audit.list_events(bundle.record.dispatch_id)
+        self.assertTrue(any(e.event_type == "error" and e.error_domain == "provider_disabled" for e in events))
+
 
 if __name__ == "__main__":
     unittest.main()

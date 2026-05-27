@@ -47,6 +47,20 @@ class OpenAIProvider(ProviderExecutor):
     def execute(
         self, decision: DispatchDecision, raw_request: str, dispatch_id: str
     ) -> ExecutionResult:
+        if not self._config.enabled:
+            self._record_event(dispatch_id, "error", error_domain="provider_disabled")
+            return ExecutionResult(
+                result_id=f"exec-{uuid.uuid4().hex[:12]}",
+                dispatch_id=dispatch_id,
+                decision_id=decision.decision_id,
+                executor_type="provider",
+                status="not_executed",
+                error_domain="provider_disabled",
+                error_message="provider is disabled in config",
+                attempt_number=0,
+                created_at=datetime.now(timezone.utc).isoformat(),
+            )
+
         try:
             api_key = self._boundary.resolve(self._cred_ref)
         except ValueError as e:
