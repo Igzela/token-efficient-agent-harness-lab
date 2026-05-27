@@ -101,6 +101,25 @@ class RiskFlagDetectionTests(unittest.TestCase):
     def test_no_risk_for_summary(self):
         a = self.analyzer.analyze("Summarize the README")
         self.assertEqual(len(a.risk_flags), 0)
+        self.assertEqual(len(a.negative_evidence), 0)
+
+    def test_negated_no_write_only_suppresses_target_write(self):
+        """'no target repo writes' should only generate negative evidence for target_write."""
+        a = self.analyzer.analyze("Review code with no target repo writes")
+        self.assertNotIn("target_write", a.risk_flags)
+        neg_features = [e.feature for e in a.negative_evidence]
+        self.assertIn("target_write", neg_features)
+        self.assertNotIn("provider_call", neg_features)
+        self.assertNotIn("sandbox_execution", neg_features)
+
+    def test_negated_no_provider_suppresses_provider_only(self):
+        """'without any provider calls' should only generate negative evidence for provider_call."""
+        a = self.analyzer.analyze("Review code without any provider calls")
+        self.assertNotIn("provider_call", a.risk_flags)
+        neg_features = [e.feature for e in a.negative_evidence]
+        self.assertIn("provider_call", neg_features)
+        self.assertNotIn("target_write", neg_features)
+        self.assertNotIn("sandbox_execution", neg_features)
 
     def test_negated_no_write(self):
         """Critical invariant: 'no target repo writes' must NOT trigger target_write."""

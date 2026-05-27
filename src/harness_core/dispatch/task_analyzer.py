@@ -68,6 +68,45 @@ _NEGATED_RISK_PHRASES: tuple[str, ...] = (
     "review only",
 )
 
+# Maps negation phrases to the specific risk flags they suppress.
+_PHRASE_FLAGS: dict[str, tuple[str, ...]] = {
+    "no target repo writes": ("target_write",),
+    "no target repository writes": ("target_write",),
+    "do not write target repo": ("target_write",),
+    "do not write target repository": ("target_write",),
+    "target repo remains read-only": ("target_write",),
+    "target repository remains read-only": ("target_write",),
+    "without target repo writes": ("target_write",),
+    "without target repository writes": ("target_write",),
+    "no source changes": ("target_write",),
+    "does not modify target repo": ("target_write",),
+    "does not modify target repository": ("target_write",),
+    "no target repository mutation": ("target_write",),
+    "no target repo mutation": ("target_write",),
+    "without any provider calls": ("provider_call",),
+    "without provider calls": ("provider_call",),
+    "without model calls": ("provider_call",),
+    "without any model calls": ("provider_call",),
+    "no provider calls": ("provider_call",),
+    "no model calls": ("provider_call",),
+    "do not call providers": ("provider_call",),
+    "do not call any providers": ("provider_call",),
+    "no api key": ("secret_handling",),
+    "no credentials": ("secret_handling",),
+    "without any sandbox execution": ("sandbox_execution",),
+    "without sandbox execution": ("sandbox_execution",),
+    "without executing commands": ("sandbox_execution",),
+    "no sandbox execution": ("sandbox_execution",),
+    "no sandbox": ("sandbox_execution",),
+    "do not run sandbox": ("sandbox_execution",),
+    "no container": ("sandbox_execution",),
+    "no worker": ("sandbox_execution",),
+    "no autonomous workers": ("sandbox_execution",),
+    "read-only validation": ("target_write",),
+    "audit only": ("target_write",),
+    "review only": ("target_write",),
+}
+
 # ---------------------------------------------------------------------------
 # Keyword maps for classification
 # ---------------------------------------------------------------------------
@@ -319,7 +358,12 @@ class RuleBasedTaskAnalyzer:
         flags: list[str] = []
         pos_evidence: list[Evidence] = []
         neg_evidence: list[Evidence] = []
-        has_any_negation = any(phrase in text for phrase in _NEGATED_RISK_PHRASES)
+
+        # Build set of explicitly negated risk flags from phrases in text
+        negated_flags: set[str] = set()
+        for phrase, covered_flags in _PHRASE_FLAGS.items():
+            if phrase in text:
+                negated_flags.update(covered_flags)
 
         for flag, keywords in _RISK_KEYWORDS.items():
             detected = False
@@ -345,7 +389,7 @@ class RuleBasedTaskAnalyzer:
                     rule_id=f"risk_{flag}",
                     confidence=0.9,
                 ))
-            elif has_any_negation:
+            elif flag in negated_flags:
                 neg_evidence.append(Evidence(
                     feature=flag,
                     text="[negated]",
