@@ -4,8 +4,8 @@ Last verified: 2026-05-27.
 
 ## Repository State
 
-- Branch: `main` synced after `a4227e9` (Phase 1 dispatch kernel complete).
-- Tests: **1072 pass**, 0 failures.
+- Branch: `main` synced after `592803f` (Phase 1 dispatch kernel stable).
+- Tests: **1074 pass**, 0 failures.
 - Security baseline: ALL CHECKS PASSED.
 
 ## Completed Tracks
@@ -34,11 +34,29 @@ Last verified: 2026-05-27.
 | Trial 3 multi-repo generalization | Closed — `TRIAL_3_MULTI_REPO_GENERALIZATION_PASS` (3 repos: API/CLI/infra, all BLOCKED→PASS_WITH_NOTES, 6 plans, triage working) |
 | Trial 3 target merge | Closed — all 3 target PRs merged, audit PASS_WITH_NOTES, blockers [] |
 | Global Architecture Book v1 | Approved — 3-round Claude+GPT collaborative review, Phase 1 implementation-ready |
-| Phase 1 — Dispatch Kernel | Complete — 8 source files, 20 fixtures, 152 tests, commit `a4227e9` |
+| Phase 1 — Dispatch Kernel | **STABLE** — 8 source files, 20 fixtures, 1074 total tests, commits `a4227e9`→`aed213b`→`592803f` |
 
 Trial 2 complete evidence chain: [`docs/trials/TRIAL_2_FINAL_STATE_INDEX.md`](trials/TRIAL_2_FINAL_STATE_INDEX.md).
 Trial 3 report: [`docs/trials/TRIAL_3_REPORT.md`](trials/TRIAL_3_REPORT.md).
 Trial 3 target merge closeout: [`docs/trials/TRIAL_3_TARGET_MERGE_CLOSEOUT.md`](trials/TRIAL_3_TARGET_MERGE_CLOSEOUT.md).
+
+## Phase 1 Dispatch Kernel — Closeout
+
+**Stable commit:** `592803f`
+**P0 fixes:** `aed213b` (5 P0 blockers from GPT review)
+**P1 evidence precision:** `592803f` (flag-specific negative evidence)
+**Tests:** 1074 pass (was 914 at Phase 0 end)
+**GPT verdict:** Phase 1 Stable — approved for Phase 2 planning
+
+**Phase 1 boundaries (sacred):** no real provider calls, no sandbox execution, no target repo writes, no autonomous workers.
+
+**Accepted limitations (non-blocking, Phase 2/3 refinement):**
+- Compound "or" negations ("without any X or Y") only match first phrase
+- Evidence spans use placeholder (0, 0) instead of exact phrase position
+- Budget pressure is diagnostic, not a selector-changing mechanism
+- fallback_tier mixes fallback/escalation semantics
+
+**Next eligible path:** Phase 2 Manual Execution Bridge planning
 
 ## Current App Capability
 
