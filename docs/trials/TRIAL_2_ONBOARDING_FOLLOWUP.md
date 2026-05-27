@@ -27,3 +27,7 @@ Applying onboarding to hermes-gateway-lab is a **target repo write**. It require
 ## Recommendation
 
 No Trial 2 rerun until onboarding is applied or the user chooses another target. The current Trial 2 result is sufficient evidence that the app generalizes correctly.
+
+## Replay Completed
+
+The onboarded replay has been executed. Result: `ACCEPTABLE_FOR_ONBOARDED_SECOND_PROJECT_TRIAL`. Full report: `docs/trials/TRIAL_2_ONBOARDED_REPLAY_REPORT.md`.
