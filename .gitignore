@@ -5,3 +5,4 @@ __pycache__/
 htmlcov/
 
 .claude/settings.local.json
+CLAUDE.md
