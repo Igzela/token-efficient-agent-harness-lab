@@ -4,7 +4,9 @@
 
 Token-Efficient Agent Harness Lab is a local deterministic harness for studying event-sourced agent workflow infrastructure from Stage 0 through Stage 4. It includes JSONL event validation, projections, project/task workflow primitives, quality gates, controlled intelligence stubs, and Stage 4 runtime-control abstractions.
 
-Current status: Stage 0-4 complete.
+Current status: Stage 0-4 complete, Harness App MVP0-MVP8 complete, Trials 0-1 closed, Reliability Hardening 1 complete.
+
+**New sessions should start with [docs/SESSION_START_HERE.md](docs/SESSION_START_HERE.md).**
 
 ## What This Project Is Not
 
@@ -16,7 +18,7 @@ This repository is not a production autonomous-agent runtime. It does not call r
 PYTHONPATH=src python3 -m unittest discover -s tests
 ```
 
-Current result: 897 tests pass.
+Current result: 914 tests pass.
 
 ## How To Run The CLI
 

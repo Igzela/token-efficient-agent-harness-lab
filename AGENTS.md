@@ -12,9 +12,14 @@ The Stage 0-4 task-book scope is complete.
 - Stage 3: controlled intelligence stubs complete.
 - Stage 4: advanced runtime abstractions complete.
 - Project closeout complete.
+- CA-7 sealed baseline complete.
+- Harness App MVP0-MVP8 complete (local operations console).
+- Trial 0 closed — real target `PASS` verdict.
+- Trial 1 closed — `ACCEPTABLE_FOR_MULTI_TASK_TRIAL_AFTER_HARDENING`.
+- Reliability Hardening 1 complete (negated risk and triage differentiation).
 - GitHub private repository published.
 
-This project is now in post-closeout maintenance mode.
+This project is now in post-closeout maintenance mode. The local dashboard is complete as a prototype. New UI, product, or production tracks still require explicit scope and human approval.
 
 ## Default Agent Behavior
 
