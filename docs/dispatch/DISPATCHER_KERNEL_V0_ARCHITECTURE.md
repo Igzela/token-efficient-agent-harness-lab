@@ -13,7 +13,7 @@
 
 This document is the master architecture book for the Token-Efficient Agent Harness project. It defines the complete journey from the current control-plane harness to a full Global System Dispatcher/Orchestrator.
 
-It is NOT a v0 implementation document. It covers every phase from current state to ultimate vision, with detailed implementation breakdowns for each phase.
+It is NOT a v0 implementation document. It defines the full phase roadmap. Phase 1 is implementation-ready; Phase 2–7 contain actionable outlines that require phase-specific expansion before implementation.
 
 ### 0.2 Current Project Status
 
@@ -162,7 +162,7 @@ These are testable assertions that must hold at all times:
 3. No adaptive route may become active without admitted evidence threshold
 4. Every execution result must link to a DispatchRecord
 5. BudgetReservation must exist before execution begins
-6. Every DispatchDecision must have at least one shadow route for diagnostics
+6. Every DispatchDecision must include either at least one shadow route or a no_shadow_route_reason
 7. No secret may appear in logs, audit events, or dispatch records
 8. Human override must be possible at any stage of the dispatch pipeline
 
@@ -431,6 +431,8 @@ Evidence:
   polarity: positive | negative
   source: raw_request | repo_context | user_constraints | target_metadata
   rule_id: str | null
+  confidence: float
+  negation_scope: str | null  # explains why negative evidence was NOT applied
 ```
 
 ### 4.6 Complexity Score v0
@@ -526,6 +528,7 @@ fallback_profile_id: str | null
 shadow_routes: [ShadowRoute]
 hard_constraints: [str]  # e.g. ["no_provider_call", "no_target_write"]
 rejected_candidates: [RejectedCandidate] | null
+no_shadow_route_reason: str | null
 max_input_tokens: int
 max_output_tokens: int
 routing_reason: str
@@ -539,9 +542,27 @@ execution_policy:
   execution_allowed: bool
   requires_human_review: bool
   max_retries: int
-execution_gates: [str]
+execution_gates: [ExecutionGate]
 decision_status: decided | needs_approval | blocked | diagnostic_only
 created_at: str
+
+ExecutionGate:
+  gate_id: str
+  gate_type: budget | risk | boundary | confidence | manual_review | provider_disabled | sandbox_disabled | target_write
+  severity: info | warning | block | critical
+  reason: str
+  evidence_refs: [str]
+  clearance_required: none | human | governance | policy
+  cleared: bool
+  cleared_by: str | null
+  cleared_at: str | null
+
+RejectedCandidate:
+  tier: str
+  profile_id: str | null
+  reason: str
+  constraint_failed: str | null
+  estimated_cost: float | null
 ```
 
 ### 4.12 Execution Gates
@@ -1128,10 +1149,16 @@ observations: [RoutingObservation]
 observation_id: str
 arm_id: str
 dispatch_id: str
+task_domain: str
+task_intent: str
+selected_tier: str
+baseline_tier: str | null
 quality_score: float | null
 cost: float
 latency_ms: int
 success: bool
+failure_domain: str | null
+budget_violation: bool
 observed_at: str
 ```
 
@@ -1371,9 +1398,13 @@ Move from local research dispatcher to service-grade system with auth, multi-ten
 - Backup/restore operational
 - Security review passed
 
-### 9.3 Dependency from Phase 5
+### 9.3 Dependency from Previous Phases
 
-Requires: All dispatch, execution, evaluation, routing, and orchestration loops stable. Production hardening is not feature innovation.
+Phase 6 is split into two sub-phases:
+- **Phase 6A**: Local durable API/storage hardening — can start after Phase 1/2 stable
+- **Phase 6B**: Production multi-tenant hardening — requires Phase 5 orchestration mature
+
+Production hardening is not feature innovation.
 
 ### 9.4 Deployment Modes
 
@@ -1638,7 +1669,7 @@ Each schema entry includes: name, version, phase introduced, owner component, st
 | ProviderAuditEvent | provider_audit_event.v1 | provider_audit.py | ProviderAdapter | Dashboard, Security | new |
 | RetryPolicy | retry_policy.v1 | retry_manager.py | Config | RetryFallbackManager | new |
 
-### 12.6 Phase 4-7 Schemas (Outlines)
+### 12.6 Phase 4-7 Schemas (Provisional — must be expanded before implementation)
 
 | Schema | Version | Phase | Purpose |
 |--------|---------|-------|---------|
@@ -1655,12 +1686,13 @@ Each schema entry includes: name, version, phase introduced, owner component, st
 
 ### 12.7 Schema Evolution Rules
 
-1. Every schema has `schema_version` field
-2. Breaking changes require new version (v1 → v2)
-3. Non-breaking additions (nullable fields) can increment within version
-4. Backward compatibility window: 1 major version
-5. Old records must be readable by new code
-6. Migrators named `{schema}_v{from}_to_v{to}.py`
+1. Version format: `schema_name.vMAJOR.MINOR` (e.g., `task_analysis.v1.0`)
+2. Non-breaking additive changes (nullable fields) → increment minor (v1.0 → v1.1)
+3. Breaking changes → increment major (v1.1 → v2.0)
+4. Records declare exact schema_version
+5. Readers declare supported version range
+6. Backward compatibility window: 1 major version
+7. Migrators named `{schema}_v{from}_to_v{to}.py`
 
 ---
 
@@ -1698,7 +1730,7 @@ Each schema entry includes: name, version, phase introduced, owner component, st
 - Golden fixtures stored in `tests/fixtures/dispatch/`
 - Each fixture: input request + expected analysis + expected decision + expected gates
 - Golden output update requires explicit review (not auto-updated)
-- Fixture coverage: each task_domain × task_intent combination represented
+- Fixture coverage: Phase 1 minimum 20 representative fixtures; Phase 1 beta 90 cross-product (task_domain × task_intent)
 
 ### 13.4 Replay Compatibility
 
@@ -1736,32 +1768,33 @@ Phase 0 (done) → Phase 1 → Phase 2 → Phase 3 → Phase 4
 | Phase 7 (docs/CLI) | Phase 6 API stable | — | Phase 6 completion |
 | Phase 7 (plugins) | Phase 6 production stable | — | — |
 
-### 14.2 Minimum Viable Dispatcher Path
+### 14.3 Minimum Viable Dispatcher Path
 
 Phase 0 → Phase 1 → Phase 2 → Phase 3
 
 This gives: task analysis → dispatch decision → manual execution → real provider execution
 
-### 14.3 Full Global Dispatcher Path
+### 14.4 Full Global Dispatcher Path
 
 All phases 0-7
 
-### 14.4 When to Stop
+### 14.5 When to Stop
 
 Stop at any phase if:
 - The current phase's success criteria are not met
 - Risk exceeds benefit
 - User does not need further capabilities
 
-### 14.5 When to Promote Phase Maturity
+### 14.6 When to Promote Phase Maturity
 
 Promote when:
+- Phase-specific pass/fail gates from Section 13.2 are met
 - All success criteria met
 - Tests comprehensive and passing
 - No known critical bugs
 - Documentation complete
 
-### 14.6 When to Reject a Phase
+### 14.7 When to Reject a Phase
 
 Reject if:
 - Prerequisites not met
@@ -1857,21 +1890,21 @@ Derived from risk_flags + task_domain + task_intent combination.
 ```
 [2026-05-27T10:00:00Z] dispatch_created
   dispatch_id: disp_001
-  request: "Review auth.py for security issues"
+  request: "Fix auth.py security issues and commit the changes"
 
 [2026-05-27T10:00:01Z] analysis_complete
   task_domain: code
   task_intent: review
-  risk_flags: [target_write]
-  complexity_score: 0.65
-  confidence: 0.85
-  risk_level: medium
+  risk_flags: [target_write, secret_handling]
+  complexity_score: 0.72
+  confidence: 0.80
+  risk_level: high
 
 [2026-05-27T10:00:02Z] decision_made
   selected_tier: strong_planner
   fallback_tier: balanced_worker
-  shadow_routes: [{tier: cheap_executor, reason: "code review may not need strong planner"}]
-  execution_gates: [target_write_gate]
+  shadow_routes: [{tier: verifier, reason: "review component may need less planning"}]
+  execution_gates: [{gate_type: target_write, severity: block}, {gate_type: risk, severity: block}]
   decision_status: needs_approval
 
 [2026-05-27T10:00:03Z] budget_reserved
@@ -1891,6 +1924,37 @@ Derived from risk_flags + task_domain + task_intent combination.
 [2026-05-27T10:00:06Z] dispatch_recorded
   final_status: not_executed
   usage_ledger_row_id: null
+```
+
+**Example 2: Low-risk read-only review**
+```
+[2026-05-27T10:01:00Z] dispatch_created
+  dispatch_id: disp_002
+  request: "Review auth.py for security issues"
+
+[2026-05-27T10:01:01Z] analysis_complete
+  task_domain: code
+  task_intent: review
+  risk_flags: []
+  complexity_score: 0.35
+  confidence: 0.90
+  risk_level: low
+
+[2026-05-27T10:01:02Z] decision_made
+  selected_tier: verifier
+  fallback_tier: balanced_worker
+  shadow_routes: [{tier: cheap_executor, reason: "simple review may not need verifier"}]
+  execution_gates: []
+  decision_status: decided
+
+[2026-05-27T10:01:03Z] budget_reserved
+  reserved_input_tokens: 2000
+  reserved_output_tokens: 1000
+  reserved_cost: 0.02 USD
+  status: reserved
+
+[2026-05-27T10:01:04Z] dispatch_recorded
+  final_status: not_executed
 ```
 
 ### 15.10 Example Cost-of-Pass Report
