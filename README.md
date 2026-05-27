@@ -75,6 +75,8 @@ docs/TEST_MATRIX.md      Test coverage matrix
 - MVP7: read-only operations and debug dashboard for component status, data flow, storage health, recent errors, and debug actions.
 - MVP8: operations console simplification that keeps the first screen focused on status, health, errors, and two primary actions while moving tools into collapsed sections.
 
+Demo packaging: [`docs/demo/README.md`](docs/demo/README.md)
+
 ## CA-7 Sealed Baseline Status
 
 Controlled Adaptive Orchestrator Kernel minimum threshold reached (CA-0 through CA-7 all passed). The current harness policy baseline is sealed. Future policy changes require the policy candidate lifecycle and governance approval path.
