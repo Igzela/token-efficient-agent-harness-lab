@@ -1,0 +1,110 @@
+"""Tests for manual_usage_bridge.py and cost_of_pass.py — usage bridge and cost aggregation."""
+
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
+
+import unittest
+from harness_core.dispatch.cost_of_pass import CostOfPassAccumulator
+from harness_core.dispatch.manual_usage_bridge import ManualUsageBridge
+from harness_core.dispatch.pasteback_parser import PastebackParser
+from harness_core.usage_ledger import UsageLedgerRow
+
+
+class ManualUsageBridgeTests(unittest.TestCase):
+    def setUp(self):
+        self.bridge = ManualUsageBridge()
+        self.parser = PastebackParser()
+
+    def test_bridge_creates_usage_row(self):
+        sub = self.parser.parse("disp-001", "Model output here")
+        row = self.bridge.bridge(sub)
+        self.assertIsInstance(row, UsageLedgerRow)
+        self.assertTrue(row.run_id)
+        self.assertEqual(row.case_id, "manual_dispatch")
+
+    def test_bridge_uses_claimed_tokens(self):
+        sub = self.parser.parse(
+            "disp-001", "Output",
+            claimed_input_tokens=500,
+            claimed_output_tokens=200,
+            claimed_cost=0.003,
+        )
+        row = self.bridge.bridge(sub)
+        self.assertEqual(row.input_tokens, 500)
+        self.assertEqual(row.output_tokens, 200)
+        self.assertEqual(row.estimated_cost, 0.003)
+
+    def test_bridge_estimates_when_no_claims(self):
+        sub = self.parser.parse("disp-001", "Short output")
+        row = self.bridge.bridge(sub)
+        self.assertGreater(row.input_tokens, 0)
+        self.assertGreater(row.output_tokens, 0)
+        self.assertGreater(row.estimated_cost, 0)
+
+    def test_bridge_custom_group(self):
+        sub = self.parser.parse("disp-001", "Output")
+        row = self.bridge.bridge(
+            sub,
+            cost_of_pass_group="eval/task_a/variant_1/success",
+            model_profile_id="gpt-4",
+        )
+        self.assertEqual(row.cost_of_pass_group, "eval/task_a/variant_1/success")
+        self.assertEqual(row.model_profile_id, "gpt-4")
+
+
+class CostOfPassAccumulatorTests(unittest.TestCase):
+    def setUp(self):
+        self.accum = CostOfPassAccumulator()
+        self.bridge = ManualUsageBridge()
+        self.parser = PastebackParser()
+
+    def _add_row(self, group: str = "manual/task/default/success", passed: bool = True):
+        sub = self.parser.parse("disp-001", "Output text")
+        row = self.bridge.bridge(sub, cost_of_pass_group=group)
+        row.pass_ = passed
+        self.accum.add(row)
+
+    def test_total_rows(self):
+        self._add_row()
+        self._add_row()
+        self.assertEqual(self.accum.total_rows(), 2)
+
+    def test_total_cost(self):
+        self._add_row()
+        self.assertGreater(self.accum.total_cost(), 0)
+
+    def test_success_rate(self):
+        self._add_row(passed=True)
+        self._add_row(passed=True)
+        self._add_row(passed=False)
+        self.assertAlmostEqual(self.accum.success_rate(), 0.6667, places=3)
+
+    def test_success_rate_empty(self):
+        self.assertEqual(self.accum.success_rate(), 0.0)
+
+    def test_rows_for_group(self):
+        self._add_row("manual/task_a/default/success")
+        self._add_row("manual/task_a/default/success")
+        self._add_row("manual/task_b/default/success")
+        rows = self.accum.rows_for_group("manual/task_a/default/success")
+        self.assertEqual(len(rows), 2)
+
+    def test_aggregate_all(self):
+        self._add_row("manual/task_a/default/success")
+        self._add_row("manual/task_a/default/success")
+        aggs = self.accum.aggregate_all()
+        self.assertTrue(len(aggs) > 0)
+        agg = aggs[0]
+        self.assertEqual(agg.total_count, 2)
+
+    def test_aggregate_group(self):
+        self._add_row("manual/task_a/default/success")
+        agg = self.accum.aggregate_group("manual/task_a/default/success")
+        self.assertIsNotNone(agg)
+        self.assertEqual(agg.total_count, 1)
+
+
+if __name__ == "__main__":
+    unittest.main()
