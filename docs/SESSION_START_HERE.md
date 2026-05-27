@@ -16,6 +16,7 @@ Token-Efficient Agent Harness Lab is a local deterministic harness for studying 
 | Trial 0 (real target) | Closed — `PASS` verdict |
 | Trial 1 (multi-task) | Closed — `ACCEPTABLE_WITH_NOTES`, hardened to `ACCEPTABLE_FOR_MULTI_TASK_TRIAL_AFTER_HARDENING` |
 | Reliability Hardening 1 | Complete |
+| Demo packaging | Complete |
 
 Tests: 914 pass.
 
@@ -36,6 +37,7 @@ Tests: 914 pass.
 3. **[docs/NEXT_DECISION.md](NEXT_DECISION.md)** — What to do next and what is disallowed by default.
 4. **[docs/MODULE_MAP.md](MODULE_MAP.md)** — Module-to-stage reference table.
 5. **[docs/trials/TRIAL_1_REPORT.md](trials/TRIAL_1_REPORT.md)** — Latest trial results and hardening closeout.
+6. **[docs/demo/README.md](demo/README.md)** — Local demo walkthrough (optional).
 
 ## Default Behavior
 

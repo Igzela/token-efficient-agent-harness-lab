@@ -10,7 +10,7 @@ The user may choose any of the following. Each requires explicit approval before
 
 | Path | Description |
 |---|---|
-| Demo packaging | Package the existing Harness App into a repeatable local demo walkthrough. |
+| Demo polish | Refine demo docs only if user feedback requires it. |
 | Trial 2 on another real local project | Run the Harness App against a different local repo to validate generalization. |
 | Future production PRD | Draft a product requirements document for a future production track (requires new approval). |
 | Additional reliability hardening | Only if backed by new trial evidence that identifies specific issues. |

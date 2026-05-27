@@ -4,7 +4,7 @@ Last verified: 2026-05-27.
 
 ## Repository State
 
-- Branch: `main` synced after `a76d64f` (Trial 1 post-hardening closeout).
+- Branch: `main` synced after `fa8c954` (demo packaging merged).
 - Tests: **914 pass**, 0 failures.
 - Security baseline: ALL CHECKS PASSED.
 
@@ -23,6 +23,7 @@ Last verified: 2026-05-27.
 | Trial 0 — Real target acceptance | Closed — `PASS` |
 | Trial 1 — Multi-task budget validation | Closed — `ACCEPTABLE_FOR_MULTI_TASK_TRIAL_AFTER_HARDENING` |
 | Reliability Hardening 1 — Negated risk and triage | Complete |
+| Demo packaging | Complete |
 
 ## Current App Capability
 
