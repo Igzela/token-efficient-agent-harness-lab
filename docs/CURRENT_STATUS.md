@@ -27,6 +27,7 @@ Last verified: 2026-05-27.
 | Demo verification | Complete — all docs accurate and runnable |
 | Trial 2 candidate selection | Planned — hermes-gateway-lab recommended |
 | Trial 2 execution | Closed — `ACCEPTABLE_WITH_NOTES` (audit BLOCKED on target, generalization finding) |
+| Target repo onboarding plan | Complete — plan and templates ready, awaiting user approval for target writes |
 
 ## Current App Capability
 
