@@ -16,7 +16,7 @@ def _make_evaluator_and_pack(raw_request: str = "Summarize the README"):
     engine = DispatchEngine()
     bundle = engine.dispatch(raw_request)
     gen = PromptPackGenerator()
-    pack = gen.generate(bundle.decision, raw_request)
+    pack = gen.generate(bundle.decision, raw_request, dispatch_id=bundle.record.dispatch_id)
     return ManualEvaluator(), pack
 
 

@@ -203,7 +203,7 @@ class ManualEvaluator:
             return "no_provider_call"
         if "target" in text or "repository" in text or "write" in text:
             return "no_target_write"
-        if "sandbox" in text or "execute" in text or "approval" in text:
+        if "sandbox" in text or "execute" in text:
             return "no_sandbox_execution"
         return "unknown"
 

@@ -26,7 +26,7 @@ class ManualUsageBridge:
     def bridge(
         self,
         submission: PastebackSubmission,
-        eval_result: ManualEvalResult | None = None,
+        eval_result: ManualEvalResult,
         prompt_pack: PromptPack | None = None,
         case_id: str = "manual_dispatch",
         cost_of_pass_group: str = "manual/unknown/unknown/unknown",
@@ -43,10 +43,7 @@ class ManualUsageBridge:
         output_tokens = submission.claimed_output_tokens or self._estimate_tokens(submission.raw_output)
         cost = submission.claimed_cost or self._estimate_cost(input_tokens, output_tokens)
 
-        if eval_result is not None:
-            passed = eval_result.status == "pass"
-        else:
-            passed = True
+        passed = eval_result.status == "pass"
 
         return UsageLedgerRow(
             run_id=f"run-{uuid.uuid4().hex[:12]}",

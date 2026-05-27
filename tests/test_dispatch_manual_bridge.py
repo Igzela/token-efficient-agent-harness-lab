@@ -15,6 +15,18 @@ from harness_core.dispatch.prompt_pack_gen import PromptPackGenerator
 from harness_core.usage_ledger import UsageLedgerRow
 
 
+def _make_eval_result(status: str = "pass"):
+    from harness_core.dispatch.manual_evaluator import ManualEvalResult, ManualEvalCheck
+    return ManualEvalResult(
+        eval_id="meval-test-001",
+        dispatch_id="disp-001",
+        submission_id="pb-001",
+        status=status,
+        checks=(ManualEvalCheck(check_id="mc-001", name="output_present", status="pass", reason="ok"),),
+        created_at="2026-01-01T00:00:00Z",
+    )
+
+
 class ManualUsageBridgeTests(unittest.TestCase):
     def setUp(self):
         self.bridge = ManualUsageBridge()
@@ -22,7 +34,8 @@ class ManualUsageBridgeTests(unittest.TestCase):
 
     def test_bridge_creates_usage_row(self):
         sub = self.parser.parse("disp-001", "Model output here")
-        row = self.bridge.bridge(sub)
+        eval_result = _make_eval_result("pass")
+        row = self.bridge.bridge(sub, eval_result=eval_result)
         self.assertIsInstance(row, UsageLedgerRow)
         self.assertTrue(row.run_id)
         self.assertEqual(row.case_id, "manual_dispatch")
@@ -34,22 +47,26 @@ class ManualUsageBridgeTests(unittest.TestCase):
             claimed_output_tokens=200,
             claimed_cost=0.003,
         )
-        row = self.bridge.bridge(sub)
+        eval_result = _make_eval_result("pass")
+        row = self.bridge.bridge(sub, eval_result=eval_result)
         self.assertEqual(row.input_tokens, 500)
         self.assertEqual(row.output_tokens, 200)
         self.assertEqual(row.estimated_cost, 0.003)
 
     def test_bridge_estimates_when_no_claims(self):
         sub = self.parser.parse("disp-001", "Short output")
-        row = self.bridge.bridge(sub)
+        eval_result = _make_eval_result("pass")
+        row = self.bridge.bridge(sub, eval_result=eval_result)
         self.assertGreater(row.input_tokens, 0)
         self.assertGreater(row.output_tokens, 0)
         self.assertGreater(row.estimated_cost, 0)
 
     def test_bridge_custom_group(self):
         sub = self.parser.parse("disp-001", "Output")
+        eval_result = _make_eval_result("pass")
         row = self.bridge.bridge(
             sub,
+            eval_result=eval_result,
             cost_of_pass_group="eval/task_a/variant_1/success",
             model_profile_id="gpt-4",
         )
@@ -93,8 +110,9 @@ class ManualUsageBridgeTests(unittest.TestCase):
         did = bundle.record.dispatch_id
         pack = gen.generate(bundle.decision, "Summarize the README", dispatch_id=did)
         sub = self.parser.parse(did, "Short output")
+        eval_result = _make_eval_result("pass")
 
-        row = self.bridge.bridge(sub, prompt_pack=pack)
+        row = self.bridge.bridge(sub, eval_result=eval_result, prompt_pack=pack)
         self.assertGreater(row.input_tokens, 0)
         self.assertGreater(row.output_tokens, 0)
 
@@ -107,8 +125,9 @@ class CostOfPassAccumulatorTests(unittest.TestCase):
 
     def _add_row(self, group: str = "manual/task/default/success", passed: bool = True):
         sub = self.parser.parse("disp-001", "Output text")
-        row = self.bridge.bridge(sub, cost_of_pass_group=group)
-        row.pass_ = passed
+        eval_status = "pass" if passed else "fail"
+        eval_result = _make_eval_result(eval_status)
+        row = self.bridge.bridge(sub, eval_result=eval_result, cost_of_pass_group=group)
         self.accum.add(row)
 
     def test_total_rows(self):

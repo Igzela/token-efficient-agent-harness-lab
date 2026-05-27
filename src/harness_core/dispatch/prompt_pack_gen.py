@@ -90,8 +90,13 @@ class PromptPackGenerator:
         self,
         decision: DispatchDecision,
         raw_request: str,
-        dispatch_id: str | None = None,
+        dispatch_id: str = "",
     ) -> PromptPack:
+        if not dispatch_id:
+            raise ValueError(
+                "dispatch_id is required — pass bundle.record.dispatch_id to maintain "
+                "the evidence chain from dispatch record → prompt pack → session → pasteback"
+            )
         checklist = self._select_checklist(decision)
         system_prompt = self._build_system_prompt(decision)
         user_prompt = self._build_user_prompt(raw_request, decision)
@@ -100,7 +105,7 @@ class PromptPackGenerator:
 
         return PromptPack(
             prompt_pack_id=f"pp-{uuid.uuid4().hex[:12]}",
-            dispatch_id=dispatch_id or decision.decision_id,
+            dispatch_id=dispatch_id,
             recommended_model_tier=decision.selected_tier,
             recommended_profile_id=decision.selected_profile_id,
             system_prompt=system_prompt,
