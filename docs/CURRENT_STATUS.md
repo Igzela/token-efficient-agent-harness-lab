@@ -4,8 +4,8 @@ Last verified: 2026-05-27.
 
 ## Repository State
 
-- Branch: `main` synced after `5685fec` (architecture book v1 approved).
-- Tests: **914 pass**, 0 failures.
+- Branch: `main` synced after `a4227e9` (Phase 1 dispatch kernel complete).
+- Tests: **1066 pass**, 0 failures.
 - Security baseline: ALL CHECKS PASSED.
 
 ## Completed Tracks
@@ -34,6 +34,7 @@ Last verified: 2026-05-27.
 | Trial 3 multi-repo generalization | Closed — `TRIAL_3_MULTI_REPO_GENERALIZATION_PASS` (3 repos: API/CLI/infra, all BLOCKED→PASS_WITH_NOTES, 6 plans, triage working) |
 | Trial 3 target merge | Closed — all 3 target PRs merged, audit PASS_WITH_NOTES, blockers [] |
 | Global Architecture Book v1 | Approved — 3-round Claude+GPT collaborative review, Phase 1 implementation-ready |
+| Phase 1 — Dispatch Kernel | Complete — 8 source files, 20 fixtures, 152 tests, commit `a4227e9` |
 
 Trial 2 complete evidence chain: [`docs/trials/TRIAL_2_FINAL_STATE_INDEX.md`](trials/TRIAL_2_FINAL_STATE_INDEX.md).
 Trial 3 report: [`docs/trials/TRIAL_3_REPORT.md`](trials/TRIAL_3_REPORT.md).
