@@ -2,10 +2,16 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
 from typing import Any
 
-from .schemas import PROMOTION_GATE_DEFAULTS, PROMOTION_VERDICTS, PROMOTION_VERDICT_SCHEMA_VERSION, RoutingObservation
+from .schemas import (
+    PROMOTION_GATE_DEFAULTS,
+    PROMOTION_VERDICTS,
+    PROMOTION_VERDICT_SCHEMA_VERSION,
+    RoutingObservation,
+    PromotionVerdict,
+    parse_task_group,
+)
 
 
 class RoutingObservationStore:
@@ -45,36 +51,6 @@ class RoutingObservationStore:
         return len(self._observations)
 
 
-@dataclass(frozen=True)
-class PromotionVerdict:
-    verdict: str
-    task_group: str
-    candidate_tier: str
-    baseline_tier: str
-    sample_count: int
-    quality_delta: float
-    cost_reduction_pct: float
-    failure_rate_delta: float
-    reasons: tuple[str, ...] = ()
-    requires_human_review: bool = False
-    schema_version: str = PROMOTION_VERDICT_SCHEMA_VERSION
-
-    def to_dict(self) -> dict[str, Any]:
-        return {
-            "schema_version": self.schema_version,
-            "verdict": self.verdict,
-            "task_group": self.task_group,
-            "candidate_tier": self.candidate_tier,
-            "baseline_tier": self.baseline_tier,
-            "sample_count": self.sample_count,
-            "quality_delta": self.quality_delta,
-            "cost_reduction_pct": self.cost_reduction_pct,
-            "failure_rate_delta": self.failure_rate_delta,
-            "reasons": list(self.reasons),
-            "requires_human_review": self.requires_human_review,
-        }
-
-
 class PromotionGate:
     """Gate shadow→active promotion with evidence thresholds."""
 
@@ -98,11 +74,10 @@ class PromotionGate:
         candidate_tier: str,
         baseline_tier: str = "balanced_worker",
     ) -> PromotionVerdict:
-        parts = task_group.split("_", 1)
-        domain = parts[0] if parts else ""
-        intent = parts[1] if len(parts) > 1 else ""
+        domain, intent = parse_task_group(task_group)
 
         sample_count = self._store.count_for_tier_and_group(candidate_tier, domain, intent)
+        baseline_sample_count = self._store.count_for_tier_and_group(baseline_tier, domain, intent)
         quality_delta = self._quality_delta(candidate_tier, baseline_tier, domain, intent)
         cost_reduction = self._cost_reduction(candidate_tier, baseline_tier, domain, intent)
         failure_delta = self._failure_rate_delta(candidate_tier, baseline_tier, domain, intent)
@@ -111,6 +86,20 @@ class PromotionGate:
 
         if sample_count < self._min_samples:
             reasons.append(f"insufficient_samples:{sample_count}<{self._min_samples}")
+            return PromotionVerdict(
+                verdict="insufficient_data",
+                task_group=task_group,
+                candidate_tier=candidate_tier,
+                baseline_tier=baseline_tier,
+                sample_count=sample_count,
+                quality_delta=quality_delta,
+                cost_reduction_pct=cost_reduction,
+                failure_rate_delta=failure_delta,
+                reasons=tuple(reasons),
+            )
+
+        if baseline_sample_count < self._min_samples:
+            reasons.append(f"insufficient_baseline_samples:{baseline_sample_count}<{self._min_samples}")
             return PromotionVerdict(
                 verdict="insufficient_data",
                 task_group=task_group,
@@ -194,9 +183,7 @@ class PromotionGate:
         )
 
     def check_sample_count(self, task_group: str, tier: str) -> tuple[bool, int]:
-        parts = task_group.split("_", 1)
-        domain = parts[0] if parts else ""
-        intent = parts[1] if len(parts) > 1 else ""
+        domain, intent = parse_task_group(task_group)
         count = self._store.count_for_tier_and_group(tier, domain, intent)
         return count >= self._min_samples, count
 

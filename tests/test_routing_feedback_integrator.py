@@ -40,7 +40,7 @@ class FeedbackIntegratorTests(unittest.TestCase):
         self.assertEqual(self.obs_store.total_count(), 1)
 
     def test_should_adapt_no_observations(self):
-        should, reason = self.integrator.should_adapt("code_review", "cheap_executor")
+        should, reason = self.integrator.should_adapt("code/review", "cheap_executor")
         self.assertFalse(should)
         self.assertEqual(reason, "no_observations")
 
@@ -51,7 +51,7 @@ class FeedbackIntegratorTests(unittest.TestCase):
                 selected_tier="cheap_executor", baseline_tier="balanced_worker",
                 quality_score=0.9, cost=0.005, latency_ms=100, success=True,
             )
-        should, reason = self.integrator.should_adapt("code_review", "cheap_executor")
+        should, reason = self.integrator.should_adapt("code/review", "cheap_executor")
         self.assertFalse(should)
 
     def test_should_adapt_triggers_upgrade_on_failure(self):
@@ -65,16 +65,16 @@ class FeedbackIntegratorTests(unittest.TestCase):
             self.history, self.obs_store,
             auto_upgrade=AutoUpgradePolicy(policy_id="up-v1"),
         )
-        should, reason = integrator.should_adapt("code_review", "cheap_executor")
+        should, reason = integrator.should_adapt("code/review", "cheap_executor")
         self.assertTrue(should)
         self.assertIn("upgrade", reason)
 
     def test_task_group_for(self):
         tg = FeedbackIntegrator.task_group_for("code", "review")
-        self.assertEqual(tg, "code_review")
+        self.assertEqual(tg, "code/review")
 
     def test_summary_empty(self):
-        s = self.integrator.summary("code_review")
+        s = self.integrator.summary("code/review")
         self.assertEqual(s["sample_count"], 0)
         self.assertEqual(s["tiers"], [])
 
@@ -85,7 +85,7 @@ class FeedbackIntegratorTests(unittest.TestCase):
                 selected_tier="cheap_executor", baseline_tier="balanced_worker",
                 quality_score=0.9, cost=0.005, latency_ms=100, success=True,
             )
-        s = self.integrator.summary("code_review")
+        s = self.integrator.summary("code/review")
         self.assertEqual(s["sample_count"], 5)
         self.assertIn("cheap_executor", s["tiers"])
         self.assertEqual(s["best_tier"], "cheap_executor")

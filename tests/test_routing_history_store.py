@@ -40,7 +40,7 @@ class TaskGroupExtractionTests(unittest.TestCase):
     def test_valid_group(self):
         row = _make_row(cost_group="suite/code/review/quality")
         tg = _task_group_from_row(row)
-        self.assertEqual(tg, "code_review")
+        self.assertEqual(tg, "code/review")
 
     def test_invalid_group(self):
         row = _make_row(cost_group="invalid")
@@ -86,7 +86,7 @@ class RoutingHistoryStoreTests(unittest.TestCase):
         store.add_row(_make_row(cost_group="suite/code/review/quality"))
         store.add_row(_make_row(cost_group="suite/docs/summarize/speed"))
         store.add_row(_make_row(cost_group="suite/code/review/quality"))
-        rows = store.rows_by_task_group("code_review")
+        rows = store.rows_by_task_group("code/review")
         self.assertEqual(len(rows), 2)
 
     def test_rows_by_tier_and_task_group(self):
@@ -94,7 +94,7 @@ class RoutingHistoryStoreTests(unittest.TestCase):
         store.add_row(_make_row(profile_id="p1", cost_group="s/code/review/q"))
         store.add_row(_make_row(profile_id="p2", cost_group="s/code/review/q"))
         store.add_row(_make_row(profile_id="p1", cost_group="s/docs/sum/s"))
-        rows = store.rows_by_tier_and_task_group("cheap_executor", "code_review")
+        rows = store.rows_by_tier_and_task_group("cheap_executor", "code/review")
         self.assertEqual(len(rows), 1)
         self.assertEqual(rows[0].model_profile_id, "p1")
 
@@ -112,7 +112,7 @@ class RoutingHistoryStoreTests(unittest.TestCase):
         store = RoutingHistoryStore(tier_profile_map={"p1": "cheap_executor"})
         store.add_row(_make_row(profile_id="p1", cost_group="s/code/review/q", cost=0.01, passed=True))
         store.add_row(_make_row(profile_id="p1", cost_group="s/docs/sum/s", cost=0.02, passed=True))
-        agg = store.aggregate_by_tier_and_task_group("cheap_executor", "code_review")
+        agg = store.aggregate_by_tier_and_task_group("cheap_executor", "code/review")
         self.assertIsNotNone(agg)
         self.assertEqual(agg.total_count, 1)
 
@@ -121,20 +121,20 @@ class RoutingHistoryStoreTests(unittest.TestCase):
         store.add_row(_make_row(cost_group="s/c/r/q"))
         store.add_row(_make_row(cost_group="s/c/r/q"))
         store.add_row(_make_row(cost_group="s/d/s/q"))
-        self.assertEqual(store.sample_count("c_r"), 2)
-        self.assertEqual(store.sample_count("d_s"), 1)
+        self.assertEqual(store.sample_count("c/r"), 2)
+        self.assertEqual(store.sample_count("d/s"), 1)
 
     def test_sample_count_for_tier(self):
         store = RoutingHistoryStore(tier_profile_map={"p1": "cheap_executor", "p2": "balanced_worker"})
         store.add_row(_make_row(profile_id="p1", cost_group="s/c/r/q"))
         store.add_row(_make_row(profile_id="p2", cost_group="s/c/r/q"))
-        self.assertEqual(store.sample_count_for_tier("c_r", "cheap_executor"), 1)
+        self.assertEqual(store.sample_count_for_tier("c/r", "cheap_executor"), 1)
 
     def test_tiers_observed(self):
         store = RoutingHistoryStore(tier_profile_map={"p1": "cheap_executor", "p2": "balanced_worker"})
         store.add_row(_make_row(profile_id="p1", cost_group="s/c/r/q"))
         store.add_row(_make_row(profile_id="p2", cost_group="s/c/r/q"))
-        tiers = store.tiers_observed("c_r")
+        tiers = store.tiers_observed("c/r")
         self.assertEqual(tiers, ("balanced_worker", "cheap_executor"))
 
     def test_all_rows(self):

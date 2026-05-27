@@ -9,6 +9,7 @@ from ..model_selector import ModelSelector
 from ..task_analyzer import TaskAnalysis
 from .cost_of_pass_router import CostOfPassRouter
 from .promotion_gate import PromotionGate
+from .schemas import RoutingSelection, make_task_group
 
 
 class DynamicTierSelector:
@@ -26,16 +27,8 @@ class DynamicTierSelector:
 
     def select(
         self, analysis: TaskAnalysis
-    ) -> tuple[
-        str,            # selected_tier
-        str | None,     # selected_profile_id
-        str,            # fallback_tier
-        str | None,     # fallback_profile_id
-        list[ShadowRoute],
-        list[RejectedCandidate],
-        str,            # routing_reason
-    ]:
-        task_group = f"{analysis.task_domain}_{analysis.task_intent}"
+    ) -> RoutingSelection:
+        task_group = make_task_group(analysis.task_domain, analysis.task_intent)
 
         if self._router.can_route_adaptively(task_group):
             result = self._router.best_tier_for_task_group(task_group)
@@ -53,17 +46,29 @@ class DynamicTierSelector:
                     fallback_tier = self._fallback_tier(selected_tier)
                     shadow_routes = self._build_shadow_routes(analysis, selected_tier, fallback_tier)
 
-                    return (
-                        selected_tier,
-                        None,
-                        fallback_tier,
-                        None,
-                        shadow_routes,
-                        rejected,
-                        "; ".join(reasons),
+                    return RoutingSelection(
+                        selected_tier=selected_tier,
+                        selected_profile_id=None,
+                        fallback_tier=fallback_tier,
+                        fallback_profile_id=None,
+                        shadow_routes=shadow_routes,
+                        rejected_candidates=rejected,
+                        routing_reason="; ".join(reasons),
+                        routing_mode="adaptive",
                     )
 
-        return self._static.select(analysis)
+        # Cold-start fallback: delegate to static selector, wrap in RoutingSelection
+        static_result = self._static.select(analysis)
+        return RoutingSelection(
+            selected_tier=static_result[0],
+            selected_profile_id=static_result[1],
+            fallback_tier=static_result[2],
+            fallback_profile_id=static_result[3],
+            shadow_routes=static_result[4],
+            rejected_candidates=static_result[5],
+            routing_reason=f"adaptive_cold_start_fallback; {static_result[6]}",
+            routing_mode="static",
+        )
 
     def _apply_hard_constraints(
         self,

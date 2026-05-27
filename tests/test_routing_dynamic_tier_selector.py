@@ -10,7 +10,7 @@ from harness_core.dispatch.routing.cost_of_pass_router import CostOfPassRouter
 from harness_core.dispatch.routing.dynamic_tier_selector import DynamicTierSelector
 from harness_core.dispatch.routing.history_store import RoutingHistoryStore
 from harness_core.dispatch.routing.promotion_gate import PromotionGate, RoutingObservationStore
-from harness_core.dispatch.routing.schemas import RoutingObservation
+from harness_core.dispatch.routing.schemas import RoutingObservation, RoutingSelection
 from harness_core.dispatch.model_selector import ModelSelector
 from harness_core.dispatch.task_analyzer import RuleBasedTaskAnalyzer
 from harness_core.usage_ledger import UsageLedgerRow
@@ -57,8 +57,9 @@ class DynamicTierSelectorTests(unittest.TestCase):
         analyzer = RuleBasedTaskAnalyzer()
         analysis = analyzer.analyze("Summarize the README")
         result = selector.select(analysis)
-        self.assertEqual(len(result), 7)
-        self.assertIn("policy_map:", result[6])
+        self.assertIsInstance(result, RoutingSelection)
+        self.assertEqual(result.routing_mode, "static")
+        self.assertIn("adaptive_cold_start_fallback", result.routing_reason)
 
     def test_adaptive_routing_used_when_data_sufficient(self):
         obs_store = RoutingObservationStore()
@@ -74,9 +75,10 @@ class DynamicTierSelectorTests(unittest.TestCase):
         analyzer = RuleBasedTaskAnalyzer()
         analysis = analyzer.analyze("Summarize the README")
         result = selector.select(analysis)
-        selected_tier = result[0]
-        self.assertEqual(selected_tier, "cheap_executor")
-        self.assertIn("adaptive_routing", result[6])
+        self.assertIsInstance(result, RoutingSelection)
+        self.assertEqual(result.selected_tier, "cheap_executor")
+        self.assertEqual(result.routing_mode, "adaptive")
+        self.assertIn("adaptive_routing", result.routing_reason)
 
     def test_hard_constraints_override_adaptive(self):
         obs_store = RoutingObservationStore()
@@ -91,11 +93,10 @@ class DynamicTierSelectorTests(unittest.TestCase):
         analyzer = RuleBasedTaskAnalyzer()
         analysis = analyzer.analyze("Debug the auth bug with low confidence issue")
         result = selector.select(analysis)
-        self.assertEqual(len(result), 7)
-        selected_tier, _, _, _, _, _, reason = result
-        self.assertIn(selected_tier, ("cheap_executor", "strong_planner", "balanced_worker"))
+        self.assertIsInstance(result, RoutingSelection)
+        self.assertIn(result.selected_tier, ("cheap_executor", "strong_planner", "balanced_worker"))
 
-    def test_returns_seven_tuple(self):
+    def test_returns_routing_selection(self):
         selector = DynamicTierSelector(
             static_selector=ModelSelector(),
             cost_of_pass_router=CostOfPassRouter(RoutingHistoryStore(), min_sample_count=30),
@@ -104,14 +105,29 @@ class DynamicTierSelectorTests(unittest.TestCase):
         analyzer = RuleBasedTaskAnalyzer()
         analysis = analyzer.analyze("Summarize the README")
         result = selector.select(analysis)
-        self.assertEqual(len(result), 7)
-        selected_tier, profile_id, fallback_tier, fallback_id, shadows, rejected, reason = result
+        self.assertIsInstance(result, RoutingSelection)
+        self.assertIsInstance(result.selected_tier, str)
+        self.assertIsNone(result.selected_profile_id)
+        self.assertIsInstance(result.fallback_tier, str)
+        self.assertIsInstance(result.shadow_routes, list)
+        self.assertIsInstance(result.rejected_candidates, list)
+        self.assertIsInstance(result.routing_reason, str)
+        self.assertEqual(result.routing_mode, "static")
+        self.assertIsNone(result.routing_experiment_id)
+
+    def test_as_tuple_7_compatibility(self):
+        selector = DynamicTierSelector(
+            static_selector=ModelSelector(),
+            cost_of_pass_router=CostOfPassRouter(RoutingHistoryStore(), min_sample_count=30),
+            promotion_gate=PromotionGate(RoutingObservationStore(), min_sample_count=0),
+        )
+        analyzer = RuleBasedTaskAnalyzer()
+        analysis = analyzer.analyze("Summarize the README")
+        result = selector.select(analysis)
+        t7 = result.as_tuple_7()
+        self.assertEqual(len(t7), 7)
+        selected_tier, profile_id, fallback_tier, fallback_id, shadows, rejected, reason = t7
         self.assertIsInstance(selected_tier, str)
-        self.assertIsNone(profile_id)
-        self.assertIsInstance(fallback_tier, str)
-        self.assertIsInstance(shadows, list)
-        self.assertIsInstance(rejected, list)
-        self.assertIsInstance(reason, str)
 
 
 if __name__ == "__main__":

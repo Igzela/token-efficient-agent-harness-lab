@@ -57,13 +57,19 @@ class DispatchEngine:
         analysis = self._analyzer.analyze(raw_request, request_source=request_source)
 
         # Step 2: Select model tier
+        routing_experiment_id: str | None = None
         if self._adaptive_selector is not None:
-            (
-                selected_tier, selected_profile_id,
-                fallback_tier, fallback_profile_id,
-                shadow_routes, rejected_candidates, routing_reason,
-            ) = self._adaptive_selector.select(analysis)
-            routing_mode = "adaptive"
+            result = self._adaptive_selector.select(analysis)
+            # DynamicTierSelector returns RoutingSelection with routing metadata
+            selected_tier = result.selected_tier
+            selected_profile_id = result.selected_profile_id
+            fallback_tier = result.fallback_tier
+            fallback_profile_id = result.fallback_profile_id
+            shadow_routes = result.shadow_routes
+            rejected_candidates = result.rejected_candidates
+            routing_reason = result.routing_reason
+            routing_mode = result.routing_mode
+            routing_experiment_id = result.routing_experiment_id
         else:
             (
                 selected_tier, selected_profile_id,
@@ -95,6 +101,7 @@ class DispatchEngine:
             max_input_tokens=analysis.context_budget_estimate,
             max_output_tokens=analysis.execution_budget_estimate,
             routing_reason=routing_reason,
+            routing_experiment_id=routing_experiment_id,
             quality_requirement=analysis.quality_requirement,
             expected_quality_band=self._quality_band(selected_tier),
             confidence=analysis.confidence,

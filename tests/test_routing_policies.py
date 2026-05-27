@@ -32,7 +32,7 @@ class AutoDowngradePolicyTests(unittest.TestCase):
 
     def test_downgrades_when_quality_high_and_cheaper(self):
         should, reason = self.policy.should_downgrade(
-            "c_r", "balanced_worker", "cheap_executor",
+            "c/r", "balanced_worker", "cheap_executor",
             quality_score=0.85, cost_of_pass=0.005, history_store=self.store,
         )
         self.assertTrue(should)
@@ -40,7 +40,7 @@ class AutoDowngradePolicyTests(unittest.TestCase):
 
     def test_rejects_when_quality_low(self):
         should, reason = self.policy.should_downgrade(
-            "c_r", "balanced_worker", "cheap_executor",
+            "c/r", "balanced_worker", "cheap_executor",
             quality_score=0.5, cost_of_pass=0.005, history_store=self.store,
         )
         self.assertFalse(should)
@@ -48,7 +48,7 @@ class AutoDowngradePolicyTests(unittest.TestCase):
 
     def test_rejects_when_candidate_not_cheaper(self):
         should, reason = self.policy.should_downgrade(
-            "c_r", "cheap_executor", "balanced_worker",
+            "c/r", "cheap_executor", "balanced_worker",
             quality_score=0.85, cost_of_pass=0.015, history_store=self.store,
         )
         self.assertFalse(should)
@@ -57,7 +57,7 @@ class AutoDowngradePolicyTests(unittest.TestCase):
     def test_rejects_when_insufficient_samples(self):
         empty_store = RoutingHistoryStore()
         should, reason = self.policy.should_downgrade(
-            "c_r", "balanced_worker", "cheap_executor",
+            "c/r", "balanced_worker", "cheap_executor",
             quality_score=0.85, cost_of_pass=0.005, history_store=empty_store,
         )
         self.assertFalse(should)
@@ -71,7 +71,7 @@ class AutoUpgradePolicyTests(unittest.TestCase):
 
     def test_upgrades_on_critical_task(self):
         should, reason = self.policy.should_upgrade(
-            "c_r", "cheap_executor", "strong_planner",
+            "c/r", "cheap_executor", "strong_planner",
             quality_score=0.9, failure_rate=0.0, risk_level="critical",
             history_store=self.store,
         )
@@ -80,7 +80,7 @@ class AutoUpgradePolicyTests(unittest.TestCase):
 
     def test_upgrades_on_high_failure_rate(self):
         should, reason = self.policy.should_upgrade(
-            "c_r", "cheap_executor", "balanced_worker",
+            "c/r", "cheap_executor", "balanced_worker",
             quality_score=0.9, failure_rate=0.3, risk_level="low",
             history_store=self.store,
         )
@@ -89,7 +89,7 @@ class AutoUpgradePolicyTests(unittest.TestCase):
 
     def test_upgrades_on_high_uncertainty(self):
         should, reason = self.policy.should_upgrade(
-            "c_r", "cheap_executor", "balanced_worker",
+            "c/r", "cheap_executor", "balanced_worker",
             quality_score=0.3, failure_rate=0.0, risk_level="low",
             history_store=self.store,
         )
@@ -98,7 +98,7 @@ class AutoUpgradePolicyTests(unittest.TestCase):
 
     def test_no_upgrade_when_quality_fine(self):
         should, reason = self.policy.should_upgrade(
-            "c_r", "cheap_executor", "balanced_worker",
+            "c/r", "cheap_executor", "balanced_worker",
             quality_score=0.8, failure_rate=0.05, risk_level="low",
             history_store=self.store,
         )
@@ -107,7 +107,7 @@ class AutoUpgradePolicyTests(unittest.TestCase):
 
     def test_no_upgrade_when_candidate_not_stronger(self):
         should, reason = self.policy.should_upgrade(
-            "c_r", "balanced_worker", "cheap_executor",
+            "c/r", "balanced_worker", "cheap_executor",
             quality_score=0.3, failure_rate=0.5, risk_level="low",
             history_store=self.store,
         )

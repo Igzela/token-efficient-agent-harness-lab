@@ -64,6 +64,9 @@ from .routing import (
     RoutingHistoryStore,
     RoutingObservation,
     RoutingObservationStore,
+    RoutingSelection,
+    make_task_group,
+    parse_task_group,
 )
 
 __all__ = [
@@ -139,4 +142,7 @@ __all__ = [
     "RoutingHistoryStore",
     "RoutingObservation",
     "RoutingObservationStore",
+    "RoutingSelection",
+    "make_task_group",
+    "parse_task_group",
 ]

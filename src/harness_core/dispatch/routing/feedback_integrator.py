@@ -9,7 +9,7 @@ from typing import Any
 from .auto_policies import AutoDowngradePolicy, AutoUpgradePolicy
 from .history_store import RoutingHistoryStore
 from .promotion_gate import RoutingObservationStore
-from .schemas import RoutingObservation
+from .schemas import RoutingObservation, make_task_group, parse_task_group
 
 
 class FeedbackIntegrator:
@@ -61,9 +61,7 @@ class FeedbackIntegrator:
         return obs
 
     def should_adapt(self, task_group: str, current_tier: str) -> tuple[bool, str]:
-        parts = task_group.split("_", 1)
-        domain = parts[0] if parts else ""
-        intent = parts[1] if len(parts) > 1 else ""
+        domain, intent = parse_task_group(task_group)
 
         obs = self._observations.observations_for_tier_and_group(current_tier, domain, intent)
         if not obs:
@@ -101,9 +99,7 @@ class FeedbackIntegrator:
         return False, "no_adaptation_needed"
 
     def summary(self, task_group: str) -> dict[str, Any]:
-        parts = task_group.split("_", 1)
-        domain = parts[0] if parts else ""
-        intent = parts[1] if len(parts) > 1 else ""
+        domain, intent = parse_task_group(task_group)
 
         all_obs = [
             o for o in self._observations.all_observations()
@@ -141,4 +137,4 @@ class FeedbackIntegrator:
 
     @staticmethod
     def task_group_for(dispatch_domain: str, dispatch_intent: str) -> str:
-        return f"{dispatch_domain}_{dispatch_intent}"
+        return make_task_group(dispatch_domain, dispatch_intent)

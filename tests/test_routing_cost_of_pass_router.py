@@ -34,7 +34,7 @@ class CostOfPassRouterTests(unittest.TestCase):
         self.router = CostOfPassRouter(self.store, min_sample_count=30)
 
     def test_best_tier_returns_cheapest(self):
-        result = self.router.best_tier_for_task_group("c_r")
+        result = self.router.best_tier_for_task_group("c/r")
         self.assertIsNotNone(result)
         tier, cop = result
         self.assertEqual(tier, "cheap_executor")
@@ -45,27 +45,27 @@ class CostOfPassRouterTests(unittest.TestCase):
         for i in range(5):
             store.add_row(_make_row("p1", "s/x/y/z", 0.01, True))
         router = CostOfPassRouter(store, min_sample_count=30)
-        self.assertIsNone(router.best_tier_for_task_group("x_y"))
+        self.assertIsNone(router.best_tier_for_task_group("x/y"))
 
     def test_can_route_adaptively(self):
-        self.assertTrue(self.router.can_route_adaptively("c_r"))
+        self.assertTrue(self.router.can_route_adaptively("c/r"))
         self.assertFalse(self.router.can_route_adaptively("nonexistent_group"))
 
     def test_cost_comparison(self):
-        result = self.router.cost_comparison("c_r", "cheap_executor", "balanced_worker")
+        result = self.router.cost_comparison("c/r", "cheap_executor", "balanced_worker")
         self.assertIsNotNone(result)
         cop_a, cop_b, delta_pct = result
         self.assertLess(cop_a, cop_b)
         self.assertLess(delta_pct, 0)
 
     def test_cost_comparison_none_when_missing(self):
-        result = self.router.cost_comparison("c_r", "cheap_executor", "nonexistent")
+        result = self.router.cost_comparison("c/r", "cheap_executor", "nonexistent")
         self.assertIsNone(result)
 
     def test_failure_rate(self):
         for i in range(5):
             self.store.add_row(_make_row("cheap-p", "s/f/g/h", 0.01, i < 3))
-        rate = self.router.failure_rate("cheap_executor", "f_g")
+        rate = self.router.failure_rate("cheap_executor", "f/g")
         self.assertAlmostEqual(rate, 0.4, places=1)
 
     def test_failure_rate_zero_for_no_data(self):
@@ -73,7 +73,7 @@ class CostOfPassRouterTests(unittest.TestCase):
         self.assertEqual(rate, 0.0)
 
     def test_tier_cost_of_pass(self):
-        cop = self.router.tier_cost_of_pass("cheap_executor", "c_r")
+        cop = self.router.tier_cost_of_pass("cheap_executor", "c/r")
         self.assertIsNotNone(cop)
         self.assertGreater(cop, 0)
 

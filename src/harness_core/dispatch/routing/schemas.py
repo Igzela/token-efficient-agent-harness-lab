@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
 # ---------------------------------------------------------------------------
@@ -30,6 +30,23 @@ PROMOTION_GATE_DEFAULTS: dict[str, Any] = {
     "max_failure_rate_delta": 0.05,
     "min_cost_reduction_pct": 5.0,
 }
+
+# ---------------------------------------------------------------------------
+# Task group helpers — "/" delimiter to avoid collision with underscored domains
+# ---------------------------------------------------------------------------
+
+_TASK_GROUP_SEP = "/"
+
+
+def make_task_group(domain: str, intent: str) -> str:
+    return f"{domain}{_TASK_GROUP_SEP}{intent}"
+
+
+def parse_task_group(task_group: str) -> tuple[str, str]:
+    parts = task_group.split(_TASK_GROUP_SEP, 1)
+    domain = parts[0] if parts else ""
+    intent = parts[1] if len(parts) > 1 else ""
+    return domain, intent
 
 # ---------------------------------------------------------------------------
 # Schemas
@@ -150,3 +167,29 @@ class PromotionVerdict:
             "reasons": list(self.reasons),
             "requires_human_review": self.requires_human_review,
         }
+
+
+@dataclass
+class RoutingSelection:
+    """Return type from adaptive tier selectors — carries routing metadata."""
+
+    selected_tier: str
+    selected_profile_id: str | None
+    fallback_tier: str
+    fallback_profile_id: str | None
+    shadow_routes: list  # list[ShadowRoute]
+    rejected_candidates: list  # list[RejectedCandidate]
+    routing_reason: str
+    routing_mode: str  # "adaptive" or "static"
+    routing_experiment_id: str | None = None
+
+    def as_tuple_7(self) -> tuple:
+        return (
+            self.selected_tier,
+            self.selected_profile_id,
+            self.fallback_tier,
+            self.fallback_profile_id,
+            self.shadow_routes,
+            self.rejected_candidates,
+            self.routing_reason,
+        )

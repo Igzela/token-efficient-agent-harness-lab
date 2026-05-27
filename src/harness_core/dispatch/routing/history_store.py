@@ -6,12 +6,13 @@ from typing import Any
 
 from ...usage_ledger import CostOfPassAggregate, UsageLedgerRow, aggregate_cost_of_pass, parse_cost_of_pass_group
 from ..cost_of_pass import CostOfPassAccumulator
+from .schemas import make_task_group
 
 
 def _task_group_from_row(row: UsageLedgerRow) -> str | None:
     try:
         _, task_family, variant, _criterion = parse_cost_of_pass_group(row.cost_of_pass_group)
-        return f"{task_family}_{variant}"
+        return make_task_group(task_family, variant)
     except (ValueError, IndexError):
         return None
 

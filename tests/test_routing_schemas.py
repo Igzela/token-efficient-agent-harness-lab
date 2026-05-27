@@ -10,6 +10,7 @@ from harness_core.dispatch.routing.schemas import (
     RoutingExperiment,
     RoutingArm,
     RoutingObservation,
+    RoutingSelection,
     PROMOTION_GATE_DEFAULTS,
     EXPERIMENT_STATUSES,
     ROUTING_MODES,
@@ -17,6 +18,8 @@ from harness_core.dispatch.routing.schemas import (
     ROUTING_EXPERIMENT_SCHEMA_VERSION,
     ROUTING_ARM_SCHEMA_VERSION,
     ROUTING_OBSERVATION_SCHEMA_VERSION,
+    make_task_group,
+    parse_task_group,
 )
 
 
@@ -155,6 +158,64 @@ class ConstantsTests(unittest.TestCase):
         self.assertEqual(PROMOTION_GATE_DEFAULTS["min_sample_count"], 30)
         self.assertEqual(PROMOTION_GATE_DEFAULTS["max_failure_rate_delta"], 0.05)
         self.assertEqual(PROMOTION_GATE_DEFAULTS["min_cost_reduction_pct"], 5.0)
+
+
+class TaskGroupTests(unittest.TestCase):
+    def test_make_task_group(self):
+        self.assertEqual(make_task_group("code", "review"), "code/review")
+
+    def test_make_task_group_with_underscore_domain(self):
+        self.assertEqual(make_task_group("repo_ops", "review"), "repo_ops/review")
+
+    def test_parse_task_group(self):
+        domain, intent = parse_task_group("code/review")
+        self.assertEqual(domain, "code")
+        self.assertEqual(intent, "review")
+
+    def test_parse_task_group_with_underscore_domain(self):
+        domain, intent = parse_task_group("repo_ops/review")
+        self.assertEqual(domain, "repo_ops")
+        self.assertEqual(intent, "review")
+
+    def test_parse_task_group_no_slash(self):
+        domain, intent = parse_task_group("standalone")
+        self.assertEqual(domain, "standalone")
+        self.assertEqual(intent, "")
+
+    def test_roundtrip(self):
+        tg = make_task_group("repo_ops", "code_review")
+        domain, intent = parse_task_group(tg)
+        self.assertEqual(domain, "repo_ops")
+        self.assertEqual(intent, "code_review")
+
+
+class RoutingSelectionTests(unittest.TestCase):
+    def test_construction(self):
+        sel = RoutingSelection(
+            selected_tier="cheap_executor",
+            selected_profile_id=None,
+            fallback_tier="balanced_worker",
+            fallback_profile_id=None,
+            shadow_routes=[],
+            rejected_candidates=[],
+            routing_reason="adaptive_routing:cost_of_pass",
+            routing_mode="adaptive",
+        )
+        self.assertEqual(sel.selected_tier, "cheap_executor")
+        self.assertEqual(sel.routing_mode, "adaptive")
+        self.assertIsNone(sel.routing_experiment_id)
+
+    def test_as_tuple_7(self):
+        sel = RoutingSelection(
+            selected_tier="t", selected_profile_id=None,
+            fallback_tier="f", fallback_profile_id=None,
+            shadow_routes=["s"], rejected_candidates=["r"],
+            routing_reason="reason", routing_mode="static",
+        )
+        t7 = sel.as_tuple_7()
+        self.assertEqual(len(t7), 7)
+        self.assertEqual(t7[0], "t")
+        self.assertEqual(t7[6], "reason")
 
 
 if __name__ == "__main__":
