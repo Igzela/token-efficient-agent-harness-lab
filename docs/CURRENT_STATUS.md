@@ -4,8 +4,8 @@ Last verified: 2026-05-27.
 
 ## Repository State
 
-- Branch: `main` synced after `592803f` (Phase 1 dispatch kernel stable).
-- Tests: **1074 pass**, 0 failures.
+- Branch: `main` synced after `8f683ad` (Phase 2 manual execution bridge stable).
+- Tests: **1131 pass**, 0 failures.
 - Security baseline: ALL CHECKS PASSED.
 
 ## Completed Tracks
@@ -35,6 +35,7 @@ Last verified: 2026-05-27.
 | Trial 3 target merge | Closed — all 3 target PRs merged, audit PASS_WITH_NOTES, blockers [] |
 | Global Architecture Book v1 | Approved — 3-round Claude+GPT collaborative review, Phase 1 implementation-ready |
 | Phase 1 — Dispatch Kernel | **STABLE** — 8 source files, 20 fixtures, 1074 total tests, commits `a4227e9`→`aed213b`→`592803f` |
+| Phase 2 — Manual Execution Bridge | **STABLE** — 6 source modules, 6 test files, 1131 total tests, commits `afbba23`→`19c8a17`→`8f683ad` |
 
 Trial 2 complete evidence chain: [`docs/trials/TRIAL_2_FINAL_STATE_INDEX.md`](trials/TRIAL_2_FINAL_STATE_INDEX.md).
 Trial 3 report: [`docs/trials/TRIAL_3_REPORT.md`](trials/TRIAL_3_REPORT.md).
@@ -57,6 +58,32 @@ Trial 3 target merge closeout: [`docs/trials/TRIAL_3_TARGET_MERGE_CLOSEOUT.md`](
 - fallback_tier mixes fallback/escalation semantics
 
 **Next eligible path:** Phase 2 Manual Execution Bridge planning
+
+## Phase 2 Manual Execution Bridge — Closeout
+
+**Stable commit:** `8f683ad`
+**P0 fixes (round 1):** `19c8a17` (5 P0 blockers from GPT review)
+**P0 fixes (round 2):** `8f683ad` (2 unsafe defaults removed)
+**Tests:** 1131 pass (was 1074 at Phase 1 end)
+**GPT verdict:** Phase 2 Stable — approved for Phase 3 planning
+
+**Phase 2 boundaries:** no provider calls, no automatic execution, human is executor, no real token counting.
+
+**Source modules:**
+- `prompt_pack_gen.py` — PromptPackGenerator (dispatch_id required)
+- `manual_session.py` — ManualExecutionSession lifecycle tracking
+- `pasteback_parser.py` — PastebackParser validates/hashes human-pasted output
+- `manual_evaluator.py` — ManualEvaluator with 5 checks + boundary heuristics
+- `manual_usage_bridge.py` — bridges PastebackSubmission → UsageLedgerRow (eval_result required)
+- `cost_of_pass.py` — CostOfPassAccumulator aggregates by group
+
+**Accepted limitations (non-blocking, Phase 3 refinement):**
+- Pasteback stores raw_output inline (no redaction policy)
+- ManualSessionStore lacks strict transition validation (happy-path only)
+- Boundary compliance is heuristic, not authoritative
+- Token estimates are rough char/4 estimates
+
+**Next eligible path:** Phase 3 provider integration design
 
 ## Current App Capability
 
