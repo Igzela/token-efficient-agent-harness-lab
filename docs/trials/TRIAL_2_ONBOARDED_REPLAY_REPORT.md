@@ -9,8 +9,9 @@ Date: 2026-05-27
 | Date/time | 2026-05-27 (post-onboarding) |
 | Harness commit | current main |
 | Target repo | `/home/igzela/Projects/hermes-gateway-lab` |
-| Target repo commit | `e96c61d` (unchanged) |
-| Target onboarding commit | `05092f0` (branch `harness-onboarding`, not pushed) |
+| Target repo commit | `e96c61d` (before onboarding merge) |
+| Target onboarding commit | `05092f0` (branch `harness-onboarding`, now merged) |
+| Target merge commit | `77cf282` (PR #1 merged to target main) |
 | Target baseline status | 1 modified draft file (`drafts/hermes-local-execution-worker.service.draft`) — pre-existing |
 | Registry path | `/tmp/harness-trial2-registry.json` |
 | Plans path | `/tmp/harness-trial2-plans.json` |
@@ -114,8 +115,20 @@ Rationale:
 
 ## 11. Recommended Next Decision
 
-**request approval to push hermes-gateway-lab harness-onboarding branch**
+**hermes-gateway-lab target onboarding is now COMPLETE.**
 
-Rationale: Onboarding was applied locally on branch `harness-onboarding` in hermes-gateway-lab (commit `05092f0`). The branch is not pushed. Pushing it would make the onboarding available for future trials and production use. This is a target repo remote write and requires explicit approval.
+The onboarding branch was pushed, PR #1 was reviewed and merged (commit `77cf282`). Audit after merge remains `PASS_WITH_NOTES` with 0 blockers. The pre-existing dirty draft is preserved. hermes-gateway-lab is now harness-managed enough for audit and planning.
 
-Alternative: **stop** — the onboarding replay result is sufficient evidence that onboarding works. No need to push.
+## 12. Final Closeout
+
+| Event | Status |
+|-------|--------|
+| Target repo initial audit | BLOCKED (missing harness control files) |
+| Onboarding protocol designed | Complete (`docs/onboarding/TARGET_REPO_ONBOARDING_PLAN.md`) |
+| Onboarding applied to target | Complete (commit `05092f0`) |
+| Onboarded replay | ACCEPTABLE_FOR_ONBOARDED_SECOND_PROJECT_TRIAL |
+| Target PR reviewed | APPROVE TARGET PR FOR HUMAN MERGE |
+| Target PR merged | 77cf282 |
+| Audit after merge | PASS_WITH_NOTES, blockers [] |
+| Dirty draft preserved | Yes |
+| Target onboarding | **COMPLETE** |

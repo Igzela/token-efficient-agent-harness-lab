@@ -10,9 +10,9 @@ The user may choose any of the following. Each requires explicit approval before
 
 | Path | Description |
 |---|---|
+| Trial 2 final verification on target main | Run harness audit and planning against hermes-gateway-lab target main to verify onboarding is effective post-merge. |
+| Trial 3 on another repo | Run Trial 3 against a third target repo (requires target onboarding or BLOCKED handling). |
 | Demo polish | Refine demo docs only if user feedback requires it. |
-| Target repo onboarding | Add minimal harness control files to a non-harness-managed repo so the app can audit and plan. Requires explicit user approval for target repo writes. |
-| Push hermes-gateway-lab onboarding | Push branch `harness-onboarding` in hermes-gateway-lab to remote. Requires explicit approval for target repo remote write. |
 | Future production PRD | Draft a product requirements document for a future production track (requires new approval). |
 | Additional reliability hardening | Only if backed by new trial evidence that identifies specific issues. |
 
