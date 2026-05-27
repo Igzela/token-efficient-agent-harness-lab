@@ -92,5 +92,47 @@ class OpenAIProviderTests(unittest.TestCase):
         self.assertNotIn("no_provider_call", bundle.decision.hard_constraints)
 
 
+class CountingProvider:
+    """Provider that counts execute calls — verifies engine blocks when needed."""
+
+    def __init__(self):
+        self.calls = 0
+
+    def execute(self, decision, raw_request, dispatch_id):
+        self.calls += 1
+        from harness_core.dispatch.executor_adapter import ExecutionResult
+        from datetime import datetime, timezone
+        import uuid
+        return ExecutionResult(
+            result_id=f"exec-{uuid.uuid4().hex[:12]}",
+            dispatch_id=dispatch_id,
+            decision_id=decision.decision_id,
+            executor_type="provider",
+            status="provider_completed",
+            output="counted",
+            attempt_number=1,
+            created_at=datetime.now(timezone.utc).isoformat(),
+        )
+
+
+class ProviderExecutionGuardTests(unittest.TestCase):
+    def test_provider_not_called_when_decision_blocked(self):
+        counting = CountingProvider()
+        engine = DispatchEngine(executor=counting)
+        bundle = engine.dispatch("Fix auth.py and commit changes to main")
+        self.assertEqual(bundle.decision.decision_status, "needs_approval")
+        self.assertEqual(counting.calls, 0)
+        self.assertEqual(bundle.execution_result.status, "not_executed")
+        self.assertEqual(bundle.execution_result.error_domain, "execution_not_authorized")
+
+    def test_provider_called_when_decision_decided(self):
+        counting = CountingProvider()
+        engine = DispatchEngine(executor=counting)
+        bundle = engine.dispatch("Summarize the README")
+        self.assertEqual(bundle.decision.decision_status, "decided")
+        self.assertEqual(counting.calls, 1)
+        self.assertEqual(bundle.execution_result.status, "provider_completed")
+
+
 if __name__ == "__main__":
     unittest.main()

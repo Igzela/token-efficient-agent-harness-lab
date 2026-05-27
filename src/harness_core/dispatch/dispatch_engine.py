@@ -105,7 +105,21 @@ class DispatchEngine:
         )
 
         # Step 7: Execute (use injected executor)
-        exec_result = self._executor.execute(decision, raw_request, dispatch_id)
+        is_provider = execution_policy.get("executor_type") == "provider"
+        if is_provider and decision.decision_status != "decided":
+            exec_result = ExecutionResult(
+                result_id=f"exec-{uuid.uuid4().hex[:12]}",
+                dispatch_id=dispatch_id,
+                decision_id=decision_id,
+                executor_type="provider",
+                status="not_executed",
+                error_domain="execution_not_authorized",
+                error_message=f"provider execution blocked: decision_status={decision.decision_status}",
+                attempt_number=0,
+                created_at=datetime.now(timezone.utc).isoformat(),
+            )
+        else:
+            exec_result = self._executor.execute(decision, raw_request, dispatch_id)
 
         # Step 8: Evaluate
         eval_result = self._evaluator.evaluate(exec_result, decision)
