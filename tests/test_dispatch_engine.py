@@ -1,4 +1,4 @@
-"""Tests for dispatch_engine.py — end-to-end and safety invariants."""
+"""Tests for dispatch_engine.py — end-to-end, safety invariants, and bundle verification."""
 
 import json
 import sys
@@ -8,6 +8,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 import unittest
 from harness_core.dispatch.dispatch_engine import DispatchEngine
+from harness_core.dispatch.dispatch_ledger import DispatchBundle
 from harness_core.dispatch.executor_adapter import ManualExecutor, MockExecutor, NoopExecutor
 
 FIXTURES_DIR = Path(__file__).resolve().parent / "fixtures" / "dispatch"
@@ -17,34 +18,67 @@ class DispatchEngineBasicTests(unittest.TestCase):
     def setUp(self):
         self.engine = DispatchEngine()
 
-    def test_dispatch_returns_record(self):
-        record = self.engine.dispatch("Summarize the README")
-        self.assertTrue(record.dispatch_id)
-        self.assertEqual(record.final_status, "not_executed")  # noop executor
+    def test_dispatch_returns_bundle(self):
+        bundle = self.engine.dispatch("Summarize the README")
+        self.assertIsInstance(bundle, DispatchBundle)
+        self.assertTrue(bundle.record.dispatch_id)
+        self.assertEqual(bundle.record.final_status, "not_executed")
 
     def test_dispatch_with_mock_executor(self):
         engine = DispatchEngine(executor=MockExecutor())
-        record = engine.dispatch("Summarize the README")
-        self.assertEqual(record.final_status, "completed")
+        bundle = engine.dispatch("Summarize the README")
+        self.assertEqual(bundle.record.final_status, "completed")
+        self.assertEqual(bundle.execution_result.executor_type, "mock")
+        self.assertIsNotNone(bundle.execution_result.output)
 
     def test_dispatch_with_manual_executor(self):
         engine = DispatchEngine(executor=ManualExecutor())
-        record = engine.dispatch("Summarize the README")
-        self.assertEqual(record.final_status, "completed")
+        bundle = engine.dispatch("Summarize the README")
+        self.assertEqual(bundle.record.final_status, "manual_pending")
+        self.assertIsNotNone(bundle.execution_result.prompt_pack)
 
     def test_dispatch_populates_record_fields(self):
-        record = self.engine.dispatch("Test request")
-        self.assertTrue(record.task_analysis_id)
-        self.assertTrue(record.decision_id)
-        self.assertTrue(record.budget_reservation_id)
-        self.assertTrue(record.created_at)
-        self.assertTrue(record.updated_at)
+        bundle = self.engine.dispatch("Test request")
+        self.assertTrue(bundle.record.task_analysis_id)
+        self.assertTrue(bundle.record.decision_id)
+        self.assertTrue(bundle.record.budget_reservation_id)
+        self.assertTrue(bundle.record.created_at)
+        self.assertTrue(bundle.record.updated_at)
 
     def test_dispatch_stores_in_ledger(self):
-        record = self.engine.dispatch("Test request")
-        stored = self.engine._ledger.get_record(record.dispatch_id)
+        bundle = self.engine.dispatch("Test request")
+        stored = self.engine._ledger.get_record(bundle.record.dispatch_id)
         self.assertIsNotNone(stored)
-        self.assertEqual(stored.dispatch_id, record.dispatch_id)
+        self.assertEqual(stored.dispatch_id, bundle.record.dispatch_id)
+
+    def test_dispatch_bundle_contains_full_chain(self):
+        engine = DispatchEngine(executor=MockExecutor())
+        bundle = engine.dispatch("Summarize the README")
+        self.assertIsNotNone(bundle.analysis)
+        self.assertIsNotNone(bundle.decision)
+        self.assertIsNotNone(bundle.execution_result)
+        self.assertIsNotNone(bundle.evaluation_result)
+        self.assertEqual(bundle.analysis.analysis_id, bundle.decision.analysis_id)
+        self.assertEqual(bundle.execution_result.dispatch_id, bundle.record.dispatch_id)
+        self.assertEqual(bundle.evaluation_result.dispatch_id, bundle.record.dispatch_id)
+
+    def test_dispatch_bundle_stored_in_ledger(self):
+        engine = DispatchEngine(executor=MockExecutor())
+        bundle = engine.dispatch("Test request")
+        stored_bundle = engine._ledger.get_bundle(bundle.record.dispatch_id)
+        self.assertIsNotNone(stored_bundle)
+        self.assertEqual(stored_bundle.record.dispatch_id, bundle.record.dispatch_id)
+        self.assertEqual(stored_bundle.analysis.analysis_id, bundle.analysis.analysis_id)
+
+    def test_bundle_to_dict_roundtrip(self):
+        engine = DispatchEngine(executor=MockExecutor())
+        bundle = engine.dispatch("Test request")
+        d = bundle.to_dict()
+        self.assertIn("record", d)
+        self.assertIn("analysis", d)
+        self.assertIn("decision", d)
+        self.assertIn("execution_result", d)
+        self.assertIn("evaluation_result", d)
 
 
 class SafetyInvariantTests(unittest.TestCase):
@@ -53,40 +87,50 @@ class SafetyInvariantTests(unittest.TestCase):
 
     def test_no_provider_executor_type(self):
         """Phase 1: provider executor must never be used."""
-        record = self.engine.dispatch("Test request", executor_type="provider")
-        # Engine should downgrade to noop
-        self.assertEqual(record.final_status, "not_executed")
+        bundle = self.engine.dispatch("Test request")
+        self.assertNotEqual(bundle.execution_result.executor_type, "provider")
 
-    def test_every_decision_has_shadow_routes_or_reason(self):
-        """Safety invariant: shadow routes or no_shadow_route_reason."""
-        record = self.engine.dispatch("Summarize the README")
-        # We can't directly access decision from record, but we can verify
-        # the dispatch completed successfully, which means the invariant was checked
-        self.assertIn(record.final_status, ("not_executed", "completed", "failed", "escalated"))
+    def test_decision_has_shadow_routes_or_reason(self):
+        bundle = self.engine.dispatch("Summarize the README")
+        d = bundle.decision
+        self.assertTrue(d.shadow_routes or d.no_shadow_route_reason)
 
     def test_budget_exists_before_execution(self):
-        """Safety invariant: BudgetReservation exists before execution."""
-        record = self.engine.dispatch("Test request")
-        self.assertIsNotNone(record.budget_reservation_id)
+        bundle = self.engine.dispatch("Test request")
+        self.assertIsNotNone(bundle.record.budget_reservation_id)
+        self.assertIsNotNone(bundle.decision.budget_reservation)
 
     def test_execution_result_links_to_record(self):
-        """Safety invariant: ExecutionResult links to DispatchRecord."""
         engine = DispatchEngine(executor=MockExecutor())
-        record = engine.dispatch("Test request")
-        self.assertIsNotNone(record.execution_result_id)
+        bundle = engine.dispatch("Test request")
+        self.assertEqual(bundle.execution_result.dispatch_id, bundle.record.dispatch_id)
+        self.assertEqual(bundle.execution_result.decision_id, bundle.decision.decision_id)
 
     def test_evaluation_result_links_to_record(self):
-        """Safety invariant: EvaluationResult links to DispatchRecord."""
         engine = DispatchEngine(executor=MockExecutor())
-        record = engine.dispatch("Test request")
-        self.assertIsNotNone(record.evaluation_result_id)
+        bundle = engine.dispatch("Test request")
+        self.assertEqual(bundle.evaluation_result.dispatch_id, bundle.record.dispatch_id)
+        self.assertEqual(bundle.evaluation_result.execution_result_id,
+                         bundle.execution_result.result_id)
 
     def test_provider_disabled_gate_always_present(self):
-        """Phase 1: provider_disabled gate must always be present."""
-        # This is verified by the dispatch completing without error
-        # The gate is built internally and checked during decision status
-        record = self.engine.dispatch("Test request")
-        self.assertIsNotNone(record)
+        bundle = self.engine.dispatch("Test request")
+        gate_types = [g.gate_type for g in bundle.decision.execution_gates]
+        self.assertIn("provider_disabled", gate_types)
+        self.assertIn("sandbox_disabled", gate_types)
+
+    def test_low_risk_noop_is_decided(self):
+        """Low-risk noop dispatch should have decision_status=decided."""
+        bundle = self.engine.dispatch("Summarize the README")
+        self.assertEqual(bundle.decision.decision_status, "decided")
+        self.assertEqual(bundle.record.final_status, "not_executed")
+
+    def test_low_risk_noop_gates_are_info(self):
+        """Provider/sandbox gates for low-risk noop should be info, not block."""
+        bundle = self.engine.dispatch("Summarize the README")
+        for g in bundle.decision.execution_gates:
+            if g.gate_type in ("provider_disabled", "sandbox_disabled"):
+                self.assertEqual(g.severity, "info")
 
 
 class GateTests(unittest.TestCase):
@@ -94,20 +138,20 @@ class GateTests(unittest.TestCase):
         self.engine = DispatchEngine()
 
     def test_high_risk_generates_risk_gate(self):
-        """High-risk requests should generate risk gate."""
-        record = self.engine.dispatch("Fix the bug and commit changes to main")
-        # Should still complete (noop executor), but with gates
-        self.assertIn(record.final_status, ("not_executed", "completed"))
+        bundle = self.engine.dispatch("Fix the bug and commit changes to main")
+        gate_types = [g.gate_type for g in bundle.decision.execution_gates]
+        self.assertIn("target_write", gate_types)
+        self.assertEqual(bundle.decision.decision_status, "needs_approval")
 
     def test_target_write_generates_gate(self):
-        """Target write risk flag should generate target_write gate."""
-        record = self.engine.dispatch("Fix the bug and commit the changes to main")
-        self.assertIsNotNone(record)
+        bundle = self.engine.dispatch("Fix the bug and commit the changes to main")
+        gate_types = [g.gate_type for g in bundle.decision.execution_gates]
+        self.assertIn("target_write", gate_types)
 
     def test_low_confidence_generates_gate(self):
-        """Low confidence should generate confidence gate."""
-        record = self.engine.dispatch("Make it better")
-        self.assertIsNotNone(record)
+        bundle = self.engine.dispatch("Make it better")
+        gate_types = [g.gate_type for g in bundle.decision.execution_gates]
+        self.assertIn("confidence", gate_types)
 
 
 class GoldenFixtureE2ETests(unittest.TestCase):
@@ -121,16 +165,17 @@ class GoldenFixtureE2ETests(unittest.TestCase):
         with open(path) as f:
             fixture = json.load(f)
 
-        record = self.engine.dispatch(
+        bundle = self.engine.dispatch(
             fixture["raw_request"],
             request_source=fixture.get("request_source", "test_fixture"),
         )
 
-        self.assertTrue(record.dispatch_id, f"dispatch_id missing for {filename}")
-        self.assertTrue(record.task_analysis_id, f"task_analysis_id missing for {filename}")
-        self.assertTrue(record.decision_id, f"decision_id missing for {filename}")
-        self.assertIn(record.final_status, ("not_executed", "completed", "failed", "escalated"))
-        return record
+        self.assertTrue(bundle.record.dispatch_id, f"dispatch_id missing for {filename}")
+        self.assertTrue(bundle.record.task_analysis_id, f"task_analysis_id missing for {filename}")
+        self.assertTrue(bundle.record.decision_id, f"decision_id missing for {filename}")
+        self.assertIn(bundle.record.final_status,
+                      ("not_executed", "completed", "failed", "escalated", "manual_pending"))
+        return bundle
 
     def test_fixture_01(self):
         self._run_fixture("fixture_01_low_risk_summary.json")
@@ -195,12 +240,19 @@ class GoldenFixtureE2ETests(unittest.TestCase):
 
 class DeterministicReplayTests(unittest.TestCase):
     def test_same_input_same_domain(self):
-        """Same input should produce same domain classification."""
         engine = DispatchEngine()
-        r1 = engine.dispatch("Summarize the README")
-        r2 = engine.dispatch("Summarize the README")
-        # Both should complete the same way
-        self.assertEqual(r1.final_status, r2.final_status)
+        b1 = engine.dispatch("Summarize the README")
+        b2 = engine.dispatch("Summarize the README")
+        self.assertEqual(b1.analysis.task_domain, b2.analysis.task_domain)
+        self.assertEqual(b1.analysis.task_intent, b2.analysis.task_intent)
+        self.assertEqual(b1.record.final_status, b2.record.final_status)
+
+    def test_bundle_analysis_matches_request(self):
+        engine = DispatchEngine()
+        bundle = engine.dispatch("Summarize the README")
+        self.assertEqual(bundle.analysis.raw_request_snapshot, "Summarize the README")
+        self.assertEqual(bundle.analysis.task_domain, "docs")
+        self.assertEqual(bundle.analysis.task_intent, "summarize")
 
 
 if __name__ == "__main__":

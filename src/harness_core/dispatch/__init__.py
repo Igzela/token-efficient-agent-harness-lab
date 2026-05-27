@@ -27,7 +27,7 @@ from .dispatch_decision import (
     ShadowRoute,
 )
 from .dispatch_engine import DispatchEngine
-from .dispatch_ledger import DISPATCH_RECORD_SCHEMA_VERSION, DISPATCH_STATUSES, DispatchLedger, DispatchRecord
+from .dispatch_ledger import DISPATCH_RECORD_SCHEMA_VERSION, DISPATCH_STATUSES, DispatchBundle, DispatchLedger, DispatchRecord
 from .evaluation_stub import (
     EVAL_CHECK_NAMES,
     EVALUATION_RESULT_SCHEMA_VERSION,
@@ -56,6 +56,7 @@ __all__ = [
     "DISPATCH_DECISION_SCHEMA_VERSION",
     "DISPATCH_RECORD_SCHEMA_VERSION",
     "DISPATCH_STATUSES",
+    "DispatchBundle",
     "DispatchDecision",
     "DispatchEngine",
     "DispatchLedger",

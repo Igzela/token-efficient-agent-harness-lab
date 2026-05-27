@@ -13,9 +13,9 @@ from .dispatch_decision import (
     DispatchDecision,
     ExecutionGate,
 )
-from .dispatch_ledger import DispatchLedger, DispatchRecord
+from .dispatch_ledger import DispatchBundle, DispatchLedger, DispatchRecord
 from .evaluation_stub import EvaluationStub
-from .executor_adapter import ExecutionResult, MockExecutor, NoopExecutor, ManualExecutor
+from .executor_adapter import ExecutionResult
 from .model_selector import ModelSelector
 from .task_analyzer import RuleBasedTaskAnalyzer, TaskAnalysis
 
@@ -31,10 +31,11 @@ class DispatchEngine:
         analyzer: RuleBasedTaskAnalyzer | None = None,
         selector: ModelSelector | None = None,
         budget_manager: BudgetManager | None = None,
-        executor: NoopExecutor | MockExecutor | ManualExecutor | None = None,
+        executor: Any | None = None,
         evaluator: EvaluationStub | None = None,
         ledger: DispatchLedger | None = None,
     ):
+        from .executor_adapter import NoopExecutor
         self._analyzer = analyzer or RuleBasedTaskAnalyzer()
         self._selector = selector or ModelSelector()
         self._budget = budget_manager or BudgetManager()
@@ -46,8 +47,7 @@ class DispatchEngine:
         self,
         raw_request: str,
         request_source: str = "test_fixture",
-        executor_type: str | None = None,
-    ) -> DispatchRecord:
+    ) -> DispatchBundle:
         dispatch_id = f"disp-{uuid.uuid4().hex[:12]}"
         decision_id = f"dec-{uuid.uuid4().hex[:12]}"
 
@@ -65,7 +65,7 @@ class DispatchEngine:
         reservation = self._budget.create_reservation(decision_id, analysis, selected_tier)
 
         # Step 4: Build execution policy and gates
-        execution_policy = self._build_execution_policy(selected_tier, analysis, executor_type)
+        execution_policy = self._build_execution_policy(selected_tier, analysis)
         execution_gates = self._build_execution_gates(analysis, reservation, execution_policy)
 
         # Step 5: Build dispatch decision
@@ -119,31 +119,37 @@ class DispatchEngine:
             evaluation_result_id=eval_result.evaluation_id,
         )
 
-        return record
+        # Step 10: Store full chain bundle
+        bundle = self._ledger.store_bundle(
+            record=record,
+            analysis=analysis,
+            decision=decision,
+            execution_result=exec_result,
+            evaluation_result=eval_result,
+        )
+
+        return bundle
 
     def _build_execution_policy(
-        self, tier: str, analysis: TaskAnalysis, executor_type: str | None
+        self, tier: str, analysis: TaskAnalysis,
     ) -> dict[str, Any]:
-        # Detect executor type from injected executor
-        if executor_type is None:
-            type_name = type(self._executor).__name__
-            executor_type = type_name.replace("Executor", "").lower()
-            if executor_type not in ("noop", "mock", "manual"):
-                executor_type = "noop"
+        type_name = type(self._executor).__name__
+        executor_type = type_name.replace("Executor", "").lower()
+        if executor_type not in ("noop", "mock", "manual"):
+            executor_type = "noop"
 
         # Phase 1: provider is always disabled
         if executor_type == "provider":
             executor_type = "noop"
 
-        effective_type = executor_type
         requires_review = (
             analysis.risk_level in ("critical", "high")
             or analysis.confidence_label == "low"
         )
 
         return {
-            "executor_type": effective_type,
-            "execution_allowed": effective_type != "provider",
+            "executor_type": executor_type,
+            "execution_allowed": executor_type != "provider",
             "requires_human_review": requires_review,
             "max_retries": 0,  # Phase 1: no real retry
         }
@@ -156,20 +162,19 @@ class DispatchEngine:
     ) -> list[ExecutionGate]:
         gates: list[ExecutionGate] = []
 
-        # Provider always blocked in Phase 1
+        # Phase 1 capability visibility (info, not block)
         gates.append(ExecutionGate(
             gate_id=f"gate-{uuid.uuid4().hex[:8]}",
             gate_type="provider_disabled",
-            severity="block",
+            severity="info",
             reason="real provider calls disabled in Phase 1",
             clearance_required="policy",
         ))
 
-        # Sandbox always blocked
         gates.append(ExecutionGate(
             gate_id=f"gate-{uuid.uuid4().hex[:8]}",
             gate_type="sandbox_disabled",
-            severity="block",
+            severity="info",
             reason="sandbox execution disabled in Phase 1",
             clearance_required="policy",
         ))
@@ -254,22 +259,9 @@ class DispatchEngine:
 
     def _determine_decision_status(self, gates: list[ExecutionGate]) -> str:
         blocking = [g for g in gates if g.severity in ("block", "critical")]
-        if any(g.gate_type == "provider_disabled" for g in blocking):
-            # Provider gate is expected in Phase 1, not a real block
-            other_blocks = [g for g in blocking if g.gate_type != "provider_disabled"]
-            if not other_blocks:
-                return "decided"
         if blocking:
             return "needs_approval"
         return "decided"
-
-    def _resolve_executor(self, executor_type: str):
-        executors = {
-            "noop": NoopExecutor(),
-            "mock": MockExecutor(),
-            "manual": ManualExecutor(),
-        }
-        return executors.get(executor_type, NoopExecutor())
 
     def _derive_final_status(
         self, exec_result: ExecutionResult, eval_result: Any
@@ -278,6 +270,8 @@ class DispatchEngine:
             return "not_executed"
         if exec_result.status == "failed":
             return "failed"
+        if exec_result.status == "manual_pending":
+            return "manual_pending"
         if eval_result.status == "fail":
             return "failed"
         if eval_result.status == "needs_human_review":

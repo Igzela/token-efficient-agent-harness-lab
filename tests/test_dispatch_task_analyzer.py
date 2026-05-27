@@ -109,8 +109,8 @@ class RiskFlagDetectionTests(unittest.TestCase):
 
     def test_negated_no_execute(self):
         a = self.analyzer.analyze("Analyze config without any provider calls or sandbox execution")
-        self.assertIn("provider_call", a.risk_flags)
-        self.assertIn("sandbox_execution", a.risk_flags)
+        self.assertNotIn("provider_call", a.risk_flags)
+        self.assertNotIn("sandbox_execution", a.risk_flags)
 
     def test_negation_produces_negative_evidence(self):
         a = self.analyzer.analyze("Review code with no target repo writes")

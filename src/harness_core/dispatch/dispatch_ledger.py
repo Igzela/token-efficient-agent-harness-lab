@@ -1,10 +1,15 @@
-"""Dispatch ledger: in-memory store for DispatchRecords."""
+"""Dispatch ledger: in-memory store for DispatchRecords and full-chain bundles."""
 
 from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any
+
+from .dispatch_decision import DispatchDecision
+from .evaluation_stub import EvaluationResult
+from .executor_adapter import ExecutionResult
+from .task_analyzer import TaskAnalysis
 
 # ---------------------------------------------------------------------------
 # Schema version
@@ -17,7 +22,8 @@ DISPATCH_RECORD_SCHEMA_VERSION = "dispatch_record.v1"
 # ---------------------------------------------------------------------------
 
 DISPATCH_STATUSES: tuple[str, ...] = (
-    "dispatched", "executing", "completed", "failed", "escalated", "cancelled", "not_executed",
+    "dispatched", "executing", "completed", "failed", "escalated",
+    "cancelled", "not_executed", "manual_pending",
 )
 
 
@@ -58,16 +64,36 @@ class DispatchRecord:
         }
 
 
+@dataclass(frozen=True)
+class DispatchBundle:
+    """Full evidence chain for a single dispatch."""
+    record: DispatchRecord
+    analysis: TaskAnalysis
+    decision: DispatchDecision
+    execution_result: ExecutionResult
+    evaluation_result: EvaluationResult
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "record": self.record.to_dict(),
+            "analysis": self.analysis.to_dict(),
+            "decision": self.decision.to_dict(),
+            "execution_result": self.execution_result.to_dict(),
+            "evaluation_result": self.evaluation_result.to_dict(),
+        }
+
+
 # ---------------------------------------------------------------------------
 # Ledger
 # ---------------------------------------------------------------------------
 
 
 class DispatchLedger:
-    """In-memory dispatch record store."""
+    """In-memory dispatch record store with full-chain bundle support."""
 
     def __init__(self) -> None:
         self._records: dict[str, DispatchRecord] = {}
+        self._bundles: dict[str, DispatchBundle] = {}
 
     def create_record(
         self,
@@ -115,11 +141,38 @@ class DispatchLedger:
         self._records[record.dispatch_id] = updated
         return updated
 
+    def store_bundle(
+        self,
+        record: DispatchRecord,
+        analysis: TaskAnalysis,
+        decision: DispatchDecision,
+        execution_result: ExecutionResult,
+        evaluation_result: EvaluationResult,
+    ) -> DispatchBundle:
+        bundle = DispatchBundle(
+            record=record,
+            analysis=analysis,
+            decision=decision,
+            execution_result=execution_result,
+            evaluation_result=evaluation_result,
+        )
+        self._bundles[record.dispatch_id] = bundle
+        return bundle
+
     def get_record(self, dispatch_id: str) -> DispatchRecord | None:
         return self._records.get(dispatch_id)
+
+    def get_bundle(self, dispatch_id: str) -> DispatchBundle | None:
+        return self._bundles.get(dispatch_id)
 
     def list_records(self) -> list[DispatchRecord]:
         return list(self._records.values())
 
-    def replay(self, dispatch_id: str) -> DispatchRecord | None:
+    def list_bundles(self) -> list[DispatchBundle]:
+        return list(self._bundles.values())
+
+    def replay(self, dispatch_id: str) -> DispatchBundle | DispatchRecord | None:
+        bundle = self._bundles.get(dispatch_id)
+        if bundle:
+            return bundle
         return self._records.get(dispatch_id)

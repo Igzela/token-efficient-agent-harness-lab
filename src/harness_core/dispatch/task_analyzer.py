@@ -44,12 +44,22 @@ _NEGATED_RISK_PHRASES: tuple[str, ...] = (
     "does not modify target repository",
     "no target repository mutation",
     "no target repo mutation",
+    "without any provider calls",
+    "without provider calls",
+    "without model calls",
+    "without any model calls",
     "no provider calls",
     "no model calls",
+    "do not call providers",
+    "do not call any providers",
     "no api key",
     "no credentials",
+    "without any sandbox execution",
+    "without sandbox execution",
+    "without executing commands",
     "no sandbox execution",
     "no sandbox",
+    "do not run sandbox",
     "no container",
     "no worker",
     "no autonomous workers",
@@ -89,7 +99,7 @@ _INTENT_KEYWORDS: dict[str, tuple[str, ...]] = {
 _RISK_KEYWORDS: dict[str, tuple[str, ...]] = {
     "target_write": ("write", "modify", "edit", "commit", "push", "merge", "delete", "remove", "create file", "fix and commit"),
     "provider_call": ("call openai", "call anthropic", "openai api", "anthropic api", "provider call", "model call", "llm call", "gpt api", "claude api"),
-    "sandbox_execution": ("execute", "sandbox", "container", "docker run", "shell command"),
+    "sandbox_execution": ("sandbox", "container", "docker run", "shell command"),
     "deployment": ("deploy", "release", "publish", "production", "staging", "ship"),
     "secret_handling": ("secret", "api key", "credential", "password", "rotate key", "rotate the api"),
     "destructive_operation": ("delete", "drop table", "destroy", "wipe", "purge", "truncate", "rm -rf"),
@@ -311,25 +321,30 @@ class RuleBasedTaskAnalyzer:
         neg_evidence: list[Evidence] = []
 
         for flag, keywords in _RISK_KEYWORDS.items():
-            detected = any(kw in positive_text for kw in keywords)
-            negated = any(kw in text for kw in _NEGATED_RISK_PHRASES) and not detected
+            detected = False
+            matched_kw = None
+            matched_idx = -1
+
+            for kw in keywords:
+                idx = positive_text.find(kw)
+                if idx >= 0 and not _is_negated_occurrence(text, kw, text.find(kw)):
+                    detected = True
+                    matched_kw = kw
+                    matched_idx = idx
+                    break
 
             if detected:
                 flags.append(flag)
-                for kw in keywords:
-                    if kw in positive_text:
-                        idx = positive_text.find(kw)
-                        pos_evidence.append(Evidence(
-                            feature=flag,
-                            text=kw,
-                            span=(idx, idx + len(kw)),
-                            polarity="positive",
-                            source="raw_request",
-                            rule_id=f"risk_{flag}",
-                            confidence=0.9,
-                        ))
-                        break
-            elif negated:
+                pos_evidence.append(Evidence(
+                    feature=flag,
+                    text=matched_kw,
+                    span=(matched_idx, matched_idx + len(matched_kw)),
+                    polarity="positive",
+                    source="raw_request",
+                    rule_id=f"risk_{flag}",
+                    confidence=0.9,
+                ))
+            else:
                 neg_evidence.append(Evidence(
                     feature=flag,
                     text="[negated]",
@@ -524,3 +539,20 @@ def _positive_risk_text(text: str) -> str:
     for phrase in _NEGATED_RISK_PHRASES:
         result = result.replace(phrase, " ")
     return result
+
+
+_NEGATION_PREFIXES: tuple[str, ...] = (
+    "without any ", "without ", "no ", "do not ", "don't ",
+    "never ", "cannot ", "can't ", "must not ", "shall not ",
+)
+
+
+def _is_negated_occurrence(text: str, keyword: str, start: int) -> bool:
+    """Check if a keyword occurrence at `start` is preceded by a negation prefix
+    within the same clause (up to 40 chars or nearest conjunction/punctuation)."""
+    clause_start = max(0, start - 40)
+    clause = text[clause_start:start]
+    for prefix in _NEGATION_PREFIXES:
+        if prefix in clause:
+            return True
+    return False

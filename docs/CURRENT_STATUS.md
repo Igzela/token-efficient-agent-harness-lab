@@ -5,7 +5,7 @@ Last verified: 2026-05-27.
 ## Repository State
 
 - Branch: `main` synced after `a4227e9` (Phase 1 dispatch kernel complete).
-- Tests: **1066 pass**, 0 failures.
+- Tests: **1072 pass**, 0 failures.
 - Security baseline: ALL CHECKS PASSED.
 
 ## Completed Tracks

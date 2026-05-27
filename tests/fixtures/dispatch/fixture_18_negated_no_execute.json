@@ -6,7 +6,7 @@
   "expected_analysis": {
     "task_domain": "config",
     "task_intent": "classify",
-    "risk_flags": ["deployment", "provider_call", "sandbox_execution"],
+    "risk_flags": ["deployment"],
     "risk_level": "critical",
     "confidence_label": "medium",
     "safe_default": "noop_with_review"

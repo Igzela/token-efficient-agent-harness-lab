@@ -187,6 +187,13 @@ class EvaluationStub:
     def _check_human_review_required(
         self, result: ExecutionResult, decision: DispatchDecision
     ) -> EvaluationCheck:
+        if result.status == "manual_pending":
+            return EvaluationCheck(
+                check_id=f"chk-{uuid.uuid4().hex[:8]}",
+                name="human_review_required",
+                status="warning",
+                reason="manual executor awaiting human pasteback",
+            )
         if decision.execution_policy.get("requires_human_review"):
             return EvaluationCheck(
                 check_id=f"chk-{uuid.uuid4().hex[:8]}",

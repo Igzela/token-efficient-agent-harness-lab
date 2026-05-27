@@ -145,6 +145,7 @@ from .validators import (
 from .dispatch import (
     BudgetManager,
     BudgetReservation,
+    DispatchBundle,
     DispatchDecision,
     DispatchEngine,
     DispatchLedger,
@@ -321,6 +322,7 @@ __all__ = [
     "validate_replay_preflight_check",
     "BudgetManager",
     "BudgetReservation",
+    "DispatchBundle",
     "DispatchDecision",
     "DispatchEngine",
     "DispatchLedger",
