@@ -86,7 +86,12 @@ class PromptPack:
 class PromptPackGenerator:
     """Generates PromptPacks from DispatchDecisions."""
 
-    def generate(self, decision: DispatchDecision, raw_request: str) -> PromptPack:
+    def generate(
+        self,
+        decision: DispatchDecision,
+        raw_request: str,
+        dispatch_id: str | None = None,
+    ) -> PromptPack:
         checklist = self._select_checklist(decision)
         system_prompt = self._build_system_prompt(decision)
         user_prompt = self._build_user_prompt(raw_request, decision)
@@ -95,7 +100,7 @@ class PromptPackGenerator:
 
         return PromptPack(
             prompt_pack_id=f"pp-{uuid.uuid4().hex[:12]}",
-            dispatch_id=decision.decision_id,
+            dispatch_id=dispatch_id or decision.decision_id,
             recommended_model_tier=decision.selected_tier,
             recommended_profile_id=decision.selected_profile_id,
             system_prompt=system_prompt,

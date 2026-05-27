@@ -23,17 +23,20 @@ class ManualExecutionFlowE2E(unittest.TestCase):
         engine = DispatchEngine()
         bundle = engine.dispatch("Summarize the README")
         decision = bundle.decision
+        dispatch_id = bundle.record.dispatch_id
 
-        # Step 2: Generate prompt pack
+        # Step 2: Generate prompt pack (uses record.dispatch_id, not decision.decision_id)
         gen = PromptPackGenerator()
-        pack = gen.generate(decision, "Summarize the README")
+        pack = gen.generate(decision, "Summarize the README", dispatch_id=dispatch_id)
         self.assertTrue(pack.prompt_pack_id)
-        self.assertEqual(pack.dispatch_id, decision.decision_id)
+        self.assertEqual(pack.dispatch_id, dispatch_id)
+        self.assertNotEqual(pack.dispatch_id, decision.decision_id)
 
         # Step 3: Create session
         store = ManualSessionStore()
-        session = store.create(decision.decision_id, pack.prompt_pack_id)
+        session = store.create(dispatch_id, pack.prompt_pack_id)
         self.assertEqual(session.status, "created")
+        self.assertEqual(session.dispatch_id, dispatch_id)
 
         # Step 4: Advance to prompt_generated
         session = store.advance(session, "prompt_generated")
@@ -42,7 +45,7 @@ class ManualExecutionFlowE2E(unittest.TestCase):
         # Step 5: Human executes and pastes back
         parser = PastebackParser()
         submission = parser.parse(
-            decision.decision_id,
+            dispatch_id,
             "The README describes a token-efficient agent harness with dispatch kernel.",
             model_used="gpt-4",
             provider_used="openai",
@@ -50,6 +53,7 @@ class ManualExecutionFlowE2E(unittest.TestCase):
             claimed_output_tokens=200,
             claimed_cost=0.005,
         )
+        self.assertEqual(submission.dispatch_id, dispatch_id)
         session = store.advance(session, "result_submitted", submission_id=submission.submission_id)
         self.assertEqual(session.submission_id, submission.submission_id)
 
@@ -59,15 +63,18 @@ class ManualExecutionFlowE2E(unittest.TestCase):
         self.assertIn(eval_result.status, ("pass", "needs_human_review"))
         session = store.advance(session, "evaluated", evaluation_id=eval_result.eval_id)
 
-        # Step 7: Write to usage ledger
+        # Step 7: Write to usage ledger (pass_ derived from eval_result)
         bridge = ManualUsageBridge()
         usage_row = bridge.bridge(
             submission,
+            eval_result=eval_result,
+            prompt_pack=pack,
             case_id="manual_readme_summary",
             cost_of_pass_group="manual/dispatch/summary/success",
             model_profile_id="gpt-4",
         )
         self.assertTrue(usage_row.run_id)
+        self.assertTrue(usage_row.pass_)
 
         # Step 8: Record in accumulator
         accum = CostOfPassAccumulator()
@@ -96,17 +103,19 @@ class ManualExecutionFlowE2E(unittest.TestCase):
 
         for req in requests:
             bundle = engine.dispatch(req)
-            pack = gen.generate(bundle.decision, req)
-            session = store.create(bundle.decision.decision_id, pack.prompt_pack_id)
+            did = bundle.record.dispatch_id
+            pack = gen.generate(bundle.decision, req, dispatch_id=did)
+            session = store.create(did, pack.prompt_pack_id)
             session = store.advance(session, "prompt_generated")
 
-            sub = parser.parse(bundle.decision.decision_id, f"Output for: {req}")
+            sub = parser.parse(did, f"Output for: {req}")
             session = store.advance(session, "result_submitted", submission_id=sub.submission_id)
 
             eval_result = evaluator.evaluate(sub, pack)
             session = store.advance(session, "evaluated", evaluation_id=eval_result.eval_id)
 
-            row = bridge.bridge(sub, cost_of_pass_group=f"manual/dispatch/{req.split()[0].lower()}/success")
+            row = bridge.bridge(sub, eval_result=eval_result, prompt_pack=pack,
+                                cost_of_pass_group=f"manual/dispatch/{req.split()[0].lower()}/success")
             accum.add(row)
 
             session = store.advance(session, "recorded")

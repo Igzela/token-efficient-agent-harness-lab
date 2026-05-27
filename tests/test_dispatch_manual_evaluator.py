@@ -72,6 +72,32 @@ class ManualEvaluatorTests(unittest.TestCase):
         self.assertIn("checks", d)
         self.assertIsInstance(d["checks"], list)
 
+    def test_boundary_heuristic_target_write_detected(self):
+        evaluator, pack = _make_evaluator_and_pack("Fix the bug and commit changes to main")
+        sub = self.parser.parse("disp-001", "Done. I committed the fix to the repository.")
+        result = evaluator.evaluate(sub, pack)
+        boundary_checks = [c for c in result.checks if c.name == "boundary_compliance"]
+        self.assertEqual(len(boundary_checks), 1)
+        self.assertEqual(boundary_checks[0].status, "fail")
+        self.assertIn("no_target_write", boundary_checks[0].reason)
+
+    def test_boundary_heuristic_provider_detected(self):
+        evaluator, pack = _make_evaluator_and_pack("Summarize the README without provider calls")
+        sub = self.parser.parse("disp-001", "I called OpenAI to summarize the file.")
+        result = evaluator.evaluate(sub, pack)
+        boundary_checks = [c for c in result.checks if c.name == "boundary_compliance"]
+        self.assertEqual(len(boundary_checks), 1)
+        self.assertEqual(boundary_checks[0].status, "fail")
+        self.assertIn("no_provider_call", boundary_checks[0].reason)
+
+    def test_boundary_heuristic_clean_output_passes(self):
+        evaluator, pack = _make_evaluator_and_pack("Fix the bug and commit changes to main")
+        sub = self.parser.parse("disp-001", "The fix has been applied to the code.")
+        result = evaluator.evaluate(sub, pack)
+        boundary_checks = [c for c in result.checks if c.name == "boundary_compliance"]
+        self.assertEqual(len(boundary_checks), 1)
+        self.assertEqual(boundary_checks[0].status, "pass")
+
     def test_all_checks_have_ids(self):
         evaluator, pack = _make_evaluator_and_pack()
         sub = self.parser.parse("disp-001", "Output")

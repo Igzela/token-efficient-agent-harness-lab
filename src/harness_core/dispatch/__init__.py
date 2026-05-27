@@ -44,7 +44,7 @@ from .executor_adapter import (
     MockExecutor,
     NoopExecutor,
 )
-from .manual_evaluator import ManualEvalCheck, ManualEvalResult, ManualEvaluator
+from .manual_evaluator import MANUAL_EVAL_RESULT_SCHEMA_VERSION, ManualEvalCheck, ManualEvalResult, ManualEvaluator
 from .manual_session import MANUAL_SESSION_SCHEMA_VERSION, MANUAL_SESSION_STATUSES, ManualExecutionSession, ManualSessionStore
 from .manual_usage_bridge import ManualUsageBridge
 from .model_selector import DispatchRoutingPolicy, ModelSelector
@@ -85,7 +85,6 @@ __all__ = [
     "MANUAL_EVAL_RESULT_SCHEMA_VERSION",
     "MANUAL_SESSION_SCHEMA_VERSION",
     "MANUAL_SESSION_STATUSES",
-    "MANUAL_EXECUTION_SESSION_SCHEMA_VERSION",
     "PASTEBACK_SUBMISSION_SCHEMA_VERSION",
     "PROMPT_PACK_SCHEMA_VERSION",
     "ManualEvalCheck",

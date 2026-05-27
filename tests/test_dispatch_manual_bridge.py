@@ -7,8 +7,11 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 import unittest
 from harness_core.dispatch.cost_of_pass import CostOfPassAccumulator
+from harness_core.dispatch.dispatch_engine import DispatchEngine
+from harness_core.dispatch.manual_evaluator import ManualEvaluator
 from harness_core.dispatch.manual_usage_bridge import ManualUsageBridge
 from harness_core.dispatch.pasteback_parser import PastebackParser
+from harness_core.dispatch.prompt_pack_gen import PromptPackGenerator
 from harness_core.usage_ledger import UsageLedgerRow
 
 
@@ -52,6 +55,48 @@ class ManualUsageBridgeTests(unittest.TestCase):
         )
         self.assertEqual(row.cost_of_pass_group, "eval/task_a/variant_1/success")
         self.assertEqual(row.model_profile_id, "gpt-4")
+
+    def test_bridge_pass_derived_from_eval_result(self):
+        engine = DispatchEngine()
+        gen = PromptPackGenerator()
+        evaluator = ManualEvaluator()
+
+        bundle = engine.dispatch("Summarize the README")
+        did = bundle.record.dispatch_id
+        pack = gen.generate(bundle.decision, "Summarize the README", dispatch_id=did)
+        sub = self.parser.parse(did, "The README describes the project.")
+
+        eval_pass = evaluator.evaluate(sub, pack)
+        row = self.bridge.bridge(sub, eval_result=eval_pass)
+        self.assertTrue(row.pass_)
+
+    def test_bridge_fail_on_eval_fail(self):
+        engine = DispatchEngine()
+        gen = PromptPackGenerator()
+        evaluator = ManualEvaluator()
+
+        bundle = engine.dispatch("Summarize the README")
+        did = bundle.record.dispatch_id
+        pack = gen.generate(bundle.decision, "Summarize the README", dispatch_id=did)
+        sub = self.parser.parse(did, "Traceback (most recent call last):\n  Error: something broke")
+
+        eval_result = evaluator.evaluate(sub, pack)
+        self.assertEqual(eval_result.status, "needs_human_review")
+        row = self.bridge.bridge(sub, eval_result=eval_result)
+        self.assertFalse(row.pass_)
+
+    def test_bridge_input_tokens_from_prompt_pack(self):
+        engine = DispatchEngine()
+        gen = PromptPackGenerator()
+
+        bundle = engine.dispatch("Summarize the README")
+        did = bundle.record.dispatch_id
+        pack = gen.generate(bundle.decision, "Summarize the README", dispatch_id=did)
+        sub = self.parser.parse(did, "Short output")
+
+        row = self.bridge.bridge(sub, prompt_pack=pack)
+        self.assertGreater(row.input_tokens, 0)
+        self.assertGreater(row.output_tokens, 0)
 
 
 class CostOfPassAccumulatorTests(unittest.TestCase):
