@@ -1,0 +1,18 @@
+{
+  "fixture_id": "fixture_01",
+  "name": "low_risk_summary",
+  "raw_request": "Summarize the README file for the project",
+  "request_source": "test_fixture",
+  "expected_analysis": {
+    "task_domain": "docs",
+    "task_intent": "summarize",
+    "risk_flags": [],
+    "risk_level": "low",
+    "confidence_label": "high",
+    "safe_default": "proceed_with_caution"
+  },
+  "expected_gates": [
+    "provider_disabled",
+    "sandbox_disabled"
+  ]
+}

@@ -1,0 +1,22 @@
+{
+  "fixture_id": "fixture_14",
+  "name": "ambiguous",
+  "raw_request": "Make it better",
+  "request_source": "test_fixture",
+  "expected_analysis": {
+    "task_domain": "other",
+    "task_intent": "classify",
+    "risk_flags": [
+      "high_uncertainty"
+    ],
+    "risk_level": "low",
+    "confidence_label": "low",
+    "safe_default": "escalate_to_human"
+  },
+  "expected_gates": [
+    "provider_disabled",
+    "sandbox_disabled",
+    "confidence",
+    "manual_review"
+  ]
+}

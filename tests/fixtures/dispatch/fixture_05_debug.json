@@ -1,0 +1,18 @@
+{
+  "fixture_id": "fixture_05",
+  "name": "debug",
+  "raw_request": "Debug the failing test in test_auth.py and fix the root cause",
+  "request_source": "test_fixture",
+  "expected_analysis": {
+    "task_domain": "code",
+    "task_intent": "debug",
+    "risk_flags": [],
+    "risk_level": "low",
+    "confidence_label": "high",
+    "safe_default": "proceed_with_caution"
+  },
+  "expected_gates": [
+    "provider_disabled",
+    "sandbox_disabled"
+  ]
+}

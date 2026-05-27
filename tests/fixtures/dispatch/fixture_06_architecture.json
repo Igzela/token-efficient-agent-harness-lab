@@ -1,0 +1,18 @@
+{
+  "fixture_id": "fixture_06",
+  "name": "architecture",
+  "raw_request": "Design the architecture for a new microservice with event-driven communication",
+  "request_source": "test_fixture",
+  "expected_analysis": {
+    "task_domain": "architecture",
+    "task_intent": "generate",
+    "risk_flags": [],
+    "risk_level": "low",
+    "confidence_label": "high",
+    "safe_default": "proceed_with_caution"
+  },
+  "expected_gates": [
+    "provider_disabled",
+    "sandbox_disabled"
+  ]
+}

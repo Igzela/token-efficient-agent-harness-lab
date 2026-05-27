@@ -1,0 +1,20 @@
+{
+  "fixture_id": "fixture_13",
+  "name": "long_context",
+  "raw_request": "Analyze this 500-file large codebase for architectural patterns and anti-patterns",
+  "request_source": "test_fixture",
+  "expected_analysis": {
+    "task_domain": "architecture",
+    "task_intent": "classify",
+    "risk_flags": [
+      "long_context"
+    ],
+    "risk_level": "low",
+    "confidence_label": "medium",
+    "safe_default": "proceed_with_caution"
+  },
+  "expected_gates": [
+    "provider_disabled",
+    "sandbox_disabled"
+  ]
+}

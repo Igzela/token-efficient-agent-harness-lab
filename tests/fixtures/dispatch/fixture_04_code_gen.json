@@ -1,0 +1,18 @@
+{
+  "fixture_id": "fixture_04",
+  "name": "code_gen",
+  "raw_request": "Generate a CLI tool for YAML validation with error reporting",
+  "request_source": "test_fixture",
+  "expected_analysis": {
+    "task_domain": "config",
+    "task_intent": "generate",
+    "risk_flags": [],
+    "risk_level": "low",
+    "confidence_label": "high",
+    "safe_default": "proceed_with_caution"
+  },
+  "expected_gates": [
+    "provider_disabled",
+    "sandbox_disabled"
+  ]
+}

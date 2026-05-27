@@ -1,0 +1,18 @@
+{
+  "fixture_id": "fixture_02",
+  "name": "doc_audit",
+  "raw_request": "Audit the documentation for broken links and outdated references",
+  "request_source": "test_fixture",
+  "expected_analysis": {
+    "task_domain": "docs",
+    "task_intent": "audit",
+    "risk_flags": [],
+    "risk_level": "medium",
+    "confidence_label": "high",
+    "safe_default": "proceed_with_caution"
+  },
+  "expected_gates": [
+    "provider_disabled",
+    "sandbox_disabled"
+  ]
+}

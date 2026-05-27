@@ -1,0 +1,18 @@
+{
+  "fixture_id": "fixture_09",
+  "name": "infra_deploy",
+  "raw_request": "Review infrastructure deployment pipeline for reliability issues",
+  "request_source": "test_fixture",
+  "expected_analysis": {
+    "task_domain": "infra",
+    "task_intent": "review",
+    "risk_flags": ["deployment"],
+    "risk_level": "critical",
+    "confidence_label": "high",
+    "safe_default": "noop_with_review"
+  },
+  "expected_gates": [
+    "provider_disabled",
+    "sandbox_disabled"
+  ]
+}

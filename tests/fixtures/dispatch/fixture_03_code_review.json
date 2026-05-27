@@ -1,0 +1,18 @@
+{
+  "fixture_id": "fixture_03",
+  "name": "code_review",
+  "raw_request": "Review auth.py for security issues and potential vulnerabilities",
+  "request_source": "test_fixture",
+  "expected_analysis": {
+    "task_domain": "code",
+    "task_intent": "review",
+    "risk_flags": [],
+    "risk_level": "low",
+    "confidence_label": "high",
+    "safe_default": "proceed_with_caution"
+  },
+  "expected_gates": [
+    "provider_disabled",
+    "sandbox_disabled"
+  ]
+}

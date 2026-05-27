@@ -1,0 +1,18 @@
+{
+  "fixture_id": "fixture_17",
+  "name": "negated_no_write",
+  "raw_request": "Review code with no target repo writes, read-only validation only",
+  "request_source": "test_fixture",
+  "expected_analysis": {
+    "task_domain": "repo_ops",
+    "task_intent": "review",
+    "risk_flags": [],
+    "risk_level": "low",
+    "confidence_label": "high",
+    "safe_default": "proceed_with_caution"
+  },
+  "expected_gates": [
+    "provider_disabled",
+    "sandbox_disabled"
+  ]
+}

@@ -1,0 +1,19 @@
+{
+  "fixture_id": "fixture_20",
+  "name": "high_quality_critical",
+  "raw_request": "Critical security review of authentication system, must be production-grade",
+  "request_source": "test_fixture",
+  "expected_analysis": {
+    "task_domain": "governance",
+    "task_intent": "review",
+    "risk_flags": ["deployment"],
+    "risk_level": "critical",
+    "confidence_label": "high",
+    "quality_requirement": "critical",
+    "safe_default": "proceed_with_caution"
+  },
+  "expected_gates": [
+    "provider_disabled",
+    "sandbox_disabled"
+  ]
+}

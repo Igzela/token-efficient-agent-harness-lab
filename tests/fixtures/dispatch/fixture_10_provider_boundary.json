@@ -1,0 +1,23 @@
+{
+  "fixture_id": "fixture_10",
+  "name": "provider_boundary",
+  "raw_request": "Call OpenAI API to analyze the codebase and generate insights",
+  "request_source": "test_fixture",
+  "expected_analysis": {
+    "task_domain": "other",
+    "task_intent": "generate",
+    "risk_flags": [
+      "provider_call"
+    ],
+    "risk_level": "high",
+    "confidence_label": "medium",
+    "safe_default": "noop_with_review"
+  },
+  "expected_gates": [
+    "provider_disabled",
+    "sandbox_disabled",
+    "risk",
+    "boundary",
+    "manual_review"
+  ]
+}

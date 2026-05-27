@@ -1,0 +1,18 @@
+{
+  "fixture_id": "fixture_15",
+  "name": "conflicting",
+  "raw_request": "Minimize cost but use the most powerful model available for this task",
+  "request_source": "test_fixture",
+  "expected_analysis": {
+    "task_domain": "other",
+    "task_intent": "classify",
+    "risk_flags": [],
+    "risk_level": "low",
+    "confidence_label": "medium",
+    "safe_default": "proceed_with_caution"
+  },
+  "expected_gates": [
+    "provider_disabled",
+    "sandbox_disabled"
+  ]
+}

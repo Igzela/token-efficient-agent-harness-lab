@@ -1,0 +1,18 @@
+{
+  "fixture_id": "fixture_19",
+  "name": "budget_constrained",
+  "raw_request": "Summarize the docs within 500 tokens budget",
+  "request_source": "test_fixture",
+  "expected_analysis": {
+    "task_domain": "docs",
+    "task_intent": "summarize",
+    "risk_flags": [],
+    "risk_level": "low",
+    "confidence_label": "high",
+    "safe_default": "proceed_with_caution"
+  },
+  "expected_gates": [
+    "provider_disabled",
+    "sandbox_disabled"
+  ]
+}
