@@ -10,8 +10,8 @@ The user may choose any of the following. Each requires explicit approval before
 
 | Path | Description |
 |---|---|
-| Review/push Trial 3 onboarding branches | Push harness-onboarding branches for simple-api-lab, cli-tool-lab, infra-config-lab and open PRs. |
-| Stop | Maintain current state. Trial 3 validated onboarding generalization across 3 project types. |
+| Trial 3 final verification | Run harness audit and planning against all 5 target repos from main to verify onboarding is effective post-merge. |
+| Stop | Maintain current state. All 5 target repos are harness-managed. Trial 3 complete. |
 | Demo polish | Refine demo docs only if user feedback requires it. |
 | Future production PRD | Draft a product requirements document for a future production track (requires new approval). |
 | Additional reliability hardening | Only if backed by new trial evidence that identifies specific issues. |

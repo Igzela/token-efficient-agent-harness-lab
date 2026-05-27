@@ -22,6 +22,7 @@ Token-Efficient Agent Harness Lab is a local deterministic harness for studying 
 | Trial 2 execution | Closed — `ACCEPTABLE_WITH_NOTES` (audit BLOCKED on target, generalization finding) |
 | Trial 2 final verification | Closed — `TRIAL_2_FINAL_VERIFICATION_PASS` |
 | Trial 3 multi-repo generalization | Closed — `TRIAL_3_MULTI_REPO_GENERALIZATION_PASS` |
+| Trial 3 target merge | Closed — all 3 target PRs merged, audit PASS_WITH_NOTES |
 
 Tests: 914 pass.
 
