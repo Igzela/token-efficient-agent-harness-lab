@@ -73,6 +73,12 @@ class OpenAIProvider(ProviderExecutor):
             usage = response_data.get("usage", {})
             content = response_data["choices"][0]["message"]["content"]
 
+            input_tok = usage.get("prompt_tokens", 0) or 0
+            output_tok = usage.get("completion_tokens", 0) or 0
+            estimated_cost = None
+            if self._config.input_cost_per_1k is not None and self._config.output_cost_per_1k is not None:
+                estimated_cost = (input_tok / 1000) * self._config.input_cost_per_1k + (output_tok / 1000) * self._config.output_cost_per_1k
+
             result = ExecutionResult(
                 result_id=f"exec-{uuid.uuid4().hex[:12]}",
                 dispatch_id=dispatch_id,
@@ -80,9 +86,9 @@ class OpenAIProvider(ProviderExecutor):
                 executor_type="provider",
                 status="provider_completed",
                 output=content,
-                input_tokens=usage.get("prompt_tokens"),
-                output_tokens=usage.get("completion_tokens"),
-                estimated_cost=None,
+                input_tokens=input_tok,
+                output_tokens=output_tok,
+                estimated_cost=estimated_cost,
                 latency_ms=latency_ms,
                 provider_request_id=response_data.get("id"),
                 attempt_number=1,

@@ -134,5 +134,204 @@ class ProviderExecutionGuardTests(unittest.TestCase):
         self.assertEqual(bundle.execution_result.status, "provider_completed")
 
 
+class MockUrlopen:
+    """Mocks urllib.request.urlopen for testing OpenAI provider without network."""
+
+    def __init__(self, response_body: dict, status: int = 200):
+        self._body = response_body
+        self._status = status
+
+    def __enter__(self):
+        import io
+        body_bytes = io.BytesIO(self._body.encode() if isinstance(self._body, str) else __import__("json").dumps(self._body).encode())
+        self._body_io = body_bytes
+        return self
+
+    def __exit__(self, *args):
+        pass
+
+    @property
+    def status(self):
+        return self._status
+
+    def read(self):
+        return self._body_io.read() if hasattr(self, '_body_io') else b'{}'
+
+
+class MockUrlopenFactory:
+    """Returns a mock urlopen that can be configured per-call."""
+
+    def __init__(self, response_body: dict, status: int = 200):
+        self._response_body = response_body
+        self._status = status
+        self.last_payload = None
+
+    def __call__(self, req, timeout=None):
+        import io
+        if hasattr(req, 'data') and req.data:
+            self.last_payload = __import__("json").loads(req.data.decode())
+        body_bytes = io.BytesIO(__import__("json").dumps(self._response_body).encode())
+        mock_resp = type('MockResp', (), {
+            'status': self._status,
+            'read': lambda s: body_bytes.read(),
+            '__enter__': lambda s: s,
+            '__exit__': lambda s, *a: None,
+        })()
+        return mock_resp
+
+
+class OpenAIProviderMockedTests(unittest.TestCase):
+    def setUp(self):
+        self.config = ProviderConfig(
+            provider_id="openai-mock",
+            provider_type="openai_compatible",
+            base_url="https://api.openai.com/v1",
+            model_id="gpt-4",
+            credential_ref="OPENAI_MOCK_KEY",
+            timeout_ms=5000,
+        )
+        self.cred_ref = CredentialRef(
+            credential_ref_id="OPENAI_MOCK_KEY",
+            storage_backend="env",
+            redacted_display="sk-***mock",
+            scope="provider:openai",
+        )
+        self.boundary = CredentialBoundary(backend="env")
+        self.audit = ProviderAuditRecorder()
+        os.environ["OPENAI_MOCK_KEY"] = "sk-test-mock-key"
+
+    def tearDown(self):
+        os.environ.pop("OPENAI_MOCK_KEY", None)
+
+    def test_successful_response_parsing(self):
+        import json as _json
+        mock_factory = MockUrlopenFactory({
+            "id": "chatcmpl-test123",
+            "choices": [{"message": {"content": "Hello world"}, "finish_reason": "stop"}],
+            "usage": {"prompt_tokens": 10, "completion_tokens": 5},
+        })
+        provider = OpenAIProvider(self.config, self.boundary, self.cred_ref, self.audit)
+        import harness_core.dispatch.provider.openai_provider as mod
+        original_urlopen = mod.urllib.request.urlopen
+        mod.urllib.request.urlopen = mock_factory
+        try:
+            engine = DispatchEngine()
+            bundle = engine.dispatch("Say hello")
+            result = provider.execute(bundle.decision, "Say hello", bundle.record.dispatch_id)
+            self.assertEqual(result.status, "provider_completed")
+            self.assertEqual(result.output, "Hello world")
+            self.assertEqual(result.input_tokens, 10)
+            self.assertEqual(result.output_tokens, 5)
+            self.assertEqual(result.provider_request_id, "chatcmpl-test123")
+            self.assertEqual(result.finish_reason, "stop")
+        finally:
+            mod.urllib.request.urlopen = original_urlopen
+
+    def test_max_tokens_uses_decision_value(self):
+        import json as _json
+        mock_factory = MockUrlopenFactory({
+            "id": "chatcmpl-test456",
+            "choices": [{"message": {"content": "ok"}, "finish_reason": "stop"}],
+            "usage": {"prompt_tokens": 5, "completion_tokens": 1},
+        })
+        provider = OpenAIProvider(self.config, self.boundary, self.cred_ref, self.audit)
+        import harness_core.dispatch.provider.openai_provider as mod
+        original_urlopen = mod.urllib.request.urlopen
+        mod.urllib.request.urlopen = mock_factory
+        try:
+            engine = DispatchEngine()
+            bundle = engine.dispatch("Short request")
+            result = provider.execute(bundle.decision, "Short request", bundle.record.dispatch_id)
+            self.assertEqual(result.status, "provider_completed")
+            max_tokens_in_payload = mock_factory.last_payload.get("max_tokens")
+            expected = bundle.decision.max_output_tokens or 1024
+            self.assertEqual(max_tokens_in_payload, expected)
+        finally:
+            mod.urllib.request.urlopen = original_urlopen
+
+    def test_malformed_json_returns_error(self):
+        import io
+        def bad_urlopen(req, timeout=None):
+            resp = type('R', (), {
+                'status': 200,
+                'read': lambda s: b'not json at all',
+                '__enter__': lambda s: s,
+                '__exit__': lambda s, *a: None,
+            })()
+            return resp
+        provider = OpenAIProvider(self.config, self.boundary, self.cred_ref, self.audit)
+        import harness_core.dispatch.provider.openai_provider as mod
+        original_urlopen = mod.urllib.request.urlopen
+        mod.urllib.request.urlopen = bad_urlopen
+        try:
+            engine = DispatchEngine()
+            bundle = engine.dispatch("Test")
+            result = provider.execute(bundle.decision, "Test", bundle.record.dispatch_id)
+            self.assertEqual(result.status, "failed")
+            self.assertEqual(result.error_domain, "provider_error")
+            self.assertIn("parse error", result.error_message.lower())
+        finally:
+            mod.urllib.request.urlopen = original_urlopen
+
+    def test_missing_choices_returns_error(self):
+        provider = OpenAIProvider(self.config, self.boundary, self.cred_ref, self.audit)
+        import harness_core.dispatch.provider.openai_provider as mod
+        mod.urllib.request.urlopen = MockUrlopenFactory({"id": "x"})
+        try:
+            engine = DispatchEngine()
+            bundle = engine.dispatch("Test")
+            result = provider.execute(bundle.decision, "Test", bundle.record.dispatch_id)
+            self.assertEqual(result.status, "failed")
+            self.assertEqual(result.error_domain, "provider_error")
+        finally:
+            mod.urllib.request.urlopen = None
+
+    def test_missing_content_returns_error(self):
+        provider = OpenAIProvider(self.config, self.boundary, self.cred_ref, self.audit)
+        import harness_core.dispatch.provider.openai_provider as mod
+        mod.urllib.request.urlopen = MockUrlopenFactory({
+            "id": "x", "choices": [{"message": {}, "finish_reason": "stop"}],
+        })
+        try:
+            engine = DispatchEngine()
+            bundle = engine.dispatch("Test")
+            result = provider.execute(bundle.decision, "Test", bundle.record.dispatch_id)
+            self.assertEqual(result.status, "failed")
+            self.assertEqual(result.error_domain, "provider_error")
+        finally:
+            mod.urllib.request.urlopen = None
+
+    def test_audit_events_no_secrets_on_success_path(self):
+        provider = OpenAIProvider(self.config, self.boundary, self.cred_ref, self.audit)
+        import harness_core.dispatch.provider.openai_provider as mod
+        mod.urllib.request.urlopen = MockUrlopenFactory({
+            "id": "chatcmpl-audit",
+            "choices": [{"message": {"content": "response with sk-12345 secret"}, "finish_reason": "stop"}],
+            "usage": {"prompt_tokens": 10, "completion_tokens": 5},
+        })
+        try:
+            engine = DispatchEngine()
+            bundle = engine.dispatch("Test with api_key sk-12345 and Authorization Bearer sk-abc")
+            result = provider.execute(bundle.decision, "Test with api_key sk-12345 and Authorization Bearer sk-abc", bundle.record.dispatch_id)
+            self.assertEqual(result.status, "provider_completed")
+            for event in self.audit.list_all():
+                d = event.to_dict()
+                for key, val in d.items():
+                    if isinstance(val, str):
+                        self.assertNotIn("sk-12345", val, f"Secret leaked in audit field {key}")
+                        self.assertNotIn("sk-abc", val, f"Secret leaked in audit field {key}")
+                        self.assertNotIn("Authorization", val, f"Auth header leaked in audit field {key}")
+        finally:
+            mod.urllib.request.urlopen = None
+
+    def test_user_negated_provider_blocks_execution(self):
+        counting = CountingProvider()
+        engine = DispatchEngine(executor=counting)
+        bundle = engine.dispatch("Summarize this without provider calls")
+        self.assertIn("no_provider_call", bundle.decision.hard_constraints)
+        self.assertEqual(counting.calls, 0)
+        self.assertEqual(bundle.execution_result.status, "not_executed")
+
+
 if __name__ == "__main__":
     unittest.main()

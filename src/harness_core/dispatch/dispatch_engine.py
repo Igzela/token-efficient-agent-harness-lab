@@ -106,7 +106,13 @@ class DispatchEngine:
 
         # Step 7: Execute (use injected executor)
         is_provider = execution_policy.get("executor_type") == "provider"
-        if is_provider and decision.decision_status != "decided":
+        provider_blocked = (
+            is_provider and (
+                decision.decision_status != "decided"
+                or "no_provider_call" in decision.hard_constraints
+            )
+        )
+        if provider_blocked:
             exec_result = ExecutionResult(
                 result_id=f"exec-{uuid.uuid4().hex[:12]}",
                 dispatch_id=dispatch_id,
@@ -264,7 +270,11 @@ class DispatchEngine:
         self, analysis: TaskAnalysis, execution_policy: dict[str, Any],
     ) -> tuple[str, ...]:
         constraints: list[str] = ["no_target_write"]
-        if execution_policy.get("executor_type") != "provider":
+        user_negated_provider = any(
+            e.feature == "provider_call" and e.polarity == "negative"
+            for e in analysis.negative_evidence
+        )
+        if execution_policy.get("executor_type") != "provider" or user_negated_provider:
             constraints.append("no_provider_call")
         if analysis.risk_level == "critical":
             constraints.append("requires_human_approval")

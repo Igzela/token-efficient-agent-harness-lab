@@ -43,6 +43,9 @@ class ProviderConfig:
     max_retries: int = 3
     rate_limit_policy_id: str | None = None
     enabled: bool = True
+    input_cost_per_1k: float | None = None  # cost per 1k input tokens
+    output_cost_per_1k: float | None = None  # cost per 1k output tokens
+    currency: str = "USD"
     created_at: str = field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
     schema_version: str = PROVIDER_CONFIG_SCHEMA_VERSION
 
@@ -58,6 +61,9 @@ class ProviderConfig:
             "max_retries": self.max_retries,
             "rate_limit_policy_id": self.rate_limit_policy_id,
             "enabled": self.enabled,
+            "input_cost_per_1k": self.input_cost_per_1k,
+            "output_cost_per_1k": self.output_cost_per_1k,
+            "currency": self.currency,
             "created_at": self.created_at,
         }
 
@@ -85,7 +91,7 @@ class CredentialRef:
 @dataclass(frozen=True)
 class RetryPolicy:
     policy_id: str
-    max_retries: int = 3
+    max_retries: int = 3  # retries after first attempt (total attempts = 1 + max_retries)
     backoff_strategy: str = "exponential"  # from BACKOFF_STRATEGIES
     base_delay_ms: int = 1000
     max_delay_ms: int = 30_000
