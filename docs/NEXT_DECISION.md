@@ -10,8 +10,8 @@ The user may choose any of the following. Each requires explicit approval before
 
 | Path | Description |
 |---|---|
-| Trial 2 final verification on target main | Run harness audit and planning against hermes-gateway-lab target main to verify onboarding is effective post-merge. |
-| Trial 3 on another repo | Run Trial 3 against a third target repo (requires target onboarding or BLOCKED handling). |
+| Review/push Trial 3 onboarding branches | Push harness-onboarding branches for simple-api-lab, cli-tool-lab, infra-config-lab and open PRs. |
+| Stop | Maintain current state. Trial 3 validated onboarding generalization across 3 project types. |
 | Demo polish | Refine demo docs only if user feedback requires it. |
 | Future production PRD | Draft a product requirements document for a future production track (requires new approval). |
 | Additional reliability hardening | Only if backed by new trial evidence that identifies specific issues. |
