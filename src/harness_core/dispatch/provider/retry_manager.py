@@ -41,6 +41,9 @@ class RetryFallbackManager:
                 if result.status != "failed" or not self._is_retryable(result):
                     break
 
+        if result.error_domain == "budget_exhausted":
+            return result
+
         if result.status == "failed" and self._fallback is not None:
             result = self._try_execute(self._fallback, decision, raw_request, dispatch_id, attempt=1)
 

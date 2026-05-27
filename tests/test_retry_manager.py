@@ -88,6 +88,20 @@ class RetryFallbackManagerTests(unittest.TestCase):
         self.assertEqual(result.status, "failed")
         self.assertEqual(result.error_domain, "budget_exhausted")
 
+    def test_budget_exhausted_blocks_fallback(self):
+        failing = FailingProvider(fail_count=10)
+        stub = StubProvider()
+        policy = RetryPolicy(policy_id="t", max_retries=5, backoff_strategy="none", budget_check_per_retry=True)
+        call_count = [0]
+        def budget_check():
+            call_count[0] += 1
+            return call_count[0] <= 1
+        manager = RetryFallbackManager(failing, stub, policy, budget_check=budget_check)
+        bundle = self.engine.dispatch("Test")
+        result = manager.execute(bundle.decision, "Test", bundle.record.dispatch_id)
+        self.assertEqual(result.status, "failed")
+        self.assertEqual(result.error_domain, "budget_exhausted")
+
     def test_no_fallback_returns_failure(self):
         always_fails = FailingProvider(fail_count=100)
         policy = RetryPolicy(policy_id="t", max_retries=1, backoff_strategy="none")

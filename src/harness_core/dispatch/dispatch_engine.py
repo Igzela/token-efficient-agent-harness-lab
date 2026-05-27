@@ -78,7 +78,7 @@ class DispatchEngine:
             fallback_tier=fallback_tier,
             fallback_profile_id=fallback_profile_id,
             shadow_routes=tuple(shadow_routes),
-            hard_constraints=self._derive_hard_constraints(analysis),
+            hard_constraints=self._derive_hard_constraints(analysis, execution_policy),
             rejected_candidates=tuple(rejected_candidates),
             no_shadow_route_reason=None if shadow_routes else "no_alternatives_available",
             max_input_tokens=analysis.context_budget_estimate,
@@ -134,13 +134,16 @@ class DispatchEngine:
         self, tier: str, analysis: TaskAnalysis,
     ) -> dict[str, Any]:
         type_name = type(self._executor).__name__
-        executor_type = type_name.replace("Executor", "").lower()
-        if executor_type not in ("noop", "mock", "manual"):
-            executor_type = "noop"
+        is_provider = "Provider" in type_name or "provider" in type_name.lower()
 
-        # Phase 1: provider is always disabled
-        if executor_type == "provider":
-            executor_type = "noop"
+        if is_provider:
+            executor_type = "provider"
+            execution_allowed = True
+        else:
+            executor_type = type_name.replace("Executor", "").lower()
+            if executor_type not in ("noop", "mock", "manual"):
+                executor_type = "noop"
+            execution_allowed = True
 
         requires_review = (
             analysis.risk_level in ("critical", "high")
@@ -149,9 +152,9 @@ class DispatchEngine:
 
         return {
             "executor_type": executor_type,
-            "execution_allowed": executor_type != "provider",
+            "execution_allowed": execution_allowed,
             "requires_human_review": requires_review,
-            "max_retries": 0,  # Phase 1: no real retry
+            "max_retries": 0,
         }
 
     def _build_execution_gates(
@@ -162,13 +165,15 @@ class DispatchEngine:
     ) -> list[ExecutionGate]:
         gates: list[ExecutionGate] = []
 
-        # Phase 1 capability visibility (info, not block)
-        gates.append(ExecutionGate(
-            gate_id=f"gate-{uuid.uuid4().hex[:8]}",
-            gate_type="provider_disabled",
-            severity="info",
-            reason="real provider calls disabled in Phase 1",
-            clearance_required="policy",
+        is_provider = execution_policy.get("executor_type") == "provider"
+
+        if not is_provider:
+            gates.append(ExecutionGate(
+                gate_id=f"gate-{uuid.uuid4().hex[:8]}",
+                gate_type="provider_disabled",
+                severity="info",
+                reason="real provider calls disabled — non-provider executor",
+                clearance_required="policy",
         ))
 
         gates.append(ExecutionGate(
@@ -241,8 +246,12 @@ class DispatchEngine:
 
         return gates
 
-    def _derive_hard_constraints(self, analysis: TaskAnalysis) -> tuple[str, ...]:
-        constraints = ["no_provider_call", "no_target_write"]
+    def _derive_hard_constraints(
+        self, analysis: TaskAnalysis, execution_policy: dict[str, Any],
+    ) -> tuple[str, ...]:
+        constraints: list[str] = ["no_target_write"]
+        if execution_policy.get("executor_type") != "provider":
+            constraints.append("no_provider_call")
         if analysis.risk_level == "critical":
             constraints.append("requires_human_approval")
         return tuple(constraints)

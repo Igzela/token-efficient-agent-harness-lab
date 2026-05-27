@@ -66,6 +66,31 @@ class OpenAIProviderTests(unittest.TestCase):
         result = provider.execute(bundle.decision, "Test", bundle.record.dispatch_id)
         self.assertIn(result.error_domain, ("provider_auth", "provider_error", "provider_timeout"))
 
+    def test_audit_events_never_contain_secrets(self):
+        os.environ.pop("OPENAI_TEST_KEY", None)
+        provider = OpenAIProvider(self.config, self.boundary, self.cred_ref, self.audit)
+        engine = DispatchEngine()
+        bundle = engine.dispatch("Test with secret api_key=sk-12345")
+        provider.execute(bundle.decision, "Test with secret api_key=sk-12345", bundle.record.dispatch_id)
+        for event in self.audit.list_all():
+            d = event.to_dict()
+            for key, val in d.items():
+                if isinstance(val, str):
+                    self.assertNotIn("sk-12345", val, f"Secret leaked in audit field {key}")
+                    self.assertNotIn("Authorization", val, f"Auth header leaked in audit field {key}")
+                    self.assertNotIn("api_key", val.lower().replace("_", ""), f"API key reference in audit field {key}")
+
+    def test_engine_provider_execution_policy(self):
+        os.environ.pop("OPENAI_TEST_KEY", None)
+        provider = OpenAIProvider(self.config, self.boundary, self.cred_ref, self.audit)
+        engine = DispatchEngine(executor=provider)
+        bundle = engine.dispatch("Test")
+        self.assertEqual(bundle.decision.execution_policy["executor_type"], "provider")
+        self.assertTrue(bundle.decision.execution_policy["execution_allowed"])
+        gate_types = [g.gate_type for g in bundle.decision.execution_gates]
+        self.assertNotIn("provider_disabled", gate_types)
+        self.assertNotIn("no_provider_call", bundle.decision.hard_constraints)
+
 
 if __name__ == "__main__":
     unittest.main()

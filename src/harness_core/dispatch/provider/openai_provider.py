@@ -67,7 +67,8 @@ class OpenAIProvider(ProviderExecutor):
         self._record_event(dispatch_id, "request_sent")
 
         try:
-            response_data = self._call_api(api_key, raw_request)
+            max_tokens = decision.max_output_tokens or 1024
+            response_data = self._call_api(api_key, raw_request, max_tokens)
             latency_ms = int((time.monotonic() - start) * 1000)
             usage = response_data.get("usage", {})
             content = response_data["choices"][0]["message"]["content"]
@@ -97,6 +98,26 @@ class OpenAIProvider(ProviderExecutor):
                 latency_ms=latency_ms,
             )
             return result
+
+        except (json.JSONDecodeError, KeyError, IndexError, TypeError) as e:
+            latency_ms = int((time.monotonic() - start) * 1000)
+            self._record_event(
+                dispatch_id, "error",
+                error_domain="provider_error",
+                latency_ms=latency_ms,
+            )
+            return ExecutionResult(
+                result_id=f"exec-{uuid.uuid4().hex[:12]}",
+                dispatch_id=dispatch_id,
+                decision_id=decision.decision_id,
+                executor_type="provider",
+                status="failed",
+                error_domain="provider_error",
+                error_message=f"Response parse error: {e}",
+                latency_ms=latency_ms,
+                attempt_number=1,
+                created_at=datetime.now(timezone.utc).isoformat(),
+            )
 
         except urllib.error.HTTPError as e:
             latency_ms = int((time.monotonic() - start) * 1000)
@@ -153,12 +174,12 @@ class OpenAIProvider(ProviderExecutor):
         except Exception:
             return False
 
-    def _call_api(self, api_key: str, prompt: str) -> dict[str, Any]:
+    def _call_api(self, api_key: str, prompt: str, max_tokens: int = 1024) -> dict[str, Any]:
         url = f"{self._config.base_url}/chat/completions"
         payload = json.dumps({
             "model": self._config.model_id,
             "messages": [{"role": "user", "content": prompt}],
-            "max_tokens": 1024,
+            "max_tokens": max_tokens,
         }).encode()
 
         req = urllib.request.Request(
