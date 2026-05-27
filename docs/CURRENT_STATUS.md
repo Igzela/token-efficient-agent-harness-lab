@@ -28,7 +28,7 @@ Last verified: 2026-05-27.
 | Trial 2 candidate selection | Planned — hermes-gateway-lab recommended |
 | Trial 2 execution | Closed — `ACCEPTABLE_WITH_NOTES` (audit BLOCKED on target, generalization finding) |
 | Target repo onboarding plan | Complete — plan and templates ready, awaiting user approval for target writes |
-| Target repo onboarding (hermes-gateway-lab) | Applied locally on branch `harness-onboarding` (commit `05092f0`), not pushed |
+| Target repo onboarding (hermes-gateway-lab) | Complete — PR #1 merged (commit `77cf282`), onboarding files on target main, audit PASS_WITH_NOTES / blockers [] |
 | Trial 2 onboarded replay | Closed — `ACCEPTABLE_FOR_ONBOARDED_SECOND_PROJECT_TRIAL` (audit PASS_WITH_NOTES, 0 blockers, 5 plans created) |
 
 ## Current App Capability

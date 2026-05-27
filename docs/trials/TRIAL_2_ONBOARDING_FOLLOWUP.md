@@ -31,3 +31,12 @@ No Trial 2 rerun until onboarding is applied or the user chooses another target.
 ## Replay Completed
 
 The onboarded replay has been executed. Result: `ACCEPTABLE_FOR_ONBOARDED_SECOND_PROJECT_TRIAL`. Full report: `docs/trials/TRIAL_2_ONBOARDED_REPLAY_REPORT.md`.
+
+## Target Onboarding Complete
+
+- Onboarding plan applied to hermes-gateway-lab
+- Branch `harness-onboarding` pushed and PR #1 opened
+- PR #1 reviewed (APPROVE TARGET PR FOR HUMAN MERGE) and merged (commit `77cf282`)
+- Audit after merge: PASS_WITH_NOTES, blockers []
+- hermes-gateway-lab is now harness-managed enough for audit and planning
+- Future trials may use target main, not local onboarding branch
