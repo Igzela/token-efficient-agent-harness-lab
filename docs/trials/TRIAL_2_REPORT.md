@@ -120,3 +120,7 @@ Notes:
 Rationale: hermes-gateway-lab is a valid second target but needs harness control files before Trial 2 can proceed to plan execution. A target onboarding plan would document what control files are needed and how to add them without modifying the target repo in ways that violate its purpose.
 
 Alternative: **persist Trial 2 report** — if the BLOCKED result is sufficient evidence that the app generalizes, no further action is needed on hermes-gateway-lab.
+
+## 11. Post-onboarding Replay
+
+After onboarding was applied, the onboarded replay returned `ACCEPTABLE_FOR_ONBOARDED_SECOND_PROJECT_TRIAL`. Full report: `docs/trials/TRIAL_2_ONBOARDED_REPLAY_REPORT.md`.
