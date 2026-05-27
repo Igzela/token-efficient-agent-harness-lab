@@ -24,7 +24,16 @@ Token-Efficient Agent Harness Lab is a local deterministic harness for studying 
 | Trial 3 multi-repo generalization | Closed — `TRIAL_3_MULTI_REPO_GENERALIZATION_PASS` |
 | Trial 3 target merge | Closed — all 3 target PRs merged, audit PASS_WITH_NOTES |
 
-Tests: 914 pass.
+Tests: 1188 pass.
+
+Additional active architecture track:
+
+| Track | Status |
+|---|---|
+| Dispatch Kernel Phase 1 | Stable |
+| Dispatch Kernel Phase 2 | Stable |
+| Dispatch Kernel Phase 3 — Provider Adapter Boundary | Stable, CA-7 compliant, no bundled real transport |
+| Dispatch Kernel Phase 4 | Not started; requires explicit approval |
 
 ## What This Project Is Not
 
@@ -60,3 +69,14 @@ Do **not** start any of the following without explicit human approval:
 - Approval/run/execute/deploy/merge controls
 
 Before proposing any new track, read `docs/CURRENT_STATUS.md` and `docs/NEXT_DECISION.md` first.
+
+## Documentation Maintenance
+
+After any commit-sized change, update the handoff docs before committing:
+
+- `docs/CURRENT_STATUS.md` for current state, test count, stable commit, limitations, and verification
+- `docs/NEXT_DECISION.md` for allowed/disallowed next paths
+- `docs/MODULE_MAP.md` for module ownership changes
+- `README.md`, `CLAUDE.md`, and `AGENTS.md` for agent-facing workflow or boundary changes
+
+If no docs changed, state the reason in the completion report.

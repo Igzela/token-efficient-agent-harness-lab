@@ -16,10 +16,24 @@ The Stage 0-4 task-book scope is complete.
 - Harness App MVP0-MVP8 complete (local operations console).
 - Trial 0 closed — real target `PASS` verdict.
 - Trial 1 closed — `ACCEPTABLE_FOR_MULTI_TASK_TRIAL_AFTER_HARDENING`.
+- Trial 2 final verification closed — `TRIAL_2_FINAL_VERIFICATION_PASS`.
+- Trial 3 multi-repo generalization and target merge closed.
 - Reliability Hardening 1 complete (negated risk and triage differentiation).
+- Dispatch Kernel Phase 3 provider-adapter boundary stable and CA-7 compliant.
 - GitHub private repository published.
 
 This project is now in post-closeout maintenance mode. The local dashboard is complete as a prototype. New UI, product, or production tracks still require explicit scope and human approval.
+
+## New Session Bootstrap
+
+Every Codex, Claude Code, or other coding-agent session must start by reading:
+
+1. `docs/SESSION_START_HERE.md`
+2. `docs/CURRENT_STATUS.md`
+3. `docs/NEXT_DECISION.md`
+4. `docs/MODULE_MAP.md`
+
+Treat those files as the handoff surface. If they disagree with `README.md`, `CLAUDE.md`, or recent git history, repair the documentation before continuing feature work.
 
 ## Default Agent Behavior
 
@@ -73,6 +87,18 @@ Requires explicit approval:
 - benchmarking framework
 - deployment work
 - broad runtime refactors
+
+## Documentation Maintenance Rule
+
+After every commit-sized change, update the handoff docs before committing:
+
+- `docs/CURRENT_STATUS.md` for current branch, latest stable commit, test count, sealed tracks, and known limitations
+- `docs/NEXT_DECISION.md` when the allowed/disallowed next paths change
+- `docs/MODULE_MAP.md` when source/test ownership changes
+- `README.md` when quickstart commands, status, test counts, or repo structure change
+- `CLAUDE.md` and this file when agent behavior, boundaries, or workflow rules change
+
+If a change does not require documentation updates, state that explicitly in the commit or final report. Never leave a new session guessing which document is authoritative.
 
 ## Test Command
 
