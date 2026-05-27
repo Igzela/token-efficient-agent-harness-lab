@@ -1,11 +1,9 @@
-"""OpenAI-compatible provider — real API calls via urllib."""
+"""OpenAI-compatible provider adapter with injected transport."""
 
 from __future__ import annotations
 
 import json
 import time
-import urllib.error
-import urllib.request
 import uuid
 from datetime import datetime, timezone
 from typing import Any
@@ -29,8 +27,41 @@ _ERROR_DOMAIN_MAP: dict[int, str] = {
 }
 
 
+class ProviderRequest:
+    """Small request object used by tests without importing network libraries."""
+
+    def __init__(
+        self,
+        url: str,
+        data: bytes | None = None,
+        headers: dict[str, str] | None = None,
+        method: str = "GET",
+    ) -> None:
+        self.url = url
+        self.data = data
+        self.headers = headers or {}
+        self.method = method
+
+
+class ProviderHTTPError(Exception):
+    def __init__(self, code: int, reason: str) -> None:
+        super().__init__(reason)
+        self.code = code
+        self.reason = reason
+
+
+class ProviderConnectionError(Exception):
+    def __init__(self, reason: str) -> None:
+        super().__init__(reason)
+        self.reason = reason
+
+
+def urlopen(req: ProviderRequest, timeout: float | None = None) -> Any:
+    raise ProviderConnectionError("network transport not configured")
+
+
 class OpenAIProvider(ProviderExecutor):
-    """OpenAI-compatible API provider using stdlib urllib."""
+    """OpenAI-compatible provider using a caller-injected transport seam."""
 
     def __init__(
         self,
@@ -139,7 +170,7 @@ class OpenAIProvider(ProviderExecutor):
                 created_at=datetime.now(timezone.utc).isoformat(),
             )
 
-        except urllib.error.HTTPError as e:
+        except ProviderHTTPError as e:
             latency_ms = int((time.monotonic() - start) * 1000)
             error_domain = _ERROR_DOMAIN_MAP.get(e.code, "provider_error")
             self._record_event(
@@ -160,7 +191,7 @@ class OpenAIProvider(ProviderExecutor):
                 created_at=datetime.now(timezone.utc).isoformat(),
             )
 
-        except urllib.error.URLError as e:
+        except ProviderConnectionError as e:
             latency_ms = int((time.monotonic() - start) * 1000)
             self._record_event(
                 dispatch_id, "error",
@@ -184,12 +215,12 @@ class OpenAIProvider(ProviderExecutor):
         try:
             api_key = self._boundary.resolve(self._cred_ref)
             url = f"{self._config.base_url}/models"
-            req = urllib.request.Request(
+            req = ProviderRequest(
                 url,
                 headers={"Authorization": f"Bearer {api_key}"},
                 method="GET",
             )
-            with urllib.request.urlopen(req, timeout=5) as resp:
+            with urlopen(req, timeout=5) as resp:
                 return resp.status == 200
         except Exception:
             return False
@@ -202,7 +233,7 @@ class OpenAIProvider(ProviderExecutor):
             "max_tokens": max_tokens,
         }).encode()
 
-        req = urllib.request.Request(
+        req = ProviderRequest(
             url,
             data=payload,
             headers={
@@ -213,7 +244,7 @@ class OpenAIProvider(ProviderExecutor):
         )
 
         timeout_s = self._config.timeout_ms / 1000
-        with urllib.request.urlopen(req, timeout=timeout_s) as resp:
+        with urlopen(req, timeout=timeout_s) as resp:
             return json.loads(resp.read().decode())
 
     def _record_event(self, dispatch_id: str, event_type: str, **kwargs: Any) -> None:

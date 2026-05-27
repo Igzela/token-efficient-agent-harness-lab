@@ -105,7 +105,7 @@ Trial 3 target merge closeout: [`docs/trials/TRIAL_3_TARGET_MERGE_CLOSEOUT.md`](
 - `provider/redaction.py` — secret stripping from text and audit fields
 - `provider/audit_recorder.py` — ProviderAuditEvent + in-memory recorder (never stores raw prompt/response)
 - `provider/provider_executor.py` — duck-typed ProviderExecutor + StubProvider
-- `provider/openai_provider.py` — real OpenAI-compatible API via urllib.request (stdlib)
+- `provider/openai_provider.py` — OpenAI-compatible adapter with test-injected transport; no bundled network import under CA-7
 - `provider/retry_manager.py` — RetryFallbackManager with budget check, backoff, fallback routing
 
 **Accepted limitations (non-blocking, future refinement):**
