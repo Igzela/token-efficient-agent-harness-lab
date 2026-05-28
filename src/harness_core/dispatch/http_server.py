@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import threading
 import uuid
 from dataclasses import dataclass, field
@@ -11,8 +12,11 @@ from typing import Any, Callable
 
 from .auth import AuthorizationDecision, RequestContext
 
+_log = logging.getLogger(__name__)
 
 HTTP_SERVER_SCHEMA_VERSION = "http_server.v1"
+MAX_BODY_SIZE = 1_048_576  # 1 MB
+_BODY_ERROR = object()  # sentinel: _read_body already sent an error response
 
 
 @dataclass(frozen=True)
@@ -63,17 +67,24 @@ class HarnessHTTPHandler(BaseHTTPRequestHandler):
         content_length = int(self.headers.get("Content-Length", 0))
         if content_length == 0:
             return None
+        if content_length > MAX_BODY_SIZE:
+            self._send_error_json(413, "request body too large")
+            return _BODY_ERROR  # type: ignore[return-value]
         body = self.rfile.read(content_length)
         try:
             return json.loads(body)
         except json.JSONDecodeError:
-            return None
+            self._send_error_json(400, "invalid JSON")
+            return _BODY_ERROR  # type: ignore[return-value]
 
     def _send_json(self, data: dict[str, Any], status: int = 200) -> None:
         body = json.dumps(data, default=str).encode()
         self.send_response(status)
         self.send_header("Content-Type", "application/json")
         self.send_header("Content-Length", str(len(body)))
+        self.send_header("Access-Control-Allow-Origin", "*")
+        self.send_header("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
+        self.send_header("Access-Control-Allow-Headers", "Content-Type, Authorization")
         self.end_headers()
         self.wfile.write(body)
 
@@ -160,6 +171,14 @@ class HarnessHTTPHandler(BaseHTTPRequestHandler):
     def do_DELETE(self) -> None:
         self._handle_request("DELETE")
 
+    def do_OPTIONS(self) -> None:
+        self.send_response(204)
+        self.send_header("Access-Control-Allow-Origin", "*")
+        self.send_header("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
+        self.send_header("Access-Control-Allow-Headers", "Content-Type, Authorization")
+        self.send_header("Access-Control-Max-Age", "86400")
+        self.end_headers()
+
     def _authenticate_request(self) -> RequestContext | None:
         """Run auth middleware if tenant_resolver is configured.
 
@@ -207,6 +226,8 @@ class HarnessHTTPHandler(BaseHTTPRequestHandler):
             return
 
         body = self._read_body()
+        if body is _BODY_ERROR:
+            return
         match = RouteMatch(
             method=method,
             path=self.path,
@@ -218,6 +239,7 @@ class HarnessHTTPHandler(BaseHTTPRequestHandler):
             response = handler(match, body)
             self._send_json(response)
         except Exception:
+            _log.exception("handler error for %s %s", method, self.path)
             self._send_error_json(500, "internal server error")
 
 
