@@ -130,6 +130,18 @@ from .auth import (
     generate_salt,
     hash_api_key,
 )
+from .dashboard import (
+    DASHBOARD_SCHEMA_VERSION,
+    DashboardSummary,
+    DispatchDashboard,
+    ExperimentResult,
+)
+from .benchmark import (
+    BENCHMARK_SCHEMA_VERSION,
+    BenchmarkResult,
+    BenchmarkSuite,
+    BenchmarkTask,
+)
 
 __all__ = [
     "BUDGET_RESERVATION_SCHEMA_VERSION",
@@ -258,4 +270,12 @@ __all__ = [
     "generate_api_key",
     "generate_salt",
     "hash_api_key",
+    "DASHBOARD_SCHEMA_VERSION",
+    "DashboardSummary",
+    "DispatchDashboard",
+    "ExperimentResult",
+    "BENCHMARK_SCHEMA_VERSION",
+    "BenchmarkResult",
+    "BenchmarkSuite",
+    "BenchmarkTask",
 ]
