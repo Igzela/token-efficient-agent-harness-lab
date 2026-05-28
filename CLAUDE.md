@@ -84,6 +84,7 @@ See `docs/CURRENT_STATUS.md` for full details.
 - **2026-05-28**: Phase 6B-2 STABLE after 2 rounds of GPT review (BLOCK → PASS). 1654 tests. P0 fix: RequestContext now flows into RouteMatch so handlers access tenant_id/scopes. Hardening: generic 401, token shape validation, scope subset constraint. Commit 6934b72.
 - **2026-05-28**: Phase 6B-3 + Phase 7 fan-out — 7 new modules (rate_limiter, backup_manager, plugin_system, plugin_registry, sdk, doc_generator, cli extensions), 7 test files, 192 new tests (1846 total). Stdlib only: bisect, sqlite3, json, ast, argparse, threading. All code-reviewed (4 HIGH + 8 MEDIUM fixed), committed b6d5bc1.
 - **2026-05-28**: Phase 6B-3 + Phase 7 STABLE after 1 round of GPT review. 1846 tests. No CRITICAL/HIGH findings. MEDIUM: TenantResolver lock deferred to 6B-3, empty scopes semantic documented, RouteMatch.path normalization deferred. LOW: hash_api_key delimiter, observability integration, auth audit — all 6B-3 scope.
+- **2026-05-28**: Real provider integration — AnthropicProvider adapter for mimo (Anthropic-compatible API). Updated evaluation_stub for Phase 3+ provider execution. 1853 tests. Real API calls working (2/3 tasks completed, 1 blocked by approval gate correctly). Demo at demos/real_provider_demo.py. API key from env only.
 
 ### GPT Gate Feedback 2026-05-28 (6B-3 + Phase 7)
 - Target: Phase 6B-3 + Phase 7 checkpoint (commit b6d5bc1)
@@ -120,7 +121,7 @@ See `docs/CURRENT_STATUS.md` for full details.
 
 - **Framework**: unittest (stdlib), no pytest
 - **Run command**: `PYTHONPATH=src python3 -m unittest discover -s tests`
-- **Current count**: 1846 tests, 0 failures (as of 2026-05-28)
+- **Current count**: 1853 tests, 0 failures (as of 2026-05-28)
 - **Coverage**: Phase boundary contracts, schema validation, golden fixtures
 - **CI**: GitHub Actions on push/PR to main — runs security baseline + all tests
 - **Test naming**: `tests/test_<module>.py`, one test file per source module

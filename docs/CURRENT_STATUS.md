@@ -5,7 +5,7 @@ Last verified: 2026-05-28.
 ## Repository State
 
 - Branch: `main` synced after `6d11c0f` (Phase 6A hardening — GPT review P0/P1 fixes).
-- Tests: **1846 pass**, 0 failures.
+- Tests: **1853 pass**, 0 failures.
 - Security baseline: ALL CHECKS PASSED.
 
 ## New Session / Documentation Discipline
