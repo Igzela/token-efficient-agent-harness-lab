@@ -4,8 +4,8 @@ Last verified: 2026-05-28.
 
 ## Repository State
 
-- Branch: `main` synced after `ef52704` (Phase 3 provider adapter boundary, CA-7 compliant).
-- Tests: **1188 pass**, 0 failures.
+- Branch: `main` synced after `66ebbc7` (Phase 4 adaptive routing hardening).
+- Tests: **1270 pass**, 0 failures.
 - Security baseline: ALL CHECKS PASSED.
 
 ## New Session / Documentation Discipline
@@ -43,6 +43,7 @@ After every commit-sized change, update this file if the change affects current 
 | Phase 1 — Dispatch Kernel | **STABLE** — 8 source files, 20 fixtures, 1074 total tests, commits `a4227e9`→`aed213b`→`592803f` |
 | Phase 2 — Manual Execution Bridge | **STABLE** — 6 source modules, 6 test files, 1131 total tests, commits `afbba23`→`19c8a17`→`8f683ad` |
 | Phase 3 — Provider Adapter Boundary | **STABLE** — 8 source modules, 8 test files, 1188 total tests, commits `c0ec508`→`e34ad8e`→`29fd12b`→`0092a1c`→`c631b4d`→`ef52704` |
+| Phase 4 — Adaptive Routing | **STABLE** — 8 source modules, 8 test files, 1270 total tests, commits `ed2c762`→`66ebbc7` |
 
 Trial 2 complete evidence chain: [`docs/trials/TRIAL_2_FINAL_STATE_INDEX.md`](trials/TRIAL_2_FINAL_STATE_INDEX.md).
 Trial 3 report: [`docs/trials/TRIAL_3_REPORT.md`](trials/TRIAL_3_REPORT.md).
@@ -91,6 +92,40 @@ Trial 3 target merge closeout: [`docs/trials/TRIAL_3_TARGET_MERGE_CLOSEOUT.md`](
 - Token estimates are rough char/4 estimates
 
 **Next eligible path:** Phase 3 provider integration design
+
+## Phase 4 Adaptive Routing — Closeout
+
+**Stable commit:** `66ebbc7`
+**Initial implementation:** `ed2c762` (8 new source modules, 8 test files, 72 new tests)
+**Hardening fixes:** `66ebbc7` (2 P0 + 3 P1 issues from GPT review)
+**Tests:** 1270 pass (was 1188 at Phase 3 end)
+**GPT verdict:** Phase 4 Stable — approved for Phase 5 planning
+**Review rounds:** 2 rounds of GPT review (Beta → Stable)
+
+**Phase 4 boundaries:** adaptive routing is recommendation-only, never mutates state. Cold start always falls back to static rules. Promotion requires ALL gate conditions met. No real LLM calls in routing logic (rule-based). No persistence layer (in-memory only).
+
+**Source modules:**
+- `routing/schemas.py` — RoutingSelection, RoutingExperiment, RoutingArm, RoutingObservation, PromotionVerdict, make_task_group/parse_task_group
+- `routing/history_store.py` — tier-aware history indexing wrapping CostOfPassAccumulator
+- `routing/cost_of_pass_router.py` — best-tier-from-history logic
+- `routing/promotion_gate.py` — shadow→active gate + RoutingObservationStore
+- `routing/auto_policies.py` — AutoDowngradePolicy, AutoUpgradePolicy
+- `routing/feedback_integrator.py` — quality→routing feedback loop
+- `routing/dynamic_tier_selector.py` — adaptive tier selection wrapping ModelSelector
+- `routing/__init__.py` — package wiring
+
+**Hardening fixes (GPT review):**
+1. RoutingSelection dataclass replaces 7-tuple — carries routing_mode/routing_experiment_id metadata
+2. Task group delimiter changed from `_` to `/` via make_task_group/parse_task_group
+3. PromotionGate requires both candidate AND baseline sample counts
+4. routing_experiment_id propagated from RoutingSelection through DispatchEngine
+5. Duplicate PromotionVerdict removed from promotion_gate.py, imported from schemas
+
+**Accepted limitations (non-blocking, future refinement):**
+- routing_experiment_id is supported but usually None until richer experiment tracking exists
+- History and observation stores are in-memory
+- Promotion logic is deterministic threshold-based, not statistical
+- Adaptive routing depends on quality/cost observations supplied by upstream evaluators
 
 ## Phase 3 Provider Adapter Boundary — Closeout
 

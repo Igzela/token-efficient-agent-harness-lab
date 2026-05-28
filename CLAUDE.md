@@ -33,9 +33,9 @@ Master architecture document: `docs/dispatch/DISPATCHER_KERNEL_V0_ARCHITECTURE.m
 - **Original Stage 0-4 task-book**: Complete and sealed.
 - **Harness App MVP0-MVP8**: Complete local operations console.
 - **Trials 0-3**: Closed, with target repo onboarding and multi-repo generalization complete.
-- **Dispatch Kernel Phase 1-3**: Complete and stable.
-- **Phase 3 — Provider Adapter Boundary**: STABLE and CA-7 compliant (8 source modules, 8 test files, 1188 tests, stable commit ef52704).
-- **Dispatch Kernel Phase 4-7**: Outlined in architecture book, not yet started.
+- **Dispatch Kernel Phase 1-4**: Complete and stable.
+- **Phase 4 — Adaptive Routing**: STABLE (8 source modules, 8 test files, 1270 tests, stable commit 66ebbc7).
+- **Dispatch Kernel Phase 5-7**: Outlined in architecture book, not yet started.
 
 See `docs/CURRENT_STATUS.md` for detailed phase closeout records.
 
@@ -59,11 +59,18 @@ See `docs/CURRENT_STATUS.md` for detailed phase closeout records.
 - OpenAI-compatible path only; Anthropic/local are future adapters
 - Cost depends on configured pricing and provider-reported usage
 
+**Phase 4 carry-over:**
+- routing_experiment_id is supported but usually None until richer experiment tracking exists
+- History and observation stores are in-memory only
+- Promotion logic is deterministic threshold-based, not statistical
+- Adaptive routing depends on quality/cost observations supplied by upstream evaluators
+
 See `docs/CURRENT_STATUS.md` for full details.
 
 ## Session Log
 
 - **2026-05-27**: Phase 3 STABLE after 4 rounds of GPT review (Alpha → Beta → RC → Stable). 1188 tests, 8 source modules, 8 test files. P0 fixes: provider gate bypass, budget_exhausted terminal, ProviderConfig.enabled enforcement. All commits on main (c0ec508→c631b4d).
+- **2026-05-28**: Phase 4 STABLE after 2 rounds of GPT review (Beta → Stable). 1270 tests, 8 new routing modules, 8 new test files. P0 fixes: RoutingSelection dataclass for routing_mode metadata, task_group delimiter `/` to avoid underscore collision. P1 fixes: baseline sample check, routing_experiment_id propagation, duplicate PromotionVerdict removed. Commits ed2c762→66ebbc7.
 
 ## External Dependencies
 
@@ -74,7 +81,7 @@ See `docs/CURRENT_STATUS.md` for full details.
 
 - **Framework**: unittest (stdlib), no pytest
 - **Run command**: `PYTHONPATH=src python3 -m unittest discover -s tests`
-- **Current count**: 1188 tests, 0 failures (as of 2026-05-27)
+- **Current count**: 1270 tests, 0 failures (as of 2026-05-28)
 - **Coverage**: Phase boundary contracts, schema validation, golden fixtures
 - **CI**: GitHub Actions on push/PR to main — runs security baseline + all tests
 - **Test naming**: `tests/test_<module>.py`, one test file per source module
@@ -93,7 +100,7 @@ Do not infer a new Stage 5, CA-8, production track, or provider-integration trac
 
 ## Next Action
 
-Stop unless the user chooses an approved next path. Dispatch Kernel Phase 4 planning is eligible only after explicit approval. See `docs/CURRENT_STATUS.md` and `docs/NEXT_DECISION.md`.
+Phase 4 is STABLE. Phase 5 — Multi-Agent Orchestration is the next eligible path per the architecture book. GPT recommends deciding whether multi-agent orchestration is the right next step before diving in. See `docs/CURRENT_STATUS.md` and `docs/NEXT_DECISION.md`.
 
 ## Rules
 
