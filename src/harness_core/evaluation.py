@@ -3,7 +3,10 @@
 from __future__ import annotations
 
 import json
+import logging
 from dataclasses import dataclass
+
+_log = logging.getLogger(__name__)
 from pathlib import Path
 from typing import Any
 
@@ -53,6 +56,7 @@ class EvaluationRunner:
         try:
             actual = self._evaluate(spec)
         except Exception:
+            _log.exception("evaluation failed for case %s", spec.case_id)
             actual = "error"
 
         passed = actual == spec.expected_outcome
@@ -103,6 +107,7 @@ class EvaluationRunner:
         try:
             orch.validate()
         except Exception:
+            _log.exception("orchestrator validation failed for %s", spec.fixture_path)
             return "fail"
 
         if spec.item_id:

@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 from typing import Any
+
+_log = logging.getLogger(__name__)
 
 from .evaluation import EvaluationReport, EvaluationRunner, EvalSpec
 from .scoring import RunScore, ScoringEngine
@@ -74,6 +77,7 @@ class RoutingExperimentManager:
                     )
                 )
             except Exception:
+                _log.exception("routing experiment failed for policy %s", policy.policy_id)
                 run_score = RunScore(
                     run_id=f"{spec.experiment_id}:{policy.policy_id}",
                     task_scores=(),
