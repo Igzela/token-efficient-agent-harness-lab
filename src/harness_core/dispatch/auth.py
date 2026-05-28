@@ -48,6 +48,14 @@ class AuthDecision:
     reason: str = ""
 
 
+@dataclass(frozen=True)
+class AuthorizationDecision:
+    allowed: bool
+    reason: str = ""
+    required_scopes: frozenset[str] = field(default_factory=frozenset)
+    granted_scopes: frozenset[str] = field(default_factory=frozenset)
+
+
 _API_KEY_PREFIX = "harness_"
 _API_KEY_SUFFIX_LEN = 64  # 32 bytes hex = 64 chars
 

@@ -9,7 +9,7 @@ from dataclasses import dataclass, field
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from typing import Any, Callable
 
-from .auth import RequestContext
+from .auth import AuthorizationDecision, RequestContext
 
 
 HTTP_SERVER_SCHEMA_VERSION = "http_server.v1"
@@ -26,6 +26,7 @@ class ServerConfig:
 class RouteMatch:
     method: str
     path: str
+    route_pattern: str = ""
     params: dict[str, str] = field(default_factory=dict)
     request_context: RequestContext | None = None
 
@@ -35,11 +36,13 @@ RequestHandler = Callable[[RouteMatch, dict[str, Any] | None], dict[str, Any]]
 
 @dataclass
 class ServerContext:
-    """Per-server state: routes, config, and store."""
+    """Per-server state: routes, config, store, auth, and rate limiting."""
     config: ServerConfig
     routes: dict[tuple[str, str], RequestHandler] = field(default_factory=dict)
+    route_scopes: dict[tuple[str, str], frozenset[str]] = field(default_factory=dict)
     store: Any = None
     tenant_resolver: Any = None
+    rate_limiter: Any = None
 
 
 class HarnessHTTPHandler(BaseHTTPRequestHandler):
@@ -77,7 +80,7 @@ class HarnessHTTPHandler(BaseHTTPRequestHandler):
     def _send_error_json(self, status: int, message: str) -> None:
         self._send_json({"error": message}, status=status)
 
-    def _match_route(self, method: str) -> tuple[RequestHandler, dict[str, str]] | None:
+    def _match_route(self, method: str) -> tuple[RequestHandler, dict[str, str], str] | None:
         path = self.path
         query_idx = path.find("?")
         if query_idx != -1:
@@ -93,7 +96,7 @@ class HarnessHTTPHandler(BaseHTTPRequestHandler):
                 continue
             params = self._match_path(route_path, path)
             if params is not None:
-                return handler, params
+                return handler, params, route_path
         return None
 
     def _match_path(self, pattern: str, path: str) -> dict[str, str] | None:
@@ -108,6 +111,42 @@ class HarnessHTTPHandler(BaseHTTPRequestHandler):
             elif pp != rp:
                 return None
         return params
+
+    def _check_scopes(self, request_context: RequestContext | None,
+                      route_key: tuple[str, str]) -> AuthorizationDecision:
+        """Check if the request context has the required scopes for the route."""
+        required = self._context.route_scopes.get(route_key, frozenset())
+        if not required:
+            return AuthorizationDecision(allowed=True)
+        if request_context is None:
+            return AuthorizationDecision(
+                allowed=False,
+                reason="authentication required",
+                required_scopes=required,
+            )
+        if request_context.scopes and not required.issubset(request_context.scopes):
+            missing = required - request_context.scopes
+            return AuthorizationDecision(
+                allowed=False,
+                reason=f"missing scopes: {', '.join(sorted(missing))}",
+                required_scopes=required,
+                granted_scopes=request_context.scopes,
+            )
+        return AuthorizationDecision(
+            allowed=True,
+            required_scopes=required,
+            granted_scopes=request_context.scopes,
+        )
+
+    def _check_rate_limit(self, request_context: RequestContext | None) -> tuple[bool, float | None]:
+        """Check rate limit. Returns (allowed, retry_after_seconds)."""
+        limiter = self._context.rate_limiter
+        if limiter is None or request_context is None:
+            return True, None
+        tenant_id = request_context.tenant_id or "anonymous"
+        api_key_id = request_context.api_key_id or "none"
+        result = limiter.check(tenant_id, api_key_id, rate_limit=60)
+        return result.allowed, result.retry_after
 
     def do_GET(self) -> None:
         self._handle_request("GET")
@@ -146,15 +185,32 @@ class HarnessHTTPHandler(BaseHTTPRequestHandler):
         request_context = self._authenticate_request()
         if request_context is None and self._context.tenant_resolver is not None:
             return
+
         result = self._match_route(method)
         if result is None:
             self._send_error_json(404, f"no route for {method} {self.path}")
             return
-        handler, params = result
+        handler, params, route_pattern = result
+        route_key = (method, route_pattern)
+
+        auth_decision = self._check_scopes(request_context, route_key)
+        if not auth_decision.allowed:
+            self._send_error_json(403, auth_decision.reason)
+            return
+
+        allowed, retry_after = self._check_rate_limit(request_context)
+        if not allowed:
+            resp: dict[str, Any] = {"error": "rate limit exceeded"}
+            if retry_after is not None:
+                resp["retry_after"] = round(retry_after, 1)
+            self._send_json(resp, status=429)
+            return
+
         body = self._read_body()
         match = RouteMatch(
             method=method,
             path=self.path,
+            route_pattern=route_pattern,
             params=params,
             request_context=request_context,
         )
@@ -169,13 +225,17 @@ _last_context: ServerContext | None = None
 
 
 def register_route(method: str, path: str, handler: RequestHandler,
+                   required_scopes: frozenset[str] | None = None,
                    server: HTTPServer | None = None) -> None:
-    """Register a route handler. If server is given, register on that server's context.
+    """Register a route handler with optional scope requirements.
 
+    If server is given, register on that server's context.
     If server is None, registers on the most recently created server context.
     """
     ctx = _get_context(server)
     ctx.routes[(method, path)] = handler
+    if required_scopes:
+        ctx.route_scopes[(method, path)] = required_scopes
 
 
 def clear_routes(server: HTTPServer | None = None) -> None:
@@ -185,6 +245,7 @@ def clear_routes(server: HTTPServer | None = None) -> None:
     """
     ctx = _get_context(server)
     ctx.routes.clear()
+    ctx.route_scopes.clear()
 
 
 def _get_context(server: HTTPServer | None = None) -> ServerContext:
@@ -197,11 +258,16 @@ def _get_context(server: HTTPServer | None = None) -> ServerContext:
 
 def create_server(config: ServerConfig | None = None,
                   store: Any = None,
-                  tenant_resolver: Any = None) -> HTTPServer:
+                  tenant_resolver: Any = None,
+                  rate_limiter: Any = None) -> HTTPServer:
     """Create an HTTPServer with per-server isolated state."""
     global _last_context
     cfg = config or ServerConfig()
-    ctx = ServerContext(config=cfg, store=store, tenant_resolver=tenant_resolver)
+    ctx = ServerContext(
+        config=cfg, store=store,
+        tenant_resolver=tenant_resolver,
+        rate_limiter=rate_limiter,
+    )
     _last_context = ctx
     server = HTTPServer((cfg.host, cfg.port), HarnessHTTPHandler)
     server._harness_context = ctx  # type: ignore[attr-defined]
@@ -210,9 +276,11 @@ def create_server(config: ServerConfig | None = None,
 
 def start_server_in_thread(config: ServerConfig | None = None,
                            store: Any = None,
-                           tenant_resolver: Any = None) -> tuple[HTTPServer, threading.Thread]:
+                           tenant_resolver: Any = None,
+                           rate_limiter: Any = None) -> tuple[HTTPServer, threading.Thread]:
     """Start the server in a daemon thread. Returns (server, thread)."""
-    server = create_server(config, store, tenant_resolver=tenant_resolver)
+    server = create_server(config, store, tenant_resolver=tenant_resolver,
+                           rate_limiter=rate_limiter)
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
     return server, thread
