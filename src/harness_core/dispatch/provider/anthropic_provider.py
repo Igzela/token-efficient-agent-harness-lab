@@ -3,9 +3,12 @@
 from __future__ import annotations
 
 import json
+import logging
 import time
 import uuid
 from datetime import datetime, timezone
+
+_log = logging.getLogger(__name__)
 from typing import Any
 
 from ..dispatch_decision import DispatchDecision
@@ -233,6 +236,7 @@ class AnthropicProvider(ProviderExecutor):
             with anthropic_urlopen(req, timeout=5) as resp:
                 return resp.status == 200
         except Exception:
+            _log.exception("anthropic health_check failed")
             return False
 
     def _call_api(self, api_key: str, prompt: str, max_tokens: int = 1024) -> dict[str, Any]:

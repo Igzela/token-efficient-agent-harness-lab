@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 from pathlib import Path
+
+_log = logging.getLogger(__name__)
 from typing import Any
 
 from .evaluation import EvalCase, EvalSpec, EvaluationReport, EvaluationRunner
@@ -58,6 +61,7 @@ class ControlledModelEvalHarness:
                 try:
                     real_eval = self._evaluator.run_single(spec)
                 except Exception:
+                    _log.exception("real evaluator failed for case %s", spec.case_id)
                     real_eval = EvalCase(
                         case_id=spec.case_id,
                         fixture_path=spec.fixture_path,

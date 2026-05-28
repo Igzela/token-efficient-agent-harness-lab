@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
+
+_log = logging.getLogger(__name__)
 from typing import Any
 
 from .model_gateway import ModelGateway
@@ -47,6 +50,7 @@ class SamplingRunner:
                 response = self._gateway.invoke(tier, prompt)
                 content = response.content
             except Exception:
+                _log.exception("sampling variant %d failed for task %s", i, task_id)
                 content = f"[error: variant {i} failed]"
 
             candidates.append(
