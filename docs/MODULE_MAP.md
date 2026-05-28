@@ -48,3 +48,14 @@
 | `plan_triage.py` | Harness App MVP6 | Read-only portfolio triage derived from stored non-executable plans. | `build_portfolio_triage`, `triage_plan`, `classify_plan_bottleneck`, `derive_token_hotspots`, `compute_review_priority` | `test_plan_triage.py`, `test_app_api_plan_triage.py` |
 | `errors.py` | Stage 1 | Shared exception classes. | Error classes | Covered through component tests |
 | `__init__.py` | Stage 1-4 | Public package export surface. | Re-exported harness APIs | Import coverage across tests |
+| `orchestration/schemas.py` | Phase 5 | Frozen dataclasses for workflow graph, nodes, edges, agent roles, conflict records. | `WorkflowGraph`, `WorkflowNode`, `WorkflowEdge`, `AgentRole`, `AgentMessage`, `ConflictRecord` | `test_orchestration_schema.py` |
+| `orchestration/agent_role_registry.py` | Phase 5 | Agent role registration, lookup, assignment with concurrency tracking. | `AgentRoleRegistry` | `test_orchestration_registry.py` |
+| `orchestration/task_decomposer.py` | Phase 5 | Rule-based TaskAnalysis to WorkflowGraph decomposition (1/2/4 node graphs). | `TaskDecomposer` | `test_orchestration_decomposer.py` |
+| `orchestration/dependency_resolver.py` | Phase 5 | Cycle detection (DFS), topological sort, ready-nodes computation. | `DependencyResolver` | `test_orchestration_decomposer.py` |
+| `orchestration/work_queue.py` | Phase 5 | Stateless node queue operating on WorkflowGraph as source of truth. | `WorkQueue` | `test_orchestration_work_queue.py` |
+| `orchestration/workflow_engine.py` | Phase 5 | Full workflow lifecycle: decompose, execute, resolve, aggregate. | `WorkflowEngine` | `test_orchestration_workflow_engine.py`, `test_orchestration_integration.py`, `test_orchestration_hardening.py` |
+| `orchestration/conflict_resolver.py` | Phase 5 | Detects and resolves output, resource, dependency, and budget conflicts. | `ConflictResolver` | `test_orchestration_conflict.py` |
+| `orchestration/result_aggregator.py` | Phase 5 | Combines completed node outputs into a final workflow result dict. | `ResultAggregator` | `test_orchestration_integration.py`, `test_orchestration_result_aggregator.py` |
+| `orchestration/human_approval_gate.py` | Phase 5 | Checkpoints for human review; triggers on budget threshold or failure. | `HumanApprovalGate` | `test_orchestration_hardening.py`, `test_orchestration_human_approval_gate.py` |
+| `orchestration/multi_agent_budget.py` | Phase 5 | Workflow/agent/node-level budget enforcement with overrun strategies. | `MultiAgentBudgetManager` | `test_orchestration_budget.py` |
+| `orchestration/__init__.py` | Phase 5 | Barrel re-exports for orchestration package. | Re-exported orchestration APIs | Import coverage across tests |

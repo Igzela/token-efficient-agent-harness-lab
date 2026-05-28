@@ -67,11 +67,11 @@ Phase 0 is complete. The harness has:
 | Phase | Goal | Architecture | Schema | Tasks | Tests | Status |
 |-------|------|-------------|--------|-------|-------|--------|
 | 0 | complete | partial | existing | complete | complete | baseline |
-| 1 | complete | detailed | detailed | detailed | detailed | ready for implementation |
-| 2 | defined | outlined | outlined | outlined | outlined | needs expansion |
-| 3 | defined | outlined | outlined | outlined | outlined | needs expansion |
-| 4 | defined | outlined | outlined | outlined | outlined | needs expansion |
-| 5 | defined | outlined | outlined | outlined | outlined | needs expansion |
+| 1 | complete | detailed | detailed | detailed | detailed | stable |
+| 2 | complete | detailed | detailed | detailed | detailed | stable |
+| 3 | complete | detailed | detailed | detailed | detailed | stable |
+| 4 | complete | detailed | detailed | detailed | detailed | stable |
+| 5 | complete | detailed | detailed | detailed | detailed | stable |
 | 6 | defined | outlined | outlined | outlined | outlined | needs expansion |
 | 7 | defined | outlined | outlined | outlined | outlined | needs expansion |
 
