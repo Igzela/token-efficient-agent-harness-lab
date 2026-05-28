@@ -1608,7 +1608,7 @@ Each decision includes: context, chosen option, alternatives considered, consequ
 
 | Decision | Choice | Alternatives | Consequences | Reversal Condition | Affected Phases |
 |----------|--------|-------------|-------------|-------------------|-----------------|
-| Python core retained | Yes | Rewrite in Go/Rust | Leverages existing 914 tests, stable ecosystem | Performance becomes bottleneck | All |
+| Python core retained | Superseded by ADR 0001: Rust core migration target | Rewrite in Go/Rust | Existing Python remains reference implementation until parity tests pass | Frozen wire contract and parity coverage become blockers | All |
 | Library-first, API wrapper | Library-first | API-first | Better testability, composability | Need standalone service earlier than Phase 6 | All |
 | Storage evolution | JSON/JSONL → SQLite → PostgreSQL | Direct PostgreSQL | Match complexity to phase, no premature infra | Data migration becomes blocker | 0→6 |
 | Shadow-first routing | Yes | Direct active routing | Evidence before action, safer promotion | Shadow data never useful after N trials | 1→4 |

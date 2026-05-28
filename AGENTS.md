@@ -25,7 +25,8 @@ The Stage 0-4 task-book scope is complete.
 - Dispatch Kernel Phase 6A local durable API/storage stable (1596 tests, GPT approved after 2 review rounds).
 - Dispatch Kernel Phase 6B-1 per-server route isolation implemented (1603 tests).
 - Dispatch Kernel Phase 6B-2 local API key + tenant boundary implemented and hardened (1654 tests).
-- Dispatch Kernel Phase 7 SDK + Documentation System implemented (sdk.py, doc_generator.py, 1846 tests).
+- Dispatch Kernel Phase 7 SDK + Documentation System implemented (sdk.py, doc_generator.py); current verified suite is 1919 tests.
+- Language migration preparation approved: Rust core + axum API target, TypeScript dashboard/SDK target, Python SDK retained. Implementation remains gated by ADR, frozen wire contracts, parity tests, and existing safety boundaries.
 - GitHub private repository published.
 
 This project is now in autonomous maintainer mode for repository advancement. The responsible coding agent may keep advancing approved documentation, test, CI, hardening, and dispatch-kernel tracks without waiting for a new human instruction on every commit. The local dashboard remains a prototype. New UI, product, production, deployment, real-provider, or real-execution tracks still require explicit scope and human approval.

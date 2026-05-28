@@ -17,6 +17,7 @@ The responsible coding agent may choose any of the following without asking for 
 | Dispatch-kernel phase work | Plan and implement the next architecture-book-defined phase only when it can remain deterministic, local, test-first, and free of real providers, real sandbox/process execution, target writes, deployment, and real worker processes. |
 | Architecture/documentation closeout | Update architecture records, module maps, closeout reports, and handoff docs after accepted changes. |
 | Demo/docs polish | Refine demo docs when verification or user feedback identifies a concrete gap. |
+| Language migration preparation | Explicitly approved docs-first preparation for Rust core + axum API, TypeScript dashboard/SDK, and retained Python SDK. Required order: fix baseline drift, write ADR, freeze dispatch wire contract, then start Rust parity kernel. |
 
 ## Disallowed by Default
 
@@ -31,6 +32,8 @@ The following are **not** allowed without explicit human approval and a new impl
 - **Target repo writes** — any mutation of registered target repositories.
 - **Approval/run/execute/deploy/merge controls** — any execution or deployment mechanism.
 - **Productionization** — hosted service, production UI, deployment, auth/multitenancy, or user-facing release.
+
+The language migration target does not by itself approve productionization, real provider calls, real sandbox/process execution, deployment, target-repo writes, or executable UI controls.
 
 ## Before Starting Autonomous Work
 

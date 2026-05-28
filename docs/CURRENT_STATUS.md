@@ -4,7 +4,7 @@ Last verified: 2026-05-28.
 
 ## Repository State
 
-- Branch: `main` synced after `6d11c0f` (Phase 6A hardening — GPT review P0/P1 fixes).
+- Branch: `codex/rust-ts-migration-prep` from `deeb753` (Gate 2 STABLE docs and CI fix).
 - Tests: **1919 pass**, 0 failures.
 - Security baseline: ALL CHECKS PASSED.
 
@@ -56,6 +56,7 @@ Run `python3 scripts/check_agent_handoff.py` before committing so the handoff su
 | Phase 6B-3 Gate 1 — Enforcement Hardening | **STABLE** — scope checks, rate limiting, 403/429 in HTTP path, 17 enforcement tests + 7 provider tests (1870 total), committed b404b8f→e26439f, GPT PASS (2 rounds) |
 | Phase 6B-3 Gate 2 — BackupManager Atomic Restore | **STABLE** — atomic restore (prepare/checksum before live target, WAL checkpoint, try/finally), 4 failure-mode tests (37 backup_manager tests, 1919 total), committed ee0cd97→c124c57, GPT PASS (3 rounds) |
 | Phase 7 — SDK + Documentation + Plugin System | **STABLE** — 2 source modules (sdk.py, doc_generator.py), 2 test files, 64 new tests, GPT approved |
+| Language Migration Preparation | **APPROVED / DOCS-FIRST** — Rust core + axum API target, TypeScript dashboard/SDK target, Python SDK retained. ADR and dispatch wire contract must land before any Rust parity implementation. |
 
 Trial 2 complete evidence chain: [`docs/trials/TRIAL_2_FINAL_STATE_INDEX.md`](trials/TRIAL_2_FINAL_STATE_INDEX.md).
 Trial 3 report: [`docs/trials/TRIAL_3_REPORT.md`](trials/TRIAL_3_REPORT.md).
