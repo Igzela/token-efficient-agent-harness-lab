@@ -76,11 +76,11 @@ class EvaluationStubTests(unittest.TestCase):
         bc = next(c for c in result.checks if c.name == "boundary_compliance")
         self.assertEqual(bc.status, "pass")
 
-    def test_boundary_compliance_provider_fails(self):
+    def test_boundary_compliance_provider_passes_in_phase3(self):
         er = make_execution_result(executor_type="provider")
         result = self.evaluator.evaluate(er, make_decision())
         bc = next(c for c in result.checks if c.name == "boundary_compliance")
-        self.assertEqual(bc.status, "fail")
+        self.assertEqual(bc.status, "pass")
 
     def test_error_free_no_error(self):
         result = self.evaluator.evaluate(make_execution_result(), make_decision())

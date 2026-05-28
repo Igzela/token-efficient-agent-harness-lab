@@ -134,17 +134,24 @@ class EvaluationStub:
         self, result: ExecutionResult, decision: DispatchDecision
     ) -> EvaluationCheck:
         if result.executor_type == "provider":
+            if decision.hard_constraints and "no_target_write" not in decision.hard_constraints:
+                return EvaluationCheck(
+                    check_id=f"chk-{uuid.uuid4().hex[:8]}",
+                    name="boundary_compliance",
+                    status="fail",
+                    reason="provider executor without boundary constraints",
+                )
             return EvaluationCheck(
                 check_id=f"chk-{uuid.uuid4().hex[:8]}",
                 name="boundary_compliance",
-                status="fail",
-                reason="provider executor not allowed in Phase 1",
+                status="pass",
+                reason=f"executor_type={result.executor_type} within Phase 3+ boundaries",
             )
         return EvaluationCheck(
             check_id=f"chk-{uuid.uuid4().hex[:8]}",
             name="boundary_compliance",
             status="pass",
-            reason=f"executor_type={result.executor_type} within Phase 1 boundaries",
+            reason=f"executor_type={result.executor_type} within boundaries",
         )
 
     def _check_output_present(self, result: ExecutionResult) -> EvaluationCheck:
