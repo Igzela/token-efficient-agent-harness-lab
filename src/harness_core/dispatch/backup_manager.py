@@ -66,8 +66,10 @@ class BackupManager:
 
     def _save_metadata(self, metadata: dict[str, dict[str, Any]]) -> None:
         meta_path = self._metadata_path()
-        with open(meta_path, "w") as f:
+        tmp_path = meta_path.with_suffix(".tmp")
+        with open(tmp_path, "w") as f:
             json.dump(metadata, f, indent=2, sort_keys=True)
+        tmp_path.replace(meta_path)
 
     def _get_store_path(self, store: DurableStore) -> str:
         return store.db_path
@@ -177,27 +179,32 @@ class BackupManager:
                     duration_ms=0.0,
                 )
 
-        target_path = Path(self._get_store_path(target_store))
+            target_path = Path(self._get_store_path(target_store))
 
-        target_store.close()
-        self._remove_sqlite_sidecars(target_path)
-        self._copy_sqlite_files(backup_path, target_path)
+            target_store.close()
+            self._remove_sqlite_sidecars(target_path)
 
-        # Reopen the store at the same path (constructor calls _ensure_schema)
-        restored_store = DurableStore(db_path=str(target_path))
-        try:
-            stats = restored_store.stats()
-            records_restored = stats["plans"] + stats["repos"] + stats["events"]
-        finally:
-            restored_store.close()
+            # Atomic restore: copy to temp, then rename over target
+            tmp_path = target_path.with_suffix(".restore_tmp")
+            self._copy_sqlite_files(backup_path, tmp_path)
+            tmp_path.replace(target_path)
+            self._remove_sqlite_sidecars(tmp_path)
 
-        duration_ms = (time.monotonic() - start) * 1000
-        return RestoreResult(
-            success=True,
-            records_restored=records_restored,
-            errors=[],
-            duration_ms=duration_ms,
-        )
+            # Reopen the store at the same path (constructor calls _ensure_schema)
+            restored_store = DurableStore(db_path=str(target_path))
+            try:
+                stats = restored_store.stats()
+                records_restored = stats["plans"] + stats["repos"] + stats["events"]
+            finally:
+                restored_store.close()
+
+            duration_ms = (time.monotonic() - start) * 1000
+            return RestoreResult(
+                success=True,
+                records_restored=records_restored,
+                errors=[],
+                duration_ms=duration_ms,
+            )
 
     def delete_backup(self, backup_id: str) -> bool:
         with self._lock:

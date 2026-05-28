@@ -434,5 +434,66 @@ class ThreadSafetyTest(unittest.TestCase):
         shutil.rmtree(backup_dir, ignore_errors=True)
 
 
+class AtomicRestoreTests(unittest.TestCase):
+    def setUp(self):
+        self.backup_dir = _make_temp_backup_dir()
+        self.bm = BackupManager(self.backup_dir)
+
+    def tearDown(self):
+        import shutil
+        shutil.rmtree(self.backup_dir, ignore_errors=True)
+
+    def test_restore_uses_atomic_copy(self):
+        db = _make_temp_db()
+        store = DurableStore(db)
+        store.save_plan("p1", {"task": "original"})
+        record = self.bm.create_backup(store)
+        store.close()
+
+        # Modify the target after backup
+        store2 = DurableStore(db)
+        store2.save_plan("p2", {"task": "added"})
+        store2.close()
+
+        # Restore should atomically replace — no partial state
+        result = self.bm.restore_backup(record.backup_id, DurableStore(db))
+        self.assertTrue(result.success)
+
+        restored = DurableStore(db)
+        plan = restored.get_plan("p1")
+        p2 = restored.get_plan("p2")
+        restored.close()
+        self.assertIsNotNone(plan)
+        self.assertIsNone(p2)  # p2 should be gone (restored to backup state)
+        db.unlink(missing_ok=True)
+
+    def test_metadata_atomic_write(self):
+        db = _make_temp_db()
+        store = DurableStore(db)
+        self.bm.create_backup(store, label="atomic-meta")
+        store.close()
+
+        meta_path = self.backup_dir / "backup_metadata.json"
+        tmp_path = self.backup_dir / "backup_metadata.tmp"
+        self.assertTrue(meta_path.exists())
+        self.assertFalse(tmp_path.exists())  # tmp should be cleaned up after write
+        db.unlink(missing_ok=True)
+
+    def test_restore_no_temp_files_left(self):
+        db = _make_temp_db()
+        store = DurableStore(db)
+        store.save_plan("p1", {"task": "test"})
+        record = self.bm.create_backup(store)
+        store.close()
+
+        result = self.bm.restore_backup(record.backup_id, DurableStore(db))
+        self.assertTrue(result.success)
+
+        # No .restore_tmp files should remain
+        tmp_files = list(db.parent.glob("*.restore_tmp"))
+        self.assertEqual(len(tmp_files), 0)
+        db.unlink(missing_ok=True)
+
+
 if __name__ == "__main__":
     unittest.main()
