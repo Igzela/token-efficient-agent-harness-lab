@@ -11,6 +11,7 @@ pub mod model_selector;
 pub mod orchestration;
 pub mod routing;
 pub mod runtime;
+pub mod storage;
 pub mod task_analyzer;
 
 pub use dispatch_engine::{build_dispatch_bundle, DispatchEngine};
