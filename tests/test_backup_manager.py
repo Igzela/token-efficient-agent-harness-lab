@@ -495,5 +495,106 @@ class AtomicRestoreTests(unittest.TestCase):
         db.unlink(missing_ok=True)
 
 
+class RestoreFailureAtomicityTests(unittest.TestCase):
+    def setUp(self):
+        self.backup_dir = _make_temp_backup_dir()
+        self.bm = BackupManager(self.backup_dir)
+
+    def tearDown(self):
+        import shutil
+        shutil.rmtree(self.backup_dir, ignore_errors=True)
+
+    def test_copy_failure_leaves_original_unchanged(self):
+        db = _make_temp_db()
+        store = DurableStore(db)
+        store.save_plan("p1", {"task": "original"})
+        record = self.bm.create_backup(store)
+        store.close()
+
+        original_checksum = _compute_checksum(db)
+
+        # Monkeypatch _copy_sqlite_files to fail on the restore call
+        original_copy = self.bm._copy_sqlite_files
+        def failing_copy(src, dst):
+            raise OSError("Simulated copy failure")
+        self.bm._copy_sqlite_files = failing_copy
+
+        result = self.bm.restore_backup(record.backup_id, DurableStore(db))
+        self.assertFalse(result.success)
+
+        # Original DB should be unchanged
+        current_checksum = _compute_checksum(db)
+        self.assertEqual(original_checksum, current_checksum)
+
+        # Original data should still be readable
+        store2 = DurableStore(db)
+        plan = store2.get_plan("p1")
+        store2.close()
+        self.assertIsNotNone(plan)
+        self.assertEqual(plan.data["task"], "original")
+        db.unlink(missing_ok=True)
+
+    def test_copy_failure_cleans_temp_files(self):
+        db = _make_temp_db()
+        store = DurableStore(db)
+        store.save_plan("p1", {"task": "test"})
+        record = self.bm.create_backup(store)
+        store.close()
+
+        def failing_copy(src, dst):
+            # Create a partial temp file before "failing"
+            dst.touch()
+            raise OSError("Simulated copy failure")
+        self.bm._copy_sqlite_files = failing_copy
+
+        result = self.bm.restore_backup(record.backup_id, DurableStore(db))
+        self.assertFalse(result.success)
+
+        # Temp files should be cleaned up
+        tmp_files = list(db.parent.glob("*.restore_tmp*"))
+        self.assertEqual(len(tmp_files), 0)
+        db.unlink(missing_ok=True)
+
+    def test_checksum_mismatch_fails_before_target_mutation(self):
+        db = _make_temp_db()
+        store = DurableStore(db)
+        store.save_plan("p1", {"task": "original"})
+        record = self.bm.create_backup(store)
+        store.close()
+
+        # Modify store after backup so original has different data
+        store2 = DurableStore(db)
+        store2.save_plan("p2", {"task": "added"})
+        store2.close()
+
+        original_checksum = _compute_checksum(db)
+
+        # Monkeypatch _copy_sqlite_files to write garbage to temp (simulating corruption during copy)
+        def corrupting_copy(src, dst):
+            import shutil as _shutil
+            _shutil.copy2(str(src), str(dst))
+            # Corrupt the temp file after copy
+            with open(str(dst), "wb") as f:
+                f.write(b"corrupted data")
+        self.bm._copy_sqlite_files = corrupting_copy
+
+        result = self.bm.restore_backup(record.backup_id, DurableStore(db))
+        self.assertFalse(result.success)
+        self.assertTrue(any("checksum" in e.lower() for e in result.errors))
+
+        # Target should be untouched
+        current_checksum = _compute_checksum(db)
+        self.assertEqual(original_checksum, current_checksum)
+
+        # Data should still be there
+        store3 = DurableStore(db)
+        plan = store3.get_plan("p1")
+        p2 = store3.get_plan("p2")
+        store3.close()
+        self.assertIsNotNone(plan)
+        self.assertIsNotNone(p2)  # p2 still exists — target wasn't replaced
+        db.unlink(missing_ok=True)
+
+
 if __name__ == "__main__":
     unittest.main()

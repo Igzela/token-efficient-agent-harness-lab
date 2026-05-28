@@ -180,31 +180,56 @@ class BackupManager:
                 )
 
             target_path = Path(self._get_store_path(target_store))
+            tmp_path = target_path.with_suffix(f".{backup_id}.restore_tmp")
 
-            target_store.close()
-            self._remove_sqlite_sidecars(target_path)
-
-            # Atomic restore: copy to temp, then rename over target
-            tmp_path = target_path.with_suffix(".restore_tmp")
-            self._copy_sqlite_files(backup_path, tmp_path)
-            tmp_path.replace(target_path)
-            self._remove_sqlite_sidecars(tmp_path)
-
-            # Reopen the store at the same path (constructor calls _ensure_schema)
-            restored_store = DurableStore(db_path=str(target_path))
             try:
-                stats = restored_store.stats()
-                records_restored = stats["plans"] + stats["repos"] + stats["events"]
-            finally:
-                restored_store.close()
+                # Step 1: Prepare and verify candidate BEFORE touching live target
+                self._copy_sqlite_files(backup_path, tmp_path)
 
-            duration_ms = (time.monotonic() - start) * 1000
-            return RestoreResult(
-                success=True,
-                records_restored=records_restored,
-                errors=[],
-                duration_ms=duration_ms,
-            )
+                # Step 2: Verify candidate integrity
+                candidate_checksum = _compute_checksum(tmp_path)
+                if candidate_checksum != entry["checksum"]:
+                    errors.append("Candidate checksum mismatch after copy")
+                    return RestoreResult(
+                        success=False,
+                        records_restored=0,
+                        errors=errors,
+                        duration_ms=0.0,
+                    )
+
+                # Step 3: Only now mutate live target
+                target_store.close()
+                self._remove_sqlite_sidecars(target_path)
+                tmp_path.replace(target_path)
+
+                # Step 4: Reopen and count
+                restored_store = DurableStore(db_path=str(target_path))
+                try:
+                    stats = restored_store.stats()
+                    records_restored = stats["plans"] + stats["repos"] + stats["events"]
+                finally:
+                    restored_store.close()
+
+                duration_ms = (time.monotonic() - start) * 1000
+                return RestoreResult(
+                    success=True,
+                    records_restored=records_restored,
+                    errors=[],
+                    duration_ms=duration_ms,
+                )
+            except Exception as exc:
+                duration_ms = (time.monotonic() - start) * 1000
+                return RestoreResult(
+                    success=False,
+                    records_restored=0,
+                    errors=[f"Restore failed: {exc}"],
+                    duration_ms=duration_ms,
+                )
+            finally:
+                # Always clean up temp files
+                if tmp_path.exists():
+                    tmp_path.unlink()
+                self._remove_sqlite_sidecars(tmp_path)
 
     def delete_backup(self, backup_id: str) -> bool:
         with self._lock:
