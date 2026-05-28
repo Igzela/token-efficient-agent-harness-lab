@@ -191,6 +191,72 @@ class TestRateLimitEnforcement(unittest.TestCase):
         server.server_close()
 
 
+class TestEmptyScopeBypass(unittest.TestCase):
+    def test_empty_scope_denied_on_scoped_route(self) -> None:
+        server, ctx = _make_server()
+        register_route("GET", "/protected", _dummy_handler,
+                       required_scopes=frozenset({"dispatch:read"}),
+                       server=server)
+        from harness_core.dispatch.http_server import HarnessHTTPHandler
+        handler_instance = HarnessHTTPHandler.__new__(HarnessHTTPHandler)
+        handler_instance.server = server
+        ctx.route_scopes[("GET", "/protected")] = frozenset({"dispatch:read"})
+        request_ctx = RequestContext(
+            tenant_id="t1", api_key_id="k1",
+            scopes=frozenset(), request_id="req-1",
+        )
+        decision = handler_instance._check_scopes(request_ctx, ("GET", "/protected"))
+        self.assertFalse(decision.allowed)
+        self.assertIn("dispatch:read", decision.reason)
+        server.server_close()
+
+    def test_empty_scope_denied_reports_missing(self) -> None:
+        server, ctx = _make_server()
+        register_route("POST", "/write", _dummy_handler,
+                       required_scopes=frozenset({"dispatch:write"}),
+                       server=server)
+        from harness_core.dispatch.http_server import HarnessHTTPHandler
+        handler_instance = HarnessHTTPHandler.__new__(HarnessHTTPHandler)
+        handler_instance.server = server
+        ctx.route_scopes[("POST", "/write")] = frozenset({"dispatch:write"})
+        request_ctx = RequestContext(
+            tenant_id="t1", api_key_id="k1",
+            scopes=frozenset(), request_id="req-1",
+        )
+        decision = handler_instance._check_scopes(request_ctx, ("POST", "/write"))
+        self.assertFalse(decision.allowed)
+        self.assertEqual(decision.required_scopes, frozenset({"dispatch:write"}))
+        self.assertEqual(decision.granted_scopes, frozenset())
+        server.server_close()
+
+
+class TestStaleScopeReRegistration(unittest.TestCase):
+    def test_reregister_public_clears_stale_scopes(self) -> None:
+        server, ctx = _make_server()
+        register_route("GET", "/route", _dummy_handler,
+                       required_scopes=frozenset({"dispatch:read"}),
+                       server=server)
+        self.assertIn(("GET", "/route"), ctx.route_scopes)
+        register_route("GET", "/route", _dummy_handler,
+                       required_scopes=None, server=server)
+        self.assertNotIn(("GET", "/route"), ctx.route_scopes)
+        server.server_close()
+
+    def test_reregister_protected_overwrites_scopes(self) -> None:
+        server, ctx = _make_server()
+        register_route("GET", "/route", _dummy_handler,
+                       required_scopes=frozenset({"dispatch:read"}),
+                       server=server)
+        register_route("GET", "/route", _dummy_handler,
+                       required_scopes=frozenset({"dispatch:write"}),
+                       server=server)
+        self.assertEqual(
+            ctx.route_scopes[("GET", "/route")],
+            frozenset({"dispatch:write"}),
+        )
+        server.server_close()
+
+
 class TestClearRoutes(unittest.TestCase):
     def test_clear_routes_removes_scopes(self) -> None:
         server, ctx = _make_server()

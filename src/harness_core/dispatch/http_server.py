@@ -124,7 +124,7 @@ class HarnessHTTPHandler(BaseHTTPRequestHandler):
                 reason="authentication required",
                 required_scopes=required,
             )
-        if request_context.scopes and not required.issubset(request_context.scopes):
+        if not required.issubset(request_context.scopes):
             missing = required - request_context.scopes
             return AuthorizationDecision(
                 allowed=False,
@@ -236,6 +236,8 @@ def register_route(method: str, path: str, handler: RequestHandler,
     ctx.routes[(method, path)] = handler
     if required_scopes:
         ctx.route_scopes[(method, path)] = required_scopes
+    else:
+        ctx.route_scopes.pop((method, path), None)
 
 
 def clear_routes(server: HTTPServer | None = None) -> None:

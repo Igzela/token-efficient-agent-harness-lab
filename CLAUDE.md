@@ -85,6 +85,12 @@ See `docs/CURRENT_STATUS.md` for full details.
 - **2026-05-28**: Phase 6B-3 + Phase 7 fan-out — 7 new modules (rate_limiter, backup_manager, plugin_system, plugin_registry, sdk, doc_generator, cli extensions), 7 test files, 192 new tests (1846 total). Stdlib only: bisect, sqlite3, json, ast, argparse, threading. All code-reviewed (4 HIGH + 8 MEDIUM fixed), committed b6d5bc1.
 - **2026-05-28**: Phase 6B-3 + Phase 7 STABLE after 1 round of GPT review. 1846 tests. No CRITICAL/HIGH findings. MEDIUM: TenantResolver lock deferred to 6B-3, empty scopes semantic documented, RouteMatch.path normalization deferred. LOW: hash_api_key delimiter, observability integration, auth audit — all 6B-3 scope.
 - **2026-05-28**: Real provider integration — AnthropicProvider adapter for mimo (Anthropic-compatible API). Updated evaluation_stub for Phase 3+ provider execution. 1853 tests. Real API calls working (2/3 tasks completed, 1 blocked by approval gate correctly). Demo at demos/real_provider_demo.py. API key from env only.
+- **2026-05-28**: Phase 6B-3 Gate 1 enforcement hardening — wired scope checks and rate limiting into HTTP request path. Added route_pattern to RouteMatch, required_scopes to register_route(), AuthorizationDecision in auth.py, _check_scopes() and _check_rate_limit() in http_server.py. Request pipeline: auth → route match → scope check (403) → rate check (429) → handler. 13 new enforcement tests + 7 anthropic_provider tests. 1866 tests total. Committed b404b8f.
+- **2026-05-28**: Gate 1 hardening fix — fixed GPT BLOCK findings: (1) empty-scope API keys no longer bypass scope checks, (2) register_route clears stale scopes when re-registering without required_scopes. 4 new tests (1870 total). Awaiting re-review.
+- Previous BLOCK findings (b6d5bc1): HIGH-1 rate limit not wired, HIGH-2 scope enforcement missing, HIGH-3 plugin locks unused
+- Gate 1 addresses: HIGH-1 (rate limiter in ServerContext + _check_rate_limit), HIGH-2 (scope enforcement + AuthorizationDecision + 403/429)
+- HIGH-3 (plugin locks) deferred to Gate 3
+- Status: submitted for GPT audit
 
 ### GPT Gate Feedback 2026-05-28 (6B-3 + Phase 7)
 - Target: Phase 6B-3 + Phase 7 checkpoint (commit b6d5bc1)
@@ -112,6 +118,15 @@ See `docs/CURRENT_STATUS.md` for full details.
 - MEDIUM items: TenantResolver config-time-only (acceptable), empty scopes = unlimited semantic (documented), RouteMatch.path raw (defer to 6B-3)
 - Status: passed — Phase 6B-2 STABLE
 
+### GPT Gate Feedback 2026-05-28 (Gate 1 round 1)
+- Target: Phase 6B-3 Gate 1 enforcement hardening (commit b404b8f)
+- Verdict: BLOCK (CRITICAL: 0, HIGH: 2, MEDIUM: 2, LOW: 0)
+- HIGH-1: empty-scope API keys bypass scope checks (`request_context.scopes and` guard in _check_scopes) — FIXED
+- HIGH-2: route re-registration with required_scopes=None leaves stale scopes — FIXED
+- MEDIUM-1: tests call internal methods directly, no real HTTP 403/429 verification
+- MEDIUM-2: rate_limit hardcoded to 60, ignoring Tenant.rate_limit — deferred to 6B-3 tenant config
+- Status: HIGH items fixed, re-review pending in ChatGPT
+
 ## External Dependencies
 
 - **Python stdlib only** — all phases through Phase 3 use `urllib.request` for HTTP, no third-party packages
@@ -121,7 +136,7 @@ See `docs/CURRENT_STATUS.md` for full details.
 
 - **Framework**: unittest (stdlib), no pytest
 - **Run command**: `PYTHONPATH=src python3 -m unittest discover -s tests`
-- **Current count**: 1853 tests, 0 failures (as of 2026-05-28)
+- **Current count**: 1866 tests, 0 failures (as of 2026-05-28)
 - **Coverage**: Phase boundary contracts, schema validation, golden fixtures
 - **CI**: GitHub Actions on push/PR to main — runs security baseline + all tests
 - **Test naming**: `tests/test_<module>.py`, one test file per source module
