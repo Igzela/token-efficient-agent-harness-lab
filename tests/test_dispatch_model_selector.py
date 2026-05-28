@@ -69,10 +69,49 @@ class DispatchRoutingPolicyTests(unittest.TestCase):
     def test_high_risk_overrides(self):
         policy = DispatchRoutingPolicy(policy_id="test", tier_map={"code_review": "cheap_executor"})
         a = make_analysis("Review auth.py for security issues")
-        # If risk_level is high, should override to balanced_worker
-        # This depends on the analyzer detecting high risk
         tier = policy.select_tier(a)
         self.assertIn(tier, ("cheap_executor", "balanced_worker"))
+
+    def test_missing_domain_key_defaults_to_balanced(self):
+        policy = DispatchRoutingPolicy(policy_id="test", tier_map={})
+        a = make_analysis("Review auth.py for security issues")
+        tier = policy.select_tier(a)
+        self.assertEqual(tier, "balanced_worker")
+
+    def test_custom_tier_map(self):
+        policy = DispatchRoutingPolicy(
+            policy_id="custom",
+            tier_map={"code_review": "verifier", "docs_summarize": "strong_planner"},
+        )
+        a = make_analysis("Summarize the README")
+        tier = policy.select_tier(a)
+        self.assertEqual(tier, "strong_planner")
+
+
+class ModelSelectorBudgetTests(unittest.TestCase):
+    def test_low_budget_rejects_strong_planner(self):
+        a = make_analysis("Review auth.py for security issues")
+        # Force low budget by replacing the field
+        from dataclasses import replace
+        low_budget = replace(a, context_budget_estimate=200)
+        selector = ModelSelector()
+        _, _, _, _, _, rejected, reason = selector.select(low_budget)
+        self.assertIn("budget_constrained", reason)
+        budget_rejected = [r for r in rejected if r.constraint_failed == "budget_threshold"]
+        self.assertEqual(len(budget_rejected), 1)
+
+    def test_self_diagnostic_shadow_for_cheapest_tier(self):
+        # Use a request that resolves to cheap_executor tier
+        a = make_analysis("Classify this as a simple task")
+        selector = ModelSelector()
+        selected, _, fallback, _, shadow_routes, _, _ = selector.select(a)
+        reasons = [sr.reason for sr in shadow_routes]
+        # If selected is cheap_executor, should have self-diagnostic or fallback != selected
+        if selected == "cheap_executor":
+            self.assertTrue(
+                any("self-diagnostic" in r for r in reasons) or fallback != selected,
+                f"Expected self-diagnostic shadow or different fallback, got {reasons}",
+            )
 
 
 if __name__ == "__main__":
