@@ -64,3 +64,5 @@
 | `storage_migrator.py` | Phase 6A | JSON/JSONL → SQLite batch migration. | `migrate_plans_json_to_sqlite`, `migrate_repos_json_to_sqlite`, `migrate_events_jsonl_to_sqlite`, `full_migration`, `MigrationReport`, `FullMigrationReport` | `test_storage_migrator.py` |
 | `http_server.py` | Phase 6A | Stdlib HTTP server with route dispatch. | `HarnessHTTPHandler`, `ServerConfig`, `register_route`, `create_server`, `start_server_in_thread` | `test_http_server.py` |
 | `health_checker.py` | Phase 6A | Health and readiness probes for storage. | `HealthChecker`, `HealthCheck`, `HealthReport` | `test_health_checker.py` |
+| `sdk.py` | Phase 7 | Python SDK for programmatic integration. | `HarnessSDK`, `SDK_SCHEMA_VERSION` | `test_sdk.py` |
+| `doc_generator.py` | Phase 7 | Auto-generated markdown docs from source schemas. | `DocGenerator`, `DOC_GENERATOR_SCHEMA_VERSION` | `test_doc_generator.py` |

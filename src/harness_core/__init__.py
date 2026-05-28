@@ -166,6 +166,8 @@ from .dispatch import (
     ShadowRoute,
     TaskAnalysis,
 )
+from .sdk import HarnessSDK, SDK_SCHEMA_VERSION
+from .doc_generator import DocGenerator, DOC_GENERATOR_SCHEMA_VERSION
 
 __all__ = [
     "__version__",
@@ -342,4 +344,8 @@ __all__ = [
     "RuleBasedTaskAnalyzer",
     "ShadowRoute",
     "TaskAnalysis",
+    "HarnessSDK",
+    "SDK_SCHEMA_VERSION",
+    "DocGenerator",
+    "DOC_GENERATOR_SCHEMA_VERSION",
 ]

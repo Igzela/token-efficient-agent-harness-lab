@@ -1,0 +1,15 @@
+{
+  "schema_version": "plugin_manifest.v1",
+  "plugin_id": "sample_community_plugin",
+  "name": "Sample Community Plugin",
+  "version": "0.1.0",
+  "author": "test_author",
+  "permissions": ["dispatch:read"],
+  "entrypoints": ["main.py"],
+  "compatible_dispatcher_versions": ["dispatcher.v1"],
+  "required_env": [],
+  "network_access": false,
+  "filesystem_access": false,
+  "signature": null,
+  "trust_level": "community"
+}

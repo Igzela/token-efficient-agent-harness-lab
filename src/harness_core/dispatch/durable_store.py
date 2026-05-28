@@ -64,6 +64,10 @@ class DurableStore:
         self._conn: sqlite3.Connection | None = None
         self._ensure_schema()
 
+    @property
+    def db_path(self) -> str:
+        return self._db_path
+
     def _get_conn(self) -> sqlite3.Connection:
         if self._conn is None:
             self._conn = sqlite3.connect(self._db_path, check_same_thread=False)

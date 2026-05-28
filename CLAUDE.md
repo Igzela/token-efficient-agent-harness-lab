@@ -38,6 +38,7 @@ Master architecture document: `docs/dispatch/DISPATCHER_KERNEL_V0_ARCHITECTURE.m
 - **Phase 6A — Local Durable API/Storage**: STABLE (5 source modules, 5 test files, 1596 tests, GPT approved after 2 review rounds).
 - **Phase 6B-1 — Per-server Route Isolation**: Implemented (http_server.py refactored, 1603 tests).
 - **Phase 6B-2 — Local API Key + Tenant Boundary**: BETA (auth.py, auth middleware, 1639 tests).
+- **Phase 7 — SDK + Documentation System**: IMPLEMENTED (sdk.py, doc_generator.py, 64 new tests, 1846 total).
 - **Dispatch Kernel Phase 6B-3**: Outlined in design doc, not yet started.
 
 See `docs/CURRENT_STATUS.md` for detailed phase closeout records.
@@ -81,6 +82,7 @@ See `docs/CURRENT_STATUS.md` for full details.
 - **2026-05-28**: Phase 6B-1 per-server route isolation implemented. Refactored http_server.py: added ServerContext dataclass, moved routes/store/config from class-level globals to per-server instance. 1603 tests (7 new isolation tests). Design doc created at docs/dispatch/PHASE_6B_AUTH_TENANT_DESIGN.md.
 - **2026-05-28**: Phase 6B-2 local API key + tenant boundary implemented. Created auth.py (APIKey, Tenant, TenantResolver, RequestContext, AuthDecision, salted SHA-256 hashing, hmac.compare_digest). Added auth middleware to http_server.py (_authenticate_request, 401 on denied). 1639 tests (36 new auth tests).
 - **2026-05-28**: Phase 6B-2 STABLE after 2 rounds of GPT review (BLOCK → PASS). 1654 tests. P0 fix: RequestContext now flows into RouteMatch so handlers access tenant_id/scopes. Hardening: generic 401, token shape validation, scope subset constraint. Commit 6934b72.
+- **2026-05-28**: Phase 7 initial implementation — 2 source modules (sdk.py, doc_generator.py), 2 test files, 64 new tests (1846 total). HarnessSDK wraps DispatchEngine, DurableStore, HealthChecker. DocGenerator uses ast to extract schema versions, dataclass fields, and docstrings from source files.
 
 ### GPT Gate Feedback 2026-05-28
 - Target: Phase 6B-1 checkpoint (commit e4aecb3)
@@ -110,7 +112,7 @@ See `docs/CURRENT_STATUS.md` for full details.
 
 - **Framework**: unittest (stdlib), no pytest
 - **Run command**: `PYTHONPATH=src python3 -m unittest discover -s tests`
-- **Current count**: 1639 tests, 0 failures (as of 2026-05-28)
+- **Current count**: 1846 tests, 0 failures (as of 2026-05-28)
 - **Coverage**: Phase boundary contracts, schema validation, golden fixtures
 - **CI**: GitHub Actions on push/PR to main — runs security baseline + all tests
 - **Test naming**: `tests/test_<module>.py`, one test file per source module
