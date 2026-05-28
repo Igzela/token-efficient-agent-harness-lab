@@ -48,7 +48,7 @@ test("dispatch posts request body to dispatch endpoint", async () => {
   });
 });
 
-test("api key becomes bearer authorization header", async () => {
+test("api key becomes auth header", async () => {
   const { calls, fetchImpl } = captureFetch();
   const client = new AgentControlPlaneClient({
     apiKey: "local-test-key",
