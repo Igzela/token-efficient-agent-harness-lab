@@ -301,5 +301,72 @@ class ConflictResolutionPersistenceTests(unittest.TestCase):
         self.assertEqual(graph.status, "cancelled")
 
 
+# P0: Terminal path cleanup — cancel and budget-overrun must release agents
+class TerminalCleanupTests(unittest.TestCase):
+    def test_cancel_running_node_releases_registry(self):
+        registry = AgentRoleRegistry()
+        registry.register_role(AgentRole(
+            role_id="r1", role_name="code", capabilities=("code",),
+            max_concurrent_nodes=1,
+        ))
+        decomposer = TaskDecomposer(role_registry=registry)
+        engine = WorkflowEngine(decomposer=decomposer, role_registry=registry)
+        graph = engine.create_workflow(_make_analysis(), dispatch_id="disp-1")
+        graph = engine.tick(graph)
+        node = [n for n in graph.nodes if n.status == "running"][0]
+        graph = engine.cancel(graph)
+        assignment = registry.get_assignment(graph.workflow_id, node.node_id)
+        self.assertIsNone(assignment)
+
+    def test_cancel_running_node_changes_status(self):
+        registry = AgentRoleRegistry()
+        registry.register_role(AgentRole(
+            role_id="r1", role_name="code", capabilities=("code",),
+            max_concurrent_nodes=1,
+        ))
+        decomposer = TaskDecomposer(role_registry=registry)
+        engine = WorkflowEngine(decomposer=decomposer, role_registry=registry)
+        graph = engine.create_workflow(_make_analysis(), dispatch_id="disp-1")
+        graph = engine.tick(graph)
+        node = [n for n in graph.nodes if n.status == "running"][0]
+        graph = engine.cancel(graph)
+        updated = [n for n in graph.nodes if n.node_id == node.node_id][0]
+        self.assertEqual(updated.status, "cancelled")
+
+    def test_budget_overrun_releases_assigned_agent(self):
+        registry = AgentRoleRegistry()
+        registry.register_role(AgentRole(
+            role_id="r1", role_name="code", capabilities=("code",),
+            max_concurrent_nodes=10,
+        ))
+        decomposer = TaskDecomposer(role_registry=registry)
+        budget = MultiAgentBudgetManager(overrun_strategy="cancel")
+        engine = WorkflowEngine(
+            decomposer=decomposer, budget_manager=budget, role_registry=registry,
+        )
+        graph = engine.create_workflow(_make_analysis(), dispatch_id="disp-1", budget_limit=1.0)
+        graph = engine.tick(graph)
+        node = [n for n in graph.nodes if n.status == "running"][0]
+        graph = engine.complete_node(graph, node.node_id, "out", cost=5.0)
+        self.assertEqual(graph.status, "failed")
+        assignment = registry.get_assignment(graph.workflow_id, node.node_id)
+        self.assertIsNone(assignment)
+
+    def test_cancelled_workflow_has_no_running_nodes(self):
+        registry = AgentRoleRegistry()
+        registry.register_role(AgentRole(
+            role_id="r1", role_name="code", capabilities=("code",),
+            max_concurrent_nodes=1,
+        ))
+        decomposer = TaskDecomposer(role_registry=registry)
+        engine = WorkflowEngine(decomposer=decomposer, role_registry=registry)
+        graph = engine.create_workflow(_make_analysis(), dispatch_id="disp-1")
+        graph = engine.tick(graph)
+        graph = engine.cancel(graph)
+        self.assertEqual(graph.status, "cancelled")
+        for node in graph.nodes:
+            self.assertNotEqual(node.status, "running")
+
+
 if __name__ == "__main__":
     unittest.main()

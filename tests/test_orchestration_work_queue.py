@@ -78,11 +78,17 @@ class WorkQueueTests(unittest.TestCase):
         result = self.queue.cancel(graph, "n1")
         self.assertEqual(self.queue.status_of(result, "n1"), "cancelled")
 
-    def test_cancel_running_not_cancelled(self):
+    def test_cancel_running_to_cancelled(self):
         node = _make_node(status="running")
         graph = _make_graph([node])
         result = self.queue.cancel(graph, "n1")
-        self.assertEqual(self.queue.status_of(result, "n1"), "running")
+        self.assertEqual(self.queue.status_of(result, "n1"), "cancelled")
+
+    def test_cancel_completed_unchanged(self):
+        node = _make_node(status="completed")
+        graph = _make_graph([node])
+        result = self.queue.cancel(graph, "n1")
+        self.assertEqual(self.queue.status_of(result, "n1"), "completed")
 
     def test_status_of_unknown(self):
         graph = _make_graph([])

@@ -128,7 +128,7 @@ class WorkflowEngine:
 
     def cancel(self, graph: WorkflowGraph) -> WorkflowGraph:
         for node in graph.nodes:
-            if node.status in ("pending", "ready"):
+            if node.status not in ("completed", "failed", "cancelled"):
                 graph = self._queue.cancel(graph, node.node_id)
                 self._release_agent(node)
         return self._set_status(graph, "cancelled")
@@ -137,6 +137,9 @@ class WorkflowEngine:
         graph = self._queue.complete(graph, node_id, output_ref)
 
         node = self._find_node(graph, node_id)
+        if node:
+            self._release_agent(node)
+
         if node and cost > 0:
             agent_id = node.assigned_agent_id or ""
             self._budget_manager.record_cost(graph.workflow_id, node_id, agent_id, cost)
@@ -146,9 +149,6 @@ class WorkflowEngine:
                 return self._set_status(graph, "failed")
 
         graph = self._update_node_fields(graph, node_id, cost_incurred=cost)
-
-        if node:
-            self._release_agent(node)
 
         return graph
 

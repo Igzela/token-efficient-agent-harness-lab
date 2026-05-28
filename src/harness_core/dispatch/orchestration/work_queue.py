@@ -67,7 +67,7 @@ class WorkQueue:
 
     def cancel(self, graph: WorkflowGraph, node_id: str) -> WorkflowGraph:
         node = self._find_node(graph, node_id)
-        if node is None or node.status not in ("pending", "ready"):
+        if node is None or node.status in ("completed", "failed", "cancelled"):
             return graph
         return self._update_node(graph, node_id, "cancelled")
 
