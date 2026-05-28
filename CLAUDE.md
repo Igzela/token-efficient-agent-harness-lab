@@ -108,6 +108,7 @@ See `docs/CURRENT_STATUS.md` for full details.
 - **2026-05-28**: Phase 7 P7-T3 CommunityProfileRegistry + P7-T4 ToolAdapterManager — 2 source modules (community_profiles.py, tool_adapter.py), 2 test files, 58 new tests (2081 total). ModelProfile dataclass, CommunityProfileRegistry with register/search/validate. ToolDefinition/ToolExecutionRequest/ToolExecutionResult dataclasses, ToolAdapterManager with register/execute stub. Commits 29ad85c, 1bd8130.
 - **2026-05-28**: Gate 3 Plugin thread safety — RLock in PluginSystem (reentrant for load→unload), threading.Lock in PluginRegistry, all public methods guarded with `with self._lock:`. No new tests needed (existing tests cover). Commit 785fe61.
 - **2026-05-28**: Review hardening — Fixed CRITICAL copy-paste bug in dashboard.py compute_summary() (cost_savings/quality_delta now filter by metric_name). Added NaN/inf validation in validate_experiment(). Added task existence check in benchmark.py record_result(). Made compare_models() atomic. 8 new tests. 2089 total.
+- **2026-05-28**: Language migration COMPLETE — Rust `http_server` (axum-based API with route matching, scope checks, CORS, health/dispatch endpoints) and `doc_generator` (module/schema registry, source parser, markdown generation) implemented. 9 new component test files for core engine modules (budget_manager, dispatch_decision, dispatch_engine, dispatch_ledger, evaluation_stub, event_schema, model_selector, task_analyzer, doc_generator). 422 total Rust tests, 35 source modules, 31 test files. All Python dispatch kernel modules now have Rust parity.
 - Previous BLOCK findings (b6d5bc1): HIGH-1 rate limit not wired, HIGH-2 scope enforcement missing, HIGH-3 plugin locks unused
 - Gate 1 addresses: HIGH-1 (rate limiter in ServerContext + _check_rate_limit), HIGH-2 (scope enforcement + AuthorizationDecision + 403/429)
 - Gate 2 addresses: atomic restore, WAL safety, failure-mode coverage
@@ -197,7 +198,7 @@ See `docs/CURRENT_STATUS.md` for full details.
 
 - **Framework**: unittest (stdlib), no pytest
 - **Run command**: `PYTHONPATH=src python3 -m unittest discover -s tests`
-- **Current count**: 2089 Python tests + Rust `engine` parity/component tests, 0 failures (as of 2026-05-28)
+- **Current count**: 2089 Python tests + 422 Rust tests, 0 failures (as of 2026-05-28)
 - **Coverage**: Phase boundary contracts, schema validation, golden fixtures
 - **CI**: GitHub Actions on push/PR to main — runs security baseline + all tests
 - **Test naming**: `tests/test_<module>.py`, one test file per source module

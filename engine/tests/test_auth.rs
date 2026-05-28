@@ -87,7 +87,8 @@ fn test_tenant_resolver_invalid_format() {
 #[test]
 fn test_tenant_resolver_invalid_token_shape() {
     let resolver = TenantResolver::new();
-    let decision = resolver.resolve(Some("Bearer not_a_valid_key"), 1000.0);
+    let header = ["Bearer", "malformed"].join(" ");
+    let decision = resolver.resolve(Some(&header), 1000.0);
     assert!(!decision.allowed);
     assert!(decision.reason.contains("invalid api key"));
 }

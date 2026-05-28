@@ -5,7 +5,7 @@ Last verified: 2026-05-28.
 ## Repository State
 
 - Branch: `rust/phase1-dispatch-kernel` with language migration Phases 0-7 complete.
-- Tests: **2089 Python pass**, **385 Rust pass**, 0 failures.
+- Tests: **2089 Python pass**, **422 Rust pass**, 0 failures.
 - Security baseline: ALL CHECKS PASSED.
 
 ## New Session / Documentation Discipline
@@ -68,7 +68,8 @@ Run `python3 scripts/check_agent_handoff.py` before committing so the handoff su
 | Language Migration Phase 4 — Infrastructure Parity | **IMPLEMENTED** — 5 infrastructure modules (observability, auth, rate_limiter, plugin_system, plugin_registry). 64 new tests. Commit `f877e81`. |
 | Language Migration Phase 5 — Ecosystem Parity | **IMPLEMENTED** — 4 ecosystem modules (community_profiles, tool_adapter, dashboard, benchmark). 48 new tests. Commit `098eda9`. |
 | Language Migration Phase 6 — Storage Parity | **IMPLEMENTED** — 3 storage modules (durable_store via rusqlite, health_checker, backup_manager). 32 new tests. Commit `965a2cd`. |
-| Language Migration Phase 7 — SDK + Migrator | **IMPLEMENTED** — 2 modules (sdk, storage_migrator). 16 new tests. Commit `ea11dfb`. All Python dispatch kernel modules have Rust parity. |
+| Language Migration Phase 7 — SDK + Migrator | **IMPLEMENTED** — 2 modules (sdk, storage_migrator). 16 new tests. Commit `ea11dfb`. |
+| Language Migration Complete — http_server + doc_generator + component tests | **IMPLEMENTED** — 2 final modules (http_server with axum API, doc_generator), 9 component test files for core engine modules. 422 total Rust tests, 35 source modules, 31 test files. All Python dispatch kernel modules have Rust parity. |
 
 Trial 2 complete evidence chain: [`docs/trials/TRIAL_2_FINAL_STATE_INDEX.md`](trials/TRIAL_2_FINAL_STATE_INDEX.md).
 Trial 3 report: [`docs/trials/TRIAL_3_REPORT.md`](trials/TRIAL_3_REPORT.md).

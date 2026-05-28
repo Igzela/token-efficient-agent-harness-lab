@@ -1,7 +1,19 @@
+use axum::extract::State;
+use axum::http::{header, HeaderMap, HeaderValue, StatusCode};
+use axum::response::{IntoResponse, Response};
+use axum::routing::{get, post};
+use axum::{Json, Router};
 use serde::{Deserialize, Serialize};
+use serde_json::json;
 use std::collections::HashMap;
+use std::sync::{Arc, Mutex};
+
+use crate::dispatch_engine::DispatchEngine;
+use crate::infrastructure::auth::{AuthDecision, TenantResolver};
+use crate::infrastructure::rate_limiter::RateLimiter;
 
 pub const HTTP_SERVER_SCHEMA_VERSION: &str = "http_server.v1";
+pub const AXUM_API_SCHEMA_VERSION: &str = "axum_api.v1";
 pub const MAX_BODY_SIZE: usize = 1_048_576; // 1 MB
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -30,6 +42,312 @@ pub struct RouteMatch {
 }
 
 pub type RouteHandler = fn(&RouteMatch, Option<&serde_json::Value>) -> serde_json::Value;
+
+#[derive(Clone)]
+pub struct AxumApiState {
+    engine: Arc<DispatchEngine>,
+    tenant_resolver: Option<Arc<Mutex<TenantResolver>>>,
+    rate_limiter: Arc<Mutex<RateLimiter>>,
+    default_rate_limit: Option<i64>,
+    now: f64,
+}
+
+impl Default for AxumApiState {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl AxumApiState {
+    pub fn new() -> Self {
+        Self {
+            engine: Arc::new(DispatchEngine::new()),
+            tenant_resolver: None,
+            rate_limiter: Arc::new(Mutex::new(RateLimiter::new(60.0, 10_000))),
+            default_rate_limit: None,
+            now: 0.0,
+        }
+    }
+
+    pub fn with_auth(
+        mut self,
+        tenant_resolver: TenantResolver,
+        rate_limiter: RateLimiter,
+        default_rate_limit: Option<i64>,
+        now: f64,
+    ) -> Self {
+        self.tenant_resolver = Some(Arc::new(Mutex::new(tenant_resolver)));
+        self.rate_limiter = Arc::new(Mutex::new(rate_limiter));
+        self.default_rate_limit = default_rate_limit;
+        self.now = now;
+        self
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct DispatchApiRequest {
+    pub raw_request: String,
+    pub request_source: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+struct ApiRequestContext {
+    tenant_id: String,
+    api_key_id: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
+struct ApiErrorBody {
+    error: String,
+    schema_version: String,
+}
+
+#[derive(Debug, Clone)]
+struct ApiError {
+    status: StatusCode,
+    error: String,
+}
+
+impl ApiError {
+    fn new(status: StatusCode, error: impl Into<String>) -> Self {
+        Self {
+            status,
+            error: error.into(),
+        }
+    }
+}
+
+impl IntoResponse for ApiError {
+    fn into_response(self) -> Response {
+        (
+            self.status,
+            cors_headers(),
+            Json(ApiErrorBody {
+                error: self.error,
+                schema_version: AXUM_API_SCHEMA_VERSION.to_string(),
+            }),
+        )
+            .into_response()
+    }
+}
+
+pub fn build_axum_router(state: AxumApiState) -> Router {
+    Router::new()
+        .route("/api/v1/health", get(api_health).options(cors_preflight))
+        .route("/api/v1/ready", get(api_ready).options(cors_preflight))
+        .route(
+            "/api/v1/openapi.json",
+            get(api_openapi).options(cors_preflight),
+        )
+        .route(
+            "/api/v1/dispatch",
+            post(api_dispatch).options(cors_preflight),
+        )
+        .with_state(state)
+}
+
+async fn api_health(
+    State(state): State<AxumApiState>,
+    headers: HeaderMap,
+) -> Result<impl IntoResponse, ApiError> {
+    let context = authorize(&state, &headers, "health:read")?;
+    Ok((
+        cors_headers(),
+        Json(json!({
+            "schema_version": AXUM_API_SCHEMA_VERSION,
+            "status": "healthy",
+            "tenant_id": context.tenant_id,
+        })),
+    ))
+}
+
+async fn api_ready(
+    State(state): State<AxumApiState>,
+    headers: HeaderMap,
+) -> Result<impl IntoResponse, ApiError> {
+    let context = authorize(&state, &headers, "health:read")?;
+    Ok((
+        cors_headers(),
+        Json(json!({
+            "schema_version": AXUM_API_SCHEMA_VERSION,
+            "status": "ready",
+            "tenant_id": context.tenant_id,
+        })),
+    ))
+}
+
+async fn api_dispatch(
+    State(state): State<AxumApiState>,
+    headers: HeaderMap,
+    Json(request): Json<DispatchApiRequest>,
+) -> Result<impl IntoResponse, ApiError> {
+    authorize(&state, &headers, "dispatch:read")?;
+    if request.raw_request.trim().is_empty() {
+        return Err(ApiError::new(
+            StatusCode::BAD_REQUEST,
+            "raw_request is required",
+        ));
+    }
+    let request_source = request.request_source.as_deref().unwrap_or("api");
+    let bundle = state.engine.dispatch(&request.raw_request, request_source);
+    Ok((cors_headers(), Json(bundle)))
+}
+
+async fn api_openapi(
+    State(state): State<AxumApiState>,
+    headers: HeaderMap,
+) -> Result<impl IntoResponse, ApiError> {
+    authorize(&state, &headers, "health:read")?;
+    Ok((cors_headers(), Json(openapi_document())))
+}
+
+async fn cors_preflight() -> impl IntoResponse {
+    (cors_headers(), StatusCode::NO_CONTENT)
+}
+
+fn authorize(
+    state: &AxumApiState,
+    headers: &HeaderMap,
+    required_scope: &str,
+) -> Result<ApiRequestContext, ApiError> {
+    let Some(resolver) = &state.tenant_resolver else {
+        return Ok(ApiRequestContext {
+            tenant_id: "local".to_string(),
+            api_key_id: "none".to_string(),
+        });
+    };
+
+    let auth_header = headers
+        .get(header::AUTHORIZATION)
+        .and_then(|value| value.to_str().ok());
+    let guard = resolver
+        .lock()
+        .map_err(|_| ApiError::new(StatusCode::INTERNAL_SERVER_ERROR, "auth unavailable"))?;
+    let decision = guard.resolve(auth_header, state.now);
+    let context = auth_context_from_decision(decision, required_scope)?;
+    let tenant_limit = guard.tenant_rate_limit(&context.tenant_id);
+    drop(guard);
+
+    let rate_limit = tenant_limit.or(state.default_rate_limit);
+    let mut limiter = state.rate_limiter.lock().map_err(|_| {
+        ApiError::new(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "rate limiter unavailable",
+        )
+    })?;
+    let rate = limiter.check(
+        &context.tenant_id,
+        &context.api_key_id,
+        rate_limit,
+        state.now,
+    );
+    if !rate.allowed {
+        return Err(ApiError::new(
+            StatusCode::TOO_MANY_REQUESTS,
+            "rate limit exceeded",
+        ));
+    }
+
+    Ok(context)
+}
+
+fn auth_context_from_decision(
+    decision: AuthDecision,
+    required_scope: &str,
+) -> Result<ApiRequestContext, ApiError> {
+    if !decision.allowed {
+        return Err(ApiError::new(StatusCode::UNAUTHORIZED, "unauthorized"));
+    }
+    if !decision.scopes.contains(required_scope) {
+        return Err(ApiError::new(StatusCode::FORBIDDEN, "forbidden"));
+    }
+    Ok(ApiRequestContext {
+        tenant_id: decision.tenant_id.unwrap_or_else(|| "unknown".to_string()),
+        api_key_id: decision.api_key_id.unwrap_or_else(|| "unknown".to_string()),
+    })
+}
+
+fn cors_headers() -> HeaderMap {
+    let mut headers = HeaderMap::new();
+    headers.insert(
+        header::ACCESS_CONTROL_ALLOW_ORIGIN,
+        HeaderValue::from_static("*"),
+    );
+    headers.insert(
+        header::ACCESS_CONTROL_ALLOW_METHODS,
+        HeaderValue::from_static("GET,POST,OPTIONS"),
+    );
+    headers.insert(
+        header::ACCESS_CONTROL_ALLOW_HEADERS,
+        HeaderValue::from_static("authorization,content-type"),
+    );
+    headers
+}
+
+pub fn openapi_document() -> serde_json::Value {
+    json!({
+        "openapi": "3.1.0",
+        "info": {
+            "title": "Agent Control Plane Local API",
+            "version": "0.1.0",
+            "description": "Deterministic local API. Real providers, sandbox execution, target writes, and runtime workers are disabled by default."
+        },
+        "paths": {
+            "/api/v1/health": {
+                "get": {
+                    "summary": "Health check",
+                    "responses": {
+                        "200": {"description": "API is healthy"}
+                    }
+                }
+            },
+            "/api/v1/ready": {
+                "get": {
+                    "summary": "Readiness check",
+                    "responses": {
+                        "200": {"description": "API is ready"}
+                    }
+                }
+            },
+            "/api/v1/openapi.json": {
+                "get": {
+                    "summary": "OpenAPI document",
+                    "responses": {
+                        "200": {"description": "OpenAPI JSON document"}
+                    }
+                }
+            },
+            "/api/v1/dispatch": {
+                "post": {
+                    "summary": "Create deterministic dispatch bundle",
+                    "description": "Runs local rule-based dispatch only. The default executor is noop and does not call real providers.",
+                    "requestBody": {
+                        "required": true,
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "type": "object",
+                                    "required": ["raw_request"],
+                                    "properties": {
+                                        "raw_request": {"type": "string"},
+                                        "request_source": {"type": "string", "default": "api"}
+                                    }
+                                }
+                            }
+                        }
+                    },
+                    "responses": {
+                        "200": {"description": "Dispatch bundle"},
+                        "400": {"description": "Invalid request"},
+                        "401": {"description": "Unauthorized"},
+                        "403": {"description": "Forbidden"},
+                        "429": {"description": "Rate limited"}
+                    }
+                }
+            }
+        }
+    })
+}
 
 pub struct ServerContext {
     pub config: ServerConfig,

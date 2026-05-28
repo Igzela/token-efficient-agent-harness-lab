@@ -97,6 +97,12 @@ impl TenantResolver {
         self.api_keys.insert(key.key_id.clone(), key);
     }
 
+    pub fn tenant_rate_limit(&self, tenant_id: &str) -> Option<i64> {
+        self.tenants
+            .get(tenant_id)
+            .and_then(|tenant| tenant.rate_limit)
+    }
+
     pub fn create_api_key(
         &mut self,
         tenant_id: &str,
