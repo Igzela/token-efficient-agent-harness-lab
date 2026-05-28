@@ -2,6 +2,7 @@ pub mod budget_manager;
 pub mod dispatch_decision;
 pub mod dispatch_engine;
 pub mod dispatch_ledger;
+pub mod ecosystem;
 pub mod evaluation_stub;
 pub mod event_schema;
 pub mod executor_adapter;
