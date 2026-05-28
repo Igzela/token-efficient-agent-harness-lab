@@ -5,6 +5,7 @@ pub mod dispatch_ledger;
 pub mod evaluation_stub;
 pub mod event_schema;
 pub mod executor_adapter;
+pub mod infrastructure;
 pub mod model_selector;
 pub mod orchestration;
 pub mod routing;
