@@ -108,6 +108,7 @@ ALLOWED_TEST_IMPORTS: dict[str, set[str]] = {
     "demos/real_provider_demo.py": {"urllib.request", "urllib.error", "json", "os", "sys", "time"},
     "demos/full_pipeline_demo.py": {"urllib.request", "urllib.error", "json", "os", "sys", "time"},
     "sdk/python/src/agent_control_plane_sdk/client.py": {"urllib.request", "urllib.error"},
+    "sdk/python/tests/test_client.py": {"urllib.error"},
 }
 
 # Paths to exclude from active routing guard (test fixtures contain

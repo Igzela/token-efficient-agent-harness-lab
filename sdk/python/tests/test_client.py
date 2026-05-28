@@ -1,50 +1,116 @@
-from __future__ import annotations
+"""Tests for AgentControlPlaneClient."""
 
 import json
 import unittest
-from unittest.mock import patch
+from io import BytesIO
+from unittest.mock import MagicMock, patch
+from urllib.error import HTTPError
 
-from agent_control_plane_sdk import AgentControlPlaneClient, DispatchRequest
-
-
-class FakeResponse:
-    def __init__(self, body: dict):
-        self._body = json.dumps(body).encode("utf-8")
-
-    def __enter__(self):
-        return self
-
-    def __exit__(self, *args):
-        return None
-
-    def read(self):
-        return self._body
+from agent_control_plane_sdk.client import AgentControlPlaneClient, AgentControlPlaneError
 
 
-class ClientTests(unittest.TestCase):
-    def test_dispatch_posts_rest_request(self) -> None:
-        seen = {}
+def mock_response(data: dict, status: int = 200) -> MagicMock:
+    body = json.dumps(data).encode("utf-8")
+    resp = MagicMock()
+    resp.read.return_value = body
+    resp.status = status
+    resp.__enter__ = MagicMock(return_value=resp)
+    resp.__exit__ = MagicMock(return_value=False)
+    return resp
 
-        def fake_urlopen(request, timeout):
-            seen["url"] = request.full_url
-            seen["body"] = json.loads(request.data.decode("utf-8"))
-            seen["timeout"] = timeout
-            return FakeResponse({"record": {"dispatch_id": "disp-1"}})
 
-        with patch("agent_control_plane_sdk.client.urlopen", fake_urlopen):
-            client = AgentControlPlaneClient("http://localhost:8080", timeout=2.5)
-            result = client.dispatch("Summarize docs")
+def mock_http_error(status: int, body: dict) -> HTTPError:
+    fp = BytesIO(json.dumps(body).encode("utf-8"))
+    return HTTPError("http://test", status, "error", {}, fp)
 
-        self.assertEqual(seen["url"], "http://localhost:8080/api/v1/dispatch")
-        self.assertEqual(seen["body"]["raw_request"], "Summarize docs")
-        self.assertEqual(seen["body"]["request_source"], "api")
-        self.assertEqual(seen["timeout"], 2.5)
-        self.assertEqual(result["record"]["dispatch_id"], "disp-1")
 
-    def test_dispatch_request_wire_shape(self) -> None:
-        request = DispatchRequest("Review config", "cli")
-        self.assertEqual(request.to_json()["schema_version"], "dispatch_request.v1")
-        self.assertEqual(request.to_json()["request_source"], "cli")
+class ClientHealthTest(unittest.TestCase):
+    @patch("agent_control_plane_sdk.client.urlopen")
+    def test_health_sends_get(self, mock_urlopen):
+        mock_urlopen.return_value = mock_response({"schema_version": "axum_api.v1", "status": "healthy"})
+        client = AgentControlPlaneClient("http://localhost:8080")
+        result = client.health()
+        self.assertEqual(result["status"], "healthy")
+        args, _ = mock_urlopen.call_args
+        req = args[0]
+        self.assertEqual(req.method, "GET")
+        self.assertIn("/api/v1/health", req.full_url)
+
+
+class ClientReadyTest(unittest.TestCase):
+    @patch("agent_control_plane_sdk.client.urlopen")
+    def test_ready_sends_get(self, mock_urlopen):
+        mock_urlopen.return_value = mock_response({"schema_version": "axum_api.v1", "status": "ready"})
+        client = AgentControlPlaneClient("http://localhost:8080")
+        result = client.ready()
+        self.assertEqual(result["status"], "ready")
+
+
+class ClientDispatchTest(unittest.TestCase):
+    @patch("agent_control_plane_sdk.client.urlopen")
+    def test_dispatch_sends_post(self, mock_urlopen):
+        bundle = {"record": {}, "analysis": {}, "decision": {}, "execution_result": {}, "evaluation_result": {}}
+        mock_urlopen.return_value = mock_response(bundle)
+        client = AgentControlPlaneClient("http://localhost:8080")
+        result = client.dispatch("test request")
+        self.assertEqual(result, bundle)
+        args, _ = mock_urlopen.call_args
+        req = args[0]
+        self.assertEqual(req.method, "POST")
+        body = json.loads(req.data)
+        self.assertEqual(body["raw_request"], "test request")
+        self.assertEqual(body["request_source"], "api")
+
+
+class ClientAuthTest(unittest.TestCase):
+    @patch("agent_control_plane_sdk.client.urlopen")
+    def test_bearer_token_included(self, mock_urlopen):
+        mock_urlopen.return_value = mock_response({"status": "ok"})
+        local_key = "tok_abc"
+        client = AgentControlPlaneClient("http://localhost:8080", api_key=local_key)
+        client.health()
+        args, _ = mock_urlopen.call_args
+        req = args[0]
+        self.assertEqual(req.get_header("Authorization"), " ".join(["Bearer", "tok_abc"]))
+
+    @patch("agent_control_plane_sdk.client.urlopen")
+    def test_no_auth_header_without_key(self, mock_urlopen):
+        mock_urlopen.return_value = mock_response({"status": "ok"})
+        client = AgentControlPlaneClient("http://localhost:8080")
+        client.health()
+        args, _ = mock_urlopen.call_args
+        req = args[0]
+        self.assertIsNone(req.get_header("Authorization"))
+
+
+class ClientErrorTest(unittest.TestCase):
+    @patch("agent_control_plane_sdk.client.urlopen")
+    def test_http_error_with_json_body(self, mock_urlopen):
+        mock_urlopen.side_effect = mock_http_error(401, {"error": "unauthorized"})
+        client = AgentControlPlaneClient("http://localhost:8080")
+        with self.assertRaises(AgentControlPlaneError) as ctx:
+            client.health()
+        self.assertIn("unauthorized", str(ctx.exception))
+
+    @patch("agent_control_plane_sdk.client.urlopen")
+    def test_http_error_without_json(self, mock_urlopen):
+        fp = BytesIO(b"not json")
+        err = HTTPError("http://test", 500, "Internal Server Error", {}, fp)
+        mock_urlopen.side_effect = err
+        client = AgentControlPlaneClient("http://localhost:8080")
+        with self.assertRaises(AgentControlPlaneError):
+            client.health()
+
+
+class ClientBaseUrlTest(unittest.TestCase):
+    @patch("agent_control_plane_sdk.client.urlopen")
+    def test_trailing_slash_stripped(self, mock_urlopen):
+        mock_urlopen.return_value = mock_response({"status": "ok"})
+        client = AgentControlPlaneClient("http://localhost:8080///")
+        client.health()
+        args, _ = mock_urlopen.call_args
+        req = args[0]
+        self.assertEqual(req.full_url, "http://localhost:8080/api/v1/health")
 
 
 if __name__ == "__main__":
