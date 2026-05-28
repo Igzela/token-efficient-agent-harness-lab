@@ -9,6 +9,8 @@ from dataclasses import dataclass, field
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from typing import Any, Callable
 
+from .auth import RequestContext
+
 
 HTTP_SERVER_SCHEMA_VERSION = "http_server.v1"
 
@@ -25,6 +27,7 @@ class RouteMatch:
     method: str
     path: str
     params: dict[str, str] = field(default_factory=dict)
+    request_context: RequestContext | None = None
 
 
 RequestHandler = Callable[[RouteMatch, dict[str, Any] | None], dict[str, Any]]
@@ -118,7 +121,7 @@ class HarnessHTTPHandler(BaseHTTPRequestHandler):
     def do_DELETE(self) -> None:
         self._handle_request("DELETE")
 
-    def _authenticate_request(self) -> Any:
+    def _authenticate_request(self) -> RequestContext | None:
         """Run auth middleware if tenant_resolver is configured.
 
         Returns RequestContext if allowed, or None if 401 already sent.
@@ -130,18 +133,18 @@ class HarnessHTTPHandler(BaseHTTPRequestHandler):
         auth_header = self.headers.get("Authorization")
         decision = resolver.resolve(auth_header)
         if not decision.allowed:
-            self._send_error_json(401, decision.reason)
+            self._send_error_json(401, "unauthorized")
             return None
-        return {
-            "tenant_id": decision.tenant_id,
-            "api_key_id": decision.api_key_id,
-            "scopes": decision.scopes,
-            "request_id": str(uuid.uuid4()),
-        }
+        return RequestContext(
+            tenant_id=decision.tenant_id,
+            api_key_id=decision.api_key_id,
+            scopes=decision.scopes,
+            request_id=str(uuid.uuid4()),
+        )
 
     def _handle_request(self, method: str) -> None:
-        ctx = self._authenticate_request()
-        if ctx is None and self._context.tenant_resolver is not None:
+        request_context = self._authenticate_request()
+        if request_context is None and self._context.tenant_resolver is not None:
             return
         result = self._match_route(method)
         if result is None:
@@ -149,7 +152,12 @@ class HarnessHTTPHandler(BaseHTTPRequestHandler):
             return
         handler, params = result
         body = self._read_body()
-        match = RouteMatch(method=method, path=self.path, params=params)
+        match = RouteMatch(
+            method=method,
+            path=self.path,
+            params=params,
+            request_context=request_context,
+        )
         try:
             response = handler(match, body)
             self._send_json(response)

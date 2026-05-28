@@ -15,6 +15,7 @@ from harness_core.dispatch.auth import (
     RequestContext,
     Tenant,
     TenantResolver,
+    _validate_token_shape,
     generate_api_key,
     generate_salt,
     hash_api_key,
@@ -237,6 +238,60 @@ class TenantResolverTests(unittest.TestCase):
         resolver = TenantResolver()
         d = resolver.resolve(None)
         self.assertIsNone(d.api_key_id)
+
+
+class TokenShapeValidationTests(unittest.TestCase):
+    """Phase 6B-2 hardening: validate token format before key scan."""
+
+    def test_valid_shape(self):
+        key = generate_api_key()
+        self.assertTrue(_validate_token_shape(key))
+
+    def test_missing_prefix(self):
+        self.assertFalse(_validate_token_shape("not_harness_abc123"))
+
+    def test_short_suffix(self):
+        self.assertFalse(_validate_token_shape("harness_abc"))
+
+    def test_long_suffix(self):
+        suffix = "a" * 65
+        self.assertFalse(_validate_token_shape(f"harness_{suffix}"))
+
+    def test_non_hex_suffix(self):
+        suffix = "g" + "a" * 63
+        self.assertFalse(_validate_token_shape(f"harness_{suffix}"))
+
+    def test_correct_length_hex(self):
+        suffix = "a" * 64
+        self.assertTrue(_validate_token_shape(f"harness_{suffix}"))
+
+    def test_resolve_rejects_invalid_shape(self):
+        resolver = TenantResolver()
+        resolver.add_tenant(Tenant(tenant_id="t1", name="T"))
+        d = resolver.resolve("Bearer not-a-valid-key-shape")
+        self.assertFalse(d.allowed)
+
+
+class ScopeSubsetConstraintTests(unittest.TestCase):
+    """Phase 6B-2 hardening: key scopes must be subset of tenant scopes."""
+
+    def test_key_scopes_within_tenant_scopes(self):
+        resolver = TenantResolver()
+        resolver.add_tenant(Tenant(tenant_id="t1", name="T", scopes=frozenset({"read", "write"})))
+        key, raw = resolver.create_api_key("t1", scopes=frozenset({"read"}))
+        self.assertEqual(key.scopes, frozenset({"read"}))
+
+    def test_key_scopes_exceed_tenant_scopes_raises(self):
+        resolver = TenantResolver()
+        resolver.add_tenant(Tenant(tenant_id="t1", name="T", scopes=frozenset({"read"})))
+        with self.assertRaises(ValueError):
+            resolver.create_api_key("t1", scopes=frozenset({"read", "admin"}))
+
+    def test_no_tenant_scopes_allows_any_key_scopes(self):
+        resolver = TenantResolver()
+        resolver.add_tenant(Tenant(tenant_id="t1", name="T"))
+        key, _ = resolver.create_api_key("t1", scopes=frozenset({"anything"}))
+        self.assertEqual(key.scopes, frozenset({"anything"}))
 
 
 if __name__ == "__main__":

@@ -21,8 +21,10 @@ from harness_core.dispatch.http_server import (
     start_server_in_thread,
 )
 from harness_core.dispatch.auth import (
+    RequestContext,
     Tenant,
     TenantResolver,
+    generate_api_key,
 )
 
 
@@ -468,6 +470,142 @@ class AuthIntegrationTests(unittest.TestCase):
         finally:
             server_a.shutdown()
             server_b.shutdown()
+
+    def test_unauthenticated_401_returns_generic_error(self):
+        server = create_server(
+            ServerConfig(port=_find_free_port()),
+            tenant_resolver=TenantResolver(),
+        )
+        register_route("GET", "/plans", lambda m, b: {"ok": True}, server=server)
+        _start_server(server)
+        try:
+            with self.assertRaises(urllib.error.HTTPError) as ctx:
+                urllib.request.urlopen(f"http://127.0.0.1:{server.server_address[1]}/api/v1/plans")
+            self.assertEqual(ctx.exception.code, 401)
+            body = json.loads(ctx.exception.read())
+            self.assertEqual(body["error"], "unauthorized")
+        finally:
+            server.shutdown()
+            server.server_close()
+
+
+class RequestContextFlowTests(unittest.TestCase):
+    """Phase 6B-2 hardening: verify RequestContext flows into RouteMatch."""
+
+    def test_handler_receives_request_context(self):
+        received_match = {}
+        resolver = TenantResolver()
+        resolver.add_tenant(Tenant(tenant_id="t1", name="Test", scopes=frozenset({"read"})))
+        _, raw_key = resolver.create_api_key("t1")
+        server = create_server(
+            ServerConfig(port=_find_free_port()),
+            tenant_resolver=resolver,
+        )
+        register_route(
+            "GET", "/echo",
+            lambda m, b: (received_match.update({"match": m}), {"ok": True})[1],
+            server=server,
+        )
+        _start_server(server)
+        try:
+            url = f"http://127.0.0.1:{server.server_address[1]}/api/v1/echo"
+            req = urllib.request.Request(url, headers={"Authorization": f"Bearer {raw_key}"})
+            with urllib.request.urlopen(req) as resp:
+                data = json.loads(resp.read())
+            self.assertTrue(data["ok"])
+            m = received_match["match"]
+            self.assertIsNotNone(m.request_context)
+            self.assertIsInstance(m.request_context, RequestContext)
+            self.assertEqual(m.request_context.tenant_id, "t1")
+            self.assertIn("read", m.request_context.scopes)
+            self.assertIsNotNone(m.request_context.request_id)
+        finally:
+            server.shutdown()
+            server.server_close()
+
+    def test_two_tenants_different_request_context(self):
+        received_a = {}
+        received_b = {}
+        resolver_a = TenantResolver()
+        resolver_a.add_tenant(Tenant(tenant_id="alpha", name="A"))
+        _, key_a = resolver_a.create_api_key("alpha")
+        resolver_b = TenantResolver()
+        resolver_b.add_tenant(Tenant(tenant_id="beta", name="B"))
+        _, key_b = resolver_b.create_api_key("beta")
+
+        server_a = create_server(ServerConfig(port=_find_free_port()), tenant_resolver=resolver_a)
+        server_b = create_server(ServerConfig(port=_find_free_port()), tenant_resolver=resolver_b)
+        register_route(
+            "GET", "/data",
+            lambda m, b: (received_a.update({"ctx": m.request_context}) if m.request_context and m.request_context.tenant_id == "alpha" else received_b.update({"ctx": m.request_context}), {"ok": True})[1],
+            server=server_a,
+        )
+        register_route(
+            "GET", "/data",
+            lambda m, b: (received_b.update({"ctx": m.request_context}), {"ok": True})[1],
+            server=server_b,
+        )
+        _start_server(server_a)
+        _start_server(server_b)
+        try:
+            port_a = server_a.server_address[1]
+            port_b = server_b.server_address[1]
+
+            req_a = urllib.request.Request(
+                f"http://127.0.0.1:{port_a}/api/v1/data",
+                headers={"Authorization": f"Bearer {key_a}"},
+            )
+            with urllib.request.urlopen(req_a):
+                pass
+
+            req_b = urllib.request.Request(
+                f"http://127.0.0.1:{port_b}/api/v1/data",
+                headers={"Authorization": f"Bearer {key_b}"},
+            )
+            with urllib.request.urlopen(req_b):
+                pass
+
+            self.assertEqual(received_a["ctx"].tenant_id, "alpha")
+            self.assertEqual(received_b["ctx"].tenant_id, "beta")
+        finally:
+            server_a.shutdown()
+            server_b.shutdown()
+
+    def test_unauthenticated_mode_request_context_is_none(self):
+        received_match = {}
+        server = create_server(ServerConfig(port=_find_free_port()))
+        register_route(
+            "GET", "/open",
+            lambda m, b: (received_match.update({"match": m}), {"ok": True})[1],
+            server=server,
+        )
+        _start_server(server)
+        try:
+            with urllib.request.urlopen(f"http://127.0.0.1:{server.server_address[1]}/api/v1/open"):
+                pass
+            m = received_match["match"]
+            self.assertIsNone(m.request_context)
+        finally:
+            server.shutdown()
+            server.server_close()
+
+    def test_invalid_token_shape_returns_401(self):
+        server = create_server(
+            ServerConfig(port=_find_free_port()),
+            tenant_resolver=TenantResolver(),
+        )
+        register_route("GET", "/plans", lambda m, b: {"ok": True}, server=server)
+        _start_server(server)
+        try:
+            url = f"http://127.0.0.1:{server.server_address[1]}/api/v1/plans"
+            # Token with wrong shape: no harness_ prefix
+            req = urllib.request.Request(url, headers={"Authorization": "Bearer not-harness-token"})
+            with self.assertRaises(urllib.error.HTTPError) as ctx:
+                urllib.request.urlopen(req)
+            self.assertEqual(ctx.exception.code, 401)
+        finally:
+            server.shutdown()
+            server.server_close()
 
 
 if __name__ == "__main__":

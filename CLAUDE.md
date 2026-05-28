@@ -80,12 +80,20 @@ See `docs/CURRENT_STATUS.md` for full details.
 - **2026-05-28**: Phase 6A STABLE after 2 rounds of GPT review (Beta → Stable). 1596 tests. P0 fixes: JSONL parser tuple return, HTTP 500 generic error, DurableStore INSERT/upsert semantics, close() thread safety, HTTP query string stripping. Hardening commit 6d11c0f.
 - **2026-05-28**: Phase 6B-1 per-server route isolation implemented. Refactored http_server.py: added ServerContext dataclass, moved routes/store/config from class-level globals to per-server instance. 1603 tests (7 new isolation tests). Design doc created at docs/dispatch/PHASE_6B_AUTH_TENANT_DESIGN.md.
 - **2026-05-28**: Phase 6B-2 local API key + tenant boundary implemented. Created auth.py (APIKey, Tenant, TenantResolver, RequestContext, AuthDecision, salted SHA-256 hashing, hmac.compare_digest). Added auth middleware to http_server.py (_authenticate_request, 401 on denied). 1639 tests (36 new auth tests).
+- **2026-05-28**: Phase 6B-2 hardening — GPT BLOCK fix. RequestContext now flows into RouteMatch (HIGH-1). Generic 401 error externally (MEDIUM-1). Token shape validation in resolve() (MEDIUM-2). Scope subset constraint in create_api_key() (MEDIUM-4). 1654 tests (15 new).
 
 ### GPT Gate Feedback 2026-05-28
 - Target: Phase 6B-1 checkpoint (commit e4aecb3)
 - Verdict: PASS_WITH_NOTES (P0: 0, P1: 3)
 - P1 items: _last_context fallback marked legacy, add lock if threaded server, normalize RouteMatch.path before auth
 - Status: passed, P1 items deferred to 6B-2
+
+### GPT Gate Feedback 2026-05-28 (6B-2 round 1)
+- Target: Phase 6B-2 initial checkpoint (commit 4899cea)
+- Verdict: BLOCK (CRITICAL: 0, HIGH: 1, MEDIUM: 4, LOW: 3)
+- HIGH-1: RequestContext generated but discarded — not passed to RouteMatch or handlers
+- MEDIUM: generic 401 error, token format validation, thread safety docs, scope subset constraint
+- Status: fixed, pending re-review
 
 ## External Dependencies
 

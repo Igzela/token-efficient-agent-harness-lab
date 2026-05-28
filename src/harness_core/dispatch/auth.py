@@ -48,8 +48,12 @@ class AuthDecision:
     reason: str = ""
 
 
+_API_KEY_PREFIX = "harness_"
+_API_KEY_SUFFIX_LEN = 64  # 32 bytes hex = 64 chars
+
+
 def generate_api_key() -> str:
-    return f"harness_{secrets.token_hex(32)}"
+    return f"{_API_KEY_PREFIX}{secrets.token_hex(32)}"
 
 
 def generate_salt() -> str:
@@ -58,6 +62,19 @@ def generate_salt() -> str:
 
 def hash_api_key(raw_key: str, salt: str) -> str:
     return hashlib.sha256((salt + raw_key).encode()).hexdigest()
+
+
+def _validate_token_shape(token: str) -> bool:
+    if not token.startswith(_API_KEY_PREFIX):
+        return False
+    suffix = token[len(_API_KEY_PREFIX):]
+    if len(suffix) != _API_KEY_SUFFIX_LEN:
+        return False
+    try:
+        int(suffix, 16)
+    except ValueError:
+        return False
+    return True
 
 
 class TenantResolver:
@@ -84,6 +101,10 @@ class TenantResolver:
         key_hash = hash_api_key(raw_key, salt)
         tenant = self._tenants[tenant_id]
         key_scopes = scopes if scopes is not None else tenant.scopes
+        if tenant.scopes and not key_scopes.issubset(tenant.scopes):
+            raise ValueError(
+                f"key scopes {key_scopes} exceed tenant scopes {tenant.scopes}"
+            )
         key = APIKey(
             key_id=f"key_{secrets.token_hex(8)}",
             tenant_id=tenant_id,
@@ -102,6 +123,8 @@ class TenantResolver:
         if len(parts) != 2 or parts[0].lower() != "bearer":
             return AuthDecision(allowed=False, reason="invalid authorization format")
         raw_token = parts[1]
+        if not _validate_token_shape(raw_token):
+            return AuthDecision(allowed=False, reason="invalid api key")
         matched_key: APIKey | None = None
         for key in self._api_keys.values():
             if hmac.compare_digest(
