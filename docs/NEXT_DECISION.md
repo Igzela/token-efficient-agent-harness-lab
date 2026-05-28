@@ -17,7 +17,7 @@ The responsible coding agent may choose any of the following without asking for 
 | Dispatch-kernel phase work | Plan and implement the next architecture-book-defined phase only when it can remain deterministic, local, test-first, and free of real providers, real sandbox/process execution, target writes, deployment, and real worker processes. |
 | Architecture/documentation closeout | Update architecture records, module maps, closeout reports, and handoff docs after accepted changes. |
 | Demo/docs polish | Refine demo docs when verification or user feedback identifies a concrete gap. |
-| Language migration | Rust engine/API parity is implemented through the local axum health/ready/openapi/dispatch router (422 Rust tests, 35 modules, 31 test files). Phase 5 codegen plus TypeScript/Python REST SDK packages are implemented. Next allowed slice: Phase 6 read-only Next.js dashboard. Providers remain stub/off; no real workers, target writes, executable dashboard controls, SDK publishing, production deployment, or Docker runtime yet. |
+| Language migration | Rust engine/API parity is implemented through the local axum health/ready/openapi/dispatch router (422 Rust tests, 35 modules, 31 test files). Phase 5 codegen plus TypeScript/Python REST SDK packages are implemented with focused client regression tests. Phase 6 read-only Next.js dashboard is implemented and verified with lint/typecheck/build plus local HTTP smoke. Next allowed slice: Phase 7 local Docker deploy. Providers remain stub/off; no real workers, target writes, executable dashboard controls, SDK publishing, or production deployment. |
 
 ## Disallowed by Default
 
