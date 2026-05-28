@@ -1,0 +1,102 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://token-efficient-agent-harness-lab.local/wire_contract/v1/evaluation_result.schema.json",
+  "title": "EvaluationResult v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "evaluation_id",
+    "dispatch_id",
+    "decision_id",
+    "execution_result_id",
+    "status",
+    "checks",
+    "quality_score",
+    "requires_retry",
+    "retry_reason",
+    "created_at"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "evaluation_result.v1"
+    },
+    "evaluation_id": {
+      "type": "string"
+    },
+    "dispatch_id": {
+      "type": "string"
+    },
+    "decision_id": {
+      "type": "string"
+    },
+    "execution_result_id": {
+      "type": "string"
+    },
+    "status": {
+      "type": "string",
+      "enum": [
+        "pass",
+        "fail",
+        "needs_human_review",
+        "not_evaluated"
+      ]
+    },
+    "checks": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/evaluation_check"
+      }
+    },
+    "quality_score": {
+      "type": [
+        "number",
+        "null"
+      ]
+    },
+    "requires_retry": {
+      "type": "boolean"
+    },
+    "retry_reason": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "created_at": {
+      "type": "string"
+    }
+  },
+  "$defs": {
+    "evaluation_check": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "check_id",
+        "name",
+        "status",
+        "reason"
+      ],
+      "properties": {
+        "check_id": {
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        },
+        "status": {
+          "type": "string",
+          "enum": [
+            "pass",
+            "fail",
+            "warning",
+            "skipped"
+          ]
+        },
+        "reason": {
+          "type": "string"
+        }
+      }
+    }
+  }
+}

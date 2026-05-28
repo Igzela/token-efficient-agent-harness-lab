@@ -1,0 +1,111 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://token-efficient-agent-harness-lab.local/wire_contract/v1/dispatch_bundle.schema.json",
+  "title": "DispatchBundle v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "record",
+    "analysis",
+    "decision",
+    "execution_result",
+    "evaluation_result"
+  ],
+  "properties": {
+    "record": {
+      "$ref": "#/$defs/dispatch_record"
+    },
+    "analysis": {
+      "type": "object"
+    },
+    "decision": {
+      "type": "object"
+    },
+    "execution_result": {
+      "type": "object"
+    },
+    "evaluation_result": {
+      "type": "object"
+    }
+  },
+  "$defs": {
+    "dispatch_record": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema_version",
+        "dispatch_id",
+        "request_snapshot",
+        "task_analysis_id",
+        "decision_id",
+        "execution_result_id",
+        "evaluation_result_id",
+        "usage_ledger_row_id",
+        "budget_reservation_id",
+        "final_status",
+        "created_at",
+        "updated_at"
+      ],
+      "properties": {
+        "schema_version": {
+          "const": "dispatch_record.v1"
+        },
+        "dispatch_id": {
+          "type": "string"
+        },
+        "request_snapshot": {
+          "type": "string"
+        },
+        "task_analysis_id": {
+          "type": "string"
+        },
+        "decision_id": {
+          "type": "string"
+        },
+        "execution_result_id": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "evaluation_result_id": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "usage_ledger_row_id": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "budget_reservation_id": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "final_status": {
+          "type": "string",
+          "enum": [
+            "dispatched",
+            "executing",
+            "completed",
+            "failed",
+            "escalated",
+            "cancelled",
+            "not_executed",
+            "manual_pending"
+          ]
+        },
+        "created_at": {
+          "type": "string"
+        },
+        "updated_at": {
+          "type": "string"
+        }
+      }
+    }
+  }
+}

@@ -1,0 +1,263 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://token-efficient-agent-harness-lab.local/wire_contract/v1/task_analysis.schema.json",
+  "title": "TaskAnalysis v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "analysis_id",
+    "raw_request_snapshot",
+    "request_source",
+    "primary_task_type",
+    "task_domain",
+    "task_intent",
+    "risk_flags",
+    "complexity_score",
+    "cognitive_complexity",
+    "context_complexity",
+    "execution_risk",
+    "ambiguity_score",
+    "required_capabilities",
+    "context_budget_estimate",
+    "execution_budget_estimate",
+    "quality_requirement",
+    "risk_level",
+    "confidence",
+    "confidence_label",
+    "uncertainty_reason",
+    "safe_default",
+    "escalation_trigger",
+    "positive_evidence",
+    "negative_evidence",
+    "features_detected",
+    "analysis_method",
+    "created_at"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "task_analysis.v1"
+    },
+    "analysis_id": {
+      "type": "string"
+    },
+    "raw_request_snapshot": {
+      "type": "string"
+    },
+    "request_source": {
+      "type": "string",
+      "enum": [
+        "cli",
+        "api",
+        "dashboard",
+        "agent",
+        "workflow",
+        "test_fixture"
+      ]
+    },
+    "primary_task_type": {
+      "type": "string"
+    },
+    "task_domain": {
+      "type": "string",
+      "enum": [
+        "code",
+        "docs",
+        "config",
+        "infra",
+        "math",
+        "architecture",
+        "repo_ops",
+        "governance",
+        "other"
+      ]
+    },
+    "task_intent": {
+      "type": "string",
+      "enum": [
+        "generate",
+        "review",
+        "debug",
+        "summarize",
+        "audit",
+        "plan",
+        "refactor",
+        "compare",
+        "explain",
+        "classify"
+      ]
+    },
+    "risk_flags": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "enum": [
+          "target_write",
+          "provider_call",
+          "sandbox_execution",
+          "deployment",
+          "secret_handling",
+          "destructive_operation",
+          "long_context",
+          "high_uncertainty"
+        ]
+      }
+    },
+    "complexity_score": {
+      "type": "number"
+    },
+    "cognitive_complexity": {
+      "type": "number"
+    },
+    "context_complexity": {
+      "type": "number"
+    },
+    "execution_risk": {
+      "type": "number"
+    },
+    "ambiguity_score": {
+      "type": "number"
+    },
+    "required_capabilities": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "context_budget_estimate": {
+      "type": "integer"
+    },
+    "execution_budget_estimate": {
+      "type": "integer"
+    },
+    "quality_requirement": {
+      "type": "string",
+      "enum": [
+        "draft",
+        "standard",
+        "high",
+        "critical"
+      ]
+    },
+    "risk_level": {
+      "type": "string",
+      "enum": [
+        "low",
+        "medium",
+        "high",
+        "critical"
+      ]
+    },
+    "confidence": {
+      "type": "number"
+    },
+    "confidence_label": {
+      "type": "string",
+      "enum": [
+        "low",
+        "medium",
+        "high"
+      ]
+    },
+    "uncertainty_reason": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "safe_default": {
+      "type": "string"
+    },
+    "escalation_trigger": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "positive_evidence": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/evidence"
+      }
+    },
+    "negative_evidence": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/evidence"
+      }
+    },
+    "features_detected": {
+      "type": "object",
+      "additionalProperties": true
+    },
+    "analysis_method": {
+      "const": "rule_only"
+    },
+    "created_at": {
+      "type": "string"
+    }
+  },
+  "$defs": {
+    "evidence": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "feature",
+        "text",
+        "span",
+        "polarity",
+        "source",
+        "rule_id",
+        "confidence",
+        "negation_scope"
+      ],
+      "properties": {
+        "feature": {
+          "type": "string"
+        },
+        "text": {
+          "type": "string"
+        },
+        "span": {
+          "type": "array",
+          "minItems": 2,
+          "maxItems": 2,
+          "items": {
+            "type": "integer"
+          }
+        },
+        "polarity": {
+          "type": "string",
+          "enum": [
+            "positive",
+            "negative"
+          ]
+        },
+        "source": {
+          "type": "string",
+          "enum": [
+            "raw_request",
+            "repo_context",
+            "user_constraints",
+            "target_metadata"
+          ]
+        },
+        "rule_id": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "confidence": {
+          "type": "number"
+        },
+        "negation_scope": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      }
+    }
+  }
+}

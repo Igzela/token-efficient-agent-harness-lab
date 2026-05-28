@@ -1,0 +1,291 @@
+{
+  "expected_analysis": {
+    "confidence_label": "high",
+    "risk_flags": [],
+    "risk_level": "low",
+    "safe_default": "proceed_with_caution",
+    "task_domain": "repo_ops",
+    "task_intent": "review"
+  },
+  "expected_gates": [
+    "provider_disabled",
+    "sandbox_disabled"
+  ],
+  "fixture_id": "fixture_17",
+  "golden_bundle": {
+    "analysis": {
+      "ambiguity_score": 0.1,
+      "analysis_id": "analysis-0001",
+      "analysis_method": "rule_only",
+      "cognitive_complexity": 0.2,
+      "complexity_score": 0.11,
+      "confidence": 0.8,
+      "confidence_label": "high",
+      "context_budget_estimate": 1500,
+      "context_complexity": 0.1,
+      "created_at": "2000-01-01T00:00:00+00:00",
+      "escalation_trigger": null,
+      "execution_budget_estimate": 1125,
+      "execution_risk": 0.0,
+      "features_detected": {
+        "domain": "repo_ops",
+        "has_code_blocks": false,
+        "has_file_refs": false,
+        "intent": "review",
+        "risk_flag_count": 0,
+        "word_count": 10
+      },
+      "negative_evidence": [
+        {
+          "confidence": 0.95,
+          "feature": "target_write",
+          "negation_scope": "negation phrase suppressed target_write",
+          "polarity": "negative",
+          "rule_id": "negation_target_write",
+          "source": "raw_request",
+          "span": [
+            0,
+            0
+          ],
+          "text": "[negated]"
+        }
+      ],
+      "positive_evidence": [],
+      "primary_task_type": "repo_ops_review",
+      "quality_requirement": "standard",
+      "raw_request_snapshot": "Review code with no target repo writes, read-only validation only",
+      "request_source": "test_fixture",
+      "required_capabilities": [],
+      "risk_flags": [],
+      "risk_level": "low",
+      "safe_default": "proceed_with_caution",
+      "schema_version": "task_analysis.v1",
+      "task_domain": "repo_ops",
+      "task_intent": "review",
+      "uncertainty_reason": []
+    },
+    "decision": {
+      "analysis_id": "analysis-0001",
+      "analysis_snapshot": {
+        "ambiguity_score": 0.1,
+        "analysis_id": "analysis-0001",
+        "analysis_method": "rule_only",
+        "cognitive_complexity": 0.2,
+        "complexity_score": 0.11,
+        "confidence": 0.8,
+        "confidence_label": "high",
+        "context_budget_estimate": 1500,
+        "context_complexity": 0.1,
+        "created_at": "2000-01-01T00:00:00+00:00",
+        "escalation_trigger": null,
+        "execution_budget_estimate": 1125,
+        "execution_risk": 0.0,
+        "features_detected": {
+          "domain": "repo_ops",
+          "has_code_blocks": false,
+          "has_file_refs": false,
+          "intent": "review",
+          "risk_flag_count": 0,
+          "word_count": 10
+        },
+        "negative_evidence": [
+          {
+            "confidence": 0.95,
+            "feature": "target_write",
+            "negation_scope": "negation phrase suppressed target_write",
+            "polarity": "negative",
+            "rule_id": "negation_target_write",
+            "source": "raw_request",
+            "span": [
+              0,
+              0
+            ],
+            "text": "[negated]"
+          }
+        ],
+        "positive_evidence": [],
+        "primary_task_type": "repo_ops_review",
+        "quality_requirement": "standard",
+        "raw_request_snapshot": "Review code with no target repo writes, read-only validation only",
+        "request_source": "test_fixture",
+        "required_capabilities": [],
+        "risk_flags": [],
+        "risk_level": "low",
+        "safe_default": "proceed_with_caution",
+        "schema_version": "task_analysis.v1",
+        "task_domain": "repo_ops",
+        "task_intent": "review",
+        "uncertainty_reason": []
+      },
+      "budget_reservation": {
+        "actual_usage_ref": null,
+        "budget_delta": null,
+        "budget_gate": null,
+        "budget_policy_id": null,
+        "budget_violation": false,
+        "created_at": "2000-01-01T00:00:00+00:00",
+        "currency": "token",
+        "decision_id": "dec-0001",
+        "expires_at": null,
+        "pre_budget": 2625,
+        "pricing_snapshot_id": null,
+        "reservation_id": "res-0001",
+        "reserved_cost": 0.002437,
+        "reserved_input_tokens": 1500,
+        "reserved_output_tokens": 1125,
+        "reserved_total_tokens": 2625,
+        "schema_version": "budget_reservation.v1",
+        "status": "reserved",
+        "updated_at": "2000-01-01T00:00:00+00:00"
+      },
+      "confidence": 0.8,
+      "confidence_label": "high",
+      "created_at": "2000-01-01T00:00:00+00:00",
+      "decision_id": "dec-0001",
+      "decision_status": "decided",
+      "execution_gates": [
+        {
+          "clearance_required": "policy",
+          "cleared": false,
+          "cleared_at": null,
+          "cleared_by": null,
+          "evidence_refs": [],
+          "gate_id": "gate-0001",
+          "gate_type": "provider_disabled",
+          "reason": "real provider calls disabled \u2014 non-provider executor",
+          "severity": "info"
+        },
+        {
+          "clearance_required": "policy",
+          "cleared": false,
+          "cleared_at": null,
+          "cleared_by": null,
+          "evidence_refs": [],
+          "gate_id": "gate-0002",
+          "gate_type": "sandbox_disabled",
+          "reason": "sandbox execution disabled in Phase 1",
+          "severity": "info"
+        }
+      ],
+      "execution_policy": {
+        "execution_allowed": true,
+        "executor_type": "noop",
+        "max_retries": 0,
+        "requires_human_review": false
+      },
+      "expected_quality_band": "low",
+      "fallback_profile_id": null,
+      "fallback_tier": "balanced_worker",
+      "hard_constraints": [
+        "no_target_write",
+        "no_provider_call"
+      ],
+      "max_input_tokens": 1500,
+      "max_output_tokens": 1125,
+      "no_shadow_route_reason": null,
+      "quality_requirement": "standard",
+      "rejected_candidates": [],
+      "routing_experiment_id": null,
+      "routing_mode": "static",
+      "routing_reason": "policy_map:repo_ops_review",
+      "schema_version": "dispatch_decision.v1",
+      "selected_profile_id": null,
+      "selected_tier": "cheap_executor",
+      "shadow_routes": [
+        {
+          "admission_scope": "diagnostic",
+          "estimated_cost": null,
+          "expected_tradeoff": "lower cost, potentially lower quality",
+          "profile_id": null,
+          "reason": "fallback option",
+          "tier": "balanced_worker"
+        }
+      ]
+    },
+    "evaluation_result": {
+      "checks": [
+        {
+          "check_id": "chk-0001",
+          "name": "schema_validity",
+          "reason": "required fields present",
+          "status": "pass"
+        },
+        {
+          "check_id": "chk-0002",
+          "name": "boundary_compliance",
+          "reason": "executor_type=noop within boundaries",
+          "status": "pass"
+        },
+        {
+          "check_id": "chk-0003",
+          "name": "output_present",
+          "reason": "noop executor produces no output (expected)",
+          "status": "warning"
+        },
+        {
+          "check_id": "chk-0004",
+          "name": "error_free",
+          "reason": "no errors",
+          "status": "pass"
+        },
+        {
+          "check_id": "chk-0005",
+          "name": "human_review_required",
+          "reason": "no human review required",
+          "status": "pass"
+        }
+      ],
+      "created_at": "2000-01-01T00:00:00+00:00",
+      "decision_id": "dec-0001",
+      "dispatch_id": "disp-0001",
+      "evaluation_id": "eval-0001",
+      "execution_result_id": "exec-0001",
+      "quality_score": null,
+      "requires_retry": false,
+      "retry_reason": null,
+      "schema_version": "evaluation_result.v1",
+      "status": "pass"
+    },
+    "execution_result": {
+      "attempt_number": null,
+      "created_at": "2000-01-01T00:00:00+00:00",
+      "decision_id": "dec-0001",
+      "dispatch_id": "disp-0001",
+      "error_domain": null,
+      "error_message": null,
+      "estimated_cost": null,
+      "executor_type": "noop",
+      "finish_reason": null,
+      "input_tokens": null,
+      "latency_ms": null,
+      "output": null,
+      "output_tokens": null,
+      "prompt_pack": null,
+      "provider_request_id": null,
+      "result_id": "exec-0001",
+      "schema_version": "execution_result.v1",
+      "status": "not_executed",
+      "usage_source": null
+    },
+    "record": {
+      "budget_reservation_id": "res-0001",
+      "created_at": "2000-01-01T00:00:00+00:00",
+      "decision_id": "dec-0001",
+      "dispatch_id": "disp-0001",
+      "evaluation_result_id": "eval-0001",
+      "execution_result_id": "exec-0001",
+      "final_status": "not_executed",
+      "request_snapshot": "Review code with no target repo writes, read-only validation only",
+      "schema_version": "dispatch_record.v1",
+      "task_analysis_id": "analysis-0001",
+      "updated_at": "2000-01-01T00:00:00+00:00",
+      "usage_ledger_row_id": null
+    }
+  },
+  "name": "negated_no_write",
+  "request": {
+    "raw_request": "Review code with no target repo writes, read-only validation only",
+    "request_source": "test_fixture",
+    "schema_version": "dispatch_request.v1"
+  }
+}

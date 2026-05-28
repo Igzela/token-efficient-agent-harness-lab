@@ -66,3 +66,7 @@
 | `health_checker.py` | Phase 6A | Health and readiness probes for storage. | `HealthChecker`, `HealthCheck`, `HealthReport` | `test_health_checker.py` |
 | `sdk.py` | Phase 7 | Python SDK for programmatic integration. | `HarnessSDK`, `SDK_SCHEMA_VERSION` | `test_sdk.py` |
 | `doc_generator.py` | Phase 7 | Auto-generated markdown docs from source schemas. | `DocGenerator`, `DOC_GENERATOR_SCHEMA_VERSION` | `test_doc_generator.py` |
+| `dashboard.py` | Phase 7 (P7-T5) | Experiment tracking, search, summary computation. | `DispatchDashboard`, `ExperimentResult`, `DashboardSummary`, `DASHBOARD_SCHEMA_VERSION` | `test_dashboard.py` |
+| `benchmark.py` | Phase 7 (P7-T8) | Model comparison benchmarks, leaderboard, task/result CRUD. | `BenchmarkSuite`, `BenchmarkTask`, `BenchmarkResult`, `BENCHMARK_SCHEMA_VERSION` | `test_benchmark.py` |
+| `wire_contract/v1/*.schema.json` | Language Migration Phase 0 | Frozen dispatch JSON schemas for Python/Rust semantic parity. | `dispatch_request`, `task_analysis`, `dispatch_decision`, `execution_result`, `evaluation_result`, `dispatch_bundle` schemas | `test_dispatch_wire_contract.py`, `tests/integration/parity/run.py` |
+| `tests/integration/parity/` | Language Migration Phase 0 | Stdlib-only Python reference parity runner and golden fixture generator. | `run_parity_checks`, `write_python_golden_fixtures`, `normalize_dynamic_values` | `test_dispatch_wire_contract.py` |

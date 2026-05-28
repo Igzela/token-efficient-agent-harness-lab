@@ -4,6 +4,10 @@ Status: Frozen for language-migration preparation.
 
 Purpose: define the semantic JSON contract that Python and Rust implementations must share before the first Rust parity kernel is written.
 
+Machine-readable schemas live in `wire_contract/v1/*.schema.json`.
+Python reference golden fixtures live in `tests/fixtures/dispatch_wire/v1/`.
+The stdlib parity gate is `python3 tests/integration/parity/run.py`.
+
 ## Contract Rules
 
 - JSON keys use `snake_case`.

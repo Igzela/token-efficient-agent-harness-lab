@@ -1,0 +1,411 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://token-efficient-agent-harness-lab.local/wire_contract/v1/dispatch_decision.schema.json",
+  "title": "DispatchDecision v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "decision_id",
+    "analysis_id",
+    "analysis_snapshot",
+    "selected_tier",
+    "selected_profile_id",
+    "fallback_tier",
+    "fallback_profile_id",
+    "shadow_routes",
+    "hard_constraints",
+    "rejected_candidates",
+    "no_shadow_route_reason",
+    "max_input_tokens",
+    "max_output_tokens",
+    "routing_reason",
+    "quality_requirement",
+    "expected_quality_band",
+    "confidence",
+    "confidence_label",
+    "budget_reservation",
+    "execution_policy",
+    "execution_gates",
+    "routing_mode",
+    "routing_experiment_id",
+    "decision_status",
+    "created_at"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "dispatch_decision.v1"
+    },
+    "decision_id": {
+      "type": "string"
+    },
+    "analysis_id": {
+      "type": "string"
+    },
+    "analysis_snapshot": {
+      "type": "object"
+    },
+    "selected_tier": {
+      "$ref": "#/$defs/model_tier"
+    },
+    "selected_profile_id": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "fallback_tier": {
+      "$ref": "#/$defs/model_tier"
+    },
+    "fallback_profile_id": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "shadow_routes": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/shadow_route"
+      }
+    },
+    "hard_constraints": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "rejected_candidates": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/rejected_candidate"
+      }
+    },
+    "no_shadow_route_reason": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "max_input_tokens": {
+      "type": "integer"
+    },
+    "max_output_tokens": {
+      "type": "integer"
+    },
+    "routing_reason": {
+      "type": "string"
+    },
+    "quality_requirement": {
+      "type": "string",
+      "enum": [
+        "draft",
+        "standard",
+        "high",
+        "critical"
+      ]
+    },
+    "expected_quality_band": {
+      "type": "string",
+      "enum": [
+        "low",
+        "medium",
+        "high",
+        "unknown"
+      ]
+    },
+    "confidence": {
+      "type": "number"
+    },
+    "confidence_label": {
+      "type": "string",
+      "enum": [
+        "low",
+        "medium",
+        "high"
+      ]
+    },
+    "budget_reservation": {
+      "$ref": "#/$defs/budget_reservation"
+    },
+    "execution_policy": {
+      "type": "object",
+      "additionalProperties": true
+    },
+    "execution_gates": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/execution_gate"
+      }
+    },
+    "routing_mode": {
+      "type": "string"
+    },
+    "routing_experiment_id": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "decision_status": {
+      "type": "string",
+      "enum": [
+        "decided",
+        "needs_approval",
+        "blocked",
+        "diagnostic_only"
+      ]
+    },
+    "created_at": {
+      "type": "string"
+    }
+  },
+  "$defs": {
+    "model_tier": {
+      "type": "string",
+      "enum": [
+        "cheap_executor",
+        "balanced_worker",
+        "strong_planner",
+        "verifier",
+        "advisor"
+      ]
+    },
+    "budget_reservation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema_version",
+        "reservation_id",
+        "decision_id",
+        "currency",
+        "pricing_snapshot_id",
+        "pre_budget",
+        "reserved_input_tokens",
+        "reserved_output_tokens",
+        "reserved_total_tokens",
+        "reserved_cost",
+        "budget_policy_id",
+        "budget_gate",
+        "status",
+        "actual_usage_ref",
+        "budget_delta",
+        "budget_violation",
+        "created_at",
+        "updated_at",
+        "expires_at"
+      ],
+      "properties": {
+        "schema_version": {
+          "const": "budget_reservation.v1"
+        },
+        "reservation_id": {
+          "type": "string"
+        },
+        "decision_id": {
+          "type": "string"
+        },
+        "currency": {
+          "type": "string"
+        },
+        "pricing_snapshot_id": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "pre_budget": {
+          "type": "integer"
+        },
+        "reserved_input_tokens": {
+          "type": "integer"
+        },
+        "reserved_output_tokens": {
+          "type": "integer"
+        },
+        "reserved_total_tokens": {
+          "type": "integer"
+        },
+        "reserved_cost": {
+          "type": "number"
+        },
+        "budget_policy_id": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "budget_gate": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "status": {
+          "type": "string"
+        },
+        "actual_usage_ref": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "budget_delta": {
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "budget_violation": {
+          "type": "boolean"
+        },
+        "created_at": {
+          "type": "string"
+        },
+        "updated_at": {
+          "type": "string"
+        },
+        "expires_at": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      }
+    },
+    "shadow_route": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "tier",
+        "profile_id",
+        "reason",
+        "admission_scope",
+        "estimated_cost",
+        "expected_tradeoff"
+      ],
+      "properties": {
+        "tier": {
+          "$ref": "#/$defs/model_tier"
+        },
+        "profile_id": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "reason": {
+          "type": "string"
+        },
+        "admission_scope": {
+          "type": "string"
+        },
+        "estimated_cost": {
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "expected_tradeoff": {
+          "type": "string"
+        }
+      }
+    },
+    "rejected_candidate": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "tier",
+        "profile_id",
+        "reason",
+        "constraint_failed",
+        "estimated_cost"
+      ],
+      "properties": {
+        "tier": {
+          "$ref": "#/$defs/model_tier"
+        },
+        "profile_id": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "reason": {
+          "type": "string"
+        },
+        "constraint_failed": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "estimated_cost": {
+          "type": [
+            "number",
+            "null"
+          ]
+        }
+      }
+    },
+    "execution_gate": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "gate_id",
+        "gate_type",
+        "severity",
+        "reason",
+        "evidence_refs",
+        "clearance_required",
+        "cleared",
+        "cleared_by",
+        "cleared_at"
+      ],
+      "properties": {
+        "gate_id": {
+          "type": "string"
+        },
+        "gate_type": {
+          "type": "string"
+        },
+        "severity": {
+          "type": "string",
+          "enum": [
+            "info",
+            "warning",
+            "block",
+            "critical"
+          ]
+        },
+        "reason": {
+          "type": "string"
+        },
+        "evidence_refs": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "clearance_required": {
+          "type": "string"
+        },
+        "cleared": {
+          "type": "boolean"
+        },
+        "cleared_by": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "cleared_at": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      }
+    }
+  }
+}

@@ -1,0 +1,349 @@
+{
+  "expected_analysis": {
+    "confidence_label": "medium",
+    "risk_flags": [
+      "provider_call"
+    ],
+    "risk_level": "high",
+    "safe_default": "noop_with_review",
+    "task_domain": "other",
+    "task_intent": "generate"
+  },
+  "expected_gates": [
+    "provider_disabled",
+    "sandbox_disabled",
+    "risk",
+    "boundary",
+    "manual_review"
+  ],
+  "fixture_id": "fixture_10",
+  "golden_bundle": {
+    "analysis": {
+      "ambiguity_score": 0.1,
+      "analysis_id": "analysis-0001",
+      "analysis_method": "rule_only",
+      "cognitive_complexity": 0.4,
+      "complexity_score": 0.2425,
+      "confidence": 0.6,
+      "confidence_label": "medium",
+      "context_budget_estimate": 3000,
+      "context_complexity": 0.1,
+      "created_at": "2000-01-01T00:00:00+00:00",
+      "escalation_trigger": null,
+      "execution_budget_estimate": 2250,
+      "execution_risk": 0.25,
+      "features_detected": {
+        "domain": "other",
+        "has_code_blocks": false,
+        "has_file_refs": false,
+        "intent": "generate",
+        "risk_flag_count": 1,
+        "word_count": 10
+      },
+      "negative_evidence": [],
+      "positive_evidence": [
+        {
+          "confidence": 0.9,
+          "feature": "provider_call",
+          "negation_scope": null,
+          "polarity": "positive",
+          "rule_id": "risk_provider_call",
+          "source": "raw_request",
+          "span": [
+            0,
+            11
+          ],
+          "text": "call openai"
+        }
+      ],
+      "primary_task_type": "other_generate",
+      "quality_requirement": "high",
+      "raw_request_snapshot": "Call OpenAI API to analyze the codebase and generate insights",
+      "request_source": "test_fixture",
+      "required_capabilities": [
+        "code_generation"
+      ],
+      "risk_flags": [
+        "provider_call"
+      ],
+      "risk_level": "high",
+      "safe_default": "noop_with_review",
+      "schema_version": "task_analysis.v1",
+      "task_domain": "other",
+      "task_intent": "generate",
+      "uncertainty_reason": [
+        "domain_unclear"
+      ]
+    },
+    "decision": {
+      "analysis_id": "analysis-0001",
+      "analysis_snapshot": {
+        "ambiguity_score": 0.1,
+        "analysis_id": "analysis-0001",
+        "analysis_method": "rule_only",
+        "cognitive_complexity": 0.4,
+        "complexity_score": 0.2425,
+        "confidence": 0.6,
+        "confidence_label": "medium",
+        "context_budget_estimate": 3000,
+        "context_complexity": 0.1,
+        "created_at": "2000-01-01T00:00:00+00:00",
+        "escalation_trigger": null,
+        "execution_budget_estimate": 2250,
+        "execution_risk": 0.25,
+        "features_detected": {
+          "domain": "other",
+          "has_code_blocks": false,
+          "has_file_refs": false,
+          "intent": "generate",
+          "risk_flag_count": 1,
+          "word_count": 10
+        },
+        "negative_evidence": [],
+        "positive_evidence": [
+          {
+            "confidence": 0.9,
+            "feature": "provider_call",
+            "negation_scope": null,
+            "polarity": "positive",
+            "rule_id": "risk_provider_call",
+            "source": "raw_request",
+            "span": [
+              0,
+              11
+            ],
+            "text": "call openai"
+          }
+        ],
+        "primary_task_type": "other_generate",
+        "quality_requirement": "high",
+        "raw_request_snapshot": "Call OpenAI API to analyze the codebase and generate insights",
+        "request_source": "test_fixture",
+        "required_capabilities": [
+          "code_generation"
+        ],
+        "risk_flags": [
+          "provider_call"
+        ],
+        "risk_level": "high",
+        "safe_default": "noop_with_review",
+        "schema_version": "task_analysis.v1",
+        "task_domain": "other",
+        "task_intent": "generate",
+        "uncertainty_reason": [
+          "domain_unclear"
+        ]
+      },
+      "budget_reservation": {
+        "actual_usage_ref": null,
+        "budget_delta": null,
+        "budget_gate": null,
+        "budget_policy_id": null,
+        "budget_violation": false,
+        "created_at": "2000-01-01T00:00:00+00:00",
+        "currency": "token",
+        "decision_id": "dec-0001",
+        "expires_at": null,
+        "pre_budget": 5250,
+        "pricing_snapshot_id": null,
+        "reservation_id": "res-0001",
+        "reserved_cost": 0.21375,
+        "reserved_input_tokens": 3000,
+        "reserved_output_tokens": 2250,
+        "reserved_total_tokens": 5250,
+        "schema_version": "budget_reservation.v1",
+        "status": "reserved",
+        "updated_at": "2000-01-01T00:00:00+00:00"
+      },
+      "confidence": 0.6,
+      "confidence_label": "medium",
+      "created_at": "2000-01-01T00:00:00+00:00",
+      "decision_id": "dec-0001",
+      "decision_status": "needs_approval",
+      "execution_gates": [
+        {
+          "clearance_required": "policy",
+          "cleared": false,
+          "cleared_at": null,
+          "cleared_by": null,
+          "evidence_refs": [],
+          "gate_id": "gate-0001",
+          "gate_type": "provider_disabled",
+          "reason": "real provider calls disabled \u2014 non-provider executor",
+          "severity": "info"
+        },
+        {
+          "clearance_required": "policy",
+          "cleared": false,
+          "cleared_at": null,
+          "cleared_by": null,
+          "evidence_refs": [],
+          "gate_id": "gate-0002",
+          "gate_type": "sandbox_disabled",
+          "reason": "sandbox execution disabled in Phase 1",
+          "severity": "info"
+        },
+        {
+          "clearance_required": "human",
+          "cleared": false,
+          "cleared_at": null,
+          "cleared_by": null,
+          "evidence_refs": [],
+          "gate_id": "gate-0003",
+          "gate_type": "risk",
+          "reason": "risk_level=high",
+          "severity": "block"
+        },
+        {
+          "clearance_required": "human",
+          "cleared": false,
+          "cleared_at": null,
+          "cleared_by": null,
+          "evidence_refs": [],
+          "gate_id": "gate-0004",
+          "gate_type": "boundary",
+          "reason": "boundary violation detected (provider/sandbox)",
+          "severity": "block"
+        },
+        {
+          "clearance_required": "human",
+          "cleared": false,
+          "cleared_at": null,
+          "cleared_by": null,
+          "evidence_refs": [],
+          "gate_id": "gate-0005",
+          "gate_type": "manual_review",
+          "reason": "high risk or low confidence requires human review",
+          "severity": "block"
+        }
+      ],
+      "execution_policy": {
+        "execution_allowed": true,
+        "executor_type": "noop",
+        "max_retries": 0,
+        "requires_human_review": true
+      },
+      "expected_quality_band": "high",
+      "fallback_profile_id": null,
+      "fallback_tier": "verifier",
+      "hard_constraints": [
+        "no_target_write",
+        "no_provider_call"
+      ],
+      "max_input_tokens": 3000,
+      "max_output_tokens": 2250,
+      "no_shadow_route_reason": null,
+      "quality_requirement": "high",
+      "rejected_candidates": [],
+      "routing_experiment_id": null,
+      "routing_mode": "static",
+      "routing_reason": "policy_map:other_generate",
+      "schema_version": "dispatch_decision.v1",
+      "selected_profile_id": null,
+      "selected_tier": "strong_planner",
+      "shadow_routes": [
+        {
+          "admission_scope": "diagnostic",
+          "estimated_cost": null,
+          "expected_tradeoff": "lower cost, potentially lower quality",
+          "profile_id": null,
+          "reason": "fallback option",
+          "tier": "verifier"
+        },
+        {
+          "admission_scope": "diagnostic",
+          "estimated_cost": null,
+          "expected_tradeoff": "lowest cost, adequate for simple tasks",
+          "profile_id": null,
+          "reason": "cost-optimized alternative",
+          "tier": "cheap_executor"
+        }
+      ]
+    },
+    "evaluation_result": {
+      "checks": [
+        {
+          "check_id": "chk-0001",
+          "name": "schema_validity",
+          "reason": "required fields present",
+          "status": "pass"
+        },
+        {
+          "check_id": "chk-0002",
+          "name": "boundary_compliance",
+          "reason": "executor_type=noop within boundaries",
+          "status": "pass"
+        },
+        {
+          "check_id": "chk-0003",
+          "name": "output_present",
+          "reason": "noop executor produces no output (expected)",
+          "status": "warning"
+        },
+        {
+          "check_id": "chk-0004",
+          "name": "error_free",
+          "reason": "no errors",
+          "status": "pass"
+        },
+        {
+          "check_id": "chk-0005",
+          "name": "human_review_required",
+          "reason": "execution policy requires human review",
+          "status": "warning"
+        }
+      ],
+      "created_at": "2000-01-01T00:00:00+00:00",
+      "decision_id": "dec-0001",
+      "dispatch_id": "disp-0001",
+      "evaluation_id": "eval-0001",
+      "execution_result_id": "exec-0001",
+      "quality_score": null,
+      "requires_retry": false,
+      "retry_reason": null,
+      "schema_version": "evaluation_result.v1",
+      "status": "needs_human_review"
+    },
+    "execution_result": {
+      "attempt_number": null,
+      "created_at": "2000-01-01T00:00:00+00:00",
+      "decision_id": "dec-0001",
+      "dispatch_id": "disp-0001",
+      "error_domain": null,
+      "error_message": null,
+      "estimated_cost": null,
+      "executor_type": "noop",
+      "finish_reason": null,
+      "input_tokens": null,
+      "latency_ms": null,
+      "output": null,
+      "output_tokens": null,
+      "prompt_pack": null,
+      "provider_request_id": null,
+      "result_id": "exec-0001",
+      "schema_version": "execution_result.v1",
+      "status": "not_executed",
+      "usage_source": null
+    },
+    "record": {
+      "budget_reservation_id": "res-0001",
+      "created_at": "2000-01-01T00:00:00+00:00",
+      "decision_id": "dec-0001",
+      "dispatch_id": "disp-0001",
+      "evaluation_result_id": "eval-0001",
+      "execution_result_id": "exec-0001",
+      "final_status": "not_executed",
+      "request_snapshot": "Call OpenAI API to analyze the codebase and generate insights",
+      "schema_version": "dispatch_record.v1",
+      "task_analysis_id": "analysis-0001",
+      "updated_at": "2000-01-01T00:00:00+00:00",
+      "usage_ledger_row_id": null
+    }
+  },
+  "name": "provider_boundary",
+  "request": {
+    "raw_request": "Call OpenAI API to analyze the codebase and generate insights",
+    "request_source": "test_fixture",
+    "schema_version": "dispatch_request.v1"
+  }
+}

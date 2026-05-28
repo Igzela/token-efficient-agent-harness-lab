@@ -1,0 +1,31 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://token-efficient-agent-harness-lab.local/wire_contract/v1/dispatch_request.schema.json",
+  "title": "DispatchRequest v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "raw_request",
+    "request_source"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "dispatch_request.v1"
+    },
+    "raw_request": {
+      "type": "string"
+    },
+    "request_source": {
+      "type": "string",
+      "enum": [
+        "cli",
+        "api",
+        "dashboard",
+        "agent",
+        "workflow",
+        "test_fixture"
+      ]
+    }
+  }
+}

@@ -1,0 +1,313 @@
+{
+  "expected_analysis": {
+    "confidence_label": "medium",
+    "risk_flags": [
+      "long_context"
+    ],
+    "risk_level": "low",
+    "safe_default": "proceed_with_caution",
+    "task_domain": "architecture",
+    "task_intent": "classify"
+  },
+  "expected_gates": [
+    "provider_disabled",
+    "sandbox_disabled"
+  ],
+  "fixture_id": "fixture_13",
+  "golden_bundle": {
+    "analysis": {
+      "ambiguity_score": 0.1,
+      "analysis_id": "analysis-0001",
+      "analysis_method": "rule_only",
+      "cognitive_complexity": 0.5,
+      "complexity_score": 0.39,
+      "confidence": 0.65,
+      "confidence_label": "medium",
+      "context_budget_estimate": 2800,
+      "context_complexity": 0.7,
+      "created_at": "2000-01-01T00:00:00+00:00",
+      "escalation_trigger": null,
+      "execution_budget_estimate": 2100,
+      "execution_risk": 0.1,
+      "features_detected": {
+        "domain": "architecture",
+        "has_code_blocks": false,
+        "has_file_refs": false,
+        "intent": "classify",
+        "risk_flag_count": 1,
+        "word_count": 10
+      },
+      "negative_evidence": [],
+      "positive_evidence": [
+        {
+          "confidence": 0.9,
+          "feature": "long_context",
+          "negation_scope": null,
+          "polarity": "positive",
+          "rule_id": "risk_long_context",
+          "source": "raw_request",
+          "span": [
+            13,
+            21
+          ],
+          "text": "500-file"
+        }
+      ],
+      "primary_task_type": "architecture_classify",
+      "quality_requirement": "standard",
+      "raw_request_snapshot": "Analyze this 500-file large codebase for architectural patterns and anti-patterns",
+      "request_source": "test_fixture",
+      "required_capabilities": [
+        "system_design"
+      ],
+      "risk_flags": [
+        "long_context"
+      ],
+      "risk_level": "low",
+      "safe_default": "proceed_with_caution",
+      "schema_version": "task_analysis.v1",
+      "task_domain": "architecture",
+      "task_intent": "classify",
+      "uncertainty_reason": [
+        "intent_unclear"
+      ]
+    },
+    "decision": {
+      "analysis_id": "analysis-0001",
+      "analysis_snapshot": {
+        "ambiguity_score": 0.1,
+        "analysis_id": "analysis-0001",
+        "analysis_method": "rule_only",
+        "cognitive_complexity": 0.5,
+        "complexity_score": 0.39,
+        "confidence": 0.65,
+        "confidence_label": "medium",
+        "context_budget_estimate": 2800,
+        "context_complexity": 0.7,
+        "created_at": "2000-01-01T00:00:00+00:00",
+        "escalation_trigger": null,
+        "execution_budget_estimate": 2100,
+        "execution_risk": 0.1,
+        "features_detected": {
+          "domain": "architecture",
+          "has_code_blocks": false,
+          "has_file_refs": false,
+          "intent": "classify",
+          "risk_flag_count": 1,
+          "word_count": 10
+        },
+        "negative_evidence": [],
+        "positive_evidence": [
+          {
+            "confidence": 0.9,
+            "feature": "long_context",
+            "negation_scope": null,
+            "polarity": "positive",
+            "rule_id": "risk_long_context",
+            "source": "raw_request",
+            "span": [
+              13,
+              21
+            ],
+            "text": "500-file"
+          }
+        ],
+        "primary_task_type": "architecture_classify",
+        "quality_requirement": "standard",
+        "raw_request_snapshot": "Analyze this 500-file large codebase for architectural patterns and anti-patterns",
+        "request_source": "test_fixture",
+        "required_capabilities": [
+          "system_design"
+        ],
+        "risk_flags": [
+          "long_context"
+        ],
+        "risk_level": "low",
+        "safe_default": "proceed_with_caution",
+        "schema_version": "task_analysis.v1",
+        "task_domain": "architecture",
+        "task_intent": "classify",
+        "uncertainty_reason": [
+          "intent_unclear"
+        ]
+      },
+      "budget_reservation": {
+        "actual_usage_ref": null,
+        "budget_delta": null,
+        "budget_gate": null,
+        "budget_policy_id": null,
+        "budget_violation": false,
+        "created_at": "2000-01-01T00:00:00+00:00",
+        "currency": "token",
+        "decision_id": "dec-0001",
+        "expires_at": null,
+        "pre_budget": 4900,
+        "pricing_snapshot_id": null,
+        "reservation_id": "res-0001",
+        "reserved_cost": 0.0399,
+        "reserved_input_tokens": 2800,
+        "reserved_output_tokens": 2100,
+        "reserved_total_tokens": 4900,
+        "schema_version": "budget_reservation.v1",
+        "status": "reserved",
+        "updated_at": "2000-01-01T00:00:00+00:00"
+      },
+      "confidence": 0.65,
+      "confidence_label": "medium",
+      "created_at": "2000-01-01T00:00:00+00:00",
+      "decision_id": "dec-0001",
+      "decision_status": "decided",
+      "execution_gates": [
+        {
+          "clearance_required": "policy",
+          "cleared": false,
+          "cleared_at": null,
+          "cleared_by": null,
+          "evidence_refs": [],
+          "gate_id": "gate-0001",
+          "gate_type": "provider_disabled",
+          "reason": "real provider calls disabled \u2014 non-provider executor",
+          "severity": "info"
+        },
+        {
+          "clearance_required": "policy",
+          "cleared": false,
+          "cleared_at": null,
+          "cleared_by": null,
+          "evidence_refs": [],
+          "gate_id": "gate-0002",
+          "gate_type": "sandbox_disabled",
+          "reason": "sandbox execution disabled in Phase 1",
+          "severity": "info"
+        }
+      ],
+      "execution_policy": {
+        "execution_allowed": true,
+        "executor_type": "noop",
+        "max_retries": 0,
+        "requires_human_review": false
+      },
+      "expected_quality_band": "medium",
+      "fallback_profile_id": null,
+      "fallback_tier": "strong_planner",
+      "hard_constraints": [
+        "no_target_write",
+        "no_provider_call"
+      ],
+      "max_input_tokens": 2800,
+      "max_output_tokens": 2100,
+      "no_shadow_route_reason": null,
+      "quality_requirement": "standard",
+      "rejected_candidates": [],
+      "routing_experiment_id": null,
+      "routing_mode": "static",
+      "routing_reason": "policy_map:architecture_classify",
+      "schema_version": "dispatch_decision.v1",
+      "selected_profile_id": null,
+      "selected_tier": "balanced_worker",
+      "shadow_routes": [
+        {
+          "admission_scope": "diagnostic",
+          "estimated_cost": null,
+          "expected_tradeoff": "lower cost, potentially lower quality",
+          "profile_id": null,
+          "reason": "fallback option",
+          "tier": "strong_planner"
+        },
+        {
+          "admission_scope": "diagnostic",
+          "estimated_cost": null,
+          "expected_tradeoff": "lowest cost, adequate for simple tasks",
+          "profile_id": null,
+          "reason": "cost-optimized alternative",
+          "tier": "cheap_executor"
+        }
+      ]
+    },
+    "evaluation_result": {
+      "checks": [
+        {
+          "check_id": "chk-0001",
+          "name": "schema_validity",
+          "reason": "required fields present",
+          "status": "pass"
+        },
+        {
+          "check_id": "chk-0002",
+          "name": "boundary_compliance",
+          "reason": "executor_type=noop within boundaries",
+          "status": "pass"
+        },
+        {
+          "check_id": "chk-0003",
+          "name": "output_present",
+          "reason": "noop executor produces no output (expected)",
+          "status": "warning"
+        },
+        {
+          "check_id": "chk-0004",
+          "name": "error_free",
+          "reason": "no errors",
+          "status": "pass"
+        },
+        {
+          "check_id": "chk-0005",
+          "name": "human_review_required",
+          "reason": "no human review required",
+          "status": "pass"
+        }
+      ],
+      "created_at": "2000-01-01T00:00:00+00:00",
+      "decision_id": "dec-0001",
+      "dispatch_id": "disp-0001",
+      "evaluation_id": "eval-0001",
+      "execution_result_id": "exec-0001",
+      "quality_score": null,
+      "requires_retry": false,
+      "retry_reason": null,
+      "schema_version": "evaluation_result.v1",
+      "status": "pass"
+    },
+    "execution_result": {
+      "attempt_number": null,
+      "created_at": "2000-01-01T00:00:00+00:00",
+      "decision_id": "dec-0001",
+      "dispatch_id": "disp-0001",
+      "error_domain": null,
+      "error_message": null,
+      "estimated_cost": null,
+      "executor_type": "noop",
+      "finish_reason": null,
+      "input_tokens": null,
+      "latency_ms": null,
+      "output": null,
+      "output_tokens": null,
+      "prompt_pack": null,
+      "provider_request_id": null,
+      "result_id": "exec-0001",
+      "schema_version": "execution_result.v1",
+      "status": "not_executed",
+      "usage_source": null
+    },
+    "record": {
+      "budget_reservation_id": "res-0001",
+      "created_at": "2000-01-01T00:00:00+00:00",
+      "decision_id": "dec-0001",
+      "dispatch_id": "disp-0001",
+      "evaluation_result_id": "eval-0001",
+      "execution_result_id": "exec-0001",
+      "final_status": "not_executed",
+      "request_snapshot": "Analyze this 500-file large codebase for architectural patterns and anti-patterns",
+      "schema_version": "dispatch_record.v1",
+      "task_analysis_id": "analysis-0001",
+      "updated_at": "2000-01-01T00:00:00+00:00",
+      "usage_ledger_row_id": null
+    }
+  },
+  "name": "long_context",
+  "request": {
+    "raw_request": "Analyze this 500-file large codebase for architectural patterns and anti-patterns",
+    "request_source": "test_fixture",
+    "schema_version": "dispatch_request.v1"
+  }
+}
