@@ -43,6 +43,7 @@ Additional active architecture track:
 | Language Migration Rust engine/API parity | Implemented through local axum health/ready/openapi/dispatch router; no real providers, workers, target writes, dashboard, SDK publishing, or Docker deploy |
 | Language Migration Phase 5 — SDK + codegen | Implemented codegen helper plus TypeScript/Python REST SDK packages; no SDK publishing |
 | Language Migration Phase 6 — Read-only Dashboard | Implemented Next.js dashboard with dispatch, routing, agents/workflows, costs, settings, and health views; no executable controls |
+| Language Migration Phase 7 — Local Docker Deploy | Implemented local compose stack for Rust API + read-only dashboard; no production deploy |
 
 ## What This Project Is Not
 
