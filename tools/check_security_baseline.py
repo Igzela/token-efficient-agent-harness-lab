@@ -96,10 +96,11 @@ SECRET_SCAN_EXCLUDE = {
     "tests/test_security_baseline.py",
 }
 
-# Paths to exclude from import scanning (test files that legitimately
-# use stdlib network modules for integration testing).
-IMPORT_SCAN_EXCLUDE = {
-    "tests/test_http_server.py",
+# Per-file import allowlists for test files that legitimately use stdlib
+# network modules for local integration testing (not runtime providers).
+# Each key is a file path; the value is the set of imports allowed in that file.
+ALLOWED_TEST_IMPORTS: dict[str, set[str]] = {
+    "tests/test_http_server.py": {"urllib.request", "urllib.error", "socket"},
 }
 
 # Paths to exclude from active routing guard (test fixtures contain
@@ -229,25 +230,27 @@ def check_secret_scan(repo_root: Path, tracked_files: list[str]) -> list[str]:
 
 
 def check_import_scan(repo_root: Path, tracked_files: list[str]) -> list[str]:
-    """AST-based scan for prohibited network/SDK imports."""
+    """AST-based scan for prohibited network/SDK imports.
+
+    Files in ALLOWED_TEST_IMPORTS are checked against their specific allowlist
+    instead of the global prohibited set. This allows test files to use stdlib
+    network modules for local integration testing while still flagging any
+    newly added dangerous imports.
+    """
     findings = []
-    py_files = [
-        f for f in tracked_files
-        if f.endswith(".py") and f not in IMPORT_SCAN_EXCLUDE and (repo_root / f).is_file()
-    ]
+    py_files = [f for f in tracked_files if f.endswith(".py") and (repo_root / f).is_file()]
 
     for rel_path in py_files:
         filepath = repo_root / rel_path
         imports = extract_import_names(filepath)
+        allowed = ALLOWED_TEST_IMPORTS.get(rel_path, set())
         for mod_name in imports:
-            # Check exact match and prefix match (e.g., urllib covers urllib.request)
-            matched = False
+            if mod_name in allowed or any(mod_name.startswith(a + ".") for a in allowed):
+                continue
             for prohibited in PROHIBITED_IMPORTS:
-                if matched:
-                    break
                 if mod_name == prohibited or mod_name.startswith(prohibited + "."):
                     findings.append(f"{rel_path}: import {mod_name}")
-                    matched = True
+                    break
     return findings
 
 
