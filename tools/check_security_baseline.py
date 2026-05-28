@@ -99,13 +99,15 @@ SECRET_SCAN_EXCLUDE = {
     "demos/real_provider_demo.py",
 }
 
-# Per-file import allowlists for test files that legitimately use stdlib
-# network modules for local integration testing (not runtime providers).
+# Per-file import allowlists for local-only HTTP clients and tests. These
+# exceptions are stdlib transports for local harness/API integration, not
+# provider SDKs.
 # Each key is a file path; the value is the set of imports allowed in that file.
 ALLOWED_TEST_IMPORTS: dict[str, set[str]] = {
     "tests/test_http_server.py": {"urllib.request", "urllib.error", "socket"},
     "demos/real_provider_demo.py": {"urllib.request", "urllib.error", "json", "os", "sys", "time"},
     "demos/full_pipeline_demo.py": {"urllib.request", "urllib.error", "json", "os", "sys", "time"},
+    "sdk/python/src/agent_control_plane_sdk/client.py": {"urllib.request", "urllib.error"},
 }
 
 # Paths to exclude from active routing guard (test fixtures contain
@@ -238,8 +240,8 @@ def check_import_scan(repo_root: Path, tracked_files: list[str]) -> list[str]:
     """AST-based scan for prohibited network/SDK imports.
 
     Files in ALLOWED_TEST_IMPORTS are checked against their specific allowlist
-    instead of the global prohibited set. This allows test files to use stdlib
-    network modules for local integration testing while still flagging any
+    instead of the global prohibited set. This allows narrowly scoped stdlib
+    HTTP modules for local integration and SDK clients while still flagging any
     newly added dangerous imports.
     """
     findings = []

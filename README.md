@@ -4,7 +4,7 @@
 
 Token-Efficient Agent Harness Lab is a local deterministic harness for studying event-sourced agent workflow infrastructure from Stage 0 through Stage 4. It includes JSONL event validation, projections, project/task workflow primitives, quality gates, controlled intelligence stubs, and Stage 4 runtime-control abstractions.
 
-Current status: Stage 0-4 complete, Harness App MVP0-MVP8 complete, Trials 0-3 closed, Dispatch Kernel Phases 1-6B-3 stable, Phase 7 SDK + DocGenerator implemented, Rust engine parity through the local axum API router implemented, security hardening complete (2089 Python tests, 422 Rust tests).
+Current status: Stage 0-4 complete, Harness App MVP0-MVP8 complete, Trials 0-3 closed, Dispatch Kernel Phases 1-6B-3 stable, Phase 7 SDK + DocGenerator implemented, Rust engine parity through the local axum API router implemented, Phase 5 codegen plus TypeScript/Python REST SDK packages implemented, security hardening complete (2089 Python tests, 422 Rust tests).
 
 **New sessions should start with [docs/SESSION_START_HERE.md](docs/SESSION_START_HERE.md).**
 
@@ -49,6 +49,9 @@ PYTHONPATH=src python3 -m harness_core.cli validate-events docs/stage0/events.js
 ```text
 src/harness_core/        Python harness modules
 engine/                  Rust deterministic parity kernel, dispatch engine, and local axum API router
+codegen/                 Wire-contract type generation helpers
+sdk/typescript/          TypeScript REST SDK package
+sdk/python/              Python REST SDK package
 tests/                   Deterministic unit tests and fixtures
 wire_contract/v1/        Frozen dispatch JSON schemas for Python/Rust parity
 tests/integration/parity/ Stdlib parity runner for dispatch golden fixtures

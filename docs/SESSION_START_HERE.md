@@ -41,6 +41,7 @@ Additional active architecture track:
 | Language Migration Phase 1 — Rust parity kernel | Implemented for `event_schema`, `task_analyzer`, `dispatch_decision`; no provider/API/dashboard/deploy work |
 | Language Migration Phase 2 — Rust dispatch engine parity | Implemented for selector, budget, noop executor abstraction, evaluator, ledger, and dispatch engine; no provider/API/dashboard/deploy work |
 | Language Migration Rust engine/API parity | Implemented through local axum health/ready/openapi/dispatch router; no real providers, workers, target writes, dashboard, SDK publishing, or Docker deploy |
+| Language Migration Phase 5 — SDK + codegen | Implemented codegen helper plus TypeScript/Python REST SDK packages; no SDK publishing |
 
 ## What This Project Is Not
 
