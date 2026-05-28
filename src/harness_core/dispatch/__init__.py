@@ -68,6 +68,23 @@ from .routing import (
     make_task_group,
     parse_task_group,
 )
+from .orchestration import (
+    AgentMessage,
+    AgentRole,
+    AgentRoleRegistry,
+    ConflictRecord,
+    ConflictResolver,
+    DependencyResolver,
+    HumanApprovalGate,
+    MultiAgentBudgetManager,
+    ResultAggregator,
+    TaskDecomposer,
+    WorkflowEdge,
+    WorkflowEngine,
+    WorkflowGraph,
+    WorkflowNode,
+    WorkQueue,
+)
 
 __all__ = [
     "BUDGET_RESERVATION_SCHEMA_VERSION",
@@ -145,4 +162,19 @@ __all__ = [
     "RoutingSelection",
     "make_task_group",
     "parse_task_group",
+    "AgentMessage",
+    "AgentRole",
+    "AgentRoleRegistry",
+    "ConflictRecord",
+    "ConflictResolver",
+    "DependencyResolver",
+    "HumanApprovalGate",
+    "MultiAgentBudgetManager",
+    "ResultAggregator",
+    "TaskDecomposer",
+    "WorkflowEdge",
+    "WorkflowEngine",
+    "WorkflowGraph",
+    "WorkflowNode",
+    "WorkQueue",
 ]

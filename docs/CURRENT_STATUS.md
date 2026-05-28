@@ -5,7 +5,7 @@ Last verified: 2026-05-28.
 ## Repository State
 
 - Branch: `main` synced after `66ebbc7` (Phase 4 adaptive routing hardening).
-- Tests: **1270 pass**, 0 failures.
+- Tests: **1381 pass**, 0 failures.
 - Security baseline: ALL CHECKS PASSED.
 
 ## New Session / Documentation Discipline
@@ -48,6 +48,7 @@ Run `python3 scripts/check_agent_handoff.py` before committing so the handoff su
 | Phase 2 — Manual Execution Bridge | **STABLE** — 6 source modules, 6 test files, 1131 total tests, commits `afbba23`→`19c8a17`→`8f683ad` |
 | Phase 3 — Provider Adapter Boundary | **STABLE** — 8 source modules, 8 test files, 1188 total tests, commits `c0ec508`→`e34ad8e`→`29fd12b`→`0092a1c`→`c631b4d`→`ef52704` |
 | Phase 4 — Adaptive Routing | **STABLE** — 8 source modules, 8 test files, 1270 total tests, commits `ed2c762`→`66ebbc7` |
+| Phase 5 — Multi-Agent Orchestration | **BETA** — 11 source modules, 9 test files, 1381 total tests, initial implementation |
 
 Trial 2 complete evidence chain: [`docs/trials/TRIAL_2_FINAL_STATE_INDEX.md`](trials/TRIAL_2_FINAL_STATE_INDEX.md).
 Trial 3 report: [`docs/trials/TRIAL_3_REPORT.md`](trials/TRIAL_3_REPORT.md).
@@ -130,6 +131,35 @@ Trial 3 target merge closeout: [`docs/trials/TRIAL_3_TARGET_MERGE_CLOSEOUT.md`](
 - History and observation stores are in-memory
 - Promotion logic is deterministic threshold-based, not statistical
 - Adaptive routing depends on quality/cost observations supplied by upstream evaluators
+
+## Phase 5 Multi-Agent Orchestration — Closeout
+
+**Initial implementation:** 11 new source modules, 9 test files, 111 new tests
+**Tests:** 1381 pass (was 1270 at Phase 4 end)
+**Status:** BETA — awaiting GPT review
+
+**Phase 5 boundaries:** WorkflowEngine orchestrates independently (does NOT call DispatchEngine). Agent execution is simulated (StubAgent returns mock output). No autonomous agent spawning without a dispatch decision. In-memory stores only. Rule-based decomposition and conflict resolution (no LLM calls). Human approval gates block workflow progression.
+
+**Source modules:**
+- `orchestration/schemas.py` — WorkflowGraph, WorkflowNode, WorkflowEdge, AgentMessage, ConflictRecord, AgentRole + constants
+- `orchestration/agent_role_registry.py` — AgentRoleRegistry: register, lookup, assign, release
+- `orchestration/task_decomposer.py` — TaskDecomposer: TaskAnalysis → WorkflowGraph (rule-based, 1/2/4 node graphs)
+- `orchestration/dependency_resolver.py` — DependencyResolver: validate (cycle detection), execution_order (topological sort), ready_nodes
+- `orchestration/work_queue.py` — WorkQueue: enqueue, dequeue_ready, start, complete, fail, cancel
+- `orchestration/workflow_engine.py` — WorkflowEngine: create_workflow, tick, resume_after_approval, cancel, complete_node, fail_node
+- `orchestration/conflict_resolver.py` — ConflictResolver: detect_conflicts (output/resource/dependency/budget), resolve
+- `orchestration/result_aggregator.py` — ResultAggregator: aggregate, is_complete
+- `orchestration/human_approval_gate.py` — HumanApprovalGate: requires_approval, approve, reject
+- `orchestration/multi_agent_budget.py` — MultiAgentBudgetManager: workflow/agent/node level budget enforcement
+- `orchestration/__init__.py` — barrel re-exports
+
+**Accepted limitations (non-blocking, future refinement):**
+- WorkflowEngine does not call DispatchEngine (no real provider integration)
+- Agent execution is simulated — no real LLM calls
+- In-memory stores only (no persistence)
+- Rule-based decomposition (1/2/4 node graphs based on complexity thresholds)
+- Conflict resolution is deterministic, not statistical
+- HumanApprovalGate triggers are heuristic (budget threshold, failure)
 
 ## Phase 3 Provider Adapter Boundary — Closeout
 
