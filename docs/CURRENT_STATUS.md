@@ -53,7 +53,7 @@ Run `python3 scripts/check_agent_handoff.py` before committing so the handoff su
 | Phase 6B-1 — Per-Server Route Isolation | **STABLE** — ServerContext pattern, backward-compatible, 4 isolation tests |
 | Phase 6B-2 — Local API Key + Tenant Boundary | **STABLE** — 1 source module (auth.py), 1 test file (test_auth.py), auth middleware in http_server.py, RequestContext flow into RouteMatch, 1654 total tests, GPT approved |
 | Phase 6B-3 — Rate Limiting + Backup + Plugins | **STABLE** — 5 source modules (rate_limiter, backup_manager, plugin_system, plugin_registry, cli extensions), 5 test files, 192 new tests (1846 total), GPT approved |
-| Phase 6B-3 Gate 1 — Enforcement Hardening | **IMPLEMENTED** — scope checks, rate limiting, 403/429 in HTTP path, 13 enforcement tests + 7 provider tests (1866 total), committed b404b8f, GPT review pending |
+| Phase 6B-3 Gate 1 — Enforcement Hardening | **STABLE** — scope checks, rate limiting, 403/429 in HTTP path, 17 enforcement tests + 7 provider tests (1870 total), committed b404b8f→e26439f, GPT PASS (2 rounds) |
 | Phase 7 — SDK + Documentation + Plugin System | **STABLE** — 2 source modules (sdk.py, doc_generator.py), 2 test files, 64 new tests, GPT approved |
 
 Trial 2 complete evidence chain: [`docs/trials/TRIAL_2_FINAL_STATE_INDEX.md`](trials/TRIAL_2_FINAL_STATE_INDEX.md).

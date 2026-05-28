@@ -87,6 +87,7 @@ See `docs/CURRENT_STATUS.md` for full details.
 - **2026-05-28**: Phase 6B-3 + Phase 7 STABLE after 1 round of GPT review. 1846 tests. No CRITICAL/HIGH findings. MEDIUM: TenantResolver lock deferred to 6B-3, empty scopes semantic documented, RouteMatch.path normalization deferred. LOW: hash_api_key delimiter, observability integration, auth audit — all 6B-3 scope.
 - **2026-05-28**: Real provider integration — AnthropicProvider adapter for mimo (Anthropic-compatible API). Updated evaluation_stub for Phase 3+ provider execution. 1853 tests. Real API calls working (2/3 tasks completed, 1 blocked by approval gate correctly). Demo at demos/real_provider_demo.py. API key from env only.
 - **2026-05-28**: Phase 6B-3 Gate 1 enforcement hardening — wired scope checks and rate limiting into HTTP request path. Added route_pattern to RouteMatch, required_scopes to register_route(), AuthorizationDecision in auth.py, _check_scopes() and _check_rate_limit() in http_server.py. Request pipeline: auth → route match → scope check (403) → rate check (429) → handler. 13 new enforcement tests + 7 anthropic_provider tests. 1866 tests total. Committed b404b8f.
+- **2026-05-28**: Gate 1 hardening fix — GPT BLOCK on empty-scope bypass (HIGH-1) and stale scope re-registration (HIGH-2). Fixed _check_scopes() to remove `request_context.scopes and` guard, fixed register_route() to pop stale scopes. 4 new regression tests (TestEmptyScopeBypass, TestStaleScopeReRegistration). 1870 tests. GPT re-review: PASS. Committed e26439f.
 - **2026-05-28**: Gate 1 hardening fix — fixed GPT BLOCK findings: (1) empty-scope API keys no longer bypass scope checks, (2) register_route clears stale scopes when re-registering without required_scopes. 4 new tests (1870 total). Awaiting re-review.
 - Previous BLOCK findings (b6d5bc1): HIGH-1 rate limit not wired, HIGH-2 scope enforcement missing, HIGH-3 plugin locks unused
 - Gate 1 addresses: HIGH-1 (rate limiter in ServerContext + _check_rate_limit), HIGH-2 (scope enforcement + AuthorizationDecision + 403/429)
@@ -127,6 +128,15 @@ See `docs/CURRENT_STATUS.md` for full details.
 - MEDIUM-1: tests call internal methods directly, no real HTTP 403/429 verification
 - MEDIUM-2: rate_limit hardcoded to 60, ignoring Tenant.rate_limit — deferred to 6B-3 tenant config
 - Status: HIGH items fixed, re-review pending in ChatGPT
+
+### GPT Gate Feedback 2026-05-28 (Gate 1 round 2)
+- Target: Phase 6B-3 Gate 1 enforcement hardening (commit e26439f)
+- Verdict: PASS (CRITICAL: 0, HIGH: 0, MEDIUM: 0, LOW: 0)
+- HIGH-1 empty-scope bypass: resolved — `_check_scopes()` uses `if not required.issubset(request_context.scopes):`
+- HIGH-2 stale scope re-registration: resolved — `register_route()` now pops stale entries
+- MEDIUM-1 direct method tests: accepted as sufficient for unit-level enforcement
+- MEDIUM-2 rate_limit=60 hardcoded: deferred to 6B-3 tenant config (non-blocking)
+- Status: passed — Gate 1 STABLE
 
 ## External Dependencies
 
