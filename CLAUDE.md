@@ -34,7 +34,7 @@ Master architecture document: `docs/dispatch/DISPATCHER_KERNEL_V0_ARCHITECTURE.m
 - **Harness App MVP0-MVP8**: Complete local operations console.
 - **Trials 0-3**: Closed, with target repo onboarding and multi-repo generalization complete.
 - **Dispatch Kernel Phase 1-5**: Phase 1-4 stable, Phase 5 BETA (11 source modules, 9 test files, 1381 tests).
-- **Phase 5 — Multi-Agent Orchestration**: BETA (11 orchestration modules, 111 new tests, awaiting GPT review).
+- **Phase 5 — Multi-Agent Orchestration**: BETA (11 orchestration modules, 134 tests, GPT review P0/P1 hardened, awaiting re-review).
 - **Dispatch Kernel Phase 6-7**: Outlined in architecture book, not yet started.
 
 See `docs/CURRENT_STATUS.md` for detailed phase closeout records.
@@ -71,7 +71,8 @@ See `docs/CURRENT_STATUS.md` for full details.
 
 - **2026-05-27**: Phase 3 STABLE after 4 rounds of GPT review (Alpha → Beta → RC → Stable). 1188 tests, 8 source modules, 8 test files. P0 fixes: provider gate bypass, budget_exhausted terminal, ProviderConfig.enabled enforcement. All commits on main (c0ec508→c631b4d).
 - **2026-05-28**: Phase 4 STABLE after 2 rounds of GPT review (Beta → Stable). 1270 tests, 8 new routing modules, 8 new test files. P0 fixes: RoutingSelection dataclass for routing_mode metadata, task_group delimiter `/` to avoid underscore collision. P1 fixes: baseline sample check, routing_experiment_id propagation, duplicate PromotionVerdict removed. Commits ed2c762→66ebbc7.
-- **2026-05-28**: Phase 5 initial implementation — 11 orchestration source modules, 9 test files, 111 new tests (1381 total). Awaiting GPT review.
+- **2026-05-28**: Phase 5 initial implementation — 11 orchestration source modules, 9 test files, 111 new tests (1381 total).
+- **2026-05-28**: Phase 5 hardening — all GPT review P0/P1 items fixed, 1 new test file (23 hardening tests, 1406 total). Awaiting GPT re-review.
 
 ## External Dependencies
 
@@ -82,7 +83,7 @@ See `docs/CURRENT_STATUS.md` for full details.
 
 - **Framework**: unittest (stdlib), no pytest
 - **Run command**: `PYTHONPATH=src python3 -m unittest discover -s tests`
-- **Current count**: 1381 tests, 0 failures (as of 2026-05-28)
+- **Current count**: 1406 tests, 0 failures (as of 2026-05-28)
 - **Coverage**: Phase boundary contracts, schema validation, golden fixtures
 - **CI**: GitHub Actions on push/PR to main — runs security baseline + all tests
 - **Test naming**: `tests/test_<module>.py`, one test file per source module

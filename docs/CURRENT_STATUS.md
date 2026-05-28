@@ -4,8 +4,8 @@ Last verified: 2026-05-28.
 
 ## Repository State
 
-- Branch: `main` synced after `66ebbc7` (Phase 4 adaptive routing hardening).
-- Tests: **1381 pass**, 0 failures.
+- Branch: `main` synced after `80641b0` (Phase 5 hardening — GPT review P0/P1 fixes).
+- Tests: **1406 pass**, 0 failures.
 - Security baseline: ALL CHECKS PASSED.
 
 ## New Session / Documentation Discipline
@@ -48,7 +48,7 @@ Run `python3 scripts/check_agent_handoff.py` before committing so the handoff su
 | Phase 2 — Manual Execution Bridge | **STABLE** — 6 source modules, 6 test files, 1131 total tests, commits `afbba23`→`19c8a17`→`8f683ad` |
 | Phase 3 — Provider Adapter Boundary | **STABLE** — 8 source modules, 8 test files, 1188 total tests, commits `c0ec508`→`e34ad8e`→`29fd12b`→`0092a1c`→`c631b4d`→`ef52704` |
 | Phase 4 — Adaptive Routing | **STABLE** — 8 source modules, 8 test files, 1270 total tests, commits `ed2c762`→`66ebbc7` |
-| Phase 5 — Multi-Agent Orchestration | **BETA** — 11 source modules, 9 test files, 1381 total tests, initial implementation |
+| Phase 5 — Multi-Agent Orchestration | **BETA** — 11 source modules, 10 test files, 1406 total tests, GPT review P0/P1 hardened |
 
 Trial 2 complete evidence chain: [`docs/trials/TRIAL_2_FINAL_STATE_INDEX.md`](trials/TRIAL_2_FINAL_STATE_INDEX.md).
 Trial 3 report: [`docs/trials/TRIAL_3_REPORT.md`](trials/TRIAL_3_REPORT.md).
@@ -135,8 +135,23 @@ Trial 3 target merge closeout: [`docs/trials/TRIAL_3_TARGET_MERGE_CLOSEOUT.md`](
 ## Phase 5 Multi-Agent Orchestration — Closeout
 
 **Initial implementation:** 11 new source modules, 9 test files, 111 new tests
-**Tests:** 1381 pass (was 1270 at Phase 4 end)
-**Status:** BETA — awaiting GPT review
+**Hardening commit:** `80641b0` — all GPT review P0/P1 items fixed, 1 new test file (23 hardening tests)
+**Tests:** 1406 pass (was 1270 at Phase 4 end)
+**Status:** BETA — hardened, awaiting GPT re-review
+
+**P0 fixes (6):**
+- Dispatch gating: create_workflow rejects non-decided decisions
+- Terminal semantics: failed nodes never silently complete
+- Approval reachability: failed/completed nodes trigger approval gate
+- Budget enforcement: overrun triggers fail, agent_id recorded correctly
+- Registry lifecycle: agents released on complete/fail/cancel
+- State unification: WorkQueue stateless, graph is sole source of truth
+
+**P1 fixes (4):**
+- Schema: WorkflowGraph.updated_at field added
+- DependencyResolver: execution_order validates graph first
+- ConflictResolver: resource_conflict only for concurrent running nodes
+- TaskDecomposer: node_id generated before registry assignment
 
 **Phase 5 boundaries:** WorkflowEngine orchestrates independently (does NOT call DispatchEngine). Agent execution is simulated (StubAgent returns mock output). No autonomous agent spawning without a dispatch decision. In-memory stores only. Rule-based decomposition and conflict resolution (no LLM calls). Human approval gates block workflow progression.
 
