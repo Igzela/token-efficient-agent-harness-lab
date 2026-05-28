@@ -38,19 +38,20 @@ def _read_json_file(path: Path) -> dict[str, Any] | None:
         return None
 
 
-def _read_jsonl_file(path: Path) -> list[dict[str, Any]]:
+def _read_jsonl_file(path: Path) -> tuple[list[dict[str, Any]], list[str]]:
     if not path.exists():
-        return []
+        return [], []
     records = []
-    for line in path.read_text().splitlines():
-        line = line.strip()
+    errors = []
+    for line_num, raw_line in enumerate(path.read_text().splitlines(), start=1):
+        line = raw_line.strip()
         if not line:
             continue
         try:
             records.append(json.loads(line))
-        except json.JSONDecodeError:
-            continue
-    return records
+        except json.JSONDecodeError as e:
+            errors.append(f"line {line_num}: {e.msg} (near {e.doc[max(0, e.pos-20):e.pos+20]!r})")
+    return records, errors
 
 
 def migrate_plans_json_to_sqlite(
@@ -77,7 +78,7 @@ def migrate_plans_json_to_sqlite(
             errors.append(f"plan missing plan_id: {json.dumps(plan)[:100]}")
             continue
         try:
-            store.save_plan(plan_id, plan, schema_version=plan.get("schema_version"))
+            store.save_plan(plan_id, plan, schema_version=plan.get("schema_version"), upsert=True)
             migrated += 1
         except Exception as e:
             errors.append(f"plan {plan_id}: {e}")
@@ -113,7 +114,7 @@ def migrate_repos_json_to_sqlite(
             errors.append(f"repo missing id: {json.dumps(repo)[:100]}")
             continue
         try:
-            store.save_repo(repo_id, repo, schema_version=repo.get("schema_version"))
+            store.save_repo(repo_id, repo, schema_version=repo.get("schema_version"), upsert=True)
             migrated += 1
         except Exception as e:
             errors.append(f"repo {repo_id}: {e}")
@@ -134,11 +135,12 @@ def migrate_events_jsonl_to_sqlite(
     errors: list[str] = []
     migrated = 0
 
-    events = _read_jsonl_file(jsonl_path)
+    events, parse_errors = _read_jsonl_file(jsonl_path)
+    errors.extend(parse_errors)
     if not events:
         return MigrationReport(
             source=str(jsonl_path), target="sqlite",
-            records_migrated=0, errors=[],
+            records_migrated=0, errors=errors,
             duration_ms=(time.monotonic() - start) * 1000,
         )
 
@@ -148,7 +150,7 @@ def migrate_events_jsonl_to_sqlite(
             errors.append(f"event missing event_id: {json.dumps(event)[:100]}")
             continue
         try:
-            store.save_event(event_id, event, schema_version=event.get("schema_version"))
+            store.save_event(event_id, event, schema_version=event.get("schema_version"), upsert=True)
             migrated += 1
         except Exception as e:
             errors.append(f"event {event_id}: {e}")

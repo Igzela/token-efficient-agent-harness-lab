@@ -36,6 +36,12 @@ class HarnessHTTPHandler(BaseHTTPRequestHandler):
     store: Any = None
     config: ServerConfig = ServerConfig()
 
+    @property
+    def _config(self) -> ServerConfig:
+        if hasattr(self.server, "_harness_config"):
+            return self.server._harness_config  # type: ignore[attr-defined]
+        return self.config
+
     def log_message(self, format: str, *args: Any) -> None:
         pass
 
@@ -62,7 +68,10 @@ class HarnessHTTPHandler(BaseHTTPRequestHandler):
 
     def _match_route(self, method: str) -> tuple[RequestHandler, dict[str, str]] | None:
         path = self.path
-        prefix = self.config.api_prefix
+        query_idx = path.find("?")
+        if query_idx != -1:
+            path = path[:query_idx]
+        prefix = self._config.api_prefix
         if path.startswith(prefix):
             path = path[len(prefix):]
         if not path.startswith("/"):
@@ -112,8 +121,8 @@ class HarnessHTTPHandler(BaseHTTPRequestHandler):
         try:
             response = handler(match, body)
             self._send_json(response)
-        except Exception as e:
-            self._send_error_json(500, str(e))
+        except Exception:
+            self._send_error_json(500, "internal server error")
 
 
 def register_route(method: str, path: str, handler: RequestHandler) -> None:
@@ -133,6 +142,7 @@ def create_server(config: ServerConfig | None = None,
     HarnessHTTPHandler.config = cfg
     HarnessHTTPHandler.store = store
     server = HTTPServer((cfg.host, cfg.port), HarnessHTTPHandler)
+    server._harness_config = cfg  # type: ignore[attr-defined]
     return server
 
 

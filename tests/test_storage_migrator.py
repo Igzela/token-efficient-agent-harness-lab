@@ -75,27 +75,44 @@ class ReadJsonlFileTests(unittest.TestCase):
         with tempfile.NamedTemporaryFile(mode="w", suffix=".jsonl", delete=False) as f:
             f.write('{"id": "1"}\n{"id": "2"}\n')
             f.flush()
-            result = _read_jsonl_file(Path(f.name))
-        self.assertEqual(len(result), 2)
+            records, errors = _read_jsonl_file(Path(f.name))
+        self.assertEqual(len(records), 2)
+        self.assertEqual(errors, [])
         Path(f.name).unlink(missing_ok=True)
 
     def test_read_nonexistent(self):
-        self.assertEqual(_read_jsonl_file(Path("/nonexistent/file.jsonl")), [])
+        records, errors = _read_jsonl_file(Path("/nonexistent/file.jsonl"))
+        self.assertEqual(records, [])
+        self.assertEqual(errors, [])
 
     def test_read_with_blank_lines(self):
         with tempfile.NamedTemporaryFile(mode="w", suffix=".jsonl", delete=False) as f:
             f.write('{"id": "1"}\n\n{"id": "2"}\n')
             f.flush()
-            result = _read_jsonl_file(Path(f.name))
-        self.assertEqual(len(result), 2)
+            records, errors = _read_jsonl_file(Path(f.name))
+        self.assertEqual(len(records), 2)
+        self.assertEqual(errors, [])
         Path(f.name).unlink(missing_ok=True)
 
     def test_read_with_invalid_line(self):
         with tempfile.NamedTemporaryFile(mode="w", suffix=".jsonl", delete=False) as f:
             f.write('{"id": "1"}\nnot json\n{"id": "2"}\n')
             f.flush()
-            result = _read_jsonl_file(Path(f.name))
-        self.assertEqual(len(result), 2)
+            records, errors = _read_jsonl_file(Path(f.name))
+        self.assertEqual(len(records), 2)
+        self.assertEqual(len(errors), 1)
+        self.assertIn("line 2", errors[0])
+        Path(f.name).unlink(missing_ok=True)
+
+    def test_read_multiple_invalid_lines(self):
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".jsonl", delete=False) as f:
+            f.write('not json 1\n{"id": "1"}\nnot json 2\n')
+            f.flush()
+            records, errors = _read_jsonl_file(Path(f.name))
+        self.assertEqual(len(records), 1)
+        self.assertEqual(len(errors), 2)
+        self.assertIn("line 1", errors[0])
+        self.assertIn("line 3", errors[1])
         Path(f.name).unlink(missing_ok=True)
 
 
@@ -218,6 +235,18 @@ class MigrateEventsTests(unittest.TestCase):
             report = migrate_events_jsonl_to_sqlite(Path(f.name), self.store)
         self.assertEqual(report.records_migrated, 0)
         self.assertEqual(report.errors, [])
+        Path(f.name).unlink(missing_ok=True)
+
+    def test_migrate_with_malformed_lines_reports_errors(self):
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".jsonl", delete=False) as f:
+            f.write('{"event_id": "e1"}\n')
+            f.write('not valid json {{{\n')
+            f.write('{"event_id": "e2"}\n')
+            f.flush()
+            report = migrate_events_jsonl_to_sqlite(Path(f.name), self.store)
+        self.assertEqual(report.records_migrated, 2)
+        self.assertEqual(len(report.errors), 1)
+        self.assertIn("line 2", report.errors[0])
         Path(f.name).unlink(missing_ok=True)
 
 

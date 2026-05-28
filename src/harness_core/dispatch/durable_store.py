@@ -78,22 +78,25 @@ class DurableStore:
         conn.commit()
 
     def close(self) -> None:
-        if self._conn is not None:
-            self._conn.close()
-            self._conn = None
+        with self._lock:
+            if self._conn is not None:
+                self._conn.close()
+                self._conn = None
 
     # ── Plans ───────────────────────────────────────────────────────────
 
     def save_plan(self, plan_id: str, data: dict[str, Any],
                   schema_version: str | None = None,
-                  created_at: str | None = None) -> StoredRecord:
+                  created_at: str | None = None,
+                  upsert: bool = False) -> StoredRecord:
         ts = created_at or time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
         sv = schema_version or data.get("schema_version")
         blob = json.dumps(data, sort_keys=True, default=str)
+        sql = "INSERT OR REPLACE INTO plans" if upsert else "INSERT INTO plans"
         with self._lock:
             conn = self._get_conn()
             conn.execute(
-                "INSERT OR REPLACE INTO plans (id, created_at, schema_version, data) VALUES (?, ?, ?, ?)",
+                f"{sql} (id, created_at, schema_version, data) VALUES (?, ?, ?, ?)",
                 (plan_id, ts, sv, blob),
             )
             conn.commit()
@@ -137,14 +140,16 @@ class DurableStore:
 
     def save_repo(self, repo_id: str, data: dict[str, Any],
                   schema_version: str | None = None,
-                  created_at: str | None = None) -> StoredRecord:
+                  created_at: str | None = None,
+                  upsert: bool = False) -> StoredRecord:
         ts = created_at or time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
         sv = schema_version or data.get("schema_version")
         blob = json.dumps(data, sort_keys=True, default=str)
+        sql = "INSERT OR REPLACE INTO repos" if upsert else "INSERT INTO repos"
         with self._lock:
             conn = self._get_conn()
             conn.execute(
-                "INSERT OR REPLACE INTO repos (id, created_at, schema_version, data) VALUES (?, ?, ?, ?)",
+                f"{sql} (id, created_at, schema_version, data) VALUES (?, ?, ?, ?)",
                 (repo_id, ts, sv, blob),
             )
             conn.commit()
@@ -188,15 +193,17 @@ class DurableStore:
 
     def save_event(self, event_id: str, data: dict[str, Any],
                    schema_version: str | None = None,
-                   created_at: str | None = None) -> StoredRecord:
+                   created_at: str | None = None,
+                   upsert: bool = False) -> StoredRecord:
         ts = created_at or time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
         sv = schema_version or data.get("schema_version")
         event_type = data.get("event_type", "")
         blob = json.dumps(data, sort_keys=True, default=str)
+        sql = "INSERT OR REPLACE INTO events" if upsert else "INSERT INTO events"
         with self._lock:
             conn = self._get_conn()
             conn.execute(
-                "INSERT OR REPLACE INTO events (id, created_at, schema_version, event_type, data) VALUES (?, ?, ?, ?, ?)",
+                f"{sql} (id, created_at, schema_version, event_type, data) VALUES (?, ?, ?, ?, ?)",
                 (event_id, ts, sv, event_type, blob),
             )
             conn.commit()

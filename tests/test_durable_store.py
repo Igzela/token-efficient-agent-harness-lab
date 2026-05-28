@@ -93,9 +93,14 @@ class PlanCRUDTests(unittest.TestCase):
 
     def test_save_plan_upsert(self):
         self.store.save_plan("p1", {"task": "v1"})
-        self.store.save_plan("p1", {"task": "v2"})
+        self.store.save_plan("p1", {"task": "v2"}, upsert=True)
         plan = self.store.get_plan("p1")
         self.assertEqual(plan.data["task"], "v2")  # type: ignore[union-attr]
+
+    def test_save_plan_no_upsert_raises(self):
+        self.store.save_plan("p1", {"task": "v1"})
+        with self.assertRaises(Exception):
+            self.store.save_plan("p1", {"task": "v2"})
 
     def test_plan_with_schema_version(self):
         self.store.save_plan("p1", {"task": "x"}, schema_version="resource_plan.v1")
@@ -153,9 +158,14 @@ class RepoCRUDTests(unittest.TestCase):
 
     def test_repo_upsert(self):
         self.store.save_repo("r1", {"name": "v1"})
-        self.store.save_repo("r1", {"name": "v2"})
+        self.store.save_repo("r1", {"name": "v2"}, upsert=True)
         repo = self.store.get_repo("r1")
         self.assertEqual(repo.data["name"], "v2")  # type: ignore[union-attr]
+
+    def test_save_repo_no_upsert_raises(self):
+        self.store.save_repo("r1", {"name": "v1"})
+        with self.assertRaises(Exception):
+            self.store.save_repo("r1", {"name": "v2"})
 
 
 class EventCRUDTests(unittest.TestCase):
@@ -203,9 +213,14 @@ class EventCRUDTests(unittest.TestCase):
 
     def test_event_upsert(self):
         self.store.save_event("e1", {"event_type": "v1"})
-        self.store.save_event("e1", {"event_type": "v2"})
+        self.store.save_event("e1", {"event_type": "v2"}, upsert=True)
         event = self.store.get_event("e1")
         self.assertEqual(event.data["event_type"], "v2")  # type: ignore[union-attr]
+
+    def test_save_event_no_upsert_raises(self):
+        self.store.save_event("e1", {"event_type": "v1"})
+        with self.assertRaises(Exception):
+            self.store.save_event("e1", {"event_type": "v2"})
 
 
 class MigrationLogTests(unittest.TestCase):

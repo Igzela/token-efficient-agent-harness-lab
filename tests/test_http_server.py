@@ -240,9 +240,9 @@ class HTTPIntegrationTests(unittest.TestCase):
         finally:
             server.shutdown()
 
-    def test_handler_exception_returns_500(self):
+    def test_handler_exception_returns_500_generic_message(self):
         def handler(match: RouteMatch, body: dict | None) -> dict:
-            raise RuntimeError("boom")
+            raise RuntimeError("secret details")
 
         register_route("GET", "/error", handler)
         server = create_server(self.config)
@@ -256,6 +256,9 @@ class HTTPIntegrationTests(unittest.TestCase):
                 self.fail("Should have raised")
             except urllib.error.HTTPError as e:
                 self.assertEqual(e.code, 500)
+                body = json.loads(e.read())
+                self.assertEqual(body["error"], "internal server error")
+                self.assertNotIn("secret details", body["error"])
         finally:
             server.shutdown()
 

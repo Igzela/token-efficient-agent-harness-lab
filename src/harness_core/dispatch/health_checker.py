@@ -64,10 +64,10 @@ class HealthChecker:
             return HealthCheck(name="plans", status="unhealthy", message="no store configured")
         start = time.monotonic()
         try:
-            plans = self._store.list_plans()
+            stats = self._store.stats()
             latency = (time.monotonic() - start) * 1000
             return HealthCheck(name="plans", status="healthy",
-                               message=f"accessible, count={len(plans)}",
+                               message=f"accessible, count={stats['plans']}",
                                latency_ms=latency)
         except Exception as e:
             latency = (time.monotonic() - start) * 1000
