@@ -85,6 +85,39 @@ from .orchestration import (
     WorkflowNode,
     WorkQueue,
 )
+from .observability import (
+    OBSERVABILITY_SCHEMA_VERSION,
+    MetricsCollector,
+    RequestTracer,
+    StructuredFormatter,
+    setup_structured_logging,
+)
+from .durable_store import DURABLE_STORE_SCHEMA_VERSION, DurableStore
+from .storage_migrator import (
+    STORAGE_MIGRATOR_SCHEMA_VERSION,
+    FullMigrationReport,
+    MigrationReport,
+    full_migration,
+    migrate_events_jsonl_to_sqlite,
+    migrate_plans_json_to_sqlite,
+    migrate_repos_json_to_sqlite,
+)
+from .http_server import (
+    HTTP_SERVER_SCHEMA_VERSION,
+    HarnessHTTPHandler,
+    RouteMatch,
+    ServerConfig,
+    clear_routes,
+    create_server,
+    register_route,
+    start_server_in_thread,
+)
+from .health_checker import (
+    HEALTH_CHECKER_SCHEMA_VERSION,
+    HealthCheck,
+    HealthChecker,
+    HealthReport,
+)
 
 __all__ = [
     "BUDGET_RESERVATION_SCHEMA_VERSION",
@@ -177,4 +210,30 @@ __all__ = [
     "WorkflowGraph",
     "WorkflowNode",
     "WorkQueue",
+    "OBSERVABILITY_SCHEMA_VERSION",
+    "MetricsCollector",
+    "RequestTracer",
+    "StructuredFormatter",
+    "setup_structured_logging",
+    "DURABLE_STORE_SCHEMA_VERSION",
+    "DurableStore",
+    "STORAGE_MIGRATOR_SCHEMA_VERSION",
+    "FullMigrationReport",
+    "MigrationReport",
+    "full_migration",
+    "migrate_events_jsonl_to_sqlite",
+    "migrate_plans_json_to_sqlite",
+    "migrate_repos_json_to_sqlite",
+    "HTTP_SERVER_SCHEMA_VERSION",
+    "HarnessHTTPHandler",
+    "RouteMatch",
+    "ServerConfig",
+    "clear_routes",
+    "create_server",
+    "register_route",
+    "start_server_in_thread",
+    "HEALTH_CHECKER_SCHEMA_VERSION",
+    "HealthCheck",
+    "HealthChecker",
+    "HealthReport",
 ]

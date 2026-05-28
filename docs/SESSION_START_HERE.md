@@ -24,7 +24,7 @@ Token-Efficient Agent Harness Lab is a local deterministic harness for studying 
 | Trial 3 multi-repo generalization | Closed — `TRIAL_3_MULTI_REPO_GENERALIZATION_PASS` |
 | Trial 3 target merge | Closed — all 3 target PRs merged, audit PASS_WITH_NOTES |
 
-Tests: 1591 pass.
+Tests: 1596 pass.
 
 Additional active architecture track:
 
@@ -34,7 +34,9 @@ Additional active architecture track:
 | Dispatch Kernel Phase 2 | Stable |
 | Dispatch Kernel Phase 3 — Provider Adapter Boundary | Stable, CA-7 compliant, no bundled real transport |
 | Dispatch Kernel Phase 4 — Adaptive Routing | Stable |
-| Dispatch Kernel Phase 5+ | Eligible only when documented in the architecture book and kept inside repository-safe boundaries |
+| Dispatch Kernel Phase 5 — Multi-Agent Orchestration | Stable |
+| Dispatch Kernel Phase 6A — Local Durable API/Storage | Stable |
+| Dispatch Kernel Phase 6B+ | Eligible only when documented in the architecture book and kept inside repository-safe boundaries |
 
 ## What This Project Is Not
 

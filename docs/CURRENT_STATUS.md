@@ -4,8 +4,8 @@ Last verified: 2026-05-28.
 
 ## Repository State
 
-- Branch: `main` synced after `80641b0` (Phase 5 hardening — GPT review P0/P1 fixes).
-- Tests: **1591 pass**, 0 failures.
+- Branch: `main` synced after `6d11c0f` (Phase 6A hardening — GPT review P0/P1 fixes).
+- Tests: **1596 pass**, 0 failures.
 - Security baseline: ALL CHECKS PASSED.
 
 ## New Session / Documentation Discipline
@@ -49,7 +49,7 @@ Run `python3 scripts/check_agent_handoff.py` before committing so the handoff su
 | Phase 3 — Provider Adapter Boundary | **STABLE** — 8 source modules, 8 test files, 1188 total tests, commits `c0ec508`→`e34ad8e`→`29fd12b`→`0092a1c`→`c631b4d`→`ef52704` |
 | Phase 4 — Adaptive Routing | **STABLE** — 8 source modules, 8 test files, 1270 total tests, commits `ed2c762`→`66ebbc7` |
 | Phase 5 — Multi-Agent Orchestration | **STABLE** — 11 source modules, 12 test files, 1454 total tests, GPT approved |
-| Phase 6A — Local Durable API/Storage | **BETA** — 5 source modules, 5 test files, 1591 total tests, initial implementation |
+| Phase 6A — Local Durable API/Storage | **STABLE** — 5 source modules, 5 test files, 1596 total tests, GPT approved |
 
 Trial 2 complete evidence chain: [`docs/trials/TRIAL_2_FINAL_STATE_INDEX.md`](trials/TRIAL_2_FINAL_STATE_INDEX.md).
 Trial 3 report: [`docs/trials/TRIAL_3_REPORT.md`](trials/TRIAL_3_REPORT.md).
@@ -183,9 +183,11 @@ Trial 3 target merge closeout: [`docs/trials/TRIAL_3_TARGET_MERGE_CLOSEOUT.md`](
 
 ## Phase 6A Local Durable API/Storage — Closeout
 
-**Initial implementation:** 5 new source modules, 5 test files, 137 new tests
-**Tests:** 1591 pass (was 1454 at Phase 5 end)
-**Status:** **BETA** — initial implementation, awaiting GPT review
+**Stable commit:** `6d11c0f`
+**Initial implementation:** `2e9f754` (5 new source modules, 5 test files, 137 new tests)
+**Hardening fixes:** `6d11c0f` (2 P0 + 6 P1 issues from GPT review)
+**Tests:** 1596 pass (was 1454 at Phase 5 end)
+**Status:** **STABLE** — GPT approved after 2 review rounds (Beta → Stable)
 
 **Phase 6A boundaries:** stdlib only (`http.server`, `sqlite3`, `logging`). No FastAPI, no PostgreSQL, no third-party packages. No auth/tenancy, no rate limiting, no real providers.
 

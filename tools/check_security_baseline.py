@@ -96,6 +96,12 @@ SECRET_SCAN_EXCLUDE = {
     "tests/test_security_baseline.py",
 }
 
+# Paths to exclude from import scanning (test files that legitimately
+# use stdlib network modules for integration testing).
+IMPORT_SCAN_EXCLUDE = {
+    "tests/test_http_server.py",
+}
+
 # Paths to exclude from active routing guard (test fixtures contain
 # intentional active_routing_allowed values for testing).
 ACTIVE_ROUTING_EXCLUDE_PREFIXES = (
@@ -225,7 +231,10 @@ def check_secret_scan(repo_root: Path, tracked_files: list[str]) -> list[str]:
 def check_import_scan(repo_root: Path, tracked_files: list[str]) -> list[str]:
     """AST-based scan for prohibited network/SDK imports."""
     findings = []
-    py_files = [f for f in tracked_files if f.endswith(".py") and (repo_root / f).is_file()]
+    py_files = [
+        f for f in tracked_files
+        if f.endswith(".py") and f not in IMPORT_SCAN_EXCLUDE and (repo_root / f).is_file()
+    ]
 
     for rel_path in py_files:
         filepath = repo_root / rel_path
