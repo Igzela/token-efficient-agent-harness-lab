@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
+import logging
 from typing import Any
 
 from .credential_boundary import CredentialBoundary
 from .provider_config import CredentialRef
+
+_log = logging.getLogger(__name__)
 
 
 def redact_secrets(
@@ -21,7 +24,7 @@ def redact_secrets(
             if secret and secret in result:
                 result = result.replace(secret, "***")
         except ValueError:
-            pass
+            _log.warning("redaction: failed to resolve credential %s — skipping", ref)
     return result
 
 

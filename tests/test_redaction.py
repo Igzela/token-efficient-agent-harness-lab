@@ -47,6 +47,13 @@ class RedactSecretsTests(unittest.TestCase):
         result = redact_secrets(text, [self.ref], self.boundary)
         self.assertEqual(result, "Some text")
 
+    def test_missing_credential_logs_warning(self):
+        os.environ.pop("TEST_REDACT_KEY", None)
+        text = "Some text"
+        with self.assertLogs("harness_core.dispatch.provider.redaction", level="WARNING") as cm:
+            redact_secrets(text, [self.ref], self.boundary)
+        self.assertTrue(any("failed to resolve credential" in msg for msg in cm.output))
+
 
 class RedactAuditFieldsTests(unittest.TestCase):
     def test_redacts_sensitive_keys(self):
