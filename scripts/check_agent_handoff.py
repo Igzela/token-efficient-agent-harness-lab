@@ -27,12 +27,12 @@ REQUIRED_FILES = {
     ],
     "README.md": [
         "autonomously advance safe repository work",
-        "1596 tests pass",
+        "1603 tests pass",
         "scripts/check_agent_handoff.py",
     ],
     "docs/SESSION_START_HERE.md": [
         "Autonomous Session Closeout",
-        "1596 pass",
+        "1603 pass",
         "Dispatch Kernel Phase 4",
     ],
     "docs/CURRENT_STATUS.md": [

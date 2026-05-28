@@ -36,7 +36,8 @@ Master architecture document: `docs/dispatch/DISPATCHER_KERNEL_V0_ARCHITECTURE.m
 - **Dispatch Kernel Phase 1-6A**: All phases STABLE (Phase 6A: 5 source modules, 5 test files, 1596 tests).
 - **Phase 5 — Multi-Agent Orchestration**: STABLE (11 orchestration modules, 1454 tests, GPT approved after 3 review rounds).
 - **Phase 6A — Local Durable API/Storage**: STABLE (5 source modules, 5 test files, 1596 tests, GPT approved after 2 review rounds).
-- **Dispatch Kernel Phase 6B-7**: Outlined in architecture book, not yet started.
+- **Phase 6B-1 — Per-server Route Isolation**: Implemented (http_server.py refactored, 1603 tests).
+- **Dispatch Kernel Phase 6B-2/6B-3**: Outlined in design doc, not yet started.
 
 See `docs/CURRENT_STATUS.md` for detailed phase closeout records.
 
@@ -76,6 +77,7 @@ See `docs/CURRENT_STATUS.md` for full details.
 - **2026-05-28**: Phase 5 STABLE after 3 rounds of GPT review (Beta → Re-review #1 → Re-review #2 → Stable). 1454 tests, 11 source modules, 12 test files. P0 fixes: dispatch gating, terminal semantics, approval reachability, budget enforcement, registry lifecycle, state unification, mandatory dispatch_id, terminal path cleanup. Commits ba7a01a→c5ff73f.
 - **2026-05-28**: Phase 6A initial implementation — 5 source modules (observability, durable_store, storage_migrator, http_server, health_checker), 5 test files, 137 new tests (1591 total). Stdlib only: http.server, sqlite3, logging.
 - **2026-05-28**: Phase 6A STABLE after 2 rounds of GPT review (Beta → Stable). 1596 tests. P0 fixes: JSONL parser tuple return, HTTP 500 generic error, DurableStore INSERT/upsert semantics, close() thread safety, HTTP query string stripping. Hardening commit 6d11c0f.
+- **2026-05-28**: Phase 6B-1 per-server route isolation implemented. Refactored http_server.py: added ServerContext dataclass, moved routes/store/config from class-level globals to per-server instance. 1603 tests (7 new isolation tests). Design doc created at docs/dispatch/PHASE_6B_AUTH_TENANT_DESIGN.md.
 
 ## External Dependencies
 
@@ -86,7 +88,7 @@ See `docs/CURRENT_STATUS.md` for full details.
 
 - **Framework**: unittest (stdlib), no pytest
 - **Run command**: `PYTHONPATH=src python3 -m unittest discover -s tests`
-- **Current count**: 1596 tests, 0 failures (as of 2026-05-28)
+- **Current count**: 1603 tests, 0 failures (as of 2026-05-28)
 - **Coverage**: Phase boundary contracts, schema validation, golden fixtures
 - **CI**: GitHub Actions on push/PR to main — runs security baseline + all tests
 - **Test naming**: `tests/test_<module>.py`, one test file per source module

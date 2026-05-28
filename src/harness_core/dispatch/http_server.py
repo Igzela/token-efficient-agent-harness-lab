@@ -1,4 +1,4 @@
-"""Phase 6A: HTTPServer — stdlib-based local API server."""
+"""Phase 6A/6B: HTTPServer — stdlib-based local API server with per-server isolation."""
 
 from __future__ import annotations
 
@@ -29,18 +29,24 @@ class RouteMatch:
 RequestHandler = Callable[[RouteMatch, dict[str, Any] | None], dict[str, Any]]
 
 
+@dataclass
+class ServerContext:
+    """Per-server state: routes, config, and store."""
+    config: ServerConfig
+    routes: dict[tuple[str, str], RequestHandler] = field(default_factory=dict)
+    store: Any = None
+
+
 class HarnessHTTPHandler(BaseHTTPRequestHandler):
     """HTTP request handler that delegates to registered route handlers."""
 
-    routes: dict[tuple[str, str], RequestHandler] = {}
-    store: Any = None
-    config: ServerConfig = ServerConfig()
+    @property
+    def _context(self) -> ServerContext:
+        return self.server._harness_context  # type: ignore[attr-defined]
 
     @property
     def _config(self) -> ServerConfig:
-        if hasattr(self.server, "_harness_config"):
-            return self.server._harness_config  # type: ignore[attr-defined]
-        return self.config
+        return self._context.config
 
     def log_message(self, format: str, *args: Any) -> None:
         pass
@@ -77,7 +83,7 @@ class HarnessHTTPHandler(BaseHTTPRequestHandler):
         if not path.startswith("/"):
             path = "/" + path
 
-        for (route_method, route_path), handler in self.routes.items():
+        for (route_method, route_path), handler in self._context.routes.items():
             if route_method != method:
                 continue
             params = self._match_path(route_path, path)
@@ -125,24 +131,45 @@ class HarnessHTTPHandler(BaseHTTPRequestHandler):
             self._send_error_json(500, "internal server error")
 
 
-def register_route(method: str, path: str, handler: RequestHandler) -> None:
-    """Register a route handler on the HarnessHTTPHandler class."""
-    HarnessHTTPHandler.routes[(method, path)] = handler
+_last_context: ServerContext | None = None
 
 
-def clear_routes() -> None:
-    """Clear all registered routes."""
-    HarnessHTTPHandler.routes.clear()
+def register_route(method: str, path: str, handler: RequestHandler,
+                   server: HTTPServer | None = None) -> None:
+    """Register a route handler. If server is given, register on that server's context.
+
+    If server is None, registers on the most recently created server context.
+    """
+    ctx = _get_context(server)
+    ctx.routes[(method, path)] = handler
+
+
+def clear_routes(server: HTTPServer | None = None) -> None:
+    """Clear registered routes. If server is given, clear that server's routes.
+
+    If server is None, clears the most recently created server context's routes.
+    """
+    ctx = _get_context(server)
+    ctx.routes.clear()
+
+
+def _get_context(server: HTTPServer | None = None) -> ServerContext:
+    if server is not None:
+        return server._harness_context  # type: ignore[attr-defined]
+    if _last_context is None:
+        raise RuntimeError("No server created yet. Call create_server() first.")
+    return _last_context
 
 
 def create_server(config: ServerConfig | None = None,
                   store: Any = None) -> HTTPServer:
-    """Create an HTTPServer with HarnessHTTPHandler configured."""
+    """Create an HTTPServer with per-server isolated state."""
+    global _last_context
     cfg = config or ServerConfig()
-    HarnessHTTPHandler.config = cfg
-    HarnessHTTPHandler.store = store
+    ctx = ServerContext(config=cfg, store=store)
+    _last_context = ctx
     server = HTTPServer((cfg.host, cfg.port), HarnessHTTPHandler)
-    server._harness_config = cfg  # type: ignore[attr-defined]
+    server._harness_context = ctx  # type: ignore[attr-defined]
     return server
 
 
