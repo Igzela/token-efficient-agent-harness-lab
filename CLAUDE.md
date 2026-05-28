@@ -79,6 +79,12 @@ See `docs/CURRENT_STATUS.md` for full details.
 - **2026-05-28**: Phase 6A STABLE after 2 rounds of GPT review (Beta → Stable). 1596 tests. P0 fixes: JSONL parser tuple return, HTTP 500 generic error, DurableStore INSERT/upsert semantics, close() thread safety, HTTP query string stripping. Hardening commit 6d11c0f.
 - **2026-05-28**: Phase 6B-1 per-server route isolation implemented. Refactored http_server.py: added ServerContext dataclass, moved routes/store/config from class-level globals to per-server instance. 1603 tests (7 new isolation tests). Design doc created at docs/dispatch/PHASE_6B_AUTH_TENANT_DESIGN.md.
 
+### GPT Gate Feedback 2026-05-28
+- Target: Phase 6B-1 checkpoint (commit e4aecb3)
+- Verdict: PASS_WITH_NOTES (P0: 0, P1: 3)
+- P1 items: _last_context fallback marked legacy, add lock if threaded server, normalize RouteMatch.path before auth
+- Status: passed, P1 items deferred to 6B-2
+
 ## External Dependencies
 
 - **Python stdlib only** — all phases through Phase 3 use `urllib.request` for HTTP, no third-party packages
