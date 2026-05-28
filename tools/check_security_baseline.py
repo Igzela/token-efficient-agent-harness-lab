@@ -95,6 +95,8 @@ SECRET_SCAN_EXCLUDE = {
     "tests/test_security_baseline.py",
     "tests/test_http_server.py",
     "tests/test_auth.py",
+    "demos/full_pipeline_demo.py",
+    "demos/real_provider_demo.py",
 }
 
 # Per-file import allowlists for test files that legitimately use stdlib
@@ -102,6 +104,8 @@ SECRET_SCAN_EXCLUDE = {
 # Each key is a file path; the value is the set of imports allowed in that file.
 ALLOWED_TEST_IMPORTS: dict[str, set[str]] = {
     "tests/test_http_server.py": {"urllib.request", "urllib.error", "socket"},
+    "demos/real_provider_demo.py": {"urllib.request", "urllib.error", "json", "os", "sys", "time"},
+    "demos/full_pipeline_demo.py": {"urllib.request", "urllib.error", "json", "os", "sys", "time"},
 }
 
 # Paths to exclude from active routing guard (test fixtures contain
