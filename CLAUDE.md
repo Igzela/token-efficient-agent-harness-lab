@@ -100,7 +100,21 @@ Do not infer a new Stage 5, CA-8, production track, or provider-integration trac
 
 ## Next Action
 
-Phase 4 is STABLE. Phase 5 — Multi-Agent Orchestration is the next eligible path per the architecture book. GPT recommends deciding whether multi-agent orchestration is the right next step before diving in. See `docs/CURRENT_STATUS.md` and `docs/NEXT_DECISION.md`.
+Phase 4 is STABLE. The responsible coding agent has standing authorization to autonomously maintain this repo and advance documented dispatch-kernel work that remains deterministic, local, test-first, and inside all hard boundaries. Phase 5 — Multi-Agent Orchestration is eligible only to the extent the architecture book defines it and the implementation does not introduce real autonomous workers, real providers, real sandbox/process execution, target repo writes, deployment, or production controls. See `docs/CURRENT_STATUS.md` and `docs/NEXT_DECISION.md`.
+
+## Autonomous Advancement Protocol
+
+For each autonomous session:
+
+1. Inspect `git status --short --branch` and read the session bootstrap docs.
+2. Choose the highest-value safe task from failing verification, documented phase work, concrete review findings, stale handoff docs, or narrowly scoped hardening.
+3. Update or add tests before behavior changes.
+4. Run the relevant verification command, plus `python3 scripts/check_agent_handoff.py`.
+5. Update the handoff surface before commit: `docs/CURRENT_STATUS.md`, `docs/NEXT_DECISION.md`, `docs/MODULE_MAP.md`, `README.md`, `CLAUDE.md`, and `AGENTS.md` when their facts changed.
+6. Commit in English and push when the working tree only contains this session's intended changes.
+7. Leave the next action, latest commit, verification, and residual risks in the final report.
+
+This protocol authorizes the coding agent to advance the repository. It does not authorize adding runtime autonomous workers to the harness.
 
 ## Rules
 
@@ -109,6 +123,7 @@ Phase 4 is STABLE. Phase 5 — Multi-Agent Orchestration is the next eligible pa
 3. **Phase boundaries are sacred**: Phase 1-2 MUST NOT call real providers, execute in sandbox, write to target repos, or start autonomous workers. Phase 3+ allows provider calls with gates.
 4. **When blocked or facing coarse granularity**: Discuss with GPT in the same ChatGPT session used for architecture review. Iterate until both agree, then update the architecture book before implementing.
 5. **Document maintenance**: Keep `docs/CURRENT_STATUS.md` updated as phases complete. Update the architecture book's Completeness Matrix (Section 0.7) when phase maturity changes.
+6. **Autonomous closeout**: Run `python3 scripts/check_agent_handoff.py` before commit. A commit is incomplete if the handoff docs no longer tell the next session what changed, how it was verified, and what should happen next.
 
 ## Documentation Maintenance Rule
 

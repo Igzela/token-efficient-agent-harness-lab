@@ -4,11 +4,11 @@
 
 Token-Efficient Agent Harness Lab is a local deterministic harness for studying event-sourced agent workflow infrastructure from Stage 0 through Stage 4. It includes JSONL event validation, projections, project/task workflow primitives, quality gates, controlled intelligence stubs, and Stage 4 runtime-control abstractions.
 
-Current status: Stage 0-4 complete, Harness App MVP0-MVP8 complete, Trials 0-3 closed, Reliability Hardening 1 complete, and Dispatch Kernel Phase 3 stable as a CA-7 compliant provider-adapter boundary.
+Current status: Stage 0-4 complete, Harness App MVP0-MVP8 complete, Trials 0-3 closed, Reliability Hardening 1 complete, Dispatch Kernel Phase 3 stable as a CA-7 compliant provider-adapter boundary, and Dispatch Kernel Phase 4 stable.
 
 **New sessions should start with [docs/SESSION_START_HERE.md](docs/SESSION_START_HERE.md).**
 
-Coding agents must keep `docs/CURRENT_STATUS.md`, `docs/NEXT_DECISION.md`, and this README current after each commit-sized change.
+Coding agents may autonomously advance safe repository work inside the documented boundaries. They must keep `docs/CURRENT_STATUS.md`, `docs/NEXT_DECISION.md`, `docs/MODULE_MAP.md`, and this README current after each commit-sized change, then run `python3 scripts/check_agent_handoff.py` before commit.
 
 ## What This Project Is Not
 
@@ -20,7 +20,7 @@ This repository is not a production autonomous-agent runtime. It does not call r
 PYTHONPATH=src python3 -m unittest discover -s tests
 ```
 
-Current result: 1188 tests pass.
+Current result: 1270 tests pass.
 
 ## How To Run The CLI
 
@@ -89,4 +89,4 @@ Full closeout report: [`docs/CA7_CONTROLLED_ADAPTIVE_CLOSEOUT_REPORT.md`](docs/C
 
 ## Next Recommended Work
 
-Stop here for the completed Stage 0-4 task-book scope. Any next phase that adds productionization, real model provider integration, real sandbox execution, approval/run controls, deployment packaging, benchmarking, or security review should be separately approved.
+Keep the repo moving through the autonomous maintainer loop: repair verification drift, keep docs current, fix focused regressions, and advance architecture-book-defined dispatch-kernel work when it remains deterministic, local, test-first, and free of real providers, real sandbox/process execution, target repo writes, deployment, or real worker processes. Any work that adds productionization, real model provider integration, real sandbox execution, approval/run controls, deployment, or a user-facing product surface still requires explicit approval.

@@ -2,19 +2,21 @@
 
 ## Default Recommendation
 
-**Stop unless the user chooses a new path.** The completed Stage 0–4 task-book scope, CA-7 sealed baseline, Harness App MVP0–MVP8, Trials 0–1, and Reliability Hardening 1 are all complete. No next track is automatic.
+**Autonomously maintain and advance safe repository work.** The completed Stage 0–4 task-book scope, CA-7 sealed baseline, Harness App MVP0–MVP8, Trials 0–3, Reliability Hardening 1, and Dispatch Kernel Phase 4 are complete. The responsible coding agent should keep the repo healthy, fix verification/documentation drift, and advance documented dispatch-kernel work that stays inside the hard boundaries.
+
+This is standing authorization for the external coding agent maintaining this repository. It is not authorization to implement real autonomous workers inside the harness runtime.
 
 ## Allowed Next Paths
 
-The user may choose any of the following. Each requires explicit approval before work begins.
+The responsible coding agent may choose any of the following without asking for a new instruction each time, provided the work is small enough to verify and all hard boundaries remain intact.
 
 | Path | Description |
 |---|---|
-| Trial 3 final verification | Run harness audit and planning against all 5 target repos from main to verify onboarding is effective post-merge. |
-| Stop | Maintain current state. All 5 target repos are harness-managed. Trial 3 complete. |
-| Demo polish | Refine demo docs only if user feedback requires it. |
-| Future production PRD | Draft a product requirements document for a future production track (requires new approval). |
-| Additional reliability hardening | Only if backed by new trial evidence that identifies specific issues. |
+| Autonomous maintenance loop | Repair stale docs, branch/test count drift, CI breakage, security baseline failures, and handoff gaps. |
+| Focused regression hardening | Add or repair tests for existing behavior when review findings, failing tests, or code inspection identify a concrete risk. |
+| Dispatch-kernel phase work | Plan and implement the next architecture-book-defined phase only when it can remain deterministic, local, test-first, and free of real providers, real sandbox/process execution, target writes, deployment, and real worker processes. |
+| Architecture/documentation closeout | Update architecture records, module maps, closeout reports, and handoff docs after accepted changes. |
+| Demo/docs polish | Refine demo docs when verification or user feedback identifies a concrete gap. |
 
 ## Disallowed by Default
 
@@ -22,16 +24,19 @@ The following are **not** allowed without explicit human approval and a new impl
 
 - **MVP9** — no MVP9 scope has been defined.
 - **CA-8** — CA-7 is sealed. No CA-8 exists.
-- **Stage 5** — no Stage 5 implementation has been started.
+- **Original task-book Stage 5** — no Stage 5 implementation has been started.
 - **Provider/model integration** — real API calls to model providers.
 - **Sandbox/process/container/VM execution** — real isolation beyond logical file claims.
-- **Autonomous workers** — real concurrent worker processes.
+- **Runtime autonomous workers** — real concurrent worker processes.
 - **Target repo writes** — any mutation of registered target repositories.
 - **Approval/run/execute/deploy/merge controls** — any execution or deployment mechanism.
+- **Productionization** — hosted service, production UI, deployment, auth/multitenancy, or user-facing release.
 
-## Before Proposing a New Track
+## Before Starting Autonomous Work
 
 1. Read `docs/CURRENT_STATUS.md` to confirm the latest state.
 2. Confirm the proposed track is not in the disallowed list above.
-3. Present the track to the user for explicit approval.
-4. Do not begin implementation until approved.
+3. Confirm the work has an architecture-book, test, issue, review finding, or documentation-drift basis.
+4. Keep the change commit-sized and run the relevant verification.
+5. Run `python3 scripts/check_agent_handoff.py`.
+6. Update handoff docs before committing and pushing.

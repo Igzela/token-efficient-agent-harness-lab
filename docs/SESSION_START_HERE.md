@@ -24,7 +24,7 @@ Token-Efficient Agent Harness Lab is a local deterministic harness for studying 
 | Trial 3 multi-repo generalization | Closed — `TRIAL_3_MULTI_REPO_GENERALIZATION_PASS` |
 | Trial 3 target merge | Closed — all 3 target PRs merged, audit PASS_WITH_NOTES |
 
-Tests: 1188 pass.
+Tests: 1270 pass.
 
 Additional active architecture track:
 
@@ -33,7 +33,8 @@ Additional active architecture track:
 | Dispatch Kernel Phase 1 | Stable |
 | Dispatch Kernel Phase 2 | Stable |
 | Dispatch Kernel Phase 3 — Provider Adapter Boundary | Stable, CA-7 compliant, no bundled real transport |
-| Dispatch Kernel Phase 4 | Not started; requires explicit approval |
+| Dispatch Kernel Phase 4 — Adaptive Routing | Stable |
+| Dispatch Kernel Phase 5+ | Eligible only when documented in the architecture book and kept inside repository-safe boundaries |
 
 ## What This Project Is Not
 
@@ -57,6 +58,14 @@ Additional active architecture track:
 
 ## Default Behavior
 
+The responsible coding agent may autonomously advance repository-safe work that keeps the project moving:
+
+- repair stale docs and handoff drift
+- fix failing tests, CI, security baseline, or deterministic regressions
+- add focused tests for existing behavior
+- harden completed phases when backed by concrete review findings
+- implement documented dispatch-kernel phase work when the architecture book already defines the contract and the implementation does not add real providers, real sandbox/process execution, target repo writes, deployment, or real worker processes
+
 Do **not** start any of the following without explicit human approval:
 
 - MVP9
@@ -69,6 +78,16 @@ Do **not** start any of the following without explicit human approval:
 - Approval/run/execute/deploy/merge controls
 
 Before proposing any new track, read `docs/CURRENT_STATUS.md` and `docs/NEXT_DECISION.md` first.
+
+## Autonomous Session Closeout
+
+A session is not complete until it leaves a durable handoff:
+
+1. Relevant tests or verification commands were run and recorded.
+2. `python3 scripts/check_agent_handoff.py` passes.
+3. Handoff docs reflect the current branch, status, test count, stable commits, limitations, and next action.
+4. The commit message is in English and the active branch is pushed when the tree contains only this session's intended changes.
+5. The final report states latest commit, verification, remaining risks, and the next safe action.
 
 ## Documentation Maintenance
 

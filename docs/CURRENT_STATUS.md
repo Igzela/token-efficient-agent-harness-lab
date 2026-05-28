@@ -12,7 +12,11 @@ Last verified: 2026-05-28.
 
 New Codex, Claude Code, or other coding-agent sessions must start with `docs/SESSION_START_HERE.md`, then this file, then `docs/NEXT_DECISION.md`.
 
+The responsible coding agent has standing authority to autonomously advance repository-safe work: documentation repair, focused regression fixes, CI/security/test hardening, and architecture-book-defined dispatch-kernel phase work that remains deterministic, local, test-first, and does not add real providers, real sandbox/process execution, target repo writes, deployment, or real runtime workers.
+
 After every commit-sized change, update this file if the change affects current state, verification, test count, stable commits, limitations, or next steps. Update `README.md`, `CLAUDE.md`, `AGENTS.md`, and `docs/MODULE_MAP.md` when their quickstart or ownership details change.
+
+Run `python3 scripts/check_agent_handoff.py` before committing so the handoff surface remains self-consistent.
 
 ## Completed Tracks
 
