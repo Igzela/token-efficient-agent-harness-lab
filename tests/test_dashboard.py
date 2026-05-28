@@ -227,11 +227,12 @@ class ComputeSummaryTests(unittest.TestCase):
     def test_single_experiment_summary(self):
         self.dash.record_experiment(_make_experiment(
             model_a="gpt-4", model_b="claude-3",
-            value_a=10.0, value_b=8.0,
+            value_a=10.0, value_b=8.0, metric_name="quality",
         ))
         s = self.dash.compute_summary()
         self.assertEqual(s.active_experiments, 1)
-        self.assertAlmostEqual(s.cost_savings_pct, -20.0)
+        self.assertAlmostEqual(s.cost_savings_pct, 0.0)
+        self.assertAlmostEqual(s.quality_delta_pct, -20.0)
         self.assertEqual(len(s.top_models), 2)
 
     def test_multiple_experiments_averages(self):
@@ -313,6 +314,60 @@ class ValidationTests(unittest.TestCase):
             _make_experiment(experiment_id="", model_a="", winner="x")
         )
         self.assertGreaterEqual(len(errors), 3)
+
+
+class MixedMetricSummaryTests(unittest.TestCase):
+    def setUp(self):
+        self.dash = DispatchDashboard()
+
+    def test_cost_and_quality_experiments_separated(self):
+        self.dash.record_experiment(_make_experiment(
+            experiment_id="cost-1", metric_name="cost",
+            value_a=100.0, value_b=80.0,
+        ))
+        self.dash.record_experiment(_make_experiment(
+            experiment_id="quality-1", metric_name="quality",
+            value_a=0.7, value_b=0.9,
+        ))
+        s = self.dash.compute_summary()
+        self.assertEqual(s.active_experiments, 2)
+        self.assertAlmostEqual(s.cost_savings_pct, -10.0)
+        self.assertAlmostEqual(s.quality_delta_pct, 14.285714, places=4)
+
+    def test_unknown_metric_ignored(self):
+        self.dash.record_experiment(_make_experiment(
+            experiment_id="unknown-1", metric_name="latency",
+            value_a=100.0, value_b=50.0,
+        ))
+        s = self.dash.compute_summary()
+        self.assertAlmostEqual(s.cost_savings_pct, 0.0)
+        self.assertAlmostEqual(s.quality_delta_pct, 0.0)
+
+
+class NaNInfValidationTests(unittest.TestCase):
+    def setUp(self):
+        self.dash = DispatchDashboard()
+
+    def test_reject_nan_value_a(self):
+        import math
+        r = _make_experiment(value_a=float("nan"))
+        errors = self.dash.validate_experiment(r)
+        self.assertTrue(any("finite" in e for e in errors))
+
+    def test_reject_inf_value_b(self):
+        r = _make_experiment(value_b=float("inf"))
+        errors = self.dash.validate_experiment(r)
+        self.assertTrue(any("finite" in e for e in errors))
+
+    def test_reject_negative_inf(self):
+        r = _make_experiment(value_a=float("-inf"))
+        errors = self.dash.validate_experiment(r)
+        self.assertTrue(any("finite" in e for e in errors))
+
+    def test_accept_finite_values(self):
+        r = _make_experiment(value_a=0.0, value_b=1.0)
+        errors = self.dash.validate_experiment(r)
+        self.assertFalse(any("finite" in e for e in errors))
 
 
 class ThreadSafetyTest(unittest.TestCase):

@@ -66,6 +66,8 @@
 | `health_checker.py` | Phase 6A | Health and readiness probes for storage. | `HealthChecker`, `HealthCheck`, `HealthReport` | `test_health_checker.py` |
 | `sdk.py` | Phase 7 | Python SDK for programmatic integration. | `HarnessSDK`, `SDK_SCHEMA_VERSION` | `test_sdk.py` |
 | `doc_generator.py` | Phase 7 | Auto-generated markdown docs from source schemas. | `DocGenerator`, `DOC_GENERATOR_SCHEMA_VERSION` | `test_doc_generator.py` |
+| `community_profiles.py` | Phase 7 (P7-T3) | Community model profile registry with validation and search. | `CommunityProfileRegistry`, `ModelProfile`, `COMMUNITY_PROFILE_SCHEMA_VERSION` | `test_community_profiles.py` |
+| `tool_adapter.py` | Phase 7 (P7-T4) | External tool registration and stub execution. | `ToolAdapterManager`, `ToolDefinition`, `ToolExecutionRequest`, `TOOL_ADAPTER_SCHEMA_VERSION` | `test_tool_adapter.py` |
 | `dashboard.py` | Phase 7 (P7-T5) | Experiment tracking, search, summary computation. | `DispatchDashboard`, `ExperimentResult`, `DashboardSummary`, `DASHBOARD_SCHEMA_VERSION` | `test_dashboard.py` |
 | `benchmark.py` | Phase 7 (P7-T8) | Model comparison benchmarks, leaderboard, task/result CRUD. | `BenchmarkSuite`, `BenchmarkTask`, `BenchmarkResult`, `BENCHMARK_SCHEMA_VERSION` | `test_benchmark.py` |
 | `wire_contract/v1/*.schema.json` | Language Migration Phase 0 | Frozen dispatch JSON schemas for Python/Rust semantic parity. | `dispatch_request`, `task_analysis`, `dispatch_decision`, `execution_result`, `evaluation_result`, `dispatch_bundle` schemas | `test_dispatch_wire_contract.py`, `tests/integration/parity/run.py` |

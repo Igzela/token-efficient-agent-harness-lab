@@ -38,8 +38,10 @@ Master architecture document: `docs/dispatch/DISPATCHER_KERNEL_V0_ARCHITECTURE.m
 - **Phase 6A — Local Durable API/Storage**: STABLE (5 source modules, 5 test files, 1596 tests, GPT approved after 2 review rounds).
 - **Phase 6B-1 — Per-server Route Isolation**: Implemented (http_server.py refactored, 1603 tests).
 - **Phase 6B-2 — Local API Key + Tenant Boundary**: STABLE (auth.py, auth middleware, 1654 tests, GPT approved).
-- **Phase 6B-3 + Phase 7**: STABLE (rate_limiter, backup_manager, plugin_system, sdk, doc_generator; GPT approved).
-- **Phase 7 P7-T5 Dashboard + P7-T8 Benchmark**: IMPLEMENTED (dashboard.py, benchmark.py; 2081 tests).
+- **Phase 6B-3 + Phase 7**: STABLE (rate_limiter, backup_manager, plugin_system, plugin_registry, sdk, doc_generator; GPT approved).
+- **Phase 7 P7-T3 CommunityProfileRegistry + P7-T4 ToolAdapterManager**: IMPLEMENTED (community_profiles.py, tool_adapter.py; 58 new tests).
+- **Phase 7 P7-T5 Dashboard + P7-T8 Benchmark**: IMPLEMENTED (dashboard.py, benchmark.py; 99 new tests).
+- **Phase 6B-3 Gate 3 — Plugin Thread Safety**: STABLE (RLock in PluginSystem, locks in PluginRegistry; 2089 total).
 - **Language migration Phase 0**: IMPLEMENTED (wire_contract/v1 JSON schemas, Python golden fixtures, stdlib parity runner; 2081 Python tests).
 - **Language migration Phase 1**: IMPLEMENTED (Rust `engine` crate with deterministic runtime, event schema, task analyzer, dispatch decision parity against 20 Python golden fixtures; no provider/API/dashboard/deploy work).
 - **Phase 6B-3 Gate 1**: IMPLEMENTED (scope checks, rate limiting, 403/429 responses).
@@ -95,6 +97,9 @@ See `docs/CURRENT_STATUS.md` for full details.
 - **2026-05-28**: Language migration Phase 0 — frozen dispatch wire schemas under `wire_contract/v1`, 20 normalized Python golden fixtures, stdlib parity runner at `tests/integration/parity/run.py`. 2081 tests. No Rust implementation started.
 - **2026-05-28**: Language migration Phase 1 — Rust workspace + `engine` crate. Implemented deterministic fixture runtime, `event_schema`, `task_analyzer`, and `dispatch_decision` parity path. `cargo fmt --check`, `cargo clippy -p engine -- -D warnings`, and `cargo test -p engine` pass. No providers, axum API, SDK, dashboard, deployment, target writes, sandbox/process execution, or runtime workers.
 - **2026-05-28**: Phase 7 P7-T5 Dispatch Dashboard + P7-T8 BenchmarkSuite — 2 source modules (dashboard.py, benchmark.py), 2 test files, 92 new tests (2081 total). ExperimentResult/DashboardSummary dataclasses, DispatchDashboard with record/search/filter/summary. BenchmarkTask/BenchmarkResult dataclasses, BenchmarkSuite with task CRUD, model comparison, leaderboard. Schema versions: dashboard.v1, benchmark.v1. Commits 87dd487, b5b3720.
+- **2026-05-28**: Phase 7 P7-T3 CommunityProfileRegistry + P7-T4 ToolAdapterManager — 2 source modules (community_profiles.py, tool_adapter.py), 2 test files, 58 new tests (2081 total). ModelProfile dataclass, CommunityProfileRegistry with register/search/validate. ToolDefinition/ToolExecutionRequest/ToolExecutionResult dataclasses, ToolAdapterManager with register/execute stub. Commits 29ad85c, 1bd8130.
+- **2026-05-28**: Gate 3 Plugin thread safety — RLock in PluginSystem (reentrant for load→unload), threading.Lock in PluginRegistry, all public methods guarded with `with self._lock:`. No new tests needed (existing tests cover). Commit 785fe61.
+- **2026-05-28**: Review hardening — Fixed CRITICAL copy-paste bug in dashboard.py compute_summary() (cost_savings/quality_delta now filter by metric_name). Added NaN/inf validation in validate_experiment(). Added task existence check in benchmark.py record_result(). Made compare_models() atomic. 8 new tests. 2089 total.
 - Previous BLOCK findings (b6d5bc1): HIGH-1 rate limit not wired, HIGH-2 scope enforcement missing, HIGH-3 plugin locks unused
 - Gate 1 addresses: HIGH-1 (rate limiter in ServerContext + _check_rate_limit), HIGH-2 (scope enforcement + AuthorizationDecision + 403/429)
 - Gate 2 addresses: atomic restore, WAL safety, failure-mode coverage

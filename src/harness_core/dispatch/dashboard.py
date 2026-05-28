@@ -61,6 +61,9 @@ class DispatchDashboard:
             errors.append("sample_count must be non-negative")
         if result.schema_version != DASHBOARD_SCHEMA_VERSION:
             errors.append(f"schema_version must be {DASHBOARD_SCHEMA_VERSION}")
+        import math
+        if not math.isfinite(result.value_a) or not math.isfinite(result.value_b):
+            errors.append("value_a and value_b must be finite numbers")
         return errors
 
     def record_experiment(self, result: ExperimentResult) -> bool:
@@ -113,9 +116,9 @@ class DispatchDashboard:
             model_counter[e.model_a] += 1
             model_counter[e.model_b] += 1
 
-            if e.value_a != 0:
+            if e.metric_name == "cost" and e.value_a != 0:
                 cost_savings += (e.value_b - e.value_a) / abs(e.value_a) * 100
-            if e.value_a != 0:
+            elif e.metric_name == "quality" and e.value_a != 0:
                 quality_delta += (e.value_b - e.value_a) / abs(e.value_a) * 100
 
         if active > 0:

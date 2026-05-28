@@ -103,6 +103,8 @@ class BenchmarkSuite:
         if errors:
             return False
         with self._lock:
+            if result.task_id not in self._tasks:
+                return False
             self._results[result.task_id].append(result)
             return True
 
@@ -119,8 +121,12 @@ class BenchmarkSuite:
             return list(self._results.get(task_id, []))
 
     def compare_models(self, model_a: str, model_b: str) -> dict:
-        a_results = self.results_for_model(model_a)
-        b_results = self.results_for_model(model_b)
+        with self._lock:
+            all_results = [
+                r for results in self._results.values() for r in results
+            ]
+        a_results = [r for r in all_results if r.model_name == model_a]
+        b_results = [r for r in all_results if r.model_name == model_b]
 
         def _stats(results: list[BenchmarkResult]) -> dict:
             if not results:

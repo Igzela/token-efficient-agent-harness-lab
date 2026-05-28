@@ -171,6 +171,7 @@ class ListTasksTests(unittest.TestCase):
 class RecordResultTests(unittest.TestCase):
     def setUp(self):
         self.suite = BenchmarkSuite()
+        self.suite.add_task(_make_task())
 
     def test_record_valid_result(self):
         self.assertTrue(self.suite.record_result(_make_result()))
@@ -179,6 +180,10 @@ class RecordResultTests(unittest.TestCase):
     def test_reject_invalid_result(self):
         self.assertFalse(self.suite.record_result(_make_result(model_name="")))
         self.assertEqual(len(self.suite.results_for_task("task-1")), 0)
+
+    def test_reject_result_for_unregistered_task(self):
+        self.assertFalse(self.suite.record_result(_make_result(task_id="nonexistent")))
+        self.assertEqual(len(self.suite.results_for_task("nonexistent")), 0)
 
     def test_multiple_results_same_task(self):
         self.suite.record_result(_make_result(model_name="gpt-4"))
@@ -191,6 +196,7 @@ class ResultsForModelTests(unittest.TestCase):
         self.suite = BenchmarkSuite()
 
     def test_finds_results_by_model(self):
+        self.suite.add_task(_make_task())
         self.suite.record_result(_make_result(model_name="gpt-4"))
         self.suite.record_result(_make_result(model_name="claude-3"))
         results = self.suite.results_for_model("gpt-4")
@@ -198,10 +204,13 @@ class ResultsForModelTests(unittest.TestCase):
         self.assertEqual(results[0].model_name, "gpt-4")
 
     def test_returns_empty_for_unknown_model(self):
+        self.suite.add_task(_make_task())
         self.suite.record_result(_make_result(model_name="gpt-4"))
         self.assertEqual(len(self.suite.results_for_model("unknown")), 0)
 
     def test_across_multiple_tasks(self):
+        self.suite.add_task(_make_task(task_id="t1"))
+        self.suite.add_task(_make_task(task_id="t2"))
         self.suite.record_result(_make_result(task_id="t1", model_name="gpt-4"))
         self.suite.record_result(_make_result(task_id="t2", model_name="gpt-4"))
         self.suite.record_result(_make_result(task_id="t1", model_name="claude-3"))
@@ -212,6 +221,7 @@ class ResultsForModelTests(unittest.TestCase):
 class ResultsForTaskTests(unittest.TestCase):
     def setUp(self):
         self.suite = BenchmarkSuite()
+        self.suite.add_task(_make_task())
 
     def test_finds_results_for_task(self):
         self.suite.record_result(_make_result(model_name="gpt-4"))
@@ -228,6 +238,7 @@ class CompareModelsTests(unittest.TestCase):
         self.suite = BenchmarkSuite()
 
     def test_compare_with_results(self):
+        self.suite.add_task(_make_task())
         self.suite.record_result(_make_result(
             model_name="gpt-4", quality_score=0.9, latency_ms=1000.0, cost_usd=0.03, passed=True,
         ))
@@ -248,12 +259,20 @@ class CompareModelsTests(unittest.TestCase):
         self.assertEqual(comparison["model_b_stats"]["task_count"], 0)
 
     def test_compare_pass_rate(self):
+        self.suite.add_task(_make_task())
         self.suite.record_result(_make_result(model_name="m1", passed=True))
         self.suite.record_result(_make_result(model_name="m1", passed=False))
         self.suite.record_result(_make_result(model_name="m2", passed=True))
         comparison = self.suite.compare_models("m1", "m2")
         self.assertAlmostEqual(comparison["model_a_stats"]["pass_rate"], 0.5)
         self.assertAlmostEqual(comparison["model_b_stats"]["pass_rate"], 1.0)
+
+    def test_compare_one_model_absent(self):
+        self.suite.add_task(_make_task())
+        self.suite.record_result(_make_result(model_name="gpt-4"))
+        comparison = self.suite.compare_models("gpt-4", "nonexistent")
+        self.assertEqual(comparison["model_a_stats"]["task_count"], 1)
+        self.assertEqual(comparison["model_b_stats"]["task_count"], 0)
 
 
 class LeaderboardTests(unittest.TestCase):
@@ -264,6 +283,7 @@ class LeaderboardTests(unittest.TestCase):
         self.assertEqual(self.suite.leaderboard(), [])
 
     def test_ranked_by_quality(self):
+        self.suite.add_task(_make_task())
         self.suite.record_result(_make_result(model_name="model-low", quality_score=0.5))
         self.suite.record_result(_make_result(model_name="model-high", quality_score=0.95))
         self.suite.record_result(_make_result(model_name="model-mid", quality_score=0.7))
@@ -274,6 +294,7 @@ class LeaderboardTests(unittest.TestCase):
         self.assertEqual(board[2]["model"], "model-low")
 
     def test_leaderboard_entry_fields(self):
+        self.suite.add_task(_make_task())
         self.suite.record_result(_make_result(
             model_name="gpt-4", quality_score=0.8, latency_ms=500.0, cost_usd=0.01, passed=True,
         ))
@@ -290,6 +311,7 @@ class LeaderboardTests(unittest.TestCase):
         self.assertEqual(entry["task_count"], 2)
 
     def test_leaderboard_averages_multiple_models(self):
+        self.suite.add_task(_make_task())
         for i in range(3):
             self.suite.record_result(_make_result(
                 model_name="gpt-4", quality_score=0.8 + i * 0.05,
@@ -407,6 +429,8 @@ class ThreadSafetyTest(unittest.TestCase):
 
     def test_concurrent_record_result(self):
         suite = BenchmarkSuite()
+        for i in range(5):
+            suite.add_task(_make_task(task_id=f"t-{i}"))
         results = []
 
         def record_one(i: int) -> None:
