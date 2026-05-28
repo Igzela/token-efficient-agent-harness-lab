@@ -49,7 +49,8 @@ Master architecture document: `docs/dispatch/DISPATCHER_KERNEL_V0_ARCHITECTURE.m
 - **Language migration Phase 4**: IMPLEMENTED (infrastructure/: observability, auth, rate_limiter, plugin_system, plugin_registry).
 - **Language migration Phase 5**: IMPLEMENTED (ecosystem/: community_profiles, tool_adapter, dashboard, benchmark).
 - **Language migration Phase 6**: IMPLEMENTED (storage/: durable_store via rusqlite, health_checker, backup_manager).
-- **Language migration Phase 7**: IMPLEMENTED (sdk, storage_migrator). All Python dispatch kernel modules have Rust parity. Only `http_server` (needs axum) and `doc_generator` (Python AST-specific) remain.
+- **Language migration Phase 7**: IMPLEMENTED (sdk, storage_migrator).
+- **Language migration Rust engine/API parity**: IMPLEMENTED (`http_server` local axum router for health/ready/openapi/dispatch, `doc_generator`, 422 Rust tests). TypeScript SDK, Python REST SDK packaging, read-only Next.js dashboard, and local Docker deploy remain future slices.
 - **Phase 6B-3 Gate 1**: IMPLEMENTED (scope checks, rate limiting, 403/429 responses).
 - **Security hardening**: redaction logging, http_server body size limit + CORS, checkpoint path traversal fix, 42 new tests for coverage gaps.
 
@@ -108,7 +109,7 @@ See `docs/CURRENT_STATUS.md` for full details.
 - **2026-05-28**: Phase 7 P7-T3 CommunityProfileRegistry + P7-T4 ToolAdapterManager — 2 source modules (community_profiles.py, tool_adapter.py), 2 test files, 58 new tests (2081 total). ModelProfile dataclass, CommunityProfileRegistry with register/search/validate. ToolDefinition/ToolExecutionRequest/ToolExecutionResult dataclasses, ToolAdapterManager with register/execute stub. Commits 29ad85c, 1bd8130.
 - **2026-05-28**: Gate 3 Plugin thread safety — RLock in PluginSystem (reentrant for load→unload), threading.Lock in PluginRegistry, all public methods guarded with `with self._lock:`. No new tests needed (existing tests cover). Commit 785fe61.
 - **2026-05-28**: Review hardening — Fixed CRITICAL copy-paste bug in dashboard.py compute_summary() (cost_savings/quality_delta now filter by metric_name). Added NaN/inf validation in validate_experiment(). Added task existence check in benchmark.py record_result(). Made compare_models() atomic. 8 new tests. 2089 total.
-- **2026-05-28**: Language migration COMPLETE — Rust `http_server` (axum-based API with route matching, scope checks, CORS, health/dispatch endpoints) and `doc_generator` (module/schema registry, source parser, markdown generation) implemented. 9 new component test files for core engine modules (budget_manager, dispatch_decision, dispatch_engine, dispatch_ledger, evaluation_stub, event_schema, model_selector, task_analyzer, doc_generator). 422 total Rust tests, 35 source modules, 31 test files. All Python dispatch kernel modules now have Rust parity.
+- **2026-05-28**: Language migration Rust engine/API parity — Rust `http_server` local axum router added for `/api/v1/health`, `/api/v1/ready`, `/api/v1/openapi.json`, and deterministic `/api/v1/dispatch`; auth/scope/rate-limit/CORS checks covered. `doc_generator` added with module/schema registry, source parser, and markdown generation. 422 total Rust tests, 35 source modules, 31 test files. Remaining migration slices: TypeScript SDK, Python REST SDK packaging, read-only Next.js dashboard, local Docker deploy, and final closeout.
 - Previous BLOCK findings (b6d5bc1): HIGH-1 rate limit not wired, HIGH-2 scope enforcement missing, HIGH-3 plugin locks unused
 - Gate 1 addresses: HIGH-1 (rate limiter in ServerContext + _check_rate_limit), HIGH-2 (scope enforcement + AuthorizationDecision + 403/429)
 - Gate 2 addresses: atomic restore, WAL safety, failure-mode coverage

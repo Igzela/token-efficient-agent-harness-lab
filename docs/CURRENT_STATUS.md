@@ -69,7 +69,7 @@ Run `python3 scripts/check_agent_handoff.py` before committing so the handoff su
 | Language Migration Phase 5 — Ecosystem Parity | **IMPLEMENTED** — 4 ecosystem modules (community_profiles, tool_adapter, dashboard, benchmark). 48 new tests. Commit `098eda9`. |
 | Language Migration Phase 6 — Storage Parity | **IMPLEMENTED** — 3 storage modules (durable_store via rusqlite, health_checker, backup_manager). 32 new tests. Commit `965a2cd`. |
 | Language Migration Phase 7 — SDK + Migrator | **IMPLEMENTED** — 2 modules (sdk, storage_migrator). 16 new tests. Commit `ea11dfb`. |
-| Language Migration Complete — http_server + doc_generator + component tests | **IMPLEMENTED** — 2 final modules (http_server with axum API, doc_generator), 9 component test files for core engine modules. 422 total Rust tests, 35 source modules, 31 test files. All Python dispatch kernel modules have Rust parity. |
+| Language Migration Rust Engine/API Parity — http_server + doc_generator + component tests | **IMPLEMENTED** — `http_server` now includes a local axum router for `/api/v1/health`, `/api/v1/ready`, `/api/v1/openapi.json`, and deterministic `/api/v1/dispatch`; `doc_generator` includes module/schema registry and markdown generation. 422 total Rust tests, 35 source modules, 31 test files. Real providers, target writes, sandbox/process/container/VM execution, runtime workers, executable dashboard controls, SDK publishing, and Docker deployment remain out of scope. |
 
 Trial 2 complete evidence chain: [`docs/trials/TRIAL_2_FINAL_STATE_INDEX.md`](trials/TRIAL_2_FINAL_STATE_INDEX.md).
 Trial 3 report: [`docs/trials/TRIAL_3_REPORT.md`](trials/TRIAL_3_REPORT.md).

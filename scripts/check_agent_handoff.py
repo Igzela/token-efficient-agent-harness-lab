@@ -32,7 +32,7 @@ REQUIRED_FILES = {
     ],
     "docs/SESSION_START_HERE.md": [
         "Autonomous Session Closeout",
-        "2089 pass",
+        "2089 Python pass",
         "Dispatch Kernel Phase 4",
     ],
     "docs/CURRENT_STATUS.md": [

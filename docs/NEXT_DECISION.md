@@ -17,7 +17,7 @@ The responsible coding agent may choose any of the following without asking for 
 | Dispatch-kernel phase work | Plan and implement the next architecture-book-defined phase only when it can remain deterministic, local, test-first, and free of real providers, real sandbox/process execution, target writes, deployment, and real worker processes. |
 | Architecture/documentation closeout | Update architecture records, module maps, closeout reports, and handoff docs after accepted changes. |
 | Demo/docs polish | Refine demo docs when verification or user feedback identifies a concrete gap. |
-| Language migration | **COMPLETE** — Phases 0-7 + final modules (422 Rust tests, 35 modules, 31 test files). All Python dispatch kernel modules have Rust parity. Providers still stub/off, no real workers, no API/dashboard/deploy work. |
+| Language migration | Rust engine/API parity is implemented through the local axum health/ready/openapi/dispatch router (422 Rust tests, 35 modules, 31 test files). Next allowed slice: Phase 5 codegen plus TypeScript SDK and Python REST SDK packaging, with SDKs using REST contracts rather than private engine internals. Providers remain stub/off; no real workers, target writes, executable dashboard controls, SDK publishing, production deployment, or Docker runtime yet. |
 
 ## Disallowed by Default
 
