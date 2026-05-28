@@ -37,7 +37,8 @@ Additional active architecture track:
 | Dispatch Kernel Phase 5 — Multi-Agent Orchestration | Stable |
 | Dispatch Kernel Phase 6A — Local Durable API/Storage | Stable |
 | Dispatch Kernel Phase 6B+ | Eligible only when documented in the architecture book and kept inside repository-safe boundaries |
-| Language Migration Phase 0 — Wire schemas/golden parity | Implemented; Rust parity kernel next, no Rust code started |
+| Language Migration Phase 0 — Wire schemas/golden parity | Implemented |
+| Language Migration Phase 1 — Rust parity kernel | Implemented for `event_schema`, `task_analyzer`, `dispatch_decision`; no provider/API/dashboard/deploy work |
 
 ## What This Project Is Not
 

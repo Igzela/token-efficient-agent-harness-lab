@@ -3,6 +3,7 @@ __pycache__/
 .pytest_cache/
 .coverage
 htmlcov/
+target/
 
 .claude/settings.local.json
 CLAUDE.md

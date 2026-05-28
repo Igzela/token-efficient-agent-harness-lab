@@ -4,8 +4,8 @@ Last verified: 2026-05-28.
 
 ## Repository State
 
-- Branch: `codex/rust-ts-migration-prep` with language migration Phase 0 wire-schema parity work.
-- Tests: **2081 pass**, 0 failures.
+- Branch: `rust/phase1-dispatch-kernel` with language migration Phase 1 Rust parity work.
+- Tests: **2081 Python pass**, 0 failures. Rust `engine` parity tests pass.
 - Security baseline: ALL CHECKS PASSED.
 
 ## New Session / Documentation Discipline
@@ -58,7 +58,8 @@ Run `python3 scripts/check_agent_handoff.py` before committing so the handoff su
 | Phase 7 — SDK + Documentation + Plugin System | **STABLE** — 2 source modules (sdk.py, doc_generator.py), 2 test files, 64 new tests, GPT approved |
 | Phase 7 (P7-T5) — Dispatch Dashboard | **IMPLEMENTED** — 1 source module (dashboard.py), 1 test file, 39 tests |
 | Phase 7 (P7-T8) — BenchmarkSuite | **IMPLEMENTED** — 1 source module (benchmark.py), 1 test file, 53 tests |
-| Language Migration Phase 0 — Wire Schemas + Python Golden Parity | **IMPLEMENTED** — `wire_contract/v1` JSON schemas, 20 normalized Python golden fixtures, stdlib parity runner, 6 contract tests. No Rust implementation started. |
+| Language Migration Phase 0 — Wire Schemas + Python Golden Parity | **IMPLEMENTED** — `wire_contract/v1` JSON schemas, 20 normalized Python golden fixtures, stdlib parity runner, 6 contract tests. |
+| Language Migration Phase 1 — Rust Parity Kernel | **IMPLEMENTED** — Rust workspace + `engine` crate with deterministic fixture runtime, event schema validation/hash helpers, task analyzer, dispatch decision bundle builder, and 20-fixture Python golden parity test. No providers, axum API, SDK, dashboard, deployment, target writes, sandbox/process execution, or runtime workers. |
 
 Trial 2 complete evidence chain: [`docs/trials/TRIAL_2_FINAL_STATE_INDEX.md`](trials/TRIAL_2_FINAL_STATE_INDEX.md).
 Trial 3 report: [`docs/trials/TRIAL_3_REPORT.md`](trials/TRIAL_3_REPORT.md).

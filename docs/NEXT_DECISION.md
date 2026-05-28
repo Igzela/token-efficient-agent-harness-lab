@@ -17,7 +17,7 @@ The responsible coding agent may choose any of the following without asking for 
 | Dispatch-kernel phase work | Plan and implement the next architecture-book-defined phase only when it can remain deterministic, local, test-first, and free of real providers, real sandbox/process execution, target writes, deployment, and real worker processes. |
 | Architecture/documentation closeout | Update architecture records, module maps, closeout reports, and handoff docs after accepted changes. |
 | Demo/docs polish | Refine demo docs when verification or user feedback identifies a concrete gap. |
-| Language migration preparation | Explicitly approved docs-first preparation for Rust core + axum API, TypeScript dashboard/SDK, and retained Python SDK. Phase 0 wire schemas/golden parity are implemented; next allowed slice is Rust parity kernel for `event_schema`, `task_analyzer`, and `dispatch_decision` only. |
+| Language migration preparation | Explicitly approved preparation for Rust core + axum API, TypeScript dashboard/SDK, and retained Python SDK. Phase 0 wire schemas/golden parity and Phase 1 Rust parity kernel are implemented; next allowed slice is Phase 2 Rust dispatch engine parity only, with providers still stub/off and no API/dashboard/deploy work. |
 
 ## Disallowed by Default
 

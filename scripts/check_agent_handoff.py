@@ -27,7 +27,7 @@ REQUIRED_FILES = {
     ],
     "README.md": [
         "autonomously advance safe repository work",
-        "2081 tests pass",
+        "2081 Python tests pass",
         "scripts/check_agent_handoff.py",
     ],
     "docs/SESSION_START_HERE.md": [

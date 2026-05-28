@@ -26,7 +26,7 @@ The Stage 0-4 task-book scope is complete.
 - Dispatch Kernel Phase 6B-1 per-server route isolation implemented (1603 tests).
 - Dispatch Kernel Phase 6B-2 local API key + tenant boundary implemented and hardened (1654 tests).
 - Dispatch Kernel Phase 7 SDK + Documentation System implemented (sdk.py, doc_generator.py); current verified suite is 2081 tests.
-- Language migration preparation approved: Rust core + axum API target, TypeScript dashboard/SDK target, Python SDK retained. Phase 0 wire schemas and Python golden parity are implemented; Rust parity remains gated by the frozen contract, tests, and existing safety boundaries.
+- Language migration preparation approved: Rust core + axum API target, TypeScript dashboard/SDK target, Python SDK retained. Phase 0 wire schemas and Python golden parity are implemented. Phase 1 Rust parity kernel is implemented for `event_schema`, `task_analyzer`, and `dispatch_decision`; provider/API/dashboard/deploy work remains gated by later phases and safety boundaries.
 - GitHub private repository published.
 
 This project is now in autonomous maintainer mode for repository advancement. The responsible coding agent may keep advancing approved documentation, test, CI, hardening, and dispatch-kernel tracks without waiting for a new human instruction on every commit. The local dashboard remains a prototype. New UI, product, production, deployment, real-provider, or real-execution tracks still require explicit scope and human approval.

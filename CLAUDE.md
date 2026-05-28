@@ -40,7 +40,8 @@ Master architecture document: `docs/dispatch/DISPATCHER_KERNEL_V0_ARCHITECTURE.m
 - **Phase 6B-2 — Local API Key + Tenant Boundary**: STABLE (auth.py, auth middleware, 1654 tests, GPT approved).
 - **Phase 6B-3 + Phase 7**: STABLE (rate_limiter, backup_manager, plugin_system, sdk, doc_generator; GPT approved).
 - **Phase 7 P7-T5 Dashboard + P7-T8 Benchmark**: IMPLEMENTED (dashboard.py, benchmark.py; 2081 tests).
-- **Language migration Phase 0**: IMPLEMENTED (wire_contract/v1 JSON schemas, Python golden fixtures, stdlib parity runner; 2081 tests).
+- **Language migration Phase 0**: IMPLEMENTED (wire_contract/v1 JSON schemas, Python golden fixtures, stdlib parity runner; 2081 Python tests).
+- **Language migration Phase 1**: IMPLEMENTED (Rust `engine` crate with deterministic runtime, event schema, task analyzer, dispatch decision parity against 20 Python golden fixtures; no provider/API/dashboard/deploy work).
 - **Phase 6B-3 Gate 1**: IMPLEMENTED (scope checks, rate limiting, 403/429 responses).
 - **Security hardening**: redaction logging, http_server body size limit + CORS, checkpoint path traversal fix, 42 new tests for coverage gaps.
 
@@ -92,6 +93,7 @@ See `docs/CURRENT_STATUS.md` for full details.
 - **2026-05-28**: Gate 1 hardening fix — GPT BLOCK on empty-scope bypass (HIGH-1) and stale scope re-registration (HIGH-2). Fixed _check_scopes() to remove `request_context.scopes and` guard, fixed register_route() to pop stale scopes. 4 new regression tests. 1870 tests. GPT re-review: PASS. Committed e26439f.
 - **2026-05-28**: Gate 2 atomic restore hardening — GPT BLOCK 3 rounds. Final fix: candidate prepared/checksummed before touching live target, WAL checkpoint before sidecar removal, try/except/finally for cleanup. 4 failure-mode tests (copy failure, temp cleanup, checksum mismatch, replace failure). 37 backup_manager tests, 1919 total. GPT PASS. Commits ee0cd97→2a3188c→c124c57.
 - **2026-05-28**: Language migration Phase 0 — frozen dispatch wire schemas under `wire_contract/v1`, 20 normalized Python golden fixtures, stdlib parity runner at `tests/integration/parity/run.py`. 2081 tests. No Rust implementation started.
+- **2026-05-28**: Language migration Phase 1 — Rust workspace + `engine` crate. Implemented deterministic fixture runtime, `event_schema`, `task_analyzer`, and `dispatch_decision` parity path. `cargo fmt --check`, `cargo clippy -p engine -- -D warnings`, and `cargo test -p engine` pass. No providers, axum API, SDK, dashboard, deployment, target writes, sandbox/process execution, or runtime workers.
 - **2026-05-28**: Phase 7 P7-T5 Dispatch Dashboard + P7-T8 BenchmarkSuite — 2 source modules (dashboard.py, benchmark.py), 2 test files, 92 new tests (2081 total). ExperimentResult/DashboardSummary dataclasses, DispatchDashboard with record/search/filter/summary. BenchmarkTask/BenchmarkResult dataclasses, BenchmarkSuite with task CRUD, model comparison, leaderboard. Schema versions: dashboard.v1, benchmark.v1. Commits 87dd487, b5b3720.
 - Previous BLOCK findings (b6d5bc1): HIGH-1 rate limit not wired, HIGH-2 scope enforcement missing, HIGH-3 plugin locks unused
 - Gate 1 addresses: HIGH-1 (rate limiter in ServerContext + _check_rate_limit), HIGH-2 (scope enforcement + AuthorizationDecision + 403/429)
@@ -174,7 +176,7 @@ See `docs/CURRENT_STATUS.md` for full details.
 
 - **Framework**: unittest (stdlib), no pytest
 - **Run command**: `PYTHONPATH=src python3 -m unittest discover -s tests`
-- **Current count**: 2081 tests, 0 failures (as of 2026-05-28)
+- **Current count**: 2081 Python tests + Rust `engine` parity tests, 0 failures (as of 2026-05-28)
 - **Coverage**: Phase boundary contracts, schema validation, golden fixtures
 - **CI**: GitHub Actions on push/PR to main — runs security baseline + all tests
 - **Test naming**: `tests/test_<module>.py`, one test file per source module
