@@ -4,7 +4,7 @@
 
 Token-Efficient Agent Harness Lab is a local deterministic harness for studying event-sourced agent workflow infrastructure from Stage 0 through Stage 4. It includes JSONL event validation, projections, project/task workflow primitives, quality gates, controlled intelligence stubs, and Stage 4 runtime-control abstractions.
 
-Current status: Stage 0-4 complete, Harness App MVP0-MVP8 complete, Trials 0-3 closed, Dispatch Kernel Phases 1-6B-3 stable, Phase 7 SDK + DocGenerator implemented, Rust engine parity through the local axum API router implemented, Phase 5 codegen plus TypeScript/Python REST SDK packages implemented, Phase 6 read-only Next.js dashboard implemented, Phase 7 local Docker deploy implemented, security hardening complete (2089 Python tests, 422 Rust tests).
+Current status: Stage 0-4 complete, Harness App MVP0-MVP8 complete, Trials 0-3 closed, Dispatch Kernel Phases 1-6B-3 stable, Phase 7 SDK + DocGenerator implemented, Rust engine parity through the local axum API router implemented, Phase 5 codegen plus TypeScript/Python REST SDK packages implemented, Phase 6 read-only Next.js dashboard implemented, Phase 7 local Docker deploy implemented, Phase 8 migration closeout recorded, security hardening complete (2089 Python tests, 422 Rust tests).
 
 **New sessions should start with [docs/SESSION_START_HERE.md](docs/SESSION_START_HERE.md).**
 
@@ -66,6 +66,7 @@ web/dashboard/           Local non-executable Harness app dashboard
 docs/MODULE_MAP.md       Module-to-stage reference
 docs/ROADMAP.md          Completed stages and optional future tracks
 docs/TEST_MATRIX.md      Test coverage matrix
+docs/AGENT_CONTROL_PLANE_MIGRATION_CLOSEOUT.md Agent-control-plane migration closeout
 ```
 
 ## Stage Summary
@@ -99,3 +100,5 @@ Full closeout report: [`docs/CA7_CONTROLLED_ADAPTIVE_CLOSEOUT_REPORT.md`](docs/C
 ## Next Recommended Work
 
 Keep the repo moving through the autonomous maintainer loop: repair verification drift, keep docs current, fix focused regressions, and advance architecture-book-defined dispatch-kernel work when it remains deterministic, local, test-first, and free of real providers, real sandbox/process execution, target repo writes, deployment, or real worker processes. Any work that adds productionization, real model provider integration, real sandbox execution, approval/run controls, deployment, or a user-facing product surface still requires explicit approval.
+
+Python reference implementation remains in `src/harness_core/` until an explicit future removal or relocation decision is approved.

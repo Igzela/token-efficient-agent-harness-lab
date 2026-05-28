@@ -44,6 +44,7 @@ Additional active architecture track:
 | Language Migration Phase 5 — SDK + codegen | Implemented codegen helper plus TypeScript/Python REST SDK packages; no SDK publishing |
 | Language Migration Phase 6 — Read-only Dashboard | Implemented Next.js dashboard with dispatch, routing, agents/workflows, costs, settings, and health views; no executable controls |
 | Language Migration Phase 7 — Local Docker Deploy | Implemented local compose stack for Rust API + read-only dashboard; no production deploy |
+| Language Migration Phase 8 — Closeout | Implemented; closeout recorded in `docs/AGENT_CONTROL_PLANE_MIGRATION_CLOSEOUT.md`; Python reference retained in `src/harness_core/` pending explicit removal decision |
 
 ## What This Project Is Not
 
