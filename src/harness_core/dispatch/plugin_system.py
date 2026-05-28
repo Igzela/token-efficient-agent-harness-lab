@@ -106,7 +106,7 @@ class PluginSystem:
 
     def __init__(self) -> None:
         self._plugins: dict[str, LoadedPlugin] = {}
-        self._lock = threading.Lock()
+        self._lock = threading.RLock()
 
     def load_plugin(
         self,
@@ -137,21 +137,24 @@ class PluginSystem:
 
         module_name = f"harness_plugin.{manifest.plugin_id}"
 
-        if manifest.plugin_id in self._plugins:
-            self.unload_plugin(manifest.plugin_id)
+        with self._lock:
+            if manifest.plugin_id in self._plugins:
+                del self._plugins[manifest.plugin_id]
 
-        loaded = LoadedPlugin(manifest=manifest, module_name=module_name)
-        self._plugins[manifest.plugin_id] = loaded
-        return loaded
+            loaded = LoadedPlugin(manifest=manifest, module_name=module_name)
+            self._plugins[manifest.plugin_id] = loaded
+            return loaded
 
     def unload_plugin(self, plugin_id: str) -> bool:
-        if plugin_id in self._plugins:
-            del self._plugins[plugin_id]
-            return True
-        return False
+        with self._lock:
+            if plugin_id in self._plugins:
+                del self._plugins[plugin_id]
+                return True
+            return False
 
     def check_permission(self, plugin_id: str, permission: str) -> bool:
-        loaded = self._plugins.get(plugin_id)
+        with self._lock:
+            loaded = self._plugins.get(plugin_id)
         if loaded is None:
             return False
         if permission not in ALL_KNOWN_PERMISSIONS:
@@ -159,10 +162,12 @@ class PluginSystem:
         return permission in loaded.manifest.permissions
 
     def list_plugins(self) -> list[LoadedPlugin]:
-        return list(self._plugins.values())
+        with self._lock:
+            return list(self._plugins.values())
 
     def get_plugin(self, plugin_id: str) -> LoadedPlugin | None:
-        return self._plugins.get(plugin_id)
+        with self._lock:
+            return self._plugins.get(plugin_id)
 
 
 def _parse_manifest(raw: dict[str, Any]) -> PluginManifest:

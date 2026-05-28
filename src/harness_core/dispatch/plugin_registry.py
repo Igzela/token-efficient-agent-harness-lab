@@ -28,16 +28,18 @@ class PluginRegistry:
         errors = self.validate_manifest(manifest)
         if errors:
             return False
-        if manifest.plugin_id in self._registered:
-            return False
-        self._registered[manifest.plugin_id] = manifest
-        return True
+        with self._lock:
+            if manifest.plugin_id in self._registered:
+                return False
+            self._registered[manifest.plugin_id] = manifest
+            return True
 
     def unregister_plugin(self, plugin_id: str) -> bool:
-        if plugin_id in self._registered:
-            del self._registered[plugin_id]
-            return True
-        return False
+        with self._lock:
+            if plugin_id in self._registered:
+                del self._registered[plugin_id]
+                return True
+            return False
 
     def discover_plugins(self, plugin_dir: str | Path) -> list[PluginManifest]:
         plugin_dir = Path(plugin_dir)
@@ -79,15 +81,17 @@ class PluginRegistry:
         return errors
 
     def list_registered(self) -> list[PluginManifest]:
-        return list(self._registered.values())
+        with self._lock:
+            return list(self._registered.values())
 
     def get_plugin(self, plugin_id: str) -> PluginManifest | None:
-        return self._registered.get(plugin_id)
+        with self._lock:
+            return self._registered.get(plugin_id)
 
     def search_plugins(self, query: str) -> list[PluginManifest]:
         query_lower = query.lower()
-        results: list[PluginManifest] = []
-        for manifest in self._registered.values():
-            if query_lower in manifest.name.lower() or query_lower in manifest.author.lower():
-                results.append(manifest)
-        return results
+        with self._lock:
+            return [
+                m for m in self._registered.values()
+                if query_lower in m.name.lower() or query_lower in m.author.lower()
+            ]
