@@ -4,7 +4,7 @@
 
 Token-Efficient Agent Harness Lab is a local deterministic harness for studying event-sourced agent workflow infrastructure from Stage 0 through Stage 4. It includes JSONL event validation, projections, project/task workflow primitives, quality gates, controlled intelligence stubs, and Stage 4 runtime-control abstractions.
 
-Current status: Stage 0-4 complete, Harness App MVP0-MVP8 complete, Trials 0-3 closed, Dispatch Kernel Phases 1-6B-3 stable, Phase 7 SDK + DocGenerator implemented, language migration Phase 1 Rust parity kernel implemented for `event_schema`, `task_analyzer`, and `dispatch_decision`, security hardening complete (2081 Python tests).
+Current status: Stage 0-4 complete, Harness App MVP0-MVP8 complete, Trials 0-3 closed, Dispatch Kernel Phases 1-6B-3 stable, Phase 7 SDK + DocGenerator implemented, language migration Phase 2 Rust dispatch engine parity implemented, security hardening complete (2089 Python tests).
 
 **New sessions should start with [docs/SESSION_START_HERE.md](docs/SESSION_START_HERE.md).**
 
@@ -21,7 +21,7 @@ PYTHONPATH=src python3 -m unittest discover -s tests
 cargo test -p engine
 ```
 
-Current result: 2081 Python tests pass; Rust `engine` parity tests pass.
+Current result: 2089 Python tests pass; Rust `engine` parity/component tests pass.
 
 ## How To Run The CLI
 
@@ -48,7 +48,7 @@ PYTHONPATH=src python3 -m harness_core.cli validate-events docs/stage0/events.js
 
 ```text
 src/harness_core/        Python harness modules
-engine/                  Rust deterministic parity kernel
+engine/                  Rust deterministic parity kernel and dispatch engine
 tests/                   Deterministic unit tests and fixtures
 wire_contract/v1/        Frozen dispatch JSON schemas for Python/Rust parity
 tests/integration/parity/ Stdlib parity runner for dispatch golden fixtures

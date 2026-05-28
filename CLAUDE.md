@@ -42,8 +42,9 @@ Master architecture document: `docs/dispatch/DISPATCHER_KERNEL_V0_ARCHITECTURE.m
 - **Phase 7 P7-T3 CommunityProfileRegistry + P7-T4 ToolAdapterManager**: IMPLEMENTED (community_profiles.py, tool_adapter.py; 58 new tests).
 - **Phase 7 P7-T5 Dashboard + P7-T8 Benchmark**: IMPLEMENTED (dashboard.py, benchmark.py; 99 new tests).
 - **Phase 6B-3 Gate 3 — Plugin Thread Safety**: STABLE (RLock in PluginSystem, locks in PluginRegistry; 2089 total).
-- **Language migration Phase 0**: IMPLEMENTED (wire_contract/v1 JSON schemas, Python golden fixtures, stdlib parity runner; 2081 Python tests).
+- **Language migration Phase 0**: IMPLEMENTED (wire_contract/v1 JSON schemas, Python golden fixtures, stdlib parity runner; 2089 Python tests).
 - **Language migration Phase 1**: IMPLEMENTED (Rust `engine` crate with deterministic runtime, event schema, task analyzer, dispatch decision parity against 20 Python golden fixtures; no provider/API/dashboard/deploy work).
+- **Language migration Phase 2**: IMPLEMENTED (Rust selector, budget manager, noop executor abstraction, evaluation stub, ledger, and dispatch engine drive exported parity path; no provider/API/dashboard/deploy work).
 - **Phase 6B-3 Gate 1**: IMPLEMENTED (scope checks, rate limiting, 403/429 responses).
 - **Security hardening**: redaction logging, http_server body size limit + CORS, checkpoint path traversal fix, 42 new tests for coverage gaps.
 
@@ -96,6 +97,7 @@ See `docs/CURRENT_STATUS.md` for full details.
 - **2026-05-28**: Gate 2 atomic restore hardening — GPT BLOCK 3 rounds. Final fix: candidate prepared/checksummed before touching live target, WAL checkpoint before sidecar removal, try/except/finally for cleanup. 4 failure-mode tests (copy failure, temp cleanup, checksum mismatch, replace failure). 37 backup_manager tests, 1919 total. GPT PASS. Commits ee0cd97→2a3188c→c124c57.
 - **2026-05-28**: Language migration Phase 0 — frozen dispatch wire schemas under `wire_contract/v1`, 20 normalized Python golden fixtures, stdlib parity runner at `tests/integration/parity/run.py`. 2081 tests. No Rust implementation started.
 - **2026-05-28**: Language migration Phase 1 — Rust workspace + `engine` crate. Implemented deterministic fixture runtime, `event_schema`, `task_analyzer`, and `dispatch_decision` parity path. `cargo fmt --check`, `cargo clippy -p engine -- -D warnings`, and `cargo test -p engine` pass. No providers, axum API, SDK, dashboard, deployment, target writes, sandbox/process execution, or runtime workers.
+- **2026-05-28**: Language migration Phase 2 — Rust dispatch engine parity. Implemented `model_selector`, `budget_manager`, `executor_adapter` with default noop executor, `evaluation_stub`, `dispatch_ledger`, and `dispatch_engine`; exported `build_dispatch_bundle` now uses the Phase2 engine path. 20 Python golden fixtures and focused Rust component tests pass. No providers, axum API, SDK, dashboard, deployment, target writes, sandbox/process execution, or runtime workers.
 - **2026-05-28**: Phase 7 P7-T5 Dispatch Dashboard + P7-T8 BenchmarkSuite — 2 source modules (dashboard.py, benchmark.py), 2 test files, 92 new tests (2081 total). ExperimentResult/DashboardSummary dataclasses, DispatchDashboard with record/search/filter/summary. BenchmarkTask/BenchmarkResult dataclasses, BenchmarkSuite with task CRUD, model comparison, leaderboard. Schema versions: dashboard.v1, benchmark.v1. Commits 87dd487, b5b3720.
 - **2026-05-28**: Phase 7 P7-T3 CommunityProfileRegistry + P7-T4 ToolAdapterManager — 2 source modules (community_profiles.py, tool_adapter.py), 2 test files, 58 new tests (2081 total). ModelProfile dataclass, CommunityProfileRegistry with register/search/validate. ToolDefinition/ToolExecutionRequest/ToolExecutionResult dataclasses, ToolAdapterManager with register/execute stub. Commits 29ad85c, 1bd8130.
 - **2026-05-28**: Gate 3 Plugin thread safety — RLock in PluginSystem (reentrant for load→unload), threading.Lock in PluginRegistry, all public methods guarded with `with self._lock:`. No new tests needed (existing tests cover). Commit 785fe61.
@@ -112,6 +114,14 @@ See `docs/CURRENT_STATUS.md` for full details.
 - MEDIUM items: TenantResolver config-time-only (defer to 6B-3), empty scopes = unlimited (documented), RouteMatch.path raw (defer to 6B-3)
 - LOW items: hash_api_key delimiter, request_id observability, auth audit — all 6B-3 scope
 - Status: passed — Phase 6B-3 + Phase 7 STABLE
+
+### GPT Gate Feedback 2026-05-28 (Phase 7 Review Hardening)
+- Target: Review hardening checkpoint (commit d387e01)
+- Verdict: PASS (CRITICAL: 0, HIGH: 0, MEDIUM: 1, LOW: 2)
+- MEDIUM: benchmark latency_ms/cost_usd still accept nan/inf (follow-up)
+- LOW: cost_savings_pct naming ambiguous (negative = savings)
+- LOW/MEDIUM: summary denominator uses all active experiments, not per-metric counts (documented behavior)
+- Status: passed — all Phase 7 hardening complete
 
 ### GPT Gate Feedback 2026-05-28 (6B-1)
 - Target: Phase 6B-1 checkpoint (commit e4aecb3)
@@ -181,7 +191,7 @@ See `docs/CURRENT_STATUS.md` for full details.
 
 - **Framework**: unittest (stdlib), no pytest
 - **Run command**: `PYTHONPATH=src python3 -m unittest discover -s tests`
-- **Current count**: 2081 Python tests + Rust `engine` parity tests, 0 failures (as of 2026-05-28)
+- **Current count**: 2089 Python tests + Rust `engine` parity/component tests, 0 failures (as of 2026-05-28)
 - **Coverage**: Phase boundary contracts, schema validation, golden fixtures
 - **CI**: GitHub Actions on push/PR to main — runs security baseline + all tests
 - **Test naming**: `tests/test_<module>.py`, one test file per source module

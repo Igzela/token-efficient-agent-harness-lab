@@ -4,8 +4,8 @@ Last verified: 2026-05-28.
 
 ## Repository State
 
-- Branch: `rust/phase1-dispatch-kernel` with language migration Phase 1 Rust parity work.
-- Tests: **2089 Python pass**, 0 failures. Rust `engine` parity tests pass.
+- Branch: `rust/phase1-dispatch-kernel` with language migration Phase 2 Rust dispatch engine parity work.
+- Tests: **2089 Python pass**, 0 failures. Rust `engine` parity/component tests pass.
 - Security baseline: ALL CHECKS PASSED.
 
 ## New Session / Documentation Discipline
@@ -63,6 +63,7 @@ Run `python3 scripts/check_agent_handoff.py` before committing so the handoff su
 | Phase 6B-3 Gate 3 — Plugin Thread Safety | **STABLE** — RLock in PluginSystem, locks in PluginRegistry, all public methods guarded, 0 new tests (verified existing), committed 785fe61 |
 | Language Migration Phase 0 — Wire Schemas + Python Golden Parity | **IMPLEMENTED** — `wire_contract/v1` JSON schemas, 20 normalized Python golden fixtures, stdlib parity runner, 6 contract tests. |
 | Language Migration Phase 1 — Rust Parity Kernel | **IMPLEMENTED** — Rust workspace + `engine` crate with deterministic fixture runtime, event schema validation/hash helpers, task analyzer, dispatch decision bundle builder, and 20-fixture Python golden parity test. No providers, axum API, SDK, dashboard, deployment, target writes, sandbox/process execution, or runtime workers. |
+| Language Migration Phase 2 — Rust Dispatch Engine | **IMPLEMENTED** — Rust selector, budget reservation manager, noop executor abstraction, evaluation stub, dispatch ledger, and dispatch engine now drive the exported dispatch bundle path. 20-fixture Python golden parity plus focused Rust component tests pass. No providers, axum API, SDK, dashboard, deployment, target writes, sandbox/process execution, or runtime workers. |
 
 Trial 2 complete evidence chain: [`docs/trials/TRIAL_2_FINAL_STATE_INDEX.md`](trials/TRIAL_2_FINAL_STATE_INDEX.md).
 Trial 3 report: [`docs/trials/TRIAL_3_REPORT.md`](trials/TRIAL_3_REPORT.md).
