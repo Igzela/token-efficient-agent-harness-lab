@@ -10,20 +10,60 @@ permissions:
   contents: read
 
 jobs:
-  test:
+  python-tests:
     runs-on: ubuntu-latest
-
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
-
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
           python-version: "3.11"
-
       - name: Run security baseline checker
         run: python tools/check_security_baseline.py
-
       - name: Run unit tests
         run: PYTHONPATH=src python3 -m unittest discover -s tests
+      - name: Run Python SDK tests
+        run: cd sdk/python && PYTHONPATH=src python3 -m unittest discover -s tests
+
+  rust-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+      - name: Run cargo test
+        run: cargo test -p engine
+      - name: Check formatting
+        run: cargo fmt --check
+      - name: Run clippy
+        run: cargo clippy -p engine -- -D warnings
+
+  typescript-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+      - name: Install SDK dependencies
+        run: cd sdk/typescript && corepack enable && pnpm install --frozen-lockfile
+      - name: Run SDK tests
+        run: cd sdk/typescript && corepack pnpm test
+      - name: Build SDK package
+        run: cd sdk/typescript && corepack pnpm build
+      - name: Install dashboard dependencies
+        run: cd dashboard && corepack pnpm install --frozen-lockfile
+      - name: Check dashboard
+        run: cd dashboard && corepack pnpm lint && corepack pnpm typecheck && corepack pnpm build
+
+  docker-build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+      - name: Build local Docker services
+        run: docker compose build

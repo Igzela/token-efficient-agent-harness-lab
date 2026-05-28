@@ -1,0 +1,16 @@
+target/
+.git/
+node_modules/
+__pycache__/
+*.pyc
+.pytest_cache/
+docs/
+web/
+tests/
+sdk/typescript/node_modules/
+sdk/typescript/dist/
+sdk/python/.venv/
+sdk/python/build/
+sdk/python/dist/
+dashboard/node_modules/
+dashboard/.next/
