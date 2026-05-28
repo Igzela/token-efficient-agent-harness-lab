@@ -213,5 +213,39 @@ class CheckpointIntegrityTests(unittest.TestCase):
             self.assertTrue(result.errors)
 
 
+class PathTraversalTests(unittest.TestCase):
+    def test_path_traversal_in_checkpoint_id_rejected(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            manager = CheckpointManager(tmp)
+            with self.assertRaises(ValueError):
+                manager.load_checkpoint("../../etc/passwd")
+
+    def test_path_traversal_in_save_rejected(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            manager = CheckpointManager(tmp)
+            checkpoint = manager.create_checkpoint(
+                task_id="task_1",
+                node_id="node_1",
+                dag_version=1,
+                status="running",
+                current_step="plan",
+                completed_steps=(),
+                pending_steps=("plan",),
+                input_hash="hash_1",
+                created_at="2026-01-01T00:00:01Z",
+            )
+            # Direct save_checkpoint with traversal id
+            from harness_core.checkpoint import Checkpoint
+            evil = Checkpoint(
+                checkpoint_id="../../tmp/evil",
+                task_id="t", node_id="n", dag_version=1,
+                status="running", current_step="s",
+                completed_steps=(), pending_steps=(),
+                input_hash="h",
+            )
+            with self.assertRaises(ValueError):
+                manager.save_checkpoint(evil)
+
+
 if __name__ == "__main__":
     unittest.main()

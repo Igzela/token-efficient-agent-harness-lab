@@ -237,7 +237,10 @@ class CheckpointManager:
         return IntegrityCheck(ok=True, warnings=warnings)
 
     def _path_for(self, checkpoint_id: str) -> Path:
-        return self.store_dir / f"{checkpoint_id}.json"
+        path = (self.store_dir / f"{checkpoint_id}.json").resolve()
+        if not str(path).startswith(str(self.store_dir.resolve())):
+            raise ValueError(f"checkpoint_id contains path traversal: {checkpoint_id!r}")
+        return path
 
 
 def _checkpoint_to_dict(checkpoint: Checkpoint) -> dict[str, Any]:
