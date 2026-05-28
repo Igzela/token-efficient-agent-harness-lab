@@ -3,6 +3,7 @@
 import json
 import sys
 import tempfile
+import threading
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
@@ -202,6 +203,96 @@ class SearchPluginsTests(unittest.TestCase):
         reg.register_plugin(_valid_manifest(plugin_id="p1", name="MyPlugin"))
         results = reg.search_plugins("myplugin")
         self.assertEqual(len(results), 1)
+
+
+class PluginRegistryThreadSafety(unittest.TestCase):
+    def test_concurrent_register_unregister(self):
+        reg = PluginRegistry()
+        errors: list[Exception] = []
+        num_threads = 10
+
+        def register_and_unregister(idx: int) -> None:
+            try:
+                m = _valid_manifest(plugin_id=f"t{idx}", name=f"Thread{idx}")
+                reg.register_plugin(m)
+                reg.unregister_plugin(f"t{idx}")
+            except Exception as e:
+                errors.append(e)
+
+        threads = [threading.Thread(target=register_and_unregister, args=(i,))
+                   for i in range(num_threads)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join(timeout=10)
+
+        self.assertEqual(errors, [], f"Thread errors: {errors}")
+        self.assertEqual(len(reg.list_registered()), 0)
+
+    def test_concurrent_search(self):
+        reg = PluginRegistry()
+        errors: list[Exception] = []
+        stop_event = threading.Event()
+
+        for i in range(10):
+            reg.register_plugin(_valid_manifest(
+                plugin_id=f"s{i}", name=f"Searchable{i}",
+            ))
+
+        def searcher_loop() -> None:
+            try:
+                while not stop_event.is_set():
+                    reg.search_plugins("searchable")
+                    reg.search_plugins("nonexistent")
+            except Exception as e:
+                errors.append(e)
+
+        def modifier() -> None:
+            try:
+                for i in range(10, 20):
+                    reg.register_plugin(_valid_manifest(
+                        plugin_id=f"s{i}", name=f"Searchable{i}",
+                    ))
+                for i in range(10, 20):
+                    reg.unregister_plugin(f"s{i}")
+            except Exception as e:
+                errors.append(e)
+
+        t_searcher = threading.Thread(target=searcher_loop)
+        t_modifier = threading.Thread(target=modifier)
+        t_searcher.start()
+        t_modifier.start()
+        t_modifier.join(timeout=10)
+        stop_event.set()
+        t_searcher.join(timeout=10)
+
+        self.assertEqual(errors, [], f"Thread errors: {errors}")
+
+    def test_concurrent_register_and_list(self):
+        reg = PluginRegistry()
+        errors: list[Exception] = []
+        num_threads = 8
+
+        def register_loop(idx: int) -> None:
+            try:
+                for j in range(5):
+                    pid = f"t{idx}_{j}"
+                    reg.register_plugin(_valid_manifest(
+                        plugin_id=pid, name=f"Plugin{idx}_{j}",
+                    ))
+                    reg.list_registered()
+            except Exception as e:
+                errors.append(e)
+
+        threads = [threading.Thread(target=register_loop, args=(i,))
+                   for i in range(num_threads)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join(timeout=10)
+
+        self.assertEqual(errors, [], f"Thread errors: {errors}")
+        self.assertEqual(len(reg.list_registered()), num_threads * 5)
 
 
 if __name__ == "__main__":

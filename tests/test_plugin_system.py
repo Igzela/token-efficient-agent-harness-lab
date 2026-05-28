@@ -3,6 +3,7 @@
 import json
 import sys
 import tempfile
+import threading
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
@@ -250,6 +251,118 @@ class ListGetPluginTests(unittest.TestCase):
             system.load_plugin(mp, tmpdir)
             self.assertIsNotNone(system.get_plugin("p1"))
             self.assertIsNone(system.get_plugin("nope"))
+
+
+def _make_manifest_json(plugin_id: str, trust_level: str = "community",
+                        permissions: list[str] | None = None) -> dict:
+    return {
+        "plugin_id": plugin_id, "name": plugin_id, "version": "1.0.0",
+        "author": "a", "permissions": permissions or ["dispatch:read"],
+        "entrypoints": [], "compatible_dispatcher_versions": [],
+        "required_env": [], "network_access": False,
+        "filesystem_access": False, "trust_level": trust_level,
+    }
+
+
+class PluginSystemThreadSafety(unittest.TestCase):
+    def test_concurrent_load_unload(self):
+        system = PluginSystem()
+        errors: list[Exception] = []
+        num_threads = 8
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            for i in range(num_threads):
+                mp = Path(tmpdir) / f"p{i}.json"
+                mp.write_text(json.dumps(_make_manifest_json(f"p{i}")))
+
+            def load_then_unload(idx: int) -> None:
+                try:
+                    mp = Path(tmpdir) / f"p{idx}.json"
+                    system.load_plugin(mp, tmpdir)
+                    system.unload_plugin(f"p{idx}")
+                except Exception as e:
+                    errors.append(e)
+
+            threads = [threading.Thread(target=load_then_unload, args=(i,))
+                       for i in range(num_threads)]
+            for t in threads:
+                t.start()
+            for t in threads:
+                t.join(timeout=10)
+
+        self.assertEqual(errors, [], f"Thread errors: {errors}")
+        self.assertEqual(len(system.list_plugins()), 0)
+
+    def test_concurrent_check_permission(self):
+        system = PluginSystem()
+        errors: list[Exception] = []
+        results_lock = threading.Lock()
+        permission_results: dict[str, bool] = {}
+        num_threads = 8
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            for i in range(num_threads):
+                mp = Path(tmpdir) / f"p{i}.json"
+                mp.write_text(json.dumps(_make_manifest_json(f"p{i}")))
+
+            def load_and_check(idx: int) -> None:
+                try:
+                    mp = Path(tmpdir) / f"p{idx}.json"
+                    system.load_plugin(mp, tmpdir)
+                    has_perm = system.check_permission(f"p{idx}", "dispatch:read")
+                    with results_lock:
+                        permission_results[f"p{idx}"] = has_perm
+                    system.unload_plugin(f"p{idx}")
+                except Exception as e:
+                    errors.append(e)
+
+            threads = [threading.Thread(target=load_and_check, args=(i,))
+                       for i in range(num_threads)]
+            for t in threads:
+                t.start()
+            for t in threads:
+                t.join(timeout=10)
+
+        self.assertEqual(errors, [], f"Thread errors: {errors}")
+        for pid, has_perm in permission_results.items():
+            self.assertTrue(has_perm, f"{pid} should have dispatch:read")
+
+    def test_concurrent_list_get_during_unload(self):
+        system = PluginSystem()
+        errors: list[Exception] = []
+        stop_event = threading.Event()
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            for i in range(10):
+                mp = Path(tmpdir) / f"p{i}.json"
+                mp.write_text(json.dumps(_make_manifest_json(f"p{i}")))
+                system.load_plugin(mp, tmpdir)
+
+            def reader_loop() -> None:
+                try:
+                    while not stop_event.is_set():
+                        system.list_plugins()
+                        for i in range(10):
+                            system.get_plugin(f"p{i}")
+                except Exception as e:
+                    errors.append(e)
+
+            def unloader() -> None:
+                try:
+                    for i in range(10):
+                        system.unload_plugin(f"p{i}")
+                except Exception as e:
+                    errors.append(e)
+
+            t_reader = threading.Thread(target=reader_loop)
+            t_unloader = threading.Thread(target=unloader)
+            t_reader.start()
+            t_unloader.start()
+            t_unloader.join(timeout=10)
+            stop_event.set()
+            t_reader.join(timeout=10)
+
+        self.assertEqual(errors, [], f"Thread errors: {errors}")
 
 
 if __name__ == "__main__":
