@@ -46,12 +46,20 @@ class ConflictResolverDetectTests(unittest.TestCase):
         self.assertIn("n2", output_conflicts[0].involved_nodes)
 
     def test_detect_resource_conflict(self):
-        n1 = WorkflowNode(node_id="n1", workflow_id="w1", task_type="a", assigned_agent_id="agent-1", status="completed")
-        n2 = WorkflowNode(node_id="n2", workflow_id="w1", task_type="b", assigned_agent_id="agent-1", status="completed")
+        n1 = WorkflowNode(node_id="n1", workflow_id="w1", task_type="a", assigned_agent_id="agent-1", status="running")
+        n2 = WorkflowNode(node_id="n2", workflow_id="w1", task_type="b", assigned_agent_id="agent-1", status="running")
         resolver = ConflictResolver()
         conflicts = resolver.detect_conflicts(_make_graph([n1, n2]))
         resource_conflicts = [c for c in conflicts if c.conflict_type == "resource_conflict"]
         self.assertEqual(len(resource_conflicts), 1)
+
+    def test_no_resource_conflict_for_sequential_agent_use(self):
+        n1 = WorkflowNode(node_id="n1", workflow_id="w1", task_type="a", assigned_agent_id="agent-1", status="completed")
+        n2 = WorkflowNode(node_id="n2", workflow_id="w1", task_type="b", assigned_agent_id="agent-1", status="running")
+        resolver = ConflictResolver()
+        conflicts = resolver.detect_conflicts(_make_graph([n1, n2]))
+        resource_conflicts = [c for c in conflicts if c.conflict_type == "resource_conflict"]
+        self.assertEqual(len(resource_conflicts), 0)
 
     def test_detect_budget_overrun(self):
         n1 = WorkflowNode(node_id="n1", workflow_id="w1", task_type="a", assigned_agent_id=None, status="completed", budget=1.0, cost_incurred=2.0)

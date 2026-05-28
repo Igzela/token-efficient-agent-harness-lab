@@ -104,6 +104,7 @@ class WorkflowGraph:
     edges: tuple[WorkflowEdge, ...] = ()
     status: str = "created"
     created_at: str = ""
+    updated_at: str = ""
     started_at: str | None = None
     completed_at: str | None = None
     result: dict[str, Any] | None = None
@@ -118,6 +119,7 @@ class WorkflowGraph:
             "edges": [e.to_dict() for e in self.edges],
             "status": self.status,
             "created_at": self.created_at,
+            "updated_at": self.updated_at,
             "started_at": self.started_at,
             "completed_at": self.completed_at,
             "result": self.result,

@@ -24,6 +24,10 @@ class DependencyResolver:
         return (len(errors) == 0, errors)
 
     def execution_order(self, graph: WorkflowGraph) -> list[list[str]]:
+        valid, _ = self.validate(graph)
+        if not valid:
+            return []
+
         in_degree: dict[str, int] = {n.node_id: 0 for n in graph.nodes}
         dependents: dict[str, list[str]] = {n.node_id: [] for n in graph.nodes}
 

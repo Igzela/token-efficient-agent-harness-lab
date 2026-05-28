@@ -40,11 +40,12 @@ class ConflictResolver:
                     involved_nodes=tuple(node_ids),
                 ))
 
-        agent_nodes: dict[str, list[str]] = {}
-        for node in completed:
+        running = [n for n in graph.nodes if n.status == "running"]
+        agent_running: dict[str, list[str]] = {}
+        for node in running:
             if node.assigned_agent_id:
-                agent_nodes.setdefault(node.assigned_agent_id, []).append(node.node_id)
-        for agent_id, node_ids in agent_nodes.items():
+                agent_running.setdefault(node.assigned_agent_id, []).append(node.node_id)
+        for agent_id, node_ids in agent_running.items():
             if len(node_ids) > 1:
                 conflicts.append(ConflictRecord(
                     conflict_id=f"conflict-{uuid.uuid4().hex[:8]}",

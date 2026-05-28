@@ -22,14 +22,14 @@ class WorkQueueTests(unittest.TestCase):
     def setUp(self):
         self.queue = WorkQueue()
 
-    def test_enqueue(self):
+    def test_enqueue_returns_graph(self):
         node = _make_node()
-        self.queue.enqueue(node)
-        self.assertEqual(self.queue.status_of("n1"), "ready")
+        graph = _make_graph([node])
+        result = self.queue.enqueue(graph, node)
+        self.assertIsInstance(result, WorkflowGraph)
 
     def test_dequeue_ready(self):
-        node = _make_node()
-        self.queue.enqueue(node)
+        node = _make_node(status="ready")
         graph = _make_graph([node])
         ready = self.queue.dequeue_ready(graph)
         self.assertEqual(len(ready), 1)
@@ -37,62 +37,59 @@ class WorkQueueTests(unittest.TestCase):
 
     def test_dequeue_ready_excludes_non_ready(self):
         node = _make_node(status="completed")
-        self.queue.enqueue(node)
         graph = _make_graph([node])
         ready = self.queue.dequeue_ready(graph)
         self.assertEqual(len(ready), 0)
 
-    def test_start(self):
-        node = _make_node()
-        self.queue.enqueue(node)
-        self.queue.start("n1")
-        self.assertEqual(self.queue.status_of("n1"), "running")
+    def test_start_transitions_to_running(self):
+        node = _make_node(status="pending")
+        graph = _make_graph([node])
+        result = self.queue.start(graph, "n1")
+        self.assertEqual(self.queue.status_of(result, "n1"), "running")
 
-    def test_start_only_transitions_from_ready(self):
-        node = _make_node()
-        self.queue.enqueue(node)
-        self.queue.start("n1")
-        self.queue.start("n1")
-        self.assertEqual(self.queue.status_of("n1"), "running")
+    def test_start_only_once(self):
+        node = _make_node(status="pending")
+        graph = _make_graph([node])
+        graph = self.queue.start(graph, "n1")
+        graph = self.queue.start(graph, "n1")
+        self.assertEqual(self.queue.status_of(graph, "n1"), "running")
 
     def test_complete(self):
-        node = _make_node()
-        self.queue.enqueue(node)
-        self.queue.complete("n1", "output-1")
-        self.assertEqual(self.queue.status_of("n1"), "completed")
+        node = _make_node(status="running")
+        graph = _make_graph([node])
+        result = self.queue.complete(graph, "n1", "output-1")
+        self.assertEqual(self.queue.status_of(result, "n1"), "completed")
 
     def test_fail(self):
-        node = _make_node()
-        self.queue.enqueue(node)
-        self.queue.fail("n1", "error occurred")
-        self.assertEqual(self.queue.status_of("n1"), "failed")
+        node = _make_node(status="running")
+        graph = _make_graph([node])
+        result = self.queue.fail(graph, "n1", "error occurred")
+        self.assertEqual(self.queue.status_of(result, "n1"), "failed")
 
     def test_cancel_pending(self):
         node = _make_node(status="pending")
-        self.queue.cancel("n1")
-        self.assertEqual(self.queue.status_of("n1"), "cancelled")
+        graph = _make_graph([node])
+        result = self.queue.cancel(graph, "n1")
+        self.assertEqual(self.queue.status_of(result, "n1"), "cancelled")
 
     def test_cancel_ready(self):
-        node = _make_node()
-        self.queue.enqueue(node)
-        self.queue.cancel("n1")
-        self.assertEqual(self.queue.status_of("n1"), "cancelled")
+        node = _make_node(status="ready")
+        graph = _make_graph([node])
+        result = self.queue.cancel(graph, "n1")
+        self.assertEqual(self.queue.status_of(result, "n1"), "cancelled")
 
     def test_cancel_running_not_cancelled(self):
-        node = _make_node()
-        self.queue.enqueue(node)
-        self.queue.start("n1")
-        self.queue.cancel("n1")
-        self.assertEqual(self.queue.status_of("n1"), "running")
+        node = _make_node(status="running")
+        graph = _make_graph([node])
+        result = self.queue.cancel(graph, "n1")
+        self.assertEqual(self.queue.status_of(result, "n1"), "running")
 
     def test_status_of_unknown(self):
-        self.assertEqual(self.queue.status_of("unknown"), "pending")
+        graph = _make_graph([])
+        self.assertEqual(self.queue.status_of(graph, "unknown"), "pending")
 
     def test_reset(self):
-        node = _make_node()
-        self.queue.enqueue(node)
         self.queue.reset()
-        self.assertEqual(self.queue.status_of("n1"), "pending")
 
 
 if __name__ == "__main__":

@@ -56,7 +56,7 @@ class SimpleWorkflowIntegrationTests(unittest.TestCase):
         engine = WorkflowEngine()
         graph = engine.create_workflow(_make_analysis())
         graph = engine.tick(graph)
-        node = graph.nodes[0]
+        node = [n for n in graph.nodes if n.status == "running"][0]
         graph = engine.complete_node(graph, node.node_id, "output-1", cost=0.5)
         graph = engine.tick(graph)
         self.assertEqual(graph.status, "completed")
@@ -67,7 +67,7 @@ class SimpleWorkflowIntegrationTests(unittest.TestCase):
         engine = WorkflowEngine(budget_manager=MultiAgentBudgetManager())
         graph = engine.create_workflow(_make_analysis(), budget_limit=10.0)
         graph = engine.tick(graph)
-        node = graph.nodes[0]
+        node = [n for n in graph.nodes if n.status == "running"][0]
         graph = engine.complete_node(graph, node.node_id, "output-1", cost=1.0)
         graph = engine.tick(graph)
         self.assertEqual(graph.status, "completed")
@@ -84,7 +84,7 @@ class MediumWorkflowIntegrationTests(unittest.TestCase):
                 break
             graph = engine.tick(graph)
             for node in graph.nodes:
-                if node.status == "ready":
+                if node.status in ("ready", "running"):
                     graph = engine.complete_node(graph, node.node_id, f"out-{node.node_id}", cost=0.3)
 
         self.assertEqual(graph.status, "completed")
@@ -105,7 +105,7 @@ class ComplexWorkflowIntegrationTests(unittest.TestCase):
                 break
             graph = engine.tick(graph)
             for node in graph.nodes:
-                if node.status == "ready":
+                if node.status in ("ready", "running"):
                     graph = engine.complete_node(graph, node.node_id, f"out-{node.node_id}", cost=0.5)
 
         self.assertEqual(graph.status, "completed")
@@ -145,7 +145,7 @@ class BudgetWorkflowIntegrationTests(unittest.TestCase):
         engine = WorkflowEngine(budget_manager=budget_mgr)
         graph = engine.create_workflow(_make_analysis(), budget_limit=1.0)
         graph = engine.tick(graph)
-        node = graph.nodes[0]
+        node = [n for n in graph.nodes if n.status == "running"][0]
         graph = engine.complete_node(graph, node.node_id, "out", cost=0.5)
         graph = engine.tick(graph)
         self.assertEqual(graph.status, "completed")
@@ -163,7 +163,7 @@ class ResultAggregationIntegrationTests(unittest.TestCase):
                 break
             graph = engine.tick(graph)
             for node in graph.nodes:
-                if node.status == "ready":
+                if node.status in ("ready", "running"):
                     graph = engine.complete_node(graph, node.node_id, f"out-{node.node_id}")
 
         self.assertEqual(graph.status, "completed")

@@ -16,29 +16,26 @@ class TaskDecomposer:
     def __init__(self, role_registry: AgentRoleRegistry | None = None) -> None:
         self._registry = role_registry
 
-    def decompose(self, analysis: TaskAnalysis) -> WorkflowGraph:
+    def decompose(self, analysis: TaskAnalysis, dispatch_id: str | None = None) -> WorkflowGraph:
         workflow_id = f"wf-{uuid.uuid4().hex[:12]}"
         now = datetime.now(timezone.utc).isoformat()
 
         nodes, edges = self._build_graph(workflow_id, analysis)
 
-        status = "decomposed"
         return WorkflowGraph(
             workflow_id=workflow_id,
-            dispatch_id=analysis.analysis_id,
+            dispatch_id=dispatch_id or analysis.analysis_id,
             nodes=tuple(nodes),
             edges=tuple(edges),
-            status=status,
+            status="decomposed",
             created_at=now,
+            updated_at=now,
         )
 
     def _build_graph(
         self, workflow_id: str, analysis: TaskAnalysis
     ) -> tuple[list[WorkflowNode], list[WorkflowEdge]]:
-        domain = analysis.task_domain
-        intent = analysis.task_intent
         complexity = analysis.complexity_score
-        features = analysis.features_detected
 
         if complexity < 0.3 and len(analysis.risk_flags) == 0:
             return self._simple_graph(workflow_id, analysis)
@@ -88,14 +85,16 @@ class TaskDecomposer:
         analysis: TaskAnalysis,
         input_refs: tuple[str, ...] = (),
     ) -> WorkflowNode:
+        node_id = f"node-{uuid.uuid4().hex[:8]}"
+
         agent_id = None
         if self._registry:
-            agent_id = self._registry.assign_agent(workflow_id, f"node-{uuid.uuid4().hex[:8]}", task_type)
+            agent_id = self._registry.assign_agent(workflow_id, node_id, task_type)
 
         budget = analysis.execution_budget_estimate / max(1, len(analysis.risk_flags) + 1)
 
         return WorkflowNode(
-            node_id=f"node-{uuid.uuid4().hex[:8]}",
+            node_id=node_id,
             workflow_id=workflow_id,
             task_type=task_type,
             assigned_agent_id=agent_id,

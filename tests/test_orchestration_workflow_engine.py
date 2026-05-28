@@ -62,6 +62,11 @@ class WorkflowEngineCreateTests(unittest.TestCase):
         graph = engine.create_workflow(_make_analysis(), budget_limit=50.0)
         self.assertIsNotNone(graph)
 
+    def test_create_workflow_rejects_undecided_dispatch(self):
+        engine = WorkflowEngine()
+        with self.assertRaises(ValueError):
+            engine.create_workflow(_make_analysis(), decision_status="needs_approval")
+
 
 class WorkflowEngineTickTests(unittest.TestCase):
     def test_tick_transitions_to_running(self):
@@ -74,7 +79,7 @@ class WorkflowEngineTickTests(unittest.TestCase):
         engine = WorkflowEngine()
         graph = engine.create_workflow(_make_analysis())
         graph = engine.tick(graph)
-        node = graph.nodes[0]
+        node = [n for n in graph.nodes if n.status == "running"][0]
         graph = engine.complete_node(graph, node.node_id, "output-1")
         graph = engine.tick(graph)
         self.assertEqual(graph.status, "completed")
@@ -84,7 +89,7 @@ class WorkflowEngineTickTests(unittest.TestCase):
         engine = WorkflowEngine()
         graph = engine.create_workflow(_make_analysis())
         graph = engine.tick(graph)
-        node = graph.nodes[0]
+        node = [n for n in graph.nodes if n.status == "running"][0]
         graph = engine.complete_node(graph, node.node_id, "output-1")
         graph = engine.tick(graph)
         same_graph = engine.tick(graph)
@@ -101,10 +106,11 @@ class WorkflowEngineTickTests(unittest.TestCase):
         engine = WorkflowEngine()
         graph = engine.create_workflow(_make_analysis())
         graph = engine.tick(graph)
-        node = graph.nodes[0]
+        node = [n for n in graph.nodes if n.status == "running"][0]
         graph = engine.fail_node(graph, node.node_id, "something broke")
-        self.assertEqual(graph.nodes[0].status, "failed")
-        self.assertEqual(graph.nodes[0].error, "something broke")
+        updated_node = [n for n in graph.nodes if n.node_id == node.node_id][0]
+        self.assertEqual(updated_node.status, "failed")
+        self.assertEqual(updated_node.error, "something broke")
 
 
 class WorkflowEngineMultiNodeTests(unittest.TestCase):
@@ -114,16 +120,16 @@ class WorkflowEngineMultiNodeTests(unittest.TestCase):
         self.assertEqual(len(graph.nodes), 2)
 
         graph = engine.tick(graph)
-        ready = [n for n in graph.nodes if n.status == "ready"]
-        self.assertGreater(len(ready), 0)
+        running = [n for n in graph.nodes if n.status == "running"]
+        self.assertGreater(len(running), 0)
 
-        first = ready[0]
+        first = running[0]
         graph = engine.complete_node(graph, first.node_id, "out-1")
         graph = engine.tick(graph)
 
-        second = [n for n in graph.nodes if n.status != "completed" and n.status != "failed"]
-        if second:
-            graph = engine.complete_node(graph, second[0].node_id, "out-2")
+        remaining = [n for n in graph.nodes if n.status not in ("completed", "failed", "cancelled")]
+        if remaining:
+            graph = engine.complete_node(graph, remaining[0].node_id, "out-2")
             graph = engine.tick(graph)
 
         self.assertEqual(graph.status, "completed")
@@ -138,7 +144,7 @@ class WorkflowEngineMultiNodeTests(unittest.TestCase):
                 break
             graph = engine.tick(graph)
             for node in graph.nodes:
-                if node.status == "ready":
+                if node.status in ("ready", "running"):
                     graph = engine.complete_node(graph, node.node_id, f"out-{node.node_id}")
 
         self.assertEqual(graph.status, "completed")
@@ -157,7 +163,7 @@ class WorkflowEngineApprovalTests(unittest.TestCase):
         engine = WorkflowEngine()
         graph = engine.create_workflow(_make_analysis())
         graph = engine.tick(graph)
-        node = graph.nodes[0]
+        node = [n for n in graph.nodes if n.status == "running"][0]
         graph = engine.complete_node(graph, node.node_id, "out-1")
         graph = engine.tick(graph)
         if graph.status == "waiting_human":
@@ -168,7 +174,7 @@ class WorkflowEngineApprovalTests(unittest.TestCase):
         engine = WorkflowEngine()
         graph = engine.create_workflow(_make_analysis())
         graph = engine.tick(graph)
-        node = graph.nodes[0]
+        node = [n for n in graph.nodes if n.status == "running"][0]
         graph = engine.complete_node(graph, node.node_id, "out-1")
         graph = engine.tick(graph)
         if graph.status == "waiting_human":
