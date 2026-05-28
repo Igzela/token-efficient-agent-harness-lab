@@ -2,7 +2,7 @@
 
 ## Default Recommendation
 
-**Autonomously maintain and advance safe repository work.** The completed Stage 0–4 task-book scope, CA-7 sealed baseline, Harness App MVP0–MVP8, Trials 0–3, Reliability Hardening 1, and Dispatch Kernel Phase 4 are complete. The responsible coding agent should keep the repo healthy, fix verification/documentation drift, and advance documented dispatch-kernel work that stays inside the hard boundaries.
+**Autonomously maintain and advance safe repository work.** The completed Stage 0–4 task-book scope, CA-7 sealed baseline, Harness App MVP0–MVP8, Trials 0–3, Reliability Hardening 1, and Dispatch Kernel Phase 1–5 are complete. The responsible coding agent should keep the repo healthy, fix verification/documentation drift, and advance documented dispatch-kernel work that stays inside the hard boundaries.
 
 This is standing authorization for the external coding agent maintaining this repository. It is not authorization to implement real autonomous workers inside the harness runtime.
 

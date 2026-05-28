@@ -33,8 +33,8 @@ Master architecture document: `docs/dispatch/DISPATCHER_KERNEL_V0_ARCHITECTURE.m
 - **Original Stage 0-4 task-book**: Complete and sealed.
 - **Harness App MVP0-MVP8**: Complete local operations console.
 - **Trials 0-3**: Closed, with target repo onboarding and multi-repo generalization complete.
-- **Dispatch Kernel Phase 1-5**: Phase 1-4 stable, Phase 5 BETA (11 source modules, 9 test files, 1413 tests).
-- **Phase 5 — Multi-Agent Orchestration**: BETA (11 orchestration modules, 134 tests, GPT review P0/P1 hardened, awaiting re-review).
+- **Dispatch Kernel Phase 1-5**: All phases STABLE (Phase 5: 11 source modules, 10 test files, 1413 tests).
+- **Phase 5 — Multi-Agent Orchestration**: STABLE (11 orchestration modules, 1413 tests, GPT approved after 3 review rounds).
 - **Dispatch Kernel Phase 6-7**: Outlined in architecture book, not yet started.
 
 See `docs/CURRENT_STATUS.md` for detailed phase closeout records.
@@ -72,7 +72,7 @@ See `docs/CURRENT_STATUS.md` for full details.
 - **2026-05-27**: Phase 3 STABLE after 4 rounds of GPT review (Alpha → Beta → RC → Stable). 1188 tests, 8 source modules, 8 test files. P0 fixes: provider gate bypass, budget_exhausted terminal, ProviderConfig.enabled enforcement. All commits on main (c0ec508→c631b4d).
 - **2026-05-28**: Phase 4 STABLE after 2 rounds of GPT review (Beta → Stable). 1270 tests, 8 new routing modules, 8 new test files. P0 fixes: RoutingSelection dataclass for routing_mode metadata, task_group delimiter `/` to avoid underscore collision. P1 fixes: baseline sample check, routing_experiment_id propagation, duplicate PromotionVerdict removed. Commits ed2c762→66ebbc7.
 - **2026-05-28**: Phase 5 initial implementation — 11 orchestration source modules, 9 test files, 111 new tests (1381 total).
-- **2026-05-28**: Phase 5 hardening — all GPT review P0/P1 items fixed, 1 new test file (23 hardening tests, 1406 total). GPT re-review: mandatory dispatch_id fix applied (dispatch_id now required in create_workflow/decompose, no analysis_id fallback). 1413 tests. Awaiting GPT re-review.
+- **2026-05-28**: Phase 5 STABLE after 3 rounds of GPT review (Beta → Re-review #1 → Re-review #2 → Stable). 1413 tests, 11 source modules, 10 test files. P0 fixes: dispatch gating, terminal semantics, approval reachability, budget enforcement, registry lifecycle, state unification, mandatory dispatch_id, terminal path cleanup. Commits ba7a01a→c5ff73f.
 
 ## External Dependencies
 

@@ -48,7 +48,7 @@ Run `python3 scripts/check_agent_handoff.py` before committing so the handoff su
 | Phase 2 — Manual Execution Bridge | **STABLE** — 6 source modules, 6 test files, 1131 total tests, commits `afbba23`→`19c8a17`→`8f683ad` |
 | Phase 3 — Provider Adapter Boundary | **STABLE** — 8 source modules, 8 test files, 1188 total tests, commits `c0ec508`→`e34ad8e`→`29fd12b`→`0092a1c`→`c631b4d`→`ef52704` |
 | Phase 4 — Adaptive Routing | **STABLE** — 8 source modules, 8 test files, 1270 total tests, commits `ed2c762`→`66ebbc7` |
-| Phase 5 — Multi-Agent Orchestration | **BETA** — 11 source modules, 10 test files, 1413 total tests, GPT review P0/P1 hardened |
+| Phase 5 — Multi-Agent Orchestration | **STABLE** — 11 source modules, 10 test files, 1413 total tests, GPT approved |
 
 Trial 2 complete evidence chain: [`docs/trials/TRIAL_2_FINAL_STATE_INDEX.md`](trials/TRIAL_2_FINAL_STATE_INDEX.md).
 Trial 3 report: [`docs/trials/TRIAL_3_REPORT.md`](trials/TRIAL_3_REPORT.md).
@@ -139,7 +139,7 @@ Trial 3 target merge closeout: [`docs/trials/TRIAL_3_TARGET_MERGE_CLOSEOUT.md`](
 **Mandatory dispatch fix:** — dispatch_id now required in create_workflow() and decompose()
 **Terminal cleanup fix:** — cancel/budget-overrun paths now release agents, cancel all non-terminal nodes
 **Tests:** 1413 pass (was 1270 at Phase 4 end)
-**Status:** BETA — hardened, awaiting GPT re-review
+**Status:** **STABLE** — GPT re-review approved after 3 rounds (Beta → Re-review #1 → Re-review #2 → Stable)
 
 **P0 fixes (8):**
 - Dispatch gating: create_workflow rejects non-decided decisions
