@@ -59,3 +59,8 @@
 | `orchestration/human_approval_gate.py` | Phase 5 | Checkpoints for human review; triggers on budget threshold or failure. | `HumanApprovalGate` | `test_orchestration_hardening.py`, `test_orchestration_human_approval_gate.py` |
 | `orchestration/multi_agent_budget.py` | Phase 5 | Workflow/agent/node-level budget enforcement with overrun strategies. | `MultiAgentBudgetManager` | `test_orchestration_budget.py` |
 | `orchestration/__init__.py` | Phase 5 | Barrel re-exports for orchestration package. | Re-exported orchestration APIs | Import coverage across tests |
+| `observability.py` | Phase 6A | Structured logging, metrics collector, request tracing. | `StructuredFormatter`, `MetricsCollector`, `RequestTracer`, `setup_structured_logging` | `test_observability.py` |
+| `durable_store.py` | Phase 6A | SQLite-backed durable storage for plans, repos, events. | `DurableStore`, `StoredRecord` | `test_durable_store.py` |
+| `storage_migrator.py` | Phase 6A | JSON/JSONL → SQLite batch migration. | `migrate_plans_json_to_sqlite`, `migrate_repos_json_to_sqlite`, `migrate_events_jsonl_to_sqlite`, `full_migration`, `MigrationReport`, `FullMigrationReport` | `test_storage_migrator.py` |
+| `http_server.py` | Phase 6A | Stdlib HTTP server with route dispatch. | `HarnessHTTPHandler`, `ServerConfig`, `register_route`, `create_server`, `start_server_in_thread` | `test_http_server.py` |
+| `health_checker.py` | Phase 6A | Health and readiness probes for storage. | `HealthChecker`, `HealthCheck`, `HealthReport` | `test_health_checker.py` |

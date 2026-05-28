@@ -5,7 +5,7 @@ Last verified: 2026-05-28.
 ## Repository State
 
 - Branch: `main` synced after `80641b0` (Phase 5 hardening — GPT review P0/P1 fixes).
-- Tests: **1454 pass**, 0 failures.
+- Tests: **1591 pass**, 0 failures.
 - Security baseline: ALL CHECKS PASSED.
 
 ## New Session / Documentation Discipline
@@ -49,6 +49,7 @@ Run `python3 scripts/check_agent_handoff.py` before committing so the handoff su
 | Phase 3 — Provider Adapter Boundary | **STABLE** — 8 source modules, 8 test files, 1188 total tests, commits `c0ec508`→`e34ad8e`→`29fd12b`→`0092a1c`→`c631b4d`→`ef52704` |
 | Phase 4 — Adaptive Routing | **STABLE** — 8 source modules, 8 test files, 1270 total tests, commits `ed2c762`→`66ebbc7` |
 | Phase 5 — Multi-Agent Orchestration | **STABLE** — 11 source modules, 12 test files, 1454 total tests, GPT approved |
+| Phase 6A — Local Durable API/Storage | **BETA** — 5 source modules, 5 test files, 1591 total tests, initial implementation |
 
 Trial 2 complete evidence chain: [`docs/trials/TRIAL_2_FINAL_STATE_INDEX.md`](trials/TRIAL_2_FINAL_STATE_INDEX.md).
 Trial 3 report: [`docs/trials/TRIAL_3_REPORT.md`](trials/TRIAL_3_REPORT.md).
@@ -179,6 +180,29 @@ Trial 3 target merge closeout: [`docs/trials/TRIAL_3_TARGET_MERGE_CLOSEOUT.md`](
 - Rule-based decomposition (1/2/4 node graphs based on complexity thresholds)
 - Conflict resolution is deterministic, not statistical
 - HumanApprovalGate triggers are heuristic (budget threshold, failure)
+
+## Phase 6A Local Durable API/Storage — Closeout
+
+**Initial implementation:** 5 new source modules, 5 test files, 137 new tests
+**Tests:** 1591 pass (was 1454 at Phase 5 end)
+**Status:** **BETA** — initial implementation, awaiting GPT review
+
+**Phase 6A boundaries:** stdlib only (`http.server`, `sqlite3`, `logging`). No FastAPI, no PostgreSQL, no third-party packages. No auth/tenancy, no rate limiting, no real providers.
+
+**Source modules:**
+- `observability.py` — StructuredFormatter, MetricsCollector (ring buffer), RequestTracer (trace/span propagation)
+- `durable_store.py` — SQLite-backed DurableStore (plans, repos, events, migration_log), thread-safe with write lock
+- `storage_migrator.py` — JSON/JSONL → SQLite batch migration with MigrationReport/FullMigrationReport
+- `http_server.py` — HarnessHTTPHandler wrapping stdlib http.server, route dispatch, ServerConfig
+- `health_checker.py` — HealthChecker with storage/events/plans probes, /api/v1/health and /api/v1/ready
+
+**Accepted limitations (non-blocking, future refinement):**
+- No auth/tenancy (Phase 6B scope)
+- No PostgreSQL (Phase 6B scope)
+- No rate limiting (Phase 6B scope)
+- In-memory MetricsCollector (no persistence)
+- RequestTracer spans are in-memory only
+- Health probes are basic connectivity checks
 
 ## Phase 3 Provider Adapter Boundary — Closeout
 
