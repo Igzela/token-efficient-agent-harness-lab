@@ -6,6 +6,8 @@ pub mod evaluation_stub;
 pub mod event_schema;
 pub mod executor_adapter;
 pub mod model_selector;
+pub mod orchestration;
+pub mod routing;
 pub mod runtime;
 pub mod task_analyzer;
 

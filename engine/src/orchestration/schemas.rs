@@ -1,0 +1,165 @@
+use serde::{Deserialize, Serialize};
+use serde_json::Value;
+use std::collections::HashMap;
+
+// Schema versions
+pub const WORKFLOW_SCHEMA_VERSION: &str = "workflow_graph.v1";
+pub const WORKFLOW_NODE_SCHEMA_VERSION: &str = "workflow_node.v1";
+pub const WORKFLOW_EDGE_SCHEMA_VERSION: &str = "workflow_edge.v1";
+pub const AGENT_MESSAGE_SCHEMA_VERSION: &str = "agent_message.v1";
+pub const CONFLICT_RECORD_SCHEMA_VERSION: &str = "conflict_record.v1";
+pub const AGENT_ROLE_SCHEMA_VERSION: &str = "agent_role.v1";
+
+// Constants
+pub const WORKFLOW_STATUSES: &[&str] = &[
+    "created",
+    "decomposed",
+    "running",
+    "waiting_human",
+    "aggregating",
+    "completed",
+    "failed",
+    "cancelled",
+];
+pub const NODE_STATUSES: &[&str] = &[
+    "pending",
+    "ready",
+    "running",
+    "completed",
+    "failed",
+    "cancelled",
+    "waiting_human",
+];
+pub const EDGE_TYPES: &[&str] = &["dependency", "data_flow"];
+pub const MESSAGE_TYPES: &[&str] = &[
+    "task_assign",
+    "result",
+    "conflict",
+    "approval_request",
+    "status_update",
+];
+pub const CONFLICT_TYPES: &[&str] = &[
+    "output_conflict",
+    "resource_conflict",
+    "dependency_violation",
+    "budget_overrun",
+];
+pub const RESOLUTION_STRATEGIES: &[&str] = &[
+    "latest_wins",
+    "priority_wins",
+    "merge",
+    "human_decides",
+    "skip",
+];
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct WorkflowNode {
+    pub schema_version: String,
+    pub node_id: String,
+    pub workflow_id: String,
+    pub task_type: String,
+    pub assigned_agent_id: Option<String>,
+    pub status: String,
+    pub input_refs: Vec<String>,
+    pub output_ref: Option<String>,
+    pub budget: f64,
+    pub cost_incurred: f64,
+    pub error: Option<String>,
+    pub created_at: String,
+    pub started_at: Option<String>,
+    pub completed_at: Option<String>,
+}
+
+impl WorkflowNode {
+    pub fn to_dict(&self) -> Value {
+        serde_json::to_value(self).unwrap_or(Value::Null)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct WorkflowEdge {
+    pub schema_version: String,
+    pub edge_id: String,
+    pub from_node_id: String,
+    pub to_node_id: String,
+    pub edge_type: String,
+}
+
+impl WorkflowEdge {
+    pub fn to_dict(&self) -> Value {
+        serde_json::to_value(self).unwrap_or(Value::Null)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct WorkflowGraph {
+    pub schema_version: String,
+    pub workflow_id: String,
+    pub dispatch_id: String,
+    pub nodes: Vec<WorkflowNode>,
+    pub edges: Vec<WorkflowEdge>,
+    pub status: String,
+    pub created_at: String,
+    pub updated_at: String,
+    pub started_at: Option<String>,
+    pub completed_at: Option<String>,
+    pub result: Option<Value>,
+}
+
+impl WorkflowGraph {
+    pub fn to_dict(&self) -> Value {
+        serde_json::to_value(self).unwrap_or(Value::Null)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct AgentMessage {
+    pub schema_version: String,
+    pub message_id: String,
+    pub from_agent_id: String,
+    pub to_agent_id: String,
+    pub workflow_id: String,
+    pub message_type: String,
+    pub payload: HashMap<String, Value>,
+    pub timestamp: String,
+}
+
+impl AgentMessage {
+    pub fn to_dict(&self) -> Value {
+        serde_json::to_value(self).unwrap_or(Value::Null)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ConflictRecord {
+    pub schema_version: String,
+    pub conflict_id: String,
+    pub workflow_id: String,
+    pub conflict_type: String,
+    pub involved_nodes: Vec<String>,
+    pub resolution_strategy: Option<String>,
+    pub resolution_result: Option<String>,
+    pub resolved_at: Option<String>,
+}
+
+impl ConflictRecord {
+    pub fn to_dict(&self) -> Value {
+        serde_json::to_value(self).unwrap_or(Value::Null)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct AgentRole {
+    pub schema_version: String,
+    pub role_id: String,
+    pub role_name: String,
+    pub capabilities: Vec<String>,
+    pub max_concurrent_nodes: usize,
+    pub budget_limit: f64,
+}
+
+impl AgentRole {
+    pub fn to_dict(&self) -> Value {
+        serde_json::to_value(self).unwrap_or(Value::Null)
+    }
+}
