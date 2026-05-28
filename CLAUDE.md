@@ -82,9 +82,17 @@ See `docs/CURRENT_STATUS.md` for full details.
 - **2026-05-28**: Phase 6B-1 per-server route isolation implemented. Refactored http_server.py: added ServerContext dataclass, moved routes/store/config from class-level globals to per-server instance. 1603 tests (7 new isolation tests). Design doc created at docs/dispatch/PHASE_6B_AUTH_TENANT_DESIGN.md.
 - **2026-05-28**: Phase 6B-2 local API key + tenant boundary implemented. Created auth.py (APIKey, Tenant, TenantResolver, RequestContext, AuthDecision, salted SHA-256 hashing, hmac.compare_digest). Added auth middleware to http_server.py (_authenticate_request, 401 on denied). 1639 tests (36 new auth tests).
 - **2026-05-28**: Phase 6B-2 STABLE after 2 rounds of GPT review (BLOCK → PASS). 1654 tests. P0 fix: RequestContext now flows into RouteMatch so handlers access tenant_id/scopes. Hardening: generic 401, token shape validation, scope subset constraint. Commit 6934b72.
-- **2026-05-28**: Phase 7 initial implementation — 2 source modules (sdk.py, doc_generator.py), 2 test files, 64 new tests (1846 total). HarnessSDK wraps DispatchEngine, DurableStore, HealthChecker. DocGenerator uses ast to extract schema versions, dataclass fields, and docstrings from source files.
+- **2026-05-28**: Phase 6B-3 + Phase 7 fan-out — 7 new modules (rate_limiter, backup_manager, plugin_system, plugin_registry, sdk, doc_generator, cli extensions), 7 test files, 192 new tests (1846 total). Stdlib only: bisect, sqlite3, json, ast, argparse, threading. All code-reviewed (4 HIGH + 8 MEDIUM fixed), committed b6d5bc1.
+- **2026-05-28**: Phase 6B-3 + Phase 7 STABLE after 1 round of GPT review. 1846 tests. No CRITICAL/HIGH findings. MEDIUM: TenantResolver lock deferred to 6B-3, empty scopes semantic documented, RouteMatch.path normalization deferred. LOW: hash_api_key delimiter, observability integration, auth audit — all 6B-3 scope.
 
-### GPT Gate Feedback 2026-05-28
+### GPT Gate Feedback 2026-05-28 (6B-3 + Phase 7)
+- Target: Phase 6B-3 + Phase 7 checkpoint (commit b6d5bc1)
+- Verdict: PASS (CRITICAL: 0, HIGH: 0, MEDIUM: 3, LOW: 3)
+- MEDIUM items: TenantResolver config-time-only (defer to 6B-3), empty scopes = unlimited (documented), RouteMatch.path raw (defer to 6B-3)
+- LOW items: hash_api_key delimiter, request_id observability, auth audit — all 6B-3 scope
+- Status: passed — Phase 6B-3 + Phase 7 STABLE
+
+### GPT Gate Feedback 2026-05-28 (6B-1)
 - Target: Phase 6B-1 checkpoint (commit e4aecb3)
 - Verdict: PASS_WITH_NOTES (P0: 0, P1: 3)
 - P1 items: _last_context fallback marked legacy, add lock if threaded server, normalize RouteMatch.path before auth

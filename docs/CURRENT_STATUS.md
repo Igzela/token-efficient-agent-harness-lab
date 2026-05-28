@@ -52,7 +52,8 @@ Run `python3 scripts/check_agent_handoff.py` before committing so the handoff su
 | Phase 6A — Local Durable API/Storage | **STABLE** — 5 source modules, 5 test files, 1596 total tests, GPT approved |
 | Phase 6B-1 — Per-Server Route Isolation | **STABLE** — ServerContext pattern, backward-compatible, 4 isolation tests |
 | Phase 6B-2 — Local API Key + Tenant Boundary | **STABLE** — 1 source module (auth.py), 1 test file (test_auth.py), auth middleware in http_server.py, RequestContext flow into RouteMatch, 1654 total tests, GPT approved |
-| Phase 7 — SDK + Documentation System | **IMPLEMENTED** — 2 source modules (sdk.py, doc_generator.py), 2 test files (test_sdk.py, test_doc_generator.py), 64 new tests (1846 total) |
+| Phase 6B-3 — Rate Limiting + Backup + Plugins | **STABLE** — 5 source modules (rate_limiter, backup_manager, plugin_system, plugin_registry, cli extensions), 5 test files, 192 new tests (1846 total), GPT approved |
+| Phase 7 — SDK + Documentation + Plugin System | **STABLE** — 2 source modules (sdk.py, doc_generator.py), 2 test files, 64 new tests, GPT approved |
 
 Trial 2 complete evidence chain: [`docs/trials/TRIAL_2_FINAL_STATE_INDEX.md`](trials/TRIAL_2_FINAL_STATE_INDEX.md).
 Trial 3 report: [`docs/trials/TRIAL_3_REPORT.md`](trials/TRIAL_3_REPORT.md).
