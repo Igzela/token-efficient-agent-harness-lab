@@ -57,17 +57,17 @@ class DispatchGatingTests(unittest.TestCase):
     def test_create_workflow_rejects_needs_approval(self):
         engine = WorkflowEngine()
         with self.assertRaises(ValueError) as ctx:
-            engine.create_workflow(_make_analysis(), decision_status="needs_approval")
+            engine.create_workflow(_make_analysis(), dispatch_id="disp-1", decision_status="needs_approval")
         self.assertIn("needs_approval", str(ctx.exception))
 
     def test_create_workflow_rejects_blocked(self):
         engine = WorkflowEngine()
         with self.assertRaises(ValueError):
-            engine.create_workflow(_make_analysis(), decision_status="blocked")
+            engine.create_workflow(_make_analysis(), dispatch_id="disp-1", decision_status="blocked")
 
     def test_create_workflow_accepts_decided(self):
         engine = WorkflowEngine()
-        graph = engine.create_workflow(_make_analysis(), decision_status="decided")
+        graph = engine.create_workflow(_make_analysis(), dispatch_id="disp-1", decision_status="decided")
         self.assertEqual(graph.status, "decomposed")
 
     def test_create_workflow_with_explicit_dispatch_id(self):
@@ -75,17 +75,17 @@ class DispatchGatingTests(unittest.TestCase):
         graph = engine.create_workflow(_make_analysis(), dispatch_id="dispatch-123")
         self.assertEqual(graph.dispatch_id, "dispatch-123")
 
-    def test_create_workflow_defaults_to_analysis_id(self):
+    def test_create_workflow_requires_dispatch_id(self):
         engine = WorkflowEngine()
-        graph = engine.create_workflow(_make_analysis())
-        self.assertEqual(graph.dispatch_id, "harden-analysis")
+        with self.assertRaises(TypeError):
+            engine.create_workflow(_make_analysis())
 
 
 # P0#2: Terminal semantics — failed node never silently completes
 class TerminalSemanticsTests(unittest.TestCase):
     def test_failed_node_workflow_never_completes(self):
         engine = WorkflowEngine()
-        graph = engine.create_workflow(_make_analysis())
+        graph = engine.create_workflow(_make_analysis(), dispatch_id="disp-1")
         graph = engine.tick(graph)
         node = [n for n in graph.nodes if n.status == "running"][0]
         graph = engine.fail_node(graph, node.node_id, "breakage")
@@ -97,6 +97,7 @@ class TerminalSemanticsTests(unittest.TestCase):
         engine = WorkflowEngine()
         graph = engine.create_workflow(
             _make_analysis(complexity=0.7, risk_flags=("target_write", "provider_call")),
+            dispatch_id="disp-1",
         )
         graph = engine.tick(graph)
         for node in graph.nodes:
@@ -112,7 +113,7 @@ class ApprovalReachabilityTests(unittest.TestCase):
     def test_failed_node_can_trigger_approval(self):
         gate = HumanApprovalGate(risk_threshold=0.0)
         engine = WorkflowEngine(approval_gate=gate)
-        graph = engine.create_workflow(_make_analysis())
+        graph = engine.create_workflow(_make_analysis(), dispatch_id="disp-1")
         graph = engine.tick(graph)
         node = [n for n in graph.nodes if n.status == "running"][0]
         graph = engine.fail_node(graph, node.node_id, "failure")
@@ -122,7 +123,7 @@ class ApprovalReachabilityTests(unittest.TestCase):
     def test_completed_node_can_trigger_approval(self):
         gate = HumanApprovalGate(risk_threshold=0.0)
         engine = WorkflowEngine(approval_gate=gate)
-        graph = engine.create_workflow(_make_analysis())
+        graph = engine.create_workflow(_make_analysis(), dispatch_id="disp-1")
         graph = engine.tick(graph)
         node = [n for n in graph.nodes if n.status == "running"][0]
         graph = engine.complete_node(graph, node.node_id, "out", cost=1.0)
@@ -135,7 +136,7 @@ class BudgetEnforcementTests(unittest.TestCase):
     def test_budget_overrun_triggers_fail(self):
         budget = MultiAgentBudgetManager(overrun_strategy="cancel")
         engine = WorkflowEngine(budget_manager=budget)
-        graph = engine.create_workflow(_make_analysis(), budget_limit=1.0)
+        graph = engine.create_workflow(_make_analysis(), dispatch_id="disp-1", budget_limit=1.0)
         graph = engine.tick(graph)
         node = [n for n in graph.nodes if n.status == "running"][0]
         graph = engine.complete_node(graph, node.node_id, "out", cost=5.0)
@@ -144,7 +145,7 @@ class BudgetEnforcementTests(unittest.TestCase):
     def test_budget_within_limit_succeeds(self):
         budget = MultiAgentBudgetManager(overrun_strategy="cancel")
         engine = WorkflowEngine(budget_manager=budget)
-        graph = engine.create_workflow(_make_analysis(), budget_limit=100.0)
+        graph = engine.create_workflow(_make_analysis(), dispatch_id="disp-1", budget_limit=100.0)
         graph = engine.tick(graph)
         node = [n for n in graph.nodes if n.status == "running"][0]
         graph = engine.complete_node(graph, node.node_id, "out", cost=0.5)
@@ -162,7 +163,7 @@ class BudgetEnforcementTests(unittest.TestCase):
         engine = WorkflowEngine(
             decomposer=decomposer, budget_manager=budget, role_registry=registry,
         )
-        graph = engine.create_workflow(_make_analysis(), budget_limit=100.0)
+        graph = engine.create_workflow(_make_analysis(), dispatch_id="disp-1", budget_limit=100.0)
         graph = engine.tick(graph)
         node = [n for n in graph.nodes if n.status == "running"][0]
         self.assertIsNotNone(node.assigned_agent_id)
@@ -181,7 +182,7 @@ class AgentReleaseTests(unittest.TestCase):
         ))
         decomposer = TaskDecomposer(role_registry=registry)
         engine = WorkflowEngine(decomposer=decomposer, role_registry=registry)
-        graph = engine.create_workflow(_make_analysis())
+        graph = engine.create_workflow(_make_analysis(), dispatch_id="disp-1")
         graph = engine.tick(graph)
         node = [n for n in graph.nodes if n.status == "running"][0]
         graph = engine.complete_node(graph, node.node_id, "out")
@@ -196,7 +197,7 @@ class AgentReleaseTests(unittest.TestCase):
         ))
         decomposer = TaskDecomposer(role_registry=registry)
         engine = WorkflowEngine(decomposer=decomposer, role_registry=registry)
-        graph = engine.create_workflow(_make_analysis())
+        graph = engine.create_workflow(_make_analysis(), dispatch_id="disp-1")
         graph = engine.tick(graph)
         node = [n for n in graph.nodes if n.status == "running"][0]
         graph = engine.fail_node(graph, node.node_id, "err")
@@ -211,7 +212,7 @@ class AgentReleaseTests(unittest.TestCase):
         ))
         decomposer = TaskDecomposer(role_registry=registry)
         engine = WorkflowEngine(decomposer=decomposer, role_registry=registry)
-        graph = engine.create_workflow(_make_analysis())
+        graph = engine.create_workflow(_make_analysis(), dispatch_id="disp-1")
         graph = engine.cancel(graph)
         for node in graph.nodes:
             assignment = registry.get_assignment(graph.workflow_id, node.node_id)
@@ -225,7 +226,7 @@ class AgentReleaseTests(unittest.TestCase):
         ))
         decomposer = TaskDecomposer(role_registry=registry)
         engine = WorkflowEngine(decomposer=decomposer, role_registry=registry)
-        graph = engine.create_workflow(_make_analysis())
+        graph = engine.create_workflow(_make_analysis(), dispatch_id="disp-1")
         graph = engine.tick(graph)
         node = [n for n in graph.nodes if n.status == "running"][0]
         graph = engine.complete_node(graph, node.node_id, "out")
@@ -237,14 +238,14 @@ class AgentReleaseTests(unittest.TestCase):
 class StateConsistencyTests(unittest.TestCase):
     def test_graph_status_consistent_after_tick(self):
         engine = WorkflowEngine()
-        graph = engine.create_workflow(_make_analysis())
+        graph = engine.create_workflow(_make_analysis(), dispatch_id="disp-1")
         graph = engine.tick(graph)
         for node in graph.nodes:
             self.assertIn(node.status, ("running", "pending", "ready", "completed", "failed", "cancelled"))
 
     def test_graph_status_consistent_after_complete(self):
         engine = WorkflowEngine()
-        graph = engine.create_workflow(_make_analysis())
+        graph = engine.create_workflow(_make_analysis(), dispatch_id="disp-1")
         graph = engine.tick(graph)
         node = [n for n in graph.nodes if n.status == "running"][0]
         graph = engine.complete_node(graph, node.node_id, "out")
@@ -266,7 +267,7 @@ class SchemaAlignmentTests(unittest.TestCase):
 
     def test_decompose_sets_updated_at(self):
         decomposer = TaskDecomposer()
-        graph = decomposer.decompose(_make_analysis())
+        graph = decomposer.decompose(_make_analysis(), dispatch_id="disp-1")
         self.assertTrue(len(graph.updated_at) > 0)
 
 

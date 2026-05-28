@@ -53,31 +53,36 @@ def _make_analysis(complexity=0.2, risk_flags=(), domain="code", intent="review"
 class WorkflowEngineCreateTests(unittest.TestCase):
     def test_create_workflow(self):
         engine = WorkflowEngine()
-        graph = engine.create_workflow(_make_analysis())
+        graph = engine.create_workflow(_make_analysis(), dispatch_id="disp-1")
         self.assertEqual(graph.status, "decomposed")
         self.assertGreater(len(graph.nodes), 0)
 
     def test_create_workflow_with_budget(self):
         engine = WorkflowEngine()
-        graph = engine.create_workflow(_make_analysis(), budget_limit=50.0)
+        graph = engine.create_workflow(_make_analysis(), dispatch_id="disp-1", budget_limit=50.0)
         self.assertIsNotNone(graph)
 
     def test_create_workflow_rejects_undecided_dispatch(self):
         engine = WorkflowEngine()
         with self.assertRaises(ValueError):
-            engine.create_workflow(_make_analysis(), decision_status="needs_approval")
+            engine.create_workflow(_make_analysis(), dispatch_id="disp-1", decision_status="needs_approval")
+
+    def test_create_workflow_requires_dispatch_id(self):
+        engine = WorkflowEngine()
+        with self.assertRaises(TypeError):
+            engine.create_workflow(_make_analysis())
 
 
 class WorkflowEngineTickTests(unittest.TestCase):
     def test_tick_transitions_to_running(self):
         engine = WorkflowEngine()
-        graph = engine.create_workflow(_make_analysis())
+        graph = engine.create_workflow(_make_analysis(), dispatch_id="disp-1")
         graph = engine.tick(graph)
         self.assertEqual(graph.status, "running")
 
     def test_tick_completes_single_node_workflow(self):
         engine = WorkflowEngine()
-        graph = engine.create_workflow(_make_analysis())
+        graph = engine.create_workflow(_make_analysis(), dispatch_id="disp-1")
         graph = engine.tick(graph)
         node = [n for n in graph.nodes if n.status == "running"][0]
         graph = engine.complete_node(graph, node.node_id, "output-1")
@@ -87,7 +92,7 @@ class WorkflowEngineTickTests(unittest.TestCase):
 
     def test_tick_already_completed(self):
         engine = WorkflowEngine()
-        graph = engine.create_workflow(_make_analysis())
+        graph = engine.create_workflow(_make_analysis(), dispatch_id="disp-1")
         graph = engine.tick(graph)
         node = [n for n in graph.nodes if n.status == "running"][0]
         graph = engine.complete_node(graph, node.node_id, "output-1")
@@ -97,14 +102,14 @@ class WorkflowEngineTickTests(unittest.TestCase):
 
     def test_tick_already_cancelled(self):
         engine = WorkflowEngine()
-        graph = engine.create_workflow(_make_analysis())
+        graph = engine.create_workflow(_make_analysis(), dispatch_id="disp-1")
         graph = engine.cancel(graph)
         same_graph = engine.tick(graph)
         self.assertEqual(same_graph.status, "cancelled")
 
     def test_fail_node(self):
         engine = WorkflowEngine()
-        graph = engine.create_workflow(_make_analysis())
+        graph = engine.create_workflow(_make_analysis(), dispatch_id="disp-1")
         graph = engine.tick(graph)
         node = [n for n in graph.nodes if n.status == "running"][0]
         graph = engine.fail_node(graph, node.node_id, "something broke")
@@ -116,7 +121,7 @@ class WorkflowEngineTickTests(unittest.TestCase):
 class WorkflowEngineMultiNodeTests(unittest.TestCase):
     def test_multi_node_sequential_execution(self):
         engine = WorkflowEngine()
-        graph = engine.create_workflow(_make_analysis(complexity=0.4, risk_flags=("target_write",)))
+        graph = engine.create_workflow(_make_analysis(complexity=0.4, risk_flags=("target_write",)), dispatch_id="disp-1")
         self.assertEqual(len(graph.nodes), 2)
 
         graph = engine.tick(graph)
@@ -136,7 +141,7 @@ class WorkflowEngineMultiNodeTests(unittest.TestCase):
 
     def test_complex_workflow_execution(self):
         engine = WorkflowEngine()
-        graph = engine.create_workflow(_make_analysis(complexity=0.7, risk_flags=("target_write", "provider_call")))
+        graph = engine.create_workflow(_make_analysis(complexity=0.7, risk_flags=("target_write", "provider_call")), dispatch_id="disp-1")
         self.assertEqual(len(graph.nodes), 4)
 
         for _ in range(10):
@@ -153,7 +158,7 @@ class WorkflowEngineMultiNodeTests(unittest.TestCase):
 class WorkflowEngineCancelTests(unittest.TestCase):
     def test_cancel(self):
         engine = WorkflowEngine()
-        graph = engine.create_workflow(_make_analysis())
+        graph = engine.create_workflow(_make_analysis(), dispatch_id="disp-1")
         graph = engine.cancel(graph)
         self.assertEqual(graph.status, "cancelled")
 
@@ -161,7 +166,7 @@ class WorkflowEngineCancelTests(unittest.TestCase):
 class WorkflowEngineApprovalTests(unittest.TestCase):
     def test_resume_after_approval(self):
         engine = WorkflowEngine()
-        graph = engine.create_workflow(_make_analysis())
+        graph = engine.create_workflow(_make_analysis(), dispatch_id="disp-1")
         graph = engine.tick(graph)
         node = [n for n in graph.nodes if n.status == "running"][0]
         graph = engine.complete_node(graph, node.node_id, "out-1")
@@ -172,7 +177,7 @@ class WorkflowEngineApprovalTests(unittest.TestCase):
 
     def test_reject_approval(self):
         engine = WorkflowEngine()
-        graph = engine.create_workflow(_make_analysis())
+        graph = engine.create_workflow(_make_analysis(), dispatch_id="disp-1")
         graph = engine.tick(graph)
         node = [n for n in graph.nodes if n.status == "running"][0]
         graph = engine.complete_node(graph, node.node_id, "out-1")

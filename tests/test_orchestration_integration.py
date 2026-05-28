@@ -54,7 +54,7 @@ def _make_analysis(complexity=0.2, risk_flags=(), domain="code", intent="review"
 class SimpleWorkflowIntegrationTests(unittest.TestCase):
     def test_single_node_workflow_completes(self):
         engine = WorkflowEngine()
-        graph = engine.create_workflow(_make_analysis())
+        graph = engine.create_workflow(_make_analysis(), dispatch_id="disp-1")
         graph = engine.tick(graph)
         node = [n for n in graph.nodes if n.status == "running"][0]
         graph = engine.complete_node(graph, node.node_id, "output-1", cost=0.5)
@@ -65,7 +65,7 @@ class SimpleWorkflowIntegrationTests(unittest.TestCase):
 
     def test_single_node_workflow_with_budget(self):
         engine = WorkflowEngine(budget_manager=MultiAgentBudgetManager())
-        graph = engine.create_workflow(_make_analysis(), budget_limit=10.0)
+        graph = engine.create_workflow(_make_analysis(), dispatch_id="disp-1", budget_limit=10.0)
         graph = engine.tick(graph)
         node = [n for n in graph.nodes if n.status == "running"][0]
         graph = engine.complete_node(graph, node.node_id, "output-1", cost=1.0)
@@ -76,7 +76,7 @@ class SimpleWorkflowIntegrationTests(unittest.TestCase):
 class MediumWorkflowIntegrationTests(unittest.TestCase):
     def test_two_node_sequential_workflow(self):
         engine = WorkflowEngine()
-        graph = engine.create_workflow(_make_analysis(complexity=0.4, risk_flags=("target_write",)))
+        graph = engine.create_workflow(_make_analysis(complexity=0.4, risk_flags=("target_write",)), dispatch_id="disp-1")
         self.assertEqual(len(graph.nodes), 2)
 
         for _ in range(5):
@@ -96,6 +96,7 @@ class ComplexWorkflowIntegrationTests(unittest.TestCase):
         engine = WorkflowEngine()
         graph = engine.create_workflow(
             _make_analysis(complexity=0.7, risk_flags=("target_write", "provider_call")),
+            dispatch_id="disp-1",
             budget_limit=50.0,
         )
         self.assertEqual(len(graph.nodes), 4)
@@ -118,6 +119,7 @@ class CancelWorkflowIntegrationTests(unittest.TestCase):
         engine = WorkflowEngine()
         graph = engine.create_workflow(
             _make_analysis(complexity=0.7, risk_flags=("target_write", "provider_call")),
+            dispatch_id="disp-1",
         )
         graph = engine.tick(graph)
         graph = engine.cancel(graph)
@@ -134,7 +136,7 @@ class AgentRoleWorkflowIntegrationTests(unittest.TestCase):
         ))
         decomposer = TaskDecomposer(role_registry=registry)
         engine = WorkflowEngine(decomposer=decomposer)
-        graph = engine.create_workflow(_make_analysis(complexity=0.7, risk_flags=("target_write", "provider_call")))
+        graph = engine.create_workflow(_make_analysis(complexity=0.7, risk_flags=("target_write", "provider_call")), dispatch_id="disp-1")
         agents = [n.assigned_agent_id for n in graph.nodes]
         self.assertTrue(all(a is not None for a in agents))
 
@@ -143,7 +145,7 @@ class BudgetWorkflowIntegrationTests(unittest.TestCase):
     def test_budget_enforcement_workflow(self):
         budget_mgr = MultiAgentBudgetManager()
         engine = WorkflowEngine(budget_manager=budget_mgr)
-        graph = engine.create_workflow(_make_analysis(), budget_limit=1.0)
+        graph = engine.create_workflow(_make_analysis(), dispatch_id="disp-1", budget_limit=1.0)
         graph = engine.tick(graph)
         node = [n for n in graph.nodes if n.status == "running"][0]
         graph = engine.complete_node(graph, node.node_id, "out", cost=0.5)
@@ -157,6 +159,7 @@ class ResultAggregationIntegrationTests(unittest.TestCase):
         engine = WorkflowEngine()
         graph = engine.create_workflow(
             _make_analysis(complexity=0.4, risk_flags=("target_write",)),
+            dispatch_id="disp-1",
         )
         for _ in range(5):
             if graph.status in ("completed", "failed", "cancelled"):

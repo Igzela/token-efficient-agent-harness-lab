@@ -16,7 +16,7 @@ class TaskDecomposer:
     def __init__(self, role_registry: AgentRoleRegistry | None = None) -> None:
         self._registry = role_registry
 
-    def decompose(self, analysis: TaskAnalysis, dispatch_id: str | None = None) -> WorkflowGraph:
+    def decompose(self, analysis: TaskAnalysis, dispatch_id: str) -> WorkflowGraph:
         workflow_id = f"wf-{uuid.uuid4().hex[:12]}"
         now = datetime.now(timezone.utc).isoformat()
 
@@ -24,7 +24,7 @@ class TaskDecomposer:
 
         return WorkflowGraph(
             workflow_id=workflow_id,
-            dispatch_id=dispatch_id or analysis.analysis_id,
+            dispatch_id=dispatch_id,
             nodes=tuple(nodes),
             edges=tuple(edges),
             status="decomposed",

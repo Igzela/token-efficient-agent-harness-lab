@@ -51,27 +51,32 @@ class TaskDecomposerSimpleTests(unittest.TestCase):
     def test_simple_task_produces_single_node(self):
         decomposer = TaskDecomposer()
         analysis = _make_analysis(complexity=0.2, risk_flags=())
-        graph = decomposer.decompose(analysis)
+        graph = decomposer.decompose(analysis, dispatch_id="disp-1")
         self.assertEqual(len(graph.nodes), 1)
         self.assertEqual(len(graph.edges), 0)
         self.assertEqual(graph.status, "decomposed")
 
-    def test_simple_task_has_correct_workflow_id(self):
+    def test_simple_task_has_correct_dispatch_id(self):
         decomposer = TaskDecomposer()
-        graph = decomposer.decompose(_make_analysis())
+        graph = decomposer.decompose(_make_analysis(), dispatch_id="disp-1")
         self.assertTrue(graph.workflow_id.startswith("wf-"))
-        self.assertEqual(graph.dispatch_id, "test-analysis")
+        self.assertEqual(graph.dispatch_id, "disp-1")
+
+    def test_decompose_requires_dispatch_id(self):
+        decomposer = TaskDecomposer()
+        with self.assertRaises(TypeError):
+            decomposer.decompose(_make_analysis())
 
     def test_medium_task_produces_two_nodes(self):
         decomposer = TaskDecomposer()
         analysis = _make_analysis(complexity=0.4, risk_flags=("target_write",))
-        graph = decomposer.decompose(analysis)
+        graph = decomposer.decompose(analysis, dispatch_id="disp-1")
         self.assertEqual(len(graph.nodes), 2)
         self.assertEqual(len(graph.edges), 1)
 
     def test_medium_task_edge_connects_nodes(self):
         decomposer = TaskDecomposer()
-        graph = decomposer.decompose(_make_analysis(complexity=0.4, risk_flags=("target_write",)))
+        graph = decomposer.decompose(_make_analysis(complexity=0.4, risk_flags=("target_write",)), dispatch_id="disp-1")
         edge = graph.edges[0]
         node_ids = {n.node_id for n in graph.nodes}
         self.assertIn(edge.from_node_id, node_ids)
@@ -80,13 +85,13 @@ class TaskDecomposerSimpleTests(unittest.TestCase):
     def test_complex_task_produces_four_nodes(self):
         decomposer = TaskDecomposer()
         analysis = _make_analysis(complexity=0.7, risk_flags=("target_write", "provider_call"))
-        graph = decomposer.decompose(analysis)
+        graph = decomposer.decompose(analysis, dispatch_id="disp-1")
         self.assertEqual(len(graph.nodes), 4)
         self.assertEqual(len(graph.edges), 3)
 
     def test_complex_task_chain_structure(self):
         decomposer = TaskDecomposer()
-        graph = decomposer.decompose(_make_analysis(complexity=0.7, risk_flags=("target_write", "provider_call")))
+        graph = decomposer.decompose(_make_analysis(complexity=0.7, risk_flags=("target_write", "provider_call")), dispatch_id="disp-1")
         task_types = [n.task_type for n in graph.nodes]
         self.assertTrue(any("analyze" in t for t in task_types))
         self.assertTrue(any("plan" in t for t in task_types))
@@ -101,7 +106,7 @@ class TaskDecomposerRegistryTests(unittest.TestCase):
             role_id="r1", role_name="code", capabilities=("code",), max_concurrent_nodes=10,
         ))
         decomposer = TaskDecomposer(role_registry=registry)
-        graph = decomposer.decompose(_make_analysis(domain="code", intent="review"))
+        graph = decomposer.decompose(_make_analysis(domain="code", intent="review"), dispatch_id="disp-1")
         self.assertIsNotNone(graph.nodes[0].assigned_agent_id)
 
 
@@ -109,7 +114,7 @@ class TaskDecomposerBudgetTests(unittest.TestCase):
     def test_nodes_have_budget_from_analysis(self):
         decomposer = TaskDecomposer()
         analysis = _make_analysis(complexity=0.7, risk_flags=("target_write", "provider_call"))
-        graph = decomposer.decompose(analysis)
+        graph = decomposer.decompose(analysis, dispatch_id="disp-1")
         for node in graph.nodes:
             self.assertGreater(node.budget, 0)
 

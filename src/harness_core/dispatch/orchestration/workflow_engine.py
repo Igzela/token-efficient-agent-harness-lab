@@ -44,9 +44,9 @@ class WorkflowEngine:
     def create_workflow(
         self,
         analysis: TaskAnalysis,
+        dispatch_id: str,
         budget_limit: float = 100.0,
         dispatch_bundle: DispatchBundle | None = None,
-        dispatch_id: str | None = None,
         decision_status: str = "decided",
     ) -> WorkflowGraph:
         dispatch_id, decision_status = self._extract_dispatch_context(
@@ -197,9 +197,9 @@ class WorkflowEngine:
     def _extract_dispatch_context(
         self,
         bundle: DispatchBundle | None,
-        dispatch_id: str | None,
+        dispatch_id: str,
         decision_status: str,
-    ) -> tuple[str | None, str]:
+    ) -> tuple[str, str]:
         if bundle is not None:
             return bundle.record.dispatch_id, bundle.decision.decision_status
         return dispatch_id, decision_status
