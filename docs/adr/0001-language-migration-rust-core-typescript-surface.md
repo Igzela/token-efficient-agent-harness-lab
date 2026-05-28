@@ -6,7 +6,7 @@ Date: 2026-05-28
 
 ## Context
 
-The repository has a stable Python stdlib-first harness with 1919 passing tests. The dispatcher architecture book previously recorded "Python core retained" and treated Go/Rust rewrite as a future reversal only if performance became a bottleneck.
+The repository has a stable Python stdlib-first harness with 2089 passing tests. The dispatcher architecture book previously recorded "Python core retained" and treated Go/Rust rewrite as a future reversal only if performance became a bottleneck.
 
 The approved migration direction is now different:
 
