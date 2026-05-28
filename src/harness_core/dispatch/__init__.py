@@ -119,6 +119,17 @@ from .health_checker import (
     HealthChecker,
     HealthReport,
 )
+from .auth import (
+    AUTH_SCHEMA_VERSION,
+    APIKey,
+    AuthDecision,
+    RequestContext,
+    Tenant,
+    TenantResolver,
+    generate_api_key,
+    generate_salt,
+    hash_api_key,
+)
 
 __all__ = [
     "BUDGET_RESERVATION_SCHEMA_VERSION",
@@ -238,4 +249,13 @@ __all__ = [
     "HealthCheck",
     "HealthChecker",
     "HealthReport",
+    "AUTH_SCHEMA_VERSION",
+    "APIKey",
+    "AuthDecision",
+    "RequestContext",
+    "Tenant",
+    "TenantResolver",
+    "generate_api_key",
+    "generate_salt",
+    "hash_api_key",
 ]

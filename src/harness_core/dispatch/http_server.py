@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import threading
+import uuid
 from dataclasses import dataclass, field
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from typing import Any, Callable
@@ -35,6 +36,7 @@ class ServerContext:
     config: ServerConfig
     routes: dict[tuple[str, str], RequestHandler] = field(default_factory=dict)
     store: Any = None
+    tenant_resolver: Any = None
 
 
 class HarnessHTTPHandler(BaseHTTPRequestHandler):
@@ -116,7 +118,31 @@ class HarnessHTTPHandler(BaseHTTPRequestHandler):
     def do_DELETE(self) -> None:
         self._handle_request("DELETE")
 
+    def _authenticate_request(self) -> Any:
+        """Run auth middleware if tenant_resolver is configured.
+
+        Returns RequestContext if allowed, or None if 401 already sent.
+        Returns None silently when no tenant_resolver is configured (unauthenticated mode).
+        """
+        resolver = self._context.tenant_resolver
+        if resolver is None:
+            return None
+        auth_header = self.headers.get("Authorization")
+        decision = resolver.resolve(auth_header)
+        if not decision.allowed:
+            self._send_error_json(401, decision.reason)
+            return None
+        return {
+            "tenant_id": decision.tenant_id,
+            "api_key_id": decision.api_key_id,
+            "scopes": decision.scopes,
+            "request_id": str(uuid.uuid4()),
+        }
+
     def _handle_request(self, method: str) -> None:
+        ctx = self._authenticate_request()
+        if ctx is None and self._context.tenant_resolver is not None:
+            return
         result = self._match_route(method)
         if result is None:
             self._send_error_json(404, f"no route for {method} {self.path}")
@@ -162,11 +188,12 @@ def _get_context(server: HTTPServer | None = None) -> ServerContext:
 
 
 def create_server(config: ServerConfig | None = None,
-                  store: Any = None) -> HTTPServer:
+                  store: Any = None,
+                  tenant_resolver: Any = None) -> HTTPServer:
     """Create an HTTPServer with per-server isolated state."""
     global _last_context
     cfg = config or ServerConfig()
-    ctx = ServerContext(config=cfg, store=store)
+    ctx = ServerContext(config=cfg, store=store, tenant_resolver=tenant_resolver)
     _last_context = ctx
     server = HTTPServer((cfg.host, cfg.port), HarnessHTTPHandler)
     server._harness_context = ctx  # type: ignore[attr-defined]
@@ -174,9 +201,10 @@ def create_server(config: ServerConfig | None = None,
 
 
 def start_server_in_thread(config: ServerConfig | None = None,
-                           store: Any = None) -> tuple[HTTPServer, threading.Thread]:
+                           store: Any = None,
+                           tenant_resolver: Any = None) -> tuple[HTTPServer, threading.Thread]:
     """Start the server in a daemon thread. Returns (server, thread)."""
-    server = create_server(config, store)
+    server = create_server(config, store, tenant_resolver=tenant_resolver)
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
     return server, thread

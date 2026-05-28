@@ -93,7 +93,8 @@ PROHIBITED_IMPORTS = {
 # that intentionally look like secrets).
 SECRET_SCAN_EXCLUDE = {
     "tests/test_security_baseline.py",
-    "tests/test_security_baseline.py",
+    "tests/test_http_server.py",
+    "tests/test_auth.py",
 }
 
 # Per-file import allowlists for test files that legitimately use stdlib

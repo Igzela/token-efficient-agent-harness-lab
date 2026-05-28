@@ -20,6 +20,10 @@ from harness_core.dispatch.http_server import (
     register_route,
     start_server_in_thread,
 )
+from harness_core.dispatch.auth import (
+    Tenant,
+    TenantResolver,
+)
 
 
 def _find_free_port() -> int:
@@ -334,6 +338,136 @@ class ServerIsolationTests(unittest.TestCase):
 class SchemaVersionTests(unittest.TestCase):
     def test_schema_version_defined(self):
         self.assertEqual(HTTP_SERVER_SCHEMA_VERSION, "http_server.v1")
+
+
+class AuthIntegrationTests(unittest.TestCase):
+    """Phase 6B-2: auth middleware integration with HTTP server."""
+
+    def _make_auth_server(self):
+        from harness_core.dispatch.auth import Tenant, TenantResolver
+        resolver = TenantResolver()
+        resolver.add_tenant(Tenant(tenant_id="t1", name="Test"))
+        _, raw_key = resolver.create_api_key("t1", scopes=frozenset({"read"}))
+        server = create_server(
+            ServerConfig(port=_find_free_port()),
+            tenant_resolver=resolver,
+        )
+        return server, raw_key
+
+    def test_unauthenticated_request_returns_401(self):
+        server = create_server(
+            ServerConfig(port=_find_free_port()),
+            tenant_resolver=TenantResolver(),
+        )
+        register_route("GET", "/plans", lambda m, b: {"ok": True}, server=server)
+        _start_server(server)
+        try:
+            with self.assertRaises(urllib.error.HTTPError) as ctx:
+                urllib.request.urlopen(f"http://127.0.0.1:{server.server_address[1]}/api/v1/plans")
+            self.assertEqual(ctx.exception.code, 401)
+        finally:
+            server.shutdown()
+            server.server_close()
+
+    def test_valid_key_allows_request(self):
+        server, raw_key = self._make_auth_server()
+        register_route("GET", "/plans", lambda m, b: {"ok": True}, server=server)
+        _start_server(server)
+        try:
+            url = f"http://127.0.0.1:{server.server_address[1]}/api/v1/plans"
+            req = urllib.request.Request(url, headers={"Authorization": f"Bearer {raw_key}"})
+            with urllib.request.urlopen(req) as resp:
+                data = json.loads(resp.read())
+            self.assertTrue(data["ok"])
+        finally:
+            server.shutdown()
+            server.server_close()
+
+    def test_invalid_key_returns_401(self):
+        server, _ = self._make_auth_server()
+        register_route("GET", "/plans", lambda m, b: {"ok": True}, server=server)
+        _start_server(server)
+        try:
+            url = f"http://127.0.0.1:{server.server_address[1]}/api/v1/plans"
+            req = urllib.request.Request(url, headers={"Authorization": "Bearer harness_badkey"})
+            with self.assertRaises(urllib.error.HTTPError) as ctx:
+                urllib.request.urlopen(req)
+            self.assertEqual(ctx.exception.code, 401)
+        finally:
+            server.shutdown()
+            server.server_close()
+
+    def test_no_auth_header_returns_401(self):
+        server, _ = self._make_auth_server()
+        register_route("GET", "/plans", lambda m, b: {"ok": True}, server=server)
+        _start_server(server)
+        try:
+            with self.assertRaises(urllib.error.HTTPError) as ctx:
+                urllib.request.urlopen(f"http://127.0.0.1:{server.server_address[1]}/api/v1/plans")
+            self.assertEqual(ctx.exception.code, 401)
+        finally:
+            server.shutdown()
+            server.server_close()
+
+    def test_no_tenant_resolver_skips_auth(self):
+        server = create_server(ServerConfig(port=_find_free_port()))
+        register_route("GET", "/open", lambda m, b: {"open": True}, server=server)
+        _start_server(server)
+        try:
+            with urllib.request.urlopen(f"http://127.0.0.1:{server.server_address[1]}/api/v1/open") as resp:
+                data = json.loads(resp.read())
+            self.assertTrue(data["open"])
+        finally:
+            server.shutdown()
+            server.server_close()
+
+    def test_two_servers_different_auth(self):
+        resolver_a = TenantResolver()
+        resolver_a.add_tenant(Tenant(tenant_id="a", name="A"))
+        _, key_a = resolver_a.create_api_key("a")
+
+        resolver_b = TenantResolver()
+        resolver_b.add_tenant(Tenant(tenant_id="b", name="B"))
+        _, key_b = resolver_b.create_api_key("b")
+
+        server_a = create_server(ServerConfig(port=_find_free_port()), tenant_resolver=resolver_a)
+        server_b = create_server(ServerConfig(port=_find_free_port()), tenant_resolver=resolver_b)
+
+        register_route("GET", "/data", lambda m, b: {"server": m.params.get("x", "a")}, server=server_a)
+        register_route("GET", "/data", lambda m, b: {"server": "b"}, server=server_b)
+
+        _start_server(server_a)
+        _start_server(server_b)
+
+        try:
+            port_a = server_a.server_address[1]
+            port_b = server_b.server_address[1]
+
+            req_a = urllib.request.Request(
+                f"http://127.0.0.1:{port_a}/api/v1/data",
+                headers={"Authorization": f"Bearer {key_a}"},
+            )
+            with urllib.request.urlopen(req_a) as resp:
+                self.assertEqual(json.loads(resp.read())["server"], "a")
+
+            req_b = urllib.request.Request(
+                f"http://127.0.0.1:{port_b}/api/v1/data",
+                headers={"Authorization": f"Bearer {key_b}"},
+            )
+            with urllib.request.urlopen(req_b) as resp:
+                self.assertEqual(json.loads(resp.read()), {"server": "b"})
+
+            # key_a should be rejected on server_b
+            req_wrong = urllib.request.Request(
+                f"http://127.0.0.1:{port_b}/api/v1/data",
+                headers={"Authorization": f"Bearer {key_a}"},
+            )
+            with self.assertRaises(urllib.error.HTTPError) as ctx:
+                urllib.request.urlopen(req_wrong)
+            self.assertEqual(ctx.exception.code, 401)
+        finally:
+            server_a.shutdown()
+            server_b.shutdown()
 
 
 if __name__ == "__main__":
