@@ -199,6 +199,8 @@ class BackupManager:
 
                 # Step 3: Only now mutate live target
                 target_store.close()
+                # Checkpoint WAL so main DB is self-contained before sidecar removal
+                self._checkpoint_wal(target_path)
                 self._remove_sqlite_sidecars(target_path)
                 tmp_path.replace(target_path)
 

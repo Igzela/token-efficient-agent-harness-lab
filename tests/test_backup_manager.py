@@ -595,6 +595,42 @@ class RestoreFailureAtomicityTests(unittest.TestCase):
         self.assertIsNotNone(p2)  # p2 still exists — target wasn't replaced
         db.unlink(missing_ok=True)
 
+    def test_replace_failure_after_sidecar_removal_preserves_target(self):
+        db = _make_temp_db()
+        store = DurableStore(db)
+        store.save_plan("p1", {"task": "original"})
+        record = self.bm.create_backup(store)
+        store.close()
+
+        # Add post-backup data
+        store2 = DurableStore(db)
+        store2.save_plan("p2", {"task": "added later"})
+        store2.close()
+
+        original_checksum = _compute_checksum(db)
+
+        # Monkeypatch Path.replace to fail after sidecars are removed
+        original_replace = Path.replace
+        def failing_replace(self_path, target):
+            raise OSError("Simulated replace failure")
+        Path.replace = failing_replace
+
+        try:
+            result = self.bm.restore_backup(record.backup_id, DurableStore(db))
+            self.assertFalse(result.success)
+        finally:
+            Path.replace = original_replace
+
+        # Target DB should still be readable (checkpoint preserved data into main DB)
+        store3 = DurableStore(db)
+        plan = store3.get_plan("p1")
+        p2 = store3.get_plan("p2")
+        store3.close()
+        self.assertIsNotNone(plan)
+        self.assertEqual(plan.data["task"], "original")
+        self.assertIsNotNone(p2)  # Post-backup data preserved via WAL checkpoint
+        db.unlink(missing_ok=True)
+
 
 if __name__ == "__main__":
     unittest.main()
