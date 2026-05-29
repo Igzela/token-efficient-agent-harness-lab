@@ -6,6 +6,8 @@
 
 This is standing authorization for the external coding agent maintaining this repository. It is not authorization to implement real autonomous workers inside the harness runtime.
 
+The current productization roadmap lives in `docs/PRODUCTIZATION_PLAN.md`. Do not create another roadmap file; update that document when the local-team product plan changes.
+
 ## Allowed Next Paths
 
 The responsible coding agent may choose any of the following without asking for a new instruction each time, provided the work is small enough to verify and all hard boundaries remain intact.
@@ -18,7 +20,7 @@ The responsible coding agent may choose any of the following without asking for 
 | Architecture/documentation closeout | Update architecture records, module maps, closeout reports, and handoff docs after accepted changes. |
 | Demo/docs polish | Refine demo docs when verification or user feedback identifies a concrete gap. |
 | Language migration | Agent-control-plane migration phases 0-8 are implemented and recorded in `docs/AGENT_CONTROL_PLANE_MIGRATION_CLOSEOUT.md`. Rust engine/API parity is implemented through the local axum health/ready/openapi/dispatch router plus provider trait boundary. Phase 5 codegen plus TypeScript/Python REST SDK packages, Phase 6 dashboard, Phase 7 optional local Docker deploy, native local runtime smoke, and explicit env-gated provider beta path are implemented and tested. No real workers, target writes, SDK publishing, or cloud production deployment. |
-| Local small-team hardening | The explicit local small-team productization track is implemented for app-owned SQLite state, live dashboard reads, local API role boundary, export/confirmed backup, SDK coverage, and no-Docker native runtime. Future work may harden this local-only path when evidence identifies a concrete gap, while keeping provider execution default-off and explicit, target writes, sandbox/process execution, real workers, and cloud SaaS out of scope. |
+| Local small-team hardening | Follow `docs/PRODUCTIZATION_PLAN.md`, starting with Provider Safety Gate. Keep provider execution default-off and explicit; keep target writes, sandbox/process execution, real workers, and cloud SaaS out of scope. |
 
 ## Disallowed by Default
 
