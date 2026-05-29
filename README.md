@@ -4,7 +4,7 @@
 
 Token-Efficient Agent Harness Lab is a local deterministic harness for studying event-sourced agent workflow infrastructure from Stage 0 through Stage 4. It includes JSONL event validation, projections, project/task workflow primitives, quality gates, controlled intelligence stubs, and Stage 4 runtime-control abstractions.
 
-Current status: Stage 0-4 complete, Harness App MVP0-MVP8 complete, Trials 0-3 closed, Dispatch Kernel Phases 1-6B-3 stable, Phase 7 SDK + DocGenerator implemented, Rust engine parity through the local axum API router implemented, Phase 5 codegen plus TypeScript/Python REST SDK packages implemented, Phase 6 dashboard implemented, Phase 7 local Docker deploy implemented, Phase 8 migration closeout recorded, native local runtime implemented, and local small-team productization now provides SQLite-backed dispatch history, config/team state, cost summaries, audit log, export, and confirmed local backup. Security hardening complete (2089 Python tests, 432 Rust tests).
+Current status: Stage 0-4 complete, Harness App MVP0-MVP8 complete, Trials 0-3 closed, Dispatch Kernel Phases 1-6B-3 stable, Phase 7 SDK + DocGenerator implemented, Rust engine parity through the local axum API router implemented, Phase 5 codegen plus TypeScript/Python REST SDK packages implemented, Phase 6 dashboard implemented, Phase 7 local Docker deploy implemented, Phase 8 migration closeout recorded, native local runtime implemented, and local small-team productization now provides SQLite-backed dispatch history, config/team state, cost summaries, audit log, export, and confirmed local backup. Rust provider stack Stage 1 and Stage 2 provider audit/usage persistence are implemented as explicit env-gated beta paths. Security hardening complete (2089 Python tests, 1031 Rust test cases enumerated by `cargo test -p engine -- --list`).
 
 **New sessions should start with [docs/SESSION_START_HERE.md](docs/SESSION_START_HERE.md).**
 
@@ -12,7 +12,7 @@ Coding agents may autonomously advance safe repository work inside the documente
 
 ## What This Project Is Not
 
-This repository is not a cloud production SaaS or autonomous-agent runtime. It does not call real model providers, run real agents, isolate work in real sandboxes, spawn production concurrent workers, provide provider failover, write target repositories, or provide hosted deployment. The local dashboard reads app-owned state from the local engine; dangerous local admin API actions require explicit confirmation and audit logging.
+This repository is not a cloud production SaaS or autonomous-agent runtime. It does not call real model providers by default, run real agents, isolate work in real sandboxes, spawn production concurrent workers, provide provider failover, write target repositories, or provide hosted deployment. OpenAI-compatible and Anthropic provider adapters exist behind explicit environment configuration for local beta use; CI uses stub/mock paths and does not call real provider APIs. The local dashboard reads app-owned state from the local engine; dangerous local admin API actions require explicit confirmation and audit logging.
 
 ## How To Run Tests
 
@@ -21,7 +21,7 @@ PYTHONPATH=src python3 -m unittest discover -s tests
 cargo test -p engine
 ```
 
-Current result: 2089 Python tests pass; 432 Rust `engine` parity/component/API tests pass.
+Current result: 2089 Python tests pass; 1031 Rust `engine` parity/component/API test cases are enumerated by `cargo test -p engine -- --list`, and `cargo test -p engine` passes.
 
 ## How To Run Without Docker
 
@@ -60,6 +60,16 @@ cargo run -p engine
 ```
 
 `<local-harness-key>` must use the local `harness_` plus 64 hex characters shape. Do not commit real keys; the key is read from the environment only. Without `ACP_REQUIRE_AUTH`, the default local loopback mode remains open for single-machine first run.
+
+Optional provider adapter beta path:
+
+```bash
+ACP_PROVIDER_TYPE=stub \
+ACP_DASHBOARD_DIR=dashboard/out \
+cargo run -p engine
+```
+
+`ACP_PROVIDER_TYPE=openai_compatible` and `ACP_PROVIDER_TYPE=anthropic` are present for local beta validation only. They require explicit provider environment configuration and should be paired with `ACP_REQUIRE_AUTH=1`, a local admin API key, and narrow network exposure. Do not commit provider credentials. Real provider execution remains default-off and is not used in CI.
 
 ## Local API Examples
 

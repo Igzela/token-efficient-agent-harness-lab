@@ -64,13 +64,13 @@ Allowed autonomous advancement:
 - fix failing tests, CI breakage, lint/security baseline failures, and deterministic regressions
 - add focused tests for uncovered behavior in existing modules
 - harden completed dispatch-kernel phases when evidence or review findings identify concrete defects
-- advance the next documented dispatch-kernel phase when it is already described in the architecture book and can be implemented without real providers, real sandbox execution, target repo writes, deployment, or concurrent worker processes
+- advance the next documented dispatch-kernel phase when it is already described in the architecture book and can be implemented without broadening real provider behavior beyond the existing explicit env-gated local beta path, real sandbox execution, target repo writes, deployment, or concurrent worker processes
 - update architecture, module maps, and closeout reports required to make the new state durable
 
 Not allowed under autonomous authority:
 
 - create a new cloud product surface, hosted service, or production runtime
-- add real model-provider calls, secrets, SDK dependency wiring, network transports, process execution, containers, VMs, target-repo mutation, approval/run/deploy controls, or real autonomous workers
+- broaden real model-provider calls beyond the existing explicit env-gated local beta path, add secrets, add default-on provider execution, process execution, containers, VMs, target-repo mutation, approval/run/deploy controls, or real autonomous workers
 - bypass the architecture book, phase gates, tests, or documentation maintenance rule
 
 ## Autonomous Advancement Loop
@@ -96,7 +96,7 @@ Do not modify:
 
 Do not add without explicit human approval:
 
-- real model API calls
+- default-on or unattended real model API calls
 - API keys or provider credentials
 - real autonomous agents
 - real sandbox/process/container/VM execution
@@ -124,7 +124,7 @@ Allowed by default:
 Requires explicit approval:
 
 - cloud productionization
-- real provider integration
+- real provider productionization beyond the existing explicit env-gated local beta path
 - real sandbox execution
 - new cloud/hosted UI/dashboard implementation
 - benchmarking framework

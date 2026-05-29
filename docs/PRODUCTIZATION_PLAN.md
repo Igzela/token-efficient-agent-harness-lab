@@ -8,7 +8,7 @@ Date: 2026-05-29
 |------|------|
 | `docs/dispatch/DISPATCHER_KERNEL_V0_ARCHITECTURE.md` §6 | Phase 3 完整架构：ProviderAdapter、凭证边界、审计、重试、错误分类（P3-T1~T13） |
 | `docs/AGENT_CONTROL_PLANE_MIGRATION_CLOSEOUT.md` | 迁移完成状态，provider trait boundary 已实现但 disabled-by-default |
-| `docs/CURRENT_STATUS.md` | 当前 432 Rust 测试，local small-team productization 已实现 |
+| `docs/CURRENT_STATUS.md` | 当前 1031 Rust test cases enumerated，local small-team productization、provider stack Stage 1、provider audit/usage bridge 已实现 |
 | `docs/CI_VERIFICATION.md` | CI 验证范围（不含真实 provider 调用） |
 
 ## 现有代码参考
@@ -63,7 +63,7 @@ Date: 2026-05-29
 - [ ] HTTP 超时 → `error_domain: "provider_timeout"`
 - [ ] 429 → `error_domain: "provider_rate_limit"` + 自动重试
 - [ ] 凭证在日志/响应中显示为 `sk-***abc`（P3-T13）
-- [ ] 所有现有 432 测试 + 新测试全部通过
+- [ ] 所有现有 Rust 测试 + 新测试全部通过；当前枚举值为 1031 Rust test cases
 - [ ] CI 全绿
 
 ### 新增依赖

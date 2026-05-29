@@ -55,4 +55,4 @@ Note: this environment's `python3 -m build` entrypoint is not available because 
 
 ## Remaining Decision
 
-The migration track remains closed. Docker is no longer required for local use. Future work should be maintenance, verification hardening, local small-team self-hosting hardening backed by concrete evidence, or an explicit user-approved decision about removing or relocating the Python reference implementation. Cloud SaaS, real provider calls, target writes, real sandbox/process execution, hosted deployment, and real autonomous workers remain out of scope.
+The migration track remains closed. Docker is no longer required for local use. Future work should be maintenance, verification hardening, local small-team self-hosting hardening backed by concrete evidence, explicit env-gated provider beta hardening, or an explicit user-approved decision about removing or relocating the Python reference implementation. Cloud SaaS, default-on provider calls, target writes, real sandbox/process execution, hosted deployment, and real autonomous workers remain out of scope.

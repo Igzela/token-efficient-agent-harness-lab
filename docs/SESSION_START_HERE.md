@@ -24,7 +24,7 @@ Token-Efficient Agent Harness Lab is a local deterministic harness for studying 
 | Trial 3 multi-repo generalization | Closed — `TRIAL_3_MULTI_REPO_GENERALIZATION_PASS` |
 | Trial 3 target merge | Closed — all 3 target PRs merged, audit PASS_WITH_NOTES |
 
-Tests: 2089 Python pass; 432 Rust pass.
+Tests: 2089 Python pass; 1031 Rust test cases enumerated by `cargo test -p engine -- --list`, with `cargo test -p engine` passing.
 
 Additional active architecture track:
 
@@ -40,20 +40,21 @@ Additional active architecture track:
 | Language Migration Phase 0 — Wire schemas/golden parity | Implemented |
 | Language Migration Phase 1 — Rust parity kernel | Implemented for `event_schema`, `task_analyzer`, `dispatch_decision`; no provider/API/dashboard/deploy work |
 | Language Migration Phase 2 — Rust dispatch engine parity | Implemented for selector, budget, noop executor abstraction, evaluator, ledger, and dispatch engine; no provider/API/dashboard/deploy work |
-| Language Migration Rust engine/API parity | Implemented through local axum health/ready/openapi/dispatch router; no real providers, workers, target writes, dashboard, SDK publishing, or Docker deploy |
+| Language Migration Rust engine/API parity | Implemented through local axum health/ready/openapi/dispatch router; no default real providers, workers, target writes, SDK publishing, or production deploy |
 | Language Migration Phase 5 — SDK + codegen | Implemented codegen helper plus TypeScript/Python REST SDK packages; no SDK publishing |
 | Language Migration Phase 6 — Read-only Dashboard | Implemented Next.js dashboard with dispatch, routing, agents/workflows, costs, settings, and health views; no executable controls |
 | Language Migration Phase 7 — Local Docker Deploy | Implemented local compose stack for Rust API + dashboard; no production deploy |
 | Language Migration Phase 8 — Closeout | Implemented; closeout recorded in `docs/AGENT_CONTROL_PLANE_MIGRATION_CLOSEOUT.md`; Python reference retained in `src/harness_core/` pending explicit removal decision |
 | Agent-Control-Plane Native Local Runtime | Implemented; Rust engine can serve API plus static dashboard from one local process via `ACP_DASHBOARD_DIR=dashboard/out`; Docker is optional |
 | Agent-Control-Plane Local Small-Team Productization | Implemented; Rust engine persists app-owned SQLite dispatch history/config/team/API-key metadata/audit/cost state, dashboard reads live local API state, SDKs cover local state endpoints, and export/confirmed backup are available without Docker |
+| Rust Provider Stack Stage 1 + Stage 2 audit/usage bridge | Implemented as explicit env-gated beta path; provider health/audit endpoints, persistent provider audit events, and dispatch usage columns exist; CI uses stub/mock paths and does not call real provider APIs |
 
 ## What This Project Is Not
 
 - **Not CA-8.** The CA-7 baseline is sealed. No CA-8 exists.
 - **Not Stage 5.** No Stage 5 implementation has been started.
 - **Not a cloud production SaaS.** No real model providers, sandboxes, workers, hosted service, or deployment targets.
-- **No real provider/model calls.** All advisor and model gateway components are stubs.
+- **No real provider/model calls by default.** Provider adapters are explicit env-gated beta paths; CI uses stub/mock paths and does not call real provider APIs.
 - **No real sandbox/process/container/VM execution.** Sandbox claims are logical file-claim tracking only.
 - **No autonomous workers.** No real concurrent workers are spawned.
 - **No target repo writes by default.** Target repositories are read-only. The app never writes to them.
@@ -76,7 +77,7 @@ The responsible coding agent may autonomously advance repository-safe work that 
 - fix failing tests, CI, security baseline, or deterministic regressions
 - add focused tests for existing behavior
 - harden completed phases when backed by concrete review findings
-- implement documented dispatch-kernel phase work when the architecture book already defines the contract and the implementation does not add real providers, real sandbox/process execution, target repo writes, deployment, or real worker processes
+- implement documented dispatch-kernel phase work when the architecture book already defines the contract and the implementation does not broaden real provider behavior beyond explicit env-gated beta paths, real sandbox/process execution, target repo writes, deployment, or real worker processes
 
 Do **not** start any of the following without explicit human approval:
 

@@ -8,14 +8,14 @@ This document describes the GitHub Actions CI pipeline that verifies the securit
 
 - **Security baseline checker** (`tools/check_security_baseline.py`): five-part gate covering secret scanning, AST import analysis, active routing guard, governance boundary guard, and stage-0 event guard.
 - **Python unit test suite** (`tests/`): 2089 tests exercising core logic with no external dependencies.
-- **Rust engine tests** (`cargo test -p engine`): 432 parity/component/API tests, including local small-team state/API coverage.
+- **Rust engine tests** (`cargo test -p engine`): 1031 enumerated parity/component/API test cases, including local small-team state/API coverage and provider audit/usage bridge coverage.
 - **TypeScript SDK/dashboard checks**: SDK tests/build plus dashboard lint/typecheck/build.
 - **Native runtime smoke**: static dashboard export plus Rust engine binary smoke without Docker, using a temporary SQLite database and verifying live dashboard/export state.
 - **Optional Docker build**: local compose images for API and dashboard.
 
 ## What CI Does Not Verify
 
-- No real provider calls — all network-facing code is stubbed or gated.
+- No real provider calls in CI — network-capable provider adapters are explicit env-gated beta paths and are exercised with stub/mock transports in automated verification.
 - No secret or API-key-dependent flows.
 - No integration tests against live infrastructure.
 - CI is **not** production certification.
