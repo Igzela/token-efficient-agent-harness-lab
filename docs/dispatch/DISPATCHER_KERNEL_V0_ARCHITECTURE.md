@@ -29,9 +29,8 @@ Phase 0 is complete. The harness has:
 | Document | Relationship |
 |----------|-------------|
 | AGENTS.md | Agent behavior rules |
-| docs/ROADMAP.md | High-level roadmap |
 | docs/CURRENT_STATUS.md | Current state snapshot |
-| docs/NEXT_DECISION.md | Immediate next decision |
+| docs/NEXT_DECISION.md | Forward plan and immediate next decision |
 | This document | Master architecture, all phases |
 
 ### 0.4 Terminology

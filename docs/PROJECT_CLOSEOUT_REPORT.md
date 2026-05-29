@@ -2,7 +2,7 @@
 
 ## 1. Executive Summary
 
-Token-Efficient Agent Harness Lab is complete for the approved Stage 0-4 task-book scope. The repository now contains deterministic local harness primitives, staged acceptance documentation, a full architecture audit, README consolidation, roadmap, module map, and test matrix.
+Token-Efficient Agent Harness Lab is complete for the approved Stage 0-4 task-book scope. The repository now contains deterministic local harness primitives, staged acceptance documentation, a full architecture audit, README consolidation, module map, and test matrix.
 
 No Stage 5 implementation was started.
 
@@ -42,7 +42,7 @@ The report commit itself is recorded in git history with message `Document final
 - Canonical Stage 4 planning specs under `docs/stage4/`.
 - Full architecture audit: `docs/project_architecture_audit.md`.
 - README: `README.md`.
-- Roadmap: `docs/ROADMAP.md`.
+- Forward plan: `docs/NEXT_DECISION.md`.
 - Module map: `docs/MODULE_MAP.md`.
 - Test matrix: `docs/TEST_MATRIX.md`.
 

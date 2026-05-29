@@ -105,11 +105,11 @@ A session is not complete until it leaves a durable handoff:
 
 ## Documentation Maintenance
 
-After any commit-sized change, update the handoff docs before committing:
+After any commit-sized change, update only the handoff docs whose facts changed:
 
 - `docs/CURRENT_STATUS.md` for current state, test count, stable commit, limitations, and verification
 - `docs/NEXT_DECISION.md` for allowed/disallowed next paths
 - `docs/MODULE_MAP.md` for module ownership changes
 - `README.md`, `CLAUDE.md`, and `AGENTS.md` for agent-facing workflow or boundary changes
 
-If no docs changed, state the reason in the completion report.
+Do not add parallel roadmap, next-steps, closeout, status, or productization documents unless the user explicitly asks for a new artifact. Prefer shortening or deleting stale documents. If no docs changed, state the reason in the completion report.

@@ -6,7 +6,7 @@
 
 This is standing authorization for the external coding agent maintaining this repository. It is not authorization to implement real autonomous workers inside the harness runtime.
 
-The current productization roadmap lives in `docs/PRODUCTIZATION_PLAN.md`. Do not create another roadmap file; update that document when the local-team product plan changes.
+This file is the single forward-plan surface. Do not add parallel roadmap, next-steps, or productization-plan documents; update this file and prune stale planning text instead.
 
 ## Allowed Next Paths
 
@@ -20,7 +20,30 @@ The responsible coding agent may choose any of the following without asking for 
 | Architecture/documentation closeout | Update architecture records, module maps, closeout reports, and handoff docs after accepted changes. |
 | Demo/docs polish | Refine demo docs when verification or user feedback identifies a concrete gap. |
 | Language migration | Agent-control-plane migration phases 0-8 are implemented and recorded in `docs/AGENT_CONTROL_PLANE_MIGRATION_CLOSEOUT.md`. Rust + TypeScript cutover is complete: Rust `engine/` is the primary runtime/API/storage/provider-gated control plane, and `dashboard/` plus `sdk/typescript/` are the primary TypeScript surfaces. Python remains only as legacy reference plus retained Python SDK compatibility. No real workers, target writes, SDK publishing, or cloud production deployment. |
-| Local small-team hardening | Follow `docs/PRODUCTIZATION_PLAN.md`. Provider Safety Gate and Permission Governance are implemented. Next: Cost Governance (cost reporting, provider-estimated vs reserved vs actual). Keep provider execution default-off and explicit; keep target writes, sandbox/process execution, real workers, and cloud SaaS out of scope. |
+| Local small-team hardening | Provider Safety Gate and Permission Governance are implemented. Next: Cost Governance, then Data Operations, Native Packaging, Dashboard Controls, and Long-Run Hardening. Keep provider execution default-off and explicit; keep target writes, sandbox/process execution, real workers, and cloud SaaS out of scope. |
+
+## Local Productization Plan
+
+Current level: local self-hosted MVP / internal beta.
+
+Implemented:
+
+- one Rust engine process serves API plus static dashboard without Docker
+- local SQLite persists dispatch history, config, team/API-key metadata, audit, costs, provider audit, and provider usage columns
+- dashboard reads live local state
+- TypeScript and Python SDKs cover local API, state, provider health/audit, export, and backup
+- provider execution is explicit, env-gated, auth-gated, execute-scope-gated, audited, and budget-capped
+- team/API-key create, revoke, rotate, delete, scope update, role update, last-used tracking, expiry, and admin audit events are implemented
+
+Next productization phases:
+
+| Order | Phase | Done When |
+|---|---|---|
+| 3 | Cost Governance | Dashboard and API separate reserved budget, provider-estimated cost, provider-reported usage, and audit-linked dispatch costs. |
+| 4 | Data Operations | SQLite migrations, backup restore, import/export roundtrip tests, integrity checks, and data-directory docs are complete. |
+| 5 | Native Packaging | Release artifact includes engine binary, dashboard assets, install/upgrade scripts, `.env.example`, and native smoke verification. |
+| 6 | Dashboard Controls | Admin-only config, backup/export, team/key, provider status, and dispatch-detail views exist with confirmations and audit logs. |
+| 7 | Long-Run Hardening | LAN threat model, audit integrity review, SQLite contention tests, provider failure matrix, upgrade smoke, and GitHub Actions Node deprecation cleanup are complete. |
 
 ## Disallowed by Default
 

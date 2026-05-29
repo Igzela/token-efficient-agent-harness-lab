@@ -14,7 +14,7 @@ New Codex, Claude Code, or other coding-agent sessions must start with `docs/SES
 
 The responsible coding agent has standing authority to autonomously advance repository-safe work: documentation repair, focused regression fixes, CI/security/test hardening, and architecture-book-defined dispatch-kernel phase work that remains deterministic, local, test-first, and does not broaden real provider behavior beyond the existing explicit env-gated beta paths, real sandbox/process execution, target repo writes, deployment, or real runtime workers.
 
-After every commit-sized change, update this file if the change affects current state, verification, test count, stable commits, limitations, or next steps. Update `README.md`, `CLAUDE.md`, `AGENTS.md`, and `docs/MODULE_MAP.md` when their quickstart or ownership details change.
+After every commit-sized change, update only the authoritative handoff docs whose facts changed. `docs/NEXT_DECISION.md` is the single forward-plan surface; do not add parallel roadmap, next-steps, status, closeout, or productization documents unless the user explicitly asks for a new artifact.
 
 Run `python3 scripts/check_agent_handoff.py` before committing so the handoff surface remains self-consistent.
 

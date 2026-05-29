@@ -112,7 +112,7 @@ Do not add without explicit human approval:
 Allowed by default:
 
 - documentation cleanup
-- README / roadmap / module map updates
+- README / forward-plan / module map updates
 - test-only improvements
 - CI maintenance
 - GitHub issue planning
@@ -133,15 +133,16 @@ Requires explicit approval:
 
 ## Documentation Maintenance Rule
 
-After every commit-sized change, update the handoff docs before committing:
+Keep the documentation set small. Do not create new roadmap, next-steps, closeout, status, or productization documents unless the user explicitly asks for a new artifact.
 
-- `docs/CURRENT_STATUS.md` for current branch, latest stable commit, test count, sealed tracks, and known limitations
-- `docs/NEXT_DECISION.md` when the allowed/disallowed next paths change
-- `docs/MODULE_MAP.md` when source/test ownership changes
-- `README.md` when quickstart commands, status, test counts, or repo structure change
-- `CLAUDE.md` and this file when agent behavior, boundaries, or workflow rules change
+Authoritative maintenance surfaces:
 
-If a change does not require documentation updates, state that explicitly in the commit or final report. Never leave a new session guessing which document is authoritative.
+- `docs/CURRENT_STATUS.md` — current state, verification, test counts, stable tracks, and limitations
+- `docs/NEXT_DECISION.md` — the single forward plan, including local productization phases and disallowed paths
+- `docs/MODULE_MAP.md` — source/test ownership
+- `README.md`, `CLAUDE.md`, and this file — quickstart, agent workflow, and hard boundaries
+
+Prefer editing, shortening, or deleting stale documents over adding another file. When facts change, update only the smallest necessary set of authoritative surfaces. If no document update is needed, say why in the completion report.
 
 ## Test Command
 

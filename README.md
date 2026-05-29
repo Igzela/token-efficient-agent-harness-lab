@@ -8,9 +8,9 @@ Current status: Stage 0-4 complete, Harness App MVP0-MVP8 complete, Trials 0-3 c
 
 **New sessions should start with [docs/SESSION_START_HERE.md](docs/SESSION_START_HERE.md).**
 
-Coding agents may autonomously advance safe repository work inside the documented boundaries. They must keep `docs/CURRENT_STATUS.md`, `docs/NEXT_DECISION.md`, `docs/MODULE_MAP.md`, and this README current after each commit-sized change, then run `python3 scripts/check_agent_handoff.py` before commit.
+Coding agents may autonomously advance safe repository work inside the documented boundaries. They must keep the smallest necessary handoff surface current after each commit-sized change, then run `python3 scripts/check_agent_handoff.py` before commit.
 
-Local-team productization work is tracked in [docs/PRODUCTIZATION_PLAN.md](docs/PRODUCTIZATION_PLAN.md); keep that as the single roadmap instead of adding new roadmap documents.
+Local-team productization work is tracked in [docs/NEXT_DECISION.md](docs/NEXT_DECISION.md); do not add parallel roadmap documents.
 
 ## What This Project Is Not
 
@@ -165,7 +165,6 @@ docs/stage3/             Controlled intelligence stub specs and acceptance
 docs/stage4/             Runtime abstraction specs and acceptance
 web/dashboard/           Local non-executable Harness app dashboard
 docs/MODULE_MAP.md       Module-to-stage reference
-docs/ROADMAP.md          Completed stages and optional future tracks
 docs/TEST_MATRIX.md      Test coverage matrix
 docs/AGENT_CONTROL_PLANE_MIGRATION_CLOSEOUT.md Agent-control-plane migration closeout
 ```

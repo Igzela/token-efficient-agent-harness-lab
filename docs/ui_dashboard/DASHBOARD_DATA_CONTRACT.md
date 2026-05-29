@@ -132,13 +132,13 @@ The dashboard reads from existing data sources. It does not write to them. Every
 - **Evidence status:** Taxonomy file reference
 - **Can trigger action:** No
 
-### 15. Roadmap
+### 15. Forward Plan
 
-- **Source file:** `docs/ROADMAP.md`
+- **Source file:** `docs/NEXT_DECISION.md`
 - **Read mode:** Read-only file read
 - **Display fields:** Track name, status, milestones, dependencies, blockers
 - **Sensitive fields:** None
-- **Evidence status:** Roadmap file reference
+- **Evidence status:** Forward-plan file reference
 - **Can trigger action:** No
 
 ### 16. Architecture Docs

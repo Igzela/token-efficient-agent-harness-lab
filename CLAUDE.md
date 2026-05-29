@@ -238,7 +238,7 @@ Do not infer a new Stage 5, CA-8, production track, or provider-integration trac
 
 ## Next Action
 
-Phase 6B-3 Gate 1 is IMPLEMENTED. Gate 2 and Gate 3 enforcement are the next eligible path. See `docs/CURRENT_STATUS.md` and `docs/NEXT_DECISION.md`.
+Use `docs/NEXT_DECISION.md` for the current forward plan. Do not rely on older phase logs as next-action authority.
 
 ## Autonomous Advancement Protocol
 
@@ -248,7 +248,7 @@ For each autonomous session:
 2. Choose the highest-value safe task from failing verification, documented phase work, concrete review findings, stale handoff docs, or narrowly scoped hardening.
 3. Update or add tests before behavior changes.
 4. Run the relevant verification command, plus `python3 scripts/check_agent_handoff.py`.
-5. Update the handoff surface before commit: `docs/CURRENT_STATUS.md`, `docs/NEXT_DECISION.md`, `docs/MODULE_MAP.md`, `README.md`, `CLAUDE.md`, and `AGENTS.md` when their facts changed.
+5. Update the smallest necessary handoff surface before commit: `docs/CURRENT_STATUS.md`, `docs/NEXT_DECISION.md`, `docs/MODULE_MAP.md`, `README.md`, `CLAUDE.md`, and `AGENTS.md` when their facts changed.
 6. Commit in English and push when the working tree only contains this session's intended changes.
 7. Leave the next action, latest commit, verification, and residual risks in the final report.
 
@@ -260,22 +260,22 @@ This protocol authorizes the coding agent to advance the repository. It does not
 2. **Never deviate from schemas** defined in the architecture book without updating the book first.
 3. **Phase boundaries are sacred**: Phase 1-2 MUST NOT call real providers, execute in sandbox, write to target repos, or start autonomous workers. Current provider execution is an explicit env-gated local beta path and must stay default-off unless a future approved plan changes that boundary.
 4. **When blocked or facing coarse granularity**: Discuss with GPT in the same ChatGPT session used for architecture review. Iterate until both agree, then update the architecture book before implementing.
-5. **Document maintenance**: Keep `docs/CURRENT_STATUS.md` updated as phases complete. Update the architecture book's Completeness Matrix (Section 0.7) when phase maturity changes.
+5. **Document maintenance**: Keep the authoritative handoff surface current and small. Prefer shortening existing docs or deleting stale planning docs over adding files.
 6. **Autonomous closeout**: Run `python3 scripts/check_agent_handoff.py` before commit. A commit is incomplete if the handoff docs no longer tell the next session what changed, how it was verified, and what should happen next.
-7. **Single roadmap**: `docs/PRODUCTIZATION_PLAN.md` is the sole productization roadmap. Do not create parallel roadmap documents. `README.md` (line 13) and `docs/NEXT_DECISION.md` (line 9) reference it — keep all three in sync when the productization plan changes. If the roadmap phase order, goals, or done-when criteria change, update PRODUCTIZATION_PLAN.md first, then propagate the change to README.md and NEXT_DECISION.md in the same commit.
+7. **Single forward plan**: `docs/NEXT_DECISION.md` is the only roadmap / next-steps / productization-plan surface. Do not create parallel planning documents. If the phase order, goals, or done-when criteria change, update `docs/NEXT_DECISION.md` and only the directly affected handoff docs.
 
 ## Documentation Maintenance Rule
 
-Before committing any change, update the handoff surface if the change affects status, scope, tests, commands, boundaries, modules, or next steps:
+Before committing, update the smallest necessary handoff surface if the change affects status, scope, tests, commands, boundaries, modules, or next steps.
 
-- `docs/CURRENT_STATUS.md`
-- `docs/NEXT_DECISION.md`
-- `docs/MODULE_MAP.md`
-- `README.md`
-- `CLAUDE.md`
-- `AGENTS.md`
+Authoritative surfaces:
 
-If no document update is needed, say why in the completion report. New sessions must never have to reconstruct the current state from git log alone.
+- `docs/CURRENT_STATUS.md` — current state, verification, test counts, stable tracks, limitations
+- `docs/NEXT_DECISION.md` — single forward plan, local productization phases, allowed/disallowed paths
+- `docs/MODULE_MAP.md` — source/test ownership
+- `README.md`, `CLAUDE.md`, `AGENTS.md` — quickstart, agent workflow, hard boundaries
+
+Do not add new roadmap, next-steps, closeout, status, or productization documents unless the user explicitly asks for a new artifact. Prefer shortening or deleting stale documents. If no document update is needed, say why in the completion report.
 
 ## GPT Collaboration Protocol
 
