@@ -6,6 +6,8 @@ Date: 2026-05-29
 
 Agent-control-plane migration phases 0-7 are implemented, Phase 8 closeout is recorded here, native local runtime hardening is implemented, and the explicitly approved local small-team productization track is implemented.
 
+The Rust + TypeScript cutover is complete: Rust `engine/` is the primary runtime/API/storage/provider-gated control plane, while `dashboard/` and `sdk/typescript/` are the primary TypeScript surfaces. Python remains only as legacy reference plus retained Python SDK compatibility.
+
 - Rust `engine/` owns deterministic dispatch parity, routing/orchestration parity, a disabled-by-default provider trait boundary, storage parity, and the local axum API.
 - `wire_contract/v1/` remains the frozen JSON contract surface.
 - `codegen/` generates Rust, TypeScript, and Python wire types from the frozen schemas.
@@ -45,6 +47,7 @@ Verified in the 2026-05-29 main-branch audit:
 - `python3 scripts/check_agent_handoff.py`
 - `python3 tools/check_security_baseline.py`
 - `PYTHONPATH=src python3 -m unittest discover -s tests`
+- `bash scripts/verify_rust_typescript_stack.sh`
 - `docker compose build`
 - `docker compose up --build -d`
 - `GET /api/v1/health`
@@ -55,4 +58,4 @@ Note: this environment's `python3 -m build` entrypoint is not available because 
 
 ## Remaining Decision
 
-The migration track remains closed. Docker is no longer required for local use. Future work should be maintenance, verification hardening, local small-team self-hosting hardening backed by concrete evidence, explicit env-gated provider beta hardening, or an explicit user-approved decision about removing or relocating the Python reference implementation. Cloud SaaS, default-on provider calls, target writes, real sandbox/process execution, hosted deployment, and real autonomous workers remain out of scope.
+The migration track remains closed and the Rust + TypeScript stack is the primary implementation target. Docker is no longer required for local use. Future work should be maintenance, verification hardening, local small-team self-hosting hardening backed by concrete evidence, explicit env-gated provider beta hardening, or an explicit user-approved decision about removing or relocating the Python reference implementation. Cloud SaaS, default-on provider calls, target writes, real sandbox/process execution, hosted deployment, and real autonomous workers remain out of scope.

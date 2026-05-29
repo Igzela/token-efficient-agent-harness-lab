@@ -26,7 +26,7 @@ The Stage 0-4 task-book scope is complete.
 - Dispatch Kernel Phase 6B-1 per-server route isolation implemented (1603 tests).
 - Dispatch Kernel Phase 6B-2 local API key + tenant boundary implemented and hardened (1654 tests).
 - Dispatch Kernel Phase 7 SDK + Documentation System implemented (sdk.py, doc_generator.py); current verified suite is 2089 tests.
-- Language migration preparation approved: Rust core + axum API target, TypeScript dashboard/SDK target, Python SDK retained. Rust engine parity now covers wire schemas, golden fixtures, dispatch, routing/orchestration, infrastructure, storage, SDK/migrator helpers, doc generation, and a local axum API router. Phase 5 codegen plus TypeScript/Python REST SDK packages are implemented. Phase 6 dashboard is implemented with static export support. Phase 7 local Docker deploy is implemented as an optional verification path. Native local runtime is implemented so one Rust process can serve API + static dashboard with `ACP_DASHBOARD_DIR=dashboard/out`; Phase 8 closeout is recorded in `docs/AGENT_CONTROL_PLANE_MIGRATION_CLOSEOUT.md`; Python reference remains in `src/harness_core/` pending explicit future removal decision.
+- Language migration preparation approved: Rust core + axum API target, TypeScript dashboard/SDK target, Python SDK retained. Rust engine parity now covers wire schemas, golden fixtures, dispatch, routing/orchestration, infrastructure, storage, SDK/migrator helpers, doc generation, and a local axum API router. Phase 5 codegen plus TypeScript/Python REST SDK packages are implemented. Phase 6 dashboard is implemented with static export support. Phase 7 local Docker deploy is implemented as an optional verification path. Native local runtime is implemented so one Rust process can serve API + static dashboard with `ACP_DASHBOARD_DIR=dashboard/out`; Phase 8 closeout is recorded in `docs/AGENT_CONTROL_PLANE_MIGRATION_CLOSEOUT.md`. Rust + TypeScript cutover is complete: Rust `engine/` is the primary runtime/API/storage/provider-gated control plane, `dashboard/` and `sdk/typescript/` are the primary TypeScript surfaces, and Python remains as legacy reference plus retained Python SDK compatibility.
 - Local small-team productization is implemented: app-owned SQLite dispatch history/config/team/API-key metadata/audit/cost state, live dashboard API state, optional local API key role boundary, export, confirmed local backup, and SDK methods. Real providers, target writes, sandbox/process/container/VM execution, runtime workers, cloud SaaS, and hosted production deployment remain disallowed.
 - GitHub private repository published.
 
@@ -145,7 +145,11 @@ If a change does not require documentation updates, state that explicitly in the
 
 ## Test Command
 
-Run:
+Primary Rust + TypeScript cutover verification:
+
+bash scripts/verify_rust_typescript_stack.sh
+
+Legacy Python reference verification:
 
 PYTHONPATH=src python3 -m unittest discover -s tests
 

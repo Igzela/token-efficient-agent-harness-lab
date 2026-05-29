@@ -4,7 +4,7 @@
 
 Token-Efficient Agent Harness Lab is a local deterministic harness for studying event-sourced agent workflow infrastructure from Stage 0 through Stage 4. It includes JSONL event validation, projections, project/task workflow primitives, quality gates, controlled intelligence stubs, and Stage 4 runtime-control abstractions.
 
-Current status: Stage 0-4 complete, Harness App MVP0-MVP8 complete, Trials 0-3 closed, Dispatch Kernel Phases 1-6B-3 stable, Phase 7 SDK + DocGenerator implemented, Rust engine parity through the local axum API router implemented, Phase 5 codegen plus TypeScript/Python REST SDK packages implemented, Phase 6 dashboard implemented, Phase 7 local Docker deploy implemented, Phase 8 migration closeout recorded, native local runtime implemented, and local small-team productization now provides SQLite-backed dispatch history, config/team state, cost summaries, audit log, export, and confirmed local backup. Rust provider stack Stage 1 and Stage 2 provider audit/usage persistence are implemented as explicit env-gated beta paths. Security hardening complete (2089 Python tests, 1031 Rust test cases enumerated by `cargo test -p engine -- --list`).
+Current status: Stage 0-4 complete, Harness App MVP0-MVP8 complete, Trials 0-3 closed, and the agent-control-plane cutover is complete for the Rust + TypeScript stack. The primary local runtime is Rust `engine/` with axum API, SQLite state, provider safety gates, and permission governance. The primary UI and SDK surface is TypeScript (`dashboard/` and `sdk/typescript/`). Python remains only as legacy reference plus the retained Python REST SDK. Security hardening complete (2089 Python tests pass; `cargo test -p engine` passes).
 
 **New sessions should start with [docs/SESSION_START_HERE.md](docs/SESSION_START_HERE.md).**
 
@@ -16,14 +16,22 @@ Local-team productization work is tracked in [docs/PRODUCTIZATION_PLAN.md](docs/
 
 This repository is not a cloud production SaaS or autonomous-agent runtime. It does not call real model providers by default, run real agents, isolate work in real sandboxes, spawn production concurrent workers, provide provider failover, write target repositories, or provide hosted deployment. OpenAI-compatible and Anthropic provider adapters exist behind explicit environment configuration for local beta use; CI uses stub/mock paths and does not call real provider APIs. The local dashboard reads app-owned state from the local engine; dangerous local admin API actions require explicit confirmation and audit logging.
 
-## How To Run Tests
+## How To Verify The Rust + TypeScript Stack
+
+```bash
+bash scripts/verify_rust_typescript_stack.sh
+```
+
+This is the primary cutover verification. It checks Rust formatting, clippy, Rust tests, TypeScript SDK tests/build, dashboard lint/typecheck/build/static export, then starts the Rust engine with the exported dashboard and smokes `/api/v1/health`, `/api/v1/dashboard`, `/api/v1/dispatch`, and the dashboard root.
+
+## How To Run Legacy Reference Tests
 
 ```bash
 PYTHONPATH=src python3 -m unittest discover -s tests
 cargo test -p engine
 ```
 
-Current result: 2089 Python tests pass; 1041 Rust `engine` parity/component/API test cases are enumerated by `cargo test -p engine -- --list`, and `cargo test -p engine` passes.
+Current result: 2089 Python tests pass; `cargo test -p engine` passes.
 
 ## How To Run Without Docker
 
@@ -93,9 +101,7 @@ curl -X POST http://127.0.0.1:8080/api/v1/backups \
   -d '{"label":"manual","confirm_local_backup":true}'
 ```
 
-## SDK Examples
-
-TypeScript:
+## TypeScript SDK Example
 
 ```ts
 import { AgentControlPlaneClient } from "@token-efficient-agent-harness/agent-control-plane-sdk";
@@ -108,7 +114,7 @@ const bundle = await client.dispatch({
 });
 ```
 
-Python:
+Python SDK is retained for compatibility:
 
 ```python
 from agent_control_plane_sdk import AgentControlPlaneClient
@@ -142,13 +148,13 @@ PYTHONPATH=src python3 -m harness_core.cli validate-events docs/stage0/events.js
 ## Repository Structure
 
 ```text
-src/harness_core/        Python harness modules
-engine/                  Rust deterministic parity kernel, dispatch engine, and local axum API router
+engine/                  Rust deterministic kernel, dispatch engine, storage, provider gates, and local axum API
 codegen/                 Wire-contract type generation helpers
 dashboard/               Next.js local agent-control-plane dashboard with static export support
 deploy/                  Optional local Dockerfiles for API and dashboard
 sdk/typescript/          TypeScript REST SDK package
-sdk/python/              Python REST SDK package
+sdk/python/              Legacy-compatible Python REST SDK package
+src/harness_core/        Legacy Python reference implementation
 tests/                   Deterministic unit tests and fixtures
 wire_contract/v1/        Frozen dispatch JSON schemas for Python/Rust parity
 tests/integration/parity/ Stdlib parity runner for dispatch golden fixtures

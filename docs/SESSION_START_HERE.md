@@ -24,7 +24,7 @@ Token-Efficient Agent Harness Lab is a local deterministic harness for studying 
 | Trial 3 multi-repo generalization | Closed — `TRIAL_3_MULTI_REPO_GENERALIZATION_PASS` |
 | Trial 3 target merge | Closed — all 3 target PRs merged, audit PASS_WITH_NOTES |
 
-Tests: 2089 Python pass; 1031 Rust test cases enumerated by `cargo test -p engine -- --list`, with `cargo test -p engine` passing.
+Tests: 2089 Python pass; `cargo test -p engine` passing. Primary cutover verification is `bash scripts/verify_rust_typescript_stack.sh`.
 
 Additional active architecture track:
 
@@ -48,6 +48,7 @@ Additional active architecture track:
 | Agent-Control-Plane Native Local Runtime | Implemented; Rust engine can serve API plus static dashboard from one local process via `ACP_DASHBOARD_DIR=dashboard/out`; Docker is optional |
 | Agent-Control-Plane Local Small-Team Productization | Implemented; Rust engine persists app-owned SQLite dispatch history/config/team/API-key metadata/audit/cost state, dashboard reads live local API state, SDKs cover local state endpoints, and export/confirmed backup are available without Docker |
 | Rust Provider Stack Stage 1 + Stage 2 audit/usage bridge | Implemented as explicit env-gated beta path; provider health/audit endpoints, persistent provider audit events, and dispatch usage columns exist; CI uses stub/mock paths and does not call real provider APIs |
+| Rust + TypeScript Cutover | Complete; Rust `engine/` is the primary runtime/API/storage/provider-gated control plane, `dashboard/` and `sdk/typescript/` are the primary TypeScript surfaces, and Python remains only as legacy reference plus retained Python SDK compatibility |
 
 ## What This Project Is Not
 

@@ -4,8 +4,8 @@ Last verified: 2026-05-29.
 
 ## Repository State
 
-- Branch: `main` with language migration Phases 0-8 complete plus native local runtime and local small-team product support.
-- Tests: **2089 Python pass**, **606 Rust tests pass**, 0 failures.
+- Branch: `main` with the Rust + TypeScript agent-control-plane cutover complete. Rust `engine/` is the primary runtime/API/storage/provider-gated control plane; `dashboard/` and `sdk/typescript/` are the primary TypeScript surfaces. Python remains as legacy reference plus the retained Python REST SDK.
+- Tests: **2089 Python pass**, **cargo test -p engine pass**, 0 failures.
 - Security baseline: ALL CHECKS PASSED.
 
 ## New Session / Documentation Discipline
@@ -81,6 +81,7 @@ Run `python3 scripts/check_agent_handoff.py` before committing so the handoff su
 | Rust Provider Stack — Stage 2 audit/usage bridge | **IMPLEMENTED** — provider audit events persist to local SQLite, dispatch history stores executor type, token usage, estimated provider cost, and latency columns, SDKs expose provider health/audit readers, and `/api/v1/provider/audit` reads persisted provider audit state. |
 | Productization Phase 1 — Provider Safety Gate | **IMPLEMENTED** — `ACP_ENABLE_PROVIDER_EXECUTION=1` required for real provider types (stub remains safe without it), `ACP_REQUIRE_AUTH=1` enforced when provider is active, `dispatch:execute` scope required for provider dispatches, per-dispatch and daily cost caps via `ACP_COST_PER_DISPATCH_USD`/`ACP_COST_DAILY_USD`, dynamic dashboard boundaries reflect real provider state, structured startup summary log. 10 new Rust tests (1041 total). |
 | Productization Phase 2 — Permission Governance | **IMPLEMENTED** — API key create/revoke/rotate/delete/update-scopes via HTTP (POST /keys, POST /keys/:id/revoke, POST /keys/:id/rotate, DELETE /keys/:id, POST /keys/:id/scopes). Team member create/update-role/delete via HTTP (POST /team, PUT /team/:id, DELETE /team/:id). `last_used_at` tracking on auth, `expires_at` support, `revoked_at` enforcement in TenantResolver. Admin audit events for all mutations. All mutation endpoints require `team:admin` scope. TypeScript + Python SDK CRUD methods. Dashboard Team tab with management UI. 8 new Rust integration tests (606 total Rust tests). |
+| Rust + TypeScript Cutover | **COMPLETE** — primary verification is `bash scripts/verify_rust_typescript_stack.sh`, covering Rust fmt/clippy/tests, TypeScript SDK test/build, dashboard lint/typecheck/build/static export, native Rust API + dashboard smoke, and deterministic dispatch smoke. Python is no longer required for the primary local stack, but remains as legacy reference and SDK compatibility. |
 
 Trial 2 complete evidence chain: [`docs/trials/TRIAL_2_FINAL_STATE_INDEX.md`](trials/TRIAL_2_FINAL_STATE_INDEX.md).
 Trial 3 report: [`docs/trials/TRIAL_3_REPORT.md`](trials/TRIAL_3_REPORT.md).

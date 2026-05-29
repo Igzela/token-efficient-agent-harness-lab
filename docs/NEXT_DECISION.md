@@ -19,7 +19,7 @@ The responsible coding agent may choose any of the following without asking for 
 | Dispatch-kernel phase work | Plan and implement the next architecture-book-defined phase only when it can remain deterministic, local, test-first, and free of broader real-provider behavior, real sandbox/process execution, target writes, deployment, and real worker processes. Existing provider adapters are explicit env-gated beta paths and must remain default-off. |
 | Architecture/documentation closeout | Update architecture records, module maps, closeout reports, and handoff docs after accepted changes. |
 | Demo/docs polish | Refine demo docs when verification or user feedback identifies a concrete gap. |
-| Language migration | Agent-control-plane migration phases 0-8 are implemented and recorded in `docs/AGENT_CONTROL_PLANE_MIGRATION_CLOSEOUT.md`. Rust engine/API parity is implemented through the local axum health/ready/openapi/dispatch router plus provider trait boundary. Phase 5 codegen plus TypeScript/Python REST SDK packages, Phase 6 dashboard, Phase 7 optional local Docker deploy, native local runtime smoke, and explicit env-gated provider beta path are implemented and tested. No real workers, target writes, SDK publishing, or cloud production deployment. |
+| Language migration | Agent-control-plane migration phases 0-8 are implemented and recorded in `docs/AGENT_CONTROL_PLANE_MIGRATION_CLOSEOUT.md`. Rust + TypeScript cutover is complete: Rust `engine/` is the primary runtime/API/storage/provider-gated control plane, and `dashboard/` plus `sdk/typescript/` are the primary TypeScript surfaces. Python remains only as legacy reference plus retained Python SDK compatibility. No real workers, target writes, SDK publishing, or cloud production deployment. |
 | Local small-team hardening | Follow `docs/PRODUCTIZATION_PLAN.md`. Provider Safety Gate and Permission Governance are implemented. Next: Cost Governance (cost reporting, provider-estimated vs reserved vs actual). Keep provider execution default-off and explicit; keep target writes, sandbox/process execution, real workers, and cloud SaaS out of scope. |
 
 ## Disallowed by Default
@@ -38,7 +38,7 @@ The following are **not** allowed without explicit human approval and a new impl
 
 The local small-team track does not approve cloud hosting, default-on provider calls, real sandbox/process execution, target-repo writes, hosted deployment, or real autonomous workers.
 
-Python reference implementation remains in `src/harness_core/` until an explicit future removal or relocation decision is approved.
+Python reference implementation remains in `src/harness_core/` as legacy reference. Do not expand it for new runtime features; new primary runtime work belongs in Rust and TypeScript unless a compatibility fix is explicitly needed.
 
 ## Before Starting Autonomous Work
 
