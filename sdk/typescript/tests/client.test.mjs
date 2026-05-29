@@ -48,6 +48,62 @@ test("dispatch posts request body to dispatch endpoint", async () => {
   });
 });
 
+test("dashboard reads local dashboard endpoint", async () => {
+  const { calls, fetchImpl } = captureFetch({ schema_version: "local_dashboard.v1", counts: { dispatches: 1 } });
+  const client = new AgentControlPlaneClient({ baseUrl: "http://127.0.0.1:8080", fetchImpl });
+
+  const result = await client.dashboard();
+
+  assert.equal(result.schema_version, "local_dashboard.v1");
+  assert.equal(calls[0].url, "http://127.0.0.1:8080/api/v1/dashboard");
+  assert.equal(calls[0].init.method, "GET");
+});
+
+test("local state readers use product endpoints", async () => {
+  const { calls, fetchImpl } = captureFetch({ ok: true });
+  const client = new AgentControlPlaneClient({ baseUrl: "http://127.0.0.1:8080", fetchImpl });
+
+  await client.dispatches();
+  await client.config();
+  await client.team();
+  await client.costs();
+  await client.exportState();
+  await client.audit();
+
+  assert.deepEqual(
+    calls.map((call) => call.url),
+    [
+      "http://127.0.0.1:8080/api/v1/dispatches",
+      "http://127.0.0.1:8080/api/v1/config",
+      "http://127.0.0.1:8080/api/v1/team",
+      "http://127.0.0.1:8080/api/v1/costs",
+      "http://127.0.0.1:8080/api/v1/export",
+      "http://127.0.0.1:8080/api/v1/audit",
+    ],
+  );
+  assert(calls.every((call) => call.init.method === "GET"));
+});
+
+test("backup creation posts explicit local confirmation", async () => {
+  const { calls, fetchImpl } = captureFetch({ backup: { backup_id: "backup-0001" } });
+  const client = new AgentControlPlaneClient({
+    apiKey: "test",
+    baseUrl: "http://127.0.0.1:8080",
+    fetchImpl,
+  });
+
+  const result = await client.createBackup({ label: "manual", confirmLocalBackup: true });
+
+  assert.equal(result.backup.backup_id, "backup-0001");
+  assert.equal(calls[0].url, "http://127.0.0.1:8080/api/v1/backups");
+  assert.equal(calls[0].init.method, "POST");
+  assert.deepEqual(JSON.parse(calls[0].init.body), {
+    confirm_local_backup: true,
+    label: "manual",
+  });
+  assert.equal(calls[0].init.headers.authorization, ["Bearer", "test"].join(" "));
+});
+
 test("api key becomes auth header", async () => {
   const { calls, fetchImpl } = captureFetch();
   const client = new AgentControlPlaneClient({

@@ -27,6 +27,27 @@ class AgentControlPlaneClient:
     def openapi(self) -> dict[str, Any]:
         return self._get("/api/v1/openapi.json")
 
+    def dashboard(self) -> dict[str, Any]:
+        return self._get("/api/v1/dashboard")
+
+    def dispatches(self) -> dict[str, Any]:
+        return self._get("/api/v1/dispatches")
+
+    def config(self) -> dict[str, Any]:
+        return self._get("/api/v1/config")
+
+    def team(self) -> dict[str, Any]:
+        return self._get("/api/v1/team")
+
+    def costs(self) -> dict[str, Any]:
+        return self._get("/api/v1/costs")
+
+    def export_state(self) -> dict[str, Any]:
+        return self._get("/api/v1/export")
+
+    def audit(self) -> dict[str, Any]:
+        return self._get("/api/v1/audit")
+
     def dispatch(
         self,
         raw_request: str,
@@ -34,6 +55,19 @@ class AgentControlPlaneClient:
     ) -> DispatchBundle:
         request = DispatchRequest(raw_request=raw_request, request_source=request_source)
         return self._post("/api/v1/dispatch", request.to_json())
+
+    def create_backup(
+        self,
+        label: str | None = None,
+        confirm_local_backup: bool = False,
+    ) -> dict[str, Any]:
+        return self._post(
+            "/api/v1/backups",
+            {
+                "label": label,
+                "confirm_local_backup": confirm_local_backup,
+            },
+        )
 
     def _get(self, path: str) -> Any:
         request = Request(f"{self.base_url}{path}", headers=self._headers(), method="GET")

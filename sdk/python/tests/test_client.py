@@ -62,6 +62,59 @@ class ClientDispatchTest(unittest.TestCase):
         self.assertEqual(body["request_source"], "api")
 
 
+class ClientLocalStateTest(unittest.TestCase):
+    @patch("agent_control_plane_sdk.client.urlopen")
+    def test_dashboard_reads_local_dashboard_endpoint(self, mock_urlopen):
+        mock_urlopen.return_value = mock_response({"schema_version": "local_dashboard.v1"})
+        client = AgentControlPlaneClient("http://localhost:8080")
+        result = client.dashboard()
+        self.assertEqual(result["schema_version"], "local_dashboard.v1")
+        args, _ = mock_urlopen.call_args
+        req = args[0]
+        self.assertEqual(req.method, "GET")
+        self.assertEqual(req.full_url, "http://localhost:8080/api/v1/dashboard")
+
+    @patch("agent_control_plane_sdk.client.urlopen")
+    def test_local_state_readers_use_product_endpoints(self, mock_urlopen):
+        mock_urlopen.return_value = mock_response({"ok": True})
+        client = AgentControlPlaneClient("http://localhost:8080")
+        client.dispatches()
+        client.config()
+        client.team()
+        client.costs()
+        client.export_state()
+        client.audit()
+
+        urls = [call.args[0].full_url for call in mock_urlopen.call_args_list]
+        self.assertEqual(
+            urls,
+            [
+                "http://localhost:8080/api/v1/dispatches",
+                "http://localhost:8080/api/v1/config",
+                "http://localhost:8080/api/v1/team",
+                "http://localhost:8080/api/v1/costs",
+                "http://localhost:8080/api/v1/export",
+                "http://localhost:8080/api/v1/audit",
+            ],
+        )
+
+    @patch("agent_control_plane_sdk.client.urlopen")
+    def test_create_backup_posts_confirmation(self, mock_urlopen):
+        mock_urlopen.return_value = mock_response({"backup": {"backup_id": "backup-0001"}})
+        client = AgentControlPlaneClient("http://localhost:8080", api_key="test")
+        result = client.create_backup(label="manual", confirm_local_backup=True)
+        self.assertEqual(result["backup"]["backup_id"], "backup-0001")
+        args, _ = mock_urlopen.call_args
+        req = args[0]
+        self.assertEqual(req.method, "POST")
+        self.assertEqual(req.full_url, "http://localhost:8080/api/v1/backups")
+        self.assertEqual(req.get_header("Authorization"), " ".join(["Bearer", "test"]))
+        self.assertEqual(
+            json.loads(req.data),
+            {"label": "manual", "confirm_local_backup": True},
+        )
+
+
 class ClientAuthTest(unittest.TestCase):
     @patch("agent_control_plane_sdk.client.urlopen")
     def test_bearer_token_included(self, mock_urlopen):

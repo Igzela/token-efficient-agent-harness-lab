@@ -31,10 +31,45 @@ export class AgentControlPlaneClient {
     return this.getJson<Record<string, unknown>>("/api/v1/openapi.json");
   }
 
+  dashboard(): Promise<Record<string, unknown>> {
+    return this.getJson<Record<string, unknown>>("/api/v1/dashboard");
+  }
+
+  dispatches(): Promise<Record<string, unknown>> {
+    return this.getJson<Record<string, unknown>>("/api/v1/dispatches");
+  }
+
+  config(): Promise<Record<string, unknown>> {
+    return this.getJson<Record<string, unknown>>("/api/v1/config");
+  }
+
+  team(): Promise<Record<string, unknown>> {
+    return this.getJson<Record<string, unknown>>("/api/v1/team");
+  }
+
+  costs(): Promise<Record<string, unknown>> {
+    return this.getJson<Record<string, unknown>>("/api/v1/costs");
+  }
+
+  exportState(): Promise<Record<string, unknown>> {
+    return this.getJson<Record<string, unknown>>("/api/v1/export");
+  }
+
+  audit(): Promise<Record<string, unknown>> {
+    return this.getJson<Record<string, unknown>>("/api/v1/audit");
+  }
+
   dispatch(request: DispatchRequest): Promise<DispatchBundle> {
     return this.postJson<DispatchBundle>("/api/v1/dispatch", {
       raw_request: request.raw_request,
       request_source: request.request_source,
+    });
+  }
+
+  createBackup(request: { label?: string; confirmLocalBackup: boolean }): Promise<Record<string, unknown>> {
+    return this.postJson<Record<string, unknown>>("/api/v1/backups", {
+      label: request.label,
+      confirm_local_backup: request.confirmLocalBackup,
     });
   }
 
