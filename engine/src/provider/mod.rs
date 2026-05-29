@@ -1,3 +1,18 @@
+pub mod anthropic;
+pub mod audit;
+pub mod config;
+pub mod credential;
+pub mod executor;
+pub mod openai;
+pub mod redaction;
+pub mod retry;
+pub mod stub;
+pub mod transport;
+
+pub use audit::{ProviderAuditEvent, ProviderAuditRecorder};
+pub use config::{CredentialRef, ProviderConfig, RetryPolicy};
+pub use credential::CredentialBoundary;
+
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -45,10 +60,11 @@ pub struct ProviderError {
 
 pub type ProviderResult = Result<ProviderResponse, ProviderError>;
 
+#[async_trait::async_trait]
 pub trait Provider: Send + Sync {
     fn provider_id(&self) -> &str;
     fn is_enabled(&self) -> bool;
-    fn invoke(&self, request: &ProviderRequest) -> ProviderResult;
+    async fn invoke(&self, request: &ProviderRequest) -> ProviderResult;
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -64,6 +80,7 @@ impl DisabledProvider {
     }
 }
 
+#[async_trait::async_trait]
 impl Provider for DisabledProvider {
     fn provider_id(&self) -> &str {
         &self.provider_id
@@ -73,7 +90,7 @@ impl Provider for DisabledProvider {
         false
     }
 
-    fn invoke(&self, _request: &ProviderRequest) -> ProviderResult {
+    async fn invoke(&self, _request: &ProviderRequest) -> ProviderResult {
         Err(ProviderError {
             schema_version: "provider_error.v1".to_string(),
             provider_id: self.provider_id.clone(),
@@ -81,5 +98,21 @@ impl Provider for DisabledProvider {
             message: "real provider calls are disabled by default".to_string(),
             retryable: false,
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn disabled_provider_returns_error() {
+        let p = DisabledProvider::new("test");
+        assert!(!p.is_enabled());
+        let req = ProviderRequest::local_stub("test", "m", "hello");
+        let result = p.invoke(&req).await;
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert_eq!(err.error_domain, "provider_disabled");
     }
 }

@@ -8,6 +8,7 @@ use crate::dispatch_ledger::{DispatchBundle, DispatchLedger};
 use crate::evaluation_stub::{EvaluationResult, EvaluationStub};
 use crate::executor_adapter::{Executor, NoopExecutor};
 use crate::model_selector::ModelSelector;
+use crate::provider::executor::make_not_executed_result;
 use crate::runtime::FixtureRuntime;
 use crate::task_analyzer::{RuleBasedTaskAnalyzer, TaskAnalysis};
 
@@ -18,6 +19,7 @@ pub struct DispatchEngine {
     executor: Box<dyn Executor>,
     evaluator: EvaluationStub,
     ledger: DispatchLedger,
+    executor_type_name: String,
 }
 
 impl Default for DispatchEngine {
@@ -29,6 +31,7 @@ impl Default for DispatchEngine {
             executor: Box::new(NoopExecutor),
             evaluator: EvaluationStub,
             ledger: DispatchLedger::new(),
+            executor_type_name: "noop".to_string(),
         }
     }
 }
@@ -43,6 +46,19 @@ impl DispatchEngine {
             executor,
             ..Self::default()
         }
+    }
+
+    pub fn with_provider_executor(provider: std::sync::Arc<dyn crate::provider::Provider>) -> Self {
+        use crate::provider::executor::ProviderExecutor;
+        Self {
+            executor: Box::new(ProviderExecutor::new(provider)),
+            executor_type_name: "provider".to_string(),
+            ..Self::default()
+        }
+    }
+
+    pub fn executor_type(&self) -> &str {
+        &self.executor_type_name
     }
 
     pub fn dispatch(&self, raw_request: &str, request_source: &str) -> Value {
@@ -64,14 +80,15 @@ impl DispatchEngine {
             &selection.selected_tier,
             &mut runtime,
         );
-        let execution_policy = build_execution_policy(&analysis);
+        let execution_policy = build_execution_policy(&analysis, &self.executor_type_name);
         let execution_gates = build_execution_gates(
             &analysis,
             &budget_reservation,
             &execution_policy,
+            &self.executor_type_name,
             &mut runtime,
         );
-        let hard_constraints = derive_hard_constraints(&analysis);
+        let hard_constraints = derive_hard_constraints(&analysis, &execution_policy);
         let decision_status = determine_decision_status(&execution_gates);
 
         let decision = DispatchDecision {
@@ -111,9 +128,27 @@ impl DispatchEngine {
             Some(decision.budget_reservation.reservation_id.clone()),
             &runtime,
         );
-        let execution_result =
+
+        let is_provider = self.executor_type_name == "provider";
+        let provider_blocked = is_provider
+            && (decision.decision_status != "decided"
+                || decision
+                    .hard_constraints
+                    .contains(&"no_provider_call".to_string()));
+
+        let execution_result = if provider_blocked {
+            make_not_executed_result(
+                &decision,
+                &dispatch_id,
+                &mut runtime,
+                "execution_not_authorized",
+                "provider execution blocked by constraints",
+            )
+        } else {
             self.executor
-                .execute(&decision, raw_request, &dispatch_id, &mut runtime);
+                .execute(&decision, raw_request, &dispatch_id, &mut runtime)
+        };
+
         let evaluation_result = self
             .evaluator
             .evaluate(&execution_result, &decision, &mut runtime);
@@ -141,11 +176,11 @@ pub fn build_dispatch_bundle(raw_request: &str, request_source: &str) -> Value {
     DispatchEngine::new().dispatch(raw_request, request_source)
 }
 
-fn build_execution_policy(analysis: &TaskAnalysis) -> Value {
+fn build_execution_policy(analysis: &TaskAnalysis, executor_type: &str) -> Value {
     let requires_human_review = ["critical", "high"].contains(&analysis.risk_level.as_str())
         || analysis.confidence_label == "low";
     json!({
-        "executor_type": "noop",
+        "executor_type": executor_type,
         "execution_allowed": true,
         "requires_human_review": requires_human_review,
         "max_retries": 0
@@ -156,20 +191,24 @@ fn build_execution_gates(
     analysis: &TaskAnalysis,
     reservation: &BudgetReservation,
     execution_policy: &Value,
+    executor_type: &str,
     runtime: &mut FixtureRuntime,
 ) -> Vec<ExecutionGate> {
     let mut gates = Vec::new();
-    gates.push(ExecutionGate {
-        gate_id: runtime.id("gate-"),
-        gate_type: "provider_disabled".to_string(),
-        severity: "info".to_string(),
-        reason: "real provider calls disabled \u{2014} non-provider executor".to_string(),
-        evidence_refs: Vec::new(),
-        clearance_required: "policy".to_string(),
-        cleared: false,
-        cleared_by: None,
-        cleared_at: None,
-    });
+
+    if executor_type != "provider" {
+        gates.push(ExecutionGate {
+            gate_id: runtime.id("gate-"),
+            gate_type: "provider_disabled".to_string(),
+            severity: "info".to_string(),
+            reason: "real provider calls disabled \u{2014} non-provider executor".to_string(),
+            evidence_refs: Vec::new(),
+            clearance_required: "policy".to_string(),
+            cleared: false,
+            cleared_by: None,
+            cleared_at: None,
+        });
+    }
     gates.push(ExecutionGate {
         gate_id: runtime.id("gate-"),
         gate_type: "sandbox_disabled".to_string(),
@@ -271,11 +310,19 @@ fn build_execution_gates(
     gates
 }
 
-fn derive_hard_constraints(analysis: &TaskAnalysis) -> Vec<String> {
-    let mut constraints = vec![
-        "no_target_write".to_string(),
-        "no_provider_call".to_string(),
-    ];
+fn derive_hard_constraints(analysis: &TaskAnalysis, execution_policy: &Value) -> Vec<String> {
+    let mut constraints = vec!["no_target_write".to_string()];
+
+    let executor_type = execution_policy["executor_type"].as_str().unwrap_or("noop");
+    let user_negated_provider = analysis
+        .negative_evidence
+        .iter()
+        .any(|e| e.feature.contains("provider") || e.text.contains("no_provider_call"));
+
+    if executor_type != "provider" || user_negated_provider {
+        constraints.push("no_provider_call".to_string());
+    }
+
     if analysis.risk_level == "critical" {
         constraints.push("requires_human_approval".to_string());
     }

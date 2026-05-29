@@ -123,6 +123,8 @@ See `docs/CURRENT_STATUS.md` for full details.
 - **2026-05-29**: Main-branch migration audit — verified local `main` at the agent-control-plane closeout state: handoff check, security baseline, 2089 Python tests, wire parity, Rust fmt/clippy/425 tests, dashboard lint/typecheck/build, TypeScript SDK build + npm dry-run, Python SDK `python -m build`, Docker compose build/up, API health/dispatch smoke, and dashboard HTTP smoke all pass. Added ignore rules for local frontend/SDK build outputs.
 - **2026-05-29**: Native local runtime — Added static dashboard export, Rust static dashboard serving via `ACP_DASHBOARD_DIR`, and `scripts/smoke_native_runtime.py`; native API + dashboard smoke passes without Docker.
 - **2026-05-29**: Local small-team productization — Added app-owned SQLite local state for dispatch history, config, team/API-key metadata, audit log, and costs; wired Rust API endpoints for dashboard/history/config/team/cost/export/audit/confirmed-backup; dashboard now reads real local state instead of fixture rows; TypeScript/Python SDKs cover local state and backup methods; native smoke verifies persisted dashboard/export state. Rust test count is now 431.
+- **2026-05-29**: Provider infrastructure (Agent B) — Created `engine/src/provider/audit.rs` (ProviderAuditEvent, ProviderAuditRecorder with std::sync::Mutex, monotonic hex event IDs, extra-field merge) and `engine/src/provider/redaction.rs` (redact_secrets, redact_audit_fields with recursive sensitive-key redaction). Added module re-exports to `mod.rs`. 28 new inline tests. Updated MODULE_MAP.md and CURRENT_STATUS.md. Build blocked by Agent A's openai.rs (CredentialRef import path + Option<&Value> calling convention); no errors from Agent B files.
+- **2026-05-29**: Rust provider stack Stage 1 (Agent C) — Implemented full `RetryFallbackManager` in `engine/src/provider/retry.rs` with `Provider` trait impl, budget-checked retry with backoff, and fallback routing. Added `executor_type()` to `DispatchEngine`. Added `GET /api/v1/provider/health` endpoint to http_server with noop/provider status reporting. Added `with_provider()` to `AxumApiState` (wires both provider reference and engine executor). 522 Rust tests, cargo fmt/clippy clean. Updated CURRENT_STATUS.md, MODULE_MAP.md, CLAUDE.md.
 - Previous BLOCK findings (b6d5bc1): HIGH-1 rate limit not wired, HIGH-2 scope enforcement missing, HIGH-3 plugin locks unused
 - Gate 1 addresses: HIGH-1 (rate limiter in ServerContext + _check_rate_limit), HIGH-2 (scope enforcement + AuthorizationDecision + 403/429)
 - Gate 2 addresses: atomic restore, WAL safety, failure-mode coverage
@@ -212,7 +214,7 @@ See `docs/CURRENT_STATUS.md` for full details.
 
 - **Framework**: unittest (stdlib), no pytest
 - **Run command**: `PYTHONPATH=src python3 -m unittest discover -s tests`
-- **Current count**: 2089 Python tests + 432 Rust tests, 0 failures (as of 2026-05-29)
+- **Current count**: 2089 Python tests + 522 Rust tests, 0 failures (as of 2026-05-29)
 - **Coverage**: Phase boundary contracts, schema validation, golden fixtures
 - **CI**: GitHub Actions on push/PR to main — runs security baseline + all tests
 - **Test naming**: `tests/test_<module>.py`, one test file per source module

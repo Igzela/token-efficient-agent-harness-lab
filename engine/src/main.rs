@@ -3,9 +3,18 @@ use engine::infrastructure::auth::{
     hash_api_key, validate_token_shape, APIKey, Tenant, TenantResolver,
 };
 use engine::infrastructure::rate_limiter::RateLimiter;
+use engine::provider::anthropic::AnthropicProvider;
+use engine::provider::config::CredentialRef;
+use engine::provider::config::ProviderConfig;
+use engine::provider::credential::CredentialBoundary;
+use engine::provider::openai::OpenAiProvider;
+use engine::provider::stub::StubProvider;
+use engine::provider::transport::ReqwestTransport;
+use engine::provider::Provider;
 use engine::storage::local_product_store::LocalProductStore;
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 #[tokio::main]
 async fn main() {
@@ -31,7 +40,7 @@ async fn main() {
             .expect("failed to record local admin API key metadata");
     }
     let state = configure_auth(
-        AxumApiState::new()
+        build_state_with_provider(AxumApiState::new())
             .with_local_store(store)
             .with_backup_dir(backup_dir),
     );
@@ -101,6 +110,69 @@ fn configure_auth(state: AxumApiState) -> AxumApiState {
         expires_at: None,
     });
     state.with_auth(resolver, RateLimiter::new(60.0, 10_000), Some(10_000), 0.0)
+}
+
+fn build_state_with_provider(state: AxumApiState) -> AxumApiState {
+    let provider_type = match std::env::var("ACP_PROVIDER_TYPE") {
+        Ok(v) if !v.trim().is_empty() => v,
+        _ => return state,
+    };
+    let api_key_env = std::env::var("ACP_API_KEY").unwrap_or_default();
+    let model = std::env::var("ACP_MODEL").unwrap_or_else(|_| "default".to_string());
+    let base_url = std::env::var("ACP_BASE_URL").unwrap_or_default();
+
+    let boundary = CredentialBoundary::new("env").expect("env credential backend");
+    let cred_ref = CredentialRef::new(
+        &api_key_env,
+        "env",
+        "***",
+        "provider:auto",
+        "2026-01-01T00:00:00Z",
+    );
+
+    let provider: Arc<dyn Provider> = match provider_type.as_str() {
+        "stub" => Arc::new(StubProvider::new("stub-env")),
+        "openai_compatible" => {
+            let config = ProviderConfig::new(
+                "openai-env",
+                "openai_compatible",
+                &base_url,
+                &model,
+                &api_key_env,
+                "2026-01-01T00:00:00Z",
+            );
+            Arc::new(OpenAiProvider::new(
+                config,
+                boundary,
+                cred_ref,
+                Arc::new(ReqwestTransport::new()),
+                None,
+            ))
+        }
+        "anthropic" => {
+            let config = ProviderConfig::new(
+                "anthropic-env",
+                "anthropic",
+                &base_url,
+                &model,
+                &api_key_env,
+                "2026-01-01T00:00:00Z",
+            );
+            Arc::new(AnthropicProvider::new(
+                config,
+                boundary,
+                cred_ref,
+                Arc::new(ReqwestTransport::new()),
+                None,
+            ))
+        }
+        other => {
+            eprintln!("unknown ACP_PROVIDER_TYPE: {other}, falling back to noop");
+            return state;
+        }
+    };
+
+    state.with_provider(provider)
 }
 
 fn local_admin_scopes() -> HashSet<String> {

@@ -13,6 +13,7 @@ use std::sync::{Arc, Mutex};
 use crate::dispatch_engine::DispatchEngine;
 use crate::infrastructure::auth::{AuthDecision, TenantResolver};
 use crate::infrastructure::rate_limiter::RateLimiter;
+use crate::provider::Provider;
 use crate::storage::backup_manager::BackupManager;
 use crate::storage::local_product_store::{local_boundaries, LocalProductStore};
 
@@ -57,6 +58,7 @@ pub struct AxumApiState {
     dashboard_dir: Option<Arc<PathBuf>>,
     local_store: Option<Arc<LocalProductStore>>,
     backup_dir: Option<Arc<PathBuf>>,
+    provider: Option<Arc<dyn Provider>>,
 }
 
 impl Default for AxumApiState {
@@ -76,6 +78,7 @@ impl AxumApiState {
             dashboard_dir: None,
             local_store: None,
             backup_dir: None,
+            provider: None,
         }
     }
 
@@ -105,6 +108,17 @@ impl AxumApiState {
 
     pub fn with_backup_dir(mut self, backup_dir: impl Into<PathBuf>) -> Self {
         self.backup_dir = Some(Arc::new(backup_dir.into()));
+        self
+    }
+
+    pub fn with_provider(mut self, provider: Arc<dyn Provider>) -> Self {
+        self.engine = Arc::new(DispatchEngine::with_provider_executor(provider.clone()));
+        self.provider = Some(provider);
+        self
+    }
+
+    pub fn with_engine(mut self, engine: DispatchEngine) -> Self {
+        self.engine = Arc::new(engine);
         self
     }
 }
@@ -203,6 +217,10 @@ fn axum_routes() -> Router<AxumApiState> {
         .route(
             "/api/v1/backups",
             post(api_create_backup).options(cors_preflight),
+        )
+        .route(
+            "/api/v1/provider/health",
+            get(api_provider_health).options(cors_preflight),
         )
 }
 
@@ -507,6 +525,57 @@ async fn api_openapi(
     Ok((cors_headers(), Json(openapi_document())))
 }
 
+async fn api_provider_health(
+    State(state): State<AxumApiState>,
+    headers: HeaderMap,
+) -> Result<impl IntoResponse, ApiError> {
+    authorize(&state, &headers, "health:read")?;
+    if state.engine.executor_type() == "noop" {
+        return Ok((
+            cors_headers(),
+            Json(json!({
+                "schema_version": AXUM_API_SCHEMA_VERSION,
+                "status": "noop",
+                "message": "no provider configured",
+            })),
+        ));
+    }
+    let Some(provider) = &state.provider else {
+        return Ok((
+            cors_headers(),
+            Json(json!({
+                "schema_version": AXUM_API_SCHEMA_VERSION,
+                "status": "error",
+                "message": "provider reference not available",
+            })),
+        ));
+    };
+    let enabled = provider.is_enabled();
+    let provider_id = provider.provider_id();
+    if enabled {
+        Ok((
+            cors_headers(),
+            Json(json!({
+                "schema_version": AXUM_API_SCHEMA_VERSION,
+                "status": "ok",
+                "provider_id": provider_id,
+                "enabled": true,
+            })),
+        ))
+    } else {
+        Ok((
+            cors_headers(),
+            Json(json!({
+                "schema_version": AXUM_API_SCHEMA_VERSION,
+                "status": "error",
+                "provider_id": provider_id,
+                "enabled": false,
+                "message": "provider is disabled",
+            })),
+        ))
+    }
+}
+
 async fn cors_preflight() -> impl IntoResponse {
     (cors_headers(), StatusCode::NO_CONTENT)
 }
@@ -724,6 +793,15 @@ pub fn openapi_document() -> serde_json::Value {
                         "200": {"description": "Backup metadata"},
                         "400": {"description": "Missing explicit confirmation"},
                         "403": {"description": "Forbidden"}
+                    }
+                }
+            },
+            "/api/v1/provider/health": {
+                "get": {
+                    "summary": "Provider health check",
+                    "description": "Reports provider status: noop if no provider configured, ok if enabled, error if disabled or unavailable.",
+                    "responses": {
+                        "200": {"description": "Provider health status"}
                     }
                 }
             }
