@@ -1,6 +1,7 @@
 {
   "name": "@token-efficient-agent-harness/agent-control-plane-sdk",
   "version": "0.1.0",
+  "packageManager": "pnpm@11.4.0",
   "description": "TypeScript REST SDK for the local Agent Control Plane API",
   "type": "module",
   "main": "dist/index.js",

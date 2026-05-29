@@ -1,6 +1,7 @@
 {
   "name": "agent-control-plane-dashboard",
   "version": "0.1.0",
+  "packageManager": "pnpm@11.4.0",
   "private": true,
   "scripts": {
     "lint": "node scripts/lint-readonly.mjs",
