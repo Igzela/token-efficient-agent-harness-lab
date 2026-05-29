@@ -4,14 +4,17 @@ Date: 2026-05-29
 
 ## Status
 
-Agent-control-plane migration phases 0-7 are implemented on the active branch, Phase 8 closeout is recorded here, and native local runtime hardening is implemented.
+Agent-control-plane migration phases 0-7 are implemented, Phase 8 closeout is recorded here, native local runtime hardening is implemented, and the explicitly approved local small-team productization track is implemented.
 
 - Rust `engine/` owns deterministic dispatch parity, routing/orchestration parity, a disabled-by-default provider trait boundary, storage parity, and the local axum API.
 - `wire_contract/v1/` remains the frozen JSON contract surface.
 - `codegen/` generates Rust, TypeScript, and Python wire types from the frozen schemas.
 - `sdk/typescript/` and `sdk/python/` provide REST SDKs and do not bind private Rust internals.
-- `dashboard/` provides a read-only Next.js dashboard with dispatch, routing, agents/workflows, costs, settings, health views, and static export support.
+- `dashboard/` provides a local Next.js dashboard with live dispatch, routing, team, costs, settings, and health views plus static export support.
 - Rust `engine` can serve the exported dashboard plus API from one local process via `ACP_DASHBOARD_DIR=dashboard/out`.
+- Rust `engine` now defaults to app-owned SQLite local state at `.agent-control-plane/local-team.db`, with dispatch history, config, team/API-key metadata, audit log, cost summary, export, and admin-auth-confirmed local backup APIs.
+- `dashboard/` reads live local API state from `/api/v1/dashboard` instead of fixture rows.
+- TypeScript and Python SDKs include local state and backup endpoint methods.
 - `deploy/` plus root `docker-compose.yml` provide optional local API + dashboard startup verification only.
 - Python reference implementation remains in `src/harness_core/` until any future explicit removal decision.
 
@@ -22,6 +25,7 @@ Agent-control-plane migration phases 0-7 are implemented on the active branch, P
 - No real sandbox/process/container/VM execution was added beyond optional local Docker build/run validation for this repository.
 - No runtime autonomous workers were added.
 - Dashboard has no approve/run/deploy/execute/merge controls and does not call the dispatch POST endpoint.
+- Confirmed local backup requires local auth, `backup:admin`, and `confirm_local_backup=true`; it is limited to app-owned SQLite state and records an audit event.
 - Docker files contain no production credentials and are optional local development artifacts.
 
 ## Verification Evidence
@@ -51,4 +55,4 @@ Note: this environment's `python3 -m build` entrypoint is not available because 
 
 ## Remaining Decision
 
-No further migration implementation slice is known inside the approved scope. Docker is no longer required for local use. Future work should be maintenance, verification hardening, or an explicit user-approved decision about removing or relocating the Python reference implementation.
+The migration track remains closed. Docker is no longer required for local use. Future work should be maintenance, verification hardening, local small-team self-hosting hardening backed by concrete evidence, or an explicit user-approved decision about removing or relocating the Python reference implementation. Cloud SaaS, real provider calls, target writes, real sandbox/process execution, hosted deployment, and real autonomous workers remain out of scope.

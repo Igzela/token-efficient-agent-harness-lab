@@ -17,7 +17,8 @@ The responsible coding agent may choose any of the following without asking for 
 | Dispatch-kernel phase work | Plan and implement the next architecture-book-defined phase only when it can remain deterministic, local, test-first, and free of real providers, real sandbox/process execution, target writes, deployment, and real worker processes. |
 | Architecture/documentation closeout | Update architecture records, module maps, closeout reports, and handoff docs after accepted changes. |
 | Demo/docs polish | Refine demo docs when verification or user feedback identifies a concrete gap. |
-| Language migration | Agent-control-plane migration phases 0-8 are implemented and recorded in `docs/AGENT_CONTROL_PLANE_MIGRATION_CLOSEOUT.md`. Rust engine/API parity is implemented through the local axum health/ready/openapi/dispatch router plus disabled-by-default provider trait boundary (428 Rust tests, 36 modules, 32 test files). Phase 5 codegen plus TypeScript/Python REST SDK packages, Phase 6 read-only Next.js dashboard, Phase 7 optional local Docker deploy, and native local runtime smoke are implemented and tested. No further migration implementation slice is known inside the approved scope. Providers remain stub/off; no real workers, target writes, executable dashboard controls, SDK publishing, or production deployment. |
+| Language migration | Agent-control-plane migration phases 0-8 are implemented and recorded in `docs/AGENT_CONTROL_PLANE_MIGRATION_CLOSEOUT.md`. Rust engine/API parity is implemented through the local axum health/ready/openapi/dispatch router plus disabled-by-default provider trait boundary. Phase 5 codegen plus TypeScript/Python REST SDK packages, Phase 6 dashboard, Phase 7 optional local Docker deploy, and native local runtime smoke are implemented and tested. Providers remain stub/off; no real workers, target writes, SDK publishing, or cloud production deployment. |
+| Local small-team hardening | The explicit local small-team productization track is implemented for app-owned SQLite state, live dashboard reads, local API role boundary, export/confirmed backup, SDK coverage, and no-Docker native runtime. Future work may harden this local-only path when evidence identifies a concrete gap, while keeping real providers, target writes, sandbox/process execution, real workers, and cloud SaaS out of scope. |
 
 ## Disallowed by Default
 
@@ -31,9 +32,9 @@ The following are **not** allowed without explicit human approval and a new impl
 - **Runtime autonomous workers** — real concurrent worker processes.
 - **Target repo writes** — any mutation of registered target repositories.
 - **Approval/run/execute/deploy/merge controls** — any execution or deployment mechanism.
-- **Productionization** — hosted service, production UI, deployment, auth/multitenancy, or user-facing release.
+- **Cloud productionization** — hosted service, SaaS deployment, production multi-tenant service, or remote user-facing release.
 
-The language migration target does not by itself approve productionization, real provider calls, real sandbox/process execution, deployment, target-repo writes, or executable UI controls.
+The local small-team track does not approve cloud hosting, real provider calls, real sandbox/process execution, target-repo writes, hosted deployment, or real autonomous workers.
 
 Python reference implementation remains in `src/harness_core/` until an explicit future removal or relocation decision is approved.
 

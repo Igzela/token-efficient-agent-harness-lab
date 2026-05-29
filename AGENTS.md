@@ -26,10 +26,11 @@ The Stage 0-4 task-book scope is complete.
 - Dispatch Kernel Phase 6B-1 per-server route isolation implemented (1603 tests).
 - Dispatch Kernel Phase 6B-2 local API key + tenant boundary implemented and hardened (1654 tests).
 - Dispatch Kernel Phase 7 SDK + Documentation System implemented (sdk.py, doc_generator.py); current verified suite is 2089 tests.
-- Language migration preparation approved: Rust core + axum API target, TypeScript dashboard/SDK target, Python SDK retained. Rust engine parity now covers wire schemas, golden fixtures, dispatch, routing/orchestration, infrastructure, storage, SDK/migrator helpers, doc generation, and a local axum API router for health/ready/openapi/dispatch. Phase 5 codegen plus TypeScript/Python REST SDK packages are implemented. Phase 6 read-only Next.js dashboard is implemented with static export support. Phase 7 local Docker deploy is implemented as an optional verification path. Native local runtime is implemented so one Rust process can serve API + static dashboard with `ACP_DASHBOARD_DIR=dashboard/out`; Phase 8 closeout is recorded in `docs/AGENT_CONTROL_PLANE_MIGRATION_CLOSEOUT.md`; Python reference remains in `src/harness_core/` pending explicit future removal decision. Real providers, target writes, sandbox/process/container/VM execution, runtime workers, production deployment, and executable dashboard controls remain disallowed.
+- Language migration preparation approved: Rust core + axum API target, TypeScript dashboard/SDK target, Python SDK retained. Rust engine parity now covers wire schemas, golden fixtures, dispatch, routing/orchestration, infrastructure, storage, SDK/migrator helpers, doc generation, and a local axum API router. Phase 5 codegen plus TypeScript/Python REST SDK packages are implemented. Phase 6 dashboard is implemented with static export support. Phase 7 local Docker deploy is implemented as an optional verification path. Native local runtime is implemented so one Rust process can serve API + static dashboard with `ACP_DASHBOARD_DIR=dashboard/out`; Phase 8 closeout is recorded in `docs/AGENT_CONTROL_PLANE_MIGRATION_CLOSEOUT.md`; Python reference remains in `src/harness_core/` pending explicit future removal decision.
+- Local small-team productization is implemented: app-owned SQLite dispatch history/config/team/API-key metadata/audit/cost state, live dashboard API state, optional local API key role boundary, export, confirmed local backup, and SDK methods. Real providers, target writes, sandbox/process/container/VM execution, runtime workers, cloud SaaS, and hosted production deployment remain disallowed.
 - GitHub private repository published.
 
-This project is now in autonomous maintainer mode for repository advancement. The responsible coding agent may keep advancing approved documentation, test, CI, hardening, and dispatch-kernel tracks without waiting for a new human instruction on every commit. The local dashboard remains a prototype. New UI, product, production, deployment, real-provider, or real-execution tracks still require explicit scope and human approval.
+This project is now in autonomous maintainer mode for repository advancement. The responsible coding agent may keep advancing approved documentation, test, CI, hardening, dispatch-kernel, and local small-team self-hosting tracks without waiting for a new human instruction on every commit. New cloud/SaaS, hosted production, real-provider, target-write, or real-execution tracks still require explicit scope and human approval.
 
 ## New Session Bootstrap
 
@@ -68,7 +69,7 @@ Allowed autonomous advancement:
 
 Not allowed under autonomous authority:
 
-- create a new product surface, UI track, hosted service, or production runtime
+- create a new cloud product surface, hosted service, or production runtime
 - add real model-provider calls, secrets, SDK dependency wiring, network transports, process execution, containers, VMs, target-repo mutation, approval/run/deploy controls, or real autonomous workers
 - bypass the architecture book, phase gates, tests, or documentation maintenance rule
 
@@ -100,9 +101,9 @@ Do not add without explicit human approval:
 - real autonomous agents
 - real sandbox/process/container/VM execution
 - real concurrent workers
-- Web UI implementation
+- new cloud/hosted Web UI implementation
 - provider failover
-- production deployment
+- cloud or hosted production deployment
 - destructive filesystem operations
 - Stage 5 implementation
 
@@ -122,12 +123,12 @@ Allowed by default:
 
 Requires explicit approval:
 
-- productionization
+- cloud productionization
 - real provider integration
 - real sandbox execution
-- UI/dashboard implementation
+- new cloud/hosted UI/dashboard implementation
 - benchmarking framework
-- deployment work
+- cloud or hosted deployment work
 - broad runtime refactors
 
 ## Documentation Maintenance Rule

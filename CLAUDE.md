@@ -2,11 +2,11 @@
 
 ## Product Scope
 
-**What**: A local deterministic harness for studying token-efficient agent workflows. Dispatches tasks to model providers, evaluates responses, tracks cost-of-pass metrics.
+**What**: A local deterministic harness and self-hosted agent-control-plane for studying token-efficient agent workflows. It provides deterministic dispatch planning, local API/dashboard access, app-owned SQLite history/config/team state, and cost-of-pass metrics.
 
-**What NOT**: Not a production runtime. No real sandbox execution, no autonomous workers, no deployment, no production web UI.
+**What NOT**: Not a cloud production SaaS or autonomous-agent runtime. No real model-provider calls by default, no real sandbox/process/container/VM execution, no autonomous workers, no target-repo writes, and no hosted production deployment.
 
-**Target user**: Solo developer studying agent infrastructure patterns.
+**Target user**: Solo developer or small local team studying and operating deterministic agent infrastructure patterns on one machine or a LAN.
 
 ## Architecture Summary
 
@@ -50,12 +50,13 @@ Master architecture document: `docs/dispatch/DISPATCHER_KERNEL_V0_ARCHITECTURE.m
 - **Language migration Phase 5**: IMPLEMENTED (ecosystem/: community_profiles, tool_adapter, dashboard, benchmark).
 - **Language migration Phase 6**: IMPLEMENTED (storage/: durable_store via rusqlite, health_checker, backup_manager).
 - **Language migration Phase 7**: IMPLEMENTED (sdk, storage_migrator).
-- **Language migration Rust engine/API parity**: IMPLEMENTED (`http_server` local axum router for health/ready/openapi/dispatch, disabled-by-default `provider` trait boundary, `doc_generator`, 428 Rust tests).
+- **Language migration Rust engine/API parity**: IMPLEMENTED (`http_server` local axum router for health/ready/openapi/dispatch, disabled-by-default `provider` trait boundary, `doc_generator`).
 - **Agent-Control-Plane Phase 5 SDK + Codegen**: IMPLEMENTED (`codegen/generate_wire_types.py`, generated Rust/TypeScript/Python wire types, TypeScript REST SDK with Node test coverage, Python REST SDK with 8 tests). Full nested types from all 6 wire_contract schemas for SDK surfaces; Rust includes generated boundary value types.
 - **Agent-Control-Plane Phase 6 Dashboard**: IMPLEMENTED (`dashboard/` Next.js App Router, read-only views, static export support, no executable controls).
 - **Agent-Control-Plane Phase 7 Docker**: IMPLEMENTED (`deploy/Dockerfile.engine`, `deploy/Dockerfile.dashboard`, `docker-compose.yml`, optional local API + dashboard smoke).
 - **Agent-Control-Plane Phase 8 Closeout**: IMPLEMENTED (`docs/AGENT_CONTROL_PLANE_MIGRATION_CLOSEOUT.md`). Python reference remains in `src/harness_core/` pending explicit future removal decision.
 - **Agent-Control-Plane Native Local Runtime**: IMPLEMENTED (`ACP_DASHBOARD_DIR=dashboard/out cargo run -p engine` serves API + dashboard from one Rust process; Docker optional).
+- **Agent-Control-Plane Local Small-Team Productization**: IMPLEMENTED (`engine/src/storage/local_product_store.rs`, live dashboard API state, SQLite dispatch history/config/team/API-key metadata/audit/cost state, export, admin-auth-confirmed local backup, SDK local-state methods; 432 Rust tests). Still no cloud SaaS, real providers, target writes, real workers, or real sandbox/process execution.
 - **Phase 6B-3 Gate 1**: IMPLEMENTED (scope checks, rate limiting, 403/429 responses).
 - **Security hardening**: redaction logging, http_server body size limit + CORS, checkpoint path traversal fix, 42 new tests for coverage gaps.
 
@@ -116,11 +117,12 @@ See `docs/CURRENT_STATUS.md` for full details.
 - **2026-05-28**: Review hardening — Fixed CRITICAL copy-paste bug in dashboard.py compute_summary() (cost_savings/quality_delta now filter by metric_name). Added NaN/inf validation in validate_experiment(). Added task existence check in benchmark.py record_result(). Made compare_models() atomic. 8 new tests. 2089 total.
 - **2026-05-28**: Language migration Rust engine/API parity — Rust `http_server` local axum router added for `/api/v1/health`, `/api/v1/ready`, `/api/v1/openapi.json`, and deterministic `/api/v1/dispatch`; auth/scope/rate-limit/CORS checks covered. `doc_generator` added with module/schema registry, source parser, and markdown generation; `provider` exposes the disabled-by-default provider trait boundary. 425 total Rust tests, 36 source modules, 32 test files.
 - **2026-05-28**: Agent-Control-Plane Phase 5 SDK + Codegen — Added deterministic codegen helper and REST-based TypeScript/Python SDK packages. `cd sdk/typescript && pnpm build && npm pack --dry-run` passes. Python SDK unit tests pass and `cd sdk/python && python -m build` passes. SDKs use REST endpoints, not private engine internals. Security baseline has a scoped stdlib `urllib` allowlist for the Python SDK local REST client.
-- **2026-05-28**: Agent-Control-Plane Phase 6 Dashboard — Added read-only Next.js dashboard at `dashboard/` with dispatch, routing, agents/workflows, costs, settings, and health views. Dashboard fetches health/readiness only and has no dispatch POST client or approve/run/deploy/execute/merge controls. `cd dashboard && pnpm lint && pnpm typecheck && pnpm build` and local HTTP smoke pass.
-- **2026-05-28**: Agent-Control-Plane Phase 7 Docker — Added local Docker deploy for Rust axum API and read-only Next.js dashboard. `docker compose build` and default `docker compose up --build -d` pass; `/api/v1/health`, `/api/v1/dispatch`, and dashboard HTTP returned successfully.
+- **2026-05-28**: Agent-Control-Plane Phase 6 Dashboard — Added Next.js dashboard at `dashboard/` with dispatch, routing, agents/workflows, costs, settings, and health views. The dashboard has no dispatch POST client or approve/run/deploy/execute/merge controls. `cd dashboard && pnpm lint && pnpm typecheck && pnpm build` and local HTTP smoke pass.
+- **2026-05-28**: Agent-Control-Plane Phase 7 Docker — Added local Docker deploy for Rust axum API and dashboard. `docker compose build` and default `docker compose up --build -d` pass; `/api/v1/health`, `/api/v1/dispatch`, and dashboard HTTP returned successfully.
 - **2026-05-28**: Agent-Control-Plane Phase 8 Closeout — Recorded migration closeout in `docs/AGENT_CONTROL_PLANE_MIGRATION_CLOSEOUT.md`, reconciled handoff docs, and retained Python reference in `src/harness_core/` until explicit future removal or relocation approval.
 - **2026-05-29**: Main-branch migration audit — verified local `main` at the agent-control-plane closeout state: handoff check, security baseline, 2089 Python tests, wire parity, Rust fmt/clippy/425 tests, dashboard lint/typecheck/build, TypeScript SDK build + npm dry-run, Python SDK `python -m build`, Docker compose build/up, API health/dispatch smoke, and dashboard HTTP smoke all pass. Added ignore rules for local frontend/SDK build outputs.
-- **2026-05-29**: Native local runtime — Added static dashboard export, Rust static dashboard serving via `ACP_DASHBOARD_DIR`, and `scripts/smoke_native_runtime.py`; native API + dashboard smoke passes without Docker. Rust test count is now 428.
+- **2026-05-29**: Native local runtime — Added static dashboard export, Rust static dashboard serving via `ACP_DASHBOARD_DIR`, and `scripts/smoke_native_runtime.py`; native API + dashboard smoke passes without Docker.
+- **2026-05-29**: Local small-team productization — Added app-owned SQLite local state for dispatch history, config, team/API-key metadata, audit log, and costs; wired Rust API endpoints for dashboard/history/config/team/cost/export/audit/confirmed-backup; dashboard now reads real local state instead of fixture rows; TypeScript/Python SDKs cover local state and backup methods; native smoke verifies persisted dashboard/export state. Rust test count is now 431.
 - Previous BLOCK findings (b6d5bc1): HIGH-1 rate limit not wired, HIGH-2 scope enforcement missing, HIGH-3 plugin locks unused
 - Gate 1 addresses: HIGH-1 (rate limiter in ServerContext + _check_rate_limit), HIGH-2 (scope enforcement + AuthorizationDecision + 403/429)
 - Gate 2 addresses: atomic restore, WAL safety, failure-mode coverage
@@ -210,7 +212,7 @@ See `docs/CURRENT_STATUS.md` for full details.
 
 - **Framework**: unittest (stdlib), no pytest
 - **Run command**: `PYTHONPATH=src python3 -m unittest discover -s tests`
-- **Current count**: 2089 Python tests + 428 Rust tests, 0 failures (as of 2026-05-29)
+- **Current count**: 2089 Python tests + 432 Rust tests, 0 failures (as of 2026-05-29)
 - **Coverage**: Phase boundary contracts, schema validation, golden fixtures
 - **CI**: GitHub Actions on push/PR to main — runs security baseline + all tests
 - **Test naming**: `tests/test_<module>.py`, one test file per source module

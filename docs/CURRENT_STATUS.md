@@ -4,8 +4,8 @@ Last verified: 2026-05-29.
 
 ## Repository State
 
-- Branch: `main` with language migration Phases 0-8 complete plus native local runtime support.
-- Tests: **2089 Python pass**, **428 Rust pass**, 0 failures.
+- Branch: `main` with language migration Phases 0-8 complete plus native local runtime and local small-team product support.
+- Tests: **2089 Python pass**, **432 Rust pass**, 0 failures.
 - Security baseline: ALL CHECKS PASSED.
 
 ## New Session / Documentation Discipline
@@ -75,6 +75,7 @@ Run `python3 scripts/check_agent_handoff.py` before committing so the handoff su
 | Agent-Control-Plane Phase 7 — Local Docker Deploy | **IMPLEMENTED** — Optional local compose stack builds Rust axum API and Next.js dashboard with `deploy/Dockerfile.engine`, `deploy/Dockerfile.dashboard`, and root `docker-compose.yml`. `docker compose build` and default `docker compose up --build -d` pass; `/api/v1/health`, `/api/v1/dispatch`, and dashboard HTTP all returned 200-class responses. No production credentials, provider calls, target writes, sandbox/process execution, or runtime workers are enabled. |
 | Agent-Control-Plane Phase 8 — Closeout | **IMPLEMENTED** — Closeout recorded in `docs/AGENT_CONTROL_PLANE_MIGRATION_CLOSEOUT.md`. Rust `engine/` includes a disabled-by-default provider trait boundary in `engine/src/provider.rs`; no real provider transport is implemented. Python reference remains in `src/harness_core/` pending any future explicit removal decision. |
 | Agent-Control-Plane Native Local Runtime | **IMPLEMENTED** — `engine` can serve API plus exported static dashboard from one local Rust process via `ACP_DASHBOARD_DIR=dashboard/out cargo run -p engine`. `scripts/smoke_native_runtime.py` verifies health, readiness, dispatch, and dashboard root without Docker. |
+| Agent-Control-Plane Local Small-Team Productization | **IMPLEMENTED** — Rust engine now defaults to app-owned SQLite state at `.agent-control-plane/local-team.db` (overridable by `ACP_DB_PATH`), persists dispatch history/config/team/API-key metadata/audit log/cost summary, exposes dashboard/history/config/team/cost/export/audit/admin-auth-confirmed-backup API endpoints, and serves a dashboard that reads real local API state instead of fixtures. TypeScript/Python SDKs include local state and backup methods. No cloud SaaS, real providers, target writes, real workers, or sandbox/process execution were added. |
 
 Trial 2 complete evidence chain: [`docs/trials/TRIAL_2_FINAL_STATE_INDEX.md`](trials/TRIAL_2_FINAL_STATE_INDEX.md).
 Trial 3 report: [`docs/trials/TRIAL_3_REPORT.md`](trials/TRIAL_3_REPORT.md).
@@ -274,6 +275,14 @@ The local Harness App (MVP0–MVP8) provides:
 - **Portfolio triage** — read-only ranking of stored plans by risk, budget, and bottleneck.
 - **Operations diagnostics** — component health, data flow, storage status, recent errors.
 
+The local Agent Control Plane runtime now also provides:
+
+- **SQLite local team state** — app-owned dispatch history, config, team/API-key metadata, audit log, and cost summary.
+- **Live local dashboard state** — dashboard reads `/api/v1/dashboard` from the Rust engine instead of fixture rows.
+- **Local role boundary** — optional `ACP_REQUIRE_AUTH=1` plus `ACP_ADMIN_API_KEY` enables scoped local API keys; admin-only backup requires `backup:admin`.
+- **Export and backup** — `/api/v1/export` exports app-owned state; `/api/v1/backups` creates local SQLite backups only with local auth enabled, `backup:admin`, `confirm_local_backup=true`, and an audit event.
+- **SDK access** — TypeScript and Python REST SDKs cover dashboard, dispatch history, config, team, costs, export, audit, dispatch, and confirmed backup.
+
 ## State Boundary
 
 | State | Owner | Writable | Description |
@@ -284,5 +293,7 @@ The local Harness App (MVP0–MVP8) provides:
 | Diagnostics | Derived | No | Computed on each request from app state. |
 | Review guidance | Derived | No | Computed from plan store. Not persisted. |
 | Portfolio triage | Derived | No | Computed from plan store. Not persisted. |
+| Agent Control Plane SQLite | App | Yes | Stores local dispatch history, config, team/API-key metadata, cost state, and audit log. |
+| Local backups/export | App | Yes | Backup/export operates only on app-owned SQLite state and requires explicit confirmation for backup. |
 
 No app output constitutes execution authority. The human operator remains the final decision-maker.

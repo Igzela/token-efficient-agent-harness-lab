@@ -4,7 +4,7 @@
 
 Token-Efficient Agent Harness Lab is a local deterministic harness for studying event-sourced agent workflow infrastructure from Stage 0 through Stage 4. It includes JSONL event validation, projections, project/task workflow primitives, quality gates, controlled intelligence stubs, and Stage 4 runtime-control abstractions.
 
-Current status: Stage 0-4 complete, Harness App MVP0-MVP8 complete, Trials 0-3 closed, Dispatch Kernel Phases 1-6B-3 stable, Phase 7 SDK + DocGenerator implemented, Rust engine parity through the local axum API router implemented, Phase 5 codegen plus TypeScript/Python REST SDK packages implemented, Phase 6 read-only Next.js dashboard implemented, Phase 7 local Docker deploy implemented, Phase 8 migration closeout recorded, native local runtime implemented, security hardening complete (2089 Python tests, 428 Rust tests).
+Current status: Stage 0-4 complete, Harness App MVP0-MVP8 complete, Trials 0-3 closed, Dispatch Kernel Phases 1-6B-3 stable, Phase 7 SDK + DocGenerator implemented, Rust engine parity through the local axum API router implemented, Phase 5 codegen plus TypeScript/Python REST SDK packages implemented, Phase 6 dashboard implemented, Phase 7 local Docker deploy implemented, Phase 8 migration closeout recorded, native local runtime implemented, and local small-team productization now provides SQLite-backed dispatch history, config/team state, cost summaries, audit log, export, and confirmed local backup. Security hardening complete (2089 Python tests, 432 Rust tests).
 
 **New sessions should start with [docs/SESSION_START_HERE.md](docs/SESSION_START_HERE.md).**
 
@@ -12,7 +12,7 @@ Coding agents may autonomously advance safe repository work inside the documente
 
 ## What This Project Is Not
 
-This repository is not a production autonomous-agent runtime. It does not call real model providers, run real agents, isolate work in real sandboxes, spawn production concurrent workers, provide provider failover, or ship a production Web UI. The local Harness app dashboard is read-only/non-executable over app-owned state.
+This repository is not a cloud production SaaS or autonomous-agent runtime. It does not call real model providers, run real agents, isolate work in real sandboxes, spawn production concurrent workers, provide provider failover, write target repositories, or provide hosted deployment. The local dashboard reads app-owned state from the local engine; dangerous local admin API actions require explicit confirmation and audit logging.
 
 ## How To Run Tests
 
@@ -21,7 +21,7 @@ PYTHONPATH=src python3 -m unittest discover -s tests
 cargo test -p engine
 ```
 
-Current result: 2089 Python tests pass; 428 Rust `engine` parity/component/API tests pass.
+Current result: 2089 Python tests pass; 432 Rust `engine` parity/component/API tests pass.
 
 ## How To Run Without Docker
 
@@ -31,7 +31,7 @@ API only:
 cargo run -p engine
 ```
 
-API plus read-only dashboard from the same Rust process:
+API plus dashboard from the same Rust process:
 
 ```bash
 cd dashboard && corepack pnpm install --frozen-lockfile && corepack pnpm build:static
@@ -39,7 +39,72 @@ cd ..
 ACP_DASHBOARD_DIR=dashboard/out cargo run -p engine
 ```
 
-Then open `http://127.0.0.1:8080`. Docker remains available for optional local compose verification, but it is not required for local use.
+Then open `http://127.0.0.1:8080`. By default the engine creates app-owned local state at `.agent-control-plane/local-team.db` and local backups under `.agent-control-plane/backups/`. Docker remains available for optional local compose verification, but it is not required for local use.
+
+Custom local paths:
+
+```bash
+ACP_DB_PATH=/tmp/acp/local-team.db \
+ACP_BACKUP_DIR=/tmp/acp/backups \
+ACP_DASHBOARD_DIR=dashboard/out \
+cargo run -p engine
+```
+
+Optional local API key boundary:
+
+```bash
+ACP_REQUIRE_AUTH=1 \
+ACP_ADMIN_API_KEY=<local-harness-key> \
+ACP_DASHBOARD_DIR=dashboard/out \
+cargo run -p engine
+```
+
+`<local-harness-key>` must use the local `harness_` plus 64 hex characters shape. Do not commit real keys; the key is read from the environment only. Without `ACP_REQUIRE_AUTH`, the default local loopback mode remains open for single-machine first run.
+
+## Local API Examples
+
+```bash
+curl http://127.0.0.1:8080/api/v1/health
+curl http://127.0.0.1:8080/api/v1/dashboard
+curl http://127.0.0.1:8080/api/v1/export
+curl -X POST http://127.0.0.1:8080/api/v1/dispatch \
+  -H 'content-type: application/json' \
+  -d '{"raw_request":"Summarize docs without provider calls","request_source":"api"}'
+```
+
+Confirmed local backup requires local auth to be enabled and an admin key:
+
+```bash
+curl -X POST http://127.0.0.1:8080/api/v1/backups \
+  -H 'content-type: application/json' \
+  -H "authorization: $(printf 'Bearer %s' "$ACP_ADMIN_API_KEY")" \
+  -d '{"label":"manual","confirm_local_backup":true}'
+```
+
+## SDK Examples
+
+TypeScript:
+
+```ts
+import { AgentControlPlaneClient } from "@token-efficient-agent-harness/agent-control-plane-sdk";
+
+const client = new AgentControlPlaneClient({ baseUrl: "http://127.0.0.1:8080" });
+const dashboard = await client.dashboard();
+const bundle = await client.dispatch({
+  raw_request: "Summarize docs without provider calls",
+  request_source: "api",
+});
+```
+
+Python:
+
+```python
+from agent_control_plane_sdk import AgentControlPlaneClient
+
+client = AgentControlPlaneClient("http://127.0.0.1:8080")
+dashboard = client.dashboard()
+bundle = client.dispatch("Summarize docs without provider calls")
+```
 
 ## How To Run The CLI
 
@@ -58,7 +123,7 @@ PYTHONPATH=src python3 -m harness_core.cli validate-events docs/stage0/events.js
 - No real sandbox/process/container/VM isolation.
 - No production concurrency or real concurrent workers.
 - No provider failover.
-- No production Web UI, deployment, or remote service.
+- No cloud production Web UI, hosted deployment, or remote SaaS service.
 - Local dashboard views remain non-executable and target repositories remain read-only.
 - No destructive runtime filesystem behavior.
 
@@ -68,7 +133,7 @@ PYTHONPATH=src python3 -m harness_core.cli validate-events docs/stage0/events.js
 src/harness_core/        Python harness modules
 engine/                  Rust deterministic parity kernel, dispatch engine, and local axum API router
 codegen/                 Wire-contract type generation helpers
-dashboard/               Read-only Next.js agent-control-plane dashboard with static export support
+dashboard/               Next.js local agent-control-plane dashboard with static export support
 deploy/                  Optional local Dockerfiles for API and dashboard
 sdk/typescript/          TypeScript REST SDK package
 sdk/python/              Python REST SDK package
@@ -117,6 +182,6 @@ Full closeout report: [`docs/CA7_CONTROLLED_ADAPTIVE_CLOSEOUT_REPORT.md`](docs/C
 
 ## Next Recommended Work
 
-Keep the repo moving through the autonomous maintainer loop: repair verification drift, keep docs current, fix focused regressions, and advance architecture-book-defined dispatch-kernel work when it remains deterministic, local, test-first, and free of real providers, real sandbox/process execution, target repo writes, deployment, or real worker processes. Any work that adds productionization, real model provider integration, real sandbox execution, approval/run controls, deployment, or a user-facing product surface still requires explicit approval.
+Keep the repo moving through the autonomous maintainer loop: repair verification drift, keep docs current, fix focused regressions, and harden the local small-team path when evidence identifies concrete gaps. Any work that adds cloud hosting, real model provider integration, real sandbox execution, target-repo mutation, hosted deployment, or real autonomous workers still requires explicit approval.
 
 Python reference implementation remains in `src/harness_core/` until an explicit future removal or relocation decision is approved.
