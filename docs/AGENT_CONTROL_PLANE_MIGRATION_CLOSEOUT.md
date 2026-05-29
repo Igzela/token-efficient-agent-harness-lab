@@ -1,6 +1,6 @@
 # Agent Control Plane Migration Closeout
 
-Date: 2026-05-28
+Date: 2026-05-29
 
 ## Status
 
@@ -25,7 +25,7 @@ Agent-control-plane migration phases 0-7 are implemented on the active branch, a
 
 ## Verification Evidence
 
-Verified in this migration run:
+Verified in the 2026-05-29 main-branch audit:
 
 - `cargo fmt --check`
 - `cargo clippy -p engine -- -D warnings`
@@ -43,6 +43,8 @@ Verified in this migration run:
 - `GET /api/v1/health`
 - `POST /api/v1/dispatch`
 - dashboard HTTP smoke on `http://127.0.0.1:3000/`
+
+Note: this environment's `python3 -m build` entrypoint is not available because the system `build` package lacks an executable module. The repository's documented Python SDK packaging check uses `python -m build`, which passed.
 
 ## Remaining Decision
 

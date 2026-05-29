@@ -5,5 +5,16 @@ __pycache__/
 htmlcov/
 target/
 
+# Frontend and SDK build outputs
+dashboard/.next/
+dashboard/node_modules/
+dashboard/tsconfig.tsbuildinfo
+sdk/typescript/dist/
+sdk/typescript/node_modules/
+sdk/typescript/*.tgz
+sdk/python/build/
+sdk/python/dist/
+sdk/python/src/*.egg-info/
+
 .claude/settings.local.json
 CLAUDE.md

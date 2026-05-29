@@ -28,7 +28,7 @@ Master architecture document: `docs/dispatch/DISPATCHER_KERNEL_V0_ARCHITECTURE.m
 - Testing strategy and pass/fail thresholds
 - Cross-phase architecture decisions and rationale
 
-## Current State (as of 2026-05-28)
+## Current State (as of 2026-05-29)
 
 - **Original Stage 0-4 task-book**: Complete and sealed.
 - **Harness App MVP0-MVP8**: Complete local operations console.
@@ -118,6 +118,7 @@ See `docs/CURRENT_STATUS.md` for full details.
 - **2026-05-28**: Agent-Control-Plane Phase 6 Dashboard — Added read-only Next.js dashboard at `dashboard/` with dispatch, routing, agents/workflows, costs, settings, and health views. Dashboard fetches health/readiness only and has no dispatch POST client or approve/run/deploy/execute/merge controls. `cd dashboard && pnpm lint && pnpm typecheck && pnpm build` and local HTTP smoke pass.
 - **2026-05-28**: Agent-Control-Plane Phase 7 Docker — Added local Docker deploy for Rust axum API and read-only Next.js dashboard. `docker compose build` and default `docker compose up --build -d` pass; `/api/v1/health`, `/api/v1/dispatch`, and dashboard HTTP returned successfully.
 - **2026-05-28**: Agent-Control-Plane Phase 8 Closeout — Recorded migration closeout in `docs/AGENT_CONTROL_PLANE_MIGRATION_CLOSEOUT.md`, reconciled handoff docs, and retained Python reference in `src/harness_core/` until explicit future removal or relocation approval.
+- **2026-05-29**: Main-branch migration audit — verified local `main` at the agent-control-plane closeout state: handoff check, security baseline, 2089 Python tests, wire parity, Rust fmt/clippy/425 tests, dashboard lint/typecheck/build, TypeScript SDK build + npm dry-run, Python SDK `python -m build`, Docker compose build/up, API health/dispatch smoke, and dashboard HTTP smoke all pass. Added ignore rules for local frontend/SDK build outputs.
 - Previous BLOCK findings (b6d5bc1): HIGH-1 rate limit not wired, HIGH-2 scope enforcement missing, HIGH-3 plugin locks unused
 - Gate 1 addresses: HIGH-1 (rate limiter in ServerContext + _check_rate_limit), HIGH-2 (scope enforcement + AuthorizationDecision + 403/429)
 - Gate 2 addresses: atomic restore, WAL safety, failure-mode coverage

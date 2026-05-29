@@ -1,10 +1,10 @@
 # Current Status
 
-Last verified: 2026-05-28.
+Last verified: 2026-05-29.
 
 ## Repository State
 
-- Branch: `rust/phase1-dispatch-kernel` with language migration Phases 0-7 complete.
+- Branch: `main` with language migration Phases 0-8 complete.
 - Tests: **2089 Python pass**, **425 Rust pass**, 0 failures.
 - Security baseline: ALL CHECKS PASSED.
 
