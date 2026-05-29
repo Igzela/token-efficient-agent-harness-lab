@@ -7,6 +7,7 @@ import os
 import socket
 import subprocess
 import sys
+import tempfile
 import time
 from pathlib import Path
 from urllib.request import Request, urlopen
@@ -75,49 +76,63 @@ def main() -> int:
 
     port = free_port()
     base_url = f"http://127.0.0.1:{port}"
-    env = {
-        **os.environ,
-        "HOST": "127.0.0.1",
-        "PORT": str(port),
-        "ACP_DASHBOARD_DIR": str(dashboard_dir),
-    }
-    process = subprocess.Popen(
-        [str(engine_bin)],
-        cwd=repo_root,
-        env=env,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
-        text=True,
-    )
-    try:
-        health = wait_for_health(base_url, process, time.monotonic() + args.timeout)
-        if health.get("status") != "healthy":
-            raise RuntimeError(f"unexpected health payload: {health}")
-
-        ready = fetch_json(f"{base_url}/api/v1/ready")
-        if ready.get("status") != "ready":
-            raise RuntimeError(f"unexpected ready payload: {ready}")
-
-        dispatch = post_json(
-            f"{base_url}/api/v1/dispatch",
-            {"raw_request": "Summarize docs without provider calls", "request_source": "api"},
+    with tempfile.TemporaryDirectory(prefix="acp-native-smoke-") as data_dir:
+        data_root = Path(data_dir)
+        env = {
+            **os.environ,
+            "HOST": "127.0.0.1",
+            "PORT": str(port),
+            "ACP_DASHBOARD_DIR": str(dashboard_dir),
+            "ACP_DB_PATH": str(data_root / "local-team.db"),
+            "ACP_BACKUP_DIR": str(data_root / "backups"),
+        }
+        process = subprocess.Popen(
+            [str(engine_bin)],
+            cwd=repo_root,
+            env=env,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
         )
-        if dispatch.get("execution_result", {}).get("executor_type") != "noop":
-            raise RuntimeError("dispatch did not use noop executor")
-
-        dashboard = fetch_text(f"{base_url}/")
-        if "Agent Control Plane" not in dashboard:
-            raise RuntimeError("dashboard root did not contain expected title")
-
-        print(f"native runtime smoke passed at {base_url}")
-        return 0
-    finally:
-        process.terminate()
         try:
-            process.wait(timeout=5)
-        except subprocess.TimeoutExpired:
-            process.kill()
-            process.wait(timeout=5)
+            health = wait_for_health(base_url, process, time.monotonic() + args.timeout)
+            if health.get("status") != "healthy":
+                raise RuntimeError(f"unexpected health payload: {health}")
+
+            ready = fetch_json(f"{base_url}/api/v1/ready")
+            if ready.get("status") != "ready":
+                raise RuntimeError(f"unexpected ready payload: {ready}")
+
+            dispatch = post_json(
+                f"{base_url}/api/v1/dispatch",
+                {"raw_request": "Summarize docs without provider calls", "request_source": "api"},
+            )
+            if dispatch.get("execution_result", {}).get("executor_type") != "noop":
+                raise RuntimeError("dispatch did not use noop executor")
+
+            dashboard_state = fetch_json(f"{base_url}/api/v1/dashboard")
+            if dashboard_state.get("counts", {}).get("dispatches") != 1:
+                raise RuntimeError(f"dashboard did not read persisted dispatch state: {dashboard_state}")
+            if dashboard_state.get("dispatches", [{}])[0].get("request_source") != "api":
+                raise RuntimeError(f"dashboard dispatch history mismatch: {dashboard_state}")
+
+            export_state = fetch_json(f"{base_url}/api/v1/export")
+            if export_state.get("schema_version") != "local_team_export.v1":
+                raise RuntimeError(f"unexpected export payload: {export_state}")
+
+            dashboard = fetch_text(f"{base_url}/")
+            if "Agent Control Plane" not in dashboard:
+                raise RuntimeError("dashboard root did not contain expected title")
+
+            print(f"native runtime smoke passed at {base_url}")
+            return 0
+        finally:
+            process.terminate()
+            try:
+                process.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                process.kill()
+                process.wait(timeout=5)
 
 
 if __name__ == "__main__":

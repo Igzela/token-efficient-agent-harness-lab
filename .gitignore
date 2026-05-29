@@ -4,6 +4,7 @@ __pycache__/
 .coverage
 htmlcov/
 target/
+.agent-control-plane/
 
 # Frontend and SDK build outputs
 dashboard/.next/

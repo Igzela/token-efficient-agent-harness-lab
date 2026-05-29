@@ -13,6 +13,8 @@ use std::sync::{Arc, Mutex};
 use crate::dispatch_engine::DispatchEngine;
 use crate::infrastructure::auth::{AuthDecision, TenantResolver};
 use crate::infrastructure::rate_limiter::RateLimiter;
+use crate::storage::backup_manager::BackupManager;
+use crate::storage::local_product_store::{local_boundaries, LocalProductStore};
 
 pub const HTTP_SERVER_SCHEMA_VERSION: &str = "http_server.v1";
 pub const AXUM_API_SCHEMA_VERSION: &str = "axum_api.v1";
@@ -53,6 +55,8 @@ pub struct AxumApiState {
     default_rate_limit: Option<i64>,
     now: f64,
     dashboard_dir: Option<Arc<PathBuf>>,
+    local_store: Option<Arc<LocalProductStore>>,
+    backup_dir: Option<Arc<PathBuf>>,
 }
 
 impl Default for AxumApiState {
@@ -70,6 +74,8 @@ impl AxumApiState {
             default_rate_limit: None,
             now: 0.0,
             dashboard_dir: None,
+            local_store: None,
+            backup_dir: None,
         }
     }
 
@@ -91,12 +97,28 @@ impl AxumApiState {
         self.dashboard_dir = Some(Arc::new(dashboard_dir.into()));
         self
     }
+
+    pub fn with_local_store(mut self, store: LocalProductStore) -> Self {
+        self.local_store = Some(Arc::new(store));
+        self
+    }
+
+    pub fn with_backup_dir(mut self, backup_dir: impl Into<PathBuf>) -> Self {
+        self.backup_dir = Some(Arc::new(backup_dir.into()));
+        self
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct DispatchApiRequest {
     pub raw_request: String,
     pub request_source: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+pub struct BackupApiRequest {
+    pub label: Option<String>,
+    pub confirm_local_backup: Option<bool>,
 }
 
 #[derive(Debug, Clone)]
@@ -164,6 +186,23 @@ fn axum_routes() -> Router<AxumApiState> {
         .route(
             "/api/v1/dispatch",
             post(api_dispatch).options(cors_preflight),
+        )
+        .route(
+            "/api/v1/dispatches",
+            get(api_dispatches).options(cors_preflight),
+        )
+        .route(
+            "/api/v1/dashboard",
+            get(api_dashboard).options(cors_preflight),
+        )
+        .route("/api/v1/config", get(api_config).options(cors_preflight))
+        .route("/api/v1/team", get(api_team).options(cors_preflight))
+        .route("/api/v1/costs", get(api_costs).options(cors_preflight))
+        .route("/api/v1/export", get(api_export).options(cors_preflight))
+        .route("/api/v1/audit", get(api_audit).options(cors_preflight))
+        .route(
+            "/api/v1/backups",
+            post(api_create_backup).options(cors_preflight),
         )
 }
 
@@ -272,7 +311,7 @@ async fn api_dispatch(
     headers: HeaderMap,
     Json(request): Json<DispatchApiRequest>,
 ) -> Result<impl IntoResponse, ApiError> {
-    authorize(&state, &headers, "dispatch:read")?;
+    let context = authorize(&state, &headers, "dispatch:read")?;
     if request.raw_request.trim().is_empty() {
         return Err(ApiError::new(
             StatusCode::BAD_REQUEST,
@@ -281,7 +320,183 @@ async fn api_dispatch(
     }
     let request_source = request.request_source.as_deref().unwrap_or("api");
     let bundle = state.engine.dispatch(&request.raw_request, request_source);
+    if let Some(store) = &state.local_store {
+        store
+            .record_dispatch(
+                &request.raw_request,
+                request_source,
+                &bundle,
+                &context.api_key_id,
+            )
+            .map_err(internal_error)?;
+    }
     Ok((cors_headers(), Json(bundle)))
+}
+
+async fn api_dispatches(
+    State(state): State<AxumApiState>,
+    headers: HeaderMap,
+) -> Result<impl IntoResponse, ApiError> {
+    authorize(&state, &headers, "dispatch:read")?;
+    let store = require_store(&state)?;
+    Ok((
+        cors_headers(),
+        Json(json!({
+            "schema_version": AXUM_API_SCHEMA_VERSION,
+            "dispatches": store.list_dispatches(100).map_err(internal_error)?,
+        })),
+    ))
+}
+
+async fn api_dashboard(
+    State(state): State<AxumApiState>,
+    headers: HeaderMap,
+) -> Result<impl IntoResponse, ApiError> {
+    authorize(&state, &headers, "health:read")?;
+    let body = if let Some(store) = &state.local_store {
+        store.dashboard_snapshot(20).map_err(internal_error)?
+    } else {
+        json!({
+            "schema_version": "local_dashboard.v1",
+            "status": "ready",
+            "counts": {
+                "dispatches": 0,
+                "team_members": 0,
+                "api_keys": 0,
+                "audit_events": 0,
+            },
+            "dispatches": [],
+            "team": {"schema_version": "local_team.v1", "members": [], "api_keys": []},
+            "config": {},
+            "costs": {
+                "schema_version": "local_cost_summary.v1",
+                "currency": "USD",
+                "dispatch_count": 0,
+                "total_reserved_cost": 0.0,
+                "by_tier": [],
+            },
+            "boundaries": local_boundaries(),
+        })
+    };
+    Ok((cors_headers(), Json(body)))
+}
+
+async fn api_config(
+    State(state): State<AxumApiState>,
+    headers: HeaderMap,
+) -> Result<impl IntoResponse, ApiError> {
+    authorize(&state, &headers, "config:read")?;
+    let store = require_store(&state)?;
+    Ok((
+        cors_headers(),
+        Json(json!({
+            "schema_version": AXUM_API_SCHEMA_VERSION,
+            "config": store.config_snapshot().map_err(internal_error)?,
+            "boundaries": local_boundaries(),
+        })),
+    ))
+}
+
+async fn api_team(
+    State(state): State<AxumApiState>,
+    headers: HeaderMap,
+) -> Result<impl IntoResponse, ApiError> {
+    authorize(&state, &headers, "team:read")?;
+    let store = require_store(&state)?;
+    Ok((
+        cors_headers(),
+        Json(store.team_snapshot().map_err(internal_error)?),
+    ))
+}
+
+async fn api_costs(
+    State(state): State<AxumApiState>,
+    headers: HeaderMap,
+) -> Result<impl IntoResponse, ApiError> {
+    authorize(&state, &headers, "cost:read")?;
+    let store = require_store(&state)?;
+    Ok((
+        cors_headers(),
+        Json(store.cost_summary().map_err(internal_error)?),
+    ))
+}
+
+async fn api_export(
+    State(state): State<AxumApiState>,
+    headers: HeaderMap,
+) -> Result<impl IntoResponse, ApiError> {
+    authorize(&state, &headers, "export:read")?;
+    let store = require_store(&state)?;
+    Ok((
+        cors_headers(),
+        Json(store.export_snapshot().map_err(internal_error)?),
+    ))
+}
+
+async fn api_audit(
+    State(state): State<AxumApiState>,
+    headers: HeaderMap,
+) -> Result<impl IntoResponse, ApiError> {
+    authorize(&state, &headers, "audit:read")?;
+    let store = require_store(&state)?;
+    Ok((
+        cors_headers(),
+        Json(json!({
+            "schema_version": AXUM_API_SCHEMA_VERSION,
+            "events": store.audit_events(100).map_err(internal_error)?,
+        })),
+    ))
+}
+
+async fn api_create_backup(
+    State(state): State<AxumApiState>,
+    headers: HeaderMap,
+    Json(request): Json<BackupApiRequest>,
+) -> Result<impl IntoResponse, ApiError> {
+    if state.tenant_resolver.is_none() {
+        return Err(ApiError::new(
+            StatusCode::UNAUTHORIZED,
+            "admin auth is required for local backup",
+        ));
+    }
+    let context = authorize(&state, &headers, "backup:admin")?;
+    if request.confirm_local_backup != Some(true) {
+        return Err(ApiError::new(
+            StatusCode::BAD_REQUEST,
+            "confirm_local_backup must be true",
+        ));
+    }
+    let store = require_store(&state)?;
+    if store.is_memory() {
+        return Err(ApiError::new(
+            StatusCode::BAD_REQUEST,
+            "file-backed local store is required for backup",
+        ));
+    }
+    store.checkpoint_wal().map_err(internal_error)?;
+
+    let backup_dir = backup_dir_for_state(&state, store.db_path());
+    let manager = BackupManager::new(&backup_dir).map_err(internal_error)?;
+    let mut backups = manager.list_backups().map_err(internal_error)?;
+    let backup_id = format!("backup-{:04}", backups.len() + 1);
+    let label = request.label.as_deref().unwrap_or("manual");
+    let backup = manager
+        .create_backup(store.db_path(), label, &backup_id, "2026-05-29T00:00:00Z")
+        .map_err(internal_error)?;
+    backups.push(backup.clone());
+    manager.save_metadata(&backups).map_err(internal_error)?;
+    store
+        .append_audit(
+            &context.api_key_id,
+            "backup.create",
+            &backup.backup_id,
+            &json!({"label": label, "backup_path": backup.backup_path}),
+        )
+        .map_err(internal_error)?;
+    Ok((
+        cors_headers(),
+        Json(json!({"schema_version": AXUM_API_SCHEMA_VERSION, "backup": backup})),
+    ))
 }
 
 async fn api_openapi(
@@ -340,6 +555,28 @@ fn authorize(
     }
 
     Ok(context)
+}
+
+fn require_store(state: &AxumApiState) -> Result<Arc<LocalProductStore>, ApiError> {
+    state
+        .local_store
+        .as_ref()
+        .cloned()
+        .ok_or_else(|| ApiError::new(StatusCode::SERVICE_UNAVAILABLE, "local store unavailable"))
+}
+
+fn backup_dir_for_state(state: &AxumApiState, db_path: &Path) -> PathBuf {
+    if let Some(dir) = &state.backup_dir {
+        return dir.as_ref().clone();
+    }
+    db_path
+        .parent()
+        .map(|parent| parent.join("backups"))
+        .unwrap_or_else(|| PathBuf::from("backups"))
+}
+
+fn internal_error(error: String) -> ApiError {
+    ApiError::new(StatusCode::INTERNAL_SERVER_ERROR, error)
 }
 
 fn auth_context_from_decision(
@@ -433,6 +670,60 @@ pub fn openapi_document() -> serde_json::Value {
                         "401": {"description": "Unauthorized"},
                         "403": {"description": "Forbidden"},
                         "429": {"description": "Rate limited"}
+                    }
+                }
+            }
+            ,
+            "/api/v1/dispatches": {
+                "get": {
+                    "summary": "List persisted local dispatch history",
+                    "responses": {"200": {"description": "Dispatch history"}}
+                }
+            },
+            "/api/v1/dashboard": {
+                "get": {
+                    "summary": "Read local dashboard state from SQLite-backed runtime state",
+                    "responses": {"200": {"description": "Dashboard state"}}
+                }
+            },
+            "/api/v1/config": {
+                "get": {
+                    "summary": "Read local configuration",
+                    "responses": {"200": {"description": "Local config"}}
+                }
+            },
+            "/api/v1/team": {
+                "get": {
+                    "summary": "Read local team and redacted API key metadata",
+                    "responses": {"200": {"description": "Team state"}}
+                }
+            },
+            "/api/v1/costs": {
+                "get": {
+                    "summary": "Read local cost summary from persisted dispatches",
+                    "responses": {"200": {"description": "Cost summary"}}
+                }
+            },
+            "/api/v1/export": {
+                "get": {
+                    "summary": "Export local app-owned state",
+                    "responses": {"200": {"description": "Local export"}}
+                }
+            },
+            "/api/v1/audit": {
+                "get": {
+                    "summary": "Read local audit log",
+                    "responses": {"200": {"description": "Audit log"}}
+                }
+            },
+            "/api/v1/backups": {
+                "post": {
+                    "summary": "Create a local SQLite backup",
+                    "description": "Requires backup:admin scope and confirm_local_backup=true.",
+                    "responses": {
+                        "200": {"description": "Backup metadata"},
+                        "400": {"description": "Missing explicit confirmation"},
+                        "403": {"description": "Forbidden"}
                     }
                 }
             }
