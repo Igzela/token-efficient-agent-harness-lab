@@ -10,6 +10,7 @@ ROOT = Path(__file__).resolve().parents[1]
 SCHEMA_DIR = ROOT / "wire_contract" / "v1"
 TS_OUT = ROOT / "sdk" / "typescript" / "src" / "wire-types.ts"
 PY_OUT = ROOT / "sdk" / "python" / "src" / "agent_control_plane_sdk" / "wire_types.py"
+RUST_OUT = ROOT / "engine" / "src" / "wire_types.rs"
 
 SCHEMA_FILES = [
     "dispatch_request.schema.json",
@@ -198,6 +199,60 @@ def render_python(schemas: dict[str, dict]) -> str:
     return "\n".join(lines)
 
 
+def render_rust(schemas: dict[str, dict]) -> str:
+    request_sources = schemas["dispatch_request.schema.json"]["properties"]["request_source"]["enum"]
+    request_source_variants = [
+        ("Cli", "cli"),
+        ("Api", "api"),
+        ("Dashboard", "dashboard"),
+        ("Agent", "agent"),
+        ("Workflow", "workflow"),
+        ("TestFixture", "test_fixture"),
+    ]
+    assert sorted(value for _, value in request_source_variants) == sorted(request_sources)
+
+    lines: list[str] = [
+        "use serde::{Deserialize, Serialize};",
+        "use serde_json::Value;",
+        "",
+        "#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]",
+        "#[serde(rename_all = \"snake_case\")]",
+        "pub enum RequestSource {",
+    ]
+    for variant, _value in request_source_variants:
+        lines.append(f"    {variant},")
+    lines.extend(
+        [
+            "}",
+            "",
+            "#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]",
+            "pub struct DispatchRequest {",
+            "    pub schema_version: String,",
+            "    pub raw_request: String,",
+            "    pub request_source: RequestSource,",
+            "}",
+            "",
+            "#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]",
+            "pub struct DispatchBundleValue {",
+            "    pub record: Value,",
+            "    pub analysis: Value,",
+            "    pub decision: Value,",
+            "    pub execution_result: Value,",
+            "    pub evaluation_result: Value,",
+            "}",
+            "",
+            "#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]",
+            "pub struct ApiStatus {",
+            "    pub schema_version: String,",
+            "    pub status: String,",
+            "    pub tenant_id: Option<String>,",
+            "}",
+            "",
+        ]
+    )
+    return "\n".join(lines)
+
+
 def main() -> int:
     schemas = load_all_schemas()
 
@@ -208,6 +263,10 @@ def main() -> int:
     py_out = render_python(schemas)
     PY_OUT.write_text(py_out, encoding="utf-8")
     print(f"wrote {PY_OUT.relative_to(ROOT)} ({len(py_out)} bytes)")
+
+    rust_out = render_rust(schemas)
+    RUST_OUT.write_text(rust_out, encoding="utf-8")
+    print(f"wrote {RUST_OUT.relative_to(ROOT)} ({len(rust_out)} bytes)")
 
     return 0
 

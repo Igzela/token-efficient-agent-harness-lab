@@ -17,5 +17,6 @@ pub mod runtime;
 pub mod sdk;
 pub mod storage;
 pub mod task_analyzer;
+pub mod wire_types;
 
 pub use dispatch_engine::{build_dispatch_bundle, DispatchEngine};

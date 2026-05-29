@@ -8,7 +8,7 @@ Agent-control-plane migration phases 0-7 are implemented on the active branch, a
 
 - Rust `engine/` owns deterministic dispatch parity, routing/orchestration parity, a disabled-by-default provider trait boundary, storage parity, and the local axum API.
 - `wire_contract/v1/` remains the frozen JSON contract surface.
-- `codegen/` generates SDK wire types from the frozen schemas.
+- `codegen/` generates Rust, TypeScript, and Python wire types from the frozen schemas.
 - `sdk/typescript/` and `sdk/python/` provide REST SDKs and do not bind private Rust internals.
 - `dashboard/` provides a read-only Next.js dashboard with dispatch, routing, agents/workflows, costs, settings, and health views.
 - `deploy/` plus root `docker-compose.yml` provide local API + dashboard startup only.
