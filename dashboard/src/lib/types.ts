@@ -11,6 +11,84 @@ export interface ApiStatus {
   tenant_id?: string;
 }
 
+export interface LocalDashboardState {
+  schema_version: "local_dashboard.v1";
+  status: string;
+  counts: LocalCounts;
+  dispatches: LocalDispatchHistory[];
+  team: LocalTeamState;
+  config: Record<string, string | number | boolean | null>;
+  costs: LocalCostSummary;
+  boundaries: LocalBoundaries;
+}
+
+export interface LocalCounts {
+  dispatches: number;
+  team_members: number;
+  api_keys: number;
+  audit_events: number;
+}
+
+export interface LocalDispatchHistory {
+  history_id: number;
+  dispatch_id: string;
+  created_at: string;
+  raw_request: string;
+  request_source: string;
+  final_status: string;
+  selected_tier: string;
+  risk_level: string;
+  reserved_cost: number;
+  bundle: DispatchBundle;
+}
+
+export interface LocalTeamState {
+  schema_version: "local_team.v1";
+  members: LocalTeamMember[];
+  api_keys: LocalApiKeyMetadata[];
+}
+
+export interface LocalTeamMember {
+  user_id: string;
+  display_name: string;
+  role: "admin" | "readonly" | string;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface LocalApiKeyMetadata {
+  key_id: string;
+  user_id: string;
+  role: "admin" | "readonly" | string;
+  scopes: string[];
+  created_at: string;
+  created_by: string;
+  revoked_at: string | null;
+}
+
+export interface LocalCostSummary {
+  schema_version: "local_cost_summary.v1";
+  currency: "USD" | string;
+  dispatch_count: number;
+  total_reserved_cost: number;
+  by_tier: LocalTierCost[];
+}
+
+export interface LocalTierCost {
+  selected_tier: string;
+  dispatch_count: number;
+  reserved_cost: number;
+}
+
+export interface LocalBoundaries {
+  provider_transport: string;
+  target_repository_writes: string;
+  sandbox_process_execution: string;
+  runtime_workers: string;
+  deployment: string;
+  docker_required: boolean;
+}
+
 export interface DispatchBundle {
   record: DispatchRecord;
   analysis: TaskAnalysis;
