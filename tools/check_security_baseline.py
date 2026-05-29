@@ -109,6 +109,7 @@ ALLOWED_TEST_IMPORTS: dict[str, set[str]] = {
     "demos/full_pipeline_demo.py": {"urllib.request", "urllib.error", "json", "os", "sys", "time"},
     "sdk/python/src/agent_control_plane_sdk/client.py": {"urllib.request", "urllib.error"},
     "sdk/python/tests/test_client.py": {"urllib.error"},
+    "scripts/smoke_native_runtime.py": {"socket", "urllib.request"},
 }
 
 # Paths to exclude from active routing guard (test fixtures contain

@@ -1,16 +1,23 @@
 use std::collections::HashSet;
+use std::fs;
 
 use axum::body::{to_bytes, Body};
 use axum::http::{header, Method, Request, StatusCode};
-use engine::http_server::{build_axum_router, AxumApiState};
+use engine::http_server::{build_axum_router, build_axum_router_with_dashboard, AxumApiState};
 use engine::infrastructure::auth::{Tenant, TenantResolver};
 use engine::infrastructure::rate_limiter::RateLimiter;
 use serde_json::{json, Value};
+use tempfile::tempdir;
 use tower::ServiceExt;
 
 async fn response_json(response: axum::response::Response) -> Value {
     let bytes = to_bytes(response.into_body(), 1_048_576).await.unwrap();
     serde_json::from_slice(&bytes).unwrap()
+}
+
+async fn response_text(response: axum::response::Response) -> String {
+    let bytes = to_bytes(response.into_body(), 1_048_576).await.unwrap();
+    String::from_utf8(bytes.to_vec()).unwrap()
 }
 
 #[tokio::test]
@@ -236,4 +243,80 @@ async fn axum_openapi_document_lists_dispatch_endpoint() {
     let body = response_json(response).await;
     assert_eq!(body["openapi"], "3.1.0");
     assert!(body["paths"]["/api/v1/dispatch"]["post"].is_object());
+}
+
+#[tokio::test]
+async fn axum_dashboard_serves_static_index_when_configured() {
+    let dir = tempdir().unwrap();
+    fs::write(
+        dir.path().join("index.html"),
+        "<!doctype html><title>Agent Control Plane</title>",
+    )
+    .unwrap();
+    let app = build_axum_router_with_dashboard(AxumApiState::new(), dir.path());
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method(Method::GET)
+                .uri("/")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(
+        response.headers().get(header::CONTENT_TYPE).unwrap(),
+        "text/html; charset=utf-8"
+    );
+    let body = response_text(response).await;
+    assert!(body.contains("Agent Control Plane"));
+}
+
+#[tokio::test]
+async fn axum_dashboard_serves_static_assets_when_configured() {
+    let dir = tempdir().unwrap();
+    let asset_dir = dir.path().join("_next/static/chunks");
+    fs::create_dir_all(&asset_dir).unwrap();
+    fs::write(asset_dir.join("app.js"), "console.log('ok');").unwrap();
+    fs::write(dir.path().join("index.html"), "<!doctype html>").unwrap();
+    let app = build_axum_router_with_dashboard(AxumApiState::new(), dir.path());
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method(Method::GET)
+                .uri("/_next/static/chunks/app.js")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(
+        response.headers().get(header::CONTENT_TYPE).unwrap(),
+        "text/javascript; charset=utf-8"
+    );
+    assert_eq!(response_text(response).await, "console.log('ok');");
+}
+
+#[tokio::test]
+async fn axum_dashboard_does_not_mask_unknown_api_routes() {
+    let dir = tempdir().unwrap();
+    fs::write(dir.path().join("index.html"), "<!doctype html>").unwrap();
+    let app = build_axum_router_with_dashboard(AxumApiState::new(), dir.path());
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method(Method::GET)
+                .uri("/api/v1/missing")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    assert_eq!(response_text(response).await, "not found");
 }

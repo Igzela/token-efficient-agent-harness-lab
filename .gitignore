@@ -8,6 +8,7 @@ target/
 # Frontend and SDK build outputs
 dashboard/.next/
 dashboard/node_modules/
+dashboard/out/
 dashboard/tsconfig.tsbuildinfo
 sdk/typescript/dist/
 sdk/typescript/node_modules/

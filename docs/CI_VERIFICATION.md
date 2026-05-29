@@ -7,7 +7,11 @@ This document describes the GitHub Actions CI pipeline that verifies the securit
 ## What CI Verifies
 
 - **Security baseline checker** (`tools/check_security_baseline.py`): five-part gate covering secret scanning, AST import analysis, active routing guard, governance boundary guard, and stage-0 event guard.
-- **Unit test suite** (`tests/`): 777 tests exercising core logic with no external dependencies.
+- **Python unit test suite** (`tests/`): 2089 tests exercising core logic with no external dependencies.
+- **Rust engine tests** (`cargo test -p engine`): 428 parity/component/API tests.
+- **TypeScript SDK/dashboard checks**: SDK tests/build plus dashboard lint/typecheck/build.
+- **Native runtime smoke**: static dashboard export plus Rust engine binary smoke without Docker.
+- **Optional Docker build**: local compose images for API and dashboard.
 
 ## What CI Does Not Verify
 
@@ -24,6 +28,18 @@ python tools/check_security_baseline.py
 
 # Unit tests
 PYTHONPATH=src python3 -m unittest discover -s tests
+
+# Rust engine
+cargo test -p engine
+
+# Dashboard
+cd dashboard && corepack pnpm lint && corepack pnpm typecheck && corepack pnpm build
+
+# Native runtime without Docker
+cd dashboard && corepack pnpm build:static
+cd ..
+cargo build -p engine
+python3 scripts/smoke_native_runtime.py
 ```
 
 ## Failure Interpretation

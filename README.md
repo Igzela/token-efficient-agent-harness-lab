@@ -4,7 +4,7 @@
 
 Token-Efficient Agent Harness Lab is a local deterministic harness for studying event-sourced agent workflow infrastructure from Stage 0 through Stage 4. It includes JSONL event validation, projections, project/task workflow primitives, quality gates, controlled intelligence stubs, and Stage 4 runtime-control abstractions.
 
-Current status: Stage 0-4 complete, Harness App MVP0-MVP8 complete, Trials 0-3 closed, Dispatch Kernel Phases 1-6B-3 stable, Phase 7 SDK + DocGenerator implemented, Rust engine parity through the local axum API router implemented, Phase 5 codegen plus TypeScript/Python REST SDK packages implemented, Phase 6 read-only Next.js dashboard implemented, Phase 7 local Docker deploy implemented, Phase 8 migration closeout recorded, security hardening complete (2089 Python tests, 425 Rust tests).
+Current status: Stage 0-4 complete, Harness App MVP0-MVP8 complete, Trials 0-3 closed, Dispatch Kernel Phases 1-6B-3 stable, Phase 7 SDK + DocGenerator implemented, Rust engine parity through the local axum API router implemented, Phase 5 codegen plus TypeScript/Python REST SDK packages implemented, Phase 6 read-only Next.js dashboard implemented, Phase 7 local Docker deploy implemented, Phase 8 migration closeout recorded, native local runtime implemented, security hardening complete (2089 Python tests, 428 Rust tests).
 
 **New sessions should start with [docs/SESSION_START_HERE.md](docs/SESSION_START_HERE.md).**
 
@@ -21,7 +21,25 @@ PYTHONPATH=src python3 -m unittest discover -s tests
 cargo test -p engine
 ```
 
-Current result: 2089 Python tests pass; 425 Rust `engine` parity/component/API tests pass.
+Current result: 2089 Python tests pass; 428 Rust `engine` parity/component/API tests pass.
+
+## How To Run Without Docker
+
+API only:
+
+```bash
+cargo run -p engine
+```
+
+API plus read-only dashboard from the same Rust process:
+
+```bash
+cd dashboard && corepack pnpm install --frozen-lockfile && corepack pnpm build:static
+cd ..
+ACP_DASHBOARD_DIR=dashboard/out cargo run -p engine
+```
+
+Then open `http://127.0.0.1:8080`. Docker remains available for optional local compose verification, but it is not required for local use.
 
 ## How To Run The CLI
 
@@ -50,8 +68,8 @@ PYTHONPATH=src python3 -m harness_core.cli validate-events docs/stage0/events.js
 src/harness_core/        Python harness modules
 engine/                  Rust deterministic parity kernel, dispatch engine, and local axum API router
 codegen/                 Wire-contract type generation helpers
-dashboard/               Read-only Next.js agent-control-plane dashboard
-deploy/                  Local Dockerfiles for API and dashboard
+dashboard/               Read-only Next.js agent-control-plane dashboard with static export support
+deploy/                  Optional local Dockerfiles for API and dashboard
 sdk/typescript/          TypeScript REST SDK package
 sdk/python/              Python REST SDK package
 tests/                   Deterministic unit tests and fixtures

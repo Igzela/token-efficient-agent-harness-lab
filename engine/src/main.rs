@@ -1,4 +1,4 @@
-use engine::http_server::{build_axum_router, AxumApiState};
+use engine::http_server::{build_axum_router, build_axum_router_with_dashboard, AxumApiState};
 
 #[tokio::main]
 async fn main() {
@@ -7,7 +7,15 @@ async fn main() {
     let addr = format!("{}:{}", host, port);
 
     let state = AxumApiState::new();
-    let router = build_axum_router(state);
+    let dashboard_dir =
+        std::env::var("ACP_DASHBOARD_DIR").or_else(|_| std::env::var("DASHBOARD_DIR"));
+    let router = match dashboard_dir {
+        Ok(path) if !path.trim().is_empty() => {
+            println!("dashboard assets served from {}", path);
+            build_axum_router_with_dashboard(state, path)
+        }
+        _ => build_axum_router(state),
+    };
 
     let listener = tokio::net::TcpListener::bind(&addr).await.unwrap();
     println!("engine listening on {}", addr);

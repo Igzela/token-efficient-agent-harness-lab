@@ -24,7 +24,7 @@ Token-Efficient Agent Harness Lab is a local deterministic harness for studying 
 | Trial 3 multi-repo generalization | Closed — `TRIAL_3_MULTI_REPO_GENERALIZATION_PASS` |
 | Trial 3 target merge | Closed — all 3 target PRs merged, audit PASS_WITH_NOTES |
 
-Tests: 2089 Python pass; 425 Rust pass.
+Tests: 2089 Python pass; 428 Rust pass.
 
 Additional active architecture track:
 
@@ -45,6 +45,7 @@ Additional active architecture track:
 | Language Migration Phase 6 — Read-only Dashboard | Implemented Next.js dashboard with dispatch, routing, agents/workflows, costs, settings, and health views; no executable controls |
 | Language Migration Phase 7 — Local Docker Deploy | Implemented local compose stack for Rust API + read-only dashboard; no production deploy |
 | Language Migration Phase 8 — Closeout | Implemented; closeout recorded in `docs/AGENT_CONTROL_PLANE_MIGRATION_CLOSEOUT.md`; Python reference retained in `src/harness_core/` pending explicit removal decision |
+| Agent-Control-Plane Native Local Runtime | Implemented; Rust engine can serve API plus static dashboard from one local process via `ACP_DASHBOARD_DIR=dashboard/out`; Docker is optional |
 
 ## What This Project Is Not
 

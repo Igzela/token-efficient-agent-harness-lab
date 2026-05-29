@@ -4,8 +4,8 @@ Last verified: 2026-05-29.
 
 ## Repository State
 
-- Branch: `main` with language migration Phases 0-8 complete.
-- Tests: **2089 Python pass**, **425 Rust pass**, 0 failures.
+- Branch: `main` with language migration Phases 0-8 complete plus native local runtime support.
+- Tests: **2089 Python pass**, **428 Rust pass**, 0 failures.
 - Security baseline: ALL CHECKS PASSED.
 
 ## New Session / Documentation Discipline
@@ -71,9 +71,10 @@ Run `python3 scripts/check_agent_handoff.py` before committing so the handoff su
 | Language Migration Phase 7 — SDK + Migrator | **IMPLEMENTED** — 2 modules (sdk, storage_migrator). 16 new tests. Commit `ea11dfb`. |
 | Language Migration Rust Engine/API Parity — http_server + doc_generator + component tests | **IMPLEMENTED** — `http_server` now includes a local axum router for `/api/v1/health`, `/api/v1/ready`, `/api/v1/openapi.json`, and deterministic `/api/v1/dispatch`; `doc_generator` includes module/schema registry and markdown generation; `provider` exposes a disabled-by-default provider trait boundary. 425 total Rust tests, 36 source modules, 32 test files. Real providers, target writes, sandbox/process/container/VM execution, runtime workers, executable dashboard controls, SDK publishing, and production deployment remain out of scope. |
 | Agent-Control-Plane Phase 5 — SDK + Codegen | **IMPLEMENTED** — `codegen/generate_wire_types.py`, generated Rust/TypeScript/Python wire types, `sdk/typescript` REST SDK package, and `sdk/python` REST SDK package. `cd sdk/typescript && pnpm build && npm pack --dry-run`, Python unittest, and `cd sdk/python && python -m build` pass. SDKs call REST endpoints and do not bind private Rust internals. Security baseline allows only the Python SDK's scoped stdlib `urllib` transport exception for this local REST client. |
-| Agent-Control-Plane Phase 6 — Read-only Dashboard | **IMPLEMENTED** — Next.js App Router dashboard at `dashboard/` with dispatch, routing, agents/workflows, costs, settings, and health views. Verified with `cd dashboard && pnpm lint && pnpm typecheck && pnpm build` and local HTTP smoke. Dashboard does not import or call dispatch POST and exposes no approve/run/deploy/execute/merge controls. Docker/local deploy remains the next migration slice. |
-| Agent-Control-Plane Phase 7 — Local Docker Deploy | **IMPLEMENTED** — Local compose stack builds Rust axum API and Next.js dashboard with `deploy/Dockerfile.engine`, `deploy/Dockerfile.dashboard`, and root `docker-compose.yml`. `docker compose build` and default `docker compose up --build -d` pass; `/api/v1/health`, `/api/v1/dispatch`, and dashboard HTTP all returned 200-class responses. No production credentials, provider calls, target writes, sandbox/process execution, or runtime workers are enabled. |
+| Agent-Control-Plane Phase 6 — Read-only Dashboard | **IMPLEMENTED** — Next.js App Router dashboard at `dashboard/` with dispatch, routing, agents/workflows, costs, settings, and health views. Verified with `cd dashboard && pnpm lint && pnpm typecheck && pnpm build`; static export is verified with `cd dashboard && pnpm build:static`. Dashboard does not import or call dispatch POST and exposes no approve/run/deploy/execute/merge controls. |
+| Agent-Control-Plane Phase 7 — Local Docker Deploy | **IMPLEMENTED** — Optional local compose stack builds Rust axum API and Next.js dashboard with `deploy/Dockerfile.engine`, `deploy/Dockerfile.dashboard`, and root `docker-compose.yml`. `docker compose build` and default `docker compose up --build -d` pass; `/api/v1/health`, `/api/v1/dispatch`, and dashboard HTTP all returned 200-class responses. No production credentials, provider calls, target writes, sandbox/process execution, or runtime workers are enabled. |
 | Agent-Control-Plane Phase 8 — Closeout | **IMPLEMENTED** — Closeout recorded in `docs/AGENT_CONTROL_PLANE_MIGRATION_CLOSEOUT.md`. Rust `engine/` includes a disabled-by-default provider trait boundary in `engine/src/provider.rs`; no real provider transport is implemented. Python reference remains in `src/harness_core/` pending any future explicit removal decision. |
+| Agent-Control-Plane Native Local Runtime | **IMPLEMENTED** — `engine` can serve API plus exported static dashboard from one local Rust process via `ACP_DASHBOARD_DIR=dashboard/out cargo run -p engine`. `scripts/smoke_native_runtime.py` verifies health, readiness, dispatch, and dashboard root without Docker. |
 
 Trial 2 complete evidence chain: [`docs/trials/TRIAL_2_FINAL_STATE_INDEX.md`](trials/TRIAL_2_FINAL_STATE_INDEX.md).
 Trial 3 report: [`docs/trials/TRIAL_3_REPORT.md`](trials/TRIAL_3_REPORT.md).

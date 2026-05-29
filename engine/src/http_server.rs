@@ -1,11 +1,13 @@
 use axum::extract::State;
-use axum::http::{header, HeaderMap, HeaderValue, StatusCode};
+use axum::http::{header, HeaderMap, HeaderValue, StatusCode, Uri};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::collections::HashMap;
+use std::fs;
+use std::path::{Component, Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 use crate::dispatch_engine::DispatchEngine;
@@ -50,6 +52,7 @@ pub struct AxumApiState {
     rate_limiter: Arc<Mutex<RateLimiter>>,
     default_rate_limit: Option<i64>,
     now: f64,
+    dashboard_dir: Option<Arc<PathBuf>>,
 }
 
 impl Default for AxumApiState {
@@ -66,6 +69,7 @@ impl AxumApiState {
             rate_limiter: Arc::new(Mutex::new(RateLimiter::new(60.0, 10_000))),
             default_rate_limit: None,
             now: 0.0,
+            dashboard_dir: None,
         }
     }
 
@@ -80,6 +84,11 @@ impl AxumApiState {
         self.rate_limiter = Arc::new(Mutex::new(rate_limiter));
         self.default_rate_limit = default_rate_limit;
         self.now = now;
+        self
+    }
+
+    pub fn with_dashboard_dir(mut self, dashboard_dir: impl Into<PathBuf>) -> Self {
+        self.dashboard_dir = Some(Arc::new(dashboard_dir.into()));
         self
     }
 }
@@ -132,6 +141,19 @@ impl IntoResponse for ApiError {
 }
 
 pub fn build_axum_router(state: AxumApiState) -> Router {
+    axum_routes().with_state(state)
+}
+
+pub fn build_axum_router_with_dashboard(
+    state: AxumApiState,
+    dashboard_dir: impl Into<PathBuf>,
+) -> Router {
+    axum_routes()
+        .fallback(serve_dashboard_asset)
+        .with_state(state.with_dashboard_dir(dashboard_dir))
+}
+
+fn axum_routes() -> Router<AxumApiState> {
     Router::new()
         .route("/api/v1/health", get(api_health).options(cors_preflight))
         .route("/api/v1/ready", get(api_ready).options(cors_preflight))
@@ -143,7 +165,76 @@ pub fn build_axum_router(state: AxumApiState) -> Router {
             "/api/v1/dispatch",
             post(api_dispatch).options(cors_preflight),
         )
-        .with_state(state)
+}
+
+async fn serve_dashboard_asset(State(state): State<AxumApiState>, uri: Uri) -> Response {
+    if uri.path().starts_with("/api/") {
+        return (StatusCode::NOT_FOUND, "not found").into_response();
+    }
+    let Some(dashboard_dir) = &state.dashboard_dir else {
+        return (StatusCode::NOT_FOUND, "dashboard not configured").into_response();
+    };
+    let Some(path) = dashboard_asset_path(dashboard_dir.as_ref(), uri.path()) else {
+        return (StatusCode::BAD_REQUEST, "invalid dashboard path").into_response();
+    };
+
+    match fs::read(&path) {
+        Ok(bytes) => {
+            let mut headers = HeaderMap::new();
+            headers.insert(
+                header::CONTENT_TYPE,
+                HeaderValue::from_static(content_type_for_path(&path)),
+            );
+            (headers, bytes).into_response()
+        }
+        Err(_) => match fs::read(dashboard_dir.join("index.html")) {
+            Ok(bytes) => {
+                let mut headers = HeaderMap::new();
+                headers.insert(
+                    header::CONTENT_TYPE,
+                    HeaderValue::from_static("text/html; charset=utf-8"),
+                );
+                (headers, bytes).into_response()
+            }
+            Err(_) => (StatusCode::NOT_FOUND, "dashboard asset not found").into_response(),
+        },
+    }
+}
+
+fn dashboard_asset_path(root: &Path, uri_path: &str) -> Option<PathBuf> {
+    let relative = uri_path.trim_start_matches('/');
+    if relative.is_empty() {
+        return Some(root.join("index.html"));
+    }
+
+    let mut path = PathBuf::from(root);
+    for component in Path::new(relative).components() {
+        match component {
+            Component::Normal(part) => path.push(part),
+            _ => return None,
+        }
+    }
+    Some(if path.is_dir() {
+        path.join("index.html")
+    } else {
+        path
+    })
+}
+
+fn content_type_for_path(path: &Path) -> &'static str {
+    match path.extension().and_then(|ext| ext.to_str()).unwrap_or("") {
+        "css" => "text/css; charset=utf-8",
+        "html" => "text/html; charset=utf-8",
+        "ico" => "image/x-icon",
+        "js" => "text/javascript; charset=utf-8",
+        "json" => "application/json; charset=utf-8",
+        "png" => "image/png",
+        "svg" => "image/svg+xml",
+        "txt" => "text/plain; charset=utf-8",
+        "wasm" => "application/wasm",
+        "webp" => "image/webp",
+        _ => "application/octet-stream",
+    }
 }
 
 async fn api_health(
