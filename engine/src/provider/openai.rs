@@ -233,16 +233,24 @@ mod tests {
 
     #[tokio::test]
     async fn openai_invoke_success() {
-        std::env::set_var("TEST_OPENAI_KEY", "sk-test123456789");
+        std::env::set_var("TEST_OPENAI_KEY_OK", "sk-test123456789");
         let transport = MockTransport::new(vec![Ok(HttpResponse {
             status: 200,
             body: make_response_json().to_string().into_bytes(),
         })]);
-        let config = make_config();
+        let mut config = make_config();
+        config.credential_ref = "TEST_OPENAI_KEY_OK".to_string();
+        let cred_ref = CredentialRef::new(
+            "TEST_OPENAI_KEY_OK",
+            "env",
+            "TES***KEY",
+            "provider:openai",
+            "2026-01-01T00:00:00Z",
+        );
         let provider = OpenAiProvider::new(
             config,
             CredentialBoundary::new("env").unwrap(),
-            make_cred_ref(),
+            cred_ref,
             Arc::new(transport),
             None,
         );
@@ -257,7 +265,7 @@ mod tests {
         assert!(result.estimated_cost.is_some());
         let cost = result.estimated_cost.unwrap();
         assert!((cost - 0.0006).abs() < 0.000001);
-        std::env::remove_var("TEST_OPENAI_KEY");
+        std::env::remove_var("TEST_OPENAI_KEY_OK");
     }
 
     #[tokio::test]
@@ -461,18 +469,26 @@ mod tests {
 
     #[tokio::test]
     async fn openai_invoke_no_cost_fields() {
-        std::env::set_var("TEST_OPENAI_KEY", "sk-nocost1234");
+        std::env::set_var("TEST_OPENAI_KEY_NOCOST", "sk-nocost1234");
         let transport = MockTransport::new(vec![Ok(HttpResponse {
             status: 200,
             body: make_response_json().to_string().into_bytes(),
         })]);
         let mut config = make_config();
+        config.credential_ref = "TEST_OPENAI_KEY_NOCOST".to_string();
         config.input_cost_per_1k = None;
         config.output_cost_per_1k = None;
+        let cred_ref = CredentialRef::new(
+            "TEST_OPENAI_KEY_NOCOST",
+            "env",
+            "TES***OST",
+            "provider:openai",
+            "2026-01-01T00:00:00Z",
+        );
         let provider = OpenAiProvider::new(
             config,
             CredentialBoundary::new("env").unwrap(),
-            make_cred_ref(),
+            cred_ref,
             Arc::new(transport),
             None,
         );
@@ -480,6 +496,6 @@ mod tests {
         let request = ProviderRequest::local_stub("openai-test", "gpt-4", "Hello");
         let result = provider.invoke(&request).await.unwrap();
         assert!(result.estimated_cost.is_none());
-        std::env::remove_var("TEST_OPENAI_KEY");
+        std::env::remove_var("TEST_OPENAI_KEY_NOCOST");
     }
 }
