@@ -52,7 +52,9 @@ CREATE TABLE IF NOT EXISTS api_key_metadata (
     scopes_json TEXT NOT NULL,
     created_at TEXT NOT NULL,
     created_by TEXT NOT NULL,
-    revoked_at TEXT
+    revoked_at TEXT,
+    last_used_at TEXT,
+    expires_at TEXT
 );
 
 CREATE TABLE IF NOT EXISTS audit_log (
@@ -105,6 +107,7 @@ impl LocalProductStore {
             conn: Mutex::new(conn),
         };
         store.ensure_default_config()?;
+        store.migrate_add_key_columns()?;
         Ok(store)
     }
 
@@ -128,6 +131,28 @@ impl LocalProductStore {
         self.with_conn(|conn| {
             conn.execute_batch("PRAGMA wal_checkpoint(FULL);")
                 .map_err(|e| e.to_string())
+        })
+    }
+
+    fn migrate_add_key_columns(&self) -> Result<(), String> {
+        self.with_conn(|conn| {
+            let columns: Vec<String> = {
+                let mut stmt = conn
+                    .prepare("PRAGMA table_info(api_key_metadata)")
+                    .map_err(|e| e.to_string())?;
+                let rows = stmt
+                    .query_map([], |row| row.get::<_, String>(1))
+                    .map_err(|e| e.to_string())?;
+                rows.filter_map(|r| r.ok()).collect()
+            };
+            if !columns.contains(&"last_used_at".to_string()) {
+                conn.execute_batch(
+                    "ALTER TABLE api_key_metadata ADD COLUMN last_used_at TEXT;
+                     ALTER TABLE api_key_metadata ADD COLUMN expires_at TEXT;",
+                )
+                .map_err(|e| e.to_string())?;
+            }
+            Ok(())
         })
     }
 
@@ -382,6 +407,165 @@ impl LocalProductStore {
         })
     }
 
+    pub fn get_api_key_metadata(&self, key_id: &str) -> Result<Option<Value>, String> {
+        self.with_conn(|conn| {
+            let result = conn.query_row(
+                "SELECT key_id, user_id, role, scopes_json, created_at, created_by,
+                        revoked_at, last_used_at, expires_at
+                 FROM api_key_metadata WHERE key_id = ?1",
+                params![key_id],
+                |row| {
+                    let scopes_text: String = row.get(3)?;
+                    let scopes: Vec<String> =
+                        serde_json::from_str(&scopes_text).unwrap_or_default();
+                    Ok(json!({
+                        "key_id": row.get::<_, String>(0)?,
+                        "user_id": row.get::<_, String>(1)?,
+                        "role": row.get::<_, String>(2)?,
+                        "scopes": scopes,
+                        "created_at": row.get::<_, String>(4)?,
+                        "created_by": row.get::<_, String>(5)?,
+                        "revoked_at": row.get::<_, Option<String>>(6)?,
+                        "last_used_at": row.get::<_, Option<String>>(7)?,
+                        "expires_at": row.get::<_, Option<String>>(8)?,
+                    }))
+                },
+            );
+            match result {
+                Ok(value) => Ok(Some(value)),
+                Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+                Err(e) => Err(e.to_string()),
+            }
+        })
+    }
+
+    pub fn revoke_api_key_metadata(&self, key_id: &str, actor: &str) -> Result<bool, String> {
+        self.with_conn(|conn| {
+            let rows = conn
+                .execute(
+                    "UPDATE api_key_metadata SET revoked_at = ?1 WHERE key_id = ?2 AND revoked_at IS NULL",
+                    params![LOCAL_NOW, key_id],
+                )
+                .map_err(|e| e.to_string())?;
+            if rows > 0 {
+                append_audit_locked(
+                    conn,
+                    actor,
+                    "team.key.revoked",
+                    key_id,
+                    &json!({"key_id": key_id}),
+                )?;
+            }
+            Ok(rows > 0)
+        })
+    }
+
+    pub fn delete_api_key_metadata(&self, key_id: &str, actor: &str) -> Result<bool, String> {
+        self.with_conn(|conn| {
+            let rows = conn
+                .execute(
+                    "DELETE FROM api_key_metadata WHERE key_id = ?1",
+                    params![key_id],
+                )
+                .map_err(|e| e.to_string())?;
+            if rows > 0 {
+                append_audit_locked(
+                    conn,
+                    actor,
+                    "team.key.deleted",
+                    key_id,
+                    &json!({"key_id": key_id}),
+                )?;
+            }
+            Ok(rows > 0)
+        })
+    }
+
+    pub fn update_api_key_scopes(
+        &self,
+        key_id: &str,
+        scopes: &[String],
+        actor: &str,
+    ) -> Result<bool, String> {
+        let scopes_json = serde_json::to_string(scopes).map_err(|e| e.to_string())?;
+        self.with_conn(|conn| {
+            let rows = conn
+                .execute(
+                    "UPDATE api_key_metadata SET scopes_json = ?1 WHERE key_id = ?2",
+                    params![scopes_json, key_id],
+                )
+                .map_err(|e| e.to_string())?;
+            if rows > 0 {
+                append_audit_locked(
+                    conn,
+                    actor,
+                    "team.key.scopes_updated",
+                    key_id,
+                    &json!({"key_id": key_id, "scopes": scopes}),
+                )?;
+            }
+            Ok(rows > 0)
+        })
+    }
+
+    pub fn update_team_member_role(
+        &self,
+        user_id: &str,
+        role: &str,
+        actor: &str,
+    ) -> Result<bool, String> {
+        self.with_conn(|conn| {
+            let rows = conn
+                .execute(
+                    "UPDATE team_members SET role = ?1, updated_at = ?2 WHERE user_id = ?3",
+                    params![role, LOCAL_NOW, user_id],
+                )
+                .map_err(|e| e.to_string())?;
+            if rows > 0 {
+                append_audit_locked(
+                    conn,
+                    actor,
+                    "team.member.role_updated",
+                    user_id,
+                    &json!({"user_id": user_id, "role": role}),
+                )?;
+            }
+            Ok(rows > 0)
+        })
+    }
+
+    pub fn delete_team_member(&self, user_id: &str, actor: &str) -> Result<bool, String> {
+        self.with_conn(|conn| {
+            let rows = conn
+                .execute(
+                    "DELETE FROM team_members WHERE user_id = ?1",
+                    params![user_id],
+                )
+                .map_err(|e| e.to_string())?;
+            if rows > 0 {
+                append_audit_locked(
+                    conn,
+                    actor,
+                    "team.member.deleted",
+                    user_id,
+                    &json!({"user_id": user_id}),
+                )?;
+            }
+            Ok(rows > 0)
+        })
+    }
+
+    pub fn touch_api_key_last_used(&self, key_id: &str) -> Result<(), String> {
+        self.with_conn(|conn| {
+            conn.execute(
+                "UPDATE api_key_metadata SET last_used_at = ?1 WHERE key_id = ?2",
+                params![LOCAL_NOW, key_id],
+            )
+            .map_err(|e| e.to_string())?;
+            Ok(())
+        })
+    }
+
     pub fn team_snapshot(&self) -> Result<Value, String> {
         self.with_conn(|conn| {
             let members = {
@@ -409,7 +593,8 @@ impl LocalProductStore {
             let api_keys = {
                 let mut stmt = conn
                     .prepare(
-                        "SELECT key_id, user_id, role, scopes_json, created_at, created_by, revoked_at
+                        "SELECT key_id, user_id, role, scopes_json, created_at, created_by,
+                                revoked_at, last_used_at, expires_at
                          FROM api_key_metadata
                          ORDER BY key_id",
                     )
@@ -427,6 +612,8 @@ impl LocalProductStore {
                             "created_at": row.get::<_, String>(4)?,
                             "created_by": row.get::<_, String>(5)?,
                             "revoked_at": row.get::<_, Option<String>>(6)?,
+                            "last_used_at": row.get::<_, Option<String>>(7)?,
+                            "expires_at": row.get::<_, Option<String>>(8)?,
                         }))
                     })
                     .map_err(|e| e.to_string())?;

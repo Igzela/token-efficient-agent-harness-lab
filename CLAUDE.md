@@ -59,6 +59,7 @@ Master architecture document: `docs/dispatch/DISPATCHER_KERNEL_V0_ARCHITECTURE.m
 - **Agent-Control-Plane Local Small-Team Productization**: IMPLEMENTED (`engine/src/storage/local_product_store.rs`, live dashboard API state, SQLite dispatch history/config/team/API-key metadata/audit/cost state, export, admin-auth-confirmed local backup, SDK local-state methods). Still no cloud SaaS, target writes, real workers, or real sandbox/process execution.
 - **Phase 6B-3 Gate 1**: IMPLEMENTED (scope checks, rate limiting, 403/429 responses).
 - **Security hardening**: redaction logging, http_server body size limit + CORS, checkpoint path traversal fix, 42 new tests for coverage gaps.
+- **Productization Phase 2 — Permission Governance**: IMPLEMENTED (API key create/revoke/rotate/delete/scopes, team member create/update-role/delete, last_used_at tracking, expires_at support, revoked_at enforcement, admin audit events, team:admin scope gating, SDK CRUD methods, dashboard management UI).
 
 See `docs/CURRENT_STATUS.md` for detailed phase closeout records.
 
@@ -216,7 +217,7 @@ See `docs/CURRENT_STATUS.md` for full details.
 
 - **Framework**: unittest (stdlib), no pytest
 - **Run command**: `PYTHONPATH=src python3 -m unittest discover -s tests`
-- **Current count**: 2089 Python tests + 1041 Rust test cases enumerated by `cargo test -p engine -- --list`, 0 failures (as of 2026-05-29)
+- **Current count**: 2089 Python tests + 606 Rust tests pass, 0 failures (as of 2026-05-29)
 - **Coverage**: Phase boundary contracts, schema validation, golden fixtures
 - **CI**: GitHub Actions on push/PR to main — runs security baseline + all tests
 - **Test naming**: `tests/test_<module>.py`, one test file per source module

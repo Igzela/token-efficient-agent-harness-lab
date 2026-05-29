@@ -62,7 +62,7 @@ fn test_tenant_resolver_create_and_resolve() {
     assert!(raw.starts_with("harness_"));
     assert!(!key.key_id.is_empty());
 
-    let decision = resolver.resolve(Some(&format!("Bearer {raw}")), 1000.0);
+    let decision = resolver.resolve_mut(Some(&format!("Bearer {raw}")), 1000.0);
     assert!(decision.allowed);
     assert_eq!(decision.tenant_id.as_deref(), Some("t1"));
     assert_eq!(decision.api_key_id.as_deref(), Some(key.key_id.as_str()));
@@ -70,25 +70,25 @@ fn test_tenant_resolver_create_and_resolve() {
 
 #[test]
 fn test_tenant_resolver_missing_header() {
-    let resolver = TenantResolver::new();
-    let decision = resolver.resolve(None, 1000.0);
+    let mut resolver = TenantResolver::new();
+    let decision = resolver.resolve_mut(None, 1000.0);
     assert!(!decision.allowed);
     assert!(decision.reason.contains("missing"));
 }
 
 #[test]
 fn test_tenant_resolver_invalid_format() {
-    let resolver = TenantResolver::new();
-    let decision = resolver.resolve(Some("Basic abc"), 1000.0);
+    let mut resolver = TenantResolver::new();
+    let decision = resolver.resolve_mut(Some("Basic abc"), 1000.0);
     assert!(!decision.allowed);
     assert!(decision.reason.contains("invalid authorization format"));
 }
 
 #[test]
 fn test_tenant_resolver_invalid_token_shape() {
-    let resolver = TenantResolver::new();
+    let mut resolver = TenantResolver::new();
     let header = ["Bearer", "malformed"].join(" ");
-    let decision = resolver.resolve(Some(&header), 1000.0);
+    let decision = resolver.resolve_mut(Some(&header), 1000.0);
     assert!(!decision.allowed);
     assert!(decision.reason.contains("invalid api key"));
 }
@@ -99,7 +99,7 @@ fn test_tenant_resolver_wrong_key() {
     resolver.add_tenant(make_tenant("t1", "Test"));
     let (_, _) = resolver.create_api_key("t1", None, None, 1000.0).unwrap();
     let wrong_key = "harness_ffff00000000000000000000000000000000000000000000000000000000ffff";
-    let decision = resolver.resolve(Some(&format!("Bearer {wrong_key}")), 1000.0);
+    let decision = resolver.resolve_mut(Some(&format!("Bearer {wrong_key}")), 1000.0);
     assert!(!decision.allowed);
 }
 
@@ -110,7 +110,7 @@ fn test_tenant_resolver_expired_key() {
     let (_, raw) = resolver
         .create_api_key("t1", None, Some(500.0), 1000.0)
         .unwrap();
-    let decision = resolver.resolve(Some(&format!("Bearer {raw}")), 600.0);
+    let decision = resolver.resolve_mut(Some(&format!("Bearer {raw}")), 600.0);
     assert!(!decision.allowed);
     assert!(decision.reason.contains("expired"));
 }

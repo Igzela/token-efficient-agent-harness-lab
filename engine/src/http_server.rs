@@ -1,7 +1,7 @@
-use axum::extract::State;
+use axum::extract::{Path as AxumPath, State};
 use axum::http::{header, HeaderMap, HeaderValue, StatusCode, Uri};
 use axum::response::{IntoResponse, Response};
-use axum::routing::{get, post};
+use axum::routing::{delete, get, post, put};
 use axum::{Json, Router};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -162,6 +162,31 @@ pub struct BackupApiRequest {
     pub confirm_local_backup: Option<bool>,
 }
 
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+pub struct CreateApiKeyRequest {
+    pub user_id: String,
+    pub role: String,
+    pub scopes: Vec<String>,
+    pub expires_at: Option<f64>,
+}
+
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+pub struct UpdateKeyScopesRequest {
+    pub scopes: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+pub struct CreateTeamMemberRequest {
+    pub user_id: String,
+    pub display_name: String,
+    pub role: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+pub struct UpdateMemberRoleRequest {
+    pub role: String,
+}
+
 #[derive(Debug, Clone)]
 struct ApiRequestContext {
     tenant_id: String,
@@ -237,13 +262,41 @@ fn axum_routes() -> Router<AxumApiState> {
             get(api_dashboard).options(cors_preflight),
         )
         .route("/api/v1/config", get(api_config).options(cors_preflight))
-        .route("/api/v1/team", get(api_team).options(cors_preflight))
+        .route(
+            "/api/v1/team",
+            get(api_team)
+                .post(api_create_member)
+                .options(cors_preflight),
+        )
+        .route(
+            "/api/v1/team/:user_id",
+            put(api_update_member_role)
+                .delete(api_delete_member)
+                .options(cors_preflight),
+        )
         .route("/api/v1/costs", get(api_costs).options(cors_preflight))
         .route("/api/v1/export", get(api_export).options(cors_preflight))
         .route("/api/v1/audit", get(api_audit).options(cors_preflight))
         .route(
             "/api/v1/backups",
             post(api_create_backup).options(cors_preflight),
+        )
+        .route("/api/v1/keys", post(api_create_key).options(cors_preflight))
+        .route(
+            "/api/v1/keys/:key_id/revoke",
+            post(api_revoke_key).options(cors_preflight),
+        )
+        .route(
+            "/api/v1/keys/:key_id/rotate",
+            post(api_rotate_key).options(cors_preflight),
+        )
+        .route(
+            "/api/v1/keys/:key_id",
+            delete(api_delete_key).options(cors_preflight),
+        )
+        .route(
+            "/api/v1/keys/:key_id/scopes",
+            post(api_update_key_scopes).options(cors_preflight),
         )
         .route(
             "/api/v1/provider/health",
@@ -596,6 +649,300 @@ async fn api_create_backup(
     ))
 }
 
+async fn api_create_key(
+    State(state): State<AxumApiState>,
+    headers: HeaderMap,
+    Json(request): Json<CreateApiKeyRequest>,
+) -> Result<impl IntoResponse, ApiError> {
+    let context = authorize(&state, &headers, "team:admin")?;
+    let store = require_store(&state)?;
+
+    let mut guard = state
+        .tenant_resolver
+        .as_ref()
+        .ok_or_else(|| ApiError::new(StatusCode::SERVICE_UNAVAILABLE, "auth unavailable"))?
+        .lock()
+        .map_err(|_| ApiError::new(StatusCode::INTERNAL_SERVER_ERROR, "auth unavailable"))?;
+
+    let scopes_set: std::collections::HashSet<String> = request.scopes.iter().cloned().collect();
+    let (key, raw_key) = guard
+        .create_api_key(
+            &context.tenant_id,
+            Some(scopes_set),
+            request.expires_at,
+            state.now,
+        )
+        .map_err(|e| ApiError::new(StatusCode::BAD_REQUEST, e))?;
+
+    store
+        .record_api_key_metadata(
+            &key.key_id,
+            &request.user_id,
+            &request.role,
+            &request.scopes,
+            &context.api_key_id,
+        )
+        .map_err(internal_error)?;
+
+    Ok((
+        cors_headers(),
+        Json(json!({
+            "schema_version": AXUM_API_SCHEMA_VERSION,
+            "key_id": key.key_id,
+            "raw_key": raw_key,
+            "user_id": request.user_id,
+            "role": request.role,
+            "scopes": request.scopes,
+            "created_at": key.created_at,
+        })),
+    ))
+}
+
+async fn api_revoke_key(
+    State(state): State<AxumApiState>,
+    headers: HeaderMap,
+    AxumPath(key_id): AxumPath<String>,
+) -> Result<impl IntoResponse, ApiError> {
+    let context = authorize(&state, &headers, "team:admin")?;
+    let store = require_store(&state)?;
+
+    let revoked = store
+        .revoke_api_key_metadata(&key_id, &context.api_key_id)
+        .map_err(internal_error)?;
+
+    if let Some(resolver) = &state.tenant_resolver {
+        let mut guard = resolver
+            .lock()
+            .map_err(|_| ApiError::new(StatusCode::INTERNAL_SERVER_ERROR, "auth unavailable"))?;
+        guard.remove_api_key(&key_id);
+    }
+
+    if !revoked {
+        return Err(ApiError::new(
+            StatusCode::NOT_FOUND,
+            "key not found or already revoked",
+        ));
+    }
+
+    Ok((
+        cors_headers(),
+        Json(json!({"schema_version": AXUM_API_SCHEMA_VERSION, "ok": true, "key_id": key_id})),
+    ))
+}
+
+async fn api_rotate_key(
+    State(state): State<AxumApiState>,
+    headers: HeaderMap,
+    AxumPath(key_id): AxumPath<String>,
+) -> Result<impl IntoResponse, ApiError> {
+    let context = authorize(&state, &headers, "team:admin")?;
+    let store = require_store(&state)?;
+
+    let old_key = store
+        .get_api_key_metadata(&key_id)
+        .map_err(internal_error)?
+        .ok_or_else(|| ApiError::new(StatusCode::NOT_FOUND, "key not found"))?;
+
+    let user_id = old_key["user_id"]
+        .as_str()
+        .ok_or_else(|| ApiError::new(StatusCode::INTERNAL_SERVER_ERROR, "invalid key metadata"))?;
+    let role = old_key["role"]
+        .as_str()
+        .ok_or_else(|| ApiError::new(StatusCode::INTERNAL_SERVER_ERROR, "invalid key metadata"))?;
+    let scopes: Vec<String> = old_key["scopes"]
+        .as_array()
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|v| v.as_str().map(String::from))
+                .collect()
+        })
+        .unwrap_or_default();
+    let expires_at = old_key["expires_at"].as_f64();
+
+    store
+        .revoke_api_key_metadata(&key_id, &context.api_key_id)
+        .map_err(internal_error)?;
+
+    if let Some(resolver) = &state.tenant_resolver {
+        let mut guard = resolver
+            .lock()
+            .map_err(|_| ApiError::new(StatusCode::INTERNAL_SERVER_ERROR, "auth unavailable"))?;
+        guard.remove_api_key(&key_id);
+
+        let scopes_set: std::collections::HashSet<String> = scopes.iter().cloned().collect();
+        let (new_key, raw_key) = guard
+            .create_api_key(&context.tenant_id, Some(scopes_set), expires_at, state.now)
+            .map_err(|e| ApiError::new(StatusCode::INTERNAL_SERVER_ERROR, e))?;
+
+        store
+            .record_api_key_metadata(&new_key.key_id, user_id, role, &scopes, &context.api_key_id)
+            .map_err(internal_error)?;
+
+        return Ok((
+            cors_headers(),
+            Json(json!({
+                "schema_version": AXUM_API_SCHEMA_VERSION,
+                "key_id": new_key.key_id,
+                "raw_key": raw_key,
+                "user_id": user_id,
+                "role": role,
+                "scopes": scopes,
+                "created_at": new_key.created_at,
+                "rotated_from": key_id,
+            })),
+        ));
+    }
+
+    Err(ApiError::new(
+        StatusCode::SERVICE_UNAVAILABLE,
+        "auth unavailable",
+    ))
+}
+
+async fn api_delete_key(
+    State(state): State<AxumApiState>,
+    headers: HeaderMap,
+    AxumPath(key_id): AxumPath<String>,
+) -> Result<impl IntoResponse, ApiError> {
+    let context = authorize(&state, &headers, "team:admin")?;
+    let store = require_store(&state)?;
+
+    let deleted = store
+        .delete_api_key_metadata(&key_id, &context.api_key_id)
+        .map_err(internal_error)?;
+
+    if let Some(resolver) = &state.tenant_resolver {
+        let mut guard = resolver
+            .lock()
+            .map_err(|_| ApiError::new(StatusCode::INTERNAL_SERVER_ERROR, "auth unavailable"))?;
+        guard.remove_api_key(&key_id);
+    }
+
+    if !deleted {
+        return Err(ApiError::new(StatusCode::NOT_FOUND, "key not found"));
+    }
+
+    Ok((
+        cors_headers(),
+        Json(json!({"schema_version": AXUM_API_SCHEMA_VERSION, "ok": true, "key_id": key_id})),
+    ))
+}
+
+async fn api_update_key_scopes(
+    State(state): State<AxumApiState>,
+    headers: HeaderMap,
+    AxumPath(key_id): AxumPath<String>,
+    Json(request): Json<UpdateKeyScopesRequest>,
+) -> Result<impl IntoResponse, ApiError> {
+    let _context = authorize(&state, &headers, "team:admin")?;
+    let store = require_store(&state)?;
+
+    let updated = store
+        .update_api_key_scopes(&key_id, &request.scopes, &_context.api_key_id)
+        .map_err(internal_error)?;
+
+    if !updated {
+        return Err(ApiError::new(StatusCode::NOT_FOUND, "key not found"));
+    }
+
+    Ok((
+        cors_headers(),
+        Json(json!({
+            "schema_version": AXUM_API_SCHEMA_VERSION,
+            "ok": true,
+            "key_id": key_id,
+            "scopes": request.scopes,
+        })),
+    ))
+}
+
+async fn api_create_member(
+    State(state): State<AxumApiState>,
+    headers: HeaderMap,
+    Json(request): Json<CreateTeamMemberRequest>,
+) -> Result<impl IntoResponse, ApiError> {
+    let context = authorize(&state, &headers, "team:admin")?;
+    let store = require_store(&state)?;
+
+    store
+        .upsert_team_member(&request.user_id, &request.display_name, &request.role)
+        .map_err(internal_error)?;
+
+    store
+        .append_audit(
+            &context.api_key_id,
+            "team.member.created",
+            &request.user_id,
+            &json!({"user_id": request.user_id, "display_name": request.display_name, "role": request.role}),
+        )
+        .map_err(internal_error)?;
+
+    Ok((
+        cors_headers(),
+        Json(json!({
+            "schema_version": AXUM_API_SCHEMA_VERSION,
+            "ok": true,
+            "user_id": request.user_id,
+            "display_name": request.display_name,
+            "role": request.role,
+        })),
+    ))
+}
+
+async fn api_update_member_role(
+    State(state): State<AxumApiState>,
+    headers: HeaderMap,
+    AxumPath(user_id): AxumPath<String>,
+    Json(request): Json<UpdateMemberRoleRequest>,
+) -> Result<impl IntoResponse, ApiError> {
+    let context = authorize(&state, &headers, "team:admin")?;
+    let store = require_store(&state)?;
+
+    let updated = store
+        .update_team_member_role(&user_id, &request.role, &context.api_key_id)
+        .map_err(internal_error)?;
+
+    if !updated {
+        return Err(ApiError::new(StatusCode::NOT_FOUND, "member not found"));
+    }
+
+    Ok((
+        cors_headers(),
+        Json(json!({
+            "schema_version": AXUM_API_SCHEMA_VERSION,
+            "ok": true,
+            "user_id": user_id,
+            "role": request.role,
+        })),
+    ))
+}
+
+async fn api_delete_member(
+    State(state): State<AxumApiState>,
+    headers: HeaderMap,
+    AxumPath(user_id): AxumPath<String>,
+) -> Result<impl IntoResponse, ApiError> {
+    let context = authorize(&state, &headers, "team:admin")?;
+    let store = require_store(&state)?;
+
+    let deleted = store
+        .delete_team_member(&user_id, &context.api_key_id)
+        .map_err(internal_error)?;
+
+    if !deleted {
+        return Err(ApiError::new(StatusCode::NOT_FOUND, "member not found"));
+    }
+
+    Ok((
+        cors_headers(),
+        Json(json!({
+            "schema_version": AXUM_API_SCHEMA_VERSION,
+            "ok": true,
+            "user_id": user_id,
+        })),
+    ))
+}
+
 async fn api_openapi(
     State(state): State<AxumApiState>,
     headers: HeaderMap,
@@ -690,10 +1037,10 @@ fn authorize(
     let auth_header = headers
         .get(header::AUTHORIZATION)
         .and_then(|value| value.to_str().ok());
-    let guard = resolver
+    let mut guard = resolver
         .lock()
         .map_err(|_| ApiError::new(StatusCode::INTERNAL_SERVER_ERROR, "auth unavailable"))?;
-    let decision = guard.resolve(auth_header, state.now);
+    let decision = guard.resolve_mut(auth_header, state.now);
     let context = auth_context_from_decision(decision, required_scope)?;
     let tenant_limit = guard.tenant_rate_limit(&context.tenant_id);
     drop(guard);
@@ -767,7 +1114,7 @@ fn cors_headers() -> HeaderMap {
     );
     headers.insert(
         header::ACCESS_CONTROL_ALLOW_METHODS,
-        HeaderValue::from_static("GET,POST,OPTIONS"),
+        HeaderValue::from_static("GET,POST,PUT,DELETE,OPTIONS"),
     );
     headers.insert(
         header::ACCESS_CONTROL_ALLOW_HEADERS,
@@ -860,6 +1207,48 @@ pub fn openapi_document() -> serde_json::Value {
                 "get": {
                     "summary": "Read local team and redacted API key metadata",
                     "responses": {"200": {"description": "Team state"}}
+                },
+                "post": {
+                    "summary": "Create or update a team member",
+                    "description": "Requires team:admin scope.",
+                    "requestBody": {
+                        "required": true,
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "type": "object",
+                                    "required": ["user_id", "display_name", "role"],
+                                    "properties": {
+                                        "user_id": {"type": "string"},
+                                        "display_name": {"type": "string"},
+                                        "role": {"type": "string"}
+                                    }
+                                }
+                            }
+                        }
+                    },
+                    "responses": {
+                        "200": {"description": "Member created"},
+                        "403": {"description": "Forbidden"}
+                    }
+                }
+            },
+            "/api/v1/team/{user_id}": {
+                "put": {
+                    "summary": "Update a team member's role",
+                    "description": "Requires team:admin scope.",
+                    "responses": {
+                        "200": {"description": "Member updated"},
+                        "404": {"description": "Member not found"}
+                    }
+                },
+                "delete": {
+                    "summary": "Remove a team member",
+                    "description": "Requires team:admin scope.",
+                    "responses": {
+                        "200": {"description": "Member removed"},
+                        "404": {"description": "Member not found"}
+                    }
                 }
             },
             "/api/v1/costs": {
@@ -888,6 +1277,88 @@ pub fn openapi_document() -> serde_json::Value {
                         "200": {"description": "Backup metadata"},
                         "400": {"description": "Missing explicit confirmation"},
                         "403": {"description": "Forbidden"}
+                    }
+                }
+            },
+            "/api/v1/keys": {
+                "post": {
+                    "summary": "Create a new API key",
+                    "description": "Requires team:admin scope. Returns the raw key once — it cannot be retrieved later.",
+                    "requestBody": {
+                        "required": true,
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "type": "object",
+                                    "required": ["user_id", "role", "scopes"],
+                                    "properties": {
+                                        "user_id": {"type": "string"},
+                                        "role": {"type": "string"},
+                                        "scopes": {"type": "array", "items": {"type": "string"}},
+                                        "expires_at": {"type": "number"}
+                                    }
+                                }
+                            }
+                        }
+                    },
+                    "responses": {
+                        "200": {"description": "Created key with raw_key"},
+                        "400": {"description": "Invalid scopes or tenant"},
+                        "403": {"description": "Forbidden"}
+                    }
+                }
+            },
+            "/api/v1/keys/{key_id}/revoke": {
+                "post": {
+                    "summary": "Revoke an API key",
+                    "description": "Requires team:admin scope. The key will no longer authenticate.",
+                    "responses": {
+                        "200": {"description": "Key revoked"},
+                        "404": {"description": "Key not found"}
+                    }
+                }
+            },
+            "/api/v1/keys/{key_id}/rotate": {
+                "post": {
+                    "summary": "Rotate an API key",
+                    "description": "Requires team:admin scope. Creates a new key and revokes the old one.",
+                    "responses": {
+                        "200": {"description": "New key with raw_key"},
+                        "404": {"description": "Key not found"}
+                    }
+                }
+            },
+            "/api/v1/keys/{key_id}": {
+                "delete": {
+                    "summary": "Delete an API key",
+                    "description": "Requires team:admin scope. Hard-deletes key metadata.",
+                    "responses": {
+                        "200": {"description": "Key deleted"},
+                        "404": {"description": "Key not found"}
+                    }
+                }
+            },
+            "/api/v1/keys/{key_id}/scopes": {
+                "post": {
+                    "summary": "Update an API key's scopes",
+                    "description": "Requires team:admin scope.",
+                    "requestBody": {
+                        "required": true,
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "type": "object",
+                                    "required": ["scopes"],
+                                    "properties": {
+                                        "scopes": {"type": "array", "items": {"type": "string"}}
+                                    }
+                                }
+                            }
+                        }
+                    },
+                    "responses": {
+                        "200": {"description": "Scopes updated"},
+                        "404": {"description": "Key not found"}
                     }
                 }
             },

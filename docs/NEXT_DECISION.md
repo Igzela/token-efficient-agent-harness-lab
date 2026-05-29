@@ -20,7 +20,7 @@ The responsible coding agent may choose any of the following without asking for 
 | Architecture/documentation closeout | Update architecture records, module maps, closeout reports, and handoff docs after accepted changes. |
 | Demo/docs polish | Refine demo docs when verification or user feedback identifies a concrete gap. |
 | Language migration | Agent-control-plane migration phases 0-8 are implemented and recorded in `docs/AGENT_CONTROL_PLANE_MIGRATION_CLOSEOUT.md`. Rust engine/API parity is implemented through the local axum health/ready/openapi/dispatch router plus provider trait boundary. Phase 5 codegen plus TypeScript/Python REST SDK packages, Phase 6 dashboard, Phase 7 optional local Docker deploy, native local runtime smoke, and explicit env-gated provider beta path are implemented and tested. No real workers, target writes, SDK publishing, or cloud production deployment. |
-| Local small-team hardening | Follow `docs/PRODUCTIZATION_PLAN.md`. Provider Safety Gate is implemented. Next: Permission Governance (roles, scopes, key management). Keep provider execution default-off and explicit; keep target writes, sandbox/process execution, real workers, and cloud SaaS out of scope. |
+| Local small-team hardening | Follow `docs/PRODUCTIZATION_PLAN.md`. Provider Safety Gate and Permission Governance are implemented. Next: Cost Governance (cost reporting, provider-estimated vs reserved vs actual). Keep provider execution default-off and explicit; keep target writes, sandbox/process execution, real workers, and cloud SaaS out of scope. |
 
 ## Disallowed by Default
 

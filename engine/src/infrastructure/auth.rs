@@ -31,6 +31,8 @@ pub struct APIKey {
     pub scopes: HashSet<String>,
     pub created_at: f64,
     pub expires_at: Option<f64>,
+    pub revoked_at: Option<f64>,
+    pub last_used_at: Option<f64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -97,6 +99,16 @@ impl TenantResolver {
         self.api_keys.insert(key.key_id.clone(), key);
     }
 
+    pub fn remove_api_key(&mut self, key_id: &str) -> bool {
+        self.api_keys.remove(key_id).is_some()
+    }
+
+    pub fn mark_key_used(&mut self, key_id: &str, now: f64) {
+        if let Some(key) = self.api_keys.get_mut(key_id) {
+            key.last_used_at = Some(now);
+        }
+    }
+
     pub fn tenant_rate_limit(&self, tenant_id: &str) -> Option<i64> {
         self.tenants
             .get(tenant_id)
@@ -139,12 +151,14 @@ impl TenantResolver {
             scopes: key_scopes,
             created_at: now,
             expires_at,
+            revoked_at: None,
+            last_used_at: None,
         };
         self.api_keys.insert(key.key_id.clone(), key.clone());
         Ok((key, raw_key))
     }
 
-    pub fn resolve(&self, auth_header: Option<&str>, now: f64) -> AuthDecision {
+    pub fn resolve_mut(&mut self, auth_header: Option<&str>, now: f64) -> AuthDecision {
         let header = match auth_header {
             Some(h) => h,
             None => {
@@ -217,6 +231,18 @@ impl TenantResolver {
             }
         }
 
+        if let Some(revoked) = matched_key.revoked_at {
+            if now >= revoked {
+                return AuthDecision {
+                    allowed: false,
+                    tenant_id: None,
+                    api_key_id: None,
+                    scopes: HashSet::new(),
+                    reason: "api key revoked".to_string(),
+                };
+            }
+        }
+
         let tenant = self.tenants.get(&matched_key.tenant_id);
         if tenant.is_none() {
             return AuthDecision {
@@ -227,6 +253,8 @@ impl TenantResolver {
                 reason: "unknown tenant".to_string(),
             };
         }
+
+        self.mark_key_used(&matched_key.key_id, now);
 
         AuthDecision {
             allowed: true,

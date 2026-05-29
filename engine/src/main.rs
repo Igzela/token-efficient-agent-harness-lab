@@ -145,6 +145,8 @@ fn configure_auth(state: AxumApiState) -> AxumApiState {
         scopes,
         created_at: 0.0,
         expires_at: None,
+        revoked_at: None,
+        last_used_at: None,
     });
     state.with_auth(resolver, RateLimiter::new(60.0, 10_000), Some(10_000), 0.0)
 }

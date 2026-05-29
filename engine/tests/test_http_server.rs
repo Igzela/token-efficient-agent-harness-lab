@@ -680,3 +680,446 @@ async fn axum_provider_health_ok_with_stub_provider() {
     assert_eq!(body["provider_id"], "stub-health");
     assert_eq!(body["enabled"], true);
 }
+
+fn make_admin_app() -> (axum::Router, String) {
+    let dir = tempdir().unwrap();
+    let store = LocalProductStore::new(dir.path().join("team.db")).unwrap();
+    let mut resolver = TenantResolver::new();
+    let mut admin_scopes = HashSet::new();
+    admin_scopes.insert("team:read".to_string());
+    admin_scopes.insert("team:admin".to_string());
+    admin_scopes.insert("dispatch:read".to_string());
+    admin_scopes.insert("health:read".to_string());
+    admin_scopes.insert("audit:read".to_string());
+    admin_scopes.insert("backup:admin".to_string());
+    resolver.add_tenant(Tenant {
+        tenant_id: "local".to_string(),
+        name: "Local".to_string(),
+        scopes: admin_scopes.clone(),
+        rate_limit: Some(10_000),
+    });
+    let (_key, raw_key) = resolver
+        .create_api_key("local", Some(admin_scopes), None, 1.0)
+        .unwrap();
+    let app = build_axum_router(AxumApiState::new().with_local_store(store).with_auth(
+        resolver,
+        RateLimiter::new(60.0, 10_000),
+        Some(10_000),
+        1.0,
+    ));
+    (app, raw_key)
+}
+
+#[tokio::test]
+async fn axum_create_api_key_returns_raw_key() {
+    let (app, admin_key) = make_admin_app();
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method(Method::POST)
+                .uri("/api/v1/keys")
+                .header(header::AUTHORIZATION, format!("Bearer {admin_key}"))
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(
+                    json!({"user_id": "u1", "role": "admin", "scopes": ["dispatch:read"]})
+                        .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = response_json(response).await;
+    assert!(body["key_id"].as_str().unwrap().starts_with("key_"));
+    assert!(body["raw_key"].as_str().unwrap().starts_with("harness_"));
+    assert_eq!(body["user_id"], "u1");
+    assert_eq!(body["role"], "admin");
+}
+
+#[tokio::test]
+async fn axum_revoke_api_key_blocks_future_auth() {
+    let (app, admin_key) = make_admin_app();
+    let app_clone = app.clone();
+
+    let create_resp = app_clone
+        .oneshot(
+            Request::builder()
+                .method(Method::POST)
+                .uri("/api/v1/keys")
+                .header(header::AUTHORIZATION, format!("Bearer {admin_key}"))
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(
+                    json!({"user_id": "u1", "role": "admin", "scopes": ["dispatch:read", "team:read"]}).to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let create_body = response_json(create_resp).await;
+    let new_key = create_body["raw_key"].as_str().unwrap().to_string();
+    let key_id = create_body["key_id"].as_str().unwrap().to_string();
+
+    let app_clone = app.clone();
+    let use_resp = app_clone
+        .oneshot(
+            Request::builder()
+                .method(Method::GET)
+                .uri("/api/v1/team")
+                .header(header::AUTHORIZATION, format!("Bearer {new_key}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(use_resp.status(), StatusCode::OK);
+
+    let app_clone = app.clone();
+    let revoke_resp = app_clone
+        .oneshot(
+            Request::builder()
+                .method(Method::POST)
+                .uri(format!("/api/v1/keys/{key_id}/revoke"))
+                .header(header::AUTHORIZATION, format!("Bearer {admin_key}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(revoke_resp.status(), StatusCode::OK);
+
+    let app_clone = app.clone();
+    let blocked_resp = app_clone
+        .oneshot(
+            Request::builder()
+                .method(Method::GET)
+                .uri("/api/v1/team")
+                .header(header::AUTHORIZATION, format!("Bearer {new_key}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(blocked_resp.status(), StatusCode::UNAUTHORIZED);
+}
+
+#[tokio::test]
+async fn axum_rotate_api_key_creates_new_revokes_old() {
+    let (app, admin_key) = make_admin_app();
+    let app_clone = app.clone();
+
+    let create_resp = app_clone
+        .oneshot(
+            Request::builder()
+                .method(Method::POST)
+                .uri("/api/v1/keys")
+                .header(header::AUTHORIZATION, format!("Bearer {admin_key}"))
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(
+                    json!({"user_id": "u1", "role": "admin", "scopes": ["dispatch:read", "team:read", "team:admin"]}).to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let create_body = response_json(create_resp).await;
+    let old_key = create_body["raw_key"].as_str().unwrap().to_string();
+    let key_id = create_body["key_id"].as_str().unwrap().to_string();
+
+    let app_clone = app.clone();
+    let rotate_resp = app_clone
+        .oneshot(
+            Request::builder()
+                .method(Method::POST)
+                .uri(format!("/api/v1/keys/{key_id}/rotate"))
+                .header(header::AUTHORIZATION, format!("Bearer {admin_key}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(rotate_resp.status(), StatusCode::OK);
+    let rotate_body = response_json(rotate_resp).await;
+    let new_key = rotate_body["raw_key"].as_str().unwrap().to_string();
+    assert_ne!(old_key, new_key);
+    assert_eq!(rotate_body["rotated_from"], key_id);
+
+    let app_clone = app.clone();
+    let old_resp = app_clone
+        .oneshot(
+            Request::builder()
+                .method(Method::GET)
+                .uri("/api/v1/team")
+                .header(header::AUTHORIZATION, format!("Bearer {old_key}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(old_resp.status(), StatusCode::UNAUTHORIZED);
+
+    let app_clone = app.clone();
+    let new_resp = app_clone
+        .oneshot(
+            Request::builder()
+                .method(Method::GET)
+                .uri("/api/v1/team")
+                .header(header::AUTHORIZATION, format!("Bearer {new_key}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(new_resp.status(), StatusCode::OK);
+}
+
+#[tokio::test]
+async fn axum_delete_api_key_removes_metadata() {
+    let (app, admin_key) = make_admin_app();
+    let app_clone = app.clone();
+
+    let create_resp = app_clone
+        .oneshot(
+            Request::builder()
+                .method(Method::POST)
+                .uri("/api/v1/keys")
+                .header(header::AUTHORIZATION, format!("Bearer {admin_key}"))
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(
+                    json!({"user_id": "u1", "role": "admin", "scopes": ["dispatch:read"]})
+                        .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let create_body = response_json(create_resp).await;
+    let key_id = create_body["key_id"].as_str().unwrap().to_string();
+
+    let app_clone = app.clone();
+    let del_resp = app_clone
+        .oneshot(
+            Request::builder()
+                .method(Method::DELETE)
+                .uri(format!("/api/v1/keys/{key_id}"))
+                .header(header::AUTHORIZATION, format!("Bearer {admin_key}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(del_resp.status(), StatusCode::OK);
+
+    let app_clone = app.clone();
+    let team_resp = app_clone
+        .oneshot(
+            Request::builder()
+                .method(Method::GET)
+                .uri("/api/v1/team")
+                .header(header::AUTHORIZATION, format!("Bearer {admin_key}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let team_body = response_json(team_resp).await;
+    let keys = team_body["api_keys"].as_array().unwrap();
+    assert!(!keys.iter().any(|k| k["key_id"] == key_id));
+}
+
+#[tokio::test]
+async fn axum_create_team_member_adds_to_snapshot() {
+    let (app, admin_key) = make_admin_app();
+
+    let create_resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(Method::POST)
+                .uri("/api/v1/team")
+                .header(header::AUTHORIZATION, format!("Bearer {admin_key}"))
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(
+                    json!({"user_id": "alice", "display_name": "Alice", "role": "admin"})
+                        .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(create_resp.status(), StatusCode::OK);
+
+    let team_resp = app
+        .oneshot(
+            Request::builder()
+                .method(Method::GET)
+                .uri("/api/v1/team")
+                .header(header::AUTHORIZATION, format!("Bearer {admin_key}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let team_body = response_json(team_resp).await;
+    let members = team_body["members"].as_array().unwrap();
+    assert!(members.iter().any(|m| m["user_id"] == "alice"));
+}
+
+#[tokio::test]
+async fn axum_update_member_role_changes_role() {
+    let (app, admin_key) = make_admin_app();
+
+    app.clone()
+        .oneshot(
+            Request::builder()
+                .method(Method::POST)
+                .uri("/api/v1/team")
+                .header(header::AUTHORIZATION, format!("Bearer {admin_key}"))
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(
+                    json!({"user_id": "bob", "display_name": "Bob", "role": "readonly"})
+                        .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    let update_resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(Method::PUT)
+                .uri("/api/v1/team/bob")
+                .header(header::AUTHORIZATION, format!("Bearer {admin_key}"))
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(json!({"role": "admin"}).to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(update_resp.status(), StatusCode::OK);
+
+    let team_resp = app
+        .oneshot(
+            Request::builder()
+                .method(Method::GET)
+                .uri("/api/v1/team")
+                .header(header::AUTHORIZATION, format!("Bearer {admin_key}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let team_body = response_json(team_resp).await;
+    let members = team_body["members"].as_array().unwrap();
+    let bob = members.iter().find(|m| m["user_id"] == "bob").unwrap();
+    assert_eq!(bob["role"], "admin");
+}
+
+#[tokio::test]
+async fn axum_delete_member_removes_from_snapshot() {
+    let (app, admin_key) = make_admin_app();
+
+    app.clone()
+        .oneshot(
+            Request::builder()
+                .method(Method::POST)
+                .uri("/api/v1/team")
+                .header(header::AUTHORIZATION, format!("Bearer {admin_key}"))
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(
+                    json!({"user_id": "carol", "display_name": "Carol", "role": "admin"})
+                        .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    let del_resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(Method::DELETE)
+                .uri("/api/v1/team/carol")
+                .header(header::AUTHORIZATION, format!("Bearer {admin_key}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(del_resp.status(), StatusCode::OK);
+
+    let team_resp = app
+        .oneshot(
+            Request::builder()
+                .method(Method::GET)
+                .uri("/api/v1/team")
+                .header(header::AUTHORIZATION, format!("Bearer {admin_key}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let team_body = response_json(team_resp).await;
+    let members = team_body["members"].as_array().unwrap();
+    assert!(!members.iter().any(|m| m["user_id"] == "carol"));
+}
+
+#[tokio::test]
+async fn axum_team_mutation_requires_admin_scope() {
+    let dir = tempdir().unwrap();
+    let store = LocalProductStore::new(dir.path().join("team.db")).unwrap();
+    let mut resolver = TenantResolver::new();
+    let mut readonly_scopes = HashSet::new();
+    readonly_scopes.insert("team:read".to_string());
+    resolver.add_tenant(Tenant {
+        tenant_id: "local".to_string(),
+        name: "Local".to_string(),
+        scopes: readonly_scopes.clone(),
+        rate_limit: Some(10_000),
+    });
+    let (_key, raw_key) = resolver
+        .create_api_key("local", Some(readonly_scopes), None, 1.0)
+        .unwrap();
+    let app = build_axum_router(AxumApiState::new().with_local_store(store).with_auth(
+        resolver,
+        RateLimiter::new(60.0, 10_000),
+        Some(10_000),
+        1.0,
+    ));
+
+    let create_resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(Method::POST)
+                .uri("/api/v1/keys")
+                .header(header::AUTHORIZATION, format!("Bearer {raw_key}"))
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(
+                    json!({"user_id": "u1", "role": "admin", "scopes": ["dispatch:read"]})
+                        .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(create_resp.status(), StatusCode::FORBIDDEN);
+
+    let member_resp = app
+        .oneshot(
+            Request::builder()
+                .method(Method::POST)
+                .uri("/api/v1/team")
+                .header(header::AUTHORIZATION, format!("Bearer {raw_key}"))
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(
+                    json!({"user_id": "u1", "display_name": "U1", "role": "admin"}).to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(member_resp.status(), StatusCode::FORBIDDEN);
+}

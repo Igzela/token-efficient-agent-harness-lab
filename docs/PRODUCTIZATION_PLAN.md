@@ -22,12 +22,35 @@ Already implemented:
 | Order | Phase | Goal | Done When |
 |---|---|---|---|
 | 1 | Provider Safety Gate ✅ | Make real provider execution safe, explicit, scoped, and auditable. | Provider execution requires explicit opt-in, auth, execute scope, startup safety summary, accurate dashboard state, and budget caps. |
-| 2 | Permission Governance | Turn API-key metadata into manageable local team controls. | Roles, scopes, key creation/revocation/rotation, last-used tracking, and admin audit logs are available through API and dashboard. |
+| 2 | Permission Governance ✅ | Turn API-key metadata into manageable local team controls. | Roles, scopes, key creation/revocation/rotation, last-used tracking, and admin audit logs are available through API and dashboard. |
 | 3 | Cost Governance | Make cost reporting match actual local behavior. | Dashboard and API separate reserved budget, provider-estimated cost, provider-reported usage, and audit-linked dispatch costs. |
 | 4 | Data Operations | Make local state maintainable over time. | SQLite schema migrations, backup restore, import/export roundtrip tests, integrity checks, and data-directory docs are complete. |
 | 5 | Native Packaging | Make no-Docker use installable without reading source. | Release artifact includes engine binary, dashboard assets, install/upgrade scripts, `.env.example`, and native smoke verification. |
 | 6 | Dashboard Controls | Promote the dashboard from live viewer to local admin console without adding dangerous execution controls. | Admin-only config, backup/export, team/key, provider status, and dispatch-detail views exist with confirmations and audit logs. |
 | 7 | Long-Run Hardening | Prepare for stable local-team use. | LAN threat model, audit integrity review, SQLite contention tests, provider failure matrix, upgrade smoke, and GitHub Actions Node deprecation cleanup are complete. |
+
+## Phase 2 Scope: Permission Governance
+
+Done.
+
+Implemented behavior:
+
+- API key creation via `POST /api/v1/keys` with user_id, role, scopes, optional expires_at
+- API key revocation via `POST /api/v1/keys/:key_id/revoke` — blocks future auth
+- API key rotation via `POST /api/v1/keys/:key_id/rotate` — creates new, revokes old
+- API key deletion via `DELETE /api/v1/keys/:key_id` — hard-deletes metadata
+- API key scope update via `POST /api/v1/keys/:key_id/scopes`
+- Team member create via `POST /api/v1/team`
+- Team member role update via `PUT /api/v1/team/:user_id`
+- Team member deletion via `DELETE /api/v1/team/:user_id`
+- `last_used_at` tracking on successful auth
+- `expires_at` support on created keys
+- `revoked_at` check blocks revoked keys in TenantResolver
+- Admin audit events for all mutations (team.key.revoked, team.key.deleted, team.key.scopes_updated, team.member.created, team.member.role_updated, team.member.deleted)
+- All mutation endpoints require `team:admin` scope
+- SQLite schema migration for last_used_at and expires_at columns
+- TypeScript and Python SDK CRUD methods
+- Dashboard Team tab with management UI
 
 ## Phase 1 Scope: Provider Safety Gate
 

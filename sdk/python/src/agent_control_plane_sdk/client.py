@@ -75,6 +75,58 @@ class AgentControlPlaneClient:
             },
         )
 
+    def create_api_key(
+        self,
+        user_id: str,
+        role: str,
+        scopes: list[str],
+        expires_at: float | None = None,
+    ) -> dict[str, Any]:
+        body: dict[str, Any] = {"user_id": user_id, "role": role, "scopes": scopes}
+        if expires_at is not None:
+            body["expires_at"] = expires_at
+        return self._post("/api/v1/keys", body)
+
+    def revoke_api_key(self, key_id: str) -> dict[str, Any]:
+        return self._post(f"/api/v1/keys/{key_id}/revoke", {})
+
+    def rotate_api_key(self, key_id: str) -> dict[str, Any]:
+        return self._post(f"/api/v1/keys/{key_id}/rotate", {})
+
+    def delete_api_key(self, key_id: str) -> dict[str, Any]:
+        url = f"{self.base_url}/api/v1/keys/{key_id}"
+        req = Request(url, method="DELETE")
+        for k, v in self._headers().items():
+            req.add_header(k, v)
+        return self._send(req)
+
+    def update_key_scopes(self, key_id: str, scopes: list[str]) -> dict[str, Any]:
+        return self._post(f"/api/v1/keys/{key_id}/scopes", {"scopes": scopes})
+
+    def create_team_member(
+        self, user_id: str, display_name: str, role: str
+    ) -> dict[str, Any]:
+        return self._post(
+            "/api/v1/team",
+            {"user_id": user_id, "display_name": display_name, "role": role},
+        )
+
+    def update_member_role(self, user_id: str, role: str) -> dict[str, Any]:
+        url = f"{self.base_url}/api/v1/team/{user_id}"
+        data = json.dumps({"role": role}).encode("utf-8")
+        req = Request(url, data=data, method="PUT")
+        req.add_header("content-type", "application/json")
+        for k, v in self._headers().items():
+            req.add_header(k, v)
+        return self._send(req)
+
+    def delete_member(self, user_id: str) -> dict[str, Any]:
+        url = f"{self.base_url}/api/v1/team/{user_id}"
+        req = Request(url, method="DELETE")
+        for k, v in self._headers().items():
+            req.add_header(k, v)
+        return self._send(req)
+
     def _get(self, path: str) -> Any:
         request = Request(f"{self.base_url}{path}", headers=self._headers(), method="GET")
         return self._send(request)

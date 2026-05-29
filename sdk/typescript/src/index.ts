@@ -81,6 +81,51 @@ export class AgentControlPlaneClient {
     });
   }
 
+  async createApiKey(request: { user_id: string; role: string; scopes: string[]; expires_at?: number }): Promise<Record<string, unknown>> {
+    return this.postJson<Record<string, unknown>>("/api/v1/keys", request);
+  }
+
+  async revokeApiKey(keyId: string): Promise<Record<string, unknown>> {
+    return this.postJson<Record<string, unknown>>(`/api/v1/keys/${encodeURIComponent(keyId)}/revoke`, {});
+  }
+
+  async rotateApiKey(keyId: string): Promise<Record<string, unknown>> {
+    return this.postJson<Record<string, unknown>>(`/api/v1/keys/${encodeURIComponent(keyId)}/rotate`, {});
+  }
+
+  async deleteApiKey(keyId: string): Promise<Record<string, unknown>> {
+    const response = await this.fetchImpl(`${this.baseUrl}/api/v1/keys/${encodeURIComponent(keyId)}`, {
+      method: "DELETE",
+      headers: this.headers(),
+    });
+    return parseResponse<Record<string, unknown>>(response);
+  }
+
+  async updateKeyScopes(keyId: string, scopes: string[]): Promise<Record<string, unknown>> {
+    return this.postJson<Record<string, unknown>>(`/api/v1/keys/${encodeURIComponent(keyId)}/scopes`, { scopes });
+  }
+
+  async createTeamMember(request: { user_id: string; display_name: string; role: string }): Promise<Record<string, unknown>> {
+    return this.postJson<Record<string, unknown>>("/api/v1/team", request);
+  }
+
+  async updateMemberRole(userId: string, role: string): Promise<Record<string, unknown>> {
+    const response = await this.fetchImpl(`${this.baseUrl}/api/v1/team/${encodeURIComponent(userId)}`, {
+      method: "PUT",
+      headers: { ...this.headers(), "content-type": "application/json" },
+      body: JSON.stringify({ role }),
+    });
+    return parseResponse<Record<string, unknown>>(response);
+  }
+
+  async deleteMember(userId: string): Promise<Record<string, unknown>> {
+    const response = await this.fetchImpl(`${this.baseUrl}/api/v1/team/${encodeURIComponent(userId)}`, {
+      method: "DELETE",
+      headers: this.headers(),
+    });
+    return parseResponse<Record<string, unknown>>(response);
+  }
+
   private async getJson<T>(path: string): Promise<T> {
     const response = await this.fetchImpl(`${this.baseUrl}${path}`, {
       headers: this.headers(),
