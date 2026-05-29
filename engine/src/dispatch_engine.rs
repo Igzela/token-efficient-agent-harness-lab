@@ -57,6 +57,18 @@ impl DispatchEngine {
         }
     }
 
+    pub fn with_provider_executor_and_audit(
+        provider: std::sync::Arc<dyn crate::provider::Provider>,
+        recorder: std::sync::Arc<crate::provider::ProviderAuditRecorder>,
+    ) -> Self {
+        use crate::provider::executor::ProviderExecutor;
+        Self {
+            executor: Box::new(ProviderExecutor::new(provider).with_audit_recorder(recorder)),
+            executor_type_name: "provider".to_string(),
+            ..Self::default()
+        }
+    }
+
     pub fn executor_type(&self) -> &str {
         &self.executor_type_name
     }

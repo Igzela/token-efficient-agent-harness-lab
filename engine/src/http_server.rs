@@ -106,6 +106,11 @@ impl AxumApiState {
         self
     }
 
+    pub fn with_local_store_arc(mut self, store: Arc<LocalProductStore>) -> Self {
+        self.local_store = Some(store);
+        self
+    }
+
     pub fn with_backup_dir(mut self, backup_dir: impl Into<PathBuf>) -> Self {
         self.backup_dir = Some(Arc::new(backup_dir.into()));
         self
@@ -113,6 +118,19 @@ impl AxumApiState {
 
     pub fn with_provider(mut self, provider: Arc<dyn Provider>) -> Self {
         self.engine = Arc::new(DispatchEngine::with_provider_executor(provider.clone()));
+        self.provider = Some(provider);
+        self
+    }
+
+    pub fn with_provider_and_audit(
+        mut self,
+        provider: Arc<dyn Provider>,
+        recorder: Arc<crate::provider::ProviderAuditRecorder>,
+    ) -> Self {
+        self.engine = Arc::new(DispatchEngine::with_provider_executor_and_audit(
+            provider.clone(),
+            recorder,
+        ));
         self.provider = Some(provider);
         self
     }
@@ -221,6 +239,10 @@ fn axum_routes() -> Router<AxumApiState> {
         .route(
             "/api/v1/provider/health",
             get(api_provider_health).options(cors_preflight),
+        )
+        .route(
+            "/api/v1/provider/audit",
+            get(api_provider_audit).options(cors_preflight),
         )
 }
 
@@ -574,6 +596,22 @@ async fn api_provider_health(
             })),
         ))
     }
+}
+
+async fn api_provider_audit(
+    State(state): State<AxumApiState>,
+    headers: HeaderMap,
+) -> Result<impl IntoResponse, ApiError> {
+    authorize(&state, &headers, "audit:read")?;
+    let store = require_store(&state)?;
+    let events = store.provider_audit_events(100).map_err(internal_error)?;
+    Ok((
+        cors_headers(),
+        Json(json!({
+            "schema_version": AXUM_API_SCHEMA_VERSION,
+            "events": events,
+        })),
+    ))
 }
 
 async fn cors_preflight() -> impl IntoResponse {

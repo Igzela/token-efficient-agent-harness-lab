@@ -48,6 +48,12 @@ class AgentControlPlaneClient:
     def audit(self) -> dict[str, Any]:
         return self._get("/api/v1/audit")
 
+    def provider_health(self) -> dict[str, Any]:
+        return self._get("/api/v1/provider/health")
+
+    def provider_audit(self) -> dict[str, Any]:
+        return self._get("/api/v1/provider/audit")
+
     def dispatch(
         self,
         raw_request: str,
