@@ -23,7 +23,7 @@ PYTHONPATH=src python3 -m unittest discover -s tests
 cargo test -p engine
 ```
 
-Current result: 2089 Python tests pass; 1031 Rust `engine` parity/component/API test cases are enumerated by `cargo test -p engine -- --list`, and `cargo test -p engine` passes.
+Current result: 2089 Python tests pass; 1041 Rust `engine` parity/component/API test cases are enumerated by `cargo test -p engine -- --list`, and `cargo test -p engine` passes.
 
 ## How To Run Without Docker
 

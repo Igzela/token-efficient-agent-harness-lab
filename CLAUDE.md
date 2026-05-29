@@ -126,6 +126,7 @@ See `docs/CURRENT_STATUS.md` for full details.
 - **2026-05-29**: Provider infrastructure (Agent B) — Created `engine/src/provider/audit.rs` (ProviderAuditEvent, ProviderAuditRecorder with std::sync::Mutex, monotonic hex event IDs, extra-field merge) and `engine/src/provider/redaction.rs` (redact_secrets, redact_audit_fields with recursive sensitive-key redaction). Added module re-exports to `mod.rs`. 28 new inline tests. Updated MODULE_MAP.md and CURRENT_STATUS.md. Build blocked by Agent A's openai.rs (CredentialRef import path + Option<&Value> calling convention); no errors from Agent B files.
 - **2026-05-29**: Rust provider stack Stage 1 (Agent C) — Implemented full `RetryFallbackManager` in `engine/src/provider/retry.rs` with `Provider` trait impl, budget-checked retry with backoff, and fallback routing. Added `executor_type()` to `DispatchEngine`. Added `GET /api/v1/provider/health` endpoint to http_server with noop/provider status reporting. Added `with_provider()` to `AxumApiState` (wires both provider reference and engine executor). Provider execution is explicit env-gated and default-off; CI uses stub/mock paths. Updated CURRENT_STATUS.md, MODULE_MAP.md, CLAUDE.md.
 - **2026-05-29**: Rust provider stack Stage 2 audit/usage bridge — provider audit events persist to local SQLite, dispatch history stores executor type, token usage, estimated provider cost, and latency columns, and SDKs expose provider health/audit readers. Current Rust test inventory is 1031 enumerated test cases, with `cargo test -p engine` passing.
+- **2026-05-29**: Productization Phase 1 — Provider Safety Gate implemented. `ACP_ENABLE_PROVIDER_EXECUTION=1` gate for real providers, `ACP_REQUIRE_AUTH=1` enforced when provider active, `dispatch:execute` scope for provider dispatches, per-dispatch and daily cost caps (`ACP_COST_PER_DISPATCH_USD`/`ACP_COST_DAILY_USD`), dynamic dashboard boundaries, structured startup summary log. 10 new Rust tests (1041 total).
 - Previous BLOCK findings (b6d5bc1): HIGH-1 rate limit not wired, HIGH-2 scope enforcement missing, HIGH-3 plugin locks unused
 - Gate 1 addresses: HIGH-1 (rate limiter in ServerContext + _check_rate_limit), HIGH-2 (scope enforcement + AuthorizationDecision + 403/429)
 - Gate 2 addresses: atomic restore, WAL safety, failure-mode coverage
@@ -215,7 +216,7 @@ See `docs/CURRENT_STATUS.md` for full details.
 
 - **Framework**: unittest (stdlib), no pytest
 - **Run command**: `PYTHONPATH=src python3 -m unittest discover -s tests`
-- **Current count**: 2089 Python tests + 1031 Rust test cases enumerated by `cargo test -p engine -- --list`, 0 failures (as of 2026-05-29)
+- **Current count**: 2089 Python tests + 1041 Rust test cases enumerated by `cargo test -p engine -- --list`, 0 failures (as of 2026-05-29)
 - **Coverage**: Phase boundary contracts, schema validation, golden fixtures
 - **CI**: GitHub Actions on push/PR to main — runs security baseline + all tests
 - **Test naming**: `tests/test_<module>.py`, one test file per source module
@@ -258,6 +259,7 @@ This protocol authorizes the coding agent to advance the repository. It does not
 4. **When blocked or facing coarse granularity**: Discuss with GPT in the same ChatGPT session used for architecture review. Iterate until both agree, then update the architecture book before implementing.
 5. **Document maintenance**: Keep `docs/CURRENT_STATUS.md` updated as phases complete. Update the architecture book's Completeness Matrix (Section 0.7) when phase maturity changes.
 6. **Autonomous closeout**: Run `python3 scripts/check_agent_handoff.py` before commit. A commit is incomplete if the handoff docs no longer tell the next session what changed, how it was verified, and what should happen next.
+7. **Single roadmap**: `docs/PRODUCTIZATION_PLAN.md` is the sole productization roadmap. Do not create parallel roadmap documents. `README.md` (line 13) and `docs/NEXT_DECISION.md` (line 9) reference it — keep all three in sync when the productization plan changes. If the roadmap phase order, goals, or done-when criteria change, update PRODUCTIZATION_PLAN.md first, then propagate the change to README.md and NEXT_DECISION.md in the same commit.
 
 ## Documentation Maintenance Rule
 

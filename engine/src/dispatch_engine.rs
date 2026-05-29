@@ -73,6 +73,22 @@ impl DispatchEngine {
         &self.executor_type_name
     }
 
+    pub fn preflight_reserved_cost(&self, raw_request: &str, request_source: &str) -> f64 {
+        let mut runtime = FixtureRuntime::new();
+        let decision_id = runtime.id("dec-");
+        let analysis =
+            self.analyzer
+                .analyze_with_runtime(raw_request, request_source, &mut runtime);
+        let selection = self.selector.select(&analysis);
+        let reservation = self.budget_manager.create_reservation(
+            &decision_id,
+            &analysis,
+            &selection.selected_tier,
+            &mut runtime,
+        );
+        reservation.reserved_cost
+    }
+
     pub fn dispatch(&self, raw_request: &str, request_source: &str) -> Value {
         self.dispatch_bundle(raw_request, request_source).to_value()
     }

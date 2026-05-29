@@ -13,6 +13,7 @@ use std::sync::{Arc, Mutex};
 use crate::dispatch_engine::DispatchEngine;
 use crate::infrastructure::auth::{AuthDecision, TenantResolver};
 use crate::infrastructure::rate_limiter::RateLimiter;
+use crate::provider::cost_gate::{check_cost_gates, CostGateConfig};
 use crate::provider::Provider;
 use crate::storage::backup_manager::BackupManager;
 use crate::storage::local_product_store::{local_boundaries, LocalProductStore};
@@ -138,6 +139,14 @@ impl AxumApiState {
     pub fn with_engine(mut self, engine: DispatchEngine) -> Self {
         self.engine = Arc::new(engine);
         self
+    }
+
+    pub fn executor_type(&self) -> &str {
+        self.engine.executor_type()
+    }
+
+    pub fn provider_enabled(&self) -> bool {
+        self.provider.as_ref().map_or(false, |p| p.is_enabled())
     }
 }
 
@@ -358,7 +367,43 @@ async fn api_dispatch(
             "raw_request is required",
         ));
     }
+
+    let is_provider = state.executor_type() == "provider";
+    if is_provider {
+        authorize(&state, &headers, "dispatch:execute")?;
+    }
+
     let request_source = request.request_source.as_deref().unwrap_or("api");
+
+    if is_provider {
+        let cost_config = CostGateConfig::from_env();
+        if cost_config.is_active() {
+            let reserved = state
+                .engine
+                .preflight_reserved_cost(&request.raw_request, request_source);
+            let daily_cost = if let Some(store) = &state.local_store {
+                let today_prefix = &chrono_free_today()[..10];
+                store.daily_estimated_cost_usd(today_prefix).unwrap_or(0.0)
+            } else {
+                0.0
+            };
+            if check_cost_gates(&cost_config, reserved, daily_cost).is_err() {
+                let bundle = state.engine.dispatch(&request.raw_request, request_source);
+                if let Some(store) = &state.local_store {
+                    store
+                        .record_dispatch(
+                            &request.raw_request,
+                            request_source,
+                            &bundle,
+                            &context.api_key_id,
+                        )
+                        .map_err(internal_error)?;
+                }
+                return Ok((cors_headers(), Json(bundle)));
+            }
+        }
+    }
+
     let bundle = state.engine.dispatch(&request.raw_request, request_source);
     if let Some(store) = &state.local_store {
         store
@@ -393,8 +438,12 @@ async fn api_dashboard(
     headers: HeaderMap,
 ) -> Result<impl IntoResponse, ApiError> {
     authorize(&state, &headers, "health:read")?;
+    let exec_type = state.executor_type();
+    let prov_enabled = state.provider_enabled();
     let body = if let Some(store) = &state.local_store {
-        store.dashboard_snapshot(20).map_err(internal_error)?
+        store
+            .dashboard_snapshot(20, exec_type, prov_enabled)
+            .map_err(internal_error)?
     } else {
         json!({
             "schema_version": "local_dashboard.v1",
@@ -415,7 +464,7 @@ async fn api_dashboard(
                 "total_reserved_cost": 0.0,
                 "by_tier": [],
             },
-            "boundaries": local_boundaries(),
+            "boundaries": local_boundaries(exec_type, prov_enabled),
         })
     };
     Ok((cors_headers(), Json(body)))
@@ -427,12 +476,14 @@ async fn api_config(
 ) -> Result<impl IntoResponse, ApiError> {
     authorize(&state, &headers, "config:read")?;
     let store = require_store(&state)?;
+    let exec_type = state.executor_type();
+    let prov_enabled = state.provider_enabled();
     Ok((
         cors_headers(),
         Json(json!({
             "schema_version": AXUM_API_SCHEMA_VERSION,
             "config": store.config_snapshot().map_err(internal_error)?,
-            "boundaries": local_boundaries(),
+            "boundaries": local_boundaries(exec_type, prov_enabled),
         })),
     ))
 }
@@ -467,9 +518,15 @@ async fn api_export(
 ) -> Result<impl IntoResponse, ApiError> {
     authorize(&state, &headers, "export:read")?;
     let store = require_store(&state)?;
+    let exec_type = state.executor_type();
+    let prov_enabled = state.provider_enabled();
     Ok((
         cors_headers(),
-        Json(store.export_snapshot().map_err(internal_error)?),
+        Json(
+            store
+                .export_snapshot(exec_type, prov_enabled)
+                .map_err(internal_error)?,
+        ),
     ))
 }
 
@@ -961,6 +1018,54 @@ fn match_path(pattern: &str, path: &str) -> Option<HashMap<String, String>> {
         }
     }
     Some(params)
+}
+
+fn chrono_free_today() -> String {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    let secs = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+    let days = secs / 86400;
+    let mut y = 1970i64;
+    loop {
+        let leap = is_leap(y);
+        let day_count = if leap { 366 } else { 365 };
+        if days < day_count as u64 {
+            break;
+        }
+        y += 1;
+    }
+    let mut remaining = days;
+    let leap = is_leap(y);
+    let month_days: [i64; 12] = [
+        31,
+        if leap { 29 } else { 28 },
+        31,
+        30,
+        31,
+        30,
+        31,
+        31,
+        30,
+        31,
+        30,
+        31,
+    ];
+    let mut m = 0u32;
+    for (i, &md) in month_days.iter().enumerate() {
+        if remaining < md as u64 {
+            m = i as u32 + 1;
+            break;
+        }
+        remaining -= md as u64;
+    }
+    let d = remaining + 1;
+    format!("{:04}-{:02}-{:02}", y, m, d)
+}
+
+fn is_leap(y: i64) -> bool {
+    (y % 4 == 0 && y % 100 != 0) || y % 400 == 0
 }
 
 #[cfg(test)]

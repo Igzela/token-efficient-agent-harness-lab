@@ -482,6 +482,20 @@ impl LocalProductStore {
         })
     }
 
+    pub fn daily_estimated_cost_usd(&self, date_prefix: &str) -> Result<f64, String> {
+        self.with_conn(|conn| {
+            let like_pattern = format!("{}%", date_prefix);
+            conn.query_row(
+                "SELECT COALESCE(SUM(estimated_cost_usd), 0.0)
+                 FROM dispatch_history
+                 WHERE created_at LIKE ?1",
+                params![like_pattern],
+                |row| row.get(0),
+            )
+            .map_err(|e| e.to_string())
+        })
+    }
+
     pub fn audit_events(&self, limit: i64) -> Result<Vec<Value>, String> {
         self.with_conn(|conn| {
             let mut stmt = conn
@@ -541,7 +555,12 @@ impl LocalProductStore {
         })
     }
 
-    pub fn dashboard_snapshot(&self, limit: i64) -> Result<Value, String> {
+    pub fn dashboard_snapshot(
+        &self,
+        limit: i64,
+        executor_type: &str,
+        provider_enabled: bool,
+    ) -> Result<Value, String> {
         let dispatches = self.list_dispatches(limit)?;
         let team = self.team_snapshot()?;
         let config = self.config_snapshot()?;
@@ -555,11 +574,15 @@ impl LocalProductStore {
             "team": team,
             "config": config,
             "costs": costs,
-            "boundaries": local_boundaries(),
+            "boundaries": local_boundaries(executor_type, provider_enabled),
         }))
     }
 
-    pub fn export_snapshot(&self) -> Result<Value, String> {
+    pub fn export_snapshot(
+        &self,
+        executor_type: &str,
+        provider_enabled: bool,
+    ) -> Result<Value, String> {
         Ok(json!({
             "schema_version": LOCAL_TEAM_EXPORT_SCHEMA_VERSION,
             "generated_at": LOCAL_NOW,
@@ -568,7 +591,7 @@ impl LocalProductStore {
             "team": self.team_snapshot()?,
             "costs": self.cost_summary()?,
             "audit": self.audit_events(10_000)?,
-            "boundaries": local_boundaries(),
+            "boundaries": local_boundaries(executor_type, provider_enabled),
         }))
     }
 
@@ -675,9 +698,15 @@ impl LocalProductStore {
     }
 }
 
-pub fn local_boundaries() -> Value {
+pub fn local_boundaries(executor_type: &str, provider_enabled: bool) -> Value {
+    let provider_transport = match executor_type {
+        "provider" if provider_enabled => "provider/enabled",
+        "provider" => "provider/disabled",
+        "stub" => "stub",
+        _ => "noop",
+    };
     json!({
-        "provider_transport": "stub/off",
+        "provider_transport": provider_transport,
         "target_repository_writes": "disabled",
         "sandbox_process_execution": "disabled",
         "runtime_workers": "disabled",

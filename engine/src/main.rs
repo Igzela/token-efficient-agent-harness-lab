@@ -46,6 +46,41 @@ async fn main() {
             .with_local_store_arc(store_arc)
             .with_backup_dir(backup_dir),
     );
+
+    let require_auth = std::env::var("ACP_REQUIRE_AUTH")
+        .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+        .unwrap_or(false);
+    if state.executor_type() == "provider" && !require_auth {
+        panic!(
+            "ACP_REQUIRE_AUTH=1 is required when ACP_ENABLE_PROVIDER_EXECUTION=1 and a real provider is configured"
+        );
+    }
+
+    let exec_type = state.executor_type();
+    let _prov_enabled = state.provider_enabled();
+    let lan = if host == "0.0.0.0" {
+        "lan-exposed"
+    } else {
+        "local-only"
+    };
+    let cost_per_dispatch = std::env::var("ACP_COST_PER_DISPATCH_USD")
+        .ok()
+        .filter(|v| !v.trim().is_empty())
+        .unwrap_or_else(|| "unlimited".to_string());
+    let cost_daily = std::env::var("ACP_COST_DAILY_USD")
+        .ok()
+        .filter(|v| !v.trim().is_empty())
+        .unwrap_or_else(|| "unlimited".to_string());
+    println!(
+        "[acp-startup] provider={} auth={} host={} budget_per_dispatch={} budget_daily={} lan={}",
+        exec_type,
+        if require_auth { "on" } else { "off" },
+        addr,
+        cost_per_dispatch,
+        cost_daily,
+        lan,
+    );
+
     let dashboard_dir =
         std::env::var("ACP_DASHBOARD_DIR").or_else(|_| std::env::var("DASHBOARD_DIR"));
     let router = match dashboard_dir {
@@ -119,6 +154,25 @@ fn build_state_with_provider(state: AxumApiState, store: &Arc<LocalProductStore>
         Ok(v) if !v.trim().is_empty() => v,
         _ => return state,
     };
+
+    let enable_execution = std::env::var("ACP_ENABLE_PROVIDER_EXECUTION")
+        .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+        .unwrap_or(false);
+
+    if provider_type == "stub" {
+        let recorder = Arc::new(ProviderAuditRecorder::with_store(store.clone()));
+        let provider: Arc<dyn Provider> = Arc::new(StubProvider::new("stub-env"));
+        return state.with_provider_and_audit(provider, recorder);
+    }
+
+    if !enable_execution {
+        eprintln!(
+            "ACP_PROVIDER_TYPE={} requires ACP_ENABLE_PROVIDER_EXECUTION=1; falling back to noop",
+            provider_type
+        );
+        return state;
+    }
+
     let api_key_env = std::env::var("ACP_API_KEY").unwrap_or_default();
     let model = std::env::var("ACP_MODEL").unwrap_or_else(|_| "default".to_string());
     let base_url = std::env::var("ACP_BASE_URL").unwrap_or_default();
@@ -189,6 +243,7 @@ fn local_admin_scope_list() -> Vec<String> {
         "config:admin",
         "config:read",
         "cost:read",
+        "dispatch:execute",
         "dispatch:read",
         "export:read",
         "health:read",

@@ -5,7 +5,7 @@ Last verified: 2026-05-29.
 ## Repository State
 
 - Branch: `main` with language migration Phases 0-8 complete plus native local runtime and local small-team product support.
-- Tests: **2089 Python pass**, **1031 Rust test cases enumerated**, 0 failures.
+- Tests: **2089 Python pass**, **1041 Rust test cases enumerated**, 0 failures.
 - Security baseline: ALL CHECKS PASSED.
 
 ## New Session / Documentation Discipline
@@ -79,6 +79,7 @@ Run `python3 scripts/check_agent_handoff.py` before committing so the handoff su
 | Agent-Control-Plane Local Small-Team Productization | **IMPLEMENTED** — Rust engine now defaults to app-owned SQLite state at `.agent-control-plane/local-team.db` (overridable by `ACP_DB_PATH`), persists dispatch history/config/team/API-key metadata/audit log/cost summary, exposes dashboard/history/config/team/cost/export/audit/admin-auth-confirmed-backup API endpoints, and serves a dashboard that reads real local API state instead of fixtures. TypeScript/Python SDKs include local state and backup methods. No cloud SaaS, target writes, real workers, or sandbox/process execution were added. |
 | Rust Provider Stack — Stage 1 | **IMPLEMENTED** — 11 provider modules (config, credential, audit, redaction, transport, openai, anthropic, stub, executor, retry, mod), RetryFallbackManager with budget-checked retry and fallback routing, provider health endpoint (`GET /api/v1/provider/health`), env-based wiring via `ACP_PROVIDER_TYPE`/`ACP_API_KEY`/`ACP_MODEL`/`ACP_BASE_URL`. Provider execution is default-off and explicit env-gated; CI tests use stub/mock paths and do not call real provider APIs. |
 | Rust Provider Stack — Stage 2 audit/usage bridge | **IMPLEMENTED** — provider audit events persist to local SQLite, dispatch history stores executor type, token usage, estimated provider cost, and latency columns, SDKs expose provider health/audit readers, and `/api/v1/provider/audit` reads persisted provider audit state. |
+| Productization Phase 1 — Provider Safety Gate | **IMPLEMENTED** — `ACP_ENABLE_PROVIDER_EXECUTION=1` required for real provider types (stub remains safe without it), `ACP_REQUIRE_AUTH=1` enforced when provider is active, `dispatch:execute` scope required for provider dispatches, per-dispatch and daily cost caps via `ACP_COST_PER_DISPATCH_USD`/`ACP_COST_DAILY_USD`, dynamic dashboard boundaries reflect real provider state, structured startup summary log. 10 new Rust tests (1041 total). |
 
 Trial 2 complete evidence chain: [`docs/trials/TRIAL_2_FINAL_STATE_INDEX.md`](trials/TRIAL_2_FINAL_STATE_INDEX.md).
 Trial 3 report: [`docs/trials/TRIAL_3_REPORT.md`](trials/TRIAL_3_REPORT.md).

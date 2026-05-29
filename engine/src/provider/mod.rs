@@ -1,6 +1,7 @@
 pub mod anthropic;
 pub mod audit;
 pub mod config;
+pub mod cost_gate;
 pub mod credential;
 pub mod executor;
 pub mod openai;
@@ -11,6 +12,7 @@ pub mod transport;
 
 pub use audit::{ProviderAuditEvent, ProviderAuditRecorder};
 pub use config::{CredentialRef, ProviderConfig, RetryPolicy};
+pub use cost_gate::{check_cost_gates, CostGateBlock, CostGateConfig};
 pub use credential::CredentialBoundary;
 
 use serde::{Deserialize, Serialize};

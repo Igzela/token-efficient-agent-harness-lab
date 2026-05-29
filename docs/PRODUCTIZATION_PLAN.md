@@ -21,7 +21,7 @@ Already implemented:
 
 | Order | Phase | Goal | Done When |
 |---|---|---|---|
-| 1 | Provider Safety Gate | Make real provider execution safe, explicit, scoped, and auditable. | Provider execution requires explicit opt-in, auth, execute scope, startup safety summary, accurate dashboard state, and budget caps. |
+| 1 | Provider Safety Gate ✅ | Make real provider execution safe, explicit, scoped, and auditable. | Provider execution requires explicit opt-in, auth, execute scope, startup safety summary, accurate dashboard state, and budget caps. |
 | 2 | Permission Governance | Turn API-key metadata into manageable local team controls. | Roles, scopes, key creation/revocation/rotation, last-used tracking, and admin audit logs are available through API and dashboard. |
 | 3 | Cost Governance | Make cost reporting match actual local behavior. | Dashboard and API separate reserved budget, provider-estimated cost, provider-reported usage, and audit-linked dispatch costs. |
 | 4 | Data Operations | Make local state maintainable over time. | SQLite schema migrations, backup restore, import/export roundtrip tests, integrity checks, and data-directory docs are complete. |

@@ -183,10 +183,7 @@ async fn axum_local_store_persists_dispatch_history_and_dashboard_summary() {
         dashboard_body["dispatches"][0]["raw_request"],
         "Summarize local team status without provider calls"
     );
-    assert_eq!(
-        dashboard_body["boundaries"]["provider_transport"],
-        "stub/off"
-    );
+    assert_eq!(dashboard_body["boundaries"]["provider_transport"], "noop");
 }
 
 #[tokio::test]
