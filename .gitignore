@@ -20,3 +20,6 @@ sdk/python/src/*.egg-info/
 
 .claude/settings.local.json
 CLAUDE.md
+
+# Separate workspace
+claude-drive/

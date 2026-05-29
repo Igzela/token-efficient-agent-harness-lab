@@ -187,6 +187,17 @@ pub struct UpdateMemberRoleRequest {
     pub role: String,
 }
 
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+pub struct ImportApiRequest {
+    pub snapshot: serde_json::Value,
+    pub confirm_import: Option<bool>,
+}
+
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+pub struct RestoreApiRequest {
+    pub confirm_restore: Option<bool>,
+}
+
 #[derive(Debug, Clone)]
 struct ApiRequestContext {
     tenant_id: String,
@@ -309,6 +320,15 @@ fn axum_routes() -> Router<AxumApiState> {
         .route(
             "/api/v1/provider/audit",
             get(api_provider_audit).options(cors_preflight),
+        )
+        .route(
+            "/api/v1/storage/integrity",
+            get(api_integrity).options(cors_preflight),
+        )
+        .route("/api/v1/import", post(api_import).options(cors_preflight))
+        .route(
+            "/api/v1/backups/:backup_id/restore",
+            post(api_restore_backup).options(cors_preflight),
         )
 }
 
@@ -1045,6 +1065,140 @@ async fn api_provider_audit(
     ))
 }
 
+async fn api_integrity(
+    State(state): State<AxumApiState>,
+    headers: HeaderMap,
+) -> Result<impl IntoResponse, ApiError> {
+    authorize(&state, &headers, "health:read")?;
+    let store = require_store(&state)?;
+    let report = store.check_integrity().map_err(internal_error)?;
+    Ok((
+        cors_headers(),
+        Json(json!({
+            "schema_version": AXUM_API_SCHEMA_VERSION,
+            "integrity": {
+                "status": report.status,
+                "schema_version": report.schema_version,
+                "tables": report.tables.iter().map(|t| json!({
+                    "name": t.name,
+                    "row_count": t.row_count,
+                    "status": t.status,
+                })).collect::<Vec<_>>(),
+            },
+        })),
+    ))
+}
+
+async fn api_import(
+    State(state): State<AxumApiState>,
+    headers: HeaderMap,
+    Json(request): Json<ImportApiRequest>,
+) -> Result<impl IntoResponse, ApiError> {
+    if state.tenant_resolver.is_none() {
+        return Err(ApiError::new(
+            StatusCode::UNAUTHORIZED,
+            "admin auth is required for import",
+        ));
+    }
+    let context = authorize(&state, &headers, "config:admin")?;
+    if request.confirm_import != Some(true) {
+        return Err(ApiError::new(
+            StatusCode::BAD_REQUEST,
+            "confirm_import must be true",
+        ));
+    }
+    let store = require_store(&state)?;
+    let result = store
+        .import_snapshot(&request.snapshot)
+        .map_err(internal_error)?;
+    store
+        .append_audit(
+            &context.api_key_id,
+            "data.import",
+            "local_product_store",
+            &json!({
+                "imported": {
+                    "dispatches": result.imported.dispatches,
+                    "config": result.imported.config,
+                    "team": result.imported.team,
+                    "audit": result.imported.audit,
+                },
+                "error_count": result.errors.len(),
+            }),
+        )
+        .map_err(internal_error)?;
+    Ok((
+        cors_headers(),
+        Json(json!({
+            "schema_version": AXUM_API_SCHEMA_VERSION,
+            "imported": {
+                "dispatches": result.imported.dispatches,
+                "config": result.imported.config,
+                "team": result.imported.team,
+                "audit": result.imported.audit,
+            },
+            "errors": result.errors,
+        })),
+    ))
+}
+
+async fn api_restore_backup(
+    State(state): State<AxumApiState>,
+    headers: HeaderMap,
+    AxumPath(backup_id): AxumPath<String>,
+    Json(request): Json<RestoreApiRequest>,
+) -> Result<impl IntoResponse, ApiError> {
+    if state.tenant_resolver.is_none() {
+        return Err(ApiError::new(
+            StatusCode::UNAUTHORIZED,
+            "admin auth is required for restore",
+        ));
+    }
+    let context = authorize(&state, &headers, "backup:admin")?;
+    if request.confirm_restore != Some(true) {
+        return Err(ApiError::new(
+            StatusCode::BAD_REQUEST,
+            "confirm_restore must be true",
+        ));
+    }
+    let store = require_store(&state)?;
+    if store.is_memory() {
+        return Err(ApiError::new(
+            StatusCode::BAD_REQUEST,
+            "file-backed local store is required for restore",
+        ));
+    }
+    let backup_dir = backup_dir_for_state(&state, store.db_path());
+    let manager = BackupManager::new(&backup_dir).map_err(internal_error)?;
+    let result = manager
+        .restore_backup_with_verify(&backup_id, store.db_path(), state.now)
+        .map_err(internal_error)?;
+    store
+        .append_audit(
+            &context.api_key_id,
+            "backup.restore",
+            &backup_id,
+            &json!({
+                "success": result.success,
+                "records_restored": result.records_restored,
+                "errors": result.errors,
+            }),
+        )
+        .map_err(internal_error)?;
+    Ok((
+        cors_headers(),
+        Json(json!({
+            "schema_version": AXUM_API_SCHEMA_VERSION,
+            "restore": {
+                "success": result.success,
+                "records_restored": result.records_restored,
+                "errors": result.errors,
+                "duration_ms": result.duration_ms,
+            },
+        })),
+    ))
+}
+
 async fn cors_preflight() -> impl IntoResponse {
     (cors_headers(), StatusCode::NO_CONTENT)
 }
@@ -1404,6 +1558,35 @@ pub fn openapi_document() -> serde_json::Value {
                     "description": "Reports provider status: noop if no provider configured, ok if enabled, error if disabled or unavailable.",
                     "responses": {
                         "200": {"description": "Provider health status"}
+                    }
+                }
+            },
+            "/api/v1/storage/integrity": {
+                "get": {
+                    "summary": "SQLite integrity check and table row counts",
+                    "responses": {
+                        "200": {"description": "Integrity report with per-table status"}
+                    }
+                }
+            },
+            "/api/v1/import": {
+                "post": {
+                    "summary": "Import data from an export snapshot",
+                    "description": "Requires config:admin scope and confirm_import=true. Imports config, team, audit, and dispatches idempotently.",
+                    "responses": {
+                        "200": {"description": "Import result with counts and errors"},
+                        "400": {"description": "Missing confirmation or invalid schema"}
+                    }
+                }
+            },
+            "/api/v1/backups/{backup_id}/restore": {
+                "post": {
+                    "summary": "Restore a backup with integrity verification",
+                    "description": "Requires backup:admin scope and confirm_restore=true. Restores from backup, runs integrity check, reports row counts.",
+                    "responses": {
+                        "200": {"description": "Restore result"},
+                        "400": {"description": "Missing confirmation"},
+                        "404": {"description": "Backup not found"}
                     }
                 }
             }

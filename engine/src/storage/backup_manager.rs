@@ -1,3 +1,4 @@
+use rusqlite::Connection;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::fs;
@@ -153,6 +154,58 @@ impl BackupManager {
             errors,
             duration_ms: (now - start) * 1000.0,
         })
+    }
+
+    pub fn restore_backup_with_verify(
+        &self,
+        backup_id: &str,
+        target_path: &Path,
+        now: f64,
+    ) -> Result<RestoreResult, String> {
+        let mut result = self.restore_backup(backup_id, target_path, now)?;
+        if !result.success {
+            return Ok(result);
+        }
+
+        match Connection::open(target_path) {
+            Ok(conn) => {
+                let integrity: String = conn
+                    .query_row("PRAGMA integrity_check", [], |row| row.get(0))
+                    .unwrap_or_else(|_| "error".to_string());
+                if integrity != "ok" {
+                    result
+                        .errors
+                        .push(format!("integrity check failed: {integrity}"));
+                    result.success = false;
+                    return Ok(result);
+                }
+
+                let tables = [
+                    "dispatch_history",
+                    "local_config",
+                    "team_members",
+                    "api_key_metadata",
+                    "audit_log",
+                    "provider_audit_events",
+                ];
+                let mut total: i64 = 0;
+                for table in &tables {
+                    let sql = format!("SELECT COUNT(*) FROM {table}");
+                    if let Ok(count) = conn.query_row(&sql, [], |row| row.get::<_, i64>(0)) {
+                        total += count;
+                    }
+                }
+                result.records_restored = total;
+            }
+            Err(e) => {
+                result
+                    .errors
+                    .push(format!("post-restore verification failed: {e}"));
+                result.success = false;
+            }
+        }
+
+        Ok(result)
     }
 
     pub fn delete_backup(&self, backup_id: &str) -> Result<bool, String> {

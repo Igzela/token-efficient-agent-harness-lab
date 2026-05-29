@@ -6,8 +6,21 @@ use std::sync::Mutex;
 pub const LOCAL_PRODUCT_STORE_SCHEMA_VERSION: &str = "local_product_store.v1";
 pub const LOCAL_TEAM_EXPORT_SCHEMA_VERSION: &str = "local_team_export.v1";
 pub const LOCAL_DASHBOARD_SCHEMA_VERSION: &str = "local_dashboard.v1";
+pub const LOCAL_IMPORT_SCHEMA_VERSION: &str = "local_team_export.v1";
 
 const LOCAL_NOW: &str = "2026-05-29T00:00:00Z";
+
+const CURRENT_SCHEMA_VERSION: i64 = 1;
+
+struct Migration {
+    version: i64,
+    description: &'static str,
+}
+
+const MIGRATIONS: &[Migration] = &[Migration {
+    version: 1,
+    description: "add last_used_at and expires_at to api_key_metadata",
+}];
 
 const DDL: &str = "
 CREATE TABLE IF NOT EXISTS dispatch_history (
@@ -107,7 +120,7 @@ impl LocalProductStore {
             conn: Mutex::new(conn),
         };
         store.ensure_default_config()?;
-        store.migrate_add_key_columns()?;
+        store.run_migrations()?;
         Ok(store)
     }
 
@@ -134,25 +147,182 @@ impl LocalProductStore {
         })
     }
 
-    fn migrate_add_key_columns(&self) -> Result<(), String> {
+    fn run_migrations(&self) -> Result<(), String> {
         self.with_conn(|conn| {
-            let columns: Vec<String> = {
-                let mut stmt = conn
-                    .prepare("PRAGMA table_info(api_key_metadata)")
-                    .map_err(|e| e.to_string())?;
-                let rows = stmt
-                    .query_map([], |row| row.get::<_, String>(1))
-                    .map_err(|e| e.to_string())?;
-                rows.filter_map(|r| r.ok()).collect()
-            };
-            if !columns.contains(&"last_used_at".to_string()) {
-                conn.execute_batch(
-                    "ALTER TABLE api_key_metadata ADD COLUMN last_used_at TEXT;
-                     ALTER TABLE api_key_metadata ADD COLUMN expires_at TEXT;",
-                )
+            let current_version: i64 = conn
+                .query_row("PRAGMA user_version", [], |row| row.get(0))
                 .map_err(|e| e.to_string())?;
+
+            for migration in MIGRATIONS {
+                if migration.version <= current_version {
+                    continue;
+                }
+                match migration.version {
+                    1 => Self::migrate_v1_add_key_columns(conn)?,
+                    _ => return Err(format!("unknown migration version: {}", migration.version)),
+                }
+                conn.execute_batch(&format!("PRAGMA user_version = {}", migration.version))
+                    .map_err(|e| e.to_string())?;
             }
             Ok(())
+        })
+    }
+
+    fn migrate_v1_add_key_columns(conn: &Connection) -> Result<(), String> {
+        let columns: Vec<String> = {
+            let mut stmt = conn
+                .prepare("PRAGMA table_info(api_key_metadata)")
+                .map_err(|e| e.to_string())?;
+            let rows = stmt
+                .query_map([], |row| row.get::<_, String>(1))
+                .map_err(|e| e.to_string())?;
+            rows.filter_map(|r| r.ok()).collect()
+        };
+        if !columns.contains(&"last_used_at".to_string()) {
+            conn.execute_batch(
+                "ALTER TABLE api_key_metadata ADD COLUMN last_used_at TEXT;
+                 ALTER TABLE api_key_metadata ADD COLUMN expires_at TEXT;",
+            )
+            .map_err(|e| e.to_string())?;
+        }
+        Ok(())
+    }
+
+    pub fn schema_version(&self) -> Result<i64, String> {
+        self.with_conn(|conn| {
+            conn.query_row("PRAGMA user_version", [], |row| row.get(0))
+                .map_err(|e| e.to_string())
+        })
+    }
+
+    pub fn check_integrity(&self) -> Result<IntegrityReport, String> {
+        self.with_conn(|conn| {
+            let status: String = conn
+                .query_row("PRAGMA integrity_check", [], |row| row.get(0))
+                .map_err(|e| e.to_string())?;
+
+            let tables = [
+                "dispatch_history",
+                "local_config",
+                "team_members",
+                "api_key_metadata",
+                "audit_log",
+                "provider_audit_events",
+            ];
+            let mut table_reports = Vec::new();
+            for table in &tables {
+                let row_count = count_table(conn, table)?;
+                table_reports.push(TableIntegrity {
+                    name: table.to_string(),
+                    row_count,
+                    status: if status == "ok" {
+                        "ok".to_string()
+                    } else {
+                        "corrupt".to_string()
+                    },
+                });
+            }
+
+            Ok(IntegrityReport {
+                status,
+                tables: table_reports,
+                schema_version: conn
+                    .query_row("PRAGMA user_version", [], |row| row.get(0))
+                    .unwrap_or(0),
+            })
+        })
+    }
+
+    pub fn import_snapshot(&self, snapshot: &Value) -> Result<ImportResult, String> {
+        let schema_version = snapshot
+            .get("schema_version")
+            .and_then(Value::as_str)
+            .unwrap_or("");
+        if schema_version != LOCAL_IMPORT_SCHEMA_VERSION {
+            return Err(format!(
+                "unsupported schema version: {schema_version} (expected {LOCAL_IMPORT_SCHEMA_VERSION})"
+            ));
+        }
+
+        let mut errors = Vec::new();
+        let mut counts = ImportCounts::default();
+
+        if let Some(config) = snapshot.get("config").and_then(Value::as_object) {
+            for (key, value) in config {
+                match self.set_config_value(key, value.clone(), "import") {
+                    Ok(_) => counts.config += 1,
+                    Err(e) => errors.push(format!("config.{key}: {e}")),
+                }
+            }
+        }
+
+        if let Some(team) = snapshot.get("team") {
+            if let Some(members) = team.get("members").and_then(Value::as_array) {
+                for member in members {
+                    let user_id = member.get("user_id").and_then(Value::as_str).unwrap_or("");
+                    let display_name = member
+                        .get("display_name")
+                        .and_then(Value::as_str)
+                        .unwrap_or("");
+                    let role = member
+                        .get("role")
+                        .and_then(Value::as_str)
+                        .unwrap_or("member");
+                    if user_id.is_empty() {
+                        errors.push("team member missing user_id".to_string());
+                        continue;
+                    }
+                    match self.upsert_team_member(user_id, display_name, role) {
+                        Ok(_) => counts.team += 1,
+                        Err(e) => errors.push(format!("team.{user_id}: {e}")),
+                    }
+                }
+            }
+        }
+
+        if let Some(audit) = snapshot.get("audit").and_then(Value::as_array) {
+            for event in audit {
+                let actor = event
+                    .get("actor")
+                    .and_then(Value::as_str)
+                    .unwrap_or("import");
+                let action = event
+                    .get("action")
+                    .and_then(Value::as_str)
+                    .unwrap_or("unknown");
+                let resource = event
+                    .get("resource")
+                    .and_then(Value::as_str)
+                    .unwrap_or("unknown");
+                let details = event.get("details").cloned().unwrap_or(Value::Null);
+                match self.append_audit(actor, action, resource, &details) {
+                    Ok(_) => counts.audit += 1,
+                    Err(e) => errors.push(format!("audit.{action}: {e}")),
+                }
+            }
+        }
+
+        if let Some(dispatches) = snapshot.get("dispatches").and_then(Value::as_array) {
+            for dispatch in dispatches {
+                let raw_request = dispatch
+                    .get("raw_request")
+                    .and_then(Value::as_str)
+                    .unwrap_or("{}");
+                let request_source = dispatch
+                    .get("request_source")
+                    .and_then(Value::as_str)
+                    .unwrap_or("import");
+                let bundle = dispatch.get("bundle").cloned().unwrap_or(Value::Null);
+                match self.record_dispatch(raw_request, request_source, &bundle, "import") {
+                    Ok(_) => counts.dispatches += 1,
+                    Err(e) => errors.push(format!("dispatch: {e}")),
+                }
+            }
+        }
+
+        Ok(ImportResult {
+            imported: counts,
+            errors,
         })
     }
 
@@ -981,6 +1151,34 @@ impl LocalProductStore {
             collect_values(rows)
         })
     }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct TableIntegrity {
+    pub name: String,
+    pub row_count: i64,
+    pub status: String,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct IntegrityReport {
+    pub status: String,
+    pub tables: Vec<TableIntegrity>,
+    pub schema_version: i64,
+}
+
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct ImportCounts {
+    pub dispatches: i64,
+    pub config: i64,
+    pub team: i64,
+    pub audit: i64,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct ImportResult {
+    pub imported: ImportCounts,
+    pub errors: Vec<String>,
 }
 
 pub fn local_boundaries(executor_type: &str, provider_enabled: bool) -> Value {
