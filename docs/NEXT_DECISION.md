@@ -34,12 +34,12 @@ Implemented:
 - TypeScript and Python SDKs cover local API, state, provider health/audit, export, and backup
 - provider execution is explicit, env-gated, auth-gated, execute-scope-gated, audited, and budget-capped
 - team/API-key create, revoke, rotate, delete, scope update, role update, last-used tracking, expiry, and admin audit events are implemented
+- cost governance: reserved vs estimated cost separation, per-tier and daily cost breakdown, utilization ratio, token usage totals, per-dispatch cost detail endpoint, typed SDK cost responses
 
 Next productization phases:
 
 | Order | Phase | Done When |
 |---|---|---|
-| 3 | Cost Governance | Dashboard and API separate reserved budget, provider-estimated cost, provider-reported usage, and audit-linked dispatch costs. |
 | 4 | Data Operations | SQLite migrations, backup restore, import/export roundtrip tests, integrity checks, and data-directory docs are complete. |
 | 5 | Native Packaging | Release artifact includes engine binary, dashboard assets, install/upgrade scripts, `.env.example`, and native smoke verification. |
 | 6 | Dashboard Controls | Admin-only config, backup/export, team/key, provider status, and dispatch-detail views exist with confirmations and audit logs. |

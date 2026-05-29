@@ -1,6 +1,6 @@
 export type * from "./wire-types.js";
 
-import type { ApiStatus, DispatchBundle, DispatchRequest } from "./wire-types.js";
+import type { ApiStatus, DispatchBundle, DispatchRequest, LocalCostSummary, LocalDispatchCostDetail } from "./wire-types.js";
 
 export interface AgentControlPlaneClientOptions {
   baseUrl: string;
@@ -47,8 +47,12 @@ export class AgentControlPlaneClient {
     return this.getJson<Record<string, unknown>>("/api/v1/team");
   }
 
-  costs(): Promise<Record<string, unknown>> {
-    return this.getJson<Record<string, unknown>>("/api/v1/costs");
+  costs(): Promise<LocalCostSummary> {
+    return this.getJson<LocalCostSummary>("/api/v1/costs");
+  }
+
+  costDetails(limit: number = 50): Promise<LocalDispatchCostDetail> {
+    return this.getJson<LocalDispatchCostDetail>(`/api/v1/costs/dispatches?limit=${limit}`);
   }
 
   exportState(): Promise<Record<string, unknown>> {

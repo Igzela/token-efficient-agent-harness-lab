@@ -44,10 +44,15 @@ const emptyDashboard: LocalDashboardState = {
   config: {},
   costs: {
     by_tier: [],
+    daily: [],
     currency: "USD",
     dispatch_count: 0,
-    schema_version: "local_cost_summary.v1",
+    schema_version: "local_cost_summary.v2",
     total_reserved_cost: 0,
+    total_estimated_cost_usd: 0,
+    total_input_tokens: 0,
+    total_output_tokens: 0,
+    cost_utilization: 0,
   },
   boundaries: {
     deployment: "local-only",
@@ -506,30 +511,97 @@ function Team({
 }
 
 function Costs({ dashboard }: { dashboard: LocalDashboardState }) {
-  const max = Math.max(1, ...dashboard.costs.by_tier.map((item) => item.reserved_cost));
+  const c = dashboard.costs;
+  const maxTier = Math.max(1, ...c.by_tier.map((t) => t.reserved_cost));
+  const recentDaily = c.daily.slice(0, 7).reverse();
+  const maxDaily = Math.max(1, ...recentDaily.map((d) => d.reserved_cost));
   return (
     <section className="card stack">
       <div className="heading-row">
-        <h2>Budget Ledger</h2>
-        <span className="pill info">{dashboard.costs.currency}</span>
+        <h2>Cost Governance</h2>
+        <span className="pill info">{c.currency}</span>
       </div>
-      <div className="bars">
-        {dashboard.costs.by_tier.length === 0 ? (
-          <p className="muted">No local cost records</p>
-        ) : (
-          dashboard.costs.by_tier.map((item) => (
-            <div className="bar" key={item.selected_tier}>
-              <div className="row">
-                <span>{item.selected_tier}</span>
-                <span>${item.reserved_cost.toFixed(3)}</span>
-              </div>
-              <div className="bar-track">
-                <div className="bar-fill" style={{ width: `${(item.reserved_cost / max) * 100}%` }} />
-              </div>
-            </div>
-          ))
-        )}
+      <div className="metrics">
+        <div className="metric">
+          <span className="metric-label">Reserved Budget</span>
+          <strong>${c.total_reserved_cost.toFixed(4)}</strong>
+        </div>
+        <div className="metric">
+          <span className="metric-label">Provider Estimated</span>
+          <strong>${c.total_estimated_cost_usd.toFixed(4)}</strong>
+        </div>
+        <div className="metric">
+          <span className="metric-label">Utilization</span>
+          <strong>{(c.cost_utilization * 100).toFixed(1)}%</strong>
+        </div>
+        <div className="metric">
+          <span className="metric-label">Tokens (in/out)</span>
+          <strong>{c.total_input_tokens.toLocaleString()} / {c.total_output_tokens.toLocaleString()}</strong>
+        </div>
       </div>
+      {c.by_tier.length > 0 && (
+        <>
+          <h3>By Tier</h3>
+          <div className="bars">
+            {c.by_tier.map((item) => (
+              <div className="bar" key={item.selected_tier}>
+                <div className="row">
+                  <span>{item.selected_tier}</span>
+                  <span>${item.estimated_cost_usd.toFixed(4)} / ${item.reserved_cost.toFixed(4)}</span>
+                </div>
+                <div className="bar-track">
+                  <div
+                    className="bar-fill"
+                    style={{ width: `${(item.reserved_cost / maxTier) * 100}%`, opacity: 0.35 }}
+                  />
+                  <div
+                    className="bar-fill"
+                    style={{
+                      width: `${(item.estimated_cost_usd / maxTier) * 100}%`,
+                      position: "absolute",
+                    }}
+                  />
+                </div>
+              </div>
+            ))}
+          </div>
+          <div className="legend" style={{ fontSize: "0.75rem", opacity: 0.6, display: "flex", gap: "1rem" }}>
+            <span><span style={{ display: "inline-block", width: 10, height: 10, background: "var(--accent)", opacity: 0.35, marginRight: 4 }} />Reserved</span>
+            <span><span style={{ display: "inline-block", width: 10, height: 10, background: "var(--accent)", marginRight: 4 }} />Estimated</span>
+          </div>
+        </>
+      )}
+      {recentDaily.length > 0 && (
+        <>
+          <h3>Daily Trend (last {recentDaily.length} days)</h3>
+          <div className="bars">
+            {recentDaily.map((day) => (
+              <div className="bar" key={day.date}>
+                <div className="row">
+                  <span>{day.date}</span>
+                  <span>${day.estimated_cost_usd.toFixed(4)} ({day.dispatch_count})</span>
+                </div>
+                <div className="bar-track">
+                  <div
+                    className="bar-fill"
+                    style={{ width: `${(day.reserved_cost / maxDaily) * 100}%`, opacity: 0.35 }}
+                  />
+                  <div
+                    className="bar-fill"
+                    style={{
+                      width: `${(day.estimated_cost_usd / maxDaily) * 100}%`,
+                      position: "absolute",
+                    }}
+                  />
+                </div>
+              </div>
+            ))}
+          </div>
+        </>
+      )}
+      {c.by_tier.length === 0 && recentDaily.length === 0 && (
+        <p className="muted">No local cost records</p>
+      )}
     </section>
   );
 }

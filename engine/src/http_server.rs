@@ -275,6 +275,10 @@ fn axum_routes() -> Router<AxumApiState> {
                 .options(cors_preflight),
         )
         .route("/api/v1/costs", get(api_costs).options(cors_preflight))
+        .route(
+            "/api/v1/costs/dispatches",
+            get(api_cost_details).options(cors_preflight),
+        )
         .route("/api/v1/export", get(api_export).options(cors_preflight))
         .route("/api/v1/audit", get(api_audit).options(cors_preflight))
         .route(
@@ -511,11 +515,16 @@ async fn api_dashboard(
             "team": {"schema_version": "local_team.v1", "members": [], "api_keys": []},
             "config": {},
             "costs": {
-                "schema_version": "local_cost_summary.v1",
+                "schema_version": "local_cost_summary.v2",
                 "currency": "USD",
                 "dispatch_count": 0,
                 "total_reserved_cost": 0.0,
+                "total_estimated_cost_usd": 0.0,
+                "total_input_tokens": 0,
+                "total_output_tokens": 0,
+                "cost_utilization": 0.0,
                 "by_tier": [],
+                "daily": [],
             },
             "boundaries": local_boundaries(exec_type, prov_enabled),
         })
@@ -562,6 +571,24 @@ async fn api_costs(
     Ok((
         cors_headers(),
         Json(store.cost_summary().map_err(internal_error)?),
+    ))
+}
+
+async fn api_cost_details(
+    State(state): State<AxumApiState>,
+    headers: HeaderMap,
+    axum::extract::Query(params): axum::extract::Query<std::collections::HashMap<String, String>>,
+) -> Result<impl IntoResponse, ApiError> {
+    authorize(&state, &headers, "cost:read")?;
+    let store = require_store(&state)?;
+    let limit = params
+        .get("limit")
+        .and_then(|v| v.parse::<i64>().ok())
+        .unwrap_or(50)
+        .min(500);
+    Ok((
+        cors_headers(),
+        Json(store.dispatch_cost_details(limit).map_err(internal_error)?),
     ))
 }
 
@@ -1255,6 +1282,15 @@ pub fn openapi_document() -> serde_json::Value {
                 "get": {
                     "summary": "Read local cost summary from persisted dispatches",
                     "responses": {"200": {"description": "Cost summary"}}
+                }
+            },
+            "/api/v1/costs/dispatches": {
+                "get": {
+                    "summary": "Read per-dispatch cost details",
+                    "parameters": [
+                        {"name": "limit", "in": "query", "schema": {"type": "integer", "default": 50, "maximum": 500}}
+                    ],
+                    "responses": {"200": {"description": "Per-dispatch cost details"}}
                 }
             },
             "/api/v1/export": {

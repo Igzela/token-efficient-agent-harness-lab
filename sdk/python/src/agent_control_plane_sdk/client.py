@@ -5,7 +5,7 @@ from typing import Any
 from urllib.error import HTTPError
 from urllib.request import Request, urlopen
 
-from .wire_types import ApiStatus, DispatchBundle, DispatchRequest, RequestSource
+from .wire_types import ApiStatus, DispatchBundle, DispatchRequest, LocalCostSummary, LocalDispatchCostDetail, RequestSource
 
 
 class AgentControlPlaneError(RuntimeError):
@@ -39,8 +39,11 @@ class AgentControlPlaneClient:
     def team(self) -> dict[str, Any]:
         return self._get("/api/v1/team")
 
-    def costs(self) -> dict[str, Any]:
+    def costs(self) -> LocalCostSummary:
         return self._get("/api/v1/costs")
+
+    def cost_details(self, limit: int = 50) -> LocalDispatchCostDetail:
+        return self._get(f"/api/v1/costs/dispatches?limit={limit}")
 
     def export_state(self) -> dict[str, Any]:
         return self._get("/api/v1/export")

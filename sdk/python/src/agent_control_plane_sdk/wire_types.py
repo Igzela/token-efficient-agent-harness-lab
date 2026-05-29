@@ -212,6 +212,48 @@ class DispatchBundle(TypedDict):
     execution_result: ExecutionResult
     evaluation_result: EvaluationResult
 
+class LocalTierCost(TypedDict):
+    selected_tier: str
+    dispatch_count: int
+    reserved_cost: float
+    estimated_cost_usd: float
+    input_tokens: int
+    output_tokens: int
+
+class LocalDailyCost(TypedDict):
+    date: str
+    dispatch_count: int
+    reserved_cost: float
+    estimated_cost_usd: float
+
+class LocalCostSummary(TypedDict):
+    schema_version: Literal["local_cost_summary.v2"]
+    currency: str
+    dispatch_count: int
+    total_reserved_cost: float
+    total_estimated_cost_usd: float
+    total_input_tokens: int
+    total_output_tokens: int
+    cost_utilization: float
+    by_tier: list[LocalTierCost]
+    daily: list[LocalDailyCost]
+
+class LocalDispatchCostRow(TypedDict):
+    history_id: int
+    dispatch_id: str
+    created_at: str
+    selected_tier: str
+    reserved_cost: float
+    input_tokens: int
+    output_tokens: int
+    estimated_cost_usd: float
+    executor_type: str
+    latency_ms: int | None
+
+class LocalDispatchCostDetail(TypedDict):
+    schema_version: Literal["local_dispatch_cost_detail.v1"]
+    dispatches: list[LocalDispatchCostRow]
+
 class ApiStatus(TypedDict, total=False):
     schema_version: Literal["axum_api.v1"]
     status: str

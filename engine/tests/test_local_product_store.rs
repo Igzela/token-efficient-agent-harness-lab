@@ -381,3 +381,183 @@ fn dispatch_history_missing_execution_result_uses_defaults() {
     assert!(d["estimated_cost_usd"].is_null());
     assert!(d["latency_ms"].is_null());
 }
+
+// --- cost_summary v2 tests ---
+
+#[test]
+fn cost_summary_empty_store() {
+    let dir = tempdir().unwrap();
+    let store = LocalProductStore::new(dir.path().join("test.db")).unwrap();
+
+    let summary = store.cost_summary().unwrap();
+
+    assert_eq!(summary["schema_version"], "local_cost_summary.v2");
+    assert_eq!(summary["currency"], "USD");
+    assert_eq!(summary["dispatch_count"], 0);
+    assert_eq!(summary["total_reserved_cost"], 0.0);
+    assert_eq!(summary["total_estimated_cost_usd"], 0.0);
+    assert_eq!(summary["total_input_tokens"], 0);
+    assert_eq!(summary["total_output_tokens"], 0);
+    assert_eq!(summary["cost_utilization"], 0.0);
+    assert_eq!(summary["by_tier"].as_array().unwrap().len(), 0);
+    assert_eq!(summary["daily"].as_array().unwrap().len(), 0);
+}
+
+#[test]
+fn cost_summary_aggregates_reserved_and_estimated() {
+    let dir = tempdir().unwrap();
+    let store = LocalProductStore::new(dir.path().join("test.db")).unwrap();
+
+    let bundle1 = make_bundle_with_usage(
+        "d1",
+        "provider",
+        Some(100),
+        Some(50),
+        Some(0.003),
+        Some(100),
+    );
+    let bundle2 = make_bundle_with_usage(
+        "d2",
+        "provider",
+        Some(200),
+        Some(80),
+        Some(0.005),
+        Some(200),
+    );
+    store
+        .record_dispatch("req1", "api", &bundle1, "actor")
+        .unwrap();
+    store
+        .record_dispatch("req2", "api", &bundle2, "actor")
+        .unwrap();
+
+    let summary = store.cost_summary().unwrap();
+
+    assert_eq!(summary["dispatch_count"], 2);
+    assert_eq!(summary["total_reserved_cost"], 0.02);
+    assert_eq!(summary["total_estimated_cost_usd"], 0.008);
+    assert_eq!(summary["total_input_tokens"], 300);
+    assert_eq!(summary["total_output_tokens"], 130);
+    assert!((summary["cost_utilization"].as_f64().unwrap() - 0.4).abs() < 0.001);
+}
+
+#[test]
+fn cost_summary_groups_by_tier() {
+    let dir = tempdir().unwrap();
+    let store = LocalProductStore::new(dir.path().join("test.db")).unwrap();
+
+    let bundle_cheap = json!({
+        "record": {"dispatch_id": "d1", "created_at": "2026-05-29T12:00:00Z", "final_status": "completed"},
+        "analysis": {"risk_level": "low"},
+        "decision": {"selected_tier": "cheap_executor", "budget_reservation": {"reserved_cost": 0.001}},
+        "execution_result": {"executor_type": "provider", "input_tokens": 50, "output_tokens": 20, "estimated_cost": 0.0005},
+        "evaluation_result": {"status": "pass"},
+    });
+    let bundle_strong = json!({
+        "record": {"dispatch_id": "d2", "created_at": "2026-05-29T12:01:00Z", "final_status": "completed"},
+        "analysis": {"risk_level": "medium"},
+        "decision": {"selected_tier": "strong_planner", "budget_reservation": {"reserved_cost": 0.05}},
+        "execution_result": {"executor_type": "provider", "input_tokens": 500, "output_tokens": 200, "estimated_cost": 0.015},
+        "evaluation_result": {"status": "pass"},
+    });
+    store
+        .record_dispatch("req1", "api", &bundle_cheap, "actor")
+        .unwrap();
+    store
+        .record_dispatch("req2", "api", &bundle_strong, "actor")
+        .unwrap();
+
+    let summary = store.cost_summary().unwrap();
+    let tiers = summary["by_tier"].as_array().unwrap();
+    assert_eq!(tiers.len(), 2);
+
+    let cheap = &tiers[0];
+    assert_eq!(cheap["selected_tier"], "cheap_executor");
+    assert_eq!(cheap["dispatch_count"], 1);
+    assert_eq!(cheap["reserved_cost"], 0.001);
+    assert_eq!(cheap["estimated_cost_usd"], 0.0005);
+    assert_eq!(cheap["input_tokens"], 50);
+    assert_eq!(cheap["output_tokens"], 20);
+
+    let strong = &tiers[1];
+    assert_eq!(strong["selected_tier"], "strong_planner");
+    assert_eq!(strong["dispatch_count"], 1);
+    assert_eq!(strong["reserved_cost"], 0.05);
+    assert_eq!(strong["estimated_cost_usd"], 0.015);
+}
+
+#[test]
+fn cost_summary_daily_breakdown() {
+    let dir = tempdir().unwrap();
+    let store = LocalProductStore::new(dir.path().join("test.db")).unwrap();
+
+    let bundle = make_bundle_with_usage("d1", "noop", None, None, None, None);
+    store
+        .record_dispatch("req1", "api", &bundle, "actor")
+        .unwrap();
+
+    let summary = store.cost_summary().unwrap();
+    let daily = summary["daily"].as_array().unwrap();
+    assert_eq!(daily.len(), 1);
+    assert_eq!(daily[0]["date"], "2026-05-29");
+    assert_eq!(daily[0]["dispatch_count"], 1);
+}
+
+// --- dispatch_cost_details tests ---
+
+#[test]
+fn dispatch_cost_details_returns_per_dispatch_rows() {
+    let dir = tempdir().unwrap();
+    let store = LocalProductStore::new(dir.path().join("test.db")).unwrap();
+
+    let bundle = make_bundle_with_usage(
+        "d1",
+        "provider",
+        Some(150),
+        Some(75),
+        Some(0.003),
+        Some(250),
+    );
+    store
+        .record_dispatch("hello", "api", &bundle, "actor")
+        .unwrap();
+
+    let details = store.dispatch_cost_details(10).unwrap();
+    assert_eq!(details["schema_version"], "local_dispatch_cost_detail.v1");
+    let dispatches = details["dispatches"].as_array().unwrap();
+    assert_eq!(dispatches.len(), 1);
+    assert_eq!(dispatches[0]["dispatch_id"], "d1");
+    assert_eq!(dispatches[0]["reserved_cost"], 0.01);
+    assert_eq!(dispatches[0]["input_tokens"], 150);
+    assert_eq!(dispatches[0]["output_tokens"], 75);
+    assert_eq!(dispatches[0]["estimated_cost_usd"], 0.003);
+    assert_eq!(dispatches[0]["executor_type"], "provider");
+    assert_eq!(dispatches[0]["latency_ms"], 250);
+}
+
+#[test]
+fn dispatch_cost_details_respects_limit() {
+    let dir = tempdir().unwrap();
+    let store = LocalProductStore::new(dir.path().join("test.db")).unwrap();
+
+    for i in 0..5 {
+        let bundle = make_bundle_with_usage(&format!("d{}", i), "noop", None, None, None, None);
+        store
+            .record_dispatch(&format!("req{}", i), "api", &bundle, "actor")
+            .unwrap();
+    }
+
+    let details = store.dispatch_cost_details(3).unwrap();
+    let dispatches = details["dispatches"].as_array().unwrap();
+    assert_eq!(dispatches.len(), 3);
+}
+
+#[test]
+fn dispatch_cost_details_empty_store() {
+    let dir = tempdir().unwrap();
+    let store = LocalProductStore::new(dir.path().join("test.db")).unwrap();
+
+    let details = store.dispatch_cost_details(50).unwrap();
+    assert_eq!(details["schema_version"], "local_dispatch_cost_detail.v1");
+    assert_eq!(details["dispatches"].as_array().unwrap().len(), 0);
+}

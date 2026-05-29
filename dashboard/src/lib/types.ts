@@ -69,17 +69,50 @@ export interface LocalApiKeyMetadata {
 }
 
 export interface LocalCostSummary {
-  schema_version: "local_cost_summary.v1";
+  schema_version: "local_cost_summary.v2";
   currency: "USD" | string;
   dispatch_count: number;
   total_reserved_cost: number;
+  total_estimated_cost_usd: number;
+  total_input_tokens: number;
+  total_output_tokens: number;
+  cost_utilization: number;
   by_tier: LocalTierCost[];
+  daily: LocalDailyCost[];
 }
 
 export interface LocalTierCost {
   selected_tier: string;
   dispatch_count: number;
   reserved_cost: number;
+  estimated_cost_usd: number;
+  input_tokens: number;
+  output_tokens: number;
+}
+
+export interface LocalDailyCost {
+  date: string;
+  dispatch_count: number;
+  reserved_cost: number;
+  estimated_cost_usd: number;
+}
+
+export interface LocalDispatchCostDetail {
+  schema_version: "local_dispatch_cost_detail.v1";
+  dispatches: LocalDispatchCostRow[];
+}
+
+export interface LocalDispatchCostRow {
+  history_id: number;
+  dispatch_id: string;
+  created_at: string;
+  selected_tier: string;
+  reserved_cost: number;
+  input_tokens: number;
+  output_tokens: number;
+  estimated_cost_usd: number;
+  executor_type: string;
+  latency_ms: number | null;
 }
 
 export interface LocalBoundaries {

@@ -60,6 +60,7 @@ Master architecture document: `docs/dispatch/DISPATCHER_KERNEL_V0_ARCHITECTURE.m
 - **Phase 6B-3 Gate 1**: IMPLEMENTED (scope checks, rate limiting, 403/429 responses).
 - **Security hardening**: redaction logging, http_server body size limit + CORS, checkpoint path traversal fix, 42 new tests for coverage gaps.
 - **Productization Phase 2 — Permission Governance**: IMPLEMENTED (API key create/revoke/rotate/delete/scopes, team member create/update-role/delete, last_used_at tracking, expires_at support, revoked_at enforcement, admin audit events, team:admin scope gating, SDK CRUD methods, dashboard management UI).
+- **Productization Phase 3 — Cost Governance**: IMPLEMENTED (cost_summary v2: reserved vs estimated, token usage, utilization ratio, daily trend; dispatch_cost_details endpoint; dashboard enhanced Costs view; typed SDK cost responses; 15 new Rust tests, 1056 total).
 - **Rust + TypeScript Cutover**: COMPLETE (`engine/` is the primary runtime/API/storage/provider-gated control plane; `dashboard/` and `sdk/typescript/` are the primary TypeScript surfaces; `scripts/verify_rust_typescript_stack.sh` is the primary cutover verification. Python remains legacy reference plus retained Python SDK compatibility).
 
 See `docs/CURRENT_STATUS.md` for detailed phase closeout records.
@@ -130,6 +131,7 @@ See `docs/CURRENT_STATUS.md` for full details.
 - **2026-05-29**: Rust provider stack Stage 2 audit/usage bridge — provider audit events persist to local SQLite, dispatch history stores executor type, token usage, estimated provider cost, and latency columns, and SDKs expose provider health/audit readers. Current Rust test inventory is 1031 enumerated test cases, with `cargo test -p engine` passing.
 - **2026-05-29**: Productization Phase 1 — Provider Safety Gate implemented. `ACP_ENABLE_PROVIDER_EXECUTION=1` gate for real providers, `ACP_REQUIRE_AUTH=1` enforced when provider active, `dispatch:execute` scope for provider dispatches, per-dispatch and daily cost caps (`ACP_COST_PER_DISPATCH_USD`/`ACP_COST_DAILY_USD`), dynamic dashboard boundaries, structured startup summary log. 10 new Rust tests (1041 total).
 - **2026-05-29**: Rust + TypeScript cutover — primary runtime and product surface are Rust `engine/`, TypeScript `dashboard/`, and TypeScript SDK. Added `scripts/verify_rust_typescript_stack.sh` to verify the cutover without using the Python reference path. Python remains legacy reference plus retained Python SDK compatibility.
+- **2026-05-29**: Productization Phase 3 — Cost Governance implemented. Enriched `cost_summary()` to v2 schema (total_estimated_cost_usd, total_input_tokens, total_output_tokens, cost_utilization, per-tier estimated/tokens, daily trend). Added `dispatch_cost_details()` method and `GET /api/v1/costs/dispatches` endpoint. Dashboard Costs component enhanced with reserved vs estimated comparison, utilization metric, token usage totals, daily trend bars. TypeScript + Python SDKs typed for LocalCostSummary and LocalDispatchCostDetail. 15 new Rust tests (1056 total). Full stack verification passes.
 - Previous BLOCK findings (b6d5bc1): HIGH-1 rate limit not wired, HIGH-2 scope enforcement missing, HIGH-3 plugin locks unused
 - Gate 1 addresses: HIGH-1 (rate limiter in ServerContext + _check_rate_limit), HIGH-2 (scope enforcement + AuthorizationDecision + 403/429)
 - Gate 2 addresses: atomic restore, WAL safety, failure-mode coverage
@@ -219,7 +221,7 @@ See `docs/CURRENT_STATUS.md` for full details.
 
 - **Framework**: unittest (stdlib), no pytest
 - **Run command**: `PYTHONPATH=src python3 -m unittest discover -s tests`
-- **Current count**: 2089 Python tests + 606 Rust tests pass, 0 failures (as of 2026-05-29)
+- **Current count**: 2089 Python tests + 1056 Rust tests pass, 0 failures (as of 2026-05-29)
 - **Coverage**: Phase boundary contracts, schema validation, golden fixtures
 - **CI**: GitHub Actions on push/PR to main — runs security baseline + all tests
 - **Test naming**: `tests/test_<module>.py`, one test file per source module
