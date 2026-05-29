@@ -30,10 +30,10 @@ Verified in this migration run:
 - `cargo fmt --check`
 - `cargo clippy -p engine -- -D warnings`
 - `cargo test -p engine`
-- `cd dashboard && corepack pnpm lint && corepack pnpm typecheck && corepack pnpm build`
-- `cd sdk/typescript && corepack pnpm test && corepack pnpm build && npm pack --dry-run`
+- `cd dashboard && pnpm lint && pnpm typecheck && pnpm build`
+- `cd sdk/typescript && pnpm build && npm pack --dry-run`
 - `cd sdk/python && PYTHONPATH=src python3 -m unittest discover -s tests`
-- `cd sdk/python && uv run --with build python -m build`
+- `cd sdk/python && python -m build`
 - `python3 tests/integration/parity/run.py`
 - `python3 scripts/check_agent_handoff.py`
 - `python3 tools/check_security_baseline.py`
@@ -43,8 +43,6 @@ Verified in this migration run:
 - `GET /api/v1/health`
 - `POST /api/v1/dispatch`
 - dashboard HTTP smoke on `http://127.0.0.1:3000/`
-
-Environment caveat: direct `pnpm` is unavailable in this Codex runtime because `corepack enable` cannot create a global symlink under the bundled node runtime path. Direct `python -m build` is also unavailable because `python` is absent and `python3` lacks the `build` module globally. Equivalent package checks passed through `corepack pnpm` and isolated `uv run --with build`.
 
 ## Remaining Decision
 
