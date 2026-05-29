@@ -36,12 +36,12 @@ Implemented:
 - team/API-key create, revoke, rotate, delete, scope update, role update, last-used tracking, expiry, and admin audit events are implemented
 - cost governance: reserved vs estimated cost separation, per-tier and daily cost breakdown, utilization ratio, token usage totals, per-dispatch cost detail endpoint, typed SDK cost responses
 - data operations: versioned SQLite migrations, integrity checks, import/export roundtrip, hardened backup restore with verification, data-directory documentation
+- native packaging: `.env.example`, install/upgrade scripts, release tarball with engine binary + static dashboard + scripts, native smoke verification
 
 Next productization phases:
 
 | Order | Phase | Done When |
 |---|---|---|
-| 5 | Native Packaging | Release artifact includes engine binary, dashboard assets, install/upgrade scripts, `.env.example`, and native smoke verification. |
 | 6 | Dashboard Controls | Admin-only config, backup/export, team/key, provider status, and dispatch-detail views exist with confirmations and audit logs. |
 | 7 | Long-Run Hardening | LAN threat model, audit integrity review, SQLite contention tests, provider failure matrix, upgrade smoke, and GitHub Actions Node deprecation cleanup are complete. |
 
