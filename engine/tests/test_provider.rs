@@ -8,12 +8,12 @@ fn disabled_provider_is_off_by_default() {
     assert!(!provider.is_enabled());
 }
 
-#[test]
-fn disabled_provider_never_returns_transport_response() {
+#[tokio::test(flavor = "current_thread")]
+async fn disabled_provider_never_returns_transport_response() {
     let provider = DisabledProvider::new("stub-provider");
     let request = ProviderRequest::local_stub("stub-provider", "noop-model", "hello");
 
-    let error = provider.invoke(&request).unwrap_err();
+    let error = provider.invoke(&request).await.unwrap_err();
 
     assert_eq!(error.schema_version, "provider_error.v1");
     assert_eq!(error.provider_id, "stub-provider");

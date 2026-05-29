@@ -636,3 +636,50 @@ async fn axum_dashboard_does_not_mask_unknown_api_routes() {
     assert_eq!(response.status(), StatusCode::NOT_FOUND);
     assert_eq!(response_text(response).await, "not found");
 }
+
+#[tokio::test]
+async fn axum_provider_health_noop_when_no_provider() {
+    let app = build_axum_router(AxumApiState::new());
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method(Method::GET)
+                .uri("/api/v1/provider/health")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = response_json(response).await;
+    assert_eq!(body["status"], "noop");
+    assert_eq!(body["message"], "no provider configured");
+}
+
+#[tokio::test]
+async fn axum_provider_health_ok_with_stub_provider() {
+    use engine::provider::stub::StubProvider;
+    use engine::provider::Provider;
+    use std::sync::Arc;
+
+    let provider: Arc<dyn Provider> = Arc::new(StubProvider::new("stub-health"));
+    let state = AxumApiState::new().with_provider(provider);
+    let app = build_axum_router(state);
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method(Method::GET)
+                .uri("/api/v1/provider/health")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = response_json(response).await;
+    assert_eq!(body["status"], "ok");
+    assert_eq!(body["provider_id"], "stub-health");
+    assert_eq!(body["enabled"], true);
+}

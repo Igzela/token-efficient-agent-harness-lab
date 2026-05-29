@@ -1,3 +1,4 @@
+pub mod app_layer;
 pub mod budget_manager;
 pub mod dispatch_decision;
 pub mod dispatch_engine;
