@@ -11,6 +11,7 @@ pub mod http_server;
 pub mod infrastructure;
 pub mod model_selector;
 pub mod orchestration;
+pub mod provider;
 pub mod routing;
 pub mod runtime;
 pub mod sdk;

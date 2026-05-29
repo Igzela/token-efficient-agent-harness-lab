@@ -6,7 +6,7 @@ Date: 2026-05-28
 
 Agent-control-plane migration phases 0-7 are implemented on the active branch, and Phase 8 closeout is recorded here.
 
-- Rust `engine/` owns deterministic dispatch parity, routing/orchestration parity, storage parity, and the local axum API.
+- Rust `engine/` owns deterministic dispatch parity, routing/orchestration parity, a disabled-by-default provider trait boundary, storage parity, and the local axum API.
 - `wire_contract/v1/` remains the frozen JSON contract surface.
 - `codegen/` generates SDK wire types from the frozen schemas.
 - `sdk/typescript/` and `sdk/python/` provide REST SDKs and do not bind private Rust internals.

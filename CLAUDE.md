@@ -50,7 +50,7 @@ Master architecture document: `docs/dispatch/DISPATCHER_KERNEL_V0_ARCHITECTURE.m
 - **Language migration Phase 5**: IMPLEMENTED (ecosystem/: community_profiles, tool_adapter, dashboard, benchmark).
 - **Language migration Phase 6**: IMPLEMENTED (storage/: durable_store via rusqlite, health_checker, backup_manager).
 - **Language migration Phase 7**: IMPLEMENTED (sdk, storage_migrator).
-- **Language migration Rust engine/API parity**: IMPLEMENTED (`http_server` local axum router for health/ready/openapi/dispatch, `doc_generator`, 422 Rust tests).
+- **Language migration Rust engine/API parity**: IMPLEMENTED (`http_server` local axum router for health/ready/openapi/dispatch, disabled-by-default `provider` trait boundary, `doc_generator`, 425 Rust tests).
 - **Agent-Control-Plane Phase 5 SDK + Codegen**: IMPLEMENTED (`codegen/generate_wire_types.py`, TypeScript REST SDK with Node test coverage, Python REST SDK with 8 tests). Full nested types from all 6 wire_contract schemas.
 - **Agent-Control-Plane Phase 6 Dashboard**: IMPLEMENTED (`dashboard/` Next.js App Router, read-only views, no executable controls).
 - **Agent-Control-Plane Phase 7 Docker**: IMPLEMENTED (`deploy/Dockerfile.engine`, `deploy/Dockerfile.dashboard`, `docker-compose.yml`, local API + dashboard smoke).
@@ -113,7 +113,7 @@ See `docs/CURRENT_STATUS.md` for full details.
 - **2026-05-28**: Phase 7 P7-T3 CommunityProfileRegistry + P7-T4 ToolAdapterManager — 2 source modules (community_profiles.py, tool_adapter.py), 2 test files, 58 new tests (2081 total). ModelProfile dataclass, CommunityProfileRegistry with register/search/validate. ToolDefinition/ToolExecutionRequest/ToolExecutionResult dataclasses, ToolAdapterManager with register/execute stub. Commits 29ad85c, 1bd8130.
 - **2026-05-28**: Gate 3 Plugin thread safety — RLock in PluginSystem (reentrant for load→unload), threading.Lock in PluginRegistry, all public methods guarded with `with self._lock:`. No new tests needed (existing tests cover). Commit 785fe61.
 - **2026-05-28**: Review hardening — Fixed CRITICAL copy-paste bug in dashboard.py compute_summary() (cost_savings/quality_delta now filter by metric_name). Added NaN/inf validation in validate_experiment(). Added task existence check in benchmark.py record_result(). Made compare_models() atomic. 8 new tests. 2089 total.
-- **2026-05-28**: Language migration Rust engine/API parity — Rust `http_server` local axum router added for `/api/v1/health`, `/api/v1/ready`, `/api/v1/openapi.json`, and deterministic `/api/v1/dispatch`; auth/scope/rate-limit/CORS checks covered. `doc_generator` added with module/schema registry, source parser, and markdown generation. 422 total Rust tests, 35 source modules, 31 test files.
+- **2026-05-28**: Language migration Rust engine/API parity — Rust `http_server` local axum router added for `/api/v1/health`, `/api/v1/ready`, `/api/v1/openapi.json`, and deterministic `/api/v1/dispatch`; auth/scope/rate-limit/CORS checks covered. `doc_generator` added with module/schema registry, source parser, and markdown generation; `provider` exposes the disabled-by-default provider trait boundary. 425 total Rust tests, 36 source modules, 32 test files.
 - **2026-05-28**: Agent-Control-Plane Phase 5 SDK + Codegen — Added deterministic codegen helper and REST-based TypeScript/Python SDK packages. `cd sdk/typescript && pnpm build && npm pack --dry-run` passes. Python SDK unit tests pass and `cd sdk/python && python -m build` passes. SDKs use REST endpoints, not private engine internals. Security baseline has a scoped stdlib `urllib` allowlist for the Python SDK local REST client.
 - **2026-05-28**: Agent-Control-Plane Phase 6 Dashboard — Added read-only Next.js dashboard at `dashboard/` with dispatch, routing, agents/workflows, costs, settings, and health views. Dashboard fetches health/readiness only and has no dispatch POST client or approve/run/deploy/execute/merge controls. `cd dashboard && pnpm lint && pnpm typecheck && pnpm build` and local HTTP smoke pass.
 - **2026-05-28**: Agent-Control-Plane Phase 7 Docker — Added local Docker deploy for Rust axum API and read-only Next.js dashboard. `docker compose build` and default `docker compose up --build -d` pass; `/api/v1/health`, `/api/v1/dispatch`, and dashboard HTTP returned successfully.
@@ -207,7 +207,7 @@ See `docs/CURRENT_STATUS.md` for full details.
 
 - **Framework**: unittest (stdlib), no pytest
 - **Run command**: `PYTHONPATH=src python3 -m unittest discover -s tests`
-- **Current count**: 2089 Python tests + 422 Rust tests, 0 failures (as of 2026-05-28)
+- **Current count**: 2089 Python tests + 425 Rust tests, 0 failures (as of 2026-05-29)
 - **Coverage**: Phase boundary contracts, schema validation, golden fixtures
 - **CI**: GitHub Actions on push/PR to main — runs security baseline + all tests
 - **Test naming**: `tests/test_<module>.py`, one test file per source module
