@@ -1,6 +1,8 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
+
+use crate::storage::local_product_store::LocalProductStore;
 
 pub const PROVIDER_AUDIT_EVENT_SCHEMA_VERSION: &str = "provider_audit_event.v1";
 
@@ -70,6 +72,7 @@ fn is_leap(y: u64) -> bool {
 pub struct ProviderAuditRecorder {
     events: Mutex<Vec<ProviderAuditEvent>>,
     counter: Mutex<u64>,
+    store: Option<Arc<LocalProductStore>>,
 }
 
 impl Default for ProviderAuditRecorder {
@@ -83,10 +86,22 @@ impl ProviderAuditRecorder {
         Self {
             events: Mutex::new(Vec::new()),
             counter: Mutex::new(0),
+            store: None,
+        }
+    }
+
+    pub fn with_store(store: Arc<LocalProductStore>) -> Self {
+        Self {
+            events: Mutex::new(Vec::new()),
+            counter: Mutex::new(0),
+            store: Some(store),
         }
     }
 
     pub fn record(&self, event: ProviderAuditEvent) {
+        if let Some(store) = &self.store {
+            let _ = store.record_provider_audit_event(&event);
+        }
         self.events.lock().unwrap().push(event);
     }
 

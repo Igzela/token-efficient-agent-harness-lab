@@ -1,5 +1,6 @@
 use std::sync::Arc;
 
+use super::audit::ProviderAuditRecorder;
 use super::{Provider, ProviderError, ProviderRequest};
 use crate::dispatch_decision::DispatchDecision;
 use crate::executor_adapter::{ExecutionResult, Executor};
@@ -7,11 +8,20 @@ use crate::runtime::FixtureRuntime;
 
 pub struct ProviderExecutor {
     provider: Arc<dyn Provider>,
+    audit_recorder: Option<Arc<ProviderAuditRecorder>>,
 }
 
 impl ProviderExecutor {
     pub fn new(provider: Arc<dyn Provider>) -> Self {
-        Self { provider }
+        Self {
+            provider,
+            audit_recorder: None,
+        }
+    }
+
+    pub fn with_audit_recorder(mut self, recorder: Arc<ProviderAuditRecorder>) -> Self {
+        self.audit_recorder = Some(recorder);
+        self
     }
 }
 
@@ -42,52 +52,80 @@ impl Executor for ProviderExecutor {
         });
 
         match response {
-            Ok(resp) => ExecutionResult {
-                schema_version: "execution_result.v1".to_string(),
-                result_id: runtime.id("exec-"),
-                dispatch_id: dispatch_id.to_string(),
-                decision_id: decision.decision_id.clone(),
-                executor_type: "provider".to_string(),
-                status: "provider_completed".to_string(),
-                output: Some(resp.output),
-                prompt_pack: None,
-                input_tokens: resp.input_tokens,
-                output_tokens: resp.output_tokens,
-                estimated_cost: resp.estimated_cost,
-                latency_ms: None,
-                error_domain: None,
-                error_message: None,
-                provider_request_id: resp.provider_request_id,
-                attempt_number: None,
-                finish_reason: None,
-                usage_source: Some("provider_reported".to_string()),
-                created_at: runtime.now(),
-            },
+            Ok(resp) => {
+                if let Some(recorder) = &self.audit_recorder {
+                    let extra = serde_json::json!({
+                        "input_token_count": resp.input_tokens,
+                        "output_token_count": resp.output_tokens,
+                        "cost": resp.estimated_cost,
+                    });
+                    recorder.create_and_record(
+                        dispatch_id,
+                        self.provider.provider_id(),
+                        "response_received",
+                        Some(&extra),
+                    );
+                }
+                ExecutionResult {
+                    schema_version: "execution_result.v1".to_string(),
+                    result_id: runtime.id("exec-"),
+                    dispatch_id: dispatch_id.to_string(),
+                    decision_id: decision.decision_id.clone(),
+                    executor_type: "provider".to_string(),
+                    status: "provider_completed".to_string(),
+                    output: Some(resp.output),
+                    prompt_pack: None,
+                    input_tokens: resp.input_tokens,
+                    output_tokens: resp.output_tokens,
+                    estimated_cost: resp.estimated_cost,
+                    latency_ms: None,
+                    error_domain: None,
+                    error_message: None,
+                    provider_request_id: resp.provider_request_id,
+                    attempt_number: None,
+                    finish_reason: None,
+                    usage_source: Some("provider_reported".to_string()),
+                    created_at: runtime.now(),
+                }
+            }
             Err(ProviderError {
                 error_domain,
                 message,
                 ..
-            }) => ExecutionResult {
-                schema_version: "execution_result.v1".to_string(),
-                result_id: runtime.id("exec-"),
-                dispatch_id: dispatch_id.to_string(),
-                decision_id: decision.decision_id.clone(),
-                executor_type: "provider".to_string(),
-                status: "failed".to_string(),
-                output: None,
-                prompt_pack: None,
-                input_tokens: None,
-                output_tokens: None,
-                estimated_cost: None,
-                latency_ms: None,
-                error_domain: Some(error_domain),
-                error_message: Some(message),
-                provider_request_id: None,
-                attempt_number: None,
-                finish_reason: None,
-                usage_source: None,
-                created_at: runtime.now(),
-            },
+            }) => {
+                if let Some(recorder) = &self.audit_recorder {
+                    let extra = serde_json::json!({
+                        "error_domain": error_domain,
+                    });
+                    recorder.create_and_record(
+                        dispatch_id,
+                        self.provider.provider_id(),
+                        "error",
+                        Some(&extra),
+                    );
+                }
+                ExecutionResult {
+                    schema_version: "execution_result.v1".to_string(),
+                    result_id: runtime.id("exec-"),
+                    dispatch_id: dispatch_id.to_string(),
+                    decision_id: decision.decision_id.clone(),
+                    executor_type: "provider".to_string(),
+                    status: "failed".to_string(),
+                    output: None,
+                    prompt_pack: None,
+                    input_tokens: None,
+                    output_tokens: None,
+                    estimated_cost: None,
+                    latency_ms: None,
+                    error_domain: Some(error_domain),
+                    error_message: Some(message),
+                    provider_request_id: None,
+                    attempt_number: None,
+                    finish_reason: None,
+                    usage_source: None,
+                    created_at: runtime.now(),
+                }
+            }
         }
     }
 }

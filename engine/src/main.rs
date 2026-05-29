@@ -4,6 +4,7 @@ use engine::infrastructure::auth::{
 };
 use engine::infrastructure::rate_limiter::RateLimiter;
 use engine::provider::anthropic::AnthropicProvider;
+use engine::provider::audit::ProviderAuditRecorder;
 use engine::provider::config::CredentialRef;
 use engine::provider::config::ProviderConfig;
 use engine::provider::credential::CredentialBoundary;
@@ -39,9 +40,10 @@ async fn main() {
             )
             .expect("failed to record local admin API key metadata");
     }
+    let store_arc = Arc::new(store);
     let state = configure_auth(
-        build_state_with_provider(AxumApiState::new())
-            .with_local_store(store)
+        build_state_with_provider(AxumApiState::new(), &store_arc)
+            .with_local_store_arc(store_arc)
             .with_backup_dir(backup_dir),
     );
     let dashboard_dir =
@@ -112,7 +114,7 @@ fn configure_auth(state: AxumApiState) -> AxumApiState {
     state.with_auth(resolver, RateLimiter::new(60.0, 10_000), Some(10_000), 0.0)
 }
 
-fn build_state_with_provider(state: AxumApiState) -> AxumApiState {
+fn build_state_with_provider(state: AxumApiState, store: &Arc<LocalProductStore>) -> AxumApiState {
     let provider_type = match std::env::var("ACP_PROVIDER_TYPE") {
         Ok(v) if !v.trim().is_empty() => v,
         _ => return state,
@@ -172,7 +174,8 @@ fn build_state_with_provider(state: AxumApiState) -> AxumApiState {
         }
     };
 
-    state.with_provider(provider)
+    let recorder = Arc::new(ProviderAuditRecorder::with_store(store.clone()));
+    state.with_provider_and_audit(provider, recorder)
 }
 
 fn local_admin_scopes() -> HashSet<String> {

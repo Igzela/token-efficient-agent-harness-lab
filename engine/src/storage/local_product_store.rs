@@ -20,7 +20,12 @@ CREATE TABLE IF NOT EXISTS dispatch_history (
     selected_tier TEXT NOT NULL,
     risk_level TEXT NOT NULL,
     reserved_cost REAL NOT NULL DEFAULT 0.0,
-    bundle_json TEXT NOT NULL
+    bundle_json TEXT NOT NULL,
+    input_tokens INTEGER,
+    output_tokens INTEGER,
+    estimated_cost_usd REAL,
+    executor_type TEXT NOT NULL DEFAULT 'noop',
+    latency_ms INTEGER
 );
 CREATE INDEX IF NOT EXISTS idx_dispatch_history_created ON dispatch_history(created_at);
 CREATE INDEX IF NOT EXISTS idx_dispatch_history_dispatch_id ON dispatch_history(dispatch_id);
@@ -59,6 +64,23 @@ CREATE TABLE IF NOT EXISTS audit_log (
     details_json TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_audit_created ON audit_log(created_at);
+
+CREATE TABLE IF NOT EXISTS provider_audit_events (
+    event_id TEXT PRIMARY KEY,
+    dispatch_id TEXT NOT NULL,
+    provider_id TEXT NOT NULL,
+    event_type TEXT NOT NULL,
+    input_token_count INTEGER,
+    output_token_count INTEGER,
+    cost REAL,
+    currency TEXT,
+    latency_ms INTEGER,
+    error_domain TEXT,
+    redaction_status TEXT NOT NULL,
+    created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_provider_audit_dispatch ON provider_audit_events(dispatch_id);
+CREATE INDEX IF NOT EXISTS idx_provider_audit_created ON provider_audit_events(created_at);
 ";
 
 pub struct LocalProductStore {
@@ -149,12 +171,30 @@ impl LocalProductStore {
             .unwrap_or(0.0);
         let bundle_json = serde_json::to_string(bundle).map_err(|e| e.to_string())?;
 
+        let input_tokens = bundle
+            .pointer("/execution_result/input_tokens")
+            .and_then(Value::as_i64);
+        let output_tokens = bundle
+            .pointer("/execution_result/output_tokens")
+            .and_then(Value::as_i64);
+        let estimated_cost_usd = bundle
+            .pointer("/execution_result/estimated_cost")
+            .and_then(Value::as_f64);
+        let executor_type = bundle
+            .pointer("/execution_result/executor_type")
+            .and_then(Value::as_str)
+            .unwrap_or("noop");
+        let latency_ms = bundle
+            .pointer("/execution_result/latency_ms")
+            .and_then(Value::as_i64);
+
         self.with_conn(|conn| {
             conn.execute(
                 "INSERT INTO dispatch_history
                  (dispatch_id, created_at, raw_request, request_source, final_status,
-                  selected_tier, risk_level, reserved_cost, bundle_json)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+                  selected_tier, risk_level, reserved_cost, bundle_json,
+                  input_tokens, output_tokens, estimated_cost_usd, executor_type, latency_ms)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)",
                 params![
                     dispatch_id,
                     created_at,
@@ -164,7 +204,12 @@ impl LocalProductStore {
                     selected_tier,
                     risk_level,
                     reserved_cost,
-                    bundle_json
+                    bundle_json,
+                    input_tokens,
+                    output_tokens,
+                    estimated_cost_usd,
+                    executor_type,
+                    latency_ms,
                 ],
             )
             .map_err(|e| e.to_string())?;
@@ -186,6 +231,11 @@ impl LocalProductStore {
                 "selected_tier": selected_tier,
                 "risk_level": risk_level,
                 "reserved_cost": reserved_cost,
+                "input_tokens": input_tokens,
+                "output_tokens": output_tokens,
+                "estimated_cost_usd": estimated_cost_usd,
+                "executor_type": executor_type,
+                "latency_ms": latency_ms,
                 "bundle": bundle,
             }))
         })
@@ -196,7 +246,8 @@ impl LocalProductStore {
             let mut stmt = conn
                 .prepare(
                     "SELECT history_id, dispatch_id, created_at, raw_request, request_source,
-                            final_status, selected_tier, risk_level, reserved_cost, bundle_json
+                            final_status, selected_tier, risk_level, reserved_cost, bundle_json,
+                            input_tokens, output_tokens, estimated_cost_usd, executor_type, latency_ms
                      FROM dispatch_history
                      ORDER BY history_id DESC
                      LIMIT ?1",
@@ -217,6 +268,11 @@ impl LocalProductStore {
                         "risk_level": row.get::<_, String>(7)?,
                         "reserved_cost": row.get::<_, f64>(8)?,
                         "bundle": bundle,
+                        "input_tokens": row.get::<_, Option<i64>>(10)?,
+                        "output_tokens": row.get::<_, Option<i64>>(11)?,
+                        "estimated_cost_usd": row.get::<_, Option<f64>>(12)?,
+                        "executor_type": row.get::<_, String>(13)?,
+                        "latency_ms": row.get::<_, Option<i64>>(14)?,
                     }))
                 })
                 .map_err(|e| e.to_string())?;
@@ -514,6 +570,108 @@ impl LocalProductStore {
             "audit": self.audit_events(10_000)?,
             "boundaries": local_boundaries(),
         }))
+    }
+
+    pub fn record_provider_audit_event(
+        &self,
+        event: &crate::provider::ProviderAuditEvent,
+    ) -> Result<(), String> {
+        self.with_conn(|conn| {
+            conn.execute(
+                "INSERT OR IGNORE INTO provider_audit_events
+                 (event_id, dispatch_id, provider_id, event_type,
+                  input_token_count, output_token_count, cost, currency,
+                  latency_ms, error_domain, redaction_status, created_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
+                params![
+                    event.event_id,
+                    event.dispatch_id,
+                    event.provider_id,
+                    event.event_type,
+                    event.input_token_count,
+                    event.output_token_count,
+                    event.cost,
+                    event.currency,
+                    event.latency_ms,
+                    event.error_domain,
+                    event.redaction_status,
+                    event.created_at,
+                ],
+            )
+            .map_err(|e| e.to_string())?;
+            Ok(())
+        })
+    }
+
+    pub fn provider_audit_events(&self, limit: i64) -> Result<Vec<Value>, String> {
+        self.with_conn(|conn| {
+            let mut stmt = conn
+                .prepare(
+                    "SELECT event_id, dispatch_id, provider_id, event_type,
+                            input_token_count, output_token_count, cost, currency,
+                            latency_ms, error_domain, redaction_status, created_at
+                     FROM provider_audit_events
+                     ORDER BY created_at DESC
+                     LIMIT ?1",
+                )
+                .map_err(|e| e.to_string())?;
+            let rows = stmt
+                .query_map(params![limit], |row| {
+                    Ok(json!({
+                        "event_id": row.get::<_, String>(0)?,
+                        "dispatch_id": row.get::<_, String>(1)?,
+                        "provider_id": row.get::<_, String>(2)?,
+                        "event_type": row.get::<_, String>(3)?,
+                        "input_token_count": row.get::<_, Option<i64>>(4)?,
+                        "output_token_count": row.get::<_, Option<i64>>(5)?,
+                        "cost": row.get::<_, Option<f64>>(6)?,
+                        "currency": row.get::<_, Option<String>>(7)?,
+                        "latency_ms": row.get::<_, Option<i64>>(8)?,
+                        "error_domain": row.get::<_, Option<String>>(9)?,
+                        "redaction_status": row.get::<_, String>(10)?,
+                        "created_at": row.get::<_, String>(11)?,
+                    }))
+                })
+                .map_err(|e| e.to_string())?;
+            collect_values(rows)
+        })
+    }
+
+    pub fn provider_audit_events_for_dispatch(
+        &self,
+        dispatch_id: &str,
+    ) -> Result<Vec<Value>, String> {
+        self.with_conn(|conn| {
+            let mut stmt = conn
+                .prepare(
+                    "SELECT event_id, dispatch_id, provider_id, event_type,
+                            input_token_count, output_token_count, cost, currency,
+                            latency_ms, error_domain, redaction_status, created_at
+                     FROM provider_audit_events
+                     WHERE dispatch_id = ?1
+                     ORDER BY created_at DESC",
+                )
+                .map_err(|e| e.to_string())?;
+            let rows = stmt
+                .query_map(params![dispatch_id], |row| {
+                    Ok(json!({
+                        "event_id": row.get::<_, String>(0)?,
+                        "dispatch_id": row.get::<_, String>(1)?,
+                        "provider_id": row.get::<_, String>(2)?,
+                        "event_type": row.get::<_, String>(3)?,
+                        "input_token_count": row.get::<_, Option<i64>>(4)?,
+                        "output_token_count": row.get::<_, Option<i64>>(5)?,
+                        "cost": row.get::<_, Option<f64>>(6)?,
+                        "currency": row.get::<_, Option<String>>(7)?,
+                        "latency_ms": row.get::<_, Option<i64>>(8)?,
+                        "error_domain": row.get::<_, Option<String>>(9)?,
+                        "redaction_status": row.get::<_, String>(10)?,
+                        "created_at": row.get::<_, String>(11)?,
+                    }))
+                })
+                .map_err(|e| e.to_string())?;
+            collect_values(rows)
+        })
     }
 }
 

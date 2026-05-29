@@ -59,6 +59,14 @@ export class AgentControlPlaneClient {
     return this.getJson<Record<string, unknown>>("/api/v1/audit");
   }
 
+  providerHealth(): Promise<Record<string, unknown>> {
+    return this.getJson<Record<string, unknown>>("/api/v1/provider/health");
+  }
+
+  providerAudit(): Promise<Record<string, unknown>> {
+    return this.getJson<Record<string, unknown>>("/api/v1/provider/audit");
+  }
+
   dispatch(request: DispatchRequest): Promise<DispatchBundle> {
     return this.postJson<DispatchBundle>("/api/v1/dispatch", {
       raw_request: request.raw_request,
