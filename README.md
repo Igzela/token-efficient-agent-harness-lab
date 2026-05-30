@@ -27,7 +27,7 @@ This is the primary cutover verification. It checks Rust formatting, clippy, Rus
 ## How To Run Legacy Reference Tests
 
 ```bash
-PYTHONPATH=src uv run python -m unittest discover -s tests
+PYTHONPATH=src uv run --no-project python -m unittest discover -s tests
 cargo test -p engine
 ```
 

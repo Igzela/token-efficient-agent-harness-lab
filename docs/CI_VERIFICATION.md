@@ -24,10 +24,10 @@ This document describes the GitHub Actions CI pipeline that verifies the securit
 
 ```bash
 # Security baseline checker
-uv run python tools/check_security_baseline.py
+uv run --no-project python tools/check_security_baseline.py
 
 # Unit tests
-PYTHONPATH=src uv run python -m unittest discover -s tests
+PYTHONPATH=src uv run --no-project python -m unittest discover -s tests
 
 # Rust engine
 cargo test -p engine
@@ -37,11 +37,11 @@ cd dashboard && bun run lint && bun run typecheck && bun run build && bun run bu
 
 # SDKs
 cd sdk/typescript && bun run build && bun run test
-cd sdk/python && PYTHONPATH=src uv run python -m unittest discover -s tests
+cd sdk/python && PYTHONPATH=src uv run --no-project python -m unittest discover -s tests
 
 # Native runtime without Docker
 cargo build -p engine
-uv run python scripts/smoke_native_runtime.py
+uv run --no-project python scripts/smoke_native_runtime.py
 ```
 
 ## Failure Interpretation

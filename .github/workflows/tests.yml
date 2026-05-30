@@ -17,12 +17,14 @@ jobs:
         uses: actions/checkout@v4
       - name: Set up uv
         uses: astral-sh/setup-uv@v5
+        with:
+          python-version: "3.11"
       - name: Run security baseline checker
-        run: uv run python tools/check_security_baseline.py
+        run: uv run --no-project python tools/check_security_baseline.py
       - name: Run unit tests
-        run: PYTHONPATH=src uv run python -m unittest discover -s tests
+        run: PYTHONPATH=src uv run --no-project python -m unittest discover -s tests
       - name: Run Python SDK tests
-        run: cd sdk/python && PYTHONPATH=src uv run python -m unittest discover -s tests
+        run: cd sdk/python && PYTHONPATH=src uv run --no-project python -m unittest discover -s tests
 
   rust-tests:
     runs-on: ubuntu-latest
@@ -67,12 +69,14 @@ jobs:
         uses: oven-sh/setup-bun@v2
       - name: Set up uv
         uses: astral-sh/setup-uv@v5
+        with:
+          python-version: "3.11"
       - name: Build static dashboard
         run: cd dashboard && bun install --frozen-lockfile && bun run build:static
       - name: Build native engine
         run: cargo build -p engine
       - name: Smoke native runtime
-        run: uv run python scripts/smoke_native_runtime.py
+        run: uv run --no-project python scripts/smoke_native_runtime.py
 
   rust-typescript-cutover:
     runs-on: ubuntu-latest
@@ -85,6 +89,8 @@ jobs:
         uses: oven-sh/setup-bun@v2
       - name: Set up uv
         uses: astral-sh/setup-uv@v5
+        with:
+          python-version: "3.11"
       - name: Verify Rust + TypeScript stack
         run: bash scripts/verify_rust_typescript_stack.sh
 
