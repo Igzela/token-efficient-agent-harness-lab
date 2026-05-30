@@ -22,7 +22,7 @@ The responsible coding agent may choose any of the following without asking for 
 | Language migration | Agent-control-plane migration phases 0-8 are implemented and recorded in `docs/AGENT_CONTROL_PLANE_MIGRATION_CLOSEOUT.md`. Rust + TypeScript cutover is complete: Rust `engine/` is the primary runtime/API/storage/provider-gated control plane, and `dashboard/` plus `sdk/typescript/` are the primary TypeScript surfaces. Python retained as REST SDK and utility scripts only; legacy reference implementation retired. No real workers, target writes, SDK publishing, or cloud production deployment. |
 | Local small-team hardening | Productization Phases 1-7 complete (Provider Safety Gate, Permission Governance, Cost Governance, Data Operations, Native Packaging, Dashboard Controls, Long-Run Hardening). All planned phases done. Keep provider execution default-off and explicit; keep target writes, sandbox/process execution, real workers, and cloud SaaS out of scope. |
 | CLI executor routing | Complexity-based dispatch to Claude Code CLI / Codex CLI implemented. Can extend: interactive session persistence, additional CLI tools, adaptive routing feedback for CLI tiers, CLI-specific execution gates. |
-| Architecture refactor (R-series) | R1 complete: http_server split into module directory. R2 complete: LocalProductStore split into 12-file module directory. Next candidate: R3 (identify next large monolith). Each refactor preserves all public behavior and tests. |
+| Architecture refactor (R-series) | R1 complete: http_server split. R2 complete: LocalProductStore split. R3 complete: task_analyzer split. Next candidate: R4 (app_layer or workflow directory). Each refactor preserves all public behavior and tests. |
 
 ## Local Productization Plan
 

@@ -67,6 +67,7 @@ Master architecture document: `docs/dispatch/DISPATCHER_KERNEL_V0_ARCHITECTURE.m
 - **Rust + TypeScript Cutover**: COMPLETE (`engine/` is the primary runtime/API/storage/provider-gated control plane; `dashboard/` and `sdk/typescript/` are the primary TypeScript surfaces; `scripts/verify_rust_typescript_stack.sh` is the primary cutover verification. Python retained as REST SDK and utility scripts only).
 - **Architecture Refactor R1**: IMPLEMENTED (`engine/src/http_server/` module directory: mod.rs, state.rs, middleware.rs, routes.rs, server_context.rs, handlers/{health,dispatch,team,keys,costs,backups,audit,provider,dashboard,data_ops}). 1140 Rust tests pass.
 - **Architecture Refactor R2**: IMPLEMENTED (`engine/src/storage/local_product_store/` module directory: mod.rs, dispatch.rs, config.rs, team.rs, keys.rs, audit.rs, provider_audit.rs, costs.rs, migrations.rs, integrity.rs, export_import.rs, boundaries.rs). 1140 Rust tests pass.
+- **Architecture Refactor R3**: IMPLEMENTED (`engine/src/task_analyzer/` module directory: mod.rs, rules.rs, classify.rs, risk.rs, scoring.rs). 1140 Rust tests pass.
 
 See `docs/CURRENT_STATUS.md` for detailed phase closeout records.
 
@@ -111,6 +112,7 @@ See `docs/CURRENT_STATUS.md` for full details.
 - **2026-05-30**: Python Legacy Reference Retirement — Removed `src/harness_core/` (58 files), root `tests/` (121 files), `demos/` (2 files), legacy tools (2 files), root `pyproject.toml`. Relocated `test_security_baseline.py` and `test_dashboard_static.py` to `tools/`. Updated CI workflow, handoff script, and all living docs. Python now means SDK + utility scripts only. 0 new Rust tests (1140 total).
 - **2026-05-30**: Architecture Refactor R1 — http_server split. Replaced 2077-line `engine/src/http_server.rs` monolith with `engine/src/http_server/` module directory (16 files): mod.rs, state.rs, middleware.rs, routes.rs, server_context.rs, handlers/{health,dispatch,team,keys,costs,backups,audit,provider,dashboard,data_ops}. Public API unchanged. 1140 Rust tests pass. Commit `f2c5ac3`.
 - **2026-05-30**: Architecture Refactor R2 — local_product_store split. Replaced 1365-line `engine/src/storage/local_product_store.rs` monolith with `engine/src/storage/local_product_store/` module directory (12 files): mod.rs, dispatch.rs, config.rs, team.rs, keys.rs, audit.rs, provider_audit.rs, costs.rs, migrations.rs, integrity.rs, export_import.rs, boundaries.rs. Public API unchanged. 1140 Rust tests pass. Commit `3c9439b`. GPT PASS.
+- **2026-05-30**: Architecture Refactor R3 — task_analyzer split. Replaced 1117-line `engine/src/task_analyzer.rs` monolith with `engine/src/task_analyzer/` module directory (5 files): mod.rs, rules.rs, classify.rs, risk.rs, scoring.rs. Public API unchanged. 1140 Rust tests pass.
 - Previous BLOCK findings (b6d5bc1): HIGH-1 rate limit not wired, HIGH-2 scope enforcement missing, HIGH-3 plugin locks unused
 - Gate 1 addresses: HIGH-1 (rate limiter in ServerContext + _check_rate_limit), HIGH-2 (scope enforcement + AuthorizationDecision + 403/429)
 - Gate 2 addresses: atomic restore, WAL safety, failure-mode coverage
