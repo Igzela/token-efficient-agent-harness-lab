@@ -2,114 +2,116 @@ import type { ApiStatus, LocalDashboardState } from "./types";
 
 const BASE = "";
 
-export async function fetchHealth(): Promise<ApiStatus> {
-  const res = await fetch(`${BASE}/api/v1/health`);
-  if (!res.ok) throw new Error(`Health check failed: ${res.status}`);
+export class ApiError extends Error {
+  status: number;
+  constructor(status: number, message: string) {
+    super(message);
+    this.name = "ApiError";
+    this.status = status;
+  }
+}
+
+export function isAuthError(err: unknown): boolean {
+  return err instanceof ApiError && (err.status === 401 || err.status === 403);
+}
+
+async function fetchJson<T>(url: string, init?: RequestInit): Promise<T> {
+  let res: Response;
+  try {
+    res = await fetch(url, init);
+  } catch {
+    throw new ApiError(0, "Network error — is the engine running?");
+  }
+  if (!res.ok) {
+    throw new ApiError(res.status, `${res.status} ${res.statusText}`);
+  }
   return res.json();
+}
+
+export async function fetchHealth(): Promise<ApiStatus> {
+  return fetchJson<ApiStatus>(`${BASE}/api/v1/health`);
 }
 
 export async function fetchReady(): Promise<ApiStatus> {
-  const res = await fetch(`${BASE}/api/v1/ready`);
-  if (!res.ok) throw new Error(`Ready check failed: ${res.status}`);
-  return res.json();
+  return fetchJson<ApiStatus>(`${BASE}/api/v1/ready`);
 }
 
 export async function fetchDashboard(): Promise<LocalDashboardState> {
-  const res = await fetch(`${BASE}/api/v1/dashboard`);
-  if (!res.ok) throw new Error(`Dashboard state failed: ${res.status}`);
-  return res.json();
+  return fetchJson<LocalDashboardState>(`${BASE}/api/v1/dashboard`);
 }
 
 export async function createApiKey(request: { user_id: string; role: string; scopes: string[]; expires_at?: number }): Promise<Record<string, unknown>> {
-    const res = await fetch(`${BASE}/api/v1/keys`, {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify(request),
-    });
-    if (!res.ok) throw new Error(`createApiKey failed: ${res.status}`);
-    return res.json();
+  return fetchJson<Record<string, unknown>>(`${BASE}/api/v1/keys`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(request),
+  });
 }
 
 export async function revokeApiKey(keyId: string): Promise<Record<string, unknown>> {
-    const res = await fetch(`${BASE}/api/v1/keys/${encodeURIComponent(keyId)}/revoke`, { method: "POST" });
-    if (!res.ok) throw new Error(`revokeApiKey failed: ${res.status}`);
-    return res.json();
+  return fetchJson<Record<string, unknown>>(`${BASE}/api/v1/keys/${encodeURIComponent(keyId)}/revoke`, { method: "POST" });
 }
 
 export async function rotateApiKey(keyId: string): Promise<Record<string, unknown>> {
-    const res = await fetch(`${BASE}/api/v1/keys/${encodeURIComponent(keyId)}/rotate`, { method: "POST" });
-    if (!res.ok) throw new Error(`rotateApiKey failed: ${res.status}`);
-    return res.json();
+  return fetchJson<Record<string, unknown>>(`${BASE}/api/v1/keys/${encodeURIComponent(keyId)}/rotate`, { method: "POST" });
 }
 
 export async function deleteApiKey(keyId: string): Promise<Record<string, unknown>> {
-    const res = await fetch(`${BASE}/api/v1/keys/${encodeURIComponent(keyId)}`, { method: "DELETE" });
-    if (!res.ok) throw new Error(`deleteApiKey failed: ${res.status}`);
-    return res.json();
+  return fetchJson<Record<string, unknown>>(`${BASE}/api/v1/keys/${encodeURIComponent(keyId)}`, { method: "DELETE" });
 }
 
 export async function createTeamMember(request: { user_id: string; display_name: string; role: string }): Promise<Record<string, unknown>> {
-    const res = await fetch(`${BASE}/api/v1/team`, {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify(request),
-    });
-    if (!res.ok) throw new Error(`createTeamMember failed: ${res.status}`);
-    return res.json();
+  return fetchJson<Record<string, unknown>>(`${BASE}/api/v1/team`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(request),
+  });
 }
 
 export async function updateMemberRole(userId: string, role: string): Promise<Record<string, unknown>> {
-    const res = await fetch(`${BASE}/api/v1/team/${encodeURIComponent(userId)}`, {
-        method: "PUT",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ role }),
-    });
-    if (!res.ok) throw new Error(`updateMemberRole failed: ${res.status}`);
-    return res.json();
+  return fetchJson<Record<string, unknown>>(`${BASE}/api/v1/team/${encodeURIComponent(userId)}`, {
+    method: "PUT",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ role }),
+  });
 }
 
 export async function deleteMember(userId: string): Promise<Record<string, unknown>> {
-    const res = await fetch(`${BASE}/api/v1/team/${encodeURIComponent(userId)}`, { method: "DELETE" });
-    if (!res.ok) throw new Error(`deleteMember failed: ${res.status}`);
-    return res.json();
+  return fetchJson<Record<string, unknown>>(`${BASE}/api/v1/team/${encodeURIComponent(userId)}`, { method: "DELETE" });
 }
 
 export async function fetchDispatchDetail(dispatchId: string): Promise<Record<string, unknown>> {
-    const res = await fetch(`${BASE}/api/v1/dispatches/${encodeURIComponent(dispatchId)}`);
-    if (!res.ok) throw new Error(`Dispatch detail failed: ${res.status}`);
-    return res.json();
+  return fetchJson<Record<string, unknown>>(`${BASE}/api/v1/dispatches/${encodeURIComponent(dispatchId)}`);
 }
 
 export async function fetchBackups(): Promise<Record<string, unknown>> {
-    const res = await fetch(`${BASE}/api/v1/backups`);
-    if (!res.ok) throw new Error(`Fetch backups failed: ${res.status}`);
-    return res.json();
+  return fetchJson<Record<string, unknown>>(`${BASE}/api/v1/backups`);
+}
+
+export async function createBackup(): Promise<Record<string, unknown>> {
+  return fetchJson<Record<string, unknown>>(`${BASE}/api/v1/backups`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ confirm_local_backup: true }),
+  });
 }
 
 export async function deleteBackup(backupId: string): Promise<Record<string, unknown>> {
-    const res = await fetch(`${BASE}/api/v1/backups/${encodeURIComponent(backupId)}`, { method: "DELETE" });
-    if (!res.ok) throw new Error(`Delete backup failed: ${res.status}`);
-    return res.json();
+  return fetchJson<Record<string, unknown>>(`${BASE}/api/v1/backups/${encodeURIComponent(backupId)}`, { method: "DELETE" });
 }
 
 export async function restoreBackup(backupId: string): Promise<Record<string, unknown>> {
-    const res = await fetch(`${BASE}/api/v1/backups/${encodeURIComponent(backupId)}/restore`, {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ confirm_restore: true }),
-    });
-    if (!res.ok) throw new Error(`Restore backup failed: ${res.status}`);
-    return res.json();
+  return fetchJson<Record<string, unknown>>(`${BASE}/api/v1/backups/${encodeURIComponent(backupId)}/restore`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ confirm_restore: true }),
+  });
 }
 
 export async function fetchAudit(): Promise<Record<string, unknown>> {
-    const res = await fetch(`${BASE}/api/v1/audit`);
-    if (!res.ok) throw new Error(`Fetch audit failed: ${res.status}`);
-    return res.json();
+  return fetchJson<Record<string, unknown>>(`${BASE}/api/v1/audit`);
 }
 
 export async function fetchProviderHealth(): Promise<Record<string, unknown>> {
-    const res = await fetch(`${BASE}/api/v1/provider/health`);
-    if (!res.ok) throw new Error(`Provider health failed: ${res.status}`);
-    return res.json();
+  return fetchJson<Record<string, unknown>>(`${BASE}/api/v1/provider/health`);
 }

@@ -432,6 +432,11 @@ tbody tr:hover {
   color: var(--muted);
 }
 
+.error-text {
+  color: #c0392b;
+  font-size: 0.875rem;
+}
+
 button {
   background: var(--panel);
   border: 1px solid var(--border);

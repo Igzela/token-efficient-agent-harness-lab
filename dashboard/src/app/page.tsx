@@ -2,7 +2,9 @@
 
 import { useCallback, useEffect, useMemo, useState } from "react";
 import {
+  ApiError,
   createApiKey,
+  createBackup,
   createTeamMember,
   deleteApiKey,
   deleteBackup,
@@ -14,6 +16,7 @@ import {
   fetchHealth,
   fetchProviderHealth,
   fetchReady,
+  isAuthError,
   restoreBackup,
   revokeApiKey,
   rotateApiKey,
@@ -196,13 +199,15 @@ function Dispatches({ dispatches }: { dispatches: LocalDispatchHistory[] }) {
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [detail, setDetail] = useState<Record<string, unknown> | null>(null);
   const [loading, setLoading] = useState(false);
+  const [detailError, setDetailError] = useState<string | null>(null);
 
   function openDetail(id: string) {
     setSelectedId(id);
     setLoading(true);
+    setDetailError(null);
     fetchDispatchDetail(id)
-      .then((r) => setDetail(r.dispatch as Record<string, unknown>))
-      .catch(() => setDetail(null))
+      .then((r) => { setDetail(r.dispatch as Record<string, unknown>); setDetailError(null); })
+      .catch((e) => { setDetail(null); setDetailError(e instanceof Error ? e.message : "Failed to load"); })
       .finally(() => setLoading(false));
   }
 
@@ -220,6 +225,8 @@ function Dispatches({ dispatches }: { dispatches: LocalDispatchHistory[] }) {
         </div>
         {loading ? (
           <p className="muted">Loading dispatch detail...</p>
+        ) : detailError ? (
+          <p className="error-text">{detailError}</p>
         ) : detail ? (
           <DispatchDetail detail={detail} />
         ) : (
@@ -419,6 +426,7 @@ function Team({
   const [keyRole, setKeyRole] = useState("readonly");
   const [keyScopes, setKeyScopes] = useState<string[]>(["dispatch:read"]);
   const [busy, setBusy] = useState(false);
+  const [teamError, setTeamError] = useState<string | null>(null);
   const [confirmAction, setConfirmAction] = useState<{
     type: "deleteMember" | "revokeKey" | "deleteKey" | "rotateKey";
     id: string;
@@ -429,12 +437,15 @@ function Team({
   async function handleCreateMember() {
     if (!userId || !displayName) return;
     setBusy(true);
+    setTeamError(null);
     try {
       await createTeamMember({ user_id: userId, display_name: displayName, role });
       setUserId("");
       setDisplayName("");
       setRole("readonly");
       refresh();
+    } catch (e) {
+      setTeamError(e instanceof Error ? e.message : "Failed to create member");
     } finally {
       setBusy(false);
     }
@@ -442,9 +453,12 @@ function Team({
 
   async function handleUpdateRole(uid: string, newRole: string) {
     setBusy(true);
+    setTeamError(null);
     try {
       await updateMemberRole(uid, newRole);
       refresh();
+    } catch (e) {
+      setTeamError(e instanceof Error ? e.message : "Failed to update role");
     } finally {
       setBusy(false);
     }
@@ -457,6 +471,7 @@ function Team({
   async function doTeamConfirm() {
     if (!confirmAction) return;
     setBusy(true);
+    setTeamError(null);
     try {
       if (confirmAction.type === "deleteMember") {
         await deleteMember(confirmAction.id);
@@ -472,6 +487,8 @@ function Team({
         }
       }
       refresh();
+    } catch (e) {
+      setTeamError(e instanceof Error ? e.message : "Operation failed");
     } finally {
       setBusy(false);
       setConfirmAction(null);
@@ -481,6 +498,7 @@ function Team({
   async function handleCreateKey() {
     if (!keyUserId) return;
     setBusy(true);
+    setTeamError(null);
     try {
       const res = await createApiKey({ user_id: keyUserId, role: keyRole, scopes: keyScopes });
       const rawKey = (res as Record<string, unknown>).raw_key;
@@ -491,6 +509,8 @@ function Team({
       setKeyRole("readonly");
       setKeyScopes(["dispatch:read"]);
       refresh();
+    } catch (e) {
+      setTeamError(e instanceof Error ? e.message : "Failed to create API key");
     } finally {
       setBusy(false);
     }
@@ -523,6 +543,7 @@ function Team({
 
   return (
     <section className="split">
+      {teamError && <p className="error-text" style={{ gridColumn: "1 / -1" }}>{teamError}</p>}
       {confirmAction && (
         <div className="confirm-overlay" onClick={() => setConfirmAction(null)}>
           <div className="confirm-card" onClick={(e) => e.stopPropagation()}>
@@ -761,9 +782,12 @@ function Costs({ dashboard }: { dashboard: LocalDashboardState }) {
 
 function Settings({ dashboard }: { dashboard: LocalDashboardState }) {
   const [providerInfo, setProviderInfo] = useState<Record<string, unknown> | null>(null);
+  const [providerError, setProviderError] = useState<string | null>(null);
 
   useEffect(() => {
-    fetchProviderHealth().then(setProviderInfo).catch(() => {});
+    fetchProviderHealth()
+      .then(setProviderInfo)
+      .catch((e) => setProviderError(e instanceof Error ? e.message : "Failed to load"));
   }, []);
 
   const rows: [string, string | number | boolean | null][] = [
@@ -787,7 +811,9 @@ function Settings({ dashboard }: { dashboard: LocalDashboardState }) {
       </div>
       <div className="card stack">
         <h2>Provider</h2>
-        {providerInfo ? (
+        {providerError ? (
+          <p className="error-text">{providerError}</p>
+        ) : providerInfo ? (
           <>
             <div className="row">
               <span>Provider ID</span>
@@ -880,14 +906,19 @@ function Backups() {
   const [backups, setBackups] = useState<Array<Record<string, unknown>>>([]);
   const [busy, setBusy] = useState(false);
   const [confirm, setConfirm] = useState<ConfirmAction>(null);
+  const [error, setError] = useState<string | null>(null);
 
-  const load = () => fetchBackups().then((r) => setBackups((r.backups as Array<Record<string, unknown>>) ?? [])).catch(() => {});
+  const load = () =>
+    fetchBackups()
+      .then((r) => { setBackups((r.backups as Array<Record<string, unknown>>) ?? []); setError(null); })
+      .catch((e) => setError(e instanceof Error ? e.message : "Failed to load backups"));
 
   useEffect(() => { load(); }, []);
 
   async function doConfirm() {
     if (!confirm) return;
     setBusy(true);
+    setError(null);
     try {
       if (confirm.type === "deleteBackup") {
         await deleteBackup(confirm.backupId);
@@ -895,17 +926,36 @@ function Backups() {
         await restoreBackup(confirm.backupId);
       }
       load();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Operation failed");
     } finally {
       setBusy(false);
       setConfirm(null);
     }
   }
 
+  async function handleCreateBackup() {
+    setBusy(true);
+    setError(null);
+    try {
+      await createBackup();
+      load();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Backup creation failed");
+    } finally {
+      setBusy(false);
+    }
+  }
+
   return (
     <section className="card stack">
-      <h2>Backups</h2>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+        <h2>Backups</h2>
+        <button disabled={busy} onClick={handleCreateBackup} type="button">Create Backup</button>
+      </div>
+      {error && <p className="error-text">{error}</p>}
       <ConfirmDialog action={confirm} onConfirm={doConfirm} onCancel={() => setConfirm(null)} />
-      {backups.length === 0 ? (
+      {backups.length === 0 && !error ? (
         <p className="muted">No local backups</p>
       ) : (
         <table>
@@ -953,17 +1003,19 @@ function Backups() {
 
 function AuditLog() {
   const [events, setEvents] = useState<Array<Record<string, unknown>>>([]);
+  const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
     fetchAudit()
-      .then((r) => setEvents((r.events as Array<Record<string, unknown>>) ?? []))
-      .catch(() => {});
+      .then((r) => { setEvents((r.events as Array<Record<string, unknown>>) ?? []); setError(null); })
+      .catch((e) => setError(e instanceof Error ? e.message : "Failed to load audit events"));
   }, []);
 
   return (
     <section className="card stack">
       <h2>Audit Log</h2>
-      {events.length === 0 ? (
+      {error && <p className="error-text">{error}</p>}
+      {events.length === 0 && !error ? (
         <p className="muted">No audit events</p>
       ) : (
         <table>
