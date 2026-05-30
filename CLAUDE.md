@@ -102,6 +102,7 @@ See `docs/CURRENT_STATUS.md` for full details.
 - **2026-05-30**: Long-Run Hardening (part 1) — SQLite contention tests (6 tests for concurrent writes, reads-during-writes, audit events, deadlock prevention, data integrity) and provider failure matrix tests (21 tests covering retry exhaustion, fallback routing, budget-exhausted mid-retry, non-retryable errors, disabled provider, cost gate blocks, audit trail, governance blocks, backoff strategies). 27 new Rust tests (1113 total).
 - **2026-05-30**: Long-Run Hardening (part 2) — Audit integrity tests (7 tests: mutation audit correctness, ordering monotonicity, persistence across reopen, concurrent writes, integrity report row count). Enhanced smoke_release.sh: tarball structure, install smoke, data preservation, port retry, integrity endpoint. 7 new Rust tests (1120 total).
 - **2026-05-30**: CLI Executor Routing — Complexity-based dispatch to Claude Code CLI / Codex CLI. New `engine/src/cli/` module with `ClaudeCodeCliExecutor`, `CodexCliExecutor`, `MultiExecutor`, `CliConfig`. Env-gated default-on. Complexity threshold 0.7 escalates to CLI tiers. 10 new Rust tests (1130 total).
+- **2026-05-30**: P1 Local-Beta Follow-Up — 7 items: GET /api/v1/keys metadata-only key list endpoint, search/filter/pagination for dispatches and audit, bookmarkable dashboard tabs via URL hash, 60-second auto-refresh with visibility-aware pausing, Docker volume persistence for SQLite, key reveal modal replacing alert(), dashboard split from 1358-line monolith into 12 focused components. 3 new Rust tests (1139 total).
 - Previous BLOCK findings (b6d5bc1): HIGH-1 rate limit not wired, HIGH-2 scope enforcement missing, HIGH-3 plugin locks unused
 - Gate 1 addresses: HIGH-1 (rate limiter in ServerContext + _check_rate_limit), HIGH-2 (scope enforcement + AuthorizationDecision + 403/429)
 - Gate 2 addresses: atomic restore, WAL safety, failure-mode coverage
@@ -120,7 +121,7 @@ All dispatch kernel review gates (6B-1, 6B-2, 6B-3 Gates 1-3, Phase 7 hardening)
 
 - **Framework**: unittest (stdlib), no pytest
 - **Run command**: `PYTHONPATH=src python3 -m unittest discover -s tests`
-- **Current count**: 2089 Python tests + 1130 Rust tests pass, 0 failures (as of 2026-05-30)
+- **Current count**: 2089 Python tests + 1139 Rust tests pass, 0 failures (as of 2026-05-30)
 - **Coverage**: Phase boundary contracts, schema validation, golden fixtures
 - **CI**: GitHub Actions on push/PR to main — runs security baseline + all tests
 - **Test naming**: `tests/test_<module>.py`, one test file per source module
