@@ -43,7 +43,7 @@ Next productization phases:
 
 | Order | Phase | Done When |
 |---|---|---|
-| 7 | Long-Run Hardening | LAN threat model, audit integrity review, SQLite contention tests, provider failure matrix, upgrade smoke, and GitHub Actions Node deprecation cleanup are complete. |
+| 7 | Long-Run Hardening | SQLite contention tests ✓, provider failure matrix ✓. Remaining: audit integrity review, upgrade smoke verification. LAN threat model already exists at `docs/security/THREAT_MODEL.md`. GitHub Actions already clean (Node 22, latest action versions). |
 
 ## Disallowed by Default
 

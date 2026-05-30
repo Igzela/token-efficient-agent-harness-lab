@@ -3,7 +3,8 @@ use engine::provider::audit::{
 };
 use engine::storage::local_product_store::LocalProductStore;
 use serde_json::{json, Value};
-use std::sync::Arc;
+use std::sync::{Arc, Barrier};
+use std::thread;
 use tempfile::tempdir;
 
 fn make_event(event_id: &str, dispatch_id: &str, event_type: &str) -> ProviderAuditEvent {
@@ -623,4 +624,321 @@ fn get_dispatch_returns_latest_when_duplicate_ids() {
     assert_eq!(result["raw_request"], "request-2");
     assert_eq!(result["executor_type"], "provider");
     assert_eq!(result["input_tokens"], 200);
+}
+
+// --- SQLite contention / concurrent-write tests ---
+
+#[test]
+fn concurrent_dispatch_writes_from_multiple_threads() {
+    let dir = tempdir().unwrap();
+    let store = Arc::new(
+        LocalProductStore::new(dir.path().join("test.db")).unwrap(),
+    );
+    let thread_count = 8;
+    let writes_per_thread = 20;
+    let barrier = Arc::new(Barrier::new(thread_count));
+
+    let handles: Vec<_> = (0..thread_count)
+        .map(|t| {
+            let store = store.clone();
+            let barrier = barrier.clone();
+            thread::spawn(move || {
+                barrier.wait();
+                for i in 0..writes_per_thread {
+                    let dispatch_id = format!("disp-t{t}-{i}");
+                    let bundle = make_bundle_with_usage(
+                        &dispatch_id,
+                        "noop",
+                        Some((t * 100 + i) as i64),
+                        None,
+                        None,
+                        None,
+                    );
+                    store
+                        .record_dispatch(
+                            &format!("request-{dispatch_id}"),
+                            "api",
+                            &bundle,
+                            "test-actor",
+                        )
+                        .unwrap();
+                }
+            })
+        })
+        .collect();
+
+    for h in handles {
+        h.join().unwrap();
+    }
+
+    let dispatches = store.list_dispatches(1000).unwrap();
+    assert_eq!(dispatches.len(), thread_count * writes_per_thread);
+}
+
+#[test]
+fn concurrent_reads_during_writes() {
+    let dir = tempdir().unwrap();
+    let store = Arc::new(
+        LocalProductStore::new(dir.path().join("test.db")).unwrap(),
+    );
+
+    let bundle = make_bundle_with_usage("seed", "noop", None, None, None, None);
+    store
+        .record_dispatch("seed-request", "api", &bundle, "actor")
+        .unwrap();
+
+    let thread_count = 6;
+    let barrier = Arc::new(Barrier::new(thread_count));
+    let store_clone = store.clone();
+
+    let writer = {
+        let store = store.clone();
+        let barrier = barrier.clone();
+        thread::spawn(move || {
+            barrier.wait();
+            for i in 0..30 {
+                let bundle = make_bundle_with_usage(
+                    &format!("w-{i}"),
+                    "noop",
+                    None,
+                    None,
+                    None,
+                    None,
+                );
+                store
+                    .record_dispatch(&format!("w-req-{i}"), "api", &bundle, "actor")
+                    .unwrap();
+            }
+        })
+    };
+
+    let readers: Vec<_> = (0..(thread_count - 1))
+        .map(|_| {
+            let store = store_clone.clone();
+            let barrier = barrier.clone();
+            thread::spawn(move || {
+                barrier.wait();
+                for _ in 0..10 {
+                    let _ = store.list_dispatches(100);
+                    let _ = store.cost_summary();
+                    let _ = store.get_dispatch("seed");
+                    thread::yield_now();
+                }
+            })
+        })
+        .collect();
+
+    writer.join().unwrap();
+    for r in readers {
+        r.join().unwrap();
+    }
+
+    let dispatches = store.list_dispatches(1000).unwrap();
+    assert_eq!(dispatches.len(), 31);
+}
+
+#[test]
+fn concurrent_provider_audit_events() {
+    let dir = tempdir().unwrap();
+    let store = Arc::new(
+        LocalProductStore::new(dir.path().join("test.db")).unwrap(),
+    );
+    let thread_count = 6;
+    let events_per_thread = 15;
+    let barrier = Arc::new(Barrier::new(thread_count));
+
+    let handles: Vec<_> = (0..thread_count)
+        .map(|t| {
+            let store = store.clone();
+            let barrier = barrier.clone();
+            thread::spawn(move || {
+                barrier.wait();
+                for i in 0..events_per_thread {
+                    let event = make_event(
+                        &format!("evt-t{t}-{i}"),
+                        &format!("disp-{t}"),
+                        "response_received",
+                    );
+                    store.record_provider_audit_event(&event).unwrap();
+                }
+            })
+        })
+        .collect();
+
+    for h in handles {
+        h.join().unwrap();
+    }
+
+    let events = store.provider_audit_events(1000).unwrap();
+    assert_eq!(events.len(), thread_count * events_per_thread);
+}
+
+#[test]
+fn no_deadlock_under_rapid_lock_contention() {
+    let dir = tempdir().unwrap();
+    let store = Arc::new(
+        LocalProductStore::new(dir.path().join("test.db")).unwrap(),
+    );
+    let thread_count = 12;
+    let ops_per_thread = 50;
+    let barrier = Arc::new(Barrier::new(thread_count));
+
+    let handles: Vec<_> = (0..thread_count)
+        .map(|t| {
+            let store = store.clone();
+            let barrier = barrier.clone();
+            thread::spawn(move || {
+                barrier.wait();
+                for i in 0..ops_per_thread {
+                    if i % 3 == 0 {
+                        let bundle = make_bundle_with_usage(
+                            &format!("deadlock-{t}-{i}"),
+                            "noop",
+                            None,
+                            None,
+                            None,
+                            None,
+                        );
+                        let _ = store.record_dispatch(
+                            &format!("req-{t}-{i}"),
+                            "api",
+                            &bundle,
+                            "actor",
+                        );
+                    } else if i % 3 == 1 {
+                        let _ = store.list_dispatches(100);
+                    } else {
+                        let _ = store.cost_summary();
+                    }
+                }
+            })
+        })
+        .collect();
+
+    for h in handles {
+        h.join().unwrap();
+    }
+
+    let dispatches = store.list_dispatches(10000).unwrap();
+    let expected_writes = thread_count * (ops_per_thread / 3 + if ops_per_thread % 3 > 0 { 1 } else { 0 });
+    assert!(
+        dispatches.len() <= expected_writes,
+        "Got {} dispatches, expected at most {}",
+        dispatches.len(),
+        expected_writes,
+    );
+}
+
+#[test]
+fn data_integrity_after_concurrent_writes() {
+    let dir = tempdir().unwrap();
+    let store = Arc::new(
+        LocalProductStore::new(dir.path().join("test.db")).unwrap(),
+    );
+    let thread_count = 4;
+    let writes_per_thread = 25;
+    let barrier = Arc::new(Barrier::new(thread_count));
+
+    let handles: Vec<_> = (0..thread_count)
+        .map(|t| {
+            let store = store.clone();
+            let barrier = barrier.clone();
+            thread::spawn(move || {
+                barrier.wait();
+                for i in 0..writes_per_thread {
+                    let dispatch_id = format!("integ-t{t}-{i}");
+                    let bundle = make_bundle_with_usage(
+                        &dispatch_id,
+                        "provider",
+                        Some(100),
+                        Some(50),
+                        Some(0.001),
+                        Some(100),
+                    );
+                    store
+                        .record_dispatch(
+                            &format!("request-{dispatch_id}"),
+                            "api",
+                            &bundle,
+                            "actor",
+                        )
+                        .unwrap();
+                }
+            })
+        })
+        .collect();
+
+    for h in handles {
+        h.join().unwrap();
+    }
+
+    let dispatches = store.list_dispatches(1000).unwrap();
+    assert_eq!(dispatches.len(), thread_count * writes_per_thread);
+
+    let summary = store.cost_summary().unwrap();
+    assert_eq!(summary["dispatch_count"], thread_count * writes_per_thread);
+    assert_eq!(
+        summary["total_input_tokens"],
+        (thread_count * writes_per_thread * 100) as i64
+    );
+    assert_eq!(
+        summary["total_output_tokens"],
+        (thread_count * writes_per_thread * 50) as i64
+    );
+
+    for d in &dispatches {
+        assert_eq!(d["executor_type"], "provider");
+        assert_eq!(d["input_tokens"], 100);
+        assert_eq!(d["output_tokens"], 50);
+        assert!(d["dispatch_id"].as_str().unwrap().starts_with("integ-t"));
+    }
+
+    let integrity = store.check_integrity().unwrap();
+    assert_eq!(integrity.status, "ok");
+}
+
+#[test]
+fn concurrent_dispatch_read_by_id() {
+    let dir = tempdir().unwrap();
+    let store = Arc::new(
+        LocalProductStore::new(dir.path().join("test.db")).unwrap(),
+    );
+
+    for i in 0..10 {
+        let bundle = make_bundle_with_usage(
+            &format!("d{i}"),
+            "noop",
+            Some(i),
+            None,
+            None,
+            None,
+        );
+        store
+            .record_dispatch(&format!("req-{i}"), "api", &bundle, "actor")
+            .unwrap();
+    }
+
+    let thread_count = 6;
+    let barrier = Arc::new(Barrier::new(thread_count));
+
+    let handles: Vec<_> = (0..thread_count)
+        .map(|_t| {
+            let store = store.clone();
+            let barrier = barrier.clone();
+            thread::spawn(move || {
+                barrier.wait();
+                for i in 0..10 {
+                    let result = store.get_dispatch(&format!("d{i}")).unwrap();
+                    assert!(result.is_some());
+                    let dispatch = result.unwrap();
+                    assert_eq!(dispatch["dispatch_id"], format!("d{i}"));
+                    assert_eq!(dispatch["input_tokens"], i as i64);
+                }
+            })
+        })
+        .collect();
+
+    for h in handles {
+        h.join().unwrap();
+    }
 }

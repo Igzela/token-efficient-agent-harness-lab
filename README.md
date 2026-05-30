@@ -31,7 +31,7 @@ PYTHONPATH=src python3 -m unittest discover -s tests
 cargo test -p engine
 ```
 
-Current result: 2089 Python tests pass; 1086 Rust tests pass.
+Current result: 2089 Python tests pass; 1113 Rust tests pass.
 
 ## How To Run Without Docker
 

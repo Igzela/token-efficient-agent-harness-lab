@@ -1,11 +1,11 @@
 # Current Status
 
-Last verified: 2026-05-29.
+Last verified: 2026-05-30.
 
 ## Repository State
 
 - Branch: `main` with the Rust + TypeScript agent-control-plane cutover complete. Rust `engine/` is the primary runtime/API/storage/provider-gated control plane; `dashboard/` and `sdk/typescript/` are the primary TypeScript surfaces. Python remains as legacy reference plus the retained Python REST SDK.
-- Tests: **2089 Python pass**, **1086 Rust pass**, 0 failures.
+- Tests: **2089 Python pass**, **1113 Rust pass**, 0 failures.
 - Security baseline: ALL CHECKS PASSED.
 
 ## New Session / Documentation Discipline
@@ -86,6 +86,7 @@ Run `python3 scripts/check_agent_handoff.py` before committing so the handoff su
 | Productization Phase 5 — Native Packaging | **IMPLEMENTED** — `.env.example` with all 16 env vars documented. `scripts/install.sh` installs engine binary + dashboard to `~/.agent-control-plane/`. `scripts/upgrade.sh` swaps binary with permission preservation. `scripts/package-release.sh` builds release binary + static dashboard + assembles tarball. `scripts/smoke_release.sh` extracts tarball, installs, starts engine, verifies health/readiness/dispatch/dashboard. Release artifact: `dist/agent-control-plane-v0.1.0-linux-x86_64.tar.gz` (4 MB). |
 | Productization Phase 6 — Dashboard Controls | **IMPLEMENTED** — Dispatch detail drill-down (click row to see full bundle with analysis/decision/execution/evaluation sections). Backups tab with list/create/restore/delete and confirmation dialogs. Audit log tab with collapsible details. Team tab confirmation dialogs for all destructive actions. Settings tab enhanced with provider health status. New Rust endpoints: `GET /api/v1/dispatches/:dispatch_id`, `GET /api/v1/backups`, `DELETE /api/v1/backups/:backup_id`. `get_dispatch()` on LocalProductStore. 11 new Rust tests (1086 total). 6 new TypeScript SDK methods + 6 tests (13 total). 6 new Python SDK methods + 6 tests (17 total). |
 | Rust + TypeScript Cutover | **COMPLETE** — primary verification is `bash scripts/verify_rust_typescript_stack.sh`, covering Rust fmt/clippy/tests, TypeScript SDK test/build, dashboard lint/typecheck/build/static export, native Rust API + dashboard smoke, and deterministic dispatch smoke. Python is no longer required for the primary local stack, but remains as legacy reference and SDK compatibility. |
+| Productization Phase 7 — Long-Run Hardening (part 1) | **IMPLEMENTED** — SQLite contention tests (6 tests: concurrent dispatch writes, concurrent reads during writes, concurrent audit events, no-deadlock contention, data integrity after concurrent writes, concurrent dispatch read-by-id). Provider failure matrix tests (21 tests: retry exhaustion, fallback routing, budget-exhausted mid-retry, non-retryable errors, disabled provider, cost gate blocks, audit trail on success/failure, governance blocks, backoff strategies, concurrent provider invocations). 27 new Rust tests (1113 total). |
 
 Trial 2 complete evidence chain: [`docs/trials/TRIAL_2_FINAL_STATE_INDEX.md`](trials/TRIAL_2_FINAL_STATE_INDEX.md).
 Trial 3 report: [`docs/trials/TRIAL_3_REPORT.md`](trials/TRIAL_3_REPORT.md).
