@@ -5,7 +5,7 @@ Last verified: 2026-05-30.
 ## Repository State
 
 - Branch: `main` with the Rust + TypeScript agent-control-plane cutover complete. Rust `engine/` is the primary runtime/API/storage/provider-gated control plane; `dashboard/` and `sdk/typescript/` are the primary TypeScript surfaces. Python remains as legacy reference plus the retained Python REST SDK.
-- Tests: **2089 Python pass**, **1136 Rust pass**, 0 failures.
+- Tests: **2089 Python pass**, **1139 Rust pass**, 0 failures.
 - Security baseline: ALL CHECKS PASSED.
 
 ## New Session / Documentation Discipline
