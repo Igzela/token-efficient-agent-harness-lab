@@ -198,3 +198,67 @@ test("restoreBackup sends POST to backups/:id/restore with confirm_restore", asy
   assert.equal(calls[0].init.method, "POST");
   assert.deepEqual(JSON.parse(calls[0].init.body), { confirm_restore: true });
 });
+
+test("dispatch bundle with CLI execution status round-trips", async () => {
+  const bundle = {
+    record: { dispatch_id: "cli-1", final_status: "completed" },
+    analysis: {},
+    decision: {},
+    execution_result: {
+      executor_type: "claude_code_cli",
+      status: "cli_completed",
+      output: "done",
+    },
+    evaluation_result: { status: "pass" },
+  };
+  const { calls, fetchImpl } = captureFetch(bundle);
+  const client = new AgentControlPlaneClient({ baseUrl: "http://127.0.0.1:8080", fetchImpl });
+
+  const result = await client.dispatch({ raw_request: "refactor utils", request_source: "api" });
+
+  assert.equal(result.execution_result.executor_type, "claude_code_cli");
+  assert.equal(result.execution_result.status, "cli_completed");
+  assert.equal(result.record.dispatch_id, "cli-1");
+});
+
+test("dispatch bundle with codex_cli executor type round-trips", async () => {
+  const bundle = {
+    record: { dispatch_id: "cli-2", final_status: "completed" },
+    analysis: {},
+    decision: {},
+    execution_result: {
+      executor_type: "codex_cli",
+      status: "cli_completed",
+      output: "done",
+    },
+    evaluation_result: { status: "pass" },
+  };
+  const { fetchImpl } = captureFetch(bundle);
+  const client = new AgentControlPlaneClient({ baseUrl: "http://127.0.0.1:8080", fetchImpl });
+
+  const result = await client.dispatch({ raw_request: "generate tests", request_source: "cli" });
+
+  assert.equal(result.execution_result.executor_type, "codex_cli");
+  assert.equal(result.execution_result.status, "cli_completed");
+});
+
+test("dispatch bundle with provider_completed status round-trips", async () => {
+  const bundle = {
+    record: { dispatch_id: "prov-1", final_status: "completed" },
+    analysis: {},
+    decision: {},
+    execution_result: {
+      executor_type: "provider",
+      status: "provider_completed",
+      output: "result",
+    },
+    evaluation_result: { status: "pass" },
+  };
+  const { fetchImpl } = captureFetch(bundle);
+  const client = new AgentControlPlaneClient({ baseUrl: "http://127.0.0.1:8080", fetchImpl });
+
+  const result = await client.dispatch({ raw_request: "summarize", request_source: "api" });
+
+  assert.equal(result.execution_result.executor_type, "provider");
+  assert.equal(result.execution_result.status, "provider_completed");
+});
