@@ -475,7 +475,12 @@ async fn api_dispatch(
                 0.0
             };
             if check_cost_gates(&cost_config, reserved, daily_cost).is_err() {
-                let bundle = state.engine.dispatch(&request.raw_request, request_source);
+                let raw = request.raw_request.clone();
+                let src = request_source.to_string();
+                let eng = Arc::clone(&state.engine);
+                let bundle = tokio::task::spawn_blocking(move || eng.dispatch(&raw, &src))
+                    .await
+                    .map_err(|e| internal_error(e.to_string()))?;
                 if let Some(store) = &state.local_store {
                     store
                         .record_dispatch(
@@ -491,7 +496,12 @@ async fn api_dispatch(
         }
     }
 
-    let bundle = state.engine.dispatch(&request.raw_request, request_source);
+    let raw = request.raw_request.clone();
+    let src = request_source.to_string();
+    let eng = Arc::clone(&state.engine);
+    let bundle = tokio::task::spawn_blocking(move || eng.dispatch(&raw, &src))
+        .await
+        .map_err(|e| internal_error(e.to_string()))?;
     if let Some(store) = &state.local_store {
         store
             .record_dispatch(
