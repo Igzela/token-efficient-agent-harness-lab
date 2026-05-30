@@ -8,13 +8,23 @@ Current status: Stage 0-4 complete, Harness App MVP0-MVP8 complete, Trials 0-3 c
 
 **New sessions should start with [docs/SESSION_START_HERE.md](docs/SESSION_START_HERE.md).**
 
-Coding agents may autonomously advance safe repository work inside the documented boundaries. They must keep the smallest necessary handoff surface current after each commit-sized change, then run `uv run python scripts/check_agent_handoff.py` before commit.
+Coding agents may autonomously advance safe repository work inside the documented boundaries. They must keep the smallest necessary handoff surface current after each commit-sized change, then run `uv run --no-project python scripts/check_agent_handoff.py` before commit.
 
 Local-team productization work is tracked in [docs/NEXT_DECISION.md](docs/NEXT_DECISION.md); do not add parallel roadmap documents.
 
 ## What This Project Is Not
 
 This repository is not a cloud production SaaS or autonomous-agent runtime. It does not call real model providers by default, run real agents, isolate work in real sandboxes, spawn production concurrent workers, provide provider failover, write target repositories, or provide hosted deployment. OpenAI-compatible and Anthropic provider adapters exist behind explicit environment configuration for local beta use; CI uses stub/mock paths and does not call real provider APIs. The local dashboard reads app-owned state from the local engine; dangerous local admin API actions require explicit confirmation and audit logging.
+
+## Toolchain
+
+| Layer | Tool | Notes |
+|---|---|---|
+| Node | `.node-version` = 22 | fnm-friendly, not mandatory; CI uses `oven-sh/setup-bun@v2` |
+| JS package manager | **Bun** | Required for dashboard and TypeScript SDK verification |
+| Python runtime | **uv** | `uv run --no-project python ...` for all local Python commands |
+| Python packaging | setuptools (legacy) | `pyproject.toml` at root + `sdk/python/`; no `uv.lock` |
+| Rust | stable toolchain | `cargo test -p engine`, `cargo fmt`, `cargo clippy` |
 
 ## How To Verify The Rust + TypeScript Stack
 

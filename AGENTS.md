@@ -82,7 +82,7 @@ For every autonomous session:
 3. Write or update tests first when behavior changes.
 4. Implement the smallest coherent change and run the relevant verification command.
 5. Update `docs/CURRENT_STATUS.md`, `docs/NEXT_DECISION.md`, `docs/MODULE_MAP.md`, `README.md`, `CLAUDE.md`, and this file when their facts changed.
-6. Run `python3 scripts/check_agent_handoff.py` before commit.
+6. Run `uv run --no-project python scripts/check_agent_handoff.py` before commit (includes toolchain drift guard).
 7. Commit with an English message and push the active branch when the working tree contains only this session's intended changes.
 8. Leave the next session a clear handoff: latest commit, verification run, remaining risk, and next recommended action.
 
@@ -152,7 +152,7 @@ bash scripts/verify_rust_typescript_stack.sh
 
 Legacy Python reference verification:
 
-PYTHONPATH=src python3 -m unittest discover -s tests
+PYTHONPATH=src uv run --no-project python -m unittest discover -s tests
 
 ## Repository Principles
 

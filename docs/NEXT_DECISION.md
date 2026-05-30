@@ -75,5 +75,5 @@ Python reference implementation remains in `src/harness_core/` as legacy referen
 2. Confirm the proposed track is not in the disallowed list above.
 3. Confirm the work has an architecture-book, test, issue, review finding, or documentation-drift basis.
 4. Keep the change commit-sized and run the relevant verification.
-5. Run `python3 scripts/check_agent_handoff.py`.
+5. Run `uv run --no-project python scripts/check_agent_handoff.py` (includes toolchain drift guard).
 6. Update handoff docs before committing and pushing.

@@ -104,6 +104,7 @@ See `docs/CURRENT_STATUS.md` for full details.
 - **2026-05-30**: CLI Executor Routing — Complexity-based dispatch to Claude Code CLI / Codex CLI. New `engine/src/cli/` module with `ClaudeCodeCliExecutor`, `CodexCliExecutor`, `MultiExecutor`, `CliConfig`. Env-gated default-on. Complexity threshold 0.7 escalates to CLI tiers. 10 new Rust tests (1130 total).
 - **2026-05-30**: P1 Local-Beta Follow-Up — 7 items: GET /api/v1/keys metadata-only key list endpoint, search/filter/pagination for dispatches and audit, bookmarkable dashboard tabs via URL hash, 60-second auto-refresh with visibility-aware pausing, Docker volume persistence for SQLite, key reveal modal replacing alert(), dashboard split from 1358-line monolith into 12 focused components. 4 new Rust tests (1140 total).
 - **2026-05-30**: P2 Local-Beta Polish & Type Hardening — CSS design token cleanup (#c0392b → var(--risk), utility classes), TypeScript SDK type hardening (22 new focused response interfaces, 21 methods typed, ExecutorType/ExecutionStatus extended for CLI executors), dashboard component quality (usePaginatedSearch hook, SearchBar, Pagination components), Next.js app polish (loading.tsx, error.tsx, metadata, favicon). 0 new Rust tests (1140 total), 16 SDK tests pass.
+- **2026-05-30**: Toolchain Consolidation & Drift Guard — Standardized all authoritative docs to `uv run --no-project python` (8 stale bare python3 references fixed across 9 files). README toolchain table added. verify_rust_typescript_stack.sh preflight extended (bun/cargo/uv). `scripts/check_toolchain_drift.sh` drift guard added for stale JS/Python toolchain references. Integrated into autonomous closeout workflow. CI already aligned. 0 new Rust tests (1140 total). `uv.lock` intentionally not added.
 - Previous BLOCK findings (b6d5bc1): HIGH-1 rate limit not wired, HIGH-2 scope enforcement missing, HIGH-3 plugin locks unused
 - Gate 1 addresses: HIGH-1 (rate limiter in ServerContext + _check_rate_limit), HIGH-2 (scope enforcement + AuthorizationDecision + 403/429)
 - Gate 2 addresses: atomic restore, WAL safety, failure-mode coverage
@@ -121,7 +122,7 @@ All dispatch kernel review gates (6B-1, 6B-2, 6B-3 Gates 1-3, Phase 7 hardening)
 ## Test Strategy
 
 - **Framework**: unittest (stdlib), no pytest
-- **Run command**: `PYTHONPATH=src python3 -m unittest discover -s tests`
+- **Run command**: `PYTHONPATH=src uv run --no-project python -m unittest discover -s tests`
 - **Current count**: 2089 Python tests + 1140 Rust tests pass, 0 failures (as of 2026-05-30)
 - **Coverage**: Phase boundary contracts, schema validation, golden fixtures
 - **CI**: GitHub Actions on push/PR to main — runs security baseline + all tests
@@ -150,7 +151,7 @@ For each autonomous session:
 1. Inspect `git status --short --branch` and read the session bootstrap docs.
 2. Choose the highest-value safe task from failing verification, documented phase work, concrete review findings, stale handoff docs, or narrowly scoped hardening.
 3. Update or add tests before behavior changes.
-4. Run the relevant verification command, plus `python3 scripts/check_agent_handoff.py`.
+4. Run the relevant verification command, plus `uv run --no-project python scripts/check_agent_handoff.py` (includes toolchain drift guard).
 5. Update the smallest necessary handoff surface before commit: `docs/CURRENT_STATUS.md`, `docs/NEXT_DECISION.md`, `docs/MODULE_MAP.md`, `README.md`, `CLAUDE.md`, and `AGENTS.md` when their facts changed.
 6. Commit in English and push when the working tree only contains this session's intended changes.
 7. Leave the next action, latest commit, verification, and residual risks in the final report.
@@ -164,7 +165,7 @@ This protocol authorizes the coding agent to advance the repository. It does not
 3. **Phase boundaries are sacred**: Phase 1-2 MUST NOT call real providers, execute in sandbox, write to target repos, or start autonomous workers. Current provider execution is an explicit env-gated local beta path and must stay default-off unless a future approved plan changes that boundary.
 4. **When blocked or facing coarse granularity**: Discuss with GPT in the same ChatGPT session used for architecture review. Iterate until both agree, then update the architecture book before implementing.
 5. **Document maintenance**: Keep the authoritative handoff surface current and small. Prefer shortening existing docs or deleting stale planning docs over adding files.
-6. **Autonomous closeout**: Run `python3 scripts/check_agent_handoff.py` before commit. A commit is incomplete if the handoff docs no longer tell the next session what changed, how it was verified, and what should happen next.
+6. **Autonomous closeout**: Run `uv run --no-project python scripts/check_agent_handoff.py` before commit. A commit is incomplete if the handoff docs no longer tell the next session what changed, how it was verified, and what should happen next.
 7. **Single forward plan**: `docs/NEXT_DECISION.md` is the only roadmap / next-steps / productization-plan surface. Do not create parallel planning documents. If the phase order, goals, or done-when criteria change, update `docs/NEXT_DECISION.md` and only the directly affected handoff docs.
 
 ## Documentation Maintenance Rule

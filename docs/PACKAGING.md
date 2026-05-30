@@ -18,7 +18,7 @@ Package-readiness metadata for `token-efficient-agent-harness-lab`. The `pyproje
 Tests run the same way as before:
 
 ```bash
-PYTHONPATH=src python3 -m unittest discover -s tests
+PYTHONPATH=src uv run --no-project python -m unittest discover -s tests
 ```
 
 The `tests/test_packaging_metadata.py` file contains 10 tests validating `pyproject.toml` structure via `tomllib`.

@@ -108,7 +108,7 @@ Before proposing any new track, read `docs/CURRENT_STATUS.md` and `docs/NEXT_DEC
 A session is not complete until it leaves a durable handoff:
 
 1. Relevant tests or verification commands were run and recorded.
-2. `python3 scripts/check_agent_handoff.py` passes.
+2. `uv run --no-project python scripts/check_agent_handoff.py` passes (includes toolchain drift guard).
 3. Handoff docs reflect the current branch, status, test count, stable commits, limitations, and next action.
 4. The commit message is in English and the active branch is pushed when the tree contains only this session's intended changes.
 5. The final report states latest commit, verification, remaining risks, and the next safe action.

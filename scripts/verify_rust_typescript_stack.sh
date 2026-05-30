@@ -15,10 +15,22 @@ cleanup() {
 }
 trap cleanup EXIT
 
-# Preflight: require bun for TypeScript/dashboard verification
+# Preflight: require bun, cargo, and uv
 if ! command -v bun &>/dev/null; then
   echo "ERROR: bun is required but not found in PATH." >&2
   echo "Install: curl -fsSL https://bun.sh/install | bash" >&2
+  exit 1
+fi
+
+if ! command -v cargo &>/dev/null; then
+  echo "ERROR: cargo is required but not found in PATH." >&2
+  echo "Install: https://rustup.rs/" >&2
+  exit 1
+fi
+
+if ! command -v uv &>/dev/null; then
+  echo "ERROR: uv is required but not found in PATH." >&2
+  echo "Install: curl -LsSf https://astral.sh/uv/install.sh | sh" >&2
   exit 1
 fi
 

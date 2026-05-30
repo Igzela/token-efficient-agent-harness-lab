@@ -5,7 +5,7 @@
 Command:
 
 ```bash
-PYTHONPATH=src python3 -m unittest discover -s tests
+PYTHONPATH=src uv run --no-project python -m unittest discover -s tests
 ```
 
 Current result: 914 tests pass.

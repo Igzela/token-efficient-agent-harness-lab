@@ -9,6 +9,7 @@ how the next agent should continue.
 from __future__ import annotations
 
 from pathlib import Path
+import subprocess
 import sys
 
 
@@ -71,6 +72,18 @@ def main() -> int:
         for failure in failures:
             print(f"- {failure}")
         return 1
+
+    drift_guard = ROOT / "scripts" / "check_toolchain_drift.sh"
+    if drift_guard.exists():
+        result = subprocess.run(
+            ["bash", str(drift_guard)],
+            capture_output=True,
+            text=True,
+        )
+        if result.returncode != 0:
+            print("Agent handoff check FAILED — toolchain drift guard:")
+            print(result.stdout.strip())
+            return 1
 
     print("Agent handoff check passed.")
     return 0
