@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   ApiError,
+  clearStoredToken,
   createApiKey,
   createBackup,
   createTeamMember,
@@ -16,10 +17,12 @@ import {
   fetchHealth,
   fetchProviderHealth,
   fetchReady,
+  getStoredToken,
   isAuthError,
   restoreBackup,
   revokeApiKey,
   rotateApiKey,
+  setStoredToken,
   updateMemberRole,
 } from "@/lib/api-client";
 import type { LocalDashboardState, LocalDispatchHistory } from "@/lib/types";
@@ -75,11 +78,84 @@ const emptyDashboard: LocalDashboardState = {
   },
 };
 
+function AuthPanel({
+  status,
+  message,
+  onSaved,
+}: {
+  status: "missing" | "denied" | "offline";
+  message: string;
+  onSaved: () => void;
+}) {
+  const [tokenInput, setTokenInput] = useState(getStoredToken() ?? "");
+
+  function handleSave() {
+    const trimmed = tokenInput.trim();
+    if (trimmed) {
+      setStoredToken(trimmed);
+    } else {
+      clearStoredToken();
+    }
+    onSaved();
+  }
+
+  function handleClear() {
+    setTokenInput("");
+    clearStoredToken();
+    onSaved();
+  }
+
+  const icon = status === "offline" ? "🔌" : "🔑";
+
+  return (
+    <section className="card stack" style={{ maxWidth: 480, margin: "16px auto" }}>
+      <h2>{icon} {status === "offline" ? "Engine Offline" : "Authentication Required"}</h2>
+      <p className="muted">{message}</p>
+      {status !== "offline" && (
+        <>
+          <label style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+            <span style={{ fontSize: "0.875rem" }}>Local API Key</span>
+            <input
+              type="password"
+              value={tokenInput}
+              onChange={(e) => setTokenInput(e.target.value)}
+              placeholder="acp-..."
+              style={{
+                padding: "8px 10px",
+                borderRadius: "var(--radius-sm)",
+                border: "1px solid var(--border)",
+                background: "var(--panel)",
+                color: "var(--ink)",
+              }}
+            />
+          </label>
+          <div style={{ display: "flex", gap: 8, justifyContent: "flex-end" }}>
+            {getStoredToken() && (
+              <button onClick={handleClear} type="button" style={{ color: "#c0392b" }}>
+                Clear Token
+              </button>
+            )}
+            <button onClick={handleSave} type="button" disabled={!tokenInput.trim()}>
+              Save &amp; Retry
+            </button>
+          </div>
+        </>
+      )}
+      {status === "offline" && (
+        <p className="muted">Start the engine and reload this page.</p>
+      )}
+    </section>
+  );
+}
+
 export default function DashboardPage() {
   const [tab, setTab] = useState<Tab>("dispatches");
   const [health, setHealth] = useState("unknown");
   const [ready, setReady] = useState("unknown");
   const [dashboard, setDashboard] = useState<LocalDashboardState>(emptyDashboard);
+  const [authStatus, setAuthStatus] = useState<"ok" | "missing" | "denied" | "offline">("ok");
+  const [authMessage, setAuthMessage] = useState("");
+  const [reloadKey, setReloadKey] = useState(0);
   const [theme, setTheme] = useState<"light" | "dark">(() => {
     if (typeof window === "undefined") return "light";
     const saved = localStorage.getItem("acp-theme");
@@ -99,17 +175,37 @@ export default function DashboardPage() {
     Promise.allSettled([fetchHealth(), fetchReady(), fetchDashboard()]).then(
       ([healthResult, readyResult, dashboardResult]) => {
         if (cancelled) return;
-        setHealth(healthResult.status === "fulfilled" ? healthResult.value.status : "offline");
+        const healthOk = healthResult.status === "fulfilled";
+        const dashOk = dashboardResult.status === "fulfilled";
+        setHealth(healthOk ? healthResult.value.status : "offline");
         setReady(readyResult.status === "fulfilled" ? readyResult.value.status : "offline");
-        if (dashboardResult.status === "fulfilled") {
+        if (dashOk) {
           setDashboard(dashboardResult.value);
+          setAuthStatus("ok");
+          setAuthMessage("");
+        } else {
+          const err = dashboardResult.status === "rejected" ? dashboardResult.reason : null;
+          if (isAuthError(err)) {
+            if (!getStoredToken()) {
+              setAuthStatus("missing");
+              setAuthMessage("This dashboard requires a local API key. Enter it below.");
+            } else {
+              setAuthStatus("denied");
+              setAuthMessage(err.status === 403
+                ? "API key accepted but lacks required scope. Check your key's scopes."
+                : "API key rejected. It may be expired, revoked, or invalid.");
+            }
+          } else if (!healthOk) {
+            setAuthStatus("offline");
+            setAuthMessage("Cannot reach the engine. Is it running?");
+          }
         }
       },
     );
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [reloadKey]);
 
   const routingRows = useMemo(
     () =>
@@ -137,6 +233,14 @@ export default function DashboardPage() {
             </button>
           </div>
         </header>
+
+        {authStatus !== "ok" && (
+          <AuthPanel
+            status={authStatus}
+            message={authMessage}
+            onSaved={() => setReloadKey((k) => k + 1)}
+          />
+        )}
 
         <section className="status-strip" aria-label="Status summary">
           <Metric label="API health" value={health} tone={health === "healthy" ? "ok" : "warn"} />

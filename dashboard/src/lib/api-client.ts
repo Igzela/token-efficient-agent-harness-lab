@@ -1,6 +1,7 @@
 import type { ApiStatus, LocalDashboardState } from "./types";
 
 const BASE = "";
+const TOKEN_KEY = "acp_local_token";
 
 export class ApiError extends Error {
   status: number;
@@ -15,10 +16,34 @@ export function isAuthError(err: unknown): boolean {
   return err instanceof ApiError && (err.status === 401 || err.status === 403);
 }
 
+export function getStoredToken(): string | null {
+  if (typeof window === "undefined") return null;
+  return localStorage.getItem(TOKEN_KEY);
+}
+
+export function setStoredToken(token: string): void {
+  if (typeof window === "undefined") return;
+  localStorage.setItem(TOKEN_KEY, token);
+}
+
+export function clearStoredToken(): void {
+  if (typeof window === "undefined") return;
+  localStorage.removeItem(TOKEN_KEY);
+}
+
+function authHeaders(): Record<string, string> {
+  const token = getStoredToken();
+  if (token) return { Authorization: `Bearer ${token}` };
+  return {};
+}
+
 async function fetchJson<T>(url: string, init?: RequestInit): Promise<T> {
   let res: Response;
   try {
-    res = await fetch(url, init);
+    res = await fetch(url, {
+      ...init,
+      headers: { ...authHeaders(), ...(init?.headers ?? {}) },
+    });
   } catch {
     throw new ApiError(0, "Network error — is the engine running?");
   }
