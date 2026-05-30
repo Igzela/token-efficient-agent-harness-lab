@@ -235,7 +235,7 @@ else
 fi
 
 # Integrity check
-INTEGRITY_CODE=$(curl -sf -o /dev/null -w "%{http_code}" "http://127.0.0.1:${PORT}/api/v1/integrity" 2>/dev/null || echo "000")
+INTEGRITY_CODE=$(curl -sf -o /dev/null -w "%{http_code}" "http://127.0.0.1:${PORT}/api/v1/storage/integrity" 2>/dev/null || echo "000")
 if [[ "${INTEGRITY_CODE}" == "200" ]]; then
     echo "  PASS  Integrity endpoint (${INTEGRITY_CODE})"
     PASS=$((PASS + 1))

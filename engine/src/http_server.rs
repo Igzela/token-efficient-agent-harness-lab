@@ -1998,4 +1998,18 @@ mod tests {
         assert_eq!(config.port, 8080);
         assert_eq!(config.api_prefix, "/api/v1");
     }
+
+    #[test]
+    fn test_openapi_integrity_route_matches_router() {
+        let doc = openapi_document();
+        let paths = doc["paths"].as_object().expect("paths should be an object");
+        assert!(
+            paths.contains_key("/api/v1/storage/integrity"),
+            "OpenAPI document must include /api/v1/storage/integrity to match the axum router registration"
+        );
+        assert!(
+            !paths.contains_key("/api/v1/integrity"),
+            "OpenAPI document must NOT include /api/v1/integrity (the correct path is /api/v1/storage/integrity)"
+        );
+    }
 }
