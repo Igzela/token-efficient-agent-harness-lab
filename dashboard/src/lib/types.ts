@@ -1,4 +1,25 @@
-export type RequestSource = "cli" | "api" | "dashboard" | "agent" | "workflow" | "test_fixture";
+import type {
+  CheckStatus,
+  ConfidenceLabel,
+  DecisionStatus,
+  EvaluationStatus,
+  EvidencePolarity,
+  EvidenceSource,
+  ExecutionStatus,
+  ExecutorType,
+  ExpectedQualityBand,
+  FinalStatus,
+  GateSeverity,
+  ModelTier,
+  QualityRequirement,
+  RequestSource,
+  RiskFlag,
+  RiskLevel,
+  TaskDomain,
+  TaskIntent,
+} from "../../../sdk/typescript/src/generated-wire-types";
+
+export type { RequestSource } from "../../../sdk/typescript/src/generated-wire-types";
 
 export interface DispatchRequest {
   raw_request: string;
@@ -34,10 +55,10 @@ export interface LocalDispatchHistory {
   dispatch_id: string;
   created_at: string;
   raw_request: string;
-  request_source: string;
-  final_status: string;
-  selected_tier: string;
-  risk_level: string;
+  request_source: RequestSource;
+  final_status: FinalStatus;
+  selected_tier: ModelTier;
+  risk_level: RiskLevel;
   reserved_cost: number;
   bundle: DispatchBundle;
 }
@@ -82,7 +103,7 @@ export interface LocalCostSummary {
 }
 
 export interface LocalTierCost {
-  selected_tier: string;
+  selected_tier: ModelTier;
   dispatch_count: number;
   reserved_cost: number;
   estimated_cost_usd: number;
@@ -106,12 +127,12 @@ export interface LocalDispatchCostRow {
   history_id: number;
   dispatch_id: string;
   created_at: string;
-  selected_tier: string;
+  selected_tier: ModelTier;
   reserved_cost: number;
   input_tokens: number;
   output_tokens: number;
   estimated_cost_usd: number;
-  executor_type: string;
+  executor_type: ExecutorType;
   latency_ms: number | null;
 }
 
@@ -142,7 +163,7 @@ export interface DispatchRecord {
   evaluation_result_id: string | null;
   usage_ledger_row_id: string | null;
   budget_reservation_id: string | null;
-  final_status: string;
+  final_status: FinalStatus;
   created_at: string;
   updated_at: string;
 }
@@ -153,9 +174,9 @@ export interface TaskAnalysis {
   raw_request_snapshot: string;
   request_source: RequestSource;
   primary_task_type: string;
-  task_domain: string;
-  task_intent: string;
-  risk_flags: string[];
+  task_domain: TaskDomain;
+  task_intent: TaskIntent;
+  risk_flags: RiskFlag[];
   complexity_score: number;
   cognitive_complexity: number;
   context_complexity: number;
@@ -164,17 +185,17 @@ export interface TaskAnalysis {
   required_capabilities: string[];
   context_budget_estimate: number;
   execution_budget_estimate: number;
-  quality_requirement: string;
-  risk_level: string;
+  quality_requirement: QualityRequirement;
+  risk_level: RiskLevel;
   confidence: number;
-  confidence_label: string;
+  confidence_label: ConfidenceLabel;
   uncertainty_reason: string[];
   safe_default: string;
   escalation_trigger: string | null;
   positive_evidence: Evidence[];
   negative_evidence: Evidence[];
   features_detected: Record<string, unknown>;
-  analysis_method: string;
+  analysis_method: "rule_only";
   created_at: string;
 }
 
@@ -182,8 +203,8 @@ export interface Evidence {
   feature: string;
   text: string;
   span: [number, number];
-  polarity: string;
-  source: string;
+  polarity: EvidencePolarity;
+  source: EvidenceSource;
   rule_id: string | null;
   confidence: number;
   negation_scope: string | null;
@@ -194,9 +215,9 @@ export interface DispatchDecision {
   decision_id: string;
   analysis_id: string;
   analysis_snapshot: Record<string, unknown>;
-  selected_tier: string;
+  selected_tier: ModelTier;
   selected_profile_id: string | null;
-  fallback_tier: string;
+  fallback_tier: ModelTier;
   fallback_profile_id: string | null;
   shadow_routes: ShadowRoute[];
   hard_constraints: string[];
@@ -205,16 +226,16 @@ export interface DispatchDecision {
   max_input_tokens: number;
   max_output_tokens: number;
   routing_reason: string;
-  quality_requirement: string;
-  expected_quality_band: string;
+  quality_requirement: QualityRequirement;
+  expected_quality_band: ExpectedQualityBand;
   confidence: number;
-  confidence_label: string;
+  confidence_label: ConfidenceLabel;
   budget_reservation: BudgetReservation;
   execution_policy: Record<string, unknown>;
   execution_gates: ExecutionGate[];
   routing_mode: string;
   routing_experiment_id: string | null;
-  decision_status: string;
+  decision_status: DecisionStatus;
   created_at: string;
 }
 
@@ -243,7 +264,7 @@ export interface BudgetReservation {
 export interface ExecutionGate {
   gate_id: string;
   gate_type: string;
-  severity: string;
+  severity: GateSeverity;
   reason: string;
   evidence_refs: string[];
   clearance_required: string;
@@ -253,7 +274,7 @@ export interface ExecutionGate {
 }
 
 export interface ShadowRoute {
-  tier: string;
+  tier: ModelTier;
   profile_id: string | null;
   reason: string;
   admission_scope: string;
@@ -262,7 +283,7 @@ export interface ShadowRoute {
 }
 
 export interface RejectedCandidate {
-  tier: string;
+  tier: ModelTier;
   profile_id: string | null;
   reason: string;
   constraint_failed: string | null;
@@ -274,8 +295,8 @@ export interface ExecutionResult {
   result_id: string;
   dispatch_id: string;
   decision_id: string;
-  executor_type: string;
-  status: string;
+  executor_type: ExecutorType;
+  status: ExecutionStatus;
   output: string | null;
   prompt_pack: Record<string, unknown> | null;
   input_tokens: number | null;
@@ -297,7 +318,7 @@ export interface EvaluationResult {
   dispatch_id: string;
   decision_id: string;
   execution_result_id: string;
-  status: string;
+  status: EvaluationStatus;
   checks: EvaluationCheck[];
   quality_score: number | null;
   requires_retry: boolean;
@@ -308,6 +329,6 @@ export interface EvaluationResult {
 export interface EvaluationCheck {
   check_id: string;
   name: string;
-  status: string;
+  status: CheckStatus;
   reason: string;
 }

@@ -3,6 +3,7 @@ WORKDIR /app
 COPY dashboard/package.json dashboard/bun.lock ./
 RUN bun install --frozen-lockfile
 COPY dashboard/ ./
+COPY sdk/typescript/src/generated-wire-types.ts /sdk/typescript/src/generated-wire-types.ts
 ENV NEXT_TELEMETRY_DISABLED=1
 ENV ENGINE_API_URL=http://engine:8080
 RUN bun run build

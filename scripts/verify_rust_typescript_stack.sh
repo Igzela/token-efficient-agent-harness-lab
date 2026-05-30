@@ -36,6 +36,7 @@ fi
 
 cd "${ROOT}"
 
+bash scripts/check_wire_codegen_drift.sh
 cargo fmt --check
 cargo clippy -p engine -- -D warnings
 cargo test -p engine

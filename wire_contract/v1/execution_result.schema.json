@@ -44,7 +44,9 @@
         "noop",
         "mock",
         "manual",
-        "provider"
+        "provider",
+        "claude_code_cli",
+        "codex_cli"
       ]
     },
     "status": {
@@ -55,7 +57,9 @@
         "mock_completed",
         "manual_pending",
         "manual_completed",
-        "failed"
+        "failed",
+        "cli_completed",
+        "provider_completed"
       ]
     },
     "output": {

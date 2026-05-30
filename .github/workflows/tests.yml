@@ -20,6 +20,8 @@ jobs:
         with:
           python-version: "3.11"
           enable-cache: false
+      - name: Check wire codegen drift
+        run: bash scripts/check_wire_codegen_drift.sh
       - name: Run security baseline checker
         run: uv run --no-project python tools/check_security_baseline.py
       - name: Run relocated utility tests

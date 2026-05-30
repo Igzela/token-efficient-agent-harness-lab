@@ -537,7 +537,7 @@ confidence: float
 confidence_label: low | medium | high
 budget_reservation: BudgetReservation
 execution_policy:
-  executor_type: noop | mock | manual | provider
+  executor_type: noop | mock | manual | provider | claude_code_cli | codex_cli
   execution_allowed: bool
   requires_human_review: bool
   max_retries: int
@@ -604,7 +604,9 @@ Orchestrator combining all components.
 | noop | enabled, default | Returns planned/not_executed |
 | mock | enabled, explicit | Deterministic fake output |
 | manual | enabled, explicit | Generates prompt pack for human |
-| provider | reserved enum, disabled | Future: real model calls |
+| provider | explicit env-gated local beta | Provider adapter path remains default-off |
+| claude_code_cli | explicit CLI gate | Claude Code CLI adapter |
+| codex_cli | explicit CLI gate | Codex CLI adapter |
 
 ### 4.15 ExecutionResult Schema
 
@@ -613,8 +615,8 @@ schema_version: "execution_result.v1"
 result_id: str
 dispatch_id: str
 decision_id: str
-executor_type: noop | mock | manual | provider
-status: not_executed | preview_generated | mock_completed | manual_pending | manual_completed | failed
+executor_type: noop | mock | manual | provider | claude_code_cli | codex_cli
+status: not_executed | preview_generated | mock_completed | manual_pending | manual_completed | failed | cli_completed | provider_completed
 output: str | null
 prompt_pack: dict | null
 input_tokens: int | null

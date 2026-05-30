@@ -1,17 +1,17 @@
 # Dispatch Wire Contract v1
 
-Status: Frozen for language-migration preparation.
+Status: Governed v1 compatibility contract.
 
-Purpose: define the semantic JSON contract that Python and Rust implementations must share before the first Rust parity kernel is written.
+Purpose: define the semantic JSON contract shared by the Rust runtime and SDK surfaces.
 
 Machine-readable schemas live in `wire_contract/v1/*.schema.json`.
-Python reference golden fixtures live in `tests/fixtures/dispatch_wire/v1/`.
-The stdlib parity gate is `python3 tests/integration/parity/run.py`.
+Normalized language-migration golden fixtures live in `tests/fixtures/dispatch_wire/v1/`.
+The Rust parity gate is `cargo test -p engine --test dispatch_parity`.
 
 ## Contract Rules
 
 - JSON keys use `snake_case`.
-- Objects include all fields emitted by the current Python `to_dict()` methods.
+- Objects include all fields emitted by the current Rust serializers.
 - Optional values are encoded as `null`, not omitted.
 - Tuples and Python lists are encoded as JSON arrays.
 - Object key order is not semantic. Parity tests should compare parsed JSON after normalizing dynamic IDs and timestamps.
@@ -35,7 +35,7 @@ Compatibility rule: Python callers that omit `schema_version` remain accepted. `
 
 ## TaskAnalysis v1
 
-Source: `TaskAnalysis.to_dict()` in `src/harness_core/dispatch/task_analyzer.py`.
+Source: `TaskAnalysis` in `engine/src/task_analyzer/mod.rs`.
 
 Required object fields:
 
@@ -85,7 +85,7 @@ negation_scope: string | null
 
 ## DispatchDecision v1
 
-Source: `DispatchDecision.to_dict()` in `src/harness_core/dispatch/dispatch_decision.py`.
+Source: `DispatchDecision` in `engine/src/dispatch_decision.rs`.
 
 Required object fields:
 
@@ -150,7 +150,7 @@ expires_at: string | null
 
 ## ExecutionResult v1
 
-Source: `ExecutionResult.to_dict()` in `src/harness_core/dispatch/executor_adapter.py`.
+Source: `ExecutionResult` in `engine/src/executor_adapter.rs`.
 
 Required object fields:
 
@@ -159,8 +159,8 @@ schema_version: "execution_result.v1"
 result_id: string
 dispatch_id: string
 decision_id: string
-executor_type: "noop" | "mock" | "manual" | "provider"
-status: enum
+executor_type: "noop" | "mock" | "manual" | "provider" | "claude_code_cli" | "codex_cli"
+status: "not_executed" | "preview_generated" | "mock_completed" | "manual_pending" | "manual_completed" | "failed" | "cli_completed" | "provider_completed"
 output: string | null
 prompt_pack: object | null
 input_tokens: integer | null
@@ -178,7 +178,7 @@ created_at: string
 
 ## EvaluationResult v1
 
-Source: `EvaluationResult.to_dict()` in `src/harness_core/dispatch/evaluation_stub.py`.
+Source: `EvaluationResult` in `engine/src/evaluation_stub.rs`.
 
 Required object fields:
 

@@ -83,6 +83,18 @@ def main() -> int:
             print(result.stdout.strip())
             return 1
 
+    wire_codegen_guard = ROOT / "scripts" / "check_wire_codegen_drift.sh"
+    if wire_codegen_guard.exists():
+        result = subprocess.run(
+            ["bash", str(wire_codegen_guard)],
+            capture_output=True,
+            text=True,
+        )
+        if result.returncode != 0:
+            print("Agent handoff check FAILED — wire codegen drift guard:")
+            print(result.stdout.strip())
+            return 1
+
     print("Agent handoff check passed.")
     return 0
 

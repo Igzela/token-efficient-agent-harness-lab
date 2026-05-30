@@ -3,12 +3,14 @@
 
 from __future__ import annotations
 
+import argparse
 import json
 from pathlib import Path
+from typing import Any
 
 ROOT = Path(__file__).resolve().parents[1]
 SCHEMA_DIR = ROOT / "wire_contract" / "v1"
-TS_OUT = ROOT / "sdk" / "typescript" / "src" / "wire-types.ts"
+TS_OUT = ROOT / "sdk" / "typescript" / "src" / "generated-wire-types.ts"
 PY_OUT = ROOT / "sdk" / "python" / "src" / "agent_control_plane_sdk" / "wire_types.py"
 RUST_OUT = ROOT / "engine" / "src" / "wire_types.rs"
 
@@ -38,47 +40,120 @@ def py_literal(values: list[str]) -> str:
     return "Literal[" + ", ".join('"' + v + '"' for v in values) + "]"
 
 
+def schema_enum(schemas: dict[str, dict], name: str, *path: str) -> list[str]:
+    value: Any = schemas[name]
+    for segment in path:
+        value = value[segment]
+    return value["enum"]
+
+
+def enum_values(schemas: dict[str, dict]) -> dict[str, list[str]]:
+    return {
+        "request_sources": schema_enum(
+            schemas, "dispatch_request.schema.json", "properties", "request_source"
+        ),
+        "model_tiers": schema_enum(
+            schemas, "dispatch_decision.schema.json", "$defs", "model_tier"
+        ),
+        "task_domains": schema_enum(
+            schemas, "task_analysis.schema.json", "properties", "task_domain"
+        ),
+        "task_intents": schema_enum(
+            schemas, "task_analysis.schema.json", "properties", "task_intent"
+        ),
+        "risk_flags": schema_enum(
+            schemas, "task_analysis.schema.json", "properties", "risk_flags", "items"
+        ),
+        "quality_reqs": schema_enum(
+            schemas, "task_analysis.schema.json", "properties", "quality_requirement"
+        ),
+        "risk_levels": schema_enum(
+            schemas, "task_analysis.schema.json", "properties", "risk_level"
+        ),
+        "confidence_labels": schema_enum(
+            schemas, "task_analysis.schema.json", "properties", "confidence_label"
+        ),
+        "evidence_polarities": schema_enum(
+            schemas,
+            "task_analysis.schema.json",
+            "$defs",
+            "evidence",
+            "properties",
+            "polarity",
+        ),
+        "evidence_sources": schema_enum(
+            schemas,
+            "task_analysis.schema.json",
+            "$defs",
+            "evidence",
+            "properties",
+            "source",
+        ),
+        "expected_quality_bands": schema_enum(
+            schemas, "dispatch_decision.schema.json", "properties", "expected_quality_band"
+        ),
+        "decision_statuses": schema_enum(
+            schemas, "dispatch_decision.schema.json", "properties", "decision_status"
+        ),
+        "gate_severities": schema_enum(
+            schemas,
+            "dispatch_decision.schema.json",
+            "$defs",
+            "execution_gate",
+            "properties",
+            "severity",
+        ),
+        "executor_types": schema_enum(
+            schemas, "execution_result.schema.json", "properties", "executor_type"
+        ),
+        "execution_statuses": schema_enum(
+            schemas, "execution_result.schema.json", "properties", "status"
+        ),
+        "evaluation_statuses": schema_enum(
+            schemas, "evaluation_result.schema.json", "properties", "status"
+        ),
+        "check_statuses": schema_enum(
+            schemas,
+            "evaluation_result.schema.json",
+            "$defs",
+            "evaluation_check",
+            "properties",
+            "status",
+        ),
+        "final_statuses": schema_enum(
+            schemas,
+            "dispatch_bundle.schema.json",
+            "$defs",
+            "dispatch_record",
+            "properties",
+            "final_status",
+        ),
+    }
+
+
 def render_ts(schemas: dict[str, dict]) -> str:
     lines: list[str] = []
+    enums = enum_values(schemas)
 
-    request_sources = schemas["dispatch_request.schema.json"]["properties"]["request_source"]["enum"]
-    model_tiers = ["cheap_executor", "balanced_worker", "strong_planner", "verifier", "advisor"]
-    task_domains = ["code", "docs", "config", "infra", "math", "architecture", "repo_ops", "governance", "other"]
-    task_intents = ["generate", "review", "debug", "summarize", "audit", "plan", "refactor", "compare", "explain", "classify"]
-    risk_flags = ["target_write", "provider_call", "sandbox_execution", "deployment", "secret_handling", "destructive_operation", "long_context", "high_uncertainty"]
-    quality_reqs = ["draft", "standard", "high", "critical"]
-    risk_levels = ["low", "medium", "high", "critical"]
-    confidence_labels = ["low", "medium", "high"]
-    evidence_polarities = ["positive", "negative"]
-    evidence_sources = ["raw_request", "repo_context", "user_constraints", "target_metadata"]
-    expected_quality_bands = ["low", "medium", "high", "unknown"]
-    decision_statuses = ["decided", "needs_approval", "blocked", "diagnostic_only"]
-    gate_severities = ["info", "warning", "block", "critical"]
-    executor_types = ["noop", "mock", "manual", "provider"]
-    execution_statuses = ["not_executed", "preview_generated", "mock_completed", "manual_pending", "manual_completed", "failed"]
-    evaluation_statuses = ["pass", "fail", "needs_human_review", "not_evaluated"]
-    check_statuses = ["pass", "fail", "warning", "skipped"]
-    final_statuses = ["dispatched", "executing", "completed", "failed", "escalated", "cancelled", "not_executed", "manual_pending"]
-
-    lines.append("type RequestSource = " + ts_union(request_sources) + ";")
+    lines.append("export type RequestSource = " + ts_union(enums["request_sources"]) + ";")
     lines.append("")
-    lines.append("type ModelTier = " + ts_union(model_tiers) + ";")
-    lines.append("type TaskDomain = " + ts_union(task_domains) + ";")
-    lines.append("type TaskIntent = " + ts_union(task_intents) + ";")
-    lines.append("type RiskFlag = " + ts_union(risk_flags) + ";")
-    lines.append("type QualityRequirement = " + ts_union(quality_reqs) + ";")
-    lines.append("type RiskLevel = " + ts_union(risk_levels) + ";")
-    lines.append("type ConfidenceLabel = " + ts_union(confidence_labels) + ";")
-    lines.append("type EvidencePolarity = " + ts_union(evidence_polarities) + ";")
-    lines.append("type EvidenceSource = " + ts_union(evidence_sources) + ";")
-    lines.append("type ExpectedQualityBand = " + ts_union(expected_quality_bands) + ";")
-    lines.append("type DecisionStatus = " + ts_union(decision_statuses) + ";")
-    lines.append("type GateSeverity = " + ts_union(gate_severities) + ";")
-    lines.append("type ExecutorType = " + ts_union(executor_types) + ";")
-    lines.append("type ExecutionStatus = " + ts_union(execution_statuses) + ";")
-    lines.append("type EvaluationStatus = " + ts_union(evaluation_statuses) + ";")
-    lines.append("type CheckStatus = " + ts_union(check_statuses) + ";")
-    lines.append("type FinalStatus = " + ts_union(final_statuses) + ";")
+    lines.append("export type ModelTier = " + ts_union(enums["model_tiers"]) + ";")
+    lines.append("export type TaskDomain = " + ts_union(enums["task_domains"]) + ";")
+    lines.append("export type TaskIntent = " + ts_union(enums["task_intents"]) + ";")
+    lines.append("export type RiskFlag = " + ts_union(enums["risk_flags"]) + ";")
+    lines.append("export type QualityRequirement = " + ts_union(enums["quality_reqs"]) + ";")
+    lines.append("export type RiskLevel = " + ts_union(enums["risk_levels"]) + ";")
+    lines.append("export type ConfidenceLabel = " + ts_union(enums["confidence_labels"]) + ";")
+    lines.append("export type EvidencePolarity = " + ts_union(enums["evidence_polarities"]) + ";")
+    lines.append("export type EvidenceSource = " + ts_union(enums["evidence_sources"]) + ";")
+    lines.append("export type ExpectedQualityBand = " + ts_union(enums["expected_quality_bands"]) + ";")
+    lines.append("export type DecisionStatus = " + ts_union(enums["decision_statuses"]) + ";")
+    lines.append("export type GateSeverity = " + ts_union(enums["gate_severities"]) + ";")
+    lines.append("export type ExecutorType = " + ts_union(enums["executor_types"]) + ";")
+    lines.append("export type ExecutionStatus = " + ts_union(enums["execution_statuses"]) + ";")
+    lines.append("export type EvaluationStatus = " + ts_union(enums["evaluation_statuses"]) + ";")
+    lines.append("export type CheckStatus = " + ts_union(enums["check_statuses"]) + ";")
+    lines.append("export type FinalStatus = " + ts_union(enums["final_statuses"]) + ";")
     lines.append("")
 
     interfaces = [
@@ -95,7 +170,6 @@ def render_ts(schemas: dict[str, dict]) -> str:
         ("DispatchRecord", ['schema_version: "dispatch_record.v1";', "dispatch_id: string;", "request_snapshot: string;", "task_analysis_id: string;", "decision_id: string;", "execution_result_id: string | null;", "evaluation_result_id: string | null;", "usage_ledger_row_id: string | null;", "budget_reservation_id: string | null;", "final_status: FinalStatus;", "created_at: string;", "updated_at: string;"]),
         ("DispatchBundle", ["record: DispatchRecord;", "analysis: TaskAnalysis;", "decision: DispatchDecision;", "execution_result: ExecutionResult;", "evaluation_result: EvaluationResult;"]),
         ("DispatchRequest", ['schema_version?: "dispatch_request.v1";', "raw_request: string;", "request_source: RequestSource;"]),
-        ("ApiStatus", ['schema_version: "axum_api.v1";', "status: string;", "tenant_id?: string;"]),
     ]
 
     for name, fields in interfaces:
@@ -117,44 +191,27 @@ def render_python(schemas: dict[str, dict]) -> str:
     lines.append("from typing import Any, Literal, TypedDict")
     lines.append("")
 
-    request_sources = schemas["dispatch_request.schema.json"]["properties"]["request_source"]["enum"]
-    model_tiers = ["cheap_executor", "balanced_worker", "strong_planner", "verifier", "advisor"]
-    task_domains = ["code", "docs", "config", "infra", "math", "architecture", "repo_ops", "governance", "other"]
-    task_intents = ["generate", "review", "debug", "summarize", "audit", "plan", "refactor", "compare", "explain", "classify"]
-    risk_flags = ["target_write", "provider_call", "sandbox_execution", "deployment", "secret_handling", "destructive_operation", "long_context", "high_uncertainty"]
-    quality_reqs = ["draft", "standard", "high", "critical"]
-    risk_levels = ["low", "medium", "high", "critical"]
-    confidence_labels = ["low", "medium", "high"]
-    evidence_polarities = ["positive", "negative"]
-    evidence_sources = ["raw_request", "repo_context", "user_constraints", "target_metadata"]
-    expected_quality_bands = ["low", "medium", "high", "unknown"]
-    decision_statuses = ["decided", "needs_approval", "blocked", "diagnostic_only"]
-    gate_severities = ["info", "warning", "block", "critical"]
-    executor_types = ["noop", "mock", "manual", "provider"]
-    execution_statuses = ["not_executed", "preview_generated", "mock_completed", "manual_pending", "manual_completed", "failed"]
-    evaluation_statuses = ["pass", "fail", "needs_human_review", "not_evaluated"]
-    check_statuses = ["pass", "fail", "warning", "skipped"]
-    final_statuses = ["dispatched", "executing", "completed", "failed", "escalated", "cancelled", "not_executed", "manual_pending"]
+    enums = enum_values(schemas)
 
-    lines.append("RequestSource = " + py_literal(request_sources))
+    lines.append("RequestSource = " + py_literal(enums["request_sources"]))
     lines.append("")
-    lines.append("ModelTier = " + py_literal(model_tiers))
-    lines.append("TaskDomain = " + py_literal(task_domains))
-    lines.append("TaskIntent = " + py_literal(task_intents))
-    lines.append("RiskFlag = " + py_literal(risk_flags))
-    lines.append("QualityRequirement = " + py_literal(quality_reqs))
-    lines.append("RiskLevel = " + py_literal(risk_levels))
-    lines.append("ConfidenceLabel = " + py_literal(confidence_labels))
-    lines.append("EvidencePolarity = " + py_literal(evidence_polarities))
-    lines.append("EvidenceSource = " + py_literal(evidence_sources))
-    lines.append("ExpectedQualityBand = " + py_literal(expected_quality_bands))
-    lines.append("DecisionStatus = " + py_literal(decision_statuses))
-    lines.append("GateSeverity = " + py_literal(gate_severities))
-    lines.append("ExecutorType = " + py_literal(executor_types))
-    lines.append("ExecutionStatus = " + py_literal(execution_statuses))
-    lines.append("EvaluationStatus = " + py_literal(evaluation_statuses))
-    lines.append("CheckStatus = " + py_literal(check_statuses))
-    lines.append("FinalStatus = " + py_literal(final_statuses))
+    lines.append("ModelTier = " + py_literal(enums["model_tiers"]))
+    lines.append("TaskDomain = " + py_literal(enums["task_domains"]))
+    lines.append("TaskIntent = " + py_literal(enums["task_intents"]))
+    lines.append("RiskFlag = " + py_literal(enums["risk_flags"]))
+    lines.append("QualityRequirement = " + py_literal(enums["quality_reqs"]))
+    lines.append("RiskLevel = " + py_literal(enums["risk_levels"]))
+    lines.append("ConfidenceLabel = " + py_literal(enums["confidence_labels"]))
+    lines.append("EvidencePolarity = " + py_literal(enums["evidence_polarities"]))
+    lines.append("EvidenceSource = " + py_literal(enums["evidence_sources"]))
+    lines.append("ExpectedQualityBand = " + py_literal(enums["expected_quality_bands"]))
+    lines.append("DecisionStatus = " + py_literal(enums["decision_statuses"]))
+    lines.append("GateSeverity = " + py_literal(enums["gate_severities"]))
+    lines.append("ExecutorType = " + py_literal(enums["executor_types"]))
+    lines.append("ExecutionStatus = " + py_literal(enums["execution_statuses"]))
+    lines.append("EvaluationStatus = " + py_literal(enums["evaluation_statuses"]))
+    lines.append("CheckStatus = " + py_literal(enums["check_statuses"]))
+    lines.append("FinalStatus = " + py_literal(enums["final_statuses"]))
     lines.append("")
 
     lines.append("@dataclass(frozen=True)")
@@ -184,6 +241,11 @@ def render_python(schemas: dict[str, dict]) -> str:
         ("EvaluationResult", [("schema_version", 'Literal["evaluation_result.v1"]'), ("evaluation_id", "str"), ("dispatch_id", "str"), ("decision_id", "str"), ("execution_result_id", "str"), ("status", "EvaluationStatus"), ("checks", "list[EvaluationCheck]"), ("quality_score", "float | None"), ("requires_retry", "bool"), ("retry_reason", "str | None"), ("created_at", "str")]),
         ("DispatchRecord", [("schema_version", 'Literal["dispatch_record.v1"]'), ("dispatch_id", "str"), ("request_snapshot", "str"), ("task_analysis_id", "str"), ("decision_id", "str"), ("execution_result_id", "str | None"), ("evaluation_result_id", "str | None"), ("usage_ledger_row_id", "str | None"), ("budget_reservation_id", "str | None"), ("final_status", "FinalStatus"), ("created_at", "str"), ("updated_at", "str")]),
         ("DispatchBundle", [("record", "DispatchRecord"), ("analysis", "TaskAnalysis"), ("decision", "DispatchDecision"), ("execution_result", "ExecutionResult"), ("evaluation_result", "EvaluationResult")]),
+        ("LocalTierCost", [("selected_tier", "str"), ("dispatch_count", "int"), ("reserved_cost", "float"), ("estimated_cost_usd", "float"), ("input_tokens", "int"), ("output_tokens", "int")]),
+        ("LocalDailyCost", [("date", "str"), ("dispatch_count", "int"), ("reserved_cost", "float"), ("estimated_cost_usd", "float")]),
+        ("LocalCostSummary", [("schema_version", 'Literal["local_cost_summary.v2"]'), ("currency", "str"), ("dispatch_count", "int"), ("total_reserved_cost", "float"), ("total_estimated_cost_usd", "float"), ("total_input_tokens", "int"), ("total_output_tokens", "int"), ("cost_utilization", "float"), ("by_tier", "list[LocalTierCost]"), ("daily", "list[LocalDailyCost]")]),
+        ("LocalDispatchCostRow", [("history_id", "int"), ("dispatch_id", "str"), ("created_at", "str"), ("selected_tier", "str"), ("reserved_cost", "float"), ("input_tokens", "int"), ("output_tokens", "int"), ("estimated_cost_usd", "float"), ("executor_type", "str"), ("latency_ms", "int | None")]),
+        ("LocalDispatchCostDetail", [("schema_version", 'Literal["local_dispatch_cost_detail.v1"]'), ("dispatches", "list[LocalDispatchCostRow]")]),
         ("ApiStatus", [("schema_version", 'Literal["axum_api.v1"]'), ("status", "str"), ("tenant_id", "str")]),
     ]
 
@@ -253,22 +315,37 @@ def render_rust(schemas: dict[str, dict]) -> str:
     return "\n".join(lines)
 
 
+def write_or_check(path: Path, content: str, check: bool) -> bool:
+    relative_path = path.relative_to(ROOT)
+    if check:
+        if not path.exists() or path.read_text(encoding="utf-8") != content:
+            print(f"drift detected: {relative_path}")
+            return False
+        print(f"checked {relative_path}")
+        return True
+
+    path.write_text(content, encoding="utf-8")
+    print(f"wrote {relative_path} ({len(content)} bytes)")
+    return True
+
+
 def main() -> int:
+    parser = argparse.ArgumentParser()
+    parser.add_argument(
+        "--check",
+        action="store_true",
+        help="fail instead of writing when generated outputs differ",
+    )
+    args = parser.parse_args()
     schemas = load_all_schemas()
 
-    ts_out = render_ts(schemas)
-    TS_OUT.write_text(ts_out, encoding="utf-8")
-    print(f"wrote {TS_OUT.relative_to(ROOT)} ({len(ts_out)} bytes)")
-
-    py_out = render_python(schemas)
-    PY_OUT.write_text(py_out, encoding="utf-8")
-    print(f"wrote {PY_OUT.relative_to(ROOT)} ({len(py_out)} bytes)")
-
-    rust_out = render_rust(schemas)
-    RUST_OUT.write_text(rust_out, encoding="utf-8")
-    print(f"wrote {RUST_OUT.relative_to(ROOT)} ({len(rust_out)} bytes)")
-
-    return 0
+    outputs = [
+        (TS_OUT, render_ts(schemas)),
+        (PY_OUT, render_python(schemas)),
+        (RUST_OUT, render_rust(schemas)),
+    ]
+    results = [write_or_check(path, content, args.check) for path, content in outputs]
+    return 0 if all(results) else 1
 
 
 if __name__ == "__main__":

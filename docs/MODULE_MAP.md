@@ -9,7 +9,8 @@ The legacy Python reference implementation (`src/harness_core/`) and its test su
 | `engine/src/runtime.rs` | Language Migration Phase 1 | Deterministic Rust fixture runtime for stable timestamps and IDs. | `FixtureRuntime`, `FIXTURE_TIMESTAMP` | `engine/tests/dispatch_parity.rs` |
 | `engine/src/event_schema.rs` | Language Migration Phase 1 | Rust event.v1 validation, canonical JSON, and stable idempotency hash helpers. | `validate_event`, `canonical_event_json`, `stable_idempotency_hash` | `engine/tests/dispatch_parity.rs` |
 | `engine/src/task_analyzer/` | Language Migration Phase 1 + Architecture Refactor R3 | Rust rule-based task analyzer module directory. `mod.rs` owns `TaskAnalysis`, `RuleBasedTaskAnalyzer`, `analyze()`. `rules.rs` static keyword/phrase/multiplier maps. `classify.rs` domain/intent classification. `risk.rs` risk flag detection and negation. `scoring.rs` complexity, budgets, confidence, risk level, quality, escalation, capabilities, features. | `RuleBasedTaskAnalyzer`, `TaskAnalysis`, `TASK_ANALYSIS_SCHEMA_VERSION`, `analyze` | `engine/tests/dispatch_parity.rs` |
-| `engine/src/dispatch_decision.rs` | Language Migration Phase 1 | Rust dispatch decision schema structs used by the parity engine. | `DispatchDecision`, `BudgetReservation`, `ExecutionGate`, `build_dispatch_bundle` | `engine/tests/dispatch_parity.rs` |
+| `engine/src/dispatch_decision.rs` | Language Migration Phase 1 | Rust dispatch decision schema structs used by the parity engine. Split deferred pending wire/type governance follow-up. | `DispatchDecision`, `BudgetReservation`, `ExecutionGate`, `build_dispatch_bundle` | `engine/tests/dispatch_parity.rs` |
+| `engine/src/app_layer/` | Dormant language-migration parity reference | Dormant/unwired parity code retained for reference; not part of the active runtime. Future work must explicitly decide whether to wire, rewrite, or delete it. | Module-local parity types only | Inline module tests |
 | `engine/src/model_selector.rs` | Language Migration Phase 2 | Rust model-tier selector with static routing policy, risk escalation, fallback, shadow routes, and rejected candidates. | `DispatchRoutingPolicy`, `ModelSelector`, `ModelSelection` | `engine/tests/dispatch_parity.rs` |
 | `engine/src/budget_manager.rs` | Language Migration Phase 2 | Rust pre-execution token/cost budget reservation manager. | `BudgetManager` | `engine/tests/dispatch_parity.rs` |
 | `engine/src/executor_adapter.rs` | Language Migration Phase 2 | Rust executor abstraction with default noop executor; does not call providers. | `Executor`, `NoopExecutor`, `ExecutionResult` | `engine/tests/dispatch_parity.rs` |
@@ -30,24 +31,25 @@ The legacy Python reference implementation (`src/harness_core/`) and its test su
 
 | Module | Stage | Purpose | Main public APIs | Related tests |
 | --- | --- | --- | --- | --- |
-| `sdk/typescript/` | Agent-Control-Plane Phase 5 + Local Small-Team Productization + Dashboard Controls | TypeScript REST SDK package. | `AgentControlPlaneClient`, generated wire types | `bun run build`, `bun run test`, `npm pack --dry-run` |
+| `sdk/typescript/` | Agent-Control-Plane Phase 5 + Local Small-Team Productization + Dashboard Controls + Post-R7 Wire/Type Governance | TypeScript REST SDK package. `generated-wire-types.ts` is codegen-owned, `api-types.ts` is hand-maintained, and `wire-types.ts` preserves the public re-export path. | `AgentControlPlaneClient`, generated wire types, local API types | `bun run build`, `bun run test`, `npm pack --dry-run` |
 | `sdk/python/` | Agent-Control-Plane Phase 5 + Local Small-Team Productization + Dashboard Controls | Python REST SDK package. | `AgentControlPlaneClient`, generated wire types | `cd sdk/python && PYTHONPATH=src uv run --no-project python -m unittest discover -s tests` |
-| `dashboard/` | Agent-Control-Plane Phase 6 + Local Small-Team Productization + Dashboard Controls | Next.js dashboard for live local dispatches, dispatch detail drill-down, routing choices, team/API-key management, costs, settings with provider health, health, backups, and audit log. | App Router page, `fetchHealth`, `fetchDashboard`, `fetchDispatchDetail`, `fetchBackups`, `fetchAudit`, `fetchProviderHealth`, readonly lint guard, `build:static` | `bun run lint`, `bun run typecheck`, `bun run build`, `bun run build:static` |
+| `dashboard/` | Agent-Control-Plane Phase 6 + Local Small-Team Productization + Dashboard Controls + Post-R7 Wire/Type Governance | Next.js dashboard for live local dispatches, dispatch detail drill-down, routing choices, team/API-key management, costs, settings with provider health, health, backups, and audit log. Wire-shaped enum fields reuse generated SDK union aliases through type-only imports. | App Router page, `fetchHealth`, `fetchDashboard`, `fetchDispatchDetail`, `fetchBackups`, `fetchAudit`, `fetchProviderHealth`, readonly lint guard, `build:static` | `bun run lint`, `bun run typecheck`, `bun run build`, `bun run build:static` |
 
 ## Codegen and Wire Contracts
 
 | Module | Stage | Purpose | Main public APIs | Related tests |
 | --- | --- | --- | --- | --- |
-| `codegen/generate_wire_types.py` | Agent-Control-Plane Phase 5 | Deterministic wire-contract type generator for SDK surfaces. | `main`, `render_ts`, `render_python` | `python3 codegen/generate_wire_types.py` |
-| `wire_contract/v1/*.schema.json` | Language Migration Phase 0 | Frozen dispatch JSON schemas for cross-language semantic parity. | `dispatch_request`, `task_analysis`, `dispatch_decision`, `execution_result`, `evaluation_result`, `dispatch_bundle` schemas | `cargo test -p engine` (Rust parity tests) |
+| `codegen/generate_wire_types.py` | Agent-Control-Plane Phase 5 + Post-R7 Wire/Type Governance | Deterministic wire-contract type generator for SDK surfaces. Practical enum values are read from JSON schemas; `--check` fails on checked-in output drift. | `main`, `render_ts`, `render_python`, `enum_values` | `uv run --no-project python codegen/generate_wire_types.py --check` |
+| `wire_contract/v1/*.schema.json` | Language Migration Phase 0 + Post-R7 Wire/Type Governance | Governed dispatch JSON schemas for cross-language semantic parity. Execution-result enums include active CLI/provider variants. | `dispatch_request`, `task_analysis`, `dispatch_decision`, `execution_result`, `evaluation_result`, `dispatch_bundle` schemas | `cargo test -p engine --test dispatch_parity` |
 
 ## Utility Scripts
 
 | Module | Stage | Purpose | Main public APIs | Related tests |
 | --- | --- | --- | --- | --- |
-| `scripts/smoke_native_runtime.py` | Agent-Control-Plane Native Local Runtime | Stdlib smoke test for the Rust engine. | `main` | `python3 scripts/smoke_native_runtime.py` |
+| `scripts/smoke_native_runtime.py` | Agent-Control-Plane Native Local Runtime | Stdlib smoke test for the Rust engine. | `main` | `uv run --no-project python scripts/smoke_native_runtime.py` |
 | `scripts/verify_rust_typescript_stack.sh` | Rust + TypeScript Cutover | Primary cutover verification. | shell entrypoint | `bash scripts/verify_rust_typescript_stack.sh` |
 | `scripts/check_agent_handoff.py` | Agent workflow | Handoff documentation integrity guard. | `main` | `uv run --no-project python scripts/check_agent_handoff.py` |
+| `scripts/check_wire_codegen_drift.sh` | Post-R7 Wire/Type Governance | Fails when generated Rust/TypeScript/Python wire files differ from schema-driven codegen output. | shell entrypoint | `bash scripts/check_wire_codegen_drift.sh` |
 | `tools/check_security_baseline.py` | CA-7 Security | Security baseline checker (secret scan, import scan, routing guard, governance guard, event guard). | `main`, `check_secret_scan`, `check_import_scan`, `check_active_routing`, `check_governance_boundary`, `check_stage0_event_guard` | `tools/test_security_baseline.py` |
 
 ## Infrastructure

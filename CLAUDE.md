@@ -72,6 +72,8 @@ Master architecture document: `docs/dispatch/DISPATCHER_KERNEL_V0_ARCHITECTURE.m
 - **Architecture Refactor R5**: IMPLEMENTED (`engine/src/workflow/context_pack/` module directory: mod.rs, rules.rs, types.rs, validation.rs, budget.rs). 1144 Rust tests pass.
 - **Architecture Refactor R6**: IMPLEMENTED (`engine/src/harness/model_profiles/` module directory: mod.rs, constants.rs, types.rs, validation.rs, shadow.rs). 1144 Rust tests pass.
 - **Architecture Refactor R7**: IMPLEMENTED (`engine/src/workflow/concurrency/` module directory: mod.rs, dag_types.rs, types.rs, controller.rs, helpers.rs). 1144 Rust tests pass.
+- **Architecture Refactor R-series**: **SEALED AT R7**. R8 is not approved. `checkpoint.rs` split deferred. `dispatch_decision.rs` split deferred pending wire/type governance follow-up.
+- **Post-R7 Wire/Type Governance Hardening**: IMPLEMENTED (`app_layer` dormant-reference annotation, 20-fixture Rust typed round-trip guardrail, active CLI/provider execution-result schema enums, generated/manual TypeScript split behind compatibility re-export, schema-driven practical enum extraction, `--check` codegen mode, CI/autonomous-closeout codegen drift guard, localized dashboard union reuse). 1146 Rust tests pass.
 
 See `docs/CURRENT_STATUS.md` for detailed phase closeout records.
 
@@ -121,6 +123,7 @@ See `docs/CURRENT_STATUS.md` for full details.
 - **2026-05-30**: Architecture Refactor R5 — context_pack split. Replaced 1003-line `engine/src/workflow/context_pack.rs` monolith with `engine/src/workflow/context_pack/` module directory (5 files): mod.rs, rules.rs, types.rs, validation.rs, budget.rs. Public API unchanged. 1144 Rust tests pass.
 - **2026-05-30**: Architecture Refactor R6 — model_profiles split. Replaced 840-line `engine/src/harness/model_profiles.rs` monolith with `engine/src/harness/model_profiles/` module directory (5 files): mod.rs, constants.rs, types.rs, validation.rs, shadow.rs. Public API unchanged. 1144 Rust tests pass.
 - **2026-05-30**: Architecture Refactor R7 — concurrency split. Replaced 674-line `engine/src/workflow/concurrency.rs` monolith with `engine/src/workflow/concurrency/` module directory (5 files): mod.rs, dag_types.rs, types.rs, controller.rs, helpers.rs. Public API unchanged. 1144 Rust tests pass.
+- **2026-05-30**: Post-R7 closeout + wire/type governance hardening — sealed R-series at R7; deferred R8, checkpoint.rs split, and dispatch_decision.rs split; annotated dormant app_layer; added typed fixture round-trips and active enum checks; aligned execution-result schemas; split generated/manual TypeScript types; extracted practical schema enums in codegen; added `--check` drift enforcement in CI and handoff checks; reused generated enum aliases in dashboard types. 2 new Rust tests (1146 total).
 - Previous BLOCK findings (b6d5bc1): HIGH-1 rate limit not wired, HIGH-2 scope enforcement missing, HIGH-3 plugin locks unused
 - Gate 1 addresses: HIGH-1 (rate limiter in ServerContext + _check_rate_limit), HIGH-2 (scope enforcement + AuthorizationDecision + 403/429)
 - Gate 2 addresses: atomic restore, WAL safety, failure-mode coverage
@@ -139,7 +142,7 @@ All dispatch kernel review gates (6B-1, 6B-2, 6B-3 Gates 1-3, Phase 7 hardening)
 
 - **Framework**: Rust `cargo test` for engine; Python `unittest` for SDK
 - **Run command**: `cargo test -p engine` (primary); `cd sdk/python && PYTHONPATH=src uv run --no-project python -m unittest discover -s tests` (SDK)
-- **Current count**: 1140 Rust tests pass, 0 failures (as of 2026-05-30)
+- **Current count**: 1146 Rust tests pass, 0 failures (as of 2026-05-30)
 - **Coverage**: Phase boundary contracts, schema validation, golden fixtures
 - **CI**: GitHub Actions on push/PR to main — runs security baseline + Rust/TS/SDK tests
 - **Test-first**: Write tests alongside implementation. Follow the test strategy in Section 4.25 of the architecture book.
