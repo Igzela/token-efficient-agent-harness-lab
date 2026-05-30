@@ -457,7 +457,11 @@ impl LocalProductStore {
         self.list_dispatches_with_offset(limit, 0)
     }
 
-    pub fn list_dispatches_with_offset(&self, limit: i64, offset: i64) -> Result<Vec<Value>, String> {
+    pub fn list_dispatches_with_offset(
+        &self,
+        limit: i64,
+        offset: i64,
+    ) -> Result<Vec<Value>, String> {
         self.with_conn(|conn| {
             let mut stmt = conn
                 .prepare(

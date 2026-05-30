@@ -947,10 +947,22 @@ fn test_list_api_key_metadata() {
 
     // Record two keys
     store
-        .record_api_key_metadata("key_1", "user_a", "admin", &["dispatch:read".to_string()], "admin")
+        .record_api_key_metadata(
+            "key_1",
+            "user_a",
+            "admin",
+            &["dispatch:read".to_string()],
+            "admin",
+        )
         .unwrap();
     store
-        .record_api_key_metadata("key_2", "user_b", "readonly", &["team:read".to_string(), "audit:read".to_string()], "admin")
+        .record_api_key_metadata(
+            "key_2",
+            "user_b",
+            "readonly",
+            &["team:read".to_string(), "audit:read".to_string()],
+            "admin",
+        )
         .unwrap();
 
     let keys = store.list_api_key_metadata(100).unwrap();

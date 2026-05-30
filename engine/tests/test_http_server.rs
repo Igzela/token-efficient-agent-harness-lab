@@ -783,7 +783,10 @@ async fn axum_list_api_keys_returns_metadata() {
         assert!(key["role"].as_str().is_some());
         assert!(key["scopes"].as_array().is_some());
         assert!(key["created_at"].as_str().is_some());
-        assert!(key.get("raw_key").is_none(), "list must not return raw keys");
+        assert!(
+            key.get("raw_key").is_none(),
+            "list must not return raw keys"
+        );
     }
 }
 

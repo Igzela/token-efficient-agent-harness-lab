@@ -527,8 +527,16 @@ async fn api_dispatches(
 ) -> Result<impl IntoResponse, ApiError> {
     authorize(&state, &headers, "dispatch:read")?;
     let store = require_store(&state)?;
-    let limit = params.get("limit").and_then(|v| v.parse::<i64>().ok()).unwrap_or(100).min(500);
-    let offset = params.get("offset").and_then(|v| v.parse::<i64>().ok()).unwrap_or(0).max(0);
+    let limit = params
+        .get("limit")
+        .and_then(|v| v.parse::<i64>().ok())
+        .unwrap_or(100)
+        .min(500);
+    let offset = params
+        .get("offset")
+        .and_then(|v| v.parse::<i64>().ok())
+        .unwrap_or(0)
+        .max(0);
     Ok((
         cors_headers(),
         Json(json!({
@@ -684,8 +692,16 @@ async fn api_audit(
 ) -> Result<impl IntoResponse, ApiError> {
     authorize(&state, &headers, "audit:read")?;
     let store = require_store(&state)?;
-    let limit = params.get("limit").and_then(|v| v.parse::<i64>().ok()).unwrap_or(100).min(500);
-    let offset = params.get("offset").and_then(|v| v.parse::<i64>().ok()).unwrap_or(0).max(0);
+    let limit = params
+        .get("limit")
+        .and_then(|v| v.parse::<i64>().ok())
+        .unwrap_or(100)
+        .min(500);
+    let offset = params
+        .get("offset")
+        .and_then(|v| v.parse::<i64>().ok())
+        .unwrap_or(0)
+        .max(0);
     Ok((
         cors_headers(),
         Json(json!({
