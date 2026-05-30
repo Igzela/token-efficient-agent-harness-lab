@@ -69,6 +69,8 @@ Master architecture document: `docs/dispatch/DISPATCHER_KERNEL_V0_ARCHITECTURE.m
 - **Architecture Refactor R2**: IMPLEMENTED (`engine/src/storage/local_product_store/` module directory: mod.rs, dispatch.rs, config.rs, team.rs, keys.rs, audit.rs, provider_audit.rs, costs.rs, migrations.rs, integrity.rs, export_import.rs, boundaries.rs). 1140 Rust tests pass.
 - **Architecture Refactor R3**: IMPLEMENTED (`engine/src/task_analyzer/` module directory: mod.rs, rules.rs, classify.rs, risk.rs, scoring.rs). 1144 Rust tests pass.
 - **Architecture Refactor R4**: IMPLEMENTED (`engine/src/workflow/dag_manager/` module directory: mod.rs, types.rs, helpers.rs, mutations.rs, compensate.rs). 1144 Rust tests pass.
+- **Architecture Refactor R5**: IMPLEMENTED (`engine/src/workflow/context_pack/` module directory: mod.rs, rules.rs, types.rs, validation.rs, budget.rs). 1144 Rust tests pass.
+- **Architecture Refactor R6**: IMPLEMENTED (`engine/src/harness/model_profiles/` module directory: mod.rs, constants.rs, types.rs, validation.rs, shadow.rs). 1144 Rust tests pass.
 
 See `docs/CURRENT_STATUS.md` for detailed phase closeout records.
 
@@ -115,6 +117,8 @@ See `docs/CURRENT_STATUS.md` for full details.
 - **2026-05-30**: Architecture Refactor R2 — local_product_store split. Replaced 1365-line `engine/src/storage/local_product_store.rs` monolith with `engine/src/storage/local_product_store/` module directory (12 files): mod.rs, dispatch.rs, config.rs, team.rs, keys.rs, audit.rs, provider_audit.rs, costs.rs, migrations.rs, integrity.rs, export_import.rs, boundaries.rs. Public API unchanged. 1140 Rust tests pass. Commit `3c9439b`. GPT PASS.
 - **2026-05-30**: Architecture Refactor R3 — task_analyzer split. Replaced 1117-line `engine/src/task_analyzer.rs` monolith with `engine/src/task_analyzer/` module directory (5 files): mod.rs, rules.rs, classify.rs, risk.rs, scoring.rs. Public API unchanged. 1140 Rust tests pass. Commit `8813a4d`. GPT PASS.
 - **2026-05-30**: Architecture Refactor R4 — dag_manager split. Replaced 1186-line `engine/src/workflow/dag_manager.rs` monolith with `engine/src/workflow/dag_manager/` module directory (5 files): mod.rs, types.rs, helpers.rs, mutations.rs, compensate.rs. Public API unchanged. 1144 Rust tests pass. Commit `7b9aac1`. GPT PASS (requires_approval re-export fix applied, docs patched). CLOSED.
+- **2026-05-30**: Architecture Refactor R5 — context_pack split. Replaced 1003-line `engine/src/workflow/context_pack.rs` monolith with `engine/src/workflow/context_pack/` module directory (5 files): mod.rs, rules.rs, types.rs, validation.rs, budget.rs. Public API unchanged. 1144 Rust tests pass.
+- **2026-05-30**: Architecture Refactor R6 — model_profiles split. Replaced 840-line `engine/src/harness/model_profiles.rs` monolith with `engine/src/harness/model_profiles/` module directory (5 files): mod.rs, constants.rs, types.rs, validation.rs, shadow.rs. Public API unchanged. 1144 Rust tests pass.
 - Previous BLOCK findings (b6d5bc1): HIGH-1 rate limit not wired, HIGH-2 scope enforcement missing, HIGH-3 plugin locks unused
 - Gate 1 addresses: HIGH-1 (rate limiter in ServerContext + _check_rate_limit), HIGH-2 (scope enforcement + AuthorizationDecision + 403/429)
 - Gate 2 addresses: atomic restore, WAL safety, failure-mode coverage
