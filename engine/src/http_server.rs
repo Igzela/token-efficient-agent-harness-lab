@@ -767,8 +767,9 @@ async fn api_create_backup(
     let mut backups = manager.list_backups().map_err(internal_error)?;
     let backup_id = format!("backup-{:04}", backups.len() + 1);
     let label = request.label.as_deref().unwrap_or("manual");
+    let now_iso = chrono::Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string();
     let backup = manager
-        .create_backup(store.db_path(), label, &backup_id, "2026-05-29T00:00:00Z")
+        .create_backup(store.db_path(), label, &backup_id, &now_iso)
         .map_err(internal_error)?;
     backups.push(backup.clone());
     manager.save_metadata(&backups).map_err(internal_error)?;

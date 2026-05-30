@@ -26,6 +26,16 @@ Token-Efficient Agent Harness Lab is a local deterministic harness for studying 
 
 Tests: 2089 Python pass; 1139 Rust pass. Primary cutover verification is `bash scripts/verify_rust_typescript_stack.sh`.
 
+## Toolchain
+
+| Layer | Tool | Notes |
+|---|---|---|
+| Node version | fnm + `.node-version` = 22 | CI uses `oven-sh/setup-bun@v2` (Bun includes Node) |
+| JS package manager | Bun | `bun.lock` replaces pnpm-lock.yaml; `bun install`, `bun run` |
+| Python runtime | uv | `uv run --no-project python ...` for local commands; pure stdlib, no deps |
+| Python packaging | setuptools (legacy reference) | `pyproject.toml` at root + `sdk/python/`; no uv.lock |
+| Rust | stable toolchain | `cargo test -p engine`, `cargo fmt`, `cargo clippy` |
+
 Additional active architecture track:
 
 | Track | Status |

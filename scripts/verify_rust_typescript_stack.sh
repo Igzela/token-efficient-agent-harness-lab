@@ -15,6 +15,13 @@ cleanup() {
 }
 trap cleanup EXIT
 
+# Preflight: require bun for TypeScript/dashboard verification
+if ! command -v bun &>/dev/null; then
+  echo "ERROR: bun is required but not found in PATH." >&2
+  echo "Install: curl -fsSL https://bun.sh/install | bash" >&2
+  exit 1
+fi
+
 cd "${ROOT}"
 
 cargo fmt --check

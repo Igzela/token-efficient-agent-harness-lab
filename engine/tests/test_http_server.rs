@@ -1420,6 +1420,72 @@ async fn axum_list_backups_after_create() {
     assert_eq!(body["backups"][0]["label"], "test");
 }
 
+#[tokio::test]
+async fn axum_create_backup_uses_real_timestamp() {
+    let dir = tempdir().unwrap();
+    let store = LocalProductStore::new(dir.path().join("team.db")).unwrap();
+
+    let mut resolver = TenantResolver::new();
+    let admin_scopes = HashSet::from(["backup:admin".to_string(), "health:read".to_string()]);
+    resolver.add_tenant(Tenant {
+        tenant_id: "local-team".to_string(),
+        name: "Local Team".to_string(),
+        scopes: admin_scopes.clone(),
+        rate_limit: Some(100),
+    });
+    let (_key, raw_key) = resolver
+        .create_api_key("local-team", Some(admin_scopes), None, 1.0)
+        .unwrap();
+
+    let app = build_axum_router(
+        AxumApiState::new()
+            .with_local_store(store)
+            .with_backup_dir(dir.path().join("backups"))
+            .with_auth(resolver, RateLimiter::new(60.0, 100), Some(100), 1.0),
+    );
+
+    // Create a backup
+    let create_resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(Method::POST)
+                .uri("/api/v1/backups")
+                .header(header::AUTHORIZATION, format!("Bearer {raw_key}"))
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(
+                    json!({"label": "ts-check", "confirm_local_backup": true}).to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(create_resp.status(), StatusCode::OK);
+
+    // List and verify timestamp is not the old hardcoded value
+    let list_resp = app
+        .oneshot(
+            Request::builder()
+                .method(Method::GET)
+                .uri("/api/v1/backups")
+                .header(header::AUTHORIZATION, format!("Bearer {raw_key}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let body = response_json(list_resp).await;
+    let created_at = body["backups"][0]["created_at"].as_str().unwrap();
+    assert_ne!(
+        created_at, "2026-05-29T00:00:00Z",
+        "backup timestamp should not be hardcoded"
+    );
+    assert!(
+        created_at.starts_with("2026-") || created_at.starts_with("2027-"),
+        "backup timestamp should be a recent ISO date, got: {created_at}"
+    );
+}
+
 // --- delete backup tests ---
 
 #[tokio::test]
