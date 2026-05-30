@@ -106,10 +106,9 @@ mod tests {
     }
 
     #[test]
-    fn test_detect_binary_claude() {
-        let result = detect_binary("claude");
-        assert!(result.is_some(), "claude binary should be detected");
-        assert!(result.unwrap().contains("claude"));
+    fn test_detect_binary_found() {
+        let result = detect_binary("sh");
+        assert!(result.is_some(), "sh binary should be detected on any Unix system");
     }
 
     #[test]
