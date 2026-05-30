@@ -77,6 +77,24 @@ curl -H "Authorization: Bearer <key>" http://localhost:8080/api/v1/storage/integ
 
 Returns per-table row counts and `PRAGMA integrity_check` status.
 
+## Docker
+
+When running via `docker compose up`, the engine service mounts a Docker named volume (`acp-data`) at `/data`. The environment variables `ACP_DB_PATH=/data/local-team.db` and `ACP_BACKUP_DIR=/data/backups` are set automatically. This means:
+
+- **Data persists across container restarts** (`docker compose restart`).
+- **Data persists across container recreation** (`docker compose down && docker compose up`).
+- **Data is lost only if the volume is explicitly removed** (`docker compose down -v` or `docker volume rm`).
+
+To back up Docker-persisted data:
+
+```bash
+# Copy the database out of the volume
+docker compose cp engine:/data/local-team.db ./local-team.db
+
+# Or use the API (requires auth)
+curl -H "Authorization: Bearer <key>" http://localhost:8080/api/v1/export > export.json
+```
+
 ## Safety
 
 - The engine never writes to target repositories

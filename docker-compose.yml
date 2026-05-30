@@ -8,6 +8,10 @@ services:
     environment:
       - HOST=0.0.0.0
       - PORT=8080
+      - ACP_DB_PATH=/data/local-team.db
+      - ACP_BACKUP_DIR=/data/backups
+    volumes:
+      - acp-data:/data
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8080/api/v1/health"]
       interval: 10s
@@ -27,3 +31,6 @@ services:
     depends_on:
       engine:
         condition: service_healthy
+
+volumes:
+  acp-data:
