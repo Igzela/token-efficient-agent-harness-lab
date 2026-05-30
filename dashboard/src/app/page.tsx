@@ -373,11 +373,15 @@ function Metric({
   );
 }
 
+const PAGE_SIZE = 25;
+
 function Dispatches({ dispatches }: { dispatches: LocalDispatchHistory[] }) {
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [detail, setDetail] = useState<Record<string, unknown> | null>(null);
   const [loading, setLoading] = useState(false);
   const [detailError, setDetailError] = useState<string | null>(null);
+  const [search, setSearch] = useState("");
+  const [page, setPage] = useState(0);
 
   function openDetail(id: string) {
     setSelectedId(id);
@@ -393,6 +397,20 @@ function Dispatches({ dispatches }: { dispatches: LocalDispatchHistory[] }) {
     setSelectedId(null);
     setDetail(null);
   }
+
+  const q = search.toLowerCase();
+  const filtered = q
+    ? dispatches.filter(
+        (d) =>
+          d.dispatch_id.toLowerCase().includes(q) ||
+          d.selected_tier.toLowerCase().includes(q) ||
+          d.final_status.toLowerCase().includes(q) ||
+          d.risk_level.toLowerCase().includes(q) ||
+          d.raw_request.toLowerCase().includes(q),
+      )
+    : dispatches;
+  const totalPages = Math.max(1, Math.ceil(filtered.length / PAGE_SIZE));
+  const pageItems = filtered.slice(page * PAGE_SIZE, (page + 1) * PAGE_SIZE);
 
   if (selectedId) {
     return (
@@ -417,6 +435,17 @@ function Dispatches({ dispatches }: { dispatches: LocalDispatchHistory[] }) {
   return (
     <section className="grid">
       <div className="table-wrap">
+        <div style={{ display: "flex", gap: 8, alignItems: "center", marginBottom: 8 }}>
+          <input
+            placeholder="Search dispatches..."
+            value={search}
+            onChange={(e) => { setSearch(e.target.value); setPage(0); }}
+            style={{ flex: 1 }}
+          />
+          <span className="muted" style={{ fontSize: 12, whiteSpace: "nowrap" }}>
+            {filtered.length} result{filtered.length !== 1 ? "s" : ""}
+          </span>
+        </div>
         <table>
           <thead>
             <tr>
@@ -428,14 +457,14 @@ function Dispatches({ dispatches }: { dispatches: LocalDispatchHistory[] }) {
             </tr>
           </thead>
           <tbody>
-            {dispatches.length === 0 ? (
+            {pageItems.length === 0 ? (
               <tr>
                 <td className="muted" colSpan={5}>
-                  No local dispatch history
+                  {search ? "No matching dispatches" : "No local dispatch history"}
                 </td>
               </tr>
             ) : (
-              dispatches.map((item) => (
+              pageItems.map((item) => (
                 <tr
                   key={item.history_id}
                   onClick={() => openDetail(item.dispatch_id)}
@@ -455,6 +484,15 @@ function Dispatches({ dispatches }: { dispatches: LocalDispatchHistory[] }) {
             )}
           </tbody>
         </table>
+        {totalPages > 1 && (
+          <div style={{ display: "flex", gap: 8, justifyContent: "center", marginTop: 8 }}>
+            <button onClick={() => setPage((p) => Math.max(0, p - 1))} disabled={page === 0} type="button">Prev</button>
+            <span className="muted" style={{ fontSize: 12, alignSelf: "center" }}>
+              Page {page + 1} of {totalPages}
+            </span>
+            <button onClick={() => setPage((p) => Math.min(totalPages - 1, p + 1))} disabled={page >= totalPages - 1} type="button">Next</button>
+          </div>
+        )}
       </div>
       <aside className="card stack">
         <div className="heading-row">
@@ -1235,6 +1273,8 @@ function Backups() {
 function AuditLog() {
   const [events, setEvents] = useState<Array<Record<string, unknown>>>([]);
   const [error, setError] = useState<string | null>(null);
+  const [search, setSearch] = useState("");
+  const [page, setPage] = useState(0);
 
   useEffect(() => {
     fetchAudit()
@@ -1242,12 +1282,35 @@ function AuditLog() {
       .catch((e) => setError(e instanceof Error ? e.message : "Failed to load audit events"));
   }, []);
 
+  const q = search.toLowerCase();
+  const filtered = q
+    ? events.filter(
+        (e) =>
+          String(e.actor).toLowerCase().includes(q) ||
+          String(e.action).toLowerCase().includes(q) ||
+          String(e.resource).toLowerCase().includes(q),
+      )
+    : events;
+  const totalPages = Math.max(1, Math.ceil(filtered.length / PAGE_SIZE));
+  const pageItems = filtered.slice(page * PAGE_SIZE, (page + 1) * PAGE_SIZE);
+
   return (
     <section className="card stack">
       <h2>Audit Log</h2>
       {error && <p className="error-text">{error}</p>}
-      {events.length === 0 && !error ? (
-        <p className="muted">No audit events</p>
+      <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+        <input
+          placeholder="Search audit events..."
+          value={search}
+          onChange={(e) => { setSearch(e.target.value); setPage(0); }}
+          style={{ flex: 1 }}
+        />
+        <span className="muted" style={{ fontSize: 12, whiteSpace: "nowrap" }}>
+          {filtered.length} event{filtered.length !== 1 ? "s" : ""}
+        </span>
+      </div>
+      {pageItems.length === 0 && !error ? (
+        <p className="muted">{search ? "No matching events" : "No audit events"}</p>
       ) : (
         <table>
           <thead>
@@ -1261,7 +1324,7 @@ function AuditLog() {
             </tr>
           </thead>
           <tbody>
-            {events.map((e) => (
+            {pageItems.map((e) => (
               <tr key={String(e.audit_id)}>
                 <td className="mono">{String(e.audit_id)}</td>
                 <td>{String(e.created_at)}</td>
@@ -1280,6 +1343,15 @@ function AuditLog() {
             ))}
           </tbody>
         </table>
+      )}
+      {totalPages > 1 && (
+        <div style={{ display: "flex", gap: 8, justifyContent: "center", marginTop: 8 }}>
+          <button onClick={() => setPage((p) => Math.max(0, p - 1))} disabled={page === 0} type="button">Prev</button>
+          <span className="muted" style={{ fontSize: 12, alignSelf: "center" }}>
+            Page {page + 1} of {totalPages}
+          </span>
+          <button onClick={() => setPage((p) => Math.min(totalPages - 1, p + 1))} disabled={page >= totalPages - 1} type="button">Next</button>
+        </div>
       )}
     </section>
   );

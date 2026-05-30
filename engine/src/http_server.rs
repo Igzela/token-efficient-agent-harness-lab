@@ -1,4 +1,4 @@
-use axum::extract::{Path as AxumPath, State};
+use axum::extract::{Path as AxumPath, Query, State};
 use axum::http::{header, HeaderMap, HeaderValue, StatusCode, Uri};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{delete, get, post, put};
@@ -523,14 +523,17 @@ async fn api_dispatch(
 async fn api_dispatches(
     State(state): State<AxumApiState>,
     headers: HeaderMap,
+    Query(params): Query<std::collections::HashMap<String, String>>,
 ) -> Result<impl IntoResponse, ApiError> {
     authorize(&state, &headers, "dispatch:read")?;
     let store = require_store(&state)?;
+    let limit = params.get("limit").and_then(|v| v.parse::<i64>().ok()).unwrap_or(100).min(500);
+    let offset = params.get("offset").and_then(|v| v.parse::<i64>().ok()).unwrap_or(0).max(0);
     Ok((
         cors_headers(),
         Json(json!({
             "schema_version": AXUM_API_SCHEMA_VERSION,
-            "dispatches": store.list_dispatches(100).map_err(internal_error)?,
+            "dispatches": store.list_dispatches_with_offset(limit, offset).map_err(internal_error)?,
         })),
     ))
 }
@@ -641,7 +644,7 @@ async fn api_costs(
 async fn api_cost_details(
     State(state): State<AxumApiState>,
     headers: HeaderMap,
-    axum::extract::Query(params): axum::extract::Query<std::collections::HashMap<String, String>>,
+    Query(params): Query<std::collections::HashMap<String, String>>,
 ) -> Result<impl IntoResponse, ApiError> {
     authorize(&state, &headers, "cost:read")?;
     let store = require_store(&state)?;
@@ -677,14 +680,17 @@ async fn api_export(
 async fn api_audit(
     State(state): State<AxumApiState>,
     headers: HeaderMap,
+    Query(params): Query<std::collections::HashMap<String, String>>,
 ) -> Result<impl IntoResponse, ApiError> {
     authorize(&state, &headers, "audit:read")?;
     let store = require_store(&state)?;
+    let limit = params.get("limit").and_then(|v| v.parse::<i64>().ok()).unwrap_or(100).min(500);
+    let offset = params.get("offset").and_then(|v| v.parse::<i64>().ok()).unwrap_or(0).max(0);
     Ok((
         cors_headers(),
         Json(json!({
             "schema_version": AXUM_API_SCHEMA_VERSION,
-            "events": store.audit_events(100).map_err(internal_error)?,
+            "events": store.audit_events_with_offset(limit, offset).map_err(internal_error)?,
         })),
     ))
 }

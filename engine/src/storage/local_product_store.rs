@@ -454,6 +454,10 @@ impl LocalProductStore {
     }
 
     pub fn list_dispatches(&self, limit: i64) -> Result<Vec<Value>, String> {
+        self.list_dispatches_with_offset(limit, 0)
+    }
+
+    pub fn list_dispatches_with_offset(&self, limit: i64, offset: i64) -> Result<Vec<Value>, String> {
         self.with_conn(|conn| {
             let mut stmt = conn
                 .prepare(
@@ -462,11 +466,11 @@ impl LocalProductStore {
                             input_tokens, output_tokens, estimated_cost_usd, executor_type, latency_ms
                      FROM dispatch_history
                      ORDER BY history_id DESC
-                     LIMIT ?1",
+                     LIMIT ?1 OFFSET ?2",
                 )
                 .map_err(|e| e.to_string())?;
             let rows = stmt
-                .query_map(params![limit], |row| {
+                .query_map(params![limit, offset], |row| {
                     let bundle_text: String = row.get(9)?;
                     let bundle: Value = serde_json::from_str(&bundle_text).unwrap_or(Value::Null);
                     Ok(json!({
@@ -1064,17 +1068,21 @@ impl LocalProductStore {
     }
 
     pub fn audit_events(&self, limit: i64) -> Result<Vec<Value>, String> {
+        self.audit_events_with_offset(limit, 0)
+    }
+
+    pub fn audit_events_with_offset(&self, limit: i64, offset: i64) -> Result<Vec<Value>, String> {
         self.with_conn(|conn| {
             let mut stmt = conn
                 .prepare(
                     "SELECT audit_id, created_at, actor, action, resource, details_json
                      FROM audit_log
                      ORDER BY audit_id DESC
-                     LIMIT ?1",
+                     LIMIT ?1 OFFSET ?2",
                 )
                 .map_err(|e| e.to_string())?;
             let rows = stmt
-                .query_map(params![limit], |row| {
+                .query_map(params![limit, offset], |row| {
                     let details_text: String = row.get(5)?;
                     let details: Value = serde_json::from_str(&details_text).unwrap_or(Value::Null);
                     Ok(json!({
