@@ -1,7 +1,6 @@
 {
   "name": "@token-efficient-agent-harness/agent-control-plane-sdk",
   "version": "0.1.0",
-  "packageManager": "pnpm@11.4.0",
   "description": "TypeScript REST SDK for the local Agent Control Plane API",
   "type": "module",
   "main": "dist/index.js",
@@ -13,7 +12,7 @@
   ],
   "scripts": {
     "build": "tsc -p tsconfig.json",
-    "test": "npm run build && node --test tests/client.test.mjs"
+    "test": "bun run build && node --test tests/client.test.mjs"
   },
   "devDependencies": {
     "typescript": "^5.7.0"

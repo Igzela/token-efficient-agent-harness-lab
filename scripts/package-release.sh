@@ -29,10 +29,10 @@ echo "  Binary: $(stat -c%s "${BINARY}") bytes"
 # Step 2: Build static dashboard
 echo "Building static dashboard..."
 cd "${REPO_ROOT}/dashboard"
-if command -v pnpm &>/dev/null; then
-    pnpm build:static 2>&1 | tail -3
+if command -v bun &>/dev/null; then
+    bun run build:static 2>&1 | tail -3
 else
-    echo "  Warning: pnpm not found, skipping dashboard build"
+    echo "  Warning: bun not found, skipping dashboard build"
     echo "  If dashboard/out/ exists, it will be included as-is"
 fi
 DASHBOARD_OUT="${REPO_ROOT}/dashboard/out"

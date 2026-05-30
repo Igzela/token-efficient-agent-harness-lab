@@ -44,7 +44,7 @@ cargo run -p engine
 API plus dashboard from the same Rust process:
 
 ```bash
-cd dashboard && corepack pnpm install --frozen-lockfile && corepack pnpm build:static
+cd dashboard && bun install --frozen-lockfile && bun run build:static
 cd ..
 ACP_DASHBOARD_DIR=dashboard/out cargo run -p engine
 ```

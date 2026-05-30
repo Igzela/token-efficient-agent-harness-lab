@@ -37,10 +37,10 @@ Verified in the 2026-05-29 main-branch audit:
 - `cargo fmt --check`
 - `cargo clippy -p engine -- -D warnings`
 - `cargo test -p engine`
-- `cd dashboard && pnpm lint && pnpm typecheck && pnpm build`
-- `cd dashboard && pnpm build:static`
+- `cd dashboard && bun run lint && bun run typecheck && bun run build`
+- `cd dashboard && bun run build:static`
 - `python3 scripts/smoke_native_runtime.py`
-- `cd sdk/typescript && pnpm build && npm pack --dry-run`
+- `cd sdk/typescript && bun run build && npm pack --dry-run`
 - `cd sdk/python && PYTHONPATH=src python3 -m unittest discover -s tests`
 - `cd sdk/python && python -m build`
 - `python3 tests/integration/parity/run.py`

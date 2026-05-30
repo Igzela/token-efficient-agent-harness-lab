@@ -33,10 +33,10 @@ PYTHONPATH=src python3 -m unittest discover -s tests
 cargo test -p engine
 
 # Dashboard
-cd dashboard && corepack pnpm lint && corepack pnpm typecheck && corepack pnpm build && corepack pnpm build:static
+cd dashboard && bun run lint && bun run typecheck && bun run build && bun run build:static
 
 # SDKs
-cd sdk/typescript && corepack pnpm build && corepack pnpm test
+cd sdk/typescript && bun run build && bun run test
 cd sdk/python && PYTHONPATH=src python3 -m unittest discover -s tests
 
 # Native runtime without Docker

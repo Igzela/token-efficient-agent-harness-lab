@@ -22,17 +22,16 @@ cargo clippy -p engine -- -D warnings
 cargo test -p engine
 
 cd "${ROOT}/sdk/typescript"
-corepack enable || true
-pnpm install --frozen-lockfile
-pnpm test
-pnpm build
+bun install --frozen-lockfile
+bun run test
+bun run build
 
 cd "${ROOT}/dashboard"
-pnpm install --frozen-lockfile
-pnpm lint
-pnpm typecheck
-pnpm build
-pnpm build:static
+bun install --frozen-lockfile
+bun run lint
+bun run typecheck
+bun run build
+bun run build:static
 
 cd "${ROOT}"
 cargo build -p engine

@@ -1,15 +1,14 @@
 {
   "name": "agent-control-plane-dashboard",
   "version": "0.1.0",
-  "packageManager": "pnpm@11.4.0",
   "private": true,
   "scripts": {
     "lint": "node scripts/lint-readonly.mjs",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "dev": "next dev",
-    "build": "next build",
+    "dev": "bun run next dev",
+    "build": "bun run next build",
     "build:static": "node scripts/build-static.mjs",
-    "start": "next start"
+    "start": "bun run next start"
   },
   "dependencies": {
     "next": "^15.3.0",
@@ -21,10 +20,5 @@
     "@types/react": "^19.1.0",
     "@types/react-dom": "^19.1.0",
     "typescript": "^5.7.0"
-  },
-  "pnpm": {
-    "ignoredBuiltDependencies": [
-      "sharp"
-    ]
   }
 }
