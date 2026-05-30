@@ -1,0 +1,205 @@
+use axum::http::{header, HeaderMap, HeaderValue, StatusCode};
+use axum::response::{IntoResponse, Response};
+use axum::Json;
+use std::path::{Path, PathBuf};
+use std::sync::Arc;
+
+use crate::infrastructure::auth::AuthDecision;
+use crate::storage::local_product_store::LocalProductStore;
+
+use super::state::AxumApiState;
+use super::AXUM_API_SCHEMA_VERSION;
+
+#[derive(Debug, Clone)]
+pub(crate) struct ApiRequestContext {
+    pub tenant_id: String,
+    pub api_key_id: String,
+}
+
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
+struct ApiErrorBody {
+    error: String,
+    schema_version: String,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct ApiError {
+    pub status: StatusCode,
+    pub error: String,
+}
+
+impl ApiError {
+    pub(crate) fn new(status: StatusCode, error: impl Into<String>) -> Self {
+        Self {
+            status,
+            error: error.into(),
+        }
+    }
+}
+
+impl IntoResponse for ApiError {
+    fn into_response(self) -> Response {
+        (
+            self.status,
+            cors_headers(),
+            Json(ApiErrorBody {
+                error: self.error,
+                schema_version: AXUM_API_SCHEMA_VERSION.to_string(),
+            }),
+        )
+            .into_response()
+    }
+}
+
+pub(crate) fn authorize(
+    state: &AxumApiState,
+    headers: &HeaderMap,
+    required_scope: &str,
+) -> Result<ApiRequestContext, ApiError> {
+    let Some(resolver) = &state.tenant_resolver else {
+        return Ok(ApiRequestContext {
+            tenant_id: "local".to_string(),
+            api_key_id: "none".to_string(),
+        });
+    };
+
+    let auth_header = headers
+        .get(header::AUTHORIZATION)
+        .and_then(|value| value.to_str().ok());
+    let mut guard = resolver
+        .lock()
+        .map_err(|_| ApiError::new(StatusCode::INTERNAL_SERVER_ERROR, "auth unavailable"))?;
+    let decision = guard.resolve_mut(auth_header, state.now);
+    let context = auth_context_from_decision(decision, required_scope)?;
+    let tenant_limit = guard.tenant_rate_limit(&context.tenant_id);
+    drop(guard);
+
+    let rate_limit = tenant_limit.or(state.default_rate_limit);
+    let mut limiter = state.rate_limiter.lock().map_err(|_| {
+        ApiError::new(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "rate limiter unavailable",
+        )
+    })?;
+    let rate = limiter.check(
+        &context.tenant_id,
+        &context.api_key_id,
+        rate_limit,
+        state.now,
+    );
+    if !rate.allowed {
+        return Err(ApiError::new(
+            StatusCode::TOO_MANY_REQUESTS,
+            "rate limit exceeded",
+        ));
+    }
+
+    Ok(context)
+}
+
+pub(crate) fn require_store(state: &AxumApiState) -> Result<Arc<LocalProductStore>, ApiError> {
+    state
+        .local_store
+        .as_ref()
+        .cloned()
+        .ok_or_else(|| ApiError::new(StatusCode::SERVICE_UNAVAILABLE, "local store unavailable"))
+}
+
+pub(crate) fn backup_dir_for_state(state: &AxumApiState, db_path: &Path) -> PathBuf {
+    if let Some(dir) = &state.backup_dir {
+        return dir.as_ref().clone();
+    }
+    db_path
+        .parent()
+        .map(|parent| parent.join("backups"))
+        .unwrap_or_else(|| PathBuf::from("backups"))
+}
+
+pub(crate) fn internal_error(error: String) -> ApiError {
+    ApiError::new(StatusCode::INTERNAL_SERVER_ERROR, error)
+}
+
+fn auth_context_from_decision(
+    decision: AuthDecision,
+    required_scope: &str,
+) -> Result<ApiRequestContext, ApiError> {
+    if !decision.allowed {
+        return Err(ApiError::new(StatusCode::UNAUTHORIZED, "unauthorized"));
+    }
+    if !decision.scopes.contains(required_scope) {
+        return Err(ApiError::new(StatusCode::FORBIDDEN, "forbidden"));
+    }
+    Ok(ApiRequestContext {
+        tenant_id: decision.tenant_id.unwrap_or_else(|| "unknown".to_string()),
+        api_key_id: decision.api_key_id.unwrap_or_else(|| "unknown".to_string()),
+    })
+}
+
+pub(crate) fn cors_headers() -> HeaderMap {
+    let mut headers = HeaderMap::new();
+    headers.insert(
+        header::ACCESS_CONTROL_ALLOW_ORIGIN,
+        HeaderValue::from_static("*"),
+    );
+    headers.insert(
+        header::ACCESS_CONTROL_ALLOW_METHODS,
+        HeaderValue::from_static("GET,POST,PUT,DELETE,OPTIONS"),
+    );
+    headers.insert(
+        header::ACCESS_CONTROL_ALLOW_HEADERS,
+        HeaderValue::from_static("authorization,content-type"),
+    );
+    headers
+}
+
+pub(crate) async fn cors_preflight() -> impl IntoResponse {
+    (cors_headers(), StatusCode::NO_CONTENT)
+}
+
+pub(crate) fn chrono_free_today() -> String {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    let secs = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+    let days = secs / 86400;
+    let mut y = 1970i64;
+    loop {
+        let leap = is_leap(y);
+        let day_count = if leap { 366 } else { 365 };
+        if days < day_count as u64 {
+            break;
+        }
+        y += 1;
+    }
+    let mut remaining = days;
+    let leap = is_leap(y);
+    let month_days: [i64; 12] = [
+        31,
+        if leap { 29 } else { 28 },
+        31,
+        30,
+        31,
+        30,
+        31,
+        31,
+        30,
+        31,
+        30,
+        31,
+    ];
+    let mut m = 0u32;
+    for (i, &md) in month_days.iter().enumerate() {
+        if remaining < md as u64 {
+            m = i as u32 + 1;
+            break;
+        }
+        remaining -= md as u64;
+    }
+    let d = remaining + 1;
+    format!("{:04}-{:02}-{:02}", y, m, d)
+}
+
+fn is_leap(y: i64) -> bool {
+    (y % 4 == 0 && y % 100 != 0) || y % 400 == 0
+}

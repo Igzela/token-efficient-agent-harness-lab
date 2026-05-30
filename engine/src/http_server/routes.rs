@@ -1,0 +1,210 @@
+use axum::extract::State;
+use axum::http::{header, HeaderMap, HeaderValue, StatusCode, Uri};
+use axum::response::{IntoResponse, Response};
+use axum::routing::{delete, get, post, put};
+use axum::Router;
+use std::fs;
+use std::path::{Component, Path, PathBuf};
+
+use super::handlers::*;
+use super::middleware::cors_preflight;
+use super::state::AxumApiState;
+
+pub fn build_axum_router(state: AxumApiState) -> Router {
+    axum_routes().with_state(state)
+}
+
+pub fn build_axum_router_with_dashboard(
+    state: AxumApiState,
+    dashboard_dir: impl Into<PathBuf>,
+) -> Router {
+    axum_routes()
+        .fallback(serve_dashboard_asset)
+        .with_state(state.with_dashboard_dir(dashboard_dir))
+}
+
+fn axum_routes() -> Router<AxumApiState> {
+    Router::new()
+        .route(
+            "/api/v1/health",
+            get(health::api_health).options(cors_preflight),
+        )
+        .route(
+            "/api/v1/ready",
+            get(health::api_ready).options(cors_preflight),
+        )
+        .route(
+            "/api/v1/openapi.json",
+            get(health::api_openapi).options(cors_preflight),
+        )
+        .route(
+            "/api/v1/dispatch",
+            post(dispatch::api_dispatch).options(cors_preflight),
+        )
+        .route(
+            "/api/v1/dispatches",
+            get(dispatch::api_dispatches).options(cors_preflight),
+        )
+        .route(
+            "/api/v1/dispatches/:dispatch_id",
+            get(dispatch::api_dispatch_detail).options(cors_preflight),
+        )
+        .route(
+            "/api/v1/dashboard",
+            get(dashboard::api_dashboard).options(cors_preflight),
+        )
+        .route(
+            "/api/v1/config",
+            get(data_ops::api_config).options(cors_preflight),
+        )
+        .route(
+            "/api/v1/team",
+            get(team::api_team)
+                .post(team::api_create_member)
+                .options(cors_preflight),
+        )
+        .route(
+            "/api/v1/team/:user_id",
+            put(team::api_update_member_role)
+                .delete(team::api_delete_member)
+                .options(cors_preflight),
+        )
+        .route(
+            "/api/v1/costs",
+            get(costs::api_costs).options(cors_preflight),
+        )
+        .route(
+            "/api/v1/costs/dispatches",
+            get(costs::api_cost_details).options(cors_preflight),
+        )
+        .route(
+            "/api/v1/export",
+            get(data_ops::api_export).options(cors_preflight),
+        )
+        .route(
+            "/api/v1/audit",
+            get(audit::api_audit).options(cors_preflight),
+        )
+        .route(
+            "/api/v1/backups",
+            get(backups::api_list_backups)
+                .post(backups::api_create_backup)
+                .options(cors_preflight),
+        )
+        .route(
+            "/api/v1/backups/:backup_id",
+            delete(backups::api_delete_backup).options(cors_preflight),
+        )
+        .route(
+            "/api/v1/keys",
+            get(keys::api_list_keys)
+                .post(keys::api_create_key)
+                .options(cors_preflight),
+        )
+        .route(
+            "/api/v1/keys/:key_id/revoke",
+            post(keys::api_revoke_key).options(cors_preflight),
+        )
+        .route(
+            "/api/v1/keys/:key_id/rotate",
+            post(keys::api_rotate_key).options(cors_preflight),
+        )
+        .route(
+            "/api/v1/keys/:key_id",
+            delete(keys::api_delete_key).options(cors_preflight),
+        )
+        .route(
+            "/api/v1/keys/:key_id/scopes",
+            post(keys::api_update_key_scopes).options(cors_preflight),
+        )
+        .route(
+            "/api/v1/provider/health",
+            get(provider::api_provider_health).options(cors_preflight),
+        )
+        .route(
+            "/api/v1/provider/audit",
+            get(provider::api_provider_audit).options(cors_preflight),
+        )
+        .route(
+            "/api/v1/storage/integrity",
+            get(data_ops::api_integrity).options(cors_preflight),
+        )
+        .route(
+            "/api/v1/import",
+            post(data_ops::api_import).options(cors_preflight),
+        )
+        .route(
+            "/api/v1/backups/:backup_id/restore",
+            post(backups::api_restore_backup).options(cors_preflight),
+        )
+}
+
+async fn serve_dashboard_asset(State(state): State<AxumApiState>, uri: Uri) -> Response {
+    if uri.path().starts_with("/api/") {
+        return (StatusCode::NOT_FOUND, "not found").into_response();
+    }
+    let Some(dashboard_dir) = &state.dashboard_dir else {
+        return (StatusCode::NOT_FOUND, "dashboard not configured").into_response();
+    };
+    let Some(path) = dashboard_asset_path(dashboard_dir.as_ref(), uri.path()) else {
+        return (StatusCode::BAD_REQUEST, "invalid dashboard path").into_response();
+    };
+
+    match fs::read(&path) {
+        Ok(bytes) => {
+            let mut headers = HeaderMap::new();
+            headers.insert(
+                header::CONTENT_TYPE,
+                HeaderValue::from_static(content_type_for_path(&path)),
+            );
+            (headers, bytes).into_response()
+        }
+        Err(_) => match fs::read(dashboard_dir.join("index.html")) {
+            Ok(bytes) => {
+                let mut headers = HeaderMap::new();
+                headers.insert(
+                    header::CONTENT_TYPE,
+                    HeaderValue::from_static("text/html; charset=utf-8"),
+                );
+                (headers, bytes).into_response()
+            }
+            Err(_) => (StatusCode::NOT_FOUND, "dashboard asset not found").into_response(),
+        },
+    }
+}
+
+fn dashboard_asset_path(root: &Path, uri_path: &str) -> Option<PathBuf> {
+    let relative = uri_path.trim_start_matches('/');
+    if relative.is_empty() {
+        return Some(root.join("index.html"));
+    }
+
+    let mut path = PathBuf::from(root);
+    for component in Path::new(relative).components() {
+        match component {
+            Component::Normal(part) => path.push(part),
+            _ => return None,
+        }
+    }
+    Some(if path.is_dir() {
+        path.join("index.html")
+    } else {
+        path
+    })
+}
+
+fn content_type_for_path(path: &Path) -> &'static str {
+    match path.extension().and_then(|ext| ext.to_str()).unwrap_or("") {
+        "css" => "text/css; charset=utf-8",
+        "html" => "text/html; charset=utf-8",
+        "ico" => "image/x-icon",
+        "js" => "text/javascript; charset=utf-8",
+        "json" => "application/json; charset=utf-8",
+        "png" => "image/png",
+        "svg" => "image/svg+xml",
+        "txt" => "text/plain; charset=utf-8",
+        "wasm" => "application/wasm",
+        "webp" => "image/webp",
+        _ => "application/octet-stream",
+    }
+}
