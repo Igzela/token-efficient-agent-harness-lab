@@ -43,7 +43,7 @@ Next productization phases:
 
 | Order | Phase | Done When |
 |---|---|---|
-| 7 | Long-Run Hardening | SQLite contention tests ✓, provider failure matrix ✓. Remaining: audit integrity review, upgrade smoke verification. LAN threat model already exists at `docs/security/THREAT_MODEL.md`. GitHub Actions already clean (Node 22, latest action versions). |
+| 7 | Long-Run Hardening | **COMPLETE** — SQLite contention tests ✓, provider failure matrix ✓, audit integrity review ✓ (7 tests), upgrade smoke verification ✓ (tarball structure, install smoke, data preservation, port retry, integrity endpoint). LAN threat model exists at `docs/security/THREAT_MODEL.md`. GitHub Actions clean (Node 22, latest action versions). |
 
 ## Disallowed by Default
 

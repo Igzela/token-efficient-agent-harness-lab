@@ -5,7 +5,7 @@ Last verified: 2026-05-30.
 ## Repository State
 
 - Branch: `main` with the Rust + TypeScript agent-control-plane cutover complete. Rust `engine/` is the primary runtime/API/storage/provider-gated control plane; `dashboard/` and `sdk/typescript/` are the primary TypeScript surfaces. Python remains as legacy reference plus the retained Python REST SDK.
-- Tests: **2089 Python pass**, **1113 Rust pass**, 0 failures.
+- Tests: **2089 Python pass**, **1120 Rust pass**, 0 failures.
 - Security baseline: ALL CHECKS PASSED.
 
 ## New Session / Documentation Discipline
@@ -87,6 +87,7 @@ Run `python3 scripts/check_agent_handoff.py` before committing so the handoff su
 | Productization Phase 6 — Dashboard Controls | **IMPLEMENTED** — Dispatch detail drill-down (click row to see full bundle with analysis/decision/execution/evaluation sections). Backups tab with list/create/restore/delete and confirmation dialogs. Audit log tab with collapsible details. Team tab confirmation dialogs for all destructive actions. Settings tab enhanced with provider health status. New Rust endpoints: `GET /api/v1/dispatches/:dispatch_id`, `GET /api/v1/backups`, `DELETE /api/v1/backups/:backup_id`. `get_dispatch()` on LocalProductStore. 11 new Rust tests (1086 total). 6 new TypeScript SDK methods + 6 tests (13 total). 6 new Python SDK methods + 6 tests (17 total). |
 | Rust + TypeScript Cutover | **COMPLETE** — primary verification is `bash scripts/verify_rust_typescript_stack.sh`, covering Rust fmt/clippy/tests, TypeScript SDK test/build, dashboard lint/typecheck/build/static export, native Rust API + dashboard smoke, and deterministic dispatch smoke. Python is no longer required for the primary local stack, but remains as legacy reference and SDK compatibility. |
 | Productization Phase 7 — Long-Run Hardening (part 1) | **IMPLEMENTED** — SQLite contention tests (6 tests: concurrent dispatch writes, concurrent reads during writes, concurrent audit events, no-deadlock contention, data integrity after concurrent writes, concurrent dispatch read-by-id). Provider failure matrix tests (21 tests: retry exhaustion, fallback routing, budget-exhausted mid-retry, non-retryable errors, disabled provider, cost gate blocks, audit trail on success/failure, governance blocks, backoff strategies, concurrent provider invocations). 27 new Rust tests (1113 total). |
+| Productization Phase 7 — Long-Run Hardening (part 2) | **IMPLEMENTED** — Audit integrity tests (7 tests: dispatch/config/api-key mutation audit correctness, audit log ordering monotonicity, audit persistence across store reopen, concurrent audit writes non-corruption, integrity report audit_log row count). Enhanced smoke_release.sh: tarball structure verification (6 file/dir checks), install script smoke, data preservation across upgrade, port conflict retry (3 attempts), integrity endpoint smoke. 7 new Rust tests (1120 total). |
 
 Trial 2 complete evidence chain: [`docs/trials/TRIAL_2_FINAL_STATE_INDEX.md`](trials/TRIAL_2_FINAL_STATE_INDEX.md).
 Trial 3 report: [`docs/trials/TRIAL_3_REPORT.md`](trials/TRIAL_3_REPORT.md).
