@@ -922,10 +922,14 @@ fn test_new_with_clock_deterministic_timestamps() {
         "decision": {"selected_tier": "noop", "budget_reservation": {"reserved_cost": 0.0}},
         "analysis": {"risk_level": "low"}
     });
-    let result = store.record_dispatch("{}", "cli", &bundle, "tester").unwrap();
+    let result = store
+        .record_dispatch("{}", "cli", &bundle, "tester")
+        .unwrap();
     assert_eq!(result["created_at"], fixed_time);
 
-    let audit = store.append_audit("tester", "test.action", "res", &json!({})).unwrap();
+    let audit = store
+        .append_audit("tester", "test.action", "res", &json!({}))
+        .unwrap();
     assert_eq!(audit["created_at"], fixed_time);
 
     let export = store.export_snapshot("noop", false).unwrap();

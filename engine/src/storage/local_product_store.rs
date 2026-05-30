@@ -550,7 +550,14 @@ impl LocalProductStore {
             )
             .map_err(|e| e.to_string())?;
             let now = self.now();
-            append_audit_locked(conn, &now, actor, "config.update", key, &json!({"key": key}))?;
+            append_audit_locked(
+                conn,
+                &now,
+                actor,
+                "config.update",
+                key,
+                &json!({"key": key}),
+            )?;
             Ok(json!({"key": key, "value": value, "updated_at": now, "updated_by": actor}))
         })
     }

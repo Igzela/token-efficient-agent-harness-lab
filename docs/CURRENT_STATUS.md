@@ -5,7 +5,7 @@ Last verified: 2026-05-30.
 ## Repository State
 
 - Branch: `main` with the Rust + TypeScript agent-control-plane cutover complete. Rust `engine/` is the primary runtime/API/storage/provider-gated control plane; `dashboard/` and `sdk/typescript/` are the primary TypeScript surfaces. Python remains as legacy reference plus the retained Python REST SDK.
-- Tests: **2089 Python pass**, **1130 Rust pass**, 0 failures.
+- Tests: **2089 Python pass**, **1132 Rust pass**, 0 failures.
 - Security baseline: ALL CHECKS PASSED.
 
 ## New Session / Documentation Discipline
@@ -89,6 +89,7 @@ Run `python3 scripts/check_agent_handoff.py` before committing so the handoff su
 | Productization Phase 7 — Long-Run Hardening (part 1) | **IMPLEMENTED** — SQLite contention tests (6 tests: concurrent dispatch writes, concurrent reads during writes, concurrent audit events, no-deadlock contention, data integrity after concurrent writes, concurrent dispatch read-by-id). Provider failure matrix tests (21 tests: retry exhaustion, fallback routing, budget-exhausted mid-retry, non-retryable errors, disabled provider, cost gate blocks, audit trail on success/failure, governance blocks, backoff strategies, concurrent provider invocations). 27 new Rust tests (1113 total). |
 | Productization Phase 7 — Long-Run Hardening (part 2) | **IMPLEMENTED** — Audit integrity tests (7 tests: dispatch/config/api-key mutation audit correctness, audit log ordering monotonicity, audit persistence across store reopen, concurrent audit writes non-corruption, integrity report audit_log row count). Enhanced smoke_release.sh: tarball structure verification (6 file/dir checks), install script smoke, data preservation across upgrade, port conflict retry (3 attempts), integrity endpoint smoke. 7 new Rust tests (1120 total). |
 | CLI Executor Routing — Complexity-Based Dispatch | **IMPLEMENTED** — `engine/src/cli/` module with `ClaudeCodeCliExecutor` (spawns `claude -p --output-format json`), `CodexCliExecutor` (spawns `codex exec`), `MultiExecutor` (tier-based routing), and `CliConfig` (env-var config, binary detection). Complexity-based escalation: score >= 0.7 escalates cheap/balanced/strong tiers to `claude_code_cli`. Tier map: `code_generate`→`codex_cli`, `code_refactor`→`codex_cli`, `code_debug`/`architecture_plan`/`architecture_design`→`claude_code_cli` (via policy or complexity escalation). Env vars: `ACP_ENABLE_CLI_EXECUTION`, `ACP_CLAUDE_CODE_BIN`, `ACP_CODEX_BIN`, `ACP_CLI_TIMEOUT_MS`, `ACP_CLI_COMPLEXITY_THRESHOLD`. 10 new Rust tests (1130 total). |
+| Product-Readiness Repair Pass | **IMPLEMENTED** — P0 fixes: smoke_release.sh integrity endpoint drift (fixed path + OpenAPI route guard test), hardcoded LOCAL_NOW replaced with injectable clock in LocalProductStore (chrono::Utc::now() + new_with_clock for tests), CLI executor dispatch wrapped in spawn_blocking for async HTTP safety, dashboard ApiError type with status code awareness and visible error states for all tabs, createBackup function and Create Backup button, threat model rewritten for current state. 2 new Rust tests (1132 total). |
 
 Trial 2 complete evidence chain: [`docs/trials/TRIAL_2_FINAL_STATE_INDEX.md`](trials/TRIAL_2_FINAL_STATE_INDEX.md).
 Trial 3 report: [`docs/trials/TRIAL_3_REPORT.md`](trials/TRIAL_3_REPORT.md).
