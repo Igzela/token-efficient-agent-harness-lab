@@ -123,13 +123,11 @@ pub use shadow::{is_shadow_only, can_compare_with_usage_ledger};
 ## Verification Commands
 
 ```bash
-# Primary: all engine tests pass
+# R-series full verification
+cargo fmt --check
+cargo clippy -p engine -- -D warnings
 cargo test -p engine
-
-# Verify public API unchanged (no import errors)
-cargo build -p engine
-
-# Handoff doc consistency
+bash scripts/verify_rust_typescript_stack.sh
 uv run --no-project python scripts/check_agent_handoff.py
 ```
 
@@ -168,7 +166,7 @@ Rules:
 - Follow the same pattern as R3 (task_analyzer), R4 (dag_manager),
   and R5 (context_pack).
 
-Verify: `cargo test -p engine` (1140+ tests pass)
+Verify: `cargo fmt --check && cargo clippy -p engine -- -D warnings && cargo test -p engine && bash scripts/verify_rust_typescript_stack.sh && uv run --no-project python scripts/check_agent_handoff.py`
 ```
 
 ## Separate Recommendation: `app_layer/`
