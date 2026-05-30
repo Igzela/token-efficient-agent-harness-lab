@@ -1,6 +1,35 @@
 export type * from "./wire-types.js";
 
-import type { ApiStatus, DispatchBundle, DispatchRequest, LocalCostSummary, LocalDispatchCostDetail } from "./wire-types.js";
+import type {
+  ApiStatus,
+  DispatchBundle,
+  DispatchRequest,
+  LocalCostSummary,
+  LocalDispatchCostDetail,
+  LocalDashboardState,
+  DispatchListResponse,
+  DispatchDetailResponse,
+  ConfigResponse,
+  TeamResponse,
+  ExportResponse,
+  AuditResponse,
+  ProviderHealthStatus,
+  ProviderAuditResponse,
+  BackupListResponse,
+  BackupCreateResponse,
+  BackupDeleteResponse,
+  BackupRestoreResponse,
+  KeyListResponse,
+  KeyCreateResponse,
+  KeyRotateResponse,
+  OkResponse,
+  KeyScopesResponse,
+  MemberCreateResponse,
+  MemberUpdateResponse,
+  MemberDeleteResponse,
+  StorageIntegrityResponse,
+  ImportResponse,
+} from "./wire-types.js";
 
 export interface AgentControlPlaneClientOptions {
   baseUrl: string;
@@ -31,20 +60,20 @@ export class AgentControlPlaneClient {
     return this.getJson<Record<string, unknown>>("/api/v1/openapi.json");
   }
 
-  dashboard(): Promise<Record<string, unknown>> {
-    return this.getJson<Record<string, unknown>>("/api/v1/dashboard");
+  dashboard(): Promise<LocalDashboardState> {
+    return this.getJson<LocalDashboardState>("/api/v1/dashboard");
   }
 
-  dispatches(): Promise<Record<string, unknown>> {
-    return this.getJson<Record<string, unknown>>("/api/v1/dispatches");
+  dispatches(): Promise<DispatchListResponse> {
+    return this.getJson<DispatchListResponse>("/api/v1/dispatches");
   }
 
-  config(): Promise<Record<string, unknown>> {
-    return this.getJson<Record<string, unknown>>("/api/v1/config");
+  config(): Promise<ConfigResponse> {
+    return this.getJson<ConfigResponse>("/api/v1/config");
   }
 
-  team(): Promise<Record<string, unknown>> {
-    return this.getJson<Record<string, unknown>>("/api/v1/team");
+  team(): Promise<TeamResponse> {
+    return this.getJson<TeamResponse>("/api/v1/team");
   }
 
   costs(): Promise<LocalCostSummary> {
@@ -55,20 +84,20 @@ export class AgentControlPlaneClient {
     return this.getJson<LocalDispatchCostDetail>(`/api/v1/costs/dispatches?limit=${limit}`);
   }
 
-  exportState(): Promise<Record<string, unknown>> {
-    return this.getJson<Record<string, unknown>>("/api/v1/export");
+  exportState(): Promise<ExportResponse> {
+    return this.getJson<ExportResponse>("/api/v1/export");
   }
 
-  audit(): Promise<Record<string, unknown>> {
-    return this.getJson<Record<string, unknown>>("/api/v1/audit");
+  audit(): Promise<AuditResponse> {
+    return this.getJson<AuditResponse>("/api/v1/audit");
   }
 
-  providerHealth(): Promise<Record<string, unknown>> {
-    return this.getJson<Record<string, unknown>>("/api/v1/provider/health");
+  providerHealth(): Promise<ProviderHealthStatus> {
+    return this.getJson<ProviderHealthStatus>("/api/v1/provider/health");
   }
 
-  providerAudit(): Promise<Record<string, unknown>> {
-    return this.getJson<Record<string, unknown>>("/api/v1/provider/audit");
+  providerAudit(): Promise<ProviderAuditResponse> {
+    return this.getJson<ProviderAuditResponse>("/api/v1/provider/audit");
   }
 
   dispatch(request: DispatchRequest): Promise<DispatchBundle> {
@@ -78,91 +107,91 @@ export class AgentControlPlaneClient {
     });
   }
 
-  createBackup(request: { label?: string; confirmLocalBackup: boolean }): Promise<Record<string, unknown>> {
-    return this.postJson<Record<string, unknown>>("/api/v1/backups", {
+  createBackup(request: { label?: string; confirmLocalBackup: boolean }): Promise<BackupCreateResponse> {
+    return this.postJson<BackupCreateResponse>("/api/v1/backups", {
       label: request.label,
       confirm_local_backup: request.confirmLocalBackup,
     });
   }
 
-  listApiKeys(): Promise<Record<string, unknown>> {
-    return this.getJson<Record<string, unknown>>("/api/v1/keys");
+  listApiKeys(): Promise<KeyListResponse> {
+    return this.getJson<KeyListResponse>("/api/v1/keys");
   }
 
-  async createApiKey(request: { user_id: string; role: string; scopes: string[]; expires_at?: number }): Promise<Record<string, unknown>> {
-    return this.postJson<Record<string, unknown>>("/api/v1/keys", request);
+  async createApiKey(request: { user_id: string; role: string; scopes: string[]; expires_at?: number }): Promise<KeyCreateResponse> {
+    return this.postJson<KeyCreateResponse>("/api/v1/keys", request);
   }
 
-  async revokeApiKey(keyId: string): Promise<Record<string, unknown>> {
-    return this.postJson<Record<string, unknown>>(`/api/v1/keys/${encodeURIComponent(keyId)}/revoke`, {});
+  async revokeApiKey(keyId: string): Promise<OkResponse> {
+    return this.postJson<OkResponse>(`/api/v1/keys/${encodeURIComponent(keyId)}/revoke`, {});
   }
 
-  async rotateApiKey(keyId: string): Promise<Record<string, unknown>> {
-    return this.postJson<Record<string, unknown>>(`/api/v1/keys/${encodeURIComponent(keyId)}/rotate`, {});
+  async rotateApiKey(keyId: string): Promise<KeyRotateResponse> {
+    return this.postJson<KeyRotateResponse>(`/api/v1/keys/${encodeURIComponent(keyId)}/rotate`, {});
   }
 
-  async deleteApiKey(keyId: string): Promise<Record<string, unknown>> {
+  async deleteApiKey(keyId: string): Promise<OkResponse> {
     const response = await this.fetchImpl(`${this.baseUrl}/api/v1/keys/${encodeURIComponent(keyId)}`, {
       method: "DELETE",
       headers: this.headers(),
     });
-    return parseResponse<Record<string, unknown>>(response);
+    return parseResponse<OkResponse>(response);
   }
 
-  async updateKeyScopes(keyId: string, scopes: string[]): Promise<Record<string, unknown>> {
-    return this.postJson<Record<string, unknown>>(`/api/v1/keys/${encodeURIComponent(keyId)}/scopes`, { scopes });
+  async updateKeyScopes(keyId: string, scopes: string[]): Promise<KeyScopesResponse> {
+    return this.postJson<KeyScopesResponse>(`/api/v1/keys/${encodeURIComponent(keyId)}/scopes`, { scopes });
   }
 
-  async createTeamMember(request: { user_id: string; display_name: string; role: string }): Promise<Record<string, unknown>> {
-    return this.postJson<Record<string, unknown>>("/api/v1/team", request);
+  async createTeamMember(request: { user_id: string; display_name: string; role: string }): Promise<MemberCreateResponse> {
+    return this.postJson<MemberCreateResponse>("/api/v1/team", request);
   }
 
-  async updateMemberRole(userId: string, role: string): Promise<Record<string, unknown>> {
+  async updateMemberRole(userId: string, role: string): Promise<MemberUpdateResponse> {
     const response = await this.fetchImpl(`${this.baseUrl}/api/v1/team/${encodeURIComponent(userId)}`, {
       method: "PUT",
       headers: { ...this.headers(), "content-type": "application/json" },
       body: JSON.stringify({ role }),
     });
-    return parseResponse<Record<string, unknown>>(response);
+    return parseResponse<MemberUpdateResponse>(response);
   }
 
-  async deleteMember(userId: string): Promise<Record<string, unknown>> {
+  async deleteMember(userId: string): Promise<MemberDeleteResponse> {
     const response = await this.fetchImpl(`${this.baseUrl}/api/v1/team/${encodeURIComponent(userId)}`, {
       method: "DELETE",
       headers: this.headers(),
     });
-    return parseResponse<Record<string, unknown>>(response);
+    return parseResponse<MemberDeleteResponse>(response);
   }
 
-  dispatchDetail(dispatchId: string): Promise<Record<string, unknown>> {
-    return this.getJson<Record<string, unknown>>(`/api/v1/dispatches/${encodeURIComponent(dispatchId)}`);
+  dispatchDetail(dispatchId: string): Promise<DispatchDetailResponse> {
+    return this.getJson<DispatchDetailResponse>(`/api/v1/dispatches/${encodeURIComponent(dispatchId)}`);
   }
 
-  listBackups(): Promise<Record<string, unknown>> {
-    return this.getJson<Record<string, unknown>>("/api/v1/backups");
+  listBackups(): Promise<BackupListResponse> {
+    return this.getJson<BackupListResponse>("/api/v1/backups");
   }
 
-  async deleteBackup(backupId: string): Promise<Record<string, unknown>> {
+  async deleteBackup(backupId: string): Promise<BackupDeleteResponse> {
     const response = await this.fetchImpl(`${this.baseUrl}/api/v1/backups/${encodeURIComponent(backupId)}`, {
       method: "DELETE",
       headers: this.headers(),
     });
-    return parseResponse<Record<string, unknown>>(response);
+    return parseResponse<BackupDeleteResponse>(response);
   }
 
-  storageIntegrity(): Promise<Record<string, unknown>> {
-    return this.getJson<Record<string, unknown>>("/api/v1/storage/integrity");
+  storageIntegrity(): Promise<StorageIntegrityResponse> {
+    return this.getJson<StorageIntegrityResponse>("/api/v1/storage/integrity");
   }
 
-  async importSnapshot(snapshot: Record<string, unknown>): Promise<Record<string, unknown>> {
-    return this.postJson<Record<string, unknown>>("/api/v1/import", {
+  async importSnapshot(snapshot: Record<string, unknown>): Promise<ImportResponse> {
+    return this.postJson<ImportResponse>("/api/v1/import", {
       snapshot,
       confirm_import: true,
     });
   }
 
-  async restoreBackup(backupId: string): Promise<Record<string, unknown>> {
-    return this.postJson<Record<string, unknown>>(
+  async restoreBackup(backupId: string): Promise<BackupRestoreResponse> {
+    return this.postJson<BackupRestoreResponse>(
       `/api/v1/backups/${encodeURIComponent(backupId)}/restore`,
       { confirm_restore: true },
     );

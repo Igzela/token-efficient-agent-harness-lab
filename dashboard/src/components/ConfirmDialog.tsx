@@ -34,9 +34,9 @@ export function ConfirmDialog({
     <div className="confirm-overlay" onClick={onCancel}>
       <div className="confirm-card" onClick={(e) => e.stopPropagation()}>
         <p>{msg}</p>
-        <div style={{ display: "flex", gap: 8, justifyContent: "flex-end" }}>
+        <div className="flex-end">
           <button onClick={onCancel} type="button">Cancel</button>
-          <button onClick={onConfirm} type="button" style={{ color: "#c0392b" }}>Confirm</button>
+          <button onClick={onConfirm} type="button" className="risk-action">Confirm</button>
         </div>
       </div>
     </div>

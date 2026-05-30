@@ -184,7 +184,7 @@ export function Team({
                   onClick={() => handleDeleteMember(item.user_id)}
                   disabled={busy}
                   type="button"
-                  style={{ color: "#c0392b" }}
+                  className="risk-action"
                 >
                   Delete
                 </button>
@@ -260,7 +260,7 @@ export function Team({
                     onClick={() => setConfirmAction({ type: "deleteKey", id: item.key_id })}
                     disabled={busy}
                     type="button"
-                    style={{ color: "#c0392b" }}
+                    className="risk-action"
                   >
                     Delete
                   </button>

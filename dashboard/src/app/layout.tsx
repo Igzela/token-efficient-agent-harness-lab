@@ -3,6 +3,7 @@ import "./globals.css";
 
 export const metadata: Metadata = {
   title: "Agent Control Plane",
+  description: "Local operations dashboard for dispatch history, team, costs, and health monitoring.",
 };
 
 export default function RootLayout({ children }: Readonly<{ children: React.ReactNode }>) {

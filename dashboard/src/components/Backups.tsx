@@ -50,7 +50,7 @@ export function Backups() {
 
   return (
     <section className="card stack">
-      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+      <div className="flex-between">
         <h2>Backups</h2>
         <button disabled={busy} onClick={handleCreateBackup} type="button">Create Backup</button>
       </div>
@@ -88,7 +88,7 @@ export function Backups() {
                     disabled={busy}
                     onClick={() => setConfirm({ type: "deleteBackup", backupId: String(b.backup_id) })}
                     type="button"
-                    style={{ color: "#c0392b" }}
+                    className="risk-action"
                   >
                     Delete
                   </button>

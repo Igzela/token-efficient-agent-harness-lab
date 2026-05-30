@@ -1,16 +1,17 @@
 import { useState } from "react";
 import { fetchDispatchDetail } from "@/lib/api-client";
 import type { LocalDispatchHistory } from "@/lib/types";
-
-const PAGE_SIZE = 25;
+import { usePaginatedSearch } from "@/lib/hooks";
+import { SearchBar } from "./SearchBar";
+import { Pagination } from "./Pagination";
 
 export function Dispatches({ dispatches }: { dispatches: LocalDispatchHistory[] }) {
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [detail, setDetail] = useState<Record<string, unknown> | null>(null);
   const [loading, setLoading] = useState(false);
   const [detailError, setDetailError] = useState<string | null>(null);
-  const [search, setSearch] = useState("");
-  const [page, setPage] = useState(0);
+  const { search, setSearch, page, setPage, filtered, pageItems, totalPages } =
+    usePaginatedSearch(dispatches, ["dispatch_id", "selected_tier", "final_status", "risk_level", "raw_request"]);
 
   function openDetail(id: string) {
     setSelectedId(id);
@@ -26,20 +27,6 @@ export function Dispatches({ dispatches }: { dispatches: LocalDispatchHistory[] 
     setSelectedId(null);
     setDetail(null);
   }
-
-  const q = search.toLowerCase();
-  const filtered = q
-    ? dispatches.filter(
-        (d) =>
-          d.dispatch_id.toLowerCase().includes(q) ||
-          d.selected_tier.toLowerCase().includes(q) ||
-          d.final_status.toLowerCase().includes(q) ||
-          d.risk_level.toLowerCase().includes(q) ||
-          d.raw_request.toLowerCase().includes(q),
-      )
-    : dispatches;
-  const totalPages = Math.max(1, Math.ceil(filtered.length / PAGE_SIZE));
-  const pageItems = filtered.slice(page * PAGE_SIZE, (page + 1) * PAGE_SIZE);
 
   if (selectedId) {
     return (
@@ -64,16 +51,14 @@ export function Dispatches({ dispatches }: { dispatches: LocalDispatchHistory[] 
   return (
     <section className="grid">
       <div className="table-wrap">
-        <div style={{ display: "flex", gap: 8, alignItems: "center", marginBottom: 8 }}>
-          <input
+        <div style={{ marginBottom: 8 }}>
+          <SearchBar
+            search={search}
+            onSearchChange={(v) => { setSearch(v); setPage(0); }}
+            resultCount={filtered.length}
+            label="result"
             placeholder="Search dispatches..."
-            value={search}
-            onChange={(e) => { setSearch(e.target.value); setPage(0); }}
-            style={{ flex: 1 }}
           />
-          <span className="muted" style={{ fontSize: 12, whiteSpace: "nowrap" }}>
-            {filtered.length} result{filtered.length !== 1 ? "s" : ""}
-          </span>
         </div>
         <table>
           <thead>
@@ -113,15 +98,7 @@ export function Dispatches({ dispatches }: { dispatches: LocalDispatchHistory[] 
             )}
           </tbody>
         </table>
-        {totalPages > 1 && (
-          <div style={{ display: "flex", gap: 8, justifyContent: "center", marginTop: 8 }}>
-            <button onClick={() => setPage((p) => Math.max(0, p - 1))} disabled={page === 0} type="button">Prev</button>
-            <span className="muted" style={{ fontSize: 12, alignSelf: "center" }}>
-              Page {page + 1} of {totalPages}
-            </span>
-            <button onClick={() => setPage((p) => Math.min(totalPages - 1, p + 1))} disabled={page >= totalPages - 1} type="button">Next</button>
-          </div>
-        )}
+        <Pagination page={page} totalPages={totalPages} onPageChange={setPage} />
       </div>
       <aside className="card stack">
         <div className="heading-row">

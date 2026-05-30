@@ -225,7 +225,7 @@ h3 {
 }
 
 .key-reveal-warning {
-  color: #c0392b;
+  color: var(--risk);
   font-size: 13px;
   font-weight: 500;
 }
@@ -455,8 +455,35 @@ tbody tr:hover {
 }
 
 .error-text {
-  color: #c0392b;
+  color: var(--risk);
   font-size: 0.875rem;
+}
+
+.risk-action {
+  color: var(--risk);
+}
+
+.flex-row {
+  align-items: center;
+  display: flex;
+  gap: 8px;
+}
+
+.flex-between {
+  align-items: center;
+  display: flex;
+  gap: 16px;
+  justify-content: space-between;
+}
+
+.flex-end {
+  display: flex;
+  gap: 8px;
+  justify-content: flex-end;
+}
+
+.search-input {
+  flex: 1;
 }
 
 button {

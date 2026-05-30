@@ -52,9 +52,9 @@ export function AuthPanel({
               }}
             />
           </label>
-          <div style={{ display: "flex", gap: 8, justifyContent: "flex-end" }}>
+          <div className="flex-end">
             {getStoredToken() && (
-              <button onClick={handleClear} type="button" style={{ color: "#c0392b" }}>
+              <button onClick={handleClear} type="button" className="risk-action">
                 Clear Token
               </button>
             )}

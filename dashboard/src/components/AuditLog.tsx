@@ -1,13 +1,14 @@
 import { useEffect, useState } from "react";
 import { fetchAudit } from "@/lib/api-client";
-
-const PAGE_SIZE = 25;
+import { usePaginatedSearch } from "@/lib/hooks";
+import { SearchBar } from "./SearchBar";
+import { Pagination } from "./Pagination";
 
 export function AuditLog() {
   const [events, setEvents] = useState<Array<Record<string, unknown>>>([]);
   const [error, setError] = useState<string | null>(null);
-  const [search, setSearch] = useState("");
-  const [page, setPage] = useState(0);
+  const { search, setSearch, page, setPage, filtered, pageItems, totalPages } =
+    usePaginatedSearch(events, ["actor", "action", "resource"]);
 
   useEffect(() => {
     fetchAudit()
@@ -15,33 +16,17 @@ export function AuditLog() {
       .catch((e) => setError(e instanceof Error ? e.message : "Failed to load audit events"));
   }, []);
 
-  const q = search.toLowerCase();
-  const filtered = q
-    ? events.filter(
-        (e) =>
-          String(e.actor).toLowerCase().includes(q) ||
-          String(e.action).toLowerCase().includes(q) ||
-          String(e.resource).toLowerCase().includes(q),
-      )
-    : events;
-  const totalPages = Math.max(1, Math.ceil(filtered.length / PAGE_SIZE));
-  const pageItems = filtered.slice(page * PAGE_SIZE, (page + 1) * PAGE_SIZE);
-
   return (
     <section className="card stack">
       <h2>Audit Log</h2>
       {error && <p className="error-text">{error}</p>}
-      <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
-        <input
-          placeholder="Search audit events..."
-          value={search}
-          onChange={(e) => { setSearch(e.target.value); setPage(0); }}
-          style={{ flex: 1 }}
-        />
-        <span className="muted" style={{ fontSize: 12, whiteSpace: "nowrap" }}>
-          {filtered.length} event{filtered.length !== 1 ? "s" : ""}
-        </span>
-      </div>
+      <SearchBar
+        search={search}
+        onSearchChange={(v) => { setSearch(v); setPage(0); }}
+        resultCount={filtered.length}
+        label="event"
+        placeholder="Search audit events..."
+      />
       {pageItems.length === 0 && !error ? (
         <p className="muted">{search ? "No matching events" : "No audit events"}</p>
       ) : (
@@ -77,15 +62,7 @@ export function AuditLog() {
           </tbody>
         </table>
       )}
-      {totalPages > 1 && (
-        <div style={{ display: "flex", gap: 8, justifyContent: "center", marginTop: 8 }}>
-          <button onClick={() => setPage((p) => Math.max(0, p - 1))} disabled={page === 0} type="button">Prev</button>
-          <span className="muted" style={{ fontSize: 12, alignSelf: "center" }}>
-            Page {page + 1} of {totalPages}
-          </span>
-          <button onClick={() => setPage((p) => Math.min(totalPages - 1, p + 1))} disabled={page >= totalPages - 1} type="button">Next</button>
-        </div>
-      )}
+      <Pagination page={page} totalPages={totalPages} onPageChange={setPage} />
     </section>
   );
 }
