@@ -558,6 +558,7 @@ function Team({
     type: "deleteMember" | "revokeKey" | "deleteKey" | "rotateKey";
     id: string;
   } | null>(null);
+  const [revealedKey, setRevealedKey] = useState<{ rawKey: string; label: string } | null>(null);
 
   const refresh = () => fetchDashboard().then((d) => refreshDashboard(d));
 
@@ -610,7 +611,7 @@ function Team({
         const res = await rotateApiKey(confirmAction.id);
         const rawKey = (res as Record<string, unknown>).raw_key;
         if (rawKey) {
-          alert(`Rotated API key (copy now — shown once):\n${rawKey}`);
+          setRevealedKey({ rawKey: String(rawKey), label: "Rotated API Key" });
         }
       }
       refresh();
@@ -630,7 +631,7 @@ function Team({
       const res = await createApiKey({ user_id: keyUserId, role: keyRole, scopes: keyScopes });
       const rawKey = (res as Record<string, unknown>).raw_key;
       if (rawKey) {
-        alert(`New API key (copy now — shown once):\n${rawKey}`);
+        setRevealedKey({ rawKey: String(rawKey), label: "New API Key" });
       }
       setKeyUserId("");
       setKeyRole("readonly");
@@ -681,6 +682,13 @@ function Team({
             </div>
           </div>
         </div>
+      )}
+      {revealedKey && (
+        <KeyRevealModal
+          rawKey={revealedKey.rawKey}
+          label={revealedKey.label}
+          onClose={() => setRevealedKey(null)}
+        />
       )}
       <div className="card stack">
         <h2>Members</h2>
@@ -1023,6 +1031,51 @@ function ConfirmDialog({
         <div style={{ display: "flex", gap: 8, justifyContent: "flex-end" }}>
           <button onClick={onCancel} type="button">Cancel</button>
           <button onClick={onConfirm} type="button" style={{ color: "#c0392b" }}>Confirm</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function KeyRevealModal({
+  rawKey,
+  label,
+  onClose,
+}: {
+  rawKey: string;
+  label: string;
+  onClose: () => void;
+}) {
+  const [copied, setCopied] = useState(false);
+
+  async function handleCopy() {
+    try {
+      await navigator.clipboard.writeText(rawKey);
+      setCopied(true);
+    } catch {
+      // Fallback: select the text
+      const el = document.getElementById("key-reveal-value");
+      if (el) {
+        const range = document.createRange();
+        range.selectNodeContents(el);
+        const sel = window.getSelection();
+        sel?.removeAllRanges();
+        sel?.addRange(range);
+      }
+    }
+  }
+
+  return (
+    <div className="confirm-overlay" onClick={onClose}>
+      <div className="confirm-card key-reveal-card" onClick={(e) => e.stopPropagation()}>
+        <h3 style={{ margin: "0 0 12px" }}>{label}</h3>
+        <p className="key-reveal-warning">This key is shown only once. Copy it now — it cannot be retrieved later.</p>
+        <div id="key-reveal-value" className="key-reveal-value">{rawKey}</div>
+        <div style={{ display: "flex", gap: 8, justifyContent: "flex-end", marginTop: 16 }}>
+          <button onClick={onClose} type="button">Close</button>
+          <button onClick={handleCopy} type="button">
+            {copied ? "Copied!" : "Copy"}
+          </button>
         </div>
       </div>
     </div>
