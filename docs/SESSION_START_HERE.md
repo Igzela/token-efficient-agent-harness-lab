@@ -59,14 +59,16 @@ Additional active architecture track:
 | Agent-Control-Plane Local Small-Team Productization | Implemented; Rust engine persists app-owned SQLite dispatch history/config/team/API-key metadata/audit/cost state, dashboard reads live local API state, SDKs cover local state endpoints, and export/confirmed backup are available without Docker |
 | Rust Provider Stack Stage 1 + Stage 2 audit/usage bridge | Implemented as explicit env-gated beta path; provider health/audit endpoints, persistent provider audit events, and dispatch usage columns exist; CI uses stub/mock paths and does not call real provider APIs |
 | Rust + TypeScript Cutover | Complete; Rust `engine/` is the primary runtime/API/storage/provider-gated control plane, `dashboard/` and `sdk/typescript/` are the primary TypeScript surfaces; Python retained as REST SDK and utility scripts only |
+| Architecture Refactor R-series | Sealed at R7; R8 is not approved. No further R-series file splitting is approved |
+| Post-R7 Wire/Type Governance Hardening | Implemented; `app_layer` remains dormant/unwired reference code and `scripts/check_wire_codegen_drift.sh` protects generated wire files |
 
 ## What This Project Is Not
 
 - **Not CA-8.** The CA-7 baseline is sealed. No CA-8 exists.
 - **Not Stage 5.** No Stage 5 implementation has been started.
-- **Not a cloud production SaaS.** No real model providers, sandboxes, workers, hosted service, or deployment targets.
+- **Not a cloud production SaaS.** No default-on real model providers, sandbox isolation runtime, workers, hosted service, or production deployment targets.
 - **No real provider/model calls by default.** Provider adapters are explicit env-gated beta paths; CI uses stub/mock paths and does not call real provider APIs.
-- **No real sandbox/process/container/VM execution.** Sandbox claims are logical file-claim tracking only.
+- **No sandbox/process/container/VM isolation runtime.** Sandbox claims are logical file-claim tracking only. Existing local CLI executor subprocess invocation is a separate, unchanged exception.
 - **No autonomous workers.** No real concurrent workers are spawned.
 - **No target repo writes by default.** Target repositories are read-only. The app never writes to them.
 
@@ -84,19 +86,18 @@ Additional active architecture track:
 
 The responsible coding agent may autonomously advance repository-safe work that keeps the project moving:
 
-- repair stale docs and handoff drift
+- repair stale docs, handoff drift, and wire-codegen guard drift
 - fix failing tests, CI, security baseline, or deterministic regressions
 - add focused tests for existing behavior
 - harden completed phases when backed by concrete review findings
-- implement documented dispatch-kernel phase work when the architecture book already defines the contract and the implementation does not broaden real provider behavior beyond explicit env-gated beta paths, real sandbox/process execution, target repo writes, deployment, or real worker processes
+- implement documented dispatch-kernel phase work when the architecture book already defines the contract and the implementation does not broaden real provider behavior beyond explicit env-gated beta paths, add sandbox isolation, expand subprocess execution beyond the existing CLI executor path, add target repo writes, deployment, or real worker processes
 
 Do **not** start any of the following without explicit human approval:
 
 - MVP9
-- Trial 2
 - Stage 5
-- Provider/model integration
-- Sandbox/process/container/VM execution
+- Broader provider/model integration beyond the explicit env-gated local beta path
+- Sandbox isolation or subprocess expansion beyond the existing CLI executor path
 - Autonomous workers
 - Target repo writes
 - Approval/run/execute/deploy/merge controls
@@ -108,7 +109,7 @@ Before proposing any new track, read `docs/CURRENT_STATUS.md` and `docs/NEXT_DEC
 A session is not complete until it leaves a durable handoff:
 
 1. Relevant tests or verification commands were run and recorded.
-2. `uv run --no-project python scripts/check_agent_handoff.py` passes (includes toolchain drift guard).
+2. `uv run --no-project python scripts/check_agent_handoff.py` passes (includes toolchain and `scripts/check_wire_codegen_drift.sh` guards).
 3. Handoff docs reflect the current branch, status, test count, stable commits, limitations, and next action.
 4. The commit message is in English and the active branch is pushed when the tree contains only this session's intended changes.
 5. The final report states latest commit, verification, remaining risks, and the next safe action.

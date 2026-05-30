@@ -4,7 +4,7 @@
 
 **What**: A local deterministic harness and self-hosted agent-control-plane for studying token-efficient agent workflows. It provides deterministic dispatch planning, local API/dashboard access, app-owned SQLite history/config/team state, and cost-of-pass metrics.
 
-**What NOT**: Not a cloud production SaaS or autonomous-agent runtime. No real model-provider calls by default, no real sandbox/process/container/VM execution, no autonomous workers, no target-repo writes, and no hosted production deployment.
+**What NOT**: Not a cloud production SaaS or autonomous-agent runtime. No real model-provider calls by default, no sandbox/process/container/VM isolation runtime, no autonomous workers, no target-repo writes, and no hosted production deployment. Existing local CLI executor subprocess invocation is a separate, unchanged exception.
 
 **Target user**: Solo developer or small local team studying and operating deterministic agent infrastructure patterns on one machine or a LAN.
 
@@ -57,7 +57,7 @@ Master architecture document: `docs/dispatch/DISPATCHER_KERNEL_V0_ARCHITECTURE.m
 - **Agent-Control-Plane Phase 7 Docker**: IMPLEMENTED (`deploy/Dockerfile.engine`, `deploy/Dockerfile.dashboard`, `docker-compose.yml`, optional local API + dashboard smoke).
 - **Agent-Control-Plane Phase 8 Closeout**: IMPLEMENTED (`docs/AGENT_CONTROL_PLANE_MIGRATION_CLOSEOUT.md`).
 - **Agent-Control-Plane Native Local Runtime**: IMPLEMENTED (`ACP_DASHBOARD_DIR=dashboard/out cargo run -p engine` serves API + dashboard from one Rust process; Docker optional).
-- **Agent-Control-Plane Local Small-Team Productization**: IMPLEMENTED (`engine/src/storage/local_product_store.rs`, live dashboard API state, SQLite dispatch history/config/team/API-key metadata/audit/cost state, export, admin-auth-confirmed local backup, SDK local-state methods). Still no cloud SaaS, target writes, real workers, or real sandbox/process execution.
+- **Agent-Control-Plane Local Small-Team Productization**: IMPLEMENTED (`engine/src/storage/local_product_store/`, live dashboard API state, SQLite dispatch history/config/team/API-key metadata/audit/cost state, export, admin-auth-confirmed local backup, SDK local-state methods). Still no cloud SaaS, target writes, real workers, or sandbox/process isolation runtime.
 - **Phase 6B-3 Gate 1**: IMPLEMENTED (scope checks, rate limiting, 403/429 responses).
 - **Security hardening**: redaction logging, http_server body size limit + CORS, checkpoint path traversal fix, 42 new tests for coverage gaps.
 - **Productization Phase 2 — Permission Governance**: IMPLEMENTED (API key create/revoke/rotate/delete/scopes, team member create/update-role/delete, last_used_at tracking, expires_at support, revoked_at enforcement, admin audit events, team:admin scope gating, SDK CRUD methods, dashboard management UI).
@@ -72,8 +72,8 @@ Master architecture document: `docs/dispatch/DISPATCHER_KERNEL_V0_ARCHITECTURE.m
 - **Architecture Refactor R5**: IMPLEMENTED (`engine/src/workflow/context_pack/` module directory: mod.rs, rules.rs, types.rs, validation.rs, budget.rs). 1144 Rust tests pass.
 - **Architecture Refactor R6**: IMPLEMENTED (`engine/src/harness/model_profiles/` module directory: mod.rs, constants.rs, types.rs, validation.rs, shadow.rs). 1144 Rust tests pass.
 - **Architecture Refactor R7**: IMPLEMENTED (`engine/src/workflow/concurrency/` module directory: mod.rs, dag_types.rs, types.rs, controller.rs, helpers.rs). 1144 Rust tests pass.
-- **Architecture Refactor R-series**: **SEALED AT R7**. R8 is not approved. `checkpoint.rs` split deferred. `dispatch_decision.rs` split deferred pending wire/type governance follow-up.
-- **Post-R7 Wire/Type Governance Hardening**: IMPLEMENTED (`app_layer` dormant-reference annotation, 20-fixture Rust typed round-trip guardrail, active CLI/provider execution-result schema enums, generated/manual TypeScript split behind compatibility re-export, schema-driven practical enum extraction, `--check` codegen mode, CI/autonomous-closeout codegen drift guard, localized dashboard union reuse). 1146 Rust tests pass.
+- **Architecture Refactor R-series**: **SEALED AT R7**. R8 is not approved. `checkpoint.rs` split and `dispatch_decision.rs` split deferred. No further R-series file splitting is approved.
+- **Post-R7 Wire/Type Governance Hardening**: IMPLEMENTED (`app_layer` dormant-reference annotation, 20-fixture Rust typed round-trip guardrail, active CLI/provider execution-result schema enums, generated/manual TypeScript split behind compatibility re-export, schema-driven practical enum extraction, `--check` codegen mode, CI/autonomous-closeout `scripts/check_wire_codegen_drift.sh` guard, localized dashboard union reuse). 1146 Rust tests pass.
 
 See `docs/CURRENT_STATUS.md` for detailed phase closeout records.
 
@@ -111,7 +111,7 @@ See `docs/CURRENT_STATUS.md` for full details.
 - **2026-05-29**: Provider infrastructure (audit/redaction/RetryFallbackManager), Rust + TypeScript cutover, Productization Phases 1-6 (Provider Safety Gate, Permission Governance, Cost Governance, Data Operations, Native Packaging, Dashboard Controls). 1086 Rust tests, 13 TS SDK tests, 17 Python SDK tests. All verification passing.
 - **2026-05-30**: Long-Run Hardening (part 1) — SQLite contention tests (6 tests for concurrent writes, reads-during-writes, audit events, deadlock prevention, data integrity) and provider failure matrix tests (21 tests covering retry exhaustion, fallback routing, budget-exhausted mid-retry, non-retryable errors, disabled provider, cost gate blocks, audit trail, governance blocks, backoff strategies). 27 new Rust tests (1113 total).
 - **2026-05-30**: Long-Run Hardening (part 2) — Audit integrity tests (7 tests: mutation audit correctness, ordering monotonicity, persistence across reopen, concurrent writes, integrity report row count). Enhanced smoke_release.sh: tarball structure, install smoke, data preservation, port retry, integrity endpoint. 7 new Rust tests (1120 total).
-- **2026-05-30**: CLI Executor Routing — Complexity-based dispatch to Claude Code CLI / Codex CLI. New `engine/src/cli/` module with `ClaudeCodeCliExecutor`, `CodexCliExecutor`, `MultiExecutor`, `CliConfig`. Env-gated default-on. Complexity threshold 0.7 escalates to CLI tiers. 10 new Rust tests (1130 total).
+- **2026-05-30**: CLI Executor Routing — Complexity-based dispatch to Claude Code CLI / Codex CLI. New `engine/src/cli/` module with `ClaudeCodeCliExecutor`, `CodexCliExecutor`, `MultiExecutor`, `CliConfig`. Existing local subprocess exception defaults enabled when binaries are discoverable. Complexity threshold 0.7 escalates to CLI tiers. 10 new Rust tests (1130 total).
 - **2026-05-30**: P1 Local-Beta Follow-Up — 7 items: GET /api/v1/keys metadata-only key list endpoint, search/filter/pagination for dispatches and audit, bookmarkable dashboard tabs via URL hash, 60-second auto-refresh with visibility-aware pausing, Docker volume persistence for SQLite, key reveal modal replacing alert(), dashboard split from 1358-line monolith into 12 focused components. 4 new Rust tests (1140 total).
 - **2026-05-30**: P2 Local-Beta Polish & Type Hardening — CSS design token cleanup (#c0392b → var(--risk), utility classes), TypeScript SDK type hardening (22 new focused response interfaces, 21 methods typed, ExecutorType/ExecutionStatus extended for CLI executors), dashboard component quality (usePaginatedSearch hook, SearchBar, Pagination components), Next.js app polish (loading.tsx, error.tsx, metadata, favicon). 0 new Rust tests (1140 total), 16 SDK tests pass.
 - **2026-05-30**: Toolchain Consolidation & Drift Guard — Standardized all authoritative docs to `uv run --no-project python` (8 stale bare python3 references fixed across 9 files). README toolchain table added. verify_rust_typescript_stack.sh preflight extended (bun/cargo/uv). `scripts/check_toolchain_drift.sh` drift guard added for stale JS/Python toolchain references. Integrated into autonomous closeout workflow. CI already aligned. 0 new Rust tests (1140 total). `uv.lock` intentionally not added.
@@ -167,9 +167,9 @@ Use `docs/NEXT_DECISION.md` for the current forward plan. Do not rely on older p
 For each autonomous session:
 
 1. Inspect `git status --short --branch` and read the session bootstrap docs.
-2. Choose the highest-value safe task from failing verification, documented phase work, concrete review findings, stale handoff docs, or narrowly scoped hardening.
+2. Choose the highest-value safe task from failing verification, CI/docs/test drift, wire-governance drift, concrete review findings, or narrowly scoped hardening.
 3. Update or add tests before behavior changes.
-4. Run the relevant verification command, plus `uv run --no-project python scripts/check_agent_handoff.py` (includes toolchain drift guard).
+4. Run the relevant verification command, plus `uv run --no-project python scripts/check_agent_handoff.py` (includes toolchain and `scripts/check_wire_codegen_drift.sh` guards).
 5. Update the smallest necessary handoff surface before commit: `docs/CURRENT_STATUS.md`, `docs/NEXT_DECISION.md`, `docs/MODULE_MAP.md`, `README.md`, `CLAUDE.md`, and `AGENTS.md` when their facts changed.
 6. Commit in English and push when the working tree only contains this session's intended changes.
 7. Leave the next action, latest commit, verification, and residual risks in the final report.
@@ -180,7 +180,7 @@ This protocol authorizes the coding agent to advance the repository. It does not
 
 1. **Always reference the architecture book** before making implementation decisions. If the book is ambiguous or too coarse, discuss with GPT (see below).
 2. **Never deviate from schemas** defined in the architecture book without updating the book first.
-3. **Phase boundaries are sacred**: Phase 1-2 MUST NOT call real providers, execute in sandbox, write to target repos, or start autonomous workers. Current provider execution is an explicit env-gated local beta path and must stay default-off unless a future approved plan changes that boundary.
+3. **Phase boundaries are sacred**: Phase 1-2 MUST NOT call real providers, add sandbox isolation, expand subprocess execution beyond the existing CLI executor path, write to target repos, or start autonomous workers. Current provider execution is an explicit env-gated local beta path and must stay default-off unless a future approved plan changes that boundary.
 4. **When blocked or facing coarse granularity**: Discuss with GPT in the same ChatGPT session used for architecture review. Iterate until both agree, then update the architecture book before implementing.
 5. **Document maintenance**: Keep the authoritative handoff surface current and small. Prefer shortening existing docs or deleting stale planning docs over adding files.
 6. **Autonomous closeout**: Run `uv run --no-project python scripts/check_agent_handoff.py` before commit. A commit is incomplete if the handoff docs no longer tell the next session what changed, how it was verified, and what should happen next.

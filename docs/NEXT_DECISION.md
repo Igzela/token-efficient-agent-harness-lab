@@ -2,7 +2,7 @@
 
 ## Default Recommendation
 
-**Autonomously maintain and advance safe repository work.** The completed Stage 0–4 task-book scope, CA-7 sealed baseline, Harness App MVP0–MVP8, Trials 0–3, Reliability Hardening 1, and Dispatch Kernel Phase 1–7 (including 6A, 6B-1/2/3, Gates 1–3, and all Phase 7 modules: sdk, doc_generator, community_profiles, tool_adapter, dashboard, benchmark) are complete. The responsible coding agent should keep the repo healthy, fix verification/documentation drift, and advance documented dispatch-kernel work that stays inside the hard boundaries.
+**Autonomously maintain and advance safe repository work.** The completed Stage 0–4 task-book scope, CA-7 sealed baseline, Harness App MVP0–MVP8, Trials 0–3, Reliability Hardening 1, and Dispatch Kernel Phase 1–7 (including 6A, 6B-1/2/3, Gates 1–3, and all Phase 7 modules: sdk, doc_generator, community_profiles, tool_adapter, dashboard, benchmark) are complete. The responsible coding agent should keep the repo healthy and fix CI/docs/test drift plus wire-governance gaps. Do not continue R-series file splitting.
 
 This is standing authorization for the external coding agent maintaining this repository. It is not authorization to implement real autonomous workers inside the harness runtime.
 
@@ -14,15 +14,15 @@ The responsible coding agent may choose any of the following without asking for 
 
 | Path | Description |
 |---|---|
-| Autonomous maintenance loop | Repair stale docs, branch/test count drift, CI breakage, security baseline failures, and handoff gaps. |
+| Autonomous maintenance loop | Repair stale docs, branch/test count drift, CI breakage, security baseline failures, handoff gaps, and wire-codegen guard drift. |
 | Focused regression hardening | Add or repair tests for existing behavior when review findings, failing tests, or code inspection identify a concrete risk. |
-| Dispatch-kernel phase work | Plan and implement the next architecture-book-defined phase only when it can remain deterministic, local, test-first, and free of broader real-provider behavior, real sandbox/process execution, target writes, deployment, and real worker processes. Existing provider adapters are explicit env-gated beta paths and must remain default-off. |
+| Dispatch-kernel phase work | Plan and implement the next architecture-book-defined phase only when it can remain deterministic, local, test-first, and free of broader real-provider behavior, sandbox isolation, subprocess expansion beyond the existing CLI executor path, target writes, deployment, and real worker processes. Existing provider adapters are explicit env-gated beta paths and must remain default-off. |
 | Architecture/documentation closeout | Update architecture records, module maps, closeout reports, and handoff docs after accepted changes. |
 | Demo/docs polish | Refine demo docs when verification or user feedback identifies a concrete gap. |
 | Language migration | Agent-control-plane migration phases 0-8 are implemented and recorded in `docs/AGENT_CONTROL_PLANE_MIGRATION_CLOSEOUT.md`. Rust + TypeScript cutover is complete: Rust `engine/` is the primary runtime/API/storage/provider-gated control plane, and `dashboard/` plus `sdk/typescript/` are the primary TypeScript surfaces. Python retained as REST SDK and utility scripts only; legacy reference implementation retired. No real workers, target writes, SDK publishing, or cloud production deployment. |
 | Local small-team hardening | Productization Phases 1-7 complete (Provider Safety Gate, Permission Governance, Cost Governance, Data Operations, Native Packaging, Dashboard Controls, Long-Run Hardening). All planned phases done. Keep provider execution default-off and explicit; keep target writes, sandbox/process execution, real workers, and cloud SaaS out of scope. |
-| CLI executor routing | Complexity-based dispatch to Claude Code CLI / Codex CLI implemented. Can extend: interactive session persistence, additional CLI tools, adaptive routing feedback for CLI tiers, CLI-specific execution gates. |
-| Architecture refactor (R-series) | **SEALED AT R7.** R1–R7 are complete. R8 is not approved. The `checkpoint.rs` split is deferred. The `dispatch_decision.rs` split is deferred pending wire/type governance follow-up. Do not continue the R-series without an explicit new plan and approval. |
+| CLI executor routing | Complexity-based dispatch to Claude Code CLI / Codex CLI implemented as a pre-existing local subprocess exception. Maintenance only. Any expansion requires an explicit new plan and approval. |
+| Architecture refactor (R-series) | **SEALED AT R7.** R1–R7 are complete. R8 is not approved. The `checkpoint.rs` split and `dispatch_decision.rs` split are deferred. No further R-series file splitting is approved. |
 
 ## Local Productization Plan
 
@@ -50,7 +50,7 @@ Next productization phases:
 |---|---|---|
 | 7 | Long-Run Hardening | **COMPLETE** — SQLite contention tests ✓, provider failure matrix ✓, audit integrity review ✓ (7 tests), upgrade smoke verification ✓ (tarball structure, install smoke, data preservation, port retry, integrity endpoint). LAN threat model exists at `docs/security/THREAT_MODEL.md`. GitHub Actions clean (Node 22, latest action versions). |
 
-All planned productization phases (1–7) are complete. No Phase 8 is defined. The agent should maintain repo health (CI, docs, test drift, security baseline) until the user provides new direction or defines a new phase.
+All planned productization phases (1–7) are complete. No productization Phase 8 is defined. The completed migration Phase 8 closeout is historical, not a new work track. The agent should maintain repo health (CI, docs, test drift, wire governance, security baseline) until the user provides new direction or defines a new phase.
 
 ## Disallowed by Default
 
@@ -60,13 +60,13 @@ The following are **not** allowed without explicit human approval and a new impl
 - **CA-8** — CA-7 is sealed. No CA-8 exists.
 - **Original task-book Stage 5** — no Stage 5 implementation has been started.
 - **Provider/model productionization** — broadening real API calls beyond the existing explicit env-gated local beta path, enabling providers by default, or adding unattended provider execution.
-- **Sandbox/process/container/VM execution** — real isolation beyond logical file claims.
+- **Sandbox/process/container/VM execution** — real isolation or subprocess expansion beyond the existing local CLI executor path.
 - **Runtime autonomous workers** — real concurrent worker processes.
 - **Target repo writes** — any mutation of registered target repositories.
 - **Approval/run/execute/deploy/merge controls** — any execution or deployment mechanism.
 - **Cloud productionization** — hosted service, SaaS deployment, production multi-tenant service, or remote user-facing release.
 
-The local small-team track does not approve cloud hosting, default-on provider calls, real sandbox/process execution, target-repo writes, hosted deployment, or real autonomous workers.
+The local small-team track does not approve cloud hosting, default-on provider calls, sandbox isolation, subprocess expansion beyond the existing CLI executor path, target-repo writes, hosted deployment, or real autonomous workers.
 
 Python legacy reference implementation has been retired. Python is retained only as the REST SDK (`sdk/python/`) and utility scripts. New primary runtime work belongs in Rust and TypeScript.
 
@@ -76,5 +76,5 @@ Python legacy reference implementation has been retired. Python is retained only
 2. Confirm the proposed track is not in the disallowed list above.
 3. Confirm the work has an architecture-book, test, issue, review finding, or documentation-drift basis.
 4. Keep the change commit-sized and run the relevant verification.
-5. Run `uv run --no-project python scripts/check_agent_handoff.py` (includes toolchain drift guard).
+5. Run `uv run --no-project python scripts/check_agent_handoff.py` (includes toolchain and `scripts/check_wire_codegen_drift.sh` guards).
 6. Update handoff docs before committing and pushing.

@@ -27,10 +27,11 @@ The Stage 0-4 task-book scope is complete.
 - Dispatch Kernel Phase 6B-2 local API key + tenant boundary implemented and hardened (1654 tests).
 - Dispatch Kernel Phase 7 SDK + Documentation System implemented (sdk.py, doc_generator.py).
 - Language migration preparation approved: Rust core + axum API target, TypeScript dashboard/SDK target, Python SDK retained. Rust engine parity now covers wire schemas, golden fixtures, dispatch, routing/orchestration, infrastructure, storage, SDK/migrator helpers, doc generation, and a local axum API router. Phase 5 codegen plus TypeScript/Python REST SDK packages are implemented. Phase 6 dashboard is implemented with static export support. Phase 7 local Docker deploy is implemented as an optional verification path. Native local runtime is implemented so one Rust process can serve API + static dashboard with `ACP_DASHBOARD_DIR=dashboard/out`; Phase 8 closeout is recorded in `docs/AGENT_CONTROL_PLANE_MIGRATION_CLOSEOUT.md`. Rust + TypeScript cutover is complete: Rust `engine/` is the primary runtime/API/storage/provider-gated control plane, `dashboard/` and `sdk/typescript/` are the primary TypeScript surfaces. Python legacy reference retired; Python retained as REST SDK and utility scripts only.
-- Local small-team productization is implemented: app-owned SQLite dispatch history/config/team/API-key metadata/audit/cost state, live dashboard API state, optional local API key role boundary, export, confirmed local backup, and SDK methods. Real providers, target writes, sandbox/process/container/VM execution, runtime workers, cloud SaaS, and hosted production deployment remain disallowed.
+- Local small-team productization is implemented: app-owned SQLite dispatch history/config/team/API-key metadata/audit/cost state, live dashboard API state, optional local API key role boundary, export, confirmed local backup, and SDK methods. Broader provider execution beyond the explicit env-gated local beta path, target writes, sandbox/process/container/VM isolation, runtime workers, cloud SaaS, and hosted production deployment remain disallowed.
 - GitHub private repository published.
-- Architecture Refactor R-series sealed at R7. R8 is not approved. The `checkpoint.rs` split is deferred. The `dispatch_decision.rs` split is deferred pending wire/type governance follow-up.
-- Post-R7 wire/type governance hardening implemented: dormant `app_layer` annotation, Rust golden fixture typed round-trip guardrail, active execution-result schema enums, generated/manual TypeScript split, schema-driven enum codegen with drift enforcement, and localized dashboard union reuse.
+- Architecture Refactor R-series sealed at R7. R8 is not approved. The `checkpoint.rs` split and `dispatch_decision.rs` split are deferred. No further R-series file splitting is approved.
+- Post-R7 wire/type governance hardening implemented: dormant `app_layer` annotation, Rust golden fixture typed round-trip guardrail, active execution-result schema enums, generated/manual TypeScript split, schema-driven enum codegen with drift enforcement via `scripts/check_wire_codegen_drift.sh`, and localized dashboard union reuse.
+- Existing CLI executor routing is a pre-existing local subprocess exception. This audit does not change it. Any expansion requires explicit scope and human approval.
 
 This project is now in autonomous maintainer mode for repository advancement. The responsible coding agent may keep advancing approved documentation, test, CI, hardening, dispatch-kernel, and local small-team self-hosting tracks without waiting for a new human instruction on every commit. New cloud/SaaS, hosted production, real-provider, target-write, or real-execution tracks still require explicit scope and human approval.
 
@@ -62,17 +63,17 @@ The responsible coding agent is expected to move this repository forward end to 
 
 Allowed autonomous advancement:
 
-- repair stale handoff docs and status drift
+- repair stale handoff docs, status drift, and wire-codegen guard drift
 - fix failing tests, CI breakage, lint/security baseline failures, and deterministic regressions
 - add focused tests for uncovered behavior in existing modules
 - harden completed dispatch-kernel phases when evidence or review findings identify concrete defects
-- advance the next documented dispatch-kernel phase when it is already described in the architecture book and can be implemented without broadening real provider behavior beyond the existing explicit env-gated local beta path, real sandbox execution, target repo writes, deployment, or concurrent worker processes
+- advance the next documented dispatch-kernel phase when it is already described in the architecture book and can be implemented without broadening real provider behavior beyond the existing explicit env-gated local beta path, sandbox isolation, subprocess execution beyond the existing CLI executor path, target repo writes, deployment, or concurrent worker processes
 - update architecture, module maps, and closeout reports required to make the new state durable
 
 Not allowed under autonomous authority:
 
 - create a new cloud product surface, hosted service, or production runtime
-- broaden real model-provider calls beyond the existing explicit env-gated local beta path, add secrets, add default-on provider execution, process execution, containers, VMs, target-repo mutation, approval/run/deploy controls, or real autonomous workers
+- broaden real model-provider calls beyond the existing explicit env-gated local beta path, add secrets, add default-on provider execution, expand subprocess execution beyond the existing CLI executor path, add containers, VMs, target-repo mutation, approval/run/deploy controls, or real autonomous workers
 - bypass the architecture book, phase gates, tests, or documentation maintenance rule
 
 ## Autonomous Advancement Loop
@@ -84,7 +85,7 @@ For every autonomous session:
 3. Write or update tests first when behavior changes.
 4. Implement the smallest coherent change and run the relevant verification command.
 5. Update `docs/CURRENT_STATUS.md`, `docs/NEXT_DECISION.md`, `docs/MODULE_MAP.md`, `README.md`, `CLAUDE.md`, and this file when their facts changed.
-6. Run `uv run --no-project python scripts/check_agent_handoff.py` before commit (includes toolchain drift guard).
+6. Run `uv run --no-project python scripts/check_agent_handoff.py` before commit (includes toolchain and wire-codegen drift guards).
 7. Commit with an English message and push the active branch when the working tree contains only this session's intended changes.
 8. Leave the next session a clear handoff: latest commit, verification run, remaining risk, and next recommended action.
 
@@ -101,7 +102,7 @@ Do not add without explicit human approval:
 - default-on or unattended real model API calls
 - API keys or provider credentials
 - real autonomous agents
-- real sandbox/process/container/VM execution
+- new or broadened sandbox/process/container/VM execution beyond the existing local CLI executor path
 - real concurrent workers
 - new cloud/hosted Web UI implementation
 - provider failover

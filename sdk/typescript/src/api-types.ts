@@ -1,3 +1,5 @@
+// Hand-maintained local API/dashboard response types. Wire types stay generated.
+
 import type {
   DispatchBundle,
   ExecutorType,

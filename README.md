@@ -32,7 +32,7 @@ This repository is not a cloud production SaaS or autonomous-agent runtime. It d
 bash scripts/verify_rust_typescript_stack.sh
 ```
 
-This is the primary cutover verification. It checks Rust formatting, clippy, Rust tests, TypeScript SDK tests/build, dashboard lint/typecheck/build/static export, then starts the Rust engine with the exported dashboard and smokes `/api/v1/health`, `/api/v1/dashboard`, `/api/v1/dispatch`, and the dashboard root.
+This is the primary cutover verification. It runs `scripts/check_wire_codegen_drift.sh`, checks Rust formatting, clippy, Rust tests, TypeScript SDK tests/build, dashboard lint/typecheck/build/static export, then starts the Rust engine with the exported dashboard and smokes `/api/v1/health`, `/api/v1/dashboard`, `/api/v1/dispatch`, and the dashboard root.
 
 ## How To Run Tests
 
@@ -89,7 +89,7 @@ ACP_DASHBOARD_DIR=dashboard/out \
 cargo run -p engine
 ```
 
-`ACP_PROVIDER_TYPE=openai_compatible` and `ACP_PROVIDER_TYPE=anthropic` are present for local beta validation only. They require explicit provider environment configuration and should be paired with `ACP_REQUIRE_AUTH=1`, a local admin API key, and narrow network exposure. Do not commit provider credentials. Real provider execution remains default-off and is not used in CI.
+`ACP_PROVIDER_TYPE=openai_compatible` and `ACP_PROVIDER_TYPE=anthropic` are present for local beta validation only. They require `ACP_ENABLE_PROVIDER_EXECUTION=1`, explicit provider environment configuration, `ACP_REQUIRE_AUTH=1`, a local admin API key, and narrow network exposure. Do not commit provider credentials. Real provider execution remains default-off and is not used in CI.
 
 ## Local API Examples
 
@@ -136,9 +136,10 @@ bundle = client.dispatch("Summarize docs without provider calls")
 
 ## Safety Boundaries
 
-- No real model calls.
+- No real model calls by default; the local beta provider path remains explicit and env-gated.
 - No real agents.
-- No real sandbox/process/container/VM isolation.
+- No real sandbox/process/container/VM isolation runtime.
+- Existing local CLI executor subprocess invocation is a separate, unchanged exception.
 - No production concurrency or real concurrent workers.
 - No provider failover.
 - No cloud production Web UI, hosted deployment, or remote SaaS service.
@@ -197,6 +198,6 @@ Full closeout report: [`docs/CA7_CONTROLLED_ADAPTIVE_CLOSEOUT_REPORT.md`](docs/C
 
 ## Next Recommended Work
 
-Keep the repo moving through the autonomous maintainer loop: repair verification drift, keep docs current, fix focused regressions, and harden the local small-team path when evidence identifies concrete gaps. Any work that adds cloud hosting, real model provider integration, real sandbox execution, target-repo mutation, hosted deployment, or real autonomous workers still requires explicit approval.
+Keep the repo moving through the autonomous maintainer loop: repair CI/docs/test drift, maintain wire governance, keep docs current, and fix focused regressions. The R-series is sealed at R7. R8 is not approved. No further file splitting is approved. Any work that adds cloud hosting, broadens model provider integration, adds sandbox isolation, expands subprocess execution beyond the existing CLI executor path, mutates target repos, adds hosted deployment, or adds real autonomous workers still requires explicit approval.
 
 Python legacy reference implementation has been retired. Python is now retained only as the REST SDK (`sdk/python/`) and utility scripts (`scripts/`, `tools/`, `codegen/`).
