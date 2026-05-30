@@ -163,6 +163,7 @@ export default function DashboardPage() {
   const [authStatus, setAuthStatus] = useState<"ok" | "missing" | "denied" | "offline">("ok");
   const [authMessage, setAuthMessage] = useState("");
   const [reloadKey, setReloadKey] = useState(0);
+  const [lastUpdated, setLastUpdated] = useState<Date | null>(null);
   const [theme, setTheme] = useState<"light" | "dark">(() => {
     if (typeof window === "undefined") return "light";
     const saved = localStorage.getItem("acp-theme");
@@ -193,9 +194,9 @@ export default function DashboardPage() {
     return () => window.removeEventListener("hashchange", onHashChange);
   }, []);
 
-  useEffect(() => {
+  const refreshAll = useCallback(() => {
     let cancelled = false;
-    Promise.allSettled([fetchHealth(), fetchReady(), fetchDashboard()]).then(
+    return Promise.allSettled([fetchHealth(), fetchReady(), fetchDashboard()]).then(
       ([healthResult, readyResult, dashboardResult]) => {
         if (cancelled) return;
         const healthOk = healthResult.status === "fulfilled";
@@ -206,6 +207,7 @@ export default function DashboardPage() {
           setDashboard(dashboardResult.value);
           setAuthStatus("ok");
           setAuthMessage("");
+          setLastUpdated(new Date());
         } else {
           const err = dashboardResult.status === "rejected" ? dashboardResult.reason : null;
           if (isAuthError(err)) {
@@ -225,10 +227,49 @@ export default function DashboardPage() {
         }
       },
     );
+  }, []);
+
+  useEffect(() => {
+    refreshAll();
+  }, [reloadKey, refreshAll]);
+
+  // Auto-refresh every 60 seconds, paused when tab is hidden
+  useEffect(() => {
+    if (authStatus !== "ok") return;
+    let intervalId: ReturnType<typeof setInterval> | null = null;
+
+    function startPolling() {
+      if (intervalId) return;
+      intervalId = setInterval(() => {
+        if (document.visibilityState === "visible") {
+          refreshAll();
+        }
+      }, 60_000);
+    }
+
+    function stopPolling() {
+      if (intervalId) {
+        clearInterval(intervalId);
+        intervalId = null;
+      }
+    }
+
+    function handleVisibility() {
+      if (document.visibilityState === "visible") {
+        refreshAll();
+        startPolling();
+      } else {
+        stopPolling();
+      }
+    }
+
+    startPolling();
+    document.addEventListener("visibilitychange", handleVisibility);
     return () => {
-      cancelled = true;
+      stopPolling();
+      document.removeEventListener("visibilitychange", handleVisibility);
     };
-  }, [reloadKey]);
+  }, [authStatus, refreshAll]);
 
   const routingRows = useMemo(
     () =>
@@ -250,6 +291,16 @@ export default function DashboardPage() {
             <h1>Operations Dashboard</h1>
           </div>
           <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+            {lastUpdated && authStatus === "ok" && (
+              <span className="muted" style={{ fontSize: 12 }}>
+                {lastUpdated.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}
+              </span>
+            )}
+            {authStatus === "ok" && (
+              <button onClick={() => refreshAll()} type="button" style={{ padding: "6px 10px", fontSize: 14 }} title="Refresh">
+                ↻
+              </button>
+            )}
             <span className="pill info">Local</span>
             <button onClick={toggleTheme} type="button" style={{ padding: "6px 10px", fontSize: 14 }}>
               {theme === "dark" ? "☀" : "☾"}
