@@ -72,7 +72,7 @@ jobs:
         with:
           node-version: "22"
       - name: Build static dashboard
-        run: cd dashboard && corepack pnpm install --frozen-lockfile && corepack pnpm build:static
+        run: cd dashboard && (corepack enable || true) && pnpm install --frozen-lockfile && pnpm build:static
       - name: Build native engine
         run: cargo build -p engine
       - name: Smoke native runtime

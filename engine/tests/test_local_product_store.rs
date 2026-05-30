@@ -631,9 +631,7 @@ fn get_dispatch_returns_latest_when_duplicate_ids() {
 #[test]
 fn concurrent_dispatch_writes_from_multiple_threads() {
     let dir = tempdir().unwrap();
-    let store = Arc::new(
-        LocalProductStore::new(dir.path().join("test.db")).unwrap(),
-    );
+    let store = Arc::new(LocalProductStore::new(dir.path().join("test.db")).unwrap());
     let thread_count = 8;
     let writes_per_thread = 20;
     let barrier = Arc::new(Barrier::new(thread_count));
@@ -678,9 +676,7 @@ fn concurrent_dispatch_writes_from_multiple_threads() {
 #[test]
 fn concurrent_reads_during_writes() {
     let dir = tempdir().unwrap();
-    let store = Arc::new(
-        LocalProductStore::new(dir.path().join("test.db")).unwrap(),
-    );
+    let store = Arc::new(LocalProductStore::new(dir.path().join("test.db")).unwrap());
 
     let bundle = make_bundle_with_usage("seed", "noop", None, None, None, None);
     store
@@ -697,14 +693,8 @@ fn concurrent_reads_during_writes() {
         thread::spawn(move || {
             barrier.wait();
             for i in 0..30 {
-                let bundle = make_bundle_with_usage(
-                    &format!("w-{i}"),
-                    "noop",
-                    None,
-                    None,
-                    None,
-                    None,
-                );
+                let bundle =
+                    make_bundle_with_usage(&format!("w-{i}"), "noop", None, None, None, None);
                 store
                     .record_dispatch(&format!("w-req-{i}"), "api", &bundle, "actor")
                     .unwrap();
@@ -740,9 +730,7 @@ fn concurrent_reads_during_writes() {
 #[test]
 fn concurrent_provider_audit_events() {
     let dir = tempdir().unwrap();
-    let store = Arc::new(
-        LocalProductStore::new(dir.path().join("test.db")).unwrap(),
-    );
+    let store = Arc::new(LocalProductStore::new(dir.path().join("test.db")).unwrap());
     let thread_count = 6;
     let events_per_thread = 15;
     let barrier = Arc::new(Barrier::new(thread_count));
@@ -776,9 +764,7 @@ fn concurrent_provider_audit_events() {
 #[test]
 fn no_deadlock_under_rapid_lock_contention() {
     let dir = tempdir().unwrap();
-    let store = Arc::new(
-        LocalProductStore::new(dir.path().join("test.db")).unwrap(),
-    );
+    let store = Arc::new(LocalProductStore::new(dir.path().join("test.db")).unwrap());
     let thread_count = 12;
     let ops_per_thread = 50;
     let barrier = Arc::new(Barrier::new(thread_count));
@@ -799,12 +785,8 @@ fn no_deadlock_under_rapid_lock_contention() {
                             None,
                             None,
                         );
-                        let _ = store.record_dispatch(
-                            &format!("req-{t}-{i}"),
-                            "api",
-                            &bundle,
-                            "actor",
-                        );
+                        let _ =
+                            store.record_dispatch(&format!("req-{t}-{i}"), "api", &bundle, "actor");
                     } else if i % 3 == 1 {
                         let _ = store.list_dispatches(100);
                     } else {
@@ -820,7 +802,8 @@ fn no_deadlock_under_rapid_lock_contention() {
     }
 
     let dispatches = store.list_dispatches(10000).unwrap();
-    let expected_writes = thread_count * (ops_per_thread / 3 + if ops_per_thread % 3 > 0 { 1 } else { 0 });
+    let expected_writes =
+        thread_count * (ops_per_thread / 3 + if ops_per_thread % 3 > 0 { 1 } else { 0 });
     assert!(
         dispatches.len() <= expected_writes,
         "Got {} dispatches, expected at most {}",
@@ -832,9 +815,7 @@ fn no_deadlock_under_rapid_lock_contention() {
 #[test]
 fn data_integrity_after_concurrent_writes() {
     let dir = tempdir().unwrap();
-    let store = Arc::new(
-        LocalProductStore::new(dir.path().join("test.db")).unwrap(),
-    );
+    let store = Arc::new(LocalProductStore::new(dir.path().join("test.db")).unwrap());
     let thread_count = 4;
     let writes_per_thread = 25;
     let barrier = Arc::new(Barrier::new(thread_count));
@@ -856,12 +837,7 @@ fn data_integrity_after_concurrent_writes() {
                         Some(100),
                     );
                     store
-                        .record_dispatch(
-                            &format!("request-{dispatch_id}"),
-                            "api",
-                            &bundle,
-                            "actor",
-                        )
+                        .record_dispatch(&format!("request-{dispatch_id}"), "api", &bundle, "actor")
                         .unwrap();
                 }
             })
@@ -900,19 +876,10 @@ fn data_integrity_after_concurrent_writes() {
 #[test]
 fn concurrent_dispatch_read_by_id() {
     let dir = tempdir().unwrap();
-    let store = Arc::new(
-        LocalProductStore::new(dir.path().join("test.db")).unwrap(),
-    );
+    let store = Arc::new(LocalProductStore::new(dir.path().join("test.db")).unwrap());
 
     for i in 0..10 {
-        let bundle = make_bundle_with_usage(
-            &format!("d{i}"),
-            "noop",
-            Some(i),
-            None,
-            None,
-            None,
-        );
+        let bundle = make_bundle_with_usage(&format!("d{i}"), "noop", Some(i), None, None, None);
         store
             .record_dispatch(&format!("req-{i}"), "api", &bundle, "actor")
             .unwrap();

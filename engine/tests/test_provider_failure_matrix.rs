@@ -1,13 +1,13 @@
+use engine::dispatch_decision::DispatchDecision;
+use engine::executor_adapter::Executor;
 use engine::provider::audit::ProviderAuditRecorder;
 use engine::provider::cost_gate::{check_cost_gates, CostGateBlock, CostGateConfig};
 use engine::provider::executor::{make_not_executed_result, ProviderExecutor};
 use engine::provider::retry::RetryFallbackManager;
 use engine::provider::{
-    DisabledProvider, Provider, ProviderError, ProviderRequest, ProviderResponse,
-    ProviderResult, RetryPolicy,
+    DisabledProvider, Provider, ProviderError, ProviderRequest, ProviderResponse, ProviderResult,
+    RetryPolicy,
 };
-use engine::dispatch_decision::DispatchDecision;
-use engine::executor_adapter::Executor;
 use engine::runtime::FixtureRuntime;
 use std::sync::atomic::{AtomicI64, Ordering};
 use std::sync::{Arc, Barrier};
@@ -154,7 +154,11 @@ async fn retry_exhaustion_returns_final_error() {
 #[tokio::test]
 async fn fallback_succeeds_after_primary_exhaustion() {
     let primary = Arc::new(AlwaysFailProvider::new("p1", "provider_rate_limit"));
-    let fallback = Arc::new(FailingThenSucceedProvider::new("fb", 0, "provider_rate_limit"));
+    let fallback = Arc::new(FailingThenSucceedProvider::new(
+        "fb",
+        0,
+        "provider_rate_limit",
+    ));
     let manager = RetryFallbackManager::new(
         primary.clone(),
         Some(fallback),
@@ -174,12 +178,7 @@ async fn fallback_succeeds_after_primary_exhaustion() {
 async fn fallback_also_fails_returns_last_error() {
     let primary = Arc::new(AlwaysFailProvider::new("p1", "provider_rate_limit"));
     let fallback = Arc::new(AlwaysFailProvider::new("fb", "provider_timeout"));
-    let manager = RetryFallbackManager::new(
-        primary,
-        Some(fallback),
-        fast_policy(),
-        always_true(),
-    );
+    let manager = RetryFallbackManager::new(primary, Some(fallback), fast_policy(), always_true());
     let request = ProviderRequest::local_stub("p1", "m", "hello");
 
     let err = manager.invoke(&request).await.unwrap_err();
@@ -191,7 +190,11 @@ async fn fallback_also_fails_returns_last_error() {
 #[tokio::test]
 async fn budget_exhausted_mid_retry_blocks_fallback() {
     let primary = Arc::new(AlwaysFailProvider::new("p1", "provider_rate_limit"));
-    let fallback = Arc::new(FailingThenSucceedProvider::new("fb", 0, "provider_rate_limit"));
+    let fallback = Arc::new(FailingThenSucceedProvider::new(
+        "fb",
+        0,
+        "provider_rate_limit",
+    ));
     let mut policy = fast_policy();
     policy.budget_check_per_retry = true;
     let manager = RetryFallbackManager::new(primary, Some(fallback), policy, always_false());
@@ -206,7 +209,11 @@ async fn budget_exhausted_mid_retry_blocks_fallback() {
 #[tokio::test]
 async fn non_retryable_error_skips_all_retries() {
     let primary = Arc::new(AlwaysFailProvider::new("p1", "provider_auth"));
-    let fallback = Arc::new(FailingThenSucceedProvider::new("fb", 0, "provider_rate_limit"));
+    let fallback = Arc::new(FailingThenSucceedProvider::new(
+        "fb",
+        0,
+        "provider_rate_limit",
+    ));
     let manager = RetryFallbackManager::new(
         primary.clone(),
         Some(fallback),
@@ -332,10 +339,7 @@ fn not_executed_result_for_governance_block() {
 
     assert_eq!(result.status, "not_executed");
     assert_eq!(result.executor_type, "provider");
-    assert_eq!(
-        result.error_domain.as_deref(),
-        Some("cost_gate_block")
-    );
+    assert_eq!(result.error_domain.as_deref(), Some("cost_gate_block"));
     assert!(result.output.is_none());
     assert!(result.input_tokens.is_none());
 }
@@ -361,7 +365,11 @@ async fn retry_exhaustion_then_fallback_failure_chain() {
 
 #[tokio::test]
 async fn concurrent_provider_invocations_through_manager() {
-    let primary = Arc::new(FailingThenSucceedProvider::new("conc-p", 1, "provider_rate_limit"));
+    let primary = Arc::new(FailingThenSucceedProvider::new(
+        "conc-p",
+        1,
+        "provider_rate_limit",
+    ));
     let manager = Arc::new(RetryFallbackManager::new(
         primary,
         None,
