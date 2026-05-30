@@ -1,24 +1,54 @@
-# Packaging Readiness
+# Packaging
 
-This document describes the packaging metadata added to the project.
+## Current State
 
-## What this is
+The legacy root `pyproject.toml` (setuptools config for `src/harness_core/`) has been removed along with the Python reference implementation. The only remaining Python packaging is the self-contained Python REST SDK.
 
-Package-readiness metadata for `token-efficient-agent-harness-lab`. The `pyproject.toml` declares the project name, version, Python requirement, and package discovery under `src/`.
+## Python REST SDK
 
-## What this is NOT
+`sdk/python/pyproject.toml` declares the `agent-control-plane-sdk` package:
 
-- **Not published to PyPI** — this is internal package metadata only.
-- **No new dependencies added** — `dependencies = []` is intentional.
-- **No runtime changes** — existing code and `events.jsonl` are untouched.
-- **No model changes** — no model integrations or API calls added.
+- Build system: setuptools >= 64
+- Python: >= 3.11
+- Dependencies: none (pure stdlib, uses `urllib.request` for REST calls)
+- Package source: `sdk/python/src/agent_control_plane_sdk/`
 
-## Testing
-
-Tests run the same way as before:
+Build and verify:
 
 ```bash
-PYTHONPATH=src uv run --no-project python -m unittest discover -s tests
+cd sdk/python && python -m build
 ```
 
-The `tests/test_packaging_metadata.py` file contains 10 tests validating `pyproject.toml` structure via `tomllib`.
+## Rust Engine
+
+The Rust engine is built with Cargo:
+
+```bash
+cargo build -p engine
+cargo build -p engine --release
+```
+
+Release packaging:
+
+```bash
+bash scripts/package-release.sh
+```
+
+This produces `dist/agent-control-plane-v0.1.0-linux-x86_64.tar.gz` containing the engine binary, static dashboard, and install/upgrade scripts.
+
+## Dashboard
+
+The Next.js dashboard is built with Bun:
+
+```bash
+cd dashboard && bun install --frozen-lockfile && bun run build:static
+```
+
+The static export goes to `dashboard/out/` and can be served by the Rust engine via `ACP_DASHBOARD_DIR=dashboard/out`.
+
+## Docker (Optional)
+
+```bash
+docker compose build
+docker compose up --build -d
+```

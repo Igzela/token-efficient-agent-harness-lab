@@ -54,7 +54,7 @@ Master architecture document: `docs/dispatch/DISPATCHER_KERNEL_V0_ARCHITECTURE.m
 - **Agent-Control-Plane Phase 5 SDK + Codegen**: IMPLEMENTED (`codegen/generate_wire_types.py`, generated Rust/TypeScript/Python wire types, TypeScript REST SDK with Node test coverage, Python REST SDK with 8 tests). Full nested types from all 6 wire_contract schemas for SDK surfaces; Rust includes generated boundary value types.
 - **Agent-Control-Plane Phase 6 Dashboard**: IMPLEMENTED (`dashboard/` Next.js App Router, read-only views, static export support, no executable controls).
 - **Agent-Control-Plane Phase 7 Docker**: IMPLEMENTED (`deploy/Dockerfile.engine`, `deploy/Dockerfile.dashboard`, `docker-compose.yml`, optional local API + dashboard smoke).
-- **Agent-Control-Plane Phase 8 Closeout**: IMPLEMENTED (`docs/AGENT_CONTROL_PLANE_MIGRATION_CLOSEOUT.md`). Python reference remains in `src/harness_core/` pending explicit future removal decision.
+- **Agent-Control-Plane Phase 8 Closeout**: IMPLEMENTED (`docs/AGENT_CONTROL_PLANE_MIGRATION_CLOSEOUT.md`).
 - **Agent-Control-Plane Native Local Runtime**: IMPLEMENTED (`ACP_DASHBOARD_DIR=dashboard/out cargo run -p engine` serves API + dashboard from one Rust process; Docker optional).
 - **Agent-Control-Plane Local Small-Team Productization**: IMPLEMENTED (`engine/src/storage/local_product_store.rs`, live dashboard API state, SQLite dispatch history/config/team/API-key metadata/audit/cost state, export, admin-auth-confirmed local backup, SDK local-state methods). Still no cloud SaaS, target writes, real workers, or real sandbox/process execution.
 - **Phase 6B-3 Gate 1**: IMPLEMENTED (scope checks, rate limiting, 403/429 responses).
@@ -63,7 +63,7 @@ Master architecture document: `docs/dispatch/DISPATCHER_KERNEL_V0_ARCHITECTURE.m
 - **Productization Phase 3 — Cost Governance**: IMPLEMENTED (cost_summary v2: reserved vs estimated, token usage, utilization ratio, daily trend; dispatch_cost_details endpoint; dashboard enhanced Costs view; typed SDK cost responses; 15 new Rust tests, 1056 total).
 - **Productization Phase 4 — Data Operations**: IMPLEMENTED (versioned SQLite migrations via PRAGMA user_version; check_integrity() with PRAGMA integrity_check and per-table row counts; import_snapshot() for idempotent import from export JSON; GET /api/v1/storage/integrity and POST /api/v1/import and POST /api/v1/backups/:id/restore endpoints; backup restore hardened with restore_backup_with_verify(); data-directory documentation; 19 new Rust tests, 1075 total).
 - **Productization Phase 5 — Native Packaging**: IMPLEMENTED (.env.example with all 16 env vars; install.sh/upgrade.sh scripts; package-release.sh builds release binary + static dashboard tarball; smoke_release.sh verifies extracted artifact; 4 MB release tarball).
-- **Rust + TypeScript Cutover**: COMPLETE (`engine/` is the primary runtime/API/storage/provider-gated control plane; `dashboard/` and `sdk/typescript/` are the primary TypeScript surfaces; `scripts/verify_rust_typescript_stack.sh` is the primary cutover verification. Python remains legacy reference plus retained Python SDK compatibility).
+- **Rust + TypeScript Cutover**: COMPLETE (`engine/` is the primary runtime/API/storage/provider-gated control plane; `dashboard/` and `sdk/typescript/` are the primary TypeScript surfaces; `scripts/verify_rust_typescript_stack.sh` is the primary cutover verification. Python retained as REST SDK and utility scripts only).
 
 See `docs/CURRENT_STATUS.md` for detailed phase closeout records.
 
@@ -105,6 +105,7 @@ See `docs/CURRENT_STATUS.md` for full details.
 - **2026-05-30**: P1 Local-Beta Follow-Up — 7 items: GET /api/v1/keys metadata-only key list endpoint, search/filter/pagination for dispatches and audit, bookmarkable dashboard tabs via URL hash, 60-second auto-refresh with visibility-aware pausing, Docker volume persistence for SQLite, key reveal modal replacing alert(), dashboard split from 1358-line monolith into 12 focused components. 4 new Rust tests (1140 total).
 - **2026-05-30**: P2 Local-Beta Polish & Type Hardening — CSS design token cleanup (#c0392b → var(--risk), utility classes), TypeScript SDK type hardening (22 new focused response interfaces, 21 methods typed, ExecutorType/ExecutionStatus extended for CLI executors), dashboard component quality (usePaginatedSearch hook, SearchBar, Pagination components), Next.js app polish (loading.tsx, error.tsx, metadata, favicon). 0 new Rust tests (1140 total), 16 SDK tests pass.
 - **2026-05-30**: Toolchain Consolidation & Drift Guard — Standardized all authoritative docs to `uv run --no-project python` (8 stale bare python3 references fixed across 9 files). README toolchain table added. verify_rust_typescript_stack.sh preflight extended (bun/cargo/uv). `scripts/check_toolchain_drift.sh` drift guard added for stale JS/Python toolchain references. Integrated into autonomous closeout workflow. CI already aligned. 0 new Rust tests (1140 total). `uv.lock` intentionally not added.
+- **2026-05-30**: Python Legacy Reference Retirement — Removed `src/harness_core/` (58 files), root `tests/` (121 files), `demos/` (2 files), legacy tools (2 files), root `pyproject.toml`. Relocated `test_security_baseline.py` and `test_dashboard_static.py` to `tools/`. Updated CI workflow, handoff script, and all living docs. Python now means SDK + utility scripts only. 0 new Rust tests (1140 total).
 - Previous BLOCK findings (b6d5bc1): HIGH-1 rate limit not wired, HIGH-2 scope enforcement missing, HIGH-3 plugin locks unused
 - Gate 1 addresses: HIGH-1 (rate limiter in ServerContext + _check_rate_limit), HIGH-2 (scope enforcement + AuthorizationDecision + 403/429)
 - Gate 2 addresses: atomic restore, WAL safety, failure-mode coverage
@@ -121,12 +122,11 @@ All dispatch kernel review gates (6B-1, 6B-2, 6B-3 Gates 1-3, Phase 7 hardening)
 
 ## Test Strategy
 
-- **Framework**: unittest (stdlib), no pytest
-- **Run command**: `PYTHONPATH=src uv run --no-project python -m unittest discover -s tests`
-- **Current count**: 2089 Python tests + 1140 Rust tests pass, 0 failures (as of 2026-05-30)
+- **Framework**: Rust `cargo test` for engine; Python `unittest` for SDK
+- **Run command**: `cargo test -p engine` (primary); `cd sdk/python && PYTHONPATH=src uv run --no-project python -m unittest discover -s tests` (SDK)
+- **Current count**: 1140 Rust tests pass, 0 failures (as of 2026-05-30)
 - **Coverage**: Phase boundary contracts, schema validation, golden fixtures
-- **CI**: GitHub Actions on push/PR to main — runs security baseline + all tests
-- **Test naming**: `tests/test_<module>.py`, one test file per source module
+- **CI**: GitHub Actions on push/PR to main — runs security baseline + Rust/TS/SDK tests
 - **Test-first**: Write tests alongside implementation. Follow the test strategy in Section 4.25 of the architecture book.
 
 ## New Session Bootstrap

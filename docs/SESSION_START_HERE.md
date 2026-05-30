@@ -24,7 +24,7 @@ Token-Efficient Agent Harness Lab is a local deterministic harness for studying 
 | Trial 3 multi-repo generalization | Closed — `TRIAL_3_MULTI_REPO_GENERALIZATION_PASS` |
 | Trial 3 target merge | Closed — all 3 target PRs merged, audit PASS_WITH_NOTES |
 
-Tests: 2089 Python pass; 1140 Rust pass. Primary cutover verification is `bash scripts/verify_rust_typescript_stack.sh`.
+Tests: 1140 Rust pass. Primary cutover verification is `bash scripts/verify_rust_typescript_stack.sh`.
 
 ## Toolchain
 
@@ -33,7 +33,7 @@ Tests: 2089 Python pass; 1140 Rust pass. Primary cutover verification is `bash s
 | Node version | fnm + `.node-version` = 22 | CI uses `oven-sh/setup-bun@v2` (Bun includes Node) |
 | JS package manager | Bun | `bun.lock` replaces pnpm-lock.yaml; `bun install`, `bun run` |
 | Python runtime | uv | `uv run --no-project python ...` for local commands; pure stdlib, no deps |
-| Python packaging | setuptools (legacy reference) | `pyproject.toml` at root + `sdk/python/`; no uv.lock |
+| Python packaging | setuptools | `sdk/python/`; no uv.lock |
 | Rust | stable toolchain | `cargo test -p engine`, `cargo fmt`, `cargo clippy` |
 
 Additional active architecture track:
@@ -54,11 +54,11 @@ Additional active architecture track:
 | Language Migration Phase 5 — SDK + codegen | Implemented codegen helper plus TypeScript/Python REST SDK packages; no SDK publishing |
 | Language Migration Phase 6 — Read-only Dashboard | Implemented Next.js dashboard with dispatch, routing, agents/workflows, costs, settings, and health views; no executable controls |
 | Language Migration Phase 7 — Local Docker Deploy | Implemented local compose stack for Rust API + dashboard; no production deploy |
-| Language Migration Phase 8 — Closeout | Implemented; closeout recorded in `docs/AGENT_CONTROL_PLANE_MIGRATION_CLOSEOUT.md`; Python reference retained in `src/harness_core/` pending explicit removal decision |
+| Language Migration Phase 8 — Closeout | Implemented; closeout recorded in `docs/AGENT_CONTROL_PLANE_MIGRATION_CLOSEOUT.md` |
 | Agent-Control-Plane Native Local Runtime | Implemented; Rust engine can serve API plus static dashboard from one local process via `ACP_DASHBOARD_DIR=dashboard/out`; Docker is optional |
 | Agent-Control-Plane Local Small-Team Productization | Implemented; Rust engine persists app-owned SQLite dispatch history/config/team/API-key metadata/audit/cost state, dashboard reads live local API state, SDKs cover local state endpoints, and export/confirmed backup are available without Docker |
 | Rust Provider Stack Stage 1 + Stage 2 audit/usage bridge | Implemented as explicit env-gated beta path; provider health/audit endpoints, persistent provider audit events, and dispatch usage columns exist; CI uses stub/mock paths and does not call real provider APIs |
-| Rust + TypeScript Cutover | Complete; Rust `engine/` is the primary runtime/API/storage/provider-gated control plane, `dashboard/` and `sdk/typescript/` are the primary TypeScript surfaces, and Python remains only as legacy reference plus retained Python SDK compatibility |
+| Rust + TypeScript Cutover | Complete; Rust `engine/` is the primary runtime/API/storage/provider-gated control plane, `dashboard/` and `sdk/typescript/` are the primary TypeScript surfaces; Python retained as REST SDK and utility scripts only |
 
 ## What This Project Is Not
 

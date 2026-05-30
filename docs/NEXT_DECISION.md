@@ -19,7 +19,7 @@ The responsible coding agent may choose any of the following without asking for 
 | Dispatch-kernel phase work | Plan and implement the next architecture-book-defined phase only when it can remain deterministic, local, test-first, and free of broader real-provider behavior, real sandbox/process execution, target writes, deployment, and real worker processes. Existing provider adapters are explicit env-gated beta paths and must remain default-off. |
 | Architecture/documentation closeout | Update architecture records, module maps, closeout reports, and handoff docs after accepted changes. |
 | Demo/docs polish | Refine demo docs when verification or user feedback identifies a concrete gap. |
-| Language migration | Agent-control-plane migration phases 0-8 are implemented and recorded in `docs/AGENT_CONTROL_PLANE_MIGRATION_CLOSEOUT.md`. Rust + TypeScript cutover is complete: Rust `engine/` is the primary runtime/API/storage/provider-gated control plane, and `dashboard/` plus `sdk/typescript/` are the primary TypeScript surfaces. Python remains only as legacy reference plus retained Python SDK compatibility. No real workers, target writes, SDK publishing, or cloud production deployment. |
+| Language migration | Agent-control-plane migration phases 0-8 are implemented and recorded in `docs/AGENT_CONTROL_PLANE_MIGRATION_CLOSEOUT.md`. Rust + TypeScript cutover is complete: Rust `engine/` is the primary runtime/API/storage/provider-gated control plane, and `dashboard/` plus `sdk/typescript/` are the primary TypeScript surfaces. Python retained as REST SDK and utility scripts only; legacy reference implementation retired. No real workers, target writes, SDK publishing, or cloud production deployment. |
 | Local small-team hardening | Productization Phases 1-7 complete (Provider Safety Gate, Permission Governance, Cost Governance, Data Operations, Native Packaging, Dashboard Controls, Long-Run Hardening). All planned phases done. Keep provider execution default-off and explicit; keep target writes, sandbox/process execution, real workers, and cloud SaaS out of scope. |
 | CLI executor routing | Complexity-based dispatch to Claude Code CLI / Codex CLI implemented. Can extend: interactive session persistence, additional CLI tools, adaptive routing feedback for CLI tiers, CLI-specific execution gates. |
 
@@ -67,7 +67,7 @@ The following are **not** allowed without explicit human approval and a new impl
 
 The local small-team track does not approve cloud hosting, default-on provider calls, real sandbox/process execution, target-repo writes, hosted deployment, or real autonomous workers.
 
-Python reference implementation remains in `src/harness_core/` as legacy reference. Do not expand it for new runtime features; new primary runtime work belongs in Rust and TypeScript unless a compatibility fix is explicitly needed.
+Python legacy reference implementation has been retired. Python is retained only as the REST SDK (`sdk/python/`) and utility scripts. New primary runtime work belongs in Rust and TypeScript.
 
 ## Before Starting Autonomous Work
 

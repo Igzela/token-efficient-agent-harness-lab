@@ -11,80 +11,59 @@ cd /home/igzela/Projects/token-efficient-agent-harness-lab
 Run the security baseline checker:
 
 ```bash
-python3 tools/check_security_baseline.py
+uv run --no-project python tools/check_security_baseline.py
 ```
 
-Run the test suite:
+Run the Rust engine tests:
 
 ```bash
-PYTHONPATH=src python3 -m unittest discover -s tests
+cargo test -p engine
 ```
 
-Check the dashboard JavaScript for syntax errors:
+Both should pass before continuing.
+
+## 2. Build the Static Dashboard
 
 ```bash
-node --check web/dashboard/app.js
+cd dashboard && bun install --frozen-lockfile && bun run build:static && cd ..
 ```
 
-All three should pass before continuing.
+## 3. Start the Engine
 
-## 2. Clean Demo State
-
-Remove any leftover demo registry and plan files:
+API only:
 
 ```bash
-rm -f /tmp/harness-demo-registry.json /tmp/harness-demo-plans.json
+cargo run -p engine
 ```
 
-## 3. Start the App Server
+API plus dashboard from the same Rust process:
 
 ```bash
-python3 tools/harness_app_server.py \
-  --host 127.0.0.1 \
-  --port 8769 \
-  --registry /tmp/harness-demo-registry.json \
-  --plans /tmp/harness-demo-plans.json
+ACP_DASHBOARD_DIR=dashboard/out cargo run -p engine
 ```
 
-The server prints:
+The engine starts on `http://127.0.0.1:8080` and creates app-owned local state at `.agent-control-plane/local-team.db`.
 
-```
-Serving Harness App on http://127.0.0.1:8769/
-Registry: /tmp/harness-demo-registry.json
-Plans: /tmp/harness-demo-plans.json
-```
+## 4. Verify
 
-## 4. Open the Dashboard
-
-Open in a browser:
-
-```
-http://127.0.0.1:8769/
+```bash
+curl http://127.0.0.1:8080/api/v1/health
+curl http://127.0.0.1:8080/api/v1/dashboard
+curl -X POST http://127.0.0.1:8080/api/v1/dispatch \
+  -H 'content-type: application/json' \
+  -d '{"raw_request":"Summarize docs without provider calls","request_source":"api"}'
 ```
 
-The dashboard loads with a static sample report. API-connected features activate after the first repo is registered.
+If using the dashboard, open `http://127.0.0.1:8080` in a browser.
 
-## 5. Stop the Server
+## 5. Stop the Engine
 
-Press `Ctrl+C` in the terminal running the server. The server prints:
-
-```
-Stopping Harness App server.
-```
+Press `Ctrl+C` in the terminal running the engine.
 
 ## 6. Confirm Clean Shutdown
 
-Check no server process remains:
+Check no engine process remains:
 
 ```bash
-pgrep -af "harness_app_server|claude" || true
+pgrep -af engine || true
 ```
-
-Confirm the target repository was not modified:
-
-```bash
-git -C /home/igzela/Projects/alters-lab status -sb
-git -C /home/igzela/Projects/alters-lab diff --stat
-```
-
-Both should show no changes.

@@ -13,8 +13,8 @@ import textwrap
 import unittest
 from pathlib import Path
 
-# Add tools/ to path so we can import the checker
-TOOLS_DIR = Path(__file__).resolve().parent.parent / "tools"
+# Import checker from same directory
+TOOLS_DIR = Path(__file__).resolve().parent
 sys.path.insert(0, str(TOOLS_DIR))
 
 import check_security_baseline as csb

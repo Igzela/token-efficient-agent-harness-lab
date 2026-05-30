@@ -4,7 +4,7 @@
 
 Token-Efficient Agent Harness Lab is a local deterministic harness for studying event-sourced agent workflow infrastructure from Stage 0 through Stage 4. It includes JSONL event validation, projections, project/task workflow primitives, quality gates, controlled intelligence stubs, and Stage 4 runtime-control abstractions.
 
-Current status: Stage 0-4 complete, Harness App MVP0-MVP8 complete, Trials 0-3 closed, and the agent-control-plane cutover is complete for the Rust + TypeScript stack. The primary local runtime is Rust `engine/` with axum API, SQLite state, provider safety gates, permission governance, cost governance, data operations, native packaging, and dashboard controls. The primary UI and SDK surface is TypeScript (`dashboard/` and `sdk/typescript/`). Python remains only as legacy reference plus the retained Python REST SDK. Security hardening complete (2089 Python tests pass; 1140 Rust tests pass).
+Current status: Stage 0-4 complete, Harness App MVP0-MVP8 complete, Trials 0-3 closed, and the agent-control-plane cutover is complete for the Rust + TypeScript stack. The primary local runtime is Rust `engine/` with axum API, SQLite state, provider safety gates, permission governance, cost governance, data operations, native packaging, and dashboard controls. The primary UI and SDK surface is TypeScript (`dashboard/` and `sdk/typescript/`). Python is retained as the Python REST SDK and utility scripts only; the legacy Python reference implementation has been retired. Security hardening complete (1140 Rust tests pass).
 
 **New sessions should start with [docs/SESSION_START_HERE.md](docs/SESSION_START_HERE.md).**
 
@@ -23,7 +23,7 @@ This repository is not a cloud production SaaS or autonomous-agent runtime. It d
 | Node | `.node-version` = 22 | fnm-friendly, not mandatory; CI uses `oven-sh/setup-bun@v2` |
 | JS package manager | **Bun** | Required for dashboard and TypeScript SDK verification |
 | Python runtime | **uv** | `uv run --no-project python ...` for all local Python commands |
-| Python packaging | setuptools (legacy) | `pyproject.toml` at root + `sdk/python/`; no `uv.lock` |
+| Python packaging | setuptools | `sdk/python/`; no `uv.lock` |
 | Rust | stable toolchain | `cargo test -p engine`, `cargo fmt`, `cargo clippy` |
 
 ## How To Verify The Rust + TypeScript Stack
@@ -34,14 +34,14 @@ bash scripts/verify_rust_typescript_stack.sh
 
 This is the primary cutover verification. It checks Rust formatting, clippy, Rust tests, TypeScript SDK tests/build, dashboard lint/typecheck/build/static export, then starts the Rust engine with the exported dashboard and smokes `/api/v1/health`, `/api/v1/dashboard`, `/api/v1/dispatch`, and the dashboard root.
 
-## How To Run Legacy Reference Tests
+## How To Run Tests
 
 ```bash
-PYTHONPATH=src uv run --no-project python -m unittest discover -s tests
 cargo test -p engine
+cd sdk/python && PYTHONPATH=src uv run --no-project python -m unittest discover -s tests
 ```
 
-Current result: 2089 Python tests pass; 1140 Rust tests pass.
+Current result: 1140 Rust tests pass. Python SDK tests run separately under `sdk/python/`.
 
 ## How To Run Without Docker
 
@@ -134,16 +134,6 @@ dashboard = client.dashboard()
 bundle = client.dispatch("Summarize docs without provider calls")
 ```
 
-## How To Run The CLI
-
-Example event validation command:
-
-```bash
-PYTHONPATH=src python3 -m harness_core.cli validate-events docs/stage0/events.jsonl
-```
-
-`docs/stage0/events.jsonl` intentionally contains a known bad line and is preserved as a validator fixture.
-
 ## Safety Boundaries
 
 - No real model calls.
@@ -163,11 +153,10 @@ codegen/                 Wire-contract type generation helpers
 dashboard/               Next.js local agent-control-plane dashboard with static export support
 deploy/                  Optional local Dockerfiles for API and dashboard
 sdk/typescript/          TypeScript REST SDK package
-sdk/python/              Legacy-compatible Python REST SDK package
-src/harness_core/        Legacy Python reference implementation
-tests/                   Deterministic unit tests and fixtures
-wire_contract/v1/        Frozen dispatch JSON schemas for Python/Rust parity
-tests/integration/parity/ Stdlib parity runner for dispatch golden fixtures
+sdk/python/              Python REST SDK package
+wire_contract/v1/        Frozen dispatch JSON schemas for cross-language parity
+tools/                   Security baseline checker, relocated utility tests
+scripts/                 Verification, packaging, and smoke-test scripts
 docs/stage0/             Stage 0 architecture fixtures and task book data
 docs/stage1/             Event store, validator, kernel, CLI, task-record docs
 docs/stage2/             Quality runtime specs and acceptance
@@ -175,7 +164,6 @@ docs/stage3/             Controlled intelligence stub specs and acceptance
 docs/stage4/             Runtime abstraction specs and acceptance
 web/dashboard/           Local non-executable Harness app dashboard
 docs/MODULE_MAP.md       Module-to-stage reference
-docs/TEST_MATRIX.md      Test coverage matrix
 docs/AGENT_CONTROL_PLANE_MIGRATION_CLOSEOUT.md Agent-control-plane migration closeout
 ```
 
@@ -211,4 +199,4 @@ Full closeout report: [`docs/CA7_CONTROLLED_ADAPTIVE_CLOSEOUT_REPORT.md`](docs/C
 
 Keep the repo moving through the autonomous maintainer loop: repair verification drift, keep docs current, fix focused regressions, and harden the local small-team path when evidence identifies concrete gaps. Any work that adds cloud hosting, real model provider integration, real sandbox execution, target-repo mutation, hosted deployment, or real autonomous workers still requires explicit approval.
 
-Python reference implementation remains in `src/harness_core/` until an explicit future removal or relocation decision is approved.
+Python legacy reference implementation has been retired. Python is now retained only as the REST SDK (`sdk/python/`) and utility scripts (`scripts/`, `tools/`, `codegen/`).

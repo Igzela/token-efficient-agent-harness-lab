@@ -92,11 +92,7 @@ PROHIBITED_IMPORTS = {
 # Paths to exclude from secret scanning (test files contain test strings
 # that intentionally look like secrets).
 SECRET_SCAN_EXCLUDE = {
-    "tests/test_security_baseline.py",
-    "tests/test_http_server.py",
-    "tests/test_auth.py",
-    "demos/full_pipeline_demo.py",
-    "demos/real_provider_demo.py",
+    "tools/test_security_baseline.py",
 }
 
 # Per-file import allowlists for local-only HTTP clients and tests. These
@@ -104,9 +100,6 @@ SECRET_SCAN_EXCLUDE = {
 # provider SDKs.
 # Each key is a file path; the value is the set of imports allowed in that file.
 ALLOWED_TEST_IMPORTS: dict[str, set[str]] = {
-    "tests/test_http_server.py": {"urllib.request", "urllib.error", "socket"},
-    "demos/real_provider_demo.py": {"urllib.request", "urllib.error", "json", "os", "sys", "time"},
-    "demos/full_pipeline_demo.py": {"urllib.request", "urllib.error", "json", "os", "sys", "time"},
     "sdk/python/src/agent_control_plane_sdk/client.py": {"urllib.request", "urllib.error"},
     "sdk/python/tests/test_client.py": {"urllib.error"},
     "scripts/smoke_native_runtime.py": {"socket", "urllib.request"},
