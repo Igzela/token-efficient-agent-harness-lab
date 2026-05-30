@@ -19,6 +19,7 @@ jobs:
         uses: astral-sh/setup-uv@v5
         with:
           python-version: "3.11"
+          enable-cache: false
       - name: Run security baseline checker
         run: uv run --no-project python tools/check_security_baseline.py
       - name: Run unit tests
@@ -71,6 +72,7 @@ jobs:
         uses: astral-sh/setup-uv@v5
         with:
           python-version: "3.11"
+          enable-cache: false
       - name: Build static dashboard
         run: cd dashboard && bun install --frozen-lockfile && bun run build:static
       - name: Build native engine
@@ -91,6 +93,7 @@ jobs:
         uses: astral-sh/setup-uv@v5
         with:
           python-version: "3.11"
+          enable-cache: false
       - name: Verify Rust + TypeScript stack
         run: bash scripts/verify_rust_typescript_stack.sh
 
