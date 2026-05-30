@@ -108,7 +108,10 @@ mod tests {
     #[test]
     fn test_detect_binary_found() {
         let result = detect_binary("sh");
-        assert!(result.is_some(), "sh binary should be detected on any Unix system");
+        assert!(
+            result.is_some(),
+            "sh binary should be detected on any Unix system"
+        );
     }
 
     #[test]
