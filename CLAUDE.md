@@ -71,6 +71,7 @@ Master architecture document: `docs/dispatch/DISPATCHER_KERNEL_V0_ARCHITECTURE.m
 - **Architecture Refactor R4**: IMPLEMENTED (`engine/src/workflow/dag_manager/` module directory: mod.rs, types.rs, helpers.rs, mutations.rs, compensate.rs). 1144 Rust tests pass.
 - **Architecture Refactor R5**: IMPLEMENTED (`engine/src/workflow/context_pack/` module directory: mod.rs, rules.rs, types.rs, validation.rs, budget.rs). 1144 Rust tests pass.
 - **Architecture Refactor R6**: IMPLEMENTED (`engine/src/harness/model_profiles/` module directory: mod.rs, constants.rs, types.rs, validation.rs, shadow.rs). 1144 Rust tests pass.
+- **Architecture Refactor R7**: IMPLEMENTED (`engine/src/workflow/concurrency/` module directory: mod.rs, dag_types.rs, types.rs, controller.rs, helpers.rs). 1144 Rust tests pass.
 
 See `docs/CURRENT_STATUS.md` for detailed phase closeout records.
 
@@ -119,6 +120,7 @@ See `docs/CURRENT_STATUS.md` for full details.
 - **2026-05-30**: Architecture Refactor R4 — dag_manager split. Replaced 1186-line `engine/src/workflow/dag_manager.rs` monolith with `engine/src/workflow/dag_manager/` module directory (5 files): mod.rs, types.rs, helpers.rs, mutations.rs, compensate.rs. Public API unchanged. 1144 Rust tests pass. Commit `7b9aac1`. GPT PASS (requires_approval re-export fix applied, docs patched). CLOSED.
 - **2026-05-30**: Architecture Refactor R5 — context_pack split. Replaced 1003-line `engine/src/workflow/context_pack.rs` monolith with `engine/src/workflow/context_pack/` module directory (5 files): mod.rs, rules.rs, types.rs, validation.rs, budget.rs. Public API unchanged. 1144 Rust tests pass.
 - **2026-05-30**: Architecture Refactor R6 — model_profiles split. Replaced 840-line `engine/src/harness/model_profiles.rs` monolith with `engine/src/harness/model_profiles/` module directory (5 files): mod.rs, constants.rs, types.rs, validation.rs, shadow.rs. Public API unchanged. 1144 Rust tests pass.
+- **2026-05-30**: Architecture Refactor R7 — concurrency split. Replaced 674-line `engine/src/workflow/concurrency.rs` monolith with `engine/src/workflow/concurrency/` module directory (5 files): mod.rs, dag_types.rs, types.rs, controller.rs, helpers.rs. Public API unchanged. 1144 Rust tests pass.
 - Previous BLOCK findings (b6d5bc1): HIGH-1 rate limit not wired, HIGH-2 scope enforcement missing, HIGH-3 plugin locks unused
 - Gate 1 addresses: HIGH-1 (rate limiter in ServerContext + _check_rate_limit), HIGH-2 (scope enforcement + AuthorizationDecision + 403/429)
 - Gate 2 addresses: atomic restore, WAL safety, failure-mode coverage
