@@ -392,7 +392,6 @@ pub fn openapi_document() -> serde_json::Value {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use server_context::{match_path, RouteMatch};
 
     #[test]
     fn test_server_config_default() {
