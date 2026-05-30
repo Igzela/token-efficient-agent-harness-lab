@@ -1,0 +1,174 @@
+use std::process::{Command, Stdio};
+
+use crate::cli::claude_code::compute_cli_cost;
+use crate::dispatch_decision::DispatchDecision;
+use crate::executor_adapter::{ExecutionResult, Executor};
+use crate::runtime::FixtureRuntime;
+
+pub struct CodexCliExecutor {
+    bin_path: String,
+    timeout_ms: u64,
+}
+
+impl CodexCliExecutor {
+    pub fn new(bin_path: String, timeout_ms: u64) -> Self {
+        Self {
+            bin_path,
+            timeout_ms,
+        }
+    }
+}
+
+impl Executor for CodexCliExecutor {
+    fn execute(
+        &self,
+        decision: &DispatchDecision,
+        raw_request: &str,
+        dispatch_id: &str,
+        runtime: &mut FixtureRuntime,
+    ) -> ExecutionResult {
+        let start = std::time::Instant::now();
+
+        let output = Command::new(&self.bin_path)
+            .arg("exec")
+            .arg(raw_request)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .output();
+
+        let elapsed = start.elapsed().as_millis() as i64;
+
+        match output {
+            Ok(output) => {
+                if !output.status.success() {
+                    let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+                    let stdout = String::from_utf8_lossy(&output.stdout).to_string();
+                    let msg = if !stderr.is_empty() {
+                        stderr
+                    } else {
+                        format!("exit code: {}", output.status.code().unwrap_or(-1))
+                    };
+                    return ExecutionResult {
+                        schema_version: "execution_result.v1".to_string(),
+                        result_id: runtime.id("exec-"),
+                        dispatch_id: dispatch_id.to_string(),
+                        decision_id: decision.decision_id.clone(),
+                        executor_type: "codex_cli".to_string(),
+                        status: "failed".to_string(),
+                        output: if stdout.is_empty() {
+                            None
+                        } else {
+                            Some(stdout)
+                        },
+                        prompt_pack: None,
+                        input_tokens: None,
+                        output_tokens: None,
+                        estimated_cost: None,
+                        latency_ms: Some(elapsed),
+                        error_domain: Some("cli_execution_error".to_string()),
+                        error_message: Some(msg),
+                        provider_request_id: None,
+                        attempt_number: Some(1),
+                        finish_reason: Some("cli_error".to_string()),
+                        usage_source: Some("codex_cli".to_string()),
+                        created_at: runtime.now(),
+                    };
+                }
+
+                let stdout = String::from_utf8_lossy(&output.stdout).to_string();
+                parse_codex_output(&stdout, decision, dispatch_id, elapsed, runtime)
+            }
+            Err(e) => ExecutionResult {
+                schema_version: "execution_result.v1".to_string(),
+                result_id: runtime.id("exec-"),
+                dispatch_id: dispatch_id.to_string(),
+                decision_id: decision.decision_id.clone(),
+                executor_type: "codex_cli".to_string(),
+                status: "failed".to_string(),
+                output: None,
+                prompt_pack: None,
+                input_tokens: None,
+                output_tokens: None,
+                estimated_cost: None,
+                latency_ms: Some(elapsed),
+                error_domain: Some("cli_not_found".to_string()),
+                error_message: Some(format!("failed to spawn codex: {e}")),
+                provider_request_id: None,
+                attempt_number: Some(1),
+                finish_reason: Some("spawn_error".to_string()),
+                usage_source: Some("codex_cli".to_string()),
+                created_at: runtime.now(),
+            },
+        }
+    }
+}
+
+fn parse_codex_output(
+    raw: &str,
+    decision: &DispatchDecision,
+    dispatch_id: &str,
+    latency_ms: i64,
+    runtime: &mut FixtureRuntime,
+) -> ExecutionResult {
+    let parsed: Option<serde_json::Value> = serde_json::from_str(raw).ok();
+
+    let (output_text, input_tokens, output_tokens) = if let Some(ref val) = parsed {
+        let text = val
+            .get("output")
+            .or_else(|| val.get("result"))
+            .or_else(|| val.get("content"))
+            .and_then(|v| v.as_str())
+            .unwrap_or(raw)
+            .to_string();
+
+        let input_tokens = val
+            .get("usage")
+            .and_then(|u| u.get("input_tokens").or_else(|| u.get("prompt_tokens")))
+            .and_then(|v| v.as_i64());
+
+        let output_tokens = val
+            .get("usage")
+            .and_then(|u| {
+                u.get("output_tokens")
+                    .or_else(|| u.get("completion_tokens"))
+            })
+            .and_then(|v| v.as_i64());
+
+        (text, input_tokens, output_tokens)
+    } else {
+        (raw.to_string(), None, None)
+    };
+
+    let estimated_cost = compute_cli_cost(
+        "codex_cli",
+        input_tokens.unwrap_or(0),
+        output_tokens.unwrap_or(0),
+    );
+
+    ExecutionResult {
+        schema_version: "execution_result.v1".to_string(),
+        result_id: runtime.id("exec-"),
+        dispatch_id: dispatch_id.to_string(),
+        decision_id: decision.decision_id.clone(),
+        executor_type: "codex_cli".to_string(),
+        status: "cli_completed".to_string(),
+        output: Some(output_text),
+        prompt_pack: None,
+        input_tokens,
+        output_tokens,
+        estimated_cost: Some(estimated_cost),
+        latency_ms: Some(latency_ms),
+        error_domain: None,
+        error_message: None,
+        provider_request_id: parsed
+            .as_ref()
+            .and_then(|v| v.get("id"))
+            .and_then(|v| v.as_str())
+            .map(String::from),
+        attempt_number: Some(1),
+        finish_reason: Some("cli_success".to_string()),
+        usage_source: Some("codex_cli".to_string()),
+        created_at: runtime.now(),
+    }
+}

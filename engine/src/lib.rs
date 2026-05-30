@@ -6,6 +6,7 @@
 
 pub mod app_layer;
 pub mod budget_manager;
+pub mod cli;
 pub mod dispatch;
 pub mod dispatch_decision;
 pub mod dispatch_engine;

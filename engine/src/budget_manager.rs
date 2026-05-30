@@ -61,7 +61,9 @@ impl BudgetManager {
         let input_rate = match tier {
             "cheap_executor" => 0.0005,
             "balanced_worker" => 0.003,
+            "codex_cli" => 0.003,
             "strong_planner" => 0.015,
+            "claude_code_cli" => 0.015,
             "verifier" => 0.003,
             "advisor" => 0.015,
             _ => 0.003,
@@ -69,7 +71,9 @@ impl BudgetManager {
         let output_rate = match tier {
             "cheap_executor" => 0.0015,
             "balanced_worker" => 0.015,
+            "codex_cli" => 0.015,
             "strong_planner" => 0.075,
+            "claude_code_cli" => 0.075,
             "verifier" => 0.015,
             "advisor" => 0.075,
             _ => 0.015,

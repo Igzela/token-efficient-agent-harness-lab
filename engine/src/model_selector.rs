@@ -8,10 +8,10 @@ use super::task_analyzer::TaskAnalysis;
 
 static DEFAULT_TIER_MAP: LazyLock<HashMap<&'static str, &'static str>> = LazyLock::new(|| {
     let mut m = HashMap::new();
-    m.insert("code_generate", "balanced_worker");
+    m.insert("code_generate", "codex_cli");
     m.insert("code_review", "balanced_worker");
     m.insert("code_debug", "strong_planner");
-    m.insert("code_refactor", "balanced_worker");
+    m.insert("code_refactor", "codex_cli");
     m.insert("docs_summarize", "cheap_executor");
     m.insert("docs_generate", "cheap_executor");
     m.insert("docs_review", "cheap_executor");
@@ -22,8 +22,8 @@ static DEFAULT_TIER_MAP: LazyLock<HashMap<&'static str, &'static str>> = LazyLoc
     m.insert("infra_plan", "strong_planner");
     m.insert("math_generate", "strong_planner");
     m.insert("math_explain", "balanced_worker");
-    m.insert("architecture_plan", "strong_planner");
-    m.insert("architecture_design", "strong_planner");
+    m.insert("architecture_plan", "claude_code_cli");
+    m.insert("architecture_design", "claude_code_cli");
     m.insert("repo_ops_review", "cheap_executor");
     m.insert("repo_ops_generate", "balanced_worker");
     m.insert("governance_audit", "verifier");
@@ -36,6 +36,7 @@ static HIGH_RISK_OVERRIDES: LazyLock<HashMap<&'static str, &'static str>> = Lazy
     let mut m = HashMap::new();
     m.insert("cheap_executor", "balanced_worker");
     m.insert("balanced_worker", "strong_planner");
+    m.insert("codex_cli", "strong_planner");
     m
 });
 
@@ -106,6 +107,26 @@ impl ModelSelector {
             analysis.task_domain, analysis.task_intent
         )];
 
+        if analysis.complexity_score >= crate::cli::config::DEFAULT_COMPLEXITY_THRESHOLD
+            && (selected_tier == "cheap_executor"
+                || selected_tier == "balanced_worker"
+                || selected_tier == "strong_planner")
+        {
+            rejected.push(RejectedCandidate {
+                tier: selected_tier.clone(),
+                profile_id: None,
+                reason: format!(
+                    "complexity_score {:.2} >= {:.2} threshold",
+                    analysis.complexity_score,
+                    crate::cli::config::DEFAULT_COMPLEXITY_THRESHOLD
+                ),
+                constraint_failed: Some("complexity_threshold".to_string()),
+                estimated_cost: None,
+            });
+            selected_tier = "claude_code_cli".to_string();
+            reasons.push("complexity_escalation_to_cli".to_string());
+        }
+
         if analysis.confidence_label == "low" {
             reasons.push("low_confidence_escalation".to_string());
             rejected.push(RejectedCandidate {
@@ -160,11 +181,16 @@ impl ModelSelector {
     }
 
     fn fallback_tier(&self, selected: &str) -> String {
-        let idx = MODEL_TIERS.iter().position(|&t| t == selected).unwrap_or(1);
-        if idx < MODEL_TIERS.len() - 1 {
-            MODEL_TIERS[idx + 1].to_string()
-        } else {
-            MODEL_TIERS[MODEL_TIERS.len() - 1].to_string()
+        match selected {
+            "claude_code_cli" | "codex_cli" => "strong_planner".to_string(),
+            _ => {
+                let idx = MODEL_TIERS.iter().position(|&t| t == selected).unwrap_or(1);
+                if idx < MODEL_TIERS.len() - 1 {
+                    MODEL_TIERS[idx + 1].to_string()
+                } else {
+                    MODEL_TIERS[MODEL_TIERS.len() - 1].to_string()
+                }
+            }
         }
     }
 

@@ -1,3 +1,6 @@
+use engine::cli::{ClaudeCodeCliExecutor, CliConfig, CodexCliExecutor, MultiExecutor};
+use engine::dispatch_engine::DispatchEngine;
+use engine::executor_adapter::NoopExecutor;
 use engine::http_server::{build_axum_router, build_axum_router_with_dashboard, AxumApiState};
 use engine::infrastructure::auth::{
     hash_api_key, validate_token_shape, APIKey, Tenant, TenantResolver,
@@ -13,7 +16,7 @@ use engine::provider::stub::StubProvider;
 use engine::provider::transport::ReqwestTransport;
 use engine::provider::Provider;
 use engine::storage::local_product_store::LocalProductStore;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -41,8 +44,11 @@ async fn main() {
             .expect("failed to record local admin API key metadata");
     }
     let store_arc = Arc::new(store);
+    let cli_config = CliConfig::from_env();
+    let multi_executor = build_multi_executor(&cli_config);
+    let base_engine = DispatchEngine::with_multi_executor(multi_executor);
     let state = configure_auth(
-        build_state_with_provider(AxumApiState::new(), &store_arc)
+        build_state_with_provider(AxumApiState::new().with_engine(base_engine), &store_arc)
             .with_local_store_arc(store_arc)
             .with_backup_dir(backup_dir),
     );
@@ -71,9 +77,14 @@ async fn main() {
         .ok()
         .filter(|v| !v.trim().is_empty())
         .unwrap_or_else(|| "unlimited".to_string());
+    let cli_summary = format!(
+        "claude={} codex={}",
+        cli_config.claude_code_enabled, cli_config.codex_enabled
+    );
     println!(
-        "[acp-startup] provider={} auth={} host={} budget_per_dispatch={} budget_daily={} lan={}",
+        "[acp-startup] executor={} cli=[{}] auth={} host={} budget_per_dispatch={} budget_daily={} lan={}",
         exec_type,
+        cli_summary,
         if require_auth { "on" } else { "off" },
         addr,
         cost_per_dispatch,
@@ -255,4 +266,35 @@ fn local_admin_scope_list() -> Vec<String> {
     .into_iter()
     .map(String::from)
     .collect()
+}
+
+fn build_multi_executor(config: &CliConfig) -> MultiExecutor {
+    let mut executors: HashMap<String, Box<dyn engine::executor_adapter::Executor>> =
+        HashMap::new();
+
+    if config.claude_code_enabled {
+        if let Some(ref bin) = config.claude_code_bin {
+            println!("[acp-cli] claude_code_cli enabled: {}", bin);
+            executors.insert(
+                "claude_code_cli".to_string(),
+                Box::new(ClaudeCodeCliExecutor::new(bin.clone(), config.timeout_ms)),
+            );
+        }
+    }
+
+    if config.codex_enabled {
+        if let Some(ref bin) = config.codex_bin {
+            println!("[acp-cli] codex_cli enabled: {}", bin);
+            executors.insert(
+                "codex_cli".to_string(),
+                Box::new(CodexCliExecutor::new(bin.clone(), config.timeout_ms)),
+            );
+        }
+    }
+
+    if executors.is_empty() {
+        println!("[acp-cli] no CLI executors available; using noop default");
+    }
+
+    MultiExecutor::new(executors).with_default(Box::new(NoopExecutor))
 }

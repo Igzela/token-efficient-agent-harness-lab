@@ -69,8 +69,28 @@ impl DispatchEngine {
         }
     }
 
+    pub fn with_multi_executor(multi: crate::cli::MultiExecutor) -> Self {
+        Self {
+            executor: Box::new(multi),
+            executor_type_name: "multi".to_string(),
+            ..Self::default()
+        }
+    }
+
     pub fn executor_type(&self) -> &str {
         &self.executor_type_name
+    }
+
+    fn effective_executor_type(&self, tier: &str) -> String {
+        if self.executor_type_name == "multi" {
+            match tier {
+                "claude_code_cli" => "claude_code_cli".to_string(),
+                "codex_cli" => "codex_cli".to_string(),
+                _ => "noop".to_string(),
+            }
+        } else {
+            self.executor_type_name.clone()
+        }
     }
 
     pub fn preflight_reserved_cost(&self, raw_request: &str, request_source: &str) -> f64 {
@@ -108,12 +128,13 @@ impl DispatchEngine {
             &selection.selected_tier,
             &mut runtime,
         );
-        let execution_policy = build_execution_policy(&analysis, &self.executor_type_name);
+        let effective_executor_type = self.effective_executor_type(&selection.selected_tier);
+        let execution_policy = build_execution_policy(&analysis, &effective_executor_type);
         let execution_gates = build_execution_gates(
             &analysis,
             &budget_reservation,
             &execution_policy,
-            &self.executor_type_name,
+            &effective_executor_type,
             &mut runtime,
         );
         let hard_constraints = derive_hard_constraints(&analysis, &execution_policy);
@@ -157,7 +178,8 @@ impl DispatchEngine {
             &runtime,
         );
 
-        let is_provider = self.executor_type_name == "provider";
+        let effective_type = self.effective_executor_type(&decision.selected_tier);
+        let is_provider = effective_type == "provider";
         let provider_blocked = is_provider
             && (decision.decision_status != "decided"
                 || decision
@@ -224,7 +246,24 @@ fn build_execution_gates(
 ) -> Vec<ExecutionGate> {
     let mut gates = Vec::new();
 
-    if executor_type != "provider" {
+    if executor_type == "provider" {
+        // provider execution has its own gate path
+    } else if executor_type.starts_with("cli")
+        || executor_type == "claude_code_cli"
+        || executor_type == "codex_cli"
+    {
+        gates.push(ExecutionGate {
+            gate_id: runtime.id("gate-"),
+            gate_type: "cli_execution".to_string(),
+            severity: "info".to_string(),
+            reason: format!("CLI executor active: {executor_type}"),
+            evidence_refs: Vec::new(),
+            clearance_required: "policy".to_string(),
+            cleared: true,
+            cleared_by: Some("auto".to_string()),
+            cleared_at: Some(runtime.now()),
+        });
+    } else {
         gates.push(ExecutionGate {
             gate_id: runtime.id("gate-"),
             gate_type: "provider_disabled".to_string(),
@@ -347,7 +386,11 @@ fn derive_hard_constraints(analysis: &TaskAnalysis, execution_policy: &Value) ->
         .iter()
         .any(|e| e.feature.contains("provider") || e.text.contains("no_provider_call"));
 
-    if executor_type != "provider" || user_negated_provider {
+    let is_cli_executor = executor_type.starts_with("cli")
+        || executor_type == "claude_code_cli"
+        || executor_type == "codex_cli";
+
+    if (executor_type != "provider" && !is_cli_executor) || user_negated_provider {
         constraints.push("no_provider_call".to_string());
     }
 
@@ -371,8 +414,8 @@ fn determine_decision_status(gates: &[ExecutionGate]) -> String {
 fn quality_band(tier: &str) -> &'static str {
     match tier {
         "cheap_executor" => "low",
-        "balanced_worker" => "medium",
-        "strong_planner" | "verifier" | "advisor" => "high",
+        "balanced_worker" | "codex_cli" => "medium",
+        "strong_planner" | "claude_code_cli" | "verifier" | "advisor" => "high",
         _ => "unknown",
     }
 }

@@ -61,6 +61,8 @@ pub const MODEL_TIERS: &[&str] = &[
     "advisor",
 ];
 
+pub const CLI_TIERS: &[&str] = &["claude_code_cli", "codex_cli"];
+
 pub const EXECUTION_GATE_TYPES: &[&str] = &[
     "budget",
     "risk",
@@ -78,7 +80,14 @@ pub const CLEARANCE_VALUES: &[&str] = &["none", "human", "governance", "policy"]
 
 pub const DECISION_STATUSES: &[&str] = &["decided", "needs_approval", "blocked", "diagnostic_only"];
 
-pub const EXECUTOR_TYPES: &[&str] = &["noop", "mock", "manual", "provider"];
+pub const EXECUTOR_TYPES: &[&str] = &[
+    "noop",
+    "mock",
+    "manual",
+    "provider",
+    "claude_code_cli",
+    "codex_cli",
+];
 
 pub const REQUEST_SOURCES: &[&str] = &[
     "cli",
