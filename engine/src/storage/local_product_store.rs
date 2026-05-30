@@ -8,7 +8,9 @@ pub const LOCAL_TEAM_EXPORT_SCHEMA_VERSION: &str = "local_team_export.v1";
 pub const LOCAL_DASHBOARD_SCHEMA_VERSION: &str = "local_dashboard.v1";
 pub const LOCAL_IMPORT_SCHEMA_VERSION: &str = "local_team_export.v1";
 
-const LOCAL_NOW: &str = "2026-05-29T00:00:00Z";
+fn utc_now() -> String {
+    chrono::Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string()
+}
 
 const CURRENT_SCHEMA_VERSION: i64 = 1;
 
@@ -101,10 +103,18 @@ CREATE INDEX IF NOT EXISTS idx_provider_audit_created ON provider_audit_events(c
 pub struct LocalProductStore {
     db_path: PathBuf,
     conn: Mutex<Connection>,
+    clock: Box<dyn Fn() -> String + Send + Sync>,
 }
 
 impl LocalProductStore {
     pub fn new(path: impl AsRef<Path>) -> Result<Self, String> {
+        Self::new_with_clock(path, utc_now)
+    }
+
+    pub fn new_with_clock(
+        path: impl AsRef<Path>,
+        clock: impl Fn() -> String + Send + Sync + 'static,
+    ) -> Result<Self, String> {
         let path = path.as_ref().to_path_buf();
         if let Some(parent) = path.parent() {
             if !parent.as_os_str().is_empty() {
@@ -118,6 +128,7 @@ impl LocalProductStore {
         let store = Self {
             db_path: path,
             conn: Mutex::new(conn),
+            clock: Box::new(clock),
         };
         store.ensure_default_config()?;
         store.run_migrations()?;
@@ -126,6 +137,10 @@ impl LocalProductStore {
 
     pub fn db_path(&self) -> &Path {
         &self.db_path
+    }
+
+    fn now(&self) -> String {
+        (self.clock)()
     }
 
     pub fn is_memory(&self) -> bool {
@@ -340,7 +355,7 @@ impl LocalProductStore {
                 conn.execute(
                     "INSERT OR IGNORE INTO local_config (key, value_json, updated_at, updated_by)
                      VALUES (?1, ?2, ?3, ?4)",
-                    params![key, value.to_string(), LOCAL_NOW, "system"],
+                    params![key, value.to_string(), self.now(), "system"],
                 )
                 .map_err(|e| e.to_string())?;
             }
@@ -356,7 +371,8 @@ impl LocalProductStore {
         actor: &str,
     ) -> Result<Value, String> {
         let dispatch_id = str_at(bundle, &["record", "dispatch_id"]).unwrap_or("unknown");
-        let created_at = str_at(bundle, &["record", "created_at"]).unwrap_or(LOCAL_NOW);
+        let default_created_at = self.now();
+        let created_at = str_at(bundle, &["record", "created_at"]).unwrap_or(&default_created_at);
         let final_status = str_at(bundle, &["record", "final_status"]).unwrap_or("unknown");
         let selected_tier = str_at(bundle, &["decision", "selected_tier"]).unwrap_or("unknown");
         let risk_level = str_at(bundle, &["analysis", "risk_level"]).unwrap_or("unknown");
@@ -411,6 +427,7 @@ impl LocalProductStore {
             let history_id = conn.last_insert_rowid();
             append_audit_locked(
                 conn,
+                &self.now(),
                 actor,
                 "dispatch.record",
                 dispatch_id,
@@ -529,11 +546,12 @@ impl LocalProductStore {
                     value_json = excluded.value_json,
                     updated_at = excluded.updated_at,
                     updated_by = excluded.updated_by",
-                params![key, value_json, LOCAL_NOW, actor],
+                params![key, value_json, self.now(), actor],
             )
             .map_err(|e| e.to_string())?;
-            append_audit_locked(conn, actor, "config.update", key, &json!({"key": key}))?;
-            Ok(json!({"key": key, "value": value, "updated_at": LOCAL_NOW, "updated_by": actor}))
+            let now = self.now();
+            append_audit_locked(conn, &now, actor, "config.update", key, &json!({"key": key}))?;
+            Ok(json!({"key": key, "value": value, "updated_at": now, "updated_by": actor}))
         })
     }
 
@@ -561,6 +579,7 @@ impl LocalProductStore {
         role: &str,
     ) -> Result<Value, String> {
         self.with_conn(|conn| {
+            let now = self.now();
             conn.execute(
                 "INSERT INTO team_members (user_id, display_name, role, created_at, updated_at)
                  VALUES (?1, ?2, ?3, ?4, ?4)
@@ -568,15 +587,15 @@ impl LocalProductStore {
                     display_name = excluded.display_name,
                     role = excluded.role,
                     updated_at = excluded.updated_at",
-                params![user_id, display_name, role, LOCAL_NOW],
+                params![user_id, display_name, role, now],
             )
             .map_err(|e| e.to_string())?;
             Ok(json!({
                 "user_id": user_id,
                 "display_name": display_name,
                 "role": role,
-                "created_at": LOCAL_NOW,
-                "updated_at": LOCAL_NOW,
+                "created_at": now,
+                "updated_at": now,
             }))
         })
     }
@@ -591,6 +610,7 @@ impl LocalProductStore {
     ) -> Result<Value, String> {
         let scopes_json = serde_json::to_string(scopes).map_err(|e| e.to_string())?;
         self.with_conn(|conn| {
+            let now = self.now();
             conn.execute(
                 "INSERT INTO api_key_metadata
                  (key_id, user_id, role, scopes_json, created_at, created_by, revoked_at)
@@ -600,11 +620,12 @@ impl LocalProductStore {
                     role = excluded.role,
                     scopes_json = excluded.scopes_json,
                     created_by = excluded.created_by",
-                params![key_id, user_id, role, scopes_json, LOCAL_NOW, actor],
+                params![key_id, user_id, role, scopes_json, now, actor],
             )
             .map_err(|e| e.to_string())?;
             append_audit_locked(
                 conn,
+                &now,
                 actor,
                 "api_key.record_metadata",
                 key_id,
@@ -615,7 +636,7 @@ impl LocalProductStore {
                 "user_id": user_id,
                 "role": role,
                 "scopes": scopes,
-                "created_at": LOCAL_NOW,
+                "created_at": now,
                 "created_by": actor,
             }))
         })
@@ -655,15 +676,17 @@ impl LocalProductStore {
 
     pub fn revoke_api_key_metadata(&self, key_id: &str, actor: &str) -> Result<bool, String> {
         self.with_conn(|conn| {
+            let now = self.now();
             let rows = conn
                 .execute(
                     "UPDATE api_key_metadata SET revoked_at = ?1 WHERE key_id = ?2 AND revoked_at IS NULL",
-                    params![LOCAL_NOW, key_id],
+                    params![now, key_id],
                 )
                 .map_err(|e| e.to_string())?;
             if rows > 0 {
                 append_audit_locked(
                     conn,
+                    &now,
                     actor,
                     "team.key.revoked",
                     key_id,
@@ -685,6 +708,7 @@ impl LocalProductStore {
             if rows > 0 {
                 append_audit_locked(
                     conn,
+                    &self.now(),
                     actor,
                     "team.key.deleted",
                     key_id,
@@ -712,6 +736,7 @@ impl LocalProductStore {
             if rows > 0 {
                 append_audit_locked(
                     conn,
+                    &self.now(),
                     actor,
                     "team.key.scopes_updated",
                     key_id,
@@ -729,15 +754,17 @@ impl LocalProductStore {
         actor: &str,
     ) -> Result<bool, String> {
         self.with_conn(|conn| {
+            let now = self.now();
             let rows = conn
                 .execute(
                     "UPDATE team_members SET role = ?1, updated_at = ?2 WHERE user_id = ?3",
-                    params![role, LOCAL_NOW, user_id],
+                    params![role, now, user_id],
                 )
                 .map_err(|e| e.to_string())?;
             if rows > 0 {
                 append_audit_locked(
                     conn,
+                    &now,
                     actor,
                     "team.member.role_updated",
                     user_id,
@@ -759,6 +786,7 @@ impl LocalProductStore {
             if rows > 0 {
                 append_audit_locked(
                     conn,
+                    &self.now(),
                     actor,
                     "team.member.deleted",
                     user_id,
@@ -773,7 +801,7 @@ impl LocalProductStore {
         self.with_conn(|conn| {
             conn.execute(
                 "UPDATE api_key_metadata SET last_used_at = ?1 WHERE key_id = ?2",
-                params![LOCAL_NOW, key_id],
+                params![self.now(), key_id],
             )
             .map_err(|e| e.to_string())?;
             Ok(())
@@ -1031,10 +1059,11 @@ impl LocalProductStore {
         details: &Value,
     ) -> Result<Value, String> {
         self.with_conn(|conn| {
-            let audit_id = append_audit_locked(conn, actor, action, resource, details)?;
+            let now = self.now();
+            let audit_id = append_audit_locked(conn, &now, actor, action, resource, details)?;
             Ok(json!({
                 "audit_id": audit_id,
-                "created_at": LOCAL_NOW,
+                "created_at": now,
                 "actor": actor,
                 "action": action,
                 "resource": resource,
@@ -1084,7 +1113,7 @@ impl LocalProductStore {
     ) -> Result<Value, String> {
         Ok(json!({
             "schema_version": LOCAL_TEAM_EXPORT_SCHEMA_VERSION,
-            "generated_at": LOCAL_NOW,
+            "generated_at": self.now(),
             "dispatches": self.list_dispatches(10_000)?,
             "config": self.config_snapshot()?,
             "team": self.team_snapshot()?,
@@ -1244,6 +1273,7 @@ pub fn local_boundaries(executor_type: &str, provider_enabled: bool) -> Value {
 
 fn append_audit_locked(
     conn: &Connection,
+    now: &str,
     actor: &str,
     action: &str,
     resource: &str,
@@ -1252,7 +1282,7 @@ fn append_audit_locked(
     conn.execute(
         "INSERT INTO audit_log (created_at, actor, action, resource, details_json)
          VALUES (?1, ?2, ?3, ?4, ?5)",
-        params![LOCAL_NOW, actor, action, resource, details.to_string()],
+        params![now, actor, action, resource, details.to_string()],
     )
     .map_err(|e| e.to_string())?;
     Ok(conn.last_insert_rowid())

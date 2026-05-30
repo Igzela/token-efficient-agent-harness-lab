@@ -909,3 +909,25 @@ fn concurrent_dispatch_read_by_id() {
         h.join().unwrap();
     }
 }
+
+#[test]
+fn test_new_with_clock_deterministic_timestamps() {
+    let dir = tempdir().unwrap();
+    let fixed_time = "2030-01-01T00:00:00Z";
+    let clock = || fixed_time.to_string();
+    let store = LocalProductStore::new_with_clock(dir.path().join("clock.db"), clock).unwrap();
+
+    let bundle = json!({
+        "record": {"dispatch_id": "clock-test", "final_status": "ok"},
+        "decision": {"selected_tier": "noop", "budget_reservation": {"reserved_cost": 0.0}},
+        "analysis": {"risk_level": "low"}
+    });
+    let result = store.record_dispatch("{}", "cli", &bundle, "tester").unwrap();
+    assert_eq!(result["created_at"], fixed_time);
+
+    let audit = store.append_audit("tester", "test.action", "res", &json!({})).unwrap();
+    assert_eq!(audit["created_at"], fixed_time);
+
+    let export = store.export_snapshot("noop", false).unwrap();
+    assert_eq!(export["generated_at"], fixed_time);
+}
