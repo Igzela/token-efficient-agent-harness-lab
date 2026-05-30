@@ -33,6 +33,7 @@ Master architecture document: `docs/dispatch/DISPATCHER_KERNEL_V0_ARCHITECTURE.m
 - **Original Stage 0-4 task-book**: Complete and sealed.
 - **Harness App MVP0-MVP8**: Complete local operations console.
 - **Trials 0-3**: Closed, with target repo onboarding and multi-repo generalization complete.
+- **Python legacy reference**: **RETIRED** — `src/harness_core/`, root `tests/`, `demos/`, and root `pyproject.toml` removed (commit c3a23f5). Python retained only as REST SDK (`sdk/python/`) and utility scripts (`scripts/`, `tools/`, `codegen/`). Rust `engine/` is the sole runtime implementation.
 - **Dispatch Kernel Phase 1-6A**: All phases STABLE (Phase 6A: 5 source modules, 5 test files, 1596 tests).
 - **Phase 5 — Multi-Agent Orchestration**: STABLE (11 orchestration modules, 1454 tests, GPT approved after 3 review rounds).
 - **Phase 6A — Local Durable API/Storage**: STABLE (5 source modules, 5 test files, 1596 tests, GPT approved after 2 review rounds).
