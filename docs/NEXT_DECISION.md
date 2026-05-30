@@ -39,6 +39,7 @@ Implemented:
 - data operations: versioned SQLite migrations, integrity checks, import/export roundtrip, hardened backup restore with verification, data-directory documentation
 - native packaging: `.env.example`, install/upgrade scripts, release tarball with engine binary + static dashboard + scripts, native smoke verification
 - dashboard controls: dispatch detail drill-down, backups tab with create/restore/delete and confirmation dialogs, audit log tab, Team tab confirmation dialogs, provider health in Settings, dispatch detail/list-backups/delete-backup API endpoints, 6 new SDK methods per SDK
+- product-readiness repair pass: smoke endpoint drift fixed with guard test, hardcoded timestamps replaced with injectable clock, CLI executor timeout enforced via spawn_with_timeout, dashboard protected-mode auth flow with token input panel, dashboard error visibility for all tabs, threat model rewritten for current state
 
 Next productization phases:
 
