@@ -7,9 +7,8 @@ pub use budget::{apply_prune_policy, check_budget_compliance};
 pub use rules::*;
 pub use types::{ContextBudget, ContextLayers, MemoryDigest, RetrievalPolicy};
 pub use validation::{
-    validate_advisor_context_pack_v2, validate_context_layers,
-    validate_context_retrieval_request, validate_context_retrieval_result,
-    validate_model_context_pack_v2,
+    validate_advisor_context_pack_v2, validate_context_layers, validate_context_retrieval_request,
+    validate_context_retrieval_result, validate_model_context_pack_v2,
 };
 
 #[cfg(test)]
