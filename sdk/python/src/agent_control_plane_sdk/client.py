@@ -78,6 +78,9 @@ class AgentControlPlaneClient:
             },
         )
 
+    def list_api_keys(self) -> dict[str, Any]:
+        return self._get("/api/v1/keys")
+
     def create_api_key(
         self,
         user_id: str,

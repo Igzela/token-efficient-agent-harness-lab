@@ -737,6 +737,94 @@ async fn axum_create_api_key_returns_raw_key() {
 }
 
 #[tokio::test]
+async fn axum_list_api_keys_returns_metadata() {
+    let (app, admin_key) = make_admin_app();
+    let app_clone = app.clone();
+
+    // Create two keys
+    for uid in &["u1", "u2"] {
+        app_clone
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method(Method::POST)
+                    .uri("/api/v1/keys")
+                    .header(header::AUTHORIZATION, format!("Bearer {admin_key}"))
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(
+                        json!({"user_id": uid, "role": "readonly", "scopes": ["dispatch:read"]})
+                            .to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+    }
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method(Method::GET)
+                .uri("/api/v1/keys")
+                .header(header::AUTHORIZATION, format!("Bearer {admin_key}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = response_json(response).await;
+    let keys = body["keys"].as_array().unwrap();
+    assert!(keys.len() >= 2);
+    // Keys should have metadata fields but no raw_key
+    for key in keys {
+        assert!(key["key_id"].as_str().is_some());
+        assert!(key["user_id"].as_str().is_some());
+        assert!(key["role"].as_str().is_some());
+        assert!(key["scopes"].as_array().is_some());
+        assert!(key["created_at"].as_str().is_some());
+        assert!(key.get("raw_key").is_none(), "list must not return raw keys");
+    }
+}
+
+#[tokio::test]
+async fn axum_list_api_keys_requires_team_read_scope() {
+    let dir = tempdir().unwrap();
+    let store = LocalProductStore::new(dir.path().join("team.db")).unwrap();
+    let mut resolver = TenantResolver::new();
+    let mut readonly_scopes = HashSet::new();
+    readonly_scopes.insert("dispatch:read".to_string());
+    resolver.add_tenant(Tenant {
+        tenant_id: "local".to_string(),
+        name: "Local".to_string(),
+        scopes: readonly_scopes.clone(),
+        rate_limit: Some(10_000),
+    });
+    let (_key, raw_key) = resolver
+        .create_api_key("local", Some(readonly_scopes), None, 1.0)
+        .unwrap();
+    let app = build_axum_router(AxumApiState::new().with_local_store(store).with_auth(
+        resolver,
+        RateLimiter::new(60.0, 10_000),
+        Some(10_000),
+        1.0,
+    ));
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method(Method::GET)
+                .uri("/api/v1/keys")
+                .header(header::AUTHORIZATION, format!("Bearer {raw_key}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::FORBIDDEN);
+}
+
+#[tokio::test]
 async fn axum_revoke_api_key_blocks_future_auth() {
     let (app, admin_key) = make_admin_app();
     let app_clone = app.clone();

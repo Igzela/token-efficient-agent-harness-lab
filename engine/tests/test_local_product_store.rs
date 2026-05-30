@@ -935,3 +935,41 @@ fn test_new_with_clock_deterministic_timestamps() {
     let export = store.export_snapshot("noop", false).unwrap();
     assert_eq!(export["generated_at"], fixed_time);
 }
+
+#[test]
+fn test_list_api_key_metadata() {
+    let dir = tempdir().unwrap();
+    let store = LocalProductStore::new(dir.path().join("keys.db")).unwrap();
+
+    // Empty list initially
+    let keys = store.list_api_key_metadata(100).unwrap();
+    assert!(keys.is_empty());
+
+    // Record two keys
+    store
+        .record_api_key_metadata("key_1", "user_a", "admin", &["dispatch:read".to_string()], "admin")
+        .unwrap();
+    store
+        .record_api_key_metadata("key_2", "user_b", "readonly", &["team:read".to_string(), "audit:read".to_string()], "admin")
+        .unwrap();
+
+    let keys = store.list_api_key_metadata(100).unwrap();
+    assert_eq!(keys.len(), 2);
+    // Ordered by created_at DESC (both have same timestamp, so order is insertion order)
+    let key_ids: Vec<&str> = keys.iter().map(|k| k["key_id"].as_str().unwrap()).collect();
+    assert!(key_ids.contains(&"key_1"));
+    assert!(key_ids.contains(&"key_2"));
+
+    // Verify fields present
+    for key in &keys {
+        assert!(key["user_id"].as_str().is_some());
+        assert!(key["role"].as_str().is_some());
+        assert!(key["scopes"].as_array().is_some());
+        assert!(key["created_at"].as_str().is_some());
+        assert!(key["created_by"].as_str().is_some());
+    }
+
+    // Limit works
+    let keys = store.list_api_key_metadata(1).unwrap();
+    assert_eq!(keys.len(), 1);
+}

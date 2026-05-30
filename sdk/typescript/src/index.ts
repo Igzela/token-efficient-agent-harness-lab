@@ -85,6 +85,10 @@ export class AgentControlPlaneClient {
     });
   }
 
+  listApiKeys(): Promise<Record<string, unknown>> {
+    return this.getJson<Record<string, unknown>>("/api/v1/keys");
+  }
+
   async createApiKey(request: { user_id: string; role: string; scopes: string[]; expires_at?: number }): Promise<Record<string, unknown>> {
     return this.postJson<Record<string, unknown>>("/api/v1/keys", request);
   }

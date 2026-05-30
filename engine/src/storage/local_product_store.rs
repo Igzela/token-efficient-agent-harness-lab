@@ -681,6 +681,39 @@ impl LocalProductStore {
         })
     }
 
+    pub fn list_api_key_metadata(&self, limit: i64) -> Result<Vec<Value>, String> {
+        self.with_conn(|conn| {
+            let mut stmt = conn
+                .prepare(
+                    "SELECT key_id, user_id, role, scopes_json, created_at, created_by,
+                            revoked_at, last_used_at, expires_at
+                     FROM api_key_metadata
+                     ORDER BY created_at DESC
+                     LIMIT ?1",
+                )
+                .map_err(|e| e.to_string())?;
+            let rows = stmt
+                .query_map(params![limit], |row| {
+                    let scopes_text: String = row.get(3)?;
+                    let scopes: Vec<String> =
+                        serde_json::from_str(&scopes_text).unwrap_or_default();
+                    Ok(json!({
+                        "key_id": row.get::<_, String>(0)?,
+                        "user_id": row.get::<_, String>(1)?,
+                        "role": row.get::<_, String>(2)?,
+                        "scopes": scopes,
+                        "created_at": row.get::<_, String>(4)?,
+                        "created_by": row.get::<_, String>(5)?,
+                        "revoked_at": row.get::<_, Option<String>>(6)?,
+                        "last_used_at": row.get::<_, Option<String>>(7)?,
+                        "expires_at": row.get::<_, Option<String>>(8)?,
+                    }))
+                })
+                .map_err(|e| e.to_string())?;
+            collect_values(rows)
+        })
+    }
+
     pub fn revoke_api_key_metadata(&self, key_id: &str, actor: &str) -> Result<bool, String> {
         self.with_conn(|conn| {
             let now = self.now();

@@ -306,7 +306,12 @@ fn axum_routes() -> Router<AxumApiState> {
             "/api/v1/backups/:backup_id",
             delete(api_delete_backup).options(cors_preflight),
         )
-        .route("/api/v1/keys", post(api_create_key).options(cors_preflight))
+        .route(
+            "/api/v1/keys",
+            get(api_list_keys)
+                .post(api_create_key)
+                .options(cors_preflight),
+        )
         .route(
             "/api/v1/keys/:key_id/revoke",
             post(api_revoke_key).options(cors_preflight),
@@ -791,6 +796,22 @@ async fn api_delete_backup(
         Json(
             json!({"schema_version": AXUM_API_SCHEMA_VERSION, "ok": true, "backup_id": backup_id}),
         ),
+    ))
+}
+
+async fn api_list_keys(
+    State(state): State<AxumApiState>,
+    headers: HeaderMap,
+) -> Result<impl IntoResponse, ApiError> {
+    authorize(&state, &headers, "team:read")?;
+    let store = require_store(&state)?;
+    let keys = store.list_api_key_metadata(100).map_err(internal_error)?;
+    Ok((
+        cors_headers(),
+        Json(json!({
+            "schema_version": AXUM_API_SCHEMA_VERSION,
+            "keys": keys,
+        })),
     ))
 }
 
@@ -1597,6 +1618,14 @@ pub fn openapi_document() -> serde_json::Value {
                 }
             },
             "/api/v1/keys": {
+                "get": {
+                    "summary": "List API key metadata",
+                    "description": "Requires team:read scope. Returns metadata only — no raw keys.",
+                    "responses": {
+                        "200": {"description": "List of API key metadata"},
+                        "403": {"description": "Forbidden"}
+                    }
+                },
                 "post": {
                     "summary": "Create a new API key",
                     "description": "Requires team:admin scope. Returns the raw key once — it cannot be retrieved later.",
