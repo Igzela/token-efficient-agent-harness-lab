@@ -1,5 +1,6 @@
 use std::process::{Command, Stdio};
 
+use crate::cli::spawn_with_timeout;
 use crate::dispatch_decision::DispatchDecision;
 use crate::executor_adapter::{ExecutionResult, Executor};
 use crate::runtime::FixtureRuntime;
@@ -34,8 +35,8 @@ impl Executor for ClaudeCodeCliExecutor {
             .and_then(|v| v.as_str())
             .unwrap_or("default");
 
-        let output = Command::new(&self.bin_path)
-            .arg("-p")
+        let mut cmd = Command::new(&self.bin_path);
+        cmd.arg("-p")
             .arg(raw_request)
             .arg("--output-format")
             .arg("json")
@@ -43,8 +44,9 @@ impl Executor for ClaudeCodeCliExecutor {
             .arg(model)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .output();
+            .stderr(Stdio::piped());
+
+        let output = spawn_with_timeout(&mut cmd, self.timeout_ms);
 
         let elapsed = start.elapsed().as_millis() as i64;
 
@@ -88,27 +90,45 @@ impl Executor for ClaudeCodeCliExecutor {
                 let stdout = String::from_utf8_lossy(&output.stdout).to_string();
                 parse_claude_output(&stdout, decision, dispatch_id, elapsed, runtime)
             }
-            Err(e) => ExecutionResult {
-                schema_version: "execution_result.v1".to_string(),
-                result_id: runtime.id("exec-"),
-                dispatch_id: dispatch_id.to_string(),
-                decision_id: decision.decision_id.clone(),
-                executor_type: "claude_code_cli".to_string(),
-                status: "failed".to_string(),
-                output: None,
-                prompt_pack: None,
-                input_tokens: None,
-                output_tokens: None,
-                estimated_cost: None,
-                latency_ms: Some(elapsed),
-                error_domain: Some("cli_not_found".to_string()),
-                error_message: Some(format!("failed to spawn claude: {e}")),
-                provider_request_id: None,
-                attempt_number: Some(1),
-                finish_reason: Some("spawn_error".to_string()),
-                usage_source: Some("claude_code_cli".to_string()),
-                created_at: runtime.now(),
-            },
+            Err(timeout_elapsed) => {
+                let (domain, msg, reason) = if timeout_elapsed == 0 {
+                    (
+                        "cli_not_found",
+                        "failed to spawn claude".to_string(),
+                        "spawn_error",
+                    )
+                } else {
+                    (
+                        "cli_timeout",
+                        format!(
+                            "claude timed out after {}ms (limit {}ms)",
+                            timeout_elapsed, self.timeout_ms
+                        ),
+                        "timeout",
+                    )
+                };
+                ExecutionResult {
+                    schema_version: "execution_result.v1".to_string(),
+                    result_id: runtime.id("exec-"),
+                    dispatch_id: dispatch_id.to_string(),
+                    decision_id: decision.decision_id.clone(),
+                    executor_type: "claude_code_cli".to_string(),
+                    status: "failed".to_string(),
+                    output: None,
+                    prompt_pack: None,
+                    input_tokens: None,
+                    output_tokens: None,
+                    estimated_cost: None,
+                    latency_ms: Some(elapsed),
+                    error_domain: Some(domain.to_string()),
+                    error_message: Some(msg),
+                    provider_request_id: None,
+                    attempt_number: Some(1),
+                    finish_reason: Some(reason.to_string()),
+                    usage_source: Some("claude_code_cli".to_string()),
+                    created_at: runtime.now(),
+                }
+            }
         }
     }
 }
