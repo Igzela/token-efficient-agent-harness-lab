@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   ApiError,
   clearStoredToken,
@@ -148,8 +148,15 @@ function AuthPanel({
   );
 }
 
+function readTabFromHash(): Tab {
+  if (typeof window === "undefined") return "dispatches";
+  const hash = window.location.hash.replace(/^#/, "");
+  if (tabs.some((t) => t.id === hash)) return hash as Tab;
+  return "dispatches";
+}
+
 export default function DashboardPage() {
-  const [tab, setTab] = useState<Tab>("dispatches");
+  const [tab, setTab] = useState<Tab>(readTabFromHash);
   const [health, setHealth] = useState("unknown");
   const [ready, setReady] = useState("unknown");
   const [dashboard, setDashboard] = useState<LocalDashboardState>(emptyDashboard);
@@ -169,6 +176,22 @@ export default function DashboardPage() {
   }, [theme]);
 
   const toggleTheme = useCallback(() => setTheme((t) => (t === "dark" ? "light" : "dark")), []);
+
+  const syncingHash = useRef(false);
+  useEffect(() => {
+    syncingHash.current = true;
+    window.location.hash = tab;
+    syncingHash.current = false;
+  }, [tab]);
+
+  useEffect(() => {
+    function onHashChange() {
+      if (syncingHash.current) return;
+      setTab(readTabFromHash());
+    }
+    window.addEventListener("hashchange", onHashChange);
+    return () => window.removeEventListener("hashchange", onHashChange);
+  }, []);
 
   useEffect(() => {
     let cancelled = false;
