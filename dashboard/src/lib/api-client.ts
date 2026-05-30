@@ -73,3 +73,43 @@ export async function deleteMember(userId: string): Promise<Record<string, unkno
     if (!res.ok) throw new Error(`deleteMember failed: ${res.status}`);
     return res.json();
 }
+
+export async function fetchDispatchDetail(dispatchId: string): Promise<Record<string, unknown>> {
+    const res = await fetch(`${BASE}/api/v1/dispatches/${encodeURIComponent(dispatchId)}`);
+    if (!res.ok) throw new Error(`Dispatch detail failed: ${res.status}`);
+    return res.json();
+}
+
+export async function fetchBackups(): Promise<Record<string, unknown>> {
+    const res = await fetch(`${BASE}/api/v1/backups`);
+    if (!res.ok) throw new Error(`Fetch backups failed: ${res.status}`);
+    return res.json();
+}
+
+export async function deleteBackup(backupId: string): Promise<Record<string, unknown>> {
+    const res = await fetch(`${BASE}/api/v1/backups/${encodeURIComponent(backupId)}`, { method: "DELETE" });
+    if (!res.ok) throw new Error(`Delete backup failed: ${res.status}`);
+    return res.json();
+}
+
+export async function restoreBackup(backupId: string): Promise<Record<string, unknown>> {
+    const res = await fetch(`${BASE}/api/v1/backups/${encodeURIComponent(backupId)}/restore`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ confirm_restore: true }),
+    });
+    if (!res.ok) throw new Error(`Restore backup failed: ${res.status}`);
+    return res.json();
+}
+
+export async function fetchAudit(): Promise<Record<string, unknown>> {
+    const res = await fetch(`${BASE}/api/v1/audit`);
+    if (!res.ok) throw new Error(`Fetch audit failed: ${res.status}`);
+    return res.json();
+}
+
+export async function fetchProviderHealth(): Promise<Record<string, unknown>> {
+    const res = await fetch(`${BASE}/api/v1/provider/health`);
+    if (!res.ok) throw new Error(`Provider health failed: ${res.status}`);
+    return res.json();
+}

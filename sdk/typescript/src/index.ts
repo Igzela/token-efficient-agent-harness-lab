@@ -130,6 +130,40 @@ export class AgentControlPlaneClient {
     return parseResponse<Record<string, unknown>>(response);
   }
 
+  dispatchDetail(dispatchId: string): Promise<Record<string, unknown>> {
+    return this.getJson<Record<string, unknown>>(`/api/v1/dispatches/${encodeURIComponent(dispatchId)}`);
+  }
+
+  listBackups(): Promise<Record<string, unknown>> {
+    return this.getJson<Record<string, unknown>>("/api/v1/backups");
+  }
+
+  async deleteBackup(backupId: string): Promise<Record<string, unknown>> {
+    const response = await this.fetchImpl(`${this.baseUrl}/api/v1/backups/${encodeURIComponent(backupId)}`, {
+      method: "DELETE",
+      headers: this.headers(),
+    });
+    return parseResponse<Record<string, unknown>>(response);
+  }
+
+  storageIntegrity(): Promise<Record<string, unknown>> {
+    return this.getJson<Record<string, unknown>>("/api/v1/storage/integrity");
+  }
+
+  async importSnapshot(snapshot: Record<string, unknown>): Promise<Record<string, unknown>> {
+    return this.postJson<Record<string, unknown>>("/api/v1/import", {
+      snapshot,
+      confirm_import: true,
+    });
+  }
+
+  async restoreBackup(backupId: string): Promise<Record<string, unknown>> {
+    return this.postJson<Record<string, unknown>>(
+      `/api/v1/backups/${encodeURIComponent(backupId)}/restore`,
+      { confirm_restore: true },
+    );
+  }
+
   private async getJson<T>(path: string): Promise<T> {
     const response = await this.fetchImpl(`${this.baseUrl}${path}`, {
       headers: this.headers(),

@@ -1123,3 +1123,371 @@ async fn axum_team_mutation_requires_admin_scope() {
         .unwrap();
     assert_eq!(member_resp.status(), StatusCode::FORBIDDEN);
 }
+
+// --- dispatch detail tests ---
+
+#[tokio::test]
+async fn axum_dispatch_detail_returns_bundle_for_existing_dispatch() {
+    let dir = tempdir().unwrap();
+    let store = LocalProductStore::new(dir.path().join("dispatch.db")).unwrap();
+    let app = build_axum_router(AxumApiState::new().with_local_store(store));
+
+    // Create a dispatch first
+    let create_resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(Method::POST)
+                .uri("/api/v1/dispatch")
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(
+                    json!({"raw_request": "test dispatch", "request_source": "api"}).to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(create_resp.status(), StatusCode::OK);
+    let create_body = response_json(create_resp).await;
+    let dispatch_id = create_body["record"]["dispatch_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    // Get detail
+    let detail_resp = app
+        .oneshot(
+            Request::builder()
+                .method(Method::GET)
+                .uri(format!("/api/v1/dispatches/{dispatch_id}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(detail_resp.status(), StatusCode::OK);
+    let detail_body = response_json(detail_resp).await;
+    assert_eq!(detail_body["dispatch"]["dispatch_id"], dispatch_id);
+    assert!(detail_body["dispatch"]["bundle"].is_object());
+}
+
+#[tokio::test]
+async fn axum_dispatch_detail_returns_404_for_missing() {
+    let dir = tempdir().unwrap();
+    let store = LocalProductStore::new(dir.path().join("dispatch.db")).unwrap();
+    let app = build_axum_router(AxumApiState::new().with_local_store(store));
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .method(Method::GET)
+                .uri("/api/v1/dispatches/nonexistent-id")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+}
+
+// --- list backups tests ---
+
+#[tokio::test]
+async fn axum_list_backups_requires_admin_scope() {
+    let dir = tempdir().unwrap();
+    let store = LocalProductStore::new(dir.path().join("team.db")).unwrap();
+
+    let mut resolver = TenantResolver::new();
+    let readonly_scopes = HashSet::from(["health:read".to_string()]);
+    resolver.add_tenant(Tenant {
+        tenant_id: "local-team".to_string(),
+        name: "Local Team".to_string(),
+        scopes: readonly_scopes.clone(),
+        rate_limit: Some(100),
+    });
+    let (_key, raw_key) = resolver
+        .create_api_key("local-team", Some(readonly_scopes), None, 1.0)
+        .unwrap();
+
+    let app = build_axum_router(
+        AxumApiState::new()
+            .with_local_store(store)
+            .with_backup_dir(dir.path().join("backups"))
+            .with_auth(resolver, RateLimiter::new(60.0, 100), Some(100), 1.0),
+    );
+
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .method(Method::GET)
+                .uri("/api/v1/backups")
+                .header(header::AUTHORIZATION, format!("Bearer {raw_key}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::FORBIDDEN);
+}
+
+#[tokio::test]
+async fn axum_list_backups_returns_empty_when_no_backups() {
+    let dir = tempdir().unwrap();
+    let store = LocalProductStore::new(dir.path().join("team.db")).unwrap();
+
+    let mut resolver = TenantResolver::new();
+    let admin_scopes = HashSet::from(["backup:admin".to_string()]);
+    resolver.add_tenant(Tenant {
+        tenant_id: "local-team".to_string(),
+        name: "Local Team".to_string(),
+        scopes: admin_scopes.clone(),
+        rate_limit: Some(100),
+    });
+    let (_key, raw_key) = resolver
+        .create_api_key("local-team", Some(admin_scopes), None, 1.0)
+        .unwrap();
+
+    let app = build_axum_router(
+        AxumApiState::new()
+            .with_local_store(store)
+            .with_backup_dir(dir.path().join("backups"))
+            .with_auth(resolver, RateLimiter::new(60.0, 100), Some(100), 1.0),
+    );
+
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .method(Method::GET)
+                .uri("/api/v1/backups")
+                .header(header::AUTHORIZATION, format!("Bearer {raw_key}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body = response_json(resp).await;
+    assert_eq!(body["backups"].as_array().unwrap().len(), 0);
+}
+
+#[tokio::test]
+async fn axum_list_backups_after_create() {
+    let dir = tempdir().unwrap();
+    let store = LocalProductStore::new(dir.path().join("team.db")).unwrap();
+
+    let mut resolver = TenantResolver::new();
+    let admin_scopes = HashSet::from(["backup:admin".to_string()]);
+    resolver.add_tenant(Tenant {
+        tenant_id: "local-team".to_string(),
+        name: "Local Team".to_string(),
+        scopes: admin_scopes.clone(),
+        rate_limit: Some(100),
+    });
+    let (_key, raw_key) = resolver
+        .create_api_key("local-team", Some(admin_scopes), None, 1.0)
+        .unwrap();
+
+    let app = build_axum_router(
+        AxumApiState::new()
+            .with_local_store(store)
+            .with_backup_dir(dir.path().join("backups"))
+            .with_auth(resolver, RateLimiter::new(60.0, 100), Some(100), 1.0),
+    );
+
+    // Create a backup
+    let create_resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(Method::POST)
+                .uri("/api/v1/backups")
+                .header(header::AUTHORIZATION, format!("Bearer {raw_key}"))
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(
+                    json!({"label": "test", "confirm_local_backup": true}).to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(create_resp.status(), StatusCode::OK);
+
+    // List backups
+    let list_resp = app
+        .oneshot(
+            Request::builder()
+                .method(Method::GET)
+                .uri("/api/v1/backups")
+                .header(header::AUTHORIZATION, format!("Bearer {raw_key}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(list_resp.status(), StatusCode::OK);
+    let body = response_json(list_resp).await;
+    assert_eq!(body["backups"].as_array().unwrap().len(), 1);
+    assert_eq!(body["backups"][0]["label"], "test");
+}
+
+// --- delete backup tests ---
+
+#[tokio::test]
+async fn axum_delete_backup_requires_admin_scope() {
+    let dir = tempdir().unwrap();
+    let store = LocalProductStore::new(dir.path().join("team.db")).unwrap();
+
+    let mut resolver = TenantResolver::new();
+    let readonly_scopes = HashSet::from(["health:read".to_string()]);
+    resolver.add_tenant(Tenant {
+        tenant_id: "local-team".to_string(),
+        name: "Local Team".to_string(),
+        scopes: readonly_scopes.clone(),
+        rate_limit: Some(100),
+    });
+    let (_key, raw_key) = resolver
+        .create_api_key("local-team", Some(readonly_scopes), None, 1.0)
+        .unwrap();
+
+    let app = build_axum_router(
+        AxumApiState::new()
+            .with_local_store(store)
+            .with_backup_dir(dir.path().join("backups"))
+            .with_auth(resolver, RateLimiter::new(60.0, 100), Some(100), 1.0),
+    );
+
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .method(Method::DELETE)
+                .uri("/api/v1/backups/backup-0001")
+                .header(header::AUTHORIZATION, format!("Bearer {raw_key}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::FORBIDDEN);
+}
+
+#[tokio::test]
+async fn axum_delete_backup_404_for_missing() {
+    let dir = tempdir().unwrap();
+    let store = LocalProductStore::new(dir.path().join("team.db")).unwrap();
+
+    let mut resolver = TenantResolver::new();
+    let admin_scopes = HashSet::from(["backup:admin".to_string(), "audit:read".to_string()]);
+    resolver.add_tenant(Tenant {
+        tenant_id: "local-team".to_string(),
+        name: "Local Team".to_string(),
+        scopes: admin_scopes.clone(),
+        rate_limit: Some(100),
+    });
+    let (_key, raw_key) = resolver
+        .create_api_key("local-team", Some(admin_scopes), None, 1.0)
+        .unwrap();
+
+    let app = build_axum_router(
+        AxumApiState::new()
+            .with_local_store(store)
+            .with_backup_dir(dir.path().join("backups"))
+            .with_auth(resolver, RateLimiter::new(60.0, 100), Some(100), 1.0),
+    );
+
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .method(Method::DELETE)
+                .uri("/api/v1/backups/nonexistent-backup")
+                .header(header::AUTHORIZATION, format!("Bearer {raw_key}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn axum_delete_backup_removes_backup() {
+    let dir = tempdir().unwrap();
+    let store = LocalProductStore::new(dir.path().join("team.db")).unwrap();
+
+    let mut resolver = TenantResolver::new();
+    let admin_scopes = HashSet::from([
+        "backup:admin".to_string(),
+        "audit:read".to_string(),
+        "health:read".to_string(),
+    ]);
+    resolver.add_tenant(Tenant {
+        tenant_id: "local-team".to_string(),
+        name: "Local Team".to_string(),
+        scopes: admin_scopes.clone(),
+        rate_limit: Some(100),
+    });
+    let (_key, raw_key) = resolver
+        .create_api_key("local-team", Some(admin_scopes), None, 1.0)
+        .unwrap();
+
+    let app = build_axum_router(
+        AxumApiState::new()
+            .with_local_store(store)
+            .with_backup_dir(dir.path().join("backups"))
+            .with_auth(resolver, RateLimiter::new(60.0, 100), Some(100), 1.0),
+    );
+
+    // Create a backup
+    let create_resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(Method::POST)
+                .uri("/api/v1/backups")
+                .header(header::AUTHORIZATION, format!("Bearer {raw_key}"))
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(
+                    json!({"label": "to-delete", "confirm_local_backup": true}).to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(create_resp.status(), StatusCode::OK);
+    let create_body = response_json(create_resp).await;
+    let backup_id = create_body["backup"]["backup_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    // Delete it
+    let delete_resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(Method::DELETE)
+                .uri(format!("/api/v1/backups/{backup_id}"))
+                .header(header::AUTHORIZATION, format!("Bearer {raw_key}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(delete_resp.status(), StatusCode::OK);
+    let delete_body = response_json(delete_resp).await;
+    assert_eq!(delete_body["ok"], true);
+
+    // Verify list is empty
+    let list_resp = app
+        .oneshot(
+            Request::builder()
+                .method(Method::GET)
+                .uri("/api/v1/backups")
+                .header(header::AUTHORIZATION, format!("Bearer {raw_key}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(list_resp.status(), StatusCode::OK);
+    let list_body = response_json(list_resp).await;
+    assert_eq!(list_body["backups"].as_array().unwrap().len(), 0);
+}

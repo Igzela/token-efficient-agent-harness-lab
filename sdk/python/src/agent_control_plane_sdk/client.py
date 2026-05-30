@@ -130,6 +130,28 @@ class AgentControlPlaneClient:
             req.add_header(k, v)
         return self._send(req)
 
+    def dispatch_detail(self, dispatch_id: str) -> dict[str, Any]:
+        return self._get(f"/api/v1/dispatches/{dispatch_id}")
+
+    def list_backups(self) -> dict[str, Any]:
+        return self._get("/api/v1/backups")
+
+    def delete_backup(self, backup_id: str) -> dict[str, Any]:
+        url = f"{self.base_url}/api/v1/backups/{backup_id}"
+        req = Request(url, method="DELETE")
+        for k, v in self._headers().items():
+            req.add_header(k, v)
+        return self._send(req)
+
+    def storage_integrity(self) -> dict[str, Any]:
+        return self._get("/api/v1/storage/integrity")
+
+    def import_snapshot(self, snapshot: dict[str, Any]) -> dict[str, Any]:
+        return self._post("/api/v1/import", {"snapshot": snapshot, "confirm_import": True})
+
+    def restore_backup(self, backup_id: str) -> dict[str, Any]:
+        return self._post(f"/api/v1/backups/{backup_id}/restore", {"confirm_restore": True})
+
     def _get(self, path: str) -> Any:
         request = Request(f"{self.base_url}{path}", headers=self._headers(), method="GET")
         return self._send(request)

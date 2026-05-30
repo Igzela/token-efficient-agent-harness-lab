@@ -475,6 +475,50 @@ impl LocalProductStore {
         })
     }
 
+    pub fn get_dispatch(&self, dispatch_id: &str) -> Result<Option<Value>, String> {
+        self.with_conn(|conn| {
+            let mut stmt = conn
+                .prepare(
+                    "SELECT history_id, dispatch_id, created_at, raw_request, request_source,
+                            final_status, selected_tier, risk_level, reserved_cost, bundle_json,
+                            input_tokens, output_tokens, estimated_cost_usd, executor_type, latency_ms
+                     FROM dispatch_history
+                     WHERE dispatch_id = ?1
+                     ORDER BY history_id DESC
+                     LIMIT 1",
+                )
+                .map_err(|e| e.to_string())?;
+            let mut rows = stmt
+                .query_map(params![dispatch_id], |row| {
+                    let bundle_text: String = row.get(9)?;
+                    let bundle: Value = serde_json::from_str(&bundle_text).unwrap_or(Value::Null);
+                    Ok(json!({
+                        "history_id": row.get::<_, i64>(0)?,
+                        "dispatch_id": row.get::<_, String>(1)?,
+                        "created_at": row.get::<_, String>(2)?,
+                        "raw_request": row.get::<_, String>(3)?,
+                        "request_source": row.get::<_, String>(4)?,
+                        "final_status": row.get::<_, String>(5)?,
+                        "selected_tier": row.get::<_, String>(6)?,
+                        "risk_level": row.get::<_, String>(7)?,
+                        "reserved_cost": row.get::<_, f64>(8)?,
+                        "bundle": bundle,
+                        "input_tokens": row.get::<_, Option<i64>>(10)?,
+                        "output_tokens": row.get::<_, Option<i64>>(11)?,
+                        "estimated_cost_usd": row.get::<_, Option<f64>>(12)?,
+                        "executor_type": row.get::<_, String>(13)?,
+                        "latency_ms": row.get::<_, Option<i64>>(14)?,
+                    }))
+                })
+                .map_err(|e| e.to_string())?;
+            match rows.next() {
+                Some(Ok(val)) => Ok(Some(val)),
+                Some(Err(e)) => Err(e.to_string()),
+                None => Ok(None),
+            }
+        })
+    }
+
     pub fn set_config_value(&self, key: &str, value: Value, actor: &str) -> Result<Value, String> {
         self.with_conn(|conn| {
             let value_json = value.to_string();

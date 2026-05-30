@@ -2,6 +2,7 @@
 #![allow(clippy::too_many_arguments)]
 #![allow(clippy::unnecessary_map_or)]
 #![allow(dead_code)]
+#![recursion_limit = "256"]
 
 pub mod app_layer;
 pub mod budget_manager;

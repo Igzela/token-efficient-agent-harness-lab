@@ -20,7 +20,7 @@ The responsible coding agent may choose any of the following without asking for 
 | Architecture/documentation closeout | Update architecture records, module maps, closeout reports, and handoff docs after accepted changes. |
 | Demo/docs polish | Refine demo docs when verification or user feedback identifies a concrete gap. |
 | Language migration | Agent-control-plane migration phases 0-8 are implemented and recorded in `docs/AGENT_CONTROL_PLANE_MIGRATION_CLOSEOUT.md`. Rust + TypeScript cutover is complete: Rust `engine/` is the primary runtime/API/storage/provider-gated control plane, and `dashboard/` plus `sdk/typescript/` are the primary TypeScript surfaces. Python remains only as legacy reference plus retained Python SDK compatibility. No real workers, target writes, SDK publishing, or cloud production deployment. |
-| Local small-team hardening | Provider Safety Gate and Permission Governance are implemented. Next: Cost Governance, then Data Operations, Native Packaging, Dashboard Controls, and Long-Run Hardening. Keep provider execution default-off and explicit; keep target writes, sandbox/process execution, real workers, and cloud SaaS out of scope. |
+| Local small-team hardening | Productization Phases 1-6 (Provider Safety Gate, Permission Governance, Cost Governance, Data Operations, Native Packaging, Dashboard Controls) are implemented. Next: Long-Run Hardening. Keep provider execution default-off and explicit; keep target writes, sandbox/process execution, real workers, and cloud SaaS out of scope. |
 
 ## Local Productization Plan
 
@@ -37,12 +37,12 @@ Implemented:
 - cost governance: reserved vs estimated cost separation, per-tier and daily cost breakdown, utilization ratio, token usage totals, per-dispatch cost detail endpoint, typed SDK cost responses
 - data operations: versioned SQLite migrations, integrity checks, import/export roundtrip, hardened backup restore with verification, data-directory documentation
 - native packaging: `.env.example`, install/upgrade scripts, release tarball with engine binary + static dashboard + scripts, native smoke verification
+- dashboard controls: dispatch detail drill-down, backups tab with create/restore/delete and confirmation dialogs, audit log tab, Team tab confirmation dialogs, provider health in Settings, dispatch detail/list-backups/delete-backup API endpoints, 6 new SDK methods per SDK
 
 Next productization phases:
 
 | Order | Phase | Done When |
 |---|---|---|
-| 6 | Dashboard Controls | Admin-only config, backup/export, team/key, provider status, and dispatch-detail views exist with confirmations and audit logs. |
 | 7 | Long-Run Hardening | LAN threat model, audit integrity review, SQLite contention tests, provider failure matrix, upgrade smoke, and GitHub Actions Node deprecation cleanup are complete. |
 
 ## Disallowed by Default

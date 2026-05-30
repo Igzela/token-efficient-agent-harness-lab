@@ -4,7 +4,7 @@
 
 Token-Efficient Agent Harness Lab is a local deterministic harness for studying event-sourced agent workflow infrastructure from Stage 0 through Stage 4. It includes JSONL event validation, projections, project/task workflow primitives, quality gates, controlled intelligence stubs, and Stage 4 runtime-control abstractions.
 
-Current status: Stage 0-4 complete, Harness App MVP0-MVP8 complete, Trials 0-3 closed, and the agent-control-plane cutover is complete for the Rust + TypeScript stack. The primary local runtime is Rust `engine/` with axum API, SQLite state, provider safety gates, permission governance, and cost governance. The primary UI and SDK surface is TypeScript (`dashboard/` and `sdk/typescript/`). Python remains only as legacy reference plus the retained Python REST SDK. Security hardening complete (2089 Python tests pass; 1056 Rust tests pass).
+Current status: Stage 0-4 complete, Harness App MVP0-MVP8 complete, Trials 0-3 closed, and the agent-control-plane cutover is complete for the Rust + TypeScript stack. The primary local runtime is Rust `engine/` with axum API, SQLite state, provider safety gates, permission governance, cost governance, data operations, native packaging, and dashboard controls. The primary UI and SDK surface is TypeScript (`dashboard/` and `sdk/typescript/`). Python remains only as legacy reference plus the retained Python REST SDK. Security hardening complete (2089 Python tests pass; 1086 Rust tests pass).
 
 **New sessions should start with [docs/SESSION_START_HERE.md](docs/SESSION_START_HERE.md).**
 
@@ -31,7 +31,7 @@ PYTHONPATH=src python3 -m unittest discover -s tests
 cargo test -p engine
 ```
 
-Current result: 2089 Python tests pass; 1056 Rust tests pass.
+Current result: 2089 Python tests pass; 1086 Rust tests pass.
 
 ## How To Run Without Docker
 

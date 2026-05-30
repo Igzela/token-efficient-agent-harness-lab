@@ -1,21 +1,27 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   createApiKey,
   createTeamMember,
   deleteApiKey,
+  deleteBackup,
   deleteMember,
+  fetchAudit,
+  fetchBackups,
   fetchDashboard,
+  fetchDispatchDetail,
   fetchHealth,
+  fetchProviderHealth,
   fetchReady,
+  restoreBackup,
   revokeApiKey,
   rotateApiKey,
   updateMemberRole,
 } from "@/lib/api-client";
 import type { LocalDashboardState, LocalDispatchHistory } from "@/lib/types";
 
-type Tab = "dispatches" | "routing" | "team" | "costs" | "settings" | "health";
+type Tab = "dispatches" | "routing" | "team" | "costs" | "settings" | "health" | "backups" | "audit";
 
 const tabs: { id: Tab; label: string }[] = [
   { id: "dispatches", label: "Dispatches" },
@@ -24,6 +30,8 @@ const tabs: { id: Tab; label: string }[] = [
   { id: "costs", label: "Costs" },
   { id: "settings", label: "Settings" },
   { id: "health", label: "Health" },
+  { id: "backups", label: "Backups" },
+  { id: "audit", label: "Audit" },
 ];
 
 const emptyDashboard: LocalDashboardState = {
@@ -69,6 +77,19 @@ export default function DashboardPage() {
   const [health, setHealth] = useState("unknown");
   const [ready, setReady] = useState("unknown");
   const [dashboard, setDashboard] = useState<LocalDashboardState>(emptyDashboard);
+  const [theme, setTheme] = useState<"light" | "dark">(() => {
+    if (typeof window === "undefined") return "light";
+    const saved = localStorage.getItem("acp-theme");
+    if (saved === "dark" || saved === "light") return saved;
+    return window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
+  });
+
+  useEffect(() => {
+    document.documentElement.setAttribute("data-theme", theme);
+    localStorage.setItem("acp-theme", theme);
+  }, [theme]);
+
+  const toggleTheme = useCallback(() => setTheme((t) => (t === "dark" ? "light" : "dark")), []);
 
   useEffect(() => {
     let cancelled = false;
@@ -106,7 +127,12 @@ export default function DashboardPage() {
             <p className="eyebrow">Agent Control Plane</p>
             <h1>Operations Dashboard</h1>
           </div>
-          <span className="pill info">Local</span>
+          <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+            <span className="pill info">Local</span>
+            <button onClick={toggleTheme} type="button" style={{ padding: "6px 10px", fontSize: 14 }}>
+              {theme === "dark" ? "☀" : "☾"}
+            </button>
+          </div>
         </header>
 
         <section className="status-strip" aria-label="Status summary">
@@ -139,6 +165,8 @@ export default function DashboardPage() {
         {tab === "costs" && <Costs dashboard={dashboard} />}
         {tab === "settings" && <Settings dashboard={dashboard} />}
         {tab === "health" && <Health dashboard={dashboard} health={health} ready={ready} />}
+        {tab === "backups" && <Backups />}
+        {tab === "audit" && <AuditLog />}
       </div>
     </main>
   );
@@ -165,6 +193,42 @@ function Metric({
 }
 
 function Dispatches({ dispatches }: { dispatches: LocalDispatchHistory[] }) {
+  const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [detail, setDetail] = useState<Record<string, unknown> | null>(null);
+  const [loading, setLoading] = useState(false);
+
+  function openDetail(id: string) {
+    setSelectedId(id);
+    setLoading(true);
+    fetchDispatchDetail(id)
+      .then((r) => setDetail(r.dispatch as Record<string, unknown>))
+      .catch(() => setDetail(null))
+      .finally(() => setLoading(false));
+  }
+
+  function closeDetail() {
+    setSelectedId(null);
+    setDetail(null);
+  }
+
+  if (selectedId) {
+    return (
+      <section className="card stack">
+        <div className="heading-row">
+          <button onClick={closeDetail} type="button">Back to list</button>
+          <span className="mono">{selectedId}</span>
+        </div>
+        {loading ? (
+          <p className="muted">Loading dispatch detail...</p>
+        ) : detail ? (
+          <DispatchDetail detail={detail} />
+        ) : (
+          <p className="muted">Dispatch not found</p>
+        )}
+      </section>
+    );
+  }
+
   return (
     <section className="grid">
       <div className="table-wrap">
@@ -187,7 +251,11 @@ function Dispatches({ dispatches }: { dispatches: LocalDispatchHistory[] }) {
               </tr>
             ) : (
               dispatches.map((item) => (
-                <tr key={item.history_id}>
+                <tr
+                  key={item.history_id}
+                  onClick={() => openDetail(item.dispatch_id)}
+                  style={{ cursor: "pointer" }}
+                >
                   <td className="mono">{item.dispatch_id}</td>
                   <td>{item.raw_request}</td>
                   <td>{item.selected_tier}</td>
@@ -220,6 +288,73 @@ function Dispatches({ dispatches }: { dispatches: LocalDispatchHistory[] }) {
         )}
       </aside>
     </section>
+  );
+}
+
+function DispatchDetail({ detail }: { detail: Record<string, unknown> }) {
+  const bundle = detail.bundle as Record<string, unknown> | undefined;
+  const analysis = bundle?.analysis as Record<string, unknown> | undefined;
+  const decision = bundle?.decision as Record<string, unknown> | undefined;
+  const execution = bundle?.execution_result as Record<string, unknown> | undefined;
+  const evaluation = bundle?.evaluation_result as Record<string, unknown> | undefined;
+
+  return (
+    <div className="split">
+      <div className="card stack">
+        <h3>Record</h3>
+        <div className="row"><span>dispatch_id</span><span className="mono">{String(detail.dispatch_id)}</span></div>
+        <div className="row"><span>raw_request</span><span>{String(detail.raw_request)}</span></div>
+        <div className="row"><span>tier</span><span>{String(detail.selected_tier)}</span></div>
+        <div className="row"><span>status</span><span className="pill info">{String(detail.final_status)}</span></div>
+        <div className="row"><span>risk</span><span className={`pill ${detail.risk_level === "low" ? "ok" : "warn"}`}>{String(detail.risk_level)}</span></div>
+        <div className="row"><span>executor</span><span className="mono">{String(detail.executor_type)}</span></div>
+        {detail.estimated_cost_usd != null && (
+          <div className="row"><span>est. cost</span><span>${Number(detail.estimated_cost_usd).toFixed(4)}</span></div>
+        )}
+        {detail.latency_ms != null && (
+          <div className="row"><span>latency</span><span>{String(detail.latency_ms)} ms</span></div>
+        )}
+      </div>
+      {analysis && (
+        <div className="card stack">
+          <h3>Analysis</h3>
+          <div className="row"><span>task_domain</span><span>{String(analysis.task_domain)}</span></div>
+          <div className="row"><span>task_intent</span><span>{String(analysis.task_intent)}</span></div>
+          <div className="row"><span>complexity</span><span>{String(analysis.complexity)}</span></div>
+          <div className="row"><span>user_negated_provider</span><span>{String(analysis.user_negated_provider)}</span></div>
+        </div>
+      )}
+      {decision && (
+        <div className="card stack">
+          <h3>Decision</h3>
+          <div className="row"><span>selected_tier</span><span>{String(decision.selected_tier)}</span></div>
+          <div className="row"><span>decision_status</span><span className="pill info">{String(decision.decision_status)}</span></div>
+          <div className="row"><span>confidence</span><span>{String(decision.confidence)}</span></div>
+          <div className="row"><span>risk_level</span><span>{String(decision.risk_level)}</span></div>
+          <div className="row"><span>expected_quality_band</span><span>{String(decision.expected_quality_band)}</span></div>
+          {decision.budget_reservation != null && (
+            <div className="row"><span>reserved_cost</span><span>${Number((decision.budget_reservation as Record<string, unknown>).reserved_cost).toFixed(4)}</span></div>
+          )}
+        </div>
+      )}
+      {execution && (
+        <div className="card stack">
+          <h3>Execution</h3>
+          <div className="row"><span>executor_type</span><span>{String(execution.executor_type)}</span></div>
+          <div className="row"><span>input_tokens</span><span className="mono">{String(execution.input_tokens)}</span></div>
+          <div className="row"><span>output_tokens</span><span className="mono">{String(execution.output_tokens)}</span></div>
+          <div className="row"><span>estimated_cost</span><span>${Number(execution.estimated_cost ?? 0).toFixed(4)}</span></div>
+          <div className="row"><span>latency_ms</span><span>{String(execution.latency_ms)}</span></div>
+        </div>
+      )}
+      {evaluation && (
+        <div className="card stack">
+          <h3>Evaluation</h3>
+          <div className="row"><span>status</span><span className={`pill ${evaluation.status === "pass" ? "ok" : "warn"}`}>{String(evaluation.status)}</span></div>
+          <div className="row"><span>final_status</span><span className="pill info">{String(evaluation.final_status)}</span></div>
+        </div>
+      )}
+    </div>
   );
 }
 
@@ -284,6 +419,10 @@ function Team({
   const [keyRole, setKeyRole] = useState("readonly");
   const [keyScopes, setKeyScopes] = useState<string[]>(["dispatch:read"]);
   const [busy, setBusy] = useState(false);
+  const [confirmAction, setConfirmAction] = useState<{
+    type: "deleteMember" | "revokeKey" | "deleteKey" | "rotateKey";
+    id: string;
+  } | null>(null);
 
   const refresh = () => fetchDashboard().then((d) => refreshDashboard(d));
 
@@ -312,12 +451,30 @@ function Team({
   }
 
   async function handleDeleteMember(uid: string) {
+    setConfirmAction({ type: "deleteMember", id: uid });
+  }
+
+  async function doTeamConfirm() {
+    if (!confirmAction) return;
     setBusy(true);
     try {
-      await deleteMember(uid);
+      if (confirmAction.type === "deleteMember") {
+        await deleteMember(confirmAction.id);
+      } else if (confirmAction.type === "revokeKey") {
+        await revokeApiKey(confirmAction.id);
+      } else if (confirmAction.type === "deleteKey") {
+        await deleteApiKey(confirmAction.id);
+      } else if (confirmAction.type === "rotateKey") {
+        const res = await rotateApiKey(confirmAction.id);
+        const rawKey = (res as Record<string, unknown>).raw_key;
+        if (rawKey) {
+          alert(`Rotated API key (copy now — shown once):\n${rawKey}`);
+        }
+      }
       refresh();
     } finally {
       setBusy(false);
+      setConfirmAction(null);
     }
   }
 
@@ -340,37 +497,15 @@ function Team({
   }
 
   async function handleRevokeKey(keyId: string) {
-    setBusy(true);
-    try {
-      await revokeApiKey(keyId);
-      refresh();
-    } finally {
-      setBusy(false);
-    }
+    setConfirmAction({ type: "revokeKey", id: keyId });
   }
 
   async function handleDeleteKey(keyId: string) {
-    setBusy(true);
-    try {
-      await deleteApiKey(keyId);
-      refresh();
-    } finally {
-      setBusy(false);
-    }
+    setConfirmAction({ type: "deleteKey", id: keyId });
   }
 
   async function handleRotateKey(keyId: string) {
-    setBusy(true);
-    try {
-      const res = await rotateApiKey(keyId);
-      const rawKey = (res as Record<string, unknown>).raw_key;
-      if (rawKey) {
-        alert(`Rotated API key (copy now — shown once):\n${rawKey}`);
-      }
-      refresh();
-    } finally {
-      setBusy(false);
-    }
+    setConfirmAction({ type: "rotateKey", id: keyId });
   }
 
   function toggleScope(scope: string) {
@@ -379,8 +514,26 @@ function Team({
     );
   }
 
+  const teamConfirmMessages: Record<string, string> = {
+    deleteMember: `Delete member ${confirmAction?.id}? This cannot be undone.`,
+    revokeKey: `Revoke key ${confirmAction?.id}? This key will no longer authenticate.`,
+    deleteKey: `Permanently delete key ${confirmAction?.id}? This cannot be undone.`,
+    rotateKey: `Rotate key ${confirmAction?.id}? A new key will be created and the old one revoked.`,
+  };
+
   return (
     <section className="split">
+      {confirmAction && (
+        <div className="confirm-overlay" onClick={() => setConfirmAction(null)}>
+          <div className="confirm-card" onClick={(e) => e.stopPropagation()}>
+            <p>{teamConfirmMessages[confirmAction.type]}</p>
+            <div style={{ display: "flex", gap: 8, justifyContent: "flex-end" }}>
+              <button onClick={() => setConfirmAction(null)} type="button">Cancel</button>
+              <button onClick={doTeamConfirm} disabled={busy} type="button" style={{ color: "#c0392b" }}>Confirm</button>
+            </div>
+          </div>
+        </div>
+      )}
       <div className="card stack">
         <h2>Members</h2>
         <div className="stack" style={{ gap: 8 }}>
@@ -607,6 +760,12 @@ function Costs({ dashboard }: { dashboard: LocalDashboardState }) {
 }
 
 function Settings({ dashboard }: { dashboard: LocalDashboardState }) {
+  const [providerInfo, setProviderInfo] = useState<Record<string, unknown> | null>(null);
+
+  useEffect(() => {
+    fetchProviderHealth().then(setProviderInfo).catch(() => {});
+  }, []);
+
   const rows: [string, string | number | boolean | null][] = [
     ["Workspace", dashboard.config.workspace_name ?? "Local Team"],
     ["Provider transport", dashboard.boundaries.provider_transport],
@@ -616,14 +775,37 @@ function Settings({ dashboard }: { dashboard: LocalDashboardState }) {
     ["Docker required", dashboard.boundaries.docker_required ? "yes" : "no"],
   ];
   return (
-    <section className="card">
-      <h2>Settings</h2>
-      {rows.map(([label, value]) => (
-        <div className="setting" key={label}>
-          <span className="label">{label}</span>
-          <strong>{String(value)}</strong>
-        </div>
-      ))}
+    <section className="split">
+      <div className="card">
+        <h2>Settings</h2>
+        {rows.map(([label, value]) => (
+          <div className="setting" key={label}>
+            <span className="label">{label}</span>
+            <strong>{String(value)}</strong>
+          </div>
+        ))}
+      </div>
+      <div className="card stack">
+        <h2>Provider</h2>
+        {providerInfo ? (
+          <>
+            <div className="row">
+              <span>Provider ID</span>
+              <span className="mono">{String(providerInfo.provider_id ?? "none")}</span>
+            </div>
+            <div className="row">
+              <span>Status</span>
+              <span className={`pill ${providerInfo.status === "ok" ? "ok" : "warn"}`}>{String(providerInfo.status)}</span>
+            </div>
+            <div className="row">
+              <span>Enabled</span>
+              <span className="pill info">{String(providerInfo.enabled ?? false)}</span>
+            </div>
+          </>
+        ) : (
+          <p className="muted">Loading provider status...</p>
+        )}
+      </div>
     </section>
   );
 }
@@ -661,6 +843,161 @@ function Health({
           <span className="mono">{dashboard.counts.audit_events}</span>
         </div>
       </article>
+    </section>
+  );
+}
+
+type ConfirmAction = { type: "deleteBackup" | "restoreBackup"; backupId: string } | null;
+
+function ConfirmDialog({
+  action,
+  onConfirm,
+  onCancel,
+}: {
+  action: ConfirmAction;
+  onConfirm: () => void;
+  onCancel: () => void;
+}) {
+  if (!action) return null;
+  const messages: Record<string, string> = {
+    deleteBackup: `Delete backup ${action.backupId}? This cannot be undone.`,
+    restoreBackup: `Restore from backup ${action.backupId}? Current data will be replaced.`,
+  };
+  return (
+    <div className="confirm-overlay" onClick={onCancel}>
+      <div className="confirm-card" onClick={(e) => e.stopPropagation()}>
+        <p>{messages[action.type]}</p>
+        <div style={{ display: "flex", gap: 8, justifyContent: "flex-end" }}>
+          <button onClick={onCancel} type="button">Cancel</button>
+          <button onClick={onConfirm} type="button" style={{ color: "#c0392b" }}>Confirm</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function Backups() {
+  const [backups, setBackups] = useState<Array<Record<string, unknown>>>([]);
+  const [busy, setBusy] = useState(false);
+  const [confirm, setConfirm] = useState<ConfirmAction>(null);
+
+  const load = () => fetchBackups().then((r) => setBackups((r.backups as Array<Record<string, unknown>>) ?? [])).catch(() => {});
+
+  useEffect(() => { load(); }, []);
+
+  async function doConfirm() {
+    if (!confirm) return;
+    setBusy(true);
+    try {
+      if (confirm.type === "deleteBackup") {
+        await deleteBackup(confirm.backupId);
+      } else if (confirm.type === "restoreBackup") {
+        await restoreBackup(confirm.backupId);
+      }
+      load();
+    } finally {
+      setBusy(false);
+      setConfirm(null);
+    }
+  }
+
+  return (
+    <section className="card stack">
+      <h2>Backups</h2>
+      <ConfirmDialog action={confirm} onConfirm={doConfirm} onCancel={() => setConfirm(null)} />
+      {backups.length === 0 ? (
+        <p className="muted">No local backups</p>
+      ) : (
+        <table>
+          <thead>
+            <tr>
+              <th>ID</th>
+              <th>Label</th>
+              <th>Created</th>
+              <th>Size</th>
+              <th>Actions</th>
+            </tr>
+          </thead>
+          <tbody>
+            {backups.map((b) => (
+              <tr key={String(b.backup_id)}>
+                <td className="mono">{String(b.backup_id)}</td>
+                <td>{String(b.label)}</td>
+                <td>{String(b.created_at)}</td>
+                <td>{String(b.size_bytes)} bytes</td>
+                <td style={{ display: "flex", gap: 4 }}>
+                  <button
+                    disabled={busy}
+                    onClick={() => setConfirm({ type: "restoreBackup", backupId: String(b.backup_id) })}
+                    type="button"
+                  >
+                    Restore
+                  </button>
+                  <button
+                    disabled={busy}
+                    onClick={() => setConfirm({ type: "deleteBackup", backupId: String(b.backup_id) })}
+                    type="button"
+                    style={{ color: "#c0392b" }}
+                  >
+                    Delete
+                  </button>
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      )}
+    </section>
+  );
+}
+
+function AuditLog() {
+  const [events, setEvents] = useState<Array<Record<string, unknown>>>([]);
+
+  useEffect(() => {
+    fetchAudit()
+      .then((r) => setEvents((r.events as Array<Record<string, unknown>>) ?? []))
+      .catch(() => {});
+  }, []);
+
+  return (
+    <section className="card stack">
+      <h2>Audit Log</h2>
+      {events.length === 0 ? (
+        <p className="muted">No audit events</p>
+      ) : (
+        <table>
+          <thead>
+            <tr>
+              <th>ID</th>
+              <th>Date</th>
+              <th>Actor</th>
+              <th>Action</th>
+              <th>Resource</th>
+              <th>Details</th>
+            </tr>
+          </thead>
+          <tbody>
+            {events.map((e) => (
+              <tr key={String(e.audit_id)}>
+                <td className="mono">{String(e.audit_id)}</td>
+                <td>{String(e.created_at)}</td>
+                <td>{String(e.actor)}</td>
+                <td>{String(e.action)}</td>
+                <td className="mono">{String(e.resource)}</td>
+                <td>
+                  <details>
+                    <summary style={{ cursor: "pointer" }}>view</summary>
+                    <pre style={{ fontSize: 11, whiteSpace: "pre-wrap", marginTop: 4 }}>
+                      {JSON.stringify(e.details, null, 2)}
+                    </pre>
+                  </details>
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      )}
     </section>
   );
 }

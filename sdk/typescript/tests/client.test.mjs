@@ -127,3 +127,74 @@ test("HTTP error reports API error message", async () => {
 
   await assert.rejects(client.health(), /unauthorized/);
 });
+
+test("dispatchDetail sends GET with dispatchId", async () => {
+  const { calls, fetchImpl } = captureFetch({ dispatch: { dispatch_id: "d-1" } });
+  const client = new AgentControlPlaneClient({ baseUrl: "http://127.0.0.1:8080", fetchImpl });
+
+  const result = await client.dispatchDetail("d-1");
+
+  assert.equal(result.dispatch.dispatch_id, "d-1");
+  assert.equal(calls[0].url, "http://127.0.0.1:8080/api/v1/dispatches/d-1");
+  assert.equal(calls[0].init.method, "GET");
+});
+
+test("listBackups sends GET to backups endpoint", async () => {
+  const { calls, fetchImpl } = captureFetch({ backups: [] });
+  const client = new AgentControlPlaneClient({ baseUrl: "http://127.0.0.1:8080", fetchImpl });
+
+  const result = await client.listBackups();
+
+  assert.deepEqual(result.backups, []);
+  assert.equal(calls[0].url, "http://127.0.0.1:8080/api/v1/backups");
+  assert.equal(calls[0].init.method, "GET");
+});
+
+test("deleteBackup sends DELETE to backups/:backupId", async () => {
+  const { calls, fetchImpl } = captureFetch({ ok: true, backup_id: "backup-0001" });
+  const client = new AgentControlPlaneClient({ baseUrl: "http://127.0.0.1:8080", fetchImpl });
+
+  const result = await client.deleteBackup("backup-0001");
+
+  assert.equal(result.ok, true);
+  assert.equal(calls[0].url, "http://127.0.0.1:8080/api/v1/backups/backup-0001");
+  assert.equal(calls[0].init.method, "DELETE");
+});
+
+test("storageIntegrity sends GET to storage/integrity", async () => {
+  const { calls, fetchImpl } = captureFetch({ status: "ok" });
+  const client = new AgentControlPlaneClient({ baseUrl: "http://127.0.0.1:8080", fetchImpl });
+
+  const result = await client.storageIntegrity();
+
+  assert.equal(result.status, "ok");
+  assert.equal(calls[0].url, "http://127.0.0.1:8080/api/v1/storage/integrity");
+  assert.equal(calls[0].init.method, "GET");
+});
+
+test("importSnapshot sends POST to import with confirm_import", async () => {
+  const { calls, fetchImpl } = captureFetch({ imported: 5 });
+  const client = new AgentControlPlaneClient({ baseUrl: "http://127.0.0.1:8080", fetchImpl });
+
+  const result = await client.importSnapshot({ config: {}, team: [] });
+
+  assert.equal(result.imported, 5);
+  assert.equal(calls[0].url, "http://127.0.0.1:8080/api/v1/import");
+  assert.equal(calls[0].init.method, "POST");
+  assert.deepEqual(JSON.parse(calls[0].init.body), {
+    snapshot: { config: {}, team: [] },
+    confirm_import: true,
+  });
+});
+
+test("restoreBackup sends POST to backups/:id/restore with confirm_restore", async () => {
+  const { calls, fetchImpl } = captureFetch({ success: true });
+  const client = new AgentControlPlaneClient({ baseUrl: "http://127.0.0.1:8080", fetchImpl });
+
+  const result = await client.restoreBackup("backup-0001");
+
+  assert.equal(result.success, true);
+  assert.equal(calls[0].url, "http://127.0.0.1:8080/api/v1/backups/backup-0001/restore");
+  assert.equal(calls[0].init.method, "POST");
+  assert.deepEqual(JSON.parse(calls[0].init.body), { confirm_restore: true });
+});

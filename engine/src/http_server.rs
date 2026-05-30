@@ -269,6 +269,10 @@ fn axum_routes() -> Router<AxumApiState> {
             get(api_dispatches).options(cors_preflight),
         )
         .route(
+            "/api/v1/dispatches/:dispatch_id",
+            get(api_dispatch_detail).options(cors_preflight),
+        )
+        .route(
             "/api/v1/dashboard",
             get(api_dashboard).options(cors_preflight),
         )
@@ -294,7 +298,13 @@ fn axum_routes() -> Router<AxumApiState> {
         .route("/api/v1/audit", get(api_audit).options(cors_preflight))
         .route(
             "/api/v1/backups",
-            post(api_create_backup).options(cors_preflight),
+            get(api_list_backups)
+                .post(api_create_backup)
+                .options(cors_preflight),
+        )
+        .route(
+            "/api/v1/backups/:backup_id",
+            delete(api_delete_backup).options(cors_preflight),
         )
         .route("/api/v1/keys", post(api_create_key).options(cors_preflight))
         .route(
@@ -510,6 +520,25 @@ async fn api_dispatches(
     ))
 }
 
+async fn api_dispatch_detail(
+    State(state): State<AxumApiState>,
+    headers: HeaderMap,
+    AxumPath(dispatch_id): AxumPath<String>,
+) -> Result<impl IntoResponse, ApiError> {
+    authorize(&state, &headers, "dispatch:read")?;
+    let store = require_store(&state)?;
+    match store.get_dispatch(&dispatch_id).map_err(internal_error)? {
+        Some(dispatch) => Ok((
+            cors_headers(),
+            Json(json!({
+                "schema_version": AXUM_API_SCHEMA_VERSION,
+                "dispatch": dispatch,
+            })),
+        )),
+        None => Err(ApiError::new(StatusCode::NOT_FOUND, "dispatch not found")),
+    }
+}
+
 async fn api_dashboard(
     State(state): State<AxumApiState>,
     headers: HeaderMap,
@@ -645,6 +674,30 @@ async fn api_audit(
     ))
 }
 
+async fn api_list_backups(
+    State(state): State<AxumApiState>,
+    headers: HeaderMap,
+) -> Result<impl IntoResponse, ApiError> {
+    if state.tenant_resolver.is_none() {
+        return Err(ApiError::new(
+            StatusCode::UNAUTHORIZED,
+            "admin auth is required for backups",
+        ));
+    }
+    authorize(&state, &headers, "backup:admin")?;
+    let store = require_store(&state)?;
+    let backup_dir = backup_dir_for_state(&state, store.db_path());
+    let manager = BackupManager::new(&backup_dir).map_err(internal_error)?;
+    let backups = manager.list_backups().map_err(internal_error)?;
+    Ok((
+        cors_headers(),
+        Json(json!({
+            "schema_version": AXUM_API_SCHEMA_VERSION,
+            "backups": backups,
+        })),
+    ))
+}
+
 async fn api_create_backup(
     State(state): State<AxumApiState>,
     headers: HeaderMap,
@@ -693,6 +746,41 @@ async fn api_create_backup(
     Ok((
         cors_headers(),
         Json(json!({"schema_version": AXUM_API_SCHEMA_VERSION, "backup": backup})),
+    ))
+}
+
+async fn api_delete_backup(
+    State(state): State<AxumApiState>,
+    headers: HeaderMap,
+    AxumPath(backup_id): AxumPath<String>,
+) -> Result<impl IntoResponse, ApiError> {
+    if state.tenant_resolver.is_none() {
+        return Err(ApiError::new(
+            StatusCode::UNAUTHORIZED,
+            "admin auth is required for backups",
+        ));
+    }
+    let context = authorize(&state, &headers, "backup:admin")?;
+    let store = require_store(&state)?;
+    let backup_dir = backup_dir_for_state(&state, store.db_path());
+    let manager = BackupManager::new(&backup_dir).map_err(internal_error)?;
+    let deleted = manager.delete_backup(&backup_id).map_err(internal_error)?;
+    if !deleted {
+        return Err(ApiError::new(StatusCode::NOT_FOUND, "backup not found"));
+    }
+    store
+        .append_audit(
+            &context.api_key_id,
+            "backup.delete",
+            &backup_id,
+            &json!({"backup_id": backup_id}),
+        )
+        .map_err(internal_error)?;
+    Ok((
+        cors_headers(),
+        Json(
+            json!({"schema_version": AXUM_API_SCHEMA_VERSION, "ok": true, "backup_id": backup_id}),
+        ),
     ))
 }
 
@@ -1372,6 +1460,15 @@ pub fn openapi_document() -> serde_json::Value {
                     "responses": {"200": {"description": "Dispatch history"}}
                 }
             },
+            "/api/v1/dispatches/{dispatch_id}": {
+                "get": {
+                    "summary": "Get a single dispatch by ID",
+                    "responses": {
+                        "200": {"description": "Dispatch detail"},
+                        "404": {"description": "Dispatch not found"}
+                    }
+                }
+            },
             "/api/v1/dashboard": {
                 "get": {
                     "summary": "Read local dashboard state from SQLite-backed runtime state",
@@ -1460,12 +1557,31 @@ pub fn openapi_document() -> serde_json::Value {
                 }
             },
             "/api/v1/backups": {
+                "get": {
+                    "summary": "List local SQLite backups",
+                    "description": "Requires backup:admin scope.",
+                    "responses": {
+                        "200": {"description": "Backup list"},
+                        "403": {"description": "Forbidden"}
+                    }
+                },
                 "post": {
                     "summary": "Create a local SQLite backup",
                     "description": "Requires backup:admin scope and confirm_local_backup=true.",
                     "responses": {
                         "200": {"description": "Backup metadata"},
                         "400": {"description": "Missing explicit confirmation"},
+                        "403": {"description": "Forbidden"}
+                    }
+                }
+            },
+            "/api/v1/backups/{backup_id}": {
+                "delete": {
+                    "summary": "Delete a local backup",
+                    "description": "Requires backup:admin scope.",
+                    "responses": {
+                        "200": {"description": "Backup deleted"},
+                        "404": {"description": "Backup not found"},
                         "403": {"description": "Forbidden"}
                     }
                 }

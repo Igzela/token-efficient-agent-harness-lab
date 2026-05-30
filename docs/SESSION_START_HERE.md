@@ -18,13 +18,13 @@ Token-Efficient Agent Harness Lab is a local deterministic harness for studying 
 | Reliability Hardening 1 | Complete |
 | Demo packaging | Complete |
 | Demo verification | Complete — all docs accurate and runnable |
-| Trial 2 candidate selection | Planned — hermes-gateway-lab recommended |
+| Trial 2 candidate selection | Complete — hermes-gateway-lab onboarded |
 | Trial 2 execution | Closed — `ACCEPTABLE_WITH_NOTES` (audit BLOCKED on target, generalization finding) |
 | Trial 2 final verification | Closed — `TRIAL_2_FINAL_VERIFICATION_PASS` |
 | Trial 3 multi-repo generalization | Closed — `TRIAL_3_MULTI_REPO_GENERALIZATION_PASS` |
 | Trial 3 target merge | Closed — all 3 target PRs merged, audit PASS_WITH_NOTES |
 
-Tests: 2089 Python pass; `cargo test -p engine` passing. Primary cutover verification is `bash scripts/verify_rust_typescript_stack.sh`.
+Tests: 2089 Python pass; 1086 Rust pass. Primary cutover verification is `bash scripts/verify_rust_typescript_stack.sh`.
 
 Additional active architecture track:
 

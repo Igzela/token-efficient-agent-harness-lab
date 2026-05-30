@@ -97,124 +97,16 @@ See `docs/CURRENT_STATUS.md` for full details.
 
 ## Session Log
 
-- **2026-05-27**: Phase 3 STABLE after 4 rounds of GPT review (Alpha → Beta → RC → Stable). 1188 tests, 8 source modules, 8 test files. P0 fixes: provider gate bypass, budget_exhausted terminal, ProviderConfig.enabled enforcement. All commits on main (c0ec508→c631b4d).
-- **2026-05-28**: Phase 4 STABLE after 2 rounds of GPT review (Beta → Stable). 1270 tests, 8 new routing modules, 8 new test files. P0 fixes: RoutingSelection dataclass for routing_mode metadata, task_group delimiter `/` to avoid underscore collision. P1 fixes: baseline sample check, routing_experiment_id propagation, duplicate PromotionVerdict removed. Commits ed2c762→66ebbc7.
-- **2026-05-28**: Phase 5 initial implementation — 11 orchestration source modules, 9 test files, 111 new tests (1381 total).
-- **2026-05-28**: Phase 5 STABLE after 3 rounds of GPT review (Beta → Re-review #1 → Re-review #2 → Stable). 1454 tests, 11 source modules, 12 test files. P0 fixes: dispatch gating, terminal semantics, approval reachability, budget enforcement, registry lifecycle, state unification, mandatory dispatch_id, terminal path cleanup. Commits ba7a01a→c5ff73f.
-- **2026-05-28**: Phase 6A initial implementation — 5 source modules (observability, durable_store, storage_migrator, http_server, health_checker), 5 test files, 137 new tests (1591 total). Stdlib only: http.server, sqlite3, logging.
-- **2026-05-28**: Phase 6A STABLE after 2 rounds of GPT review (Beta → Stable). 1596 tests. P0 fixes: JSONL parser tuple return, HTTP 500 generic error, DurableStore INSERT/upsert semantics, close() thread safety, HTTP query string stripping. Hardening commit 6d11c0f.
-- **2026-05-28**: Phase 6B-1 per-server route isolation implemented. Refactored http_server.py: added ServerContext dataclass, moved routes/store/config from class-level globals to per-server instance. 1603 tests (7 new isolation tests). Design doc created at docs/dispatch/PHASE_6B_AUTH_TENANT_DESIGN.md.
-- **2026-05-28**: Phase 6B-2 local API key + tenant boundary implemented. Created auth.py (APIKey, Tenant, TenantResolver, RequestContext, AuthDecision, salted SHA-256 hashing, hmac.compare_digest). Added auth middleware to http_server.py (_authenticate_request, 401 on denied). 1639 tests (36 new auth tests).
-- **2026-05-28**: Phase 6B-2 STABLE after 2 rounds of GPT review (BLOCK → PASS). 1654 tests. P0 fix: RequestContext now flows into RouteMatch so handlers access tenant_id/scopes. Hardening: generic 401, token shape validation, scope subset constraint. Commit 6934b72.
-- **2026-05-28**: Phase 6B-3 + Phase 7 fan-out — 7 new modules (rate_limiter, backup_manager, plugin_system, plugin_registry, sdk, doc_generator, cli extensions), 7 test files, 192 new tests (1846 total). Stdlib only: bisect, sqlite3, json, ast, argparse, threading. All code-reviewed (4 HIGH + 8 MEDIUM fixed), committed b6d5bc1.
-- **2026-05-28**: Phase 6B-3 + Phase 7 STABLE after 1 round of GPT review. 1846 tests. No CRITICAL/HIGH findings. MEDIUM: TenantResolver lock deferred to 6B-3, empty scopes semantic documented, RouteMatch.path normalization deferred. LOW: hash_api_key delimiter, observability integration, auth audit — all 6B-3 scope.
-- **2026-05-28**: Real provider integration — AnthropicProvider adapter for mimo (Anthropic-compatible API). Updated evaluation_stub for Phase 3+ provider execution. 1853 tests. Real API calls working (2/3 tasks completed, 1 blocked by approval gate correctly). Demo at demos/real_provider_demo.py. API key from env only.
-- **2026-05-28**: Phase 6B-3 Gate 1 enforcement hardening — wired scope checks and rate limiting into HTTP request path. Added route_pattern to RouteMatch, required_scopes to register_route(), AuthorizationDecision in auth.py, _check_scopes() and _check_rate_limit() in http_server.py. Request pipeline: auth → route match → scope check (403) → rate check (429) → handler. 13 new enforcement tests + 7 anthropic_provider tests. 1866 tests total. Committed b404b8f.
-- **2026-05-28**: Gate 1 hardening fix — GPT BLOCK on empty-scope bypass (HIGH-1) and stale scope re-registration (HIGH-2). Fixed _check_scopes() to remove `request_context.scopes and` guard, fixed register_route() to pop stale scopes. 4 new regression tests. 1870 tests. GPT re-review: PASS. Committed e26439f.
-- **2026-05-28**: Gate 2 atomic restore hardening — GPT BLOCK 3 rounds. Final fix: candidate prepared/checksummed before touching live target, WAL checkpoint before sidecar removal, try/except/finally for cleanup. 4 failure-mode tests (copy failure, temp cleanup, checksum mismatch, replace failure). 37 backup_manager tests, 1919 total. GPT PASS. Commits ee0cd97→2a3188c→c124c57.
-- **2026-05-28**: Language migration Phase 0 — frozen dispatch wire schemas under `wire_contract/v1`, 20 normalized Python golden fixtures, stdlib parity runner at `tests/integration/parity/run.py`. 2081 tests. No Rust implementation started.
-- **2026-05-28**: Language migration Phase 1 — Rust workspace + `engine` crate. Implemented deterministic fixture runtime, `event_schema`, `task_analyzer`, and `dispatch_decision` parity path. `cargo fmt --check`, `cargo clippy -p engine -- -D warnings`, and `cargo test -p engine` pass. No providers, axum API, SDK, dashboard, deployment, target writes, sandbox/process execution, or runtime workers.
-- **2026-05-28**: Language migration Phase 2 — Rust dispatch engine parity. Implemented `model_selector`, `budget_manager`, `executor_adapter` with default noop executor, `evaluation_stub`, `dispatch_ledger`, and `dispatch_engine`; exported `build_dispatch_bundle` now uses the Phase2 engine path. 20 Python golden fixtures and focused Rust component tests pass.
-- **2026-05-28**: Language migration Phases 3-7 — Full Rust parity for all Python dispatch kernel modules. Phase 3: routing/ (7 modules) + orchestration/ (10 modules), 173 new tests. Phase 4: infrastructure/ (5 modules: observability, auth, rate_limiter, plugin_system, plugin_registry), 64 new tests. Phase 5: ecosystem/ (4 modules: community_profiles, tool_adapter, dashboard, benchmark), 48 new tests. Phase 6: storage/ (3 modules: durable_store via rusqlite, health_checker, backup_manager), 32 new tests. Phase 7: sdk + storage_migrator, 16 new tests. 385 total Rust tests, 33 source modules, 29 test files. Commits 31c105a, f877e81, 098eda9, 965a2cd, ea11dfb. Follow-up API/doc work later added `http_server` axum parity and Rust `doc_generator`.
-- **2026-05-28**: Phase 7 P7-T5 Dispatch Dashboard + P7-T8 BenchmarkSuite — 2 source modules (dashboard.py, benchmark.py), 2 test files, 92 new tests (2081 total). ExperimentResult/DashboardSummary dataclasses, DispatchDashboard with record/search/filter/summary. BenchmarkTask/BenchmarkResult dataclasses, BenchmarkSuite with task CRUD, model comparison, leaderboard. Schema versions: dashboard.v1, benchmark.v1. Commits 87dd487, b5b3720.
-- **2026-05-28**: Phase 7 P7-T3 CommunityProfileRegistry + P7-T4 ToolAdapterManager — 2 source modules (community_profiles.py, tool_adapter.py), 2 test files, 58 new tests (2081 total). ModelProfile dataclass, CommunityProfileRegistry with register/search/validate. ToolDefinition/ToolExecutionRequest/ToolExecutionResult dataclasses, ToolAdapterManager with register/execute stub. Commits 29ad85c, 1bd8130.
-- **2026-05-28**: Gate 3 Plugin thread safety — RLock in PluginSystem (reentrant for load→unload), threading.Lock in PluginRegistry, all public methods guarded with `with self._lock:`. No new tests needed (existing tests cover). Commit 785fe61.
-- **2026-05-28**: Review hardening — Fixed CRITICAL copy-paste bug in dashboard.py compute_summary() (cost_savings/quality_delta now filter by metric_name). Added NaN/inf validation in validate_experiment(). Added task existence check in benchmark.py record_result(). Made compare_models() atomic. 8 new tests. 2089 total.
-- **2026-05-28**: Language migration Rust engine/API parity — Rust `http_server` local axum router added for `/api/v1/health`, `/api/v1/ready`, `/api/v1/openapi.json`, and deterministic `/api/v1/dispatch`; auth/scope/rate-limit/CORS checks covered. `doc_generator` added with module/schema registry, source parser, and markdown generation; `provider` exposes the disabled-by-default provider trait boundary. 425 total Rust tests, 36 source modules, 32 test files.
-- **2026-05-28**: Agent-Control-Plane Phase 5 SDK + Codegen — Added deterministic codegen helper and REST-based TypeScript/Python SDK packages. `cd sdk/typescript && pnpm build && npm pack --dry-run` passes. Python SDK unit tests pass and `cd sdk/python && python -m build` passes. SDKs use REST endpoints, not private engine internals. Security baseline has a scoped stdlib `urllib` allowlist for the Python SDK local REST client.
-- **2026-05-28**: Agent-Control-Plane Phase 6 Dashboard — Added Next.js dashboard at `dashboard/` with dispatch, routing, agents/workflows, costs, settings, and health views. The dashboard has no dispatch POST client or approve/run/deploy/execute/merge controls. `cd dashboard && pnpm lint && pnpm typecheck && pnpm build` and local HTTP smoke pass.
-- **2026-05-28**: Agent-Control-Plane Phase 7 Docker — Added local Docker deploy for Rust axum API and dashboard. `docker compose build` and default `docker compose up --build -d` pass; `/api/v1/health`, `/api/v1/dispatch`, and dashboard HTTP returned successfully.
-- **2026-05-28**: Agent-Control-Plane Phase 8 Closeout — Recorded migration closeout in `docs/AGENT_CONTROL_PLANE_MIGRATION_CLOSEOUT.md`, reconciled handoff docs, and retained Python reference in `src/harness_core/` until explicit future removal or relocation approval.
-- **2026-05-29**: Main-branch migration audit — verified local `main` at the agent-control-plane closeout state: handoff check, security baseline, 2089 Python tests, wire parity, Rust fmt/clippy/425 tests, dashboard lint/typecheck/build, TypeScript SDK build + npm dry-run, Python SDK `python -m build`, Docker compose build/up, API health/dispatch smoke, and dashboard HTTP smoke all pass. Added ignore rules for local frontend/SDK build outputs.
-- **2026-05-29**: Native local runtime — Added static dashboard export, Rust static dashboard serving via `ACP_DASHBOARD_DIR`, and `scripts/smoke_native_runtime.py`; native API + dashboard smoke passes without Docker.
-- **2026-05-29**: Local small-team productization — Added app-owned SQLite local state for dispatch history, config, team/API-key metadata, audit log, and costs; wired Rust API endpoints for dashboard/history/config/team/cost/export/audit/confirmed-backup; dashboard now reads real local state instead of fixture rows; TypeScript/Python SDKs cover local state and backup methods; native smoke verifies persisted dashboard/export state.
-- **2026-05-29**: Provider infrastructure (Agent B) — Created `engine/src/provider/audit.rs` (ProviderAuditEvent, ProviderAuditRecorder with std::sync::Mutex, monotonic hex event IDs, extra-field merge) and `engine/src/provider/redaction.rs` (redact_secrets, redact_audit_fields with recursive sensitive-key redaction). Added module re-exports to `mod.rs`. 28 new inline tests. Updated MODULE_MAP.md and CURRENT_STATUS.md. Build blocked by Agent A's openai.rs (CredentialRef import path + Option<&Value> calling convention); no errors from Agent B files.
-- **2026-05-29**: Rust provider stack Stage 1 (Agent C) — Implemented full `RetryFallbackManager` in `engine/src/provider/retry.rs` with `Provider` trait impl, budget-checked retry with backoff, and fallback routing. Added `executor_type()` to `DispatchEngine`. Added `GET /api/v1/provider/health` endpoint to http_server with noop/provider status reporting. Added `with_provider()` to `AxumApiState` (wires both provider reference and engine executor). Provider execution is explicit env-gated and default-off; CI uses stub/mock paths. Updated CURRENT_STATUS.md, MODULE_MAP.md, CLAUDE.md.
-- **2026-05-29**: Rust provider stack Stage 2 audit/usage bridge — provider audit events persist to local SQLite, dispatch history stores executor type, token usage, estimated provider cost, and latency columns, and SDKs expose provider health/audit readers. Current Rust test inventory is 1031 enumerated test cases, with `cargo test -p engine` passing.
-- **2026-05-29**: Productization Phase 1 — Provider Safety Gate implemented. `ACP_ENABLE_PROVIDER_EXECUTION=1` gate for real providers, `ACP_REQUIRE_AUTH=1` enforced when provider active, `dispatch:execute` scope for provider dispatches, per-dispatch and daily cost caps (`ACP_COST_PER_DISPATCH_USD`/`ACP_COST_DAILY_USD`), dynamic dashboard boundaries, structured startup summary log. 10 new Rust tests (1041 total).
-- **2026-05-29**: Rust + TypeScript cutover — primary runtime and product surface are Rust `engine/`, TypeScript `dashboard/`, and TypeScript SDK. Added `scripts/verify_rust_typescript_stack.sh` to verify the cutover without using the Python reference path. Python remains legacy reference plus retained Python SDK compatibility.
-- **2026-05-29**: Productization Phase 3 — Cost Governance implemented. Enriched `cost_summary()` to v2 schema (total_estimated_cost_usd, total_input_tokens, total_output_tokens, cost_utilization, per-tier estimated/tokens, daily trend). Added `dispatch_cost_details()` method and `GET /api/v1/costs/dispatches` endpoint. Dashboard Costs component enhanced with reserved vs estimated comparison, utilization metric, token usage totals, daily trend bars. TypeScript + Python SDKs typed for LocalCostSummary and LocalDispatchCostDetail. 15 new Rust tests (1056 total). Full stack verification passes.
-- **2026-05-29**: Productization Phase 4 — Data Operations implemented. Versioned SQLite migrations via PRAGMA user_version (v1: adds last_used_at/expires_at columns). check_integrity() with PRAGMA integrity_check and per-table row counts. import_snapshot() for idempotent import from export JSON with schema version validation. GET /api/v1/storage/integrity, POST /api/v1/import, and POST /api/v1/backups/:id/restore endpoints. Backup restore hardened: restore_backup_with_verify() with post-restore integrity check and row count. Data directory documentation at docs/DATA_DIRECTORY.md. 19 new Rust tests (1075 total). All verification passes.
-- **2026-05-29**: Productization Phase 5 — Native Packaging implemented. `.env.example` with all 16 env vars documented. `scripts/install.sh` and `scripts/upgrade.sh` for local install/upgrade. `scripts/package-release.sh` builds release binary + static dashboard + assembles tarball. `scripts/smoke_release.sh` extracts tarball, installs, starts engine, verifies health/readiness/dispatch/dashboard (6/6 checks pass). Release artifact: `dist/agent-control-plane-v0.1.0-linux-x86_64.tar.gz` (4 MB, SHA256 verified). Added `dist/` and `claude-drive/` to .gitignore. All verification passes.
+- **2026-05-27→05-28**: Dispatch Kernel Phases 1-5, 6A, 6B-1/2/3, Gates 1-3, Phase 7 all STABLE through iterative GPT review. 2089 Python tests. Language migration Phases 0-7 complete. Rust engine/API parity implemented. SDK + codegen + dashboard + Docker deployed. See `docs/CURRENT_STATUS.md` for full track history.
+- **2026-05-29**: Provider infrastructure (audit/redaction/RetryFallbackManager), Rust + TypeScript cutover, Productization Phases 1-6 (Provider Safety Gate, Permission Governance, Cost Governance, Data Operations, Native Packaging, Dashboard Controls). 1086 Rust tests, 13 TS SDK tests, 17 Python SDK tests. All verification passing.
 - Previous BLOCK findings (b6d5bc1): HIGH-1 rate limit not wired, HIGH-2 scope enforcement missing, HIGH-3 plugin locks unused
 - Gate 1 addresses: HIGH-1 (rate limiter in ServerContext + _check_rate_limit), HIGH-2 (scope enforcement + AuthorizationDecision + 403/429)
 - Gate 2 addresses: atomic restore, WAL safety, failure-mode coverage
 - HIGH-3 (plugin locks) deferred to Gate 3
-- Status: Gate 1 STABLE, Gate 2 STABLE, Gate 3 next
+- Status: Gate 1 STABLE, Gate 2 STABLE, Gate 3 STABLE
 
-### GPT Gate Feedback 2026-05-28 (6B-3 + Phase 7)
-- Target: Phase 6B-3 + Phase 7 checkpoint (commit b6d5bc1)
-- Verdict: PASS (CRITICAL: 0, HIGH: 0, MEDIUM: 3, LOW: 3)
-- MEDIUM items: TenantResolver config-time-only (defer to 6B-3), empty scopes = unlimited (documented), RouteMatch.path raw (defer to 6B-3)
-- LOW items: hash_api_key delimiter, request_id observability, auth audit — all 6B-3 scope
-- Status: passed — Phase 6B-3 + Phase 7 STABLE
-
-### GPT Gate Feedback 2026-05-28 (Phase 7 Review Hardening)
-- Target: Review hardening checkpoint (commit d387e01)
-- Verdict: PASS (CRITICAL: 0, HIGH: 0, MEDIUM: 1, LOW: 2)
-- MEDIUM: benchmark latency_ms/cost_usd still accept nan/inf (follow-up)
-- LOW: cost_savings_pct naming ambiguous (negative = savings)
-- LOW/MEDIUM: summary denominator uses all active experiments, not per-metric counts (documented behavior)
-- Status: passed — all Phase 7 hardening complete
-
-### GPT Gate Feedback 2026-05-28 (6B-1)
-- Target: Phase 6B-1 checkpoint (commit e4aecb3)
-- Verdict: PASS_WITH_NOTES (P0: 0, P1: 3)
-- P1 items: _last_context fallback marked legacy, add lock if threaded server, normalize RouteMatch.path before auth
-- Status: passed, P1 items deferred to 6B-2
-
-### GPT Gate Feedback 2026-05-28 (6B-2 round 1)
-- Target: Phase 6B-2 initial checkpoint (commit 4899cea)
-- Verdict: BLOCK (CRITICAL: 0, HIGH: 1, MEDIUM: 4, LOW: 3)
-- HIGH-1: RequestContext generated but discarded — not passed to RouteMatch or handlers
-- MEDIUM: generic 401 error, token format validation, thread safety docs, scope subset constraint
-- Status: fixed, re-reviewed
-
-### GPT Gate Feedback 2026-05-28 (6B-2 round 2)
-- Target: Phase 6B-2 hardening checkpoint (commit 6934b72)
-- Verdict: PASS (CRITICAL: 0, HIGH: 0, MEDIUM: 3, LOW: 3)
-- MEDIUM items: TenantResolver config-time-only (acceptable), empty scopes = unlimited semantic (documented), RouteMatch.path raw (defer to 6B-3)
-- Status: passed — Phase 6B-2 STABLE
-
-### GPT Gate Feedback 2026-05-28 (Gate 1 round 1)
-- Target: Phase 6B-3 Gate 1 enforcement hardening (commit b404b8f)
-- Verdict: BLOCK (CRITICAL: 0, HIGH: 2, MEDIUM: 2, LOW: 0)
-- HIGH-1: empty-scope API keys bypass scope checks (`request_context.scopes and` guard in _check_scopes) — FIXED
-- HIGH-2: route re-registration with required_scopes=None leaves stale scopes — FIXED
-- MEDIUM-1: tests call internal methods directly, no real HTTP 403/429 verification
-- MEDIUM-2: rate_limit hardcoded to 60, ignoring Tenant.rate_limit — deferred to 6B-3 tenant config
-- Status: HIGH items fixed, re-review pending in ChatGPT
-
-### GPT Gate Feedback 2026-05-28 (Gate 1 round 2)
-- Target: Phase 6B-3 Gate 1 enforcement hardening (commit e26439f)
-- Verdict: PASS (CRITICAL: 0, HIGH: 0, MEDIUM: 0, LOW: 0)
-- HIGH-1 empty-scope bypass: resolved — `_check_scopes()` uses `if not required.issubset(request_context.scopes):`
-- HIGH-2 stale scope re-registration: resolved — `register_route()` now pops stale entries
-- MEDIUM-1 direct method tests: accepted as sufficient for unit-level enforcement
-- MEDIUM-2 rate_limit=60 hardcoded: deferred to 6B-3 tenant config (non-blocking)
-- Status: passed — Gate 1 STABLE
-
-### GPT Gate Feedback 2026-05-28 (Gate 2 round 1)
-- Target: Phase 6B-3 Gate 2 BackupManager atomic restore (commit ee0cd97)
-- Verdict: BLOCK (CRITICAL: 0, HIGH: 2, MEDIUM: 0, LOW: 0)
-- HIGH-1: target sidecars deleted before candidate restore succeeds — FIXED
-- HIGH-2: no try/finally for temp cleanup — FIXED
-- Status: fixed, re-reviewed
-
-### GPT Gate Feedback 2026-05-28 (Gate 2 round 2)
-- Target: Phase 6B-3 Gate 2 rework (commit 2a3188c)
-- Verdict: BLOCK (CRITICAL: 0, HIGH: 1, MEDIUM: 0, LOW: 0)
-- HIGH-1: WAL not checkpointed before sidecar removal — FIXED
-- Status: fixed, re-reviewed
-
-### GPT Gate Feedback 2026-05-28 (Gate 2 round 3)
-- Target: Phase 6B-3 Gate 2 WAL checkpoint fix (commit c124c57)
-- Verdict: PASS (CRITICAL: 0, HIGH: 0, MEDIUM: 0, LOW: 0)
-- Candidate prepared/checksummed before live target mutation
-- WAL checkpoint before sidecar removal
-- try/except/finally with temp cleanup
-- 4 failure-mode regression tests
-- Status: passed — Gate 2 STABLE
+### GPT Gate Feedback Summary (2026-05-28)
+All dispatch kernel review gates (6B-1, 6B-2, 6B-3 Gates 1-3, Phase 7 hardening) passed after iterative fixes. Key P0 fixes: empty-scope bypass, stale scope re-registration, WAL checkpoint before sidecar removal, atomic restore with checksum verification. Full details archived in git history.
 
 ## External Dependencies
 
@@ -225,7 +117,7 @@ See `docs/CURRENT_STATUS.md` for full details.
 
 - **Framework**: unittest (stdlib), no pytest
 - **Run command**: `PYTHONPATH=src python3 -m unittest discover -s tests`
-- **Current count**: 2089 Python tests + 1075 Rust tests pass, 0 failures (as of 2026-05-29)
+- **Current count**: 2089 Python tests + 1086 Rust tests pass, 0 failures (as of 2026-05-29)
 - **Coverage**: Phase boundary contracts, schema validation, golden fixtures
 - **CI**: GitHub Actions on push/PR to main — runs security baseline + all tests
 - **Test naming**: `tests/test_<module>.py`, one test file per source module
@@ -240,7 +132,7 @@ Start every Claude Code, Codex, or other coding-agent session by reading:
 3. `docs/NEXT_DECISION.md`
 4. `docs/MODULE_MAP.md`
 
-Do not infer a new Stage 5, CA-8, production track, or provider-integration track from old phase names. The original Stage 0-4 work is complete; Dispatch Kernel Phase 4 is only an eligible future path with explicit human approval.
+Do not infer a new Stage 5, CA-8, production track, or provider-integration track from old phase names. The original Stage 0-4 work is complete; Dispatch Kernel Phases 1-7 (including 6A, 6B-1/2/3, Gates 1-3) are all complete and stable.
 
 ## Next Action
 

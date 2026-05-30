@@ -5,7 +5,7 @@ Last verified: 2026-05-29.
 ## Repository State
 
 - Branch: `main` with the Rust + TypeScript agent-control-plane cutover complete. Rust `engine/` is the primary runtime/API/storage/provider-gated control plane; `dashboard/` and `sdk/typescript/` are the primary TypeScript surfaces. Python remains as legacy reference plus the retained Python REST SDK.
-- Tests: **2089 Python pass**, **1075 Rust pass**, 0 failures.
+- Tests: **2089 Python pass**, **1086 Rust pass**, 0 failures.
 - Security baseline: ALL CHECKS PASSED.
 
 ## New Session / Documentation Discipline
@@ -35,7 +35,7 @@ Run `python3 scripts/check_agent_handoff.py` before committing so the handoff su
 | Reliability Hardening 1 — Negated risk and triage | Complete |
 | Demo packaging | Complete |
 | Demo verification | Complete — all docs accurate and runnable |
-| Trial 2 candidate selection | Planned — hermes-gateway-lab recommended |
+| Trial 2 candidate selection | Complete — hermes-gateway-lab onboarded |
 | Trial 2 execution | Closed — `ACCEPTABLE_WITH_NOTES` (audit BLOCKED on target, generalization finding) |
 | Target repo onboarding plan | Complete — plan and templates ready, awaiting user approval for target writes |
 | Target repo onboarding (hermes-gateway-lab) | Complete — PR #1 merged (commit `77cf282`), onboarding files on target main, audit PASS_WITH_NOTES / blockers [] |
@@ -84,6 +84,7 @@ Run `python3 scripts/check_agent_handoff.py` before committing so the handoff su
 | Productization Phase 3 — Cost Governance | **IMPLEMENTED** — Enriched `cost_summary()` to v2 schema with `total_estimated_cost_usd`, `total_input_tokens`, `total_output_tokens`, `cost_utilization` ratio, per-tier estimated/tokens breakdown, and daily cost trend. New `dispatch_cost_details()` method and `GET /api/v1/costs/dispatches` endpoint for per-dispatch cost rows. Dashboard Costs component enhanced with reserved vs estimated comparison, utilization metric, token usage totals, and daily trend bars. TypeScript + Python SDKs typed for `LocalCostSummary` and `LocalDispatchCostDetail`. 15 new Rust tests (1056 total). |
 | Productization Phase 4 — Data Operations | **IMPLEMENTED** — Versioned SQLite migrations via `PRAGMA user_version` (v1: adds `last_used_at`/`expires_at` columns). `check_integrity()` method with `PRAGMA integrity_check` and per-table row counts. `import_snapshot()` for idempotent import from export JSON. `GET /api/v1/storage/integrity` endpoint. `POST /api/v1/import` endpoint (requires `confirm_import=true`). Backup restore hardened: `restore_backup_with_verify()` with post-restore integrity check and row count. `POST /api/v1/backups/:id/restore` endpoint (requires `confirm_restore=true`). Data directory documentation at `docs/DATA_DIRECTORY.md`. 19 new Rust tests (1075 total). |
 | Productization Phase 5 — Native Packaging | **IMPLEMENTED** — `.env.example` with all 16 env vars documented. `scripts/install.sh` installs engine binary + dashboard to `~/.agent-control-plane/`. `scripts/upgrade.sh` swaps binary with permission preservation. `scripts/package-release.sh` builds release binary + static dashboard + assembles tarball. `scripts/smoke_release.sh` extracts tarball, installs, starts engine, verifies health/readiness/dispatch/dashboard. Release artifact: `dist/agent-control-plane-v0.1.0-linux-x86_64.tar.gz` (4 MB). |
+| Productization Phase 6 — Dashboard Controls | **IMPLEMENTED** — Dispatch detail drill-down (click row to see full bundle with analysis/decision/execution/evaluation sections). Backups tab with list/create/restore/delete and confirmation dialogs. Audit log tab with collapsible details. Team tab confirmation dialogs for all destructive actions. Settings tab enhanced with provider health status. New Rust endpoints: `GET /api/v1/dispatches/:dispatch_id`, `GET /api/v1/backups`, `DELETE /api/v1/backups/:backup_id`. `get_dispatch()` on LocalProductStore. 11 new Rust tests (1086 total). 6 new TypeScript SDK methods + 6 tests (13 total). 6 new Python SDK methods + 6 tests (17 total). |
 | Rust + TypeScript Cutover | **COMPLETE** — primary verification is `bash scripts/verify_rust_typescript_stack.sh`, covering Rust fmt/clippy/tests, TypeScript SDK test/build, dashboard lint/typecheck/build/static export, native Rust API + dashboard smoke, and deterministic dispatch smoke. Python is no longer required for the primary local stack, but remains as legacy reference and SDK compatibility. |
 
 Trial 2 complete evidence chain: [`docs/trials/TRIAL_2_FINAL_STATE_INDEX.md`](trials/TRIAL_2_FINAL_STATE_INDEX.md).

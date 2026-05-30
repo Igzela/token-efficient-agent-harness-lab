@@ -166,5 +166,88 @@ class ClientBaseUrlTest(unittest.TestCase):
         self.assertEqual(req.full_url, "http://localhost:8080/api/v1/health")
 
 
+class ClientDispatchDetailTest(unittest.TestCase):
+    @patch("agent_control_plane_sdk.client.urlopen")
+    def test_dispatch_detail_sends_get(self, mock_urlopen):
+        mock_urlopen.return_value = mock_response({"dispatch": {"dispatch_id": "d-1"}})
+        client = AgentControlPlaneClient("http://localhost:8080")
+        result = client.dispatch_detail("d-1")
+        self.assertEqual(result["dispatch"]["dispatch_id"], "d-1")
+        args, _ = mock_urlopen.call_args
+        req = args[0]
+        self.assertEqual(req.method, "GET")
+        self.assertIn("/api/v1/dispatches/d-1", req.full_url)
+
+
+class ClientListBackupsTest(unittest.TestCase):
+    @patch("agent_control_plane_sdk.client.urlopen")
+    def test_list_backups_sends_get(self, mock_urlopen):
+        mock_urlopen.return_value = mock_response({"backups": []})
+        client = AgentControlPlaneClient("http://localhost:8080")
+        result = client.list_backups()
+        self.assertEqual(result["backups"], [])
+        args, _ = mock_urlopen.call_args
+        req = args[0]
+        self.assertEqual(req.method, "GET")
+        self.assertEqual(req.full_url, "http://localhost:8080/api/v1/backups")
+
+
+class ClientDeleteBackupTest(unittest.TestCase):
+    @patch("agent_control_plane_sdk.client.urlopen")
+    def test_delete_backup_sends_delete(self, mock_urlopen):
+        mock_urlopen.return_value = mock_response({"ok": True, "backup_id": "backup-0001"})
+        client = AgentControlPlaneClient("http://localhost:8080")
+        result = client.delete_backup("backup-0001")
+        self.assertEqual(result["ok"], True)
+        args, _ = mock_urlopen.call_args
+        req = args[0]
+        self.assertEqual(req.method, "DELETE")
+        self.assertIn("/api/v1/backups/backup-0001", req.full_url)
+
+
+class ClientStorageIntegrityTest(unittest.TestCase):
+    @patch("agent_control_plane_sdk.client.urlopen")
+    def test_storage_integrity_sends_get(self, mock_urlopen):
+        mock_urlopen.return_value = mock_response({"status": "ok"})
+        client = AgentControlPlaneClient("http://localhost:8080")
+        result = client.storage_integrity()
+        self.assertEqual(result["status"], "ok")
+        args, _ = mock_urlopen.call_args
+        req = args[0]
+        self.assertEqual(req.method, "GET")
+        self.assertEqual(req.full_url, "http://localhost:8080/api/v1/storage/integrity")
+
+
+class ClientImportSnapshotTest(unittest.TestCase):
+    @patch("agent_control_plane_sdk.client.urlopen")
+    def test_import_snapshot_sends_post(self, mock_urlopen):
+        mock_urlopen.return_value = mock_response({"imported": 5})
+        client = AgentControlPlaneClient("http://localhost:8080")
+        result = client.import_snapshot({"config": {}, "team": []})
+        self.assertEqual(result["imported"], 5)
+        args, _ = mock_urlopen.call_args
+        req = args[0]
+        self.assertEqual(req.method, "POST")
+        self.assertEqual(req.full_url, "http://localhost:8080/api/v1/import")
+        self.assertEqual(
+            json.loads(req.data),
+            {"snapshot": {"config": {}, "team": []}, "confirm_import": True},
+        )
+
+
+class ClientRestoreBackupTest(unittest.TestCase):
+    @patch("agent_control_plane_sdk.client.urlopen")
+    def test_restore_backup_sends_post(self, mock_urlopen):
+        mock_urlopen.return_value = mock_response({"success": True})
+        client = AgentControlPlaneClient("http://localhost:8080")
+        result = client.restore_backup("backup-0001")
+        self.assertEqual(result["success"], True)
+        args, _ = mock_urlopen.call_args
+        req = args[0]
+        self.assertEqual(req.method, "POST")
+        self.assertIn("/api/v1/backups/backup-0001/restore", req.full_url)
+        self.assertEqual(json.loads(req.data), {"confirm_restore": True})
+
+
 if __name__ == "__main__":
     unittest.main()

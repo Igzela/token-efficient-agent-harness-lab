@@ -561,3 +561,66 @@ fn dispatch_cost_details_empty_store() {
     assert_eq!(details["schema_version"], "local_dispatch_cost_detail.v1");
     assert_eq!(details["dispatches"].as_array().unwrap().len(), 0);
 }
+
+// --- get_dispatch tests ---
+
+#[test]
+fn get_dispatch_returns_dispatch_for_existing_id() {
+    let dir = tempdir().unwrap();
+    let store = LocalProductStore::new(dir.path().join("test.db")).unwrap();
+
+    let bundle = make_bundle_with_usage("d1", "noop", Some(100), Some(50), Some(0.001), Some(42));
+    store
+        .record_dispatch("request-1", "api", &bundle, "actor")
+        .unwrap();
+
+    let result = store.get_dispatch("d1").unwrap();
+    assert!(result.is_some());
+    let dispatch = result.unwrap();
+    assert_eq!(dispatch["dispatch_id"], "d1");
+    assert_eq!(dispatch["raw_request"], "request-1");
+    assert_eq!(dispatch["request_source"], "api");
+    assert_eq!(dispatch["executor_type"], "noop");
+    assert_eq!(dispatch["input_tokens"], 100);
+    assert_eq!(dispatch["output_tokens"], 50);
+    assert!((dispatch["estimated_cost_usd"].as_f64().unwrap() - 0.001).abs() < 1e-10);
+    assert_eq!(dispatch["latency_ms"], 42);
+    assert!(dispatch["bundle"].is_object());
+}
+
+#[test]
+fn get_dispatch_returns_none_for_missing_id() {
+    let dir = tempdir().unwrap();
+    let store = LocalProductStore::new(dir.path().join("test.db")).unwrap();
+
+    let result = store.get_dispatch("nonexistent").unwrap();
+    assert!(result.is_none());
+}
+
+#[test]
+fn get_dispatch_returns_latest_when_duplicate_ids() {
+    let dir = tempdir().unwrap();
+    let store = LocalProductStore::new(dir.path().join("test.db")).unwrap();
+
+    let bundle1 = make_bundle_with_usage("d1", "noop", Some(10), Some(5), Some(0.0005), Some(10));
+    store
+        .record_dispatch("request-1", "api", &bundle1, "actor")
+        .unwrap();
+
+    let bundle2 = make_bundle_with_usage(
+        "d1",
+        "provider",
+        Some(200),
+        Some(100),
+        Some(0.01),
+        Some(200),
+    );
+    store
+        .record_dispatch("request-2", "api", &bundle2, "actor")
+        .unwrap();
+
+    let result = store.get_dispatch("d1").unwrap().unwrap();
+    assert_eq!(result["raw_request"], "request-2");
+    assert_eq!(result["executor_type"], "provider");
+    assert_eq!(result["input_tokens"], 200);
+}
