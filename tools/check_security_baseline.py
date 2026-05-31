@@ -103,6 +103,12 @@ ALLOWED_TEST_IMPORTS: dict[str, set[str]] = {
     "sdk/python/src/agent_control_plane_sdk/client.py": {"urllib.request", "urllib.error"},
     "sdk/python/tests/test_client.py": {"urllib.error"},
     "scripts/smoke_native_runtime.py": {"socket", "urllib.request"},
+    "scripts/trial4_real_use_pilot.py": {
+        "socket",
+        "urllib.error",
+        "urllib.parse",
+        "urllib.request",
+    },
 }
 
 # Paths to exclude from active routing guard (test fixtures contain

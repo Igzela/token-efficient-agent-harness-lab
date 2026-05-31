@@ -100,6 +100,7 @@ cargo fmt --check
 cargo clippy -p engine -- -D warnings
 cargo test -p engine
 bash scripts/check_wire_codegen_drift.sh
+uv run --no-project python tools/check_security_baseline.py
 cd sdk/python && PYTHONPATH=src uv run --no-project python -m unittest discover -s tests
 cd sdk/typescript && ./node_modules/.bin/tsc -p tsconfig.json
 cd sdk/typescript && node --test tests/client.test.mjs
