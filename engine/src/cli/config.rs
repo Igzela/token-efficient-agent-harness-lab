@@ -2,6 +2,7 @@ use std::process::Command;
 
 pub const DEFAULT_CLI_TIMEOUT_MS: u64 = 300_000;
 pub const DEFAULT_COMPLEXITY_THRESHOLD: f64 = 0.7;
+pub const DEFAULT_CLI_EXECUTION_ENABLED: bool = false;
 
 #[derive(Clone, Debug)]
 pub struct CliConfig {
@@ -16,7 +17,7 @@ pub struct CliConfig {
 
 impl CliConfig {
     pub fn from_env() -> Self {
-        let enabled = env_bool("ACP_ENABLE_CLI_EXECUTION", true);
+        let enabled = env_bool("ACP_ENABLE_CLI_EXECUTION", DEFAULT_CLI_EXECUTION_ENABLED);
         let timeout_ms = env_u64("ACP_CLI_TIMEOUT_MS", DEFAULT_CLI_TIMEOUT_MS);
         let complexity_threshold =
             env_f64("ACP_CLI_COMPLEXITY_THRESHOLD", DEFAULT_COMPLEXITY_THRESHOLD);
@@ -103,6 +104,15 @@ mod tests {
         assert!(config.timeout_ms > 0);
         assert!(config.complexity_threshold > 0.0);
         assert!(config.complexity_threshold <= 1.0);
+    }
+
+    #[test]
+    fn test_cli_execution_default_is_opt_in() {
+        assert!(!DEFAULT_CLI_EXECUTION_ENABLED);
+        assert!(!env_bool(
+            "NONEXISTENT_KEY_DEFAULT_FALSE",
+            DEFAULT_CLI_EXECUTION_ENABLED
+        ));
     }
 
     #[test]

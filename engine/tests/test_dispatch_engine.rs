@@ -51,6 +51,25 @@ fn test_no_provider_executor_type() {
 }
 
 #[test]
+fn test_multi_executor_without_cli_tier_reports_noop_policy() {
+    let engine = DispatchEngine::with_multi_executor(engine::cli::MultiExecutor::new(
+        std::collections::HashMap::new(),
+    ));
+    let v = engine.dispatch(
+        "Generate code: function parseCsv(input: string): string[][].",
+        "test_fixture",
+    );
+
+    assert_eq!(v["decision"]["selected_tier"], "codex_cli");
+    assert_eq!(v["decision"]["execution_policy"]["executor_type"], "noop");
+    assert_eq!(v["execution_result"]["executor_type"], "noop");
+    let constraints = v["decision"]["hard_constraints"].as_array().unwrap();
+    assert!(constraints
+        .iter()
+        .any(|value| value.as_str() == Some("no_provider_call")));
+}
+
+#[test]
 fn test_decision_has_shadow_routes_or_reason() {
     let engine = DispatchEngine::new();
     let v = engine.dispatch("Summarize the README", "test_fixture");

@@ -4,7 +4,7 @@
 
 **What**: A local deterministic harness and self-hosted agent-control-plane for studying token-efficient agent workflows. It provides deterministic dispatch planning, local API/dashboard access, app-owned SQLite history/config/team state, and cost-of-pass metrics.
 
-**What NOT**: Not a cloud production SaaS or autonomous-agent runtime. No real model-provider calls by default, no sandbox/process/container/VM isolation runtime, no autonomous workers, no target-repo writes, and no hosted production deployment. Existing local CLI executor subprocess invocation is a separate, unchanged exception.
+**What NOT**: Not a cloud production SaaS or autonomous-agent runtime. No real model-provider calls by default, no sandbox/process/container/VM isolation runtime, no autonomous workers, no target-repo writes, and no hosted production deployment. Existing local CLI executor subprocess invocation is a separate, explicit opt-in exception via `ACP_ENABLE_CLI_EXECUTION=1`.
 
 **Target user**: Solo developer or small local team studying and operating deterministic agent infrastructure patterns on one machine or a LAN.
 
@@ -73,7 +73,7 @@ Master architecture document: `docs/dispatch/DISPATCHER_KERNEL_V0_ARCHITECTURE.m
 - **Architecture Refactor R6**: IMPLEMENTED (`engine/src/harness/model_profiles/` module directory: mod.rs, constants.rs, types.rs, validation.rs, shadow.rs). 1144 Rust tests pass.
 - **Architecture Refactor R7**: IMPLEMENTED (`engine/src/workflow/concurrency/` module directory: mod.rs, dag_types.rs, types.rs, controller.rs, helpers.rs). 1144 Rust tests pass.
 - **Architecture Refactor R-series**: **SEALED AT R7**. R8 is not approved. `checkpoint.rs` split and `dispatch_decision.rs` split deferred. No further R-series file splitting is approved.
-- **Post-R7 Wire/Type Governance Hardening**: IMPLEMENTED (`app_layer` dormant-reference annotation, 20-fixture Rust typed round-trip guardrail, active CLI/provider execution-result schema enums, generated/manual TypeScript split behind compatibility re-export, schema-driven practical enum extraction, `--check` codegen mode, CI/autonomous-closeout `scripts/check_wire_codegen_drift.sh` guard, localized dashboard union reuse). 1146 Rust tests pass.
+- **Post-R7 Wire/Type Governance Hardening**: IMPLEMENTED (`app_layer` dormant-reference annotation, 20-fixture Rust typed round-trip guardrail, active CLI/provider execution-result schema enums, generated/manual TypeScript split behind compatibility re-export, schema-driven practical enum extraction, `--check` codegen mode, CI/autonomous-closeout `scripts/check_wire_codegen_drift.sh` guard, localized dashboard union reuse). Post-R7 real-use audit fixes bring the current suite to 1151 Rust tests pass.
 
 See `docs/CURRENT_STATUS.md` for detailed phase closeout records.
 
@@ -111,7 +111,7 @@ See `docs/CURRENT_STATUS.md` for full details.
 - **2026-05-29**: Provider infrastructure (audit/redaction/RetryFallbackManager), Rust + TypeScript cutover, Productization Phases 1-6 (Provider Safety Gate, Permission Governance, Cost Governance, Data Operations, Native Packaging, Dashboard Controls). 1086 Rust tests, 13 TS SDK tests, 17 Python SDK tests. All verification passing.
 - **2026-05-30**: Long-Run Hardening (part 1) — SQLite contention tests (6 tests for concurrent writes, reads-during-writes, audit events, deadlock prevention, data integrity) and provider failure matrix tests (21 tests covering retry exhaustion, fallback routing, budget-exhausted mid-retry, non-retryable errors, disabled provider, cost gate blocks, audit trail, governance blocks, backoff strategies). 27 new Rust tests (1113 total).
 - **2026-05-30**: Long-Run Hardening (part 2) — Audit integrity tests (7 tests: mutation audit correctness, ordering monotonicity, persistence across reopen, concurrent writes, integrity report row count). Enhanced smoke_release.sh: tarball structure, install smoke, data preservation, port retry, integrity endpoint. 7 new Rust tests (1120 total).
-- **2026-05-30**: CLI Executor Routing — Complexity-based dispatch to Claude Code CLI / Codex CLI. New `engine/src/cli/` module with `ClaudeCodeCliExecutor`, `CodexCliExecutor`, `MultiExecutor`, `CliConfig`. Existing local subprocess exception defaults enabled when binaries are discoverable. Complexity threshold 0.7 escalates to CLI tiers. 10 new Rust tests (1130 total).
+- **2026-05-30**: CLI Executor Routing — Complexity-based dispatch to Claude Code CLI / Codex CLI. New `engine/src/cli/` module with `ClaudeCodeCliExecutor`, `CodexCliExecutor`, `MultiExecutor`, `CliConfig`. Existing local subprocess exception is explicit opt-in via `ACP_ENABLE_CLI_EXECUTION=1`. Complexity threshold 0.7 escalates to CLI tiers when enabled. 10 new Rust tests (1130 total).
 - **2026-05-30**: P1 Local-Beta Follow-Up — 7 items: GET /api/v1/keys metadata-only key list endpoint, search/filter/pagination for dispatches and audit, bookmarkable dashboard tabs via URL hash, 60-second auto-refresh with visibility-aware pausing, Docker volume persistence for SQLite, key reveal modal replacing alert(), dashboard split from 1358-line monolith into 12 focused components. 4 new Rust tests (1140 total).
 - **2026-05-30**: P2 Local-Beta Polish & Type Hardening — CSS design token cleanup (#c0392b → var(--risk), utility classes), TypeScript SDK type hardening (22 new focused response interfaces, 21 methods typed, ExecutorType/ExecutionStatus extended for CLI executors), dashboard component quality (usePaginatedSearch hook, SearchBar, Pagination components), Next.js app polish (loading.tsx, error.tsx, metadata, favicon). 0 new Rust tests (1140 total), 16 SDK tests pass.
 - **2026-05-30**: Toolchain Consolidation & Drift Guard — Standardized all authoritative docs to `uv run --no-project python` (8 stale bare python3 references fixed across 9 files). README toolchain table added. verify_rust_typescript_stack.sh preflight extended (bun/cargo/uv). `scripts/check_toolchain_drift.sh` drift guard added for stale JS/Python toolchain references. Integrated into autonomous closeout workflow. CI already aligned. 0 new Rust tests (1140 total). `uv.lock` intentionally not added.
@@ -142,7 +142,7 @@ All dispatch kernel review gates (6B-1, 6B-2, 6B-3 Gates 1-3, Phase 7 hardening)
 
 - **Framework**: Rust `cargo test` for engine; Python `unittest` for SDK
 - **Run command**: `cargo test -p engine` (primary); `cd sdk/python && PYTHONPATH=src uv run --no-project python -m unittest discover -s tests` (SDK)
-- **Current count**: 1146 Rust tests pass, 0 failures (as of 2026-05-30)
+- **Current count**: 1151 Rust tests pass, 0 failures (as of 2026-05-31)
 - **Coverage**: Phase boundary contracts, schema validation, golden fixtures
 - **CI**: GitHub Actions on push/PR to main — runs security baseline + Rust/TS/SDK tests
 - **Test-first**: Write tests alongside implementation. Follow the test strategy in Section 4.25 of the architecture book.

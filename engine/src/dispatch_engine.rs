@@ -1,3 +1,5 @@
+use std::collections::HashSet;
+
 use serde_json::{json, Value};
 
 use crate::budget_manager::BudgetManager;
@@ -20,6 +22,7 @@ pub struct DispatchEngine {
     evaluator: EvaluationStub,
     ledger: DispatchLedger,
     executor_type_name: String,
+    available_executor_tiers: HashSet<String>,
 }
 
 impl Default for DispatchEngine {
@@ -32,6 +35,7 @@ impl Default for DispatchEngine {
             evaluator: EvaluationStub,
             ledger: DispatchLedger::new(),
             executor_type_name: "noop".to_string(),
+            available_executor_tiers: HashSet::new(),
         }
     }
 }
@@ -70,9 +74,15 @@ impl DispatchEngine {
     }
 
     pub fn with_multi_executor(multi: crate::cli::MultiExecutor) -> Self {
+        let available_executor_tiers = ["claude_code_cli", "codex_cli"]
+            .into_iter()
+            .filter(|tier| multi.has_executor_for_tier(tier))
+            .map(String::from)
+            .collect();
         Self {
             executor: Box::new(multi),
             executor_type_name: "multi".to_string(),
+            available_executor_tiers,
             ..Self::default()
         }
     }
@@ -83,11 +93,10 @@ impl DispatchEngine {
 
     fn effective_executor_type(&self, tier: &str) -> String {
         if self.executor_type_name == "multi" {
-            match tier {
-                "claude_code_cli" => "claude_code_cli".to_string(),
-                "codex_cli" => "codex_cli".to_string(),
-                _ => "noop".to_string(),
+            if self.available_executor_tiers.contains(tier) {
+                return tier.to_string();
             }
+            "noop".to_string()
         } else {
             self.executor_type_name.clone()
         }

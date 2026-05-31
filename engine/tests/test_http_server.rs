@@ -655,6 +655,29 @@ async fn axum_provider_health_noop_when_no_provider() {
 }
 
 #[tokio::test]
+async fn axum_provider_health_noop_with_multi_executor_and_no_provider() {
+    let engine = engine::dispatch_engine::DispatchEngine::with_multi_executor(
+        engine::cli::MultiExecutor::new(std::collections::HashMap::new()),
+    );
+    let app = build_axum_router(AxumApiState::new().with_engine(engine));
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method(Method::GET)
+                .uri("/api/v1/provider/health")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = response_json(response).await;
+    assert_eq!(body["status"], "noop");
+    assert_eq!(body["message"], "no provider configured");
+}
+
+#[tokio::test]
 async fn axum_provider_health_ok_with_stub_provider() {
     use engine::provider::stub::StubProvider;
     use engine::provider::Provider;

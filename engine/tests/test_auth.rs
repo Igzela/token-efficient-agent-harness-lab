@@ -69,6 +69,42 @@ fn test_tenant_resolver_create_and_resolve() {
 }
 
 #[test]
+fn test_add_api_key_reserves_generated_key_space() {
+    let mut resolver = TenantResolver::new();
+    resolver.add_tenant(make_tenant("t1", "Test Tenant"));
+    let admin_raw = "harness_0000000000000000000000000000000000000000000000000000000000000001";
+    resolver.add_api_key(APIKey {
+        key_id: "local-admin-env".to_string(),
+        tenant_id: "t1".to_string(),
+        key_hash: hash_api_key(admin_raw, "admin-salt"),
+        key_salt: "admin-salt".to_string(),
+        scopes: HashSet::from(["team:admin".to_string()]),
+        created_at: 0.0,
+        expires_at: None,
+        revoked_at: None,
+        last_used_at: None,
+    });
+
+    let (created, created_raw) = resolver.create_api_key("t1", None, None, 1000.0).unwrap();
+
+    assert_ne!(created_raw, admin_raw);
+    let admin_decision = resolver.resolve_mut(Some(&format!("Bearer {admin_raw}")), 1000.0);
+    assert!(admin_decision.allowed);
+    assert_eq!(
+        admin_decision.api_key_id.as_deref(),
+        Some("local-admin-env")
+    );
+    assert!(admin_decision.scopes.contains("team:admin"));
+
+    let created_decision = resolver.resolve_mut(Some(&format!("Bearer {created_raw}")), 1000.0);
+    assert!(created_decision.allowed);
+    assert_eq!(
+        created_decision.api_key_id.as_deref(),
+        Some(created.key_id.as_str())
+    );
+}
+
+#[test]
 fn test_tenant_resolver_missing_header() {
     let mut resolver = TenantResolver::new();
     let decision = resolver.resolve_mut(None, 1000.0);

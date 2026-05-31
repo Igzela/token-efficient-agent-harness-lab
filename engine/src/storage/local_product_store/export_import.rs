@@ -99,6 +99,20 @@ impl LocalProductStore {
                     .and_then(Value::as_str)
                     .unwrap_or("import");
                 let bundle = dispatch.get("bundle").cloned().unwrap_or(Value::Null);
+                let dispatch_id =
+                    dispatch
+                        .get("dispatch_id")
+                        .and_then(Value::as_str)
+                        .or_else(|| {
+                            bundle
+                                .pointer("/record/dispatch_id")
+                                .and_then(Value::as_str)
+                        });
+                if let Some(dispatch_id) = dispatch_id {
+                    if self.get_dispatch(dispatch_id)?.is_some() {
+                        continue;
+                    }
+                }
                 match self.record_dispatch(raw_request, request_source, &bundle, "import") {
                     Ok(_) => counts.dispatches += 1,
                     Err(e) => errors.push(format!("dispatch: {e}")),

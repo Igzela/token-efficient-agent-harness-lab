@@ -31,7 +31,7 @@ The Stage 0-4 task-book scope is complete.
 - GitHub private repository published.
 - Architecture Refactor R-series sealed at R7. R8 is not approved. The `checkpoint.rs` split and `dispatch_decision.rs` split are deferred. No further R-series file splitting is approved.
 - Post-R7 wire/type governance hardening implemented: dormant `app_layer` annotation, Rust golden fixture typed round-trip guardrail, active execution-result schema enums, generated/manual TypeScript split, schema-driven enum codegen with drift enforcement via `scripts/check_wire_codegen_drift.sh`, and localized dashboard union reuse.
-- Existing CLI executor routing is a pre-existing local subprocess exception. This audit does not change it. Any expansion requires explicit scope and human approval.
+- Existing CLI executor routing is a pre-existing local subprocess exception and is explicit opt-in via `ACP_ENABLE_CLI_EXECUTION=1`. Any expansion requires explicit scope and human approval.
 
 This project is now in autonomous maintainer mode for repository advancement. The responsible coding agent may keep advancing approved documentation, test, CI, hardening, dispatch-kernel, and local small-team self-hosting tracks without waiting for a new human instruction on every commit. New cloud/SaaS, hosted production, real-provider, target-write, or real-execution tracks still require explicit scope and human approval.
 

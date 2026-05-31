@@ -67,6 +67,8 @@ curl -X POST -H "Content-Type: application/json" \
   http://localhost:8080/api/v1/import
 ```
 
+Import is idempotent for existing dispatch IDs: repeated imports skip dispatch rows that are already present.
+
 ### Integrity Check
 
 Verify database integrity:

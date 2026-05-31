@@ -15,23 +15,13 @@ pub(crate) async fn api_provider_health(
     headers: HeaderMap,
 ) -> Result<impl IntoResponse, ApiError> {
     authorize(&state, &headers, "health:read")?;
-    if state.engine.executor_type() == "noop" {
+    let Some(provider) = &state.provider else {
         return Ok((
             cors_headers(),
             Json(json!({
                 "schema_version": AXUM_API_SCHEMA_VERSION,
                 "status": "noop",
                 "message": "no provider configured",
-            })),
-        ));
-    }
-    let Some(provider) = &state.provider else {
-        return Ok((
-            cors_headers(),
-            Json(json!({
-                "schema_version": AXUM_API_SCHEMA_VERSION,
-                "status": "error",
-                "message": "provider reference not available",
             })),
         ));
     };

@@ -24,7 +24,7 @@ Token-Efficient Agent Harness Lab is a local deterministic harness for studying 
 | Trial 3 multi-repo generalization | Closed — `TRIAL_3_MULTI_REPO_GENERALIZATION_PASS` |
 | Trial 3 target merge | Closed — all 3 target PRs merged, audit PASS_WITH_NOTES |
 
-Tests: 1146 Rust pass. Primary cutover verification is `bash scripts/verify_rust_typescript_stack.sh`.
+Tests: 1151 Rust pass. Primary cutover verification is `bash scripts/verify_rust_typescript_stack.sh`.
 
 ## Toolchain
 
@@ -68,7 +68,7 @@ Additional active architecture track:
 - **Not Stage 5.** No Stage 5 implementation has been started.
 - **Not a cloud production SaaS.** No default-on real model providers, sandbox isolation runtime, workers, hosted service, or production deployment targets.
 - **No real provider/model calls by default.** Provider adapters are explicit env-gated beta paths; CI uses stub/mock paths and does not call real provider APIs.
-- **No sandbox/process/container/VM isolation runtime.** Sandbox claims are logical file-claim tracking only. Existing local CLI executor subprocess invocation is a separate, unchanged exception.
+- **No sandbox/process/container/VM isolation runtime.** Sandbox claims are logical file-claim tracking only. Existing local CLI executor subprocess invocation is a separate, explicit opt-in exception via `ACP_ENABLE_CLI_EXECUTION=1`.
 - **No autonomous workers.** No real concurrent workers are spawned.
 - **No target repo writes by default.** Target repositories are read-only. The app never writes to them.
 

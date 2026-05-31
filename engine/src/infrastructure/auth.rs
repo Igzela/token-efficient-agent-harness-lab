@@ -96,6 +96,11 @@ impl TenantResolver {
     }
 
     pub fn add_api_key(&mut self, key: APIKey) {
+        if !self.api_keys.contains_key(&key.key_id) {
+            // Reserve the generated raw/key-id pair space for externally inserted keys
+            // such as ACP_ADMIN_API_KEY, whose raw token is not stored here.
+            self.counter = self.counter.saturating_add(2);
+        }
         self.api_keys.insert(key.key_id.clone(), key);
     }
 

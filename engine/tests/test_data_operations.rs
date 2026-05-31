@@ -229,6 +229,34 @@ fn import_snapshot_dispatches() {
 }
 
 #[test]
+fn import_snapshot_dispatches_skips_existing_dispatch_id() {
+    let dir = tempdir().unwrap();
+    let store = LocalProductStore::new(dir.path().join("test.db")).unwrap();
+    let snapshot = json!({
+        "schema_version": LOCAL_TEAM_EXPORT_SCHEMA_VERSION,
+        "config": {},
+        "team": {"members": [], "api_keys": []},
+        "audit": [],
+        "dispatches": [
+            {
+                "raw_request": "{\"test\": true}",
+                "request_source": "import",
+                "bundle": {"record": {"dispatch_id": "imported-1"}},
+            }
+        ],
+    });
+
+    let first = store.import_snapshot(&snapshot).unwrap();
+    let second = store.import_snapshot(&snapshot).unwrap();
+
+    assert_eq!(first.imported.dispatches, 1);
+    assert_eq!(second.imported.dispatches, 0);
+    let dispatches = store.list_dispatches(100).unwrap();
+    assert_eq!(dispatches.len(), 1);
+    assert_eq!(dispatches[0]["dispatch_id"], "imported-1");
+}
+
+#[test]
 fn import_snapshot_wrong_schema_version_rejects() {
     let dir = tempdir().unwrap();
     let store = LocalProductStore::new(dir.path().join("test.db")).unwrap();
