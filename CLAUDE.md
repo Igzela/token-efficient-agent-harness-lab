@@ -32,7 +32,7 @@ Master architecture document: `docs/dispatch/DISPATCHER_KERNEL_V0_ARCHITECTURE.m
 
 - **Original Stage 0-4 task-book**: Complete and sealed.
 - **Harness App MVP0-MVP8**: Complete local operations console.
-- **Trials 0-4**: Closed, with target repo onboarding, multi-repo generalization, and real-use pilot complete.
+- **Trials 0-5**: Closed, with target repo onboarding, multi-repo generalization, real-use pilot, and CLI execution beta complete.
 - **Python legacy reference**: **RETIRED** — `src/harness_core/`, root `tests/`, `demos/`, and root `pyproject.toml` removed (commit c3a23f5). Python retained only as REST SDK (`sdk/python/`) and utility scripts (`scripts/`, `tools/`, `codegen/`). Rust `engine/` is the sole runtime implementation.
 - **Dispatch Kernel Phase 1-6A**: All phases STABLE (Phase 6A: 5 source modules, 5 test files, 1596 tests).
 - **Phase 5 — Multi-Agent Orchestration**: STABLE (11 orchestration modules, 1454 tests, GPT approved after 3 review rounds).
@@ -73,7 +73,7 @@ Master architecture document: `docs/dispatch/DISPATCHER_KERNEL_V0_ARCHITECTURE.m
 - **Architecture Refactor R6**: IMPLEMENTED (`engine/src/harness/model_profiles/` module directory: mod.rs, constants.rs, types.rs, validation.rs, shadow.rs). 1144 Rust tests pass.
 - **Architecture Refactor R7**: IMPLEMENTED (`engine/src/workflow/concurrency/` module directory: mod.rs, dag_types.rs, types.rs, controller.rs, helpers.rs). 1144 Rust tests pass.
 - **Architecture Refactor R-series**: **SEALED AT R7**. R8 is not approved. `checkpoint.rs` split and `dispatch_decision.rs` split deferred. No further R-series file splitting is approved.
-- **Post-R7 Wire/Type Governance Hardening**: IMPLEMENTED (`app_layer` dormant-reference annotation, 20-fixture Rust typed round-trip guardrail, active CLI/provider execution-result schema enums, generated/manual TypeScript split behind compatibility re-export, schema-driven practical enum extraction, `--check` codegen mode, CI/autonomous-closeout `scripts/check_wire_codegen_drift.sh` guard, localized dashboard union reuse). Post-R7 real-use, developer-experience audit fixes, and Trial 4 duplicate-dispatch regression coverage bring the current suite to 1159 Rust tests pass.
+- **Post-R7 Wire/Type Governance Hardening**: IMPLEMENTED (`app_layer` dormant-reference annotation, 20-fixture Rust typed round-trip guardrail, active CLI/provider execution-result schema enums, generated/manual TypeScript split behind compatibility re-export, schema-driven practical enum extraction, `--check` codegen mode, CI/autonomous-closeout `scripts/check_wire_codegen_drift.sh` guard, localized dashboard union reuse). Post-R7 real-use, developer-experience audit fixes, Trial 4 duplicate-dispatch regression coverage, and Trial 5 malformed-CLI-output regressions bring the current suite to 1161 Rust tests pass.
 
 See `docs/CURRENT_STATUS.md` for detailed phase closeout records.
 
@@ -142,7 +142,7 @@ All dispatch kernel review gates (6B-1, 6B-2, 6B-3 Gates 1-3, Phase 7 hardening)
 
 - **Framework**: Rust `cargo test` for engine; Python `unittest` for SDK
 - **Run command**: `cargo test -p engine` (primary); `cd sdk/python && PYTHONPATH=src uv run --no-project python -m unittest discover -s tests` (SDK)
-- **Current count**: 1159 Rust tests pass, 0 failures (as of 2026-05-31)
+- **Current count**: 1161 Rust tests pass, 0 failures (as of 2026-05-31)
 - **Coverage**: Phase boundary contracts, schema validation, golden fixtures
 - **CI**: GitHub Actions on push/PR to main — runs security baseline + Rust/TS/SDK tests
 - **Test-first**: Write tests alongside implementation. Follow the test strategy in Section 4.25 of the architecture book.

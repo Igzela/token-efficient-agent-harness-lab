@@ -109,6 +109,12 @@ ALLOWED_TEST_IMPORTS: dict[str, set[str]] = {
         "urllib.parse",
         "urllib.request",
     },
+    "scripts/trial5_cli_execution_beta.py": {
+        "socket",
+        "urllib.error",
+        "urllib.parse",
+        "urllib.request",
+    },
 }
 
 # Paths to exclude from active routing guard (test fixtures contain

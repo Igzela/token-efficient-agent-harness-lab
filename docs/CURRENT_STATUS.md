@@ -5,7 +5,7 @@ Last verified: 2026-05-31. Local Rust, handoff, security, and Python SDK checks 
 ## Repository State
 
 - Branch: `main` with the Rust + TypeScript agent-control-plane cutover complete. Rust `engine/` is the primary runtime/API/storage/provider-gated control plane; `dashboard/` and `sdk/typescript/` are the primary TypeScript surfaces. Python retained as REST SDK (`sdk/python/`) and utility scripts only.
-- Tests: **1159 Rust pass**, 0 failures. Python SDK tests run separately under `sdk/python/`.
+- Tests: **1161 Rust pass**, 0 failures. Python SDK tests run separately under `sdk/python/`.
 - Security baseline: ALL CHECKS PASSED.
 
 ## New Session / Documentation Discipline
@@ -44,6 +44,7 @@ Run `uv run --no-project python scripts/check_agent_handoff.py` before committin
 | Trial 3 multi-repo generalization | Closed — `TRIAL_3_MULTI_REPO_GENERALIZATION_PASS` (3 repos: API/CLI/infra, all BLOCKED→PASS_WITH_NOTES, 6 plans, triage working) |
 | Trial 3 target merge | Closed — all 3 target PRs merged, audit PASS_WITH_NOTES, blockers [] |
 | Trial 4 real-use pilot | Closed — `TRIAL_4_REAL_USE_PILOT_PASS_AFTER_FIXES`; local pilot covered engine startup, static dashboard, API key CRUD, noop dispatches, dispatch list/detail/search/pagination, audit, backup restore/delete, export/import, provider-health default-off, TypeScript SDK, Python SDK, and CLI routing smoke without real provider calls. |
+| Trial 5 CLI execution beta | Closed — `TRIAL_5_CLI_EXECUTION_BETA_PASS_AFTER_FIXES`; deterministic stub pilot covered CLI default-off behavior, missing binary diagnostics, `codex_cli` and `claude_code_cli` routing, execution result fields, audit/provider-audit expectations, failure paths, SDK visibility, and dashboard wording without real provider calls. |
 | Global Architecture Book v1 | Approved — 3-round Claude+GPT collaborative review, Phase 1 implementation-ready |
 | Phase 1 — Dispatch Kernel | **STABLE** — 8 source files, 20 fixtures, 1074 total tests, commits `a4227e9`→`aed213b`→`592803f` |
 | Phase 2 — Manual Execution Bridge | **STABLE** — 6 source modules, 6 test files, 1131 total tests, commits `afbba23`→`19c8a17`→`8f683ad` |
@@ -102,7 +103,7 @@ Run `uv run --no-project python scripts/check_agent_handoff.py` before committin
 | Architecture Refactor R6 — model_profiles split | **IMPLEMENTED** — Replaced 840-line `engine/src/harness/model_profiles.rs` monolith with `engine/src/harness/model_profiles/` module directory (5 files). Split into: `mod.rs` (re-exports, inline tests), `constants.rs` (schema versions, enum sets, required-field arrays), `types.rs` (CostMetadata, ForbiddenPreviousTool, ModelHarnessProfile, ShadowRoutingRecommendation structs), `validation.rs` (validate_model_harness_profile, validate_shadow_routing_recommendation validators plus internal helpers), `shadow.rs` (is_shadow_only, can_compare_with_usage_ledger). Public API unchanged — all constants, types, validators, and shadow helpers re-exported from `crate::harness::model_profiles`. 1144 Rust tests pass (unchanged). |
 | Architecture Refactor R7 — concurrency split | **IMPLEMENTED** — Replaced 674-line `engine/src/workflow/concurrency.rs` monolith with `engine/src/workflow/concurrency/` module directory (5 files). Split into: `mod.rs` (re-exports, inline tests), `dag_types.rs` (DagNode, DagEdge, DagState with Default impls), `types.rs` (FileOverlap, ScheduleBatch structs), `controller.rs` (ConcurrencyController with new/schedule/detect_file_overlaps/can_run_parallel), `helpers.rs` (item_id, metadata, read_files, write_files, conflicting_files, blocking_reason, edge_blocks). Public API unchanged — all types, controller, and helpers re-exported from `crate::workflow::concurrency`. 1144 Rust tests pass (unchanged). |
 | Architecture Refactor R-series Seal | **SEALED AT R7** — R8 is not approved. The `checkpoint.rs` split and `dispatch_decision.rs` split are deferred. No further R-series file splitting is approved. |
-| Post-R7 Wire/Type Governance Hardening | **IMPLEMENTED** — `app_layer` is annotated as dormant/unwired parity reference code; 20 golden fixtures typed-round-trip through current Rust structs; execution-result schemas include active CLI/provider variants; TypeScript generated wire declarations are split from hand-maintained local API types behind a compatibility re-export; codegen reads practical enums from JSON schemas and supports `--check`; CI and autonomous closeout run `scripts/check_wire_codegen_drift.sh`; `scripts/check_agent_handoff.py` requires the current R7 seal facts plus the executable guard and its verifier/CI wiring; dashboard wire-shaped fields reuse generated union aliases. 2 new Rust tests (1146 total). Post-R7 real-use, developer-experience audit fixes, and Trial 4 duplicate-dispatch regression coverage raised the current Rust count to 1159. |
+| Post-R7 Wire/Type Governance Hardening | **IMPLEMENTED** — `app_layer` is annotated as dormant/unwired parity reference code; 20 golden fixtures typed-round-trip through current Rust structs; execution-result schemas include active CLI/provider variants; TypeScript generated wire declarations are split from hand-maintained local API types behind a compatibility re-export; codegen reads practical enums from JSON schemas and supports `--check`; CI and autonomous closeout run `scripts/check_wire_codegen_drift.sh`; `scripts/check_agent_handoff.py` requires the current R7 seal facts plus the executable guard and its verifier/CI wiring; dashboard wire-shaped fields reuse generated union aliases. 2 new Rust tests (1146 total). Post-R7 real-use, developer-experience audit fixes, Trial 4 duplicate-dispatch regression coverage, and Trial 5 malformed-CLI-output regressions raised the current Rust count to 1161. |
 
 Maintenance posture: repair CI/docs/test drift and wire-governance gaps. Do not continue R-series file splitting.
 
@@ -110,6 +111,7 @@ Trial 2 complete evidence chain: [`docs/trials/TRIAL_2_FINAL_STATE_INDEX.md`](tr
 Trial 3 report: [`docs/trials/TRIAL_3_REPORT.md`](trials/TRIAL_3_REPORT.md).
 Trial 3 target merge closeout: [`docs/trials/TRIAL_3_TARGET_MERGE_CLOSEOUT.md`](trials/TRIAL_3_TARGET_MERGE_CLOSEOUT.md).
 Trial 4 real-use pilot: [`docs/trials/TRIAL_4_REAL_USE_PILOT.md`](trials/TRIAL_4_REAL_USE_PILOT.md).
+Trial 5 CLI execution beta: [`docs/trials/TRIAL_5_CLI_EXECUTION_BETA.md`](trials/TRIAL_5_CLI_EXECUTION_BETA.md).
 
 ## Phase Closeout Summary
 

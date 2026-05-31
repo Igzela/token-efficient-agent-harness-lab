@@ -20,7 +20,7 @@ export function Costs({ dashboard }: { dashboard: LocalDashboardState }) {
         <div className="metric">
           <span className="metric-label">Estimated Cost</span>
           <strong>${c.total_estimated_cost_usd.toFixed(4)}</strong>
-          <span className="info">provider</span>
+          <span className="info">executor</span>
         </div>
         <div className="metric">
           <span className="metric-label">Utilization</span>

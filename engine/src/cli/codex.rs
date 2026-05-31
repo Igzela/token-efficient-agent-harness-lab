@@ -131,34 +131,57 @@ fn parse_codex_output(
     latency_ms: i64,
     runtime: &mut FixtureRuntime,
 ) -> ExecutionResult {
-    let parsed: Option<serde_json::Value> = serde_json::from_str(raw).ok();
-
-    let (output_text, input_tokens, output_tokens) = if let Some(ref val) = parsed {
-        let text = val
-            .get("output")
-            .or_else(|| val.get("result"))
-            .or_else(|| val.get("content"))
-            .and_then(|v| v.as_str())
-            .unwrap_or(raw)
-            .to_string();
-
-        let input_tokens = val
-            .get("usage")
-            .and_then(|u| u.get("input_tokens").or_else(|| u.get("prompt_tokens")))
-            .and_then(|v| v.as_i64());
-
-        let output_tokens = val
-            .get("usage")
-            .and_then(|u| {
-                u.get("output_tokens")
-                    .or_else(|| u.get("completion_tokens"))
-            })
-            .and_then(|v| v.as_i64());
-
-        (text, input_tokens, output_tokens)
-    } else {
-        (raw.to_string(), None, None)
+    let parsed: serde_json::Value = match serde_json::from_str(raw) {
+        Ok(value) => value,
+        Err(err) => {
+            return ExecutionResult {
+                schema_version: "execution_result.v1".to_string(),
+                result_id: runtime.id("exec-"),
+                dispatch_id: dispatch_id.to_string(),
+                decision_id: decision.decision_id.clone(),
+                executor_type: "codex_cli".to_string(),
+                status: "failed".to_string(),
+                output: if raw.is_empty() {
+                    None
+                } else {
+                    Some(raw.to_string())
+                },
+                prompt_pack: None,
+                input_tokens: None,
+                output_tokens: None,
+                estimated_cost: None,
+                latency_ms: Some(latency_ms),
+                error_domain: Some("cli_output_parse_error".to_string()),
+                error_message: Some(format!("failed to parse codex JSON output: {err}")),
+                provider_request_id: None,
+                attempt_number: Some(1),
+                finish_reason: Some("parse_error".to_string()),
+                usage_source: Some("codex_cli".to_string()),
+                created_at: runtime.now(),
+            };
+        }
     };
+
+    let output_text = parsed
+        .get("output")
+        .or_else(|| parsed.get("result"))
+        .or_else(|| parsed.get("content"))
+        .and_then(|v| v.as_str())
+        .unwrap_or(raw)
+        .to_string();
+
+    let input_tokens = parsed
+        .get("usage")
+        .and_then(|u| u.get("input_tokens").or_else(|| u.get("prompt_tokens")))
+        .and_then(|v| v.as_i64());
+
+    let output_tokens = parsed
+        .get("usage")
+        .and_then(|u| {
+            u.get("output_tokens")
+                .or_else(|| u.get("completion_tokens"))
+        })
+        .and_then(|v| v.as_i64());
 
     let estimated_cost = compute_cli_cost(
         "codex_cli",
@@ -181,14 +204,38 @@ fn parse_codex_output(
         latency_ms: Some(latency_ms),
         error_domain: None,
         error_message: None,
-        provider_request_id: parsed
-            .as_ref()
-            .and_then(|v| v.get("id"))
-            .and_then(|v| v.as_str())
-            .map(String::from),
+        provider_request_id: parsed.get("id").and_then(|v| v.as_str()).map(String::from),
         attempt_number: Some(1),
         finish_reason: Some("cli_success".to_string()),
         usage_source: Some("codex_cli".to_string()),
         created_at: runtime.now(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn decision() -> DispatchDecision {
+        DispatchDecision {
+            decision_id: "dec-test".to_string(),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn malformed_codex_json_is_a_failed_execution() {
+        let mut runtime = FixtureRuntime::new();
+        let result = parse_codex_output("not-json", &decision(), "disp-test", 3, &mut runtime);
+
+        assert_eq!(result.executor_type, "codex_cli");
+        assert_eq!(result.status, "failed");
+        assert_eq!(
+            result.error_domain.as_deref(),
+            Some("cli_output_parse_error")
+        );
+        assert_eq!(result.finish_reason.as_deref(), Some("parse_error"));
+        assert_eq!(result.output.as_deref(), Some("not-json"));
+        assert_eq!(result.estimated_cost, None);
     }
 }

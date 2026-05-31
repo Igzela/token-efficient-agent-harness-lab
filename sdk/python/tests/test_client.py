@@ -61,6 +61,32 @@ class ClientDispatchTest(unittest.TestCase):
         self.assertEqual(body["raw_request"], "test request")
         self.assertEqual(body["request_source"], "api")
 
+    @patch("agent_control_plane_sdk.client.urlopen")
+    def test_dispatch_preserves_cli_execution_result_fields(self, mock_urlopen):
+        bundle = {
+            "record": {},
+            "analysis": {},
+            "decision": {},
+            "execution_result": {
+                "executor_type": "codex_cli",
+                "status": "cli_completed",
+                "output": "codex ok",
+                "input_tokens": 11,
+                "output_tokens": 7,
+                "estimated_cost": 0.000138,
+                "usage_source": "codex_cli",
+            },
+            "evaluation_result": {},
+        }
+        mock_urlopen.return_value = mock_response(bundle)
+        client = AgentControlPlaneClient("http://localhost:8080")
+        result = client.dispatch("generate a Rust function")
+
+        self.assertEqual(result["execution_result"]["executor_type"], "codex_cli")
+        self.assertEqual(result["execution_result"]["status"], "cli_completed")
+        self.assertEqual(result["execution_result"]["input_tokens"], 11)
+        self.assertEqual(result["execution_result"]["usage_source"], "codex_cli")
+
 
 class ClientLocalStateTest(unittest.TestCase):
     @patch("agent_control_plane_sdk.client.urlopen")
