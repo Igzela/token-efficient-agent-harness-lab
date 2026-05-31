@@ -20,11 +20,11 @@ cd sdk/typescript && bun run test
 bash scripts/verify_rust_typescript_stack.sh
 ```
 
-Current result: 1157 Rust tests pass. Python SDK and TypeScript SDK tests run separately.
+Current result: 1158 Rust tests pass. Python SDK and TypeScript SDK tests run separately.
 
 ## Rust Engine Test Coverage
 
-The Rust engine (`engine/`) has 1157 tests covering:
+The Rust engine (`engine/`) has 1158 tests covering:
 
 - **Dispatch kernel parity** — golden fixture parity with frozen wire contracts
 - **Routing and orchestration** — schemas, history store, cost-of-pass router, promotion gate, feedback integrator, dynamic tier selector, agent roles, task decomposer, dependency resolver, work queue, workflow engine, conflict resolver, result aggregator, human approval gate, multi-agent budget

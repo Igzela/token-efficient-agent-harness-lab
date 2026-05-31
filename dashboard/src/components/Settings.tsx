@@ -16,12 +16,16 @@ export function Settings({ dashboard }: { dashboard: LocalDashboardState }) {
     <section className="card stack">
       <h2>Settings</h2>
       <div className="stack" style={{ fontSize: 14 }}>
-        {Object.entries(dashboard.config).map(([key, value]) => (
-          <div key={key} style={{ display: "flex", justifyContent: "space-between", gap: 16 }}>
-            <span className="muted">{key}</span>
-            <span className="mono">{String(value)}</span>
-          </div>
-        ))}
+        {Object.entries(dashboard.config).length === 0 ? (
+          <p className="muted">No local config values</p>
+        ) : (
+          Object.entries(dashboard.config).map(([key, value]) => (
+            <div key={key} style={{ display: "flex", justifyContent: "space-between", gap: 16 }}>
+              <span className="muted">{key}</span>
+              <span className="mono">{String(value)}</span>
+            </div>
+          ))
+        )}
       </div>
       <h3 style={{ marginTop: 16 }}>Provider Health</h3>
       {providerError ? (

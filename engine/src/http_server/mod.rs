@@ -72,6 +72,21 @@ fn path_parameter(name: &str) -> Value {
     })
 }
 
+fn json_request_body(required: &[&str], properties: Value) -> Value {
+    json!({
+        "required": true,
+        "content": {
+            "application/json": {
+                "schema": {
+                    "type": "object",
+                    "required": required,
+                    "properties": properties
+                }
+            }
+        }
+    })
+}
+
 pub fn openapi_document() -> serde_json::Value {
     json!({
         "openapi": "3.1.0",
@@ -202,6 +217,9 @@ pub fn openapi_document() -> serde_json::Value {
                     "summary": "Update a team member's role",
                     "description": "Requires team:admin scope.",
                     "parameters": [path_parameter("user_id")],
+                    "requestBody": json_request_body(&["role"], json!({
+                        "role": {"type": "string"}
+                    })),
                     "responses": {
                         "200": {"description": "Member updated"},
                         "404": {"description": "Member not found"}
@@ -260,6 +278,10 @@ pub fn openapi_document() -> serde_json::Value {
                 "post": {
                     "summary": "Create a local SQLite backup",
                     "description": "Requires backup:admin scope and confirm_local_backup=true.",
+                    "requestBody": json_request_body(&["confirm_local_backup"], json!({
+                        "label": {"type": "string"},
+                        "confirm_local_backup": {"type": "boolean", "const": true}
+                    })),
                     "responses": {
                         "200": {"description": "Backup metadata"},
                         "400": {"description": "Missing explicit confirmation"},
@@ -406,6 +428,10 @@ pub fn openapi_document() -> serde_json::Value {
                 "post": {
                     "summary": "Import data from an export snapshot",
                     "description": "Requires config:admin scope and confirm_import=true. Imports config, team, audit, and dispatches idempotently.",
+                    "requestBody": json_request_body(&["snapshot", "confirm_import"], json!({
+                        "snapshot": {"type": "object"},
+                        "confirm_import": {"type": "boolean", "const": true}
+                    })),
                     "responses": {
                         "200": {"description": "Import result with counts and errors"},
                         "400": {"description": "Missing confirmation or invalid schema"}
@@ -417,6 +443,9 @@ pub fn openapi_document() -> serde_json::Value {
                     "summary": "Restore a backup with integrity verification",
                     "description": "Requires backup:admin scope and confirm_restore=true. Restores from backup, runs integrity check, reports row counts.",
                     "parameters": [path_parameter("backup_id")],
+                    "requestBody": json_request_body(&["confirm_restore"], json!({
+                        "confirm_restore": {"type": "boolean", "const": true}
+                    })),
                     "responses": {
                         "200": {"description": "Restore result"},
                         "400": {"description": "Missing confirmation"},
@@ -479,6 +508,26 @@ mod tests {
         );
     }
 
+    #[test]
+    fn test_openapi_mutation_routes_document_request_bodies() {
+        let doc = openapi_document();
+
+        assert_required_body_fields(&doc, "/api/v1/team/{user_id}", "put", &["role"]);
+        assert_required_body_fields(&doc, "/api/v1/backups", "post", &["confirm_local_backup"]);
+        assert_required_body_fields(
+            &doc,
+            "/api/v1/import",
+            "post",
+            &["snapshot", "confirm_import"],
+        );
+        assert_required_body_fields(
+            &doc,
+            "/api/v1/backups/{backup_id}/restore",
+            "post",
+            &["confirm_restore"],
+        );
+    }
+
     fn assert_path_parameter(doc: &Value, path: &str, method: &str, name: &str) {
         let params = doc["paths"][path][method]["parameters"]
             .as_array()
@@ -490,5 +539,19 @@ mod tests {
         assert_eq!(param["in"], "path");
         assert_eq!(param["required"], true);
         assert_eq!(param["schema"]["type"], "string");
+    }
+
+    fn assert_required_body_fields(doc: &Value, path: &str, method: &str, fields: &[&str]) {
+        let request_body = &doc["paths"][path][method]["requestBody"];
+        assert_eq!(request_body["required"], true);
+        let required = request_body["content"]["application/json"]["schema"]["required"]
+            .as_array()
+            .expect("request body required fields must be documented");
+        for field in fields {
+            assert!(
+                required.iter().any(|item| item == field),
+                "{path} {method} must require {field}"
+            );
+        }
     }
 }

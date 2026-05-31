@@ -37,34 +37,42 @@ export function Costs({ dashboard }: { dashboard: LocalDashboardState }) {
       </div>
 
       <h3 style={{ marginTop: 16 }}>By Tier</h3>
-      <div className="bars">
-        {c.by_tier.map((t) => (
-          <div className="bar" key={t.selected_tier}>
-            <div style={{ display: "flex", justifyContent: "space-between", fontSize: 13 }}>
-              <span>{t.selected_tier}</span>
-              <span>${t.reserved_cost.toFixed(4)}</span>
+      {c.by_tier.length === 0 ? (
+        <p className="muted">No tier cost data yet</p>
+      ) : (
+        <div className="bars">
+          {c.by_tier.map((t) => (
+            <div className="bar" key={t.selected_tier}>
+              <div style={{ display: "flex", justifyContent: "space-between", fontSize: 13 }}>
+                <span>{t.selected_tier}</span>
+                <span>${t.reserved_cost.toFixed(4)}</span>
+              </div>
+              <div className="bar-track">
+                <div className="bar-fill" style={{ width: `${(t.reserved_cost / maxTier) * 100}%` }} />
+              </div>
             </div>
-            <div className="bar-track">
-              <div className="bar-fill" style={{ width: `${(t.reserved_cost / maxTier) * 100}%` }} />
-            </div>
-          </div>
-        ))}
-      </div>
+          ))}
+        </div>
+      )}
 
       <h3 style={{ marginTop: 16 }}>Daily Trend</h3>
-      <div className="bars">
-        {recentDaily.map((d) => (
-          <div className="bar" key={d.date}>
-            <div style={{ display: "flex", justifyContent: "space-between", fontSize: 13 }}>
-              <span>{d.date}</span>
-              <span>${d.reserved_cost.toFixed(4)}</span>
+      {recentDaily.length === 0 ? (
+        <p className="muted">No daily cost data yet</p>
+      ) : (
+        <div className="bars">
+          {recentDaily.map((d) => (
+            <div className="bar" key={d.date}>
+              <div style={{ display: "flex", justifyContent: "space-between", fontSize: 13 }}>
+                <span>{d.date}</span>
+                <span>${d.reserved_cost.toFixed(4)}</span>
+              </div>
+              <div className="bar-track">
+                <div className="bar-fill" style={{ width: `${(d.reserved_cost / maxDaily) * 100}%` }} />
+              </div>
             </div>
-            <div className="bar-track">
-              <div className="bar-fill" style={{ width: `${(d.reserved_cost / maxDaily) * 100}%` }} />
-            </div>
-          </div>
-        ))}
-      </div>
+          ))}
+        </div>
+      )}
     </section>
   );
 }
