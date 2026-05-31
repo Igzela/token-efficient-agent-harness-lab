@@ -78,8 +78,17 @@ class AgentControlPlaneClient:
     def provider_health(self) -> dict[str, Any]:
         return self._get("/api/v1/provider/health")
 
-    def provider_audit(self) -> dict[str, Any]:
-        return self._get("/api/v1/provider/audit")
+    def provider_audit(
+        self,
+        limit: int | None = None,
+        offset: int | None = None,
+    ) -> dict[str, Any]:
+        params: dict[str, Any] = {}
+        if limit is not None:
+            params["limit"] = limit
+        if offset is not None:
+            params["offset"] = offset
+        return self._get(_query_path("/api/v1/provider/audit", params))
 
     def dispatch(
         self,

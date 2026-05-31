@@ -122,6 +122,16 @@ class ClientLocalStateTest(unittest.TestCase):
         self.assertEqual(req.full_url, "http://localhost:8080/api/v1/audit?limit=25&offset=50")
 
     @patch("agent_control_plane_sdk.client.urlopen")
+    def test_provider_audit_sends_pagination_query_params(self, mock_urlopen):
+        mock_urlopen.return_value = mock_response({"schema_version": "axum_api.v1", "events": []})
+        client = AgentControlPlaneClient("http://localhost:8080")
+        client.provider_audit(limit=25, offset=50)
+
+        args, _ = mock_urlopen.call_args
+        req = args[0]
+        self.assertEqual(req.full_url, "http://localhost:8080/api/v1/provider/audit?limit=25&offset=50")
+
+    @patch("agent_control_plane_sdk.client.urlopen")
     def test_cost_details_sends_limit_query_param(self, mock_urlopen):
         mock_urlopen.return_value = mock_response({"schema_version": "local_dispatch_cost_detail.v1", "dispatches": []})
         client = AgentControlPlaneClient("http://localhost:8080")

@@ -36,6 +36,14 @@ impl LocalProductStore {
     }
 
     pub fn provider_audit_events(&self, limit: i64) -> Result<Vec<Value>, String> {
+        self.provider_audit_events_with_offset(limit, 0)
+    }
+
+    pub fn provider_audit_events_with_offset(
+        &self,
+        limit: i64,
+        offset: i64,
+    ) -> Result<Vec<Value>, String> {
         self.with_conn(|conn| {
             let mut stmt = conn
                 .prepare(
@@ -44,11 +52,11 @@ impl LocalProductStore {
                             latency_ms, error_domain, redaction_status, created_at
                      FROM provider_audit_events
                      ORDER BY created_at DESC
-                     LIMIT ?1",
+                     LIMIT ?1 OFFSET ?2",
                 )
                 .map_err(|e| e.to_string())?;
             let rows = stmt
-                .query_map(params![limit], |row| {
+                .query_map(params![limit, offset], |row| {
                     Ok(json!({
                         "event_id": row.get::<_, String>(0)?,
                         "dispatch_id": row.get::<_, String>(1)?,

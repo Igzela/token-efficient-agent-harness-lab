@@ -48,6 +48,11 @@ export interface AuditListOptions {
   offset?: number;
 }
 
+export interface ProviderAuditOptions {
+  limit?: number;
+  offset?: number;
+}
+
 export interface CostDetailsOptions {
   limit?: number;
 }
@@ -119,8 +124,11 @@ export class AgentControlPlaneClient {
     return this.getJson<ProviderHealthStatus>("/api/v1/provider/health");
   }
 
-  providerAudit(): Promise<ProviderAuditResponse> {
-    return this.getJson<ProviderAuditResponse>("/api/v1/provider/audit");
+  providerAudit(options: ProviderAuditOptions = {}): Promise<ProviderAuditResponse> {
+    return this.getJson<ProviderAuditResponse>(`/api/v1/provider/audit${queryString({
+      limit: options.limit,
+      offset: options.offset,
+    })}`);
   }
 
   dispatch(request: DispatchRequest): Promise<DispatchBundle> {

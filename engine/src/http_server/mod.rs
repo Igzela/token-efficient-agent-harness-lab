@@ -365,6 +365,18 @@ pub fn openapi_document() -> serde_json::Value {
                     }
                 }
             },
+            "/api/v1/provider/audit": {
+                "get": {
+                    "summary": "Read persisted provider audit events",
+                    "parameters": [
+                        {"name": "limit", "in": "query", "schema": {"type": "integer", "default": 100, "minimum": 0, "maximum": 500}},
+                        {"name": "offset", "in": "query", "schema": {"type": "integer", "default": 0, "minimum": 0}}
+                    ],
+                    "responses": {
+                        "200": {"description": "Provider audit event list"}
+                    }
+                }
+            },
             "/api/v1/storage/integrity": {
                 "get": {
                     "summary": "SQLite integrity check and table row counts",

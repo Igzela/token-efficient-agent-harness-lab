@@ -6,6 +6,7 @@ use axum::http::{header, Method, Request, StatusCode};
 use engine::http_server::{build_axum_router, build_axum_router_with_dashboard, AxumApiState};
 use engine::infrastructure::auth::{Tenant, TenantResolver};
 use engine::infrastructure::rate_limiter::RateLimiter;
+use engine::provider::audit::{ProviderAuditEvent, PROVIDER_AUDIT_EVENT_SCHEMA_VERSION};
 use engine::storage::local_product_store::LocalProductStore;
 use serde_json::{json, Value};
 use tempfile::tempdir;
@@ -19,6 +20,24 @@ async fn response_json(response: axum::response::Response) -> Value {
 async fn response_text(response: axum::response::Response) -> String {
     let bytes = to_bytes(response.into_body(), 1_048_576).await.unwrap();
     String::from_utf8(bytes.to_vec()).unwrap()
+}
+
+fn provider_audit_event(event_id: &str, created_at: &str) -> ProviderAuditEvent {
+    ProviderAuditEvent {
+        schema_version: PROVIDER_AUDIT_EVENT_SCHEMA_VERSION.to_string(),
+        event_id: event_id.to_string(),
+        dispatch_id: "disp-provider-audit".to_string(),
+        provider_id: "stub-provider".to_string(),
+        event_type: "response_received".to_string(),
+        input_token_count: Some(10),
+        output_token_count: Some(5),
+        cost: Some(0.001),
+        currency: Some("USD".to_string()),
+        latency_ms: Some(25),
+        error_domain: None,
+        redaction_status: "not_applicable".to_string(),
+        created_at: created_at.to_string(),
+    }
 }
 
 #[tokio::test]
@@ -686,6 +705,15 @@ async fn axum_openapi_document_lists_dispatch_endpoint() {
     let body = response_json(response).await;
     assert_eq!(body["openapi"], "3.1.0");
     assert!(body["paths"]["/api/v1/dispatch"]["post"].is_object());
+    assert!(body["paths"]["/api/v1/provider/audit"]["get"].is_object());
+    assert_eq!(
+        body["paths"]["/api/v1/provider/audit"]["get"]["parameters"][0]["name"],
+        "limit"
+    );
+    assert_eq!(
+        body["paths"]["/api/v1/provider/audit"]["get"]["parameters"][1]["name"],
+        "offset"
+    );
 }
 
 #[tokio::test]
@@ -832,6 +860,51 @@ async fn axum_provider_health_ok_with_stub_provider() {
     assert_eq!(body["status"], "ok");
     assert_eq!(body["provider_id"], "stub-health");
     assert_eq!(body["enabled"], true);
+}
+
+#[tokio::test]
+async fn axum_provider_audit_paginates_and_clamps_negative_limit() {
+    let dir = tempdir().unwrap();
+    let store = LocalProductStore::new(dir.path().join("team.db")).unwrap();
+    store
+        .record_provider_audit_event(&provider_audit_event("evt-old", "2026-05-29T12:00:00Z"))
+        .unwrap();
+    store
+        .record_provider_audit_event(&provider_audit_event("evt-new", "2026-05-29T12:01:00Z"))
+        .unwrap();
+
+    let app = build_axum_router(AxumApiState::new().with_local_store(store));
+    let paged = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(Method::GET)
+                .uri("/api/v1/provider/audit?limit=1&offset=1")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(paged.status(), StatusCode::OK);
+    let body = response_json(paged).await;
+    let events = body["events"].as_array().unwrap();
+    assert_eq!(events.len(), 1);
+    assert_eq!(events[0]["event_id"], "evt-old");
+
+    let negative = app
+        .oneshot(
+            Request::builder()
+                .method(Method::GET)
+                .uri("/api/v1/provider/audit?limit=-1")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(negative.status(), StatusCode::OK);
+    let body = response_json(negative).await;
+    assert!(body["events"].as_array().unwrap().is_empty());
 }
 
 fn make_admin_app() -> (axum::Router, String) {
