@@ -13,7 +13,7 @@ pub const AXUM_API_SCHEMA_VERSION: &str = "axum_api.v1";
 pub const MAX_BODY_SIZE: usize = 1_048_576;
 
 use serde::Deserialize;
-use serde_json::json;
+use serde_json::{json, Value};
 
 #[derive(Debug, Clone, PartialEq, Deserialize)]
 pub struct DispatchApiRequest {
@@ -61,6 +61,15 @@ pub struct ImportApiRequest {
 #[derive(Debug, Clone, PartialEq, Deserialize)]
 pub struct RestoreApiRequest {
     pub confirm_restore: Option<bool>,
+}
+
+fn path_parameter(name: &str) -> Value {
+    json!({
+        "name": name,
+        "in": "path",
+        "required": true,
+        "schema": {"type": "string"}
+    })
 }
 
 pub fn openapi_document() -> serde_json::Value {
@@ -139,6 +148,7 @@ pub fn openapi_document() -> serde_json::Value {
             "/api/v1/dispatches/{dispatch_id}": {
                 "get": {
                     "summary": "Get a single dispatch by ID",
+                    "parameters": [path_parameter("dispatch_id")],
                     "responses": {
                         "200": {"description": "Dispatch detail"},
                         "404": {"description": "Dispatch not found"}
@@ -191,6 +201,7 @@ pub fn openapi_document() -> serde_json::Value {
                 "put": {
                     "summary": "Update a team member's role",
                     "description": "Requires team:admin scope.",
+                    "parameters": [path_parameter("user_id")],
                     "responses": {
                         "200": {"description": "Member updated"},
                         "404": {"description": "Member not found"}
@@ -199,6 +210,7 @@ pub fn openapi_document() -> serde_json::Value {
                 "delete": {
                     "summary": "Remove a team member",
                     "description": "Requires team:admin scope.",
+                    "parameters": [path_parameter("user_id")],
                     "responses": {
                         "200": {"description": "Member removed"},
                         "404": {"description": "Member not found"}
@@ -259,6 +271,7 @@ pub fn openapi_document() -> serde_json::Value {
                 "delete": {
                     "summary": "Delete a local backup",
                     "description": "Requires backup:admin scope.",
+                    "parameters": [path_parameter("backup_id")],
                     "responses": {
                         "200": {"description": "Backup deleted"},
                         "404": {"description": "Backup not found"},
@@ -306,6 +319,7 @@ pub fn openapi_document() -> serde_json::Value {
                 "post": {
                     "summary": "Revoke an API key",
                     "description": "Requires team:admin scope. The key will no longer authenticate.",
+                    "parameters": [path_parameter("key_id")],
                     "responses": {
                         "200": {"description": "Key revoked"},
                         "404": {"description": "Key not found"}
@@ -316,6 +330,7 @@ pub fn openapi_document() -> serde_json::Value {
                 "post": {
                     "summary": "Rotate an API key",
                     "description": "Requires team:admin scope. Creates a new key and revokes the old one.",
+                    "parameters": [path_parameter("key_id")],
                     "responses": {
                         "200": {"description": "New key with raw_key"},
                         "404": {"description": "Key not found"}
@@ -326,6 +341,7 @@ pub fn openapi_document() -> serde_json::Value {
                 "delete": {
                     "summary": "Delete an API key",
                     "description": "Requires team:admin scope. Hard-deletes key metadata.",
+                    "parameters": [path_parameter("key_id")],
                     "responses": {
                         "200": {"description": "Key deleted"},
                         "404": {"description": "Key not found"}
@@ -336,6 +352,7 @@ pub fn openapi_document() -> serde_json::Value {
                 "post": {
                     "summary": "Update an API key's scopes",
                     "description": "Requires team:admin scope.",
+                    "parameters": [path_parameter("key_id")],
                     "requestBody": {
                         "required": true,
                         "content": {
@@ -399,6 +416,7 @@ pub fn openapi_document() -> serde_json::Value {
                 "post": {
                     "summary": "Restore a backup with integrity verification",
                     "description": "Requires backup:admin scope and confirm_restore=true. Restores from backup, runs integrity check, reports row counts.",
+                    "parameters": [path_parameter("backup_id")],
                     "responses": {
                         "200": {"description": "Restore result"},
                         "400": {"description": "Missing confirmation"},
@@ -434,5 +452,43 @@ mod tests {
             !paths.contains_key("/api/v1/integrity"),
             "OpenAPI document must NOT include /api/v1/integrity (the correct path is /api/v1/storage/integrity)"
         );
+    }
+
+    #[test]
+    fn test_openapi_dynamic_routes_document_path_parameters() {
+        let doc = openapi_document();
+
+        assert_path_parameter(
+            &doc,
+            "/api/v1/dispatches/{dispatch_id}",
+            "get",
+            "dispatch_id",
+        );
+        assert_path_parameter(&doc, "/api/v1/team/{user_id}", "put", "user_id");
+        assert_path_parameter(&doc, "/api/v1/team/{user_id}", "delete", "user_id");
+        assert_path_parameter(&doc, "/api/v1/backups/{backup_id}", "delete", "backup_id");
+        assert_path_parameter(&doc, "/api/v1/keys/{key_id}/revoke", "post", "key_id");
+        assert_path_parameter(&doc, "/api/v1/keys/{key_id}/rotate", "post", "key_id");
+        assert_path_parameter(&doc, "/api/v1/keys/{key_id}", "delete", "key_id");
+        assert_path_parameter(&doc, "/api/v1/keys/{key_id}/scopes", "post", "key_id");
+        assert_path_parameter(
+            &doc,
+            "/api/v1/backups/{backup_id}/restore",
+            "post",
+            "backup_id",
+        );
+    }
+
+    fn assert_path_parameter(doc: &Value, path: &str, method: &str, name: &str) {
+        let params = doc["paths"][path][method]["parameters"]
+            .as_array()
+            .expect("dynamic route must document path parameters");
+        let param = params
+            .iter()
+            .find(|param| param["name"] == name)
+            .expect("expected named path parameter");
+        assert_eq!(param["in"], "path");
+        assert_eq!(param["required"], true);
+        assert_eq!(param["schema"]["type"], "string");
     }
 }
