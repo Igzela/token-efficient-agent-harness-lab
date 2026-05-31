@@ -43,6 +43,15 @@ export interface DispatchListOptions {
   search?: string;
 }
 
+export interface AuditListOptions {
+  limit?: number;
+  offset?: number;
+}
+
+export interface CostDetailsOptions {
+  limit?: number;
+}
+
 export class AgentControlPlaneClient {
   private readonly baseUrl: string;
   private readonly apiKey?: string;
@@ -90,16 +99,20 @@ export class AgentControlPlaneClient {
     return this.getJson<LocalCostSummary>("/api/v1/costs");
   }
 
-  costDetails(limit: number = 50): Promise<LocalDispatchCostDetail> {
-    return this.getJson<LocalDispatchCostDetail>(`/api/v1/costs/dispatches?limit=${limit}`);
+  costDetails(options: CostDetailsOptions | number = {}): Promise<LocalDispatchCostDetail> {
+    const limit = typeof options === "number" ? options : options.limit;
+    return this.getJson<LocalDispatchCostDetail>(`/api/v1/costs/dispatches${queryString({ limit })}`);
   }
 
   exportState(): Promise<ExportResponse> {
     return this.getJson<ExportResponse>("/api/v1/export");
   }
 
-  audit(): Promise<AuditResponse> {
-    return this.getJson<AuditResponse>("/api/v1/audit");
+  audit(options: AuditListOptions = {}): Promise<AuditResponse> {
+    return this.getJson<AuditResponse>(`/api/v1/audit${queryString({
+      limit: options.limit,
+      offset: options.offset,
+    })}`);
   }
 
   providerHealth(): Promise<ProviderHealthStatus> {

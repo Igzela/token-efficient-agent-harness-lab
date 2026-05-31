@@ -340,6 +340,86 @@ async fn axum_local_store_exposes_team_config_costs_and_export() {
 }
 
 #[tokio::test]
+async fn axum_cost_details_clamps_negative_limit() {
+    let dir = tempdir().unwrap();
+    let store = LocalProductStore::new(dir.path().join("team.db")).unwrap();
+    store
+        .record_dispatch(
+            "Cost row",
+            "api",
+            &json!({
+                "record": {"dispatch_id": "disp-cost", "final_status": "not_executed"},
+                "decision": {"selected_tier": "balanced_worker", "budget_reservation": {"reserved_cost": 0.1}},
+                "analysis": {"risk_level": "low"},
+                "execution_result": {"executor_type": "noop"},
+            }),
+            "test",
+        )
+        .unwrap();
+
+    let app = build_axum_router(AxumApiState::new().with_local_store(store));
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method(Method::GET)
+                .uri("/api/v1/costs/dispatches?limit=-1")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = response_json(response).await;
+    assert!(body["dispatches"].as_array().unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn axum_audit_paginates_and_clamps_negative_limit() {
+    let dir = tempdir().unwrap();
+    let store = LocalProductStore::new(dir.path().join("team.db")).unwrap();
+    store
+        .append_audit("tester", "first.action", "res-1", &json!({}))
+        .unwrap();
+    store
+        .append_audit("tester", "second.action", "res-2", &json!({}))
+        .unwrap();
+
+    let app = build_axum_router(AxumApiState::new().with_local_store(store));
+    let paged = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(Method::GET)
+                .uri("/api/v1/audit?limit=1&offset=1")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(paged.status(), StatusCode::OK);
+    let body = response_json(paged).await;
+    let events = body["events"].as_array().unwrap();
+    assert_eq!(events.len(), 1);
+    assert_eq!(events[0]["action"], "first.action");
+
+    let negative = app
+        .oneshot(
+            Request::builder()
+                .method(Method::GET)
+                .uri("/api/v1/audit?limit=-1")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(negative.status(), StatusCode::OK);
+    let body = response_json(negative).await;
+    assert!(body["events"].as_array().unwrap().is_empty());
+}
+
+#[tokio::test]
 async fn axum_auth_rejects_missing_key_when_configured() {
     let state = AxumApiState::new().with_auth(
         TenantResolver::new(),

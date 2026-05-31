@@ -112,6 +112,26 @@ class ClientLocalStateTest(unittest.TestCase):
         )
 
     @patch("agent_control_plane_sdk.client.urlopen")
+    def test_audit_sends_pagination_query_params(self, mock_urlopen):
+        mock_urlopen.return_value = mock_response({"schema_version": "axum_api.v1", "events": []})
+        client = AgentControlPlaneClient("http://localhost:8080")
+        client.audit(limit=25, offset=50)
+
+        args, _ = mock_urlopen.call_args
+        req = args[0]
+        self.assertEqual(req.full_url, "http://localhost:8080/api/v1/audit?limit=25&offset=50")
+
+    @patch("agent_control_plane_sdk.client.urlopen")
+    def test_cost_details_sends_limit_query_param(self, mock_urlopen):
+        mock_urlopen.return_value = mock_response({"schema_version": "local_dispatch_cost_detail.v1", "dispatches": []})
+        client = AgentControlPlaneClient("http://localhost:8080")
+        client.cost_details(limit=25)
+
+        args, _ = mock_urlopen.call_args
+        req = args[0]
+        self.assertEqual(req.full_url, "http://localhost:8080/api/v1/costs/dispatches?limit=25")
+
+    @patch("agent_control_plane_sdk.client.urlopen")
     def test_create_backup_posts_confirmation(self, mock_urlopen):
         mock_urlopen.return_value = mock_response({"backup": {"backup_id": "backup-0001"}})
         client = AgentControlPlaneClient("http://localhost:8080", api_key="test")
@@ -182,14 +202,14 @@ class ClientBaseUrlTest(unittest.TestCase):
 class ClientDispatchDetailTest(unittest.TestCase):
     @patch("agent_control_plane_sdk.client.urlopen")
     def test_dispatch_detail_sends_get(self, mock_urlopen):
-        mock_urlopen.return_value = mock_response({"dispatch": {"dispatch_id": "d-1"}})
+        mock_urlopen.return_value = mock_response({"dispatch": {"dispatch_id": "d/1 needs review"}})
         client = AgentControlPlaneClient("http://localhost:8080")
-        result = client.dispatch_detail("d-1")
-        self.assertEqual(result["dispatch"]["dispatch_id"], "d-1")
+        result = client.dispatch_detail("d/1 needs review")
+        self.assertEqual(result["dispatch"]["dispatch_id"], "d/1 needs review")
         args, _ = mock_urlopen.call_args
         req = args[0]
         self.assertEqual(req.method, "GET")
-        self.assertIn("/api/v1/dispatches/d-1", req.full_url)
+        self.assertIn("/api/v1/dispatches/d%2F1%20needs%20review", req.full_url)
 
 
 class ClientListBackupsTest(unittest.TestCase):
@@ -208,14 +228,14 @@ class ClientListBackupsTest(unittest.TestCase):
 class ClientDeleteBackupTest(unittest.TestCase):
     @patch("agent_control_plane_sdk.client.urlopen")
     def test_delete_backup_sends_delete(self, mock_urlopen):
-        mock_urlopen.return_value = mock_response({"ok": True, "backup_id": "backup-0001"})
+        mock_urlopen.return_value = mock_response({"ok": True, "backup_id": "backup/0001"})
         client = AgentControlPlaneClient("http://localhost:8080")
-        result = client.delete_backup("backup-0001")
+        result = client.delete_backup("backup/0001")
         self.assertEqual(result["ok"], True)
         args, _ = mock_urlopen.call_args
         req = args[0]
         self.assertEqual(req.method, "DELETE")
-        self.assertIn("/api/v1/backups/backup-0001", req.full_url)
+        self.assertIn("/api/v1/backups/backup%2F0001", req.full_url)
 
 
 class ClientStorageIntegrityTest(unittest.TestCase):
@@ -253,13 +273,53 @@ class ClientRestoreBackupTest(unittest.TestCase):
     def test_restore_backup_sends_post(self, mock_urlopen):
         mock_urlopen.return_value = mock_response({"success": True})
         client = AgentControlPlaneClient("http://localhost:8080")
-        result = client.restore_backup("backup-0001")
+        result = client.restore_backup("backup/0001")
         self.assertEqual(result["success"], True)
         args, _ = mock_urlopen.call_args
         req = args[0]
         self.assertEqual(req.method, "POST")
-        self.assertIn("/api/v1/backups/backup-0001/restore", req.full_url)
+        self.assertIn("/api/v1/backups/backup%2F0001/restore", req.full_url)
         self.assertEqual(json.loads(req.data), {"confirm_restore": True})
+
+
+class ClientEncodedPathTest(unittest.TestCase):
+    @patch("agent_control_plane_sdk.client.urlopen")
+    def test_api_key_paths_encode_ids(self, mock_urlopen):
+        mock_urlopen.return_value = mock_response({"ok": True})
+        client = AgentControlPlaneClient("http://localhost:8080")
+
+        client.revoke_api_key("key/1")
+        client.rotate_api_key("key/1")
+        client.delete_api_key("key/1")
+        client.update_key_scopes("key/1", ["health:read"])
+
+        urls = [call.args[0].full_url for call in mock_urlopen.call_args_list]
+        self.assertEqual(
+            urls,
+            [
+                "http://localhost:8080/api/v1/keys/key%2F1/revoke",
+                "http://localhost:8080/api/v1/keys/key%2F1/rotate",
+                "http://localhost:8080/api/v1/keys/key%2F1",
+                "http://localhost:8080/api/v1/keys/key%2F1/scopes",
+            ],
+        )
+
+    @patch("agent_control_plane_sdk.client.urlopen")
+    def test_team_paths_encode_ids(self, mock_urlopen):
+        mock_urlopen.return_value = mock_response({"ok": True})
+        client = AgentControlPlaneClient("http://localhost:8080")
+
+        client.update_member_role("user/1", "admin")
+        client.delete_member("user/1")
+
+        urls = [call.args[0].full_url for call in mock_urlopen.call_args_list]
+        self.assertEqual(
+            urls,
+            [
+                "http://localhost:8080/api/v1/team/user%2F1",
+                "http://localhost:8080/api/v1/team/user%2F1",
+            ],
+        )
 
 
 if __name__ == "__main__":

@@ -31,7 +31,7 @@ pub(crate) async fn api_cost_details(
         .get("limit")
         .and_then(|v| v.parse::<i64>().ok())
         .unwrap_or(50)
-        .min(500);
+        .clamp(0, 500);
     Ok((
         cors_headers(),
         Json(store.dispatch_cost_details(limit).map_err(internal_error)?),

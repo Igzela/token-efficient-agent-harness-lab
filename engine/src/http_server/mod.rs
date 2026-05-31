@@ -215,7 +215,7 @@ pub fn openapi_document() -> serde_json::Value {
                 "get": {
                     "summary": "Read per-dispatch cost details",
                     "parameters": [
-                        {"name": "limit", "in": "query", "schema": {"type": "integer", "default": 50, "maximum": 500}}
+                        {"name": "limit", "in": "query", "schema": {"type": "integer", "default": 50, "minimum": 0, "maximum": 500}}
                     ],
                     "responses": {"200": {"description": "Per-dispatch cost details"}}
                 }
@@ -229,6 +229,10 @@ pub fn openapi_document() -> serde_json::Value {
             "/api/v1/audit": {
                 "get": {
                     "summary": "Read local audit log",
+                    "parameters": [
+                        {"name": "limit", "in": "query", "schema": {"type": "integer", "default": 100, "minimum": 0, "maximum": 500}},
+                        {"name": "offset", "in": "query", "schema": {"type": "integer", "default": 0, "minimum": 0}}
+                    ],
                     "responses": {"200": {"description": "Audit log"}}
                 }
             },

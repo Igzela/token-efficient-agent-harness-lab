@@ -54,14 +54,26 @@ class AgentControlPlaneClient:
     def costs(self) -> LocalCostSummary:
         return self._get("/api/v1/costs")
 
-    def cost_details(self, limit: int = 50) -> LocalDispatchCostDetail:
-        return self._get(f"/api/v1/costs/dispatches?limit={limit}")
+    def cost_details(self, limit: int | None = None) -> LocalDispatchCostDetail:
+        params: dict[str, Any] = {}
+        if limit is not None:
+            params["limit"] = limit
+        return self._get(_query_path("/api/v1/costs/dispatches", params))
 
     def export_state(self) -> dict[str, Any]:
         return self._get("/api/v1/export")
 
-    def audit(self) -> dict[str, Any]:
-        return self._get("/api/v1/audit")
+    def audit(
+        self,
+        limit: int | None = None,
+        offset: int | None = None,
+    ) -> dict[str, Any]:
+        params: dict[str, Any] = {}
+        if limit is not None:
+            params["limit"] = limit
+        if offset is not None:
+            params["offset"] = offset
+        return self._get(_query_path("/api/v1/audit", params))
 
     def provider_health(self) -> dict[str, Any]:
         return self._get("/api/v1/provider/health")
@@ -106,20 +118,20 @@ class AgentControlPlaneClient:
         return self._post("/api/v1/keys", body)
 
     def revoke_api_key(self, key_id: str) -> dict[str, Any]:
-        return self._post(f"/api/v1/keys/{key_id}/revoke", {})
+        return self._post(f"/api/v1/keys/{_quote_path_segment(key_id)}/revoke", {})
 
     def rotate_api_key(self, key_id: str) -> dict[str, Any]:
-        return self._post(f"/api/v1/keys/{key_id}/rotate", {})
+        return self._post(f"/api/v1/keys/{_quote_path_segment(key_id)}/rotate", {})
 
     def delete_api_key(self, key_id: str) -> dict[str, Any]:
-        url = f"{self.base_url}/api/v1/keys/{key_id}"
+        url = f"{self.base_url}/api/v1/keys/{_quote_path_segment(key_id)}"
         req = Request(url, method="DELETE")
         for k, v in self._headers().items():
             req.add_header(k, v)
         return self._send(req)
 
     def update_key_scopes(self, key_id: str, scopes: list[str]) -> dict[str, Any]:
-        return self._post(f"/api/v1/keys/{key_id}/scopes", {"scopes": scopes})
+        return self._post(f"/api/v1/keys/{_quote_path_segment(key_id)}/scopes", {"scopes": scopes})
 
     def create_team_member(
         self, user_id: str, display_name: str, role: str
@@ -130,7 +142,7 @@ class AgentControlPlaneClient:
         )
 
     def update_member_role(self, user_id: str, role: str) -> dict[str, Any]:
-        url = f"{self.base_url}/api/v1/team/{user_id}"
+        url = f"{self.base_url}/api/v1/team/{_quote_path_segment(user_id)}"
         data = json.dumps({"role": role}).encode("utf-8")
         req = Request(url, data=data, method="PUT")
         req.add_header("content-type", "application/json")
@@ -139,20 +151,20 @@ class AgentControlPlaneClient:
         return self._send(req)
 
     def delete_member(self, user_id: str) -> dict[str, Any]:
-        url = f"{self.base_url}/api/v1/team/{user_id}"
+        url = f"{self.base_url}/api/v1/team/{_quote_path_segment(user_id)}"
         req = Request(url, method="DELETE")
         for k, v in self._headers().items():
             req.add_header(k, v)
         return self._send(req)
 
     def dispatch_detail(self, dispatch_id: str) -> dict[str, Any]:
-        return self._get(f"/api/v1/dispatches/{dispatch_id}")
+        return self._get(f"/api/v1/dispatches/{_quote_path_segment(dispatch_id)}")
 
     def list_backups(self) -> dict[str, Any]:
         return self._get("/api/v1/backups")
 
     def delete_backup(self, backup_id: str) -> dict[str, Any]:
-        url = f"{self.base_url}/api/v1/backups/{backup_id}"
+        url = f"{self.base_url}/api/v1/backups/{_quote_path_segment(backup_id)}"
         req = Request(url, method="DELETE")
         for k, v in self._headers().items():
             req.add_header(k, v)
@@ -165,7 +177,7 @@ class AgentControlPlaneClient:
         return self._post("/api/v1/import", {"snapshot": snapshot, "confirm_import": True})
 
     def restore_backup(self, backup_id: str) -> dict[str, Any]:
-        return self._post(f"/api/v1/backups/{backup_id}/restore", {"confirm_restore": True})
+        return self._post(f"/api/v1/backups/{_quote_path_segment(backup_id)}/restore", {"confirm_restore": True})
 
     def _get(self, path: str) -> Any:
         request = Request(f"{self.base_url}{path}", headers=self._headers(), method="GET")
@@ -206,6 +218,14 @@ def _query_path(path: str, params: dict[str, Any]) -> str:
 
 
 def _quote_query_component(value: str) -> str:
+    return _quote_component(value, space_as_plus=True)
+
+
+def _quote_path_segment(value: str) -> str:
+    return _quote_component(value, space_as_plus=False)
+
+
+def _quote_component(value: str, space_as_plus: bool) -> str:
     encoded = []
     for byte in value.encode("utf-8"):
         if (
@@ -215,7 +235,7 @@ def _quote_query_component(value: str) -> str:
             or byte in b"-._~"
         ):
             encoded.append(chr(byte))
-        elif byte == ord(" "):
+        elif byte == ord(" ") and space_as_plus:
             encoded.append("+")
         else:
             encoded.append(f"%{byte:02X}")

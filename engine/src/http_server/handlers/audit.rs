@@ -21,7 +21,7 @@ pub(crate) async fn api_audit(
         .get("limit")
         .and_then(|v| v.parse::<i64>().ok())
         .unwrap_or(100)
-        .min(500);
+        .clamp(0, 500);
     let offset = params
         .get("offset")
         .and_then(|v| v.parse::<i64>().ok())

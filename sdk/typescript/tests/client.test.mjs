@@ -97,6 +97,26 @@ test("dispatches sends pagination and search query params", async () => {
   assert.equal(calls[0].init.method, "GET");
 });
 
+test("audit sends pagination query params", async () => {
+  const { calls, fetchImpl } = captureFetch({ schema_version: "axum_api.v1", events: [] });
+  const client = new AgentControlPlaneClient({ baseUrl: "http://127.0.0.1:8080", fetchImpl });
+
+  await client.audit({ limit: 25, offset: 50 });
+
+  assert.equal(calls[0].url, "http://127.0.0.1:8080/api/v1/audit?limit=25&offset=50");
+  assert.equal(calls[0].init.method, "GET");
+});
+
+test("costDetails sends limit query param", async () => {
+  const { calls, fetchImpl } = captureFetch({ schema_version: "local_dispatch_cost_detail.v1", dispatches: [] });
+  const client = new AgentControlPlaneClient({ baseUrl: "http://127.0.0.1:8080", fetchImpl });
+
+  await client.costDetails({ limit: 25 });
+
+  assert.equal(calls[0].url, "http://127.0.0.1:8080/api/v1/costs/dispatches?limit=25");
+  assert.equal(calls[0].init.method, "GET");
+});
+
 test("backup creation posts explicit local confirmation", async () => {
   const { calls, fetchImpl } = captureFetch({ backup: { backup_id: "backup-0001" } });
   const client = new AgentControlPlaneClient({
