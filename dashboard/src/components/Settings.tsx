@@ -20,7 +20,7 @@ export function Settings({ dashboard }: { dashboard: LocalDashboardState }) {
           <p className="muted">No local config values</p>
         ) : (
           Object.entries(dashboard.config).map(([key, value]) => (
-            <div key={key} style={{ display: "flex", justifyContent: "space-between", gap: 16 }}>
+            <div key={key} className="kv-row">
               <span className="muted">{key}</span>
               <span className="mono">{String(value)}</span>
             </div>
@@ -35,7 +35,7 @@ export function Settings({ dashboard }: { dashboard: LocalDashboardState }) {
           {JSON.stringify(providerHealth, null, 2)}
         </pre>
       ) : (
-        <p className="muted">Loading...</p>
+        <p className="muted"><span className="spinner" />Loading…</p>
       )}
     </section>
   );

@@ -213,19 +213,19 @@ export default function DashboardPage() {
             <p className="eyebrow">Agent Control Plane</p>
             <h1>Operations Dashboard</h1>
           </div>
-          <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+          <div className="flex-row">
             {lastUpdated && authStatus === "ok" && (
               <span className="muted" style={{ fontSize: 12 }}>
                 {lastUpdated.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}
               </span>
             )}
             {authStatus === "ok" && (
-              <button onClick={() => refreshAll()} type="button" style={{ padding: "6px 10px", fontSize: 14 }} title="Refresh">
+              <button onClick={() => refreshAll()} type="button" className="topbar-btn" aria-label="Refresh dashboard data">
                 ↻
               </button>
             )}
             <span className="pill info">Local</span>
-            <button onClick={toggleTheme} type="button" style={{ padding: "6px 10px", fontSize: 14 }}>
+            <button onClick={toggleTheme} type="button" className="topbar-btn" aria-label={theme === "dark" ? "Switch to light mode" : "Switch to dark mode"}>
               {theme === "dark" ? "☀" : "☾"}
             </button>
           </div>
@@ -247,13 +247,30 @@ export default function DashboardPage() {
           <Metric label="Team" value={dashboard.counts.team_members.toString()} detail={`${dashboard.counts.api_keys} keys`} />
         </section>
 
-        <nav className="nav" aria-label="Dashboard sections">
+        <nav className="nav" aria-label="Dashboard sections" role="tablist">
           {tabs.map((item) => (
             <button
               aria-selected={item.id === tab}
+              aria-controls={`tabpanel-${item.id}`}
               className="tab"
+              id={`tab-${item.id}`}
               key={item.id}
               onClick={() => setTab(item.id)}
+              onKeyDown={(e) => {
+                const idx = tabs.findIndex((t) => t.id === item.id);
+                if (e.key === "ArrowRight") {
+                  e.preventDefault();
+                  const next = tabs[(idx + 1) % tabs.length];
+                  setTab(next.id);
+                  document.getElementById(`tab-${next.id}`)?.focus();
+                } else if (e.key === "ArrowLeft") {
+                  e.preventDefault();
+                  const prev = tabs[(idx - 1 + tabs.length) % tabs.length];
+                  setTab(prev.id);
+                  document.getElementById(`tab-${prev.id}`)?.focus();
+                }
+              }}
+              role="tab"
               type="button"
             >
               {item.label}
@@ -261,16 +278,18 @@ export default function DashboardPage() {
           ))}
         </nav>
 
-        {tab === "dispatches" && <Dispatches dispatches={dashboard.dispatches} />}
-        {tab === "routing" && <Routing rows={routingRows} />}
-        {tab === "team" && (
-          <Team dashboard={dashboard} refreshDashboard={(d) => setDashboard(d)} />
-        )}
-        {tab === "costs" && <Costs dashboard={dashboard} />}
-        {tab === "settings" && <Settings dashboard={dashboard} />}
-        {tab === "health" && <Health dashboard={dashboard} health={health} ready={ready} />}
-        {tab === "backups" && <Backups />}
-        {tab === "audit" && <AuditLog />}
+        <div role="tabpanel" id={`tabpanel-${tab}`} aria-labelledby={`tab-${tab}`}>
+          {tab === "dispatches" && <Dispatches dispatches={dashboard.dispatches} />}
+          {tab === "routing" && <Routing rows={routingRows} />}
+          {tab === "team" && (
+            <Team dashboard={dashboard} refreshDashboard={(d) => setDashboard(d)} />
+          )}
+          {tab === "costs" && <Costs dashboard={dashboard} />}
+          {tab === "settings" && <Settings dashboard={dashboard} />}
+          {tab === "health" && <Health dashboard={dashboard} health={health} ready={ready} />}
+          {tab === "backups" && <Backups />}
+          {tab === "audit" && <AuditLog />}
+        </div>
       </div>
     </main>
   );

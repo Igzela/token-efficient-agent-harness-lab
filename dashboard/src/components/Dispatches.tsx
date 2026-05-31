@@ -36,7 +36,7 @@ export function Dispatches({ dispatches }: { dispatches: LocalDispatchHistory[] 
           <span className="mono">{selectedId}</span>
         </div>
         {loading ? (
-          <p className="muted">Loading dispatch detail...</p>
+          <p className="muted"><span className="spinner" />Loading dispatch detail…</p>
         ) : detailError ? (
           <p className="error-text">{detailError}</p>
         ) : detail ? (
@@ -63,11 +63,11 @@ export function Dispatches({ dispatches }: { dispatches: LocalDispatchHistory[] 
         <table>
           <thead>
             <tr>
-              <th>ID</th>
-              <th>Task</th>
-              <th>Tier</th>
-              <th>Status</th>
-              <th>Risk</th>
+              <th scope="col">ID</th>
+              <th scope="col">Task</th>
+              <th scope="col">Tier</th>
+              <th scope="col">Status</th>
+              <th scope="col">Risk</th>
             </tr>
           </thead>
           <tbody>
@@ -82,7 +82,11 @@ export function Dispatches({ dispatches }: { dispatches: LocalDispatchHistory[] 
                 <tr
                   key={item.history_id}
                   onClick={() => openDetail(item.dispatch_id)}
+                  onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); openDetail(item.dispatch_id); } }}
                   style={{ cursor: "pointer" }}
+                  role="button"
+                  tabIndex={0}
+                  aria-label={`View dispatch ${item.dispatch_id}`}
                 >
                   <td className="mono">{item.dispatch_id}</td>
                   <td>{item.raw_request}</td>
@@ -136,16 +140,52 @@ function DispatchDetail({ detail }: { detail: Record<string, unknown> }) {
     <div className="stack">
       {sections.map(({ label, key }) => {
         const data = bundle[key];
-        if (!data) return null;
+        if (!data || typeof data !== "object") return null;
+        const obj = data as Record<string, unknown>;
+        const known = knownFields[key];
         return (
           <details key={key} open>
             <summary style={{ cursor: "pointer", fontWeight: 600, marginBottom: 8 }}>{label}</summary>
-            <pre style={{ fontSize: 12, whiteSpace: "pre-wrap", background: "var(--bg-subtle)", padding: 12, borderRadius: "var(--radius-sm)" }}>
-              {JSON.stringify(data, null, 2)}
-            </pre>
+            {known ? (
+              <div className="stack" style={{ fontSize: 13 }}>
+                {known.map((field) => {
+                  const val = obj[field];
+                  if (val === undefined || val === null) return null;
+                  if (Array.isArray(val) && val.length === 0) return null;
+                  if (typeof val === "object" && !Array.isArray(val)) {
+                    return (
+                      <div key={field} className="kv-row">
+                        <span className="muted">{field}</span>
+                        <pre style={{ fontSize: 11, whiteSpace: "pre-wrap", margin: 0, background: "var(--bg-subtle)", padding: 6, borderRadius: "var(--radius-sm)" }}>
+                          {JSON.stringify(val, null, 2)}
+                        </pre>
+                      </div>
+                    );
+                  }
+                  return (
+                    <div key={field} className="kv-row">
+                      <span className="muted">{field}</span>
+                      <span className={typeof val === "number" ? "" : "mono"}>{String(val)}</span>
+                    </div>
+                  );
+                })}
+              </div>
+            ) : (
+              <pre style={{ fontSize: 12, whiteSpace: "pre-wrap", background: "var(--bg-subtle)", padding: 12, borderRadius: "var(--radius-sm)" }}>
+                {JSON.stringify(data, null, 2)}
+              </pre>
+            )}
           </details>
         );
       })}
     </div>
   );
 }
+
+const knownFields: Record<string, string[]> = {
+  record: ["dispatch_id", "request_snapshot", "request_source", "final_status", "created_at", "completed_at", "history_id", "analysis_id", "decision_id", "execution_id", "evaluation_id"],
+  analysis: ["task_domain", "task_intent", "complexity_score", "risk_level", "risk_flags", "confidence", "positive_evidence", "negative_evidence", "estimated_tokens"],
+  decision: ["selected_tier", "fallback_tier", "routing_reason", "decision_status", "confidence", "budget_reservation", "execution_gates"],
+  execution_result: ["executor_type", "status", "output", "input_tokens", "output_tokens", "latency_ms", "error_message"],
+  evaluation_result: ["quality_score", "requires_retry", "checks"],
+};

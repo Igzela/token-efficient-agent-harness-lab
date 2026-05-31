@@ -147,18 +147,23 @@ export function Team({
       )}
       <div className="card stack">
         <h2>Members</h2>
-        <div className="stack" style={{ gap: 8 }}>
+        <div className="form-stack">
+          <label htmlFor="member-user-id" className="label">User ID</label>
           <input
+            id="member-user-id"
             placeholder="user_id"
             value={userId}
             onChange={(e) => setUserId(e.target.value)}
           />
+          <label htmlFor="member-display-name" className="label">Display Name</label>
           <input
+            id="member-display-name"
             placeholder="display name"
             value={displayName}
             onChange={(e) => setDisplayName(e.target.value)}
           />
-          <select value={role} onChange={(e) => setRole(e.target.value)}>
+          <label htmlFor="member-role" className="label">Role</label>
+          <select id="member-role" value={role} onChange={(e) => setRole(e.target.value)}>
             <option value="admin">admin</option>
             <option value="readonly">readonly</option>
           </select>
@@ -196,13 +201,16 @@ export function Team({
 
       <div className="card stack">
         <h2>API Keys</h2>
-        <div className="stack" style={{ gap: 8 }}>
+        <div className="form-stack">
+          <label htmlFor="key-user-id" className="label">User ID</label>
           <input
+            id="key-user-id"
             placeholder="user_id"
             value={keyUserId}
             onChange={(e) => setKeyUserId(e.target.value)}
           />
-          <select value={keyRole} onChange={(e) => setKeyRole(e.target.value)}>
+          <label htmlFor="key-role" className="label">Role</label>
+          <select id="key-role" value={keyRole} onChange={(e) => setKeyRole(e.target.value)}>
             <option value="admin">admin</option>
             <option value="readonly">readonly</option>
           </select>

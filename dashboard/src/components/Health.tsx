@@ -26,19 +26,19 @@ export function Health({
       </div>
       <h3 style={{ marginTop: 16 }}>State Counts</h3>
       <div className="stack" style={{ fontSize: 14 }}>
-        <div style={{ display: "flex", justifyContent: "space-between" }}>
+        <div className="kv-row">
           <span className="muted">Dispatches</span>
           <span>{dashboard.counts.dispatches}</span>
         </div>
-        <div style={{ display: "flex", justifyContent: "space-between" }}>
+        <div className="kv-row">
           <span className="muted">Team Members</span>
           <span>{dashboard.counts.team_members}</span>
         </div>
-        <div style={{ display: "flex", justifyContent: "space-between" }}>
+        <div className="kv-row">
           <span className="muted">API Keys</span>
           <span>{dashboard.counts.api_keys}</span>
         </div>
-        <div style={{ display: "flex", justifyContent: "space-between" }}>
+        <div className="kv-row">
           <span className="muted">Audit Events</span>
           <span>{dashboard.counts.audit_events}</span>
         </div>
@@ -46,7 +46,7 @@ export function Health({
       <h3 style={{ marginTop: 16 }}>Boundaries</h3>
       <div className="stack" style={{ fontSize: 14 }}>
         {Object.entries(dashboard.boundaries).map(([key, value]) => (
-          <div key={key} style={{ display: "flex", justifyContent: "space-between", gap: 16 }}>
+          <div key={key} className="kv-row">
             <span className="muted">{key}</span>
             <span className="mono">{String(value)}</span>
           </div>
