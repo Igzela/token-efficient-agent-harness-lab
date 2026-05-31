@@ -23,8 +23,9 @@ Token-Efficient Agent Harness Lab is a local deterministic harness for studying 
 | Trial 2 final verification | Closed — `TRIAL_2_FINAL_VERIFICATION_PASS` |
 | Trial 3 multi-repo generalization | Closed — `TRIAL_3_MULTI_REPO_GENERALIZATION_PASS` |
 | Trial 3 target merge | Closed — all 3 target PRs merged, audit PASS_WITH_NOTES |
+| Trial 4 real-use pilot | Closed — `TRIAL_4_REAL_USE_PILOT_PASS_AFTER_FIXES` |
 
-Tests: 1158 Rust pass. Primary cutover verification is `bash scripts/verify_rust_typescript_stack.sh`.
+Tests: 1159 Rust pass. Primary cutover verification is `bash scripts/verify_rust_typescript_stack.sh`.
 
 ## Toolchain
 

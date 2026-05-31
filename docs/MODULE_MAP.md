@@ -47,6 +47,7 @@ The legacy Python reference implementation (`src/harness_core/`) and its test su
 | Module | Stage | Purpose | Main public APIs | Related tests |
 | --- | --- | --- | --- | --- |
 | `scripts/smoke_native_runtime.py` | Agent-Control-Plane Native Local Runtime | Stdlib smoke test for the Rust engine. | `main` | `uv run --no-project python scripts/smoke_native_runtime.py` |
+| `scripts/trial4_real_use_pilot.py` | Trial 4 real-use pilot | Stdlib pilot runner that starts temporary local engines and exercises static dashboard, API key, noop dispatch, dispatch list/detail/search/pagination, audit, backup, export/import, provider-health, TypeScript SDK, Python SDK, and CLI-routing smoke flows without real provider calls. | `main` | `uv run --no-project python scripts/trial4_real_use_pilot.py` |
 | `scripts/verify_rust_typescript_stack.sh` | Rust + TypeScript Cutover | Primary cutover verification. | shell entrypoint | `bash scripts/verify_rust_typescript_stack.sh` |
 | `scripts/check_agent_handoff.py` | Agent workflow | Handoff documentation integrity guard. Requires current R7 seal facts plus executable wire-codegen guard and verifier/CI wiring. | `main` | `uv run --no-project python scripts/check_agent_handoff.py` |
 | `scripts/check_wire_codegen_drift.sh` | Post-R7 Wire/Type Governance | Fails when generated Rust/TypeScript/Python wire files differ from schema-driven codegen output. | shell entrypoint | `bash scripts/check_wire_codegen_drift.sh` |

@@ -122,6 +122,9 @@ export function Dispatches({ dispatches }: { dispatches: LocalDispatchHistory[] 
 }
 
 function DispatchDetail({ detail }: { detail: Record<string, unknown> }) {
+  const bundle = detail.bundle && typeof detail.bundle === "object"
+    ? detail.bundle as Record<string, unknown>
+    : detail;
   const sections = [
     { label: "Record", key: "record" },
     { label: "Analysis", key: "analysis" },
@@ -132,7 +135,7 @@ function DispatchDetail({ detail }: { detail: Record<string, unknown> }) {
   return (
     <div className="stack">
       {sections.map(({ label, key }) => {
-        const data = detail[key];
+        const data = bundle[key];
         if (!data) return null;
         return (
           <details key={key} open>

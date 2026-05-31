@@ -1,4 +1,5 @@
 use std::collections::HashSet;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 use serde_json::{json, Value};
 
@@ -23,6 +24,7 @@ pub struct DispatchEngine {
     ledger: DispatchLedger,
     executor_type_name: String,
     available_executor_tiers: HashSet<String>,
+    dispatch_counter: AtomicUsize,
 }
 
 impl Default for DispatchEngine {
@@ -36,6 +38,7 @@ impl Default for DispatchEngine {
             ledger: DispatchLedger::new(),
             executor_type_name: "noop".to_string(),
             available_executor_tiers: HashSet::new(),
+            dispatch_counter: AtomicUsize::new(0),
         }
     }
 }
@@ -124,7 +127,10 @@ impl DispatchEngine {
 
     pub fn dispatch_bundle(&self, raw_request: &str, request_source: &str) -> DispatchBundle {
         let mut runtime = FixtureRuntime::new();
-        let dispatch_id = runtime.id("disp-");
+        let dispatch_id = format!(
+            "disp-{:04}",
+            self.dispatch_counter.fetch_add(1, Ordering::Relaxed) + 1
+        );
         let decision_id = runtime.id("dec-");
 
         let analysis =
@@ -443,5 +449,22 @@ fn derive_final_status(
         "escalated"
     } else {
         "completed"
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn successive_dispatches_from_one_engine_have_distinct_dispatch_ids() {
+        let engine = DispatchEngine::new();
+        let first = engine.dispatch("Trial 4 alpha noop dispatch", "api");
+        let second = engine.dispatch("Trial 4 beta noop dispatch", "api");
+
+        assert_eq!(first["record"]["dispatch_id"], "disp-0001");
+        assert_eq!(second["record"]["dispatch_id"], "disp-0002");
+        assert_eq!(first["execution_result"]["dispatch_id"], "disp-0001");
+        assert_eq!(second["execution_result"]["dispatch_id"], "disp-0002");
     }
 }
