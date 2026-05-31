@@ -30,8 +30,20 @@ class AgentControlPlaneClient:
     def dashboard(self) -> dict[str, Any]:
         return self._get("/api/v1/dashboard")
 
-    def dispatches(self) -> dict[str, Any]:
-        return self._get("/api/v1/dispatches")
+    def dispatches(
+        self,
+        limit: int | None = None,
+        offset: int | None = None,
+        search: str | None = None,
+    ) -> dict[str, Any]:
+        params: dict[str, Any] = {}
+        if limit is not None:
+            params["limit"] = limit
+        if offset is not None:
+            params["offset"] = offset
+        if search:
+            params["search"] = search
+        return self._get(_query_path("/api/v1/dispatches", params))
 
     def config(self) -> dict[str, Any]:
         return self._get("/api/v1/config")
@@ -183,3 +195,28 @@ class AgentControlPlaneClient:
                 message = exc.reason
             raise AgentControlPlaneError(str(message)) from exc
         return json.loads(payload) if payload else None
+
+
+def _query_path(path: str, params: dict[str, Any]) -> str:
+    query = "&".join(
+        f"{_quote_query_component(key)}={_quote_query_component(str(value))}"
+        for key, value in params.items()
+    )
+    return f"{path}?{query}" if query else path
+
+
+def _quote_query_component(value: str) -> str:
+    encoded = []
+    for byte in value.encode("utf-8"):
+        if (
+            ord("a") <= byte <= ord("z")
+            or ord("A") <= byte <= ord("Z")
+            or ord("0") <= byte <= ord("9")
+            or byte in b"-._~"
+        ):
+            encoded.append(chr(byte))
+        elif byte == ord(" "):
+            encoded.append("+")
+        else:
+            encoded.append(f"%{byte:02X}")
+    return "".join(encoded)

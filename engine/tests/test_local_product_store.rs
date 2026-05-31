@@ -293,6 +293,44 @@ fn dispatch_history_lists_usage_data() {
 }
 
 #[test]
+fn dispatch_history_search_filters_and_paginates() {
+    let dir = tempdir().unwrap();
+    let store = LocalProductStore::new(dir.path().join("test.db")).unwrap();
+
+    store
+        .record_dispatch(
+            "Alpha parser work",
+            "api",
+            &make_bundle_with_usage("disp-alpha", "noop", None, None, None, None),
+            "actor",
+        )
+        .unwrap();
+    store
+        .record_dispatch(
+            "Beta docs review",
+            "dashboard",
+            &make_bundle_with_usage("disp-beta", "noop", None, None, None, None),
+            "actor",
+        )
+        .unwrap();
+
+    let raw_matches = store.search_dispatches(10, 0, Some("alpha")).unwrap();
+    assert_eq!(raw_matches.len(), 1);
+    assert_eq!(raw_matches[0]["dispatch_id"], "disp-alpha");
+
+    let source_matches = store.search_dispatches(10, 0, Some("DASHBOARD")).unwrap();
+    assert_eq!(source_matches.len(), 1);
+    assert_eq!(source_matches[0]["dispatch_id"], "disp-beta");
+
+    let wildcard_matches = store.search_dispatches(10, 0, Some("%")).unwrap();
+    assert!(wildcard_matches.is_empty());
+
+    let paged_matches = store.search_dispatches(1, 1, Some("disp")).unwrap();
+    assert_eq!(paged_matches.len(), 1);
+    assert_eq!(paged_matches[0]["dispatch_id"], "disp-alpha");
+}
+
+#[test]
 fn dispatch_history_defaults_executor_type_to_noop() {
     let dir = tempdir().unwrap();
     let store = LocalProductStore::new(dir.path().join("test.db")).unwrap();

@@ -187,6 +187,56 @@ async fn axum_local_store_persists_dispatch_history_and_dashboard_summary() {
 }
 
 #[tokio::test]
+async fn axum_dispatches_filters_by_search_query() {
+    let dir = tempdir().unwrap();
+    let store = LocalProductStore::new(dir.path().join("dispatch.db")).unwrap();
+    store
+        .record_dispatch(
+            "Alpha parser work",
+            "api",
+            &json!({
+                "record": {"dispatch_id": "disp-alpha", "final_status": "not_executed"},
+                "decision": {"selected_tier": "balanced_worker", "budget_reservation": {"reserved_cost": 0.1}},
+                "analysis": {"risk_level": "low"},
+                "execution_result": {"executor_type": "noop"},
+            }),
+            "test",
+        )
+        .unwrap();
+    store
+        .record_dispatch(
+            "Beta docs review",
+            "dashboard",
+            &json!({
+                "record": {"dispatch_id": "disp-beta", "final_status": "not_executed"},
+                "decision": {"selected_tier": "cheap_executor", "budget_reservation": {"reserved_cost": 0.1}},
+                "analysis": {"risk_level": "low"},
+                "execution_result": {"executor_type": "noop"},
+            }),
+            "test",
+        )
+        .unwrap();
+
+    let app = build_axum_router(AxumApiState::new().with_local_store(store));
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method(Method::GET)
+                .uri("/api/v1/dispatches?search=alpha&limit=10")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = response_json(response).await;
+    let dispatches = body["dispatches"].as_array().unwrap();
+    assert_eq!(dispatches.len(), 1);
+    assert_eq!(dispatches[0]["dispatch_id"], "disp-alpha");
+}
+
+#[tokio::test]
 async fn axum_local_store_exposes_team_config_costs_and_export() {
     let dir = tempdir().unwrap();
     let store = LocalProductStore::new(dir.path().join("team.db")).unwrap();

@@ -1,4 +1,4 @@
-use rusqlite::params;
+use rusqlite::{params, Row};
 use serde_json::{json, Value};
 
 use super::{append_audit_locked, collect_values, str_at, LocalProductStore};
@@ -115,27 +115,42 @@ impl LocalProductStore {
                 )
                 .map_err(|e| e.to_string())?;
             let rows = stmt
-                .query_map(params![limit, offset], |row| {
-                    let bundle_text: String = row.get(9)?;
-                    let bundle: Value = serde_json::from_str(&bundle_text).unwrap_or(Value::Null);
-                    Ok(json!({
-                        "history_id": row.get::<_, i64>(0)?,
-                        "dispatch_id": row.get::<_, String>(1)?,
-                        "created_at": row.get::<_, String>(2)?,
-                        "raw_request": row.get::<_, String>(3)?,
-                        "request_source": row.get::<_, String>(4)?,
-                        "final_status": row.get::<_, String>(5)?,
-                        "selected_tier": row.get::<_, String>(6)?,
-                        "risk_level": row.get::<_, String>(7)?,
-                        "reserved_cost": row.get::<_, f64>(8)?,
-                        "bundle": bundle,
-                        "input_tokens": row.get::<_, Option<i64>>(10)?,
-                        "output_tokens": row.get::<_, Option<i64>>(11)?,
-                        "estimated_cost_usd": row.get::<_, Option<f64>>(12)?,
-                        "executor_type": row.get::<_, String>(13)?,
-                        "latency_ms": row.get::<_, Option<i64>>(14)?,
-                    }))
-                })
+                .query_map(params![limit, offset], dispatch_history_row)
+                .map_err(|e| e.to_string())?;
+            collect_values(rows)
+        })
+    }
+
+    pub fn search_dispatches(
+        &self,
+        limit: i64,
+        offset: i64,
+        search: Option<&str>,
+    ) -> Result<Vec<Value>, String> {
+        let Some(search) = search.map(str::trim).filter(|value| !value.is_empty()) else {
+            return self.list_dispatches_with_offset(limit, offset);
+        };
+        let pattern = format!("%{}%", escape_like(&search.to_lowercase()));
+
+        self.with_conn(|conn| {
+            let mut stmt = conn
+                .prepare(
+                    "SELECT history_id, dispatch_id, created_at, raw_request, request_source,
+                            final_status, selected_tier, risk_level, reserved_cost, bundle_json,
+                            input_tokens, output_tokens, estimated_cost_usd, executor_type, latency_ms
+                     FROM dispatch_history
+                     WHERE lower(dispatch_id) LIKE ?1 ESCAPE '\\'
+                        OR lower(raw_request) LIKE ?1 ESCAPE '\\'
+                        OR lower(request_source) LIKE ?1 ESCAPE '\\'
+                        OR lower(final_status) LIKE ?1 ESCAPE '\\'
+                        OR lower(selected_tier) LIKE ?1 ESCAPE '\\'
+                        OR lower(risk_level) LIKE ?1 ESCAPE '\\'
+                     ORDER BY history_id DESC
+                     LIMIT ?2 OFFSET ?3",
+                )
+                .map_err(|e| e.to_string())?;
+            let rows = stmt
+                .query_map(params![pattern, limit, offset], dispatch_history_row)
                 .map_err(|e| e.to_string())?;
             collect_values(rows)
         })
@@ -155,27 +170,7 @@ impl LocalProductStore {
                 )
                 .map_err(|e| e.to_string())?;
             let mut rows = stmt
-                .query_map(params![dispatch_id], |row| {
-                    let bundle_text: String = row.get(9)?;
-                    let bundle: Value = serde_json::from_str(&bundle_text).unwrap_or(Value::Null);
-                    Ok(json!({
-                        "history_id": row.get::<_, i64>(0)?,
-                        "dispatch_id": row.get::<_, String>(1)?,
-                        "created_at": row.get::<_, String>(2)?,
-                        "raw_request": row.get::<_, String>(3)?,
-                        "request_source": row.get::<_, String>(4)?,
-                        "final_status": row.get::<_, String>(5)?,
-                        "selected_tier": row.get::<_, String>(6)?,
-                        "risk_level": row.get::<_, String>(7)?,
-                        "reserved_cost": row.get::<_, f64>(8)?,
-                        "bundle": bundle,
-                        "input_tokens": row.get::<_, Option<i64>>(10)?,
-                        "output_tokens": row.get::<_, Option<i64>>(11)?,
-                        "estimated_cost_usd": row.get::<_, Option<f64>>(12)?,
-                        "executor_type": row.get::<_, String>(13)?,
-                        "latency_ms": row.get::<_, Option<i64>>(14)?,
-                    }))
-                })
+                .query_map(params![dispatch_id], dispatch_history_row)
                 .map_err(|e| e.to_string())?;
             match rows.next() {
                 Some(Ok(val)) => Ok(Some(val)),
@@ -184,4 +179,37 @@ impl LocalProductStore {
             }
         })
     }
+}
+
+fn dispatch_history_row(row: &Row<'_>) -> rusqlite::Result<Value> {
+    let bundle_text: String = row.get(9)?;
+    let bundle: Value = serde_json::from_str(&bundle_text).unwrap_or(Value::Null);
+    Ok(json!({
+        "history_id": row.get::<_, i64>(0)?,
+        "dispatch_id": row.get::<_, String>(1)?,
+        "created_at": row.get::<_, String>(2)?,
+        "raw_request": row.get::<_, String>(3)?,
+        "request_source": row.get::<_, String>(4)?,
+        "final_status": row.get::<_, String>(5)?,
+        "selected_tier": row.get::<_, String>(6)?,
+        "risk_level": row.get::<_, String>(7)?,
+        "reserved_cost": row.get::<_, f64>(8)?,
+        "bundle": bundle,
+        "input_tokens": row.get::<_, Option<i64>>(10)?,
+        "output_tokens": row.get::<_, Option<i64>>(11)?,
+        "estimated_cost_usd": row.get::<_, Option<f64>>(12)?,
+        "executor_type": row.get::<_, String>(13)?,
+        "latency_ms": row.get::<_, Option<i64>>(14)?,
+    }))
+}
+
+fn escape_like(value: &str) -> String {
+    let mut escaped = String::new();
+    for ch in value.chars() {
+        if matches!(ch, '%' | '_' | '\\') {
+            escaped.push('\\');
+        }
+        escaped.push(ch);
+    }
+    escaped
 }

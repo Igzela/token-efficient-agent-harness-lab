@@ -84,6 +84,19 @@ test("local state readers use product endpoints", async () => {
   assert(calls.every((call) => call.init.method === "GET"));
 });
 
+test("dispatches sends pagination and search query params", async () => {
+  const { calls, fetchImpl } = captureFetch({ schema_version: "axum_api.v1", dispatches: [] });
+  const client = new AgentControlPlaneClient({ baseUrl: "http://127.0.0.1:8080", fetchImpl });
+
+  await client.dispatches({ limit: 25, offset: 50, search: "alpha parser&owner=bad" });
+
+  assert.equal(
+    calls[0].url,
+    "http://127.0.0.1:8080/api/v1/dispatches?limit=25&offset=50&search=alpha+parser%26owner%3Dbad",
+  );
+  assert.equal(calls[0].init.method, "GET");
+});
+
 test("backup creation posts explicit local confirmation", async () => {
   const { calls, fetchImpl } = captureFetch({ backup: { backup_id: "backup-0001" } });
   const client = new AgentControlPlaneClient({

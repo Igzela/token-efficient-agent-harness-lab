@@ -128,6 +128,11 @@ pub fn openapi_document() -> serde_json::Value {
             "/api/v1/dispatches": {
                 "get": {
                     "summary": "List persisted local dispatch history",
+                    "parameters": [
+                        {"name": "limit", "in": "query", "schema": {"type": "integer", "default": 100, "minimum": 0, "maximum": 500}},
+                        {"name": "offset", "in": "query", "schema": {"type": "integer", "default": 0, "minimum": 0}},
+                        {"name": "search", "in": "query", "schema": {"type": "string"}, "description": "Case-insensitive match across dispatch id, request text, source, status, tier, and risk."}
+                    ],
                     "responses": {"200": {"description": "Dispatch history"}}
                 }
             },

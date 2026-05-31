@@ -99,6 +99,19 @@ class ClientLocalStateTest(unittest.TestCase):
         )
 
     @patch("agent_control_plane_sdk.client.urlopen")
+    def test_dispatches_sends_pagination_and_search_query_params(self, mock_urlopen):
+        mock_urlopen.return_value = mock_response({"schema_version": "axum_api.v1", "dispatches": []})
+        client = AgentControlPlaneClient("http://localhost:8080")
+        client.dispatches(limit=25, offset=50, search="alpha parser&owner=bad")
+
+        args, _ = mock_urlopen.call_args
+        req = args[0]
+        self.assertEqual(
+            req.full_url,
+            "http://localhost:8080/api/v1/dispatches?limit=25&offset=50&search=alpha+parser%26owner%3Dbad",
+        )
+
+    @patch("agent_control_plane_sdk.client.urlopen")
     def test_create_backup_posts_confirmation(self, mock_urlopen):
         mock_urlopen.return_value = mock_response({"backup": {"backup_id": "backup-0001"}})
         client = AgentControlPlaneClient("http://localhost:8080", api_key="test")

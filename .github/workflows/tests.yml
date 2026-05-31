@@ -14,9 +14,9 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Check out repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
       - name: Set up uv
-        uses: astral-sh/setup-uv@v5
+        uses: astral-sh/setup-uv@v8
         with:
           python-version: "3.11"
           enable-cache: false
@@ -33,7 +33,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Check out repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
       - name: Run cargo test
@@ -47,7 +47,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Check out repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
       - name: Set up Bun
         uses: oven-sh/setup-bun@v2
       - name: Install SDK dependencies
@@ -65,13 +65,13 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Check out repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
       - name: Set up Bun
         uses: oven-sh/setup-bun@v2
       - name: Set up uv
-        uses: astral-sh/setup-uv@v5
+        uses: astral-sh/setup-uv@v8
         with:
           python-version: "3.11"
           enable-cache: false
@@ -86,13 +86,13 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Check out repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
       - name: Set up Bun
         uses: oven-sh/setup-bun@v2
       - name: Set up uv
-        uses: astral-sh/setup-uv@v5
+        uses: astral-sh/setup-uv@v8
         with:
           python-version: "3.11"
           enable-cache: false
@@ -103,6 +103,6 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Check out repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
       - name: Build local Docker services
         run: docker compose build

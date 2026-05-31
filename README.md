@@ -4,7 +4,7 @@
 
 Token-Efficient Agent Harness Lab is a local deterministic harness for studying event-sourced agent workflow infrastructure from Stage 0 through Stage 4. It includes JSONL event validation, projections, project/task workflow primitives, quality gates, controlled intelligence stubs, and Stage 4 runtime-control abstractions.
 
-Current status: Stage 0-4 complete, Harness App MVP0-MVP8 complete, Trials 0-3 closed, and the agent-control-plane cutover is complete for the Rust + TypeScript stack. The primary local runtime is Rust `engine/` with axum API, SQLite state, provider safety gates, permission governance, cost governance, data operations, native packaging, and dashboard controls. The primary UI and SDK surface is TypeScript (`dashboard/` and `sdk/typescript/`). Python is retained as the Python REST SDK and utility scripts only; the legacy Python reference implementation has been retired. Security hardening complete (1151 Rust tests pass).
+Current status: Stage 0-4 complete, Harness App MVP0-MVP8 complete, Trials 0-3 closed, and the agent-control-plane cutover is complete for the Rust + TypeScript stack. The primary local runtime is Rust `engine/` with axum API, SQLite state, provider safety gates, permission governance, cost governance, data operations, native packaging, and dashboard controls. The primary UI and SDK surface is TypeScript (`dashboard/` and `sdk/typescript/`). Python is retained as the Python REST SDK and utility scripts only; the legacy Python reference implementation has been retired. Security hardening complete (1153 Rust tests pass).
 
 **New sessions should start with [docs/SESSION_START_HERE.md](docs/SESSION_START_HERE.md).**
 
@@ -41,7 +41,7 @@ cargo test -p engine
 cd sdk/python && PYTHONPATH=src uv run --no-project python -m unittest discover -s tests
 ```
 
-Current result: 1151 Rust tests pass. Python SDK tests run separately under `sdk/python/`.
+Current result: 1153 Rust tests pass. Python SDK tests run separately under `sdk/python/`.
 
 ## How To Run Without Docker
 
@@ -96,6 +96,7 @@ cargo run -p engine
 ```bash
 curl http://127.0.0.1:8080/api/v1/health
 curl http://127.0.0.1:8080/api/v1/dashboard
+curl 'http://127.0.0.1:8080/api/v1/dispatches?limit=25&search=docs'
 curl http://127.0.0.1:8080/api/v1/export
 curl -X POST http://127.0.0.1:8080/api/v1/dispatch \
   -H 'content-type: application/json' \
@@ -118,6 +119,7 @@ import { AgentControlPlaneClient } from "@token-efficient-agent-harness/agent-co
 
 const client = new AgentControlPlaneClient({ baseUrl: "http://127.0.0.1:8080" });
 const dashboard = await client.dashboard();
+const recentDocsRuns = await client.dispatches({ limit: 25, search: "docs" });
 const bundle = await client.dispatch({
   raw_request: "Summarize docs without provider calls",
   request_source: "api",
@@ -131,6 +133,7 @@ from agent_control_plane_sdk import AgentControlPlaneClient
 
 client = AgentControlPlaneClient("http://127.0.0.1:8080")
 dashboard = client.dashboard()
+recent_docs_runs = client.dispatches(limit=25, search="docs")
 bundle = client.dispatch("Summarize docs without provider calls")
 ```
 

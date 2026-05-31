@@ -37,6 +37,12 @@ export interface AgentControlPlaneClientOptions {
   fetchImpl?: typeof fetch;
 }
 
+export interface DispatchListOptions {
+  limit?: number;
+  offset?: number;
+  search?: string;
+}
+
 export class AgentControlPlaneClient {
   private readonly baseUrl: string;
   private readonly apiKey?: string;
@@ -64,8 +70,12 @@ export class AgentControlPlaneClient {
     return this.getJson<LocalDashboardState>("/api/v1/dashboard");
   }
 
-  dispatches(): Promise<DispatchListResponse> {
-    return this.getJson<DispatchListResponse>("/api/v1/dispatches");
+  dispatches(options: DispatchListOptions = {}): Promise<DispatchListResponse> {
+    return this.getJson<DispatchListResponse>(`/api/v1/dispatches${queryString({
+      limit: options.limit,
+      offset: options.offset,
+      search: options.search,
+    })}`);
   }
 
   config(): Promise<ConfigResponse> {
@@ -230,4 +240,14 @@ async function parseResponse<T>(response: Response): Promise<T> {
     throw new Error(error);
   }
   return body as T;
+}
+
+function queryString(params: Record<string, number | string | undefined>): string {
+  const query = new URLSearchParams();
+  for (const [key, value] of Object.entries(params)) {
+    if (value === undefined || value === "") continue;
+    query.set(key, String(value));
+  }
+  const text = query.toString();
+  return text ? `?${text}` : "";
 }

@@ -96,17 +96,18 @@ pub(crate) async fn api_dispatches(
         .get("limit")
         .and_then(|v| v.parse::<i64>().ok())
         .unwrap_or(100)
-        .min(500);
+        .clamp(0, 500);
     let offset = params
         .get("offset")
         .and_then(|v| v.parse::<i64>().ok())
         .unwrap_or(0)
         .max(0);
+    let search = params.get("search").map(String::as_str);
     Ok((
         cors_headers(),
         Json(json!({
             "schema_version": AXUM_API_SCHEMA_VERSION,
-            "dispatches": store.list_dispatches_with_offset(limit, offset).map_err(internal_error)?,
+            "dispatches": store.search_dispatches(limit, offset, search).map_err(internal_error)?,
         })),
     ))
 }
