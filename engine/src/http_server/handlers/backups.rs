@@ -16,8 +16,9 @@ pub(crate) async fn api_list_backups(
     headers: HeaderMap,
 ) -> Result<impl IntoResponse, ApiError> {
     if state.tenant_resolver.is_none() {
-        return Err(ApiError::new(
+        return Err(ApiError::with_code(
             StatusCode::UNAUTHORIZED,
+            "backup_admin_required",
             "admin auth is required for backups",
         ));
     }
@@ -41,22 +42,25 @@ pub(crate) async fn api_create_backup(
     Json(request): Json<BackupApiRequest>,
 ) -> Result<impl IntoResponse, ApiError> {
     if state.tenant_resolver.is_none() {
-        return Err(ApiError::new(
+        return Err(ApiError::with_code(
             StatusCode::UNAUTHORIZED,
+            "backup_admin_required",
             "admin auth is required for local backup",
         ));
     }
     let context = authorize(&state, &headers, "backup:admin")?;
     if request.confirm_local_backup != Some(true) {
-        return Err(ApiError::new(
+        return Err(ApiError::with_code(
             StatusCode::BAD_REQUEST,
+            "backup_confirmation_required",
             "confirm_local_backup must be true",
         ));
     }
     let store = require_store(&state)?;
     if store.is_memory() {
-        return Err(ApiError::new(
+        return Err(ApiError::with_code(
             StatusCode::BAD_REQUEST,
+            "file_store_required",
             "file-backed local store is required for backup",
         ));
     }
@@ -93,8 +97,9 @@ pub(crate) async fn api_delete_backup(
     AxumPath(backup_id): AxumPath<String>,
 ) -> Result<impl IntoResponse, ApiError> {
     if state.tenant_resolver.is_none() {
-        return Err(ApiError::new(
+        return Err(ApiError::with_code(
             StatusCode::UNAUTHORIZED,
+            "backup_admin_required",
             "admin auth is required for backups",
         ));
     }
@@ -104,7 +109,11 @@ pub(crate) async fn api_delete_backup(
     let manager = BackupManager::new(&backup_dir).map_err(internal_error)?;
     let deleted = manager.delete_backup(&backup_id).map_err(internal_error)?;
     if !deleted {
-        return Err(ApiError::new(StatusCode::NOT_FOUND, "backup not found"));
+        return Err(ApiError::with_code(
+            StatusCode::NOT_FOUND,
+            "backup_not_found",
+            "backup not found",
+        ));
     }
     store
         .append_audit(
@@ -129,22 +138,25 @@ pub(crate) async fn api_restore_backup(
     Json(request): Json<RestoreApiRequest>,
 ) -> Result<impl IntoResponse, ApiError> {
     if state.tenant_resolver.is_none() {
-        return Err(ApiError::new(
+        return Err(ApiError::with_code(
             StatusCode::UNAUTHORIZED,
+            "backup_admin_required",
             "admin auth is required for restore",
         ));
     }
     let context = authorize(&state, &headers, "backup:admin")?;
     if request.confirm_restore != Some(true) {
-        return Err(ApiError::new(
+        return Err(ApiError::with_code(
             StatusCode::BAD_REQUEST,
+            "restore_confirmation_required",
             "confirm_restore must be true",
         ));
     }
     let store = require_store(&state)?;
     if store.is_memory() {
-        return Err(ApiError::new(
+        return Err(ApiError::with_code(
             StatusCode::BAD_REQUEST,
+            "file_store_required",
             "file-backed local store is required for restore",
         ));
     }

@@ -32,7 +32,7 @@ This repository is not a cloud production SaaS or autonomous-agent runtime. It d
 bash scripts/verify_rust_typescript_stack.sh
 ```
 
-This is the primary cutover verification. It runs `scripts/check_wire_codegen_drift.sh`, checks Rust formatting, clippy, Rust tests, TypeScript SDK tests/build, dashboard lint/typecheck/build/static export, then starts the Rust engine with the exported dashboard and smokes `/api/v1/health`, `/api/v1/dashboard`, `/api/v1/dispatch`, and the dashboard root.
+This is the primary cutover verification. It runs `scripts/check_wire_codegen_drift.sh`, checks Rust formatting, clippy, Rust tests, TypeScript SDK tests/build, dashboard lint/typecheck/build/static export, then starts the Rust engine with the exported dashboard and smokes `/api/v1/health`, `/api/v1/dashboard`, `/api/v1/dispatch`, dispatch/audit search, the structured backup auth boundary, and the dashboard root.
 
 ## How To Run Tests
 
@@ -60,6 +60,18 @@ ACP_DASHBOARD_DIR=dashboard/out cargo run -p engine
 ```
 
 Then open `http://127.0.0.1:8080`. By default the engine creates app-owned local state at `.agent-control-plane/local-team.db` and local backups under `.agent-control-plane/backups/`. Docker remains available for optional local compose verification, but it is not required for local use.
+
+Check local setup readiness:
+
+```bash
+uv run --no-project python scripts/acp_local_doctor.py
+```
+
+Generate a local protected-mode admin key and startup command:
+
+```bash
+uv run --no-project python scripts/bootstrap_local_auth.py
+```
 
 Custom local paths:
 

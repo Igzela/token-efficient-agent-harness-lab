@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { clearStoredToken, getStoredToken, setStoredToken } from "@/lib/api-client";
+import { StateBanner } from "./StateBanner";
 
 export function AuthPanel({
   status,
@@ -28,44 +29,46 @@ export function AuthPanel({
     onSaved();
   }
 
-  const icon = status === "offline" ? "🔌" : "🔑";
+  const title = status === "offline" ? "Engine offline" : "Authentication required";
+  const tone = status === "offline" ? "warn" : status === "denied" ? "risk" : "info";
 
   return (
-    <section className="card stack" style={{ maxWidth: 480, margin: "16px auto" }}>
-      <h2>{icon} {status === "offline" ? "Engine Offline" : "Authentication Required"}</h2>
-      <p className="muted">{message}</p>
+    <section className="auth-panel">
+      <StateBanner title={title} tone={tone}>
+        <p>{message}</p>
+      </StateBanner>
       {status !== "offline" && (
         <>
-          <label style={{ display: "flex", flexDirection: "column", gap: 4 }}>
-            <span style={{ fontSize: "0.875rem" }}>Local API Key</span>
+          <label className="form-stack" htmlFor="local-api-key">
+            <span className="label">Local API Key</span>
             <input
+              id="local-api-key"
               type="password"
               value={tokenInput}
               onChange={(e) => setTokenInput(e.target.value)}
-              placeholder="acp-..."
-              style={{
-                padding: "8px 10px",
-                borderRadius: "var(--radius-sm)",
-                border: "1px solid var(--border)",
-                background: "var(--panel)",
-                color: "var(--ink)",
-              }}
+              placeholder="harness_<64 hex characters>"
             />
           </label>
+          <p className="muted">
+            Protected mode uses a local bearer token stored in this browser only.
+          </p>
           <div className="flex-end">
             {getStoredToken() && (
               <button onClick={handleClear} type="button" className="risk-action">
                 Clear Token
               </button>
             )}
-            <button onClick={handleSave} type="button" disabled={!tokenInput.trim()}>
+            <button onClick={handleSave} type="button" disabled={!tokenInput.trim()} className="button-primary">
               Save &amp; Retry
             </button>
           </div>
         </>
       )}
       {status === "offline" && (
-        <p className="muted">Start the engine and reload this page.</p>
+        <div className="command-block">
+          <span className="label">Start local runtime</span>
+          <code>ACP_DASHBOARD_DIR=dashboard/out cargo run -p engine</code>
+        </div>
       )}
     </section>
   );

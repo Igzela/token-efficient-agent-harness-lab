@@ -1,15 +1,20 @@
 export function Pagination({
+  hasNext,
   page,
   totalPages,
   onPageChange,
 }: {
+  hasNext?: boolean;
   page: number;
-  totalPages: number;
+  totalPages?: number;
   onPageChange: (page: number) => void;
 }) {
-  if (totalPages <= 1) return null;
+  const knownTotal = typeof totalPages === "number";
+  const canPrev = page > 0;
+  const canNext = knownTotal ? page < Math.max(1, totalPages) - 1 : Boolean(hasNext);
+  if (!canPrev && !canNext && (!knownTotal || totalPages <= 1)) return null;
   return (
-    <div className="flex-row" style={{ justifyContent: "center", marginTop: 8 }}>
+    <div className="pagination">
       <button
         onClick={() => onPageChange(Math.max(0, page - 1))}
         disabled={page === 0}
@@ -17,12 +22,12 @@ export function Pagination({
       >
         Prev
       </button>
-      <span className="muted" style={{ fontSize: 12, alignSelf: "center" }}>
-        Page {page + 1} of {totalPages}
+      <span className="muted pagination-label">
+        Page {page + 1}{knownTotal ? ` of ${Math.max(1, totalPages)}` : ""}
       </span>
       <button
-        onClick={() => onPageChange(Math.min(totalPages - 1, page + 1))}
-        disabled={page >= totalPages - 1}
+        onClick={() => onPageChange(knownTotal ? Math.min(Math.max(1, totalPages) - 1, page + 1) : page + 1)}
+        disabled={!canNext}
         type="button"
       >
         Next

@@ -11,7 +11,9 @@ import {
 } from "@/lib/api-client";
 import type { LocalDashboardState } from "@/lib/types";
 import { ConfirmDialog, type ConfirmAction } from "./ConfirmDialog";
+import { EmptyState } from "./EmptyState";
 import { KeyRevealModal } from "./KeyRevealModal";
+import { StateBanner } from "./StateBanner";
 
 const ALL_SCOPES = [
   "dispatch:read",
@@ -136,7 +138,13 @@ export function Team({
 
   return (
     <section className="split">
-      {teamError && <p className="error-text" style={{ gridColumn: "1 / -1" }}>{teamError}</p>}
+      {teamError && (
+        <div className="full-row">
+          <StateBanner title="Team operation failed" tone="risk">
+            <p>{teamError}</p>
+          </StateBanner>
+        </div>
+      )}
       <ConfirmDialog action={confirmAction} onConfirm={doTeamConfirm} onCancel={() => setConfirmAction(null)} />
       {revealedKey && (
         <KeyRevealModal
@@ -167,17 +175,21 @@ export function Team({
             <option value="admin">admin</option>
             <option value="readonly">readonly</option>
           </select>
-          <button onClick={handleCreateMember} disabled={busy} type="button">
+          <button onClick={handleCreateMember} disabled={busy} type="button" className="button-primary">
             Create Member
           </button>
         </div>
         {dashboard.team.members.length === 0 ? (
-          <p className="muted">No local members</p>
+          <EmptyState
+            title="No local members yet"
+            description="Members define who owns local API keys and role boundaries. Add a member before creating scoped keys."
+            tone="info"
+          />
         ) : (
           dashboard.team.members.map((item) => (
-            <div className="row" key={item.user_id} style={{ justifyContent: "space-between" }}>
+            <div className="row item-row" key={item.user_id}>
               <span>{item.display_name}</span>
-              <span style={{ display: "inline-flex", alignItems: "center", gap: 6 }}>
+              <span className="inline-actions">
                 <select
                   value={item.role}
                   onChange={(e) => handleUpdateRole(item.user_id, e.target.value)}
@@ -214,9 +226,9 @@ export function Team({
             <option value="admin">admin</option>
             <option value="readonly">readonly</option>
           </select>
-          <div style={{ display: "flex", flexWrap: "wrap", gap: 4 }}>
+          <div className="scope-list">
             {ALL_SCOPES.map((s) => (
-              <label key={s} style={{ display: "flex", alignItems: "center", gap: 3, fontSize: 13 }}>
+              <label key={s} className="scope-option">
                 <input
                   type="checkbox"
                   checked={keyScopes.includes(s)}
@@ -226,30 +238,34 @@ export function Team({
               </label>
             ))}
           </div>
-          <button onClick={handleCreateKey} disabled={busy} type="button">
+          <button onClick={handleCreateKey} disabled={busy} type="button" className="button-primary">
             Create API Key
           </button>
         </div>
         {dashboard.team.api_keys.length === 0 ? (
-          <p className="muted">No local key metadata</p>
+          <EmptyState
+            title="No API key metadata yet"
+            description="Create scoped keys to unlock protected dashboard tabs such as audit, team administration, and backups."
+            tone="info"
+          />
         ) : (
           dashboard.team.api_keys.map((item) => (
-            <div className="row" key={item.key_id} style={{ justifyContent: "space-between", flexWrap: "wrap" }}>
+            <div className="row item-row wrap-row" key={item.key_id}>
               <span className="mono">{item.key_id}</span>
               <span className={`pill ${item.role === "admin" ? "warn" : "ok"}`}>{item.role}</span>
               {item.scopes && item.scopes.length > 0 && (
-                <span className="muted" style={{ fontSize: 12 }}>{item.scopes.join(", ")}</span>
+                <span className="muted metadata-chip">{item.scopes.join(", ")}</span>
               )}
               {item.last_used_at && (
-                <span className="muted" style={{ fontSize: 12 }}>used: {item.last_used_at}</span>
+                <span className="muted metadata-chip">used: {item.last_used_at}</span>
               )}
               {item.expires_at && (
-                <span className="muted" style={{ fontSize: 12 }}>expires: {item.expires_at}</span>
+                <span className="muted metadata-chip">expires: {item.expires_at}</span>
               )}
               {item.revoked_at ? (
                 <span className="pill warn">revoked</span>
               ) : (
-                <span style={{ display: "inline-flex", gap: 4 }}>
+                <span className="inline-actions">
                   <button
                     onClick={() => setConfirmAction({ type: "rotateKey", id: item.key_id })}
                     disabled={busy}

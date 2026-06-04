@@ -1,10 +1,10 @@
 export default function Loading() {
   return (
     <main>
-      <div className="shell" style={{ display: "flex", justifyContent: "center", marginTop: 80 }}>
+      <div className="shell loading-shell">
         <p className="muted">
           <span className="spinner spinner-lg" />
-          Loading dashboard…
+          Loading dashboard...
         </p>
       </div>
     </main>

@@ -1,4 +1,5 @@
 import type { LocalDashboardState } from "@/lib/types";
+import { EmptyState } from "./EmptyState";
 
 export function Costs({ dashboard }: { dashboard: LocalDashboardState }) {
   const c = dashboard.costs;
@@ -36,14 +37,18 @@ export function Costs({ dashboard }: { dashboard: LocalDashboardState }) {
         </div>
       </div>
 
-      <h3 style={{ marginTop: 16 }}>By Tier</h3>
+      <h3 className="section-subhead">By Tier</h3>
       {c.by_tier.length === 0 ? (
-        <p className="muted">No tier cost data yet</p>
+        <EmptyState
+          title="No tier cost data yet"
+          description="Cost by tier appears after dispatch records include reserved or estimated usage."
+          tone="info"
+        />
       ) : (
         <div className="bars">
           {c.by_tier.map((t) => (
             <div className="bar" key={t.selected_tier}>
-              <div style={{ display: "flex", justifyContent: "space-between", fontSize: 13 }}>
+              <div className="bar-row">
                 <span>{t.selected_tier}</span>
                 <span>${t.reserved_cost.toFixed(4)}</span>
               </div>
@@ -55,14 +60,18 @@ export function Costs({ dashboard }: { dashboard: LocalDashboardState }) {
         </div>
       )}
 
-      <h3 style={{ marginTop: 16 }}>Daily Trend</h3>
+      <h3 className="section-subhead">Daily Trend</h3>
       {recentDaily.length === 0 ? (
-        <p className="muted">No daily cost data yet</p>
+        <EmptyState
+          title="No daily cost trend yet"
+          description="Daily cost bars will populate as local dispatch records accumulate."
+          tone="info"
+        />
       ) : (
         <div className="bars">
           {recentDaily.map((d) => (
             <div className="bar" key={d.date}>
-              <div style={{ display: "flex", justifyContent: "space-between", fontSize: 13 }}>
+              <div className="bar-row">
                 <span>{d.date}</span>
                 <span>${d.reserved_cost.toFixed(4)}</span>
               </div>

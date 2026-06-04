@@ -63,6 +63,25 @@ export interface LocalDispatchHistory {
   bundle: DispatchBundle;
 }
 
+export interface DispatchListResponse {
+  schema_version: "axum_api.v1";
+  dispatches: LocalDispatchHistory[];
+}
+
+export interface AuditListResponse {
+  schema_version: "axum_api.v1";
+  events: LocalAuditEvent[];
+}
+
+export interface LocalAuditEvent {
+  audit_id: number | string;
+  created_at: string;
+  actor: string;
+  action: string;
+  resource: string;
+  details: Record<string, unknown> | null;
+}
+
 export interface LocalTeamState {
   schema_version: "local_team.v1";
   members: LocalTeamMember[];

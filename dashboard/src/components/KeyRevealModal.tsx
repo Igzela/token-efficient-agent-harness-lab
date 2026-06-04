@@ -61,12 +61,12 @@ export function KeyRevealModal({
   return (
     <div className="confirm-overlay" onClick={onClose} role="dialog" aria-modal="true" aria-label={label}>
       <div className="confirm-card key-reveal-card" onClick={(e) => e.stopPropagation()} ref={cardRef}>
-        <h3 style={{ margin: "0 0 12px" }}>{label}</h3>
-        <p className="key-reveal-warning">This key is shown only once. Copy it now — it cannot be retrieved later.</p>
+        <h3 className="modal-title">{label}</h3>
+        <p className="key-reveal-warning">This key is shown only once. Copy it now; it cannot be retrieved later.</p>
         <div id="key-reveal-value" className="key-reveal-value">{rawKey}</div>
-        <div style={{ display: "flex", gap: 8, justifyContent: "flex-end", marginTop: 16 }}>
+        <div className="modal-actions">
           <button onClick={onClose} type="button" ref={closeRef}>Close</button>
-          <button onClick={handleCopy} type="button">
+          <button onClick={handleCopy} type="button" className="button-primary">
             {copied ? "Copied!" : "Copy"}
           </button>
         </div>

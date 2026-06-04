@@ -124,6 +124,7 @@ async fn axum_dispatch_rejects_empty_request() {
 
     assert_eq!(response.status(), StatusCode::BAD_REQUEST);
     let body = response_json(response).await;
+    assert_eq!(body["code"], "raw_request_required");
     assert_eq!(body["error"], "raw_request is required");
 }
 
@@ -439,6 +440,46 @@ async fn axum_audit_paginates_and_clamps_negative_limit() {
 }
 
 #[tokio::test]
+async fn axum_audit_filters_by_search_query() {
+    let dir = tempdir().unwrap();
+    let store = LocalProductStore::new(dir.path().join("team.db")).unwrap();
+    store
+        .append_audit(
+            "key-admin",
+            "backup.create",
+            "backup-0001",
+            &json!({"label": "nightly"}),
+        )
+        .unwrap();
+    store
+        .append_audit(
+            "key-readonly",
+            "team.update",
+            "user-readonly",
+            &json!({"role": "readonly"}),
+        )
+        .unwrap();
+
+    let app = build_axum_router(AxumApiState::new().with_local_store(store));
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method(Method::GET)
+                .uri("/api/v1/audit?search=backup&limit=10")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = response_json(response).await;
+    let events = body["events"].as_array().unwrap();
+    assert_eq!(events.len(), 1);
+    assert_eq!(events[0]["action"], "backup.create");
+}
+
+#[tokio::test]
 async fn axum_auth_rejects_missing_key_when_configured() {
     let state = AxumApiState::new().with_auth(
         TenantResolver::new(),
@@ -589,6 +630,7 @@ async fn axum_backup_requires_auth_boundary_even_with_confirmation() {
 
     assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
     let body = response_json(response).await;
+    assert_eq!(body["code"], "backup_admin_required");
     assert_eq!(body["error"], "admin auth is required for local backup");
 }
 

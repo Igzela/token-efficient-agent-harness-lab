@@ -27,11 +27,12 @@ pub(crate) async fn api_audit(
         .and_then(|v| v.parse::<i64>().ok())
         .unwrap_or(0)
         .max(0);
+    let search = params.get("search").map(String::as_str);
     Ok((
         cors_headers(),
         Json(json!({
             "schema_version": AXUM_API_SCHEMA_VERSION,
-            "events": store.audit_events_with_offset(limit, offset).map_err(internal_error)?,
+            "events": store.search_audit_events(limit, offset, search).map_err(internal_error)?,
         })),
     ))
 }

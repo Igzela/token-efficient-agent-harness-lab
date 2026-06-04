@@ -18,12 +18,14 @@ pub(crate) struct ApiRequestContext {
 
 #[derive(Debug, Clone, PartialEq, serde::Serialize)]
 struct ApiErrorBody {
+    code: String,
     error: String,
     schema_version: String,
 }
 
 #[derive(Debug, Clone)]
 pub(crate) struct ApiError {
+    pub code: String,
     pub status: StatusCode,
     pub error: String,
 }
@@ -31,6 +33,19 @@ pub(crate) struct ApiError {
 impl ApiError {
     pub(crate) fn new(status: StatusCode, error: impl Into<String>) -> Self {
         Self {
+            code: default_error_code(status).to_string(),
+            status,
+            error: error.into(),
+        }
+    }
+
+    pub(crate) fn with_code(
+        status: StatusCode,
+        code: impl Into<String>,
+        error: impl Into<String>,
+    ) -> Self {
+        Self {
+            code: code.into(),
             status,
             error: error.into(),
         }
@@ -43,6 +58,7 @@ impl IntoResponse for ApiError {
             self.status,
             cors_headers(),
             Json(ApiErrorBody {
+                code: self.code,
                 error: self.error,
                 schema_version: AXUM_API_SCHEMA_VERSION.to_string(),
             }),
@@ -66,9 +82,13 @@ pub(crate) fn authorize(
     let auth_header = headers
         .get(header::AUTHORIZATION)
         .and_then(|value| value.to_str().ok());
-    let mut guard = resolver
-        .lock()
-        .map_err(|_| ApiError::new(StatusCode::INTERNAL_SERVER_ERROR, "auth unavailable"))?;
+    let mut guard = resolver.lock().map_err(|_| {
+        ApiError::with_code(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "auth_unavailable",
+            "auth unavailable",
+        )
+    })?;
     let decision = guard.resolve_mut(auth_header, state.now);
     let context = auth_context_from_decision(decision, required_scope)?;
     let tenant_limit = guard.tenant_rate_limit(&context.tenant_id);
@@ -76,8 +96,9 @@ pub(crate) fn authorize(
 
     let rate_limit = tenant_limit.or(state.default_rate_limit);
     let mut limiter = state.rate_limiter.lock().map_err(|_| {
-        ApiError::new(
+        ApiError::with_code(
             StatusCode::INTERNAL_SERVER_ERROR,
+            "rate_limiter_unavailable",
             "rate limiter unavailable",
         )
     })?;
@@ -98,11 +119,13 @@ pub(crate) fn authorize(
 }
 
 pub(crate) fn require_store(state: &AxumApiState) -> Result<Arc<LocalProductStore>, ApiError> {
-    state
-        .local_store
-        .as_ref()
-        .cloned()
-        .ok_or_else(|| ApiError::new(StatusCode::SERVICE_UNAVAILABLE, "local store unavailable"))
+    state.local_store.as_ref().cloned().ok_or_else(|| {
+        ApiError::with_code(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "local_store_unavailable",
+            "local store unavailable",
+        )
+    })
 }
 
 pub(crate) fn backup_dir_for_state(state: &AxumApiState, db_path: &Path) -> PathBuf {
@@ -116,7 +139,7 @@ pub(crate) fn backup_dir_for_state(state: &AxumApiState, db_path: &Path) -> Path
 }
 
 pub(crate) fn internal_error(error: String) -> ApiError {
-    ApiError::new(StatusCode::INTERNAL_SERVER_ERROR, error)
+    ApiError::with_code(StatusCode::INTERNAL_SERVER_ERROR, "internal_error", error)
 }
 
 fn auth_context_from_decision(
@@ -124,15 +147,36 @@ fn auth_context_from_decision(
     required_scope: &str,
 ) -> Result<ApiRequestContext, ApiError> {
     if !decision.allowed {
-        return Err(ApiError::new(StatusCode::UNAUTHORIZED, "unauthorized"));
+        return Err(ApiError::with_code(
+            StatusCode::UNAUTHORIZED,
+            "auth_required",
+            "unauthorized",
+        ));
     }
     if !decision.scopes.contains(required_scope) {
-        return Err(ApiError::new(StatusCode::FORBIDDEN, "forbidden"));
+        return Err(ApiError::with_code(
+            StatusCode::FORBIDDEN,
+            "missing_scope",
+            "forbidden",
+        ));
     }
     Ok(ApiRequestContext {
         tenant_id: decision.tenant_id.unwrap_or_else(|| "unknown".to_string()),
         api_key_id: decision.api_key_id.unwrap_or_else(|| "unknown".to_string()),
     })
+}
+
+fn default_error_code(status: StatusCode) -> &'static str {
+    match status {
+        StatusCode::BAD_REQUEST => "bad_request",
+        StatusCode::UNAUTHORIZED => "auth_required",
+        StatusCode::FORBIDDEN => "missing_scope",
+        StatusCode::NOT_FOUND => "not_found",
+        StatusCode::TOO_MANY_REQUESTS => "rate_limited",
+        StatusCode::SERVICE_UNAVAILABLE => "service_unavailable",
+        StatusCode::INTERNAL_SERVER_ERROR => "internal_error",
+        _ => "api_error",
+    }
 }
 
 pub(crate) fn cors_headers() -> HeaderMap {

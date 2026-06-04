@@ -24,8 +24,8 @@ export function Health({
           <span className={ready === "ready" ? "ok" : "warn"}>{ready === "ready" ? "ok" : "check"}</span>
         </div>
       </div>
-      <h3 style={{ marginTop: 16 }}>State Counts</h3>
-      <div className="stack" style={{ fontSize: 14 }}>
+      <h3 className="section-subhead">State Counts</h3>
+      <div className="stack readable-list">
         <div className="kv-row">
           <span className="muted">Dispatches</span>
           <span>{dashboard.counts.dispatches}</span>
@@ -43,8 +43,8 @@ export function Health({
           <span>{dashboard.counts.audit_events}</span>
         </div>
       </div>
-      <h3 style={{ marginTop: 16 }}>Boundaries</h3>
-      <div className="stack" style={{ fontSize: 14 }}>
+      <h3 className="section-subhead">Boundaries</h3>
+      <div className="stack readable-list">
         {Object.entries(dashboard.boundaries).map(([key, value]) => (
           <div key={key} className="kv-row">
             <span className="muted">{key}</span>

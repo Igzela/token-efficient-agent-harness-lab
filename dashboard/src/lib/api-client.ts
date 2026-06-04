@@ -1,13 +1,22 @@
-import type { ApiStatus, LocalDashboardState } from "./types";
+import type {
+  ApiStatus,
+  AuditListResponse,
+  DispatchListResponse,
+  LocalDashboardState,
+} from "./types";
 
 const BASE = "";
 const TOKEN_KEY = "acp_local_token";
 
 export class ApiError extends Error {
+  body: unknown;
+  code?: string;
   status: number;
-  constructor(status: number, message: string) {
+  constructor(status: number, message: string, code?: string, body?: unknown) {
     super(message);
     this.name = "ApiError";
+    this.body = body;
+    this.code = code;
     this.status = status;
   }
 }
@@ -45,12 +54,34 @@ async function fetchJson<T>(url: string, init?: RequestInit): Promise<T> {
       headers: { ...authHeaders(), ...(init?.headers ?? {}) },
     });
   } catch {
-    throw new ApiError(0, "Network error — is the engine running?");
+    throw new ApiError(0, "Network error - is the engine running?");
   }
   if (!res.ok) {
-    throw new ApiError(res.status, `${res.status} ${res.statusText}`);
+    let message = `${res.status} ${res.statusText}`;
+    let code: string | undefined;
+    let body: unknown;
+    try {
+      body = await res.json();
+      if (body && typeof body === "object") {
+        const record = body as Record<string, unknown>;
+        if (typeof record.error === "string") message = record.error;
+        if (typeof record.code === "string") code = record.code;
+      }
+    } catch {
+      body = undefined;
+    }
+    throw new ApiError(res.status, message, code, body);
   }
   return res.json();
+}
+
+function withQuery(path: string, params: Record<string, string | number | undefined>): string {
+  const query = new URLSearchParams();
+  Object.entries(params).forEach(([key, value]) => {
+    if (value !== undefined && value !== "") query.set(key, String(value));
+  });
+  const suffix = query.toString();
+  return `${BASE}${path}${suffix ? `?${suffix}` : ""}`;
 }
 
 export async function fetchHealth(): Promise<ApiStatus> {
@@ -63,6 +94,14 @@ export async function fetchReady(): Promise<ApiStatus> {
 
 export async function fetchDashboard(): Promise<LocalDashboardState> {
   return fetchJson<LocalDashboardState>(`${BASE}/api/v1/dashboard`);
+}
+
+export async function fetchDispatches(params: {
+  limit?: number;
+  offset?: number;
+  search?: string;
+} = {}): Promise<DispatchListResponse> {
+  return fetchJson<DispatchListResponse>(withQuery("/api/v1/dispatches", params));
 }
 
 export async function createApiKey(request: { user_id: string; role: string; scopes: string[]; expires_at?: number }): Promise<Record<string, unknown>> {
@@ -133,8 +172,12 @@ export async function restoreBackup(backupId: string): Promise<Record<string, un
   });
 }
 
-export async function fetchAudit(): Promise<Record<string, unknown>> {
-  return fetchJson<Record<string, unknown>>(`${BASE}/api/v1/audit`);
+export async function fetchAudit(params: {
+  limit?: number;
+  offset?: number;
+  search?: string;
+} = {}): Promise<AuditListResponse> {
+  return fetchJson<AuditListResponse>(withQuery("/api/v1/audit", params));
 }
 
 export async function fetchProviderHealth(): Promise<Record<string, unknown>> {

@@ -19,8 +19,9 @@ pub(crate) async fn api_dispatch(
 ) -> Result<impl IntoResponse, ApiError> {
     let context = authorize(&state, &headers, "dispatch:read")?;
     if request.raw_request.trim().is_empty() {
-        return Err(ApiError::new(
+        return Err(ApiError::with_code(
             axum::http::StatusCode::BAD_REQUEST,
+            "raw_request_required",
             "raw_request is required",
         ));
     }
@@ -127,8 +128,9 @@ pub(crate) async fn api_dispatch_detail(
                 "dispatch": dispatch,
             })),
         )),
-        None => Err(ApiError::new(
+        None => Err(ApiError::with_code(
             axum::http::StatusCode::NOT_FOUND,
+            "dispatch_not_found",
             "dispatch not found",
         )),
     }

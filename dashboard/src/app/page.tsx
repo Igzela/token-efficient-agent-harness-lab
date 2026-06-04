@@ -12,6 +12,7 @@ import type { LocalDashboardState } from "@/lib/types";
 import { AuthPanel } from "@/components/AuthPanel";
 import { AuditLog } from "@/components/AuditLog";
 import { Backups } from "@/components/Backups";
+import { BoundaryBadges } from "@/components/BoundaryBadges";
 import { Costs } from "@/components/Costs";
 import { Dispatches } from "@/components/Dispatches";
 import { Health } from "@/components/Health";
@@ -204,29 +205,74 @@ export default function DashboardPage() {
       })),
     [dashboard.dispatches],
   );
+  const hasLocalToken = Boolean(getStoredToken());
+  const setupSteps = useMemo(
+    () => [
+      {
+        detail: health === "healthy" ? "Engine API is reachable." : "Start the Rust engine on 127.0.0.1.",
+        label: "Engine reachable",
+        state: health === "healthy" ? "done" : "warn",
+      },
+      {
+        detail: ready === "ready" ? "Runtime readiness checks pass." : "Readiness endpoint is not reporting ready.",
+        label: "Runtime ready",
+        state: ready === "ready" ? "done" : "warn",
+      },
+      {
+        detail: hasLocalToken
+          ? "A local bearer token is stored for protected tabs."
+          : "Needed for backups, audit history, and team administration.",
+        label: "Admin key available",
+        state: hasLocalToken ? "done" : "todo",
+      },
+      {
+        detail: dashboard.counts.dispatches > 0
+          ? `${dashboard.counts.dispatches} dispatch record${dashboard.counts.dispatches === 1 ? "" : "s"} persisted.`
+          : "Create a noop dispatch through the API to populate history.",
+        label: "First dispatch recorded",
+        state: dashboard.counts.dispatches > 0 ? "done" : "todo",
+      },
+      {
+        detail: dashboard.counts.team_members > 0 || dashboard.counts.api_keys > 0
+          ? `${dashboard.counts.team_members} member${dashboard.counts.team_members === 1 ? "" : "s"}, ${dashboard.counts.api_keys} key${dashboard.counts.api_keys === 1 ? "" : "s"}.`
+          : "Add a local member and scoped API key when protected mode is enabled.",
+        label: "Team boundary configured",
+        state: dashboard.counts.team_members > 0 || dashboard.counts.api_keys > 0 ? "done" : "todo",
+      },
+    ],
+    [dashboard.counts.api_keys, dashboard.counts.dispatches, dashboard.counts.team_members, hasLocalToken, health, ready],
+  );
 
   return (
     <main>
       <div className="shell">
         <header className="topbar">
-          <div>
+          <div className="topbar-main">
             <p className="eyebrow">Agent Control Plane</p>
-            <h1>Operations Dashboard</h1>
+            <h1>Local Operations Console</h1>
+            <p className="hero-copy">
+              Monitor local dispatch history, team state, cost usage, audit events, and data
+              operations without enabling cloud or target-repo execution paths.
+            </p>
+            <BoundaryBadges
+              authStatus={authStatus}
+              boundaries={dashboard.boundaries}
+              hasToken={hasLocalToken}
+            />
           </div>
-          <div className="flex-row">
+          <div className="topbar-meta">
             {lastUpdated && authStatus === "ok" && (
-              <span className="muted" style={{ fontSize: 12 }}>
+              <span className="muted timestamp">
                 {lastUpdated.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}
               </span>
             )}
             {authStatus === "ok" && (
               <button onClick={() => refreshAll()} type="button" className="topbar-btn" aria-label="Refresh dashboard data">
-                ↻
+                Refresh
               </button>
             )}
-            <span className="pill info">Local</span>
             <button onClick={toggleTheme} type="button" className="topbar-btn" aria-label={theme === "dark" ? "Switch to light mode" : "Switch to dark mode"}>
-              {theme === "dark" ? "☀" : "☾"}
+              {theme === "dark" ? "Light" : "Dark"}
             </button>
           </div>
         </header>
@@ -240,12 +286,14 @@ export default function DashboardPage() {
         )}
 
         <section className="status-strip" aria-label="Status summary">
-          <Metric label="API health" value={health} tone={health === "healthy" ? "ok" : "warn"} />
-          <Metric label="Readiness" value={ready} tone={ready === "ready" ? "ok" : "warn"} />
+          <Metric label="API" value={health} detail={health === "healthy" ? "healthy" : "check engine"} tone={health === "healthy" ? "ok" : "warn"} />
+          <Metric label="Ready" value={ready} detail={ready === "ready" ? "ready" : "not ready"} tone={ready === "ready" ? "ok" : "warn"} />
           <Metric label="Dispatches" value={dashboard.counts.dispatches.toString()} detail="persisted" />
           <Metric label="Cost" value={`$${dashboard.costs.total_reserved_cost.toFixed(3)}`} detail="reserved" />
           <Metric label="Team" value={dashboard.counts.team_members.toString()} detail={`${dashboard.counts.api_keys} keys`} />
         </section>
+
+        <SetupChecklist steps={setupSteps} />
 
         <nav className="nav" aria-label="Dashboard sections" role="tablist">
           {tabs.map((item) => (
@@ -279,7 +327,12 @@ export default function DashboardPage() {
         </nav>
 
         <div role="tabpanel" id={`tabpanel-${tab}`} aria-labelledby={`tab-${tab}`}>
-          {tab === "dispatches" && <Dispatches dispatches={dashboard.dispatches} />}
+          {tab === "dispatches" && (
+            <Dispatches
+              dispatches={dashboard.dispatches}
+              totalDispatches={dashboard.counts.dispatches}
+            />
+          )}
           {tab === "routing" && <Routing rows={routingRows} />}
           {tab === "team" && (
             <Team dashboard={dashboard} refreshDashboard={(d) => setDashboard(d)} />
@@ -292,5 +345,35 @@ export default function DashboardPage() {
         </div>
       </div>
     </main>
+  );
+}
+
+function SetupChecklist({
+  steps,
+}: {
+  steps: Array<{ detail: string; label: string; state: string }>;
+}) {
+  const completed = steps.filter((step) => step.state === "done").length;
+  return (
+    <section className="setup-card" aria-label="Local setup checklist">
+      <div className="setup-heading">
+        <div>
+          <p className="label">Setup checklist</p>
+          <h2>{completed}/{steps.length} local readiness steps complete</h2>
+        </div>
+        <span className="pill info">local-only</span>
+      </div>
+      <ol className="setup-list">
+        {steps.map((step) => (
+          <li className={`setup-step setup-step-${step.state}`} key={step.label}>
+            <span aria-hidden="true" className="setup-dot" />
+            <div>
+              <strong>{step.label}</strong>
+              <p>{step.detail}</p>
+            </div>
+          </li>
+        ))}
+      </ol>
+    </section>
   );
 }
