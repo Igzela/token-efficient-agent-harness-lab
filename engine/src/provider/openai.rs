@@ -74,6 +74,10 @@ impl Provider for OpenAiProvider {
         self.config.enabled
     }
 
+    fn default_model(&self) -> Option<&str> {
+        Some(&self.config.model_id)
+    }
+
     async fn invoke(&self, request: &ProviderRequest) -> ProviderResult {
         if !self.config.enabled {
             return Err(ProviderError {

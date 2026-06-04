@@ -66,6 +66,9 @@ pub type ProviderResult = Result<ProviderResponse, ProviderError>;
 pub trait Provider: Send + Sync {
     fn provider_id(&self) -> &str;
     fn is_enabled(&self) -> bool;
+    fn default_model(&self) -> Option<&str> {
+        None
+    }
     async fn invoke(&self, request: &ProviderRequest) -> ProviderResult;
 }
 
