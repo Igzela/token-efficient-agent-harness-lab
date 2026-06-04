@@ -206,7 +206,10 @@ pub(crate) fn chrono_free_today() -> String {
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
         .as_secs();
-    let days = secs / 86400;
+    chrono_free_date_from_unix_days(secs / 86400)
+}
+
+fn chrono_free_date_from_unix_days(mut days: u64) -> String {
     let mut y = 1970i64;
     loop {
         let leap = is_leap(y);
@@ -214,6 +217,7 @@ pub(crate) fn chrono_free_today() -> String {
         if days < day_count as u64 {
             break;
         }
+        days -= day_count as u64;
         y += 1;
     }
     let mut remaining = days;
@@ -246,4 +250,20 @@ pub(crate) fn chrono_free_today() -> String {
 
 fn is_leap(y: i64) -> bool {
     (y % 4 == 0 && y % 100 != 0) || y % 400 == 0
+}
+
+#[cfg(test)]
+mod tests {
+    use super::chrono_free_date_from_unix_days;
+
+    #[test]
+    fn chrono_free_date_from_unix_days_advances_years() {
+        assert_eq!(chrono_free_date_from_unix_days(0), "1970-01-01");
+        assert_eq!(chrono_free_date_from_unix_days(365), "1971-01-01");
+        assert_eq!(chrono_free_date_from_unix_days(365 + 365), "1972-01-01");
+        assert_eq!(
+            chrono_free_date_from_unix_days(365 + 365 + 31 + 28),
+            "1972-02-29"
+        );
+    }
 }

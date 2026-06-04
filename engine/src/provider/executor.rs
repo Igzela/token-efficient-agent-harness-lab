@@ -48,9 +48,7 @@ impl Executor for ProviderExecutor {
         };
 
         let provider = self.provider.clone();
-        let response = tokio::task::block_in_place(|| {
-            tokio::runtime::Handle::current().block_on(provider.invoke(&request))
-        });
+        let response = invoke_provider_blocking(provider, &request);
 
         match response {
             Ok(resp) => {
@@ -129,6 +127,31 @@ impl Executor for ProviderExecutor {
             }
         }
     }
+}
+
+fn invoke_provider_blocking(
+    provider: Arc<dyn Provider>,
+    request: &ProviderRequest,
+) -> Result<super::ProviderResponse, ProviderError> {
+    let request = request.clone();
+    let provider_id = request.provider_id.clone();
+    std::thread::spawn(move || {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("provider runtime");
+        runtime.block_on(provider.invoke(&request))
+    })
+    .join()
+    .unwrap_or_else(|_| {
+        Err(ProviderError {
+            schema_version: "provider_error.v1".to_string(),
+            provider_id,
+            error_domain: "provider_runtime".to_string(),
+            message: "provider runtime thread panicked".to_string(),
+            retryable: true,
+        })
+    })
 }
 
 pub fn make_not_executed_result(
