@@ -38,6 +38,10 @@ fn axum_routes() -> Router<AxumApiState> {
             get(health::api_openapi).options(cors_preflight),
         )
         .route(
+            "/api/v1/metrics",
+            get(operations::api_metrics).options(cors_preflight),
+        )
+        .route(
             "/api/v1/dispatch",
             post(dispatch::api_dispatch).options(cors_preflight),
         )
@@ -96,6 +100,10 @@ fn axum_routes() -> Router<AxumApiState> {
             delete(backups::api_delete_backup).options(cors_preflight),
         )
         .route(
+            "/api/v1/backups/:backup_id/verify",
+            get(backups::api_verify_backup).options(cors_preflight),
+        )
+        .route(
             "/api/v1/keys",
             get(keys::api_list_keys)
                 .post(keys::api_create_key)
@@ -136,6 +144,10 @@ fn axum_routes() -> Router<AxumApiState> {
         .route(
             "/api/v1/backups/:backup_id/restore",
             post(backups::api_restore_backup).options(cors_preflight),
+        )
+        .route(
+            "/api/v1/backups/:backup_id/restore/dry-run",
+            post(backups::api_restore_backup_dry_run).options(cors_preflight),
         )
 }
 

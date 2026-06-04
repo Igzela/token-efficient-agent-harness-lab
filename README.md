@@ -4,7 +4,7 @@
 
 Token-Efficient Agent Harness Lab is a local deterministic harness for studying event-sourced agent workflow infrastructure from Stage 0 through Stage 4. It includes JSONL event validation, projections, project/task workflow primitives, quality gates, controlled intelligence stubs, and Stage 4 runtime-control abstractions.
 
-Current status: Stage 0-4 complete, Harness App MVP0-MVP8 complete, Trials 0-5 closed, and the agent-control-plane cutover is complete for the Rust + TypeScript stack. The primary local runtime is Rust `engine/` with axum API, SQLite state, provider safety gates, permission governance, cost governance, data operations, native packaging, and dashboard controls. The primary UI and SDK surface is TypeScript (`dashboard/` and `sdk/typescript/`). Python is retained as the Python REST SDK and utility scripts only; the legacy Python reference implementation has been retired. Security hardening complete (1163 Rust tests pass).
+Current status: Stage 0-4 complete, Harness App MVP0-MVP8 complete, Trials 0-5 closed, and the agent-control-plane cutover is complete for the Rust + TypeScript stack. The primary local runtime is Rust `engine/` with axum API, SQLite state, provider safety gates, permission governance, cost governance, data operations, native packaging, dashboard controls, and production-like local beta operations checks. The primary UI and SDK surface is TypeScript (`dashboard/` and `sdk/typescript/`). Python is retained as the Python REST SDK and utility scripts only; the legacy Python reference implementation has been retired. Security hardening complete (1166 Rust tests pass).
 
 **New sessions should start with [docs/SESSION_START_HERE.md](docs/SESSION_START_HERE.md).**
 
@@ -41,7 +41,7 @@ cargo test -p engine
 cd sdk/python && PYTHONPATH=src uv run --no-project python -m unittest discover -s tests
 ```
 
-Current result: 1163 Rust tests pass. Python SDK tests run separately under `sdk/python/`.
+Current result: 1166 Rust tests pass. Python SDK tests run separately under `sdk/python/`.
 
 ## How To Run Without Docker
 
@@ -103,6 +103,28 @@ cargo run -p engine
 
 `ACP_PROVIDER_TYPE=openai_compatible` and `ACP_PROVIDER_TYPE=anthropic` are present for local beta validation only. They require `ACP_ENABLE_PROVIDER_EXECUTION=1`, explicit provider environment configuration, `ACP_REQUIRE_AUTH=1`, a local admin API key, and narrow network exposure. Do not commit provider credentials. Real provider execution remains default-off and is not used in CI.
 
+Production-like local beta profile:
+
+```bash
+cp .env.production-like.local.example .env.production-like.local
+uv run --no-project python scripts/bootstrap_local_auth.py --json
+# Fill ACP_ADMIN_API_KEY in .env.production-like.local and export the provider secret locally.
+export ACP_CN_ANTHROPIC_API_KEY=<provider-secret>
+scripts/start_production_like_local.sh
+```
+
+This profile keeps auth, cost caps, audit, backups, and explicit provider execution enabled for local beta trials. It is still local-only and is not a cloud production deployment.
+
+Operational checks:
+
+```bash
+uv run --no-project python scripts/acp_ops_check.py --token "$ACP_ADMIN_API_KEY"
+uv run --no-project python scripts/acp_restore_smoke.py --token "$ACP_ADMIN_API_KEY"
+uv run --no-project python scripts/acp_secret_scan.py
+```
+
+`acp_restore_smoke.py` creates a local backup, verifies checksum/integrity, and runs restore dry-run by default. Real restore requires `--execute-restore --confirm-execute-restore`.
+
 ## Local API Examples
 
 ```bash
@@ -122,6 +144,18 @@ curl -X POST http://127.0.0.1:8080/api/v1/backups \
   -H 'content-type: application/json' \
   -H "authorization: $(printf 'Bearer %s' "$ACP_ADMIN_API_KEY")" \
   -d '{"label":"manual","confirm_local_backup":true}'
+```
+
+Verify a backup and dry-run restore without modifying the live local database:
+
+```bash
+curl -H "authorization: $(printf 'Bearer %s' "$ACP_ADMIN_API_KEY")" \
+  http://127.0.0.1:8080/api/v1/backups/backup-0001/verify
+
+curl -X POST http://127.0.0.1:8080/api/v1/backups/backup-0001/restore/dry-run \
+  -H 'content-type: application/json' \
+  -H "authorization: $(printf 'Bearer %s' "$ACP_ADMIN_API_KEY")" \
+  -d '{"confirm_restore_dry_run":true}'
 ```
 
 ## TypeScript SDK Example

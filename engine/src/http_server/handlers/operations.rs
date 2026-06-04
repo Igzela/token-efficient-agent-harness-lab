@@ -1,0 +1,78 @@
+use axum::extract::State;
+use axum::http::HeaderMap;
+use axum::response::IntoResponse;
+use axum::Json;
+use serde_json::json;
+
+use crate::http_server::middleware::{
+    authorize, backup_dir_for_state, cors_headers, internal_error, ApiError,
+};
+use crate::http_server::state::AxumApiState;
+use crate::http_server::AXUM_API_SCHEMA_VERSION;
+use crate::storage::backup_manager::BackupManager;
+
+pub(crate) async fn api_metrics(
+    State(state): State<AxumApiState>,
+    headers: HeaderMap,
+) -> Result<impl IntoResponse, ApiError> {
+    authorize(&state, &headers, "health:read")?;
+
+    let mut dispatch_count = 0;
+    let mut audit_event_count = 0;
+    let mut api_key_count = 0;
+    let mut backup_count = 0;
+    let mut total_reserved_cost = 0.0;
+    let mut total_estimated_cost_usd = 0.0;
+    let mut total_input_tokens = 0;
+    let mut total_output_tokens = 0;
+    let mut latest_backup_created_at = serde_json::Value::Null;
+
+    if let Some(store) = &state.local_store {
+        let stats = store.stats().map_err(internal_error)?;
+        dispatch_count = stats["dispatches"].as_i64().unwrap_or(0);
+        audit_event_count = stats["audit_events"].as_i64().unwrap_or(0);
+        api_key_count = stats["api_keys"].as_i64().unwrap_or(0);
+
+        let costs = store.cost_summary().map_err(internal_error)?;
+        total_reserved_cost = costs["total_reserved_cost"].as_f64().unwrap_or(0.0);
+        total_estimated_cost_usd = costs["total_estimated_cost_usd"].as_f64().unwrap_or(0.0);
+        total_input_tokens = costs["total_input_tokens"].as_i64().unwrap_or(0);
+        total_output_tokens = costs["total_output_tokens"].as_i64().unwrap_or(0);
+
+        if !store.is_memory() {
+            let backup_dir = backup_dir_for_state(&state, store.db_path());
+            let manager = BackupManager::new(&backup_dir).map_err(internal_error)?;
+            let backups = manager.list_backups().map_err(internal_error)?;
+            backup_count = backups.len() as i64;
+            latest_backup_created_at = backups
+                .iter()
+                .max_by(|a, b| a.created_at.cmp(&b.created_at))
+                .map(|b| json!(b.created_at))
+                .unwrap_or(serde_json::Value::Null);
+        }
+    }
+
+    Ok((
+        cors_headers(),
+        Json(json!({
+            "schema_version": AXUM_API_SCHEMA_VERSION,
+            "executor_type": state.executor_type(),
+            "auth_required": state.tenant_resolver.is_some(),
+            "provider_enabled": state.provider_enabled(),
+            "local_store": state.local_store.is_some(),
+            "dispatch_count": dispatch_count,
+            "audit_event_count": audit_event_count,
+            "api_key_count": api_key_count,
+            "backup_count": backup_count,
+            "latest_backup_created_at": latest_backup_created_at,
+            "total_reserved_cost": total_reserved_cost,
+            "total_estimated_cost_usd": total_estimated_cost_usd,
+            "total_input_tokens": total_input_tokens,
+            "total_output_tokens": total_output_tokens,
+            "boundaries": crate::storage::local_product_store::local_boundaries(
+                state.executor_type(),
+                state.provider_enabled(),
+            ),
+        })),
+    ))
+}

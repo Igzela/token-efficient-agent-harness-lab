@@ -63,6 +63,11 @@ pub struct RestoreApiRequest {
     pub confirm_restore: Option<bool>,
 }
 
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+pub struct RestoreDryRunApiRequest {
+    pub confirm_restore_dry_run: Option<bool>,
+}
+
 fn path_parameter(name: &str) -> Value {
     json!({
         "name": name,
@@ -176,6 +181,13 @@ pub fn openapi_document() -> serde_json::Value {
                     "responses": {"200": {"description": "Dashboard state"}}
                 }
             },
+            "/api/v1/metrics": {
+                "get": {
+                    "summary": "Read local operational metrics",
+                    "description": "Requires health:read scope. Reports dispatch, audit, key, backup, cost, token, provider, auth, and local boundary summary.",
+                    "responses": {"200": {"description": "Operational metrics"}}
+                }
+            },
             "/api/v1/config": {
                 "get": {
                     "summary": "Read local configuration",
@@ -261,7 +273,9 @@ pub fn openapi_document() -> serde_json::Value {
                     "summary": "Read local audit log",
                     "parameters": [
                         {"name": "limit", "in": "query", "schema": {"type": "integer", "default": 100, "minimum": 0, "maximum": 500}},
-                        {"name": "offset", "in": "query", "schema": {"type": "integer", "default": 0, "minimum": 0}}
+                        {"name": "offset", "in": "query", "schema": {"type": "integer", "default": 0, "minimum": 0}},
+                        {"name": "search", "in": "query", "schema": {"type": "string"}, "description": "Case-insensitive match across audit actor, action, resource, and details."},
+                        {"name": "redact", "in": "query", "schema": {"type": "boolean", "default": false}, "description": "When true, sensitive detail keys are redacted in the response."}
                     ],
                     "responses": {"200": {"description": "Audit log"}}
                 }
@@ -296,6 +310,18 @@ pub fn openapi_document() -> serde_json::Value {
                     "parameters": [path_parameter("backup_id")],
                     "responses": {
                         "200": {"description": "Backup deleted"},
+                        "404": {"description": "Backup not found"},
+                        "403": {"description": "Forbidden"}
+                    }
+                }
+            },
+            "/api/v1/backups/{backup_id}/verify": {
+                "get": {
+                    "summary": "Verify a local backup",
+                    "description": "Requires backup:admin scope. Checks backup checksum, SQLite integrity, and table row counts without modifying the live store.",
+                    "parameters": [path_parameter("backup_id")],
+                    "responses": {
+                        "200": {"description": "Backup verification result"},
                         "404": {"description": "Backup not found"},
                         "403": {"description": "Forbidden"}
                     }
@@ -448,6 +474,21 @@ pub fn openapi_document() -> serde_json::Value {
                     })),
                     "responses": {
                         "200": {"description": "Restore result"},
+                        "400": {"description": "Missing confirmation"},
+                        "404": {"description": "Backup not found"}
+                    }
+                }
+            },
+            "/api/v1/backups/{backup_id}/restore/dry-run": {
+                "post": {
+                    "summary": "Dry-run a backup restore",
+                    "description": "Requires backup:admin scope and confirm_restore_dry_run=true. Verifies the backup and reports whether restore would overwrite the live app-owned SQLite DB without modifying it.",
+                    "parameters": [path_parameter("backup_id")],
+                    "requestBody": json_request_body(&["confirm_restore_dry_run"], json!({
+                        "confirm_restore_dry_run": {"type": "boolean", "const": true}
+                    })),
+                    "responses": {
+                        "200": {"description": "Restore dry-run verification result"},
                         "400": {"description": "Missing confirmation"},
                         "404": {"description": "Backup not found"}
                     }

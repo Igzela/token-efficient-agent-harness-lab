@@ -103,6 +103,8 @@ ALLOWED_TEST_IMPORTS: dict[str, set[str]] = {
     "sdk/python/src/agent_control_plane_sdk/client.py": {"urllib.request", "urllib.error"},
     "sdk/python/tests/test_client.py": {"urllib.error"},
     "scripts/acp_local_doctor.py": {"socket"},
+    "scripts/acp_ops_check.py": {"urllib.error", "urllib.request"},
+    "scripts/acp_restore_smoke.py": {"urllib.error", "urllib.request"},
     "scripts/smoke_native_runtime.py": {"socket", "urllib.error", "urllib.request"},
     "scripts/trial4_real_use_pilot.py": {
         "socket",

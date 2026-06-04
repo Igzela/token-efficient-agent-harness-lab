@@ -480,6 +480,135 @@ async fn axum_audit_filters_by_search_query() {
 }
 
 #[tokio::test]
+async fn axum_audit_redacts_sensitive_details_when_requested() {
+    let dir = tempdir().unwrap();
+    let store = LocalProductStore::new(dir.path().join("team.db")).unwrap();
+    store
+        .append_audit(
+            "key-admin",
+            "provider.configure",
+            "provider-local",
+            &json!({
+                "api_key": "secret123",
+                "nested": {"password": "pw"},
+                "safe": "kept",
+            }),
+        )
+        .unwrap();
+
+    let app = build_axum_router(AxumApiState::new().with_local_store(store));
+    let unredacted = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(Method::GET)
+                .uri("/api/v1/audit?limit=1")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(unredacted.status(), StatusCode::OK);
+    let body = response_json(unredacted).await;
+    assert_eq!(body["redacted"], false);
+    assert_eq!(body["events"][0]["details"]["api_key"], "secret123");
+
+    let redacted = app
+        .oneshot(
+            Request::builder()
+                .method(Method::GET)
+                .uri("/api/v1/audit?limit=1&redact=true")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(redacted.status(), StatusCode::OK);
+    let body = response_json(redacted).await;
+    assert_eq!(body["redacted"], true);
+    assert_eq!(body["events"][0]["details"]["api_key"], "***");
+    assert_eq!(body["events"][0]["details"]["nested"]["password"], "***");
+    assert_eq!(body["events"][0]["details"]["safe"], "kept");
+}
+
+#[tokio::test]
+async fn axum_metrics_reports_operations_summary() {
+    let dir = tempdir().unwrap();
+    let store = LocalProductStore::new(dir.path().join("team.db")).unwrap();
+    store
+        .record_dispatch(
+            "Metrics dispatch",
+            "api",
+            &json!({
+                "record": {"dispatch_id": "disp-metrics", "final_status": "provider_completed"},
+                "decision": {"selected_tier": "balanced_worker", "budget_reservation": {"reserved_cost": 0.25}},
+                "analysis": {"risk_level": "low"},
+                "execution_result": {
+                    "executor_type": "provider",
+                    "input_tokens": 100,
+                    "output_tokens": 50,
+                    "estimated_cost": 0.05,
+                    "latency_ms": 1200
+                },
+            }),
+            "test",
+        )
+        .unwrap();
+    store
+        .record_api_key_metadata(
+            "key-admin",
+            "user-admin",
+            "admin",
+            &["health:read".to_string()],
+            "test",
+        )
+        .unwrap();
+
+    let mut resolver = TenantResolver::new();
+    let scopes = HashSet::from(["health:read".to_string()]);
+    resolver.add_tenant(Tenant {
+        tenant_id: "local-team".to_string(),
+        name: "Local Team".to_string(),
+        scopes: scopes.clone(),
+        rate_limit: Some(100),
+    });
+    let (_key, raw_key) = resolver
+        .create_api_key("local-team", Some(scopes), None, 1.0)
+        .unwrap();
+
+    let app = build_axum_router(AxumApiState::new().with_local_store(store).with_auth(
+        resolver,
+        RateLimiter::new(60.0, 100),
+        Some(100),
+        1.0,
+    ));
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method(Method::GET)
+                .uri("/api/v1/metrics")
+                .header(header::AUTHORIZATION, format!("Bearer {raw_key}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = response_json(response).await;
+    assert_eq!(body["auth_required"], true);
+    assert_eq!(body["local_store"], true);
+    assert_eq!(body["dispatch_count"], 1);
+    assert_eq!(body["api_key_count"], 1);
+    assert!(body["audit_event_count"].as_i64().unwrap() >= 2);
+    assert_eq!(body["total_reserved_cost"], 0.25);
+    assert_eq!(body["total_estimated_cost_usd"], 0.05);
+    assert_eq!(body["total_input_tokens"], 100);
+    assert_eq!(body["total_output_tokens"], 50);
+    assert_eq!(body["boundaries"]["target_repository_writes"], "disabled");
+}
+
+#[tokio::test]
 async fn axum_auth_rejects_missing_key_when_configured() {
     let state = AxumApiState::new().with_auth(
         TenantResolver::new(),
@@ -635,6 +764,132 @@ async fn axum_backup_requires_auth_boundary_even_with_confirmation() {
 }
 
 #[tokio::test]
+async fn axum_backup_verify_and_restore_dry_run_are_non_destructive() {
+    let dir = tempdir().unwrap();
+    let db_path = dir.path().join("team.db");
+    let store = LocalProductStore::new(&db_path).unwrap();
+    store
+        .record_dispatch(
+            "Backup verification row",
+            "api",
+            &json!({
+                "record": {"dispatch_id": "disp-backup-verify", "final_status": "not_executed"},
+                "decision": {"selected_tier": "cheap_executor", "budget_reservation": {"reserved_cost": 0.1}},
+                "analysis": {"risk_level": "low"},
+                "execution_result": {"executor_type": "noop"},
+            }),
+            "test",
+        )
+        .unwrap();
+
+    let mut resolver = TenantResolver::new();
+    let admin_scopes = HashSet::from([
+        "backup:admin".to_string(),
+        "audit:read".to_string(),
+        "health:read".to_string(),
+    ]);
+    resolver.add_tenant(Tenant {
+        tenant_id: "local-team".to_string(),
+        name: "Local Team".to_string(),
+        scopes: admin_scopes.clone(),
+        rate_limit: Some(100),
+    });
+    let (_key, raw_key) = resolver
+        .create_api_key("local-team", Some(admin_scopes), None, 1.0)
+        .unwrap();
+
+    let app = build_axum_router(
+        AxumApiState::new()
+            .with_local_store(store)
+            .with_backup_dir(dir.path().join("backups"))
+            .with_auth(resolver, RateLimiter::new(60.0, 100), Some(100), 1.0),
+    );
+
+    let create = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(Method::POST)
+                .uri("/api/v1/backups")
+                .header(header::AUTHORIZATION, format!("Bearer {raw_key}"))
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(
+                    json!({"label": "verify", "confirm_local_backup": true}).to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(create.status(), StatusCode::OK);
+    let create_body = response_json(create).await;
+    let backup_id = create_body["backup"]["backup_id"].as_str().unwrap();
+
+    let verify = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(Method::GET)
+                .uri(format!("/api/v1/backups/{backup_id}/verify"))
+                .header(header::AUTHORIZATION, format!("Bearer {raw_key}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(verify.status(), StatusCode::OK);
+    let verify_body = response_json(verify).await;
+    assert_eq!(verify_body["verification"]["success"], true);
+    assert_eq!(verify_body["verification"]["checksum_ok"], true);
+    assert_eq!(verify_body["verification"]["integrity_ok"], true);
+    assert_eq!(verify_body["verification"]["dry_run"], false);
+    assert!(
+        verify_body["verification"]["records_checked"]
+            .as_i64()
+            .unwrap()
+            > 0
+    );
+
+    let dry_run = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(Method::POST)
+                .uri(format!("/api/v1/backups/{backup_id}/restore/dry-run"))
+                .header(header::AUTHORIZATION, format!("Bearer {raw_key}"))
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(
+                    json!({"confirm_restore_dry_run": true}).to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(dry_run.status(), StatusCode::OK);
+    let dry_run_body = response_json(dry_run).await;
+    assert_eq!(dry_run_body["restore_dry_run"]["success"], true);
+    assert_eq!(dry_run_body["restore_dry_run"]["dry_run"], true);
+    assert_eq!(
+        dry_run_body["restore_dry_run"]["restore_would_overwrite"],
+        true
+    );
+
+    let integrity = app
+        .oneshot(
+            Request::builder()
+                .method(Method::GET)
+                .uri("/api/v1/storage/integrity")
+                .header(header::AUTHORIZATION, format!("Bearer {raw_key}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(integrity.status(), StatusCode::OK);
+    let integrity_body = response_json(integrity).await;
+    assert_eq!(integrity_body["integrity"]["status"], "ok");
+}
+
+#[tokio::test]
 async fn axum_auth_allows_scoped_dispatch_key() {
     let mut resolver = TenantResolver::new();
     let scopes = HashSet::from(["dispatch:read".to_string(), "health:read".to_string()]);
@@ -747,6 +1002,13 @@ async fn axum_openapi_document_lists_dispatch_endpoint() {
     let body = response_json(response).await;
     assert_eq!(body["openapi"], "3.1.0");
     assert!(body["paths"]["/api/v1/dispatch"]["post"].is_object());
+    assert!(body["paths"]["/api/v1/metrics"]["get"].is_object());
+    assert!(body["paths"]["/api/v1/backups/{backup_id}/verify"]["get"].is_object());
+    assert!(body["paths"]["/api/v1/backups/{backup_id}/restore/dry-run"]["post"].is_object());
+    assert_eq!(
+        body["paths"]["/api/v1/audit"]["get"]["parameters"][3]["name"],
+        "redact"
+    );
     assert!(body["paths"]["/api/v1/provider/audit"]["get"].is_object());
     assert_eq!(
         body["paths"]["/api/v1/provider/audit"]["get"]["parameters"][0]["name"],

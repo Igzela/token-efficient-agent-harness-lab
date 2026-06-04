@@ -1,8 +1,10 @@
 import type {
   ApiStatus,
   AuditListResponse,
+  BackupVerification,
   DispatchListResponse,
   LocalDashboardState,
+  OperationsMetrics,
 } from "./types";
 
 const BASE = "";
@@ -75,7 +77,7 @@ async function fetchJson<T>(url: string, init?: RequestInit): Promise<T> {
   return res.json();
 }
 
-function withQuery(path: string, params: Record<string, string | number | undefined>): string {
+function withQuery(path: string, params: Record<string, string | number | boolean | undefined>): string {
   const query = new URLSearchParams();
   Object.entries(params).forEach(([key, value]) => {
     if (value !== undefined && value !== "") query.set(key, String(value));
@@ -172,12 +174,34 @@ export async function restoreBackup(backupId: string): Promise<Record<string, un
   });
 }
 
+export async function verifyBackup(backupId: string): Promise<{ schema_version: "axum_api.v1"; verification: BackupVerification }> {
+  return fetchJson<{ schema_version: "axum_api.v1"; verification: BackupVerification }>(
+    `${BASE}/api/v1/backups/${encodeURIComponent(backupId)}/verify`,
+  );
+}
+
+export async function restoreBackupDryRun(backupId: string): Promise<{ schema_version: "axum_api.v1"; restore_dry_run: BackupVerification }> {
+  return fetchJson<{ schema_version: "axum_api.v1"; restore_dry_run: BackupVerification }>(
+    `${BASE}/api/v1/backups/${encodeURIComponent(backupId)}/restore/dry-run`,
+    {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ confirm_restore_dry_run: true }),
+    },
+  );
+}
+
 export async function fetchAudit(params: {
   limit?: number;
   offset?: number;
+  redact?: boolean;
   search?: string;
 } = {}): Promise<AuditListResponse> {
   return fetchJson<AuditListResponse>(withQuery("/api/v1/audit", params));
+}
+
+export async function fetchMetrics(): Promise<OperationsMetrics> {
+  return fetchJson<OperationsMetrics>(`${BASE}/api/v1/metrics`);
 }
 
 export async function fetchProviderHealth(): Promise<Record<string, unknown>> {

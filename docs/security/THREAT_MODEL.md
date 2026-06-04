@@ -1,6 +1,6 @@
 # Threat Model — Local Agent Control Plane
 
-Last updated: 2026-05-30
+Last updated: 2026-06-04
 Scope: Rust engine, TypeScript dashboard/SDK, local SQLite state, env-gated provider adapters
 
 ---
@@ -44,7 +44,9 @@ Scope: Rust engine, TypeScript dashboard/SDK, local SQLite state, env-gated prov
 
 **Controls:**
 - `check_security_baseline.py` scans for credential patterns in source
+- `scripts/acp_secret_scan.py` scans tracked files plus local env files before real local trials
 - `redact_secrets()` and `redact_audit_fields()` in provider audit path
+- `/api/v1/audit?redact=true` redacts sensitive audit detail keys for operator-facing review
 - API keys are hashed; raw keys shown once on creation/rotation
 - `.env` is gitignored; `.env.example` documents vars without values
 
@@ -130,6 +132,9 @@ Scope: Rust engine, TypeScript dashboard/SDK, local SQLite state, env-gated prov
 
 **Controls:**
 - `confirm_restore=true` required for restore endpoint
+- `GET /api/v1/backups/:id/verify` checks checksum, SQLite integrity, and table row counts without modifying the live store
+- `POST /api/v1/backups/:id/restore/dry-run` reports restore readiness without overwriting the live store
+- `scripts/acp_restore_smoke.py` exercises create backup → verify → restore dry-run by default
 - `restore_backup_with_verify()` performs post-restore integrity check
 - Backup creation requires `backup:admin` scope and `confirm_local_backup=true`
 - Admin audit events for all backup operations
@@ -169,6 +174,9 @@ Scope: Rust engine, TypeScript dashboard/SDK, local SQLite state, env-gated prov
 | C-014 | Thread-safe plugin execution (RLock) | T-003 |
 | C-015 | CORS headers on all API responses | T-003 |
 | C-016 | Request body size limit on HTTP server | T-003 |
+| C-017 | Production-like local ops check (`acp_ops_check.py`) | T-003, T-004, T-006 |
+| C-018 | Backup verify and restore dry-run | T-007 |
+| C-019 | Local env secret scan (`acp_secret_scan.py`) | T-001 |
 
 ---
 

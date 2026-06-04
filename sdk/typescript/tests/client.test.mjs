@@ -101,9 +101,23 @@ test("audit sends pagination query params", async () => {
   const { calls, fetchImpl } = captureFetch({ schema_version: "axum_api.v1", events: [] });
   const client = new AgentControlPlaneClient({ baseUrl: "http://127.0.0.1:8080", fetchImpl });
 
-  await client.audit({ limit: 25, offset: 50 });
+  await client.audit({ limit: 25, offset: 50, redact: true, search: "provider key" });
 
-  assert.equal(calls[0].url, "http://127.0.0.1:8080/api/v1/audit?limit=25&offset=50");
+  assert.equal(
+    calls[0].url,
+    "http://127.0.0.1:8080/api/v1/audit?limit=25&offset=50&redact=true&search=provider+key",
+  );
+  assert.equal(calls[0].init.method, "GET");
+});
+
+test("metrics sends GET to operations metrics endpoint", async () => {
+  const { calls, fetchImpl } = captureFetch({ schema_version: "axum_api.v1", dispatch_count: 0 });
+  const client = new AgentControlPlaneClient({ baseUrl: "http://127.0.0.1:8080", fetchImpl });
+
+  const result = await client.metrics();
+
+  assert.equal(result.dispatch_count, 0);
+  assert.equal(calls[0].url, "http://127.0.0.1:8080/api/v1/metrics");
   assert.equal(calls[0].init.method, "GET");
 });
 
@@ -202,6 +216,29 @@ test("deleteBackup sends DELETE to backups/:backupId", async () => {
   assert.equal(result.ok, true);
   assert.equal(calls[0].url, "http://127.0.0.1:8080/api/v1/backups/backup-0001");
   assert.equal(calls[0].init.method, "DELETE");
+});
+
+test("verifyBackup sends GET to backups/:id/verify", async () => {
+  const { calls, fetchImpl } = captureFetch({ verification: { backup_id: "backup/0001", success: true } });
+  const client = new AgentControlPlaneClient({ baseUrl: "http://127.0.0.1:8080", fetchImpl });
+
+  const result = await client.verifyBackup("backup/0001");
+
+  assert.equal(result.verification.success, true);
+  assert.equal(calls[0].url, "http://127.0.0.1:8080/api/v1/backups/backup%2F0001/verify");
+  assert.equal(calls[0].init.method, "GET");
+});
+
+test("restoreBackupDryRun posts explicit dry-run confirmation", async () => {
+  const { calls, fetchImpl } = captureFetch({ restore_dry_run: { backup_id: "backup-0001", dry_run: true, success: true } });
+  const client = new AgentControlPlaneClient({ baseUrl: "http://127.0.0.1:8080", fetchImpl });
+
+  const result = await client.restoreBackupDryRun("backup-0001");
+
+  assert.equal(result.restore_dry_run.dry_run, true);
+  assert.equal(calls[0].url, "http://127.0.0.1:8080/api/v1/backups/backup-0001/restore/dry-run");
+  assert.equal(calls[0].init.method, "POST");
+  assert.deepEqual(JSON.parse(calls[0].init.body), { confirm_restore_dry_run: true });
 });
 
 test("storageIntegrity sends GET to storage/integrity", async () => {

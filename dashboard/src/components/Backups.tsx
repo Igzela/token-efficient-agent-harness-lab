@@ -1,5 +1,14 @@
 import { useEffect, useState } from "react";
-import { ApiError, createBackup, deleteBackup, fetchBackups, restoreBackup } from "@/lib/api-client";
+import {
+  ApiError,
+  createBackup,
+  deleteBackup,
+  fetchBackups,
+  restoreBackup,
+  restoreBackupDryRun,
+  verifyBackup,
+} from "@/lib/api-client";
+import type { BackupVerification } from "@/lib/types";
 import { ConfirmDialog, type ConfirmAction } from "./ConfirmDialog";
 import { EmptyState } from "./EmptyState";
 import { StateBanner } from "./StateBanner";
@@ -31,6 +40,7 @@ export function Backups() {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<BackupError | null>(null);
   const [confirm, setConfirm] = useState<ConfirmAction>(null);
+  const [verification, setVerification] = useState<BackupVerification | null>(null);
 
   function load() {
     fetchBackups()
@@ -72,6 +82,32 @@ export function Backups() {
     }
   }
 
+  async function handleVerify(backupId: string) {
+    setBusy(true);
+    setError(null);
+    try {
+      const response = await verifyBackup(backupId);
+      setVerification(response.verification);
+    } catch (e) {
+      setError(backupError(e, "Backup verification failed"));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function handleDryRun(backupId: string) {
+    setBusy(true);
+    setError(null);
+    try {
+      const response = await restoreBackupDryRun(backupId);
+      setVerification(response.restore_dry_run);
+    } catch (e) {
+      setError(backupError(e, "Restore dry-run failed"));
+    } finally {
+      setBusy(false);
+    }
+  }
+
   return (
     <section className="card stack">
       <div className="flex-between">
@@ -90,6 +126,24 @@ export function Backups() {
         </StateBanner>
       )}
       {error?.type === "error" && <StateBanner title="Backup state unavailable" tone="risk"><p>{error.message}</p></StateBanner>}
+      {verification && (
+        <StateBanner
+          title={verification.dry_run ? "Restore dry-run result" : "Backup verification result"}
+          tone={verification.success ? "ok" : "risk"}
+        >
+          <p>
+            <strong>{verification.backup_id}</strong>: checksum {verification.checksum_ok ? "ok" : "failed"},
+            integrity {verification.integrity_ok ? "ok" : "failed"},
+            records checked {verification.records_checked}.
+          </p>
+          {verification.restore_would_overwrite && (
+            <p>Dry-run target exists and would be overwritten only after explicit restore confirmation.</p>
+          )}
+          {verification.errors.length > 0 && (
+            <pre>{verification.errors.join("\n")}</pre>
+          )}
+        </StateBanner>
+      )}
       <ConfirmDialog action={confirm} onConfirm={doConfirm} onCancel={() => setConfirm(null)} />
       {backups.length === 0 && !error ? (
         <EmptyState
@@ -127,6 +181,20 @@ export function Backups() {
                 <td>{String(b.created_at)}</td>
                 <td>{String(b.size_bytes)} bytes</td>
                 <td className="action-cell">
+                  <button
+                    disabled={busy}
+                    onClick={() => handleVerify(String(b.backup_id))}
+                    type="button"
+                  >
+                    Verify
+                  </button>
+                  <button
+                    disabled={busy}
+                    onClick={() => handleDryRun(String(b.backup_id))}
+                    type="button"
+                  >
+                    Dry-run
+                  </button>
                   <button
                     disabled={busy}
                     onClick={() => setConfirm({ type: "restoreBackup", backupId: String(b.backup_id) })}

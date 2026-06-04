@@ -9,6 +9,7 @@ use crate::http_server::middleware::{
 };
 use crate::http_server::state::AxumApiState;
 use crate::http_server::AXUM_API_SCHEMA_VERSION;
+use crate::provider::redaction::redact_audit_fields;
 
 pub(crate) async fn api_audit(
     State(state): State<AxumApiState>,
@@ -28,11 +29,26 @@ pub(crate) async fn api_audit(
         .unwrap_or(0)
         .max(0);
     let search = params.get("search").map(String::as_str);
+    let redact = params
+        .get("redact")
+        .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+        .unwrap_or(false);
+    let mut events = store
+        .search_audit_events(limit, offset, search)
+        .map_err(internal_error)?;
+    if redact {
+        for event in &mut events {
+            if let Some(details) = event.get_mut("details") {
+                *details = redact_audit_fields(details);
+            }
+        }
+    }
     Ok((
         cors_headers(),
         Json(json!({
             "schema_version": AXUM_API_SCHEMA_VERSION,
-            "events": store.search_audit_events(limit, offset, search).map_err(internal_error)?,
+            "redacted": redact,
+            "events": events,
         })),
     ))
 }

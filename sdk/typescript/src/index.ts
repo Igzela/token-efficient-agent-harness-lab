@@ -19,6 +19,8 @@ import type {
   BackupCreateResponse,
   BackupDeleteResponse,
   BackupRestoreResponse,
+  BackupRestoreDryRunResponse,
+  BackupVerifyResponse,
   KeyListResponse,
   KeyCreateResponse,
   KeyRotateResponse,
@@ -29,6 +31,7 @@ import type {
   MemberDeleteResponse,
   StorageIntegrityResponse,
   ImportResponse,
+  OperationsMetricsResponse,
 } from "./wire-types.js";
 
 export interface AgentControlPlaneClientOptions {
@@ -46,6 +49,8 @@ export interface DispatchListOptions {
 export interface AuditListOptions {
   limit?: number;
   offset?: number;
+  redact?: boolean;
+  search?: string;
 }
 
 export interface ProviderAuditOptions {
@@ -84,6 +89,10 @@ export class AgentControlPlaneClient {
     return this.getJson<LocalDashboardState>("/api/v1/dashboard");
   }
 
+  metrics(): Promise<OperationsMetricsResponse> {
+    return this.getJson<OperationsMetricsResponse>("/api/v1/metrics");
+  }
+
   dispatches(options: DispatchListOptions = {}): Promise<DispatchListResponse> {
     return this.getJson<DispatchListResponse>(`/api/v1/dispatches${queryString({
       limit: options.limit,
@@ -117,6 +126,8 @@ export class AgentControlPlaneClient {
     return this.getJson<AuditResponse>(`/api/v1/audit${queryString({
       limit: options.limit,
       offset: options.offset,
+      redact: options.redact,
+      search: options.search,
     })}`);
   }
 
@@ -202,6 +213,17 @@ export class AgentControlPlaneClient {
     return this.getJson<BackupListResponse>("/api/v1/backups");
   }
 
+  verifyBackup(backupId: string): Promise<BackupVerifyResponse> {
+    return this.getJson<BackupVerifyResponse>(`/api/v1/backups/${encodeURIComponent(backupId)}/verify`);
+  }
+
+  restoreBackupDryRun(backupId: string): Promise<BackupRestoreDryRunResponse> {
+    return this.postJson<BackupRestoreDryRunResponse>(
+      `/api/v1/backups/${encodeURIComponent(backupId)}/restore/dry-run`,
+      { confirm_restore_dry_run: true },
+    );
+  }
+
   async deleteBackup(backupId: string): Promise<BackupDeleteResponse> {
     const response = await this.fetchImpl(`${this.baseUrl}/api/v1/backups/${encodeURIComponent(backupId)}`, {
       method: "DELETE",
@@ -263,7 +285,7 @@ async function parseResponse<T>(response: Response): Promise<T> {
   return body as T;
 }
 
-function queryString(params: Record<string, number | string | undefined>): string {
+function queryString(params: Record<string, boolean | number | string | undefined>): string {
   const query = new URLSearchParams();
   for (const [key, value] of Object.entries(params)) {
     if (value === undefined || value === "") continue;

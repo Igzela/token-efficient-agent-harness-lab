@@ -79,6 +79,32 @@ curl -H "Authorization: Bearer <key>" http://localhost:8080/api/v1/storage/integ
 
 Returns per-table row counts and `PRAGMA integrity_check` status.
 
+### Backup Verify and Restore Dry-Run
+
+Verify a backup without touching the live database:
+
+```bash
+curl -H "Authorization: Bearer <key>" \
+  http://localhost:8080/api/v1/backups/backup-0001/verify
+```
+
+Dry-run restore verification:
+
+```bash
+curl -X POST -H "Content-Type: application/json" \
+  -H "Authorization: Bearer <key>" \
+  -d '{"confirm_restore_dry_run": true}' \
+  http://localhost:8080/api/v1/backups/backup-0001/restore/dry-run
+```
+
+For a scripted smoke:
+
+```bash
+uv run --no-project python scripts/acp_restore_smoke.py --token "$ACP_ADMIN_API_KEY"
+```
+
+The smoke creates a backup, verifies checksum/integrity, and runs restore dry-run. It skips real restore unless `--execute-restore --confirm-execute-restore` is provided.
+
 ## Docker
 
 When running via `docker compose up`, the engine service mounts a Docker named volume (`acp-data`) at `/data`. The environment variables `ACP_DB_PATH=/data/local-team.db` and `ACP_BACKUP_DIR=/data/backups` are set automatically. This means:
@@ -101,6 +127,7 @@ curl -H "Authorization: Bearer <key>" http://localhost:8080/api/v1/export > expo
 
 - The engine never writes to target repositories
 - Backups require explicit `confirm_local_backup=true` and `backup:admin` scope
+- Backup verification and restore dry-run require `backup:admin`; dry-run does not overwrite the live DB
 - Import requires explicit `confirm_import=true` and `config:admin` scope
 - Restore requires explicit `confirm_restore=true` and `backup:admin` scope
 - All mutations are logged to the audit log

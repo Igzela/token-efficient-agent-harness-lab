@@ -204,9 +204,23 @@ h3 {
 }
 
 .nav {
-  grid-template-columns: repeat(8, minmax(0, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(96px, 1fr));
   margin-bottom: 16px;
   gap: 6px;
+}
+
+.subcard {
+  background: var(--bg-subtle);
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  padding: 14px;
+}
+
+.loading-row {
+  align-items: center;
+  color: var(--muted);
+  display: flex;
+  min-height: 44px;
 }
 
 .boundary-badges {

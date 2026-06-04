@@ -8,7 +8,9 @@ use crate::http_server::middleware::{
     authorize, backup_dir_for_state, cors_headers, internal_error, require_store, ApiError,
 };
 use crate::http_server::state::AxumApiState;
-use crate::http_server::{BackupApiRequest, RestoreApiRequest, AXUM_API_SCHEMA_VERSION};
+use crate::http_server::{
+    BackupApiRequest, RestoreApiRequest, RestoreDryRunApiRequest, AXUM_API_SCHEMA_VERSION,
+};
 use crate::storage::backup_manager::BackupManager;
 
 pub(crate) async fn api_list_backups(
@@ -131,6 +133,42 @@ pub(crate) async fn api_delete_backup(
     ))
 }
 
+pub(crate) async fn api_verify_backup(
+    State(state): State<AxumApiState>,
+    headers: HeaderMap,
+    AxumPath(backup_id): AxumPath<String>,
+) -> Result<impl IntoResponse, ApiError> {
+    if state.tenant_resolver.is_none() {
+        return Err(ApiError::with_code(
+            StatusCode::UNAUTHORIZED,
+            "backup_admin_required",
+            "admin auth is required for backup verification",
+        ));
+    }
+    authorize(&state, &headers, "backup:admin")?;
+    let store = require_store(&state)?;
+    let backup_dir = backup_dir_for_state(&state, store.db_path());
+    let manager = BackupManager::new(&backup_dir).map_err(internal_error)?;
+    let verification = manager.verify_backup(&backup_id).map_err(|e| {
+        if e.starts_with("backup not found:") {
+            ApiError::with_code(
+                StatusCode::NOT_FOUND,
+                "backup_not_found",
+                "backup not found",
+            )
+        } else {
+            internal_error(e)
+        }
+    })?;
+    Ok((
+        cors_headers(),
+        Json(json!({
+            "schema_version": AXUM_API_SCHEMA_VERSION,
+            "verification": verification,
+        })),
+    ))
+}
+
 pub(crate) async fn api_restore_backup(
     State(state): State<AxumApiState>,
     headers: HeaderMap,
@@ -187,6 +225,59 @@ pub(crate) async fn api_restore_backup(
                 "errors": result.errors,
                 "duration_ms": result.duration_ms,
             },
+        })),
+    ))
+}
+
+pub(crate) async fn api_restore_backup_dry_run(
+    State(state): State<AxumApiState>,
+    headers: HeaderMap,
+    AxumPath(backup_id): AxumPath<String>,
+    Json(request): Json<RestoreDryRunApiRequest>,
+) -> Result<impl IntoResponse, ApiError> {
+    if state.tenant_resolver.is_none() {
+        return Err(ApiError::with_code(
+            StatusCode::UNAUTHORIZED,
+            "backup_admin_required",
+            "admin auth is required for restore dry-run",
+        ));
+    }
+    authorize(&state, &headers, "backup:admin")?;
+    if request.confirm_restore_dry_run != Some(true) {
+        return Err(ApiError::with_code(
+            StatusCode::BAD_REQUEST,
+            "restore_dry_run_confirmation_required",
+            "confirm_restore_dry_run must be true",
+        ));
+    }
+    let store = require_store(&state)?;
+    if store.is_memory() {
+        return Err(ApiError::with_code(
+            StatusCode::BAD_REQUEST,
+            "file_store_required",
+            "file-backed local store is required for restore dry-run",
+        ));
+    }
+    let backup_dir = backup_dir_for_state(&state, store.db_path());
+    let manager = BackupManager::new(&backup_dir).map_err(internal_error)?;
+    let verification = manager
+        .restore_dry_run(&backup_id, store.db_path())
+        .map_err(|e| {
+            if e.starts_with("backup not found:") {
+                ApiError::with_code(
+                    StatusCode::NOT_FOUND,
+                    "backup_not_found",
+                    "backup not found",
+                )
+            } else {
+                internal_error(e)
+            }
+        })?;
+    Ok((
+        cors_headers(),
+        Json(json!({
+            "schema_version": AXUM_API_SCHEMA_VERSION,
+            "restore_dry_run": verification,
         })),
     ))
 }

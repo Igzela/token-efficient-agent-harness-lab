@@ -6,5 +6,6 @@ pub(crate) mod data_ops;
 pub(crate) mod dispatch;
 pub(crate) mod health;
 pub(crate) mod keys;
+pub(crate) mod operations;
 pub(crate) mod provider;
 pub(crate) mod team;

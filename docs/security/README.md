@@ -43,3 +43,4 @@ and extend it to cover the new attack surface.
 | `THREAT_MODEL.md` | Assets, trust boundaries, threats, controls, residual risks |
 | `SECURITY_CONTROLS_MATRIX.md` | Traceable control IDs with evidence and test coverage |
 | `CA7_SECURITY_REVIEW.md` | Executive summary, findings, and recommendations |
+| `SCOPE_TEMPLATES.md` | Local API least-privilege scope templates |

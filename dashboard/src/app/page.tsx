@@ -17,17 +17,19 @@ import { Costs } from "@/components/Costs";
 import { Dispatches } from "@/components/Dispatches";
 import { Health } from "@/components/Health";
 import { Metric } from "@/components/Metric";
+import { Operations } from "@/components/Operations";
 import { Routing } from "@/components/Routing";
 import { Settings } from "@/components/Settings";
 import { Team } from "@/components/Team";
 
-type Tab = "dispatches" | "routing" | "team" | "costs" | "settings" | "health" | "backups" | "audit";
+type Tab = "dispatches" | "routing" | "team" | "costs" | "operations" | "settings" | "health" | "backups" | "audit";
 
 const tabs: { id: Tab; label: string }[] = [
   { id: "dispatches", label: "Dispatches" },
   { id: "routing", label: "Routing" },
   { id: "team", label: "Team" },
   { id: "costs", label: "Costs" },
+  { id: "operations", label: "Operations" },
   { id: "settings", label: "Settings" },
   { id: "health", label: "Health" },
   { id: "backups", label: "Backups" },
@@ -338,6 +340,7 @@ export default function DashboardPage() {
             <Team dashboard={dashboard} refreshDashboard={(d) => setDashboard(d)} />
           )}
           {tab === "costs" && <Costs dashboard={dashboard} />}
+          {tab === "operations" && <Operations />}
           {tab === "settings" && <Settings dashboard={dashboard} />}
           {tab === "health" && <Health dashboard={dashboard} health={health} ready={ready} />}
           {tab === "backups" && <Backups />}

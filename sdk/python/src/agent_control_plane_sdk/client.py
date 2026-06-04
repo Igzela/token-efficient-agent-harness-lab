@@ -30,6 +30,9 @@ class AgentControlPlaneClient:
     def dashboard(self) -> dict[str, Any]:
         return self._get("/api/v1/dashboard")
 
+    def metrics(self) -> dict[str, Any]:
+        return self._get("/api/v1/metrics")
+
     def dispatches(
         self,
         limit: int | None = None,
@@ -67,12 +70,18 @@ class AgentControlPlaneClient:
         self,
         limit: int | None = None,
         offset: int | None = None,
+        search: str | None = None,
+        redact: bool | None = None,
     ) -> dict[str, Any]:
         params: dict[str, Any] = {}
         if limit is not None:
             params["limit"] = limit
         if offset is not None:
             params["offset"] = offset
+        if search:
+            params["search"] = search
+        if redact is not None:
+            params["redact"] = "true" if redact else "false"
         return self._get(_query_path("/api/v1/audit", params))
 
     def provider_health(self) -> dict[str, Any]:
@@ -171,6 +180,15 @@ class AgentControlPlaneClient:
 
     def list_backups(self) -> dict[str, Any]:
         return self._get("/api/v1/backups")
+
+    def verify_backup(self, backup_id: str) -> dict[str, Any]:
+        return self._get(f"/api/v1/backups/{_quote_path_segment(backup_id)}/verify")
+
+    def restore_backup_dry_run(self, backup_id: str) -> dict[str, Any]:
+        return self._post(
+            f"/api/v1/backups/{_quote_path_segment(backup_id)}/restore/dry-run",
+            {"confirm_restore_dry_run": True},
+        )
 
     def delete_backup(self, backup_id: str) -> dict[str, Any]:
         url = f"{self.base_url}/api/v1/backups/{_quote_path_segment(backup_id)}"

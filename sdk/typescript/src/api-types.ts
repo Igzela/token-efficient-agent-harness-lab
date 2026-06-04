@@ -216,6 +216,7 @@ export interface ExportResponse {
 
 export interface AuditResponse {
   schema_version: "axum_api.v1";
+  redacted?: boolean;
   events: AuditEvent[];
 }
 
@@ -302,6 +303,48 @@ export interface BackupDeleteResponse {
 export interface BackupRestoreResponse {
   schema_version: "axum_api.v1";
   restore: RestoreResult;
+}
+
+export interface BackupVerification {
+  backup_id: string;
+  success: boolean;
+  checksum_ok: boolean;
+  integrity_ok: boolean;
+  records_checked: number;
+  size_bytes: number;
+  backup_path: string;
+  target_path: string | null;
+  restore_would_overwrite: boolean;
+  dry_run: boolean;
+  errors: string[];
+}
+
+export interface BackupVerifyResponse {
+  schema_version: "axum_api.v1";
+  verification: BackupVerification;
+}
+
+export interface BackupRestoreDryRunResponse {
+  schema_version: "axum_api.v1";
+  restore_dry_run: BackupVerification;
+}
+
+export interface OperationsMetricsResponse {
+  schema_version: "axum_api.v1";
+  executor_type: string;
+  auth_required: boolean;
+  provider_enabled: boolean;
+  local_store: boolean;
+  dispatch_count: number;
+  audit_event_count: number;
+  api_key_count: number;
+  backup_count: number;
+  latest_backup_created_at: string | null;
+  total_reserved_cost: number;
+  total_estimated_cost_usd: number;
+  total_input_tokens: number;
+  total_output_tokens: number;
+  boundaries: Boundaries;
 }
 
 export interface StorageIntegrityResponse {

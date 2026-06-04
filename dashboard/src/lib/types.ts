@@ -70,6 +70,7 @@ export interface DispatchListResponse {
 
 export interface AuditListResponse {
   schema_version: "axum_api.v1";
+  redacted?: boolean;
   events: LocalAuditEvent[];
 }
 
@@ -162,6 +163,38 @@ export interface LocalBoundaries {
   runtime_workers: string;
   deployment: string;
   docker_required: boolean;
+}
+
+export interface OperationsMetrics {
+  schema_version: "axum_api.v1";
+  executor_type: string;
+  auth_required: boolean;
+  provider_enabled: boolean;
+  local_store: boolean;
+  dispatch_count: number;
+  audit_event_count: number;
+  api_key_count: number;
+  backup_count: number;
+  latest_backup_created_at: string | null;
+  total_reserved_cost: number;
+  total_estimated_cost_usd: number;
+  total_input_tokens: number;
+  total_output_tokens: number;
+  boundaries: LocalBoundaries;
+}
+
+export interface BackupVerification {
+  backup_id: string;
+  success: boolean;
+  checksum_ok: boolean;
+  integrity_ok: boolean;
+  records_checked: number;
+  size_bytes: number;
+  backup_path: string;
+  target_path: string | null;
+  restore_would_overwrite: boolean;
+  dry_run: boolean;
+  errors: string[];
 }
 
 export interface DispatchBundle {
