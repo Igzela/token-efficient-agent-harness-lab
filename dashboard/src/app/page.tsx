@@ -220,7 +220,7 @@ export default function DashboardPage() {
       },
       {
         detail: hasLocalToken
-          ? "A local bearer token is stored for protected tabs."
+          ? "A local API key is stored for protected tabs."
           : "Needed for backups, audit history, and team administration.",
         label: "Admin key available",
         state: hasLocalToken ? "done" : "todo",

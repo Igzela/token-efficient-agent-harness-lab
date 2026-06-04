@@ -50,7 +50,7 @@ export function AuthPanel({
             />
           </label>
           <p className="muted">
-            Protected mode uses a local bearer token stored in this browser only.
+            Protected mode uses a local API key stored in this browser only.
           </p>
           <div className="flex-end">
             {getStoredToken() && (
