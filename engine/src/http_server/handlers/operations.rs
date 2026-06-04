@@ -9,6 +9,7 @@ use crate::http_server::middleware::{
 };
 use crate::http_server::state::AxumApiState;
 use crate::http_server::AXUM_API_SCHEMA_VERSION;
+use crate::provider::config::provider_pricing_from_env;
 use crate::storage::backup_manager::BackupManager;
 
 pub(crate) async fn api_metrics(
@@ -25,7 +26,9 @@ pub(crate) async fn api_metrics(
     let mut total_estimated_cost_usd = 0.0;
     let mut total_input_tokens = 0;
     let mut total_output_tokens = 0;
+    let mut estimated_cost_available = false;
     let mut latest_backup_created_at = serde_json::Value::Null;
+    let pricing_configured = provider_pricing_from_env().configured();
 
     if let Some(store) = &state.local_store {
         let stats = store.stats().map_err(internal_error)?;
@@ -38,6 +41,7 @@ pub(crate) async fn api_metrics(
         total_estimated_cost_usd = costs["total_estimated_cost_usd"].as_f64().unwrap_or(0.0);
         total_input_tokens = costs["total_input_tokens"].as_i64().unwrap_or(0);
         total_output_tokens = costs["total_output_tokens"].as_i64().unwrap_or(0);
+        estimated_cost_available = costs["estimated_cost_available"].as_bool().unwrap_or(false);
 
         if !store.is_memory() {
             let backup_dir = backup_dir_for_state(&state, store.db_path());
@@ -69,6 +73,8 @@ pub(crate) async fn api_metrics(
             "total_estimated_cost_usd": total_estimated_cost_usd,
             "total_input_tokens": total_input_tokens,
             "total_output_tokens": total_output_tokens,
+            "pricing_configured": pricing_configured,
+            "estimated_cost_available": estimated_cost_available,
             "boundaries": crate::storage::local_product_store::local_boundaries(
                 state.executor_type(),
                 state.provider_enabled(),

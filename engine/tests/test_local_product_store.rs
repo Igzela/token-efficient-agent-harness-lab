@@ -437,6 +437,7 @@ fn cost_summary_empty_store() {
     assert_eq!(summary["total_estimated_cost_usd"], 0.0);
     assert_eq!(summary["total_input_tokens"], 0);
     assert_eq!(summary["total_output_tokens"], 0);
+    assert_eq!(summary["estimated_cost_available"], false);
     assert_eq!(summary["cost_utilization"], 0.0);
     assert_eq!(summary["by_tier"].as_array().unwrap().len(), 0);
     assert_eq!(summary["daily"].as_array().unwrap().len(), 0);
@@ -477,7 +478,26 @@ fn cost_summary_aggregates_reserved_and_estimated() {
     assert_eq!(summary["total_estimated_cost_usd"], 0.008);
     assert_eq!(summary["total_input_tokens"], 300);
     assert_eq!(summary["total_output_tokens"], 130);
+    assert_eq!(summary["estimated_cost_available"], true);
     assert!((summary["cost_utilization"].as_f64().unwrap() - 0.4).abs() < 0.001);
+}
+
+#[test]
+fn cost_summary_distinguishes_token_usage_without_estimated_cost() {
+    let dir = tempdir().unwrap();
+    let store = LocalProductStore::new(dir.path().join("test.db")).unwrap();
+    let bundle = make_bundle_with_usage("d1", "provider", Some(100), Some(50), None, Some(100));
+    store
+        .record_dispatch("req1", "api", &bundle, "actor")
+        .unwrap();
+
+    let summary = store.cost_summary().unwrap();
+
+    assert_eq!(summary["dispatch_count"], 1);
+    assert_eq!(summary["total_input_tokens"], 100);
+    assert_eq!(summary["total_output_tokens"], 50);
+    assert_eq!(summary["total_estimated_cost_usd"], 0.0);
+    assert_eq!(summary["estimated_cost_available"], false);
 }
 
 #[test]

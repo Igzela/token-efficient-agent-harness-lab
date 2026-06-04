@@ -117,6 +117,8 @@ export interface LocalCostSummary {
   total_estimated_cost_usd: number;
   total_input_tokens: number;
   total_output_tokens: number;
+  estimated_cost_available: boolean;
+  pricing_configured?: boolean;
   cost_utilization: number;
   by_tier: LocalTierCost[];
   daily: LocalDailyCost[];
@@ -180,6 +182,8 @@ export interface OperationsMetrics {
   total_estimated_cost_usd: number;
   total_input_tokens: number;
   total_output_tokens: number;
+  estimated_cost_available: boolean;
+  pricing_configured: boolean;
   boundaries: LocalBoundaries;
 }
 

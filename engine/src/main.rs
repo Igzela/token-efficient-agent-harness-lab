@@ -9,7 +9,7 @@ use engine::infrastructure::rate_limiter::RateLimiter;
 use engine::provider::anthropic::AnthropicProvider;
 use engine::provider::audit::ProviderAuditRecorder;
 use engine::provider::config::CredentialRef;
-use engine::provider::config::ProviderConfig;
+use engine::provider::config::{provider_pricing_from_env, ProviderConfig};
 use engine::provider::credential::CredentialBoundary;
 use engine::provider::openai::OpenAiProvider;
 use engine::provider::stub::StubProvider;
@@ -189,6 +189,12 @@ fn build_state_with_provider(state: AxumApiState, store: &Arc<LocalProductStore>
     let api_key_env = std::env::var("ACP_API_KEY").unwrap_or_default();
     let model = std::env::var("ACP_MODEL").unwrap_or_else(|_| "default".to_string());
     let base_url = std::env::var("ACP_BASE_URL").unwrap_or_default();
+    let pricing = provider_pricing_from_env();
+    if !pricing.configured() {
+        eprintln!(
+            "provider token usage will be tracked, but ACP_PROVIDER_INPUT_COST_PER_1K_USD/ACP_PROVIDER_OUTPUT_COST_PER_1K_USD are not fully configured"
+        );
+    }
 
     let boundary = CredentialBoundary::new("env").expect("env credential backend");
     let cred_ref = CredentialRef::new(
@@ -202,7 +208,7 @@ fn build_state_with_provider(state: AxumApiState, store: &Arc<LocalProductStore>
     let provider: Arc<dyn Provider> = match provider_type.as_str() {
         "stub" => Arc::new(StubProvider::new("stub-env")),
         "openai_compatible" => {
-            let config = ProviderConfig::new(
+            let mut config = ProviderConfig::new(
                 "openai-env",
                 "openai_compatible",
                 &base_url,
@@ -210,6 +216,7 @@ fn build_state_with_provider(state: AxumApiState, store: &Arc<LocalProductStore>
                 &api_key_env,
                 "2026-01-01T00:00:00Z",
             );
+            config.apply_pricing(&pricing);
             Arc::new(OpenAiProvider::new(
                 config,
                 boundary,
@@ -219,7 +226,7 @@ fn build_state_with_provider(state: AxumApiState, store: &Arc<LocalProductStore>
             ))
         }
         "anthropic" => {
-            let config = ProviderConfig::new(
+            let mut config = ProviderConfig::new(
                 "anthropic-env",
                 "anthropic",
                 &base_url,
@@ -227,6 +234,7 @@ fn build_state_with_provider(state: AxumApiState, store: &Arc<LocalProductStore>
                 &api_key_env,
                 "2026-01-01T00:00:00Z",
             );
+            config.apply_pricing(&pricing);
             Arc::new(AnthropicProvider::new(
                 config,
                 boundary,

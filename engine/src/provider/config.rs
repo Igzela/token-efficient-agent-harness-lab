@@ -4,6 +4,8 @@ use serde_json::{json, Value};
 pub const PROVIDER_CONFIG_SCHEMA_VERSION: &str = "provider_config.v1";
 pub const CREDENTIAL_REF_SCHEMA_VERSION: &str = "credential_ref.v1";
 pub const RETRY_POLICY_SCHEMA_VERSION: &str = "retry_policy.v1";
+pub const ACP_PROVIDER_INPUT_COST_PER_1K_USD: &str = "ACP_PROVIDER_INPUT_COST_PER_1K_USD";
+pub const ACP_PROVIDER_OUTPUT_COST_PER_1K_USD: &str = "ACP_PROVIDER_OUTPUT_COST_PER_1K_USD";
 
 pub const PROVIDER_TYPES: &[&str] = &["openai_compatible", "anthropic", "local"];
 pub const CREDENTIAL_STORAGE_BACKENDS: &[&str] = &["env", "file", "keyring", "vault"];
@@ -69,6 +71,43 @@ pub struct ProviderConfig {
     pub created_at: String,
 }
 
+#[derive(Clone, Debug, PartialEq)]
+pub struct ProviderPricingConfig {
+    pub input_cost_per_1k: Option<f64>,
+    pub output_cost_per_1k: Option<f64>,
+}
+
+impl ProviderPricingConfig {
+    pub fn configured(&self) -> bool {
+        self.input_cost_per_1k.is_some() && self.output_cost_per_1k.is_some()
+    }
+}
+
+pub fn parse_provider_pricing(
+    input_cost_per_1k: Option<&str>,
+    output_cost_per_1k: Option<&str>,
+) -> ProviderPricingConfig {
+    ProviderPricingConfig {
+        input_cost_per_1k: parse_non_negative_finite(input_cost_per_1k),
+        output_cost_per_1k: parse_non_negative_finite(output_cost_per_1k),
+    }
+}
+
+pub fn provider_pricing_from_env() -> ProviderPricingConfig {
+    let input = std::env::var(ACP_PROVIDER_INPUT_COST_PER_1K_USD).ok();
+    let output = std::env::var(ACP_PROVIDER_OUTPUT_COST_PER_1K_USD).ok();
+    parse_provider_pricing(input.as_deref(), output.as_deref())
+}
+
+fn parse_non_negative_finite(value: Option<&str>) -> Option<f64> {
+    let parsed = value?.trim().parse::<f64>().ok()?;
+    if parsed.is_finite() && parsed >= 0.0 {
+        Some(parsed)
+    } else {
+        None
+    }
+}
+
 impl ProviderConfig {
     pub fn new(
         provider_id: &str,
@@ -98,6 +137,11 @@ impl ProviderConfig {
 
     pub fn to_value(&self) -> Value {
         serde_json::to_value(self).unwrap_or_else(|_| json!({}))
+    }
+
+    pub fn apply_pricing(&mut self, pricing: &ProviderPricingConfig) {
+        self.input_cost_per_1k = pricing.input_cost_per_1k;
+        self.output_cost_per_1k = pricing.output_cost_per_1k;
     }
 }
 
@@ -191,6 +235,37 @@ mod tests {
         assert!(c.enabled);
         assert_eq!(c.currency, "USD");
         assert!(c.input_cost_per_1k.is_none());
+    }
+
+    #[test]
+    fn parse_provider_pricing_accepts_non_negative_finite_rates() {
+        let pricing = parse_provider_pricing(Some("0.015"), Some("0.075"));
+        assert!(pricing.configured());
+        assert_eq!(pricing.input_cost_per_1k, Some(0.015));
+        assert_eq!(pricing.output_cost_per_1k, Some(0.075));
+    }
+
+    #[test]
+    fn parse_provider_pricing_rejects_missing_invalid_or_negative_rates() {
+        assert!(!parse_provider_pricing(None, Some("0.075")).configured());
+        assert!(!parse_provider_pricing(Some("nan"), Some("0.075")).configured());
+        assert!(!parse_provider_pricing(Some("-0.1"), Some("0.075")).configured());
+    }
+
+    #[test]
+    fn provider_config_applies_pricing_rates() {
+        let mut config = ProviderConfig::new(
+            "p1",
+            "anthropic",
+            "https://api.anthropic.com",
+            "claude-3",
+            "ANTHROPIC_KEY",
+            "2026-01-01T00:00:00Z",
+        );
+        let pricing = parse_provider_pricing(Some("0.001"), Some("0.002"));
+        config.apply_pricing(&pricing);
+        assert_eq!(config.input_cost_per_1k, Some(0.001));
+        assert_eq!(config.output_cost_per_1k, Some(0.002));
     }
 
     #[test]

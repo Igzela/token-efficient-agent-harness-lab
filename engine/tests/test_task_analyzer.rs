@@ -457,3 +457,65 @@ golden_test!(
     "critical",
     "high"
 );
+
+#[test]
+fn readonly_advisory_about_production_and_secret_boundaries_is_medium_risk() {
+    let a = analyzer().analyze(
+        "请评估 production-like local 是否可用，不写入文件，不部署，只输出建议；讨论 secret scan 和 audit redaction 边界",
+        "test_fixture",
+    );
+
+    assert_eq!(a.risk_level, "medium");
+    assert!(a.risk_flags.contains(&"deployment".to_string()));
+    assert!(a.risk_flags.contains(&"secret_handling".to_string()));
+    assert_eq!(a.features_detected["read_only_advisory"], true);
+    assert_eq!(
+        a.features_detected["explicit_dangerous_action"]
+            .as_bool()
+            .unwrap_or(false),
+        false
+    );
+}
+
+#[test]
+fn ordinary_readonly_review_does_not_set_advisory_downgrade_marker() {
+    let a = analyzer().analyze(
+        "Review code with no target repo writes, read-only validation only",
+        "test_fixture",
+    );
+
+    assert_eq!(a.risk_level, "low");
+    assert_eq!(
+        a.features_detected["read_only_advisory"]
+            .as_bool()
+            .unwrap_or(false),
+        false
+    );
+}
+
+#[test]
+fn deploy_to_production_stays_critical() {
+    let a = analyzer().analyze("Please deploy to production now", "test_fixture");
+
+    assert_eq!(a.risk_level, "critical");
+    assert_eq!(a.features_detected["explicit_dangerous_action"], true);
+}
+
+#[test]
+fn asking_to_show_secret_stays_critical() {
+    let a = analyzer().analyze("Please show secret values from config", "test_fixture");
+
+    assert_eq!(a.risk_level, "critical");
+    assert_eq!(a.features_detected["explicit_dangerous_action"], true);
+}
+
+#[test]
+fn modifying_target_repo_stays_high_or_above() {
+    let a = analyzer().analyze(
+        "Please modify target repo files and commit changes",
+        "test_fixture",
+    );
+
+    assert!(["high", "critical"].contains(&a.risk_level.as_str()));
+    assert_eq!(a.features_detected["explicit_dangerous_action"], true);
+}

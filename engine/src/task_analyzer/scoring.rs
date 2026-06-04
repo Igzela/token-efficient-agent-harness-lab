@@ -150,10 +150,14 @@ impl RuleBasedTaskAnalyzer {
 
     pub(super) fn derive_risk_level(
         &self,
+        text: &str,
         risk_flags: &[&str],
         domain: &str,
         intent: &str,
     ) -> &str {
+        if is_read_only_advisory_risk_downgrade(text, domain, intent, risk_flags) {
+            return "medium";
+        }
         if risk_flags
             .iter()
             .any(|f| ["destructive_operation", "secret_handling", "deployment"].contains(f))
@@ -258,13 +262,122 @@ impl RuleBasedTaskAnalyzer {
         let has_file_refs = [".py", ".js", ".ts", ".yaml", ".json"]
             .iter()
             .any(|kw| text.contains(kw));
-        json!({
+        let mut features = json!({
             "domain": domain,
             "intent": intent,
             "has_code_blocks": text.contains("```"),
             "has_file_refs": has_file_refs,
             "risk_flag_count": risk_flags.len(),
             "word_count": text.split_whitespace().count()
-        })
+        });
+        if is_read_only_advisory_risk_downgrade(text, domain, intent, risk_flags) {
+            features["read_only_advisory"] = json!(true);
+        }
+        if has_explicit_dangerous_action(text) {
+            features["explicit_dangerous_action"] = json!(true);
+        }
+        features
     }
+}
+
+pub(super) fn is_read_only_advisory_risk_downgrade(
+    text: &str,
+    domain: &str,
+    intent: &str,
+    risk_flags: &[&str],
+) -> bool {
+    is_read_only_advisory(text, domain, intent)
+        && !has_explicit_dangerous_action(text)
+        && risk_flags
+            .iter()
+            .any(|f| ["secret_handling", "deployment"].contains(f))
+}
+
+pub(super) fn is_read_only_advisory(text: &str, _domain: &str, intent: &str) -> bool {
+    let advisory_intent = ["review", "summarize", "audit"].contains(&intent)
+        || [
+            "review",
+            "assess",
+            "summarize",
+            "audit",
+            "analyze",
+            "advise",
+            "评估",
+            "审阅",
+            "分析",
+            "建议",
+        ]
+        .iter()
+        .any(|kw| text.contains(kw));
+    let read_only_constraint = [
+        "read-only",
+        "readonly",
+        "review only",
+        "audit only",
+        "no write",
+        "no writes",
+        "no deploy",
+        "no deployment",
+        "do not write",
+        "do not modify",
+        "do not deploy",
+        "without writes",
+        "without deployment",
+        "只读",
+        "只输出",
+        "不要修改",
+        "不修改",
+        "不要写",
+        "不写入",
+        "不要部署",
+        "不部署",
+        "不可部署",
+        "不可写",
+    ]
+    .iter()
+    .any(|kw| text.contains(kw));
+
+    advisory_intent && read_only_constraint
+}
+
+pub(super) fn has_explicit_dangerous_action(text: &str) -> bool {
+    [
+        "show api key",
+        "print api key",
+        "display api key",
+        "read api key",
+        "show secret",
+        "print secret",
+        "display secret",
+        "read secret",
+        "output secret",
+        "输出 api key",
+        "显示 api key",
+        "读取 api key",
+        "输出密钥",
+        "显示密钥",
+        "读取密钥",
+        "deploy to production",
+        "deploy production",
+        "ship to production",
+        "部署到生产",
+        "发布到生产",
+        "上线到生产",
+        "modify target repo",
+        "write target repo",
+        "commit changes",
+        "push changes",
+        "修改 target repo",
+        "写入 target repo",
+        "bypass auth",
+        "disable auth",
+        "disable audit",
+        "bypass cost",
+        "绕过 auth",
+        "绕过认证",
+        "关闭审计",
+        "绕过成本",
+    ]
+    .iter()
+    .any(|kw| text.contains(kw))
 }

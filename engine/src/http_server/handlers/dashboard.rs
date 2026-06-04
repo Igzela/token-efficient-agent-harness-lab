@@ -6,6 +6,7 @@ use serde_json::json;
 
 use crate::http_server::middleware::{authorize, cors_headers, internal_error, ApiError};
 use crate::http_server::state::AxumApiState;
+use crate::provider::config::provider_pricing_from_env;
 use crate::storage::local_product_store::local_boundaries;
 
 pub(crate) async fn api_dashboard(
@@ -15,7 +16,7 @@ pub(crate) async fn api_dashboard(
     authorize(&state, &headers, "health:read")?;
     let exec_type = state.executor_type();
     let prov_enabled = state.provider_enabled();
-    let body = if let Some(store) = &state.local_store {
+    let mut body = if let Some(store) = &state.local_store {
         store
             .dashboard_snapshot(20, exec_type, prov_enabled)
             .map_err(internal_error)?
@@ -40,6 +41,8 @@ pub(crate) async fn api_dashboard(
                 "total_estimated_cost_usd": 0.0,
                 "total_input_tokens": 0,
                 "total_output_tokens": 0,
+                "estimated_cost_available": false,
+                "pricing_configured": provider_pricing_from_env().configured(),
                 "cost_utilization": 0.0,
                 "by_tier": [],
                 "daily": [],
@@ -47,5 +50,11 @@ pub(crate) async fn api_dashboard(
             "boundaries": local_boundaries(exec_type, prov_enabled),
         })
     };
+    if let Some(costs) = body.get_mut("costs").and_then(|v| v.as_object_mut()) {
+        costs.insert(
+            "pricing_configured".to_string(),
+            json!(provider_pricing_from_env().configured()),
+        );
+    }
     Ok((cors_headers(), Json(body)))
 }

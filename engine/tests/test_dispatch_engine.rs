@@ -1,4 +1,6 @@
 use engine::dispatch_engine::DispatchEngine;
+use engine::provider::stub::StubProvider;
+use std::sync::Arc;
 
 // Basic tests
 #[test]
@@ -67,6 +69,43 @@ fn test_multi_executor_without_cli_tier_reports_noop_policy() {
     assert!(constraints
         .iter()
         .any(|value| value.as_str() == Some("no_provider_call")));
+}
+
+#[test]
+fn readonly_advisory_with_provider_executes_but_requires_review() {
+    let engine = DispatchEngine::with_provider_executor(Arc::new(StubProvider::new("stub-test")));
+    let v = engine.dispatch(
+        "请评估 production-like local 是否可用，不写入文件，不部署，只输出建议；讨论 secret scan 和 audit redaction 边界",
+        "test_fixture",
+    );
+
+    assert_eq!(v["analysis"]["risk_level"], "medium");
+    assert_eq!(
+        v["decision"]["execution_policy"]["executor_type"],
+        "provider"
+    );
+    assert_eq!(
+        v["decision"]["execution_policy"]["requires_human_review"],
+        true
+    );
+    assert_eq!(v["decision"]["decision_status"], "decided");
+    assert_eq!(v["execution_result"]["status"], "provider_completed");
+    assert_eq!(v["evaluation_result"]["status"], "needs_human_review");
+    assert_eq!(v["record"]["final_status"], "escalated");
+}
+
+#[test]
+fn dangerous_provider_request_stays_blocked() {
+    let engine = DispatchEngine::with_provider_executor(Arc::new(StubProvider::new("stub-test")));
+    let v = engine.dispatch("Please deploy to production now", "test_fixture");
+
+    assert_eq!(v["analysis"]["risk_level"], "critical");
+    assert_eq!(v["decision"]["decision_status"], "needs_approval");
+    assert_eq!(v["execution_result"]["status"], "not_executed");
+    assert_eq!(
+        v["execution_result"]["error_domain"],
+        "execution_not_authorized"
+    );
 }
 
 #[test]

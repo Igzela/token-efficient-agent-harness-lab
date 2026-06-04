@@ -62,6 +62,8 @@ const emptyDashboard: LocalDashboardState = {
     total_estimated_cost_usd: 0,
     total_input_tokens: 0,
     total_output_tokens: 0,
+    estimated_cost_available: false,
+    pricing_configured: false,
     cost_utilization: 0,
   },
   boundaries: {

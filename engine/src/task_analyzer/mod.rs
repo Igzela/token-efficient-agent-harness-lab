@@ -87,7 +87,7 @@ impl RuleBasedTaskAnalyzer {
         let (context_budget, execution_budget) = self.estimate_budgets(domain, intent, &text);
         let (confidence, confidence_label, uncertainty_reasons) =
             self.assess_confidence(domain, intent, &text, &risk_flags);
-        let risk_level = self.derive_risk_level(&risk_flags, domain, intent);
+        let risk_level = self.derive_risk_level(&text, &risk_flags, domain, intent);
         let quality_req = self.derive_quality_requirement(&text, risk_level);
         let safe_default = self.determine_safe_default(confidence, risk_level);
         let escalation = self.determine_escalation(confidence, risk_level, &risk_flags);

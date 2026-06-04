@@ -74,12 +74,22 @@ export function Operations() {
         />
       ) : metrics ? (
         <>
+          {metrics.provider_enabled && !metrics.pricing_configured && (metrics.total_input_tokens + metrics.total_output_tokens) > 0 && (
+            <StateBanner title="Provider pricing not configured" tone="warn">
+              <p>Provider token usage is tracked, but price rates are not configured.</p>
+            </StateBanner>
+          )}
           <div className="status-strip" aria-label="Operations metrics">
             <Metric label="Executor" value={metrics.executor_type} detail={metrics.provider_enabled ? "provider on" : "provider off"} tone={metrics.provider_enabled ? "warn" : "ok"} />
             <Metric label="Dispatches" value={String(metrics.dispatch_count)} detail="persisted" />
             <Metric label="Backups" value={String(metrics.backup_count)} detail={metrics.latest_backup_created_at ?? "none"} tone={metrics.backup_count > 0 ? "ok" : "warn"} />
             <Metric label="Audit" value={String(metrics.audit_event_count)} detail="events" />
-            <Metric label="Cost" value={`$${metrics.total_estimated_cost_usd.toFixed(3)}`} detail="estimated" />
+            <Metric
+              label="Cost"
+              value={metrics.estimated_cost_available ? `$${metrics.total_estimated_cost_usd.toFixed(3)}` : "unavailable"}
+              detail={metrics.pricing_configured ? "estimated" : "pricing missing"}
+              tone={metrics.pricing_configured ? "ok" : "warn"}
+            />
           </div>
           <div className="grid two">
             <div className="subcard stack">
@@ -93,7 +103,11 @@ export function Operations() {
             <div className="subcard stack">
               <h3>Usage Snapshot</h3>
               <div className="kv-row"><span className="muted">Reserved cost</span><span>${metrics.total_reserved_cost.toFixed(3)}</span></div>
-              <div className="kv-row"><span className="muted">Estimated cost</span><span>${metrics.total_estimated_cost_usd.toFixed(3)}</span></div>
+              <div className="kv-row">
+                <span className="muted">Estimated cost</span>
+                <span>{metrics.estimated_cost_available ? `$${metrics.total_estimated_cost_usd.toFixed(3)}` : "unavailable"}</span>
+              </div>
+              <div className="kv-row"><span className="muted">Pricing config</span><span>{metrics.pricing_configured ? "configured" : "missing"}</span></div>
               <div className="kv-row"><span className="muted">Input tokens</span><span>{metrics.total_input_tokens}</span></div>
               <div className="kv-row"><span className="muted">Output tokens</span><span>{metrics.total_output_tokens}</span></div>
               <div className="kv-row"><span className="muted">API keys</span><span>{metrics.api_key_count}</span></div>

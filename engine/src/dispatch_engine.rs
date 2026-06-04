@@ -242,8 +242,12 @@ pub fn build_dispatch_bundle(raw_request: &str, request_source: &str) -> Value {
 }
 
 fn build_execution_policy(analysis: &TaskAnalysis, executor_type: &str) -> Value {
+    let read_only_advisory = analysis.features_detected["read_only_advisory"]
+        .as_bool()
+        .unwrap_or(false);
     let requires_human_review = ["critical", "high"].contains(&analysis.risk_level.as_str())
-        || analysis.confidence_label == "low";
+        || analysis.confidence_label == "low"
+        || read_only_advisory;
     json!({
         "executor_type": executor_type,
         "execution_allowed": true,
@@ -377,11 +381,19 @@ fn build_execution_gates(
         });
     }
     if execution_policy["requires_human_review"] == true {
+        let advisory_review = analysis.features_detected["read_only_advisory"]
+            .as_bool()
+            .unwrap_or(false);
         gates.push(ExecutionGate {
             gate_id: runtime.id("gate-"),
             gate_type: "manual_review".to_string(),
-            severity: "block".to_string(),
-            reason: "high risk or low confidence requires human review".to_string(),
+            severity: if advisory_review { "warning" } else { "block" }.to_string(),
+            reason: if advisory_review {
+                "read-only advisory output requires human review after provider response"
+            } else {
+                "high risk or low confidence requires human review"
+            }
+            .to_string(),
             evidence_refs: Vec::new(),
             clearance_required: "human".to_string(),
             cleared: false,

@@ -36,7 +36,7 @@ Implemented:
 - TypeScript and Python SDKs cover local API, state, provider health/audit, export, and backup
 - provider execution is explicit, env-gated, auth-gated, execute-scope-gated, audited, and budget-capped
 - team/API-key create, revoke, rotate, delete, scope update, role update, last-used tracking, expiry, and admin audit events are implemented
-- cost governance: reserved vs estimated cost separation, per-tier and daily cost breakdown, utilization ratio, token usage totals, per-dispatch cost detail endpoint, typed SDK cost responses
+- cost governance: reserved vs estimated cost separation, explicit provider price env for estimated-cost availability, per-tier and daily cost breakdown, utilization ratio, token usage totals, per-dispatch cost detail endpoint, typed SDK cost responses
 - data operations: versioned SQLite migrations, integrity checks, import/export roundtrip, hardened backup restore with verification, data-directory documentation
 - native packaging: `.env.example`, install/upgrade scripts, release tarball with engine binary + static dashboard + scripts, native smoke verification
 - dashboard controls: dispatch detail drill-down, backups tab with create/restore/delete and confirmation dialogs, audit log tab, Team tab confirmation dialogs, provider health in Settings, dispatch detail/list-backups/delete-backup API endpoints, 6 new SDK methods per SDK
@@ -44,7 +44,7 @@ Implemented:
 - P1 local-beta follow-up: GET /api/v1/keys metadata-only key list, search/filter/pagination for dispatches and audit, bookmarkable tabs via URL hash, 60-second auto-refresh with visibility-aware pausing, Docker volume persistence, key reveal modal replacing alert(), dashboard split into 12 focused components
 - P2 local-beta polish & type hardening: CSS design token cleanup (#c0392b → var(--risk), utility classes), TypeScript SDK type hardening (22 new focused response interfaces, 21 methods typed), dashboard component quality (usePaginatedSearch hook, SearchBar, Pagination components), Next.js app polish (loading.tsx, error.tsx, metadata, favicon)
 - Dashboard UX polish: ARIA tab roles + keyboard navigation, modal focus traps with Escape key, keyboard-accessible dispatch table rows, form labels on Team inputs, aria-label on icon buttons and search input, CSS spinner animation replacing plain-text loading states, shared EmptyState/StateBanner/BoundaryBadges components, local setup checklist plus setup/auth helper scripts, permission-aware Backups/Audit/Provider states, structured API error codes, server-side dispatch/audit pagination/search, actionable empty states, consolidated visual utility classes, and readable dispatch/provider/audit summaries with raw JSON behind details
-- Production-like local beta ops hardening: guarded `.env.production-like.local.example` and startup script, `/api/v1/metrics`, dashboard Operations tab, `acp_ops_check.py`, backup verify and restore dry-run API/UI/script smoke, local env secret scan, audit redaction query, and least-privilege scope templates
+- Production-like local beta ops hardening: guarded `.env.production-like.local.example` and startup script, `/api/v1/metrics`, dashboard Operations tab, `acp_ops_check.py`, backup verify and restore dry-run API/UI/script smoke, local env secret scan, audit redaction query, provider pricing visibility, read-only advisory risk-gate repair, and least-privilege scope templates
 
 Next productization phases:
 

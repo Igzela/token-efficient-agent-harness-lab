@@ -605,6 +605,8 @@ async fn axum_metrics_reports_operations_summary() {
     assert_eq!(body["total_estimated_cost_usd"], 0.05);
     assert_eq!(body["total_input_tokens"], 100);
     assert_eq!(body["total_output_tokens"], 50);
+    assert_eq!(body["estimated_cost_available"], true);
+    assert!(body["pricing_configured"].is_boolean());
     assert_eq!(body["boundaries"]["target_repository_writes"], "disabled");
 }
 

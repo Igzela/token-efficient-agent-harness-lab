@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, Literal, TypedDict
+from typing import Any, Literal, NotRequired, TypedDict
 
 RequestSource = Literal["cli", "api", "dashboard", "agent", "workflow", "test_fixture"]
 
@@ -234,6 +234,8 @@ class LocalCostSummary(TypedDict):
     total_estimated_cost_usd: float
     total_input_tokens: int
     total_output_tokens: int
+    estimated_cost_available: bool
+    pricing_configured: NotRequired[bool]
     cost_utilization: float
     by_tier: list[LocalTierCost]
     daily: list[LocalDailyCost]
