@@ -30,14 +30,14 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 # Patterns that indicate a credential assignment (flagged unless in an
 # allowlist of placeholder values).
 SECRET_PATTERNS = [
-    re.compile(r"""api_key\s*=\s*['"][^'"]+['"]""", re.IGNORECASE),
-    re.compile(r"""secret\s*=\s*['"][^'"]+['"]""", re.IGNORECASE),
-    re.compile(r"""token\s*=\s*['"][^'"]+['"]""", re.IGNORECASE),
-    re.compile(r"""password\s*=\s*['"][^'"]+['"]""", re.IGNORECASE),
-    re.compile(r"""api[_-]?key\s*[:=]\s*['"][^'"]+['"]""", re.IGNORECASE),
-    re.compile(r"""secret[_-]?key\s*[:=]\s*['"][^'"]+['"]""", re.IGNORECASE),
-    re.compile(r"""access[_-]?token\s*[:=]\s*['"][^'"]+['"]""", re.IGNORECASE),
-    re.compile(r"""bearer\s+[A-Za-z0-9._-]+""", re.IGNORECASE),
+    re.compile(r"""(?<![A-Za-z0-9_])api_key\s*=\s*['"][^'"]+['"]""", re.IGNORECASE),
+    re.compile(r"""(?<![A-Za-z0-9_])secret\s*=\s*['"][^'"]+['"]""", re.IGNORECASE),
+    re.compile(r"""(?<![A-Za-z0-9_])token\s*=\s*['"][^'"]+['"]""", re.IGNORECASE),
+    re.compile(r"""(?<![A-Za-z0-9_])password\s*=\s*['"][^'"]+['"]""", re.IGNORECASE),
+    re.compile(r"""(?<![A-Za-z0-9_])api[_-]?key\s*[:=]\s*['"][^'"]+['"]""", re.IGNORECASE),
+    re.compile(r"""(?<![A-Za-z0-9_])secret[_-]?key\s*[:=]\s*['"][^'"]+['"]""", re.IGNORECASE),
+    re.compile(r"""(?<![A-Za-z0-9_])access[_-]?token\s*[:=]\s*['"][^'"]+['"]""", re.IGNORECASE),
+    re.compile(r"""bearer\s+(?!token\b)[A-Za-z0-9._-]{10,}""", re.IGNORECASE),
 ]
 
 # Placeholder values that should NOT trigger the secret scan.

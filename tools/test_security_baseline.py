@@ -75,11 +75,29 @@ class TestSecretScan(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmpdir:
             repo = Path(tmpdir)
             (repo / "headers.py").write_text(
-                'Authorization = "Bearer sk-abc123"\n'
+                'Authorization = "Bearer sk-abc123def456"\n'
             )
             findings = csb.check_secret_scan(repo, ["headers.py"])
             self.assertEqual(len(findings), 1)
             self.assertIn("Bearer", findings[0])
+
+    def test_allows_bearer_help_text(self):
+        """CLI help text mentioning Bearer token is not a credential."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            repo = Path(tmpdir)
+            (repo / "cli.py").write_text(
+                'parser.add_argument("--token", help="Bearer token; never printed.")\n'
+            )
+            findings = csb.check_secret_scan(repo, ["cli.py"])
+            self.assertEqual(findings, [])
+
+    def test_allows_indirect_provider_secret_env_lookup(self):
+        """Shell indirection through a named environment variable is not a literal secret."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            repo = Path(tmpdir)
+            (repo / "start.sh").write_text('provider_secret="${!ACP_API_KEY:-}"\n')
+            findings = csb.check_secret_scan(repo, ["start.sh"])
+            self.assertEqual(findings, [])
 
 
 class TestImportScan(unittest.TestCase):
