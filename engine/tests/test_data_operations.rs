@@ -47,7 +47,7 @@ fn schema_version_returns_current_version() {
     let dir = tempdir().unwrap();
     let store = LocalProductStore::new(dir.path().join("test.db")).unwrap();
     let version = store.schema_version().unwrap();
-    assert_eq!(version, 2);
+    assert_eq!(version, 3);
 }
 
 #[test]
@@ -56,7 +56,7 @@ fn migration_runs_only_once() {
     let path = dir.path().join("test.db");
     let _store1 = LocalProductStore::new(&path).unwrap();
     let store2 = LocalProductStore::new(&path).unwrap();
-    assert_eq!(store2.schema_version().unwrap(), 2);
+    assert_eq!(store2.schema_version().unwrap(), 3);
 }
 
 #[test]
@@ -96,7 +96,7 @@ fn fresh_database_starts_at_version_0_before_migrations() {
         let version: i64 = conn
             .query_row("PRAGMA user_version", [], |row| row.get(0))
             .unwrap();
-        assert_eq!(version, 2);
+        assert_eq!(version, 3);
     }
 }
 
@@ -108,8 +108,8 @@ fn check_integrity_on_clean_database() {
     let store = LocalProductStore::new(dir.path().join("test.db")).unwrap();
     let report = store.check_integrity().unwrap();
     assert_eq!(report.status, "ok");
-    assert_eq!(report.schema_version, 2);
-    assert_eq!(report.tables.len(), 12);
+    assert_eq!(report.schema_version, 3);
+    assert_eq!(report.tables.len(), 14);
     for table in &report.tables {
         assert_eq!(table.status, "ok");
         assert!(table.row_count >= 0);
@@ -165,6 +165,8 @@ fn check_integrity_table_names() {
     assert!(names.contains(&"workflow_run_edges"));
     assert!(names.contains(&"workflow_run_events"));
     assert!(names.contains(&"workflow_run_approvals"));
+    assert!(names.contains(&"supervised_patch_workspaces"));
+    assert!(names.contains(&"supervised_patch_artifacts"));
 }
 
 // --- import tests ---
@@ -506,6 +508,178 @@ fn export_import_roundtrip_workflow_runs() {
     assert_eq!(run["approvals"].as_array().unwrap().len(), 1);
 }
 
+#[test]
+fn export_import_roundtrip_supervised_patch_metadata() {
+    let target_dir = tempdir().unwrap();
+    let workspace_root = tempdir().unwrap();
+    let dir = tempdir().unwrap();
+    let store = LocalProductStore::new(dir.path().join("test.db")).unwrap();
+    let workspace_path = workspace_root.path().join("workspaces").join("ws-001");
+    let workspace = store
+        .record_supervised_patch_workspace(
+            &json!({
+                "plan_id": "plan-0001",
+                "run_id": "run-0001",
+                "target_id": "target-001",
+                "target_repo_path": target_dir.path().to_string_lossy(),
+                "workspace_path": workspace_path.to_string_lossy(),
+                "source_revision": "abc123",
+                "source_tree_hash": "tree123",
+            }),
+            "actor",
+        )
+        .unwrap();
+    store
+        .record_supervised_patch_artifact(
+            &json!({
+                "workspace_id": workspace["workspace_id"],
+                "patch_hash": "sha256-patch",
+                "changed_files": ["src/lib.rs"],
+                "redaction_status": "redacted",
+            }),
+            "actor",
+        )
+        .unwrap();
+
+    let export = store.export_snapshot("noop", false).unwrap();
+    assert_eq!(
+        export["supervised_patch_workspaces"]
+            .as_array()
+            .unwrap()
+            .len(),
+        1
+    );
+    assert_eq!(
+        export["supervised_patch_artifacts"]
+            .as_array()
+            .unwrap()
+            .len(),
+        1
+    );
+
+    let dir2 = tempdir().unwrap();
+    let store2 = LocalProductStore::new(dir2.path().join("test.db")).unwrap();
+    let result = store2.import_snapshot(&export).unwrap();
+    assert_eq!(result.errors.len(), 0);
+    assert_eq!(result.imported.supervised_patch_workspaces, 1);
+    assert_eq!(result.imported.supervised_patch_artifacts, 1);
+
+    let imported_workspace = store2
+        .get_supervised_patch_workspace("patch-workspace-0001")
+        .unwrap()
+        .unwrap();
+    assert_eq!(imported_workspace["target_id"], "target-001");
+    assert_eq!(
+        imported_workspace["boundary"]["target_repository_writes"],
+        "disabled"
+    );
+    let imported_artifact = store2
+        .get_supervised_patch_artifact("patch-artifact-0001")
+        .unwrap()
+        .unwrap();
+    assert_eq!(imported_artifact["patch_apply_authority"], "disabled");
+    assert_eq!(imported_artifact["changed_files"][0], "src/lib.rs");
+}
+
+#[test]
+fn import_snapshot_rejects_supervised_patch_workspace_inside_target() {
+    let dir = tempdir().unwrap();
+    let store = LocalProductStore::new(dir.path().join("test.db")).unwrap();
+    let target_path = dir.path().join("target");
+    let workspace_path = target_path.join(".agent-control-plane").join("ws-001");
+
+    let mut snapshot = make_export_snapshot();
+    snapshot["supervised_patch_workspaces"] = json!([
+        {
+            "schema_version": "supervised_patch_workspace.v1",
+            "workspace_id": "patch-workspace-0001",
+            "run_id": "run-0001",
+            "target_id": "target-001",
+            "target_repo_path": target_path.to_string_lossy(),
+            "target_repo_canonical_path": target_path.to_string_lossy(),
+            "workspace_path": workspace_path.to_string_lossy(),
+            "workspace_canonical_path": workspace_path.to_string_lossy(),
+            "source_revision": "abc123",
+            "status": "requested",
+            "metadata_only": true,
+            "execution_authority": "disabled",
+            "boundary": {
+                "metadata_only": true,
+                "execution_authority": "disabled",
+                "workspace_directory_creation": "not_performed",
+                "target_repository_writes": "disabled",
+                "registered_git_worktree": "forbidden",
+                "git_worktree_add": "forbidden",
+                "process_execution": "disabled",
+                "provider_calls": "disabled",
+                "push_merge_deploy_apply": "disabled"
+            }
+        }
+    ]);
+
+    let result = store.import_snapshot(&snapshot).unwrap();
+    assert_eq!(result.imported.supervised_patch_workspaces, 0);
+    assert!(result
+        .errors
+        .iter()
+        .any(|error| error.contains("outside registered target repository")));
+    assert_eq!(store.supervised_patch_workspaces(10).unwrap().len(), 0);
+}
+
+#[test]
+fn import_snapshot_rejects_unsafe_supervised_patch_artifact_files() {
+    let target_dir = tempdir().unwrap();
+    let workspace_root = tempdir().unwrap();
+    let dir = tempdir().unwrap();
+    let store = LocalProductStore::new(dir.path().join("test.db")).unwrap();
+    let workspace_path = workspace_root.path().join("workspaces").join("ws-001");
+
+    let mut snapshot = make_export_snapshot();
+    snapshot["supervised_patch_workspaces"] = json!([
+        {
+            "schema_version": "supervised_patch_workspace.v1",
+            "workspace_id": "patch-workspace-0001",
+            "run_id": "run-0001",
+            "target_id": "target-001",
+            "target_repo_path": target_dir.path().to_string_lossy(),
+            "target_repo_canonical_path": target_dir.path().to_string_lossy(),
+            "workspace_path": workspace_path.to_string_lossy(),
+            "workspace_canonical_path": workspace_path.to_string_lossy(),
+            "source_revision": "abc123",
+            "status": "requested",
+            "metadata_only": true,
+            "execution_authority": "disabled"
+        }
+    ]);
+    snapshot["supervised_patch_artifacts"] = json!([
+        {
+            "schema_version": "supervised_patch_artifact.v1",
+            "artifact_id": "patch-artifact-0001",
+            "workspace_id": "patch-workspace-0001",
+            "run_id": "run-0001",
+            "target_id": "target-001",
+            "source_revision": "abc123",
+            "artifact_type": "patch_diff",
+            "patch_hash": "sha256-patch",
+            "changed_files": ["src\\lib.rs"],
+            "redaction_status": "redacted",
+            "metadata_only": true,
+            "execution_authority": "disabled",
+            "patch_apply_authority": "disabled",
+            "artifact_file_created": false
+        }
+    ]);
+
+    let result = store.import_snapshot(&snapshot).unwrap();
+    assert_eq!(result.imported.supervised_patch_workspaces, 1);
+    assert_eq!(result.imported.supervised_patch_artifacts, 0);
+    assert!(result
+        .errors
+        .iter()
+        .any(|error| error.contains("changed file must use forward slashes")));
+    assert_eq!(store.supervised_patch_artifacts(10).unwrap().len(), 0);
+}
+
 // --- import result struct tests ---
 
 #[test]
@@ -517,6 +691,8 @@ fn import_counts_default() {
     assert_eq!(counts.audit, 0);
     assert_eq!(counts.plans, 0);
     assert_eq!(counts.workflow_runs, 0);
+    assert_eq!(counts.supervised_patch_workspaces, 0);
+    assert_eq!(counts.supervised_patch_artifacts, 0);
 }
 
 #[test]
@@ -529,10 +705,14 @@ fn import_result_struct_fields() {
             audit: 5,
             plans: 4,
             workflow_runs: 3,
+            supervised_patch_workspaces: 2,
+            supervised_patch_artifacts: 1,
         },
         errors: vec!["err1".to_string()],
     };
     assert_eq!(result.imported.dispatches, 3);
+    assert_eq!(result.imported.supervised_patch_workspaces, 2);
+    assert_eq!(result.imported.supervised_patch_artifacts, 1);
     assert_eq!(result.errors.len(), 1);
 }
 

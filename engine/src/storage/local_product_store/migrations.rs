@@ -2,7 +2,7 @@ use rusqlite::Connection;
 
 use super::LocalProductStore;
 
-pub(super) const CURRENT_SCHEMA_VERSION: i64 = 2;
+pub(super) const CURRENT_SCHEMA_VERSION: i64 = 3;
 
 struct Migration {
     version: i64,
@@ -17,6 +17,10 @@ const MIGRATIONS: &[Migration] = &[
     Migration {
         version: 2,
         description: "add inert workflow run state tables",
+    },
+    Migration {
+        version: 3,
+        description: "add supervised patch metadata tables",
     },
 ];
 
@@ -34,6 +38,7 @@ impl LocalProductStore {
                 match migration.version {
                     1 => Self::migrate_v1_add_key_columns(conn)?,
                     2 => Self::migrate_v2_add_workflow_run_tables(conn)?,
+                    3 => Self::migrate_v3_add_supervised_patch_tables(conn)?,
                     _ => return Err(format!("unknown migration version: {}", migration.version)),
                 }
                 conn.execute_batch(&format!("PRAGMA user_version = {}", migration.version))
@@ -111,6 +116,54 @@ CREATE TABLE IF NOT EXISTS workflow_run_approvals (
     approval_json TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_workflow_run_approvals_run ON workflow_run_approvals(run_id);
+",
+        )
+        .map_err(|e| e.to_string())
+    }
+
+    fn migrate_v3_add_supervised_patch_tables(conn: &Connection) -> Result<(), String> {
+        conn.execute_batch(
+            "
+CREATE TABLE IF NOT EXISTS supervised_patch_workspaces (
+    workspace_sequence INTEGER PRIMARY KEY,
+    workspace_id TEXT NOT NULL UNIQUE,
+    plan_id TEXT,
+    run_id TEXT NOT NULL,
+    target_id TEXT NOT NULL,
+    target_repo_path TEXT NOT NULL,
+    target_repo_canonical_path TEXT NOT NULL,
+    workspace_path TEXT NOT NULL,
+    workspace_canonical_path TEXT NOT NULL,
+    source_revision TEXT NOT NULL,
+    source_tree_hash TEXT,
+    status TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    boundary_json TEXT NOT NULL,
+    workspace_json TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_supervised_patch_workspaces_run ON supervised_patch_workspaces(run_id);
+CREATE INDEX IF NOT EXISTS idx_supervised_patch_workspaces_target ON supervised_patch_workspaces(target_id, source_revision);
+CREATE INDEX IF NOT EXISTS idx_supervised_patch_workspaces_status ON supervised_patch_workspaces(status);
+
+CREATE TABLE IF NOT EXISTS supervised_patch_artifacts (
+    artifact_sequence INTEGER PRIMARY KEY,
+    artifact_id TEXT NOT NULL UNIQUE,
+    workspace_id TEXT NOT NULL,
+    run_id TEXT NOT NULL,
+    plan_id TEXT,
+    target_id TEXT NOT NULL,
+    source_revision TEXT NOT NULL,
+    artifact_type TEXT NOT NULL,
+    patch_hash TEXT NOT NULL,
+    changed_files_json TEXT NOT NULL,
+    redaction_status TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    artifact_json TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_supervised_patch_artifacts_workspace ON supervised_patch_artifacts(workspace_id);
+CREATE INDEX IF NOT EXISTS idx_supervised_patch_artifacts_run ON supervised_patch_artifacts(run_id);
+CREATE INDEX IF NOT EXISTS idx_supervised_patch_artifacts_created ON supervised_patch_artifacts(created_at);
 ",
         )
         .map_err(|e| e.to_string())

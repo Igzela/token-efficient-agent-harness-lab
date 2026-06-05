@@ -34,6 +34,8 @@ impl LocalProductStore {
                 "workflow_run_edges",
                 "workflow_run_events",
                 "workflow_run_approvals",
+                "supervised_patch_workspaces",
+                "supervised_patch_artifacts",
             ];
             let mut table_reports = Vec::new();
             for table in &tables {

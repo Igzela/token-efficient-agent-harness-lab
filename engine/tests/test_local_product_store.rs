@@ -722,6 +722,199 @@ fn workflow_run_resume_and_cancel_are_metadata_only() {
         .any(|event| event["event_type"] == "workflow_cancel_requested"));
 }
 
+#[test]
+fn supervised_patch_workspace_records_metadata_only_boundary_evidence() {
+    let target_dir = tempdir().unwrap();
+    let workspace_root = tempdir().unwrap();
+    let dir = tempdir().unwrap();
+    let store = LocalProductStore::new(dir.path().join("test.db")).unwrap();
+    let workspace_path = workspace_root.path().join("workspaces").join("ws-001");
+
+    let workspace = store
+        .record_supervised_patch_workspace(
+            &json!({
+                "plan_id": "plan-0001",
+                "run_id": "run-0001",
+                "target_id": "target-001",
+                "target_repo_path": target_dir.path().to_string_lossy(),
+                "workspace_path": workspace_path.to_string_lossy(),
+                "source_revision": "abc123",
+                "source_tree_hash": "tree123",
+            }),
+            "operator",
+        )
+        .unwrap();
+
+    assert_eq!(workspace["schema_version"], "supervised_patch_workspace.v1");
+    assert_eq!(workspace["workspace_id"], "patch-workspace-0001");
+    assert_eq!(workspace["status"], "requested");
+    assert_eq!(workspace["metadata_only"], true);
+    assert_eq!(workspace["execution_authority"], "disabled");
+    assert_eq!(
+        workspace["boundary"]["target_repository_writes"],
+        "disabled"
+    );
+    assert_eq!(
+        workspace["boundary"]["workspace_directory_creation"],
+        "not_performed"
+    );
+    assert_eq!(
+        workspace["boundary"]["registered_git_worktree"],
+        "forbidden"
+    );
+
+    let listed = store.supervised_patch_workspaces(10).unwrap();
+    assert_eq!(listed.len(), 1);
+    let fetched = store
+        .get_supervised_patch_workspace("patch-workspace-0001")
+        .unwrap()
+        .unwrap();
+    assert_eq!(fetched["target_id"], "target-001");
+
+    let stats = store.stats().unwrap();
+    assert_eq!(stats["supervised_patch_workspaces"], 1);
+    assert_eq!(stats["supervised_patch_artifacts"], 0);
+
+    let audit = store.audit_events(10).unwrap();
+    assert!(audit
+        .iter()
+        .any(|event| event["action"] == "supervised_patch.workspace_record"));
+}
+
+#[test]
+fn supervised_patch_workspace_rejects_registered_target_paths() {
+    let target_dir = tempdir().unwrap();
+    let dir = tempdir().unwrap();
+    let store = LocalProductStore::new(dir.path().join("test.db")).unwrap();
+    let workspace_path = target_dir
+        .path()
+        .join(".agent-control-plane")
+        .join("ws-001");
+
+    let result = store.record_supervised_patch_workspace(
+        &json!({
+            "run_id": "run-0001",
+            "target_id": "target-001",
+            "target_repo_path": target_dir.path().to_string_lossy(),
+            "workspace_path": workspace_path.to_string_lossy(),
+            "source_revision": "abc123",
+        }),
+        "operator",
+    );
+
+    assert!(result.is_err());
+    assert!(result
+        .unwrap_err()
+        .contains("outside registered target repository"));
+    assert_eq!(store.supervised_patch_workspaces(10).unwrap().len(), 0);
+}
+
+#[test]
+fn supervised_patch_artifact_records_metadata_without_apply_authority() {
+    let target_dir = tempdir().unwrap();
+    let workspace_root = tempdir().unwrap();
+    let dir = tempdir().unwrap();
+    let store = LocalProductStore::new(dir.path().join("test.db")).unwrap();
+    let workspace_path = workspace_root.path().join("workspaces").join("ws-001");
+    store
+        .record_supervised_patch_workspace(
+            &json!({
+                "plan_id": "plan-0001",
+                "run_id": "run-0001",
+                "target_id": "target-001",
+                "target_repo_path": target_dir.path().to_string_lossy(),
+                "workspace_path": workspace_path.to_string_lossy(),
+                "source_revision": "abc123",
+            }),
+            "operator",
+        )
+        .unwrap();
+
+    let artifact = store
+        .record_supervised_patch_artifact(
+            &json!({
+                "workspace_id": "patch-workspace-0001",
+                "patch_hash": "sha256-patch",
+                "changed_files": ["src/lib.rs", "README.md"],
+                "redaction_status": "redacted",
+                "storage_refs": {"patch": "app-owned://patches/patch-artifact-0001"},
+            }),
+            "operator",
+        )
+        .unwrap();
+
+    assert_eq!(artifact["schema_version"], "supervised_patch_artifact.v1");
+    assert_eq!(artifact["artifact_id"], "patch-artifact-0001");
+    assert_eq!(artifact["workspace_id"], "patch-workspace-0001");
+    assert_eq!(artifact["metadata_only"], true);
+    assert_eq!(artifact["execution_authority"], "disabled");
+    assert_eq!(artifact["patch_apply_authority"], "disabled");
+    assert_eq!(artifact["artifact_file_created"], false);
+    assert_eq!(artifact["changed_files"].as_array().unwrap().len(), 2);
+
+    let fetched = store
+        .get_supervised_patch_artifact("patch-artifact-0001")
+        .unwrap()
+        .unwrap();
+    assert_eq!(fetched["patch_hash"], "sha256-patch");
+    assert_eq!(store.supervised_patch_artifacts(10).unwrap().len(), 1);
+
+    let stats = store.stats().unwrap();
+    assert_eq!(stats["supervised_patch_workspaces"], 1);
+    assert_eq!(stats["supervised_patch_artifacts"], 1);
+}
+
+#[test]
+fn supervised_patch_artifact_rejects_unsafe_changed_files() {
+    let target_dir = tempdir().unwrap();
+    let workspace_root = tempdir().unwrap();
+    let dir = tempdir().unwrap();
+    let store = LocalProductStore::new(dir.path().join("test.db")).unwrap();
+    let workspace_path = workspace_root.path().join("workspaces").join("ws-001");
+    store
+        .record_supervised_patch_workspace(
+            &json!({
+                "run_id": "run-0001",
+                "target_id": "target-001",
+                "target_repo_path": target_dir.path().to_string_lossy(),
+                "workspace_path": workspace_path.to_string_lossy(),
+                "source_revision": "abc123",
+            }),
+            "operator",
+        )
+        .unwrap();
+
+    let result = store.record_supervised_patch_artifact(
+        &json!({
+            "workspace_id": "patch-workspace-0001",
+            "patch_hash": "sha256-patch",
+            "changed_files": ["../secret.txt"],
+        }),
+        "operator",
+    );
+
+    assert!(result.is_err());
+    assert!(result
+        .unwrap_err()
+        .contains("changed file must be normalized"));
+    assert_eq!(store.supervised_patch_artifacts(10).unwrap().len(), 0);
+
+    let backslash_result = store.record_supervised_patch_artifact(
+        &json!({
+            "workspace_id": "patch-workspace-0001",
+            "patch_hash": "sha256-patch",
+            "changed_files": ["src\\lib.rs"],
+        }),
+        "operator",
+    );
+
+    assert!(backslash_result.is_err());
+    assert!(backslash_result
+        .unwrap_err()
+        .contains("changed file must use forward slashes"));
+    assert_eq!(store.supervised_patch_artifacts(10).unwrap().len(), 0);
+}
+
 // --- cost_summary v2 tests ---
 
 #[test]
