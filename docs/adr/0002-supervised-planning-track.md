@@ -1,6 +1,6 @@
 # ADR 0002: Supervised Planning Track Toward Autonomous Beta
 
-Status: Accepted for planning only; execution remains gated.
+Status: Accepted for planning only; execution remains gated. Batch 2 canonical model decision recorded.
 
 Date: 2026-06-05
 
@@ -47,9 +47,43 @@ Design documents for sandbox, target workspace, approval broker, rollback, or ar
 
 ## Canonical Model Direction
 
-Batch 2 should treat `WorkflowGraph` as the likely canonical planning model because it already carries workflow/node status, budget, cost, result, and resume/cancel-oriented semantics. `DAGState` should remain the graph-mutation model until an adapter is approved. Scheduling-local `DagState` should remain a concurrency view until an adapter is approved.
+Batch 2 selects `WorkflowGraph` as the canonical planning model because it already carries workflow/node status, budget, cost, result, and resume/cancel-oriented semantics. `DAGState` remains the graph-mutation model for versioned proposals, approval-aware mutation, and rollback. Scheduling-local `DagState` remains a concurrency view for file-overlap scheduling.
 
 This does not approve R8, file splitting, or broad runtime refactoring.
+
+## Batch 2 Model Contract
+
+Canonical direction:
+
+- `WorkflowGraph` is the canonical planning, persistence, and future read-only planner model.
+- `DAGState` is an adapter source/target for graph mutations, not the canonical plan record.
+- `DagState` is an adapter target for concurrency scheduling, not the canonical plan record.
+- No existing Rust modules are moved, split, or wired by this decision.
+
+Field correspondence for later adapters:
+
+| Canonical field | `DAGState` mapping | `DagState` mapping | Notes |
+|---|---|---|---|
+| `WorkflowGraph.workflow_id` | `DAGState.dag_id` | `DagState.dag_id` | Adapter must define deterministic id policy. |
+| `WorkflowGraph.dispatch_id` | not present | not present | Planner must supply dispatch/planning id separately. |
+| `WorkflowGraph.status` | not graph-level semantic equivalent | not graph-level semantic equivalent | Keep workflow lifecycle canonical in `WorkflowGraph`. |
+| `WorkflowGraph.nodes[].node_id` | `DAGNode.node_id` | `DagNode.node_id` | Direct id mapping. |
+| `WorkflowGraph.nodes[].task_type` | `DAGNode.node_type` or metadata | `DagNode.node_type` | Adapter must preserve current task type semantics. |
+| `WorkflowGraph.nodes[].status` | `DAGNode.status` | `DagNode.status` | Status strings need validation at adapter boundary. |
+| `WorkflowGraph.nodes[].budget` / `cost_incurred` | not present | not present | Planning/persistence-only fields stay canonical. |
+| `WorkflowGraph.nodes[].assigned_agent_id` | not present | not present | Later planner can keep this `None`; no worker authority implied. |
+| `WorkflowGraph.edges[].edge_id` | `DAGEdge.edge_id` | `DagEdge.edge_id` | Direct id mapping. |
+| `WorkflowGraph.edges[].from_node_id` | `DAGEdge.from_node` | `DagEdge.from_node` | Naming bridge only. |
+| `WorkflowGraph.edges[].to_node_id` | `DAGEdge.to_node` | `DagEdge.to_node` | Naming bridge only. |
+| `WorkflowGraph.edges[].edge_type` | `DAGEdge.dependency_type` | `DagEdge.dependency_type` | Adapter must map `hard`/`soft`/`artifact` to workflow edge semantics. |
+| Version metadata | `DAGState.version` | `DagState.version` | Do not add a `WorkflowGraph.version` field in Batch 2. Decide in Batch 3 only if persistence tests require it. |
+
+Batch 3 adapter design constraints:
+
+- Implement adapters only after tests define the mapping.
+- Preserve existing module files; no R8-style split.
+- Keep adapters planning-only and deterministic.
+- Do not use adapters to start execution, spawn workers, write targets, run sandboxes, or grant approval authority.
 
 ## Consequences
 

@@ -37,14 +37,14 @@ Batch status:
 |---|---|---|
 | 0 | Governance and boundary confirmation | Complete as documentation/audit scope. |
 | 1 | Module reachability audit and classification | Complete as documentation/audit scope. |
-| 2 | DAG/workflow canonical model decision | Next recommended batch. |
+| 2 | DAG/workflow canonical model decision | Complete as documentation/design scope; `WorkflowGraph` is canonical. |
 | 3 | Read-only planner API plus app-owned SQLite plan state | Not started; must generate plans only. |
 | 4 | Durable workflow run/node/edge/event/approval state | Not started; no real worker. |
 | 5 | Quality/routing/retry/observability recommendation path | Not started; recommend/block only. |
 | 6 | Sandbox, target workspace, approval broker, rollback, artifact-capture design gate | Not started; documentation/design only. |
 | 7 | Supervised execution beta | Not approved; requires explicit human approval before implementation. |
 
-Batch 2 should treat `WorkflowGraph` as the likely canonical model, `DAGState` as the graph-mutation model, and scheduling-local `DagState` as a concurrency view. Do not implement R8, file splitting, target writes, worker runtime, or execution controls while doing this design.
+Batch 2 selects `WorkflowGraph` as the canonical planning and persistence model. `DAGState` remains the graph-mutation model for versioned proposals/rollback, and scheduling-local `DagState` remains the concurrency view for file-overlap scheduling. Batch 3 may design test-first adapters only; do not implement R8, file splitting, target writes, worker runtime, or execution controls.
 
 ## Local Productization Plan
 

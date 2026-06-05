@@ -33,7 +33,7 @@ The Stage 0-4 task-book scope is complete.
 - GitHub private repository published.
 - Architecture Refactor R-series sealed at R7. R8 is not approved. The `checkpoint.rs` split and `dispatch_decision.rs` split are deferred. No further R-series file splitting is approved.
 - Post-R7 wire/type governance hardening implemented: dormant `app_layer` annotation, Rust golden fixture typed round-trip guardrail, active execution-result schema enums, generated/manual TypeScript split, schema-driven enum codegen with drift enforcement via `scripts/check_wire_codegen_drift.sh`, and localized dashboard union reuse.
-- Supervised autonomous beta planning is accepted as a planning-only track in `docs/adr/0002-supervised-planning-track.md`. Batch 0-1 governance/module audit is recorded. A read-only planner is not a runtime autonomous worker when it only creates non-executable app-owned plans.
+- Supervised autonomous beta planning is accepted as a planning-only track in `docs/adr/0002-supervised-planning-track.md`. Batch 0-2 governance/module/model planning is recorded, with `WorkflowGraph` selected as canonical planning model. A read-only planner is not a runtime autonomous worker when it only creates non-executable app-owned plans.
 - Current Rust test count: 1178 pass.
 - Existing CLI executor routing is a pre-existing local subprocess exception and is explicit opt-in via `ACP_ENABLE_CLI_EXECUTION=1`. Any expansion requires explicit scope and human approval.
 

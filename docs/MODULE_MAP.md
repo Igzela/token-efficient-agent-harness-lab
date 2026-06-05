@@ -20,7 +20,15 @@ Batch 1 classified modules for the supervised autonomous beta planning track. Cl
 | dormant | `engine/src/app_layer/` compiled module subset (`app_registry`, `error_taxonomy`, `governance`, `instance_audit`, `plan_workbench`, `policy_candidate`, `usage_ledger`, `user_style_mutation`) |
 | legacy-delete-candidate | Undeclared `engine/src/app_layer/` files: `app_api.rs`, `app_diagnostics.rs`, `dashboard_model.rs`, `plan_store.rs`, `plan_triage.rs`, `resource_planner.rs`, `review_guidance.rs`. Caveat: `ResourcePlanner` as an architecture concept is explicitly not legacy; only the current undeclared Rust file is a candidate for later review. |
 
-Batch 2 model guidance: use `WorkflowGraph` as the likely canonical planning model, keep `DAGState` as graph-mutation state until an adapter is approved, and keep scheduling-local `DagState` as a concurrency view. This is design guidance only; no R8 or broad refactor is approved.
+Batch 2 model decision: `WorkflowGraph` is the canonical planning and persistence model, `DAGState` remains graph-mutation state for versioned proposals and rollback, and scheduling-local `DagState` remains a concurrency view. This is design guidance only; no R8 or broad refactor is approved.
+
+Adapter direction for Batch 3:
+
+| Source | Target | Purpose | Constraint |
+| --- | --- | --- | --- |
+| `DAGState` | `WorkflowGraph` | Convert approved graph-mutation snapshots into canonical planning records. | Test-first; no execution authority. |
+| `WorkflowGraph` | `DagState` | Feed concurrency scheduling from canonical planning records. | Drop-only view; preserve node ids/status and edge dependencies. |
+| `WorkflowGraph` | persisted app-owned SQLite rows | Store read-only planner state in Batch 3. | App-owned state only; no target repo writes. |
 
 ## Rust Engine Modules
 

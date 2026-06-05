@@ -64,7 +64,7 @@ Additional active architecture track:
 | Rust + TypeScript Cutover | Complete; Rust `engine/` is the primary runtime/API/storage/provider-gated control plane, `dashboard/` and `sdk/typescript/` are the primary TypeScript surfaces; Python retained as REST SDK and utility scripts only |
 | Architecture Refactor R-series | Sealed at R7; R8 is not approved. No further R-series file splitting is approved |
 | Post-R7 Wire/Type Governance Hardening | Implemented; `app_layer` remains dormant/unwired reference code and `scripts/check_wire_codegen_drift.sh` protects generated wire files |
-| Supervised Autonomous Beta Planning | Planning-only track accepted in ADR-0002; Batch 0-1 governance/module audit recorded. A read-only planner is not a runtime autonomous worker when it only creates non-executable app-owned plans. |
+| Supervised Autonomous Beta Planning | Planning-only track accepted in ADR-0002; Batch 0-2 governance/module/model planning recorded. `WorkflowGraph` is canonical planning model. A read-only planner is not a runtime autonomous worker when it only creates non-executable app-owned plans. |
 
 ## What This Project Is Not
 
