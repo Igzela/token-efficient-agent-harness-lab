@@ -1,6 +1,6 @@
 # ADR 0002: Supervised Planning Track Toward Autonomous Beta
 
-Status: Accepted for planning only; execution remains gated. Batch 7 readiness audit is NO-GO.
+Status: Accepted for planning only; execution remains gated. Batch 7 implementation-plan artifact is documented; implementation remains NO-GO.
 
 Date: 2026-06-05
 
@@ -74,7 +74,7 @@ Batch 7 is not approved by this ADR. A later Batch 7 request must satisfy these 
 | Property | Design contract | Current implementation status |
 |---|---|---|
 | Workspace source | Create an isolated harness-owned workspace from a selected target revision or read-only target mount. | Not implemented. |
-| Write boundary | Writes are limited to scratch or an isolated worktree/patch area; registered target repositories are not mutated directly. | Not implemented. Existing app behavior does not write target repos. |
+| Write boundary | Writes are limited to scratch or an app-owned detached workspace/patch area outside registered target repositories; registered target repositories are not mutated directly. | Not implemented. Existing app behavior does not write target repos. |
 | Concurrency | One active execution workspace per target/revision unless a conflict policy proves isolation. | Not implemented. |
 | Lifecycle | Workspace creation, capture, rollback, retention, and cleanup must be explicit lifecycle states. | Not implemented. |
 | Integrity evidence | Record source revision, workspace id, writable paths, and final diff/artifact inventory before human review. | Not implemented. |
@@ -125,19 +125,119 @@ Batch 7 may start only after a separate human-approved implementation plan prove
 
 Current go/no-go: **NO-GO for implementation**.
 
-The current repository does not yet satisfy the Batch 7 prerequisites:
+The current repository now has a documentation-only implementation-plan artifact, but it still does not have Batch 7 implementation, schema, tests, or runtime controls:
 
 | Prerequisite | Current evidence | Status |
 |---|---|---|
-| Isolation primitive selected | No constrained process/container/VM primitive is selected. Existing sandbox-like code is logical file-claim tracking only. | Missing |
-| Target workspace contract | No harness-owned isolated worktree/scratch lifecycle, source revision evidence, diff capture, or cleanup path is wired. | Missing |
-| Approval broker | `workflow_run_approvals` are inert metadata with `execution_authority=disabled`; no scoped future approval authority or pre-execution gate exists. | Missing |
-| Rollback | DAG compensation and backup restore helpers exist, but no workspace-level rollback strategy or execution failure-mode tests exist. | Missing |
-| Artifact capture | Artifact lifecycle/gate modules are library-level; no persisted execution artifact schema, storage, redaction, access control, or retention path exists. | Missing |
+| Isolation primitive selected | This ADR selects an app-owned detached patch workspace/snapshot as the first Batch 7 primitive. It explicitly rejects registered-target `git worktree add` for the first slice because that mutates target repository `.git/worktrees` metadata. No process/container/VM execution primitive is selected because the first slice must not run untrusted code or target commands. | Design selected; implementation not started |
+| Target workspace contract | This ADR defines an app-owned detached workspace lifecycle with source revision evidence, writable app-owned paths, diff capture, and cleanup/quarantine states. No code or tests exist yet. | Design specified; implementation missing |
+| Approval broker | This ADR defines future patch-generation and patch-review gate semantics bound to operator identity, scope, expiry, and diff/workspace evidence. `workflow_run_approvals` remain inert metadata with `execution_authority=disabled`. | Design specified; implementation missing |
+| Rollback | This ADR defines rollback as app-owned workspace discard/quarantine plus terminal run state and evidence. DAG compensation and backup restore helpers are not execution rollback engines. | Design specified; tests missing |
+| Artifact capture | This ADR defines a future patch artifact schema/storage/redaction/access plan. Artifact lifecycle/gate modules remain library-level and no persisted execution artifact table exists. | Design specified; implementation missing |
 | Provider default-off | Existing env/auth/scope/cost gates keep provider execution default-off. | Satisfied, must remain unchanged |
 | No push/merge/deploy/target mutation | Existing boundaries block these behaviors. | Satisfied, must remain unchanged |
 
-The next safe artifact is a Batch 7 implementation plan that selects the isolation primitive, defines target workspace lifecycle and artifact schema, defines approval scopes and gate semantics, defines rollback tests, and updates threat-model controls. That artifact remains documentation/design until separately accepted.
+The next safe action is a separate, test-first implementation-slice request. No Batch 7 code is approved by this artifact.
+
+### Batch 7 Implementation Plan Artifact
+
+Status: **documentation/design only**. This section records the smallest acceptable supervised-beta implementation direction. It does not authorize code, runtime workers, process/container/VM isolation, target repository writes, provider calls, push/merge/deploy controls, or automatic execution.
+
+#### Selected First-Slice Primitive
+
+The first supervised-beta primitive is an **app-owned detached patch workspace/snapshot**:
+
+- The target repository is read only. The system may read a selected source revision and record commit/tree evidence.
+- The writable workspace lives under an app-owned ACP data path outside the registered target repository, for example `<acp_data_dir>/workspaces/<workspace_id>`.
+- If a default ACP data path would resolve inside the registered target repository, the implementation must relocate it to an approved app-owned directory or reject workspace creation.
+- The app-owned workspace is detached from the registered target repository. The first slice must not run `git worktree add` against the registered target repository because that writes `.git/worktrees` metadata in the target repo.
+- The first slice may generate a patch artifact by comparing the app-owned workspace manifest with the recorded source revision. It must not apply the patch to the registered target repository.
+- The first slice must not run target code, test commands, package managers, shell commands, external CLIs, provider calls, containers, VMs, or autonomous workers. If a later slice needs command execution, it requires a separate isolation primitive decision and threat-model update.
+
+This primitive is weaker than process/container/VM isolation by design. It is sufficient only for human-approved app-owned patch artifact generation because no untrusted process execution is allowed in the first slice. It is not sufficient for target test execution, build execution, provider-backed implementation, or unattended autonomous work.
+
+#### Target Workspace Lifecycle
+
+| State | Meaning | Required evidence |
+|---|---|---|
+| `requested` | Operator requests a supervised patch-generation workspace for a plan/run. | plan id, run id, target id, requested source revision, requester id |
+| `source_recorded` | The target revision is inspected read-only and pinned. | commit/tree hash, dirty-state policy result, readable path inventory summary |
+| `workspace_created` | App-owned detached workspace/snapshot is created outside the registered target repository. | workspace id, app-owned path, writable path inventory |
+| `patch_prepared` | Proposed changes exist only in the app-owned workspace. | changed-file inventory, patch hash, advisory snapshot hash |
+| `review_blocked` | Human review is required before export or any later action. | diff/artifact refs, approval requirement, expiry |
+| `approved_for_artifact_export` | Operator approves review of the patch artifact only. | approver id, scope, timestamp, expiry, reviewed patch hash |
+| `rejected` | Operator rejects the patch artifact. | denial reason, terminal event |
+| `quarantined` | Failure or policy violation preserves workspace for diagnosis without target mutation. | failure event, quarantine path/ref, cleanup requirement |
+| `cleaned` | App-owned workspace is removed after retention or explicit cleanup. | cleanup event, remaining artifact refs |
+
+Concurrency policy for the first implementation slice: one active app-owned workspace per target id and source revision unless a later approved conflict policy proves isolation. Registered target repositories remain read-only throughout the lifecycle.
+
+#### Approval Broker Scope And Gate
+
+Future implementation must treat approval as scoped metadata bound to evidence, not blanket execution authority:
+
+- Candidate approval scope: `workflow:patch_review`.
+- Required binding: plan id, run id, workspace id, target id, source revision, patch hash, changed-file inventory hash, approver id, decision timestamp, and expiry.
+- Stale, revoked, wrong-scope, wrong-hash, or wrong-identity approvals must block artifact export and emit app-owned events.
+- Approval grants permission to expose/export the captured patch artifact for human use only. It does not grant permission to run commands, apply patches to target repos, push, merge, deploy, call providers, or start workers.
+- Batch 4 `workflow_run_approvals` remain inert until a separate implementation slice wires and tests this gate.
+
+#### Rollback And Failure Tests
+
+For the first slice, rollback never repairs a target repository because the target repository is never mutated. Rollback means:
+
+- mark the app-owned workspace/run terminal as `rejected`, `rolled_back`, or `quarantined`
+- delete or quarantine the app-owned workspace according to retention policy
+- preserve redacted artifact and event evidence
+- verify the registered target repository path and `.git` metadata were not changed by the operation
+
+Required future tests before code is acceptable:
+
+- workspace create failure leaves no writable target residue
+- workspace path canonicalization rejects paths inside the registered target repository
+- wrong source revision or dirty-state policy blocks workspace creation
+- stale/wrong-scope approval blocks patch artifact export
+- rollback removes or quarantines the app-owned workspace and records a terminal event
+- registered target repository `.git` metadata is unchanged, including no registered `git worktree` metadata
+- provider gates remain default-off and no provider call path is reachable
+- no push, merge, deploy, apply, run, or execute control is exposed
+
+#### Artifact Capture Schema And Access
+
+Future implementation should persist patch artifacts in app-owned SQLite/filesystem storage, not target repositories. Minimum schema fields:
+
+| Field | Meaning |
+|---|---|
+| `schema_version` | `supervised_patch_artifact.v1` |
+| `artifact_id` | app-owned artifact id |
+| `plan_id` / `run_id` / `workspace_id` | source planning and workspace refs |
+| `target_id` / `source_revision` / `source_tree_hash` | read-only target evidence |
+| `workspace_manifest_hash` | manifest of app-owned workspace inputs |
+| `patch_hash` | hash of generated patch content |
+| `changed_files` | normalized changed-file inventory |
+| `advisory_snapshot_hash` | hash/ref for recommendation-only advisory state used during review |
+| `approval_refs` | approval/denial ids bound to this artifact |
+| `redaction_status` | pending, redacted, or failed |
+| `storage_refs` | app-owned file/db refs only |
+| `retention_expires_at` | cleanup deadline |
+
+Access rules:
+
+- read requires a future read scope compatible with `dispatch:read`
+- export/review requires the future `workflow:patch_review` gate above
+- destructive cleanup requires explicit admin scope and confirmation
+- operator-facing display/export must run secret redaction first
+
+#### Explicit Non-Goals For Batch 7 First Slice
+
+The implementation plan still forbids:
+
+- direct target repository mutation, including registered-target `git worktree add`
+- process, shell, container, VM, package-manager, test, or external CLI execution
+- real autonomous workers or concurrent runtime workers
+- default-on provider calls or unattended provider calls
+- patch apply, push, merge, deploy, run, execute, or release controls
+- hosted/cloud production behavior
 
 ## Boundaries
 
@@ -203,7 +303,7 @@ Batch 3 adapter design constraints:
 - Batch 3 and later implementation must be small, test-first, and scoped to planning-only behavior unless the user approves a broader batch.
 - Any future supervised execution beta must use a separate approval gate and threat model before implementation.
 - Batch 6 makes the future execution gate concrete, but it is not itself implementation authority.
-- Batch 7 readiness audit blocks implementation until the missing prerequisites above are resolved in a separate accepted plan.
+- Batch 7 implementation-plan artifact selects an app-owned detached patch workspace/snapshot for the first supervised patch artifact slice, but implementation remains blocked until a separate approved, test-first batch.
 
 ## Reversal Conditions
 
