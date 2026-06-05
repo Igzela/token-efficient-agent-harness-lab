@@ -298,6 +298,19 @@ async fn axum_create_read_only_plan_persists_workflow_graph_without_execution() 
         "disabled"
     );
     assert_eq!(body["plan"]["boundaries"]["runtime_workers"], "disabled");
+    assert_eq!(
+        body["plan"]["advisory"]["schema_version"],
+        "plan_advisory.v1"
+    );
+    assert_eq!(body["plan"]["advisory"]["mode"], "recommendation_only");
+    assert_eq!(
+        body["plan"]["advisory"]["decision"]["execution_allowed"],
+        false
+    );
+    assert_eq!(
+        body["plan"]["advisory"]["routing"]["adaptive_routing_available"],
+        false
+    );
     assert!(body["plan"].get("execution_result").is_none());
 
     let list = app
@@ -314,6 +327,10 @@ async fn axum_create_read_only_plan_persists_workflow_graph_without_execution() 
     let list_body = response_json(list).await;
     assert_eq!(list_body["plans"].as_array().unwrap().len(), 1);
     assert_eq!(list_body["plans"][0]["plan_id"], "plan-0001");
+    assert_eq!(
+        list_body["plans"][0]["advisory"]["retry"]["provider_invocation"],
+        "not_invoked"
+    );
 }
 
 #[tokio::test]

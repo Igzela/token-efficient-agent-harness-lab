@@ -208,7 +208,7 @@ pub fn openapi_document() -> serde_json::Value {
             "/api/v1/plans": {
                 "get": {
                     "summary": "List persisted read-only workflow plans",
-                    "description": "Requires dispatch:read scope. Plans are app-owned metadata only and do not execute workers or write target repositories.",
+                    "description": "Requires dispatch:read scope. Plans are app-owned metadata only and include recommendation-only advisory status; they do not execute workers or write target repositories.",
                     "parameters": [
                         {"name": "limit", "in": "query", "schema": {"type": "integer", "default": 100, "minimum": 0, "maximum": 500}},
                         {"name": "offset", "in": "query", "schema": {"type": "integer", "default": 0, "minimum": 0}},
@@ -218,7 +218,7 @@ pub fn openapi_document() -> serde_json::Value {
                 },
                 "post": {
                     "summary": "Create a read-only workflow plan",
-                    "description": "Generates a canonical WorkflowGraph plan only. No execution, provider call, worker spawn, sandbox/process execution, target write, deploy, merge, or approval control is performed.",
+                    "description": "Generates a canonical WorkflowGraph plan with recommendation-only quality/routing/retry/observability advisory metadata. No execution, provider call, worker spawn, sandbox/process execution, target write, deploy, merge, or approval control is performed.",
                     "requestBody": json_request_body(&["raw_request"], json!({
                         "raw_request": {"type": "string"},
                         "request_source": {"type": "string", "default": "api"}
@@ -234,7 +234,7 @@ pub fn openapi_document() -> serde_json::Value {
             "/api/v1/plans/{plan_id}": {
                 "get": {
                     "summary": "Get a read-only workflow plan by ID",
-                    "description": "Requires dispatch:read scope. Returns app-owned planning metadata only.",
+                    "description": "Requires dispatch:read scope. Returns app-owned planning metadata plus recommendation-only advisory status.",
                     "parameters": [path_parameter("plan_id")],
                     "responses": {
                         "200": {"description": "Read-only workflow plan"},

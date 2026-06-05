@@ -1,6 +1,7 @@
 use engine::provider::audit::{
     ProviderAuditEvent, ProviderAuditRecorder, PROVIDER_AUDIT_EVENT_SCHEMA_VERSION,
 };
+use engine::read_only_planner::ReadOnlyPlanner;
 use engine::storage::local_product_store::LocalProductStore;
 use serde_json::{json, Value};
 use std::sync::{Arc, Barrier};
@@ -546,6 +547,37 @@ fn workflow_plans_create_list_get_and_audit() {
     assert!(audit
         .iter()
         .any(|event| event["action"] == "workflow_plan.create"));
+}
+
+#[test]
+fn workflow_plans_persist_read_only_advisory_metadata() {
+    let dir = tempdir().unwrap();
+    let store = LocalProductStore::new(dir.path().join("test.db")).unwrap();
+    let planner = ReadOnlyPlanner::new();
+
+    let created = store
+        .create_workflow_plan("Plan docs only", "api", "actor", |ids, created_at| {
+            planner.create_plan(ids, "Plan docs only", "api", created_at)
+        })
+        .unwrap();
+
+    assert_eq!(created["advisory"]["schema_version"], "plan_advisory.v1");
+    assert_eq!(created["advisory"]["mode"], "recommendation_only");
+    assert_eq!(
+        created["advisory"]["decision"]["target_repository_writes"],
+        "disabled"
+    );
+    assert_eq!(
+        created["advisory"]["retry"]["provider_invocation"],
+        "not_invoked"
+    );
+
+    let fetched = store.get_workflow_plan("plan-0001").unwrap().unwrap();
+    assert_eq!(fetched["advisory"]["schema_version"], "plan_advisory.v1");
+    assert_eq!(
+        fetched["advisory"]["routing"]["adaptive_routing_available"],
+        false
+    );
 }
 
 #[test]

@@ -98,12 +98,31 @@ test("dispatches sends pagination and search query params", async () => {
 });
 
 test("planner methods call read-only plan endpoints", async () => {
-  const { calls, fetchImpl } = captureFetch({ schema_version: "axum_api.v1", plan: { plan_id: "plan-0001" }, plans: [] });
+  const advisory = {
+    schema_version: "plan_advisory.v1",
+    mode: "recommendation_only",
+    status: "recommendation_ready",
+    blockers: [],
+    recommendations: [],
+    quality: {},
+    routing: {},
+    retry: {},
+    observability: {},
+    decision: { execution_allowed: false },
+  };
+  const { calls, fetchImpl } = captureFetch({
+    schema_version: "axum_api.v1",
+    plan: { plan_id: "plan-0001", advisory },
+    plans: [{ plan_id: "plan-0001", advisory }],
+  });
   const client = new AgentControlPlaneClient({ baseUrl: "http://127.0.0.1:8080", fetchImpl });
 
-  await client.createPlan({ raw_request: "Plan docs", request_source: "api" });
-  await client.plans({ limit: 25, offset: 50, search: "docs plan" });
+  const created = await client.createPlan({ raw_request: "Plan docs", request_source: "api" });
+  const listed = await client.plans({ limit: 25, offset: 50, search: "docs plan" });
   await client.plan("plan/0001");
+
+  assert.equal(created.plan.advisory.schema_version, "plan_advisory.v1");
+  assert.equal(listed.plans[0].advisory.decision.execution_allowed, false);
 
   assert.equal(calls[0].url, "http://127.0.0.1:8080/api/v1/plans");
   assert.equal(calls[0].init.method, "POST");

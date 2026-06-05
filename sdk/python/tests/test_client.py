@@ -139,12 +139,31 @@ class ClientLocalStateTest(unittest.TestCase):
 
     @patch("agent_control_plane_sdk.client.urlopen")
     def test_planner_methods_call_read_only_plan_endpoints(self, mock_urlopen):
-        mock_urlopen.return_value = mock_response({"schema_version": "axum_api.v1", "plan": {"plan_id": "plan-0001"}, "plans": []})
+        advisory = {
+            "schema_version": "plan_advisory.v1",
+            "mode": "recommendation_only",
+            "status": "recommendation_ready",
+            "blockers": [],
+            "recommendations": [],
+            "quality": {},
+            "routing": {},
+            "retry": {},
+            "observability": {},
+            "decision": {"execution_allowed": False},
+        }
+        mock_urlopen.return_value = mock_response({
+            "schema_version": "axum_api.v1",
+            "plan": {"plan_id": "plan-0001", "advisory": advisory},
+            "plans": [{"plan_id": "plan-0001", "advisory": advisory}],
+        })
         client = AgentControlPlaneClient("http://localhost:8080")
 
-        client.create_plan("Plan docs", request_source="api")
-        client.plans(limit=25, offset=50, search="docs plan")
+        created = client.create_plan("Plan docs", request_source="api")
+        listed = client.plans(limit=25, offset=50, search="docs plan")
         client.plan("plan/0001")
+
+        self.assertEqual(created["plan"]["advisory"]["schema_version"], "plan_advisory.v1")
+        self.assertFalse(listed["plans"][0]["advisory"]["decision"]["execution_allowed"])
 
         calls = [call.args[0] for call in mock_urlopen.call_args_list]
         self.assertEqual(calls[0].method, "POST")

@@ -123,7 +123,21 @@ export interface ReadOnlyPlan {
   graph: Record<string, unknown>;
   validation?: Record<string, unknown>;
   execution_order?: string[][];
+  advisory?: PlanAdvisory;
   boundaries: Record<string, unknown>;
+}
+
+export interface PlanAdvisory {
+  schema_version: "plan_advisory.v1";
+  mode: "recommendation_only";
+  status: "recommendation_ready" | "blocked_for_human_review";
+  blockers: Record<string, unknown>[];
+  recommendations: Record<string, unknown>[];
+  quality: Record<string, unknown>;
+  routing: Record<string, unknown>;
+  retry: Record<string, unknown>;
+  observability: Record<string, unknown>;
+  decision: Record<string, unknown>;
 }
 
 export interface PlanCreateRequest {

@@ -1,6 +1,6 @@
 # ADR 0002: Supervised Planning Track Toward Autonomous Beta
 
-Status: Accepted for planning only; execution remains gated. Batch 4 inert durable state implemented.
+Status: Accepted for planning only; execution remains gated. Batch 5 recommendation-only advisory implemented.
 
 Date: 2026-06-05
 
@@ -43,6 +43,12 @@ Batch 4 implements inert durable state:
 - `POST /api/v1/workflow-runs` creates run metadata from an existing read-only plan; list/detail endpoints read stored metadata.
 - Event, approval, resume, and cancel endpoints record metadata and status only. Resume/cancel do not call `WorkflowEngine`, spawn workers, execute subprocesses, cancel processes, write targets, call providers, or grant approval/run/deploy/merge authority.
 - Export/import/integrity, operations counts, and TypeScript/Python SDK methods cover the new state.
+
+Batch 5 implements recommendation-only advisory metadata:
+
+- `engine/src/read_only_planner.rs` adds a top-level `advisory` record to read-only plans with quality preflight status, cold-start routing recommendation, retry-policy metadata, observability hints, blockers, and recommendations.
+- The advisory path uses pure `TaskAnalysis`, `DynamicTierSelector` cold-start fallback, `BudgetManager` math, `RetryPolicy` serialization, and observability schema constants. It does not construct `RetryFallbackManager`, call `Provider::invoke`, run `EvaluationRunner`, execute workers, write targets, or grant approval/run/deploy/merge authority.
+- The advisory is stored inside the existing app-owned `plan_json`; no target repository state or runtime execution state is modified.
 
 ## Boundaries
 
@@ -99,7 +105,7 @@ Batch 3 adapter design constraints:
 - Keep adapters planning-only and deterministic.
 - Do not use adapters to start execution, spawn workers, write targets, run sandboxes, or grant approval authority.
 - Batch 4 implemented durable workflow run/node/edge/event/approval records only as inert app-owned state. It did not add runtime workers, execution resume/cancel authority, target writes, or sandbox behavior.
-- Batch 5 may add quality/routing/retry/observability records only as recommendation/block/status metadata. It must not call providers, retry provider execution, route live workers, or start execution.
+- Batch 5 added quality/routing/retry/observability records only as recommendation/block/status metadata. It does not call providers, retry provider execution, route live workers, or start execution.
 
 ## Consequences
 
