@@ -5,6 +5,10 @@ import type {
   DispatchListResponse,
   LocalDashboardState,
   OperationsMetrics,
+  SupervisedPatchArtifactListResponse,
+  SupervisedPatchArtifactResponse,
+  SupervisedPatchWorkspaceListResponse,
+  SupervisedPatchWorkspaceResponse,
 } from "./types";
 
 const BASE = "";
@@ -206,4 +210,24 @@ export async function fetchMetrics(): Promise<OperationsMetrics> {
 
 export async function fetchProviderHealth(): Promise<Record<string, unknown>> {
   return fetchJson<Record<string, unknown>>(`${BASE}/api/v1/provider/health`);
+}
+
+export async function fetchSupervisedPatchWorkspaces(params: { limit?: number } = {}): Promise<SupervisedPatchWorkspaceListResponse> {
+  return fetchJson<SupervisedPatchWorkspaceListResponse>(withQuery("/api/v1/supervised-patch/workspaces", params));
+}
+
+export async function fetchSupervisedPatchWorkspaceDetail(workspaceId: string): Promise<SupervisedPatchWorkspaceResponse> {
+  return fetchJson<SupervisedPatchWorkspaceResponse>(
+    `${BASE}/api/v1/supervised-patch/workspaces/${encodeURIComponent(workspaceId)}`,
+  );
+}
+
+export async function fetchSupervisedPatchArtifacts(params: { limit?: number } = {}): Promise<SupervisedPatchArtifactListResponse> {
+  return fetchJson<SupervisedPatchArtifactListResponse>(withQuery("/api/v1/supervised-patch/artifacts", params));
+}
+
+export async function fetchSupervisedPatchArtifactDetail(artifactId: string): Promise<SupervisedPatchArtifactResponse> {
+  return fetchJson<SupervisedPatchArtifactResponse>(
+    `${BASE}/api/v1/supervised-patch/artifacts/${encodeURIComponent(artifactId)}`,
+  );
 }
