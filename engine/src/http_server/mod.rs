@@ -330,6 +330,48 @@ pub fn openapi_document() -> serde_json::Value {
                     "responses": {"200": {"description": "Workflow run metadata"}}
                 }
             },
+            "/api/v1/supervised-patch/workspaces": {
+                "get": {
+                    "summary": "List supervised patch workspace metadata",
+                    "description": "Requires dispatch:read scope. Returns app-owned Slice A metadata only; it does not create workspace directories, generate patches, execute workers, call providers, or write target repositories.",
+                    "parameters": [
+                        {"name": "limit", "in": "query", "schema": {"type": "integer", "default": 100, "minimum": 0, "maximum": 500}}
+                    ],
+                    "responses": {"200": {"description": "Supervised patch workspace metadata list"}}
+                }
+            },
+            "/api/v1/supervised-patch/workspaces/{workspace_id}": {
+                "get": {
+                    "summary": "Get supervised patch workspace metadata by ID",
+                    "description": "Requires dispatch:read scope. Returns app-owned metadata only and grants no execution authority.",
+                    "parameters": [path_parameter("workspace_id")],
+                    "responses": {
+                        "200": {"description": "Supervised patch workspace metadata"},
+                        "404": {"description": "Supervised patch workspace not found"}
+                    }
+                }
+            },
+            "/api/v1/supervised-patch/artifacts": {
+                "get": {
+                    "summary": "List supervised patch artifact metadata",
+                    "description": "Requires dispatch:read scope. Returns app-owned artifact metadata only; it does not expose patch files, run redaction, approve export, apply patches, or mutate target repositories.",
+                    "parameters": [
+                        {"name": "limit", "in": "query", "schema": {"type": "integer", "default": 100, "minimum": 0, "maximum": 500}}
+                    ],
+                    "responses": {"200": {"description": "Supervised patch artifact metadata list"}}
+                }
+            },
+            "/api/v1/supervised-patch/artifacts/{artifact_id}": {
+                "get": {
+                    "summary": "Get supervised patch artifact metadata by ID",
+                    "description": "Requires dispatch:read scope. Returns app-owned artifact metadata only and grants no patch apply/export authority.",
+                    "parameters": [path_parameter("artifact_id")],
+                    "responses": {
+                        "200": {"description": "Supervised patch artifact metadata"},
+                        "404": {"description": "Supervised patch artifact not found"}
+                    }
+                }
+            },
             "/api/v1/dashboard": {
                 "get": {
                     "summary": "Read local dashboard state from SQLite-backed runtime state",

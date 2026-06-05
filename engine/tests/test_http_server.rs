@@ -693,6 +693,239 @@ async fn axum_plans_require_dispatch_read_scope_when_auth_configured() {
 }
 
 #[tokio::test]
+async fn axum_supervised_patch_metadata_lists_empty_state() {
+    let dir = tempdir().unwrap();
+    let store = LocalProductStore::new(dir.path().join("patch.db")).unwrap();
+    let app = build_axum_router(AxumApiState::new().with_local_store(store));
+
+    let workspaces = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(Method::GET)
+                .uri("/api/v1/supervised-patch/workspaces")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(workspaces.status(), StatusCode::OK);
+    let workspaces_body = response_json(workspaces).await;
+    assert_eq!(workspaces_body["metadata_only"], true);
+    assert_eq!(workspaces_body["execution_authority"], "disabled");
+    assert_eq!(workspaces_body["workspaces"].as_array().unwrap().len(), 0);
+
+    let artifacts = app
+        .oneshot(
+            Request::builder()
+                .method(Method::GET)
+                .uri("/api/v1/supervised-patch/artifacts")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(artifacts.status(), StatusCode::OK);
+    let artifacts_body = response_json(artifacts).await;
+    assert_eq!(artifacts_body["metadata_only"], true);
+    assert_eq!(artifacts_body["execution_authority"], "disabled");
+    assert_eq!(artifacts_body["artifacts"].as_array().unwrap().len(), 0);
+}
+
+#[tokio::test]
+async fn axum_supervised_patch_metadata_returns_storage_records_read_only() {
+    let target_dir = tempdir().unwrap();
+    let workspace_root = tempdir().unwrap();
+    let dir = tempdir().unwrap();
+    let store = LocalProductStore::new(dir.path().join("patch.db")).unwrap();
+    let workspace_path = workspace_root.path().join("workspaces").join("ws-001");
+    store
+        .record_supervised_patch_workspace(
+            &json!({
+                "plan_id": "plan-0001",
+                "run_id": "run-0001",
+                "target_id": "target-001",
+                "target_repo_path": target_dir.path().to_string_lossy(),
+                "workspace_path": workspace_path.to_string_lossy(),
+                "source_revision": "abc123",
+            }),
+            "operator",
+        )
+        .unwrap();
+    store
+        .record_supervised_patch_artifact(
+            &json!({
+                "workspace_id": "patch-workspace-0001",
+                "patch_hash": "sha256-patch",
+                "changed_files": ["src/lib.rs"],
+                "redaction_status": "redacted",
+            }),
+            "operator",
+        )
+        .unwrap();
+    let app = build_axum_router(AxumApiState::new().with_local_store(store));
+
+    let workspaces = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(Method::GET)
+                .uri("/api/v1/supervised-patch/workspaces?limit=10")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(workspaces.status(), StatusCode::OK);
+    let workspaces_body = response_json(workspaces).await;
+    assert_eq!(workspaces_body["workspaces"].as_array().unwrap().len(), 1);
+    assert_eq!(
+        workspaces_body["workspaces"][0]["boundary"]["target_repository_writes"],
+        "disabled"
+    );
+    assert_eq!(
+        workspaces_body["workspaces"][0]["boundary"]["workspace_directory_creation"],
+        "not_performed"
+    );
+
+    let workspace_detail = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(Method::GET)
+                .uri("/api/v1/supervised-patch/workspaces/patch-workspace-0001")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(workspace_detail.status(), StatusCode::OK);
+    let workspace_detail_body = response_json(workspace_detail).await;
+    assert_eq!(
+        workspace_detail_body["workspace"]["workspace_id"],
+        "patch-workspace-0001"
+    );
+    assert_eq!(workspace_detail_body["execution_authority"], "disabled");
+
+    let artifacts = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(Method::GET)
+                .uri("/api/v1/supervised-patch/artifacts?limit=10")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(artifacts.status(), StatusCode::OK);
+    let artifacts_body = response_json(artifacts).await;
+    assert_eq!(artifacts_body["artifacts"].as_array().unwrap().len(), 1);
+    assert_eq!(
+        artifacts_body["artifacts"][0]["patch_apply_authority"],
+        "disabled"
+    );
+    assert_eq!(
+        artifacts_body["artifacts"][0]["artifact_file_created"],
+        false
+    );
+
+    let artifact_detail = app
+        .oneshot(
+            Request::builder()
+                .method(Method::GET)
+                .uri("/api/v1/supervised-patch/artifacts/patch-artifact-0001")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(artifact_detail.status(), StatusCode::OK);
+    let artifact_detail_body = response_json(artifact_detail).await;
+    assert_eq!(
+        artifact_detail_body["artifact"]["artifact_id"],
+        "patch-artifact-0001"
+    );
+    assert_eq!(artifact_detail_body["metadata_only"], true);
+}
+
+#[tokio::test]
+async fn axum_supervised_patch_metadata_returns_404_for_missing_records() {
+    let dir = tempdir().unwrap();
+    let store = LocalProductStore::new(dir.path().join("patch.db")).unwrap();
+    let app = build_axum_router(AxumApiState::new().with_local_store(store));
+
+    let workspace = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(Method::GET)
+                .uri("/api/v1/supervised-patch/workspaces/missing")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(workspace.status(), StatusCode::NOT_FOUND);
+    let workspace_body = response_json(workspace).await;
+    assert_eq!(
+        workspace_body["code"],
+        "supervised_patch_workspace_not_found"
+    );
+
+    let artifact = app
+        .oneshot(
+            Request::builder()
+                .method(Method::GET)
+                .uri("/api/v1/supervised-patch/artifacts/missing")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(artifact.status(), StatusCode::NOT_FOUND);
+    let artifact_body = response_json(artifact).await;
+    assert_eq!(artifact_body["code"], "supervised_patch_artifact_not_found");
+}
+
+#[tokio::test]
+async fn axum_supervised_patch_metadata_requires_dispatch_read_scope_when_auth_configured() {
+    let dir = tempdir().unwrap();
+    let store = LocalProductStore::new(dir.path().join("patch.db")).unwrap();
+    let mut resolver = TenantResolver::new();
+    let scopes = HashSet::from(["health:read".to_string()]);
+    resolver.add_tenant(Tenant {
+        tenant_id: "tenant-a".to_string(),
+        name: "Tenant A".to_string(),
+        scopes: HashSet::from(["health:read".to_string(), "dispatch:read".to_string()]),
+        rate_limit: Some(100),
+    });
+    let (_key, raw_key) = resolver
+        .create_api_key("tenant-a", Some(scopes), None, 1.0)
+        .unwrap();
+    let app = build_axum_router(AxumApiState::new().with_local_store(store).with_auth(
+        resolver,
+        RateLimiter::new(60.0, 100),
+        Some(100),
+        1.0,
+    ));
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method(Method::GET)
+                .uri("/api/v1/supervised-patch/workspaces")
+                .header(header::AUTHORIZATION, format!("Bearer {raw_key}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::FORBIDDEN);
+}
+
+#[tokio::test]
 async fn axum_local_store_exposes_team_config_costs_and_export() {
     let dir = tempdir().unwrap();
     let store = LocalProductStore::new(dir.path().join("team.db")).unwrap();
@@ -1448,6 +1681,10 @@ async fn axum_openapi_document_lists_dispatch_endpoint() {
     assert!(body["paths"]["/api/v1/workflow-runs/{run_id}"]["get"].is_object());
     assert!(body["paths"]["/api/v1/workflow-runs/{run_id}/events"]["get"].is_object());
     assert!(body["paths"]["/api/v1/workflow-runs/{run_id}/approvals"]["get"].is_object());
+    assert!(body["paths"]["/api/v1/supervised-patch/workspaces"]["get"].is_object());
+    assert!(body["paths"]["/api/v1/supervised-patch/workspaces/{workspace_id}"]["get"].is_object());
+    assert!(body["paths"]["/api/v1/supervised-patch/artifacts"]["get"].is_object());
+    assert!(body["paths"]["/api/v1/supervised-patch/artifacts/{artifact_id}"]["get"].is_object());
     assert!(body["paths"]["/api/v1/metrics"]["get"].is_object());
     assert!(body["paths"]["/api/v1/backups/{backup_id}/verify"]["get"].is_object());
     assert!(body["paths"]["/api/v1/backups/{backup_id}/restore/dry-run"]["post"].is_object());

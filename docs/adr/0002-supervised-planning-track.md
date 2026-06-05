@@ -1,6 +1,6 @@
 # ADR 0002: Supervised Planning Track Toward Autonomous Beta
 
-Status: Accepted for planning plus storage-only metadata. Execution remains gated. Batch 7 Slice A storage-only metadata is implemented; supervised execution runtime remains NO-GO.
+Status: Accepted for planning plus storage-only/read-only metadata. Execution remains gated. Batch 7 Slice A storage-only metadata and Slice B read-only HTTP visibility are implemented; supervised execution runtime remains NO-GO.
 
 Date: 2026-06-05
 
@@ -125,19 +125,19 @@ Batch 7 may start only after a separate human-approved implementation plan prove
 
 Current go/no-go: **NO-GO for supervised execution runtime**.
 
-The current repository now has a storage-only Batch 7 Slice A for app-owned workspace/artifact metadata. It still does not have workspace directory creation, patch generation, approval-broker enforcement, rollback execution, artifact file capture, HTTP/SDK controls for this surface, or supervised execution runtime controls:
+The current repository now has a storage-only Batch 7 Slice A for app-owned workspace/artifact metadata and a read-only Batch 7 Slice B HTTP visibility surface. It still does not have workspace directory creation, patch generation, approval-broker enforcement, rollback execution, artifact file capture, SDK/dashboard controls for this surface, create/update/delete supervised-patch routes, or supervised execution runtime controls:
 
 | Prerequisite | Current evidence | Status |
 |---|---|---|
 | Isolation primitive selected | This ADR selects an app-owned detached patch workspace/snapshot as the first Batch 7 primitive. Slice A records only metadata and path-boundary evidence. It explicitly rejects registered-target `git worktree add` because that mutates target repository `.git/worktrees` metadata. No process/container/VM execution primitive is selected because Slice A does not run untrusted code or target commands. | Storage-only metadata implemented; execution primitive not selected |
-| Target workspace contract | Slice A adds app-owned SQLite `supervised_patch_workspaces` metadata with source revision, target path, workspace path, lifecycle status, boundary JSON, and tests that reject workspace paths inside registered target repositories, including import bypass attempts. It does not create workspace directories or copy target files. | Metadata schema/storage implemented; lifecycle runtime missing |
+| Target workspace contract | Slice A adds app-owned SQLite `supervised_patch_workspaces` metadata with source revision, target path, workspace path, lifecycle status, boundary JSON, and tests that reject workspace paths inside registered target repositories, including import bypass attempts. Slice B exposes workspace metadata through read-only GET routes. It does not create workspace directories or copy target files. | Metadata schema/storage/API visibility implemented; lifecycle runtime missing |
 | Approval broker | This ADR defines future patch-generation and patch-review gate semantics bound to operator identity, scope, expiry, and diff/workspace evidence. `workflow_run_approvals` remain inert metadata with `execution_authority=disabled`. | Design specified; implementation missing |
 | Rollback | This ADR defines rollback as app-owned workspace discard/quarantine plus terminal run state and evidence. DAG compensation and backup restore helpers are not execution rollback engines. | Design specified; tests missing |
-| Artifact capture | Slice A adds app-owned SQLite `supervised_patch_artifacts` metadata with patch hash, normalized changed-file inventory, redaction status, storage refs, export/import, integrity, and stats coverage. It does not create patch files, run redaction, expose artifacts, or gate export/review. | Metadata schema/storage implemented; capture runtime missing |
+| Artifact capture | Slice A adds app-owned SQLite `supervised_patch_artifacts` metadata with patch hash, normalized changed-file inventory, redaction status, storage refs, export/import, integrity, and stats coverage. Slice B exposes artifact metadata through read-only GET routes. It does not create patch files, run redaction, expose patch files, or gate export/review. | Metadata schema/storage/API visibility implemented; capture runtime missing |
 | Provider default-off | Existing env/auth/scope/cost gates keep provider execution default-off. | Satisfied, must remain unchanged |
 | No push/merge/deploy/target mutation | Existing boundaries block these behaviors. | Satisfied, must remain unchanged |
 
-The next safe action is a separate, test-first Slice B request. No workspace creation, patch generation, execution, provider, target-write, apply, push, merge, deploy, or runtime-worker code is approved by Slice A.
+The next safe action is a separate, test-first Slice C request. No workspace creation, patch generation, execution, provider, target-write, apply, push, merge, deploy, create/update/delete supervised-patch route, or runtime-worker code is approved by Slice A/B.
 
 ### Batch 7 Implementation Plan Artifact
 
@@ -251,9 +251,24 @@ Slice A adds:
 - Path validation that canonicalizes the registered target repository and planned workspace path without creating the workspace directory, then rejects workspace paths inside the registered target repository.
 - Changed-file validation for artifact metadata that rejects absolute, empty, or traversal paths.
 - Integrity, stats, and export/import coverage for the new app-owned tables.
-- Seven focused Rust tests plus full Rust verification; current Rust test count is 1200 pass.
+- Seven focused Rust tests plus full Rust verification; Slice A Rust test count reached 1200 pass.
 
 Slice A deliberately does not add HTTP routes, SDK methods, dashboard UI, workspace directory creation, target file copying, patch file generation, redaction runtime, approval-broker wiring, rollback execution, command execution, provider calls, target repository writes, sandbox/process/container/VM execution, workers, or apply/push/merge/deploy/run controls. Claude Code recommended exposing HTTP/SDK routes for consistency with prior batches; the controller rejected that for Slice A because it would expand the operator surface before the approval/export gate is designed.
+
+### Batch 7 Slice B: Read-Only HTTP Visibility
+
+Status: **implemented as GET-only metadata views**.
+
+Slice B adds:
+
+- `/api/v1/supervised-patch/workspaces` and `/api/v1/supervised-patch/workspaces/{workspace_id}` for workspace metadata inspection.
+- `/api/v1/supervised-patch/artifacts` and `/api/v1/supervised-patch/artifacts/{artifact_id}` for artifact metadata inspection.
+- `dispatch:read` authorization on every route.
+- Response boundary fields proving `metadata_only=true` and `execution_authority=disabled`.
+- OpenAPI entries for all four routes.
+- Four focused Rust HTTP tests plus full Rust verification; current Rust test count is 1204 pass.
+
+Slice B deliberately does not add POST/PUT/DELETE routes, SDK methods, dashboard UI, workspace directory creation, target file copying, patch file generation, redaction runtime, approval-broker wiring, rollback execution, command execution, provider calls, target repository writes, sandbox/process/container/VM execution, workers, or apply/push/merge/deploy/run controls.
 
 ## Boundaries
 
@@ -319,7 +334,7 @@ Batch 3 adapter design constraints:
 - Batch 3 and later implementation must be small, test-first, and scoped to planning-only behavior unless the user approves a broader batch.
 - Any future supervised execution beta must use a separate approval gate and threat model before implementation.
 - Batch 6 makes the future execution gate concrete, but it is not itself implementation authority.
-- Batch 7 Slice A implements only app-owned storage metadata for the first supervised patch artifact slice; supervised execution runtime remains blocked until a separate approved, test-first batch.
+- Batch 7 Slice A/B implements only app-owned storage metadata and read-only HTTP views for the first supervised patch artifact slice; supervised execution runtime remains blocked until a separate approved, test-first batch.
 
 ## Reversal Conditions
 

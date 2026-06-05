@@ -9,5 +9,6 @@ pub(crate) mod keys;
 pub(crate) mod operations;
 pub(crate) mod plans;
 pub(crate) mod provider;
+pub(crate) mod supervised_patch;
 pub(crate) mod team;
 pub(crate) mod workflow_runs;

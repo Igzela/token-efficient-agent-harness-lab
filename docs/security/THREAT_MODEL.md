@@ -1,7 +1,7 @@
 # Threat Model — Local Agent Control Plane
 
 Last updated: 2026-06-05
-Scope: Rust engine, TypeScript dashboard/SDK, local SQLite state, env-gated provider adapters, Batch 6 supervised-execution design-gate risks, and Batch 7 Slice A storage-only supervised patch metadata. Batch 6/7 risks are not implemented runtime features.
+Scope: Rust engine, TypeScript dashboard/SDK, local SQLite state, env-gated provider adapters, Batch 6 supervised-execution design-gate risks, Batch 7 Slice A storage-only supervised patch metadata, and Batch 7 Slice B read-only HTTP metadata views. Batch 6/7 risks are not implemented runtime features.
 
 ---
 
@@ -17,8 +17,8 @@ Scope: Rust engine, TypeScript dashboard/SDK, local SQLite state, env-gated prov
 | Audit log | Immutable record of all state mutations | High — tampering breaks accountability |
 | Source code (Rust `engine/`, TypeScript `dashboard/`, `sdk/`) | All runtime logic | High — controls all system behavior |
 | Static dashboard export | Pre-built Next.js UI served by the engine | Low — read-only interface |
-| Future target workspace | Planned app-owned detached patch workspace/snapshot area for any later supervised patch artifact beta | Critical — Slice A stores metadata only; runtime workspace creation not implemented |
-| Future execution artifacts | Planned patch artifacts, diffs, evidence manifests, rollback/quarantine evidence, and captured files | High — Slice A stores metadata only; patch file capture/redaction/export not implemented |
+| Future target workspace | Planned app-owned detached patch workspace/snapshot area for any later supervised patch artifact beta | Critical — Slice A stores metadata only and Slice B exposes read-only metadata views; runtime workspace creation not implemented |
+| Future execution artifacts | Planned patch artifacts, diffs, evidence manifests, rollback/quarantine evidence, and captured files | High — Slice A stores metadata only and Slice B exposes read-only metadata views; patch file capture/redaction/export not implemented |
 
 ---
 
@@ -166,7 +166,7 @@ Scope: Rust engine, TypeScript dashboard/SDK, local SQLite state, env-gated prov
 **Controls:**
 - Not implemented today.
 - ADR-0002 Batch 6 requires a selected isolation primitive, resource limits, default-deny network policy, read-only target mount, writable scratch-only policy, audit events, and failure handling before Batch 7 can start.
-- ADR-0002 Batch 7 Slice A stores only app-owned workspace/artifact metadata. This is not a process/container/VM sandbox and is acceptable only while target commands, shell execution, package managers, external CLIs, providers, and workers remain forbidden. Any later command execution requires a separate isolation primitive decision.
+- ADR-0002 Batch 7 Slice A stores only app-owned workspace/artifact metadata. Slice B exposes only read-only GET metadata views. This is not a process/container/VM sandbox and is acceptable only while target commands, shell execution, package managers, external CLIs, providers, and workers remain forbidden. Any later command execution requires a separate isolation primitive decision.
 
 ---
 
@@ -180,7 +180,7 @@ Scope: Rust engine, TypeScript dashboard/SDK, local SQLite state, env-gated prov
 - Not implemented today.
 - Current app behavior remains read-only for target repositories.
 - ADR-0002 Batch 6 requires an isolated harness-owned workspace, source revision evidence, writable path inventory, final diff/artifact inventory, and no direct target-repo mutation before Batch 7 can start.
-- ADR-0002 Batch 7 Slice A rejects registered-target `git worktree add` for metadata records and validates that planned workspace canonical paths are outside registered target repositories. It does not create workspace directories or copy target files.
+- ADR-0002 Batch 7 Slice A rejects registered-target `git worktree add` for metadata records and validates that planned workspace canonical paths are outside registered target repositories. Slice B only exposes this metadata through `dispatch:read` GET routes. It does not create workspace directories or copy target files.
 
 ---
 
@@ -194,7 +194,7 @@ Scope: Rust engine, TypeScript dashboard/SDK, local SQLite state, env-gated prov
 - Not implemented today.
 - Batch 4 approval records are inert metadata and do not grant execution authority.
 - ADR-0002 Batch 6 requires authenticated approver identity, scoped approval authority, decision expiry, revocation behavior, and immutable audit events before Batch 7 can start.
-- ADR-0002 Batch 7 Slice A stores patch workspace/artifact metadata that future approval evidence can bind to, but the patch-review approval gate is not wired.
+- ADR-0002 Batch 7 Slice A stores patch workspace/artifact metadata that future approval evidence can bind to, and Slice B exposes read-only metadata views, but the patch-review approval gate is not wired.
 
 ---
 
@@ -207,7 +207,7 @@ Scope: Rust engine, TypeScript dashboard/SDK, local SQLite state, env-gated prov
 **Controls:**
 - Not implemented today.
 - ADR-0002 Batch 6 requires all-or-nothing transitions, rollback verification, app-owned artifact storage, redaction before display/export, read-only artifact access, and explicit cleanup rules before Batch 7 can start.
-- ADR-0002 Batch 7 Slice A implements minimum app-owned SQLite metadata storage for `supervised_patch_workspace.v1` and `supervised_patch_artifact.v1`, plus normalized changed-file validation and export/import/integrity coverage. Rollback runtime, patch file capture, redaction runtime, access/export gate, and cleanup runtime are not implemented.
+- ADR-0002 Batch 7 Slice A implements minimum app-owned SQLite metadata storage for `supervised_patch_workspace.v1` and `supervised_patch_artifact.v1`, plus normalized changed-file validation and export/import/integrity coverage. Slice B exposes metadata through read-only `dispatch:read` GET routes. Rollback runtime, patch file capture, redaction runtime, access/export gate, and cleanup runtime are not implemented.
 
 ---
 
@@ -241,7 +241,7 @@ Scope: Rust engine, TypeScript dashboard/SDK, local SQLite state, env-gated prov
 |----|------------------|-----------|
 | DG-001 | ADR-0002 Batch 6 sandbox/workspace/approval/rollback/artifact contracts | T-009, T-010, T-011, T-012 |
 | DG-002 | Batch 7 must receive separate human approval before any supervised execution implementation | T-009, T-010, T-011, T-012 |
-| DG-003 | ADR-0002 Batch 7 Slice A stores only app-owned patch workspace/artifact metadata and rejects registered-target worktree mutation/path placement | T-009, T-010, T-011, T-012 |
+| DG-003 | ADR-0002 Batch 7 Slice A/B stores only app-owned patch workspace/artifact metadata, rejects registered-target worktree mutation/path placement, and exposes only read-only metadata views | T-009, T-010, T-011, T-012 |
 
 ---
 

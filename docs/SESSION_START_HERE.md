@@ -26,7 +26,7 @@ Token-Efficient Agent Harness Lab is a local deterministic harness for studying 
 | Trial 4 real-use pilot | Closed — `TRIAL_4_REAL_USE_PILOT_PASS_AFTER_FIXES` |
 | Trial 5 CLI execution beta | Closed — `TRIAL_5_CLI_EXECUTION_BETA_PASS_AFTER_FIXES` |
 
-Tests: 1200 Rust pass. Primary cutover verification is `bash scripts/verify_rust_typescript_stack.sh`.
+Tests: 1204 Rust pass. Primary cutover verification is `bash scripts/verify_rust_typescript_stack.sh`.
 
 ## Toolchain
 
@@ -64,7 +64,7 @@ Additional active architecture track:
 | Rust + TypeScript Cutover | Complete; Rust `engine/` is the primary runtime/API/storage/provider-gated control plane, `dashboard/` and `sdk/typescript/` are the primary TypeScript surfaces; Python retained as REST SDK and utility scripts only |
 | Architecture Refactor R-series | Sealed at R7; R8 is not approved. No further R-series file splitting is approved |
 | Post-R7 Wire/Type Governance Hardening | Implemented; `app_layer` remains dormant/unwired reference code and `scripts/check_wire_codegen_drift.sh` protects generated wire files |
-| Supervised Autonomous Beta Planning | Planning-only track accepted in ADR-0002; Batch 0-6 governance/module/model/read-only-planner/durable-state/advisory/design-gate work recorded. `WorkflowGraph` is canonical planning model. `/api/v1/plans` creates app-owned non-executable SQLite plans with recommendation-only quality/routing/retry/observability advisory metadata, and `/api/v1/workflow-runs` stores inert workflow run/node/edge/event/approval metadata only. Batch 7 Slice A stores app-owned detached patch workspace/artifact metadata with path-boundary tests outside registered target repositories. Batch 7 supervised execution runtime remains NO-GO: no workspace directory creation, patch generation, approval/export gate, target writes, sandbox/process/container/VM execution, workers, provider calls, or apply/push/merge/deploy controls. |
+| Supervised Autonomous Beta Planning | Planning-only track accepted in ADR-0002; Batch 0-6 governance/module/model/read-only-planner/durable-state/advisory/design-gate work recorded. `WorkflowGraph` is canonical planning model. `/api/v1/plans` creates app-owned non-executable SQLite plans with recommendation-only quality/routing/retry/observability advisory metadata, and `/api/v1/workflow-runs` stores inert workflow run/node/edge/event/approval metadata only. Batch 7 Slice A stores app-owned detached patch workspace/artifact metadata with path-boundary tests outside registered target repositories. Batch 7 Slice B adds read-only HTTP GET visibility for those metadata records. Batch 7 supervised execution runtime remains NO-GO: no workspace directory creation, patch generation, approval/export gate, target writes, sandbox/process/container/VM execution, workers, provider calls, or apply/push/merge/deploy controls. |
 
 ## What This Project Is Not
 

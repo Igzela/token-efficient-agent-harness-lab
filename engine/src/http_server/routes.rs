@@ -94,6 +94,22 @@ fn axum_routes() -> Router<AxumApiState> {
             post(workflow_runs::api_cancel_workflow_run).options(cors_preflight),
         )
         .route(
+            "/api/v1/supervised-patch/workspaces",
+            get(supervised_patch::api_supervised_patch_workspaces).options(cors_preflight),
+        )
+        .route(
+            "/api/v1/supervised-patch/workspaces/:workspace_id",
+            get(supervised_patch::api_supervised_patch_workspace_detail).options(cors_preflight),
+        )
+        .route(
+            "/api/v1/supervised-patch/artifacts",
+            get(supervised_patch::api_supervised_patch_artifacts).options(cors_preflight),
+        )
+        .route(
+            "/api/v1/supervised-patch/artifacts/:artifact_id",
+            get(supervised_patch::api_supervised_patch_artifact_detail).options(cors_preflight),
+        )
+        .route(
             "/api/v1/dashboard",
             get(dashboard::api_dashboard).options(cors_preflight),
         )
