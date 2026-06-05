@@ -237,6 +237,40 @@ class ClientLocalStateTest(unittest.TestCase):
         self.assertEqual(json.loads(calls[8].data), {"reason": "metadata cancel"})
 
     @patch("agent_control_plane_sdk.client.urlopen")
+    def test_supervised_patch_methods_call_read_only_metadata_endpoints(self, mock_urlopen):
+        mock_urlopen.return_value = mock_response({
+            "schema_version": "axum_api.v1",
+            "metadata_only": True,
+            "execution_authority": "disabled",
+            "workspace": {"workspace_id": "patch-workspace-0001"},
+            "workspaces": [],
+            "artifact": {"artifact_id": "patch-artifact-0001"},
+            "artifacts": [],
+        })
+        client = AgentControlPlaneClient("http://localhost:8080")
+
+        workspaces = client.supervised_patch_workspaces(limit=25)
+        workspace = client.supervised_patch_workspace_detail("workspace/0001")
+        artifacts = client.supervised_patch_artifacts(limit=10)
+        artifact = client.supervised_patch_artifact_detail("artifact/0001")
+
+        self.assertTrue(workspaces["metadata_only"])
+        self.assertEqual(workspace["execution_authority"], "disabled")
+        self.assertTrue(artifacts["metadata_only"])
+        self.assertEqual(artifact["execution_authority"], "disabled")
+        calls = [call.args[0] for call in mock_urlopen.call_args_list]
+        self.assertEqual(
+            [call.full_url for call in calls],
+            [
+                "http://localhost:8080/api/v1/supervised-patch/workspaces?limit=25",
+                "http://localhost:8080/api/v1/supervised-patch/workspaces/workspace%2F0001",
+                "http://localhost:8080/api/v1/supervised-patch/artifacts?limit=10",
+                "http://localhost:8080/api/v1/supervised-patch/artifacts/artifact%2F0001",
+            ],
+        )
+        self.assertTrue(all(call.method == "GET" for call in calls))
+
+    @patch("agent_control_plane_sdk.client.urlopen")
     def test_audit_sends_pagination_query_params(self, mock_urlopen):
         mock_urlopen.return_value = mock_response({"schema_version": "axum_api.v1", "events": []})
         client = AgentControlPlaneClient("http://localhost:8080")

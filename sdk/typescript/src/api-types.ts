@@ -211,6 +211,49 @@ export interface WorkflowRunActionRequest {
   reason?: string;
 }
 
+export interface SupervisedPatchWorkspace {
+  schema_version: "supervised_patch_workspace.v1";
+  workspace_sequence: number;
+  workspace_id: string;
+  plan_id: string | null;
+  run_id: string;
+  target_id: string;
+  target_repo_path: string;
+  target_repo_canonical_path: string;
+  workspace_path: string;
+  workspace_canonical_path: string;
+  source_revision: string;
+  source_tree_hash: string | null;
+  status: string;
+  created_at: string;
+  updated_at: string;
+  boundary: Record<string, unknown>;
+  metadata_only: true;
+  execution_authority: "disabled";
+}
+
+export interface SupervisedPatchArtifact {
+  schema_version: "supervised_patch_artifact.v1";
+  artifact_sequence: number;
+  artifact_id: string;
+  workspace_id: string;
+  run_id: string;
+  plan_id: string | null;
+  target_id: string;
+  source_revision: string;
+  artifact_type: "patch_diff";
+  patch_hash: string;
+  changed_files: string[];
+  redaction_status: "pending" | "redacted" | "failed";
+  storage_refs?: Record<string, unknown>;
+  retention_expires_at?: string | null;
+  created_at: string;
+  metadata_only: true;
+  execution_authority: "disabled";
+  patch_apply_authority: "disabled";
+  artifact_file_created?: false;
+}
+
 export interface Boundaries {
   provider_transport: string;
   target_repository_writes: string;
@@ -334,6 +377,34 @@ export interface WorkflowRunApprovalListResponse {
 export interface WorkflowRunApprovalResponse {
   schema_version: "axum_api.v1";
   approval: WorkflowRunApproval;
+}
+
+export interface SupervisedPatchWorkspaceListResponse {
+  schema_version: "axum_api.v1";
+  metadata_only: true;
+  execution_authority: "disabled";
+  workspaces: SupervisedPatchWorkspace[];
+}
+
+export interface SupervisedPatchWorkspaceResponse {
+  schema_version: "axum_api.v1";
+  metadata_only: true;
+  execution_authority: "disabled";
+  workspace: SupervisedPatchWorkspace;
+}
+
+export interface SupervisedPatchArtifactListResponse {
+  schema_version: "axum_api.v1";
+  metadata_only: true;
+  execution_authority: "disabled";
+  artifacts: SupervisedPatchArtifact[];
+}
+
+export interface SupervisedPatchArtifactResponse {
+  schema_version: "axum_api.v1";
+  metadata_only: true;
+  execution_authority: "disabled";
+  artifact: SupervisedPatchArtifact;
 }
 
 export interface ConfigResponse {

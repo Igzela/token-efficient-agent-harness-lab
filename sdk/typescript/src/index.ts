@@ -17,6 +17,10 @@ import type {
   WorkflowRunEventResponse,
   WorkflowRunListResponse,
   WorkflowRunResponse,
+  SupervisedPatchArtifactListResponse,
+  SupervisedPatchArtifactResponse,
+  SupervisedPatchWorkspaceListResponse,
+  SupervisedPatchWorkspaceResponse,
   LocalCostSummary,
   LocalDispatchCostDetail,
   LocalDashboardState,
@@ -72,6 +76,10 @@ export interface WorkflowRunListOptions {
 }
 
 export interface WorkflowRunChildListOptions {
+  limit?: number;
+}
+
+export interface SupervisedPatchListOptions {
   limit?: number;
 }
 
@@ -230,6 +238,34 @@ export class AgentControlPlaneClient {
     return this.postJson<WorkflowRunResponse>(`/api/v1/workflow-runs/${encodeURIComponent(runId)}/cancel`, {
       reason: request.reason,
     });
+  }
+
+  supervisedPatchWorkspaces(
+    options: SupervisedPatchListOptions = {},
+  ): Promise<SupervisedPatchWorkspaceListResponse> {
+    return this.getJson<SupervisedPatchWorkspaceListResponse>(
+      `/api/v1/supervised-patch/workspaces${queryString({ limit: options.limit })}`,
+    );
+  }
+
+  supervisedPatchWorkspaceDetail(workspaceId: string): Promise<SupervisedPatchWorkspaceResponse> {
+    return this.getJson<SupervisedPatchWorkspaceResponse>(
+      `/api/v1/supervised-patch/workspaces/${encodeURIComponent(workspaceId)}`,
+    );
+  }
+
+  supervisedPatchArtifacts(
+    options: SupervisedPatchListOptions = {},
+  ): Promise<SupervisedPatchArtifactListResponse> {
+    return this.getJson<SupervisedPatchArtifactListResponse>(
+      `/api/v1/supervised-patch/artifacts${queryString({ limit: options.limit })}`,
+    );
+  }
+
+  supervisedPatchArtifactDetail(artifactId: string): Promise<SupervisedPatchArtifactResponse> {
+    return this.getJson<SupervisedPatchArtifactResponse>(
+      `/api/v1/supervised-patch/artifacts/${encodeURIComponent(artifactId)}`,
+    );
   }
 
   config(): Promise<ConfigResponse> {

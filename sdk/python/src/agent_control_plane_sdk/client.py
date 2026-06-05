@@ -157,6 +157,28 @@ class AgentControlPlaneClient:
             payload["reason"] = reason
         return self._post(f"/api/v1/workflow-runs/{_quote_path_segment(run_id)}/cancel", payload)
 
+    def supervised_patch_workspaces(self, limit: int | None = None) -> dict[str, Any]:
+        params: dict[str, Any] = {}
+        if limit is not None:
+            params["limit"] = limit
+        return self._get(_query_path("/api/v1/supervised-patch/workspaces", params))
+
+    def supervised_patch_workspace_detail(self, workspace_id: str) -> dict[str, Any]:
+        return self._get(
+            f"/api/v1/supervised-patch/workspaces/{_quote_path_segment(workspace_id)}"
+        )
+
+    def supervised_patch_artifacts(self, limit: int | None = None) -> dict[str, Any]:
+        params: dict[str, Any] = {}
+        if limit is not None:
+            params["limit"] = limit
+        return self._get(_query_path("/api/v1/supervised-patch/artifacts", params))
+
+    def supervised_patch_artifact_detail(self, artifact_id: str) -> dict[str, Any]:
+        return self._get(
+            f"/api/v1/supervised-patch/artifacts/{_quote_path_segment(artifact_id)}"
+        )
+
     def config(self) -> dict[str, Any]:
         return self._get("/api/v1/config")
 

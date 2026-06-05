@@ -193,6 +193,39 @@ test("workflow run methods call inert runtime state endpoints", async () => {
   assert.deepEqual(JSON.parse(calls[8].init.body), { reason: "metadata cancel" });
 });
 
+test("supervised patch methods call read-only metadata endpoints", async () => {
+  const { calls, fetchImpl } = captureFetch({
+    schema_version: "axum_api.v1",
+    metadata_only: true,
+    execution_authority: "disabled",
+    workspace: { workspace_id: "patch-workspace-0001" },
+    workspaces: [],
+    artifact: { artifact_id: "patch-artifact-0001" },
+    artifacts: [],
+  });
+  const client = new AgentControlPlaneClient({ baseUrl: "http://127.0.0.1:8080", fetchImpl });
+
+  const workspaces = await client.supervisedPatchWorkspaces({ limit: 25 });
+  const workspace = await client.supervisedPatchWorkspaceDetail("workspace/0001");
+  const artifacts = await client.supervisedPatchArtifacts({ limit: 10 });
+  const artifact = await client.supervisedPatchArtifactDetail("artifact/0001");
+
+  assert.equal(workspaces.metadata_only, true);
+  assert.equal(workspace.execution_authority, "disabled");
+  assert.equal(artifacts.metadata_only, true);
+  assert.equal(artifact.execution_authority, "disabled");
+  assert.deepEqual(
+    calls.map((call) => call.url),
+    [
+      "http://127.0.0.1:8080/api/v1/supervised-patch/workspaces?limit=25",
+      "http://127.0.0.1:8080/api/v1/supervised-patch/workspaces/workspace%2F0001",
+      "http://127.0.0.1:8080/api/v1/supervised-patch/artifacts?limit=10",
+      "http://127.0.0.1:8080/api/v1/supervised-patch/artifacts/artifact%2F0001",
+    ],
+  );
+  assert(calls.every((call) => call.init.method === "GET"));
+});
+
 test("audit sends pagination query params", async () => {
   const { calls, fetchImpl } = captureFetch({ schema_version: "axum_api.v1", events: [] });
   const client = new AgentControlPlaneClient({ baseUrl: "http://127.0.0.1:8080", fetchImpl });
