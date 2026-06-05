@@ -131,6 +131,72 @@ export interface PlanCreateRequest {
   request_source?: RequestSource;
 }
 
+export interface WorkflowRun {
+  schema_version: "workflow_run.v1";
+  run_sequence: number;
+  run_id: string;
+  plan_id: string | null;
+  created_at: string;
+  updated_at: string;
+  status: string;
+  workflow_id: string;
+  dispatch_id: string | null;
+  started_at: string | null;
+  completed_at: string | null;
+  result: unknown;
+  graph?: Record<string, unknown>;
+  nodes?: Record<string, unknown>[];
+  edges?: Record<string, unknown>[];
+  events?: WorkflowRunEvent[];
+  approvals?: WorkflowRunApproval[];
+  boundaries: Record<string, unknown>;
+}
+
+export interface WorkflowRunEvent {
+  event_sequence: number;
+  event_id: string;
+  run_id: string;
+  node_id: string | null;
+  event_type: string;
+  actor: string;
+  created_at: string;
+  details: unknown;
+  metadata_only?: boolean;
+}
+
+export interface WorkflowRunApproval {
+  approval_sequence: number;
+  approval_id: string;
+  run_id: string;
+  node_id: string;
+  decision: "requested" | "approved" | "rejected";
+  actor: string;
+  reason: string | null;
+  created_at: string;
+  metadata_only?: boolean;
+  execution_authority?: string;
+}
+
+export interface WorkflowRunCreateRequest {
+  plan_id: string;
+}
+
+export interface WorkflowRunEventRequest {
+  node_id?: string;
+  event_type: string;
+  details?: unknown;
+}
+
+export interface WorkflowRunApprovalRequest {
+  node_id: string;
+  decision: "requested" | "approved" | "rejected";
+  reason?: string;
+}
+
+export interface WorkflowRunActionRequest {
+  reason?: string;
+}
+
 export interface Boundaries {
   provider_transport: string;
   target_repository_writes: string;
@@ -198,7 +264,7 @@ export interface ProviderAuditEvent {
 export interface LocalDashboardState {
   schema_version: "local_dashboard.v1";
   status: string;
-  counts: { dispatches: number; plans?: number; team_members: number; api_keys: number; audit_events: number };
+  counts: { dispatches: number; plans?: number; workflow_runs?: number; team_members: number; api_keys: number; audit_events: number };
   dispatches: DispatchItem[];
   team: LocalTeamSnapshot;
   config: Record<string, unknown>;
@@ -226,6 +292,36 @@ export interface PlanResponse {
   plan: ReadOnlyPlan;
 }
 
+export interface WorkflowRunListResponse {
+  schema_version: "axum_api.v1";
+  runs: WorkflowRun[];
+}
+
+export interface WorkflowRunResponse {
+  schema_version: "axum_api.v1";
+  run: WorkflowRun;
+}
+
+export interface WorkflowRunEventListResponse {
+  schema_version: "axum_api.v1";
+  events: WorkflowRunEvent[];
+}
+
+export interface WorkflowRunEventResponse {
+  schema_version: "axum_api.v1";
+  event: WorkflowRunEvent;
+}
+
+export interface WorkflowRunApprovalListResponse {
+  schema_version: "axum_api.v1";
+  approvals: WorkflowRunApproval[];
+}
+
+export interface WorkflowRunApprovalResponse {
+  schema_version: "axum_api.v1";
+  approval: WorkflowRunApproval;
+}
+
 export interface ConfigResponse {
   schema_version: "axum_api.v1";
   config: Record<string, unknown>;
@@ -243,6 +339,7 @@ export interface ExportResponse {
   generated_at: number;
   dispatches: DispatchItem[];
   plans?: ReadOnlyPlan[];
+  workflow_runs?: WorkflowRun[];
   config: Record<string, unknown>;
   team: LocalTeamSnapshot;
   costs: LocalCostSummary;
@@ -373,6 +470,7 @@ export interface OperationsMetricsResponse {
   local_store: boolean;
   dispatch_count: number;
   plan_count?: number;
+  workflow_run_count?: number;
   audit_event_count: number;
   api_key_count: number;
   backup_count: number;
@@ -400,6 +498,7 @@ export interface ImportResponse {
   imported: {
     dispatches: number;
     plans: number;
+    workflow_runs: number;
     config: number;
     team: number;
     audit: number;

@@ -76,6 +76,87 @@ class AgentControlPlaneClient:
     def plan(self, plan_id: str) -> dict[str, Any]:
         return self._get(f"/api/v1/plans/{_quote_path_segment(plan_id)}")
 
+    def workflow_runs(
+        self,
+        limit: int | None = None,
+        offset: int | None = None,
+        search: str | None = None,
+    ) -> dict[str, Any]:
+        params: dict[str, Any] = {}
+        if limit is not None:
+            params["limit"] = limit
+        if offset is not None:
+            params["offset"] = offset
+        if search:
+            params["search"] = search
+        return self._get(_query_path("/api/v1/workflow-runs", params))
+
+    def create_workflow_run(self, plan_id: str) -> dict[str, Any]:
+        return self._post("/api/v1/workflow-runs", {"plan_id": plan_id})
+
+    def workflow_run(self, run_id: str) -> dict[str, Any]:
+        return self._get(f"/api/v1/workflow-runs/{_quote_path_segment(run_id)}")
+
+    def workflow_run_events(self, run_id: str, limit: int | None = None) -> dict[str, Any]:
+        params: dict[str, Any] = {}
+        if limit is not None:
+            params["limit"] = limit
+        return self._get(
+            _query_path(f"/api/v1/workflow-runs/{_quote_path_segment(run_id)}/events", params)
+        )
+
+    def record_workflow_run_event(
+        self,
+        run_id: str,
+        event_type: str,
+        node_id: str | None = None,
+        details: Any | None = None,
+    ) -> dict[str, Any]:
+        payload: dict[str, Any] = {"event_type": event_type}
+        if node_id is not None:
+            payload["node_id"] = node_id
+        if details is not None:
+            payload["details"] = details
+        return self._post(
+            f"/api/v1/workflow-runs/{_quote_path_segment(run_id)}/events",
+            payload,
+        )
+
+    def workflow_run_approvals(self, run_id: str, limit: int | None = None) -> dict[str, Any]:
+        params: dict[str, Any] = {}
+        if limit is not None:
+            params["limit"] = limit
+        return self._get(
+            _query_path(f"/api/v1/workflow-runs/{_quote_path_segment(run_id)}/approvals", params)
+        )
+
+    def record_workflow_run_approval(
+        self,
+        run_id: str,
+        node_id: str,
+        decision: str,
+        reason: str | None = None,
+    ) -> dict[str, Any]:
+        payload = {"node_id": node_id, "decision": decision}
+        if reason is not None:
+            payload["reason"] = reason
+        return self._post(
+            f"/api/v1/workflow-runs/{_quote_path_segment(run_id)}/approvals",
+            payload,
+        )
+
+    def resume_workflow_run(self, run_id: str, reason: str | None = None) -> dict[str, Any]:
+        payload: dict[str, Any] = {}
+        if reason is not None:
+            payload["reason"] = reason
+        return self._post(f"/api/v1/workflow-runs/{_quote_path_segment(run_id)}/resume", payload)
+
+    def cancel_workflow_run(self, run_id: str, reason: str | None = None) -> dict[str, Any]:
+        payload: dict[str, Any] = {}
+        if reason is not None:
+            payload["reason"] = reason
+        return self._post(f"/api/v1/workflow-runs/{_quote_path_segment(run_id)}/cancel", payload)
+
     def config(self) -> dict[str, Any]:
         return self._get("/api/v1/config")
 

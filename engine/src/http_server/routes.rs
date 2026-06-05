@@ -64,6 +64,36 @@ fn axum_routes() -> Router<AxumApiState> {
             get(plans::api_plan_detail).options(cors_preflight),
         )
         .route(
+            "/api/v1/workflow-runs",
+            get(workflow_runs::api_workflow_runs)
+                .post(workflow_runs::api_create_workflow_run)
+                .options(cors_preflight),
+        )
+        .route(
+            "/api/v1/workflow-runs/:run_id",
+            get(workflow_runs::api_workflow_run_detail).options(cors_preflight),
+        )
+        .route(
+            "/api/v1/workflow-runs/:run_id/events",
+            get(workflow_runs::api_workflow_run_events)
+                .post(workflow_runs::api_create_workflow_run_event)
+                .options(cors_preflight),
+        )
+        .route(
+            "/api/v1/workflow-runs/:run_id/approvals",
+            get(workflow_runs::api_workflow_run_approvals)
+                .post(workflow_runs::api_create_workflow_run_approval)
+                .options(cors_preflight),
+        )
+        .route(
+            "/api/v1/workflow-runs/:run_id/resume",
+            post(workflow_runs::api_resume_workflow_run).options(cors_preflight),
+        )
+        .route(
+            "/api/v1/workflow-runs/:run_id/cancel",
+            post(workflow_runs::api_cancel_workflow_run).options(cors_preflight),
+        )
+        .route(
             "/api/v1/dashboard",
             get(dashboard::api_dashboard).options(cors_preflight),
         )

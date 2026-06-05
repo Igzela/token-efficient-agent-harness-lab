@@ -102,6 +102,7 @@ pub(crate) async fn api_import(
                 "imported": {
                     "dispatches": result.imported.dispatches,
                     "plans": result.imported.plans,
+                    "workflow_runs": result.imported.workflow_runs,
                     "config": result.imported.config,
                     "team": result.imported.team,
                     "audit": result.imported.audit,
@@ -117,6 +118,7 @@ pub(crate) async fn api_import(
             "imported": {
                 "dispatches": result.imported.dispatches,
                 "plans": result.imported.plans,
+                "workflow_runs": result.imported.workflow_runs,
                 "config": result.imported.config,
                 "team": result.imported.team,
                 "audit": result.imported.audit,

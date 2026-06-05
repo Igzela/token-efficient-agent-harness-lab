@@ -47,7 +47,7 @@ fn schema_version_returns_current_version() {
     let dir = tempdir().unwrap();
     let store = LocalProductStore::new(dir.path().join("test.db")).unwrap();
     let version = store.schema_version().unwrap();
-    assert_eq!(version, 1);
+    assert_eq!(version, 2);
 }
 
 #[test]
@@ -56,7 +56,7 @@ fn migration_runs_only_once() {
     let path = dir.path().join("test.db");
     let _store1 = LocalProductStore::new(&path).unwrap();
     let store2 = LocalProductStore::new(&path).unwrap();
-    assert_eq!(store2.schema_version().unwrap(), 1);
+    assert_eq!(store2.schema_version().unwrap(), 2);
 }
 
 #[test]
@@ -96,7 +96,7 @@ fn fresh_database_starts_at_version_0_before_migrations() {
         let version: i64 = conn
             .query_row("PRAGMA user_version", [], |row| row.get(0))
             .unwrap();
-        assert_eq!(version, 1);
+        assert_eq!(version, 2);
     }
 }
 
@@ -108,8 +108,8 @@ fn check_integrity_on_clean_database() {
     let store = LocalProductStore::new(dir.path().join("test.db")).unwrap();
     let report = store.check_integrity().unwrap();
     assert_eq!(report.status, "ok");
-    assert_eq!(report.schema_version, 1);
-    assert_eq!(report.tables.len(), 7);
+    assert_eq!(report.schema_version, 2);
+    assert_eq!(report.tables.len(), 12);
     for table in &report.tables {
         assert_eq!(table.status, "ok");
         assert!(table.row_count >= 0);
@@ -160,6 +160,11 @@ fn check_integrity_table_names() {
     assert!(names.contains(&"audit_log"));
     assert!(names.contains(&"provider_audit_events"));
     assert!(names.contains(&"workflow_plans"));
+    assert!(names.contains(&"workflow_runs"));
+    assert!(names.contains(&"workflow_run_nodes"));
+    assert!(names.contains(&"workflow_run_edges"));
+    assert!(names.contains(&"workflow_run_events"));
+    assert!(names.contains(&"workflow_run_approvals"));
 }
 
 // --- import tests ---
@@ -419,6 +424,88 @@ fn export_import_roundtrip_workflow_plans() {
     assert_eq!(plans[0]["raw_request"], "Plan export roundtrip");
 }
 
+#[test]
+fn export_import_roundtrip_workflow_runs() {
+    let dir = tempdir().unwrap();
+    let store = LocalProductStore::new(dir.path().join("test.db")).unwrap();
+    store
+        .create_workflow_plan(
+            "Plan run export roundtrip",
+            "api",
+            "actor",
+            |ids, _created_at| {
+                Ok(json!({
+                    "schema_version": "read_only_plan.v1",
+                    "plan_id": ids.plan_id,
+                    "status": "planned_read_only",
+                    "workflow_id": ids.workflow_id,
+                    "dispatch_id": ids.dispatch_id,
+                    "analysis": {"analysis_id": "analysis-0001"},
+                    "graph": {
+                        "schema_version": "workflow_graph.v1",
+                        "workflow_id": ids.workflow_id,
+                        "dispatch_id": ids.dispatch_id,
+                        "status": "decomposed",
+                        "nodes": [{
+                            "schema_version": "workflow_node.v1",
+                            "node_id": "node-a",
+                            "workflow_id": ids.workflow_id,
+                            "task_type": "docs",
+                            "assigned_agent_id": null,
+                            "status": "pending",
+                            "input_refs": [],
+                            "output_ref": null,
+                            "budget": 0.1,
+                            "cost_incurred": 0.0,
+                            "error": null,
+                            "created_at": "2026-06-05T00:00:00Z",
+                            "started_at": null,
+                            "completed_at": null
+                        }],
+                        "edges": [],
+                    },
+                    "boundaries": {"execution": "disabled"},
+                }))
+            },
+        )
+        .unwrap();
+    store
+        .create_workflow_run_from_plan("plan-0001", "actor")
+        .unwrap();
+    store
+        .append_workflow_run_event(
+            "run-0001",
+            Some("node-a"),
+            "node_status_observed",
+            &json!({"status": "ready"}),
+            "actor",
+        )
+        .unwrap();
+    store
+        .record_workflow_run_approval(
+            "run-0001",
+            "node-a",
+            "approved",
+            "reviewer",
+            Some("metadata only"),
+        )
+        .unwrap();
+
+    let export = store.export_snapshot("noop", false).unwrap();
+    assert_eq!(export["workflow_runs"].as_array().unwrap().len(), 1);
+
+    let dir2 = tempdir().unwrap();
+    let store2 = LocalProductStore::new(dir2.path().join("test.db")).unwrap();
+    let result = store2.import_snapshot(&export).unwrap();
+    assert_eq!(result.errors.len(), 0);
+    assert_eq!(result.imported.workflow_runs, 1);
+
+    let run = store2.get_workflow_run("run-0001").unwrap().unwrap();
+    assert_eq!(run["nodes"].as_array().unwrap().len(), 1);
+    assert_eq!(run["events"].as_array().unwrap().len(), 2);
+    assert_eq!(run["approvals"].as_array().unwrap().len(), 1);
+}
+
 // --- import result struct tests ---
 
 #[test]
@@ -429,6 +516,7 @@ fn import_counts_default() {
     assert_eq!(counts.team, 0);
     assert_eq!(counts.audit, 0);
     assert_eq!(counts.plans, 0);
+    assert_eq!(counts.workflow_runs, 0);
 }
 
 #[test]
@@ -440,6 +528,7 @@ fn import_result_struct_fields() {
             team: 1,
             audit: 5,
             plans: 4,
+            workflow_runs: 3,
         },
         errors: vec!["err1".to_string()],
     };

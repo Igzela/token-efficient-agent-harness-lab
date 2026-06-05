@@ -20,6 +20,7 @@ pub(crate) async fn api_metrics(
 
     let mut dispatch_count = 0;
     let mut plan_count = 0;
+    let mut workflow_run_count = 0;
     let mut audit_event_count = 0;
     let mut api_key_count = 0;
     let mut backup_count = 0;
@@ -35,6 +36,7 @@ pub(crate) async fn api_metrics(
         let stats = store.stats().map_err(internal_error)?;
         dispatch_count = stats["dispatches"].as_i64().unwrap_or(0);
         plan_count = stats["plans"].as_i64().unwrap_or(0);
+        workflow_run_count = stats["workflow_runs"].as_i64().unwrap_or(0);
         audit_event_count = stats["audit_events"].as_i64().unwrap_or(0);
         api_key_count = stats["api_keys"].as_i64().unwrap_or(0);
 
@@ -68,6 +70,7 @@ pub(crate) async fn api_metrics(
             "local_store": state.local_store.is_some(),
             "dispatch_count": dispatch_count,
             "plan_count": plan_count,
+            "workflow_run_count": workflow_run_count,
             "audit_event_count": audit_event_count,
             "api_key_count": api_key_count,
             "backup_count": backup_count,

@@ -29,6 +29,11 @@ impl LocalProductStore {
                 "audit_log",
                 "provider_audit_events",
                 "workflow_plans",
+                "workflow_runs",
+                "workflow_run_nodes",
+                "workflow_run_edges",
+                "workflow_run_events",
+                "workflow_run_approvals",
             ];
             let mut table_reports = Vec::new();
             for table in &tables {

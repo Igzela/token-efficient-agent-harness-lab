@@ -8,6 +8,7 @@ pub const LOCAL_IMPORT_SCHEMA_VERSION: &str = "local_team_export.v1";
 pub struct ImportCounts {
     pub dispatches: i64,
     pub plans: i64,
+    pub workflow_runs: i64,
     pub config: i64,
     pub team: i64,
     pub audit: i64,
@@ -131,6 +132,16 @@ impl LocalProductStore {
             }
         }
 
+        if let Some(runs) = snapshot.get("workflow_runs").and_then(Value::as_array) {
+            for run in runs {
+                match self.import_workflow_run(run) {
+                    Ok(true) => counts.workflow_runs += 1,
+                    Ok(false) => {}
+                    Err(e) => errors.push(format!("workflow_run: {e}")),
+                }
+            }
+        }
+
         Ok(ImportResult {
             imported: counts,
             errors,
@@ -147,6 +158,7 @@ impl LocalProductStore {
             "generated_at": self.now(),
             "dispatches": self.list_dispatches(10_000)?,
             "plans": self.search_workflow_plans(10_000, 0, None)?,
+            "workflow_runs": self.export_workflow_runs(10_000)?,
             "config": self.config_snapshot()?,
             "team": self.team_snapshot()?,
             "costs": self.cost_summary()?,

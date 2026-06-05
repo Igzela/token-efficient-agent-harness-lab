@@ -28,6 +28,30 @@ pub struct ReadOnlyPlanApiRequest {
 }
 
 #[derive(Debug, Clone, PartialEq, Deserialize)]
+pub struct WorkflowRunCreateApiRequest {
+    pub plan_id: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+pub struct WorkflowRunEventApiRequest {
+    pub node_id: Option<String>,
+    pub event_type: String,
+    pub details: Option<Value>,
+}
+
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+pub struct WorkflowRunApprovalApiRequest {
+    pub node_id: String,
+    pub decision: String,
+    pub reason: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+pub struct WorkflowRunActionApiRequest {
+    pub reason: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Deserialize)]
 pub struct BackupApiRequest {
     pub label: Option<String>,
     pub confirm_local_backup: Option<bool>,
@@ -216,6 +240,94 @@ pub fn openapi_document() -> serde_json::Value {
                         "200": {"description": "Read-only workflow plan"},
                         "404": {"description": "Plan not found"}
                     }
+                }
+            },
+            "/api/v1/workflow-runs": {
+                "get": {
+                    "summary": "List inert durable workflow run metadata",
+                    "description": "Requires dispatch:read scope. Returns app-owned run metadata only; no workers, execution, provider calls, target writes, approval authority, deploy, or merge controls.",
+                    "parameters": [
+                        {"name": "limit", "in": "query", "schema": {"type": "integer", "default": 100, "minimum": 0, "maximum": 500}},
+                        {"name": "offset", "in": "query", "schema": {"type": "integer", "default": 0, "minimum": 0}},
+                        {"name": "search", "in": "query", "schema": {"type": "string"}}
+                    ],
+                    "responses": {"200": {"description": "Workflow run metadata list"}}
+                },
+                "post": {
+                    "summary": "Create inert workflow run metadata from a read-only plan",
+                    "description": "Persists run/node/edge/event metadata only. It does not execute, resume execution, spawn workers, call providers, or write target repositories.",
+                    "requestBody": json_request_body(&["plan_id"], json!({
+                        "plan_id": {"type": "string"}
+                    })),
+                    "responses": {
+                        "200": {"description": "Workflow run metadata"},
+                        "400": {"description": "Invalid request"},
+                        "401": {"description": "Unauthorized"},
+                        "403": {"description": "Forbidden"},
+                        "404": {"description": "Plan not found"}
+                    }
+                }
+            },
+            "/api/v1/workflow-runs/{run_id}": {
+                "get": {
+                    "summary": "Get inert workflow run metadata by ID",
+                    "parameters": [path_parameter("run_id")],
+                    "responses": {
+                        "200": {"description": "Workflow run metadata"},
+                        "404": {"description": "Workflow run not found"}
+                    }
+                }
+            },
+            "/api/v1/workflow-runs/{run_id}/events": {
+                "get": {
+                    "summary": "List workflow run metadata events",
+                    "parameters": [path_parameter("run_id"), {"name": "limit", "in": "query", "schema": {"type": "integer", "default": 100, "minimum": 0, "maximum": 500}}],
+                    "responses": {"200": {"description": "Workflow run metadata events"}}
+                },
+                "post": {
+                    "summary": "Append workflow run metadata event",
+                    "description": "Appends an event record only; does not trigger execution.",
+                    "requestBody": json_request_body(&["event_type"], json!({
+                        "node_id": {"type": "string"},
+                        "event_type": {"type": "string"},
+                        "details": {"type": "object"}
+                    })),
+                    "responses": {"200": {"description": "Workflow run metadata event"}}
+                }
+            },
+            "/api/v1/workflow-runs/{run_id}/approvals": {
+                "get": {
+                    "summary": "List workflow run approval metadata",
+                    "parameters": [path_parameter("run_id"), {"name": "limit", "in": "query", "schema": {"type": "integer", "default": 100, "minimum": 0, "maximum": 500}}],
+                    "responses": {"200": {"description": "Workflow run approval metadata"}}
+                },
+                "post": {
+                    "summary": "Record workflow run approval metadata",
+                    "description": "Records approval metadata only; does not grant execution authority.",
+                    "requestBody": json_request_body(&["node_id", "decision"], json!({
+                        "node_id": {"type": "string"},
+                        "decision": {"type": "string", "enum": ["requested", "approved", "rejected"]},
+                        "reason": {"type": "string"}
+                    })),
+                    "responses": {"200": {"description": "Workflow run approval metadata"}}
+                }
+            },
+            "/api/v1/workflow-runs/{run_id}/resume": {
+                "post": {
+                    "summary": "Record workflow run resume metadata",
+                    "description": "Records resume intent and status metadata only; no execution resume authority.",
+                    "parameters": [path_parameter("run_id")],
+                    "requestBody": json_request_body(&[], json!({"reason": {"type": "string"}})),
+                    "responses": {"200": {"description": "Workflow run metadata"}}
+                }
+            },
+            "/api/v1/workflow-runs/{run_id}/cancel": {
+                "post": {
+                    "summary": "Record workflow run cancel metadata",
+                    "description": "Records cancel intent and status metadata only; no worker or process cancellation authority.",
+                    "parameters": [path_parameter("run_id")],
+                    "requestBody": json_request_body(&[], json!({"reason": {"type": "string"}})),
+                    "responses": {"200": {"description": "Workflow run metadata"}}
                 }
             },
             "/api/v1/dashboard": {
@@ -578,6 +690,31 @@ mod tests {
             "dispatch_id",
         );
         assert_path_parameter(&doc, "/api/v1/plans/{plan_id}", "get", "plan_id");
+        assert_path_parameter(&doc, "/api/v1/workflow-runs/{run_id}", "get", "run_id");
+        assert_path_parameter(
+            &doc,
+            "/api/v1/workflow-runs/{run_id}/events",
+            "get",
+            "run_id",
+        );
+        assert_path_parameter(
+            &doc,
+            "/api/v1/workflow-runs/{run_id}/approvals",
+            "get",
+            "run_id",
+        );
+        assert_path_parameter(
+            &doc,
+            "/api/v1/workflow-runs/{run_id}/resume",
+            "post",
+            "run_id",
+        );
+        assert_path_parameter(
+            &doc,
+            "/api/v1/workflow-runs/{run_id}/cancel",
+            "post",
+            "run_id",
+        );
         assert_path_parameter(&doc, "/api/v1/team/{user_id}", "put", "user_id");
         assert_path_parameter(&doc, "/api/v1/team/{user_id}", "delete", "user_id");
         assert_path_parameter(&doc, "/api/v1/backups/{backup_id}", "delete", "backup_id");
@@ -598,6 +735,19 @@ mod tests {
         let doc = openapi_document();
 
         assert_required_body_fields(&doc, "/api/v1/plans", "post", &["raw_request"]);
+        assert_required_body_fields(&doc, "/api/v1/workflow-runs", "post", &["plan_id"]);
+        assert_required_body_fields(
+            &doc,
+            "/api/v1/workflow-runs/{run_id}/events",
+            "post",
+            &["event_type"],
+        );
+        assert_required_body_fields(
+            &doc,
+            "/api/v1/workflow-runs/{run_id}/approvals",
+            "post",
+            &["node_id", "decision"],
+        );
         assert_required_body_fields(&doc, "/api/v1/team/{user_id}", "put", &["role"]);
         assert_required_body_fields(&doc, "/api/v1/backups", "post", &["confirm_local_backup"]);
         assert_required_body_fields(

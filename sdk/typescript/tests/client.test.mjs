@@ -117,6 +117,63 @@ test("planner methods call read-only plan endpoints", async () => {
   assert.equal(calls[2].init.method, "GET");
 });
 
+test("workflow run methods call inert runtime state endpoints", async () => {
+  const { calls, fetchImpl } = captureFetch({
+    schema_version: "axum_api.v1",
+    run: { run_id: "run-0001" },
+    runs: [],
+    event: { event_id: "workflow-event-0001" },
+    events: [],
+    approval: { approval_id: "workflow-approval-0001" },
+    approvals: [],
+  });
+  const client = new AgentControlPlaneClient({ baseUrl: "http://127.0.0.1:8080", fetchImpl });
+
+  await client.createWorkflowRun({ plan_id: "plan-0001" });
+  await client.workflowRuns({ limit: 25, offset: 50, search: "run plan" });
+  await client.workflowRun("run/0001");
+  await client.recordWorkflowRunEvent("run/0001", {
+    node_id: "node-a",
+    event_type: "node_status_observed",
+    details: { status: "ready" },
+  });
+  await client.workflowRunEvents("run/0001", { limit: 10 });
+  await client.recordWorkflowRunApproval("run/0001", {
+    node_id: "node-a",
+    decision: "approved",
+    reason: "metadata only",
+  });
+  await client.workflowRunApprovals("run/0001", { limit: 10 });
+  await client.resumeWorkflowRun("run/0001", { reason: "metadata resume" });
+  await client.cancelWorkflowRun("run/0001", { reason: "metadata cancel" });
+
+  assert.equal(calls[0].url, "http://127.0.0.1:8080/api/v1/workflow-runs");
+  assert.equal(calls[0].init.method, "POST");
+  assert.deepEqual(JSON.parse(calls[0].init.body), { plan_id: "plan-0001" });
+  assert.equal(calls[1].url, "http://127.0.0.1:8080/api/v1/workflow-runs?limit=25&offset=50&search=run+plan");
+  assert.equal(calls[2].url, "http://127.0.0.1:8080/api/v1/workflow-runs/run%2F0001");
+  assert.equal(calls[3].url, "http://127.0.0.1:8080/api/v1/workflow-runs/run%2F0001/events");
+  assert.equal(calls[3].init.method, "POST");
+  assert.deepEqual(JSON.parse(calls[3].init.body), {
+    node_id: "node-a",
+    event_type: "node_status_observed",
+    details: { status: "ready" },
+  });
+  assert.equal(calls[4].url, "http://127.0.0.1:8080/api/v1/workflow-runs/run%2F0001/events?limit=10");
+  assert.equal(calls[5].url, "http://127.0.0.1:8080/api/v1/workflow-runs/run%2F0001/approvals");
+  assert.equal(calls[5].init.method, "POST");
+  assert.deepEqual(JSON.parse(calls[5].init.body), {
+    node_id: "node-a",
+    decision: "approved",
+    reason: "metadata only",
+  });
+  assert.equal(calls[6].url, "http://127.0.0.1:8080/api/v1/workflow-runs/run%2F0001/approvals?limit=10");
+  assert.equal(calls[7].url, "http://127.0.0.1:8080/api/v1/workflow-runs/run%2F0001/resume");
+  assert.deepEqual(JSON.parse(calls[7].init.body), { reason: "metadata resume" });
+  assert.equal(calls[8].url, "http://127.0.0.1:8080/api/v1/workflow-runs/run%2F0001/cancel");
+  assert.deepEqual(JSON.parse(calls[8].init.body), { reason: "metadata cancel" });
+});
+
 test("audit sends pagination query params", async () => {
   const { calls, fetchImpl } = captureFetch({ schema_version: "axum_api.v1", events: [] });
   const client = new AgentControlPlaneClient({ baseUrl: "http://127.0.0.1:8080", fetchImpl });

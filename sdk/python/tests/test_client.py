@@ -156,6 +156,68 @@ class ClientLocalStateTest(unittest.TestCase):
         self.assertIn("/api/v1/plans/plan%2F0001", calls[2].full_url)
 
     @patch("agent_control_plane_sdk.client.urlopen")
+    def test_workflow_run_methods_call_inert_runtime_state_endpoints(self, mock_urlopen):
+        mock_urlopen.return_value = mock_response({
+            "schema_version": "axum_api.v1",
+            "run": {"run_id": "run-0001"},
+            "runs": [],
+            "event": {"event_id": "workflow-event-0001"},
+            "events": [],
+            "approval": {"approval_id": "workflow-approval-0001"},
+            "approvals": [],
+        })
+        client = AgentControlPlaneClient("http://localhost:8080")
+
+        client.create_workflow_run("plan-0001")
+        client.workflow_runs(limit=25, offset=50, search="run plan")
+        client.workflow_run("run/0001")
+        client.record_workflow_run_event(
+            "run/0001",
+            event_type="node_status_observed",
+            node_id="node-a",
+            details={"status": "ready"},
+        )
+        client.workflow_run_events("run/0001", limit=10)
+        client.record_workflow_run_approval(
+            "run/0001",
+            node_id="node-a",
+            decision="approved",
+            reason="metadata only",
+        )
+        client.workflow_run_approvals("run/0001", limit=10)
+        client.resume_workflow_run("run/0001", reason="metadata resume")
+        client.cancel_workflow_run("run/0001", reason="metadata cancel")
+
+        calls = [call.args[0] for call in mock_urlopen.call_args_list]
+        self.assertEqual(calls[0].method, "POST")
+        self.assertEqual(calls[0].full_url, "http://localhost:8080/api/v1/workflow-runs")
+        self.assertEqual(json.loads(calls[0].data), {"plan_id": "plan-0001"})
+        self.assertEqual(calls[1].method, "GET")
+        self.assertEqual(calls[1].full_url, "http://localhost:8080/api/v1/workflow-runs?limit=25&offset=50&search=run+plan")
+        self.assertEqual(calls[2].method, "GET")
+        self.assertIn("/api/v1/workflow-runs/run%2F0001", calls[2].full_url)
+        self.assertEqual(calls[3].method, "POST")
+        self.assertIn("/api/v1/workflow-runs/run%2F0001/events", calls[3].full_url)
+        self.assertEqual(json.loads(calls[3].data), {
+            "node_id": "node-a",
+            "event_type": "node_status_observed",
+            "details": {"status": "ready"},
+        })
+        self.assertIn("/api/v1/workflow-runs/run%2F0001/events?limit=10", calls[4].full_url)
+        self.assertEqual(calls[5].method, "POST")
+        self.assertIn("/api/v1/workflow-runs/run%2F0001/approvals", calls[5].full_url)
+        self.assertEqual(json.loads(calls[5].data), {
+            "node_id": "node-a",
+            "decision": "approved",
+            "reason": "metadata only",
+        })
+        self.assertIn("/api/v1/workflow-runs/run%2F0001/approvals?limit=10", calls[6].full_url)
+        self.assertIn("/api/v1/workflow-runs/run%2F0001/resume", calls[7].full_url)
+        self.assertEqual(json.loads(calls[7].data), {"reason": "metadata resume"})
+        self.assertIn("/api/v1/workflow-runs/run%2F0001/cancel", calls[8].full_url)
+        self.assertEqual(json.loads(calls[8].data), {"reason": "metadata cancel"})
+
+    @patch("agent_control_plane_sdk.client.urlopen")
     def test_audit_sends_pagination_query_params(self, mock_urlopen):
         mock_urlopen.return_value = mock_response({"schema_version": "axum_api.v1", "events": []})
         client = AgentControlPlaneClient("http://localhost:8080")

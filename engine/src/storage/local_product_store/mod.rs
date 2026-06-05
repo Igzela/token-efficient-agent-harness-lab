@@ -10,6 +10,7 @@ mod migrations;
 mod plans;
 mod provider_audit;
 mod team;
+mod workflow_runs;
 
 use rusqlite::{params, Connection};
 use serde_json::{json, Value};
@@ -121,6 +122,72 @@ CREATE TABLE IF NOT EXISTS workflow_plans (
 );
 CREATE INDEX IF NOT EXISTS idx_workflow_plans_created ON workflow_plans(created_at);
 CREATE INDEX IF NOT EXISTS idx_workflow_plans_status ON workflow_plans(status);
+
+CREATE TABLE IF NOT EXISTS workflow_runs (
+    run_sequence INTEGER PRIMARY KEY,
+    run_id TEXT NOT NULL UNIQUE,
+    plan_id TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    status TEXT NOT NULL,
+    workflow_id TEXT NOT NULL,
+    dispatch_id TEXT,
+    started_at TEXT,
+    completed_at TEXT,
+    result_json TEXT,
+    boundaries_json TEXT NOT NULL,
+    run_json TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_workflow_runs_created ON workflow_runs(created_at);
+CREATE INDEX IF NOT EXISTS idx_workflow_runs_status ON workflow_runs(status);
+CREATE INDEX IF NOT EXISTS idx_workflow_runs_plan ON workflow_runs(plan_id);
+
+CREATE TABLE IF NOT EXISTS workflow_run_nodes (
+    run_id TEXT NOT NULL,
+    node_id TEXT NOT NULL,
+    task_type TEXT NOT NULL,
+    status TEXT NOT NULL,
+    node_json TEXT NOT NULL,
+    PRIMARY KEY (run_id, node_id)
+);
+CREATE INDEX IF NOT EXISTS idx_workflow_run_nodes_run ON workflow_run_nodes(run_id);
+
+CREATE TABLE IF NOT EXISTS workflow_run_edges (
+    run_id TEXT NOT NULL,
+    edge_id TEXT NOT NULL,
+    from_node_id TEXT NOT NULL,
+    to_node_id TEXT NOT NULL,
+    edge_type TEXT NOT NULL,
+    edge_json TEXT NOT NULL,
+    PRIMARY KEY (run_id, edge_id)
+);
+CREATE INDEX IF NOT EXISTS idx_workflow_run_edges_run ON workflow_run_edges(run_id);
+
+CREATE TABLE IF NOT EXISTS workflow_run_events (
+    event_sequence INTEGER PRIMARY KEY,
+    event_id TEXT NOT NULL UNIQUE,
+    run_id TEXT NOT NULL,
+    node_id TEXT,
+    event_type TEXT NOT NULL,
+    actor TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    details_json TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_workflow_run_events_run ON workflow_run_events(run_id);
+CREATE INDEX IF NOT EXISTS idx_workflow_run_events_created ON workflow_run_events(created_at);
+
+CREATE TABLE IF NOT EXISTS workflow_run_approvals (
+    approval_sequence INTEGER PRIMARY KEY,
+    approval_id TEXT NOT NULL UNIQUE,
+    run_id TEXT NOT NULL,
+    node_id TEXT NOT NULL,
+    decision TEXT NOT NULL,
+    actor TEXT NOT NULL,
+    reason TEXT,
+    created_at TEXT NOT NULL,
+    approval_json TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_workflow_run_approvals_run ON workflow_run_approvals(run_id);
 ";
 
 pub struct LocalProductStore {
@@ -193,6 +260,7 @@ impl LocalProductStore {
                 "api_keys": count_table(conn, "api_key_metadata")?,
                 "audit_events": count_table(conn, "audit_log")?,
                 "plans": count_table(conn, "workflow_plans")?,
+                "workflow_runs": count_table(conn, "workflow_runs")?,
             }))
         })
     }

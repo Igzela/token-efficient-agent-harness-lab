@@ -1,6 +1,6 @@
 # ADR 0002: Supervised Planning Track Toward Autonomous Beta
 
-Status: Accepted for planning only; execution remains gated. Batch 3 read-only planner implemented.
+Status: Accepted for planning only; execution remains gated. Batch 4 inert durable state implemented.
 
 Date: 2026-06-05
 
@@ -36,6 +36,13 @@ Batch 3 implements this first planning-only surface:
 - `POST /api/v1/plans` creates an app-owned plan record in local SQLite; `GET /api/v1/plans` and `GET /api/v1/plans/{plan_id}` read stored planning metadata.
 - `workflow_plans` stores the plan in `LocalProductStore`; export/import/integrity and SDK methods cover the new state.
 - The endpoint requires `dispatch:read` under protected mode and does not call providers, execute workers, write target repositories, start sandbox/process/container/VM isolation, or expose approve/run/deploy/merge controls.
+
+Batch 4 implements inert durable state:
+
+- `workflow_runs`, `workflow_run_nodes`, `workflow_run_edges`, `workflow_run_events`, and `workflow_run_approvals` persist app-owned workflow metadata in `LocalProductStore`.
+- `POST /api/v1/workflow-runs` creates run metadata from an existing read-only plan; list/detail endpoints read stored metadata.
+- Event, approval, resume, and cancel endpoints record metadata and status only. Resume/cancel do not call `WorkflowEngine`, spawn workers, execute subprocesses, cancel processes, write targets, call providers, or grant approval/run/deploy/merge authority.
+- Export/import/integrity, operations counts, and TypeScript/Python SDK methods cover the new state.
 
 ## Boundaries
 
@@ -91,7 +98,8 @@ Batch 3 adapter design constraints:
 - Preserve existing module files; no R8-style split.
 - Keep adapters planning-only and deterministic.
 - Do not use adapters to start execution, spawn workers, write targets, run sandboxes, or grant approval authority.
-- Batch 4 may add durable workflow run/node/edge/event/approval records only as inert app-owned state. It must not add runtime workers, execution resume/cancel authority, target writes, or sandbox behavior.
+- Batch 4 implemented durable workflow run/node/edge/event/approval records only as inert app-owned state. It did not add runtime workers, execution resume/cancel authority, target writes, or sandbox behavior.
+- Batch 5 may add quality/routing/retry/observability records only as recommendation/block/status metadata. It must not call providers, retry provider execution, route live workers, or start execution.
 
 ## Consequences
 

@@ -445,6 +445,78 @@ fn make_workflow_plan(ids: &engine::storage::local_product_store::WorkflowPlanId
     })
 }
 
+fn make_workflow_plan_with_nodes(
+    ids: &engine::storage::local_product_store::WorkflowPlanIds,
+) -> Value {
+    json!({
+        "schema_version": "read_only_plan.v1",
+        "plan_id": ids.plan_id,
+        "status": "planned_read_only",
+        "workflow_id": ids.workflow_id,
+        "dispatch_id": ids.dispatch_id,
+        "analysis": {"analysis_id": "analysis-0001", "task_domain": "docs"},
+        "graph": {
+            "schema_version": "workflow_graph.v1",
+            "workflow_id": ids.workflow_id,
+            "dispatch_id": ids.dispatch_id,
+            "status": "decomposed",
+            "created_at": "2026-06-05T00:00:00Z",
+            "updated_at": "2026-06-05T00:00:00Z",
+            "nodes": [
+                {
+                    "schema_version": "workflow_node.v1",
+                    "node_id": "node-a",
+                    "workflow_id": ids.workflow_id,
+                    "task_type": "analysis",
+                    "assigned_agent_id": null,
+                    "status": "pending",
+                    "input_refs": [],
+                    "output_ref": null,
+                    "budget": 0.1,
+                    "cost_incurred": 0.0,
+                    "error": null,
+                    "created_at": "2026-06-05T00:00:00Z",
+                    "started_at": null,
+                    "completed_at": null
+                },
+                {
+                    "schema_version": "workflow_node.v1",
+                    "node_id": "node-b",
+                    "workflow_id": ids.workflow_id,
+                    "task_type": "docs",
+                    "assigned_agent_id": null,
+                    "status": "pending",
+                    "input_refs": ["node-a"],
+                    "output_ref": null,
+                    "budget": 0.2,
+                    "cost_incurred": 0.0,
+                    "error": null,
+                    "created_at": "2026-06-05T00:00:00Z",
+                    "started_at": null,
+                    "completed_at": null
+                }
+            ],
+            "edges": [
+                {
+                    "schema_version": "workflow_edge.v1",
+                    "edge_id": "edge-a-b",
+                    "from_node_id": "node-a",
+                    "to_node_id": "node-b",
+                    "edge_type": "dependency"
+                }
+            ],
+            "started_at": null,
+            "completed_at": null,
+            "result": null
+        },
+        "boundaries": {
+            "execution": "disabled",
+            "target_repository_writes": "disabled",
+            "runtime_workers": "disabled",
+        },
+    })
+}
+
 #[test]
 fn workflow_plans_create_list_get_and_audit() {
     let dir = tempdir().unwrap();
@@ -508,6 +580,114 @@ fn workflow_plan_search_filters_and_paginates() {
     let paged = store.search_workflow_plans(1, 1, Some("plan")).unwrap();
     assert_eq!(paged.len(), 1);
     assert_eq!(paged[0]["plan_id"], "plan-0001");
+}
+
+#[test]
+fn workflow_runs_create_from_plan_persists_nodes_edges_events_and_approvals() {
+    let dir = tempdir().unwrap();
+    let store = LocalProductStore::new(dir.path().join("test.db")).unwrap();
+    let plan = store
+        .create_workflow_plan("Plan run state", "api", "actor", |ids, _created_at| {
+            Ok(make_workflow_plan_with_nodes(ids))
+        })
+        .unwrap();
+
+    let run = store
+        .create_workflow_run_from_plan(plan["plan_id"].as_str().unwrap(), "actor")
+        .unwrap();
+    assert_eq!(run["run_id"], "run-0001");
+    assert_eq!(run["plan_id"], "plan-0001");
+    assert_eq!(run["workflow_id"], "wf-plan-0001");
+    assert_eq!(run["status"], "created");
+    assert_eq!(run["boundaries"]["execution_authority"], "disabled");
+    assert_eq!(run["boundaries"]["runtime_workers"], "disabled");
+    assert!(run.get("execution_result").is_none());
+    assert_eq!(run["nodes"].as_array().unwrap().len(), 2);
+    assert_eq!(run["edges"].as_array().unwrap().len(), 1);
+
+    let listed = store
+        .search_workflow_runs(10, 0, Some("plan-0001"))
+        .unwrap();
+    assert_eq!(listed.len(), 1);
+    assert_eq!(listed[0]["run_id"], "run-0001");
+
+    let fetched = store.get_workflow_run("run-0001").unwrap().unwrap();
+    assert_eq!(fetched["nodes"][1]["node_id"], "node-b");
+
+    let event = store
+        .append_workflow_run_event(
+            "run-0001",
+            Some("node-a"),
+            "node_status_observed",
+            &json!({"status": "ready"}),
+            "actor",
+        )
+        .unwrap();
+    assert_eq!(event["event_id"], "workflow-event-0002");
+    assert_eq!(event["event_type"], "node_status_observed");
+
+    let approval = store
+        .record_workflow_run_approval(
+            "run-0001",
+            "node-a",
+            "approved",
+            "reviewer",
+            Some("metadata only"),
+        )
+        .unwrap();
+    assert_eq!(approval["approval_id"], "workflow-approval-0001");
+    assert_eq!(approval["decision"], "approved");
+
+    let events = store.workflow_run_events("run-0001", 10).unwrap();
+    assert_eq!(events.len(), 2);
+    assert_eq!(events[0]["event_type"], "workflow_run.created");
+    assert_eq!(events[1]["event_type"], "node_status_observed");
+
+    let approvals = store.workflow_run_approvals("run-0001", 10).unwrap();
+    assert_eq!(approvals.len(), 1);
+    assert_eq!(approvals[0]["actor"], "reviewer");
+}
+
+#[test]
+fn workflow_run_resume_and_cancel_are_metadata_only() {
+    let dir = tempdir().unwrap();
+    let store = LocalProductStore::new(dir.path().join("test.db")).unwrap();
+    let plan = store
+        .create_workflow_plan("Plan run actions", "api", "actor", |ids, _created_at| {
+            Ok(make_workflow_plan_with_nodes(ids))
+        })
+        .unwrap();
+    store
+        .create_workflow_run_from_plan(plan["plan_id"].as_str().unwrap(), "actor")
+        .unwrap();
+
+    let resumed = store
+        .request_workflow_run_resume("run-0001", "operator", Some("manual resume"))
+        .unwrap();
+    assert_eq!(resumed["status"], "running");
+    assert_eq!(
+        resumed["boundaries"]["resume_execution_authority"],
+        "disabled"
+    );
+    assert!(resumed.get("execution_result").is_none());
+
+    let cancelled = store
+        .request_workflow_run_cancel("run-0001", "operator", Some("stop metadata run"))
+        .unwrap();
+    assert_eq!(cancelled["status"], "cancelled");
+    assert_eq!(
+        cancelled["boundaries"]["cancel_execution_authority"],
+        "disabled"
+    );
+    assert!(cancelled.get("execution_result").is_none());
+
+    let events = store.workflow_run_events("run-0001", 10).unwrap();
+    assert!(events
+        .iter()
+        .any(|event| event["event_type"] == "workflow_resume_requested"));
+    assert!(events
+        .iter()
+        .any(|event| event["event_type"] == "workflow_cancel_requested"));
 }
 
 // --- cost_summary v2 tests ---

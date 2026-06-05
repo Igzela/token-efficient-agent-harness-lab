@@ -7,6 +7,16 @@ import type {
   PlanCreateRequest,
   PlanListResponse,
   PlanResponse,
+  WorkflowRunActionRequest,
+  WorkflowRunApprovalListResponse,
+  WorkflowRunApprovalRequest,
+  WorkflowRunApprovalResponse,
+  WorkflowRunCreateRequest,
+  WorkflowRunEventListResponse,
+  WorkflowRunEventRequest,
+  WorkflowRunEventResponse,
+  WorkflowRunListResponse,
+  WorkflowRunResponse,
   LocalCostSummary,
   LocalDispatchCostDetail,
   LocalDashboardState,
@@ -53,6 +63,16 @@ export interface PlanListOptions {
   limit?: number;
   offset?: number;
   search?: string;
+}
+
+export interface WorkflowRunListOptions {
+  limit?: number;
+  offset?: number;
+  search?: string;
+}
+
+export interface WorkflowRunChildListOptions {
+  limit?: number;
 }
 
 export interface AuditListOptions {
@@ -127,6 +147,89 @@ export class AgentControlPlaneClient {
 
   plan(planId: string): Promise<PlanResponse> {
     return this.getJson<PlanResponse>(`/api/v1/plans/${encodeURIComponent(planId)}`);
+  }
+
+  workflowRuns(options: WorkflowRunListOptions = {}): Promise<WorkflowRunListResponse> {
+    return this.getJson<WorkflowRunListResponse>(`/api/v1/workflow-runs${queryString({
+      limit: options.limit,
+      offset: options.offset,
+      search: options.search,
+    })}`);
+  }
+
+  createWorkflowRun(request: WorkflowRunCreateRequest): Promise<WorkflowRunResponse> {
+    return this.postJson<WorkflowRunResponse>("/api/v1/workflow-runs", {
+      plan_id: request.plan_id,
+    });
+  }
+
+  workflowRun(runId: string): Promise<WorkflowRunResponse> {
+    return this.getJson<WorkflowRunResponse>(`/api/v1/workflow-runs/${encodeURIComponent(runId)}`);
+  }
+
+  workflowRunEvents(
+    runId: string,
+    options: WorkflowRunChildListOptions = {},
+  ): Promise<WorkflowRunEventListResponse> {
+    return this.getJson<WorkflowRunEventListResponse>(
+      `/api/v1/workflow-runs/${encodeURIComponent(runId)}/events${queryString({
+        limit: options.limit,
+      })}`,
+    );
+  }
+
+  recordWorkflowRunEvent(
+    runId: string,
+    request: WorkflowRunEventRequest,
+  ): Promise<WorkflowRunEventResponse> {
+    return this.postJson<WorkflowRunEventResponse>(`/api/v1/workflow-runs/${encodeURIComponent(runId)}/events`, {
+      node_id: request.node_id,
+      event_type: request.event_type,
+      details: request.details,
+    });
+  }
+
+  workflowRunApprovals(
+    runId: string,
+    options: WorkflowRunChildListOptions = {},
+  ): Promise<WorkflowRunApprovalListResponse> {
+    return this.getJson<WorkflowRunApprovalListResponse>(
+      `/api/v1/workflow-runs/${encodeURIComponent(runId)}/approvals${queryString({
+        limit: options.limit,
+      })}`,
+    );
+  }
+
+  recordWorkflowRunApproval(
+    runId: string,
+    request: WorkflowRunApprovalRequest,
+  ): Promise<WorkflowRunApprovalResponse> {
+    return this.postJson<WorkflowRunApprovalResponse>(
+      `/api/v1/workflow-runs/${encodeURIComponent(runId)}/approvals`,
+      {
+        node_id: request.node_id,
+        decision: request.decision,
+        reason: request.reason,
+      },
+    );
+  }
+
+  resumeWorkflowRun(
+    runId: string,
+    request: WorkflowRunActionRequest = {},
+  ): Promise<WorkflowRunResponse> {
+    return this.postJson<WorkflowRunResponse>(`/api/v1/workflow-runs/${encodeURIComponent(runId)}/resume`, {
+      reason: request.reason,
+    });
+  }
+
+  cancelWorkflowRun(
+    runId: string,
+    request: WorkflowRunActionRequest = {},
+  ): Promise<WorkflowRunResponse> {
+    return this.postJson<WorkflowRunResponse>(`/api/v1/workflow-runs/${encodeURIComponent(runId)}/cancel`, {
+      reason: request.reason,
+    });
   }
 
   config(): Promise<ConfigResponse> {
