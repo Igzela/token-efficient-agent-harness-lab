@@ -1,7 +1,7 @@
 # Threat Model — Local Agent Control Plane
 
 Last updated: 2026-06-05
-Scope: Rust engine, TypeScript dashboard/SDK, local SQLite state, env-gated provider adapters, Batch 6 supervised-execution design-gate risks, Batch 7 Slice A storage-only supervised patch metadata, Slice B read-only HTTP metadata views, and Slice C read-only SDK metadata wrappers. Batch 6/7 risks are not implemented runtime features.
+Scope: Rust engine, TypeScript dashboard/SDK, local SQLite state, env-gated provider adapters, Batch 6 supervised-execution design-gate risks, Batch 7 Slice A storage-only supervised patch metadata, Slice B read-only HTTP metadata views, Slice C read-only SDK metadata wrappers, and Slice D approval-binding design. Batch 6/7 risks are not implemented runtime features.
 
 ---
 
@@ -195,6 +195,7 @@ Scope: Rust engine, TypeScript dashboard/SDK, local SQLite state, env-gated prov
 - Batch 4 approval records are inert metadata and do not grant execution authority.
 - ADR-0002 Batch 6 requires authenticated approver identity, scoped approval authority, decision expiry, revocation behavior, and immutable audit events before Batch 7 can start.
 - ADR-0002 Batch 7 Slice A stores patch workspace/artifact metadata that future approval evidence can bind to, and Slice B/C expose read-only metadata views, but the patch-review approval gate is not wired.
+- ADR-0002 Batch 7 Slice D defines the docs-only `supervised_patch_approval_binding.v1` contract. Future implementation must validate artifact/workspace ids, patch hash, changed-files hash, approver identity, `workflow:patch_review` scope, expiry, revocation, and stale reasons before any artifact export can become eligible. Wrong-hash, wrong-scope, wrong-identity, expired, revoked, rejected, or stale bindings must block export and emit app-owned events/audit records.
 
 ---
 
@@ -242,6 +243,7 @@ Scope: Rust engine, TypeScript dashboard/SDK, local SQLite state, env-gated prov
 | DG-001 | ADR-0002 Batch 6 sandbox/workspace/approval/rollback/artifact contracts | T-009, T-010, T-011, T-012 |
 | DG-002 | Batch 7 must receive separate human approval before any supervised execution implementation | T-009, T-010, T-011, T-012 |
 | DG-003 | ADR-0002 Batch 7 Slice A/B/C stores only app-owned patch workspace/artifact metadata, rejects registered-target worktree mutation/path placement, and exposes only read-only metadata views through HTTP and SDK GET surfaces | T-009, T-010, T-011, T-012 |
+| DG-004 | ADR-0002 Batch 7 Slice D specifies the approval-binding contract for future patch-review/export gate: evidence binding, scope, identity, expiry, revocation, stale reasons, and export blocking rules | T-011, T-012 |
 
 ---
 
@@ -269,4 +271,4 @@ Rate limiter state is in-memory. Restart resets rate limits. **Acceptable** for 
 
 ### RR-006: No Execution-Phase Controls
 
-Sandbox isolation, target workspace writes, approval broker wiring, rollback engine, and artifact-capture runtime are not implemented. **Acceptable** for the current storage-only Slice A because no execution authority exists. Any approved runtime slice must test controls for T-009 through T-012 before supervised execution beta can be considered.
+Sandbox isolation, target workspace writes, approval broker wiring, rollback engine, and artifact-capture runtime are not implemented. **Acceptable** for the current Slice A-D state because no execution authority or export runtime exists. Any approved runtime slice must test controls for T-009 through T-012 before supervised execution beta can be considered.

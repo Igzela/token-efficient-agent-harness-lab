@@ -1,6 +1,6 @@
 # ADR 0002: Supervised Planning Track Toward Autonomous Beta
 
-Status: Accepted for planning plus storage-only/read-only metadata. Execution remains gated. Batch 7 Slice A storage-only metadata, Slice B read-only HTTP visibility, and Slice C read-only SDK visibility are implemented; supervised execution runtime remains NO-GO.
+Status: Accepted for planning plus storage-only/read-only metadata. Execution remains gated. Batch 7 Slice A storage-only metadata, Slice B read-only HTTP visibility, Slice C read-only SDK visibility, and Slice D approval-binding contract are implemented; supervised execution runtime remains NO-GO.
 
 Date: 2026-06-05
 
@@ -125,19 +125,19 @@ Batch 7 may start only after a separate human-approved implementation plan prove
 
 Current go/no-go: **NO-GO for supervised execution runtime**.
 
-The current repository now has a storage-only Batch 7 Slice A for app-owned workspace/artifact metadata, a read-only Batch 7 Slice B HTTP visibility surface, and read-only Batch 7 Slice C SDK wrappers. It still does not have workspace directory creation, patch generation, approval-broker enforcement, rollback execution, artifact file capture, dashboard controls for this surface, create/update/delete supervised-patch routes, or supervised execution runtime controls:
+The current repository now has a storage-only Batch 7 Slice A for app-owned workspace/artifact metadata, a read-only Batch 7 Slice B HTTP visibility surface, read-only Batch 7 Slice C SDK wrappers, and a docs-only Slice D approval-binding contract. It still does not have workspace directory creation, patch generation, approval-broker enforcement, rollback execution, artifact file capture, dashboard controls for this surface, create/update/delete supervised-patch routes, or supervised execution runtime controls:
 
 | Prerequisite | Current evidence | Status |
 |---|---|---|
 | Isolation primitive selected | This ADR selects an app-owned detached patch workspace/snapshot as the first Batch 7 primitive. Slice A records only metadata and path-boundary evidence. It explicitly rejects registered-target `git worktree add` because that mutates target repository `.git/worktrees` metadata. No process/container/VM execution primitive is selected because Slice A does not run untrusted code or target commands. | Storage-only metadata implemented; execution primitive not selected |
 | Target workspace contract | Slice A adds app-owned SQLite `supervised_patch_workspaces` metadata with source revision, target path, workspace path, lifecycle status, boundary JSON, and tests that reject workspace paths inside registered target repositories, including import bypass attempts. Slice B exposes workspace metadata through read-only GET routes. Slice C exposes those GET routes through TypeScript/Python SDKs. It does not create workspace directories or copy target files. | Metadata schema/storage/API/SDK visibility implemented; lifecycle runtime missing |
-| Approval broker | This ADR defines future patch-generation and patch-review gate semantics bound to operator identity, scope, expiry, and diff/workspace evidence. `workflow_run_approvals` remain inert metadata with `execution_authority=disabled`. | Design specified; implementation missing |
+| Approval broker | This ADR defines future patch-generation and patch-review gate semantics bound to operator identity, scope, expiry, and diff/workspace evidence. Slice D specifies the `supervised_patch_approval_binding.v1` contract and blocking rules. `workflow_run_approvals` remain inert metadata with `execution_authority=disabled`. | Contract specified; implementation missing |
 | Rollback | This ADR defines rollback as app-owned workspace discard/quarantine plus terminal run state and evidence. DAG compensation and backup restore helpers are not execution rollback engines. | Design specified; tests missing |
 | Artifact capture | Slice A adds app-owned SQLite `supervised_patch_artifacts` metadata with patch hash, normalized changed-file inventory, redaction status, storage refs, export/import, integrity, and stats coverage. Slice B exposes artifact metadata through read-only GET routes. Slice C exposes those GET routes through TypeScript/Python SDKs. It does not create patch files, run redaction, expose patch files, or gate export/review. | Metadata schema/storage/API/SDK visibility implemented; capture runtime missing |
 | Provider default-off | Existing env/auth/scope/cost gates keep provider execution default-off. | Satisfied, must remain unchanged |
 | No push/merge/deploy/target mutation | Existing boundaries block these behaviors. | Satisfied, must remain unchanged |
 
-The next safe action is a separate, test-first Slice D request. No workspace creation, patch generation, execution, provider, target-write, apply, push, merge, deploy, create/update/delete supervised-patch route, or runtime-worker code is approved by Slice A/B/C.
+The next safe action is a separate, test-first Slice E request. No workspace creation, patch generation, execution, provider, target-write, apply, push, merge, deploy, create/update/delete supervised-patch route, or runtime-worker code is approved by Slice A/B/C/D.
 
 ### Batch 7 Implementation Plan Artifact
 
@@ -283,6 +283,72 @@ Slice C also adds hand-maintained TypeScript response types for `supervised_patc
 
 Slice C deliberately does not add Rust runtime/API route changes, POST/PUT/DELETE SDK methods, dashboard UI, workspace directory creation, target file copying, patch file generation, redaction runtime, approval-broker wiring, rollback execution, command execution, provider calls, target repository writes, sandbox/process/container/VM execution, workers, or apply/push/merge/deploy/run controls.
 
+### Batch 7 Slice D: Approval Binding Contract
+
+Status: **implemented as documentation/design only**.
+
+Slice D defines the future evidence-bound approval record that must exist before any patch artifact can become export-eligible. It does not add tables, routes, SDK methods, dashboard UI, approval broker wiring, export runtime, or execution authority.
+
+Future approval binding schema:
+
+| Field | Meaning |
+|---|---|
+| `schema_version` | `supervised_patch_approval_binding.v1` |
+| `binding_id` | app-owned approval binding id |
+| `workspace_id` | supervised patch workspace id under review |
+| `artifact_id` | supervised patch artifact id under review |
+| `plan_id` / `run_id` | source planning and inert run refs |
+| `target_id` | registered target id |
+| `source_revision` / `source_tree_hash` | read-only source evidence copied from workspace/artifact metadata |
+| `patch_hash` | reviewed artifact patch hash |
+| `changed_files_hash` | hash of normalized `changed_files` inventory |
+| `approver_id` | authenticated local operator id |
+| `approver_scope` | future scope used for this decision; candidate value `workflow:patch_review` |
+| `decision` | `requested`, `approved`, `rejected`, `expired`, or `revoked` |
+| `decision_timestamp` | local decision timestamp |
+| `expires_at` | approval expiry timestamp; export must block after this time |
+| `revoked_at` | revocation timestamp, or null |
+| `stale_reason` | reason export is blocked, or null when binding is export-eligible |
+| `metadata_only` | true |
+| `execution_authority` | `disabled` |
+| `patch_apply_authority` | `disabled` |
+
+Validation rules for any future implementation:
+
+- `workspace_id` must resolve to a Slice A workspace record.
+- `artifact_id` must resolve to a Slice A artifact record for the same `workspace_id`, `run_id`, `plan_id`, `target_id`, and `source_revision`.
+- `patch_hash` must equal the artifact metadata `patch_hash`.
+- `changed_files_hash` must be computed from the normalized artifact `changed_files` array; mismatches block export.
+- `approver_id` must identify an active local team member at decision time.
+- `approver_scope` must include the future `workflow:patch_review` scope. This scope is not currently part of the runtime scope list and must not be granted until a separate implementation slice adds and tests it.
+- `decision=approved` is required for export eligibility.
+- `expires_at` must be in the future at export time.
+- Non-null `revoked_at` blocks export.
+- Any stale, wrong-scope, wrong-hash, wrong-artifact, wrong-workspace, wrong-identity, expired, revoked, or rejected binding must block export and emit an app-owned event/audit record.
+
+State transitions:
+
+| From | To | Meaning |
+|---|---|---|
+| `requested` | `approved` | Operator approves review/export of this exact artifact evidence. |
+| `requested` | `rejected` | Operator denies review/export. |
+| `approved` | `expired` | Time-based expiry makes approval unusable. |
+| `approved` | `revoked` | Operator/admin revokes approval before export. |
+| any non-terminal state | `rejected` | Operator denies after review. |
+
+Export eligibility requires all of:
+
+- binding validates against current workspace/artifact metadata
+- `decision=approved`
+- `approver_scope=workflow:patch_review`
+- `expires_at` has not passed
+- `revoked_at` is null
+- `stale_reason` is null
+- artifact `redaction_status=redacted`
+- artifact and workspace still report `metadata_only=true`, `execution_authority=disabled`, and `patch_apply_authority=disabled` where applicable
+
+Slice D deliberately does not implement approval storage, route enforcement, export, redaction, dashboard controls, workspace creation, patch generation, rollback execution, command execution, provider calls, target repository writes, sandbox/process/container/VM execution, workers, or apply/push/merge/deploy/run controls.
+
 ## Boundaries
 
 This ADR does not approve:
@@ -347,7 +413,7 @@ Batch 3 adapter design constraints:
 - Batch 3 and later implementation must be small, test-first, and scoped to planning-only behavior unless the user approves a broader batch.
 - Any future supervised execution beta must use a separate approval gate and threat model before implementation.
 - Batch 6 makes the future execution gate concrete, but it is not itself implementation authority.
-- Batch 7 Slice A/B/C implements only app-owned storage metadata, read-only HTTP views, and read-only SDK wrappers for the first supervised patch artifact slice; supervised execution runtime remains blocked until a separate approved, test-first batch.
+- Batch 7 Slice A/B/C/D implements only app-owned storage metadata, read-only HTTP views, read-only SDK wrappers, and approval-binding design for the first supervised patch artifact slice; supervised execution runtime remains blocked until a separate approved, test-first batch.
 
 ## Reversal Conditions
 
