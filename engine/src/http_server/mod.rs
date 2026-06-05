@@ -22,6 +22,12 @@ pub struct DispatchApiRequest {
 }
 
 #[derive(Debug, Clone, PartialEq, Deserialize)]
+pub struct ReadOnlyPlanApiRequest {
+    pub raw_request: String,
+    pub request_source: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Deserialize)]
 pub struct BackupApiRequest {
     pub label: Option<String>,
     pub confirm_local_backup: Option<bool>,
@@ -172,6 +178,43 @@ pub fn openapi_document() -> serde_json::Value {
                     "responses": {
                         "200": {"description": "Dispatch detail"},
                         "404": {"description": "Dispatch not found"}
+                    }
+                }
+            },
+            "/api/v1/plans": {
+                "get": {
+                    "summary": "List persisted read-only workflow plans",
+                    "description": "Requires dispatch:read scope. Plans are app-owned metadata only and do not execute workers or write target repositories.",
+                    "parameters": [
+                        {"name": "limit", "in": "query", "schema": {"type": "integer", "default": 100, "minimum": 0, "maximum": 500}},
+                        {"name": "offset", "in": "query", "schema": {"type": "integer", "default": 0, "minimum": 0}},
+                        {"name": "search", "in": "query", "schema": {"type": "string"}, "description": "Case-insensitive match across plan id, request text, source, status, workflow id, and dispatch id."}
+                    ],
+                    "responses": {"200": {"description": "Read-only workflow plan list"}}
+                },
+                "post": {
+                    "summary": "Create a read-only workflow plan",
+                    "description": "Generates a canonical WorkflowGraph plan only. No execution, provider call, worker spawn, sandbox/process execution, target write, deploy, merge, or approval control is performed.",
+                    "requestBody": json_request_body(&["raw_request"], json!({
+                        "raw_request": {"type": "string"},
+                        "request_source": {"type": "string", "default": "api"}
+                    })),
+                    "responses": {
+                        "200": {"description": "Read-only workflow plan"},
+                        "400": {"description": "Invalid request"},
+                        "401": {"description": "Unauthorized"},
+                        "403": {"description": "Forbidden"}
+                    }
+                }
+            },
+            "/api/v1/plans/{plan_id}": {
+                "get": {
+                    "summary": "Get a read-only workflow plan by ID",
+                    "description": "Requires dispatch:read scope. Returns app-owned planning metadata only.",
+                    "parameters": [path_parameter("plan_id")],
+                    "responses": {
+                        "200": {"description": "Read-only workflow plan"},
+                        "404": {"description": "Plan not found"}
                     }
                 }
             },
@@ -534,6 +577,7 @@ mod tests {
             "get",
             "dispatch_id",
         );
+        assert_path_parameter(&doc, "/api/v1/plans/{plan_id}", "get", "plan_id");
         assert_path_parameter(&doc, "/api/v1/team/{user_id}", "put", "user_id");
         assert_path_parameter(&doc, "/api/v1/team/{user_id}", "delete", "user_id");
         assert_path_parameter(&doc, "/api/v1/backups/{backup_id}", "delete", "backup_id");
@@ -553,6 +597,7 @@ mod tests {
     fn test_openapi_mutation_routes_document_request_bodies() {
         let doc = openapi_document();
 
+        assert_required_body_fields(&doc, "/api/v1/plans", "post", &["raw_request"]);
         assert_required_body_fields(&doc, "/api/v1/team/{user_id}", "put", &["role"]);
         assert_required_body_fields(&doc, "/api/v1/backups", "post", &["confirm_local_backup"]);
         assert_required_body_fields(

@@ -28,6 +28,7 @@ impl LocalProductStore {
                 "api_key_metadata",
                 "audit_log",
                 "provider_audit_events",
+                "workflow_plans",
             ];
             let mut table_reports = Vec::new();
             for table in &tables {

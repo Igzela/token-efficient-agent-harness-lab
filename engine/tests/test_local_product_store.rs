@@ -421,6 +421,95 @@ fn dispatch_history_missing_execution_result_uses_defaults() {
     assert!(d["latency_ms"].is_null());
 }
 
+fn make_workflow_plan(ids: &engine::storage::local_product_store::WorkflowPlanIds) -> Value {
+    json!({
+        "schema_version": "read_only_plan.v1",
+        "plan_id": ids.plan_id,
+        "status": "planned_read_only",
+        "workflow_id": ids.workflow_id,
+        "dispatch_id": ids.dispatch_id,
+        "analysis": {"analysis_id": "analysis-0001", "task_domain": "docs"},
+        "graph": {
+            "schema_version": "workflow_graph.v1",
+            "workflow_id": ids.workflow_id,
+            "dispatch_id": ids.dispatch_id,
+            "status": "decomposed",
+            "nodes": [],
+            "edges": [],
+        },
+        "boundaries": {
+            "execution": "disabled",
+            "target_repository_writes": "disabled",
+            "runtime_workers": "disabled",
+        },
+    })
+}
+
+#[test]
+fn workflow_plans_create_list_get_and_audit() {
+    let dir = tempdir().unwrap();
+    let store = LocalProductStore::new(dir.path().join("test.db")).unwrap();
+
+    let created = store
+        .create_workflow_plan("Plan docs only", "api", "actor", |ids, _created_at| {
+            Ok(make_workflow_plan(ids))
+        })
+        .unwrap();
+
+    assert_eq!(created["plan_id"], "plan-0001");
+    assert_eq!(created["status"], "planned_read_only");
+    assert_eq!(created["workflow_id"], "wf-plan-0001");
+    assert_eq!(created["dispatch_id"], "plan-dispatch-0001");
+    assert_eq!(created["boundaries"]["execution"], "disabled");
+
+    let listed = store.search_workflow_plans(10, 0, None).unwrap();
+    assert_eq!(listed.len(), 1);
+    assert_eq!(listed[0]["plan_id"], "plan-0001");
+
+    let fetched = store.get_workflow_plan("plan-0001").unwrap().unwrap();
+    assert_eq!(fetched["raw_request"], "Plan docs only");
+    assert_eq!(fetched["graph"]["workflow_id"], "wf-plan-0001");
+
+    let audit = store.audit_events(10).unwrap();
+    assert!(audit
+        .iter()
+        .any(|event| event["action"] == "workflow_plan.create"));
+}
+
+#[test]
+fn workflow_plan_search_filters_and_paginates() {
+    let dir = tempdir().unwrap();
+    let store = LocalProductStore::new(dir.path().join("test.db")).unwrap();
+
+    store
+        .create_workflow_plan("Alpha workflow plan", "api", "actor", |ids, _created_at| {
+            Ok(make_workflow_plan(ids))
+        })
+        .unwrap();
+    store
+        .create_workflow_plan(
+            "Beta routing proposal",
+            "dashboard",
+            "actor",
+            |ids, _created_at| Ok(make_workflow_plan(ids)),
+        )
+        .unwrap();
+
+    let alpha = store.search_workflow_plans(10, 0, Some("alpha")).unwrap();
+    assert_eq!(alpha.len(), 1);
+    assert_eq!(alpha[0]["plan_id"], "plan-0001");
+
+    let source = store
+        .search_workflow_plans(10, 0, Some("DASHBOARD"))
+        .unwrap();
+    assert_eq!(source.len(), 1);
+    assert_eq!(source[0]["plan_id"], "plan-0002");
+
+    let paged = store.search_workflow_plans(1, 1, Some("plan")).unwrap();
+    assert_eq!(paged.len(), 1);
+    assert_eq!(paged[0]["plan_id"], "plan-0001");
+}
+
 // --- cost_summary v2 tests ---
 
 #[test]

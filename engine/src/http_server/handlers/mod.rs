@@ -7,5 +7,6 @@ pub(crate) mod dispatch;
 pub(crate) mod health;
 pub(crate) mod keys;
 pub(crate) mod operations;
+pub(crate) mod plans;
 pub(crate) mod provider;
 pub(crate) mod team;

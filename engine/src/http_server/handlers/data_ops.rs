@@ -101,6 +101,7 @@ pub(crate) async fn api_import(
             &json!({
                 "imported": {
                     "dispatches": result.imported.dispatches,
+                    "plans": result.imported.plans,
                     "config": result.imported.config,
                     "team": result.imported.team,
                     "audit": result.imported.audit,
@@ -115,6 +116,7 @@ pub(crate) async fn api_import(
             "schema_version": AXUM_API_SCHEMA_VERSION,
             "imported": {
                 "dispatches": result.imported.dispatches,
+                "plans": result.imported.plans,
                 "config": result.imported.config,
                 "team": result.imported.team,
                 "audit": result.imported.audit,

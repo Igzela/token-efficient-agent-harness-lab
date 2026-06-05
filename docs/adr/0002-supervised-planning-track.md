@@ -1,6 +1,6 @@
 # ADR 0002: Supervised Planning Track Toward Autonomous Beta
 
-Status: Accepted for planning only; execution remains gated. Batch 2 canonical model decision recorded.
+Status: Accepted for planning only; execution remains gated. Batch 3 read-only planner implemented.
 
 Date: 2026-06-05
 
@@ -29,6 +29,13 @@ Add a supervised planning track that advances in gated batches:
 8. Enter supervised execution beta only after explicit human approval for that batch.
 
 For this track, a read-only planner is not a runtime autonomous worker. It may generate non-executable plans and app-owned planning state. It must not spawn workers, execute tasks, mutate target repositories, manage deployment, or grant approval authority.
+
+Batch 3 implements this first planning-only surface:
+
+- `engine/src/read_only_planner.rs` generates a `read_only_plan.v1` record with canonical `WorkflowGraph`, task analysis, validation, execution-order waves, and explicit disabled-boundary fields.
+- `POST /api/v1/plans` creates an app-owned plan record in local SQLite; `GET /api/v1/plans` and `GET /api/v1/plans/{plan_id}` read stored planning metadata.
+- `workflow_plans` stores the plan in `LocalProductStore`; export/import/integrity and SDK methods cover the new state.
+- The endpoint requires `dispatch:read` under protected mode and does not call providers, execute workers, write target repositories, start sandbox/process/container/VM isolation, or expose approve/run/deploy/merge controls.
 
 ## Boundaries
 
@@ -80,10 +87,11 @@ Field correspondence for later adapters:
 
 Batch 3 adapter design constraints:
 
-- Implement adapters only after tests define the mapping.
+- Batch 3 implemented only the `WorkflowGraph` to persisted app-owned SQLite row path.
 - Preserve existing module files; no R8-style split.
 - Keep adapters planning-only and deterministic.
 - Do not use adapters to start execution, spawn workers, write targets, run sandboxes, or grant approval authority.
+- Batch 4 may add durable workflow run/node/edge/event/approval records only as inert app-owned state. It must not add runtime workers, execution resume/cancel authority, target writes, or sandbox behavior.
 
 ## Consequences
 

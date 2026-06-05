@@ -22,7 +22,7 @@ The responsible coding agent may choose any of the following without asking for 
 | Language migration | Agent-control-plane migration phases 0-8 are implemented and recorded in `docs/AGENT_CONTROL_PLANE_MIGRATION_CLOSEOUT.md`. Rust + TypeScript cutover is complete: Rust `engine/` is the primary runtime/API/storage/provider-gated control plane, and `dashboard/` plus `sdk/typescript/` are the primary TypeScript surfaces. Python retained as REST SDK and utility scripts only; legacy reference implementation retired. No real workers, target writes, SDK publishing, or cloud production deployment. |
 | Local small-team hardening | Productization Phases 1-7 complete (Provider Safety Gate, Permission Governance, Cost Governance, Data Operations, Native Packaging, Dashboard Controls, Long-Run Hardening). All planned phases done. Keep provider execution default-off and explicit; keep target writes, sandbox/process execution, real workers, and cloud SaaS out of scope. |
 | CLI executor routing | Complexity-based dispatch to Claude Code CLI / Codex CLI implemented as a pre-existing local subprocess exception. It is explicit opt-in via `ACP_ENABLE_CLI_EXECUTION=1`; unavailable or disabled CLI tiers fall back to noop. Trial 5 controlled beta validation is closed. Maintenance only. Any expansion requires an explicit new plan and approval. |
-| Supervised autonomous beta planning | Planning-only track accepted in ADR-0002. Current authority covers Batch 0-1 governance/module audit and documentation, plus later batch planning when each batch stays non-executable. A read-only planner is not a runtime autonomous worker when it only creates non-executable app-owned plans. No real workers, target writes, sandbox/process/container/VM execution, deploy/merge controls, or default-on provider calls are approved. |
+| Supervised autonomous beta planning | Planning-only track accepted in ADR-0002. Batch 0-3 governance/module/model/read-only-planner work is complete. A read-only planner is not a runtime autonomous worker when it only creates non-executable app-owned plans. No real workers, target writes, sandbox/process/container/VM execution, deploy/merge controls, or default-on provider calls are approved. |
 | Architecture refactor (R-series) | **SEALED AT R7.** R1–R7 are complete. R8 is not approved. The `checkpoint.rs` split and `dispatch_decision.rs` split are deferred. No further R-series file splitting is approved. |
 
 ## Supervised Autonomous Beta Planning
@@ -38,13 +38,13 @@ Batch status:
 | 0 | Governance and boundary confirmation | Complete as documentation/audit scope. |
 | 1 | Module reachability audit and classification | Complete as documentation/audit scope. |
 | 2 | DAG/workflow canonical model decision | Complete as documentation/design scope; `WorkflowGraph` is canonical. |
-| 3 | Read-only planner API plus app-owned SQLite plan state | Not started; must generate plans only. |
+| 3 | Read-only planner API plus app-owned SQLite plan state | Complete as planning-only implementation; `/api/v1/plans` creates/lists/reads non-executable app-owned `WorkflowGraph` plans. |
 | 4 | Durable workflow run/node/edge/event/approval state | Not started; no real worker. |
 | 5 | Quality/routing/retry/observability recommendation path | Not started; recommend/block only. |
 | 6 | Sandbox, target workspace, approval broker, rollback, artifact-capture design gate | Not started; documentation/design only. |
 | 7 | Supervised execution beta | Not approved; requires explicit human approval before implementation. |
 
-Batch 2 selects `WorkflowGraph` as the canonical planning and persistence model. `DAGState` remains the graph-mutation model for versioned proposals/rollback, and scheduling-local `DagState` remains the concurrency view for file-overlap scheduling. Batch 3 may design test-first adapters only; do not implement R8, file splitting, target writes, worker runtime, or execution controls.
+Batch 2 selects `WorkflowGraph` as the canonical planning and persistence model. `DAGState` remains the graph-mutation model for versioned proposals/rollback, and scheduling-local `DagState` remains the concurrency view for file-overlap scheduling. Batch 3 implemented the read-only planner without R8, file splitting, target writes, worker runtime, provider calls, sandbox/process/container/VM execution, or execution controls. Batch 4 may persist workflow run/node/edge/event/approval records only as app-owned state; it must not add real workers or resume/cancel execution authority.
 
 ## Local Productization Plan
 
@@ -53,7 +53,7 @@ Current level: local self-hosted MVP / internal beta.
 Implemented:
 
 - one Rust engine process serves API plus static dashboard without Docker
-- local SQLite persists dispatch history, config, team/API-key metadata, audit, costs, provider audit, and provider usage columns
+- local SQLite persists dispatch history, read-only workflow plans, config, team/API-key metadata, audit, costs, provider audit, and provider usage columns
 - dashboard reads live local state
 - TypeScript and Python SDKs cover local API, state, provider health/audit, export, and backup
 - provider execution is explicit, env-gated, auth-gated, execute-scope-gated, audited, and budget-capped
@@ -67,6 +67,7 @@ Implemented:
 - P2 local-beta polish & type hardening: CSS design token cleanup (#c0392b → var(--risk), utility classes), TypeScript SDK type hardening (22 new focused response interfaces, 21 methods typed), dashboard component quality (usePaginatedSearch hook, SearchBar, Pagination components), Next.js app polish (loading.tsx, error.tsx, metadata, favicon)
 - Dashboard UX polish: ARIA tab roles + keyboard navigation, modal focus traps with Escape key, keyboard-accessible dispatch table rows, form labels on Team inputs, aria-label on icon buttons and search input, CSS spinner animation replacing plain-text loading states, shared EmptyState/StateBanner/BoundaryBadges components, local setup checklist plus setup/auth helper scripts, permission-aware Backups/Audit/Provider states, structured API error codes, server-side dispatch/audit pagination/search, actionable empty states, consolidated visual utility classes, and readable dispatch/provider/audit summaries with raw JSON behind details
 - Production-like local beta ops hardening: guarded `.env.production-like.local.example` and startup script, `/api/v1/metrics`, dashboard Operations tab, `acp_ops_check.py`, backup verify and restore dry-run API/UI/script smoke, local env secret scan, audit redaction query, provider pricing visibility, read-only advisory risk-gate repair, and least-privilege scope templates
+- Supervised planning Batch 3: `/api/v1/plans` creates/lists/reads non-executable app-owned `WorkflowGraph` plans in SQLite; SDKs expose plan methods
 
 Next productization phases:
 

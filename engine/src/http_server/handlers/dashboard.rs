@@ -26,6 +26,7 @@ pub(crate) async fn api_dashboard(
             "status": "ready",
             "counts": {
                 "dispatches": 0,
+                "plans": 0,
                 "team_members": 0,
                 "api_keys": 0,
                 "audit_events": 0,

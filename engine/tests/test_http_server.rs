@@ -257,6 +257,154 @@ async fn axum_dispatches_filters_by_search_query() {
 }
 
 #[tokio::test]
+async fn axum_create_read_only_plan_persists_workflow_graph_without_execution() {
+    let dir = tempdir().unwrap();
+    let store = LocalProductStore::new(dir.path().join("plans.db")).unwrap();
+    let app = build_axum_router(AxumApiState::new().with_local_store(store));
+
+    let response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(Method::POST)
+                .uri("/api/v1/plans")
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(
+                    json!({
+                        "raw_request": "Plan a docs migration without execution",
+                        "request_source": "api"
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = response_json(response).await;
+    assert_eq!(body["schema_version"], "axum_api.v1");
+    assert_eq!(body["plan"]["schema_version"], "read_only_plan.v1");
+    assert_eq!(body["plan"]["plan_id"], "plan-0001");
+    assert_eq!(body["plan"]["status"], "planned_read_only");
+    assert_eq!(body["plan"]["graph"]["status"], "decomposed");
+    assert!(!body["plan"]["graph"]["nodes"]
+        .as_array()
+        .unwrap()
+        .is_empty());
+    assert_eq!(body["plan"]["boundaries"]["execution"], "disabled");
+    assert_eq!(
+        body["plan"]["boundaries"]["target_repository_writes"],
+        "disabled"
+    );
+    assert_eq!(body["plan"]["boundaries"]["runtime_workers"], "disabled");
+    assert!(body["plan"].get("execution_result").is_none());
+
+    let list = app
+        .oneshot(
+            Request::builder()
+                .method(Method::GET)
+                .uri("/api/v1/plans?search=docs&limit=10")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(list.status(), StatusCode::OK);
+    let list_body = response_json(list).await;
+    assert_eq!(list_body["plans"].as_array().unwrap().len(), 1);
+    assert_eq!(list_body["plans"][0]["plan_id"], "plan-0001");
+}
+
+#[tokio::test]
+async fn axum_get_read_only_plan_by_id_and_missing_id() {
+    let dir = tempdir().unwrap();
+    let store = LocalProductStore::new(dir.path().join("plans.db")).unwrap();
+    let app = build_axum_router(AxumApiState::new().with_local_store(store));
+
+    let created = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(Method::POST)
+                .uri("/api/v1/plans")
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(json!({"raw_request": "Plan only"}).to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(created.status(), StatusCode::OK);
+
+    let fetched = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(Method::GET)
+                .uri("/api/v1/plans/plan-0001")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(fetched.status(), StatusCode::OK);
+    let body = response_json(fetched).await;
+    assert_eq!(body["plan"]["plan_id"], "plan-0001");
+
+    let missing = app
+        .oneshot(
+            Request::builder()
+                .method(Method::GET)
+                .uri("/api/v1/plans/plan-missing")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(missing.status(), StatusCode::NOT_FOUND);
+    let body = response_json(missing).await;
+    assert_eq!(body["code"], "plan_not_found");
+}
+
+#[tokio::test]
+async fn axum_plans_require_dispatch_read_scope_when_auth_configured() {
+    let dir = tempdir().unwrap();
+    let store = LocalProductStore::new(dir.path().join("plans.db")).unwrap();
+    let mut resolver = TenantResolver::new();
+    let scopes = HashSet::from(["health:read".to_string()]);
+    resolver.add_tenant(Tenant {
+        tenant_id: "tenant-a".to_string(),
+        name: "Tenant A".to_string(),
+        scopes: HashSet::from(["health:read".to_string(), "dispatch:read".to_string()]),
+        rate_limit: Some(100),
+    });
+    let (_key, raw_key) = resolver
+        .create_api_key("tenant-a", Some(scopes), None, 1.0)
+        .unwrap();
+    let app = build_axum_router(AxumApiState::new().with_local_store(store).with_auth(
+        resolver,
+        RateLimiter::new(60.0, 100),
+        Some(100),
+        1.0,
+    ));
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method(Method::POST)
+                .uri("/api/v1/plans")
+                .header(header::AUTHORIZATION, format!("Bearer {raw_key}"))
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(json!({"raw_request": "Plan only"}).to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::FORBIDDEN);
+}
+
+#[tokio::test]
 async fn axum_local_store_exposes_team_config_costs_and_export() {
     let dir = tempdir().unwrap();
     let store = LocalProductStore::new(dir.path().join("team.db")).unwrap();
@@ -1004,6 +1152,9 @@ async fn axum_openapi_document_lists_dispatch_endpoint() {
     let body = response_json(response).await;
     assert_eq!(body["openapi"], "3.1.0");
     assert!(body["paths"]["/api/v1/dispatch"]["post"].is_object());
+    assert!(body["paths"]["/api/v1/plans"]["post"].is_object());
+    assert!(body["paths"]["/api/v1/plans"]["get"].is_object());
+    assert!(body["paths"]["/api/v1/plans/{plan_id}"]["get"].is_object());
     assert!(body["paths"]["/api/v1/metrics"]["get"].is_object());
     assert!(body["paths"]["/api/v1/backups/{backup_id}/verify"]["get"].is_object());
     assert!(body["paths"]["/api/v1/backups/{backup_id}/restore/dry-run"]["post"].is_object());

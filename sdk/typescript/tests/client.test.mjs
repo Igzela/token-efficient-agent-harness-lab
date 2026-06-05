@@ -97,6 +97,26 @@ test("dispatches sends pagination and search query params", async () => {
   assert.equal(calls[0].init.method, "GET");
 });
 
+test("planner methods call read-only plan endpoints", async () => {
+  const { calls, fetchImpl } = captureFetch({ schema_version: "axum_api.v1", plan: { plan_id: "plan-0001" }, plans: [] });
+  const client = new AgentControlPlaneClient({ baseUrl: "http://127.0.0.1:8080", fetchImpl });
+
+  await client.createPlan({ raw_request: "Plan docs", request_source: "api" });
+  await client.plans({ limit: 25, offset: 50, search: "docs plan" });
+  await client.plan("plan/0001");
+
+  assert.equal(calls[0].url, "http://127.0.0.1:8080/api/v1/plans");
+  assert.equal(calls[0].init.method, "POST");
+  assert.deepEqual(JSON.parse(calls[0].init.body), {
+    raw_request: "Plan docs",
+    request_source: "api",
+  });
+  assert.equal(calls[1].url, "http://127.0.0.1:8080/api/v1/plans?limit=25&offset=50&search=docs+plan");
+  assert.equal(calls[1].init.method, "GET");
+  assert.equal(calls[2].url, "http://127.0.0.1:8080/api/v1/plans/plan%2F0001");
+  assert.equal(calls[2].init.method, "GET");
+});
+
 test("audit sends pagination query params", async () => {
   const { calls, fetchImpl } = captureFetch({ schema_version: "axum_api.v1", events: [] });
   const client = new AgentControlPlaneClient({ baseUrl: "http://127.0.0.1:8080", fetchImpl });

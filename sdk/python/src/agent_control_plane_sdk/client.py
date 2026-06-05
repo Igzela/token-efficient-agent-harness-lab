@@ -48,6 +48,34 @@ class AgentControlPlaneClient:
             params["search"] = search
         return self._get(_query_path("/api/v1/dispatches", params))
 
+    def plans(
+        self,
+        limit: int | None = None,
+        offset: int | None = None,
+        search: str | None = None,
+    ) -> dict[str, Any]:
+        params: dict[str, Any] = {}
+        if limit is not None:
+            params["limit"] = limit
+        if offset is not None:
+            params["offset"] = offset
+        if search:
+            params["search"] = search
+        return self._get(_query_path("/api/v1/plans", params))
+
+    def create_plan(
+        self,
+        raw_request: str,
+        request_source: RequestSource = "api",
+    ) -> dict[str, Any]:
+        return self._post(
+            "/api/v1/plans",
+            {"raw_request": raw_request, "request_source": request_source},
+        )
+
+    def plan(self, plan_id: str) -> dict[str, Any]:
+        return self._get(f"/api/v1/plans/{_quote_path_segment(plan_id)}")
+
     def config(self) -> dict[str, Any]:
         return self._get("/api/v1/config")
 

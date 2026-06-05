@@ -25,6 +25,7 @@ pub mod model_selector;
 pub mod orchestration;
 pub mod provider;
 pub mod quality;
+pub mod read_only_planner;
 pub mod routing;
 pub mod runtime;
 pub mod sdk;

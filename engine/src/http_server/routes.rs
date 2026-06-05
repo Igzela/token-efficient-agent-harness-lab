@@ -54,6 +54,16 @@ fn axum_routes() -> Router<AxumApiState> {
             get(dispatch::api_dispatch_detail).options(cors_preflight),
         )
         .route(
+            "/api/v1/plans",
+            get(plans::api_plans)
+                .post(plans::api_create_plan)
+                .options(cors_preflight),
+        )
+        .route(
+            "/api/v1/plans/:plan_id",
+            get(plans::api_plan_detail).options(cors_preflight),
+        )
+        .route(
             "/api/v1/dashboard",
             get(dashboard::api_dashboard).options(cors_preflight),
         )

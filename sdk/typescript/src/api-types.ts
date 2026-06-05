@@ -108,6 +108,29 @@ export interface DispatchItem {
   latency_ms: number | null;
 }
 
+export interface ReadOnlyPlan {
+  schema_version: "read_only_plan.v1";
+  plan_sequence: number;
+  plan_id: string;
+  created_at: string;
+  updated_at: string;
+  raw_request: string;
+  request_source: RequestSource;
+  status: "planned_read_only" | "blocked_invalid_graph";
+  workflow_id: string;
+  dispatch_id: string;
+  analysis: Record<string, unknown>;
+  graph: Record<string, unknown>;
+  validation?: Record<string, unknown>;
+  execution_order?: string[][];
+  boundaries: Record<string, unknown>;
+}
+
+export interface PlanCreateRequest {
+  raw_request: string;
+  request_source?: RequestSource;
+}
+
 export interface Boundaries {
   provider_transport: string;
   target_repository_writes: string;
@@ -175,7 +198,7 @@ export interface ProviderAuditEvent {
 export interface LocalDashboardState {
   schema_version: "local_dashboard.v1";
   status: string;
-  counts: { dispatches: number; team_members: number; api_keys: number; audit_events: number };
+  counts: { dispatches: number; plans?: number; team_members: number; api_keys: number; audit_events: number };
   dispatches: DispatchItem[];
   team: LocalTeamSnapshot;
   config: Record<string, unknown>;
@@ -191,6 +214,16 @@ export interface DispatchListResponse {
 export interface DispatchDetailResponse {
   schema_version: "axum_api.v1";
   dispatch: DispatchItem;
+}
+
+export interface PlanListResponse {
+  schema_version: "axum_api.v1";
+  plans: ReadOnlyPlan[];
+}
+
+export interface PlanResponse {
+  schema_version: "axum_api.v1";
+  plan: ReadOnlyPlan;
 }
 
 export interface ConfigResponse {
@@ -209,6 +242,7 @@ export interface ExportResponse {
   schema_version: "local_team_export.v1";
   generated_at: number;
   dispatches: DispatchItem[];
+  plans?: ReadOnlyPlan[];
   config: Record<string, unknown>;
   team: LocalTeamSnapshot;
   costs: LocalCostSummary;
@@ -338,6 +372,7 @@ export interface OperationsMetricsResponse {
   provider_enabled: boolean;
   local_store: boolean;
   dispatch_count: number;
+  plan_count?: number;
   audit_event_count: number;
   api_key_count: number;
   backup_count: number;
@@ -364,6 +399,7 @@ export interface ImportResponse {
   schema_version: "axum_api.v1";
   imported: {
     dispatches: number;
+    plans: number;
     config: number;
     team: number;
     audit: number;

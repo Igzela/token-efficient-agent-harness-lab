@@ -138,6 +138,24 @@ class ClientLocalStateTest(unittest.TestCase):
         )
 
     @patch("agent_control_plane_sdk.client.urlopen")
+    def test_planner_methods_call_read_only_plan_endpoints(self, mock_urlopen):
+        mock_urlopen.return_value = mock_response({"schema_version": "axum_api.v1", "plan": {"plan_id": "plan-0001"}, "plans": []})
+        client = AgentControlPlaneClient("http://localhost:8080")
+
+        client.create_plan("Plan docs", request_source="api")
+        client.plans(limit=25, offset=50, search="docs plan")
+        client.plan("plan/0001")
+
+        calls = [call.args[0] for call in mock_urlopen.call_args_list]
+        self.assertEqual(calls[0].method, "POST")
+        self.assertEqual(calls[0].full_url, "http://localhost:8080/api/v1/plans")
+        self.assertEqual(json.loads(calls[0].data), {"raw_request": "Plan docs", "request_source": "api"})
+        self.assertEqual(calls[1].method, "GET")
+        self.assertEqual(calls[1].full_url, "http://localhost:8080/api/v1/plans?limit=25&offset=50&search=docs+plan")
+        self.assertEqual(calls[2].method, "GET")
+        self.assertIn("/api/v1/plans/plan%2F0001", calls[2].full_url)
+
+    @patch("agent_control_plane_sdk.client.urlopen")
     def test_audit_sends_pagination_query_params(self, mock_urlopen):
         mock_urlopen.return_value = mock_response({"schema_version": "axum_api.v1", "events": []})
         client = AgentControlPlaneClient("http://localhost:8080")

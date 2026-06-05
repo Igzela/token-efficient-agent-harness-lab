@@ -9,6 +9,7 @@ fn make_export_snapshot() -> Value {
         "schema_version": LOCAL_TEAM_EXPORT_SCHEMA_VERSION,
         "generated_at": "2026-05-29T00:00:00Z",
         "dispatches": [],
+        "plans": [],
         "config": {
             "workspace_name": json!("Imported Team"),
             "provider_transport": json!("stub/off"),
@@ -108,7 +109,7 @@ fn check_integrity_on_clean_database() {
     let report = store.check_integrity().unwrap();
     assert_eq!(report.status, "ok");
     assert_eq!(report.schema_version, 1);
-    assert_eq!(report.tables.len(), 6);
+    assert_eq!(report.tables.len(), 7);
     for table in &report.tables {
         assert_eq!(table.status, "ok");
         assert!(table.row_count >= 0);
@@ -158,6 +159,7 @@ fn check_integrity_table_names() {
     assert!(names.contains(&"api_key_metadata"));
     assert!(names.contains(&"audit_log"));
     assert!(names.contains(&"provider_audit_events"));
+    assert!(names.contains(&"workflow_plans"));
 }
 
 // --- import tests ---
@@ -172,6 +174,7 @@ fn import_snapshot_config() {
         "team": {"members": [], "api_keys": []},
         "audit": [],
         "dispatches": [],
+        "plans": [],
     });
     let result = store.import_snapshot(&snapshot).unwrap();
     assert_eq!(result.errors.len(), 0);
@@ -220,6 +223,7 @@ fn import_snapshot_dispatches() {
                 "bundle": {"record": {"dispatch_id": "imported-1"}},
             }
         ],
+        "plans": [],
     });
     let result = store.import_snapshot(&snapshot).unwrap();
     assert_eq!(result.imported.dispatches, 1);
@@ -244,6 +248,7 @@ fn import_snapshot_dispatches_skips_existing_dispatch_id() {
                 "bundle": {"record": {"dispatch_id": "imported-1"}},
             }
         ],
+        "plans": [],
     });
 
     let first = store.import_snapshot(&snapshot).unwrap();
@@ -266,6 +271,7 @@ fn import_snapshot_wrong_schema_version_rejects() {
         "team": {"members": [], "api_keys": []},
         "audit": [],
         "dispatches": [],
+        "plans": [],
     });
     let result = store.import_snapshot(&snapshot);
     assert!(result.is_err());
@@ -282,6 +288,7 @@ fn import_snapshot_idempotent_config() {
         "team": {"members": [], "api_keys": []},
         "audit": [],
         "dispatches": [],
+        "plans": [],
     });
     store.import_snapshot(&snapshot).unwrap();
     let snapshot2 = json!({
@@ -290,6 +297,7 @@ fn import_snapshot_idempotent_config() {
         "team": {"members": [], "api_keys": []},
         "audit": [],
         "dispatches": [],
+        "plans": [],
     });
     let result = store.import_snapshot(&snapshot2).unwrap();
     assert_eq!(result.imported.config, 1);
@@ -307,6 +315,7 @@ fn import_snapshot_team_member_missing_user_id() {
         "team": {"members": [{"display_name": "No ID", "role": "member"}], "api_keys": []},
         "audit": [],
         "dispatches": [],
+        "plans": [],
     });
     let result = store.import_snapshot(&snapshot).unwrap();
     assert_eq!(result.imported.team, 0);
@@ -364,6 +373,52 @@ fn export_import_roundtrip_dispatches() {
     assert_eq!(dispatches[0]["dispatch_id"], "rt-dispatch-1");
 }
 
+#[test]
+fn export_import_roundtrip_workflow_plans() {
+    let dir = tempdir().unwrap();
+    let store = LocalProductStore::new(dir.path().join("test.db")).unwrap();
+    store
+        .create_workflow_plan(
+            "Plan export roundtrip",
+            "api",
+            "actor",
+            |ids, _created_at| {
+                Ok(json!({
+                    "schema_version": "read_only_plan.v1",
+                    "plan_id": ids.plan_id,
+                    "status": "planned_read_only",
+                    "workflow_id": ids.workflow_id,
+                    "dispatch_id": ids.dispatch_id,
+                    "analysis": {"analysis_id": "analysis-0001"},
+                    "graph": {
+                        "schema_version": "workflow_graph.v1",
+                        "workflow_id": ids.workflow_id,
+                        "dispatch_id": ids.dispatch_id,
+                        "status": "decomposed",
+                        "nodes": [],
+                        "edges": [],
+                    },
+                    "boundaries": {"execution": "disabled"},
+                }))
+            },
+        )
+        .unwrap();
+
+    let export = store.export_snapshot("noop", false).unwrap();
+    assert_eq!(export["plans"].as_array().unwrap().len(), 1);
+
+    let dir2 = tempdir().unwrap();
+    let store2 = LocalProductStore::new(dir2.path().join("test.db")).unwrap();
+    let result = store2.import_snapshot(&export).unwrap();
+    assert_eq!(result.errors.len(), 0);
+    assert_eq!(result.imported.plans, 1);
+
+    let plans = store2.search_workflow_plans(10, 0, None).unwrap();
+    assert_eq!(plans.len(), 1);
+    assert_eq!(plans[0]["plan_id"], "plan-0001");
+    assert_eq!(plans[0]["raw_request"], "Plan export roundtrip");
+}
+
 // --- import result struct tests ---
 
 #[test]
@@ -373,6 +428,7 @@ fn import_counts_default() {
     assert_eq!(counts.config, 0);
     assert_eq!(counts.team, 0);
     assert_eq!(counts.audit, 0);
+    assert_eq!(counts.plans, 0);
 }
 
 #[test]
@@ -383,6 +439,7 @@ fn import_result_struct_fields() {
             config: 2,
             team: 1,
             audit: 5,
+            plans: 4,
         },
         errors: vec!["err1".to_string()],
     };

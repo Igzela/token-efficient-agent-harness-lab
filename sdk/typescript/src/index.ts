@@ -4,6 +4,9 @@ import type {
   ApiStatus,
   DispatchBundle,
   DispatchRequest,
+  PlanCreateRequest,
+  PlanListResponse,
+  PlanResponse,
   LocalCostSummary,
   LocalDispatchCostDetail,
   LocalDashboardState,
@@ -41,6 +44,12 @@ export interface AgentControlPlaneClientOptions {
 }
 
 export interface DispatchListOptions {
+  limit?: number;
+  offset?: number;
+  search?: string;
+}
+
+export interface PlanListOptions {
   limit?: number;
   offset?: number;
   search?: string;
@@ -99,6 +108,25 @@ export class AgentControlPlaneClient {
       offset: options.offset,
       search: options.search,
     })}`);
+  }
+
+  plans(options: PlanListOptions = {}): Promise<PlanListResponse> {
+    return this.getJson<PlanListResponse>(`/api/v1/plans${queryString({
+      limit: options.limit,
+      offset: options.offset,
+      search: options.search,
+    })}`);
+  }
+
+  createPlan(request: PlanCreateRequest): Promise<PlanResponse> {
+    return this.postJson<PlanResponse>("/api/v1/plans", {
+      raw_request: request.raw_request,
+      request_source: request.request_source,
+    });
+  }
+
+  plan(planId: string): Promise<PlanResponse> {
+    return this.getJson<PlanResponse>(`/api/v1/plans/${encodeURIComponent(planId)}`);
   }
 
   config(): Promise<ConfigResponse> {

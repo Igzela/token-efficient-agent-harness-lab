@@ -1,0 +1,326 @@
+use rusqlite::{params, Row};
+use serde_json::{json, Value};
+
+use crate::read_only_planner::WorkflowPlanIds;
+
+use super::{append_audit_locked, collect_values, LocalProductStore};
+
+impl LocalProductStore {
+    pub fn create_workflow_plan<F>(
+        &self,
+        raw_request: &str,
+        request_source: &str,
+        actor: &str,
+        build_plan: F,
+    ) -> Result<Value, String>
+    where
+        F: FnOnce(&WorkflowPlanIds, &str) -> Result<Value, String>,
+    {
+        self.with_conn(|conn| {
+            let sequence: i64 = conn
+                .query_row(
+                    "SELECT COALESCE(MAX(plan_sequence), 0) + 1 FROM workflow_plans",
+                    [],
+                    |row| row.get(0),
+                )
+                .map_err(|e| e.to_string())?;
+            let ids = WorkflowPlanIds::for_sequence(sequence);
+            let created_at = self.now();
+            let plan = build_plan(&ids, &created_at)?;
+            let status = plan
+                .get("status")
+                .and_then(Value::as_str)
+                .unwrap_or("planned_read_only");
+            let graph = required_object(&plan, "graph")?;
+            let analysis = required_object(&plan, "analysis")?;
+            let boundaries = required_object(&plan, "boundaries")?;
+
+            conn.execute(
+                "INSERT INTO workflow_plans
+                 (plan_sequence, plan_id, created_at, updated_at, raw_request, request_source,
+                  status, workflow_id, dispatch_id, graph_json, analysis_json, boundaries_json, plan_json)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
+                params![
+                    sequence,
+                    ids.plan_id,
+                    created_at,
+                    created_at,
+                    raw_request,
+                    request_source,
+                    status,
+                    ids.workflow_id,
+                    ids.dispatch_id,
+                    graph.to_string(),
+                    analysis.to_string(),
+                    boundaries.to_string(),
+                    plan.to_string(),
+                ],
+            )
+            .map_err(|e| e.to_string())?;
+            append_audit_locked(
+                conn,
+                &created_at,
+                actor,
+                "workflow_plan.create",
+                &ids.plan_id,
+                &json!({
+                    "request_source": request_source,
+                    "status": status,
+                    "workflow_id": ids.workflow_id,
+                    "dispatch_id": ids.dispatch_id,
+                }),
+            )?;
+            Ok(workflow_plan_value(
+                sequence,
+                &ids.plan_id,
+                &created_at,
+                &created_at,
+                raw_request,
+                request_source,
+                status,
+                &ids.workflow_id,
+                &ids.dispatch_id,
+                &plan,
+            ))
+        })
+    }
+
+    pub fn search_workflow_plans(
+        &self,
+        limit: i64,
+        offset: i64,
+        search: Option<&str>,
+    ) -> Result<Vec<Value>, String> {
+        let Some(search) = search.map(str::trim).filter(|value| !value.is_empty()) else {
+            return self.list_workflow_plans_with_offset(limit, offset);
+        };
+        let pattern = format!("%{}%", escape_like(&search.to_lowercase()));
+        self.with_conn(|conn| {
+            let mut stmt = conn
+                .prepare(
+                    "SELECT plan_sequence, plan_id, created_at, updated_at, raw_request, request_source,
+                            status, workflow_id, dispatch_id, plan_json
+                     FROM workflow_plans
+                     WHERE lower(plan_id) LIKE ?1 ESCAPE '\\'
+                        OR lower(raw_request) LIKE ?1 ESCAPE '\\'
+                        OR lower(request_source) LIKE ?1 ESCAPE '\\'
+                        OR lower(status) LIKE ?1 ESCAPE '\\'
+                        OR lower(workflow_id) LIKE ?1 ESCAPE '\\'
+                        OR lower(dispatch_id) LIKE ?1 ESCAPE '\\'
+                     ORDER BY plan_sequence DESC
+                     LIMIT ?2 OFFSET ?3",
+                )
+                .map_err(|e| e.to_string())?;
+            let rows = stmt
+                .query_map(params![pattern, limit, offset], workflow_plan_row)
+                .map_err(|e| e.to_string())?;
+            collect_values(rows)
+        })
+    }
+
+    pub fn list_workflow_plans_with_offset(
+        &self,
+        limit: i64,
+        offset: i64,
+    ) -> Result<Vec<Value>, String> {
+        self.with_conn(|conn| {
+            let mut stmt = conn
+                .prepare(
+                    "SELECT plan_sequence, plan_id, created_at, updated_at, raw_request, request_source,
+                            status, workflow_id, dispatch_id, plan_json
+                     FROM workflow_plans
+                     ORDER BY plan_sequence DESC
+                     LIMIT ?1 OFFSET ?2",
+                )
+                .map_err(|e| e.to_string())?;
+            let rows = stmt
+                .query_map(params![limit, offset], workflow_plan_row)
+                .map_err(|e| e.to_string())?;
+            collect_values(rows)
+        })
+    }
+
+    pub fn get_workflow_plan(&self, plan_id: &str) -> Result<Option<Value>, String> {
+        self.with_conn(|conn| {
+            let mut stmt = conn
+                .prepare(
+                    "SELECT plan_sequence, plan_id, created_at, updated_at, raw_request, request_source,
+                            status, workflow_id, dispatch_id, plan_json
+                     FROM workflow_plans
+                     WHERE plan_id = ?1
+                     LIMIT 1",
+                )
+                .map_err(|e| e.to_string())?;
+            let mut rows = stmt
+                .query_map(params![plan_id], workflow_plan_row)
+                .map_err(|e| e.to_string())?;
+            match rows.next() {
+                Some(Ok(value)) => Ok(Some(value)),
+                Some(Err(e)) => Err(e.to_string()),
+                None => Ok(None),
+            }
+        })
+    }
+
+    pub fn import_workflow_plan(&self, plan: &Value) -> Result<bool, String> {
+        let plan_id = plan
+            .get("plan_id")
+            .and_then(Value::as_str)
+            .ok_or_else(|| "plan missing plan_id".to_string())?;
+        if self.get_workflow_plan(plan_id)?.is_some() {
+            return Ok(false);
+        }
+        let workflow_id = plan
+            .get("workflow_id")
+            .and_then(Value::as_str)
+            .ok_or_else(|| format!("plan {plan_id} missing workflow_id"))?;
+        let dispatch_id = plan
+            .get("dispatch_id")
+            .and_then(Value::as_str)
+            .ok_or_else(|| format!("plan {plan_id} missing dispatch_id"))?;
+        let status = plan
+            .get("status")
+            .and_then(Value::as_str)
+            .unwrap_or("planned_read_only");
+        let raw_request = plan
+            .get("raw_request")
+            .and_then(Value::as_str)
+            .unwrap_or("");
+        let request_source = plan
+            .get("request_source")
+            .and_then(Value::as_str)
+            .unwrap_or("import");
+        let graph = required_object(plan, "graph")?;
+        let analysis = required_object(plan, "analysis")?;
+        let boundaries = required_object(plan, "boundaries")?;
+
+        self.with_conn(|conn| {
+            let sequence: i64 = conn
+                .query_row(
+                    "SELECT COALESCE(MAX(plan_sequence), 0) + 1 FROM workflow_plans",
+                    [],
+                    |row| row.get(0),
+                )
+                .map_err(|e| e.to_string())?;
+            let created_at = plan
+                .get("created_at")
+                .and_then(Value::as_str)
+                .map(str::to_string)
+                .unwrap_or_else(|| self.now());
+            let updated_at = plan
+                .get("updated_at")
+                .and_then(Value::as_str)
+                .map(str::to_string)
+                .unwrap_or_else(|| created_at.clone());
+            conn.execute(
+                "INSERT INTO workflow_plans
+                 (plan_sequence, plan_id, created_at, updated_at, raw_request, request_source,
+                  status, workflow_id, dispatch_id, graph_json, analysis_json, boundaries_json, plan_json)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
+                params![
+                    sequence,
+                    plan_id,
+                    created_at,
+                    updated_at,
+                    raw_request,
+                    request_source,
+                    status,
+                    workflow_id,
+                    dispatch_id,
+                    graph.to_string(),
+                    analysis.to_string(),
+                    boundaries.to_string(),
+                    plan.to_string(),
+                ],
+            )
+            .map_err(|e| e.to_string())?;
+            append_audit_locked(
+                conn,
+                &self.now(),
+                "import",
+                "workflow_plan.import",
+                plan_id,
+                &json!({"workflow_id": workflow_id, "dispatch_id": dispatch_id}),
+            )?;
+            Ok(true)
+        })
+    }
+}
+
+fn workflow_plan_row(row: &Row<'_>) -> rusqlite::Result<Value> {
+    let plan_text: String = row.get(9)?;
+    let plan: Value = serde_json::from_str(&plan_text).unwrap_or(Value::Null);
+    Ok(workflow_plan_value(
+        row.get::<_, i64>(0)?,
+        &row.get::<_, String>(1)?,
+        &row.get::<_, String>(2)?,
+        &row.get::<_, String>(3)?,
+        &row.get::<_, String>(4)?,
+        &row.get::<_, String>(5)?,
+        &row.get::<_, String>(6)?,
+        &row.get::<_, String>(7)?,
+        &row.get::<_, String>(8)?,
+        &plan,
+    ))
+}
+
+fn workflow_plan_value(
+    sequence: i64,
+    plan_id: &str,
+    created_at: &str,
+    updated_at: &str,
+    raw_request: &str,
+    request_source: &str,
+    status: &str,
+    workflow_id: &str,
+    dispatch_id: &str,
+    plan: &Value,
+) -> Value {
+    let mut value = plan.clone();
+    if let Some(obj) = value.as_object_mut() {
+        obj.insert("plan_sequence".to_string(), json!(sequence));
+        obj.insert("plan_id".to_string(), json!(plan_id));
+        obj.insert("created_at".to_string(), json!(created_at));
+        obj.insert("updated_at".to_string(), json!(updated_at));
+        obj.insert("raw_request".to_string(), json!(raw_request));
+        obj.insert("request_source".to_string(), json!(request_source));
+        obj.insert("status".to_string(), json!(status));
+        obj.insert("workflow_id".to_string(), json!(workflow_id));
+        obj.insert("dispatch_id".to_string(), json!(dispatch_id));
+        value
+    } else {
+        json!({
+            "plan_sequence": sequence,
+            "plan_id": plan_id,
+            "created_at": created_at,
+            "updated_at": updated_at,
+            "raw_request": raw_request,
+            "request_source": request_source,
+            "status": status,
+            "workflow_id": workflow_id,
+            "dispatch_id": dispatch_id,
+        })
+    }
+}
+
+fn required_object<'a>(plan: &'a Value, field: &str) -> Result<&'a Value, String> {
+    let value = plan
+        .get(field)
+        .ok_or_else(|| format!("plan missing {field}"))?;
+    if value.is_object() {
+        Ok(value)
+    } else {
+        Err(format!("plan {field} must be an object"))
+    }
+}
+
+fn escape_like(value: &str) -> String {
+    let mut escaped = String::new();
+    for ch in value.chars() {
+        if matches!(ch, '%' | '_' | '\\') {
+            escaped.push('\\');
+        }
+        escaped.push(ch);
+    }
+    escaped
+}

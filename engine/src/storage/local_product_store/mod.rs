@@ -7,6 +7,7 @@ mod export_import;
 mod integrity;
 mod keys;
 mod migrations;
+mod plans;
 mod provider_audit;
 mod team;
 
@@ -15,6 +16,7 @@ use serde_json::{json, Value};
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
+pub use crate::read_only_planner::WorkflowPlanIds;
 pub use boundaries::local_boundaries;
 pub use export_import::{ImportCounts, ImportResult, LOCAL_IMPORT_SCHEMA_VERSION};
 pub use integrity::{IntegrityReport, TableIntegrity};
@@ -101,6 +103,24 @@ CREATE TABLE IF NOT EXISTS provider_audit_events (
 );
 CREATE INDEX IF NOT EXISTS idx_provider_audit_dispatch ON provider_audit_events(dispatch_id);
 CREATE INDEX IF NOT EXISTS idx_provider_audit_created ON provider_audit_events(created_at);
+
+CREATE TABLE IF NOT EXISTS workflow_plans (
+    plan_sequence INTEGER PRIMARY KEY,
+    plan_id TEXT NOT NULL UNIQUE,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    raw_request TEXT NOT NULL,
+    request_source TEXT NOT NULL,
+    status TEXT NOT NULL,
+    workflow_id TEXT NOT NULL,
+    dispatch_id TEXT NOT NULL,
+    graph_json TEXT NOT NULL,
+    analysis_json TEXT NOT NULL,
+    boundaries_json TEXT NOT NULL,
+    plan_json TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_workflow_plans_created ON workflow_plans(created_at);
+CREATE INDEX IF NOT EXISTS idx_workflow_plans_status ON workflow_plans(status);
 ";
 
 pub struct LocalProductStore {
@@ -172,6 +192,7 @@ impl LocalProductStore {
                 "team_members": count_table(conn, "team_members")?,
                 "api_keys": count_table(conn, "api_key_metadata")?,
                 "audit_events": count_table(conn, "audit_log")?,
+                "plans": count_table(conn, "workflow_plans")?,
             }))
         })
     }
