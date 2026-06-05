@@ -2,6 +2,26 @@
 
 The legacy Python reference implementation (`src/harness_core/`) and its test suite (`tests/`) have been retired. The Rust `engine/` is now the sole runtime implementation. Python is retained only as the REST SDK (`sdk/python/`) and utility scripts.
 
+## Reachability Classification
+
+Batch 1 classified modules for the supervised autonomous beta planning track. Classes:
+
+- **active** — wired into the primary Rust runtime/API/dashboard/SDK or primary verification path.
+- **partial** — implemented and tested, but not wired into the primary runtime/API.
+- **library-only** — exported/tested utility surface used by tests, scripts, or future adapters.
+- **dormant** — retained unwired reference/parity code.
+- **legacy-delete-candidate** — likely removable only after a later explicit deletion review; no deletion is approved here.
+
+| Class | Modules |
+| --- | --- |
+| active | `engine/src/main.rs`, `engine/src/http_server/`, `engine/src/dispatch_engine.rs`, `engine/src/task_analyzer/`, `engine/src/model_selector.rs`, `engine/src/budget_manager.rs`, `engine/src/executor_adapter.rs`, `engine/src/dispatch_ledger.rs`, `engine/src/provider/`, `engine/src/storage/local_product_store/`, `engine/src/infrastructure/auth.rs`, `engine/src/infrastructure/rate_limiter.rs`, `dashboard/`, `sdk/typescript/`, `sdk/python/`, `codegen/generate_wire_types.py`, `wire_contract/v1/`, primary smoke/ops/check scripts |
+| partial | `engine/src/orchestration/`, `engine/src/workflow/dag_manager/`, `engine/src/workflow/concurrency/`, `engine/src/workflow/context_pack/`, `engine/src/workflow/checkpoint.rs`, `engine/src/workflow/dag_mutations.rs`, `engine/src/quality/`, `engine/src/routing/`, `engine/src/event_source/`, `engine/src/ecosystem/`, `engine/src/doc_generator.rs`, `engine/src/storage/durable_store.rs`, `engine/src/storage/health_checker.rs`, `engine/src/storage/storage_migrator.rs`, `engine/src/dispatch/manual/`, `engine/src/harness/` |
+| library-only | `engine/src/sdk.rs`, `engine/src/runtime.rs`, `engine/src/event_schema.rs`, `engine/src/evaluation_stub.rs`, `engine/src/errors.rs`, `engine/src/wire_types.rs`, `engine/src/harness/model_profiles/`, `tools/check_security_baseline.py`, dashboard/static and security test helpers |
+| dormant | `engine/src/app_layer/` compiled module subset (`app_registry`, `error_taxonomy`, `governance`, `instance_audit`, `plan_workbench`, `policy_candidate`, `usage_ledger`, `user_style_mutation`) |
+| legacy-delete-candidate | Undeclared `engine/src/app_layer/` files: `app_api.rs`, `app_diagnostics.rs`, `dashboard_model.rs`, `plan_store.rs`, `plan_triage.rs`, `resource_planner.rs`, `review_guidance.rs`. Caveat: `ResourcePlanner` as an architecture concept is explicitly not legacy; only the current undeclared Rust file is a candidate for later review. |
+
+Batch 2 model guidance: use `WorkflowGraph` as the likely canonical planning model, keep `DAGState` as graph-mutation state until an adapter is approved, and keep scheduling-local `DagState` as a concurrency view. This is design guidance only; no R8 or broad refactor is approved.
+
 ## Rust Engine Modules
 
 | Module | Stage | Purpose | Main public APIs | Related tests |

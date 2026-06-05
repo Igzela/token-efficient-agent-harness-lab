@@ -64,6 +64,7 @@ Additional active architecture track:
 | Rust + TypeScript Cutover | Complete; Rust `engine/` is the primary runtime/API/storage/provider-gated control plane, `dashboard/` and `sdk/typescript/` are the primary TypeScript surfaces; Python retained as REST SDK and utility scripts only |
 | Architecture Refactor R-series | Sealed at R7; R8 is not approved. No further R-series file splitting is approved |
 | Post-R7 Wire/Type Governance Hardening | Implemented; `app_layer` remains dormant/unwired reference code and `scripts/check_wire_codegen_drift.sh` protects generated wire files |
+| Supervised Autonomous Beta Planning | Planning-only track accepted in ADR-0002; Batch 0-1 governance/module audit recorded. A read-only planner is not a runtime autonomous worker when it only creates non-executable app-owned plans. |
 
 ## What This Project Is Not
 
@@ -74,6 +75,8 @@ Additional active architecture track:
 - **No sandbox/process/container/VM isolation runtime.** Sandbox claims are logical file-claim tracking only. Existing local CLI executor subprocess invocation is a separate, explicit opt-in exception via `ACP_ENABLE_CLI_EXECUTION=1`.
 - **No autonomous workers.** No real concurrent workers are spawned.
 - **No target repo writes by default.** Target repositories are read-only. The app never writes to them.
+
+Planning-only modules may generate non-executable plans and app-owned planning metadata. They do not grant runtime worker, execution, target-write, sandbox, deploy, or merge authority.
 
 ## Must-Read Order
 
