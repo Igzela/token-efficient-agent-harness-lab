@@ -1,6 +1,6 @@
 # ADR 0002: Supervised Planning Track Toward Autonomous Beta
 
-Status: Accepted for planning only; execution remains gated. Batch 6 design gate documented.
+Status: Accepted for planning only; execution remains gated. Batch 7 readiness audit is NO-GO.
 
 Date: 2026-06-05
 
@@ -121,6 +121,24 @@ Batch 7 may start only after a separate human-approved implementation plan prove
 - provider execution remains default-off and separately gated
 - no automatic push, merge, deploy, or target-repo mutation
 
+### Batch 7 Readiness Audit
+
+Current go/no-go: **NO-GO for implementation**.
+
+The current repository does not yet satisfy the Batch 7 prerequisites:
+
+| Prerequisite | Current evidence | Status |
+|---|---|---|
+| Isolation primitive selected | No constrained process/container/VM primitive is selected. Existing sandbox-like code is logical file-claim tracking only. | Missing |
+| Target workspace contract | No harness-owned isolated worktree/scratch lifecycle, source revision evidence, diff capture, or cleanup path is wired. | Missing |
+| Approval broker | `workflow_run_approvals` are inert metadata with `execution_authority=disabled`; no scoped future approval authority or pre-execution gate exists. | Missing |
+| Rollback | DAG compensation and backup restore helpers exist, but no workspace-level rollback strategy or execution failure-mode tests exist. | Missing |
+| Artifact capture | Artifact lifecycle/gate modules are library-level; no persisted execution artifact schema, storage, redaction, access control, or retention path exists. | Missing |
+| Provider default-off | Existing env/auth/scope/cost gates keep provider execution default-off. | Satisfied, must remain unchanged |
+| No push/merge/deploy/target mutation | Existing boundaries block these behaviors. | Satisfied, must remain unchanged |
+
+The next safe artifact is a Batch 7 implementation plan that selects the isolation primitive, defines target workspace lifecycle and artifact schema, defines approval scopes and gate semantics, defines rollback tests, and updates threat-model controls. That artifact remains documentation/design until separately accepted.
+
 ## Boundaries
 
 This ADR does not approve:
@@ -185,6 +203,7 @@ Batch 3 adapter design constraints:
 - Batch 3 and later implementation must be small, test-first, and scoped to planning-only behavior unless the user approves a broader batch.
 - Any future supervised execution beta must use a separate approval gate and threat model before implementation.
 - Batch 6 makes the future execution gate concrete, but it is not itself implementation authority.
+- Batch 7 readiness audit blocks implementation until the missing prerequisites above are resolved in a separate accepted plan.
 
 ## Reversal Conditions
 
