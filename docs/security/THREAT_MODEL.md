@@ -1,7 +1,7 @@
 # Threat Model — Local Agent Control Plane
 
-Last updated: 2026-06-04
-Scope: Rust engine, TypeScript dashboard/SDK, local SQLite state, env-gated provider adapters
+Last updated: 2026-06-05
+Scope: Rust engine, TypeScript dashboard/SDK, local SQLite state, env-gated provider adapters, and Batch 6 supervised-execution design-gate risks. Batch 6 risks are not implemented runtime features.
 
 ---
 
@@ -17,6 +17,8 @@ Scope: Rust engine, TypeScript dashboard/SDK, local SQLite state, env-gated prov
 | Audit log | Immutable record of all state mutations | High — tampering breaks accountability |
 | Source code (Rust `engine/`, TypeScript `dashboard/`, `sdk/`) | All runtime logic | High — controls all system behavior |
 | Static dashboard export | Pre-built Next.js UI served by the engine | Low — read-only interface |
+| Future target workspace | Planned isolated scratch/worktree area for any later supervised execution beta | Critical — not implemented; would separate target repos from writable scratch |
+| Future execution artifacts | Planned logs, diffs, test output, screenshots, rollback evidence, and captured files | High — not implemented; may contain secrets or sensitive source context |
 
 ---
 
@@ -31,6 +33,7 @@ Scope: Rust engine, TypeScript dashboard/SDK, local SQLite state, env-gated prov
 | Plugin boundary | Registered plugins with valid manifests | Unregistered or malformed plugins | `PluginSystem` validation, thread-safe `RLock` execution |
 | SQLite boundary | App-owned local state | External data sources | WAL mode, foreign keys, `PRAGMA integrity_check` |
 | CLI executor boundary | Engine process | External CLI tools (`claude`, `codex`) | `spawn_blocking` for async safety, timeout via `ACP_CLI_TIMEOUT_MS` |
+| Future supervised-execution boundary | Planned sandbox/workspace/approval/rollback/artifact contracts | Host filesystem, network, target repos, external tools | Not implemented; design contracts recorded in ADR-0002 Batch 6 |
 
 ---
 
@@ -154,6 +157,56 @@ Scope: Rust engine, TypeScript dashboard/SDK, local SQLite state, env-gated prov
 
 ---
 
+### T-009: Sandbox Escape In A Future Execution Beta
+
+**Description:** Code or tools run during a future supervised execution beta escape the intended isolation boundary and access host files, network, processes, credentials, or other workflow state.
+
+**Impact:** Critical — host compromise or credential exposure.
+
+**Controls:**
+- Not implemented today.
+- ADR-0002 Batch 6 requires a selected isolation primitive, resource limits, default-deny network policy, read-only target mount, writable scratch-only policy, audit events, and failure handling before Batch 7 can start.
+
+---
+
+### T-010: Target Workspace Boundary Failure
+
+**Description:** A future execution workspace reads or writes outside its intended scope, mutates a registered target repository directly, or leaks target data through artifacts.
+
+**Impact:** High — unauthorized target mutation or data exfiltration.
+
+**Controls:**
+- Not implemented today.
+- Current app behavior remains read-only for target repositories.
+- ADR-0002 Batch 6 requires an isolated harness-owned workspace, source revision evidence, writable path inventory, final diff/artifact inventory, and no direct target-repo mutation before Batch 7 can start.
+
+---
+
+### T-011: Approval Bypass In Future Execution
+
+**Description:** A future execution path proceeds without a required human approval, uses stale approval, accepts approval from the wrong identity/scope, or ignores revocation.
+
+**Impact:** Critical — human-gated actions execute without valid authorization.
+
+**Controls:**
+- Not implemented today.
+- Batch 4 approval records are inert metadata and do not grant execution authority.
+- ADR-0002 Batch 6 requires authenticated approver identity, scoped approval authority, decision expiry, revocation behavior, and immutable audit events before Batch 7 can start.
+
+---
+
+### T-012: Rollback Or Artifact-Capture Failure
+
+**Description:** A future execution failure leaves app state or workspace state partially rolled back, loses evidence, captures secrets without redaction, or stores artifacts in a target repository.
+
+**Impact:** High — inconsistent state, unrecoverable workspace, or sensitive data exposure.
+
+**Controls:**
+- Not implemented today.
+- ADR-0002 Batch 6 requires all-or-nothing transitions, rollback verification, app-owned artifact storage, redaction before display/export, read-only artifact access, and explicit cleanup rules before Batch 7 can start.
+
+---
+
 ## 4. Existing Controls
 
 | ID | Control | Addresses |
@@ -178,6 +231,13 @@ Scope: Rust engine, TypeScript dashboard/SDK, local SQLite state, env-gated prov
 | C-018 | Backup verify and restore dry-run | T-007 |
 | C-019 | Local env secret scan (`acp_secret_scan.py`) | T-001 |
 
+## 4.1 Design Gates Not Yet Implemented
+
+| ID | Planning control | Addresses |
+|----|------------------|-----------|
+| DG-001 | ADR-0002 Batch 6 sandbox/workspace/approval/rollback/artifact contracts | T-009, T-010, T-011, T-012 |
+| DG-002 | Batch 7 must receive separate human approval before any supervised execution implementation | T-009, T-010, T-011, T-012 |
+
 ---
 
 ## 5. Residual Risks
@@ -201,3 +261,7 @@ Provider API keys live in environment variables, which may be visible in process
 ### RR-005: No Rate Limit Persistence
 
 Rate limiter state is in-memory. Restart resets rate limits. **Acceptable** for local use; would need persistent storage for production deployment.
+
+### RR-006: No Execution-Phase Controls
+
+Sandbox isolation, target workspace writes, approval broker wiring, rollback engine, and artifact-capture runtime are not implemented. **Acceptable** for the current planning-only track because no execution authority exists; Batch 7 must implement and test controls for T-009 through T-012 before supervised execution beta can be considered.

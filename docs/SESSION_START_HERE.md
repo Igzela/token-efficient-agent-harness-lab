@@ -64,7 +64,7 @@ Additional active architecture track:
 | Rust + TypeScript Cutover | Complete; Rust `engine/` is the primary runtime/API/storage/provider-gated control plane, `dashboard/` and `sdk/typescript/` are the primary TypeScript surfaces; Python retained as REST SDK and utility scripts only |
 | Architecture Refactor R-series | Sealed at R7; R8 is not approved. No further R-series file splitting is approved |
 | Post-R7 Wire/Type Governance Hardening | Implemented; `app_layer` remains dormant/unwired reference code and `scripts/check_wire_codegen_drift.sh` protects generated wire files |
-| Supervised Autonomous Beta Planning | Planning-only track accepted in ADR-0002; Batch 0-5 governance/module/model/read-only-planner/durable-state/advisory work recorded. `WorkflowGraph` is canonical planning model. `/api/v1/plans` creates app-owned non-executable SQLite plans with recommendation-only quality/routing/retry/observability advisory metadata, and `/api/v1/workflow-runs` stores inert workflow run/node/edge/event/approval metadata only; neither surface is a runtime autonomous worker. |
+| Supervised Autonomous Beta Planning | Planning-only track accepted in ADR-0002; Batch 0-6 governance/module/model/read-only-planner/durable-state/advisory/design-gate work recorded. `WorkflowGraph` is canonical planning model. `/api/v1/plans` creates app-owned non-executable SQLite plans with recommendation-only quality/routing/retry/observability advisory metadata, and `/api/v1/workflow-runs` stores inert workflow run/node/edge/event/approval metadata only. Batch 6 documents future sandbox/workspace/approval/rollback/artifact requirements only. None of these surfaces is a runtime autonomous worker. |
 
 ## What This Project Is Not
 
@@ -76,7 +76,7 @@ Additional active architecture track:
 - **No autonomous workers.** No real concurrent workers are spawned.
 - **No target repo writes by default.** Target repositories are read-only. The app never writes to them.
 
-Planning-only modules may generate non-executable plans and app-owned planning metadata. They do not grant runtime worker, execution, target-write, sandbox, deploy, or merge authority.
+Planning-only modules may generate non-executable plans, app-owned planning metadata, and design-gate documents. They do not grant runtime worker, execution, target-write, sandbox, deploy, or merge authority.
 
 ## Must-Read Order
 

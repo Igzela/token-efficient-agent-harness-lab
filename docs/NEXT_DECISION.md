@@ -22,7 +22,7 @@ The responsible coding agent may choose any of the following without asking for 
 | Language migration | Agent-control-plane migration phases 0-8 are implemented and recorded in `docs/AGENT_CONTROL_PLANE_MIGRATION_CLOSEOUT.md`. Rust + TypeScript cutover is complete: Rust `engine/` is the primary runtime/API/storage/provider-gated control plane, and `dashboard/` plus `sdk/typescript/` are the primary TypeScript surfaces. Python retained as REST SDK and utility scripts only; legacy reference implementation retired. No real workers, target writes, SDK publishing, or cloud production deployment. |
 | Local small-team hardening | Productization Phases 1-7 complete (Provider Safety Gate, Permission Governance, Cost Governance, Data Operations, Native Packaging, Dashboard Controls, Long-Run Hardening). All planned phases done. Keep provider execution default-off and explicit; keep target writes, sandbox/process execution, real workers, and cloud SaaS out of scope. |
 | CLI executor routing | Complexity-based dispatch to Claude Code CLI / Codex CLI implemented as a pre-existing local subprocess exception. It is explicit opt-in via `ACP_ENABLE_CLI_EXECUTION=1`; unavailable or disabled CLI tiers fall back to noop. Trial 5 controlled beta validation is closed. Maintenance only. Any expansion requires an explicit new plan and approval. |
-| Supervised autonomous beta planning | Planning-only track accepted in ADR-0002. Batch 0-5 governance/module/model/read-only-planner/durable-state/advisory work is complete. Read-only plans, recommendation-only plan advisory metadata, and inert workflow run metadata are not runtime autonomous workers when they only create app-owned non-executable state. No real workers, target writes, sandbox/process/container/VM execution, deploy/merge controls, or default-on provider calls are approved. |
+| Supervised autonomous beta planning | Planning-only track accepted in ADR-0002. Batch 0-6 governance/module/model/read-only-planner/durable-state/advisory/design-gate work is complete. Read-only plans, recommendation-only plan advisory metadata, inert workflow run metadata, and Batch 6 execution-boundary contracts are not runtime autonomous workers when they only create app-owned non-executable state or documentation. No real workers, target writes, sandbox/process/container/VM execution, deploy/merge controls, or default-on provider calls are approved. |
 | Architecture refactor (R-series) | **SEALED AT R7.** R1–R7 are complete. R8 is not approved. The `checkpoint.rs` split and `dispatch_decision.rs` split are deferred. No further R-series file splitting is approved. |
 
 ## Supervised Autonomous Beta Planning
@@ -41,10 +41,10 @@ Batch status:
 | 3 | Read-only planner API plus app-owned SQLite plan state | Complete as planning-only implementation; `/api/v1/plans` creates/lists/reads non-executable app-owned `WorkflowGraph` plans. |
 | 4 | Durable workflow run/node/edge/event/approval state | Complete as inert app-owned state; `/api/v1/workflow-runs` creates/lists/reads run metadata, records events/approvals, and records resume/cancel intent without execution authority. |
 | 5 | Quality/routing/retry/observability recommendation path | Complete as recommendation-only plan advisory metadata; no provider invocation, live worker routing, retry execution, target writes, or execution authority. |
-| 6 | Sandbox, target workspace, approval broker, rollback, artifact-capture design gate | Not started; documentation/design only. |
+| 6 | Sandbox, target workspace, approval broker, rollback, artifact-capture design gate | Complete as documentation/design only in ADR-0002 and `docs/security/THREAT_MODEL.md`; no implementation. |
 | 7 | Supervised execution beta | Not approved; requires explicit human approval before implementation. |
 
-Batch 2 selects `WorkflowGraph` as the canonical planning and persistence model. `DAGState` remains the graph-mutation model for versioned proposals/rollback, and scheduling-local `DagState` remains the concurrency view for file-overlap scheduling. Batch 3 implemented the read-only planner without R8, file splitting, target writes, worker runtime, provider calls, sandbox/process/container/VM execution, or execution controls. Batch 4 persists workflow run/node/edge/event/approval records only as app-owned state; resume/cancel endpoints record metadata and update stored status only, with no worker or execution authority. Batch 5 connects quality/routing/retry/observability into planning decisions only as `advisory` status/block/recommendation metadata.
+Batch 2 selects `WorkflowGraph` as the canonical planning and persistence model. `DAGState` remains the graph-mutation model for versioned proposals/rollback, and scheduling-local `DagState` remains the concurrency view for file-overlap scheduling. Batch 3 implemented the read-only planner without R8, file splitting, target writes, worker runtime, provider calls, sandbox/process/container/VM execution, or execution controls. Batch 4 persists workflow run/node/edge/event/approval records only as app-owned state; resume/cancel endpoints record metadata and update stored status only, with no worker or execution authority. Batch 5 connects quality/routing/retry/observability into planning decisions only as `advisory` status/block/recommendation metadata. Batch 6 documents future sandbox/workspace/approval/rollback/artifact requirements and threat-model risks, but it does not implement or authorize execution.
 
 ## Local Productization Plan
 
@@ -70,6 +70,7 @@ Implemented:
 - Supervised planning Batch 3: `/api/v1/plans` creates/lists/reads non-executable app-owned `WorkflowGraph` plans in SQLite; SDKs expose plan methods
 - Supervised planning Batch 4: `/api/v1/workflow-runs` creates/lists/reads inert workflow run metadata from plans, stores nodes/edges/events/approvals, records resume/cancel intent as metadata only, and exposes SDK methods
 - Supervised planning Batch 5: read-only plan records include recommendation-only quality/routing/retry/observability advisory metadata for status/block/recommendation decisions only
+- Supervised planning Batch 6: ADR-0002 and `docs/security/THREAT_MODEL.md` document sandbox/workspace/approval-broker/rollback/artifact-capture contracts and execution-phase risks as planning-only gates
 
 Next productization phases:
 
@@ -94,6 +95,8 @@ The following are **not** allowed without explicit human approval and a new impl
 - **Cloud productionization** — hosted service, SaaS deployment, production multi-tenant service, or remote user-facing release.
 
 A planning-only module may store app-owned non-executable plans or approval metadata. That does not approve approval controls, execution controls, runtime workers, target writes, or sandbox execution.
+
+Batch 6 design contracts are planning artifacts only. They do not approve any sandbox/process/container/VM implementation, target workspace writer, approval broker wiring, rollback engine, artifact-capture runtime, worker process, provider call, push, merge, deploy, or execution control.
 
 The local small-team track does not approve cloud hosting, default-on provider calls, sandbox isolation, subprocess expansion beyond the existing CLI executor path, target-repo writes, hosted deployment, or real autonomous workers.
 

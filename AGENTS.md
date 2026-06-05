@@ -33,7 +33,7 @@ The Stage 0-4 task-book scope is complete.
 - GitHub private repository published.
 - Architecture Refactor R-series sealed at R7. R8 is not approved. The `checkpoint.rs` split and `dispatch_decision.rs` split are deferred. No further R-series file splitting is approved.
 - Post-R7 wire/type governance hardening implemented: dormant `app_layer` annotation, Rust golden fixture typed round-trip guardrail, active execution-result schema enums, generated/manual TypeScript split, schema-driven enum codegen with drift enforcement via `scripts/check_wire_codegen_drift.sh`, and localized dashboard union reuse.
-- Supervised autonomous beta planning is accepted as a planning-only track in `docs/adr/0002-supervised-planning-track.md`. Batch 0-5 governance/module/model/read-only-planner/durable-state/advisory work is recorded, with `WorkflowGraph` selected as canonical planning model, `/api/v1/plans` storing non-executable app-owned SQLite plans plus recommendation-only quality/routing/retry/observability advisory metadata, and `/api/v1/workflow-runs` storing inert workflow run/node/edge/event/approval metadata. These records are not runtime autonomous workers and do not grant execution authority.
+- Supervised autonomous beta planning is accepted as a planning-only track in `docs/adr/0002-supervised-planning-track.md`. Batch 0-6 governance/module/model/read-only-planner/durable-state/advisory/design-gate work is recorded, with `WorkflowGraph` selected as canonical planning model, `/api/v1/plans` storing non-executable app-owned SQLite plans plus recommendation-only quality/routing/retry/observability advisory metadata, `/api/v1/workflow-runs` storing inert workflow run/node/edge/event/approval metadata, and ADR/security docs recording future sandbox/workspace/approval/rollback/artifact-capture contracts. These records and docs are not runtime autonomous workers and do not grant execution authority.
 - Current Rust test count: 1193 pass.
 - Existing CLI executor routing is a pre-existing local subprocess exception and is explicit opt-in via `ACP_ENABLE_CLI_EXECUTION=1`. Any expansion requires explicit scope and human approval.
 
@@ -66,6 +66,8 @@ Before doing any work:
 The responsible coding agent is expected to move this repository forward end to end when work is inside the safe scope below. This authority applies to the external coding agent maintaining the repo; it does not authorize implementing runtime autonomous workers inside the harness.
 
 Planning-only supervised beta work may classify modules, design schemas, and create non-executable app-owned planning records. It does not authorize runtime autonomous workers, target repository writes, sandbox/process/container/VM execution, deploy/merge controls, or default-on provider calls.
+
+Batch 6 supervised-execution contracts are planning artifacts only. Implementing sandbox/process/container/VM behavior, target workspace writes, approval broker wiring, rollback execution, artifact-capture runtime, or Batch 7 supervised execution still requires a separate explicit human-approved batch.
 
 Allowed autonomous advancement:
 

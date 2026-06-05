@@ -1,6 +1,6 @@
 # ADR 0002: Supervised Planning Track Toward Autonomous Beta
 
-Status: Accepted for planning only; execution remains gated. Batch 5 recommendation-only advisory implemented.
+Status: Accepted for planning only; execution remains gated. Batch 6 design gate documented.
 
 Date: 2026-06-05
 
@@ -49,6 +49,77 @@ Batch 5 implements recommendation-only advisory metadata:
 - `engine/src/read_only_planner.rs` adds a top-level `advisory` record to read-only plans with quality preflight status, cold-start routing recommendation, retry-policy metadata, observability hints, blockers, and recommendations.
 - The advisory path uses pure `TaskAnalysis`, `DynamicTierSelector` cold-start fallback, `BudgetManager` math, `RetryPolicy` serialization, and observability schema constants. It does not construct `RetryFallbackManager`, call `Provider::invoke`, run `EvaluationRunner`, execute workers, write targets, or grant approval/run/deploy/merge authority.
 - The advisory is stored inside the existing app-owned `plan_json`; no target repository state or runtime execution state is modified.
+
+Batch 6 documents the supervised execution design gate only:
+
+- The contracts below define what a later supervised execution beta would have to implement and prove before Batch 7 can start.
+- They are planning artifacts only. They do not select or implement a sandbox, create a target workspace, wire an approval broker, apply rollback, capture execution artifacts, run workers, write target repositories, call providers, or expose approve/run/deploy/merge controls.
+
+## Batch 6 Design Gate Contracts
+
+Batch 7 is not approved by this ADR. A later Batch 7 request must satisfy these contracts with implementation design, tests, and separate human approval before any execution code is added.
+
+### Sandbox, Process, Container, Or VM Isolation
+
+| Property | Design contract | Current implementation status |
+|---|---|---|
+| Isolation primitive | Pick one primitive before Batch 7: constrained process, container, or VM/microVM. Record why weaker primitives are sufficient or rejected. | Not implemented. |
+| Resource limits | Define CPU, memory, disk, process count, and wall-clock timeout caps before any run starts. | Not implemented. |
+| Network policy | Default-deny egress. Any allowlist must be explicit, narrow, audited, and unavailable by default. | Not implemented. |
+| Filesystem boundary | Target repository is mounted read-only. Only harness-owned scratch/artifact dirs may be writable. | Not implemented. Existing target-repo boundary remains read-only. |
+| Failure handling | Timeout, isolation error, or policy violation must stop the run, persist an audit/event record, and trigger rollback/capture review. | Not implemented. |
+
+### Target Workspace Contract
+
+| Property | Design contract | Current implementation status |
+|---|---|---|
+| Workspace source | Create an isolated harness-owned workspace from a selected target revision or read-only target mount. | Not implemented. |
+| Write boundary | Writes are limited to scratch or an isolated worktree/patch area; registered target repositories are not mutated directly. | Not implemented. Existing app behavior does not write target repos. |
+| Concurrency | One active execution workspace per target/revision unless a conflict policy proves isolation. | Not implemented. |
+| Lifecycle | Workspace creation, capture, rollback, retention, and cleanup must be explicit lifecycle states. | Not implemented. |
+| Integrity evidence | Record source revision, workspace id, writable paths, and final diff/artifact inventory before human review. | Not implemented. |
+
+### Approval Broker Contract
+
+| Property | Design contract | Current implementation status |
+|---|---|---|
+| Approval trigger | Any node with human-review, target-write, provider, sandbox, high-risk, or cost gate must block before execution. | Inert approval metadata only from Batch 4. |
+| Approver identity | Approval requires an authenticated local operator with an explicit future approval scope. | Not implemented. |
+| Decision storage | Store decision, approver id, timestamp, scope, affected nodes, and expiry before execution begins. | Inert approval rows exist, not wired to execution. |
+| Revocation | Revocation before start blocks execution; revocation during execution must stop or quarantine the run. | Not implemented. |
+| Auditability | Approval, denial, expiry, revocation, and override attempts must emit immutable app-owned events. | Inert events exist, not execution-gating. |
+
+### Rollback Strategy
+
+| Property | Design contract | Current implementation status |
+|---|---|---|
+| Rollback trigger | Failure, timeout, policy violation, approval denial/revocation, or operator cancel. | Not implemented. |
+| Scope | Restore app-owned run state and discard or quarantine workspace changes; never repair by writing directly to target repos. | Not implemented. |
+| Mechanism | Use explicit snapshots/checkpoints plus graph-level compensation where applicable. `DAGManager::compensate()` may inform design but is not an execution rollback engine today. | Library logic exists; not wired. |
+| Atomicity | Define all-or-nothing state transitions. Partial rollback must end in a blocked/quarantined state with evidence. | Not implemented. |
+| Verification | Post-rollback checks must verify app-owned state integrity and workspace cleanliness. | Not implemented. |
+
+### Artifact Capture
+
+| Property | Design contract | Current implementation status |
+|---|---|---|
+| Capture scope | Planned inputs, approval decisions, stdout/stderr, provider audit refs if any, diffs, generated files, test logs, screenshots when applicable, and rollback evidence. | Not implemented. |
+| Storage owner | Store under app-owned SQLite/filesystem paths, not inside registered target repositories. | Not implemented. |
+| Redaction | Apply secret redaction before operator-facing display or export. | Existing audit/provider redaction exists; execution artifacts not implemented. |
+| Access control | Read-only artifact access must require read scope; destructive cleanup must require explicit admin scope and confirmation. | Not implemented. |
+| Retention | Define retention, export, and cleanup rules before Batch 7. | Not implemented. |
+
+### Batch 7 Go/No-Go Prerequisites
+
+Batch 7 may start only after a separate human-approved implementation plan proves:
+
+- selected isolation primitive and threat model coverage
+- target workspace contract with read-only target boundary and writable scratch/patch area
+- approval broker wired to a pre-execution gate
+- rollback strategy with failure-mode tests
+- artifact capture schema/storage/redaction/access rules
+- provider execution remains default-off and separately gated
+- no automatic push, merge, deploy, or target-repo mutation
 
 ## Boundaries
 
@@ -113,6 +184,7 @@ Batch 3 adapter design constraints:
 - `docs/MODULE_MAP.md` records reachability classes so later batches do not mistake dormant or library-only code for active runtime.
 - Batch 3 and later implementation must be small, test-first, and scoped to planning-only behavior unless the user approves a broader batch.
 - Any future supervised execution beta must use a separate approval gate and threat model before implementation.
+- Batch 6 makes the future execution gate concrete, but it is not itself implementation authority.
 
 ## Reversal Conditions
 
@@ -121,5 +193,6 @@ Revisit this ADR if:
 - planning-only code gains execution authority
 - target repository writes become possible without a separate approved gate
 - sandbox/process/container/VM behavior is implemented before a dedicated design gate
+- Batch 7 implementation starts before the Batch 6 contracts receive separate human approval
 - module unification requires R8-style file splitting or broad refactoring
 - provider calls become default-on or unattended
