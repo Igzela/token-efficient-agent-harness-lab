@@ -4,7 +4,7 @@
 
 Token-Efficient Agent Harness Lab is a local deterministic harness for studying event-sourced agent workflow infrastructure from Stage 0 through Stage 4. It includes JSONL event validation, projections, project/task workflow primitives, quality gates, controlled intelligence stubs, and Stage 4 runtime-control abstractions.
 
-Current status: Stage 0-4 complete, Harness App MVP0-MVP8 complete, Trials 0-5 closed, and the agent-control-plane cutover is complete for the Rust + TypeScript stack. The primary local runtime is Rust `engine/` with axum API, SQLite state, provider safety gates, permission governance, cost governance, data operations, native packaging, dashboard controls, production-like local beta operations checks, a read-only planner API that stores non-executable `WorkflowGraph` plans with recommendation-only advisory metadata, inert durable workflow run/node/edge/event/approval metadata, and Batch 7 Slice A/B/C/D supervised patch workspace/artifact metadata in app-owned SQLite plus read-only HTTP/SDK visibility and docs-only approval-binding design. Supervised execution runtime remains NO-GO: no workspace directory creation, patch generation, approval/export gate implementation, export runtime, target writes, sandbox/process/container/VM execution, workers, provider calls, or apply/push/merge/deploy controls. The primary UI and SDK surface is TypeScript (`dashboard/` and `sdk/typescript/`). Python is retained as the Python REST SDK and utility scripts only; the legacy Python reference implementation has been retired. Security hardening complete (1204 Rust tests pass).
+Current status: Stage 0-4 complete, Harness App MVP0-MVP8 complete, Trials 0-5 closed, and the agent-control-plane cutover is complete for the Rust + TypeScript stack. The primary local runtime is Rust `engine/` with axum API, SQLite state, provider safety gates, permission governance, cost governance, data operations, native packaging, dashboard controls, production-like local beta operations checks, a read-only planner API that stores non-executable `WorkflowGraph` plans with recommendation-only advisory metadata, inert durable workflow run/node/edge/event/approval metadata, and Batch 7 Slice A/B/C/D supervised patch workspace/artifact metadata in app-owned SQLite plus read-only HTTP/SDK visibility and docs-only approval-binding design. Supervised execution runtime remains NO-GO: no workspace directory creation, patch generation, approval/export gate implementation, export runtime, target writes, sandbox/process/container/VM execution, workers, provider calls, or apply/push/merge/deploy controls. The primary UI and SDK surface is TypeScript (`dashboard/` and `sdk/typescript/`). Python is retained as the Python REST SDK and utility scripts only; the legacy Python reference implementation has been retired. Security hardening complete. Dormant module adaptation track complete (1099 Rust tests pass).
 
 **New sessions should start with [docs/SESSION_START_HERE.md](docs/SESSION_START_HERE.md).**
 
@@ -41,7 +41,7 @@ cargo test -p engine
 cd sdk/python && PYTHONPATH=src uv run --no-project python -m unittest discover -s tests
 ```
 
-Current result: 1204 Rust tests pass. Python SDK tests run separately under `sdk/python/`.
+Current result: 1099 Rust tests pass. Python SDK tests run separately under `sdk/python/`.
 
 ## How To Run Without Docker
 
