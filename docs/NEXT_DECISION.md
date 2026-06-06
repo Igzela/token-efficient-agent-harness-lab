@@ -112,8 +112,8 @@ This track selectively activates dormant modules from the Rust engine into the p
 
 | Phase | Scope | Status |
 |---|---|---|
-| 1. Interface Unification | Extract `trait Evaluator` from `EvaluationStub`; unify `ModelProvider`→`Provider` adapter; extract `trait GraphOperations` from dag_manager + dependency_resolver | **Next** |
-| 2. Zero-Conflict Activation | Activate `workflow/dag_manager` mutations in planner; activate `workflow/context_pack` rules in task_analyzer; activate `orchestration/work_queue` replacing inline state machine; activate `routing/auto_policies` in scheduler tick | Pending |
+| 1. Interface Unification | Extract `trait Evaluator` from `EvaluationStub`; unify `ModelProvider`→`Provider` adapter; extract `trait GraphOperations` from dag_manager + dependency_resolver | **COMPLETE** |
+| 2. Zero-Conflict Activation | Activate `workflow/dag_manager` mutations in planner; activate `workflow/context_pack` rules in task_analyzer; activate `orchestration/work_queue` replacing inline state machine; activate `routing/auto_policies` in scheduler tick | **Next** |
 | 3. Adapted Activation | Activate `harness/advisor` as dispatch advisory layer; activate `routing/feedback_integrator` driving adaptive routing; activate `quality/` gate chain replacing EvaluationStub; activate `orchestration/workflow_engine` as scheduler concurrency accelerator; activate `orchestration/conflict_resolver` + `human_approval_gate` | Pending |
 | 4. Dead Code Cleanup | Remove `app_layer/` (fully duplicated); remove `dispatch/manual/` (superseded); remove `harness/{sandbox,supervisor,batch_runner,sampling,model_eval}`; remove `storage/{durable_store,health_checker,storage_migrator}`; tag `event_source/`+`errors`+`event_schema` as reference-only | Pending |
 
@@ -158,16 +158,16 @@ This track selectively activates dormant modules from the Rust engine into the p
 
 | Conflict | Severity | Resolution |
 |---|---|---|
-| `harness::ModelProvider` (sync) vs `provider::Provider` (async) | HIGH | Write `ProviderAdapter` bridge in Phase 1 |
-| `EvaluationStub` (concrete) vs `quality::*` gates | HIGH | Extract `trait Evaluator` in Phase 1 |
-| `ModelResponse` vs `ProviderResponse` | MEDIUM | Unified response type or conversion layer |
-| `LocalProductStore` vs `DurableStore` | MEDIUM | Do not activate DurableStore (delete) |
+| `harness::ModelProvider` (sync) vs `provider::Provider` (async) | HIGH | **RESOLVED** — `ProviderAdapter` bridges via `Arc`+`spawn_blocking` |
+| `EvaluationStub` (concrete) vs `quality::*` gates | HIGH | **RESOLVED** — `trait Evaluator` extracted; `DispatchEngine` uses `Box<dyn Evaluator>` |
+| `ModelResponse` vs `ProviderResponse` | MEDIUM | Conversion layer in `ProviderAdapter` (done in Phase 1) |
+| `LocalProductStore` vs `DurableStore` | MEDIUM | Do not activate DurableStore (delete in Phase 4) |
 
 ### Risk Blockers
 
 | Blocker | Severity | Mitigation |
 |---|---|---|
-| Evaluator has no trait | RED | Phase 1 extracts trait before Phase 3 quality gate work |
+| Evaluator has no trait | RED | **RESOLVED** — `trait Evaluator` in `evaluation_stub.rs` |
 | Two disjoint execution traits (Executor vs NodeExecutor) | RED | Document clearly; dormant modules must target correct trait |
 | Scheduler single-thread serial execution | YELLOW | Phase 3 workflow_engine integration addresses concurrency |
 | read_only_planner hardcoded `execution: "disabled"` | YELLOW | Phase 3 modifies boundary logic for execution-eligible plans |

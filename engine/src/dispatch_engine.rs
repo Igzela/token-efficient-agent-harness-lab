@@ -8,7 +8,7 @@ use crate::dispatch_decision::{
     BudgetReservation, DispatchDecision, ExecutionGate, DISPATCH_DECISION_SCHEMA_VERSION,
 };
 use crate::dispatch_ledger::{DispatchBundle, DispatchLedger};
-use crate::evaluation_stub::{EvaluationResult, EvaluationStub};
+use crate::evaluation_stub::{EvaluationResult, EvaluationStub, Evaluator};
 use crate::executor_adapter::{Executor, NoopExecutor};
 use crate::model_selector::ModelSelector;
 use crate::provider::executor::make_not_executed_result;
@@ -20,7 +20,7 @@ pub struct DispatchEngine {
     selector: ModelSelector,
     budget_manager: BudgetManager,
     executor: Box<dyn Executor>,
-    evaluator: EvaluationStub,
+    evaluator: Box<dyn Evaluator>,
     ledger: DispatchLedger,
     executor_type_name: String,
     available_executor_tiers: HashSet<String>,
@@ -34,7 +34,7 @@ impl Default for DispatchEngine {
             selector: ModelSelector::new(None),
             budget_manager: BudgetManager::new(),
             executor: Box::new(NoopExecutor),
-            evaluator: EvaluationStub,
+            evaluator: Box::new(EvaluationStub),
             ledger: DispatchLedger::new(),
             executor_type_name: "noop".to_string(),
             available_executor_tiers: HashSet::new(),
@@ -51,6 +51,13 @@ impl DispatchEngine {
     pub fn with_executor(executor: Box<dyn Executor>) -> Self {
         Self {
             executor,
+            ..Self::default()
+        }
+    }
+
+    pub fn with_evaluator(evaluator: Box<dyn Evaluator>) -> Self {
+        Self {
+            evaluator,
             ..Self::default()
         }
     }
