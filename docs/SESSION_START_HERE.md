@@ -120,7 +120,8 @@ A session is not complete until it leaves a durable handoff:
 2. `uv run --no-project python scripts/check_agent_handoff.py` passes (includes toolchain and `scripts/check_wire_codegen_drift.sh` guards).
 3. Handoff docs reflect the current branch, status, test count, stable commits, limitations, and next action.
 4. The commit message is in English and the active branch is pushed when the tree contains only this session's intended changes.
-5. The final report states latest commit, verification, remaining risks, and the next safe action.
+5. After push, **wait for CI to pass** before starting the next batch. Use `gh run list --limit 3` to check status; if CI fails, fix and re-push before continuing. A green CI is required before the next session's work is considered safe to build on.
+6. The final report states latest commit, CI status, verification, remaining risks, and the next safe action.
 
 ## Documentation Maintenance
 
