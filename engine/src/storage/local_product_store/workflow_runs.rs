@@ -623,6 +623,20 @@ impl LocalProductStore {
                             &json!({"node_id": node_id, "attempt": attempt, "error_domain": output.error_domain, "error_message": output.error_message}),
                             &now,
                         )?;
+                        append_audit_locked(
+                            conn,
+                            &now,
+                            actor,
+                            "workflow_run.node_tick",
+                            run_id,
+                            &json!({
+                                "node_id": node_id,
+                                "executor_type": output.executor_type,
+                                "status": "retry_scheduled",
+                                "attempt": attempt,
+                                "latency_ms": output.latency_ms,
+                            }),
+                        )?;
                     } else {
                         let event_type = if final_status == "completed" { "node.completed" } else { "node.failed" };
                         insert_workflow_run_event_locked(
@@ -633,6 +647,21 @@ impl LocalProductStore {
                             actor,
                             &json!({"node_id": node_id, "executor_type": output.executor_type, "attempt": attempt, "result": result_json}),
                             &now,
+                        )?;
+                        append_audit_locked(
+                            conn,
+                            &now,
+                            actor,
+                            "workflow_run.node_tick",
+                            run_id,
+                            &json!({
+                                "node_id": node_id,
+                                "executor_type": output.executor_type,
+                                "status": final_status,
+                                "attempt": attempt,
+                                "latency_ms": output.latency_ms,
+                                "error_domain": output.error_domain,
+                            }),
                         )?;
                     }
 

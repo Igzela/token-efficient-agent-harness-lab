@@ -317,6 +317,18 @@ impl LocalProductStore {
                     |row| row.get(0),
                 )
                 .map_err(|e| e.to_string())?;
+            let artifact_count: i64 = count_table(conn, "supervised_patch_artifacts")?;
+            let approval_count: i64 = count_table(conn, "workflow_run_approvals")?;
+            let executor_latency_avg_ms: Value = conn
+                .query_row(
+                    "SELECT COALESCE(AVG(latency_ms), 0) FROM dispatch_history WHERE latency_ms IS NOT NULL",
+                    [],
+                    |row| {
+                        let avg: f64 = row.get(0)?;
+                        Ok(json!(avg))
+                    },
+                )
+                .unwrap_or(Value::Null);
             Ok(json!({
                 "dispatches": count_table(conn, "dispatch_history")?,
                 "team_members": count_table(conn, "team_members")?,
@@ -325,9 +337,12 @@ impl LocalProductStore {
                 "plans": count_table(conn, "workflow_plans")?,
                 "workflow_runs": count_table(conn, "workflow_runs")?,
                 "supervised_patch_workspaces": count_table(conn, "supervised_patch_workspaces")?,
-                "supervised_patch_artifacts": count_table(conn, "supervised_patch_artifacts")?,
+                "supervised_patch_artifacts": artifact_count,
                 "secret_block_count": secret_block_count,
                 "queue_length": queue_length,
+                "artifact_count": artifact_count,
+                "approval_count": approval_count,
+                "executor_latency_avg_ms": executor_latency_avg_ms,
             }))
         })
     }

@@ -28,6 +28,9 @@ pub(crate) async fn api_metrics(
     let mut backup_count = 0;
     let mut secret_block_count = 0;
     let mut queue_length = 0;
+    let mut artifact_count = 0;
+    let mut approval_count = 0;
+    let mut executor_latency_avg_ms = 0.0;
     let mut total_reserved_cost = 0.0;
     let mut total_estimated_cost_usd = 0.0;
     let mut total_input_tokens = 0;
@@ -45,6 +48,9 @@ pub(crate) async fn api_metrics(
         api_key_count = stats["api_keys"].as_i64().unwrap_or(0);
         secret_block_count = stats["secret_block_count"].as_i64().unwrap_or(0);
         queue_length = stats["queue_length"].as_i64().unwrap_or(0);
+        artifact_count = stats["artifact_count"].as_i64().unwrap_or(0);
+        approval_count = stats["approval_count"].as_i64().unwrap_or(0);
+        executor_latency_avg_ms = stats["executor_latency_avg_ms"].as_f64().unwrap_or(0.0);
 
         let costs = store.cost_summary().map_err(internal_error)?;
         total_reserved_cost = costs["total_reserved_cost"].as_f64().unwrap_or(0.0);
@@ -66,6 +72,16 @@ pub(crate) async fn api_metrics(
         }
     }
 
+    let scheduler_active_runs = match &state.scheduler {
+        Some(scheduler) => scheduler
+            .lock()
+            .ok()
+            .and_then(|g| g.status().get("active_runs").cloned())
+            .and_then(|v| v.as_u64())
+            .unwrap_or(0),
+        None => 0,
+    };
+
     Ok((
         cors_headers(),
         Json(json!({
@@ -81,6 +97,10 @@ pub(crate) async fn api_metrics(
             "api_key_count": api_key_count,
             "secret_block_count": secret_block_count,
             "queue_length": queue_length,
+            "artifact_count": artifact_count,
+            "approval_count": approval_count,
+            "executor_latency_avg_ms": executor_latency_avg_ms,
+            "scheduler_active_runs": scheduler_active_runs,
             "backup_count": backup_count,
             "latest_backup_created_at": latest_backup_created_at,
             "total_reserved_cost": total_reserved_cost,
