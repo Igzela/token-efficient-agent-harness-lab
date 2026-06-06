@@ -84,21 +84,36 @@ for i in $(seq 1 "$MAX_BATCHES"); do
     # multi-agent workflow orchestration
     PROMPT="ultracode
 
-You are continuing the GA hardening track for this repository.
+You are continuing the GA hardening track for this repository (branch: feat/dashboard-ux-polish).
 
-Read docs/SESSION_START_HERE.md, docs/CURRENT_STATUS.md, docs/NEXT_DECISION.md, and docs/MODULE_MAP.md.
+IMPORTANT: Read and follow these files IN ORDER before doing anything:
+1. docs/SESSION_START_HERE.md
+2. docs/CURRENT_STATUS.md
+3. docs/NEXT_DECISION.md
+4. docs/MODULE_MAP.md
+5. AGENTS.md (hard boundaries, documentation maintenance rule, autonomous advancement protocol)
+6. CLAUDE.md (code style, session log format, test commands)
 
 Your task: implement GA-${NEXT_BATCH} as described in docs/NEXT_DECISION.md.
+
+Documentation rules (from AGENTS.md):
+- After every commit-sized change, update docs/CURRENT_STATUS.md, docs/NEXT_DECISION.md, and CLAUDE.md session log if their facts changed.
+- Do NOT create new roadmap, next-steps, closeout, status, or productization documents.
+- Prefer editing/shortening existing docs over adding files.
+- Commit messages in English, focus on why not what.
+- After push, verify CI passes with gh run watch before considering the batch done.
 
 Requirements:
 1. Implement the GA-${NEXT_BATCH} scope with tests. Use multi-agent workflow orchestration to parallelize exploration and review.
 2. Run cargo test -p engine, cargo fmt --check, cargo clippy -p engine --all-targets -- -D warnings
 3. Run uv run --no-project python scripts/check_agent_handoff.py
 4. Update docs/CURRENT_STATUS.md and docs/NEXT_DECISION.md to reflect completion
-5. Commit and push
-6. Report: commit hash, test count, what was implemented, remaining risks
+5. Update CLAUDE.md session log with a new entry for today's date
+6. Commit and push
+7. After push, run: gh run watch \$(gh run list --limit 1 --json databaseId -q '.[0].databaseId') --exit-status
+8. Report: commit hash, test count, CI status, what was implemented, remaining risks
 
-Do NOT start any work beyond GA-${NEXT_BATCH}. Stop after committing and pushing."
+Do NOT start any work beyond GA-${NEXT_BATCH}. Stop after CI passes."
 
     if claude -p "$PROMPT" \
         --dangerously-skip-permissions \
