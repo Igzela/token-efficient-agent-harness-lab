@@ -106,7 +106,7 @@ Requirements:
 
 Do NOT start any work beyond GA-${batch_num}.
 
-When done, write 'GA-${batch_num}_DONE' to ${signal_file} and exit."
+When all steps are complete and CI is green, write 'GA-${batch_num}_DONE' to ${signal_file}, then run 'exit' to close this terminal session. Do NOT wait for user input."
 
     # Launch in a new tmux window
     tmux new-window -t "$SESSION_NAME" -n "ga-${batch_num}" \
@@ -149,11 +149,31 @@ for i in $(seq 1 "$MAX_BATCHES"); do
     # Wait for session to signal completion
     echo "  Waiting for GA-${NEXT_BATCH} to complete..."
     echo "  (Attach with: tmux attach -t $SESSION_NAME -w ga-${NEXT_BATCH})"
+
+    PRE_COMMIT=$(git rev-parse HEAD)
+    WAIT_ELAPSED=0
+    WAIT_MAX=1200  # 20 minutes max per batch
+
     while [[ ! -f "$SIGNAL_FILE" ]]; do
         sleep 10
+        WAIT_ELAPSED=$((WAIT_ELAPSED + 10))
+
+        # Check if a new commit appeared (fallback if signal file wasn't written)
+        CURRENT_COMMIT=$(git rev-parse HEAD)
+        if [[ "$CURRENT_COMMIT" != "$PRE_COMMIT" ]]; then
+            echo "  New commit detected: $(git log --oneline -1). Assuming GA-${NEXT_BATCH} done."
+            break
+        fi
+
         # Check if claude process is still running
         if ! tmux list-windows -t "$SESSION_NAME" 2>/dev/null | grep -q "ga-${NEXT_BATCH}"; then
-            echo "  GA-${NEXT_BATCH} window closed unexpectedly."
+            echo "  GA-${NEXT_BATCH} window closed."
+            break
+        fi
+
+        # Timeout
+        if [[ $WAIT_ELAPSED -ge $WAIT_MAX ]]; then
+            echo "  Timeout waiting for GA-${NEXT_BATCH} (${WAIT_MAX}s)."
             FAILED=true
             break 2
         fi
