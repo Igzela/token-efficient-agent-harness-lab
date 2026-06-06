@@ -612,6 +612,25 @@ test("tickWorkflowRun passes optional parameters", async () => {
   assert.equal(body.timeout_ms, 60000);
 });
 
+test("tickWorkflowRun passes command override to executor", async () => {
+  const { calls, fetchImpl } = captureFetch({
+    schema_version: "axum_api.v1",
+    tick: { status: "completed" },
+  });
+  const client = new AgentControlPlaneClient({ baseUrl: "http://127.0.0.1:8080", fetchImpl });
+
+  await client.tickWorkflowRun("run-0001", {
+    executor: "command",
+    command: "echo hello",
+    timeout_ms: 5000,
+  });
+
+  const body = JSON.parse(calls[0].init.body);
+  assert.equal(body.executor, "command");
+  assert.equal(body.command, "echo hello");
+  assert.equal(body.timeout_ms, 5000);
+});
+
 test("schedulerStatus gets scheduler health", async () => {
   const { calls, fetchImpl } = captureFetch({
     schema_version: "axum_api.v1",

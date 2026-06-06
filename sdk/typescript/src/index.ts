@@ -332,6 +332,7 @@ export class AgentControlPlaneClient {
         max_retries: request.max_retries,
         executor: request.executor,
         timeout_ms: request.timeout_ms,
+        command: request.command,
       },
     );
   }

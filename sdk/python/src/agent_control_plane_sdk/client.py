@@ -233,6 +233,7 @@ class AgentControlPlaneClient:
         max_retries: int | None = None,
         executor: str | None = None,
         timeout_ms: int | None = None,
+        command: str | None = None,
     ) -> dict[str, Any]:
         body: dict[str, Any] = {}
         if actor is not None:
@@ -243,6 +244,8 @@ class AgentControlPlaneClient:
             body["executor"] = executor
         if timeout_ms is not None:
             body["timeout_ms"] = timeout_ms
+        if command is not None:
+            body["command"] = command
         return self._post(
             f"/api/v1/workflow-runs/{_quote_path_segment(run_id)}/tick", body
         )

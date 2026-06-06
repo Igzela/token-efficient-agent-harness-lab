@@ -638,6 +638,7 @@ export interface WorkflowRunTickRequest {
   max_retries?: number;
   executor?: string;
   timeout_ms?: number;
+  command?: string;
 }
 
 export interface WorkflowRunTickResponse {

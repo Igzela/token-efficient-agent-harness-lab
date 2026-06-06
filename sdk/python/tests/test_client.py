@@ -685,6 +685,26 @@ class ClientTickWorkflowRunTest(unittest.TestCase):
         self.assertEqual(body["timeout_ms"], 60000)
 
     @patch("agent_control_plane_sdk.client.urlopen")
+    def test_tick_workflow_run_passes_command_override(self, mock_urlopen):
+        mock_urlopen.return_value = mock_response({
+            "schema_version": "axum_api.v1",
+            "tick": {"status": "completed"},
+        })
+        client = AgentControlPlaneClient("http://localhost:8080")
+        client.tick_workflow_run(
+            "run-0001",
+            executor="command",
+            command="echo hello",
+            timeout_ms=5000,
+        )
+        args, _ = mock_urlopen.call_args
+        req = args[0]
+        body = json.loads(req.data)
+        self.assertEqual(body["executor"], "command")
+        self.assertEqual(body["command"], "echo hello")
+        self.assertEqual(body["timeout_ms"], 5000)
+
+    @patch("agent_control_plane_sdk.client.urlopen")
     def test_scheduler_status_gets(self, mock_urlopen):
         mock_urlopen.return_value = mock_response({
             "schema_version": "axum_api.v1",
