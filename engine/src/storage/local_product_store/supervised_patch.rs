@@ -8,6 +8,28 @@ use super::{append_audit_locked, collect_values, LocalProductStore};
 pub const SUPERVISED_PATCH_WORKSPACE_SCHEMA_VERSION: &str = "supervised_patch_workspace.v1";
 pub const SUPERVISED_PATCH_ARTIFACT_SCHEMA_VERSION: &str = "supervised_patch_artifact.v1";
 
+const DEFAULT_IGNORE_DIRS: &[&str] = &[
+    "target",
+    "node_modules",
+    ".next",
+    "dist",
+    "build",
+    "__pycache__",
+    ".pytest_cache",
+    ".git",
+];
+
+const MAX_FILE_BYTES: u64 = 1_048_576; // 1 MB
+
+fn is_ignored_dir(name: &str) -> bool {
+    DEFAULT_IGNORE_DIRS.contains(&name)
+}
+
+fn is_binary_content(data: &[u8]) -> bool {
+    let check_len = data.len().min(8192);
+    data[..check_len].contains(&0)
+}
+
 impl LocalProductStore {
     pub fn create_workspace_directory(
         &self,
@@ -163,11 +185,14 @@ impl LocalProductStore {
             "failed"
         };
 
+        let review_diff = generate_review_diff(path, &added, &modified, &deleted);
+
         let artifact_request = json!({
             "workspace_id": workspace_id,
             "patch_hash": patch_hash,
             "changed_files": changed_files,
             "redaction_status": redaction_status,
+            "review_diff": review_diff,
         });
         let artifact = self.record_supervised_patch_artifact(&artifact_request, actor)?;
 
@@ -608,6 +633,11 @@ impl LocalProductStore {
                 "invalid supervised patch artifact redaction_status: {redaction_status}"
             ));
         }
+        let review_diff = request
+            .get("review_diff")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string();
         let storage_refs = request
             .get("storage_refs")
             .cloned()
@@ -635,6 +665,7 @@ impl LocalProductStore {
                 "patch_hash": patch_hash,
                 "changed_files": changed_files.clone(),
                 "redaction_status": redaction_status,
+                "review_diff": review_diff,
                 "storage_refs": storage_refs.clone(),
                 "retention_expires_at": retention_expires_at,
                 "created_at": created_at,
@@ -1275,7 +1306,7 @@ fn collect_files_recursive(
         let path = entry.path();
         if path.is_dir() {
             let name = path.file_name().unwrap_or_default().to_string_lossy();
-            if name.starts_with('.') {
+            if name.starts_with('.') || is_ignored_dir(&name) {
                 continue;
             }
             collect_files_recursive(base, &path, files, hashes)?;
@@ -1284,12 +1315,19 @@ fn collect_files_recursive(
             if name.starts_with('.') {
                 continue;
             }
+            let meta = std::fs::metadata(&path).map_err(|e| e.to_string())?;
+            if meta.len() > MAX_FILE_BYTES {
+                continue;
+            }
+            let content = std::fs::read(&path).map_err(|e| e.to_string())?;
+            if is_binary_content(&content) {
+                continue;
+            }
             let relative = path
                 .strip_prefix(base)
                 .unwrap_or(&path)
                 .to_string_lossy()
                 .into_owned();
-            let content = std::fs::read(&path).map_err(|e| e.to_string())?;
             let hash = hex_encode(&sha256_bytes(&content));
             files.push(relative);
             hashes.push(hash);
@@ -1300,6 +1338,56 @@ fn collect_files_recursive(
 
 fn hex_encode(bytes: &[u8]) -> String {
     bytes.iter().map(|b| format!("{b:02x}")).collect()
+}
+
+fn generate_review_diff(
+    workspace_dir: &Path,
+    added: &[String],
+    modified: &[String],
+    deleted: &[String],
+) -> String {
+    let mut diff = String::new();
+
+    for path in added {
+        let full = workspace_dir.join(path);
+        let content = match std::fs::read_to_string(&full) {
+            Ok(c) => c,
+            Err(_) => continue,
+        };
+        let line_count = content.lines().count();
+        diff.push_str(&format!(
+            "--- /dev/null\n+++ b/{path}\n@@ -0,0 +1,{line_count} @@\n"
+        ));
+        for line in content.lines() {
+            diff.push('+');
+            diff.push_str(line);
+            diff.push('\n');
+        }
+    }
+
+    for path in modified {
+        let full = workspace_dir.join(path);
+        let content = match std::fs::read_to_string(&full) {
+            Ok(c) => c,
+            Err(_) => continue,
+        };
+        let line_count = content.lines().count();
+        diff.push_str(&format!(
+            "--- a/{path}\n+++ b/{path}\n@@ -1,{line_count} +1,{line_count} @@\n"
+        ));
+        for line in content.lines() {
+            diff.push(' ');
+            diff.push_str(line);
+            diff.push('\n');
+        }
+    }
+
+    for path in deleted {
+        diff.push_str(&format!("--- a/{path}\n+++ /dev/null\n@@ -1,0 +0,0 @@\n"));
+        diff.push_str(&format!("(deleted: {path})\n"));
+    }
+
+    diff
 }
 
 fn sha256_bytes(data: &[u8]) -> [u8; 32] {

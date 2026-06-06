@@ -1541,3 +1541,253 @@ fn test_list_api_key_metadata() {
     let keys = store.list_api_key_metadata(1).unwrap();
     assert_eq!(keys.len(), 1);
 }
+
+// ---------------------------------------------------------------------------
+// GA-1: Artifact Ignore + Persisted Diff
+// ---------------------------------------------------------------------------
+
+fn setup_workspace_with_target(
+    store: &LocalProductStore,
+    dir: &tempfile::TempDir,
+    run_id: &str,
+    target_files: Vec<(&str, &str)>,
+) -> (String, String) {
+    let target_dir = dir.path().join(format!("target_{run_id}"));
+    std::fs::create_dir_all(&target_dir).unwrap();
+    for (name, content) in &target_files {
+        let path = target_dir.join(name);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, content).unwrap();
+    }
+    let ws_path = store
+        .create_workspace_directory(run_id, target_dir.to_str().unwrap())
+        .unwrap();
+    let workspace = store
+        .record_supervised_patch_workspace(
+            &json!({
+                "plan_id": "plan-ga1",
+                "run_id": run_id,
+                "target_id": "ga1-target",
+                "target_repo_path": target_dir.to_string_lossy(),
+                "workspace_path": &ws_path,
+                "source_revision": "abc123",
+                "status": "workspace_created",
+            }),
+            "operator",
+        )
+        .unwrap();
+    let ws_id = workspace["workspace_id"].as_str().unwrap().to_string();
+    (ws_path, ws_id)
+}
+
+#[test]
+fn ga1_capture_excludes_target_dir() {
+    let dir = tempdir().unwrap();
+    let store = LocalProductStore::new(dir.path().join("test.db")).unwrap();
+
+    let (ws_path, ws_id) = setup_workspace_with_target(
+        &store,
+        &dir,
+        "run-ga1-target",
+        vec![
+            ("src/lib.rs", "fn main() {}\n"),
+            ("Cargo.toml", "[package]\n"),
+        ],
+    );
+
+    // Simulate build: add target/ with artifacts
+    let target_build = std::path::PathBuf::from(&ws_path).join("target");
+    std::fs::create_dir_all(target_build.join("debug")).unwrap();
+    std::fs::write(target_build.join("debug").join("app"), "binary\x00data").unwrap();
+
+    // Also add a real source change
+    std::fs::write(
+        std::path::PathBuf::from(&ws_path)
+            .join("src")
+            .join("lib.rs"),
+        "fn main() { println!(\"hello\"); }\n",
+    )
+    .unwrap();
+
+    let artifact = store.capture_patch(&ws_id, "operator").unwrap();
+    let changed: Vec<&str> = artifact["changed_files"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|v| v.as_str().unwrap())
+        .collect();
+
+    assert!(
+        changed.iter().all(|f| !f.contains("target/")),
+        "target/ should be excluded from changed_files: {:?}",
+        changed
+    );
+    assert!(
+        changed.iter().any(|f| f.contains("lib.rs")),
+        "src/lib.rs should be in changed_files"
+    );
+}
+
+#[test]
+fn ga1_capture_excludes_node_modules() {
+    let dir = tempdir().unwrap();
+    let store = LocalProductStore::new(dir.path().join("test.db")).unwrap();
+
+    let (ws_path, ws_id) = setup_workspace_with_target(
+        &store,
+        &dir,
+        "run-ga1-nm",
+        vec![("index.js", "console.log('hi');\n")],
+    );
+
+    // Add node_modules
+    let nm = std::path::PathBuf::from(&ws_path).join("node_modules");
+    std::fs::create_dir_all(&nm).unwrap();
+    std::fs::write(nm.join("pkg.js"), "module.exports = {};").unwrap();
+
+    // Add real change
+    std::fs::write(
+        std::path::PathBuf::from(&ws_path).join("index.js"),
+        "console.log('hello');\n",
+    )
+    .unwrap();
+
+    let artifact = store.capture_patch(&ws_id, "operator").unwrap();
+    let changed: Vec<&str> = artifact["changed_files"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|v| v.as_str().unwrap())
+        .collect();
+
+    assert!(
+        changed.iter().all(|f| !f.contains("node_modules")),
+        "node_modules should be excluded: {:?}",
+        changed
+    );
+}
+
+#[test]
+fn ga1_capture_excludes_binary_files() {
+    let dir = tempdir().unwrap();
+    let store = LocalProductStore::new(dir.path().join("test.db")).unwrap();
+
+    let (ws_path, ws_id) = setup_workspace_with_target(
+        &store,
+        &dir,
+        "run-ga1-bin",
+        vec![("src/main.rs", "fn main() {}\n")],
+    );
+
+    // Add a binary file
+    std::fs::write(
+        std::path::PathBuf::from(&ws_path).join("image.png"),
+        b"\x89PNG\r\n\x1a\n\x00binary\x00data",
+    )
+    .unwrap();
+
+    // Add a real change
+    std::fs::write(
+        std::path::PathBuf::from(&ws_path)
+            .join("src")
+            .join("main.rs"),
+        "fn main() { println!(\"hi\"); }\n",
+    )
+    .unwrap();
+
+    let artifact = store.capture_patch(&ws_id, "operator").unwrap();
+    let changed: Vec<&str> = artifact["changed_files"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|v| v.as_str().unwrap())
+        .collect();
+
+    assert!(
+        changed.iter().all(|f| !f.contains("image.png")),
+        "binary files should be excluded: {:?}",
+        changed
+    );
+}
+
+#[test]
+fn ga1_capture_persists_review_diff() {
+    let dir = tempdir().unwrap();
+    let store = LocalProductStore::new(dir.path().join("test.db")).unwrap();
+
+    let (ws_path, ws_id) = setup_workspace_with_target(
+        &store,
+        &dir,
+        "run-ga1-diff",
+        vec![("src/lib.rs", "fn add(a: i32, b: i32) -> i32 { a + b }\n")],
+    );
+
+    // Add a new file and modify existing
+    std::fs::write(
+        std::path::PathBuf::from(&ws_path)
+            .join("src")
+            .join("greeting.rs"),
+        "pub fn greet(name: &str) -> String {\n    format!(\"Hello, {name}!\")\n}\n",
+    )
+    .unwrap();
+    std::fs::write(
+        std::path::PathBuf::from(&ws_path)
+            .join("src")
+            .join("lib.rs"),
+        "fn add(a: i32, b: i32) -> i32 { a + b }\npub mod greeting;\n",
+    )
+    .unwrap();
+
+    let artifact = store.capture_patch(&ws_id, "operator").unwrap();
+
+    let review_diff = artifact["review_diff"].as_str().unwrap();
+    assert!(
+        !review_diff.is_empty(),
+        "review_diff should be persisted and non-empty"
+    );
+    assert!(
+        review_diff.contains("+++ b/src/greeting.rs"),
+        "review_diff should contain added file header"
+    );
+    assert!(
+        review_diff.contains("pub fn greet"),
+        "review_diff should contain added file content"
+    );
+    assert!(
+        review_diff.contains("--- a/src/lib.rs"),
+        "review_diff should contain modified file header"
+    );
+}
+
+#[test]
+fn ga1_review_diff_survives_artifact_read() {
+    let dir = tempdir().unwrap();
+    let store = LocalProductStore::new(dir.path().join("test.db")).unwrap();
+
+    let (ws_path, ws_id) = setup_workspace_with_target(
+        &store,
+        &dir,
+        "run-ga1-persist",
+        vec![("README.md", "# Test\n")],
+    );
+
+    std::fs::write(
+        std::path::PathBuf::from(&ws_path).join("README.md"),
+        "# Test Project\n\nUpdated.\n",
+    )
+    .unwrap();
+
+    let artifact = store.capture_patch(&ws_id, "operator").unwrap();
+    let art_id = artifact["artifact_id"].as_str().unwrap();
+
+    // Read artifact back from store
+    let stored = store
+        .get_supervised_patch_artifact(art_id)
+        .unwrap()
+        .unwrap();
+    let stored_diff = stored["review_diff"].as_str().unwrap();
+    assert!(
+        stored_diff.contains("--- a/README.md"),
+        "persisted artifact should contain review_diff"
+    );
+}
