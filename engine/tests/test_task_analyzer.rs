@@ -468,7 +468,9 @@ fn readonly_advisory_about_production_and_secret_boundaries_is_medium_risk() {
     assert_eq!(a.risk_level, "medium");
     assert!(a.risk_flags.contains(&"deployment".to_string()));
     assert!(a.risk_flags.contains(&"secret_handling".to_string()));
-    assert!(a.features_detected["read_only_advisory"].as_bool().unwrap_or(false));
+    assert!(a.features_detected["read_only_advisory"]
+        .as_bool()
+        .unwrap_or(false));
     assert!(!a.features_detected["explicit_dangerous_action"]
         .as_bool()
         .unwrap_or(false));

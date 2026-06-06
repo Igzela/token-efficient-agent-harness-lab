@@ -249,10 +249,7 @@ fn test_approval_expiry_blocks_export() {
 
     // Validate binding: expired approval should make export_eligible false
     let binding = store
-        .validate_approval_binding(
-            run_id,
-            artifact["artifact_id"].as_str().unwrap(),
-        )
+        .validate_approval_binding(run_id, artifact["artifact_id"].as_str().unwrap())
         .unwrap();
     assert_eq!(binding["export_eligible"], false);
 
@@ -307,7 +304,10 @@ fn test_artifact_integrity_tamper() {
 
     // Integrity should pass now
     let integrity = store.validate_artifact_integrity(artifact_id).unwrap();
-    assert_eq!(integrity["integrity_ok"], true, "integrity should pass before tamper");
+    assert_eq!(
+        integrity["integrity_ok"], true,
+        "integrity should pass before tamper"
+    );
 
     // Tamper: add a new file after capture, which changes the diff set
     std::fs::write(ws_path.join("tampered.txt"), "injected content").unwrap();
@@ -320,7 +320,10 @@ fn test_artifact_integrity_tamper() {
     );
 
     let checks = integrity_after["checks"].as_array().unwrap();
-    let hash_check = checks.iter().find(|c| c["check"] == "patch_hash_unchanged").unwrap();
+    let hash_check = checks
+        .iter()
+        .find(|c| c["check"] == "patch_hash_unchanged")
+        .unwrap();
     assert_eq!(hash_check["passed"], false);
 }
 
@@ -362,14 +365,21 @@ fn test_concurrent_tick_no_double_execute() {
     }
 
     // Exactly one thread should have executed the node; the other should have found no ready node
-    assert_eq!(executed, 1, "exactly one thread should execute the node, got {executed}");
     assert_eq!(
-        no_ready + errors, 1,
+        executed, 1,
+        "exactly one thread should execute the node, got {executed}"
+    );
+    assert_eq!(
+        no_ready + errors,
+        1,
         "the other thread should see no ready node or error"
     );
 
     // Verify node status: node-a should be failed (FailNodeExecutor), not double-processed
-    let run = store.get_workflow_run(&run_id.to_string()).unwrap().unwrap();
+    let run = store
+        .get_workflow_run(&run_id.to_string())
+        .unwrap()
+        .unwrap();
     let nodes = run["nodes"].as_array().unwrap();
     let node_a = nodes.iter().find(|n| n["node_id"] == "node-a").unwrap();
     let db_status = node_a["db_status"].as_str().unwrap();

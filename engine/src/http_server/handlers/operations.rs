@@ -4,8 +4,8 @@ use axum::response::IntoResponse;
 use axum::Json;
 use serde_json::json;
 
-use crate::http_server::middleware::{RequestId, 
-    authorize, backup_dir_for_state, cors_headers, internal_error, ApiError,
+use crate::http_server::middleware::{
+    authorize, backup_dir_for_state, cors_headers, internal_error, ApiError, RequestId,
 };
 use crate::http_server::state::AxumApiState;
 use crate::http_server::AXUM_API_SCHEMA_VERSION;

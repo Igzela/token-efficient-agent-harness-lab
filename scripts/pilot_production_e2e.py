@@ -19,31 +19,34 @@ import urllib.request
 DEFAULT_BASE_URL = "http://127.0.0.1:8080"
 
 
-def api(method, path, body=None, base_url=DEFAULT_BASE_URL):
-    url = f"{base_url}{path}"
-    data = json.dumps(body).encode() if body else None
-    req = urllib.request.Request(url, data=data, method=method)
-    req.add_header("Content-Type", "application/json")
-    try:
-        with urllib.request.urlopen(req, timeout=30) as resp:
-            return json.loads(resp.read())
-    except urllib.error.HTTPError as e:
-        error_body = e.read().decode()
-        print(f"  HTTP {e.code}: {error_body}")
-        return {"error": e.code, "body": error_body}
+class ApiClient:
+    def __init__(self, base_url: str):
+        self.base_url = base_url
 
-
-def wait_for_health(base_url, timeout=30):
-    start = time.time()
-    while time.time() - start < timeout:
+    def call(self, method, path, body=None):
+        url = f"{self.base_url}{path}"
+        data = json.dumps(body).encode() if body else None
+        req = urllib.request.Request(url, data=data, method=method)
+        req.add_header("Content-Type", "application/json")
         try:
-            result = api("GET", "/api/v1/health", base_url=base_url)
-            if result.get("status") == "healthy":
-                return True
-        except Exception:
-            pass
-        time.sleep(1)
-    return False
+            with urllib.request.urlopen(req, timeout=30) as resp:
+                return json.loads(resp.read())
+        except urllib.error.HTTPError as e:
+            error_body = e.read().decode()
+            print(f"  HTTP {e.code}: {error_body}")
+            return {"error": e.code, "body": error_body}
+
+    def wait_for_health(self, timeout=30):
+        start = time.time()
+        while time.time() - start < timeout:
+            try:
+                result = self.call("GET", "/api/v1/health")
+                if result.get("status") == "healthy":
+                    return True
+            except Exception:
+                pass
+            time.sleep(1)
+        return False
 
 
 def main():
@@ -52,13 +55,15 @@ def main():
         idx = sys.argv.index("--base-url")
         base_url = sys.argv[idx + 1]
 
+    api = ApiClient(base_url)
+
     print("=== Production Pilot E2E ===")
     print(f"Base URL: {base_url}")
     print()
 
     # Step 0: Health check
     print("[0] Checking engine health...")
-    if not wait_for_health(base_url):
+    if not api.wait_for_health():
         print("FAIL: Engine not healthy")
         return 1
     print("  OK: Engine healthy")
@@ -82,7 +87,7 @@ def main():
 
     # Step 2: Create a plan (prerequisite for workflow run)
     print("[2] Creating plan...")
-    plan_result = api("POST", "/api/v1/plans", {
+    plan_result = api.call("POST", "/api/v1/plans", {
         "raw_request": "Add a greeting function to src/lib.rs",
         "request_source": "pilot",
     })
@@ -95,7 +100,7 @@ def main():
 
     # Step 3: Create workflow run from plan
     print("[3] Creating workflow run...")
-    run_result = api("POST", "/api/v1/workflow-runs", {"plan_id": plan_id})
+    run_result = api.call("POST", "/api/v1/workflow-runs", {"plan_id": plan_id})
     run_id = run_result.get("run", {}).get("run_id")
     if not run_id:
         print(f"FAIL: Could not create run: {run_result}")
@@ -105,7 +110,7 @@ def main():
 
     # Step 4: Create workspace from target
     print("[4] Creating workspace...")
-    ws_result = api("POST", "/api/v1/supervised-patch/workspaces", {
+    ws_result = api.call("POST", "/api/v1/supervised-patch/workspaces", {
         "run_id": run_id,
         "target_id": "pilot-target",
         "target_repo_path": target_dir,
@@ -121,7 +126,7 @@ def main():
     print()
 
     # Get workspace path
-    ws_detail = api("GET", f"/api/v1/supervised-patch/workspaces/{ws_id}")
+    ws_detail = api.call("GET", f"/api/v1/supervised-patch/workspaces/{ws_id}")
     ws_path = ws_detail.get("workspace", {}).get("workspace_path")
     if not ws_path:
         print(f"FAIL: Could not get workspace path: {ws_detail}")
@@ -148,7 +153,7 @@ def main():
     print(f"  Helper script placed: .pilot_worker.py")
 
     # 5b: Tick with command override — executor runs python3 on the helper script
-    tick = api("POST", f"/api/v1/workflow-runs/{run_id}/tick", {
+    tick = api.call("POST", f"/api/v1/workflow-runs/{run_id}/tick", {
         "executor": "command",
         "command": "python3 .pilot_worker.py",
         "timeout_ms": 15000,
@@ -157,19 +162,19 @@ def main():
     tick_action = tick.get("tick", {}).get("action", "N/A")
     print(f"  Tick: status={tick_status} action={tick_action}")
 
-    # Verify the executor produced changes
+    # Hard assert: executor must have produced src/greeting.rs
     greeting_path = os.path.join(ws_path, "src", "greeting.rs")
-    if os.path.exists(greeting_path):
-        with open(greeting_path) as f:
-            content = f.read()
-        print(f"  VERIFY: src/greeting.rs created by executor ({len(content)} bytes)")
-    else:
-        print("  NOTE: greeting.rs not created (no command node in graph, only noop)")
+    if not os.path.exists(greeting_path):
+        print("FAIL: src/greeting.rs was NOT created by executor")
+        return 1
+    with open(greeting_path) as f:
+        greeting_content = f.read()
+    print(f"  VERIFY: src/greeting.rs created by executor ({len(greeting_content)} bytes)")
     print()
 
     # Step 6: Capture patch (diff against source manifest)
     print("[6] Capturing patch...")
-    capture_result = api("POST", f"/api/v1/supervised-patch/workspaces/{ws_id}/capture")
+    capture_result = api.call("POST", f"/api/v1/supervised-patch/workspaces/{ws_id}/capture")
     artifact = capture_result.get("artifact", {})
     art_id = artifact.get("artifact_id")
     if not art_id:
@@ -183,18 +188,17 @@ def main():
     if artifact.get("secret_findings"):
         print(f"  Secret findings: {artifact['secret_findings']}")
 
-    # Verify the patch has executor-produced changes
+    # Hard assert: patch must contain executor-produced changes
     has_worker_change = any("greeting" in f for f in changed)
-    has_helper = any("pilot_worker" in f for f in changed)
-    print(f"  Worker-produced changes in patch: {has_worker_change}")
-    print(f"  Helper script in patch: {has_helper}")
-    if not changed:
-        print("  WARN: No changes captured — executor may not have run (no command node in graph)")
+    if not has_worker_change:
+        print(f"FAIL: Patch does not contain executor-produced greeting change. Files: {changed}")
+        return 1
+    print(f"  OK: Executor-produced changes confirmed in patch")
     print()
 
     # Step 7: Record approval with binding
     print("[7] Recording approval...")
-    approval_result = api("POST", f"/api/v1/workflow-runs/{run_id}/approvals", {
+    approval_result = api.call("POST", f"/api/v1/workflow-runs/{run_id}/approvals", {
         "node_id": "node-a",
         "decision": "approved",
         "reason": "pilot test approval",
@@ -209,7 +213,7 @@ def main():
 
     # Step 8: Export artifact
     print("[8] Exporting artifact...")
-    export_result = api("POST", f"/api/v1/supervised-patch/artifacts/{art_id}/export", {
+    export_result = api.call("POST", f"/api/v1/supervised-patch/artifacts/{art_id}/export", {
         "run_id": run_id,
     })
     export_data = export_result.get("export", {})
@@ -224,7 +228,7 @@ def main():
 
     # Step 9: Cleanup workspace
     print("[9] Cleaning up workspace...")
-    cleanup_result = api("POST", f"/api/v1/supervised-patch/workspaces/{ws_id}/cleanup")
+    cleanup_result = api.call("POST", f"/api/v1/supervised-patch/workspaces/{ws_id}/cleanup")
     print(f"  Cleanup: {cleanup_result.get('workspace', {}).get('status', 'N/A')}")
     print()
 

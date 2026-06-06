@@ -118,6 +118,10 @@ ALLOWED_TEST_IMPORTS: dict[str, set[str]] = {
         "urllib.parse",
         "urllib.request",
     },
+    "scripts/pilot_production_e2e.py": {
+        "urllib.request",
+        "urllib.error",
+    },
 }
 
 # Paths to exclude from active routing guard (test fixtures contain

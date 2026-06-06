@@ -894,12 +894,7 @@ mod tests {
 
         assert_required_body_fields(&doc, "/api/v1/plans", "post", &["raw_request"]);
         assert_required_body_fields(&doc, "/api/v1/workflow-runs", "post", &["plan_id"]);
-        assert_required_body_fields(
-            &doc,
-            "/api/v1/workflow-runs/{run_id}/tick",
-            "post",
-            &[],
-        );
+        assert_required_body_fields(&doc, "/api/v1/workflow-runs/{run_id}/tick", "post", &[]);
         assert_required_body_fields(
             &doc,
             "/api/v1/workflow-runs/{run_id}/events",

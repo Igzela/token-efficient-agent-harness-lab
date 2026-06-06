@@ -5,8 +5,8 @@ use axum::Json;
 use serde_json::json;
 use std::sync::Arc;
 
-use crate::http_server::middleware::{RequestId, 
-    authorize, cors_headers, internal_error, require_store, ApiError,
+use crate::http_server::middleware::{
+    authorize, cors_headers, internal_error, require_store, ApiError, RequestId,
 };
 use crate::http_server::state::AxumApiState;
 use crate::http_server::{DispatchApiRequest, AXUM_API_SCHEMA_VERSION};
@@ -30,7 +30,13 @@ pub(crate) async fn api_dispatch(
 
     let is_provider = state.executor_type() == "provider";
     if is_provider {
-        authorize(&state, &headers, "dispatch:execute", uri.path(), &request_id.0)?;
+        authorize(
+            &state,
+            &headers,
+            "dispatch:execute",
+            uri.path(),
+            &request_id.0,
+        )?;
     }
 
     let request_source = request.request_source.as_deref().unwrap_or("api");

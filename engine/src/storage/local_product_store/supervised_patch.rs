@@ -41,8 +41,8 @@ impl LocalProductStore {
         )
         .map_err(|e| e.to_string())?;
 
-        let canonical_workspace = std::fs::canonicalize(&workspace_dir)
-            .map_err(|e| e.to_string())?;
+        let canonical_workspace =
+            std::fs::canonicalize(&workspace_dir).map_err(|e| e.to_string())?;
         Ok(canonical_workspace.to_string_lossy().into_owned())
     }
 
@@ -87,11 +87,7 @@ impl LocalProductStore {
             .ok_or_else(|| format!("workspace not found after update: {workspace_id}"))
     }
 
-    pub fn cleanup_workspace(
-        &self,
-        workspace_id: &str,
-        actor: &str,
-    ) -> Result<Value, String> {
+    pub fn cleanup_workspace(&self, workspace_id: &str, actor: &str) -> Result<Value, String> {
         let workspace = self
             .get_supervised_patch_workspace(workspace_id)?
             .ok_or_else(|| format!("workspace not found: {workspace_id}"))?;
@@ -108,19 +104,11 @@ impl LocalProductStore {
         self.update_workspace_status(workspace_id, "cleaned", actor)
     }
 
-    pub fn quarantine_workspace(
-        &self,
-        workspace_id: &str,
-        actor: &str,
-    ) -> Result<Value, String> {
+    pub fn quarantine_workspace(&self, workspace_id: &str, actor: &str) -> Result<Value, String> {
         self.update_workspace_status(workspace_id, "quarantined", actor)
     }
 
-    pub fn capture_patch(
-        &self,
-        workspace_id: &str,
-        actor: &str,
-    ) -> Result<Value, String> {
+    pub fn capture_patch(&self, workspace_id: &str, actor: &str) -> Result<Value, String> {
         let workspace = self
             .get_supervised_patch_workspace(workspace_id)?
             .ok_or_else(|| format!("workspace not found: {workspace_id}"))?;
@@ -130,7 +118,9 @@ impl LocalProductStore {
             .ok_or_else(|| "workspace missing workspace_path".to_string())?;
         let path = Path::new(workspace_path);
         if !path.exists() {
-            return Err(format!("workspace directory does not exist: {workspace_path}"));
+            return Err(format!(
+                "workspace directory does not exist: {workspace_path}"
+            ));
         }
 
         let manifest_path = path.join(".source_manifest.json");
@@ -193,10 +183,7 @@ impl LocalProductStore {
         Ok(result)
     }
 
-    pub fn validate_artifact_integrity(
-        &self,
-        artifact_id: &str,
-    ) -> Result<Value, String> {
+    pub fn validate_artifact_integrity(&self, artifact_id: &str) -> Result<Value, String> {
         let artifact = self
             .get_supervised_patch_artifact(artifact_id)?
             .ok_or_else(|| format!("artifact not found: {artifact_id}"))?;
@@ -253,8 +240,7 @@ impl LocalProductStore {
         if workspace_exists {
             let manifest_path = Path::new(workspace_path).join(".source_manifest.json");
             if manifest_path.exists() {
-                let manifest_content =
-                    std::fs::read_to_string(&manifest_path).unwrap_or_default();
+                let manifest_content = std::fs::read_to_string(&manifest_path).unwrap_or_default();
                 let manifest: Value =
                     serde_json::from_str(&manifest_content).unwrap_or(Value::Null);
                 if manifest.is_object() {
@@ -278,7 +264,9 @@ impl LocalProductStore {
             "message": if hash_unchanged { "ok".to_string() } else { format!("hash changed: recorded={} current={}", patch_hash, current_hash) }
         }));
 
-        let all_passed = checks.iter().all(|c| c["passed"].as_bool().unwrap_or(false));
+        let all_passed = checks
+            .iter()
+            .all(|c| c["passed"].as_bool().unwrap_or(false));
         Ok(json!({
             "artifact_id": artifact_id,
             "integrity_ok": all_passed,
@@ -1058,11 +1046,30 @@ fn is_valid_workspace_transition(from: &str, to: &str) -> bool {
     matches!(
         (from, to),
         ("requested", "source_recorded" | "rejected" | "quarantined")
-            | ("source_recorded", "workspace_created" | "rejected" | "quarantined")
-            | ("workspace_created", "patch_prepared" | "rejected" | "quarantined" | "cleaned")
-            | ("patch_prepared", "review_blocked" | "approved_for_artifact_export" | "rejected" | "quarantined" | "cleaned")
-            | ("review_blocked", "approved_for_artifact_export" | "rejected" | "quarantined")
-            | ("approved_for_artifact_export", "rejected" | "quarantined" | "cleaned")
+            | (
+                "source_recorded",
+                "workspace_created" | "rejected" | "quarantined"
+            )
+            | (
+                "workspace_created",
+                "patch_prepared" | "rejected" | "quarantined" | "cleaned"
+            )
+            | (
+                "patch_prepared",
+                "review_blocked"
+                    | "approved_for_artifact_export"
+                    | "rejected"
+                    | "quarantined"
+                    | "cleaned"
+            )
+            | (
+                "review_blocked",
+                "approved_for_artifact_export" | "rejected" | "quarantined"
+            )
+            | (
+                "approved_for_artifact_export",
+                "rejected" | "quarantined" | "cleaned"
+            )
             | ("rejected", "quarantined" | "cleaned")
             | ("quarantined", "cleaned")
     )
@@ -1184,7 +1191,8 @@ fn diff_against_manifest(
         .cloned()
         .unwrap_or_default();
 
-    let mut source_map: std::collections::HashMap<String, String> = std::collections::HashMap::new();
+    let mut source_map: std::collections::HashMap<String, String> =
+        std::collections::HashMap::new();
     for entry in &manifest_entries {
         if let (Some(path), Some(hash)) = (
             entry.get("path").and_then(Value::as_str),
@@ -1310,8 +1318,8 @@ impl Sha256Writer {
     fn new() -> Self {
         Self {
             state: [
-                0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a,
-                0x510e527f, 0x9b05688c, 0x1f83d9ab, 0x5be0cd19,
+                0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a, 0x510e527f, 0x9b05688c, 0x1f83d9ab,
+                0x5be0cd19,
             ],
             buffer: Vec::new(),
             total_len: 0,
@@ -1349,22 +1357,16 @@ impl Sha256Writer {
 
     fn process_block(&mut self, block: &[u8; 64]) {
         const K: [u32; 64] = [
-            0x428a2f98, 0x71374491, 0xb5c0fbcf, 0xe9b5dba5,
-            0x3956c25b, 0x59f111f1, 0x923f82a4, 0xab1c5ed5,
-            0xd807aa98, 0x12835b01, 0x243185be, 0x550c7dc3,
-            0x72be5d74, 0x80deb1fe, 0x9bdc06a7, 0xc19bf174,
-            0xe49b69c1, 0xefbe4786, 0x0fc19dc6, 0x240ca1cc,
-            0x2de92c6f, 0x4a7484aa, 0x5cb0a9dc, 0x76f988da,
-            0x983e5152, 0xa831c66d, 0xb00327c8, 0xbf597fc7,
-            0xc6e00bf3, 0xd5a79147, 0x06ca6351, 0x14292967,
-            0x27b70a85, 0x2e1b2138, 0x4d2c6dfc, 0x53380d13,
-            0x650a7354, 0x766a0abb, 0x81c2c92e, 0x92722c85,
-            0xa2bfe8a1, 0xa81a664b, 0xc24b8b70, 0xc76c51a3,
-            0xd192e819, 0xd6990624, 0xf40e3585, 0x106aa070,
-            0x19a4c116, 0x1e376c08, 0x2748774c, 0x34b0bcb5,
-            0x391c0cb3, 0x4ed8aa4a, 0x5b9cca4f, 0x682e6ff3,
-            0x748f82ee, 0x78a5636f, 0x84c87814, 0x8cc70208,
-            0x90befffa, 0xa4506ceb, 0xbef9a3f7, 0xc67178f2,
+            0x428a2f98, 0x71374491, 0xb5c0fbcf, 0xe9b5dba5, 0x3956c25b, 0x59f111f1, 0x923f82a4,
+            0xab1c5ed5, 0xd807aa98, 0x12835b01, 0x243185be, 0x550c7dc3, 0x72be5d74, 0x80deb1fe,
+            0x9bdc06a7, 0xc19bf174, 0xe49b69c1, 0xefbe4786, 0x0fc19dc6, 0x240ca1cc, 0x2de92c6f,
+            0x4a7484aa, 0x5cb0a9dc, 0x76f988da, 0x983e5152, 0xa831c66d, 0xb00327c8, 0xbf597fc7,
+            0xc6e00bf3, 0xd5a79147, 0x06ca6351, 0x14292967, 0x27b70a85, 0x2e1b2138, 0x4d2c6dfc,
+            0x53380d13, 0x650a7354, 0x766a0abb, 0x81c2c92e, 0x92722c85, 0xa2bfe8a1, 0xa81a664b,
+            0xc24b8b70, 0xc76c51a3, 0xd192e819, 0xd6990624, 0xf40e3585, 0x106aa070, 0x19a4c116,
+            0x1e376c08, 0x2748774c, 0x34b0bcb5, 0x391c0cb3, 0x4ed8aa4a, 0x5b9cca4f, 0x682e6ff3,
+            0x748f82ee, 0x78a5636f, 0x84c87814, 0x8cc70208, 0x90befffa, 0xa4506ceb, 0xbef9a3f7,
+            0xc67178f2,
         ];
         let mut w = [0u32; 64];
         for i in 0..16 {
@@ -1437,10 +1439,7 @@ fn scan_recursive(dir: &Path, findings: &mut Vec<String>) -> Result<(), String> 
                         || lower.contains("bearer ")
                         || lower.contains("private_key")
                     {
-                        let relative = path
-                            .file_name()
-                            .unwrap_or_default()
-                            .to_string_lossy();
+                        let relative = path.file_name().unwrap_or_default().to_string_lossy();
                         findings.push(format!("{}: {}", relative, line.trim()));
                     }
                 }

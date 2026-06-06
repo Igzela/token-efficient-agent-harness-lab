@@ -1353,14 +1353,14 @@ async fn axum_health_bypass_is_skipped_when_auth_header_present() {
         rate_limit: Some(100),
     });
     let (_key, raw_key) = resolver
-        .create_api_key("t1", Some(HashSet::from(["dispatch:read".to_string()])), None, 1.0)
+        .create_api_key(
+            "t1",
+            Some(HashSet::from(["dispatch:read".to_string()])),
+            None,
+            1.0,
+        )
         .unwrap();
-    let state = AxumApiState::new().with_auth(
-        resolver,
-        RateLimiter::new(60.0, 10),
-        Some(60),
-        1.0,
-    );
+    let state = AxumApiState::new().with_auth(resolver, RateLimiter::new(60.0, 10), Some(60), 1.0);
     let app = build_axum_router(state);
 
     let response = app
@@ -3042,8 +3042,7 @@ async fn axum_tick_advances_single_node_run_to_completion() {
         .unwrap();
     let detail_body = response_json(run_detail).await;
     assert!(
-        detail_body["run"]["status"] == "completed"
-            || detail_body["run"]["status"] == "failed",
+        detail_body["run"]["status"] == "completed" || detail_body["run"]["status"] == "failed",
         "run should be terminal, got: {}",
         detail_body["run"]["status"]
     );
@@ -3214,15 +3213,16 @@ async fn axum_tick_respects_node_dependencies() {
         .unwrap();
     let detail_body = response_json(detail_resp).await;
     assert!(
-        detail_body["run"]["status"] == "completed"
-            || detail_body["run"]["status"] == "failed",
+        detail_body["run"]["status"] == "completed" || detail_body["run"]["status"] == "failed",
         "run should be terminal after all nodes complete"
     );
 
     // Verify all nodes have completed status
     let run_nodes = detail_body["run"]["nodes"].as_array().unwrap();
     for node in run_nodes {
-        let status = node["db_status"].as_str().unwrap_or(node["status"].as_str().unwrap_or(""));
+        let status = node["db_status"]
+            .as_str()
+            .unwrap_or(node["status"].as_str().unwrap_or(""));
         assert!(
             status == "completed" || status == "failed",
             "node {} should be terminal, got: {}",
@@ -3435,7 +3435,10 @@ async fn axum_supervised_patch_artifact_capture() {
     assert_eq!(capture_resp.status(), StatusCode::OK);
     let capture_body = response_json(capture_resp).await;
     let artifact = &capture_body["artifact"];
-    assert!(artifact["patch_hash"].as_str().unwrap().starts_with("sha256:"));
+    assert!(artifact["patch_hash"]
+        .as_str()
+        .unwrap()
+        .starts_with("sha256:"));
     assert_eq!(artifact["artifact_type"], "patch_diff");
     assert_eq!(artifact["redaction_status"], "redacted");
     assert!(!artifact["changed_files"].as_array().unwrap().is_empty());
@@ -3503,7 +3506,9 @@ async fn axum_end_to_end_plan_run_tick_workspace_capture_quality_approval_export
                     .method(Method::POST)
                     .uri(format!("/api/v1/workflow-runs/{run_id}/tick"))
                     .header(header::CONTENT_TYPE, "application/json")
-                    .body(Body::from(json!({"actor": "e2e", "max_retries": 2}).to_string()))
+                    .body(Body::from(
+                        json!({"actor": "e2e", "max_retries": 2}).to_string(),
+                    ))
                     .unwrap(),
             )
             .await
@@ -3532,8 +3537,7 @@ async fn axum_end_to_end_plan_run_tick_workspace_capture_quality_approval_export
         .unwrap();
     let detail_body = response_json(detail_resp).await;
     assert!(
-        detail_body["run"]["status"] == "completed"
-            || detail_body["run"]["status"] == "failed"
+        detail_body["run"]["status"] == "completed" || detail_body["run"]["status"] == "failed"
     );
 
     // Step 5: Create workspace (copies target code)
@@ -3569,7 +3573,9 @@ async fn axum_end_to_end_plan_run_tick_workspace_capture_quality_approval_export
         .to_string();
 
     // Verify workspace has the copied file
-    assert!(std::path::Path::new(&workspace_path).join("src.rs").exists());
+    assert!(std::path::Path::new(&workspace_path)
+        .join("src.rs")
+        .exists());
 
     // Step 6: Modify workspace (simulate work)
     std::fs::write(
@@ -3608,9 +3614,7 @@ async fn axum_end_to_end_plan_run_tick_workspace_capture_quality_approval_export
         .oneshot(
             Request::builder()
                 .method(Method::GET)
-                .uri(format!(
-                    "/api/v1/supervised-patch/artifacts/{artifact_id}"
-                ))
+                .uri(format!("/api/v1/supervised-patch/artifacts/{artifact_id}"))
                 .body(Body::empty())
                 .unwrap(),
         )
@@ -3667,11 +3671,21 @@ async fn axum_end_to_end_plan_run_tick_workspace_capture_quality_approval_export
         .unwrap();
     let export_status = export_resp.status();
     let export_body = response_json(export_resp).await;
-    assert_eq!(export_status, StatusCode::OK, "export failed: {export_body}");
+    assert_eq!(
+        export_status,
+        StatusCode::OK,
+        "export failed: {export_body}"
+    );
     let export = &export_body["export"];
     assert_eq!(export["artifact_id"], artifact_id);
-    assert!(export["artifact"]["patch_hash"].as_str().unwrap().starts_with("sha256:"));
-    assert!(!export["artifact"]["changed_files"].as_array().unwrap().is_empty());
+    assert!(export["artifact"]["patch_hash"]
+        .as_str()
+        .unwrap()
+        .starts_with("sha256:"));
+    assert!(!export["artifact"]["changed_files"]
+        .as_array()
+        .unwrap()
+        .is_empty());
     assert_eq!(export["approval_binding"]["export_eligible"], true);
     assert_eq!(export["integrity"]["integrity_ok"], true);
 
@@ -3692,7 +3706,6 @@ async fn axum_end_to_end_plan_run_tick_workspace_capture_quality_approval_export
     assert_eq!(cleanup_resp.status(), StatusCode::OK);
     assert!(!std::path::Path::new(&workspace_path).exists());
 }
-
 
 #[tokio::test]
 async fn axum_e2e_command_executor_produces_real_patch_export() {
@@ -3774,11 +3787,9 @@ async fn axum_e2e_command_executor_produces_real_patch_export() {
         .to_string();
 
     // Verify workspace has the copied README.md from target
-    assert!(
-        std::path::Path::new(&workspace_path)
-            .join("README.md")
-            .exists()
-    );
+    assert!(std::path::Path::new(&workspace_path)
+        .join("README.md")
+        .exists());
 
     // 5. Tick the workflow run with executor=command
     // The plan graph nodes don't have a command field, so CommandNodeExecutor
@@ -3862,9 +3873,7 @@ async fn axum_e2e_command_executor_produces_real_patch_export() {
         .oneshot(
             Request::builder()
                 .method(Method::GET)
-                .uri(format!(
-                    "/api/v1/supervised-patch/artifacts/{artifact_id}"
-                ))
+                .uri(format!("/api/v1/supervised-patch/artifacts/{artifact_id}"))
                 .body(Body::empty())
                 .unwrap(),
         )
@@ -3873,9 +3882,7 @@ async fn axum_e2e_command_executor_produces_real_patch_export() {
     assert_eq!(integrity_resp.status(), StatusCode::OK);
     let integrity_body = response_json(integrity_resp).await;
     assert_eq!(integrity_body["artifact"]["artifact_id"], artifact_id);
-    assert_eq!(
-        integrity_body["artifact"]["patch_hash"], patch_hash
-    );
+    assert_eq!(integrity_body["artifact"]["patch_hash"], patch_hash);
 
     // 9. Record approval WITH proper binding fields
     let changed_files_vec: Vec<String> = artifact["changed_files"]
@@ -3926,16 +3933,21 @@ async fn axum_e2e_command_executor_produces_real_patch_export() {
         .unwrap();
     let export_status = export_resp.status();
     let export_body = response_json(export_resp).await;
-    assert_eq!(export_status, StatusCode::OK, "export failed: {export_body}");
+    assert_eq!(
+        export_status,
+        StatusCode::OK,
+        "export failed: {export_body}"
+    );
     let export = &export_body["export"];
     assert_eq!(export["artifact_id"], artifact_id);
-    assert!(
-        export["artifact"]["patch_hash"]
-            .as_str()
-            .unwrap()
-            .starts_with("sha256:")
-    );
-    assert!(!export["artifact"]["changed_files"].as_array().unwrap().is_empty());
+    assert!(export["artifact"]["patch_hash"]
+        .as_str()
+        .unwrap()
+        .starts_with("sha256:"));
+    assert!(!export["artifact"]["changed_files"]
+        .as_array()
+        .unwrap()
+        .is_empty());
     assert_eq!(export["approval_binding"]["export_eligible"], true);
     assert_eq!(export["integrity"]["integrity_ok"], true);
 }
@@ -3986,7 +3998,9 @@ async fn axum_tick_with_command_executor_uses_command_node_executor() {
                 .method(Method::POST)
                 .uri(format!("/api/v1/workflow-runs/{run_id}/tick"))
                 .header(header::CONTENT_TYPE, "application/json")
-                .body(Body::from(json!({"actor": "test", "executor": "command"}).to_string()))
+                .body(Body::from(
+                    json!({"actor": "test", "executor": "command"}).to_string(),
+                ))
                 .unwrap(),
         )
         .await
@@ -4046,7 +4060,9 @@ async fn axum_tick_with_unknown_executor_falls_back_to_noop() {
                 .method(Method::POST)
                 .uri(format!("/api/v1/workflow-runs/{run_id}/tick"))
                 .header(header::CONTENT_TYPE, "application/json")
-                .body(Body::from(json!({"actor": "test", "executor": "fake_executor"}).to_string()))
+                .body(Body::from(
+                    json!({"actor": "test", "executor": "fake_executor"}).to_string(),
+                ))
                 .unwrap(),
         )
         .await
@@ -4127,7 +4143,8 @@ fn cli_node_executor_resolve_prompt_and_executor() {
     use engine::cli::CliNodeExecutor;
     use serde_json::json;
 
-    let executor = CliNodeExecutor::new(Some("/bin/claude".into()), Some("/bin/codex".into()), 5000);
+    let executor =
+        CliNodeExecutor::new(Some("/bin/claude".into()), Some("/bin/codex".into()), 5000);
 
     let input_with_prompt = engine::node_executor::NodeExecutionInput {
         node_id: "n1".into(),
@@ -4137,7 +4154,10 @@ fn cli_node_executor_resolve_prompt_and_executor() {
         node_metadata: json!({"prompt": "do something"}),
     };
     assert_eq!(executor.resolve_prompt(&input_with_prompt), "do something");
-    assert_eq!(executor.resolve_executor(&input_with_prompt), "claude_code_cli");
+    assert_eq!(
+        executor.resolve_executor(&input_with_prompt),
+        "claude_code_cli"
+    );
 
     let input_with_command = engine::node_executor::NodeExecutionInput {
         node_id: "n2".into(),

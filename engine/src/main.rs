@@ -100,7 +100,9 @@ async fn main() {
     if host == "0.0.0.0" {
         let cors = std::env::var("ACP_CORS_ORIGINS").unwrap_or_default();
         if cors.is_empty() || cors == "*" {
-            eprintln!("[acp-warning] CORS allows all origins — set ACP_CORS_ORIGINS for production");
+            eprintln!(
+                "[acp-warning] CORS allows all origins — set ACP_CORS_ORIGINS for production"
+            );
         }
     }
 
@@ -114,7 +116,10 @@ async fn main() {
         let mut scheduler = WorkflowScheduler::new(store_for_scheduler, scheduler_config);
         scheduler.start().expect("failed to start scheduler");
         let scheduler_arc = Arc::new(Mutex::new(scheduler));
-        println!("[acp-startup] scheduler=enabled interval={}ms executor={}", interval, executor_type);
+        println!(
+            "[acp-startup] scheduler=enabled interval={}ms executor={}",
+            interval, executor_type
+        );
         state.with_scheduler(scheduler_arc)
     } else {
         state

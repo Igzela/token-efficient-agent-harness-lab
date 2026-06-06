@@ -20,11 +20,7 @@ pub struct CliNodeExecutor {
 }
 
 impl CliNodeExecutor {
-    pub fn new(
-        claude_bin: Option<String>,
-        codex_bin: Option<String>,
-        timeout_ms: u64,
-    ) -> Self {
+    pub fn new(claude_bin: Option<String>, codex_bin: Option<String>, timeout_ms: u64) -> Self {
         let default_executor = if claude_bin.is_some() {
             "claude_code_cli".to_string()
         } else if codex_bin.is_some() {
@@ -185,7 +181,11 @@ impl NodeExecutor for CliNodeExecutor {
                     return NodeExecutionOutput {
                         status: "failed".to_string(),
                         executor_type: effective_type.to_string(),
-                        output: if stdout.is_empty() { None } else { Some(stdout) },
+                        output: if stdout.is_empty() {
+                            None
+                        } else {
+                            Some(stdout)
+                        },
                         error_domain: Some("cli_execution_error".to_string()),
                         error_message: Some(msg),
                         input_tokens: None,
@@ -200,10 +200,7 @@ impl NodeExecutor for CliNodeExecutor {
             }
             Err(timeout_elapsed) => {
                 let (domain, msg) = if timeout_elapsed == 0 {
-                    (
-                        "cli_not_found",
-                        format!("failed to spawn {effective_type}"),
-                    )
+                    ("cli_not_found", format!("failed to spawn {effective_type}"))
                 } else {
                     (
                         "cli_timeout",
@@ -236,7 +233,11 @@ fn parse_cli_output(raw: &str, executor_type: &str, latency_ms: i64) -> NodeExec
             return NodeExecutionOutput {
                 status: "failed".to_string(),
                 executor_type: executor_type.to_string(),
-                output: if raw.is_empty() { None } else { Some(raw.to_string()) },
+                output: if raw.is_empty() {
+                    None
+                } else {
+                    Some(raw.to_string())
+                },
                 error_domain: Some("cli_output_parse_error".to_string()),
                 error_message: Some(format!("failed to parse CLI JSON output: {err}")),
                 input_tokens: None,
@@ -262,7 +263,10 @@ fn parse_cli_output(raw: &str, executor_type: &str, latency_ms: i64) -> NodeExec
 
     let output_tokens = parsed
         .get("usage")
-        .and_then(|u| u.get("output_tokens").or_else(|| u.get("completion_tokens")))
+        .and_then(|u| {
+            u.get("output_tokens")
+                .or_else(|| u.get("completion_tokens"))
+        })
         .and_then(|v| v.as_i64());
 
     let estimated_cost = super::claude_code::compute_cli_cost(
@@ -314,10 +318,7 @@ mod tests {
         let input = make_input(json!({"prompt": "hello", "executor": "unknown_type"}));
         let output = executor.execute_node(&input);
         assert_eq!(output.status, "failed");
-        assert_eq!(
-            output.error_domain.as_deref(),
-            Some("unknown_cli_executor")
-        );
+        assert_eq!(output.error_domain.as_deref(), Some("unknown_cli_executor"));
     }
 
     #[test]

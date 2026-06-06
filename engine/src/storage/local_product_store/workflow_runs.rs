@@ -6,8 +6,13 @@ use super::{append_audit_locked, collect_values, LocalProductStore};
 pub const WORKFLOW_RUN_SCHEMA_VERSION: &str = "workflow_run.v1";
 
 enum LeaseResult {
-    Terminal { action: String, run: Value },
-    NoReadyNode { run: Value },
+    Terminal {
+        action: String,
+        run: Value,
+    },
+    NoReadyNode {
+        run: Value,
+    },
     Leased {
         node_id: String,
         task_type: String,
@@ -376,11 +381,7 @@ impl LocalProductStore {
         )
     }
 
-    pub fn tick_workflow_run(
-        &self,
-        run_id: &str,
-        actor: &str,
-    ) -> Result<Value, String> {
+    pub fn tick_workflow_run(&self, run_id: &str, actor: &str) -> Result<Value, String> {
         use crate::node_executor::NoopNodeExecutor;
         self.tick_with_executor(run_id, actor, 0, &NoopNodeExecutor)
     }
@@ -537,11 +538,20 @@ impl LocalProductStore {
         // Phase 2: Execute (outside SQLite lock)
         match leased {
             LeaseResult::Terminal { action, run } => Ok(json!({ "action": action, "run": run })),
-            LeaseResult::NoReadyNode { run } => Ok(json!({ "action": "no_ready_node", "run": run })),
-            LeaseResult::Leased { node_id, task_type, workflow_id, attempt, mut node_metadata } => {
+            LeaseResult::NoReadyNode { run } => {
+                Ok(json!({ "action": "no_ready_node", "run": run }))
+            }
+            LeaseResult::Leased {
+                node_id,
+                task_type,
+                workflow_id,
+                attempt,
+                mut node_metadata,
+            } => {
                 // Inject workspace_path from supervised_patch_workspaces if available
                 if let Ok(Some(workspace)) = self.get_supervised_patch_workspace_for_run(run_id) {
-                    if let Some(ws_path) = workspace.get("workspace_path").and_then(|v| v.as_str()) {
+                    if let Some(ws_path) = workspace.get("workspace_path").and_then(|v| v.as_str())
+                    {
                         if let Some(obj) = node_metadata.as_object_mut() {
                             obj.insert("workspace_path".to_string(), json!(ws_path));
                         }
@@ -692,7 +702,10 @@ impl LocalProductStore {
         let mut approved_approval = None;
 
         for approval in &approvals {
-            let decision = approval.get("decision").and_then(Value::as_str).unwrap_or("");
+            let decision = approval
+                .get("decision")
+                .and_then(Value::as_str)
+                .unwrap_or("");
             if decision != "approved" {
                 continue;
             }
@@ -977,7 +990,9 @@ fn insert_workflow_run_node_locked(
             node.to_string(),
             node.get("started_at").and_then(Value::as_str),
             node.get("completed_at").and_then(Value::as_str),
-            node.get("attempt_count").and_then(Value::as_i64).unwrap_or(0),
+            node.get("attempt_count")
+                .and_then(Value::as_i64)
+                .unwrap_or(0),
             node.get("timeout_ms").and_then(Value::as_i64),
             node.get("blocked_reason").and_then(Value::as_str),
             node.get("leased_at").and_then(Value::as_str),

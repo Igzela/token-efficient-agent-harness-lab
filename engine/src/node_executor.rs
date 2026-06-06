@@ -191,10 +191,7 @@ impl CommandNodeExecutor {
 
     fn is_command_allowed(&self, command: &str) -> bool {
         let first_token = command.split_whitespace().next().unwrap_or("");
-        let binary = first_token
-            .rsplit('/')
-            .next()
-            .unwrap_or(first_token);
+        let binary = first_token.rsplit('/').next().unwrap_or(first_token);
         self.allowed_binaries.iter().any(|a| a == binary)
             || self.allowed_commands.iter().any(|a| a == binary)
     }
@@ -211,10 +208,7 @@ impl CommandNodeExecutor {
     }
 
     fn parse_argv(command: &str) -> Vec<String> {
-        command
-            .split_whitespace()
-            .map(|s| s.to_string())
-            .collect()
+        command.split_whitespace().map(|s| s.to_string()).collect()
     }
 }
 
@@ -291,7 +285,8 @@ impl NodeExecutor for CommandNodeExecutor {
             cmd.env(k, v);
         }
 
-        let child = match cmd.stdout(std::process::Stdio::piped())
+        let child = match cmd
+            .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::piped())
             .spawn()
         {

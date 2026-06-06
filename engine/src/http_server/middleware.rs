@@ -249,14 +249,12 @@ pub(crate) async fn cors_layer(request: Request, next: Next) -> Response {
     let mut response = next.run(request).await;
     let methods = HeaderValue::from_static("GET,POST,PUT,DELETE,OPTIONS");
     let allowed_headers = HeaderValue::from_static("authorization,content-type");
-    response.headers_mut().insert(
-        header::ACCESS_CONTROL_ALLOW_METHODS,
-        methods,
-    );
-    response.headers_mut().insert(
-        header::ACCESS_CONTROL_ALLOW_HEADERS,
-        allowed_headers,
-    );
+    response
+        .headers_mut()
+        .insert(header::ACCESS_CONTROL_ALLOW_METHODS, methods);
+    response
+        .headers_mut()
+        .insert(header::ACCESS_CONTROL_ALLOW_HEADERS, allowed_headers);
     let origin_to_set = if let Some(req_origin) = origin_header {
         matches_origin(&req_origin).map(|s| s.to_string())
     } else {
@@ -269,7 +267,9 @@ pub(crate) async fn cors_layer(request: Request, next: Next) -> Response {
     };
     if let Some(origin_val) = origin_to_set {
         if let Ok(val) = HeaderValue::from_str(&origin_val) {
-            response.headers_mut().insert(header::ACCESS_CONTROL_ALLOW_ORIGIN, val);
+            response
+                .headers_mut()
+                .insert(header::ACCESS_CONTROL_ALLOW_ORIGIN, val);
         }
     }
     response

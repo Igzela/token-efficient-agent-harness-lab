@@ -5,7 +5,7 @@ use std::thread::JoinHandle;
 use std::time::Duration;
 
 use crate::cli::CliNodeExecutor;
-use crate::node_executor::{NoopNodeExecutor, NodeExecutor};
+use crate::node_executor::{NodeExecutor, NoopNodeExecutor};
 use crate::storage::local_product_store::LocalProductStore;
 
 #[derive(Debug, Clone)]
@@ -41,23 +41,29 @@ impl SchedulerConfig {
             .ok()
             .and_then(|v| v.parse().ok())
             .unwrap_or(300_000);
-        let executor_type = std::env::var("ACP_SCHEDULER_EXECUTOR")
-            .unwrap_or_else(|_| "noop".to_string());
-        Self { interval_ms, max_concurrent, lease_timeout_ms, executor_type }
+        let executor_type =
+            std::env::var("ACP_SCHEDULER_EXECUTOR").unwrap_or_else(|_| "noop".to_string());
+        Self {
+            interval_ms,
+            max_concurrent,
+            lease_timeout_ms,
+            executor_type,
+        }
     }
 }
 
 fn create_scheduler_executor(executor_type: &str) -> Arc<dyn NodeExecutor> {
     match executor_type {
-        "command" => {
-            Arc::new(crate::node_executor::CommandNodeExecutor::default())
-        }
+        "command" => Arc::new(crate::node_executor::CommandNodeExecutor::default()),
         "claude_code_cli" | "codex_cli" => {
             let config = crate::cli::CliConfig::from_env();
             match CliNodeExecutor::from_config(&config) {
                 Some(exec) => Arc::new(exec),
                 None => {
-                    eprintln!("[scheduler] CLI executor '{}' not available, falling back to noop", executor_type);
+                    eprintln!(
+                        "[scheduler] CLI executor '{}' not available, falling back to noop",
+                        executor_type
+                    );
                     Arc::new(NoopNodeExecutor)
                 }
             }
@@ -114,11 +120,8 @@ impl WorkflowScheduler {
                     Ok(ticks) => {
                         tick_count.fetch_add(ticks, Ordering::SeqCst);
                         if let Ok(mut guard) = last_tick_at.lock() {
-                            *guard = Some(
-                                chrono::Utc::now()
-                                    .format("%Y-%m-%dT%H:%M:%SZ")
-                                    .to_string(),
-                            );
+                            *guard =
+                                Some(chrono::Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string());
                         }
                     }
                     Err(e) => {
@@ -133,11 +136,7 @@ impl WorkflowScheduler {
         });
 
         self.handle = Some(handle);
-        self.started_at = Some(
-            chrono::Utc::now()
-                .format("%Y-%m-%dT%H:%M:%SZ")
-                .to_string(),
-        );
+        self.started_at = Some(chrono::Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string());
         Ok(())
     }
 
@@ -220,9 +219,7 @@ mod tests {
         Arc::new(LocalProductStore::new(":memory:").unwrap())
     }
 
-    fn make_plan_value(
-        ids: &crate::read_only_planner::WorkflowPlanIds,
-    ) -> Value {
+    fn make_plan_value(ids: &crate::read_only_planner::WorkflowPlanIds) -> Value {
         json!({
             "schema_version": "read_only_plan.v1",
             "plan_id": ids.plan_id,
@@ -272,7 +269,9 @@ mod tests {
             })
             .unwrap();
         let plan_id = plan["plan_id"].as_str().unwrap();
-        let run = store.create_workflow_run_from_plan(plan_id, "actor").unwrap();
+        let run = store
+            .create_workflow_run_from_plan(plan_id, "actor")
+            .unwrap();
         run["run_id"].as_str().unwrap().to_string()
     }
 

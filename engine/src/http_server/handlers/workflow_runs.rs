@@ -1,11 +1,11 @@
 use axum::extract::{Extension, Path as AxumPath, Query, State};
-use axum::http::{Uri, HeaderMap, StatusCode};
+use axum::http::{HeaderMap, StatusCode, Uri};
 use axum::response::IntoResponse;
 use axum::Json;
 use serde_json::json;
 
-use crate::http_server::middleware::{RequestId, 
-    authorize, cors_headers, internal_error, require_store, ApiError,
+use crate::http_server::middleware::{
+    authorize, cors_headers, internal_error, require_store, ApiError, RequestId,
 };
 use crate::http_server::state::AxumApiState;
 use crate::http_server::{
@@ -239,10 +239,7 @@ pub(crate) async fn api_tick_workflow_run(
 ) -> Result<impl IntoResponse, ApiError> {
     let context = authorize(&state, &headers, "dispatch:read", uri.path(), &request_id.0)?;
     let store = require_store(&state)?;
-    let actor = request
-        .actor
-        .as_deref()
-        .unwrap_or(&context.api_key_id);
+    let actor = request.actor.as_deref().unwrap_or(&context.api_key_id);
     let max_retries = request.max_retries.unwrap_or(0).clamp(0, 10);
     let executor_type = request.executor.as_deref().unwrap_or("noop");
     let timeout_ms = request.timeout_ms.unwrap_or(30_000).clamp(1000, 300_000);
@@ -251,7 +248,13 @@ pub(crate) async fn api_tick_workflow_run(
         "command" => {
             use crate::node_executor::CommandNodeExecutor;
             let executor = CommandNodeExecutor::default().with_timeout(timeout_ms);
-            match store.tick_with_executor_and_command(&run_id, actor, max_retries, &executor, request.command.as_deref()) {
+            match store.tick_with_executor_and_command(
+                &run_id,
+                actor,
+                max_retries,
+                &executor,
+                request.command.as_deref(),
+            ) {
                 Ok(result) => Ok((cors_headers(), Json(json_response("tick", result)))),
                 Err(e) if e.starts_with("workflow run not found:") => Err(not_found()),
                 Err(e) if e.contains("terminal") => Err(ApiError::with_code(
@@ -291,18 +294,16 @@ pub(crate) async fn api_tick_workflow_run(
                 }
             }
         }
-        _ => {
-            match store.tick_with_retry(&run_id, actor, max_retries) {
-                Ok(result) => Ok((cors_headers(), Json(json_response("tick", result)))),
-                Err(e) if e.starts_with("workflow run not found:") => Err(not_found()),
-                Err(e) if e.contains("terminal") => Err(ApiError::with_code(
-                    StatusCode::CONFLICT,
-                    "run_terminal",
-                    &e,
-                )),
-                Err(e) => Err(internal_error(e)),
-            }
-        }
+        _ => match store.tick_with_retry(&run_id, actor, max_retries) {
+            Ok(result) => Ok((cors_headers(), Json(json_response("tick", result)))),
+            Err(e) if e.starts_with("workflow run not found:") => Err(not_found()),
+            Err(e) if e.contains("terminal") => Err(ApiError::with_code(
+                StatusCode::CONFLICT,
+                "run_terminal",
+                &e,
+            )),
+            Err(e) => Err(internal_error(e)),
+        },
     }
 }
 

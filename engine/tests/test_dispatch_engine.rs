@@ -30,7 +30,10 @@ fn test_dispatch_populates_record_fields() {
     let v = engine.dispatch("Test request", "test_fixture");
     assert!(!v["record"]["task_analysis_id"].as_str().unwrap().is_empty());
     assert!(!v["record"]["decision_id"].as_str().unwrap().is_empty());
-    assert!(!v["record"]["budget_reservation_id"].as_str().unwrap().is_empty());
+    assert!(!v["record"]["budget_reservation_id"]
+        .as_str()
+        .unwrap()
+        .is_empty());
 }
 
 #[test]

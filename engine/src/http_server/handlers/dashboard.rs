@@ -4,7 +4,9 @@ use axum::response::IntoResponse;
 use axum::Json;
 use serde_json::json;
 
-use crate::http_server::middleware::{RequestId, authorize, cors_headers, internal_error, ApiError};
+use crate::http_server::middleware::{
+    authorize, cors_headers, internal_error, ApiError, RequestId,
+};
 use crate::http_server::state::AxumApiState;
 use crate::provider::config::provider_pricing_from_env;
 use crate::storage::local_product_store::local_boundaries;
