@@ -97,11 +97,7 @@ fn find_event(run: &Value, event_type: &str) -> Option<Value> {
         .and_then(Value::as_array)
         .unwrap_or(&vec![])
         .iter()
-        .find(|e| {
-            e.get("event_type")
-                .and_then(Value::as_str)
-                == Some(event_type)
-        })
+        .find(|e| e.get("event_type").and_then(Value::as_str) == Some(event_type))
         .cloned()
 }
 
@@ -189,7 +185,11 @@ fn test_remove_workflow_node_success() {
     assert!(ids.contains(&"node-a".to_string()));
 
     let edges = edge_ids(&updated);
-    assert_eq!(edges.len(), 0, "expected 0 edges after node-b removal (edge-ab connected)");
+    assert_eq!(
+        edges.len(),
+        0,
+        "expected 0 edges after node-b removal (edge-ab connected)"
+    );
 }
 
 #[test]
@@ -200,7 +200,10 @@ fn test_remove_workflow_node_not_found_fails() {
 
     // Removing a nonexistent node succeeds silently (no rows deleted) but still records event
     let result = store.remove_workflow_node(run_id, "node-nonexistent", "test", "not found");
-    assert!(result.is_ok(), "removing nonexistent node is a no-op, not an error");
+    assert!(
+        result.is_ok(),
+        "removing nonexistent node is a no-op, not an error"
+    );
 }
 
 #[test]
@@ -256,8 +259,7 @@ fn test_update_workflow_node_status_invalid_fails() {
     let run = run_from_plan(&store);
     let run_id = run.get("run_id").and_then(Value::as_str).unwrap();
 
-    let result =
-        store.update_workflow_node_status(run_id, "node-a", "bogus", "test", "invalid");
+    let result = store.update_workflow_node_status(run_id, "node-a", "bogus", "test", "invalid");
     assert!(result.is_err(), "expected error on invalid status");
     assert!(
         result.unwrap_err().contains("invalid"),
@@ -389,10 +391,7 @@ fn test_rewire_workflow_edge_success() {
         .unwrap();
 
     let updated = store.get_workflow_run(run_id).unwrap().unwrap();
-    let edges = updated
-        .get("edges")
-        .and_then(Value::as_array)
-        .unwrap();
+    let edges = updated.get("edges").and_then(Value::as_array).unwrap();
     let edge_ab = edges
         .iter()
         .find(|e| e.get("edge_id").and_then(Value::as_str) == Some("edge-ab"))
@@ -436,10 +435,7 @@ fn test_rewire_workflow_edge_partial() {
         .unwrap();
 
     let updated = store.get_workflow_run(run_id).unwrap().unwrap();
-    let edges = updated
-        .get("edges")
-        .and_then(Value::as_array)
-        .unwrap();
+    let edges = updated.get("edges").and_then(Value::as_array).unwrap();
     let edge_ab = edges
         .iter()
         .find(|e| e.get("edge_id").and_then(Value::as_str) == Some("edge-ab"))
@@ -493,14 +489,15 @@ fn test_replay_mutation_events_with_add_and_remove() {
 
     let replay = store.replay_mutation_events(run_id).unwrap();
     assert!(
-        replay.get("mutations_replayed").and_then(Value::as_u64).unwrap() >= 2,
+        replay
+            .get("mutations_replayed")
+            .and_then(Value::as_u64)
+            .unwrap()
+            >= 2,
         "expected at least 2 mutations replayed"
     );
 
-    let replay_nodes = replay
-        .get("nodes")
-        .and_then(Value::as_array)
-        .unwrap();
+    let replay_nodes = replay.get("nodes").and_then(Value::as_array).unwrap();
     let replay_node_ids: Vec<&str> = replay_nodes
         .iter()
         .map(|n| n.get("node_id").and_then(Value::as_str).unwrap())
@@ -539,10 +536,7 @@ fn test_replay_protects_completed_nodes() {
         .get("protected_completed_nodes")
         .and_then(Value::as_array)
         .unwrap();
-    let protected_ids: Vec<&str> = protected
-        .iter()
-        .map(|v| v.as_str().unwrap())
-        .collect();
+    let protected_ids: Vec<&str> = protected.iter().map(|v| v.as_str().unwrap()).collect();
     assert!(
         protected_ids.contains(&"node-a"),
         "node-a should be in protected_completed_nodes after tick"
@@ -629,7 +623,10 @@ fn test_apply_dag_mutations_batch_add_node() {
 
     let updated = store.get_workflow_run(run_id).unwrap().unwrap();
     let ids = node_ids(&updated);
-    assert!(ids.contains(&"node-c".to_string()), "node-c should exist after batch add");
+    assert!(
+        ids.contains(&"node-c".to_string()),
+        "node-c should exist after batch add"
+    );
 }
 
 #[test]
@@ -665,9 +662,7 @@ fn test_apply_dag_mutations_batch_records_events() {
         .and_then(Value::as_array)
         .unwrap()
         .iter()
-        .filter(|e| {
-            e.get("event_type").and_then(Value::as_str) == Some("dag.mutation.applied")
-        })
+        .filter(|e| e.get("event_type").and_then(Value::as_str) == Some("dag.mutation.applied"))
         .collect();
     assert!(
         !applied_events.is_empty(),
@@ -712,7 +707,10 @@ fn test_export_import_roundtrip_with_mutations() {
 
     let imported_run = store2.get_workflow_run(run_id).unwrap().unwrap();
     let ids = node_ids(&imported_run);
-    assert!(ids.contains(&"node-c".to_string()), "imported run should have node-c");
+    assert!(
+        ids.contains(&"node-c".to_string()),
+        "imported run should have node-c"
+    );
     let edges = edge_ids(&imported_run);
     assert!(edges.is_empty(), "imported run should have 0 edges");
 
@@ -772,7 +770,10 @@ fn test_no_duplicate_execution_after_mutation() {
         .find(|n| n.get("node_id").and_then(Value::as_str) == Some("node-a"))
         .unwrap();
     assert_eq!(
-        node_a.get("db_status").and_then(Value::as_str).or_else(|| node_a.get("status").and_then(Value::as_str)),
+        node_a
+            .get("db_status")
+            .and_then(Value::as_str)
+            .or_else(|| node_a.get("status").and_then(Value::as_str)),
         Some("completed")
     );
 
@@ -799,7 +800,10 @@ fn test_no_duplicate_execution_after_mutation() {
         .unwrap();
     // node-a should still be completed (not re-executed)
     assert_eq!(
-        node_a_final.get("db_status").and_then(Value::as_str).or_else(|| node_a_final.get("status").and_then(Value::as_str)),
+        node_a_final
+            .get("db_status")
+            .and_then(Value::as_str)
+            .or_else(|| node_a_final.get("status").and_then(Value::as_str)),
         Some("completed"),
         "node-a should remain completed, not re-executed"
     );
@@ -822,16 +826,11 @@ fn test_workflow_run_detail_includes_mutation_events() {
         .unwrap();
 
     let detail = store.get_workflow_run(run_id).unwrap().unwrap();
-    let events = detail
-        .get("events")
-        .and_then(Value::as_array)
-        .unwrap();
+    let events = detail.get("events").and_then(Value::as_array).unwrap();
 
     let mutation_event = events
         .iter()
-        .find(|e| {
-            e.get("event_type").and_then(Value::as_str) == Some("dag.mutation.node_added")
-        });
+        .find(|e| e.get("event_type").and_then(Value::as_str) == Some("dag.mutation.node_added"));
     assert!(
         mutation_event.is_some(),
         "get_workflow_run should include mutation events in the events array"

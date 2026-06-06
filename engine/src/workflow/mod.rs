@@ -3,4 +3,7 @@ pub mod concurrency;
 pub mod context_pack;
 pub mod dag_manager;
 pub mod dag_mutations;
+pub mod dynamic_controller;
+#[cfg(test)]
+mod dynamic_controller_tests;
 pub mod graph_operations;

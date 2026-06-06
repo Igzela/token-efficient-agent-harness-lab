@@ -2,7 +2,7 @@ use rusqlite::{params, Row};
 use serde_json::{json, Value};
 
 use super::{append_audit_locked, collect_values, LocalProductStore};
-use crate::workflow::dag_manager::{DAGManager, types::DAGMutationProposal};
+use crate::workflow::dag_manager::{types::DAGMutationProposal, DAGManager};
 
 pub const WORKFLOW_RUN_SCHEMA_VERSION: &str = "workflow_run.v1";
 
@@ -1420,10 +1420,7 @@ impl LocalProductStore {
                         .map(Some)
                 }
                 "remove_node" => {
-                    let nid = proposal
-                        .target_node_id
-                        .as_deref()
-                        .unwrap_or("");
+                    let nid = proposal.target_node_id.as_deref().unwrap_or("");
                     self.remove_workflow_node(run_id, nid, actor, &proposal.reason)
                         .map(Some)
                 }
@@ -1437,26 +1434,14 @@ impl LocalProductStore {
                         .map(Some)
                 }
                 "remove_edge" => {
-                    let eid = proposal
-                        .target_edge_id
-                        .as_deref()
-                        .unwrap_or("");
+                    let eid = proposal.target_edge_id.as_deref().unwrap_or("");
                     self.remove_workflow_edge(run_id, eid, actor, &proposal.reason)
                         .map(Some)
                 }
                 "rewire_edge" => {
-                    let eid = proposal
-                        .target_edge_id
-                        .as_deref()
-                        .unwrap_or("");
-                    let new_from = proposal
-                        .payload
-                        .get("from_node")
-                        .and_then(Value::as_str);
-                    let new_to = proposal
-                        .payload
-                        .get("to_node")
-                        .and_then(Value::as_str);
+                    let eid = proposal.target_edge_id.as_deref().unwrap_or("");
+                    let new_from = proposal.payload.get("from_node").and_then(Value::as_str);
+                    let new_to = proposal.payload.get("to_node").and_then(Value::as_str);
                     self.rewire_workflow_edge(
                         run_id,
                         eid,
@@ -1468,23 +1453,14 @@ impl LocalProductStore {
                     .map(Some)
                 }
                 "update_node" => {
-                    let nid = proposal
-                        .target_node_id
-                        .as_deref()
-                        .unwrap_or("");
+                    let nid = proposal.target_node_id.as_deref().unwrap_or("");
                     let status = proposal
                         .payload
                         .get("status")
                         .and_then(Value::as_str)
                         .unwrap_or("pending");
-                    self.update_workflow_node_status(
-                        run_id,
-                        nid,
-                        status,
-                        actor,
-                        &proposal.reason,
-                    )
-                    .map(Some)
+                    self.update_workflow_node_status(run_id, nid, status, actor, &proposal.reason)
+                        .map(Some)
                 }
                 _ => Err(format!(
                     "unsupported mutation type: {}",
@@ -1549,9 +1525,8 @@ impl LocalProductStore {
             .cloned()
             .unwrap_or_default();
 
-        let all_events = self.with_conn(|conn| {
-            workflow_run_events_locked(conn, run_id, 100_000)
-        })?;
+        let all_events =
+            self.with_conn(|conn| workflow_run_events_locked(conn, run_id, 100_000))?;
 
         let mutation_events: Vec<&Value> = all_events
             .iter()
@@ -1577,9 +1552,10 @@ impl LocalProductStore {
             match event_type {
                 "dag.mutation.node_added" => {
                     if let Some(node_id) = details.get("node_id").and_then(Value::as_str) {
-                        if !nodes.iter().any(|n| {
-                            n.get("node_id").and_then(Value::as_str) == Some(node_id)
-                        }) {
+                        if !nodes
+                            .iter()
+                            .any(|n| n.get("node_id").and_then(Value::as_str) == Some(node_id))
+                        {
                             nodes.push(json!({
                                 "node_id": node_id,
                                 "status": "pending",
@@ -1591,20 +1567,18 @@ impl LocalProductStore {
                 }
                 "dag.mutation.node_removed" => {
                     if let Some(node_id) = details.get("node_id").and_then(Value::as_str) {
-                        nodes.retain(|n| {
-                            n.get("node_id").and_then(Value::as_str) != Some(node_id)
-                        });
+                        nodes.retain(|n| n.get("node_id").and_then(Value::as_str) != Some(node_id));
                     }
                     mutations_replayed += 1;
                 }
                 "dag.mutation.node_status_updated" => {
                     if let Some(node_id) = details.get("node_id").and_then(Value::as_str) {
-                        if let Some(new_status) =
-                            details.get("new_status").and_then(Value::as_str)
+                        if let Some(new_status) = details.get("new_status").and_then(Value::as_str)
                         {
-                            if let Some(node) = nodes.iter_mut().find(|n| {
-                                n.get("node_id").and_then(Value::as_str) == Some(node_id)
-                            }) {
+                            if let Some(node) = nodes
+                                .iter_mut()
+                                .find(|n| n.get("node_id").and_then(Value::as_str) == Some(node_id))
+                            {
                                 if let Some(obj) = node.as_object_mut() {
                                     obj.insert("status".to_string(), json!(new_status));
                                 }
@@ -1615,9 +1589,10 @@ impl LocalProductStore {
                 }
                 "dag.mutation.edge_added" => {
                     if let Some(edge_id) = details.get("edge_id").and_then(Value::as_str) {
-                        if !edges.iter().any(|e| {
-                            e.get("edge_id").and_then(Value::as_str) == Some(edge_id)
-                        }) {
+                        if !edges
+                            .iter()
+                            .any(|e| e.get("edge_id").and_then(Value::as_str) == Some(edge_id))
+                        {
                             edges.push(json!({
                                 "edge_id": edge_id,
                             }));
@@ -1627,25 +1602,23 @@ impl LocalProductStore {
                 }
                 "dag.mutation.edge_removed" => {
                     if let Some(edge_id) = details.get("edge_id").and_then(Value::as_str) {
-                        edges.retain(|e| {
-                            e.get("edge_id").and_then(Value::as_str) != Some(edge_id)
-                        });
+                        edges.retain(|e| e.get("edge_id").and_then(Value::as_str) != Some(edge_id));
                     }
                     mutations_replayed += 1;
                 }
                 "dag.mutation.edge_rewired" => {
                     if let Some(edge_id) = details.get("edge_id").and_then(Value::as_str) {
-                        if let Some(edge) = edges.iter_mut().find(|e| {
-                            e.get("edge_id").and_then(Value::as_str) == Some(edge_id)
-                        }) {
+                        if let Some(edge) = edges
+                            .iter_mut()
+                            .find(|e| e.get("edge_id").and_then(Value::as_str) == Some(edge_id))
+                        {
                             if let Some(obj) = edge.as_object_mut() {
                                 if let Some(new_from) =
                                     details.get("new_from").and_then(Value::as_str)
                                 {
                                     obj.insert("from_node_id".to_string(), json!(new_from));
                                 }
-                                if let Some(new_to) =
-                                    details.get("new_to").and_then(Value::as_str)
+                                if let Some(new_to) = details.get("new_to").and_then(Value::as_str)
                                 {
                                     obj.insert("to_node_id".to_string(), json!(new_to));
                                 }
