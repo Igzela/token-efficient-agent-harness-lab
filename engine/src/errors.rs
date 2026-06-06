@@ -1,3 +1,8 @@
+//! Reference-only module: event store and schema error types.
+//!
+//! Retained for parity with the wire contract error schemas.
+//! Not used by the active runtime (which uses `LocalProductStore` errors).
+
 use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]

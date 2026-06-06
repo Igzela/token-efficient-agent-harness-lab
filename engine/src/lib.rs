@@ -4,10 +4,8 @@
 #![allow(dead_code)]
 #![recursion_limit = "256"]
 
-pub mod app_layer;
 pub mod budget_manager;
 pub mod cli;
-pub mod dispatch;
 pub mod dispatch_decision;
 pub mod dispatch_engine;
 pub mod dispatch_ledger;
@@ -30,7 +28,6 @@ pub mod read_only_planner;
 pub mod routing;
 pub mod runtime;
 pub mod scheduler;
-pub mod sdk;
 pub mod storage;
 pub mod task_analyzer;
 pub mod wire_types;
