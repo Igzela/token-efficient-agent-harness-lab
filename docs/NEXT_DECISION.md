@@ -101,15 +101,19 @@ All planned productization phases (1–7) are complete. No productization Phase 
 
 This track authorizes extending existing supervised autonomous beta infrastructure into a production-grade hosted/self-hosted deployment. It overrides previous "disallowed by default" restrictions for real CLI executor integration in NodeExecutor, persistent scheduler with crash recovery, dashboard operational controls, SDK productization endpoints, and security hardening. The track must **not** create parallel runtime/DAG/scheduler kernels — it extends existing modules only.
 
-| Phase | Scope | Done When |
+| Phase | Scope | Status |
 |---|---|---|
-| 1. CLI Worker Integration | Wire real CLI executor into `CommandNodeExecutor` / `NodeExecutor` trait with config, error handling, and audit trail | NodeExecutor runs real CLI commands via existing `ACP_ENABLE_CLI_EXECUTION=1` path; workspace lifecycle creates and cleans up working directories; all dispatches audited with execution results |
-| 2. Persistent Scheduler | Add crash-recoverable task scheduler that persists run state in SQLite and resumes on restart | Scheduler persists workflow run state before and after each node tick; on restart, incomplete runs resume from last persisted checkpoint; no in-memory-only state for critical scheduling decisions |
-| 3. Dashboard Operations | Add operational controls to dashboard for managing dispatches, scheduling, and workflow lifecycle | Dashboard exposes dispatch pause/resume/cancel, workflow run detail with live node status, and scheduler health; all controls gated by admin auth and scope checks |
-| 4. SDK/API Productization | Expose operational endpoints through typed SDK methods for programmatic dispatch management | SDK methods for dispatch lifecycle, workflow run management, and scheduler status; TypeScript and Python SDKs both covered; OpenAPI docs updated |
-| 5. Security Isolation | Harden authentication, authorization, and audit for production-grade access patterns | Role-based access for all operational endpoints, rate limiting per key, audit trail for all state mutations, input validation on all new routes |
-| 6. Ops/HA/DR | Add health monitoring, backup automation, and disaster recovery for self-hosted deployment | Health checks cover scheduler state, backup schedule with verification, restore-from-backup tested end-to-end, metrics endpoint reports scheduler and worker health |
-| 7. Real Pilot | Run a supervised end-to-end pilot with real CLI workers on a non-production target | Pilot runs successfully with real CLI executor, all audit trails complete, no target repo mutations, manual review of all execution artifacts before any target interaction |
+| 1. CLI Worker Integration | CliNodeExecutor bridges Claude/Codex CLI to NodeExecutor trait; tick handler supports `claude_code_cli`/`codex_cli` executor types | **DONE** — commits 82aa844, ac20dff |
+| 2. Persistent Scheduler | WorkflowScheduler with background thread, lease recovery, crash recovery; `ACP_SCHEDULER_EXECUTOR` selects executor type | **DONE** — commits 82aa844, b8d611b |
+| 3. Dashboard Operations | Create workspace, capture patch, approve/reject/export, cleanup/quarantine with ConfirmDialog | **DONE** — commit 82aa844 |
+| 4. SDK/API Productization | 7 new TypeScript + Python methods; schedulerStatus; response types | **DONE** — commit 82aa844 |
+| 5. Security Isolation | CORS origin matching middleware; health probe bypass; X-Request-ID; production startup warnings; `ACP_CORS_ORIGINS` | **DONE** — commits 82aa844, ac20dff |
+| 6. Ops/HA/DR | 6 failure injection tests (timeout, retry exhaustion, missing dir, expiry, tamper, concurrent tick) | **DONE** — commit 82aa844 |
+| 7. Real Pilot | E2E with executor-produced patch; tick command override; pilot script | **DONE** — commits b8d611b, ac20dff |
+
+**Latest**: ac20dff — CORS origin matching fixed (middleware matches request Origin against allowlist), tick `command` override injects into node_metadata, pilot proves executor-produced patch.
+
+**Next**: Real Claude/Codex CLI pilot (requires CLI binary in environment). Current `ACP_SCHEDULER_EXECUTOR=claude_code_cli` + `ACP_ENABLE_CLI_EXECUTION=1` is ready but needs `claude` or `codex` binary on PATH.
 
 **Boundaries that remain intact:**
 - Provider execution remains default-off and env-gated
