@@ -178,8 +178,22 @@ def main():
         return 1
     with open(greeting_path) as f:
         greeting_content = f.read()
+    if "pub fn greet" not in greeting_content:
+        print(f"FAIL: src/greeting.rs does not contain expected greet function")
+        print(f"  Content: {greeting_content}")
+        return 1
     print(f"  VERIFY: src/greeting.rs created ({len(greeting_content)} bytes)")
     print(f"  Content preview: {greeting_content[:150]}...")
+
+    # Hard assert: lib.rs must contain the module declaration
+    lib_path = os.path.join(ws_path, "src", "lib.rs")
+    with open(lib_path) as f:
+        lib_content = f.read()
+    if "pub mod greeting" not in lib_content:
+        print(f"FAIL: src/lib.rs does not contain 'pub mod greeting'")
+        print(f"  Content: {lib_content}")
+        return 1
+    print(f"  VERIFY: src/lib.rs contains 'pub mod greeting'")
     print()
 
     # Step 6: Capture patch
@@ -195,12 +209,16 @@ def main():
     print(f"  Patch hash: {artifact.get('patch_hash', 'N/A')}")
     print(f"  Changed files: {changed}")
 
-    # Hard assert: patch must contain greeting changes
+    # Hard assert: patch must contain both greeting.rs and lib.rs changes
     has_greeting = any("greeting" in f for f in changed)
+    has_lib = any("lib.rs" in f for f in changed)
     if not has_greeting:
-        print(f"FAIL: Patch does not contain greeting changes. Files: {changed}")
+        print(f"FAIL: Patch missing greeting changes. Files: {changed}")
         return 1
-    print(f"  OK: greeting changes confirmed in patch")
+    if not has_lib:
+        print(f"FAIL: Patch missing lib.rs changes. Files: {changed}")
+        return 1
+    print(f"  OK: greeting + lib.rs changes confirmed in patch")
     print()
 
     # Step 7: Record approval
