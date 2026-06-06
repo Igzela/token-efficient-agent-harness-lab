@@ -26,9 +26,37 @@ The responsible coding agent may choose any of the following without asking for 
 | Architecture refactor (R-series) | **SEALED AT R7.** R1–R7 are complete. R8 is not approved. The `checkpoint.rs` split and `dispatch_decision.rs` split are deferred. No further R-series file splitting is approved. |
 | Dormant module adaptation | 4-phase strategy to selectively activate 23,939 lines of dormant code. Phase 1: Interface Unification (trait Evaluator, Provider adapter, GraphOperations) — COMPLETE. Phase 2: Zero-Conflict Activation (DAGManager in planner, context_pack in task_analyzer, WorkQueue+ResultAggregator+FeedbackIntegrator with AutoPolicies in scheduler) — COMPLETE. Phase 3: Adapted Activation (QualityGateEvaluator, AdvisorBroker in dispatch, ConflictResolver+HumanApprovalGate+WorkflowEngine in scheduler) — COMPLETE (1332 tests). Phase 4: Dead Code Cleanup — COMPLETE (~9,400 lines removed, 1099 tests). All 4 phases done. All boundaries intact. |
 
+## Dynamic Workflow Direction
+
+Current status: **candidate next product track; documented audit only.** This is not implemented yet and does not authorize a new parallel runtime, default-on provider execution, target-repository mutation, hosted deployment, or sandbox/process/container/VM expansion beyond the existing explicit CLI executor path.
+
+Reference model: Claude Code dynamic workflows move orchestration into a workflow script/runtime that can coordinate many subagents, keep intermediate results outside the main conversation context, run in the background, expose progress, and resume/inspect runs. For this repository, the equivalent should be implemented as a Rust control-plane layer over the existing `workflow_runs`, `scheduler`, `dag_manager`, `workflow_engine`, `node_executor`, `quality`, and `routing` modules rather than a second scheduler or DAG kernel.
+
+Current architecture assessment:
+
+| Area | Assessment |
+|---|---|
+| Usability | Local/self-hosted supervised beta is usable: real CLI executor, workspace/capture/export, dashboard, SDK, scheduler, and pilot paths are wired. Hosted production remains partial. |
+| Intelligence | Medium: intelligence comes from explicit CLI executor calls; planner/decomposer remains deterministic and rule-based. |
+| Dynamicity | Medium-low: scheduler executes persisted graphs and records advisory feedback, but does not persist runtime graph mutation, re-plan loops, subagent fan-out, or feedback-driven executor routing. |
+
+Recommended dynamic-workflow implementation batches:
+
+| Order | Batch | Done When |
+|---|---|---|
+| 1 | Persisted Graph Mutation Runtime | Workflow run storage records `node_added`, `node_split`, `edge_added`, `node_blocked`, `replan_requested`, and `replan_applied` events; replay reconstructs the same graph; tests prove no duplicate node execution after mutation. |
+| 2 | DynamicWorkflowController | A controller owns the loop: observe run state, choose next action, tick executor, evaluate result, mutate graph, pause for approval, or finish. It extends existing `scheduler`/`workflow_runs` and does not create a parallel scheduler. |
+| 3 | Feedback-Driven Routing | Scheduler feedback is persisted across ticks and uses real executor type, task group, success/failure, latency, retry count, quality result, and cost. Later nodes can select executor/model tier from this history instead of hard-coded advisory/noop fields. |
+| 4 | Dynamic Decomposition | Replace fixed simple/medium/complex decomposition with a planner interface that can propose node additions/splits from observations, test failures, quality failures, and user goals. Initial implementation may still use deterministic rules, but the interface must support CLI/provider-backed planners behind explicit gates. |
+| 5 | Agent Profiles / Subagent Runs | Add reusable agent profiles for planner, implementer, reviewer, tester, and researcher. Each node records profile, tools, model/executor, context budget, and workspace scope. The first version may run serially; fan-out/concurrency remains controlled by existing scheduler limits. |
+| 6 | Tool Registry and Hook Points | Record tool capabilities, allowlists, pre/post-execution hooks, and MCP-like external tool descriptors as app-owned metadata. Hooks may block, enrich, or require approval; they must be audited and deterministic in tests. |
+| 7 | Dynamic Workflow E2E Trial | One real pilot proves: broad task → plan → execute → test fails → graph mutates with fix/test nodes → rerun → review/approval → export. The trial must assert graph mutation events, patch contents, test logs, integrity, approval binding, and cleanup/quarantine behavior. |
+
+Minimum acceptance target: a broad task should not merely run a predeclared graph. It must be able to observe a result, change the persisted workflow graph, and continue safely with full auditability.
+
 ## Supervised Autonomous Beta Planning
 
-Current level: planning-only track, no execution authority.
+Current level: supervised execution beta with explicit opt-in runtime primitives. It is not yet a dynamic autonomous workflow runtime.
 
 Authoritative ADR: `docs/adr/0002-supervised-planning-track.md`.
 
@@ -59,7 +87,7 @@ Batch 7 readiness audit outcome:
 | Provider default-off | Existing provider gate remains default-off. | Satisfied, must be preserved |
 | No push/merge/deploy/target mutation | Existing boundaries block these behaviors. | Satisfied, must be preserved |
 
-Next safe action: Slice F is implemented. Next options: (1) harden workspace rollback/quarantine tests, (2) add SDK methods for new workspace/tick/export endpoints, (3) add dashboard controls for workspace lifecycle and export, or (4) continue repo maintenance. No target repo writes, sandbox/VM execution, real workers, provider calls, push/merge/deploy/apply controls, or registered-target `git worktree add`.
+Next safe action: if the user approves a new implementation batch, start Dynamic Workflow Direction Batch 1 with persisted graph mutation runtime and replay tests. Otherwise continue repo maintenance, docs drift repair, and focused regression hardening. No target repo writes, sandbox/VM execution, real workers beyond the existing scheduler/CLI executor path, provider calls, push/merge/deploy/apply controls, or registered-target `git worktree add`.
 
 ## Local Productization Plan
 
@@ -196,9 +224,9 @@ This track authorizes extending existing supervised autonomous beta infrastructu
 | GA-6. SDK/API Completeness | TS/Python SDK: scheduler status, workspace CRUD, capture, approval, export, cleanup/quarantine, workflow tick, artifact diff/detail. Tests: happy path, approval mismatch, artifact tamper, scheduler status. | **DONE** — commit 295467f, 10 new integration tests |
 | GA-7. Soak Test | `scripts/soak_ga_e2e.py` — `--base-url`, `--executor`, `--count`, `--concurrency`. Command executor 50 tasks; real CLI ≥3 tasks. JSON summary: success rate, failure domains, p95 latency, artifact count, cleanup success, cost. Non-zero exit on failure. | **DONE** — commit 0781a71, 10 new integration tests |
 
-**Latest**: GA-5 review UI. 1286 Rust tests pass.
+**Latest**: GA hardening, real CLI pilot, dormant module adaptation cleanup, and the path/hash regression fix are complete. 1099 Rust tests pass.
 
-**Next**: All GA batches complete. GA hardening track finished.
+**Next**: All GA batches complete. GA hardening track finished. Candidate next product direction is Dynamic Workflow Direction above.
 
 **Boundaries that remain intact:**
 - Provider execution remains default-off and env-gated

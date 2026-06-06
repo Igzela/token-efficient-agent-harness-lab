@@ -21,6 +21,21 @@ Batch 1 classified modules for the supervised autonomous beta planning track. Cl
 
 Batch 2 model decision: `WorkflowGraph` is the canonical planning and persistence model, `DAGState` remains graph-mutation state for versioned proposals and rollback, and scheduling-local `DagState` remains a concurrency view. Batch 3 implements the read-only planner against `WorkflowGraph` and app-owned SQLite `workflow_plans` without execution authority. Batch 4 implements inert durable workflow run/node/edge/event/approval metadata in app-owned SQLite without execution authority. Batch 5 adds recommendation-only quality/routing/retry/observability advisory metadata to read-only plans without execution authority. Batch 6 is documentation/design only. Batch 7 Slice A adds storage-only supervised patch workspace/artifact metadata in `engine/src/storage/local_product_store/` without execution authority. Batch 7 Slice B adds GET-only HTTP visibility for that metadata, Slice C adds TypeScript/Python SDK read-only visibility, Slice D adds docs-only approval-binding design, and Slice E adds dashboard read-only supervised patch metadata visibility (read-only tab with list/detail drill-down, boundary badges; typecheck/lint/build verified; no Rust/API/storage changes), without create/update/delete or execution authority. No R8 or broad refactor is approved.
 
+## Dynamic Workflow Readiness Notes
+
+The current system has supervised workflow execution primitives, but not Claude Code-style dynamic workflows. Existing modules should be deepened rather than duplicated:
+
+| Need | Existing modules to extend | Current gap |
+| --- | --- | --- |
+| Runtime graph mutation | `engine/src/workflow/dag_manager/`, `engine/src/storage/local_product_store/workflow_runs.rs`, `engine/src/scheduler.rs` | DAG mutation exists as a model capability, but workflow runs do not yet persist or replay runtime `add_node`/`split_node`/`edge_added` mutations. |
+| Controller loop | `engine/src/scheduler.rs`, `engine/src/orchestration/workflow_engine.rs`, `engine/src/node_executor.rs` | Scheduler ticks ready nodes; no `DynamicWorkflowController` yet owns observe → execute → evaluate → mutate → resume. |
+| Adaptive routing | `engine/src/routing/`, `engine/src/scheduler.rs`, `engine/src/provider/` | Feedback modules are wired, but scheduler feedback is not durable across ticks and still records simplified advisory fields for runtime decisions. |
+| Dynamic decomposition | `engine/src/read_only_planner.rs`, `engine/src/orchestration/task_decomposer.rs`, `engine/src/task_analyzer/` | Decomposition is still rule-based simple/medium/complex graph generation; it does not re-plan from observations or test/quality failures. |
+| Agent profiles / subagent runs | `engine/src/orchestration/agent_role_registry.rs`, `engine/src/cli/`, `engine/src/node_executor.rs` | Nodes can run CLI executors, but reusable planner/implementer/reviewer/tester profiles with scoped tools/context are not first-class runtime records. |
+| Tool registry and hooks | `engine/src/infrastructure/`, `engine/src/http_server/`, future metadata tables | No audited pre/post execution hook registry or MCP-like tool capability metadata is wired into workflow decisions. |
+
+Minimum dynamic-workflow acceptance requires a persisted run to change its graph after observing results, then continue execution with replayable audit evidence. Running a fixed workflow graph through CLI executor is supervised execution, not dynamic workflow orchestration.
+
 Adapter status after Batch 3:
 
 | Source | Target | Purpose | Constraint |
