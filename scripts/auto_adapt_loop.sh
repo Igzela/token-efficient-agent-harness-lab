@@ -214,13 +214,18 @@ for i in $(seq 1 "$MAX_PHASES"); do
     echo "  Phase ${NEXT_PHASE} session completed."
     COMPLETED=$((COMPLETED + 1))
 
-    # Wait for CI to go green — mandatory
-    echo ""
-    echo "  Verifying CI passes..."
-    if ! wait_for_ci_green; then
-        echo "  CI did not pass after Phase ${NEXT_PHASE}. Stopping."
-        FAILED=true
-        break
+    # Only wait for CI if there was a new commit (phase actually changed code)
+    CURRENT_COMMIT=$(git rev-parse HEAD)
+    if [[ "$CURRENT_COMMIT" != "$PRE_COMMIT" ]]; then
+        echo ""
+        echo "  Verifying CI passes..."
+        if ! wait_for_ci_green; then
+            echo "  CI did not pass after Phase ${NEXT_PHASE}. Stopping."
+            FAILED=true
+            break
+        fi
+    else
+        echo "  No new commit — skipping CI wait (Phase ${NEXT_PHASE} verified existing code)."
     fi
 done
 
