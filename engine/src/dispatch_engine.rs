@@ -10,6 +10,7 @@ use crate::dispatch_decision::{
 use crate::dispatch_ledger::{DispatchBundle, DispatchLedger};
 use crate::evaluation_stub::{EvaluationResult, EvaluationStub, Evaluator};
 use crate::executor_adapter::{Executor, NoopExecutor};
+use crate::harness::advisor::{AdvisorBroker, AdvisorContextPack};
 use crate::model_selector::ModelSelector;
 use crate::provider::executor::make_not_executed_result;
 use crate::runtime::FixtureRuntime;
@@ -21,6 +22,7 @@ pub struct DispatchEngine {
     budget_manager: BudgetManager,
     executor: Box<dyn Executor>,
     evaluator: Box<dyn Evaluator>,
+    advisor: Option<AdvisorBroker>,
     ledger: DispatchLedger,
     executor_type_name: String,
     available_executor_tiers: HashSet<String>,
@@ -35,6 +37,7 @@ impl Default for DispatchEngine {
             budget_manager: BudgetManager::new(),
             executor: Box::new(NoopExecutor),
             evaluator: Box::new(EvaluationStub),
+            advisor: None,
             ledger: DispatchLedger::new(),
             executor_type_name: "noop".to_string(),
             available_executor_tiers: HashSet::new(),
@@ -58,6 +61,13 @@ impl DispatchEngine {
     pub fn with_evaluator(evaluator: Box<dyn Evaluator>) -> Self {
         Self {
             evaluator,
+            ..Self::default()
+        }
+    }
+
+    pub fn with_advisor(advisor: AdvisorBroker) -> Self {
+        Self {
+            advisor: Some(advisor),
             ..Self::default()
         }
     }
@@ -151,7 +161,27 @@ impl DispatchEngine {
             &mut runtime,
         );
         let effective_executor_type = self.effective_executor_type(&selection.selected_tier);
-        let execution_policy = build_execution_policy(&analysis, &effective_executor_type);
+        let mut execution_policy = build_execution_policy(&analysis, &effective_executor_type);
+
+        // Phase 3: Activate advisor as dispatch advisory layer
+        if let Some(ref advisor) = self.advisor {
+            let ctx = AdvisorContextPack {
+                task_description: raw_request.to_string(),
+                context: format!(
+                    "domain={} intent={}",
+                    analysis.task_domain, analysis.task_intent
+                ),
+                constraints: analysis.risk_flags.clone(),
+                budget_tokens: analysis.context_budget_estimate,
+            };
+            let advice = advisor.request_advice(&ctx);
+            execution_policy["advisory"] = json!({
+                "recommendation": advice.recommendation,
+                "confidence": advice.confidence,
+                "reasoning": advice.reasoning,
+                "alternatives": advice.alternatives,
+            });
+        }
         let execution_gates = build_execution_gates(
             &analysis,
             &budget_reservation,
@@ -474,6 +504,7 @@ fn derive_final_status(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::harness::advisor::StubAdvisorProvider;
 
     #[test]
     fn successive_dispatches_from_one_engine_have_distinct_dispatch_ids() {
@@ -485,5 +516,49 @@ mod tests {
         assert_eq!(second["record"]["dispatch_id"], "disp-0002");
         assert_eq!(first["execution_result"]["dispatch_id"], "disp-0001");
         assert_eq!(second["execution_result"]["dispatch_id"], "disp-0002");
+    }
+
+    #[test]
+    fn advisor_enriches_dispatch_decision_policy() {
+        let advisor = AdvisorBroker::new(Box::new(StubAdvisorProvider::new()));
+        let engine = DispatchEngine::with_advisor(advisor);
+        let bundle = engine.dispatch_bundle("fix auth bug", "api");
+        let policy: Value =
+            serde_json::from_str(&serde_json::to_string(&bundle.decision).unwrap()).unwrap();
+        let advisory = &policy["execution_policy"]["advisory"];
+        assert!(
+            advisory.is_object(),
+            "advisory should be present in execution_policy"
+        );
+        assert!(advisory["recommendation"].as_str().is_some());
+        assert!(advisory["confidence"].as_f64().is_some());
+    }
+
+    #[test]
+    fn advisor_not_present_by_default() {
+        let engine = DispatchEngine::new();
+        let bundle = engine.dispatch_bundle("test request", "api");
+        let policy: Value =
+            serde_json::from_str(&serde_json::to_string(&bundle.decision).unwrap()).unwrap();
+        assert!(
+            policy["execution_policy"]["advisory"].is_null(),
+            "advisory should not be present without advisor"
+        );
+    }
+
+    #[test]
+    fn with_advisor_and_evaluator_together() {
+        // Build engine with both advisor and quality evaluator
+        let engine = DispatchEngine {
+            advisor: Some(AdvisorBroker::new(Box::new(StubAdvisorProvider::new()))),
+            evaluator: Box::new(crate::quality::evaluator_bridge::QualityGateEvaluator::new()),
+            ..DispatchEngine::default()
+        };
+        let bundle = engine.dispatch_bundle("analyze code quality", "api");
+        // Both advisor and quality evaluator should be active
+        let policy: Value =
+            serde_json::from_str(&serde_json::to_string(&bundle.decision).unwrap()).unwrap();
+        assert!(policy["execution_policy"]["advisory"].is_object());
+        assert!(bundle.evaluation_result["quality_score"].is_number());
     }
 }

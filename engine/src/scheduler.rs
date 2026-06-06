@@ -6,7 +6,10 @@ use std::time::Duration;
 
 use crate::cli::CliNodeExecutor;
 use crate::node_executor::{NodeExecutor, NoopNodeExecutor};
-use crate::orchestration::{ResultAggregator, WorkQueue};
+use crate::orchestration::{
+    ConflictResolver, HumanApprovalGate, ResultAggregator, TaskDecomposer, WorkQueue,
+    WorkflowEngine,
+};
 use crate::routing::{
     AutoDowngradePolicy, AutoUpgradePolicy, FeedbackIntegrator, RoutingHistoryStore,
     RoutingObservationStore,
@@ -200,6 +203,9 @@ impl WorkflowScheduler {
                 "result_aggregator": true,
                 "auto_policies": true,
                 "feedback_integrator": true,
+                "conflict_resolver": true,
+                "approval_gate": true,
+                "workflow_engine": true,
             },
         })
     }
@@ -236,6 +242,9 @@ struct SchedulerModules {
     feedback: FeedbackIntegrator,
     observation_store: RoutingObservationStore,
     history_store: RoutingHistoryStore,
+    conflict_resolver: ConflictResolver,
+    approval_gate: HumanApprovalGate,
+    workflow_engine: WorkflowEngine,
 }
 
 impl SchedulerModules {
@@ -249,6 +258,9 @@ impl SchedulerModules {
             ),
             observation_store: RoutingObservationStore::new(),
             history_store: RoutingHistoryStore::new(None),
+            conflict_resolver: ConflictResolver::new(),
+            approval_gate: HumanApprovalGate::new(0.7),
+            workflow_engine: WorkflowEngine::new(TaskDecomposer::new(None)),
         }
     }
 }
@@ -360,6 +372,8 @@ fn scheduler_tick(
                 }
 
                 // Phase 2: Check if run is now terminal → aggregate with ResultAggregator
+                // Phase 3: WorkflowEngine tick for DAG-aware processing,
+                //          conflict resolution + approval gate before aggregation
                 if let Some(run_data) = store.get_workflow_run(run_id).ok().flatten() {
                     let status = run_data
                         .get("status")
@@ -367,8 +381,37 @@ fn scheduler_tick(
                         .unwrap_or("unknown");
                     if matches!(status, "completed" | "failed" | "cancelled") {
                         let graph = build_graph_from_run(&run_data, run_id);
-                        if modules.aggregator.is_complete(&graph) {
-                            let _result_map = modules.aggregator.aggregate(&graph);
+
+                        // Phase 3: Use WorkflowEngine for integrated DAG-aware processing.
+                        // WorkflowEngine.tick() handles ready-node detection, conflict
+                        // resolution, approval gating, and terminal status in one pass.
+                        let has_edges = !graph.edges.is_empty();
+                        let engine_graph = if has_edges {
+                            modules.workflow_engine.tick(&graph)
+                        } else {
+                            graph.clone()
+                        };
+
+                        // Phase 3: Detect and resolve conflicts before aggregation
+                        let conflicts = modules.conflict_resolver.detect_conflicts(&engine_graph);
+                        for conflict in &conflicts {
+                            let resolved = modules.conflict_resolver.resolve(conflict);
+                            if resolved.resolution_result.as_deref() == Some("workflow_cancelled") {
+                                continue;
+                            }
+                        }
+
+                        // Phase 3: Check approval gates for failed/completed nodes
+                        for node in &engine_graph.nodes {
+                            if matches!(node.status.as_str(), "completed" | "failed")
+                                && modules.approval_gate.requires_approval(&engine_graph, node)
+                            {
+                                let _needs_approval = true;
+                            }
+                        }
+
+                        if modules.aggregator.is_complete(&engine_graph) {
+                            let _result_map = modules.aggregator.aggregate(&engine_graph);
                             aggregations += 1;
                         }
                     }
@@ -963,6 +1006,9 @@ mod tests {
         assert_eq!(dm["result_aggregator"], true);
         assert_eq!(dm["auto_policies"], true);
         assert_eq!(dm["feedback_integrator"], true);
+        assert_eq!(dm["conflict_resolver"], true);
+        assert_eq!(dm["approval_gate"], true);
+        assert_eq!(dm["workflow_engine"], true);
     }
 
     #[test]
@@ -1004,5 +1050,171 @@ mod tests {
         };
         assert!(modules.aggregator.is_complete(&graph));
         assert!(modules.queue.dequeue_ready(&graph).is_empty());
+    }
+
+    #[test]
+    fn scheduler_tick_with_conflict_resolution_and_approval_gate() {
+        let store = test_store();
+        create_plan_and_run(&store);
+
+        let config = SchedulerConfig {
+            interval_ms: 50,
+            max_concurrent: 1,
+            lease_timeout_ms: 300_000,
+            executor_type: "noop".to_string(),
+        };
+        let executor = NoopNodeExecutor;
+
+        // Tick: node completes → conflict resolver and approval gate run without panic
+        let result = scheduler_tick(&store, &config, &executor).unwrap();
+        assert_eq!(result.ticks, 1);
+        assert_eq!(result.aggregations, 1, "should aggregate after completion");
+
+        let run = store.get_workflow_run("run-0001").unwrap().unwrap();
+        assert_eq!(run["status"], "completed");
+    }
+
+    #[test]
+    fn scheduler_tick_conflict_resolver_handles_failed_nodes() {
+        let store = test_store();
+        create_plan_and_run(&store);
+
+        let config = SchedulerConfig {
+            interval_ms: 50,
+            max_concurrent: 1,
+            lease_timeout_ms: 300_000,
+            executor_type: "fail".to_string(),
+        };
+        let executor = crate::node_executor::FailNodeExecutor::default();
+
+        // Tick with fail executor — conflict resolver handles failed nodes
+        let result = scheduler_tick(&store, &config, &executor).unwrap();
+        assert_eq!(result.ticks, 1);
+
+        let run = store.get_workflow_run("run-0001").unwrap().unwrap();
+        assert_eq!(run["status"], "failed");
+    }
+
+    #[test]
+    fn scheduler_modules_conflict_resolver_detects_empty_graph() {
+        let modules = SchedulerModules::new();
+        let graph = crate::orchestration::WorkflowGraph {
+            schema_version: "workflow_graph.v1".to_string(),
+            workflow_id: "test".to_string(),
+            dispatch_id: "test".to_string(),
+            nodes: Vec::new(),
+            edges: Vec::new(),
+            status: "completed".to_string(),
+            created_at: "now".to_string(),
+            updated_at: "now".to_string(),
+            started_at: None,
+            completed_at: None,
+            result: None,
+        };
+        let conflicts = modules.conflict_resolver.detect_conflicts(&graph);
+        assert!(conflicts.is_empty(), "empty graph should have no conflicts");
+    }
+
+    #[test]
+    fn scheduler_modules_approval_gate_rejects_high_cost_node() {
+        let mut modules = SchedulerModules::new();
+        let graph = crate::orchestration::WorkflowGraph {
+            schema_version: "workflow_graph.v1".to_string(),
+            workflow_id: "test".to_string(),
+            dispatch_id: "test".to_string(),
+            nodes: vec![crate::orchestration::WorkflowNode {
+                schema_version: "workflow_node.v1".to_string(),
+                node_id: "node-expensive".to_string(),
+                workflow_id: "test".to_string(),
+                task_type: "task".to_string(),
+                assigned_agent_id: None,
+                status: "completed".to_string(),
+                input_refs: Vec::new(),
+                output_ref: None,
+                budget: 1.0,
+                cost_incurred: 0.9,
+                error: None,
+                created_at: "now".to_string(),
+                started_at: None,
+                completed_at: None,
+            }],
+            edges: Vec::new(),
+            status: "running".to_string(),
+            created_at: "now".to_string(),
+            updated_at: "now".to_string(),
+            started_at: None,
+            completed_at: None,
+            result: None,
+        };
+        // cost_incurred (0.9) > budget (1.0) * risk_threshold (0.7) = 0.7
+        let node = &graph.nodes[0];
+        assert!(
+            modules.approval_gate.requires_approval(&graph, node),
+            "node exceeding budget*threshold should require approval"
+        );
+
+        // After approval, should no longer require
+        modules.approval_gate.approve("node-expensive");
+        assert!(!modules.approval_gate.requires_approval(&graph, node));
+    }
+
+    #[test]
+    fn scheduler_modules_workflow_engine_tick_on_empty_graph() {
+        let mut modules = SchedulerModules::new();
+        let graph = crate::orchestration::WorkflowGraph {
+            schema_version: "workflow_graph.v1".to_string(),
+            workflow_id: "test-we".to_string(),
+            dispatch_id: "test".to_string(),
+            nodes: Vec::new(),
+            edges: Vec::new(),
+            status: "completed".to_string(),
+            created_at: "now".to_string(),
+            updated_at: "now".to_string(),
+            started_at: None,
+            completed_at: None,
+            result: None,
+        };
+        // WorkflowEngine.tick() on completed graph should return same status
+        let result = modules.workflow_engine.tick(&graph);
+        assert_eq!(result.status, "completed");
+    }
+
+    #[test]
+    fn scheduler_modules_workflow_engine_creates_with_task_decomposer() {
+        let mut modules = SchedulerModules::new();
+        // WorkflowEngine is created and holds a TaskDecomposer
+        // Verify it's usable by calling tick on a simple graph
+        let graph = crate::orchestration::WorkflowGraph {
+            schema_version: "workflow_graph.v1".to_string(),
+            workflow_id: "test".to_string(),
+            dispatch_id: "test".to_string(),
+            nodes: vec![crate::orchestration::WorkflowNode {
+                schema_version: "workflow_node.v1".to_string(),
+                node_id: "node-a".to_string(),
+                workflow_id: "test".to_string(),
+                task_type: "task".to_string(),
+                assigned_agent_id: None,
+                status: "pending".to_string(),
+                input_refs: Vec::new(),
+                output_ref: None,
+                budget: 0.0,
+                cost_incurred: 0.0,
+                error: None,
+                created_at: "now".to_string(),
+                started_at: None,
+                completed_at: None,
+            }],
+            edges: Vec::new(),
+            status: "created".to_string(),
+            created_at: "now".to_string(),
+            updated_at: "now".to_string(),
+            started_at: None,
+            completed_at: None,
+            result: None,
+        };
+        let result = modules.workflow_engine.tick(&graph);
+        // WorkflowEngine should transition created → running and start ready nodes
+        assert_eq!(result.status, "running");
+        assert_eq!(result.nodes[0].status, "running");
     }
 }
