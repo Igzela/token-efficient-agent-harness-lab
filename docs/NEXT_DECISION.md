@@ -110,8 +110,8 @@ This track authorizes extending existing supervised autonomous beta infrastructu
 | 5. Security Isolation | CORS origin matching middleware; health probe bypass; X-Request-ID; production startup warnings; `ACP_CORS_ORIGINS` | **DONE** — commits 82aa844, ac20dff |
 | 6. Ops/HA/DR | 6 failure injection tests (timeout, retry exhaustion, missing dir, expiry, tamper, concurrent tick) | **DONE** — commit 82aa844 |
 | 7. Real Pilot | E2E with real Claude Code CLI; command override wiring; `--allowedTools`; hard-assert pilot script | **DONE** — commits 10f4bdc, ae151c4 |
-| GA-1. Artifact Ignore + Persisted Diff | capture_patch excludes build artifacts (target/, node_modules/, .next/, dist/, build/, __pycache__/, .pytest_cache/, .git/), large files, binaries. Stores review-safe unified diff summary in artifact metadata. Diff readable after workspace cleanup. Pilot verifies no build artifacts in patch. | **NEXT** |
-| GA-2. Production Profile | `ACP_PROFILE=local|production`. Production: auth required, CORS not `*`, backup dir configured, CLI/provider explicit opt-in. LAN exposed + auth off or CORS `*` fails startup (not just warning). Tests cover profile gate. | Pending |
+| GA-1. Artifact Ignore + Persisted Diff | capture_patch excludes build artifacts (target/, node_modules/, .next/, dist/, build/, __pycache__/, .pytest_cache/, .git/), large files, binaries. Stores review-safe unified diff summary in artifact metadata. Diff readable after workspace cleanup. Pilot verifies no build artifacts in patch. | **DONE** — commit 2054fcf, 5 new tests |
+| GA-2. Production Profile | `ACP_PROFILE=local|production`. Production: auth required, CORS not `*`, backup dir configured, CLI/provider explicit opt-in. LAN exposed + auth off or CORS `*` fails startup (not just warning). Tests cover profile gate. | **DONE** — commit 556455a, 5 new tests |
 | GA-3. Scheduler Stability | Prove lease anti-concurrency with tests. Confirm heartbeat, lease timeout, retry exhausted, cancel, timeout, cleanup failure behavior. Scheduler status API: `running`, `executor_type`, `tick_count`, `error_count`, `last_error`, `last_tick_at`, `active_runs`. | Pending |
 | GA-4. Observability / Audit | Metrics: executor latency, retry count, artifact count, secret block count, active runs, queue length. Audit: CLI tick, artifact capture, approval, export, cleanup/quarantine events. Runbook in existing ops docs. | Pending |
 | GA-5. Review UI | Dashboard: run/workspace/artifact/diff/changed_files/hash/source_revision/integrity/secret scan/executor/duration/cost/logs. Approve/reject/export/cleanup/quarantine ops. Diff visible before approval. Failure/retry/terminal states clear. | Pending |
@@ -120,7 +120,7 @@ This track authorizes extending existing supervised autonomous beta infrastructu
 
 **Latest**: ae151c4 — Real CLI pilot E2E verified with actual Claude Code CLI process. Hard assertions on file content and patch coverage.
 
-**Next**: GA-1 (Artifact Ignore + Persisted Diff) and GA-2 (Production Profile) — can execute in parallel.
+**Next**: GA-3 (Scheduler Stability) — prove lease anti-concurrency, confirm heartbeat/retry/cancel/timeout behavior, scheduler status API.
 
 **Boundaries that remain intact:**
 - Provider execution remains default-off and env-gated
