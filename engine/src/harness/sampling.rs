@@ -116,13 +116,13 @@ mod tests {
 
     #[test]
     fn report_serializes() {
-        let v = serde_json::to_value(&SamplingRunner::new().build_report("t1", vec![])).unwrap();
+        let v = serde_json::to_value(SamplingRunner::new().build_report("t1", vec![])).unwrap();
         assert_eq!(v["selection_method"], "highest_score");
     }
 
     #[test]
     fn candidate_serializes() {
-        let v = serde_json::to_value(&cand("x", 0.8)).unwrap();
+        let v = serde_json::to_value(cand("x", 0.8)).unwrap();
         assert_eq!(v["candidate_id"], "x");
     }
 }

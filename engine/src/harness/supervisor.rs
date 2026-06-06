@@ -134,7 +134,7 @@ mod tests {
 
     #[test]
     fn report_serializes() {
-        let v = serde_json::to_value(&RuntimeSupervisor::new(300).assess_workers(&[], 0)).unwrap();
-        assert_eq!(v["healthy"], true);
+        let v = serde_json::to_value(RuntimeSupervisor::new(300).assess_workers(&[], 0)).unwrap();
+        assert!(v["healthy"].as_bool().unwrap());
     }
 }

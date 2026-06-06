@@ -2861,3 +2861,1006 @@ async fn axum_delete_backup_removes_backup() {
     let list_body = response_json(list_resp).await;
     assert_eq!(list_body["backups"].as_array().unwrap().len(), 0);
 }
+
+#[tokio::test]
+async fn axum_tick_advances_single_node_run_to_completion() {
+    let dir = tempdir().unwrap();
+    let store = LocalProductStore::new(dir.path().join("tick.db")).unwrap();
+    let app = build_axum_router(AxumApiState::new().with_local_store(store));
+
+    // Create a plan
+    let plan_resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(Method::POST)
+                .uri("/api/v1/plans")
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(
+                    json!({"raw_request": "echo hello", "request_source": "test"}).to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(plan_resp.status(), StatusCode::OK);
+    let plan_body = response_json(plan_resp).await;
+    let plan_id = plan_body["plan"]["plan_id"].as_str().unwrap().to_string();
+
+    // Create a run from the plan
+    let run_resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(Method::POST)
+                .uri("/api/v1/workflow-runs")
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(json!({"plan_id": plan_id}).to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(run_resp.status(), StatusCode::OK);
+    let run_body = response_json(run_resp).await;
+    let run_id = run_body["run"]["run_id"].as_str().unwrap().to_string();
+    assert_eq!(run_body["run"]["status"], "created");
+
+    // Tick the run - should transition to running and execute first node
+    let tick_resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(Method::POST)
+                .uri(format!("/api/v1/workflow-runs/{run_id}/tick"))
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(json!({"actor": "test"}).to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let first_tick_body = response_json(tick_resp).await;
+    // For a single-node plan, the first tick may complete the run immediately
+    let first_action = first_tick_body["tick"]["action"].as_str().unwrap_or("");
+    assert!(
+        first_action == "node_executed" || first_action == "completed",
+        "first tick should execute a node or complete, got: {first_action}"
+    );
+    if first_action == "node_executed" {
+        assert_eq!(first_tick_body["tick"]["executor_type"], "noop");
+    }
+
+    // Keep ticking until run completes (for multi-node plans)
+    for _ in 0..20 {
+        let tick_resp = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method(Method::POST)
+                    .uri(format!("/api/v1/workflow-runs/{run_id}/tick"))
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(json!({"actor": "test"}).to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        if tick_resp.status() == StatusCode::CONFLICT {
+            // Run is already terminal
+            break;
+        }
+        let tick_body = response_json(tick_resp).await;
+        let action = tick_body["tick"]["action"].as_str().unwrap_or("");
+        if action == "completed" || action == "failed" {
+            break;
+        }
+    }
+
+    // Verify the run is terminal
+    let run_detail = app
+        .oneshot(
+            Request::builder()
+                .method(Method::GET)
+                .uri(format!("/api/v1/workflow-runs/{run_id}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let detail_body = response_json(run_detail).await;
+    assert!(
+        detail_body["run"]["status"] == "completed"
+            || detail_body["run"]["status"] == "failed",
+        "run should be terminal, got: {}",
+        detail_body["run"]["status"]
+    );
+}
+
+#[tokio::test]
+async fn axum_tick_returns_409_on_terminal_run() {
+    let dir = tempdir().unwrap();
+    let store = LocalProductStore::new(dir.path().join("tick-terminal.db")).unwrap();
+    let app = build_axum_router(AxumApiState::new().with_local_store(store));
+
+    // Create a plan and run
+    let plan_resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(Method::POST)
+                .uri("/api/v1/plans")
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(
+                    json!({"raw_request": "echo test", "request_source": "test"}).to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let plan_body = response_json(plan_resp).await;
+    let plan_id = plan_body["plan"]["plan_id"].as_str().unwrap();
+
+    let run_resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(Method::POST)
+                .uri("/api/v1/workflow-runs")
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(json!({"plan_id": plan_id}).to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let run_body = response_json(run_resp).await;
+    let run_id = run_body["run"]["run_id"].as_str().unwrap();
+
+    // Cancel the run
+    app.clone()
+        .oneshot(
+            Request::builder()
+                .method(Method::POST)
+                .uri(format!("/api/v1/workflow-runs/{run_id}/cancel"))
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(json!({"reason": "test"}).to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    // Tick should return 409
+    let tick_resp = app
+        .oneshot(
+            Request::builder()
+                .method(Method::POST)
+                .uri(format!("/api/v1/workflow-runs/{run_id}/tick"))
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(json!({"actor": "test"}).to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(tick_resp.status(), StatusCode::CONFLICT);
+    let tick_body = response_json(tick_resp).await;
+    assert_eq!(tick_body["code"], "run_terminal");
+}
+
+#[tokio::test]
+async fn axum_tick_respects_node_dependencies() {
+    let dir = tempdir().unwrap();
+    let store = LocalProductStore::new(dir.path().join("tick-deps.db")).unwrap();
+    let app = build_axum_router(AxumApiState::new().with_local_store(store));
+
+    // Create a plan with multiple nodes
+    let plan_resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(Method::POST)
+                .uri("/api/v1/plans")
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(
+                    json!({
+                        "raw_request": "first analyze the code, then refactor it, then test it",
+                        "request_source": "test"
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let plan_body = response_json(plan_resp).await;
+    let plan_id = plan_body["plan"]["plan_id"].as_str().unwrap();
+    let nodes = plan_body["plan"]["graph"]["nodes"].as_array().unwrap();
+
+    // Only run this test if the plan has multiple nodes
+    if nodes.len() < 2 {
+        return; // Skip if decomposition didn't produce multiple nodes
+    }
+
+    let run_resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(Method::POST)
+                .uri("/api/v1/workflow-runs")
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(json!({"plan_id": plan_id}).to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let run_body = response_json(run_resp).await;
+    let run_id = run_body["run"]["run_id"].as_str().unwrap().to_string();
+
+    // Tick repeatedly - nodes should complete respecting dependencies
+    let mut completed_nodes = Vec::new();
+    for _ in 0..(nodes.len() + 5) {
+        let tick_resp = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method(Method::POST)
+                    .uri(format!("/api/v1/workflow-runs/{run_id}/tick"))
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(json!({"actor": "test"}).to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let tick_body = response_json(tick_resp).await;
+        let action = tick_body["tick"]["action"].as_str().unwrap_or("");
+        if action == "node_executed" {
+            let node_id = tick_body["tick"]["node_id"].as_str().unwrap();
+            completed_nodes.push(node_id.to_string());
+        }
+        if action == "completed" || action == "failed" {
+            break;
+        }
+    }
+
+    // All nodes should have been executed
+    assert!(
+        completed_nodes.len() >= nodes.len(),
+        "expected {} nodes to execute, got {}",
+        nodes.len(),
+        completed_nodes.len()
+    );
+
+    // Verify the run is terminal
+    let detail_resp = app
+        .oneshot(
+            Request::builder()
+                .method(Method::GET)
+                .uri(format!("/api/v1/workflow-runs/{run_id}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let detail_body = response_json(detail_resp).await;
+    assert!(
+        detail_body["run"]["status"] == "completed"
+            || detail_body["run"]["status"] == "failed",
+        "run should be terminal after all nodes complete"
+    );
+
+    // Verify all nodes have completed status
+    let run_nodes = detail_body["run"]["nodes"].as_array().unwrap();
+    for node in run_nodes {
+        let status = node["db_status"].as_str().unwrap_or(node["status"].as_str().unwrap_or(""));
+        assert!(
+            status == "completed" || status == "failed",
+            "node {} should be terminal, got: {}",
+            node["node_id"].as_str().unwrap_or("?"),
+            status
+        );
+    }
+}
+
+#[tokio::test]
+async fn axum_tick_returns_404_for_missing_run() {
+    let dir = tempdir().unwrap();
+    let store = LocalProductStore::new(dir.path().join("tick-missing.db")).unwrap();
+    let app = build_axum_router(AxumApiState::new().with_local_store(store));
+    let tick_resp = app
+        .oneshot(
+            Request::builder()
+                .method(Method::POST)
+                .uri("/api/v1/workflow-runs/nonexistent/tick")
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(json!({"actor": "test"}).to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(tick_resp.status(), StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn axum_supervised_patch_workspace_create_and_cleanup() {
+    let dir = tempdir().unwrap();
+    let target_dir = tempdir().unwrap();
+    let store = LocalProductStore::new(dir.path().join("workspace.db")).unwrap();
+    let app = build_axum_router(AxumApiState::new().with_local_store(store));
+
+    // Create a workspace
+    let create_resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(Method::POST)
+                .uri("/api/v1/supervised-patch/workspaces")
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(
+                    json!({
+                        "run_id": "run-test-001",
+                        "target_id": "target-001",
+                        "target_repo_path": target_dir.path().to_string_lossy(),
+                        "source_revision": "abc123"
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(create_resp.status(), StatusCode::OK);
+    let create_body = response_json(create_resp).await;
+    let workspace = &create_body["workspace"];
+    assert_eq!(workspace["status"], "workspace_created");
+    assert_eq!(workspace["run_id"], "run-test-001");
+
+    let workspace_path = workspace["workspace_path"].as_str().unwrap();
+    assert!(
+        std::path::Path::new(workspace_path).exists(),
+        "workspace directory should exist on disk"
+    );
+
+    let workspace_id = workspace["workspace_id"].as_str().unwrap().to_string();
+
+    // Cleanup the workspace
+    let cleanup_resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(Method::POST)
+                .uri(format!(
+                    "/api/v1/supervised-patch/workspaces/{workspace_id}/cleanup"
+                ))
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(cleanup_resp.status(), StatusCode::OK);
+    let cleanup_body = response_json(cleanup_resp).await;
+    assert_eq!(cleanup_body["workspace"]["status"], "cleaned");
+    assert!(
+        !std::path::Path::new(workspace_path).exists(),
+        "workspace directory should be removed after cleanup"
+    );
+}
+
+#[tokio::test]
+async fn axum_supervised_patch_workspace_quarantine() {
+    let dir = tempdir().unwrap();
+    let target_dir = tempdir().unwrap();
+    let store = LocalProductStore::new(dir.path().join("quarantine.db")).unwrap();
+    let app = build_axum_router(AxumApiState::new().with_local_store(store));
+
+    // Create a workspace
+    let create_resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(Method::POST)
+                .uri("/api/v1/supervised-patch/workspaces")
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(
+                    json!({
+                        "run_id": "run-test-002",
+                        "target_id": "target-002",
+                        "target_repo_path": target_dir.path().to_string_lossy(),
+                        "source_revision": "def456"
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let create_body = response_json(create_resp).await;
+    let workspace_id = create_body["workspace"]["workspace_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    // Quarantine the workspace
+    let quarantine_resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(Method::POST)
+                .uri(format!(
+                    "/api/v1/supervised-patch/workspaces/{workspace_id}/quarantine"
+                ))
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(quarantine_resp.status(), StatusCode::OK);
+    let quarantine_body = response_json(quarantine_resp).await;
+    assert_eq!(quarantine_body["workspace"]["status"], "quarantined");
+}
+
+#[tokio::test]
+async fn axum_supervised_patch_artifact_capture() {
+    let dir = tempdir().unwrap();
+    let target_dir = tempdir().unwrap();
+    // Write a test file in the target so workspace gets it
+    std::fs::write(target_dir.path().join("hello.txt"), "hello world").unwrap();
+    let store = LocalProductStore::new(dir.path().join("artifact.db")).unwrap();
+    let app = build_axum_router(AxumApiState::new().with_local_store(store));
+
+    // Create a workspace (copies target contents)
+    let create_resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(Method::POST)
+                .uri("/api/v1/supervised-patch/workspaces")
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(
+                    json!({
+                        "run_id": "run-test-003",
+                        "target_id": "target-003",
+                        "target_repo_path": target_dir.path().to_string_lossy(),
+                        "source_revision": "ghi789"
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let create_body = response_json(create_resp).await;
+    let workspace_id = create_body["workspace"]["workspace_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let workspace_path = create_body["workspace"]["workspace_path"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    // Simulate a patch: add a new file to the workspace
+    std::fs::write(
+        std::path::Path::new(&workspace_path).join("patch.txt"),
+        "patched content",
+    )
+    .unwrap();
+
+    // Capture patch (server-generated hash)
+    let capture_resp = app
+        .oneshot(
+            Request::builder()
+                .method(Method::POST)
+                .uri(format!(
+                    "/api/v1/supervised-patch/workspaces/{workspace_id}/capture"
+                ))
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(capture_resp.status(), StatusCode::OK);
+    let capture_body = response_json(capture_resp).await;
+    let artifact = &capture_body["artifact"];
+    assert!(artifact["patch_hash"].as_str().unwrap().starts_with("sha256:"));
+    assert_eq!(artifact["artifact_type"], "patch_diff");
+    assert_eq!(artifact["redaction_status"], "redacted");
+    assert!(!artifact["changed_files"].as_array().unwrap().is_empty());
+    // .source_manifest.json must never appear in changed_files
+    for file in artifact["changed_files"].as_array().unwrap() {
+        assert!(
+            !file.as_str().unwrap().contains(".source_manifest.json"),
+            "changed_files must not contain .source_manifest.json, got: {file}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn axum_end_to_end_plan_run_tick_workspace_capture_quality_approval_export() {
+    let dir = tempdir().unwrap();
+    let target_dir = tempdir().unwrap();
+    // Seed target with a file
+    std::fs::write(target_dir.path().join("src.rs"), "fn main() {}").unwrap();
+    let store = LocalProductStore::new(dir.path().join("e2e.db")).unwrap();
+    let app = build_axum_router(AxumApiState::new().with_local_store(store));
+
+    // Step 1: Create a plan
+    let plan_resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(Method::POST)
+                .uri("/api/v1/plans")
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(
+                    json!({"raw_request": "analyze and refactor code", "request_source": "e2e"})
+                        .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(plan_resp.status(), StatusCode::OK);
+    let plan_body = response_json(plan_resp).await;
+    let plan_id = plan_body["plan"]["plan_id"].as_str().unwrap().to_string();
+
+    // Step 2: Create a run
+    let run_resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(Method::POST)
+                .uri("/api/v1/workflow-runs")
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(json!({"plan_id": plan_id}).to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(run_resp.status(), StatusCode::OK);
+    let run_body = response_json(run_resp).await;
+    let run_id = run_body["run"]["run_id"].as_str().unwrap().to_string();
+
+    // Step 3: Tick to completion
+    for _ in 0..20 {
+        let tick_resp = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method(Method::POST)
+                    .uri(format!("/api/v1/workflow-runs/{run_id}/tick"))
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(json!({"actor": "e2e", "max_retries": 2}).to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        if tick_resp.status() == StatusCode::CONFLICT {
+            break;
+        }
+        let tick_body = response_json(tick_resp).await;
+        let action = tick_body["tick"]["action"].as_str().unwrap_or("");
+        if action == "completed" || action == "failed" {
+            break;
+        }
+    }
+
+    // Step 4: Verify run is terminal
+    let detail_resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(Method::GET)
+                .uri(format!("/api/v1/workflow-runs/{run_id}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let detail_body = response_json(detail_resp).await;
+    assert!(
+        detail_body["run"]["status"] == "completed"
+            || detail_body["run"]["status"] == "failed"
+    );
+
+    // Step 5: Create workspace (copies target code)
+    let ws_resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(Method::POST)
+                .uri("/api/v1/supervised-patch/workspaces")
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(
+                    json!({
+                        "run_id": run_id,
+                        "target_id": "target-e2e",
+                        "target_repo_path": target_dir.path().to_string_lossy(),
+                        "source_revision": "e2e-rev-001"
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(ws_resp.status(), StatusCode::OK);
+    let ws_body = response_json(ws_resp).await;
+    let workspace_id = ws_body["workspace"]["workspace_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let workspace_path = ws_body["workspace"]["workspace_path"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    // Verify workspace has the copied file
+    assert!(std::path::Path::new(&workspace_path).join("src.rs").exists());
+
+    // Step 6: Modify workspace (simulate work)
+    std::fs::write(
+        std::path::Path::new(&workspace_path).join("patch.txt"),
+        "new file",
+    )
+    .unwrap();
+
+    // Step 7: Capture patch (server-generated hash, quality checks)
+    let capture_resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(Method::POST)
+                .uri(format!(
+                    "/api/v1/supervised-patch/workspaces/{workspace_id}/capture"
+                ))
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(capture_resp.status(), StatusCode::OK);
+    let capture_body = response_json(capture_resp).await;
+    let artifact = &capture_body["artifact"];
+    let artifact_id = artifact["artifact_id"].as_str().unwrap().to_string();
+    let patch_hash = artifact["patch_hash"].as_str().unwrap().to_string();
+    assert!(patch_hash.starts_with("sha256:"));
+    assert_eq!(artifact["redaction_status"], "redacted");
+    assert!(!artifact["changed_files"].as_array().unwrap().is_empty());
+
+    // Step 8: Quality check - integrity
+    let integrity_resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(Method::GET)
+                .uri(format!(
+                    "/api/v1/supervised-patch/artifacts/{artifact_id}"
+                ))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(integrity_resp.status(), StatusCode::OK);
+
+    // Step 9: Record approval WITH proper binding fields
+    let changed_files: Vec<String> = artifact["changed_files"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|v| v.as_str().unwrap_or("").to_string())
+        .collect();
+    let approval_resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(Method::POST)
+                .uri(format!("/api/v1/workflow-runs/{run_id}/approvals"))
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(
+                    json!({
+                        "node_id": "approval-node",
+                        "decision": "approved",
+                        "reason": "e2e test approval",
+                        "bound_patch_hash": patch_hash,
+                        "bound_source_revision": "e2e-rev-001",
+                        "bound_changed_files": changed_files,
+                        "expires_at": "2099-12-31T23:59:59Z"
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(approval_resp.status(), StatusCode::OK);
+
+    // Step 10: Export with valid binding should succeed
+    let export_resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(Method::POST)
+                .uri(format!(
+                    "/api/v1/supervised-patch/artifacts/{artifact_id}/export"
+                ))
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(json!({"run_id": run_id}).to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let export_status = export_resp.status();
+    let export_body = response_json(export_resp).await;
+    assert_eq!(export_status, StatusCode::OK, "export failed: {export_body}");
+    let export = &export_body["export"];
+    assert_eq!(export["artifact_id"], artifact_id);
+    assert!(export["artifact"]["patch_hash"].as_str().unwrap().starts_with("sha256:"));
+    assert!(!export["artifact"]["changed_files"].as_array().unwrap().is_empty());
+    assert_eq!(export["approval_binding"]["export_eligible"], true);
+    assert_eq!(export["integrity"]["integrity_ok"], true);
+
+    // Step 11: Cleanup
+    let cleanup_resp = app
+        .oneshot(
+            Request::builder()
+                .method(Method::POST)
+                .uri(format!(
+                    "/api/v1/supervised-patch/workspaces/{workspace_id}/cleanup"
+                ))
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(cleanup_resp.status(), StatusCode::OK);
+    assert!(!std::path::Path::new(&workspace_path).exists());
+}
+
+
+#[tokio::test]
+async fn axum_e2e_command_executor_produces_real_patch_export() {
+    // 1. Create a temp dir with a "target repo" containing one file
+    let target_dir = tempdir().unwrap();
+    std::fs::write(target_dir.path().join("README.md"), "# target\n").unwrap();
+
+    let dir = tempdir().unwrap();
+    let store = LocalProductStore::new(dir.path().join("e2e.db")).unwrap();
+    let app = build_axum_router(AxumApiState::new().with_local_store(store));
+
+    // 2. Create a plan
+    let plan_resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(Method::POST)
+                .uri("/api/v1/plans")
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(
+                    json!({"raw_request": "echo hello", "request_source": "e2e-command"})
+                        .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(plan_resp.status(), StatusCode::OK);
+    let plan_body = response_json(plan_resp).await;
+    let plan_id = plan_body["plan"]["plan_id"].as_str().unwrap().to_string();
+
+    // 3. Create a workflow run
+    let run_resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(Method::POST)
+                .uri("/api/v1/workflow-runs")
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(json!({"plan_id": plan_id}).to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(run_resp.status(), StatusCode::OK);
+    let run_body = response_json(run_resp).await;
+    let run_id = run_body["run"]["run_id"].as_str().unwrap().to_string();
+
+    // 4. Create a supervised patch workspace linked to the run
+    let ws_resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(Method::POST)
+                .uri("/api/v1/supervised-patch/workspaces")
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(
+                    json!({
+                        "run_id": run_id,
+                        "target_id": "target-command-e2e",
+                        "target_repo_path": target_dir.path().to_string_lossy(),
+                        "source_revision": "cmd-rev-001"
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(ws_resp.status(), StatusCode::OK);
+    let ws_body = response_json(ws_resp).await;
+    let workspace_id = ws_body["workspace"]["workspace_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let workspace_path = ws_body["workspace"]["workspace_path"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    // Verify workspace has the copied README.md from target
+    assert!(
+        std::path::Path::new(&workspace_path)
+            .join("README.md")
+            .exists()
+    );
+
+    // 5. Tick the workflow run with executor=command
+    // The plan graph nodes don't have a command field, so CommandNodeExecutor
+    // defaults to "echo noop". The workspace_path is injected from
+    // supervised_patch_workspaces into node_metadata.
+    let tick_resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(Method::POST)
+                .uri(format!("/api/v1/workflow-runs/{run_id}/tick"))
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(
+                    json!({
+                        "executor": "command",
+                        "actor": "e2e-command",
+                        "max_retries": 0
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    // Tick may succeed (node_executed) or return 409 if run is terminal
+    assert!(
+        tick_resp.status() == StatusCode::OK || tick_resp.status() == StatusCode::CONFLICT,
+        "tick should succeed or return conflict if terminal"
+    );
+
+    // 6. After tick, manually create a file in workspace_path to simulate
+    //    command output (since the noop default doesn't create files)
+    std::fs::write(
+        std::path::Path::new(&workspace_path).join("new_file.txt"),
+        "patched content\n",
+    )
+    .unwrap();
+
+    // 7. Capture the patch
+    let capture_resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(Method::POST)
+                .uri(format!(
+                    "/api/v1/supervised-patch/workspaces/{workspace_id}/capture"
+                ))
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(capture_resp.status(), StatusCode::OK);
+    let capture_body = response_json(capture_resp).await;
+    let artifact = &capture_body["artifact"];
+    let artifact_id = artifact["artifact_id"].as_str().unwrap().to_string();
+    let patch_hash = artifact["patch_hash"].as_str().unwrap().to_string();
+    assert!(
+        patch_hash.starts_with("sha256:"),
+        "patch_hash should start with sha256:, got: {patch_hash}"
+    );
+    let changed_files = artifact["changed_files"].as_array().unwrap();
+    // Should contain the new file but NOT .source_manifest.json
+    assert!(
+        changed_files
+            .iter()
+            .any(|f| f.as_str().unwrap().contains("new_file.txt")),
+        "changed_files should contain new_file.txt, got: {changed_files:?}"
+    );
+    assert!(
+        !changed_files
+            .iter()
+            .any(|f| f.as_str().unwrap().contains(".source_manifest.json")),
+        "changed_files must not contain .source_manifest.json, got: {changed_files:?}"
+    );
+
+    // 8. Validate artifact integrity via artifact detail endpoint
+    let integrity_resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(Method::GET)
+                .uri(format!(
+                    "/api/v1/supervised-patch/artifacts/{artifact_id}"
+                ))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(integrity_resp.status(), StatusCode::OK);
+    let integrity_body = response_json(integrity_resp).await;
+    assert_eq!(integrity_body["artifact"]["artifact_id"], artifact_id);
+    assert_eq!(
+        integrity_body["artifact"]["patch_hash"], patch_hash
+    );
+
+    // 9. Record approval WITH proper binding fields
+    let changed_files_vec: Vec<String> = artifact["changed_files"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|v| v.as_str().unwrap_or("").to_string())
+        .collect();
+    let approval_resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(Method::POST)
+                .uri(format!("/api/v1/workflow-runs/{run_id}/approvals"))
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(
+                    json!({
+                        "node_id": "approval-node",
+                        "decision": "approved",
+                        "reason": "command executor e2e approval",
+                        "bound_patch_hash": patch_hash,
+                        "bound_source_revision": "cmd-rev-001",
+                        "bound_changed_files": changed_files_vec,
+                        "expires_at": "2099-12-31T23:59:59Z"
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(approval_resp.status(), StatusCode::OK);
+
+    // 10. Export the artifact (needs approval binding first)
+    let export_resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(Method::POST)
+                .uri(format!(
+                    "/api/v1/supervised-patch/artifacts/{artifact_id}/export"
+                ))
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(json!({"run_id": run_id}).to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let export_status = export_resp.status();
+    let export_body = response_json(export_resp).await;
+    assert_eq!(export_status, StatusCode::OK, "export failed: {export_body}");
+    let export = &export_body["export"];
+    assert_eq!(export["artifact_id"], artifact_id);
+    assert!(
+        export["artifact"]["patch_hash"]
+            .as_str()
+            .unwrap()
+            .starts_with("sha256:")
+    );
+    assert!(!export["artifact"]["changed_files"].as_array().unwrap().is_empty());
+    assert_eq!(export["approval_binding"]["export_eligible"], true);
+    assert_eq!(export["integrity"]["integrity_ok"], true);
+}

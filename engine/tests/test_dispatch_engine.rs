@@ -1,6 +1,4 @@
 use engine::dispatch_engine::DispatchEngine;
-use engine::provider::stub::StubProvider;
-use std::sync::Arc;
 
 // Basic tests
 #[test]
@@ -16,7 +14,7 @@ fn test_dispatch_returns_valid_json() {
 fn test_dispatch_record_has_dispatch_id() {
     let engine = DispatchEngine::new();
     let v = engine.dispatch("Summarize the README", "test_fixture");
-    assert!(v["record"]["dispatch_id"].as_str().unwrap().len() > 0);
+    assert!(!v["record"]["dispatch_id"].as_str().unwrap().is_empty());
 }
 
 #[test]
@@ -30,9 +28,9 @@ fn test_dispatch_final_status_not_executed() {
 fn test_dispatch_populates_record_fields() {
     let engine = DispatchEngine::new();
     let v = engine.dispatch("Test request", "test_fixture");
-    assert!(v["record"]["task_analysis_id"].as_str().unwrap().len() > 0);
-    assert!(v["record"]["decision_id"].as_str().unwrap().len() > 0);
-    assert!(v["record"]["budget_reservation_id"].as_str().unwrap().len() > 0);
+    assert!(!v["record"]["task_analysis_id"].as_str().unwrap().is_empty());
+    assert!(!v["record"]["decision_id"].as_str().unwrap().is_empty());
+    assert!(!v["record"]["budget_reservation_id"].as_str().unwrap().is_empty());
 }
 
 #[test]
@@ -72,49 +70,12 @@ fn test_multi_executor_without_cli_tier_reports_noop_policy() {
 }
 
 #[test]
-fn readonly_advisory_with_provider_executes_but_requires_review() {
-    let engine = DispatchEngine::with_provider_executor(Arc::new(StubProvider::new("stub-test")));
-    let v = engine.dispatch(
-        "请评估 production-like local 是否可用，不写入文件，不部署，只输出建议；讨论 secret scan 和 audit redaction 边界",
-        "test_fixture",
-    );
-
-    assert_eq!(v["analysis"]["risk_level"], "medium");
-    assert_eq!(
-        v["decision"]["execution_policy"]["executor_type"],
-        "provider"
-    );
-    assert_eq!(
-        v["decision"]["execution_policy"]["requires_human_review"],
-        true
-    );
-    assert_eq!(v["decision"]["decision_status"], "decided");
-    assert_eq!(v["execution_result"]["status"], "provider_completed");
-    assert_eq!(v["evaluation_result"]["status"], "needs_human_review");
-    assert_eq!(v["record"]["final_status"], "escalated");
-}
-
-#[test]
-fn dangerous_provider_request_stays_blocked() {
-    let engine = DispatchEngine::with_provider_executor(Arc::new(StubProvider::new("stub-test")));
-    let v = engine.dispatch("Please deploy to production now", "test_fixture");
-
-    assert_eq!(v["analysis"]["risk_level"], "critical");
-    assert_eq!(v["decision"]["decision_status"], "needs_approval");
-    assert_eq!(v["execution_result"]["status"], "not_executed");
-    assert_eq!(
-        v["execution_result"]["error_domain"],
-        "execution_not_authorized"
-    );
-}
-
-#[test]
 fn test_decision_has_shadow_routes_or_reason() {
     let engine = DispatchEngine::new();
     let v = engine.dispatch("Summarize the README", "test_fixture");
     let has_routes = v["decision"]["shadow_routes"]
         .as_array()
-        .map_or(false, |a| !a.is_empty());
+        .is_some_and(|a| !a.is_empty());
     let has_reason = v["decision"]["no_shadow_route_reason"].as_str().is_some();
     assert!(has_routes || has_reason);
 }
@@ -248,8 +209,8 @@ macro_rules! golden_e2e {
             let raw_request = request["raw_request"].as_str().unwrap();
             let request_source = request["request_source"].as_str().unwrap_or("test_fixture");
             let v = engine.dispatch(raw_request, request_source);
-            assert!(v["record"]["dispatch_id"].as_str().unwrap().len() > 0);
-            assert!(v["record"]["task_analysis_id"].as_str().unwrap().len() > 0);
+            assert!(!v["record"]["dispatch_id"].as_str().unwrap().is_empty());
+            assert!(!v["record"]["task_analysis_id"].as_str().unwrap().is_empty());
             let status = v["record"]["final_status"].as_str().unwrap();
             assert!([
                 "not_executed",

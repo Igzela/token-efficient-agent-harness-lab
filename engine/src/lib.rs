@@ -22,6 +22,7 @@ pub mod harness;
 pub mod http_server;
 pub mod infrastructure;
 pub mod model_selector;
+pub mod node_executor;
 pub mod orchestration;
 pub mod provider;
 pub mod quality;

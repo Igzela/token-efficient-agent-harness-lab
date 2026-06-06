@@ -9,6 +9,281 @@ pub const SUPERVISED_PATCH_WORKSPACE_SCHEMA_VERSION: &str = "supervised_patch_wo
 pub const SUPERVISED_PATCH_ARTIFACT_SCHEMA_VERSION: &str = "supervised_patch_artifact.v1";
 
 impl LocalProductStore {
+    pub fn create_workspace_directory(
+        &self,
+        workspace_id: &str,
+        target_repo_path: &str,
+    ) -> Result<String, String> {
+        let db_dir = self
+            .db_path()
+            .parent()
+            .ok_or_else(|| "store has no parent directory".to_string())?;
+        let workspaces_dir = db_dir.join("workspaces");
+        std::fs::create_dir_all(&workspaces_dir).map_err(|e| e.to_string())?;
+        let workspace_dir = workspaces_dir.join(workspace_id);
+        if workspace_dir.exists() {
+            return Ok(workspace_dir.to_string_lossy().into_owned());
+        }
+
+        let target_canonical =
+            std::fs::canonicalize(target_repo_path).map_err(|e| e.to_string())?;
+        if workspaces_dir.starts_with(&target_canonical) {
+            return Err("workspace directory must be outside target repository".to_string());
+        }
+
+        copy_dir_contents(&target_canonical, &workspace_dir)?;
+
+        let source_manifest = compute_manifest(&target_canonical)?;
+        let manifest_path = workspace_dir.join(".source_manifest.json");
+        std::fs::write(
+            &manifest_path,
+            serde_json::to_string_pretty(&source_manifest).unwrap_or_default(),
+        )
+        .map_err(|e| e.to_string())?;
+
+        Ok(workspace_dir.to_string_lossy().into_owned())
+    }
+
+    pub fn update_workspace_status(
+        &self,
+        workspace_id: &str,
+        new_status: &str,
+        actor: &str,
+    ) -> Result<Value, String> {
+        if !is_valid_workspace_status(new_status) {
+            return Err(format!("invalid workspace status: {new_status}"));
+        }
+        let workspace = self
+            .get_supervised_patch_workspace(workspace_id)?
+            .ok_or_else(|| format!("workspace not found: {workspace_id}"))?;
+        let current_status = workspace
+            .get("status")
+            .and_then(Value::as_str)
+            .unwrap_or("requested");
+        if !is_valid_workspace_transition(current_status, new_status) {
+            return Err(format!(
+                "invalid workspace status transition: {current_status} -> {new_status}"
+            ));
+        }
+        let now = self.now();
+        self.with_conn(|conn| {
+            conn.execute(
+                "UPDATE supervised_patch_workspaces SET status = ?1, updated_at = ?2 WHERE workspace_id = ?3",
+                params![new_status, now, workspace_id],
+            ).map_err(|e| e.to_string())?;
+            append_audit_locked(
+                conn,
+                &now,
+                actor,
+                "supervised_patch.workspace_status_update",
+                workspace_id,
+                &json!({"from": current_status, "to": new_status, "metadata_only": true}),
+            )?;
+            Ok(())
+        })?;
+        self.get_supervised_patch_workspace(workspace_id)?
+            .ok_or_else(|| format!("workspace not found after update: {workspace_id}"))
+    }
+
+    pub fn cleanup_workspace(
+        &self,
+        workspace_id: &str,
+        actor: &str,
+    ) -> Result<Value, String> {
+        let workspace = self
+            .get_supervised_patch_workspace(workspace_id)?
+            .ok_or_else(|| format!("workspace not found: {workspace_id}"))?;
+        let workspace_path = workspace
+            .get("workspace_path")
+            .and_then(Value::as_str)
+            .unwrap_or("");
+        if !workspace_path.is_empty() {
+            let path = Path::new(workspace_path);
+            if path.exists() {
+                std::fs::remove_dir_all(path).map_err(|e| e.to_string())?;
+            }
+        }
+        self.update_workspace_status(workspace_id, "cleaned", actor)
+    }
+
+    pub fn quarantine_workspace(
+        &self,
+        workspace_id: &str,
+        actor: &str,
+    ) -> Result<Value, String> {
+        self.update_workspace_status(workspace_id, "quarantined", actor)
+    }
+
+    pub fn capture_patch(
+        &self,
+        workspace_id: &str,
+        actor: &str,
+    ) -> Result<Value, String> {
+        let workspace = self
+            .get_supervised_patch_workspace(workspace_id)?
+            .ok_or_else(|| format!("workspace not found: {workspace_id}"))?;
+        let workspace_path = workspace
+            .get("workspace_path")
+            .and_then(Value::as_str)
+            .ok_or_else(|| "workspace missing workspace_path".to_string())?;
+        let path = Path::new(workspace_path);
+        if !path.exists() {
+            return Err(format!("workspace directory does not exist: {workspace_path}"));
+        }
+
+        let manifest_path = path.join(".source_manifest.json");
+        let manifest: Value = if manifest_path.exists() {
+            let content = std::fs::read_to_string(&manifest_path).map_err(|e| e.to_string())?;
+            serde_json::from_str(&content).unwrap_or(Value::Null)
+        } else {
+            Value::Null
+        };
+
+        let (added, modified, deleted) = if manifest.is_object() {
+            diff_against_manifest(path, &manifest)?
+        } else {
+            let (files, _) = collect_workspace_files(path)?;
+            (files, Vec::new(), Vec::new())
+        };
+
+        let mut changed_files = Vec::new();
+        changed_files.extend(added.iter().map(|f| format!("+{f}")));
+        changed_files.extend(modified.iter().map(|f| format!("~{f}")));
+        changed_files.extend(deleted.iter().map(|f| format!("-{f}")));
+
+        if changed_files.is_empty() {
+            return Err("no changes detected against source snapshot".to_string());
+        }
+
+        let diff_content = format!(
+            "added:{}\nmodified:{}\ndeleted:{}",
+            added.join(","),
+            modified.join(","),
+            deleted.join(",")
+        );
+        let hash_bytes = sha256_bytes(diff_content.as_bytes());
+        let patch_hash = format!("sha256:{}", hex_encode(&hash_bytes));
+
+        let secret_findings = scan_for_secrets(path)?;
+        let redaction_status = if secret_findings.is_empty() {
+            "redacted"
+        } else {
+            "failed"
+        };
+
+        let artifact_request = json!({
+            "workspace_id": workspace_id,
+            "patch_hash": patch_hash,
+            "changed_files": changed_files,
+            "redaction_status": redaction_status,
+        });
+        let artifact = self.record_supervised_patch_artifact(&artifact_request, actor)?;
+
+        self.update_workspace_status(workspace_id, "patch_prepared", actor)?;
+
+        let mut result = artifact;
+        if let Some(obj) = result.as_object_mut() {
+            obj.insert("secret_findings".to_string(), json!(secret_findings));
+            obj.insert("added".to_string(), json!(added));
+            obj.insert("modified".to_string(), json!(modified));
+            obj.insert("deleted".to_string(), json!(deleted));
+        }
+        Ok(result)
+    }
+
+    pub fn validate_artifact_integrity(
+        &self,
+        artifact_id: &str,
+    ) -> Result<Value, String> {
+        let artifact = self
+            .get_supervised_patch_artifact(artifact_id)?
+            .ok_or_else(|| format!("artifact not found: {artifact_id}"))?;
+        let workspace_id = artifact
+            .get("workspace_id")
+            .and_then(Value::as_str)
+            .unwrap_or("");
+        let workspace = self.get_supervised_patch_workspace(workspace_id)?;
+        let workspace_path = workspace
+            .as_ref()
+            .and_then(|w| w.get("workspace_path"))
+            .and_then(Value::as_str)
+            .unwrap_or("");
+        let patch_hash = artifact
+            .get("patch_hash")
+            .and_then(Value::as_str)
+            .unwrap_or("");
+        let changed_files = artifact
+            .get("changed_files")
+            .and_then(Value::as_array)
+            .cloned()
+            .unwrap_or_default();
+        let redaction_status = artifact
+            .get("redaction_status")
+            .and_then(Value::as_str)
+            .unwrap_or("pending");
+
+        let mut checks = Vec::new();
+
+        checks.push(json!({
+            "check": "patch_hash_non_empty",
+            "passed": !patch_hash.is_empty(),
+            "message": if patch_hash.is_empty() { "patch hash is empty" } else { "ok" }
+        }));
+        checks.push(json!({
+            "check": "changed_files_non_empty",
+            "passed": !changed_files.is_empty(),
+            "message": if changed_files.is_empty() { "no changed files" } else { "ok" }
+        }));
+        checks.push(json!({
+            "check": "redaction_not_failed",
+            "passed": redaction_status != "failed",
+            "message": if redaction_status == "failed" { "redaction failed" } else { "ok" }
+        }));
+
+        let workspace_exists = !workspace_path.is_empty() && Path::new(workspace_path).exists();
+        checks.push(json!({
+            "check": "workspace_exists",
+            "passed": workspace_exists,
+            "message": if workspace_exists { "ok" } else { "workspace directory missing" }
+        }));
+
+        let mut current_hash = String::new();
+        if workspace_exists {
+            let manifest_path = Path::new(workspace_path).join(".source_manifest.json");
+            if manifest_path.exists() {
+                let manifest_content =
+                    std::fs::read_to_string(&manifest_path).unwrap_or_default();
+                let manifest: Value =
+                    serde_json::from_str(&manifest_content).unwrap_or(Value::Null);
+                if manifest.is_object() {
+                    let (added, modified, deleted) =
+                        diff_against_manifest(Path::new(workspace_path), &manifest)?;
+                    let diff_content = format!(
+                        "added:{}\nmodified:{}\ndeleted:{}",
+                        added.join(","),
+                        modified.join(","),
+                        deleted.join(",")
+                    );
+                    let hash_bytes = sha256_bytes(diff_content.as_bytes());
+                    current_hash = format!("sha256:{}", hex_encode(&hash_bytes));
+                }
+            }
+        }
+        let hash_unchanged = current_hash.is_empty() || current_hash == patch_hash;
+        checks.push(json!({
+            "check": "patch_hash_unchanged",
+            "passed": hash_unchanged,
+            "message": if hash_unchanged { "ok".to_string() } else { format!("hash changed: recorded={} current={}", patch_hash, current_hash) }
+        }));
+
+        let all_passed = checks.iter().all(|c| c["passed"].as_bool().unwrap_or(false));
+        Ok(json!({
+            "artifact_id": artifact_id,
+            "integrity_ok": all_passed,
+            "checks": checks,
+        }))
+    }
+
     pub fn record_supervised_patch_workspace(
         &self,
         request: &Value,
@@ -103,6 +378,34 @@ impl LocalProductStore {
                 }),
             )?;
             Ok(workspace)
+        })
+    }
+
+    pub fn get_supervised_patch_workspace_for_run(
+        &self,
+        run_id: &str,
+    ) -> Result<Option<Value>, String> {
+        self.with_conn(|conn| {
+            let mut stmt = conn
+                .prepare(
+                    "SELECT workspace_sequence, workspace_id, plan_id, run_id, target_id,
+                            target_repo_path, target_repo_canonical_path, workspace_path,
+                            workspace_canonical_path, source_revision, source_tree_hash, status,
+                            created_at, updated_at, boundary_json, workspace_json
+                     FROM supervised_patch_workspaces
+                     WHERE run_id = ?1
+                     ORDER BY workspace_sequence DESC
+                     LIMIT 1",
+                )
+                .map_err(|e| e.to_string())?;
+            let mut rows = stmt
+                .query_map(params![run_id], supervised_patch_workspace_row)
+                .map_err(|e| e.to_string())?;
+            match rows.next() {
+                Some(Ok(value)) => Ok(Some(value)),
+                Some(Err(e)) => Err(e.to_string()),
+                None => Ok(None),
+            }
         })
     }
 
@@ -749,6 +1052,20 @@ fn is_valid_workspace_status(status: &str) -> bool {
     )
 }
 
+fn is_valid_workspace_transition(from: &str, to: &str) -> bool {
+    matches!(
+        (from, to),
+        ("requested", "source_recorded" | "rejected" | "quarantined")
+            | ("source_recorded", "workspace_created" | "rejected" | "quarantined")
+            | ("workspace_created", "patch_prepared" | "rejected" | "quarantined" | "cleaned")
+            | ("patch_prepared", "review_blocked" | "approved_for_artifact_export" | "rejected" | "quarantined" | "cleaned")
+            | ("review_blocked", "approved_for_artifact_export" | "rejected" | "quarantined")
+            | ("approved_for_artifact_export", "rejected" | "quarantined" | "cleaned")
+            | ("rejected", "quarantined" | "cleaned")
+            | ("quarantined", "cleaned")
+    )
+}
+
 fn validate_imported_workspace_boundary(
     target_repo_path: &str,
     target_repo_canonical_path: &str,
@@ -838,4 +1155,355 @@ fn next_sequence(conn: &rusqlite::Connection, table: &str, column: &str) -> Resu
 
 fn path_string(path: &Path) -> String {
     path.to_string_lossy().into_owned()
+}
+
+fn compute_manifest(dir: &Path) -> Result<Value, String> {
+    let (files, hashes) = collect_workspace_files(dir)?;
+    let entries: Vec<Value> = files
+        .iter()
+        .zip(hashes.iter())
+        .map(|(f, h)| json!({"path": f, "hash": h}))
+        .collect();
+    Ok(json!({
+        "files": entries,
+        "computed_at": chrono::Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string(),
+    }))
+}
+
+#[allow(clippy::type_complexity)]
+fn diff_against_manifest(
+    workspace_dir: &Path,
+    manifest: &Value,
+) -> Result<(Vec<String>, Vec<String>, Vec<String>), String> {
+    let (current_files, current_hashes) = collect_workspace_files(workspace_dir)?;
+    let manifest_entries = manifest
+        .get("files")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+
+    let mut source_map: std::collections::HashMap<String, String> = std::collections::HashMap::new();
+    for entry in &manifest_entries {
+        if let (Some(path), Some(hash)) = (
+            entry.get("path").and_then(Value::as_str),
+            entry.get("hash").and_then(Value::as_str),
+        ) {
+            source_map.insert(path.to_string(), hash.to_string());
+        }
+    }
+
+    let mut current_map: std::collections::HashMap<String, String> =
+        std::collections::HashMap::new();
+    for (path, hash) in current_files.iter().zip(current_hashes.iter()) {
+        current_map.insert(path.clone(), hash.clone());
+    }
+
+    let mut added = Vec::new();
+    let mut modified = Vec::new();
+    let mut deleted = Vec::new();
+
+    for (path, hash) in &current_map {
+        match source_map.get(path) {
+            Some(source_hash) => {
+                if source_hash != hash {
+                    modified.push(path.clone());
+                }
+            }
+            None => added.push(path.clone()),
+        }
+    }
+    for path in source_map.keys() {
+        if !current_map.contains_key(path) {
+            deleted.push(path.clone());
+        }
+    }
+
+    added.sort();
+    modified.sort();
+    deleted.sort();
+    Ok((added, modified, deleted))
+}
+
+fn copy_dir_contents(src: &Path, dst: &Path) -> Result<(), String> {
+    std::fs::create_dir_all(dst).map_err(|e| e.to_string())?;
+    let entries = std::fs::read_dir(src).map_err(|e| e.to_string())?;
+    for entry in entries {
+        let entry = entry.map_err(|e| e.to_string())?;
+        let path = entry.path();
+        let name = entry.file_name();
+        let name_str = name.to_string_lossy();
+        if name_str.starts_with('.') {
+            continue;
+        }
+        let target = dst.join(&name);
+        if path.is_dir() {
+            copy_dir_contents(&path, &target)?;
+        } else if path.is_file() {
+            std::fs::copy(&path, &target).map_err(|e| e.to_string())?;
+        }
+    }
+    Ok(())
+}
+
+fn collect_workspace_files(dir: &Path) -> Result<(Vec<String>, Vec<String>), String> {
+    let mut files = Vec::new();
+    let mut hashes = Vec::new();
+    collect_files_recursive(dir, dir, &mut files, &mut hashes)?;
+    files.sort();
+    Ok((files, hashes))
+}
+
+fn collect_files_recursive(
+    base: &Path,
+    dir: &Path,
+    files: &mut Vec<String>,
+    hashes: &mut Vec<String>,
+) -> Result<(), String> {
+    let entries = std::fs::read_dir(dir).map_err(|e| e.to_string())?;
+    for entry in entries {
+        let entry = entry.map_err(|e| e.to_string())?;
+        let path = entry.path();
+        if path.is_dir() {
+            let name = path.file_name().unwrap_or_default().to_string_lossy();
+            if name.starts_with('.') {
+                continue;
+            }
+            collect_files_recursive(base, &path, files, hashes)?;
+        } else if path.is_file() {
+            let name = path.file_name().unwrap_or_default().to_string_lossy();
+            if name.starts_with('.') {
+                continue;
+            }
+            let relative = path
+                .strip_prefix(base)
+                .unwrap_or(&path)
+                .to_string_lossy()
+                .into_owned();
+            let content = std::fs::read(&path).map_err(|e| e.to_string())?;
+            let hash = hex_encode(&sha256_bytes(&content));
+            files.push(relative);
+            hashes.push(hash);
+        }
+    }
+    Ok(())
+}
+
+fn hex_encode(bytes: &[u8]) -> String {
+    bytes.iter().map(|b| format!("{b:02x}")).collect()
+}
+
+fn sha256_bytes(data: &[u8]) -> [u8; 32] {
+    let mut hasher = Sha256Writer::new();
+    hasher.write(data);
+    hasher.finalize()
+}
+
+struct Sha256Writer {
+    state: [u32; 8],
+    buffer: Vec<u8>,
+    total_len: u64,
+}
+
+impl Sha256Writer {
+    fn new() -> Self {
+        Self {
+            state: [
+                0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a,
+                0x510e527f, 0x9b05688c, 0x1f83d9ab, 0x5be0cd19,
+            ],
+            buffer: Vec::new(),
+            total_len: 0,
+        }
+    }
+
+    fn write(&mut self, data: &[u8]) {
+        self.buffer.extend_from_slice(data);
+        self.total_len += data.len() as u64;
+        while self.buffer.len() >= 64 {
+            let block: [u8; 64] = self.buffer[..64].try_into().unwrap();
+            self.buffer.drain(..64);
+            self.process_block(&block);
+        }
+    }
+
+    fn finalize(mut self) -> [u8; 32] {
+        let bit_len = self.total_len * 8;
+        self.buffer.push(0x80);
+        while (self.buffer.len() % 64) != 56 {
+            self.buffer.push(0);
+        }
+        self.buffer.extend_from_slice(&bit_len.to_be_bytes());
+        while self.buffer.len() >= 64 {
+            let block: [u8; 64] = self.buffer[..64].try_into().unwrap();
+            self.buffer.drain(..64);
+            self.process_block(&block);
+        }
+        let mut result = [0u8; 32];
+        for (i, &word) in self.state.iter().enumerate() {
+            result[i * 4..(i + 1) * 4].copy_from_slice(&word.to_be_bytes());
+        }
+        result
+    }
+
+    fn process_block(&mut self, block: &[u8; 64]) {
+        const K: [u32; 64] = [
+            0x428a2f98, 0x71374491, 0xb5c0fbcf, 0xe9b5dba5,
+            0x3956c25b, 0x59f111f1, 0x923f82a4, 0xab1c5ed5,
+            0xd807aa98, 0x12835b01, 0x243185be, 0x550c7dc3,
+            0x72be5d74, 0x80deb1fe, 0x9bdc06a7, 0xc19bf174,
+            0xe49b69c1, 0xefbe4786, 0x0fc19dc6, 0x240ca1cc,
+            0x2de92c6f, 0x4a7484aa, 0x5cb0a9dc, 0x76f988da,
+            0x983e5152, 0xa831c66d, 0xb00327c8, 0xbf597fc7,
+            0xc6e00bf3, 0xd5a79147, 0x06ca6351, 0x14292967,
+            0x27b70a85, 0x2e1b2138, 0x4d2c6dfc, 0x53380d13,
+            0x650a7354, 0x766a0abb, 0x81c2c92e, 0x92722c85,
+            0xa2bfe8a1, 0xa81a664b, 0xc24b8b70, 0xc76c51a3,
+            0xd192e819, 0xd6990624, 0xf40e3585, 0x106aa070,
+            0x19a4c116, 0x1e376c08, 0x2748774c, 0x34b0bcb5,
+            0x391c0cb3, 0x4ed8aa4a, 0x5b9cca4f, 0x682e6ff3,
+            0x748f82ee, 0x78a5636f, 0x84c87814, 0x8cc70208,
+            0x90befffa, 0xa4506ceb, 0xbef9a3f7, 0xc67178f2,
+        ];
+        let mut w = [0u32; 64];
+        for i in 0..16 {
+            w[i] = u32::from_be_bytes(block[i * 4..(i + 1) * 4].try_into().unwrap());
+        }
+        for i in 16..64 {
+            let s0 = w[i - 15].rotate_right(7) ^ w[i - 15].rotate_right(18) ^ (w[i - 15] >> 3);
+            let s1 = w[i - 2].rotate_right(17) ^ w[i - 2].rotate_right(19) ^ (w[i - 2] >> 10);
+            w[i] = w[i - 16]
+                .wrapping_add(s0)
+                .wrapping_add(w[i - 7])
+                .wrapping_add(s1);
+        }
+        let [mut a, mut b, mut c, mut d, mut e, mut f, mut g, mut h] = self.state;
+        for i in 0..64 {
+            let s1 = e.rotate_right(6) ^ e.rotate_right(11) ^ e.rotate_right(25);
+            let ch = (e & f) ^ ((!e) & g);
+            let temp1 = h
+                .wrapping_add(s1)
+                .wrapping_add(ch)
+                .wrapping_add(K[i])
+                .wrapping_add(w[i]);
+            let s0 = a.rotate_right(2) ^ a.rotate_right(13) ^ a.rotate_right(22);
+            let maj = (a & b) ^ (a & c) ^ (b & c);
+            let temp2 = s0.wrapping_add(maj);
+            h = g;
+            g = f;
+            f = e;
+            e = d.wrapping_add(temp1);
+            d = c;
+            c = b;
+            b = a;
+            a = temp1.wrapping_add(temp2);
+        }
+        self.state[0] = self.state[0].wrapping_add(a);
+        self.state[1] = self.state[1].wrapping_add(b);
+        self.state[2] = self.state[2].wrapping_add(c);
+        self.state[3] = self.state[3].wrapping_add(d);
+        self.state[4] = self.state[4].wrapping_add(e);
+        self.state[5] = self.state[5].wrapping_add(f);
+        self.state[6] = self.state[6].wrapping_add(g);
+        self.state[7] = self.state[7].wrapping_add(h);
+    }
+}
+
+fn scan_for_secrets(dir: &Path) -> Result<Vec<String>, String> {
+    let mut findings = Vec::new();
+    scan_recursive(dir, &mut findings)?;
+    Ok(findings)
+}
+
+fn scan_recursive(dir: &Path, findings: &mut Vec<String>) -> Result<(), String> {
+    let entries = std::fs::read_dir(dir).map_err(|e| e.to_string())?;
+    for entry in entries {
+        let entry = entry.map_err(|e| e.to_string())?;
+        let path = entry.path();
+        if path.is_dir() {
+            let name = path.file_name().unwrap_or_default().to_string_lossy();
+            if !name.starts_with('.') {
+                scan_recursive(&path, findings)?;
+            }
+        } else if path.is_file() {
+            if let Ok(content) = std::fs::read_to_string(&path) {
+                for line in content.lines() {
+                    let lower = line.to_lowercase();
+                    if lower.contains("api_key")
+                        || lower.contains("api-key")
+                        || lower.contains("secret_key")
+                        || lower.contains("password")
+                        || lower.contains("bearer ")
+                        || lower.contains("private_key")
+                    {
+                        let relative = path
+                            .file_name()
+                            .unwrap_or_default()
+                            .to_string_lossy();
+                        findings.push(format!("{}: {}", relative, line.trim()));
+                    }
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+
+    #[test]
+    fn collect_files_recursive_skips_dotfiles() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        fs::write(root.join("visible.txt"), "content").unwrap();
+        fs::write(root.join(".hidden.txt"), "secret").unwrap();
+        fs::write(root.join(".source_manifest.json"), "{}").unwrap();
+
+        let mut files = Vec::new();
+        let mut hashes = Vec::new();
+        collect_files_recursive(root, root, &mut files, &mut hashes).unwrap();
+        files.sort();
+
+        assert_eq!(files, vec!["visible.txt"]);
+        assert!(!files.iter().any(|f| f.contains(".source_manifest")));
+        assert!(!files.iter().any(|f| f.starts_with('.')));
+    }
+
+    #[test]
+    fn collect_files_recursive_skips_dot_directories() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        fs::write(root.join("top.txt"), "content").unwrap();
+        fs::create_dir(root.join(".git")).unwrap();
+        fs::write(root.join(".git/config"), "stuff").unwrap();
+        fs::create_dir(root.join("sub")).unwrap();
+        fs::write(root.join("sub/nested.txt"), "data").unwrap();
+
+        let mut files = Vec::new();
+        let mut hashes = Vec::new();
+        collect_files_recursive(root, root, &mut files, &mut hashes).unwrap();
+        files.sort();
+
+        assert_eq!(files, vec!["sub/nested.txt", "top.txt"]);
+    }
+
+    #[test]
+    fn collect_files_recursive_no_dotfiles_in_workspace() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        fs::write(root.join("real_patch.rs"), "fn main() {}").unwrap();
+        fs::write(root.join(".source_manifest.json"), r#"{"files":[]}"#).unwrap();
+        fs::create_dir(root.join(".git")).unwrap();
+        fs::write(root.join(".git/index"), "binary").unwrap();
+
+        let mut files = Vec::new();
+        let mut hashes = Vec::new();
+        collect_files_recursive(root, root, &mut files, &mut hashes).unwrap();
+
+        assert_eq!(files.len(), 1);
+        assert_eq!(files[0], "real_patch.rs");
+        assert!(!files.iter().any(|f| f.starts_with('.')));
+    }
 }

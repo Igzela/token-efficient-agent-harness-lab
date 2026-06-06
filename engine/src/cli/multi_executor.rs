@@ -60,9 +60,10 @@ mod tests {
     use crate::dispatch_decision::DispatchDecision;
 
     fn make_decision(tier: &str) -> DispatchDecision {
-        let mut d = DispatchDecision::default();
-        d.selected_tier = tier.to_string();
-        d
+        DispatchDecision {
+            selected_tier: tier.to_string(),
+            ..Default::default()
+        }
     }
 
     #[test]

@@ -92,13 +92,13 @@ mod tests {
 
     #[test]
     fn context_serializes() {
-        let v = serde_json::to_value(&ctx()).unwrap();
+        let v = serde_json::to_value(ctx()).unwrap();
         assert_eq!(v["budget_tokens"], 4000);
     }
 
     #[test]
     fn response_serializes() {
-        let v = serde_json::to_value(&StubAdvisorProvider::new().advise(&ctx())).unwrap();
+        let v = serde_json::to_value(StubAdvisorProvider::new().advise(&ctx())).unwrap();
         assert_eq!(v["confidence"], 0.8);
     }
 }

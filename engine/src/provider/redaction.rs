@@ -162,11 +162,11 @@ mod tests {
 
     #[test]
     fn redact_audit_fields_preserves_types() {
-        let data = json!({"count": 42, "flag": true, "ratio": 3.14, "nothing": null});
+        let data = json!({"count": 42, "flag": true, "ratio": std::f64::consts::PI, "nothing": null});
         let result = redact_audit_fields(&data);
         assert_eq!(result["count"], 42);
-        assert_eq!(result["flag"], true);
-        assert_eq!(result["ratio"], 3.14);
+        assert!(result["flag"].as_bool().unwrap());
+        assert_eq!(result["ratio"], std::f64::consts::PI);
         assert_eq!(result["nothing"], serde_json::Value::Null);
     }
 

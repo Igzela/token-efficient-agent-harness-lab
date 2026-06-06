@@ -108,7 +108,7 @@ mod tests {
 
     #[test]
     fn test_cli_execution_default_is_opt_in() {
-        assert!(!DEFAULT_CLI_EXECUTION_ENABLED);
+        const { assert!(!DEFAULT_CLI_EXECUTION_ENABLED) };
         assert!(!env_bool(
             "NONEXISTENT_KEY_DEFAULT_FALSE",
             DEFAULT_CLI_EXECUTION_ENABLED

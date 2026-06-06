@@ -94,20 +94,43 @@ fn axum_routes() -> Router<AxumApiState> {
             post(workflow_runs::api_cancel_workflow_run).options(cors_preflight),
         )
         .route(
+            "/api/v1/workflow-runs/:run_id/tick",
+            post(workflow_runs::api_tick_workflow_run).options(cors_preflight),
+        )
+        .route(
             "/api/v1/supervised-patch/workspaces",
-            get(supervised_patch::api_supervised_patch_workspaces).options(cors_preflight),
+            get(supervised_patch::api_supervised_patch_workspaces)
+                .post(supervised_patch::api_create_supervised_patch_workspace)
+                .options(cors_preflight),
         )
         .route(
             "/api/v1/supervised-patch/workspaces/:workspace_id",
             get(supervised_patch::api_supervised_patch_workspace_detail).options(cors_preflight),
         )
         .route(
+            "/api/v1/supervised-patch/workspaces/:workspace_id/cleanup",
+            post(supervised_patch::api_cleanup_supervised_patch_workspace).options(cors_preflight),
+        )
+        .route(
+            "/api/v1/supervised-patch/workspaces/:workspace_id/quarantine",
+            post(supervised_patch::api_quarantine_supervised_patch_workspace)
+                .options(cors_preflight),
+        )
+        .route(
             "/api/v1/supervised-patch/artifacts",
             get(supervised_patch::api_supervised_patch_artifacts).options(cors_preflight),
         )
         .route(
+            "/api/v1/supervised-patch/workspaces/:workspace_id/capture",
+            post(supervised_patch::api_capture_supervised_patch).options(cors_preflight),
+        )
+        .route(
             "/api/v1/supervised-patch/artifacts/:artifact_id",
             get(supervised_patch::api_supervised_patch_artifact_detail).options(cors_preflight),
+        )
+        .route(
+            "/api/v1/supervised-patch/artifacts/:artifact_id/export",
+            post(supervised_patch::api_export_supervised_patch).options(cors_preflight),
         )
         .route(
             "/api/v1/dashboard",

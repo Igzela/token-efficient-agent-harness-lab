@@ -26,3 +26,4 @@ dist/
 
 # Separate workspace
 claude-drive/
+.claude/worktrees/

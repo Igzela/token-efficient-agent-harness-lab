@@ -44,11 +44,41 @@ pub struct WorkflowRunApprovalApiRequest {
     pub node_id: String,
     pub decision: String,
     pub reason: Option<String>,
+    pub bound_patch_hash: Option<String>,
+    pub bound_source_revision: Option<String>,
+    pub bound_changed_files: Option<Vec<String>>,
+    pub expires_at: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Deserialize)]
 pub struct WorkflowRunActionApiRequest {
     pub reason: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+pub struct WorkflowRunTickApiRequest {
+    pub actor: Option<String>,
+    pub max_retries: Option<i64>,
+    pub executor: Option<String>,
+    pub timeout_ms: Option<u64>,
+}
+
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+pub struct SupervisedPatchWorkspaceCreateRequest {
+    pub run_id: String,
+    pub target_id: String,
+    pub target_repo_path: String,
+    pub source_revision: String,
+    pub plan_id: Option<String>,
+    pub source_tree_hash: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+pub struct SupervisedPatchArtifactRecordRequest {
+    pub workspace_id: String,
+    pub patch_hash: String,
+    pub changed_files: Vec<String>,
+    pub redaction_status: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Deserialize)]
@@ -330,6 +360,19 @@ pub fn openapi_document() -> serde_json::Value {
                     "responses": {"200": {"description": "Workflow run metadata"}}
                 }
             },
+            "/api/v1/workflow-runs/{run_id}/tick": {
+                "post": {
+                    "summary": "Advance workflow run by one tick",
+                    "description": "Finds a ready node (all predecessors completed), leases it, executes via noop/stub, and records the result. Returns the tick result with node execution details. Returns 409 if the run is already terminal.",
+                    "parameters": [path_parameter("run_id")],
+                    "requestBody": json_request_body(&[], json!({"actor": {"type": "string"}})),
+                    "responses": {
+                        "200": {"description": "Tick result with node execution details"},
+                        "404": {"description": "Workflow run not found"},
+                        "409": {"description": "Run is in terminal state"}
+                    }
+                }
+            },
             "/api/v1/supervised-patch/workspaces": {
                 "get": {
                     "summary": "List supervised patch workspace metadata",
@@ -338,6 +381,24 @@ pub fn openapi_document() -> serde_json::Value {
                         {"name": "limit", "in": "query", "schema": {"type": "integer", "default": 100, "minimum": 0, "maximum": 500}}
                     ],
                     "responses": {"200": {"description": "Supervised patch workspace metadata list"}}
+                },
+                "post": {
+                    "summary": "Create a supervised patch workspace",
+                    "description": "Creates a detached workspace directory outside the target repository and records workspace metadata. Requires dispatch:read scope.",
+                    "requestBody": json_request_body(&["run_id", "target_id", "target_repo_path", "source_revision"], json!({
+                        "run_id": {"type": "string"},
+                        "target_id": {"type": "string"},
+                        "target_repo_path": {"type": "string"},
+                        "source_revision": {"type": "string"},
+                        "plan_id": {"type": "string"},
+                        "source_tree_hash": {"type": "string"}
+                    })),
+                    "responses": {
+                        "200": {"description": "Created workspace metadata"},
+                        "400": {"description": "Invalid request"},
+                        "401": {"description": "Unauthorized"},
+                        "403": {"description": "Forbidden"}
+                    }
                 }
             },
             "/api/v1/supervised-patch/workspaces/{workspace_id}": {
@@ -351,6 +412,30 @@ pub fn openapi_document() -> serde_json::Value {
                     }
                 }
             },
+            "/api/v1/supervised-patch/workspaces/{workspace_id}/cleanup": {
+                "post": {
+                    "summary": "Clean up a supervised patch workspace",
+                    "description": "Removes the workspace directory and transitions status to cleaned. Requires dispatch:read scope.",
+                    "parameters": [path_parameter("workspace_id")],
+                    "responses": {
+                        "200": {"description": "Workspace cleaned up"},
+                        "404": {"description": "Workspace not found"},
+                        "409": {"description": "Invalid status transition"}
+                    }
+                }
+            },
+            "/api/v1/supervised-patch/workspaces/{workspace_id}/quarantine": {
+                "post": {
+                    "summary": "Quarantine a supervised patch workspace",
+                    "description": "Transitions workspace status to quarantined. Requires dispatch:read scope.",
+                    "parameters": [path_parameter("workspace_id")],
+                    "responses": {
+                        "200": {"description": "Workspace quarantined"},
+                        "404": {"description": "Workspace not found"},
+                        "409": {"description": "Invalid status transition"}
+                    }
+                }
+            },
             "/api/v1/supervised-patch/artifacts": {
                 "get": {
                     "summary": "List supervised patch artifact metadata",
@@ -359,6 +444,21 @@ pub fn openapi_document() -> serde_json::Value {
                         {"name": "limit", "in": "query", "schema": {"type": "integer", "default": 100, "minimum": 0, "maximum": 500}}
                     ],
                     "responses": {"200": {"description": "Supervised patch artifact metadata list"}}
+                },
+                "post": {
+                    "summary": "Record a supervised patch artifact",
+                    "description": "Records patch artifact metadata linked to a workspace. Requires dispatch:read scope.",
+                    "requestBody": json_request_body(&["workspace_id", "patch_hash", "changed_files"], json!({
+                        "workspace_id": {"type": "string"},
+                        "patch_hash": {"type": "string"},
+                        "changed_files": {"type": "array", "items": {"type": "string"}},
+                        "redaction_status": {"type": "string", "enum": ["pending", "redacted", "failed"]}
+                    })),
+                    "responses": {
+                        "200": {"description": "Recorded artifact metadata"},
+                        "400": {"description": "Invalid request"},
+                        "404": {"description": "Workspace not found"}
+                    }
                 }
             },
             "/api/v1/supervised-patch/artifacts/{artifact_id}": {
@@ -757,6 +857,12 @@ mod tests {
             "post",
             "run_id",
         );
+        assert_path_parameter(
+            &doc,
+            "/api/v1/workflow-runs/{run_id}/tick",
+            "post",
+            "run_id",
+        );
         assert_path_parameter(&doc, "/api/v1/team/{user_id}", "put", "user_id");
         assert_path_parameter(&doc, "/api/v1/team/{user_id}", "delete", "user_id");
         assert_path_parameter(&doc, "/api/v1/backups/{backup_id}", "delete", "backup_id");
@@ -778,6 +884,12 @@ mod tests {
 
         assert_required_body_fields(&doc, "/api/v1/plans", "post", &["raw_request"]);
         assert_required_body_fields(&doc, "/api/v1/workflow-runs", "post", &["plan_id"]);
+        assert_required_body_fields(
+            &doc,
+            "/api/v1/workflow-runs/{run_id}/tick",
+            "post",
+            &[],
+        );
         assert_required_body_fields(
             &doc,
             "/api/v1/workflow-runs/{run_id}/events",

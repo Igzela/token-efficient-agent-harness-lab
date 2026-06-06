@@ -471,7 +471,7 @@ mod tests {
     fn test_missing_handoff_detected() {
         let monitor = TrajectoryMonitor::new();
         let content = r#"{"event_id":"e1","event_type":"project_item_state_changed","payload":{"item_id":"item1","new_status":"running"}}"#;
-        let report = monitor.analyze_project_stream(&content);
+        let report = monitor.analyze_project_stream(content);
         assert_eq!(report.missing_handoff_count, 1);
         assert!(report
             .anomalies
@@ -484,7 +484,7 @@ mod tests {
         let monitor = TrajectoryMonitor::new();
         let content = r#"{"event_id":"e1","event_type":"project_to_queue_handoff_created","payload":{"item_id":"item1"}}
 {"event_id":"e2","event_type":"project_item_state_changed","payload":{"item_id":"item1","new_status":"running"}}"#;
-        let report = monitor.analyze_project_stream(&content);
+        let report = monitor.analyze_project_stream(content);
         assert_eq!(report.missing_handoff_count, 0);
     }
 

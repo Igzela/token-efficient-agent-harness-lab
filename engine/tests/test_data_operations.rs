@@ -490,6 +490,10 @@ fn export_import_roundtrip_workflow_runs() {
             "approved",
             "reviewer",
             Some("metadata only"),
+            None,
+            None,
+            None,
+            None,
         )
         .unwrap();
 

@@ -89,14 +89,14 @@ mod tests {
     #[test]
     fn result_serializes() {
         let v =
-            serde_json::to_value(&RoutingExperimentManager::new().evaluate_policy(&policy(), &[]))
+            serde_json::to_value(RoutingExperimentManager::new().evaluate_policy(&policy(), &[]))
                 .unwrap();
         assert_eq!(v["policy_id"], "p1");
     }
 
     #[test]
     fn policy_serializes() {
-        let v = serde_json::to_value(&policy()).unwrap();
+        let v = serde_json::to_value(policy()).unwrap();
         assert_eq!(v["policy_id"], "p1");
     }
 }

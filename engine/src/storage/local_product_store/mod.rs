@@ -135,6 +135,7 @@ CREATE TABLE IF NOT EXISTS workflow_runs (
     dispatch_id TEXT,
     started_at TEXT,
     completed_at TEXT,
+    last_heartbeat_at TEXT,
     result_json TEXT,
     boundaries_json TEXT NOT NULL,
     run_json TEXT NOT NULL
@@ -149,6 +150,12 @@ CREATE TABLE IF NOT EXISTS workflow_run_nodes (
     task_type TEXT NOT NULL,
     status TEXT NOT NULL,
     node_json TEXT NOT NULL,
+    started_at TEXT,
+    completed_at TEXT,
+    attempt_count INTEGER NOT NULL DEFAULT 0,
+    timeout_ms INTEGER,
+    blocked_reason TEXT,
+    leased_at TEXT,
     PRIMARY KEY (run_id, node_id)
 );
 CREATE INDEX IF NOT EXISTS idx_workflow_run_nodes_run ON workflow_run_nodes(run_id);

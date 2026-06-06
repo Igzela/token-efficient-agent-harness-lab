@@ -665,6 +665,10 @@ fn workflow_runs_create_from_plan_persists_nodes_edges_events_and_approvals() {
             "approved",
             "reviewer",
             Some("metadata only"),
+            None,
+            None,
+            None,
+            None,
         )
         .unwrap();
     assert_eq!(approval["approval_id"], "workflow-approval-0001");

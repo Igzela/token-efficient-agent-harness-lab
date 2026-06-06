@@ -5,6 +5,18 @@ use super::{append_audit_locked, collect_values, LocalProductStore};
 
 pub const WORKFLOW_RUN_SCHEMA_VERSION: &str = "workflow_run.v1";
 
+enum LeaseResult {
+    Terminal { action: String, run: Value },
+    NoReadyNode { run: Value },
+    Leased {
+        node_id: String,
+        task_type: String,
+        workflow_id: String,
+        attempt: i64,
+        node_metadata: Value,
+    },
+}
+
 impl LocalProductStore {
     pub fn create_workflow_run_from_plan(
         &self,
@@ -130,7 +142,7 @@ impl LocalProductStore {
                 .prepare(
                     "SELECT run_sequence, run_id, plan_id, created_at, updated_at, status,
                             workflow_id, dispatch_id, started_at, completed_at, result_json,
-                            boundaries_json, run_json
+                            last_heartbeat_at, boundaries_json, run_json
                      FROM workflow_runs
                      WHERE lower(run_id) LIKE ?1 ESCAPE '\\'
                         OR lower(COALESCE(plan_id, '')) LIKE ?1 ESCAPE '\\'
@@ -158,7 +170,7 @@ impl LocalProductStore {
                 .prepare(
                     "SELECT run_sequence, run_id, plan_id, created_at, updated_at, status,
                             workflow_id, dispatch_id, started_at, completed_at, result_json,
-                            boundaries_json, run_json
+                            last_heartbeat_at, boundaries_json, run_json
                      FROM workflow_runs
                      ORDER BY run_sequence DESC
                      LIMIT ?1 OFFSET ?2",
@@ -190,7 +202,7 @@ impl LocalProductStore {
                 .prepare(
                     "SELECT run_sequence, run_id, plan_id, created_at, updated_at, status,
                             workflow_id, dispatch_id, started_at, completed_at, result_json,
-                            boundaries_json, run_json
+                            last_heartbeat_at, boundaries_json, run_json
                      FROM workflow_runs
                      WHERE run_id = ?1
                      LIMIT 1",
@@ -253,6 +265,10 @@ impl LocalProductStore {
         decision: &str,
         actor: &str,
         reason: Option<&str>,
+        bound_patch_hash: Option<&str>,
+        bound_source_revision: Option<&str>,
+        bound_changed_files: Option<&[String]>,
+        expires_at: Option<&str>,
     ) -> Result<Value, String> {
         if !matches!(decision, "requested" | "approved" | "rejected") {
             return Err(format!("invalid workflow approval decision: {decision}"));
@@ -262,7 +278,7 @@ impl LocalProductStore {
             let sequence = next_sequence(conn, "workflow_run_approvals", "approval_sequence")?;
             let approval_id = format!("workflow-approval-{sequence:04}");
             let created_at = self.now();
-            let approval = json!({
+            let mut approval = json!({
                 "approval_sequence": sequence,
                 "approval_id": approval_id,
                 "run_id": run_id,
@@ -274,6 +290,20 @@ impl LocalProductStore {
                 "metadata_only": true,
                 "execution_authority": "disabled",
             });
+            if let Some(obj) = approval.as_object_mut() {
+                if let Some(hash) = bound_patch_hash {
+                    obj.insert("bound_patch_hash".to_string(), json!(hash));
+                }
+                if let Some(source) = bound_source_revision {
+                    obj.insert("bound_source_revision".to_string(), json!(source));
+                }
+                if let Some(files) = bound_changed_files {
+                    obj.insert("bound_changed_files".to_string(), json!(files));
+                }
+                if let Some(exp) = expires_at {
+                    obj.insert("expires_at".to_string(), json!(exp));
+                }
+            }
             conn.execute(
                 "INSERT INTO workflow_run_approvals
                  (approval_sequence, approval_id, run_id, node_id, decision, actor, reason,
@@ -344,6 +374,357 @@ impl LocalProductStore {
             actor,
             reason,
         )
+    }
+
+    pub fn tick_workflow_run(
+        &self,
+        run_id: &str,
+        actor: &str,
+    ) -> Result<Value, String> {
+        use crate::node_executor::NoopNodeExecutor;
+        self.tick_with_executor(run_id, actor, 0, &NoopNodeExecutor)
+    }
+
+    pub fn tick_with_retry(
+        &self,
+        run_id: &str,
+        actor: &str,
+        max_retries: i64,
+    ) -> Result<Value, String> {
+        use crate::node_executor::NoopNodeExecutor;
+        self.tick_with_executor(run_id, actor, max_retries, &NoopNodeExecutor)
+    }
+
+    pub fn tick_with_executor(
+        &self,
+        run_id: &str,
+        actor: &str,
+        max_retries: i64,
+        executor: &dyn crate::node_executor::NodeExecutor,
+    ) -> Result<Value, String> {
+        // Phase 1: Lease a ready node (inside SQLite lock)
+        let leased = self.with_conn(|conn| {
+            ensure_run_exists_locked(conn, run_id)?;
+
+            let run_status: String = conn
+                .query_row(
+                    "SELECT status FROM workflow_runs WHERE run_id = ?1",
+                    params![run_id],
+                    |row| row.get(0),
+                )
+                .map_err(|e| e.to_string())?;
+
+            if is_run_terminal(&run_status) {
+                return Err(format!("workflow run {run_id} is terminal: {run_status}"));
+            }
+
+            let now = self.now();
+            if run_status == "created" {
+                update_workflow_run_status_locked(conn, run_id, "running", &now)?;
+                insert_workflow_run_event_locked(
+                    conn,
+                    run_id,
+                    None,
+                    "workflow_run.tick_started",
+                    actor,
+                    &json!({"trigger": "tick", "max_retries": max_retries}),
+                    &now,
+                )?;
+            }
+
+            let Some(node_id) = find_ready_node_locked(conn, run_id)? else {
+                let (all_done, has_failure) = check_run_completion_locked(conn, run_id)?;
+                if all_done {
+                    let terminal_status = if has_failure { "failed" } else { "completed" };
+                    let now = self.now();
+                    update_workflow_run_status_locked(conn, run_id, terminal_status, &now)?;
+                    insert_workflow_run_event_locked(
+                        conn,
+                        run_id,
+                        None,
+                        &format!("workflow_run.{terminal_status}"),
+                        actor,
+                        &json!({"reason": if has_failure { "node_failure" } else { "all_nodes_completed" }}),
+                        &now,
+                    )?;
+                    append_audit_locked(
+                        conn,
+                        &now,
+                        actor,
+                        &format!("workflow_run.{terminal_status}"),
+                        run_id,
+                        &json!({"metadata_only": true}),
+                    )?;
+                    let run = get_run_row(conn, run_id)?;
+                    return Ok(LeaseResult::Terminal { action: terminal_status.to_string(), run });
+                }
+                let run = get_run_row(conn, run_id)?;
+                return Ok(LeaseResult::NoReadyNode { run });
+            };
+
+            let now = self.now();
+            conn.execute(
+                "UPDATE workflow_run_nodes SET status = 'running', started_at = ?1, leased_at = ?1, attempt_count = attempt_count + 1
+                 WHERE run_id = ?2 AND node_id = ?3 AND status = 'pending'",
+                params![now, run_id, node_id],
+            ).map_err(|e| e.to_string())?;
+
+            let attempt: i64 = conn
+                .query_row(
+                    "SELECT attempt_count FROM workflow_run_nodes WHERE run_id = ?1 AND node_id = ?2",
+                    params![run_id, node_id],
+                    |row| row.get(0),
+                )
+                .unwrap_or(1);
+
+            let task_type: String = conn
+                .query_row(
+                    "SELECT task_type FROM workflow_run_nodes WHERE run_id = ?1 AND node_id = ?2",
+                    params![run_id, node_id],
+                    |row| row.get(0),
+                )
+                .unwrap_or_else(|_| "unknown".to_string());
+
+            let workflow_id: String = conn
+                .query_row(
+                    "SELECT workflow_id FROM workflow_runs WHERE run_id = ?1",
+                    params![run_id],
+                    |row| row.get(0),
+                )
+                .unwrap_or_default();
+
+            let node_metadata = conn
+                .query_row(
+                    "SELECT node_json FROM workflow_run_nodes WHERE run_id = ?1 AND node_id = ?2",
+                    params![run_id, node_id],
+                    |row| {
+                        let text: String = row.get(0)?;
+                        Ok::<Value, rusqlite::Error>(serde_json::from_str(&text).unwrap_or(Value::Null))
+                    },
+                )
+                .unwrap_or(Value::Null);
+
+            insert_workflow_run_event_locked(
+                conn,
+                run_id,
+                Some(&node_id),
+                "node.leased",
+                actor,
+                &json!({"node_id": node_id, "status": "running", "attempt": attempt}),
+                &now,
+            )?;
+
+            Ok(LeaseResult::Leased {
+                node_id,
+                task_type,
+                workflow_id,
+                attempt,
+                node_metadata,
+            })
+        })?;
+
+        // Phase 2: Execute (outside SQLite lock)
+        match leased {
+            LeaseResult::Terminal { action, run } => Ok(json!({ "action": action, "run": run })),
+            LeaseResult::NoReadyNode { run } => Ok(json!({ "action": "no_ready_node", "run": run })),
+            LeaseResult::Leased { node_id, task_type, workflow_id, attempt, mut node_metadata } => {
+                // Inject workspace_path from supervised_patch_workspaces if available
+                if let Ok(Some(workspace)) = self.get_supervised_patch_workspace_for_run(run_id) {
+                    if let Some(ws_path) = workspace.get("workspace_path").and_then(|v| v.as_str()) {
+                        if let Some(obj) = node_metadata.as_object_mut() {
+                            obj.insert("workspace_path".to_string(), json!(ws_path));
+                        }
+                    }
+                }
+                let input = crate::node_executor::NodeExecutionInput {
+                    node_id: node_id.clone(),
+                    task_type,
+                    run_id: run_id.to_string(),
+                    workflow_id,
+                    node_metadata,
+                };
+                let output = executor.execute_node(&input);
+
+                // Phase 3: Record result (inside SQLite lock)
+                self.with_conn(|conn| {
+                    let now = self.now();
+                    let final_status = &output.status;
+                    let should_retry = final_status == "failed"
+                        && attempt <= max_retries;
+
+                    let actual_status = if should_retry { "pending" } else { final_status };
+
+                    conn.execute(
+                        "UPDATE workflow_run_nodes SET status = ?1, completed_at = ?2 WHERE run_id = ?3 AND node_id = ?4",
+                        params![actual_status, now, run_id, node_id],
+                    ).map_err(|e| e.to_string())?;
+
+                    let node_json_text: String = conn
+                        .query_row(
+                            "SELECT node_json FROM workflow_run_nodes WHERE run_id = ?1 AND node_id = ?2",
+                            params![run_id, node_id],
+                            |row| row.get(0),
+                        )
+                        .map_err(|e| e.to_string())?;
+                    let mut node_json: Value =
+                        serde_json::from_str(&node_json_text).unwrap_or(Value::Null);
+                    let result_json = output.to_value();
+                    if let Some(obj) = node_json.as_object_mut() {
+                        obj.insert("status".to_string(), json!(actual_status));
+                        obj.insert("result".to_string(), result_json.clone());
+                        if actual_status == "completed" {
+                            obj.insert("completed_at".to_string(), json!(now));
+                        }
+                    }
+                    conn.execute(
+                        "UPDATE workflow_run_nodes SET node_json = ?1 WHERE run_id = ?2 AND node_id = ?3",
+                        params![node_json.to_string(), run_id, node_id],
+                    )
+                    .map_err(|e| e.to_string())?;
+
+                    if should_retry {
+                        conn.execute(
+                            "UPDATE workflow_run_nodes SET blocked_reason = ?1 WHERE run_id = ?2 AND node_id = ?3",
+                            params![format!("retry after attempt {attempt}: {}", output.error_message.as_deref().unwrap_or("")), run_id, node_id],
+                        ).map_err(|e| e.to_string())?;
+                        insert_workflow_run_event_locked(
+                            conn,
+                            run_id,
+                            Some(&node_id),
+                            "node.retry_scheduled",
+                            actor,
+                            &json!({"node_id": node_id, "attempt": attempt, "error_domain": output.error_domain, "error_message": output.error_message}),
+                            &now,
+                        )?;
+                    } else {
+                        let event_type = if final_status == "completed" { "node.completed" } else { "node.failed" };
+                        insert_workflow_run_event_locked(
+                            conn,
+                            run_id,
+                            Some(&node_id),
+                            event_type,
+                            actor,
+                            &json!({"node_id": node_id, "executor_type": output.executor_type, "attempt": attempt, "result": result_json}),
+                            &now,
+                        )?;
+                    }
+
+                    let (all_done, has_failure) = check_run_completion_locked(conn, run_id)?;
+                    if all_done {
+                        let terminal_status = if has_failure { "failed" } else { "completed" };
+                        let now = self.now();
+                        update_workflow_run_status_locked(conn, run_id, terminal_status, &now)?;
+                        insert_workflow_run_event_locked(
+                            conn,
+                            run_id,
+                            None,
+                            &format!("workflow_run.{terminal_status}"),
+                            actor,
+                            &json!({"reason": if has_failure { "node_failure" } else { "all_nodes_completed" }}),
+                            &now,
+                        )?;
+                        append_audit_locked(
+                            conn,
+                            &now,
+                            actor,
+                            &format!("workflow_run.{terminal_status}"),
+                            run_id,
+                            &json!({"metadata_only": true}),
+                        )?;
+                    }
+
+                    let run = get_run_row(conn, run_id)?;
+                    Ok(json!({
+                        "action": if should_retry { "node_retry" } else { "node_executed" },
+                        "node_id": node_id,
+                        "executor_type": output.executor_type,
+                        "attempt": attempt,
+                        "result": output.to_value(),
+                        "run": run,
+                    }))
+                })
+            }
+        }
+    }
+
+    pub fn validate_approval_binding(
+        &self,
+        run_id: &str,
+        artifact_id: &str,
+    ) -> Result<Value, String> {
+        let approvals = self.workflow_run_approvals(run_id, 1000)?;
+        let artifact = self
+            .get_supervised_patch_artifact(artifact_id)?
+            .ok_or_else(|| format!("artifact not found: {artifact_id}"))?;
+
+        let artifact_hash = artifact
+            .get("patch_hash")
+            .and_then(Value::as_str)
+            .unwrap_or("");
+        let artifact_source = artifact
+            .get("source_revision")
+            .and_then(Value::as_str)
+            .unwrap_or("");
+        let artifact_files = artifact
+            .get("changed_files")
+            .and_then(Value::as_array)
+            .cloned()
+            .unwrap_or_default();
+
+        let mut binding_checks = Vec::new();
+        let mut approved_approval = None;
+
+        for approval in &approvals {
+            let decision = approval.get("decision").and_then(Value::as_str).unwrap_or("");
+            if decision != "approved" {
+                continue;
+            }
+            let bound_hash = approval
+                .get("bound_patch_hash")
+                .and_then(Value::as_str)
+                .unwrap_or("");
+            let bound_source = approval
+                .get("bound_source_revision")
+                .and_then(Value::as_str)
+                .unwrap_or("");
+            let bound_files = approval
+                .get("bound_changed_files")
+                .and_then(Value::as_array)
+                .cloned()
+                .unwrap_or_default();
+            let expires_at = approval
+                .get("expires_at")
+                .and_then(Value::as_str)
+                .unwrap_or("");
+
+            let hash_match = !bound_hash.is_empty() && bound_hash == artifact_hash;
+            let source_match = !bound_source.is_empty() && bound_source == artifact_source;
+            let files_match = !bound_files.is_empty() && bound_files == artifact_files;
+            let now_str = self.now();
+            let not_expired = expires_at.is_empty() || expires_at > now_str.as_str();
+
+            binding_checks.push(json!({
+                "approval_id": approval.get("approval_id"),
+                "hash_match": hash_match,
+                "source_match": source_match,
+                "files_match": files_match,
+                "not_expired": not_expired,
+            }));
+
+            if hash_match && source_match && files_match && not_expired {
+                approved_approval = Some(approval.clone());
+                break;
+            }
+        }
+
+        let eligible = approved_approval.is_some();
+        Ok(json!({
+            "run_id": run_id,
+            "artifact_id": artifact_id,
+            "export_eligible": eligible,
+            "binding_checks": binding_checks,
+            "approving_approval": approved_approval,
+        }))
     }
 
     pub fn import_workflow_run(&self, run: &Value) -> Result<bool, String> {
@@ -500,9 +881,22 @@ fn insert_workflow_run_node_locked(
         .unwrap_or("pending");
     conn.execute(
         "INSERT OR REPLACE INTO workflow_run_nodes
-         (run_id, node_id, task_type, status, node_json)
-         VALUES (?1, ?2, ?3, ?4, ?5)",
-        params![run_id, node_id, task_type, status, node.to_string()],
+         (run_id, node_id, task_type, status, node_json,
+          started_at, completed_at, attempt_count, timeout_ms, blocked_reason, leased_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+        params![
+            run_id,
+            node_id,
+            task_type,
+            status,
+            node.to_string(),
+            node.get("started_at").and_then(Value::as_str),
+            node.get("completed_at").and_then(Value::as_str),
+            node.get("attempt_count").and_then(Value::as_i64).unwrap_or(0),
+            node.get("timeout_ms").and_then(Value::as_i64),
+            node.get("blocked_reason").and_then(Value::as_str),
+            node.get("leased_at").and_then(Value::as_str),
+        ],
     )
     .map_err(|e| e.to_string())?;
     Ok(())
@@ -702,9 +1096,9 @@ fn update_workflow_run_status_locked(
 }
 
 fn workflow_run_summary_row(row: &Row<'_>) -> rusqlite::Result<Value> {
-    let run_text: String = row.get(12)?;
+    let run_text: String = row.get(13)?;
     let run: Value = serde_json::from_str(&run_text).unwrap_or(Value::Null);
-    let boundaries_text: String = row.get(11)?;
+    let boundaries_text: String = row.get(12)?;
     let boundaries: Value =
         serde_json::from_str(&boundaries_text).unwrap_or_else(|_| workflow_run_boundaries());
     Ok(workflow_run_value(
@@ -719,6 +1113,7 @@ fn workflow_run_summary_row(row: &Row<'_>) -> rusqlite::Result<Value> {
         row.get::<_, Option<String>>(8)?.as_deref(),
         row.get::<_, Option<String>>(9)?.as_deref(),
         row.get::<_, Option<String>>(10)?.as_deref(),
+        row.get::<_, Option<String>>(11)?.as_deref(),
         &boundaries,
         &run,
     ))
@@ -736,6 +1131,7 @@ fn workflow_run_value(
     started_at: Option<&str>,
     completed_at: Option<&str>,
     result_json: Option<&str>,
+    last_heartbeat_at: Option<&str>,
     boundaries: &Value,
     run: &Value,
 ) -> Value {
@@ -759,6 +1155,7 @@ fn workflow_run_value(
         obj.insert("dispatch_id".to_string(), json!(dispatch_id));
         obj.insert("started_at".to_string(), json!(started_at));
         obj.insert("completed_at".to_string(), json!(completed_at));
+        obj.insert("last_heartbeat_at".to_string(), json!(last_heartbeat_at));
         obj.insert("result".to_string(), result.unwrap_or(Value::Null));
         obj.insert("boundaries".to_string(), boundaries.clone());
     }
@@ -800,12 +1197,36 @@ fn workflow_run_nodes_locked(
     run_id: &str,
 ) -> Result<Vec<Value>, String> {
     let mut stmt = conn
-        .prepare("SELECT node_json FROM workflow_run_nodes WHERE run_id = ?1 ORDER BY rowid ASC")
+        .prepare(
+            "SELECT node_json, status, started_at, completed_at, attempt_count,
+                    timeout_ms, blocked_reason, leased_at
+             FROM workflow_run_nodes WHERE run_id = ?1 ORDER BY rowid ASC",
+        )
         .map_err(|e| e.to_string())?;
     let rows = stmt
         .query_map(params![run_id], |row| {
             let text: String = row.get(0)?;
-            Ok(serde_json::from_str(&text).unwrap_or(Value::Null))
+            let mut node: Value = serde_json::from_str(&text).unwrap_or(Value::Null);
+            if let Some(obj) = node.as_object_mut() {
+                obj.insert("db_status".to_string(), json!(row.get::<_, String>(1)?));
+                if let Ok(Some(v)) = row.get::<_, Option<String>>(2) {
+                    obj.insert("started_at".to_string(), json!(v));
+                }
+                if let Ok(Some(v)) = row.get::<_, Option<String>>(3) {
+                    obj.insert("completed_at".to_string(), json!(v));
+                }
+                obj.insert("attempt_count".to_string(), json!(row.get::<_, i64>(4)?));
+                if let Ok(Some(v)) = row.get::<_, Option<i64>>(5) {
+                    obj.insert("timeout_ms".to_string(), json!(v));
+                }
+                if let Ok(Some(v)) = row.get::<_, Option<String>>(6) {
+                    obj.insert("blocked_reason".to_string(), json!(v));
+                }
+                if let Ok(Some(v)) = row.get::<_, Option<String>>(7) {
+                    obj.insert("leased_at".to_string(), json!(v));
+                }
+            }
+            Ok(node)
         })
         .map_err(|e| e.to_string())?;
     collect_values(rows)
@@ -940,6 +1361,86 @@ fn escape_like(value: &str) -> String {
         escaped.push(ch);
     }
     escaped
+}
+
+fn find_ready_node_locked(
+    conn: &rusqlite::Connection,
+    run_id: &str,
+) -> Result<Option<String>, String> {
+    let mut stmt = conn
+        .prepare("SELECT node_id FROM workflow_run_nodes WHERE run_id = ?1 AND status = 'pending' ORDER BY node_id")
+        .map_err(|e| e.to_string())?;
+    let pending_nodes: Vec<String> = stmt
+        .query_map(params![run_id], |row| row.get(0))
+        .map_err(|e| e.to_string())?
+        .filter_map(|r| r.ok())
+        .collect();
+
+    for node_id in pending_nodes {
+        // Check if all predecessor nodes are completed
+        let mut edge_stmt = conn
+            .prepare(
+                "SELECT wrn.status FROM workflow_run_edges wre
+                 JOIN workflow_run_nodes wrn ON wrn.run_id = wre.run_id AND wrn.node_id = wre.from_node_id
+                 WHERE wre.run_id = ?1 AND wre.to_node_id = ?2",
+            )
+            .map_err(|e| e.to_string())?;
+        let predecessor_statuses: Vec<String> = edge_stmt
+            .query_map(params![run_id, node_id], |row| row.get(0))
+            .map_err(|e| e.to_string())?
+            .filter_map(|r| r.ok())
+            .collect();
+
+        if predecessor_statuses.iter().all(|s| s == "completed") {
+            return Ok(Some(node_id));
+        }
+    }
+    Ok(None)
+}
+
+fn check_run_completion_locked(
+    conn: &rusqlite::Connection,
+    run_id: &str,
+) -> Result<(bool, bool), String> {
+    let mut stmt = conn
+        .prepare("SELECT status FROM workflow_run_nodes WHERE run_id = ?1")
+        .map_err(|e| e.to_string())?;
+    let statuses: Vec<String> = stmt
+        .query_map(params![run_id], |row| row.get(0))
+        .map_err(|e| e.to_string())?
+        .filter_map(|r| r.ok())
+        .collect();
+
+    if statuses.is_empty() {
+        return Ok((true, false));
+    }
+    let all_done = statuses
+        .iter()
+        .all(|s| s == "completed" || s == "failed" || s == "cancelled");
+    let has_failure = statuses.iter().any(|s| s == "failed");
+    Ok((all_done, has_failure))
+}
+
+fn is_run_terminal(status: &str) -> bool {
+    matches!(status, "completed" | "failed" | "cancelled")
+}
+
+fn get_run_row(conn: &rusqlite::Connection, run_id: &str) -> Result<Value, String> {
+    let mut stmt = conn
+        .prepare(
+            "SELECT run_sequence, run_id, plan_id, created_at, updated_at, status,
+                    workflow_id, dispatch_id, started_at, completed_at, result_json,
+                    last_heartbeat_at, boundaries_json, run_json
+             FROM workflow_runs WHERE run_id = ?1 LIMIT 1",
+        )
+        .map_err(|e| e.to_string())?;
+    let mut rows = stmt
+        .query_map(params![run_id], workflow_run_summary_row)
+        .map_err(|e| e.to_string())?;
+    let Some(row) = rows.next() else {
+        return Err(format!("workflow run not found: {run_id}"));
+    };
+    row.map_err(|e| e.to_string())
 }
 
 pub fn workflow_run_boundaries() -> Value {

@@ -25,7 +25,7 @@ fn test_task_decomposer_medium() {
     let mut runtime = FixtureRuntime::new();
     let graph = decomposer.decompose(&analysis, "disp-001", &mut runtime);
     // complexity determines graph shape: <0.3 simple, >=0.6 complex, else medium
-    assert!(graph.nodes.len() >= 1);
+    assert!(!graph.nodes.is_empty());
     assert_eq!(graph.nodes.len() - 1, graph.edges.len());
 }
 
@@ -36,7 +36,7 @@ fn test_task_decomposer_complex() {
         analyze("refactor this architecture with complex dependencies and multiple risk factors");
     let mut runtime = FixtureRuntime::new();
     let graph = decomposer.decompose(&analysis, "disp-001", &mut runtime);
-    assert!(graph.nodes.len() >= 1);
+    assert!(!graph.nodes.is_empty());
     assert_eq!(graph.nodes.len() - 1, graph.edges.len());
 }
 

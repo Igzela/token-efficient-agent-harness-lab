@@ -89,14 +89,14 @@ mod tests {
 
     #[test]
     fn report_serializes() {
-        let v = serde_json::to_value(&ControlledModelEvalHarness::new().evaluate("s1", vec![]))
+        let v = serde_json::to_value(ControlledModelEvalHarness::new().evaluate("s1", vec![]))
             .unwrap();
         assert_eq!(v["suite_id"], "s1");
     }
 
     #[test]
     fn case_serializes() {
-        let v = serde_json::to_value(&make_case("c1", true)).unwrap();
-        assert_eq!(v["passed"], true);
+        let v = serde_json::to_value(make_case("c1", true)).unwrap();
+        assert!(v["passed"].as_bool().unwrap());
     }
 }

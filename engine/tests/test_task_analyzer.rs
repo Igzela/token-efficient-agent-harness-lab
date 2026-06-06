@@ -468,13 +468,10 @@ fn readonly_advisory_about_production_and_secret_boundaries_is_medium_risk() {
     assert_eq!(a.risk_level, "medium");
     assert!(a.risk_flags.contains(&"deployment".to_string()));
     assert!(a.risk_flags.contains(&"secret_handling".to_string()));
-    assert_eq!(a.features_detected["read_only_advisory"], true);
-    assert_eq!(
-        a.features_detected["explicit_dangerous_action"]
-            .as_bool()
-            .unwrap_or(false),
-        false
-    );
+    assert!(a.features_detected["read_only_advisory"].as_bool().unwrap_or(false));
+    assert!(!a.features_detected["explicit_dangerous_action"]
+        .as_bool()
+        .unwrap_or(false));
 }
 
 #[test]
@@ -485,12 +482,9 @@ fn ordinary_readonly_review_does_not_set_advisory_downgrade_marker() {
     );
 
     assert_eq!(a.risk_level, "low");
-    assert_eq!(
-        a.features_detected["read_only_advisory"]
-            .as_bool()
-            .unwrap_or(false),
-        false
-    );
+    assert!(!a.features_detected["read_only_advisory"]
+        .as_bool()
+        .unwrap_or(false));
 }
 
 #[test]
