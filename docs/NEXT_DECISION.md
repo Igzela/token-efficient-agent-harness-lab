@@ -109,11 +109,18 @@ This track authorizes extending existing supervised autonomous beta infrastructu
 | 4. SDK/API Productization | 7 new TypeScript + Python methods; schedulerStatus; response types | **DONE** — commit 82aa844 |
 | 5. Security Isolation | CORS origin matching middleware; health probe bypass; X-Request-ID; production startup warnings; `ACP_CORS_ORIGINS` | **DONE** — commits 82aa844, ac20dff |
 | 6. Ops/HA/DR | 6 failure injection tests (timeout, retry exhaustion, missing dir, expiry, tamper, concurrent tick) | **DONE** — commit 82aa844 |
-| 7. Real Pilot | E2E with executor-produced patch; tick command override; pilot script | **DONE** — commits b8d611b, ac20dff |
+| 7. Real Pilot | E2E with real Claude Code CLI; command override wiring; `--allowedTools`; hard-assert pilot script | **DONE** — commits 10f4bdc, ae151c4 |
+| GA-1. Artifact Ignore + Persisted Diff | capture_patch excludes build artifacts (target/, node_modules/, .next/, dist/, build/, __pycache__/, .pytest_cache/, .git/), large files, binaries. Stores review-safe unified diff summary in artifact metadata. Diff readable after workspace cleanup. Pilot verifies no build artifacts in patch. | **NEXT** |
+| GA-2. Production Profile | `ACP_PROFILE=local|production`. Production: auth required, CORS not `*`, backup dir configured, CLI/provider explicit opt-in. LAN exposed + auth off or CORS `*` fails startup (not just warning). Tests cover profile gate. | Pending |
+| GA-3. Scheduler Stability | Prove lease anti-concurrency with tests. Confirm heartbeat, lease timeout, retry exhausted, cancel, timeout, cleanup failure behavior. Scheduler status API: `running`, `executor_type`, `tick_count`, `error_count`, `last_error`, `last_tick_at`, `active_runs`. | Pending |
+| GA-4. Observability / Audit | Metrics: executor latency, retry count, artifact count, secret block count, active runs, queue length. Audit: CLI tick, artifact capture, approval, export, cleanup/quarantine events. Runbook in existing ops docs. | Pending |
+| GA-5. Review UI | Dashboard: run/workspace/artifact/diff/changed_files/hash/source_revision/integrity/secret scan/executor/duration/cost/logs. Approve/reject/export/cleanup/quarantine ops. Diff visible before approval. Failure/retry/terminal states clear. | Pending |
+| GA-6. SDK/API Completeness | TS/Python SDK: scheduler status, workspace CRUD, capture, approval, export, cleanup/quarantine, workflow tick, artifact diff/detail. Tests: happy path, approval mismatch, artifact tamper, scheduler status. | Pending |
+| GA-7. Soak Test | `scripts/soak_ga_e2e.py` — `--base-url`, `--executor`, `--count`, `--concurrency`. Command executor 50 tasks; real CLI ≥3 tasks. JSON summary: success rate, failure domains, p95 latency, artifact count, cleanup success, cost. Non-zero exit on failure. | Pending |
 
-**Latest**: ac20dff — CORS origin matching fixed (middleware matches request Origin against allowlist), tick `command` override injects into node_metadata, pilot proves executor-produced patch.
+**Latest**: ae151c4 — Real CLI pilot E2E verified with actual Claude Code CLI process. Hard assertions on file content and patch coverage.
 
-**Next**: Real Claude/Codex CLI pilot (requires CLI binary in environment). Current `ACP_SCHEDULER_EXECUTOR=claude_code_cli` + `ACP_ENABLE_CLI_EXECUTION=1` is ready but needs `claude` or `codex` binary on PATH.
+**Next**: GA-1 (Artifact Ignore + Persisted Diff) and GA-2 (Production Profile) — can execute in parallel.
 
 **Boundaries that remain intact:**
 - Provider execution remains default-off and env-gated
