@@ -1,6 +1,6 @@
 # Current Status
 
-Last verified: 2026-06-06. Production-grade hosted/self-hosted track Phase 1-7 + real CLI pilot complete. **GA hardening track active (GA-0 through GA-7)**: GA-0 (plan docs) DONE, GA-1 (artifact ignore + persisted review diff) DONE, GA-2 (production profile gate) DONE, GA-3 (scheduler stability) DONE, GA-4 (observability/audit) DONE, GA-5 (review UI) DONE, GA-6 (SDK/API completeness) DONE. Next: GA-7 (soak test).
+Last verified: 2026-06-06. Production-grade hosted/self-hosted track Phase 1-7 + real CLI pilot complete. GA hardening track complete (GA-0 through GA-7). **Dormant Module Adaptation track planned (Phase 1-4)**: 76 dormant files / 23,939 lines identified; 4-phase strategy documented in NEXT_DECISION.md; `scripts/auto_adapt_loop.sh` ready for autonomous advancement. Phase 1 (Interface Unification) is next.
 
 ## Repository State
 

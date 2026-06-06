@@ -24,6 +24,7 @@ The responsible coding agent may choose any of the following without asking for 
 | CLI executor routing | Complexity-based dispatch to Claude Code CLI / Codex CLI implemented as a pre-existing local subprocess exception. It is explicit opt-in via `ACP_ENABLE_CLI_EXECUTION=1`; unavailable or disabled CLI tiers fall back to noop. Trial 5 controlled beta validation is closed. Tick API wires `command` to `CliNodeExecutor` via `tick_with_executor_and_command`; claude CLI invoked with `--allowedTools Edit,Write,Bash`. Real CLI pilot (`scripts/pilot_cli_e2e.py`) verified end-to-end with actual Claude Code CLI process creating files in workspace. Maintenance + pilot validation. Any expansion requires an explicit new plan and approval. |
 | Supervised autonomous beta planning | Batch 0-7 Slice A-F complete. Slice F adds supervised execution runtime primitives: NodeExecutor trait, CommandNodeExecutor (shell-metachar rejection, allowlist, no `sh -c`), workflow tick endpoint, workspace lifecycle (create/cleanup/quarantine), capture_patch with source manifest diff, approval binding with bound fields, integrity validation, export gate, E2E closed-loop test. 1222 Rust tests pass, clippy clean. No target repo writes, sandbox/process/container/VM execution, real workers, provider calls, push/merge/deploy/apply controls, or default-on execution. |
 | Architecture refactor (R-series) | **SEALED AT R7.** R1–R7 are complete. R8 is not approved. The `checkpoint.rs` split and `dispatch_decision.rs` split are deferred. No further R-series file splitting is approved. |
+| Dormant module adaptation | 4-phase strategy to selectively activate 23,939 lines of dormant code. Phase 1: Interface Unification (trait Evaluator, Provider adapter, GraphOperations). Phase 2: Zero-Conflict Activation (dag_manager, context_pack, work_queue, auto_policies, result_aggregator). Phase 3: Adapted Activation (advisor, feedback_integrator, quality gates, workflow_engine, conflict_resolver, human_approval_gate). Phase 4: Dead Code Cleanup (~15,000 lines). Automated via `scripts/auto_adapt_loop.sh`. All boundaries intact. |
 
 ## Supervised Autonomous Beta Planning
 
@@ -94,6 +95,83 @@ Next productization phases:
 | 7 | Long-Run Hardening | **COMPLETE** — SQLite contention tests ✓, provider failure matrix ✓, audit integrity review ✓ (7 tests), upgrade smoke verification ✓ (tarball structure, install smoke, data preservation, port retry, integrity endpoint). LAN threat model exists at `docs/security/THREAT_MODEL.md`. GitHub Actions clean (Node 22, latest action versions). |
 
 All planned productization phases (1–7) are complete. No productization Phase 8 is defined. The completed migration Phase 8 closeout is historical, not a new work track. The agent should maintain repo health (CI, docs, test drift, wire governance, security baseline) until the user provides new direction or defines a new phase.
+
+## Dormant Module Adaptation Track (User-Approved)
+
+**User approved on 2026-06-06.** Starting from commit 0781a71 (1286 Rust tests baseline).
+
+This track selectively activates dormant modules from the Rust engine into the production code path. 76 files / 23,939 lines of dormant code exist; approximately 60% is functionally duplicated or violates project boundaries. The track follows a 4-phase strategy: interface unification → zero-conflict activation → adapted activation → dead code cleanup.
+
+**Boundaries that remain intact:**
+- Provider execution remains default-off and env-gated
+- Target repo writes remain forbidden (workspace is app-owned copy only)
+- No parallel runtime/DAG/scheduler kernels — all work extends existing modules
+- No sandbox/process/container/VM execution beyond existing CLI executor path
+- No cloud SaaS or hosted production deployment
+- R-series file splitting remains sealed at R7
+
+| Phase | Scope | Status |
+|---|---|---|
+| 1. Interface Unification | Extract `trait Evaluator` from `EvaluationStub`; unify `ModelProvider`→`Provider` adapter; extract `trait GraphOperations` from dag_manager + dependency_resolver | **Next** |
+| 2. Zero-Conflict Activation | Activate `workflow/dag_manager` mutations in planner; activate `workflow/context_pack` rules in task_analyzer; activate `orchestration/work_queue` replacing inline state machine; activate `routing/auto_policies` in scheduler tick | Pending |
+| 3. Adapted Activation | Activate `harness/advisor` as dispatch advisory layer; activate `routing/feedback_integrator` driving adaptive routing; activate `quality/` gate chain replacing EvaluationStub; activate `orchestration/workflow_engine` as scheduler concurrency accelerator; activate `orchestration/conflict_resolver` + `human_approval_gate` | Pending |
+| 4. Dead Code Cleanup | Remove `app_layer/` (fully duplicated); remove `dispatch/manual/` (superseded); remove `harness/{sandbox,supervisor,batch_runner,sampling,model_eval}`; remove `storage/{durable_store,health_checker,storage_migrator}`; tag `event_source/`+`errors`+`event_schema` as reference-only | Pending |
+
+### Dormant Module Inventory
+
+**Top-level dormant (55 files, 18,264 lines):**
+
+| Module | Files | Lines | Strategy |
+|---|---|---|---|
+| `app_layer/` | 16 | 6,334 | DELETE (functionally duplicated by http_server + local_product_store) |
+| `workflow/` | 18 | 4,081 | ACTIVATE (dag_manager, context_pack → Phase 2) |
+| `event_source/` | 7 | 2,736 | KEEP AS REFERENCE (append-only event sourcing, incompatible with SQLite CRUD) |
+| `harness/` | 17 | 2,719 | PARTIAL ACTIVATE (advisor → Phase 3; delete sandbox/supervisor/batch_runner/sampling/model_eval) |
+| `dispatch/manual/` | 7 | 827 | DELETE (superseded by CLI executor + scheduler) |
+| `ecosystem/` | 5 | 795 | EVALUATE (benchmark, community_profiles, tool_adapter → may activate if registry pattern needed) |
+| `doc_generator.rs` | 1 | 318 | EVALUATE (utility, low priority) |
+| `event_schema.rs` | 1 | 228 | KEEP AS REFERENCE |
+| `errors.rs` | 1 | 101 | KEEP AS REFERENCE |
+| `sdk.rs` | 1 | 88 | DELETE (alternative SDK entry, unused) |
+| `wire_types.rs` | 1 | 36 | DELETE (production uses inline types) |
+
+**Dormant sub-modules in wired parents (21 files, 5,675 lines):**
+
+| Sub-Module | Lines | Strategy |
+|---|---|---|
+| `quality/` (8 files) | 3,412 | ACTIVATE in Phase 3 (gate chain replacing EvaluationStub) |
+| `storage/durable_store` | 434 | DELETE (overlaps LocalProductStore) |
+| `orchestration/workflow_engine` | 272 | ACTIVATE in Phase 3 (scheduler concurrency) |
+| `infrastructure/plugin_system` | 250 | EVALUATE (may activate if plugin pattern needed) |
+| `storage/storage_migrator` | 237 | DELETE (LocalProductStore has own migrations) |
+| `routing/feedback_integrator` | 196 | ACTIVATE in Phase 3 |
+| `orchestration/conflict_resolver` | 149 | ACTIVATE in Phase 3 |
+| `storage/health_checker` | 142 | DELETE (only used by dormant sdk.rs) |
+| `orchestration/multi_agent_budget` | 140 | EVALUATE |
+| `orchestration/work_queue` | 116 | ACTIVATE in Phase 2 |
+| `routing/auto_policies` | 111 | ACTIVATE in Phase 2 |
+| `infrastructure/plugin_registry` | 83 | EVALUATE |
+| `orchestration/result_aggregator` | 69 | ACTIVATE in Phase 2 |
+| `orchestration/human_approval_gate` | 64 | ACTIVATE in Phase 3 |
+
+### Type Conflicts Requiring Resolution
+
+| Conflict | Severity | Resolution |
+|---|---|---|
+| `harness::ModelProvider` (sync) vs `provider::Provider` (async) | HIGH | Write `ProviderAdapter` bridge in Phase 1 |
+| `EvaluationStub` (concrete) vs `quality::*` gates | HIGH | Extract `trait Evaluator` in Phase 1 |
+| `ModelResponse` vs `ProviderResponse` | MEDIUM | Unified response type or conversion layer |
+| `LocalProductStore` vs `DurableStore` | MEDIUM | Do not activate DurableStore (delete) |
+
+### Risk Blockers
+
+| Blocker | Severity | Mitigation |
+|---|---|---|
+| Evaluator has no trait | RED | Phase 1 extracts trait before Phase 3 quality gate work |
+| Two disjoint execution traits (Executor vs NodeExecutor) | RED | Document clearly; dormant modules must target correct trait |
+| Scheduler single-thread serial execution | YELLOW | Phase 3 workflow_engine integration addresses concurrency |
+| read_only_planner hardcoded `execution: "disabled"` | YELLOW | Phase 3 modifies boundary logic for execution-eligible plans |
+| No cross-module integration tests for dormant code | YELLOW | Each phase includes integration test requirements |
 
 ## Production-Grade Hosted/Self-Hosted Track (User-Approved)
 
