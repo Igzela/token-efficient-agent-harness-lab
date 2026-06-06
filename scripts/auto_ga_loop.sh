@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
-# auto_ga_loop.sh — Autonomous GA hardening batch loop with ultracode
+# auto_ga_loop.sh — Autonomous GA hardening batch loop
 #
-# Reads NEXT_DECISION.md to find the next incomplete GA batch,
-# launches a Claude Code session in ultracode mode (multi-agent workflow),
-# waits for CI to go green, then repeats until all batches are done or one fails.
+# Launches interactive Claude Code sessions in tmux to implement GA batches.
+# Each session runs in its own tmux window, executes the full GA batch
+# (implement + test + commit + push + CI verify), then signals completion.
 #
 # Usage:
 #   ./scripts/auto_ga_loop.sh [--max-batches N]
@@ -11,12 +11,14 @@
 # Requirements:
 #   - claude CLI installed and authenticated
 #   - gh CLI installed and authenticated
+#   - tmux installed
 #   - Working tree clean before starting
 
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 MAX_BATCHES="${MAX_BATCHES:-7}"
+SESSION_NAME="auto-ga-$$"
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -34,11 +36,11 @@ if [[ -n "$(git status --porcelain)" ]]; then
 fi
 
 wait_for_ci_green() {
-    local max_wait=600  # 10 minutes max
+    local max_wait=600
     local elapsed=0
 
     echo "  Waiting for CI to start..."
-    sleep 15  # give CI time to trigger
+    sleep 15
 
     while [[ $elapsed -lt $max_wait ]]; do
         local status
@@ -61,28 +63,15 @@ wait_for_ci_green() {
     return 1
 }
 
-COMPLETED=0
-FAILED=false
+# Signal file for completion
+SIGNAL_DIR="/tmp/auto-ga-$$"
+mkdir -p "$SIGNAL_DIR"
 
-for i in $(seq 1 "$MAX_BATCHES"); do
-    # Find next incomplete GA batch from NEXT_DECISION.md
-    NEXT_BATCH=$(grep -oP 'GA-\K\d+(?=\. .* \| \*\*NEXT\*\*|\. .* \| Pending)' \
-        docs/NEXT_DECISION.md | head -1)
+launch_ga_session() {
+    local batch_num="$1"
+    local signal_file="$SIGNAL_DIR/ga-${batch_num}.done"
 
-    if [[ -z "$NEXT_BATCH" ]]; then
-        echo "=== All GA batches complete or none found ==="
-        break
-    fi
-
-    echo ""
-    echo "============================================================"
-    echo "  Starting GA-${NEXT_BATCH} (batch ${i}/${MAX_BATCHES}) [ultracode]"
-    echo "============================================================"
-    echo ""
-
-    # Build the ultracode prompt — includes "ultracode" keyword to activate
-    # multi-agent workflow orchestration
-    PROMPT="ultracode
+    local PROMPT="ultracode
 
 You are continuing the GA hardening track for this repository (branch: feat/dashboard-ux-polish).
 
@@ -94,7 +83,9 @@ IMPORTANT: Read and follow these files IN ORDER before doing anything:
 5. AGENTS.md (hard boundaries, documentation maintenance rule, autonomous advancement protocol)
 6. CLAUDE.md (code style, session log format, test commands)
 
-Your task: implement GA-${NEXT_BATCH} as described in docs/NEXT_DECISION.md.
+Your task: implement GA-${batch_num} as described in docs/NEXT_DECISION.md.
+
+You MUST execute all steps immediately. Do NOT present a plan and wait for approval. Read files, write code, run tests, commit, push, and verify CI — all in this single session. There is no human reviewer; you have full autonomous authority for this GA batch.
 
 Documentation rules (from AGENTS.md):
 - After every commit-sized change, update docs/CURRENT_STATUS.md, docs/NEXT_DECISION.md, and CLAUDE.md session log if their facts changed.
@@ -104,7 +95,7 @@ Documentation rules (from AGENTS.md):
 - After push, verify CI passes with gh run watch before considering the batch done.
 
 Requirements:
-1. Implement the GA-${NEXT_BATCH} scope with tests. Use multi-agent workflow orchestration to parallelize exploration and review.
+1. Implement the GA-${batch_num} scope with tests
 2. Run cargo test -p engine, cargo fmt --check, cargo clippy -p engine --all-targets -- -D warnings
 3. Run uv run --no-project python scripts/check_agent_handoff.py
 4. Update docs/CURRENT_STATUS.md and docs/NEXT_DECISION.md to reflect completion
@@ -113,22 +104,67 @@ Requirements:
 7. After push, run: gh run watch \$(gh run list --limit 1 --json databaseId -q '.[0].databaseId') --exit-status
 8. Report: commit hash, test count, CI status, what was implemented, remaining risks
 
-Do NOT start any work beyond GA-${NEXT_BATCH}. Stop after CI passes."
+Do NOT start any work beyond GA-${batch_num}.
 
-    if claude -p "$PROMPT" \
-        --dangerously-skip-permissions \
-        --output-format text \
-        2>&1; then
+When done, write 'GA-${batch_num}_DONE' to ${signal_file} and exit."
 
-        echo ""
-        echo "  GA-${NEXT_BATCH} session completed successfully."
-        COMPLETED=$((COMPLETED + 1))
-    else
-        echo ""
-        echo "  GA-${NEXT_BATCH} session FAILED (exit code $?)."
-        FAILED=true
+    # Launch in a new tmux window
+    tmux new-window -t "$SESSION_NAME" -n "ga-${batch_num}" \
+        "cd $REPO_ROOT && claude --dangerously-skip-permissions <<< '$PROMPT'; echo 'GA-${batch_num}_DONE' > '$signal_file'; echo '=== GA-${batch_num} session finished ==='; read -p 'Press Enter to close...'"
+}
+
+cleanup() {
+    tmux kill-session -t "$SESSION_NAME" 2>/dev/null || true
+    rm -rf "$SIGNAL_DIR"
+}
+trap cleanup EXIT
+
+# Create tmux session
+tmux new-session -d -s "$SESSION_NAME" -c "$REPO_ROOT" "echo 'Auto-GA loop started. Waiting for first batch...'; sleep infinity"
+
+COMPLETED=0
+FAILED=false
+
+for i in $(seq 1 "$MAX_BATCHES"); do
+    NEXT_BATCH=$(grep -oP 'GA-\K\d+(?=\. .* \| \*\*NEXT\*\*|\. .* \| Pending)' \
+        docs/NEXT_DECISION.md | head -1)
+
+    if [[ -z "$NEXT_BATCH" ]]; then
+        echo "=== All GA batches complete or none found ==="
         break
     fi
+
+    echo ""
+    echo "============================================================"
+    echo "  Starting GA-${NEXT_BATCH} (batch ${i}/${MAX_BATCHES}) [ultracode, tmux]"
+    echo "  tmux session: $SESSION_NAME, window: ga-${NEXT_BATCH}"
+    echo "============================================================"
+    echo ""
+
+    SIGNAL_FILE="$SIGNAL_DIR/ga-${NEXT_BATCH}.done"
+    rm -f "$SIGNAL_FILE"
+
+    launch_ga_session "$NEXT_BATCH"
+
+    # Wait for session to signal completion
+    echo "  Waiting for GA-${NEXT_BATCH} to complete..."
+    echo "  (Attach with: tmux attach -t $SESSION_NAME -w ga-${NEXT_BATCH})"
+    while [[ ! -f "$SIGNAL_FILE" ]]; do
+        sleep 10
+        # Check if claude process is still running
+        if ! tmux list-windows -t "$SESSION_NAME" 2>/dev/null | grep -q "ga-${NEXT_BATCH}"; then
+            echo "  GA-${NEXT_BATCH} window closed unexpectedly."
+            FAILED=true
+            break 2
+        fi
+    done
+
+    if [[ "$FAILED" == "true" ]]; then
+        break
+    fi
+
+    echo "  GA-${NEXT_BATCH} session completed."
+    COMPLETED=$((COMPLETED + 1))
 
     # Wait for CI to go green — mandatory
     echo ""
@@ -138,11 +174,6 @@ Do NOT start any work beyond GA-${NEXT_BATCH}. Stop after CI passes."
         FAILED=true
         break
     fi
-
-    # Verify working tree is clean
-    if [[ -n "$(git status --porcelain)" ]]; then
-        echo "  WARNING: Working tree not clean after GA-${NEXT_BATCH}."
-    fi
 done
 
 echo ""
@@ -151,8 +182,10 @@ echo "  Auto-GA loop finished"
 echo "  Completed: ${COMPLETED} batches"
 if [[ "$FAILED" == "true" ]]; then
     echo "  Status: FAILED (see above)"
+    echo "  Attach to tmux session to inspect: tmux attach -t $SESSION_NAME"
     exit 1
 else
-    echo "  Status: ALL DONE — all GA batches complete, CI green"
+    echo "  Status: ALL DONE"
+    tmux kill-session -t "$SESSION_NAME" 2>/dev/null || true
     exit 0
 fi
