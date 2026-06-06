@@ -364,15 +364,25 @@ fn build_multi_executor(config: &CliConfig) -> MultiExecutor {
 }
 
 pub fn production_profile_violations(host: &str, require_auth: bool) -> Vec<&'static str> {
+    let cors = std::env::var("ACP_CORS_ORIGINS").unwrap_or_default();
+    let has_backup_dir = std::env::var("ACP_BACKUP_DIR").is_ok();
+    production_profile_violations_inner(host, require_auth, &cors, has_backup_dir)
+}
+
+fn production_profile_violations_inner(
+    host: &str,
+    require_auth: bool,
+    cors: &str,
+    has_backup_dir: bool,
+) -> Vec<&'static str> {
     let mut violations = Vec::new();
     if !require_auth {
         violations.push("ACP_REQUIRE_AUTH must be enabled (set ACP_REQUIRE_AUTH=1)");
     }
-    let cors = std::env::var("ACP_CORS_ORIGINS").unwrap_or_default();
     if cors.is_empty() || cors == "*" {
         violations.push("ACP_CORS_ORIGINS must not be '*' (set explicit origin allowlist)");
     }
-    if std::env::var("ACP_BACKUP_DIR").is_err() {
+    if !has_backup_dir {
         violations.push("ACP_BACKUP_DIR must be configured");
     }
     if host == "0.0.0.0" && !require_auth {
@@ -387,81 +397,55 @@ mod tests {
 
     #[test]
     fn ga2_production_profile_clean_config_passes() {
-        // Temporarily set env vars for a clean production config
-        std::env::set_var("ACP_CORS_ORIGINS", "https://example.com");
-        std::env::set_var("ACP_BACKUP_DIR", "/tmp/test-backups");
-
-        let violations = production_profile_violations("127.0.0.1", true);
+        let violations =
+            production_profile_violations_inner("127.0.0.1", true, "https://example.com", true);
         assert!(
             violations.is_empty(),
             "clean production config should have no violations: {:?}",
             violations
         );
-
-        std::env::remove_var("ACP_CORS_ORIGINS");
-        std::env::remove_var("ACP_BACKUP_DIR");
     }
 
     #[test]
     fn ga2_production_profile_no_auth_fails() {
-        std::env::set_var("ACP_CORS_ORIGINS", "https://example.com");
-        std::env::set_var("ACP_BACKUP_DIR", "/tmp/test-backups");
-
-        let violations = production_profile_violations("127.0.0.1", false);
+        let violations =
+            production_profile_violations_inner("127.0.0.1", false, "https://example.com", true);
         assert!(
             violations.iter().any(|v| v.contains("ACP_REQUIRE_AUTH")),
             "should require auth: {:?}",
             violations
         );
-
-        std::env::remove_var("ACP_CORS_ORIGINS");
-        std::env::remove_var("ACP_BACKUP_DIR");
     }
 
     #[test]
     fn ga2_production_profile_wildcard_cors_fails() {
-        std::env::set_var("ACP_CORS_ORIGINS", "*");
-        std::env::set_var("ACP_BACKUP_DIR", "/tmp/test-backups");
-
-        let violations = production_profile_violations("127.0.0.1", true);
+        let violations = production_profile_violations_inner("127.0.0.1", true, "*", true);
         assert!(
             violations.iter().any(|v| v.contains("ACP_CORS_ORIGINS")),
             "should reject wildcard CORS: {:?}",
             violations
         );
-
-        std::env::remove_var("ACP_CORS_ORIGINS");
-        std::env::remove_var("ACP_BACKUP_DIR");
     }
 
     #[test]
     fn ga2_production_profile_no_backup_dir_fails() {
-        std::env::set_var("ACP_CORS_ORIGINS", "https://example.com");
-        std::env::remove_var("ACP_BACKUP_DIR");
-
-        let violations = production_profile_violations("127.0.0.1", true);
+        let violations =
+            production_profile_violations_inner("127.0.0.1", true, "https://example.com", false);
         assert!(
             violations.iter().any(|v| v.contains("ACP_BACKUP_DIR")),
             "should require backup dir: {:?}",
             violations
         );
-
-        std::env::remove_var("ACP_CORS_ORIGINS");
     }
 
     #[test]
     fn ga2_production_profile_lan_no_auth_fails() {
-        std::env::set_var("ACP_CORS_ORIGINS", "https://example.com");
-        std::env::set_var("ACP_BACKUP_DIR", "/tmp/test-backups");
-
-        let violations = production_profile_violations("0.0.0.0", false);
+        let violations =
+            production_profile_violations_inner("0.0.0.0", false, "https://example.com", true);
         assert!(
             violations.iter().any(|v| v.contains("LAN-exposed")),
             "should reject LAN without auth: {:?}",
             violations
         );
-
-        std::env::remove_var("ACP_CORS_ORIGINS");
-        std::env::remove_var("ACP_BACKUP_DIR");
     }
 }
