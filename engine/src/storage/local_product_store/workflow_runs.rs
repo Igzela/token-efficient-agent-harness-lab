@@ -826,6 +826,74 @@ impl LocalProductStore {
         })
     }
 
+    pub fn list_active_workflow_run_ids(&self) -> Result<Vec<String>, String> {
+        self.with_conn(|conn| {
+            let mut stmt = conn
+                .prepare("SELECT run_id FROM workflow_runs WHERE status IN ('running', 'created') ORDER BY run_sequence")
+                .map_err(|e| e.to_string())?;
+            let ids = stmt
+                .query_map([], |row| row.get(0))
+                .map_err(|e| e.to_string())?
+                .filter_map(|r| r.ok())
+                .collect();
+            Ok(ids)
+        })
+    }
+
+    pub fn set_pending_node_to_running_for_test(&self, leased_at: &str) -> Result<i64, String> {
+        self.with_conn(|conn| {
+            let node_id: Option<String> = conn
+                .query_row(
+                    "SELECT node_id FROM workflow_run_nodes WHERE status = 'pending' LIMIT 1",
+                    [],
+                    |row| row.get(0),
+                )
+                .ok();
+            let Some(node_id) = node_id else {
+                return Ok(0);
+            };
+            let count = conn
+                .execute(
+                    "UPDATE workflow_run_nodes SET status = 'running', leased_at = ?1 WHERE node_id = ?2",
+                    rusqlite::params![leased_at, node_id],
+                )
+                .map_err(|e| e.to_string())?;
+            Ok(count as i64)
+        })
+    }
+
+    pub fn recover_stale_leases(&self, lease_timeout_ms: u64) -> Result<i64, String> {
+        self.with_conn(|conn| {
+            let now = self.now();
+            let mut stmt = conn
+                .prepare("SELECT node_id, leased_at FROM workflow_run_nodes WHERE status = 'running' AND leased_at IS NOT NULL")
+                .map_err(|e| e.to_string())?;
+            let stale_nodes: Vec<(String, String)> = stmt
+                .query_map([], |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)))
+                .map_err(|e| e.to_string())?
+                .filter_map(|r| r.ok())
+                .filter(|(_, leased_at)| {
+                    if let (Ok(lease_time), Ok(now_time)) = (
+                        chrono::NaiveDateTime::parse_from_str(leased_at, "%Y-%m-%dT%H:%M:%SZ"),
+                        chrono::NaiveDateTime::parse_from_str(&now, "%Y-%m-%dT%H:%M:%SZ"),
+                    ) {
+                        (now_time - lease_time).num_milliseconds() as u64 > lease_timeout_ms
+                    } else {
+                        false
+                    }
+                })
+                .collect();
+            let count = stale_nodes.len() as i64;
+            for (node_id, _) in &stale_nodes {
+                conn.execute(
+                    "UPDATE workflow_run_nodes SET status = 'pending', leased_at = NULL WHERE node_id = ?1 AND status = 'running'",
+                    params![node_id],
+                ).map_err(|e| e.to_string())?;
+            }
+            Ok(count)
+        })
+    }
+
     fn update_workflow_run_status_with_event(
         &self,
         run_id: &str,

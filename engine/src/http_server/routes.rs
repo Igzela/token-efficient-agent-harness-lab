@@ -7,11 +7,13 @@ use std::fs;
 use std::path::{Component, Path, PathBuf};
 
 use super::handlers::*;
-use super::middleware::cors_preflight;
+use super::middleware::{cors_preflight, request_id_layer};
 use super::state::AxumApiState;
 
 pub fn build_axum_router(state: AxumApiState) -> Router {
-    axum_routes().with_state(state)
+    axum_routes()
+        .layer(axum::middleware::from_fn(request_id_layer))
+        .with_state(state)
 }
 
 pub fn build_axum_router_with_dashboard(
@@ -20,6 +22,7 @@ pub fn build_axum_router_with_dashboard(
 ) -> Router {
     axum_routes()
         .fallback(serve_dashboard_asset)
+        .layer(axum::middleware::from_fn(request_id_layer))
         .with_state(state.with_dashboard_dir(dashboard_dir))
 }
 
@@ -203,6 +206,10 @@ fn axum_routes() -> Router<AxumApiState> {
         .route(
             "/api/v1/keys/:key_id/scopes",
             post(keys::api_update_key_scopes).options(cors_preflight),
+        )
+        .route(
+            "/api/v1/scheduler/status",
+            get(scheduler::api_scheduler_status).options(cors_preflight),
         )
         .route(
             "/api/v1/provider/health",

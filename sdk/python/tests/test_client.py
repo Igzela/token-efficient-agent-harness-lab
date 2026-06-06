@@ -533,5 +533,171 @@ class ClientEncodedPathTest(unittest.TestCase):
         )
 
 
+class ClientCreateSupervisedPatchWorkspaceTest(unittest.TestCase):
+    @patch("agent_control_plane_sdk.client.urlopen")
+    def test_create_workspace_posts_request(self, mock_urlopen):
+        mock_urlopen.return_value = mock_response({
+            "schema_version": "axum_api.v1",
+            "workspace": {"workspace_id": "ws-0001", "status": "workspace_created"},
+        })
+        client = AgentControlPlaneClient("http://localhost:8080")
+        result = client.create_supervised_patch_workspace(
+            run_id="run-0001",
+            target_id="target-a",
+            target_repo_path="/tmp/repo",
+            source_revision="abc123",
+        )
+        self.assertEqual(result["workspace"]["workspace_id"], "ws-0001")
+        args, _ = mock_urlopen.call_args
+        req = args[0]
+        self.assertEqual(req.method, "POST")
+        self.assertEqual(req.full_url, "http://localhost:8080/api/v1/supervised-patch/workspaces")
+        self.assertEqual(json.loads(req.data), {
+            "run_id": "run-0001",
+            "target_id": "target-a",
+            "target_repo_path": "/tmp/repo",
+            "source_revision": "abc123",
+        })
+
+    @patch("agent_control_plane_sdk.client.urlopen")
+    def test_create_workspace_includes_optional_fields(self, mock_urlopen):
+        mock_urlopen.return_value = mock_response({
+            "schema_version": "axum_api.v1",
+            "workspace": {"workspace_id": "ws-0002"},
+        })
+        client = AgentControlPlaneClient("http://localhost:8080")
+        client.create_supervised_patch_workspace(
+            run_id="run-0001",
+            target_id="target-a",
+            target_repo_path="/tmp/repo",
+            source_revision="abc123",
+            plan_id="plan-0001",
+            source_tree_hash="sha256:deadbeef",
+        )
+        args, _ = mock_urlopen.call_args
+        req = args[0]
+        body = json.loads(req.data)
+        self.assertEqual(body["plan_id"], "plan-0001")
+        self.assertEqual(body["source_tree_hash"], "sha256:deadbeef")
+
+
+class ClientCleanupSupervisedPatchWorkspaceTest(unittest.TestCase):
+    @patch("agent_control_plane_sdk.client.urlopen")
+    def test_cleanup_workspace_posts_action(self, mock_urlopen):
+        mock_urlopen.return_value = mock_response({
+            "schema_version": "axum_api.v1",
+            "workspace": {"workspace_id": "ws-0001", "status": "cleaned"},
+        })
+        client = AgentControlPlaneClient("http://localhost:8080")
+        result = client.cleanup_supervised_patch_workspace("ws/0001")
+        self.assertEqual(result["workspace"]["status"], "cleaned")
+        args, _ = mock_urlopen.call_args
+        req = args[0]
+        self.assertEqual(req.method, "POST")
+        self.assertIn("/api/v1/supervised-patch/workspaces/ws%2F0001/cleanup", req.full_url)
+
+
+class ClientQuarantineSupervisedPatchWorkspaceTest(unittest.TestCase):
+    @patch("agent_control_plane_sdk.client.urlopen")
+    def test_quarantine_workspace_posts_action(self, mock_urlopen):
+        mock_urlopen.return_value = mock_response({
+            "schema_version": "axum_api.v1",
+            "workspace": {"workspace_id": "ws-0001", "status": "quarantined"},
+        })
+        client = AgentControlPlaneClient("http://localhost:8080")
+        result = client.quarantine_supervised_patch_workspace("ws-0001")
+        self.assertEqual(result["workspace"]["status"], "quarantined")
+        args, _ = mock_urlopen.call_args
+        req = args[0]
+        self.assertEqual(req.method, "POST")
+        self.assertIn("/api/v1/supervised-patch/workspaces/ws-0001/quarantine", req.full_url)
+
+
+class ClientCaptureSupervisedPatchTest(unittest.TestCase):
+    @patch("agent_control_plane_sdk.client.urlopen")
+    def test_capture_patch_posts_to_workspace(self, mock_urlopen):
+        mock_urlopen.return_value = mock_response({
+            "schema_version": "axum_api.v1",
+            "artifact": {"artifact_id": "art-0001", "artifact_type": "patch_diff"},
+        })
+        client = AgentControlPlaneClient("http://localhost:8080")
+        result = client.capture_supervised_patch("ws-0001")
+        self.assertEqual(result["artifact"]["artifact_id"], "art-0001")
+        args, _ = mock_urlopen.call_args
+        req = args[0]
+        self.assertEqual(req.method, "POST")
+        self.assertIn("/api/v1/supervised-patch/workspaces/ws-0001/capture", req.full_url)
+
+
+class ClientExportSupervisedPatchArtifactTest(unittest.TestCase):
+    @patch("agent_control_plane_sdk.client.urlopen")
+    def test_export_artifact_posts_with_run_id(self, mock_urlopen):
+        mock_urlopen.return_value = mock_response({
+            "schema_version": "axum_api.v1",
+            "export": {"artifact_id": "art-0001", "exported_by": "key-1"},
+        })
+        client = AgentControlPlaneClient("http://localhost:8080")
+        result = client.export_supervised_patch_artifact("art/0001", run_id="run-0001")
+        self.assertEqual(result["export"]["artifact_id"], "art-0001")
+        args, _ = mock_urlopen.call_args
+        req = args[0]
+        self.assertEqual(req.method, "POST")
+        self.assertIn("/api/v1/supervised-patch/artifacts/art%2F0001/export", req.full_url)
+        self.assertEqual(json.loads(req.data), {"run_id": "run-0001"})
+
+
+class ClientTickWorkflowRunTest(unittest.TestCase):
+    @patch("agent_control_plane_sdk.client.urlopen")
+    def test_tick_workflow_run_posts(self, mock_urlopen):
+        mock_urlopen.return_value = mock_response({
+            "schema_version": "axum_api.v1",
+            "tick": {"node_id": "node-a", "status": "completed"},
+        })
+        client = AgentControlPlaneClient("http://localhost:8080")
+        result = client.tick_workflow_run("run/0001")
+        self.assertEqual(result["tick"]["node_id"], "node-a")
+        args, _ = mock_urlopen.call_args
+        req = args[0]
+        self.assertEqual(req.method, "POST")
+        self.assertIn("/api/v1/workflow-runs/run%2F0001/tick", req.full_url)
+        self.assertEqual(json.loads(req.data), {})
+
+    @patch("agent_control_plane_sdk.client.urlopen")
+    def test_tick_workflow_run_passes_optional_params(self, mock_urlopen):
+        mock_urlopen.return_value = mock_response({
+            "schema_version": "axum_api.v1",
+            "tick": {"status": "completed"},
+        })
+        client = AgentControlPlaneClient("http://localhost:8080")
+        client.tick_workflow_run(
+            "run-0001",
+            actor="user-1",
+            max_retries=3,
+            executor="command",
+            timeout_ms=60000,
+        )
+        args, _ = mock_urlopen.call_args
+        req = args[0]
+        body = json.loads(req.data)
+        self.assertEqual(body["actor"], "user-1")
+        self.assertEqual(body["max_retries"], 3)
+        self.assertEqual(body["executor"], "command")
+        self.assertEqual(body["timeout_ms"], 60000)
+
+    @patch("agent_control_plane_sdk.client.urlopen")
+    def test_scheduler_status_gets(self, mock_urlopen):
+        mock_urlopen.return_value = mock_response({
+            "schema_version": "axum_api.v1",
+            "scheduler": {"enabled": True, "running": True},
+        })
+        client = AgentControlPlaneClient("http://localhost:8080")
+        result = client.scheduler_status()
+        self.assertEqual(result["scheduler"]["enabled"], True)
+        args, _ = mock_urlopen.call_args
+        req = args[0]
+        self.assertEqual(req.method, "GET")
+        self.assertIn("/api/v1/scheduler/status", req.full_url)
+
+
 if __name__ == "__main__":
     unittest.main()

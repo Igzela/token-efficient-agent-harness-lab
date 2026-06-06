@@ -272,6 +272,43 @@ export interface SupervisedPatchArtifactResponse {
   artifact: SupervisedPatchArtifact;
 }
 
+export interface SupervisedPatchWorkspaceCreateResponse {
+  schema_version: "axum_api.v1";
+  workspace: SupervisedPatchWorkspace;
+}
+
+export interface SupervisedPatchArtifactCaptureResponse {
+  schema_version: "axum_api.v1";
+  artifact: SupervisedPatchArtifact;
+}
+
+export interface SupervisedPatchExportResponse {
+  schema_version: "axum_api.v1";
+  export: {
+    artifact_id: string;
+    artifact: SupervisedPatchArtifact;
+    approval_binding: Record<string, unknown>;
+    integrity: Record<string, unknown>;
+    exported_by: string;
+    exported_at: string;
+  };
+}
+
+export interface WorkflowRunApprovalResponse {
+  schema_version: "axum_api.v1";
+  approval: Record<string, unknown>;
+}
+
+export interface WorkflowRunTickResponse {
+  schema_version: "axum_api.v1";
+  tick: Record<string, unknown>;
+}
+
+export interface WorkflowRunActionResponse {
+  schema_version: "axum_api.v1";
+  run: Record<string, unknown>;
+}
+
 export interface DispatchBundle {
   record: DispatchRecord;
   analysis: TaskAnalysis;

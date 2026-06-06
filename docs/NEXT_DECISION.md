@@ -95,6 +95,29 @@ Next productization phases:
 
 All planned productization phases (1–7) are complete. No productization Phase 8 is defined. The completed migration Phase 8 closeout is historical, not a new work track. The agent should maintain repo health (CI, docs, test drift, wire governance, security baseline) until the user provides new direction or defines a new phase.
 
+## Production-Grade Hosted/Self-Hosted Track (User-Approved)
+
+**User approved on 2026-06-06.** Starting from commit 0309d0d (1222 Rust tests baseline).
+
+This track authorizes extending existing supervised autonomous beta infrastructure into a production-grade hosted/self-hosted deployment. It overrides previous "disallowed by default" restrictions for real CLI executor integration in NodeExecutor, persistent scheduler with crash recovery, dashboard operational controls, SDK productization endpoints, and security hardening. The track must **not** create parallel runtime/DAG/scheduler kernels — it extends existing modules only.
+
+| Phase | Scope | Done When |
+|---|---|---|
+| 1. CLI Worker Integration | Wire real CLI executor into `CommandNodeExecutor` / `NodeExecutor` trait with config, error handling, and audit trail | NodeExecutor runs real CLI commands via existing `ACP_ENABLE_CLI_EXECUTION=1` path; workspace lifecycle creates and cleans up working directories; all dispatches audited with execution results |
+| 2. Persistent Scheduler | Add crash-recoverable task scheduler that persists run state in SQLite and resumes on restart | Scheduler persists workflow run state before and after each node tick; on restart, incomplete runs resume from last persisted checkpoint; no in-memory-only state for critical scheduling decisions |
+| 3. Dashboard Operations | Add operational controls to dashboard for managing dispatches, scheduling, and workflow lifecycle | Dashboard exposes dispatch pause/resume/cancel, workflow run detail with live node status, and scheduler health; all controls gated by admin auth and scope checks |
+| 4. SDK/API Productization | Expose operational endpoints through typed SDK methods for programmatic dispatch management | SDK methods for dispatch lifecycle, workflow run management, and scheduler status; TypeScript and Python SDKs both covered; OpenAPI docs updated |
+| 5. Security Isolation | Harden authentication, authorization, and audit for production-grade access patterns | Role-based access for all operational endpoints, rate limiting per key, audit trail for all state mutations, input validation on all new routes |
+| 6. Ops/HA/DR | Add health monitoring, backup automation, and disaster recovery for self-hosted deployment | Health checks cover scheduler state, backup schedule with verification, restore-from-backup tested end-to-end, metrics endpoint reports scheduler and worker health |
+| 7. Real Pilot | Run a supervised end-to-end pilot with real CLI workers on a non-production target | Pilot runs successfully with real CLI executor, all audit trails complete, no target repo mutations, manual review of all execution artifacts before any target interaction |
+
+**Boundaries that remain intact:**
+- Provider execution remains default-off and env-gated
+- Target repo writes remain forbidden (workspace is app-owned copy only)
+- No parallel runtime/DAG/scheduler kernels — all work extends existing modules (`node_executor`, `workflow_runs`, `supervised_patch`, `http_server`, `local_product_store`)
+- No sandbox/process/container/VM execution beyond existing CLI executor path
+- No cloud SaaS or hosted production deployment
+
 ## Disallowed by Default
 
 The following are **not** allowed without explicit human approval and a new implementation plan:

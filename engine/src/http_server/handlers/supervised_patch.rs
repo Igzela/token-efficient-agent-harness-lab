@@ -1,10 +1,10 @@
-use axum::extract::{Path as AxumPath, Query, State};
-use axum::http::{HeaderMap, StatusCode};
+use axum::extract::{Extension, Path as AxumPath, Query, State};
+use axum::http::{Uri, HeaderMap, StatusCode};
 use axum::response::IntoResponse;
 use axum::Json;
 use serde_json::json;
 
-use crate::http_server::middleware::{
+use crate::http_server::middleware::{RequestId, 
     authorize, cors_headers, internal_error, require_store, ApiError,
 };
 use crate::http_server::state::AxumApiState;
@@ -13,9 +13,11 @@ use crate::http_server::{SupervisedPatchWorkspaceCreateRequest, AXUM_API_SCHEMA_
 pub(crate) async fn api_supervised_patch_workspaces(
     State(state): State<AxumApiState>,
     headers: HeaderMap,
+    uri: Uri,
+    Extension(request_id): Extension<RequestId>,
     Query(params): Query<std::collections::HashMap<String, String>>,
 ) -> Result<impl IntoResponse, ApiError> {
-    authorize(&state, &headers, "dispatch:read")?;
+    authorize(&state, &headers, "dispatch:read", uri.path(), &request_id.0)?;
     let store = require_store(&state)?;
     let limit = query_i64(&params, "limit", 100).clamp(0, 500);
     Ok((
@@ -32,9 +34,11 @@ pub(crate) async fn api_supervised_patch_workspaces(
 pub(crate) async fn api_supervised_patch_workspace_detail(
     State(state): State<AxumApiState>,
     headers: HeaderMap,
+    uri: Uri,
+    Extension(request_id): Extension<RequestId>,
     AxumPath(workspace_id): AxumPath<String>,
 ) -> Result<impl IntoResponse, ApiError> {
-    authorize(&state, &headers, "dispatch:read")?;
+    authorize(&state, &headers, "dispatch:read", uri.path(), &request_id.0)?;
     let store = require_store(&state)?;
     match store
         .get_supervised_patch_workspace(&workspace_id)
@@ -56,9 +60,11 @@ pub(crate) async fn api_supervised_patch_workspace_detail(
 pub(crate) async fn api_supervised_patch_artifacts(
     State(state): State<AxumApiState>,
     headers: HeaderMap,
+    uri: Uri,
+    Extension(request_id): Extension<RequestId>,
     Query(params): Query<std::collections::HashMap<String, String>>,
 ) -> Result<impl IntoResponse, ApiError> {
-    authorize(&state, &headers, "dispatch:read")?;
+    authorize(&state, &headers, "dispatch:read", uri.path(), &request_id.0)?;
     let store = require_store(&state)?;
     let limit = query_i64(&params, "limit", 100).clamp(0, 500);
     Ok((
@@ -75,9 +81,11 @@ pub(crate) async fn api_supervised_patch_artifacts(
 pub(crate) async fn api_supervised_patch_artifact_detail(
     State(state): State<AxumApiState>,
     headers: HeaderMap,
+    uri: Uri,
+    Extension(request_id): Extension<RequestId>,
     AxumPath(artifact_id): AxumPath<String>,
 ) -> Result<impl IntoResponse, ApiError> {
-    authorize(&state, &headers, "dispatch:read")?;
+    authorize(&state, &headers, "dispatch:read", uri.path(), &request_id.0)?;
     let store = require_store(&state)?;
     match store
         .get_supervised_patch_artifact(&artifact_id)
@@ -123,10 +131,12 @@ fn not_found(code: &str) -> ApiError {
 pub(crate) async fn api_export_supervised_patch(
     State(state): State<AxumApiState>,
     headers: HeaderMap,
+    uri: Uri,
+    Extension(request_id): Extension<RequestId>,
     AxumPath(artifact_id): AxumPath<String>,
     Json(request): Json<serde_json::Value>,
 ) -> Result<impl IntoResponse, ApiError> {
-    let context = authorize(&state, &headers, "dispatch:read")?;
+    let context = authorize(&state, &headers, "dispatch:read", uri.path(), &request_id.0)?;
     let store = require_store(&state)?;
 
     let run_id = request
@@ -182,9 +192,11 @@ pub(crate) async fn api_export_supervised_patch(
 pub(crate) async fn api_create_supervised_patch_workspace(
     State(state): State<AxumApiState>,
     headers: HeaderMap,
+    uri: Uri,
+    Extension(request_id): Extension<RequestId>,
     Json(request): Json<SupervisedPatchWorkspaceCreateRequest>,
 ) -> Result<impl IntoResponse, ApiError> {
-    let context = authorize(&state, &headers, "dispatch:read")?;
+    let context = authorize(&state, &headers, "dispatch:read", uri.path(), &request_id.0)?;
     let store = require_store(&state)?;
 
     let unique_id = format!(
@@ -222,9 +234,11 @@ pub(crate) async fn api_create_supervised_patch_workspace(
 pub(crate) async fn api_cleanup_supervised_patch_workspace(
     State(state): State<AxumApiState>,
     headers: HeaderMap,
+    uri: Uri,
+    Extension(request_id): Extension<RequestId>,
     AxumPath(workspace_id): AxumPath<String>,
 ) -> Result<impl IntoResponse, ApiError> {
-    let context = authorize(&state, &headers, "dispatch:read")?;
+    let context = authorize(&state, &headers, "dispatch:read", uri.path(), &request_id.0)?;
     let store = require_store(&state)?;
     match store.cleanup_workspace(&workspace_id, &context.api_key_id) {
         Ok(workspace) => Ok((
@@ -247,9 +261,11 @@ pub(crate) async fn api_cleanup_supervised_patch_workspace(
 pub(crate) async fn api_quarantine_supervised_patch_workspace(
     State(state): State<AxumApiState>,
     headers: HeaderMap,
+    uri: Uri,
+    Extension(request_id): Extension<RequestId>,
     AxumPath(workspace_id): AxumPath<String>,
 ) -> Result<impl IntoResponse, ApiError> {
-    let context = authorize(&state, &headers, "dispatch:read")?;
+    let context = authorize(&state, &headers, "dispatch:read", uri.path(), &request_id.0)?;
     let store = require_store(&state)?;
     match store.quarantine_workspace(&workspace_id, &context.api_key_id) {
         Ok(workspace) => Ok((
@@ -272,9 +288,11 @@ pub(crate) async fn api_quarantine_supervised_patch_workspace(
 pub(crate) async fn api_capture_supervised_patch(
     State(state): State<AxumApiState>,
     headers: HeaderMap,
+    uri: Uri,
+    Extension(request_id): Extension<RequestId>,
     AxumPath(workspace_id): AxumPath<String>,
 ) -> Result<impl IntoResponse, ApiError> {
-    let context = authorize(&state, &headers, "dispatch:read")?;
+    let context = authorize(&state, &headers, "dispatch:read", uri.path(), &request_id.0)?;
     let store = require_store(&state)?;
     match store.capture_patch(&workspace_id, &context.api_key_id) {
         Ok(artifact) => Ok((

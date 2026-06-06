@@ -1,10 +1,10 @@
-use axum::extract::{Path as AxumPath, State};
-use axum::http::{HeaderMap, StatusCode};
+use axum::extract::{Extension, Path as AxumPath, State};
+use axum::http::{Uri, HeaderMap, StatusCode};
 use axum::response::IntoResponse;
 use axum::Json;
 use serde_json::json;
 
-use crate::http_server::middleware::{
+use crate::http_server::middleware::{RequestId, 
     authorize, backup_dir_for_state, cors_headers, internal_error, require_store, ApiError,
 };
 use crate::http_server::state::AxumApiState;
@@ -16,6 +16,8 @@ use crate::storage::backup_manager::BackupManager;
 pub(crate) async fn api_list_backups(
     State(state): State<AxumApiState>,
     headers: HeaderMap,
+    uri: Uri,
+    Extension(request_id): Extension<RequestId>,
 ) -> Result<impl IntoResponse, ApiError> {
     if state.tenant_resolver.is_none() {
         return Err(ApiError::with_code(
@@ -24,7 +26,7 @@ pub(crate) async fn api_list_backups(
             "admin auth is required for backups",
         ));
     }
-    authorize(&state, &headers, "backup:admin")?;
+    authorize(&state, &headers, "backup:admin", uri.path(), &request_id.0)?;
     let store = require_store(&state)?;
     let backup_dir = backup_dir_for_state(&state, store.db_path());
     let manager = BackupManager::new(&backup_dir).map_err(internal_error)?;
@@ -41,6 +43,8 @@ pub(crate) async fn api_list_backups(
 pub(crate) async fn api_create_backup(
     State(state): State<AxumApiState>,
     headers: HeaderMap,
+    uri: Uri,
+    Extension(request_id): Extension<RequestId>,
     Json(request): Json<BackupApiRequest>,
 ) -> Result<impl IntoResponse, ApiError> {
     if state.tenant_resolver.is_none() {
@@ -50,7 +54,7 @@ pub(crate) async fn api_create_backup(
             "admin auth is required for local backup",
         ));
     }
-    let context = authorize(&state, &headers, "backup:admin")?;
+    let context = authorize(&state, &headers, "backup:admin", uri.path(), &request_id.0)?;
     if request.confirm_local_backup != Some(true) {
         return Err(ApiError::with_code(
             StatusCode::BAD_REQUEST,
@@ -96,6 +100,8 @@ pub(crate) async fn api_create_backup(
 pub(crate) async fn api_delete_backup(
     State(state): State<AxumApiState>,
     headers: HeaderMap,
+    uri: Uri,
+    Extension(request_id): Extension<RequestId>,
     AxumPath(backup_id): AxumPath<String>,
 ) -> Result<impl IntoResponse, ApiError> {
     if state.tenant_resolver.is_none() {
@@ -105,7 +111,7 @@ pub(crate) async fn api_delete_backup(
             "admin auth is required for backups",
         ));
     }
-    let context = authorize(&state, &headers, "backup:admin")?;
+    let context = authorize(&state, &headers, "backup:admin", uri.path(), &request_id.0)?;
     let store = require_store(&state)?;
     let backup_dir = backup_dir_for_state(&state, store.db_path());
     let manager = BackupManager::new(&backup_dir).map_err(internal_error)?;
@@ -136,6 +142,8 @@ pub(crate) async fn api_delete_backup(
 pub(crate) async fn api_verify_backup(
     State(state): State<AxumApiState>,
     headers: HeaderMap,
+    uri: Uri,
+    Extension(request_id): Extension<RequestId>,
     AxumPath(backup_id): AxumPath<String>,
 ) -> Result<impl IntoResponse, ApiError> {
     if state.tenant_resolver.is_none() {
@@ -145,7 +153,7 @@ pub(crate) async fn api_verify_backup(
             "admin auth is required for backup verification",
         ));
     }
-    authorize(&state, &headers, "backup:admin")?;
+    authorize(&state, &headers, "backup:admin", uri.path(), &request_id.0)?;
     let store = require_store(&state)?;
     let backup_dir = backup_dir_for_state(&state, store.db_path());
     let manager = BackupManager::new(&backup_dir).map_err(internal_error)?;
@@ -172,6 +180,8 @@ pub(crate) async fn api_verify_backup(
 pub(crate) async fn api_restore_backup(
     State(state): State<AxumApiState>,
     headers: HeaderMap,
+    uri: Uri,
+    Extension(request_id): Extension<RequestId>,
     AxumPath(backup_id): AxumPath<String>,
     Json(request): Json<RestoreApiRequest>,
 ) -> Result<impl IntoResponse, ApiError> {
@@ -182,7 +192,7 @@ pub(crate) async fn api_restore_backup(
             "admin auth is required for restore",
         ));
     }
-    let context = authorize(&state, &headers, "backup:admin")?;
+    let context = authorize(&state, &headers, "backup:admin", uri.path(), &request_id.0)?;
     if request.confirm_restore != Some(true) {
         return Err(ApiError::with_code(
             StatusCode::BAD_REQUEST,
@@ -232,6 +242,8 @@ pub(crate) async fn api_restore_backup(
 pub(crate) async fn api_restore_backup_dry_run(
     State(state): State<AxumApiState>,
     headers: HeaderMap,
+    uri: Uri,
+    Extension(request_id): Extension<RequestId>,
     AxumPath(backup_id): AxumPath<String>,
     Json(request): Json<RestoreDryRunApiRequest>,
 ) -> Result<impl IntoResponse, ApiError> {
@@ -242,7 +254,7 @@ pub(crate) async fn api_restore_backup_dry_run(
             "admin auth is required for restore dry-run",
         ));
     }
-    authorize(&state, &headers, "backup:admin")?;
+    authorize(&state, &headers, "backup:admin", uri.path(), &request_id.0)?;
     if request.confirm_restore_dry_run != Some(true) {
         return Err(ApiError::with_code(
             StatusCode::BAD_REQUEST,

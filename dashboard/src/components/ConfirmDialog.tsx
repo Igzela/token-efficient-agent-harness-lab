@@ -3,6 +3,8 @@ import { useEffect, useRef } from "react";
 export type ConfirmAction =
   | { type: "deleteBackup" | "restoreBackup"; backupId: string }
   | { type: "deleteMember" | "revokeKey" | "deleteKey" | "rotateKey"; id: string }
+  | { type: "cleanupWorkspace" | "quarantineWorkspace" | "capturePatch"; workspaceId: string }
+  | { type: "approveArtifact" | "rejectArtifact" | "exportArtifact"; artifactId: string; runId: string }
   | null;
 
 const messages: Record<string, string> = {};
@@ -64,7 +66,19 @@ export function ConfirmDialog({
               ? `Permanently delete key ${(action as { id: string }).id}? This cannot be undone.`
               : action.type === "rotateKey"
                 ? `Rotate key ${(action as { id: string }).id}? A new key will be created and the old one revoked.`
-                : "Are you sure?");
+                : action.type === "cleanupWorkspace"
+                  ? `Clean up workspace ${(action as { workspaceId: string }).workspaceId.slice(0, 12)}? This transitions the workspace to cleaned status.`
+                  : action.type === "quarantineWorkspace"
+                    ? `Quarantine workspace ${(action as { workspaceId: string }).workspaceId.slice(0, 12)}? This isolates the workspace.`
+                    : action.type === "capturePatch"
+                      ? `Capture patch from workspace ${(action as { workspaceId: string }).workspaceId.slice(0, 12)}?`
+                      : action.type === "approveArtifact"
+                        ? `Approve artifact ${(action as { artifactId: string }).artifactId.slice(0, 12)}? This binds the approval to run ${(action as { runId: string }).runId.slice(0, 12)}.`
+                        : action.type === "rejectArtifact"
+                          ? `Reject artifact ${(action as { artifactId: string }).artifactId.slice(0, 12)}?`
+                          : action.type === "exportArtifact"
+                            ? `Export artifact ${(action as { artifactId: string }).artifactId.slice(0, 12)}? Requires valid approval binding.`
+                            : "Are you sure?");
   return (
     <div className="confirm-overlay" onClick={onCancel} role="dialog" aria-modal="true" aria-label={msg}>
       <div className="confirm-card" onClick={(e) => e.stopPropagation()} ref={cardRef}>

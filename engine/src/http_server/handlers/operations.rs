@@ -1,10 +1,10 @@
-use axum::extract::State;
-use axum::http::HeaderMap;
+use axum::extract::{Extension, State};
+use axum::http::{HeaderMap, Uri};
 use axum::response::IntoResponse;
 use axum::Json;
 use serde_json::json;
 
-use crate::http_server::middleware::{
+use crate::http_server::middleware::{RequestId, 
     authorize, backup_dir_for_state, cors_headers, internal_error, ApiError,
 };
 use crate::http_server::state::AxumApiState;
@@ -15,8 +15,10 @@ use crate::storage::backup_manager::BackupManager;
 pub(crate) async fn api_metrics(
     State(state): State<AxumApiState>,
     headers: HeaderMap,
+    uri: Uri,
+    Extension(request_id): Extension<RequestId>,
 ) -> Result<impl IntoResponse, ApiError> {
-    authorize(&state, &headers, "health:read")?;
+    authorize(&state, &headers, "health:read", uri.path(), &request_id.0)?;
 
     let mut dispatch_count = 0;
     let mut plan_count = 0;

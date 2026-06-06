@@ -1,10 +1,10 @@
-use axum::extract::State;
-use axum::http::HeaderMap;
+use axum::extract::{Extension, State};
+use axum::http::{HeaderMap, Uri};
 use axum::response::IntoResponse;
 use axum::Json;
 use serde_json::json;
 
-use crate::http_server::middleware::{authorize, cors_headers, internal_error, ApiError};
+use crate::http_server::middleware::{RequestId, authorize, cors_headers, internal_error, ApiError};
 use crate::http_server::state::AxumApiState;
 use crate::provider::config::provider_pricing_from_env;
 use crate::storage::local_product_store::local_boundaries;
@@ -12,8 +12,10 @@ use crate::storage::local_product_store::local_boundaries;
 pub(crate) async fn api_dashboard(
     State(state): State<AxumApiState>,
     headers: HeaderMap,
+    uri: Uri,
+    Extension(request_id): Extension<RequestId>,
 ) -> Result<impl IntoResponse, ApiError> {
-    authorize(&state, &headers, "health:read")?;
+    authorize(&state, &headers, "health:read", uri.path(), &request_id.0)?;
     let exec_type = state.executor_type();
     let prov_enabled = state.provider_enabled();
     let mut body = if let Some(store) = &state.local_store {

@@ -1,10 +1,10 @@
-use axum::extract::{Path as AxumPath, Query, State};
-use axum::http::{HeaderMap, StatusCode};
+use axum::extract::{Extension, Path as AxumPath, Query, State};
+use axum::http::{Uri, HeaderMap, StatusCode};
 use axum::response::IntoResponse;
 use axum::Json;
 use serde_json::json;
 
-use crate::http_server::middleware::{
+use crate::http_server::middleware::{RequestId, 
     authorize, cors_headers, internal_error, require_store, ApiError,
 };
 use crate::http_server::state::AxumApiState;
@@ -16,9 +16,11 @@ use crate::http_server::{
 pub(crate) async fn api_create_workflow_run(
     State(state): State<AxumApiState>,
     headers: HeaderMap,
+    uri: Uri,
+    Extension(request_id): Extension<RequestId>,
     Json(request): Json<WorkflowRunCreateApiRequest>,
 ) -> Result<impl IntoResponse, ApiError> {
-    let context = authorize(&state, &headers, "dispatch:read")?;
+    let context = authorize(&state, &headers, "dispatch:read", uri.path(), &request_id.0)?;
     if request.plan_id.trim().is_empty() {
         return Err(ApiError::with_code(
             StatusCode::BAD_REQUEST,
@@ -41,9 +43,11 @@ pub(crate) async fn api_create_workflow_run(
 pub(crate) async fn api_workflow_runs(
     State(state): State<AxumApiState>,
     headers: HeaderMap,
+    uri: Uri,
+    Extension(request_id): Extension<RequestId>,
     Query(params): Query<std::collections::HashMap<String, String>>,
 ) -> Result<impl IntoResponse, ApiError> {
-    authorize(&state, &headers, "dispatch:read")?;
+    authorize(&state, &headers, "dispatch:read", uri.path(), &request_id.0)?;
     let store = require_store(&state)?;
     let limit = query_i64(&params, "limit", 100).clamp(0, 500);
     let offset = query_i64(&params, "offset", 0).max(0);
@@ -60,9 +64,11 @@ pub(crate) async fn api_workflow_runs(
 pub(crate) async fn api_workflow_run_detail(
     State(state): State<AxumApiState>,
     headers: HeaderMap,
+    uri: Uri,
+    Extension(request_id): Extension<RequestId>,
     AxumPath(run_id): AxumPath<String>,
 ) -> Result<impl IntoResponse, ApiError> {
-    authorize(&state, &headers, "dispatch:read")?;
+    authorize(&state, &headers, "dispatch:read", uri.path(), &request_id.0)?;
     let store = require_store(&state)?;
     match store.get_workflow_run(&run_id).map_err(internal_error)? {
         Some(run) => Ok((cors_headers(), Json(json_response("run", run)))),
@@ -73,10 +79,12 @@ pub(crate) async fn api_workflow_run_detail(
 pub(crate) async fn api_create_workflow_run_event(
     State(state): State<AxumApiState>,
     headers: HeaderMap,
+    uri: Uri,
+    Extension(request_id): Extension<RequestId>,
     AxumPath(run_id): AxumPath<String>,
     Json(request): Json<WorkflowRunEventApiRequest>,
 ) -> Result<impl IntoResponse, ApiError> {
-    let context = authorize(&state, &headers, "dispatch:read")?;
+    let context = authorize(&state, &headers, "dispatch:read", uri.path(), &request_id.0)?;
     if request.event_type.trim().is_empty() {
         return Err(ApiError::with_code(
             StatusCode::BAD_REQUEST,
@@ -101,10 +109,12 @@ pub(crate) async fn api_create_workflow_run_event(
 pub(crate) async fn api_workflow_run_events(
     State(state): State<AxumApiState>,
     headers: HeaderMap,
+    uri: Uri,
+    Extension(request_id): Extension<RequestId>,
     AxumPath(run_id): AxumPath<String>,
     Query(params): Query<std::collections::HashMap<String, String>>,
 ) -> Result<impl IntoResponse, ApiError> {
-    authorize(&state, &headers, "dispatch:read")?;
+    authorize(&state, &headers, "dispatch:read", uri.path(), &request_id.0)?;
     let store = require_store(&state)?;
     let limit = query_i64(&params, "limit", 100).clamp(0, 500);
     match store.workflow_run_events(&run_id, limit) {
@@ -123,10 +133,12 @@ pub(crate) async fn api_workflow_run_events(
 pub(crate) async fn api_create_workflow_run_approval(
     State(state): State<AxumApiState>,
     headers: HeaderMap,
+    uri: Uri,
+    Extension(request_id): Extension<RequestId>,
     AxumPath(run_id): AxumPath<String>,
     Json(request): Json<WorkflowRunApprovalApiRequest>,
 ) -> Result<impl IntoResponse, ApiError> {
-    let context = authorize(&state, &headers, "dispatch:read")?;
+    let context = authorize(&state, &headers, "dispatch:read", uri.path(), &request_id.0)?;
     if request.node_id.trim().is_empty() {
         return Err(ApiError::with_code(
             StatusCode::BAD_REQUEST,
@@ -160,10 +172,12 @@ pub(crate) async fn api_create_workflow_run_approval(
 pub(crate) async fn api_workflow_run_approvals(
     State(state): State<AxumApiState>,
     headers: HeaderMap,
+    uri: Uri,
+    Extension(request_id): Extension<RequestId>,
     AxumPath(run_id): AxumPath<String>,
     Query(params): Query<std::collections::HashMap<String, String>>,
 ) -> Result<impl IntoResponse, ApiError> {
-    authorize(&state, &headers, "dispatch:read")?;
+    authorize(&state, &headers, "dispatch:read", uri.path(), &request_id.0)?;
     let store = require_store(&state)?;
     let limit = query_i64(&params, "limit", 100).clamp(0, 500);
     match store.workflow_run_approvals(&run_id, limit) {
@@ -182,10 +196,12 @@ pub(crate) async fn api_workflow_run_approvals(
 pub(crate) async fn api_resume_workflow_run(
     State(state): State<AxumApiState>,
     headers: HeaderMap,
+    uri: Uri,
+    Extension(request_id): Extension<RequestId>,
     AxumPath(run_id): AxumPath<String>,
     Json(request): Json<WorkflowRunActionApiRequest>,
 ) -> Result<impl IntoResponse, ApiError> {
-    let context = authorize(&state, &headers, "dispatch:read")?;
+    let context = authorize(&state, &headers, "dispatch:read", uri.path(), &request_id.0)?;
     let store = require_store(&state)?;
     match store.request_workflow_run_resume(&run_id, &context.api_key_id, request.reason.as_deref())
     {
@@ -198,10 +214,12 @@ pub(crate) async fn api_resume_workflow_run(
 pub(crate) async fn api_cancel_workflow_run(
     State(state): State<AxumApiState>,
     headers: HeaderMap,
+    uri: Uri,
+    Extension(request_id): Extension<RequestId>,
     AxumPath(run_id): AxumPath<String>,
     Json(request): Json<WorkflowRunActionApiRequest>,
 ) -> Result<impl IntoResponse, ApiError> {
-    let context = authorize(&state, &headers, "dispatch:read")?;
+    let context = authorize(&state, &headers, "dispatch:read", uri.path(), &request_id.0)?;
     let store = require_store(&state)?;
     match store.request_workflow_run_cancel(&run_id, &context.api_key_id, request.reason.as_deref())
     {
@@ -214,10 +232,12 @@ pub(crate) async fn api_cancel_workflow_run(
 pub(crate) async fn api_tick_workflow_run(
     State(state): State<AxumApiState>,
     headers: HeaderMap,
+    uri: Uri,
+    Extension(request_id): Extension<RequestId>,
     AxumPath(run_id): AxumPath<String>,
     Json(request): Json<WorkflowRunTickApiRequest>,
 ) -> Result<impl IntoResponse, ApiError> {
-    let context = authorize(&state, &headers, "dispatch:read")?;
+    let context = authorize(&state, &headers, "dispatch:read", uri.path(), &request_id.0)?;
     let store = require_store(&state)?;
     let actor = request
         .actor
@@ -240,6 +260,35 @@ pub(crate) async fn api_tick_workflow_run(
                     &e,
                 )),
                 Err(e) => Err(internal_error(e)),
+            }
+        }
+        "claude_code_cli" | "codex_cli" => {
+            let cli_config = crate::cli::CliConfig::from_env();
+            match crate::cli::CliNodeExecutor::from_config(&cli_config) {
+                Some(executor) => {
+                    match store.tick_with_executor(&run_id, actor, max_retries, &executor) {
+                        Ok(result) => Ok((cors_headers(), Json(json_response("tick", result)))),
+                        Err(e) if e.starts_with("workflow run not found:") => Err(not_found()),
+                        Err(e) if e.contains("terminal") => Err(ApiError::with_code(
+                            StatusCode::CONFLICT,
+                            "run_terminal",
+                            &e,
+                        )),
+                        Err(e) => Err(internal_error(e)),
+                    }
+                }
+                None => {
+                    let reason = if !cli_config.enabled {
+                        "CLI execution not enabled (ACP_ENABLE_CLI_EXECUTION=1 required)"
+                    } else {
+                        "CLI executor binary not found"
+                    };
+                    Err(ApiError::with_code(
+                        StatusCode::BAD_REQUEST,
+                        "cli_not_available",
+                        reason,
+                    ))
+                }
             }
         }
         _ => {

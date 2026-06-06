@@ -15,10 +15,11 @@ use engine::provider::openai::OpenAiProvider;
 use engine::provider::stub::StubProvider;
 use engine::provider::transport::ReqwestTransport;
 use engine::provider::Provider;
+use engine::scheduler::{SchedulerConfig, WorkflowScheduler};
 use engine::storage::local_product_store::LocalProductStore;
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 #[tokio::main]
 async fn main() {
@@ -44,6 +45,7 @@ async fn main() {
             .expect("failed to record local admin API key metadata");
     }
     let store_arc = Arc::new(store);
+    let store_for_scheduler = store_arc.clone();
     let cli_config = CliConfig::from_env();
     let multi_executor = build_multi_executor(&cli_config);
     let base_engine = DispatchEngine::with_multi_executor(multi_executor);
@@ -91,6 +93,33 @@ async fn main() {
         cost_daily,
         lan,
     );
+
+    let enable_scheduler = std::env::var("ACP_ENABLE_SCHEDULER")
+        .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+        .unwrap_or(false);
+    let state = if enable_scheduler {
+        let scheduler_config = SchedulerConfig {
+            interval_ms: std::env::var("ACP_SCHEDULER_INTERVAL_MS")
+                .ok()
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(2000),
+            max_concurrent: std::env::var("ACP_SCHEDULER_MAX_CONCURRENT")
+                .ok()
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(4),
+            lease_timeout_ms: std::env::var("ACP_SCHEDULER_LEASE_TIMEOUT_MS")
+                .ok()
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(300_000),
+        };
+        let mut scheduler = WorkflowScheduler::new(store_for_scheduler, scheduler_config);
+        scheduler.start().expect("failed to start scheduler");
+        let scheduler_arc = Arc::new(Mutex::new(scheduler));
+        println!("[acp-startup] scheduler=enabled interval={}ms", 2000);
+        state.with_scheduler(scheduler_arc)
+    } else {
+        state
+    };
 
     let dashboard_dir =
         std::env::var("ACP_DASHBOARD_DIR").or_else(|_| std::env::var("DASHBOARD_DIR"));

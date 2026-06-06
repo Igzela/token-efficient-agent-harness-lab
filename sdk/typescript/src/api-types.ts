@@ -590,3 +590,69 @@ export interface ImportResponse {
   };
   errors: string[];
 }
+
+export interface SupervisedPatchWorkspaceCreateRequest {
+  run_id: string;
+  target_id: string;
+  target_repo_path: string;
+  source_revision: string;
+  plan_id?: string;
+  source_tree_hash?: string;
+}
+
+export interface SupervisedPatchWorkspaceCreateResponse {
+  schema_version: "axum_api.v1";
+  workspace: SupervisedPatchWorkspace;
+}
+
+export interface SupervisedPatchWorkspaceActionResponse {
+  schema_version: "axum_api.v1";
+  workspace: SupervisedPatchWorkspace;
+}
+
+export interface SupervisedPatchCaptureResponse {
+  schema_version: "axum_api.v1";
+  artifact: SupervisedPatchArtifact;
+}
+
+export interface SupervisedPatchExportRequest {
+  run_id: string;
+}
+
+export interface SupervisedPatchExportDetail {
+  artifact_id: string;
+  artifact: SupervisedPatchArtifact;
+  approval_binding: Record<string, unknown>;
+  integrity: Record<string, unknown>;
+  exported_by: string;
+  exported_at: string;
+}
+
+export interface SupervisedPatchExportResponse {
+  schema_version: "axum_api.v1";
+  export: SupervisedPatchExportDetail;
+}
+
+export interface WorkflowRunTickRequest {
+  actor?: string;
+  max_retries?: number;
+  executor?: string;
+  timeout_ms?: number;
+}
+
+export interface WorkflowRunTickResponse {
+  schema_version: "axum_api.v1";
+  tick: Record<string, unknown>;
+}
+
+export interface SchedulerStatus {
+  schema_version: "axum_api.v1";
+  scheduler: {
+    enabled: boolean;
+    running: boolean;
+    interval_ms: number;
+    max_concurrent: number;
+    lease_timeout_ms: number;
+    active_runs: number;
+  };
+}

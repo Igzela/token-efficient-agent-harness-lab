@@ -101,6 +101,8 @@ If another agent has in-progress changes, do not overwrite them. Either build on
 
 ## Hard Boundaries
 
+The production-grade hosted/self-hosted productization track (user-approved 2026-06-06) is authorized. It extends existing modules (node_executor, workflow_runs, supervised_patch, http_server) without creating parallel runtime kernels. See `docs/NEXT_DECISION.md` for phase details and constraints.
+
 Do not modify:
 
 - docs/stage0/events.jsonl

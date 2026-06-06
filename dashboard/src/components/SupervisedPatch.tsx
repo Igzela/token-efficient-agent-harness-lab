@@ -1,15 +1,22 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import {
   ApiError,
-  fetchSupervisedPatchArtifacts,
+  captureSupervisedPatch,
+  cleanupSupervisedPatchWorkspace,
+  createSupervisedPatchWorkspace,
+  exportSupervisedPatchArtifact,
   fetchSupervisedPatchArtifactDetail,
+  fetchSupervisedPatchArtifacts,
   fetchSupervisedPatchWorkspaceDetail,
   fetchSupervisedPatchWorkspaces,
+  quarantineSupervisedPatchWorkspace,
+  recordWorkflowRunApproval,
 } from "@/lib/api-client";
 import type {
   SupervisedPatchArtifact,
   SupervisedPatchWorkspace,
 } from "@/lib/types";
+import { ConfirmDialog, type ConfirmAction } from "./ConfirmDialog";
 import { EmptyState } from "./EmptyState";
 import { StateBanner } from "./StateBanner";
 
@@ -55,7 +62,128 @@ function BoundaryBadges({ metadataOnly, executionAuthority, patchApplyAuthority 
   );
 }
 
-function WorkspaceDetail({ workspace, onBack }: { workspace: SupervisedPatchWorkspace; onBack: () => void }) {
+function CreateWorkspaceForm({
+  onCreated,
+  onCancel,
+}: {
+  onCreated: () => void;
+  onCancel: () => void;
+}) {
+  const [runId, setRunId] = useState("");
+  const [targetId, setTargetId] = useState("");
+  const [targetRepoPath, setTargetRepoPath] = useState("");
+  const [sourceRevision, setSourceRevision] = useState("");
+  const [submitting, setSubmitting] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  async function handleSubmit(e: React.FormEvent) {
+    e.preventDefault();
+    setSubmitting(true);
+    setError(null);
+    try {
+      await createSupervisedPatchWorkspace({
+        run_id: runId,
+        target_id: targetId,
+        target_repo_path: targetRepoPath,
+        source_revision: sourceRevision,
+      });
+      onCreated();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to create workspace");
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
+  return (
+    <form onSubmit={handleSubmit} className="card stack" style={{ marginTop: "0.5rem" }}>
+      <h3>Create Workspace</h3>
+      {error && <StateBanner title="Error" tone="risk"><p>{error}</p></StateBanner>}
+      <label className="stack" style={{ gap: "0.25rem" }}>
+        <span className="muted">Run ID</span>
+        <input
+          type="text"
+          value={runId}
+          onChange={(e) => setRunId(e.target.value)}
+          required
+          placeholder="run-..."
+        />
+      </label>
+      <label className="stack" style={{ gap: "0.25rem" }}>
+        <span className="muted">Target ID</span>
+        <input
+          type="text"
+          value={targetId}
+          onChange={(e) => setTargetId(e.target.value)}
+          required
+          placeholder="target-..."
+        />
+      </label>
+      <label className="stack" style={{ gap: "0.25rem" }}>
+        <span className="muted">Target repo path</span>
+        <input
+          type="text"
+          value={targetRepoPath}
+          onChange={(e) => setTargetRepoPath(e.target.value)}
+          required
+          placeholder="/path/to/repo"
+        />
+      </label>
+      <label className="stack" style={{ gap: "0.25rem" }}>
+        <span className="muted">Source revision</span>
+        <input
+          type="text"
+          value={sourceRevision}
+          onChange={(e) => setSourceRevision(e.target.value)}
+          required
+          placeholder="commit hash or ref"
+        />
+      </label>
+      <div className="flex-end" style={{ gap: "0.5rem" }}>
+        <button type="button" onClick={onCancel} disabled={submitting}>Cancel</button>
+        <button type="submit" disabled={submitting}>
+          {submitting ? "Creating..." : "Create"}
+        </button>
+      </div>
+    </form>
+  );
+}
+
+function WorkspaceDetail({
+  workspace,
+  onBack,
+  onMutated,
+}: {
+  workspace: SupervisedPatchWorkspace;
+  onBack: () => void;
+  onMutated: () => void;
+}) {
+  const [confirmAction, setConfirmAction] = useState<ConfirmAction>(null);
+  const [mutating, setMutating] = useState(false);
+  const [mutationError, setMutationError] = useState<string | null>(null);
+
+  function handleConfirm() {
+    if (!confirmAction) return;
+    const action = confirmAction;
+    setConfirmAction(null);
+    setMutating(true);
+    setMutationError(null);
+
+    const promise =
+      action.type === "cleanupWorkspace"
+        ? cleanupSupervisedPatchWorkspace(action.workspaceId)
+        : action.type === "quarantineWorkspace"
+          ? quarantineSupervisedPatchWorkspace(action.workspaceId)
+          : action.type === "capturePatch"
+            ? captureSupervisedPatch(action.workspaceId)
+            : Promise.resolve();
+
+    promise
+      .then(() => onMutated())
+      .catch((err) => setMutationError(err instanceof Error ? err.message : "Operation failed"))
+      .finally(() => setMutating(false));
+  }
+
   return (
     <div className="card stack">
       <div className="flex-between">
@@ -66,6 +194,9 @@ function WorkspaceDetail({ workspace, onBack }: { workspace: SupervisedPatchWork
         metadataOnly={workspace.metadata_only}
         executionAuthority={workspace.execution_authority}
       />
+      {mutationError && (
+        <StateBanner title="Operation failed" tone="risk"><p>{mutationError}</p></StateBanner>
+      )}
       <div className="subcard stack">
         <h4>Details</h4>
         <div className="kv-row"><span className="muted">Status</span><span>{workspace.status}</span></div>
@@ -92,11 +223,78 @@ function WorkspaceDetail({ workspace, onBack }: { workspace: SupervisedPatchWork
           ))}
         </div>
       )}
+      <div className="flex-end" style={{ gap: "0.5rem" }}>
+        <button
+          type="button"
+          onClick={() => setConfirmAction({ type: "capturePatch", workspaceId: workspace.workspace_id })}
+          disabled={mutating}
+        >
+          {mutating ? "Working..." : "Capture Patch"}
+        </button>
+        <button
+          type="button"
+          onClick={() => setConfirmAction({ type: "cleanupWorkspace", workspaceId: workspace.workspace_id })}
+          disabled={mutating}
+        >
+          {mutating ? "Working..." : "Cleanup"}
+        </button>
+        <button
+          type="button"
+          className="risk-action"
+          onClick={() => setConfirmAction({ type: "quarantineWorkspace", workspaceId: workspace.workspace_id })}
+          disabled={mutating}
+        >
+          {mutating ? "Working..." : "Quarantine"}
+        </button>
+      </div>
+      <ConfirmDialog
+        action={confirmAction}
+        onConfirm={handleConfirm}
+        onCancel={() => setConfirmAction(null)}
+      />
     </div>
   );
 }
 
-function ArtifactDetail({ artifact, onBack }: { artifact: SupervisedPatchArtifact; onBack: () => void }) {
+function ArtifactDetail({
+  artifact,
+  onBack,
+  onMutated,
+}: {
+  artifact: SupervisedPatchArtifact;
+  onBack: () => void;
+  onMutated: () => void;
+}) {
+  const [confirmAction, setConfirmAction] = useState<ConfirmAction>(null);
+  const [mutating, setMutating] = useState(false);
+  const [mutationError, setMutationError] = useState<string | null>(null);
+  const [exportResult, setExportResult] = useState<Record<string, unknown> | null>(null);
+
+  function handleConfirm() {
+    if (!confirmAction) return;
+    const action = confirmAction;
+    setConfirmAction(null);
+    setMutating(true);
+    setMutationError(null);
+
+    if (action.type === "approveArtifact" || action.type === "rejectArtifact") {
+      recordWorkflowRunApproval(action.runId, {
+        node_id: action.artifactId,
+        decision: action.type === "approveArtifact" ? "approved" : "rejected",
+      })
+        .then(() => onMutated())
+        .catch((err) => setMutationError(err instanceof Error ? err.message : "Approval failed"))
+        .finally(() => setMutating(false));
+    } else if (action.type === "exportArtifact") {
+      exportSupervisedPatchArtifact(action.artifactId, action.runId)
+        .then((result) => {
+          setExportResult(result.export as Record<string, unknown>);
+        })
+        .catch((err) => setMutationError(err instanceof Error ? err.message : "Export failed"))
+        .finally(() => setMutating(false));
+    }
+  }
+
   return (
     <div className="card stack">
       <div className="flex-between">
@@ -108,6 +306,14 @@ function ArtifactDetail({ artifact, onBack }: { artifact: SupervisedPatchArtifac
         executionAuthority={artifact.execution_authority}
         patchApplyAuthority={artifact.patch_apply_authority}
       />
+      {mutationError && (
+        <StateBanner title="Operation failed" tone="risk"><p>{mutationError}</p></StateBanner>
+      )}
+      {exportResult && (
+        <StateBanner title="Export succeeded" tone="ok">
+          <p>Artifact exported by {String(exportResult.exported_by ?? "unknown")} at {String(exportResult.exported_at ?? "unknown")}</p>
+        </StateBanner>
+      )}
       <div className="subcard stack">
         <h4>Details</h4>
         <div className="kv-row"><span className="muted">Type</span><span>{artifact.artifact_type}</span></div>
@@ -145,6 +351,35 @@ function ArtifactDetail({ artifact, onBack }: { artifact: SupervisedPatchArtifac
           ))}
         </div>
       )}
+      <div className="flex-end" style={{ gap: "0.5rem" }}>
+        <button
+          type="button"
+          onClick={() => setConfirmAction({ type: "approveArtifact", artifactId: artifact.artifact_id, runId: artifact.run_id })}
+          disabled={mutating}
+        >
+          {mutating ? "Working..." : "Approve"}
+        </button>
+        <button
+          type="button"
+          className="risk-action"
+          onClick={() => setConfirmAction({ type: "rejectArtifact", artifactId: artifact.artifact_id, runId: artifact.run_id })}
+          disabled={mutating}
+        >
+          {mutating ? "Working..." : "Reject"}
+        </button>
+        <button
+          type="button"
+          onClick={() => setConfirmAction({ type: "exportArtifact", artifactId: artifact.artifact_id, runId: artifact.run_id })}
+          disabled={mutating}
+        >
+          {mutating ? "Working..." : "Export"}
+        </button>
+      </div>
+      <ConfirmDialog
+        action={confirmAction}
+        onConfirm={handleConfirm}
+        onCancel={() => setConfirmAction(null)}
+      />
     </div>
   );
 }
@@ -157,8 +392,9 @@ export function SupervisedPatch() {
   const [detailMode, setDetailMode] = useState<{ kind: "workspace"; id: string } | { kind: "artifact"; id: string } | null>(null);
   const [detailData, setDetailData] = useState<SupervisedPatchWorkspace | SupervisedPatchArtifact | null>(null);
   const [detailLoading, setDetailLoading] = useState(false);
+  const [showCreateForm, setShowCreateForm] = useState(false);
 
-  function load() {
+  const load = useCallback(() => {
     setLoading(true);
     setError(null);
     setDetailMode(null);
@@ -181,11 +417,11 @@ export function SupervisedPatch() {
       setArtifacts(nextArtifacts);
       setError(firstError);
     }).finally(() => setLoading(false));
-  }
+  }, []);
 
   useEffect(() => {
     load();
-  }, []);
+  }, [load]);
 
   function openDetail(kind: "workspace" | "artifact", id: string) {
     setDetailLoading(true);
@@ -199,18 +435,32 @@ export function SupervisedPatch() {
       .finally(() => setDetailLoading(false));
   }
 
+  function handleMutated() {
+    load();
+  }
+
   const empty = workspaces.length === 0 && artifacts.length === 0;
 
   return (
     <section className="card stack">
       <div className="flex-between">
         <h2>Supervised Patch Metadata</h2>
-        <button onClick={load} type="button">Refresh</button>
+        <div className="flex-end" style={{ gap: "0.5rem" }}>
+          <button onClick={() => setShowCreateForm(!showCreateForm)} type="button">
+            {showCreateForm ? "Hide Form" : "Create Workspace"}
+          </button>
+          <button onClick={load} type="button">Refresh</button>
+        </div>
       </div>
+      {showCreateForm && (
+        <CreateWorkspaceForm
+          onCreated={() => { setShowCreateForm(false); load(); }}
+          onCancel={() => setShowCreateForm(false)}
+        />
+      )}
       <StateBanner title="Read-only metadata" tone="info">
         <p>
-          Workspace and artifact metadata from Batch 7 storage. No patch files, no approval gates,
-          no execution controls.
+          Workspace and artifact metadata from Batch 7 storage. Controls are operational metadata actions only.
         </p>
       </StateBanner>
       {error?.type === "permission" && (
@@ -232,11 +482,13 @@ export function SupervisedPatch() {
           <WorkspaceDetail
             workspace={detailData as SupervisedPatchWorkspace}
             onBack={() => { setDetailMode(null); setDetailData(null); }}
+            onMutated={handleMutated}
           />
         ) : (
           <ArtifactDetail
             artifact={detailData as SupervisedPatchArtifact}
             onBack={() => { setDetailMode(null); setDetailData(null); }}
+            onMutated={handleMutated}
           />
         )
       ) : empty && !error ? (

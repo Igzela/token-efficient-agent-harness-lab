@@ -1,4 +1,6 @@
+use axum::extract::Request;
 use axum::http::{header, HeaderMap, HeaderValue, StatusCode};
+use axum::middleware::Next;
 use axum::response::{IntoResponse, Response};
 use axum::Json;
 use std::path::{Path, PathBuf};
@@ -14,6 +16,7 @@ use super::AXUM_API_SCHEMA_VERSION;
 pub(crate) struct ApiRequestContext {
     pub tenant_id: String,
     pub api_key_id: String,
+    pub request_id: String,
 }
 
 #[derive(Debug, Clone, PartialEq, serde::Serialize)]
@@ -67,21 +70,39 @@ impl IntoResponse for ApiError {
     }
 }
 
+const HEALTH_PATHS: &[&str] = &["/api/v1/health", "/api/v1/ready"];
+
+fn is_health_path(path: &str) -> bool {
+    HEALTH_PATHS.contains(&path)
+}
+
 pub(crate) fn authorize(
     state: &AxumApiState,
     headers: &HeaderMap,
     required_scope: &str,
+    path: &str,
+    request_id: &str,
 ) -> Result<ApiRequestContext, ApiError> {
     let Some(resolver) = &state.tenant_resolver else {
         return Ok(ApiRequestContext {
             tenant_id: "local".to_string(),
             api_key_id: "none".to_string(),
+            request_id: request_id.to_string(),
         });
     };
 
     let auth_header = headers
         .get(header::AUTHORIZATION)
         .and_then(|value| value.to_str().ok());
+
+    if auth_header.is_none() && is_health_path(path) {
+        return Ok(ApiRequestContext {
+            tenant_id: "local".to_string(),
+            api_key_id: "health-bypass".to_string(),
+            request_id: request_id.to_string(),
+        });
+    }
+
     let mut guard = resolver.lock().map_err(|_| {
         ApiError::with_code(
             StatusCode::INTERNAL_SERVER_ERROR,
@@ -90,7 +111,7 @@ pub(crate) fn authorize(
         )
     })?;
     let decision = guard.resolve_mut(auth_header, state.now);
-    let context = auth_context_from_decision(decision, required_scope)?;
+    let context = auth_context_from_decision(decision, required_scope, request_id)?;
     let tenant_limit = guard.tenant_rate_limit(&context.tenant_id);
     drop(guard);
 
@@ -145,6 +166,7 @@ pub(crate) fn internal_error(error: String) -> ApiError {
 fn auth_context_from_decision(
     decision: AuthDecision,
     required_scope: &str,
+    request_id: &str,
 ) -> Result<ApiRequestContext, ApiError> {
     if !decision.allowed {
         return Err(ApiError::with_code(
@@ -163,6 +185,7 @@ fn auth_context_from_decision(
     Ok(ApiRequestContext {
         tenant_id: decision.tenant_id.unwrap_or_else(|| "unknown".to_string()),
         api_key_id: decision.api_key_id.unwrap_or_else(|| "unknown".to_string()),
+        request_id: request_id.to_string(),
     })
 }
 
@@ -199,6 +222,21 @@ pub(crate) fn cors_headers() -> HeaderMap {
 pub(crate) async fn cors_preflight() -> impl IntoResponse {
     (cors_headers(), StatusCode::NO_CONTENT)
 }
+
+pub(crate) async fn request_id_layer(mut request: Request, next: Next) -> Response {
+    let request_id = uuid::Uuid::new_v4().to_string();
+    request
+        .extensions_mut()
+        .insert(RequestId(request_id.clone()));
+    let mut response = next.run(request).await;
+    if let Ok(val) = HeaderValue::from_str(&request_id) {
+        response.headers_mut().insert("x-request-id", val);
+    }
+    response
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct RequestId(pub String);
 
 pub(crate) fn chrono_free_today() -> String {
     use std::time::{SystemTime, UNIX_EPOCH};

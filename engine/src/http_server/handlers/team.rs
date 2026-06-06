@@ -1,10 +1,10 @@
-use axum::extract::{Path as AxumPath, State};
-use axum::http::HeaderMap;
+use axum::extract::{Extension, Path as AxumPath, State};
+use axum::http::{HeaderMap, Uri};
 use axum::response::IntoResponse;
 use axum::Json;
 use serde_json::json;
 
-use crate::http_server::middleware::{
+use crate::http_server::middleware::{RequestId, 
     authorize, cors_headers, internal_error, require_store, ApiError,
 };
 use crate::http_server::state::AxumApiState;
@@ -15,8 +15,10 @@ use crate::http_server::{
 pub(crate) async fn api_team(
     State(state): State<AxumApiState>,
     headers: HeaderMap,
+    uri: Uri,
+    Extension(request_id): Extension<RequestId>,
 ) -> Result<impl IntoResponse, ApiError> {
-    authorize(&state, &headers, "team:read")?;
+    authorize(&state, &headers, "team:read", uri.path(), &request_id.0)?;
     let store = require_store(&state)?;
     Ok((
         cors_headers(),
@@ -27,9 +29,11 @@ pub(crate) async fn api_team(
 pub(crate) async fn api_create_member(
     State(state): State<AxumApiState>,
     headers: HeaderMap,
+    uri: Uri,
+    Extension(request_id): Extension<RequestId>,
     Json(request): Json<CreateTeamMemberRequest>,
 ) -> Result<impl IntoResponse, ApiError> {
-    let context = authorize(&state, &headers, "team:admin")?;
+    let context = authorize(&state, &headers, "team:admin", uri.path(), &request_id.0)?;
     let store = require_store(&state)?;
 
     store
@@ -60,10 +64,12 @@ pub(crate) async fn api_create_member(
 pub(crate) async fn api_update_member_role(
     State(state): State<AxumApiState>,
     headers: HeaderMap,
+    uri: Uri,
+    Extension(request_id): Extension<RequestId>,
     AxumPath(user_id): AxumPath<String>,
     Json(request): Json<UpdateMemberRoleRequest>,
 ) -> Result<impl IntoResponse, ApiError> {
-    let context = authorize(&state, &headers, "team:admin")?;
+    let context = authorize(&state, &headers, "team:admin", uri.path(), &request_id.0)?;
     let store = require_store(&state)?;
 
     let updated = store
@@ -91,9 +97,11 @@ pub(crate) async fn api_update_member_role(
 pub(crate) async fn api_delete_member(
     State(state): State<AxumApiState>,
     headers: HeaderMap,
+    uri: Uri,
+    Extension(request_id): Extension<RequestId>,
     AxumPath(user_id): AxumPath<String>,
 ) -> Result<impl IntoResponse, ApiError> {
-    let context = authorize(&state, &headers, "team:admin")?;
+    let context = authorize(&state, &headers, "team:admin", uri.path(), &request_id.0)?;
     let store = require_store(&state)?;
 
     let deleted = store

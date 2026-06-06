@@ -471,3 +471,155 @@ test("dispatch bundle with provider_completed status round-trips", async () => {
   assert.equal(result.execution_result.executor_type, "provider");
   assert.equal(result.execution_result.status, "provider_completed");
 });
+
+test("createSupervisedPatchWorkspace posts workspace creation request", async () => {
+  const { calls, fetchImpl } = captureFetch({
+    schema_version: "axum_api.v1",
+    workspace: { workspace_id: "ws-0001", status: "workspace_created" },
+  });
+  const client = new AgentControlPlaneClient({ baseUrl: "http://127.0.0.1:8080", fetchImpl });
+
+  const result = await client.createSupervisedPatchWorkspace({
+    run_id: "run-0001",
+    target_id: "target-a",
+    target_repo_path: "/tmp/repo",
+    source_revision: "abc123",
+  });
+
+  assert.equal(result.workspace.workspace_id, "ws-0001");
+  assert.equal(calls[0].url, "http://127.0.0.1:8080/api/v1/supervised-patch/workspaces");
+  assert.equal(calls[0].init.method, "POST");
+  assert.deepEqual(JSON.parse(calls[0].init.body), {
+    run_id: "run-0001",
+    target_id: "target-a",
+    target_repo_path: "/tmp/repo",
+    source_revision: "abc123",
+  });
+});
+
+test("createSupervisedPatchWorkspace includes optional fields", async () => {
+  const { calls, fetchImpl } = captureFetch({
+    schema_version: "axum_api.v1",
+    workspace: { workspace_id: "ws-0002" },
+  });
+  const client = new AgentControlPlaneClient({ baseUrl: "http://127.0.0.1:8080", fetchImpl });
+
+  await client.createSupervisedPatchWorkspace({
+    run_id: "run-0001",
+    target_id: "target-a",
+    target_repo_path: "/tmp/repo",
+    source_revision: "abc123",
+    plan_id: "plan-0001",
+    source_tree_hash: "sha256:deadbeef",
+  });
+
+  const body = JSON.parse(calls[0].init.body);
+  assert.equal(body.plan_id, "plan-0001");
+  assert.equal(body.source_tree_hash, "sha256:deadbeef");
+});
+
+test("cleanupSupervisedPatchWorkspace posts cleanup action", async () => {
+  const { calls, fetchImpl } = captureFetch({
+    schema_version: "axum_api.v1",
+    workspace: { workspace_id: "ws-0001", status: "cleaned" },
+  });
+  const client = new AgentControlPlaneClient({ baseUrl: "http://127.0.0.1:8080", fetchImpl });
+
+  const result = await client.cleanupSupervisedPatchWorkspace("ws/0001");
+
+  assert.equal(result.workspace.status, "cleaned");
+  assert.equal(calls[0].url, "http://127.0.0.1:8080/api/v1/supervised-patch/workspaces/ws%2F0001/cleanup");
+  assert.equal(calls[0].init.method, "POST");
+  assert.deepEqual(JSON.parse(calls[0].init.body), {});
+});
+
+test("quarantineSupervisedPatchWorkspace posts quarantine action", async () => {
+  const { calls, fetchImpl } = captureFetch({
+    schema_version: "axum_api.v1",
+    workspace: { workspace_id: "ws-0001", status: "quarantined" },
+  });
+  const client = new AgentControlPlaneClient({ baseUrl: "http://127.0.0.1:8080", fetchImpl });
+
+  const result = await client.quarantineSupervisedPatchWorkspace("ws-0001");
+
+  assert.equal(result.workspace.status, "quarantined");
+  assert.equal(calls[0].url, "http://127.0.0.1:8080/api/v1/supervised-patch/workspaces/ws-0001/quarantine");
+  assert.equal(calls[0].init.method, "POST");
+});
+
+test("captureSupervisedPatch posts capture to workspace", async () => {
+  const { calls, fetchImpl } = captureFetch({
+    schema_version: "axum_api.v1",
+    artifact: { artifact_id: "art-0001", artifact_type: "patch_diff" },
+  });
+  const client = new AgentControlPlaneClient({ baseUrl: "http://127.0.0.1:8080", fetchImpl });
+
+  const result = await client.captureSupervisedPatch("ws-0001");
+
+  assert.equal(result.artifact.artifact_id, "art-0001");
+  assert.equal(calls[0].url, "http://127.0.0.1:8080/api/v1/supervised-patch/workspaces/ws-0001/capture");
+  assert.equal(calls[0].init.method, "POST");
+});
+
+test("exportSupervisedPatchArtifact posts export with run_id", async () => {
+  const { calls, fetchImpl } = captureFetch({
+    schema_version: "axum_api.v1",
+    export: { artifact_id: "art-0001", exported_by: "key-1", exported_at: "2026-06-05T00:00:00Z" },
+  });
+  const client = new AgentControlPlaneClient({ baseUrl: "http://127.0.0.1:8080", fetchImpl });
+
+  const result = await client.exportSupervisedPatchArtifact("art/0001", { run_id: "run-0001" });
+
+  assert.equal(result.export.artifact_id, "art-0001");
+  assert.equal(calls[0].url, "http://127.0.0.1:8080/api/v1/supervised-patch/artifacts/art%2F0001/export");
+  assert.equal(calls[0].init.method, "POST");
+  assert.deepEqual(JSON.parse(calls[0].init.body), { run_id: "run-0001" });
+});
+
+test("tickWorkflowRun posts tick to workflow run", async () => {
+  const { calls, fetchImpl } = captureFetch({
+    schema_version: "axum_api.v1",
+    tick: { node_id: "node-a", status: "completed" },
+  });
+  const client = new AgentControlPlaneClient({ baseUrl: "http://127.0.0.1:8080", fetchImpl });
+
+  const result = await client.tickWorkflowRun("run/0001");
+
+  assert.equal(result.tick.node_id, "node-a");
+  assert.equal(calls[0].url, "http://127.0.0.1:8080/api/v1/workflow-runs/run%2F0001/tick");
+  assert.equal(calls[0].init.method, "POST");
+  assert.deepEqual(JSON.parse(calls[0].init.body), {});
+});
+
+test("tickWorkflowRun passes optional parameters", async () => {
+  const { calls, fetchImpl } = captureFetch({
+    schema_version: "axum_api.v1",
+    tick: { status: "completed" },
+  });
+  const client = new AgentControlPlaneClient({ baseUrl: "http://127.0.0.1:8080", fetchImpl });
+
+  await client.tickWorkflowRun("run-0001", {
+    actor: "user-1",
+    max_retries: 3,
+    executor: "command",
+    timeout_ms: 60000,
+  });
+
+  const body = JSON.parse(calls[0].init.body);
+  assert.equal(body.actor, "user-1");
+  assert.equal(body.max_retries, 3);
+  assert.equal(body.executor, "command");
+  assert.equal(body.timeout_ms, 60000);
+});
+
+test("schedulerStatus gets scheduler health", async () => {
+  const { calls, fetchImpl } = captureFetch({
+    schema_version: "axum_api.v1",
+    scheduler: { enabled: true, running: true, interval_ms: 2000 },
+  });
+  const client = new AgentControlPlaneClient({ baseUrl: "http://localhost:8080", fetchImpl });
+  const result = await client.schedulerStatus();
+  assert.equal(result.scheduler.enabled, true);
+  assert.equal(result.scheduler.interval_ms, 2000);
+  assert.ok(calls[0].url.includes("/api/v1/scheduler/status"));
+});

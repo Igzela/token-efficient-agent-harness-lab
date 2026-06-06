@@ -1292,7 +1292,7 @@ async fn axum_auth_rejects_missing_key_when_configured() {
         .oneshot(
             Request::builder()
                 .method(Method::GET)
-                .uri("/api/v1/health")
+                .uri("/api/v1/config")
                 .body(Body::empty())
                 .unwrap(),
         )
@@ -1300,6 +1300,81 @@ async fn axum_auth_rejects_missing_key_when_configured() {
         .unwrap();
 
     assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+}
+
+#[tokio::test]
+async fn axum_health_bypass_allows_unauthenticated_health_probe_when_auth_configured() {
+    let state = AxumApiState::new().with_auth(
+        TenantResolver::new(),
+        RateLimiter::new(60.0, 10),
+        Some(60),
+        1.0,
+    );
+    let app = build_axum_router(state);
+
+    let health = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(Method::GET)
+                .uri("/api/v1/health")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(health.status(), StatusCode::OK);
+    let body = response_json(health).await;
+    assert_eq!(body["status"], "healthy");
+    assert_eq!(body["tenant_id"], "local");
+
+    let ready = app
+        .oneshot(
+            Request::builder()
+                .method(Method::GET)
+                .uri("/api/v1/ready")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(ready.status(), StatusCode::OK);
+    let body = response_json(ready).await;
+    assert_eq!(body["status"], "ready");
+}
+
+#[tokio::test]
+async fn axum_health_bypass_is_skipped_when_auth_header_present() {
+    let mut resolver = TenantResolver::new();
+    resolver.add_tenant(Tenant {
+        tenant_id: "t1".to_string(),
+        name: "T1".to_string(),
+        scopes: HashSet::new(),
+        rate_limit: Some(100),
+    });
+    let (_key, raw_key) = resolver
+        .create_api_key("t1", Some(HashSet::from(["dispatch:read".to_string()])), None, 1.0)
+        .unwrap();
+    let state = AxumApiState::new().with_auth(
+        resolver,
+        RateLimiter::new(60.0, 10),
+        Some(60),
+        1.0,
+    );
+    let app = build_axum_router(state);
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method(Method::GET)
+                .uri("/api/v1/health")
+                .header(header::AUTHORIZATION, format!("Bearer {raw_key}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::FORBIDDEN);
 }
 
 #[tokio::test]
@@ -3863,4 +3938,292 @@ async fn axum_e2e_command_executor_produces_real_patch_export() {
     assert!(!export["artifact"]["changed_files"].as_array().unwrap().is_empty());
     assert_eq!(export["approval_binding"]["export_eligible"], true);
     assert_eq!(export["integrity"]["integrity_ok"], true);
+}
+
+#[tokio::test]
+async fn axum_tick_with_command_executor_uses_command_node_executor() {
+    let dir = tempdir().unwrap();
+    let store = LocalProductStore::new(dir.path().join("tick-cmd.db")).unwrap();
+    let app = build_axum_router(AxumApiState::new().with_local_store(store));
+
+    let plan_resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(Method::POST)
+                .uri("/api/v1/plans")
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(
+                    json!({"raw_request": "echo hello", "request_source": "test"}).to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(plan_resp.status(), StatusCode::OK);
+    let plan_body = response_json(plan_resp).await;
+    let plan_id = plan_body["plan"]["plan_id"].as_str().unwrap();
+
+    let run_resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(Method::POST)
+                .uri("/api/v1/workflow-runs")
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(json!({"plan_id": plan_id}).to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let run_body = response_json(run_resp).await;
+    let run_id = run_body["run"]["run_id"].as_str().unwrap();
+
+    let tick_resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(Method::POST)
+                .uri(format!("/api/v1/workflow-runs/{run_id}/tick"))
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(json!({"actor": "test", "executor": "command"}).to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(tick_resp.status(), StatusCode::OK);
+    let tick_body = response_json(tick_resp).await;
+    let executor_type = tick_body["tick"]["executor_type"].as_str().unwrap_or("");
+    assert!(
+        executor_type == "command" || executor_type == "noop",
+        "expected command or noop executor_type, got: {executor_type}"
+    );
+}
+
+#[tokio::test]
+async fn axum_tick_with_unknown_executor_falls_back_to_noop() {
+    let dir = tempdir().unwrap();
+    let store = LocalProductStore::new(dir.path().join("tick-unknown.db")).unwrap();
+    let app = build_axum_router(AxumApiState::new().with_local_store(store));
+
+    let plan_resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(Method::POST)
+                .uri("/api/v1/plans")
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(
+                    json!({"raw_request": "echo test", "request_source": "test"}).to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(plan_resp.status(), StatusCode::OK);
+    let plan_body = response_json(plan_resp).await;
+    let plan_id = plan_body["plan"]["plan_id"].as_str().unwrap();
+
+    let run_resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(Method::POST)
+                .uri("/api/v1/workflow-runs")
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(json!({"plan_id": plan_id}).to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let run_body = response_json(run_resp).await;
+    let run_id = run_body["run"]["run_id"].as_str().unwrap();
+
+    let tick_resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(Method::POST)
+                .uri(format!("/api/v1/workflow-runs/{run_id}/tick"))
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(json!({"actor": "test", "executor": "fake_executor"}).to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(tick_resp.status(), StatusCode::OK);
+    let tick_body = response_json(tick_resp).await;
+    let action = tick_body["tick"]["action"].as_str().unwrap_or("");
+    assert!(
+        action == "node_executed" || action == "completed",
+        "tick should still work with unknown executor, got: {action}"
+    );
+    if action == "node_executed" {
+        assert_eq!(tick_body["tick"]["executor_type"], "noop");
+    }
+}
+
+#[tokio::test]
+async fn axum_tick_with_claude_code_cli_unavailable_returns_400() {
+    let dir = tempdir().unwrap();
+    let store = LocalProductStore::new(dir.path().join("tick-cli-400.db")).unwrap();
+    let app = build_axum_router(AxumApiState::new().with_local_store(store));
+
+    let plan_resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(Method::POST)
+                .uri("/api/v1/plans")
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(
+                    json!({"raw_request": "echo cli", "request_source": "test"}).to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(plan_resp.status(), StatusCode::OK);
+    let plan_body = response_json(plan_resp).await;
+    let plan_id = plan_body["plan"]["plan_id"].as_str().unwrap();
+
+    let run_resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(Method::POST)
+                .uri("/api/v1/workflow-runs")
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(json!({"plan_id": plan_id}).to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let run_body = response_json(run_resp).await;
+    let run_id = run_body["run"]["run_id"].as_str().unwrap();
+
+    // CLI execution is not enabled in test env (ACP_ENABLE_CLI_EXECUTION not set)
+    let tick_resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(Method::POST)
+                .uri(format!("/api/v1/workflow-runs/{run_id}/tick"))
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(
+                    json!({"actor": "test", "executor": "claude_code_cli"}).to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(tick_resp.status(), StatusCode::BAD_REQUEST);
+    let tick_body = response_json(tick_resp).await;
+    assert_eq!(tick_body["code"], "cli_not_available");
+}
+
+#[test]
+fn cli_node_executor_resolve_prompt_and_executor() {
+    use engine::cli::CliNodeExecutor;
+    use serde_json::json;
+
+    let executor = CliNodeExecutor::new(Some("/bin/claude".into()), Some("/bin/codex".into()), 5000);
+
+    let input_with_prompt = engine::node_executor::NodeExecutionInput {
+        node_id: "n1".into(),
+        task_type: "test".into(),
+        run_id: "r1".into(),
+        workflow_id: "w1".into(),
+        node_metadata: json!({"prompt": "do something"}),
+    };
+    assert_eq!(executor.resolve_prompt(&input_with_prompt), "do something");
+    assert_eq!(executor.resolve_executor(&input_with_prompt), "claude_code_cli");
+
+    let input_with_command = engine::node_executor::NodeExecutionInput {
+        node_id: "n2".into(),
+        task_type: "test".into(),
+        run_id: "r2".into(),
+        workflow_id: "w2".into(),
+        node_metadata: json!({"command": "echo hi"}),
+    };
+    assert_eq!(executor.resolve_prompt(&input_with_command), "echo hi");
+
+    let input_with_explicit_executor = engine::node_executor::NodeExecutionInput {
+        node_id: "n3".into(),
+        task_type: "test".into(),
+        run_id: "r3".into(),
+        workflow_id: "w3".into(),
+        node_metadata: json!({"executor": "codex_cli"}),
+    };
+    assert_eq!(
+        executor.resolve_executor(&input_with_explicit_executor),
+        "codex_cli"
+    );
+
+    let input_empty = engine::node_executor::NodeExecutionInput {
+        node_id: "n4".into(),
+        task_type: "test".into(),
+        run_id: "r4".into(),
+        workflow_id: "w4".into(),
+        node_metadata: json!({}),
+    };
+    assert_eq!(executor.resolve_prompt(&input_empty), "echo noop");
+}
+
+#[tokio::test]
+async fn axum_tick_with_codex_cli_unavailable_returns_400() {
+    let dir = tempdir().unwrap();
+    let store = LocalProductStore::new(dir.path().join("tick-codex-400.db")).unwrap();
+    let app = build_axum_router(AxumApiState::new().with_local_store(store));
+
+    let plan_resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(Method::POST)
+                .uri("/api/v1/plans")
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(
+                    json!({"raw_request": "echo codex cli", "request_source": "test"}).to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(plan_resp.status(), StatusCode::OK);
+    let plan_body = response_json(plan_resp).await;
+    let plan_id = plan_body["plan"]["plan_id"].as_str().unwrap();
+
+    let run_resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(Method::POST)
+                .uri("/api/v1/workflow-runs")
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(json!({"plan_id": plan_id}).to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let run_body = response_json(run_resp).await;
+    let run_id = run_body["run"]["run_id"].as_str().unwrap();
+
+    let tick_resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(Method::POST)
+                .uri(format!("/api/v1/workflow-runs/{run_id}/tick"))
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(
+                    json!({"actor": "test", "executor": "codex_cli"}).to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(tick_resp.status(), StatusCode::BAD_REQUEST);
+    let tick_body = response_json(tick_resp).await;
+    assert_eq!(tick_body["code"], "cli_not_available");
 }

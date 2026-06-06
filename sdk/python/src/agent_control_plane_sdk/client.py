@@ -179,6 +179,77 @@ class AgentControlPlaneClient:
             f"/api/v1/supervised-patch/artifacts/{_quote_path_segment(artifact_id)}"
         )
 
+    def create_supervised_patch_workspace(
+        self,
+        run_id: str,
+        target_id: str,
+        target_repo_path: str,
+        source_revision: str,
+        plan_id: str | None = None,
+        source_tree_hash: str | None = None,
+    ) -> dict[str, Any]:
+        body: dict[str, Any] = {
+            "run_id": run_id,
+            "target_id": target_id,
+            "target_repo_path": target_repo_path,
+            "source_revision": source_revision,
+        }
+        if plan_id is not None:
+            body["plan_id"] = plan_id
+        if source_tree_hash is not None:
+            body["source_tree_hash"] = source_tree_hash
+        return self._post("/api/v1/supervised-patch/workspaces", body)
+
+    def cleanup_supervised_patch_workspace(self, workspace_id: str) -> dict[str, Any]:
+        return self._post(
+            f"/api/v1/supervised-patch/workspaces/{_quote_path_segment(workspace_id)}/cleanup",
+            {},
+        )
+
+    def quarantine_supervised_patch_workspace(self, workspace_id: str) -> dict[str, Any]:
+        return self._post(
+            f"/api/v1/supervised-patch/workspaces/{_quote_path_segment(workspace_id)}/quarantine",
+            {},
+        )
+
+    def capture_supervised_patch(self, workspace_id: str) -> dict[str, Any]:
+        return self._post(
+            f"/api/v1/supervised-patch/workspaces/{_quote_path_segment(workspace_id)}/capture",
+            {},
+        )
+
+    def export_supervised_patch_artifact(
+        self, artifact_id: str, run_id: str
+    ) -> dict[str, Any]:
+        return self._post(
+            f"/api/v1/supervised-patch/artifacts/{_quote_path_segment(artifact_id)}/export",
+            {"run_id": run_id},
+        )
+
+    def tick_workflow_run(
+        self,
+        run_id: str,
+        actor: str | None = None,
+        max_retries: int | None = None,
+        executor: str | None = None,
+        timeout_ms: int | None = None,
+    ) -> dict[str, Any]:
+        body: dict[str, Any] = {}
+        if actor is not None:
+            body["actor"] = actor
+        if max_retries is not None:
+            body["max_retries"] = max_retries
+        if executor is not None:
+            body["executor"] = executor
+        if timeout_ms is not None:
+            body["timeout_ms"] = timeout_ms
+        return self._post(
+            f"/api/v1/workflow-runs/{_quote_path_segment(run_id)}/tick", body
+        )
+
+    def scheduler_status(self) -> dict[str, Any]:
+        return self._get("/api/v1/scheduler/status")
+
     def config(self) -> dict[str, Any]:
         return self._get("/api/v1/config")
 

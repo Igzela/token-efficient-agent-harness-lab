@@ -1,10 +1,10 @@
-use axum::extract::{Path as AxumPath, Query, State};
-use axum::http::{HeaderMap, StatusCode};
+use axum::extract::{Extension, Path as AxumPath, Query, State};
+use axum::http::{Uri, HeaderMap, StatusCode};
 use axum::response::IntoResponse;
 use axum::Json;
 use serde_json::json;
 
-use crate::http_server::middleware::{
+use crate::http_server::middleware::{RequestId, 
     authorize, cors_headers, internal_error, require_store, ApiError,
 };
 use crate::http_server::state::AxumApiState;
@@ -14,9 +14,11 @@ use crate::read_only_planner::ReadOnlyPlanner;
 pub(crate) async fn api_create_plan(
     State(state): State<AxumApiState>,
     headers: HeaderMap,
+    uri: Uri,
+    Extension(request_id): Extension<RequestId>,
     Json(request): Json<ReadOnlyPlanApiRequest>,
 ) -> Result<impl IntoResponse, ApiError> {
-    let context = authorize(&state, &headers, "dispatch:read")?;
+    let context = authorize(&state, &headers, "dispatch:read", uri.path(), &request_id.0)?;
     if request.raw_request.trim().is_empty() {
         return Err(ApiError::with_code(
             StatusCode::BAD_REQUEST,
@@ -51,9 +53,11 @@ pub(crate) async fn api_create_plan(
 pub(crate) async fn api_plans(
     State(state): State<AxumApiState>,
     headers: HeaderMap,
+    uri: Uri,
+    Extension(request_id): Extension<RequestId>,
     Query(params): Query<std::collections::HashMap<String, String>>,
 ) -> Result<impl IntoResponse, ApiError> {
-    authorize(&state, &headers, "dispatch:read")?;
+    authorize(&state, &headers, "dispatch:read", uri.path(), &request_id.0)?;
     let store = require_store(&state)?;
     let limit = params
         .get("limit")
@@ -78,9 +82,11 @@ pub(crate) async fn api_plans(
 pub(crate) async fn api_plan_detail(
     State(state): State<AxumApiState>,
     headers: HeaderMap,
+    uri: Uri,
+    Extension(request_id): Extension<RequestId>,
     AxumPath(plan_id): AxumPath<String>,
 ) -> Result<impl IntoResponse, ApiError> {
-    authorize(&state, &headers, "dispatch:read")?;
+    authorize(&state, &headers, "dispatch:read", uri.path(), &request_id.0)?;
     let store = require_store(&state)?;
     match store.get_workflow_plan(&plan_id).map_err(internal_error)? {
         Some(plan) => Ok((

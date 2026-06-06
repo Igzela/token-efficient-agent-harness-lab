@@ -5,10 +5,16 @@ import type {
   DispatchListResponse,
   LocalDashboardState,
   OperationsMetrics,
+  SupervisedPatchArtifactCaptureResponse,
   SupervisedPatchArtifactListResponse,
   SupervisedPatchArtifactResponse,
+  SupervisedPatchExportResponse,
+  SupervisedPatchWorkspaceCreateResponse,
   SupervisedPatchWorkspaceListResponse,
   SupervisedPatchWorkspaceResponse,
+  WorkflowRunActionResponse,
+  WorkflowRunApprovalResponse,
+  WorkflowRunTickResponse,
 } from "./types";
 
 const BASE = "";
@@ -229,5 +235,104 @@ export async function fetchSupervisedPatchArtifacts(params: { limit?: number } =
 export async function fetchSupervisedPatchArtifactDetail(artifactId: string): Promise<SupervisedPatchArtifactResponse> {
   return fetchJson<SupervisedPatchArtifactResponse>(
     `${BASE}/api/v1/supervised-patch/artifacts/${encodeURIComponent(artifactId)}`,
+  );
+}
+
+export async function createSupervisedPatchWorkspace(request: {
+  run_id: string;
+  target_id: string;
+  target_repo_path: string;
+  source_revision: string;
+  plan_id?: string;
+  source_tree_hash?: string;
+}): Promise<SupervisedPatchWorkspaceCreateResponse> {
+  return fetchJson<SupervisedPatchWorkspaceCreateResponse>(
+    `${BASE}/api/v1/supervised-patch/workspaces`,
+    {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(request),
+    },
+  );
+}
+
+export async function cleanupSupervisedPatchWorkspace(workspaceId: string): Promise<SupervisedPatchWorkspaceResponse> {
+  return fetchJson<SupervisedPatchWorkspaceResponse>(
+    `${BASE}/api/v1/supervised-patch/workspaces/${encodeURIComponent(workspaceId)}/cleanup`,
+    { method: "POST" },
+  );
+}
+
+export async function quarantineSupervisedPatchWorkspace(workspaceId: string): Promise<SupervisedPatchWorkspaceResponse> {
+  return fetchJson<SupervisedPatchWorkspaceResponse>(
+    `${BASE}/api/v1/supervised-patch/workspaces/${encodeURIComponent(workspaceId)}/quarantine`,
+    { method: "POST" },
+  );
+}
+
+export async function captureSupervisedPatch(workspaceId: string): Promise<SupervisedPatchArtifactCaptureResponse> {
+  return fetchJson<SupervisedPatchArtifactCaptureResponse>(
+    `${BASE}/api/v1/supervised-patch/workspaces/${encodeURIComponent(workspaceId)}/capture`,
+    { method: "POST" },
+  );
+}
+
+export async function exportSupervisedPatchArtifact(artifactId: string, runId: string): Promise<SupervisedPatchExportResponse> {
+  return fetchJson<SupervisedPatchExportResponse>(
+    `${BASE}/api/v1/supervised-patch/artifacts/${encodeURIComponent(artifactId)}/export`,
+    {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ run_id: runId }),
+    },
+  );
+}
+
+export async function recordWorkflowRunApproval(
+  runId: string,
+  request: {
+    node_id: string;
+    decision: string;
+    reason?: string;
+    bound_patch_hash?: string;
+    bound_source_revision?: string;
+    bound_changed_files?: string[];
+    expires_at?: string;
+  },
+): Promise<WorkflowRunApprovalResponse> {
+  return fetchJson<WorkflowRunApprovalResponse>(
+    `${BASE}/api/v1/workflow-runs/${encodeURIComponent(runId)}/approvals`,
+    {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(request),
+    },
+  );
+}
+
+export async function tickWorkflowRun(runId: string, request?: {
+  actor?: string;
+  max_retries?: number;
+  executor?: string;
+  timeout_ms?: number;
+}): Promise<WorkflowRunTickResponse> {
+  return fetchJson<WorkflowRunTickResponse>(
+    `${BASE}/api/v1/workflow-runs/${encodeURIComponent(runId)}/tick`,
+    {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(request ?? {}),
+    },
+  );
+}
+
+export async function cancelWorkflowRun(runId: string, reason?: string): Promise<WorkflowRunActionResponse> {
+  return fetchJson<WorkflowRunActionResponse>(
+    `${BASE}/api/v1/workflow-runs/${encodeURIComponent(runId)}/cancel`,
+    {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ reason }),
+    },
   );
 }

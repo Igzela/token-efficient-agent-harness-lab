@@ -29,6 +29,7 @@ pub mod quality;
 pub mod read_only_planner;
 pub mod routing;
 pub mod runtime;
+pub mod scheduler;
 pub mod sdk;
 pub mod storage;
 pub mod task_analyzer;

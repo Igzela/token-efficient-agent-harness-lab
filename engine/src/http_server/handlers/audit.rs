@@ -1,10 +1,10 @@
-use axum::extract::{Query, State};
-use axum::http::HeaderMap;
+use axum::extract::{Extension, Query, State};
+use axum::http::{HeaderMap, Uri};
 use axum::response::IntoResponse;
 use axum::Json;
 use serde_json::json;
 
-use crate::http_server::middleware::{
+use crate::http_server::middleware::{RequestId, 
     authorize, cors_headers, internal_error, require_store, ApiError,
 };
 use crate::http_server::state::AxumApiState;
@@ -14,9 +14,11 @@ use crate::provider::redaction::redact_audit_fields;
 pub(crate) async fn api_audit(
     State(state): State<AxumApiState>,
     headers: HeaderMap,
+    uri: Uri,
+    Extension(request_id): Extension<RequestId>,
     Query(params): Query<std::collections::HashMap<String, String>>,
 ) -> Result<impl IntoResponse, ApiError> {
-    authorize(&state, &headers, "audit:read")?;
+    authorize(&state, &headers, "audit:read", uri.path(), &request_id.0)?;
     let store = require_store(&state)?;
     let limit = params
         .get("limit")

@@ -17,8 +17,17 @@ import type {
   WorkflowRunEventResponse,
   WorkflowRunListResponse,
   WorkflowRunResponse,
+  WorkflowRunTickRequest,
+  WorkflowRunTickResponse,
+  SchedulerStatus,
   SupervisedPatchArtifactListResponse,
   SupervisedPatchArtifactResponse,
+  SupervisedPatchCaptureResponse,
+  SupervisedPatchExportRequest,
+  SupervisedPatchExportResponse,
+  SupervisedPatchWorkspaceActionResponse,
+  SupervisedPatchWorkspaceCreateRequest,
+  SupervisedPatchWorkspaceCreateResponse,
   SupervisedPatchWorkspaceListResponse,
   SupervisedPatchWorkspaceResponse,
   LocalCostSummary,
@@ -266,6 +275,69 @@ export class AgentControlPlaneClient {
     return this.getJson<SupervisedPatchArtifactResponse>(
       `/api/v1/supervised-patch/artifacts/${encodeURIComponent(artifactId)}`,
     );
+  }
+
+  createSupervisedPatchWorkspace(
+    request: SupervisedPatchWorkspaceCreateRequest,
+  ): Promise<SupervisedPatchWorkspaceCreateResponse> {
+    return this.postJson<SupervisedPatchWorkspaceCreateResponse>(
+      "/api/v1/supervised-patch/workspaces",
+      {
+        run_id: request.run_id,
+        target_id: request.target_id,
+        target_repo_path: request.target_repo_path,
+        source_revision: request.source_revision,
+        plan_id: request.plan_id,
+        source_tree_hash: request.source_tree_hash,
+      },
+    );
+  }
+
+  cleanupSupervisedPatchWorkspace(workspaceId: string): Promise<SupervisedPatchWorkspaceActionResponse> {
+    return this.postJson<SupervisedPatchWorkspaceActionResponse>(
+      `/api/v1/supervised-patch/workspaces/${encodeURIComponent(workspaceId)}/cleanup`,
+      {},
+    );
+  }
+
+  quarantineSupervisedPatchWorkspace(workspaceId: string): Promise<SupervisedPatchWorkspaceActionResponse> {
+    return this.postJson<SupervisedPatchWorkspaceActionResponse>(
+      `/api/v1/supervised-patch/workspaces/${encodeURIComponent(workspaceId)}/quarantine`,
+      {},
+    );
+  }
+
+  captureSupervisedPatch(workspaceId: string): Promise<SupervisedPatchCaptureResponse> {
+    return this.postJson<SupervisedPatchCaptureResponse>(
+      `/api/v1/supervised-patch/workspaces/${encodeURIComponent(workspaceId)}/capture`,
+      {},
+    );
+  }
+
+  exportSupervisedPatchArtifact(
+    artifactId: string,
+    request: SupervisedPatchExportRequest,
+  ): Promise<SupervisedPatchExportResponse> {
+    return this.postJson<SupervisedPatchExportResponse>(
+      `/api/v1/supervised-patch/artifacts/${encodeURIComponent(artifactId)}/export`,
+      { run_id: request.run_id },
+    );
+  }
+
+  tickWorkflowRun(runId: string, request: WorkflowRunTickRequest = {}): Promise<WorkflowRunTickResponse> {
+    return this.postJson<WorkflowRunTickResponse>(
+      `/api/v1/workflow-runs/${encodeURIComponent(runId)}/tick`,
+      {
+        actor: request.actor,
+        max_retries: request.max_retries,
+        executor: request.executor,
+        timeout_ms: request.timeout_ms,
+      },
+    );
+  }
+
+  schedulerStatus(): Promise<SchedulerStatus> {
+    return this.getJson<SchedulerStatus>("/api/v1/scheduler/status");
   }
 
   config(): Promise<ConfigResponse> {

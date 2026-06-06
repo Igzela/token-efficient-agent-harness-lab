@@ -727,6 +727,15 @@ pub fn openapi_document() -> serde_json::Value {
                     }
                 }
             },
+            "/api/v1/scheduler/status": {
+                "get": {
+                    "summary": "Workflow scheduler status",
+                    "description": "Reports scheduler health, tick count, error count, and configuration. Returns enabled=false when ACP_ENABLE_SCHEDULER is not set.",
+                    "responses": {
+                        "200": {"description": "Scheduler status"}
+                    }
+                }
+            },
             "/api/v1/provider/audit": {
                 "get": {
                     "summary": "Read persisted provider audit events",

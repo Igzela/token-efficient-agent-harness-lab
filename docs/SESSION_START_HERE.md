@@ -76,6 +76,8 @@ Additional active architecture track:
 - **No autonomous workers.** No real concurrent workers are spawned.
 - **No target repo writes by default.** Target repositories are read-only. The app never writes to them.
 
+Production-grade hosted/self-hosted productization track was explicitly approved by user on 2026-06-06. This track extends existing supervised autonomous beta infrastructure with real CLI executor integration, persistent scheduling, dashboard controls, SDK productization, and security hardening. It does NOT create parallel runtime kernels. See `docs/NEXT_DECISION.md` for phase details and done-when criteria.
+
 Planning-only modules may generate non-executable plans, app-owned planning metadata, and design-gate documents. They do not grant runtime worker, execution, target-write, sandbox, deploy, apply, run, or merge authority.
 
 ## Must-Read Order
