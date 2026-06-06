@@ -5,6 +5,7 @@ import type {
   DispatchListResponse,
   LocalDashboardState,
   OperationsMetrics,
+  SchedulerStatusResponse,
   SupervisedPatchArtifactCaptureResponse,
   SupervisedPatchArtifactListResponse,
   SupervisedPatchArtifactResponse,
@@ -12,8 +13,14 @@ import type {
   SupervisedPatchWorkspaceCreateResponse,
   SupervisedPatchWorkspaceListResponse,
   SupervisedPatchWorkspaceResponse,
+  WorkflowPlanDetailResponse,
+  WorkflowPlanListResponse,
   WorkflowRunActionResponse,
+  WorkflowRunApprovalListResponse,
   WorkflowRunApprovalResponse,
+  WorkflowRunDetailResponse,
+  WorkflowRunEventListResponse,
+  WorkflowRunListResponse,
   WorkflowRunTickResponse,
 } from "./types";
 
@@ -335,4 +342,59 @@ export async function cancelWorkflowRun(runId: string, reason?: string): Promise
       body: JSON.stringify({ reason }),
     },
   );
+}
+
+export async function fetchWorkflowRuns(params: {
+  limit?: number;
+  offset?: number;
+  search?: string;
+} = {}): Promise<WorkflowRunListResponse> {
+  return fetchJson<WorkflowRunListResponse>(withQuery("/api/v1/workflow-runs", params));
+}
+
+export async function fetchWorkflowRunDetail(runId: string): Promise<WorkflowRunDetailResponse> {
+  return fetchJson<WorkflowRunDetailResponse>(
+    `${BASE}/api/v1/workflow-runs/${encodeURIComponent(runId)}`,
+  );
+}
+
+export async function fetchWorkflowRunEvents(runId: string, params: {
+  limit?: number;
+} = {}): Promise<WorkflowRunEventListResponse> {
+  return fetchJson<WorkflowRunEventListResponse>(withQuery(`/api/v1/workflow-runs/${encodeURIComponent(runId)}/events`, params));
+}
+
+export async function fetchWorkflowRunApprovals(runId: string, params: {
+  limit?: number;
+} = {}): Promise<WorkflowRunApprovalListResponse> {
+  return fetchJson<WorkflowRunApprovalListResponse>(withQuery(`/api/v1/workflow-runs/${encodeURIComponent(runId)}/approvals`, params));
+}
+
+export async function resumeWorkflowRun(runId: string, reason?: string): Promise<WorkflowRunActionResponse> {
+  return fetchJson<WorkflowRunActionResponse>(
+    `${BASE}/api/v1/workflow-runs/${encodeURIComponent(runId)}/resume`,
+    {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ reason }),
+    },
+  );
+}
+
+export async function fetchPlans(params: {
+  limit?: number;
+  offset?: number;
+  search?: string;
+} = {}): Promise<WorkflowPlanListResponse> {
+  return fetchJson<WorkflowPlanListResponse>(withQuery("/api/v1/plans", params));
+}
+
+export async function fetchPlanDetail(planId: string): Promise<WorkflowPlanDetailResponse> {
+  return fetchJson<WorkflowPlanDetailResponse>(
+    `${BASE}/api/v1/plans/${encodeURIComponent(planId)}`,
+  );
+}
+
+export async function fetchSchedulerStatus(): Promise<SchedulerStatusResponse> {
+  return fetchJson<SchedulerStatusResponse>(`${BASE}/api/v1/scheduler/status`);
 }

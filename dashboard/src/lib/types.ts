@@ -185,6 +185,12 @@ export interface OperationsMetrics {
   estimated_cost_available: boolean;
   pricing_configured: boolean;
   boundaries: LocalBoundaries;
+  plan_count?: number;
+  workflow_run_count?: number;
+  artifact_count?: number;
+  approval_count?: number;
+  executor_latency_avg_ms?: number;
+  scheduler_active_runs?: number;
 }
 
 export interface BackupVerification {
@@ -294,9 +300,93 @@ export interface SupervisedPatchExportResponse {
   };
 }
 
+// Workflow run types
+
+export interface WorkflowRunNode {
+  node_id: string;
+  task_type: string;
+  status: string;
+  input_refs: string[];
+  output_ref: string | null;
+  cost_incurred: number;
+  error_domain: string | null;
+  error_message: string | null;
+  executor_type: string | null;
+  latency_ms: number | null;
+  attempt: number;
+  lease_expires_at: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface WorkflowRunEdge {
+  edge_id: string;
+  from_node_id: string;
+  to_node_id: string;
+  edge_type: string;
+  created_at: string;
+}
+
+export interface WorkflowRun {
+  run_id: string;
+  plan_id: string | null;
+  workflow_id: string;
+  status: string;
+  initiated_by: string;
+  nodes: WorkflowRunNode[];
+  edges: WorkflowRunEdge[];
+  boundaries: Record<string, unknown>;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface WorkflowRunEvent {
+  event_id: string;
+  run_id: string;
+  node_id: string | null;
+  event_type: string;
+  details: Record<string, unknown> | null;
+  actor: string;
+  created_at: string;
+}
+
+export interface WorkflowRunApproval {
+  approval_id: string;
+  run_id: string;
+  node_id: string;
+  decision: string;
+  decided_by: string;
+  reason: string | null;
+  bound_patch_hash: string | null;
+  bound_source_revision: string | null;
+  bound_changed_files: string[] | null;
+  expires_at: string | null;
+  created_at: string;
+}
+
+export interface WorkflowRunListResponse {
+  schema_version: "axum_api.v1";
+  runs: WorkflowRun[];
+}
+
+export interface WorkflowRunDetailResponse {
+  schema_version: "axum_api.v1";
+  run: WorkflowRun;
+}
+
+export interface WorkflowRunEventListResponse {
+  schema_version: "axum_api.v1";
+  events: WorkflowRunEvent[];
+}
+
+export interface WorkflowRunApprovalListResponse {
+  schema_version: "axum_api.v1";
+  approvals: WorkflowRunApproval[];
+}
+
 export interface WorkflowRunApprovalResponse {
   schema_version: "axum_api.v1";
-  approval: Record<string, unknown>;
+  approval: WorkflowRunApproval;
 }
 
 export interface WorkflowRunTickResponse {
@@ -306,7 +396,66 @@ export interface WorkflowRunTickResponse {
 
 export interface WorkflowRunActionResponse {
   schema_version: "axum_api.v1";
-  run: Record<string, unknown>;
+  run: WorkflowRun;
+}
+
+// Plan types
+
+export interface WorkflowPlan {
+  plan_id: string;
+  workflow_id: string;
+  dispatch_id: string | null;
+  raw_request: string;
+  request_source: string;
+  status: string;
+  initiated_by: string;
+  graph: Record<string, unknown>;
+  advisory: Record<string, unknown> | null;
+  boundaries: Record<string, unknown>;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface WorkflowPlanListResponse {
+  schema_version: "axum_api.v1";
+  plans: WorkflowPlan[];
+}
+
+export interface WorkflowPlanDetailResponse {
+  schema_version: "axum_api.v1";
+  plan: WorkflowPlan;
+}
+
+// Scheduler types
+
+export interface SchedulerConfig {
+  interval_ms: number;
+  max_concurrent: number;
+  lease_timeout_ms: number;
+  executor_type: string;
+}
+
+export interface SchedulerStatus {
+  schema_version: string;
+  running: boolean;
+  enabled?: boolean;
+  message?: string;
+  started_at?: string | null;
+  config?: SchedulerConfig;
+  tick_count?: number;
+  error_count?: number;
+  retry_count?: number;
+  total_execution_time_ns?: number;
+  last_tick_at?: string | null;
+  last_error?: string | null;
+  active_runs?: number;
+}
+
+export interface SchedulerStatusResponse {
+  schema_version: "axum_api.v1";
+  tenant_id?: string;
+  request_id?: string;
+  scheduler: SchedulerStatus;
 }
 
 export interface DispatchBundle {

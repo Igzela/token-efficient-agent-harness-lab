@@ -19,11 +19,13 @@ import { Health } from "@/components/Health";
 import { Metric } from "@/components/Metric";
 import { Operations } from "@/components/Operations";
 import { Routing } from "@/components/Routing";
+import { SchedulerStatus } from "@/components/SchedulerStatus";
 import { SupervisedPatch } from "@/components/SupervisedPatch";
 import { Settings } from "@/components/Settings";
 import { Team } from "@/components/Team";
+import { WorkflowRuns } from "@/components/WorkflowRuns";
 
-type Tab = "dispatches" | "routing" | "team" | "costs" | "operations" | "patches" | "settings" | "health" | "backups" | "audit";
+type Tab = "dispatches" | "routing" | "team" | "costs" | "operations" | "runs" | "patches" | "scheduler" | "settings" | "health" | "backups" | "audit";
 
 const tabs: { id: Tab; label: string }[] = [
   { id: "dispatches", label: "Dispatches" },
@@ -31,7 +33,9 @@ const tabs: { id: Tab; label: string }[] = [
   { id: "team", label: "Team" },
   { id: "costs", label: "Costs" },
   { id: "operations", label: "Operations" },
+  { id: "runs", label: "Runs" },
   { id: "patches", label: "Patches" },
+  { id: "scheduler", label: "Scheduler" },
   { id: "settings", label: "Settings" },
   { id: "health", label: "Health" },
   { id: "backups", label: "Backups" },
@@ -345,7 +349,9 @@ export default function DashboardPage() {
           )}
           {tab === "costs" && <Costs dashboard={dashboard} />}
           {tab === "operations" && <Operations />}
+          {tab === "runs" && <WorkflowRuns />}
           {tab === "patches" && <SupervisedPatch />}
+          {tab === "scheduler" && <SchedulerStatus />}
           {tab === "settings" && <Settings dashboard={dashboard} />}
           {tab === "health" && <Health dashboard={dashboard} health={health} ready={ready} />}
           {tab === "backups" && <Backups />}
