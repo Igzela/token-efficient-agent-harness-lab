@@ -1287,18 +1287,18 @@ fn copy_dir_contents(src: &Path, dst: &Path) -> Result<(), String> {
 }
 
 fn collect_workspace_files(dir: &Path) -> Result<(Vec<String>, Vec<String>), String> {
-    let mut files = Vec::new();
-    let mut hashes = Vec::new();
-    collect_files_recursive(dir, dir, &mut files, &mut hashes)?;
-    files.sort();
+    let mut pairs = Vec::new();
+    collect_files_recursive(dir, dir, &mut pairs)?;
+    pairs.sort_by(|a, b| a.0.cmp(&b.0));
+    let files = pairs.iter().map(|(p, _)| p.clone()).collect();
+    let hashes = pairs.iter().map(|(_, h)| h.clone()).collect();
     Ok((files, hashes))
 }
 
 fn collect_files_recursive(
     base: &Path,
     dir: &Path,
-    files: &mut Vec<String>,
-    hashes: &mut Vec<String>,
+    pairs: &mut Vec<(String, String)>,
 ) -> Result<(), String> {
     let entries = std::fs::read_dir(dir).map_err(|e| e.to_string())?;
     for entry in entries {
@@ -1309,7 +1309,7 @@ fn collect_files_recursive(
             if name.starts_with('.') || is_ignored_dir(&name) {
                 continue;
             }
-            collect_files_recursive(base, &path, files, hashes)?;
+            collect_files_recursive(base, &path, pairs)?;
         } else if path.is_file() {
             let name = path.file_name().unwrap_or_default().to_string_lossy();
             if name.starts_with('.') {
@@ -1329,8 +1329,7 @@ fn collect_files_recursive(
                 .to_string_lossy()
                 .into_owned();
             let hash = hex_encode(&sha256_bytes(&content));
-            files.push(relative);
-            hashes.push(hash);
+            pairs.push((relative, hash));
         }
     }
     Ok(())
@@ -1550,10 +1549,10 @@ mod tests {
         fs::write(root.join(".hidden.txt"), "secret").unwrap();
         fs::write(root.join(".source_manifest.json"), "{}").unwrap();
 
-        let mut files = Vec::new();
-        let mut hashes = Vec::new();
-        collect_files_recursive(root, root, &mut files, &mut hashes).unwrap();
-        files.sort();
+        let mut pairs = Vec::new();
+        collect_files_recursive(root, root, &mut pairs).unwrap();
+        pairs.sort_by(|a, b| a.0.cmp(&b.0));
+        let files: Vec<String> = pairs.iter().map(|(p, _)| p.clone()).collect();
 
         assert_eq!(files, vec!["visible.txt"]);
         assert!(!files.iter().any(|f| f.contains(".source_manifest")));
@@ -1570,10 +1569,10 @@ mod tests {
         fs::create_dir(root.join("sub")).unwrap();
         fs::write(root.join("sub/nested.txt"), "data").unwrap();
 
-        let mut files = Vec::new();
-        let mut hashes = Vec::new();
-        collect_files_recursive(root, root, &mut files, &mut hashes).unwrap();
-        files.sort();
+        let mut pairs = Vec::new();
+        collect_files_recursive(root, root, &mut pairs).unwrap();
+        pairs.sort_by(|a, b| a.0.cmp(&b.0));
+        let files: Vec<String> = pairs.iter().map(|(p, _)| p.clone()).collect();
 
         assert_eq!(files, vec!["sub/nested.txt", "top.txt"]);
     }
@@ -1587,12 +1586,34 @@ mod tests {
         fs::create_dir(root.join(".git")).unwrap();
         fs::write(root.join(".git/index"), "binary").unwrap();
 
-        let mut files = Vec::new();
-        let mut hashes = Vec::new();
-        collect_files_recursive(root, root, &mut files, &mut hashes).unwrap();
+        let mut pairs = Vec::new();
+        collect_files_recursive(root, root, &mut pairs).unwrap();
+        let files: Vec<String> = pairs.iter().map(|(p, _)| p.clone()).collect();
 
         assert_eq!(files.len(), 1);
         assert_eq!(files[0], "real_patch.rs");
         assert!(!files.iter().any(|f| f.starts_with('.')));
+    }
+
+    #[test]
+    fn collect_workspace_files_path_hash_alignment() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        // Write multiple files with known content so we can verify hash alignment
+        fs::write(root.join("aaa.txt"), "alpha").unwrap();
+        fs::write(root.join("bbb.txt"), "beta").unwrap();
+        fs::write(root.join("ccc.txt"), "gamma").unwrap();
+
+        let (files, hashes) = collect_workspace_files(root).unwrap();
+
+        // Files must be sorted
+        assert_eq!(files, vec!["aaa.txt", "bbb.txt", "ccc.txt"]);
+        // Each hash must correspond to its file's content
+        let expected_aaa = hex_encode(&sha256_bytes(b"alpha"));
+        let expected_bbb = hex_encode(&sha256_bytes(b"beta"));
+        let expected_ccc = hex_encode(&sha256_bytes(b"gamma"));
+        assert_eq!(hashes[0], expected_aaa, "hash mismatch for aaa.txt");
+        assert_eq!(hashes[1], expected_bbb, "hash mismatch for bbb.txt");
+        assert_eq!(hashes[2], expected_ccc, "hash mismatch for ccc.txt");
     }
 }
