@@ -1,11 +1,11 @@
 # Current Status
 
-Last verified: 2026-06-06. Production-grade hosted/self-hosted track Phase 1-7 + real CLI pilot complete. **GA hardening track active (GA-0 through GA-7)**: GA-0 (plan docs) DONE, GA-1 (artifact ignore + persisted review diff) DONE, GA-2 (production profile gate) DONE. Next: GA-3 (scheduler stability).
+Last verified: 2026-06-06. Production-grade hosted/self-hosted track Phase 1-7 + real CLI pilot complete. **GA hardening track active (GA-0 through GA-7)**: GA-0 (plan docs) DONE, GA-1 (artifact ignore + persisted review diff) DONE, GA-2 (production profile gate) DONE, GA-3 (scheduler stability) DONE. Next: GA-4 (observability/audit).
 
 ## Repository State
 
 - Branch: `feat/dashboard-ux-polish` with the Rust + TypeScript agent-control-plane cutover complete and local production-like ops hardening implemented. Rust `engine/` is the primary runtime/API/storage/provider-gated control plane; `dashboard/` and `sdk/typescript/` are the primary TypeScript surfaces. Python retained as REST SDK (`sdk/python/`) and utility scripts only.
-- Tests: **1266 Rust pass**, 0 failures. Python SDK tests run separately under `sdk/python/`.
+- Tests: **1276 Rust pass**, 0 failures. Python SDK tests run separately under `sdk/python/`.
 - Security baseline: ALL CHECKS PASSED.
 - Supervised autonomous beta planning: Batch 0-6 governance/module/model/read-only-planner/durable-state/advisory/design-gate work is recorded as planning-only in ADR-0002, `docs/NEXT_DECISION.md`, and `docs/security/THREAT_MODEL.md`; `WorkflowGraph` is the canonical planning model. `/api/v1/plans` creates, lists, and reads non-executable app-owned SQLite plans with recommendation-only quality/routing/retry/observability advisory metadata. `/api/v1/workflow-runs` stores inert workflow run/node/edge/event/approval metadata and records resume/cancel intent without execution authority. Batch 7 Slice A-E adds metadata, read-only HTTP/SDK/dashboard visibility, and docs-only approval-binding contract. Batch 7 Slice F adds supervised execution runtime primitives: workspace directory lifecycle (create/cleanup/quarantine), workflow tick endpoint with `NodeExecutor` trait, `CommandNodeExecutor` with shell-metachar rejection and allowlist-based direct exec (no `sh -c`), source manifest diff fix (dotfiles excluded from `changed_files`), approval binding with bound patch hash/source/fields/expiry, artifact capture with secret scan + integrity validation + export gate, and E2E closed-loop test proving command executor creates real files that flow through capture → integrity → approval → export. No target repo writes, sandbox/process/container/VM execution, real workers, provider calls, push/merge/deploy/apply controls, or default-on execution are approved.
 

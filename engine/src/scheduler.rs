@@ -158,6 +158,11 @@ impl WorkflowScheduler {
     }
 
     pub fn status(&self) -> Value {
+        let active_runs = self
+            .store
+            .list_active_workflow_run_ids()
+            .map(|ids| ids.len())
+            .unwrap_or(0);
         json!({
             "schema_version": "scheduler.v1",
             "running": self.is_running(),
@@ -172,6 +177,7 @@ impl WorkflowScheduler {
             "error_count": self.error_count.load(Ordering::SeqCst),
             "last_tick_at": self.last_tick_at.lock().ok().and_then(|g| g.clone()),
             "last_error": self.last_error.lock().ok().and_then(|g| g.clone()),
+            "active_runs": active_runs,
         })
     }
 }
@@ -417,5 +423,184 @@ mod tests {
         let executor = NoopNodeExecutor;
         let ticks = scheduler_tick(&store, &config, &executor).unwrap();
         assert_eq!(ticks, 0);
+    }
+
+    #[test]
+    fn scheduler_lease_anti_concurrency_two_ticks_dont_double_lease() {
+        let store = test_store();
+        create_plan_and_run(&store);
+
+        let config = SchedulerConfig {
+            interval_ms: 50,
+            max_concurrent: 1,
+            lease_timeout_ms: 300_000,
+            executor_type: "noop".to_string(),
+        };
+        let executor = NoopNodeExecutor;
+
+        // First tick leases and completes the single node
+        let r1 = scheduler_tick(&store, &config, &executor).unwrap();
+        assert_eq!(r1, 1);
+
+        // Second tick finds no ready nodes (already completed)
+        let r2 = scheduler_tick(&store, &config, &executor).unwrap();
+        assert_eq!(r2, 0, "second tick should not re-lease completed node");
+
+        let run = store.get_workflow_run("run-0001").unwrap().unwrap();
+        assert_eq!(run["status"], "completed");
+    }
+
+    #[test]
+    fn scheduler_fail_executor_increments_error_count() {
+        let store = test_store();
+        create_plan_and_run(&store);
+
+        let config = SchedulerConfig {
+            interval_ms: 50,
+            max_concurrent: 1,
+            lease_timeout_ms: 300_000,
+            executor_type: "fail".to_string(),
+        };
+        let executor = crate::node_executor::FailNodeExecutor::default();
+
+        // Tick with fail executor — node fails, run becomes failed
+        let result = scheduler_tick(&store, &config, &executor);
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), 1);
+
+        let run = store.get_workflow_run("run-0001").unwrap().unwrap();
+        assert_eq!(
+            run["status"], "failed",
+            "run should be failed after node failure"
+        );
+    }
+
+    #[test]
+    fn scheduler_skip_cancelled_run() {
+        let store = test_store();
+        let run_id = create_plan_and_run(&store);
+
+        // Cancel the run
+        store
+            .request_workflow_run_cancel(&run_id, "test", Some("aborted"))
+            .unwrap();
+
+        let config = SchedulerConfig {
+            interval_ms: 50,
+            max_concurrent: 4,
+            lease_timeout_ms: 300_000,
+            executor_type: "noop".to_string(),
+        };
+        let executor = NoopNodeExecutor;
+
+        // Scheduler tick should skip cancelled run (0 ticks)
+        let ticks = scheduler_tick(&store, &config, &executor).unwrap();
+        assert_eq!(ticks, 0, "cancelled run should not be ticked");
+
+        let run = store.get_workflow_run(&run_id).unwrap().unwrap();
+        assert_eq!(run["status"], "cancelled");
+    }
+
+    #[test]
+    fn scheduler_stale_lease_recovery_then_reexecution() {
+        let store = test_store();
+        let run_id = create_plan_and_run(&store);
+
+        // Tick once to lease the node
+        store.tick_workflow_run(&run_id, "test").unwrap();
+
+        // Force the leased node into a stale state
+        store
+            .set_pending_node_to_running_for_test("2020-01-01T00:00:00Z")
+            .unwrap();
+
+        // Scheduler tick recovers stale lease AND re-executes the recovered node
+        let config = SchedulerConfig {
+            interval_ms: 50,
+            max_concurrent: 1,
+            lease_timeout_ms: 60_000,
+            executor_type: "noop".to_string(),
+        };
+        let mut scheduler = WorkflowScheduler::new(store.clone(), config);
+        scheduler.start().unwrap();
+        std::thread::sleep(Duration::from_millis(200));
+        scheduler.stop().unwrap();
+
+        // The stale lease should have been recovered and the node re-executed
+        let run = store.get_workflow_run(&run_id).unwrap().unwrap();
+        assert_eq!(
+            run["status"], "completed",
+            "run should complete after stale lease recovery and re-execution"
+        );
+    }
+
+    #[test]
+    fn scheduler_retry_exhaustion_marks_run_failed() {
+        let store = test_store();
+        let run_id = create_plan_and_run(&store);
+
+        // Tick with fail executor and max_retries=2
+        let executor = crate::node_executor::FailNodeExecutor::default();
+        for attempt in 0..3 {
+            let result = store.tick_with_executor(&run_id, "test", 2, &executor);
+            assert!(result.is_ok(), "tick {attempt} should succeed");
+        }
+
+        // After 3 attempts (initial + 2 retries), node should be failed
+        let run = store.get_workflow_run(&run_id).unwrap().unwrap();
+        assert_eq!(
+            run["status"], "failed",
+            "run should fail after retry exhaustion"
+        );
+
+        let nodes = run["nodes"].as_array().unwrap();
+        let node = &nodes[0];
+        assert_eq!(node["db_status"], "failed");
+    }
+
+    #[test]
+    fn scheduler_status_includes_active_runs() {
+        let store = test_store();
+        let config = SchedulerConfig {
+            interval_ms: 50,
+            max_concurrent: 2,
+            lease_timeout_ms: 60_000,
+            executor_type: "noop".to_string(),
+        };
+        let scheduler = WorkflowScheduler::new(store.clone(), config);
+
+        let status = scheduler.status();
+        assert_eq!(status["active_runs"], 0, "no runs yet");
+
+        create_plan_and_run(&store);
+
+        let status = scheduler.status();
+        assert_eq!(status["active_runs"], 1, "one active run after creation");
+    }
+
+    #[test]
+    fn scheduler_max_concurrent_limits_per_tick() {
+        let store = test_store();
+
+        // Create 3 runs
+        for _ in 0..3 {
+            create_plan_and_run(&store);
+        }
+        let active = store.list_active_workflow_run_ids().unwrap();
+        assert_eq!(active.len(), 3);
+
+        // max_concurrent=2: scheduler tick should process at most 2
+        let config = SchedulerConfig {
+            interval_ms: 50,
+            max_concurrent: 2,
+            lease_timeout_ms: 300_000,
+            executor_type: "noop".to_string(),
+        };
+        let executor = NoopNodeExecutor;
+        let ticks = scheduler_tick(&store, &config, &executor).unwrap();
+        assert!(
+            ticks <= 2,
+            "max_concurrent=2 should limit ticks to at most 2, got {ticks}"
+        );
     }
 }

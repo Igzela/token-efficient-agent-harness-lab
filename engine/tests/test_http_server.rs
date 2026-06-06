@@ -4247,3 +4247,156 @@ async fn axum_tick_with_codex_cli_unavailable_returns_400() {
     let tick_body = response_json(tick_resp).await;
     assert_eq!(tick_body["code"], "cli_not_available");
 }
+
+// ── GA-3: Scheduler status endpoint tests ────────────────────────────
+
+#[tokio::test]
+async fn axum_scheduler_status_returns_enabled_when_scheduler_present() {
+    use engine::scheduler::{SchedulerConfig, WorkflowScheduler};
+    use std::sync::{Arc, Mutex};
+
+    let dir = tempdir().unwrap();
+    let store = LocalProductStore::new(dir.path().join("sched-status.db")).unwrap();
+    let config = SchedulerConfig {
+        interval_ms: 2000,
+        max_concurrent: 4,
+        lease_timeout_ms: 300_000,
+        executor_type: "noop".to_string(),
+    };
+    let mut scheduler = WorkflowScheduler::new(Arc::new(store), config);
+    scheduler.start().unwrap();
+    let scheduler_arc = Arc::new(Mutex::new(scheduler));
+
+    let app = build_axum_router(AxumApiState::new().with_scheduler(scheduler_arc));
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method(Method::GET)
+                .uri("/api/v1/scheduler/status")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = response_json(response).await;
+    let sched = &body["scheduler"];
+    assert_eq!(sched["schema_version"], "scheduler.v1");
+    assert_eq!(sched["running"], true);
+    assert_eq!(sched["config"]["interval_ms"], 2000);
+    assert_eq!(sched["config"]["max_concurrent"], 4);
+    assert_eq!(sched["config"]["lease_timeout_ms"], 300_000);
+    assert_eq!(sched["config"]["executor_type"], "noop");
+    assert_eq!(sched["active_runs"], 0);
+    assert!(sched["started_at"].as_str().is_some());
+}
+
+#[tokio::test]
+async fn axum_scheduler_status_returns_disabled_when_no_scheduler() {
+    let app = build_axum_router(AxumApiState::new());
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method(Method::GET)
+                .uri("/api/v1/scheduler/status")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = response_json(response).await;
+    let sched = &body["scheduler"];
+    assert_eq!(sched["running"], false);
+    assert_eq!(sched["enabled"], false);
+    assert_eq!(
+        sched["message"],
+        "scheduler not enabled (set ACP_ENABLE_SCHEDULER=1)"
+    );
+}
+
+#[tokio::test]
+async fn axum_scheduler_status_reflects_active_runs() {
+    use engine::scheduler::{SchedulerConfig, WorkflowScheduler};
+    use std::sync::{Arc, Mutex};
+
+    let dir = tempdir().unwrap();
+    let store = LocalProductStore::new(dir.path().join("sched-active.db")).unwrap();
+
+    // Create a plan and run before wrapping store in scheduler
+    let plan = store
+        .create_workflow_plan("test task", "test", "actor", |ids, _| {
+            Ok(json!({
+                "schema_version": "read_only_plan.v1",
+                "plan_id": ids.plan_id,
+                "status": "planned_read_only",
+                "workflow_id": ids.workflow_id,
+                "dispatch_id": ids.dispatch_id,
+                "analysis": {"analysis_id": "a-1", "task_domain": "docs"},
+                "graph": {
+                    "schema_version": "workflow_graph.v1",
+                    "workflow_id": ids.workflow_id,
+                    "dispatch_id": ids.dispatch_id,
+                    "status": "decomposed",
+                    "created_at": "2026-06-05T00:00:00Z",
+                    "updated_at": "2026-06-05T00:00:00Z",
+                    "nodes": [{
+                        "schema_version": "workflow_node.v1",
+                        "node_id": "node-a",
+                        "workflow_id": ids.workflow_id,
+                        "task_type": "analysis",
+                        "assigned_agent_id": null,
+                        "status": "pending",
+                        "input_refs": [],
+                        "output_ref": null,
+                        "budget": 0.1,
+                        "cost_incurred": 0.0,
+                        "error": null,
+                        "created_at": "2026-06-05T00:00:00Z",
+                        "started_at": null,
+                        "completed_at": null
+                    }],
+                    "edges": [],
+                },
+                "boundaries": {
+                    "execution_authority": "disabled",
+                    "target_repository_writes": "disabled",
+                    "runtime_workers": "disabled",
+                },
+            }))
+        })
+        .unwrap();
+    let plan_id = plan["plan_id"].as_str().unwrap();
+    store
+        .create_workflow_run_from_plan(plan_id, "actor")
+        .unwrap();
+
+    let store_arc = Arc::new(store);
+    let config = SchedulerConfig {
+        interval_ms: 2000,
+        max_concurrent: 4,
+        lease_timeout_ms: 300_000,
+        executor_type: "noop".to_string(),
+    };
+    let scheduler = WorkflowScheduler::new(store_arc, config);
+    let scheduler_arc = Arc::new(Mutex::new(scheduler));
+
+    let app = build_axum_router(AxumApiState::new().with_scheduler(scheduler_arc));
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method(Method::GET)
+                .uri("/api/v1/scheduler/status")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = response_json(response).await;
+    let sched = &body["scheduler"];
+    assert_eq!(sched["active_runs"], 1, "should reflect the created run");
+}
