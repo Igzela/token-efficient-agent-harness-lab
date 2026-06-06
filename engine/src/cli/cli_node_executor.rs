@@ -150,7 +150,9 @@ impl NodeExecutor for CliNodeExecutor {
                 cmd.arg("-p")
                     .arg(&prompt)
                     .arg("--output-format")
-                    .arg("json");
+                    .arg("json")
+                    .arg("--allowedTools")
+                    .arg("Edit,Write,Bash");
                 if let Some(ref m) = model {
                     cmd.arg("--model").arg(m);
                 }
