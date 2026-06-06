@@ -27,7 +27,7 @@ The current system has supervised workflow execution primitives, but not Claude 
 
 | Need | Existing modules to extend | Current gap |
 | --- | --- | --- |
-| Runtime graph mutation | `engine/src/workflow/dag_manager/`, `engine/src/storage/local_product_store/workflow_runs.rs`, `engine/src/scheduler.rs` | DAG mutation exists as a model capability, but workflow runs do not yet persist or replay runtime `add_node`/`split_node`/`edge_added` mutations. |
+| Runtime graph mutation | `engine/src/workflow/dag_manager/`, `engine/src/storage/local_product_store/workflow_runs.rs`, `engine/src/scheduler.rs` | **DONE (Batch 1):** DAGManager→persistence bridge, mutation events (node_added/removed/status_updated, edge_added/removed/rewired), replay with completed-node protection, batch mutation, import/export round-trip. |
 | Controller loop | `engine/src/scheduler.rs`, `engine/src/orchestration/workflow_engine.rs`, `engine/src/node_executor.rs` | Scheduler ticks ready nodes; no `DynamicWorkflowController` yet owns observe → execute → evaluate → mutate → resume. |
 | Adaptive routing | `engine/src/routing/`, `engine/src/scheduler.rs`, `engine/src/provider/` | Feedback modules are wired, but scheduler feedback is not durable across ticks and still records simplified advisory fields for runtime decisions. |
 | Dynamic decomposition | `engine/src/read_only_planner.rs`, `engine/src/orchestration/task_decomposer.rs`, `engine/src/task_analyzer/` | Decomposition is still rule-based simple/medium/complex graph generation; it does not re-plan from observations or test/quality failures. |

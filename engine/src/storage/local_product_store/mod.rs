@@ -13,6 +13,9 @@ mod supervised_patch;
 mod team;
 mod workflow_runs;
 
+#[cfg(test)]
+mod workflow_runs_mutation_tests;
+
 use rusqlite::{params, Connection};
 use serde_json::{json, Value};
 use std::path::{Path, PathBuf};

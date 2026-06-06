@@ -28,7 +28,7 @@ The responsible coding agent may choose any of the following without asking for 
 
 ## Dynamic Workflow Direction
 
-Current status: **candidate next product track; documented audit only.** This is not implemented yet and does not authorize a new parallel runtime, default-on provider execution, target-repository mutation, hosted deployment, or sandbox/process/container/VM expansion beyond the existing explicit CLI executor path.
+Current status: **Batch 1 COMPLETE (Persisted Graph Mutation Runtime).** Batch 2 (DynamicWorkflowController) is next. Does not authorize a new parallel runtime, default-on provider execution, target-repository mutation, hosted deployment, or sandbox/process/container/VM expansion beyond the existing explicit CLI executor path.
 
 Reference model: Claude Code dynamic workflows move orchestration into a workflow script/runtime that can coordinate many subagents, keep intermediate results outside the main conversation context, run in the background, expose progress, and resume/inspect runs. For this repository, the equivalent should be implemented as a Rust control-plane layer over the existing `workflow_runs`, `scheduler`, `dag_manager`, `workflow_engine`, `node_executor`, `quality`, and `routing` modules rather than a second scheduler or DAG kernel.
 
@@ -38,13 +38,13 @@ Current architecture assessment:
 |---|---|
 | Usability | Local/self-hosted supervised beta is usable: real CLI executor, workspace/capture/export, dashboard, SDK, scheduler, and pilot paths are wired. Hosted production remains partial. |
 | Intelligence | Medium: intelligence comes from explicit CLI executor calls; planner/decomposer remains deterministic and rule-based. |
-| Dynamicity | Medium-low: scheduler executes persisted graphs and records advisory feedback, but does not persist runtime graph mutation, re-plan loops, subagent fan-out, or feedback-driven executor routing. |
+| Dynamicity | Medium-low → Medium: Batch 1 adds persisted graph mutation (add/remove/rewire nodes+edges, replay, no-duplicate-execution). Still missing: controller loop, feedback-driven routing, dynamic decomposition, agent profiles. |
 
 Recommended dynamic-workflow implementation batches:
 
 | Order | Batch | Done When |
 |---|---|---|
-| 1 | Persisted Graph Mutation Runtime | Workflow run storage records `node_added`, `node_split`, `edge_added`, `node_blocked`, `replan_requested`, and `replan_applied` events; replay reconstructs the same graph; tests prove no duplicate node execution after mutation. |
+| 1 | Persisted Graph Mutation Runtime | **DONE** (1125 tests). Storage records `node_added`, `node_removed`, `node_status_updated`, `edge_added`, `edge_removed`, `edge_rewired` events; replay reconstructs graph; completed nodes protected from re-execution; batch mutation via DAGManager; import/export round-trip verified. |
 | 2 | DynamicWorkflowController | A controller owns the loop: observe run state, choose next action, tick executor, evaluate result, mutate graph, pause for approval, or finish. It extends existing `scheduler`/`workflow_runs` and does not create a parallel scheduler. |
 | 3 | Feedback-Driven Routing | Scheduler feedback is persisted across ticks and uses real executor type, task group, success/failure, latency, retry count, quality result, and cost. Later nodes can select executor/model tier from this history instead of hard-coded advisory/noop fields. |
 | 4 | Dynamic Decomposition | Replace fixed simple/medium/complex decomposition with a planner interface that can propose node additions/splits from observations, test failures, quality failures, and user goals. Initial implementation may still use deterministic rules, but the interface must support CLI/provider-backed planners behind explicit gates. |
