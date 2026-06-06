@@ -37,6 +37,9 @@ impl LocalProductStore {
                 "supervised_patch_workspaces",
                 "supervised_patch_artifacts",
                 "scheduler_feedback",
+                "tool_capabilities",
+                "tool_allowlists",
+                "tool_hooks",
             ];
             let mut table_reports = Vec::new();
             for table in &tables {

@@ -2,7 +2,7 @@ use rusqlite::Connection;
 
 use super::LocalProductStore;
 
-pub(super) const CURRENT_SCHEMA_VERSION: i64 = 5;
+pub(super) const CURRENT_SCHEMA_VERSION: i64 = 6;
 
 struct Migration {
     version: i64,
@@ -30,6 +30,10 @@ const MIGRATIONS: &[Migration] = &[
         version: 5,
         description: "add agent_profiles table and profile_id column on workflow_run_nodes",
     },
+    Migration {
+        version: 6,
+        description: "add tool_capabilities, tool_allowlists, and tool_hooks tables",
+    },
 ];
 
 impl LocalProductStore {
@@ -49,6 +53,7 @@ impl LocalProductStore {
                     3 => Self::migrate_v3_add_supervised_patch_tables(conn)?,
                     4 => Self::migrate_v4_add_scheduler_feedback(conn)?,
                     5 => Self::migrate_v5_add_agent_profiles(conn)?,
+                    6 => Self::migrate_v6_add_tool_registry(conn)?,
                     _ => return Err(format!("unknown migration version: {}", migration.version)),
                 }
                 conn.execute_batch(&format!("PRAGMA user_version = {}", migration.version))
@@ -261,6 +266,41 @@ CREATE TABLE IF NOT EXISTS agent_profiles (
         }
 
         Ok(())
+    }
+
+    fn migrate_v6_add_tool_registry(conn: &Connection) -> Result<(), String> {
+        conn.execute_batch(
+            "
+CREATE TABLE IF NOT EXISTS tool_capabilities (
+    tool_name TEXT PRIMARY KEY,
+    description TEXT NOT NULL,
+    input_schema_json TEXT,
+    output_schema_json TEXT,
+    requires_approval INTEGER NOT NULL DEFAULT 0,
+    risk_level TEXT NOT NULL DEFAULT 'low',
+    created_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS tool_allowlists (
+    profile_id TEXT NOT NULL,
+    tool_name TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    PRIMARY KEY (profile_id, tool_name)
+);
+
+CREATE TABLE IF NOT EXISTS tool_hooks (
+    hook_id TEXT PRIMARY KEY,
+    hook_type TEXT NOT NULL,
+    tool_name TEXT,
+    condition_json TEXT,
+    action TEXT NOT NULL,
+    action_config_json TEXT,
+    enabled INTEGER NOT NULL DEFAULT 1,
+    created_at TEXT NOT NULL
+);
+",
+        )
+        .map_err(|e| e.to_string())
     }
 
     pub fn schema_version(&self) -> Result<i64, String> {

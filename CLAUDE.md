@@ -36,9 +36,10 @@ Master document: `docs/dispatch/DISPATCHER_KERNEL_V0_ARCHITECTURE.md`
 - Dynamic Workflow Batch 3 (Feedback-Driven Routing): COMPLETE (1159 Rust tests)
 - Dynamic Workflow Batch 4 (Dynamic Decomposition): COMPLETE (1205 Rust tests)
 - Dynamic Workflow Batch 5 (Agent Profiles): COMPLETE (1193 Rust tests)
+- Dynamic Workflow Batch 6 (Tool Registry): COMPLETE (1205 Rust tests)
 
 **Key Milestones:**
-- 1193 Rust tests pass, 0 failures
+- 1205 Rust tests pass, 0 failures
 - TypeScript strict + readonly lint + build + static export pass
 - `cargo fmt`, `cargo clippy`, handoff guard all pass
 

@@ -13,6 +13,7 @@ mod plans;
 mod provider_audit;
 mod supervised_patch;
 mod team;
+mod tool_registry;
 mod workflow_runs;
 
 #[cfg(test)]
@@ -275,6 +276,34 @@ CREATE TABLE IF NOT EXISTS agent_profiles (
     max_retries INTEGER NOT NULL DEFAULT 3,
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS tool_capabilities (
+    tool_name TEXT PRIMARY KEY,
+    description TEXT NOT NULL,
+    input_schema_json TEXT,
+    output_schema_json TEXT,
+    requires_approval INTEGER NOT NULL DEFAULT 0,
+    risk_level TEXT NOT NULL DEFAULT 'low',
+    created_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS tool_allowlists (
+    profile_id TEXT NOT NULL,
+    tool_name TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    PRIMARY KEY (profile_id, tool_name)
+);
+
+CREATE TABLE IF NOT EXISTS tool_hooks (
+    hook_id TEXT PRIMARY KEY,
+    hook_type TEXT NOT NULL,
+    tool_name TEXT,
+    condition_json TEXT,
+    action TEXT NOT NULL,
+    action_config_json TEXT,
+    enabled INTEGER NOT NULL DEFAULT 1,
+    created_at TEXT NOT NULL
 );
 ";
 

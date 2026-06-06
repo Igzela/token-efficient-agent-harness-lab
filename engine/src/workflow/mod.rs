@@ -13,3 +13,6 @@ pub mod dynamic_decomposer;
 #[cfg(test)]
 mod dynamic_decomposer_tests;
 pub mod graph_operations;
+pub mod tool_registry;
+#[cfg(test)]
+mod tool_registry_tests;
