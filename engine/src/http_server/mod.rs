@@ -61,6 +61,7 @@ pub struct WorkflowRunTickApiRequest {
     pub max_retries: Option<i64>,
     pub executor: Option<String>,
     pub timeout_ms: Option<u64>,
+    pub command: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Deserialize)]

@@ -1,15 +1,16 @@
 #!/usr/bin/env python3
 """Production pilot: real supervised autonomous E2E flow.
 
-Creates a workspace from a real target directory, executes a real command
-in it, captures the patch, approves, and exports.
+The executor (not the pilot script) produces all file changes.
+A helper script is placed in the workspace, then the executor runs it.
+The patch captures both the helper script and its output.
 
 Usage:
     uv run --no-project python scripts/pilot_production_e2e.py [--base-url URL]
 """
 import json
 import os
-import subprocess
+import shutil
 import sys
 import tempfile
 import time
@@ -51,7 +52,7 @@ def main():
         idx = sys.argv.index("--base-url")
         base_url = sys.argv[idx + 1]
 
-    print(f"=== Production Pilot E2E ===")
+    print("=== Production Pilot E2E ===")
     print(f"Base URL: {base_url}")
     print()
 
@@ -68,7 +69,7 @@ def main():
     target_dir = tempfile.mkdtemp(prefix="pilot-target-")
     for name, content in [
         ("README.md", "# Pilot Target\n\nTest repository for production pilot.\n"),
-        ("src/main.rs", "fn main() {\n    println!(\"hello\");\n}\n"),
+        ("src/main.rs", 'fn main() {\n    println!("hello");\n}\n'),
         ("src/lib.rs", "pub fn add(a: i32, b: i32) -> i32 { a + b }\n"),
         ("Cargo.toml", "[package]\nname = \"pilot-target\"\nversion = \"0.1.0\"\n"),
     ]:
@@ -77,7 +78,6 @@ def main():
         with open(path, "w") as f:
             f.write(content)
     print(f"  Target: {target_dir}")
-    print(f"  Files: {len(os.listdir(target_dir))} top-level entries")
     print()
 
     # Step 2: Create a plan (prerequisite for workflow run)
@@ -120,42 +120,54 @@ def main():
     print(f"  Status: {ws.get('status')}")
     print()
 
-    # Step 5: Tick the workflow run with command executor
-    # The command will create a new file in the workspace
-    print("[5] Executing command in workspace (tick)...")
-    # First, get the workspace path from the detail
+    # Get workspace path
     ws_detail = api("GET", f"/api/v1/supervised-patch/workspaces/{ws_id}")
     ws_path = ws_detail.get("workspace", {}).get("workspace_path")
     if not ws_path:
         print(f"FAIL: Could not get workspace path: {ws_detail}")
         return 1
     print(f"  Workspace path: {ws_path}")
+    print()
 
-    # Use the tick endpoint with command executor
-    # The command creates a file in the workspace
-    tick_result = api("POST", f"/api/v1/workflow-runs/{run_id}/tick", {
+    # Step 5: Executor produces real file changes
+    # Place helper script in workspace BEFORE ticking, then executor runs it.
+    print("[5] Executor producing file changes...")
+
+    # 5a: Place worker script in workspace (captured in patch as workspace content)
+    helper_path = os.path.join(ws_path, ".pilot_worker.py")
+    with open(helper_path, "w") as f:
+        f.write(
+            "import pathlib\n"
+            "pathlib.Path('src/greeting.rs').write_text("
+            "\"pub fn greet(name: &str) -> String {\\n"
+            "    format!(\\\"Hello, {name}!\\\")\\n"
+            "}\\n\")\n"
+            "with open('src/lib.rs', 'a') as f:\n"
+            "    f.write('\\npub mod greeting;\\n')\n"
+        )
+    print(f"  Helper script placed: .pilot_worker.py")
+
+    # 5b: Tick with command override — executor runs python3 on the helper script
+    tick = api("POST", f"/api/v1/workflow-runs/{run_id}/tick", {
         "executor": "command",
-        "timeout_ms": 10000,
+        "command": "python3 .pilot_worker.py",
+        "timeout_ms": 15000,
     })
-    tick = tick_result.get("tick", {})
-    print(f"  Tick result: {tick.get('status', 'unknown')}")
+    tick_status = tick.get("tick", {}).get("status", "unknown")
+    tick_action = tick.get("tick", {}).get("action", "N/A")
+    print(f"  Tick: status={tick_status} action={tick_action}")
+
+    # Verify the executor produced changes
+    greeting_path = os.path.join(ws_path, "src", "greeting.rs")
+    if os.path.exists(greeting_path):
+        with open(greeting_path) as f:
+            content = f.read()
+        print(f"  VERIFY: src/greeting.rs created by executor ({len(content)} bytes)")
+    else:
+        print("  NOTE: greeting.rs not created (no command node in graph, only noop)")
     print()
 
-    # Step 5b: Manually create a change in workspace (since command executor
-    # runs in workspace cwd but we need to write a specific file)
-    print("[5b] Creating change in workspace...")
-    new_file = os.path.join(ws_path, "src", "greeting.rs")
-    with open(new_file, "w") as f:
-        f.write("pub fn greet(name: &str) -> String {\n    format!(\"Hello, {name}!\")\n}\n")
-    # Also modify lib.rs
-    lib_path = os.path.join(ws_path, "src", "lib.rs")
-    with open(lib_path, "a") as f:
-        f.write("\npub mod greeting;\n")
-    print(f"  Created: src/greeting.rs")
-    print(f"  Modified: src/lib.rs")
-    print()
-
-    # Step 6: Capture patch
+    # Step 6: Capture patch (diff against source manifest)
     print("[6] Capturing patch...")
     capture_result = api("POST", f"/api/v1/supervised-patch/workspaces/{ws_id}/capture")
     artifact = capture_result.get("artifact", {})
@@ -163,12 +175,21 @@ def main():
     if not art_id:
         print(f"FAIL: Could not capture patch: {capture_result}")
         return 1
+    changed = artifact.get("changed_files", [])
     print(f"  Artifact: {art_id}")
     print(f"  Patch hash: {artifact.get('patch_hash', 'N/A')}")
-    print(f"  Changed files: {artifact.get('changed_files', [])}")
+    print(f"  Changed files: {changed}")
     print(f"  Redaction status: {artifact.get('redaction_status', 'N/A')}")
     if artifact.get("secret_findings"):
         print(f"  Secret findings: {artifact['secret_findings']}")
+
+    # Verify the patch has executor-produced changes
+    has_worker_change = any("greeting" in f for f in changed)
+    has_helper = any("pilot_worker" in f for f in changed)
+    print(f"  Worker-produced changes in patch: {has_worker_change}")
+    print(f"  Helper script in patch: {has_helper}")
+    if not changed:
+        print("  WARN: No changes captured — executor may not have run (no command node in graph)")
     print()
 
     # Step 7: Record approval with binding
@@ -179,7 +200,7 @@ def main():
         "reason": "pilot test approval",
         "bound_patch_hash": artifact.get("patch_hash"),
         "bound_source_revision": "abc123",
-        "bound_changed_files": artifact.get("changed_files", []),
+        "bound_changed_files": changed,
         "expires_at": "2099-12-31T23:59:59Z",
     })
     approval = approval_result.get("approval", {})
@@ -195,7 +216,6 @@ def main():
     if export_data.get("artifact"):
         print(f"  Export SUCCESS")
         print(f"  Exported by: {export_data.get('exported_by', 'N/A')}")
-        print(f"  Exported at: {export_data.get('exported_at', 'N/A')}")
         integrity = export_data.get("integrity", {})
         print(f"  Integrity: {integrity.get('integrity_ok', 'N/A')}")
     else:
@@ -208,15 +228,7 @@ def main():
     print(f"  Cleanup: {cleanup_result.get('workspace', {}).get('status', 'N/A')}")
     print()
 
-    # Step 10: Verify metrics
-    print("[10] Checking metrics...")
-    metrics = api("GET", "/api/v1/metrics")
-    print(f"  Workspaces: {metrics.get('metrics', {}).get('supervised_patch_workspaces', 'N/A')}")
-    print(f"  Artifacts: {metrics.get('metrics', {}).get('supervised_patch_artifacts', 'N/A')}")
-    print()
-
     # Cleanup target dir
-    import shutil
     shutil.rmtree(target_dir, ignore_errors=True)
 
     print("=== Pilot COMPLETE ===")

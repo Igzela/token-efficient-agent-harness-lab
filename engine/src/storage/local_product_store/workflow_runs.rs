@@ -402,6 +402,17 @@ impl LocalProductStore {
         max_retries: i64,
         executor: &dyn crate::node_executor::NodeExecutor,
     ) -> Result<Value, String> {
+        self.tick_with_executor_and_command(run_id, actor, max_retries, executor, None)
+    }
+
+    pub fn tick_with_executor_and_command(
+        &self,
+        run_id: &str,
+        actor: &str,
+        max_retries: i64,
+        executor: &dyn crate::node_executor::NodeExecutor,
+        command_override: Option<&str>,
+    ) -> Result<Value, String> {
         // Phase 1: Lease a ready node (inside SQLite lock)
         let leased = self.with_conn(|conn| {
             ensure_run_exists_locked(conn, run_id)?;
@@ -534,6 +545,12 @@ impl LocalProductStore {
                         if let Some(obj) = node_metadata.as_object_mut() {
                             obj.insert("workspace_path".to_string(), json!(ws_path));
                         }
+                    }
+                }
+                // Inject command override if provided
+                if let Some(cmd) = command_override {
+                    if let Some(obj) = node_metadata.as_object_mut() {
+                        obj.insert("command".to_string(), json!(cmd));
                     }
                 }
                 let input = crate::node_executor::NodeExecutionInput {

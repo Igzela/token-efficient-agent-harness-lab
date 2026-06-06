@@ -204,11 +204,6 @@ fn default_error_code(status: StatusCode) -> &'static str {
 
 pub(crate) fn cors_headers() -> HeaderMap {
     let mut headers = HeaderMap::new();
-    let origin = cors_allowed_origin();
-    headers.insert(
-        header::ACCESS_CONTROL_ALLOW_ORIGIN,
-        HeaderValue::from_str(origin).unwrap_or_else(|_| HeaderValue::from_static("*")),
-    );
     headers.insert(
         header::ACCESS_CONTROL_ALLOW_METHODS,
         HeaderValue::from_static("GET,POST,PUT,DELETE,OPTIONS"),
@@ -220,11 +215,64 @@ pub(crate) fn cors_headers() -> HeaderMap {
     headers
 }
 
-fn cors_allowed_origin() -> &'static str {
-    static CORS_ORIGIN: std::sync::OnceLock<String> = std::sync::OnceLock::new();
-    CORS_ORIGIN.get_or_init(|| {
-        std::env::var("ACP_CORS_ORIGINS").unwrap_or_else(|_| "*".to_string())
+fn cors_allowed_origins() -> &'static Vec<String> {
+    static ORIGINS: std::sync::OnceLock<Vec<String>> = std::sync::OnceLock::new();
+    ORIGINS.get_or_init(|| {
+        std::env::var("ACP_CORS_ORIGINS")
+            .unwrap_or_else(|_| "*".to_string())
+            .split(',')
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+            .collect()
     })
+}
+
+fn matches_origin(request_origin: &str) -> Option<&'static str> {
+    let origins = cors_allowed_origins();
+    if origins.len() == 1 && origins[0] == "*" {
+        return Some("*");
+    }
+    for allowed in origins.iter() {
+        if allowed == request_origin {
+            return Some(allowed.as_str());
+        }
+    }
+    None
+}
+
+pub(crate) async fn cors_layer(request: Request, next: Next) -> Response {
+    let origin_header = request
+        .headers()
+        .get(header::ORIGIN)
+        .and_then(|v| v.to_str().ok())
+        .map(|s| s.to_string());
+    let mut response = next.run(request).await;
+    let methods = HeaderValue::from_static("GET,POST,PUT,DELETE,OPTIONS");
+    let allowed_headers = HeaderValue::from_static("authorization,content-type");
+    response.headers_mut().insert(
+        header::ACCESS_CONTROL_ALLOW_METHODS,
+        methods,
+    );
+    response.headers_mut().insert(
+        header::ACCESS_CONTROL_ALLOW_HEADERS,
+        allowed_headers,
+    );
+    let origin_to_set = if let Some(req_origin) = origin_header {
+        matches_origin(&req_origin).map(|s| s.to_string())
+    } else {
+        let origins = cors_allowed_origins();
+        if origins.len() == 1 && origins[0] == "*" {
+            Some("*".to_string())
+        } else {
+            None
+        }
+    };
+    if let Some(origin_val) = origin_to_set {
+        if let Ok(val) = HeaderValue::from_str(&origin_val) {
+            response.headers_mut().insert(header::ACCESS_CONTROL_ALLOW_ORIGIN, val);
+        }
+    }
+    response
 }
 
 pub(crate) async fn cors_preflight() -> impl IntoResponse {

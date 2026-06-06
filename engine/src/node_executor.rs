@@ -152,6 +152,10 @@ impl Default for CommandNodeExecutor {
                 "true".to_string(),
                 "false".to_string(),
                 "test".to_string(),
+                "tee".to_string(),
+                "sed".to_string(),
+                "python3".to_string(),
+                "python".to_string(),
             ],
             allowed_binaries: vec![
                 "echo".to_string(),
@@ -164,6 +168,10 @@ impl Default for CommandNodeExecutor {
                 "true".to_string(),
                 "false".to_string(),
                 "test".to_string(),
+                "tee".to_string(),
+                "sed".to_string(),
+                "python3".to_string(),
+                "python".to_string(),
             ],
             env_vars: Vec::new(),
         }

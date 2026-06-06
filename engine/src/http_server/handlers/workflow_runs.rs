@@ -251,7 +251,7 @@ pub(crate) async fn api_tick_workflow_run(
         "command" => {
             use crate::node_executor::CommandNodeExecutor;
             let executor = CommandNodeExecutor::default().with_timeout(timeout_ms);
-            match store.tick_with_executor(&run_id, actor, max_retries, &executor) {
+            match store.tick_with_executor_and_command(&run_id, actor, max_retries, &executor, request.command.as_deref()) {
                 Ok(result) => Ok((cors_headers(), Json(json_response("tick", result)))),
                 Err(e) if e.starts_with("workflow run not found:") => Err(not_found()),
                 Err(e) if e.contains("terminal") => Err(ApiError::with_code(

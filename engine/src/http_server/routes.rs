@@ -7,11 +7,12 @@ use std::fs;
 use std::path::{Component, Path, PathBuf};
 
 use super::handlers::*;
-use super::middleware::{cors_preflight, request_id_layer};
+use super::middleware::{cors_layer, cors_preflight, request_id_layer};
 use super::state::AxumApiState;
 
 pub fn build_axum_router(state: AxumApiState) -> Router {
     axum_routes()
+        .layer(axum::middleware::from_fn(cors_layer))
         .layer(axum::middleware::from_fn(request_id_layer))
         .with_state(state)
 }
@@ -22,6 +23,7 @@ pub fn build_axum_router_with_dashboard(
 ) -> Router {
     axum_routes()
         .fallback(serve_dashboard_asset)
+        .layer(axum::middleware::from_fn(cors_layer))
         .layer(axum::middleware::from_fn(request_id_layer))
         .with_state(state.with_dashboard_dir(dashboard_dir))
 }
