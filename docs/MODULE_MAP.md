@@ -33,16 +33,17 @@ The current system has supervised workflow execution primitives, but not Claude 
 | Dynamic decomposition | `engine/src/read_only_planner.rs`, `engine/src/orchestration/task_decomposer.rs`, `engine/src/task_analyzer/` | **DONE (Batch 4):** `Decomposer` trait with `ObservationDecomposer`, `TestFailureDecomposer`, `QualityFailureDecomposer`, `GoalDrivenDecomposer` implementations. DynamicWorkflowController integrates decomposers for observation/test/quality/goal-driven graph proposals. 46 new tests. |
 | Agent profiles / subagent runs | `engine/src/orchestration/agent_role_registry.rs`, `engine/src/orchestration/agent_profiles.rs`, `engine/src/cli/`, `engine/src/node_executor.rs` | **DONE (Batch 5):** Reusable agent profiles (planner, implementer, reviewer, tester, researcher) with role-specific tools, context_budget, workspace_scope. `AgentProfile` struct, `AgentProfileRegistry` with built-in profiles, validation, tool allowlisting, context budget enforcement, workspace scope filtering. `DynamicWorkflowController` exposes `active_profile`. Schema version + migration. |
 | Tool registry and hooks | `engine/src/infrastructure/`, `engine/src/http_server/`, future metadata tables | **DONE (Batch 6):** `ToolRegistry` with capabilities, allowlists, pre/post-execution hooks, MCP-like external tool descriptors. `DynamicWorkflowController` integrates via `tool_registry` field. Schema version + migration. |
+| E2E dynamic workflow trial | All above modules | **DONE (Batch 7):** E2E trial proves broad task → plan → execute → test fails → graph mutates with fix/test nodes → rerun → review/approval → export. Full auditability of mutation events, patch contents, test logs, integrity, approval binding, and cleanup/quarantine. ALL 7 BATCHES COMPLETE. |
 
-Minimum dynamic-workflow acceptance requires a persisted run to change its graph after observing results, then continue execution with replayable audit evidence. Running a fixed workflow graph through CLI executor is supervised execution, not dynamic workflow orchestration.
+Minimum dynamic-workflow acceptance target **ACHIEVED**. A persisted run can change its graph after observing results, then continue execution with replayable audit evidence. Running a fixed workflow graph through CLI executor is supervised execution, not dynamic workflow orchestration — this distinction is now resolved.
 
-Adapter status after Batch 5:
+Adapter status after Batch 7 (all batches complete):
 
 | Source | Target | Purpose | Constraint |
 | --- | --- | --- | --- |
 | `DAGState` | `WorkflowGraph` | Convert approved graph-mutation snapshots into canonical planning records. | Test-first; no execution authority. |
 | `WorkflowGraph` | `DagState` | Feed concurrency scheduling from canonical planning records. | Drop-only view; preserve node ids/status and edge dependencies. |
-| `WorkflowGraph` | persisted app-owned SQLite rows | Store read-only planner state in Batch 3, inert workflow run state in Batch 4, recommendation-only advisory metadata in Batch 5, and agent profile metadata in Batch 5. Batch 6 adds only design-gate docs for future execution boundaries. Batch 7 Slice A adds separate app-owned supervised patch metadata tables, Slice B adds GET-only metadata visibility, Slice C adds SDK read-only visibility, Slice D adds approval-binding design only, and Slice E adds dashboard read-only visibility; none wire workflow graph execution. | App-owned state only; no target repo writes or execution authority. |
+| `WorkflowGraph` | persisted app-owned SQLite rows | Store read-only planner state in Batch 3, inert workflow run state in Batch 4, recommendation-only advisory metadata in Batch 5, and agent profile metadata in Batch 5. Batch 6 adds tool registry metadata. Batch 7 Slice A adds separate app-owned supervised patch metadata tables, Slice B adds GET-only metadata visibility, Slice C adds SDK read-only visibility, Slice D adds approval-binding design only, Slice E adds dashboard read-only visibility, and Slice F adds supervised execution runtime primitives with E2E trial. | App-owned state only; no target repo writes or execution authority. |
 
 ## Rust Engine Modules
 

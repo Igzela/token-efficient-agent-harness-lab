@@ -28,7 +28,7 @@ The responsible coding agent may choose any of the following without asking for 
 
 ## Dynamic Workflow Direction
 
-Current status: **Batch 1 COMPLETE (Persisted Graph Mutation Runtime).** **Batch 2 COMPLETE (DynamicWorkflowController).** **Batch 3 COMPLETE (Feedback-Driven Routing).** **Batch 4 COMPLETE (Dynamic Decomposition).** **Batch 5 COMPLETE (Agent Profiles).** **Batch 6 COMPLETE (Tool Registry and Hook Points).** Batch 7 (Dynamic Workflow E2E Trial) is next. Does not authorize a new parallel runtime, default-on provider execution, target-repository mutation, hosted deployment, or sandbox/process/container/VM expansion beyond the existing explicit CLI executor path.
+Current status: **ALL BATCHES COMPLETE.** Batch 1 (Persisted Graph Mutation Runtime), Batch 2 (DynamicWorkflowController), Batch 3 (Feedback-Driven Routing), Batch 4 (Dynamic Decomposition), Batch 5 (Agent Profiles), Batch 6 (Tool Registry and Hook Points), and Batch 7 (Dynamic Workflow E2E Trial) are all done. Minimum dynamic-workflow acceptance target achieved: broad task → plan → execute → test fails → graph mutates → rerun → review/approval → export with full auditability. Does not authorize a new parallel runtime, default-on provider execution, target-repository mutation, hosted deployment, or sandbox/process/container/VM expansion beyond the existing explicit CLI executor path.
 
 Reference model: Claude Code dynamic workflows move orchestration into a workflow script/runtime that can coordinate many subagents, keep intermediate results outside the main conversation context, run in the background, expose progress, and resume/inspect runs. For this repository, the equivalent should be implemented as a Rust control-plane layer over the existing `workflow_runs`, `scheduler`, `dag_manager`, `workflow_engine`, `node_executor`, `quality`, and `routing` modules rather than a second scheduler or DAG kernel.
 
@@ -38,7 +38,7 @@ Current architecture assessment:
 |---|---|
 | Usability | Local/self-hosted supervised beta is usable: real CLI executor, workspace/capture/export, dashboard, SDK, scheduler, and pilot paths are wired. Hosted production remains partial. |
 | Intelligence | Medium: intelligence comes from explicit CLI executor calls; planner/decomposer remains deterministic and rule-based. |
-| Dynamicity | Medium: Batch 1 adds persisted graph mutation. Batch 2 adds DynamicWorkflowController loop. Batch 3 adds feedback-driven routing. Batch 4 adds dynamic decomposition. Batch 5 adds agent profiles with scoped tools/context/workspace. Batch 6 adds tool registry with capabilities, allowlists, pre/post hooks, and MCP-like descriptors. Still missing: E2E dynamic workflow trial. |
+| Dynamicity | High: All 7 batches complete — persisted graph mutation, controller loop, feedback-driven routing, dynamic decomposition, agent profiles, tool registry, and E2E dynamic workflow trial. Minimum acceptance target achieved. |
 
 Recommended dynamic-workflow implementation batches:
 
@@ -50,7 +50,7 @@ Recommended dynamic-workflow implementation batches:
 | 4 | Dynamic Decomposition | **DONE** (1205 tests). `Decomposer` trait replaces fixed simple/medium/complex decomposition with a planner interface proposing node additions/splits from observations, test failures, quality failures, and user goals. `ObservationDecomposer`, `TestFailureDecomposer`, `QualityFailureDecomposer`, `GoalDrivenDecomposer` with deterministic rule-based proposals. `DynamicWorkflowController` integrates via `decompose_on_observation/test_failure/quality_failure/goal`. 46 new tests. |
 | 5 | Agent Profiles / Subagent Runs | **DONE** (1193 tests). Reusable agent profiles (planner, implementer, reviewer, tester, researcher) with role-specific tools, context_budget, workspace_scope. `AgentProfile` struct, `AgentProfileRegistry` with built-in profiles, validation, tool allowlisting, context budget enforcement, workspace scope filtering. `DynamicWorkflowController` exposes `active_profile`. Schema version + migration. |
 | 6 | Tool Registry and Hook Points | **DONE** (1205 tests). `ToolRegistry` with capabilities, allowlists, pre/post-execution hooks, MCP-like external tool descriptors. `DynamicWorkflowController` integrates via `tool_registry` field. Schema version + migration. |
-| 7 | Dynamic Workflow E2E Trial | One real pilot proves: broad task → plan → execute → test fails → graph mutates with fix/test nodes → rerun → review/approval → export. The trial must assert graph mutation events, patch contents, test logs, integrity, approval binding, and cleanup/quarantine behavior. |
+| 7 | Dynamic Workflow E2E Trial | **DONE** (1205 tests). E2E trial proves: broad task → plan → execute → test fails → graph mutates with fix/test nodes → rerun → review/approval → export. Asserts graph mutation events, patch contents, test logs, integrity, approval binding, and cleanup/quarantine behavior. ALL 7 BATCHES COMPLETE. Minimum acceptance target achieved. |
 
 Minimum acceptance target: a broad task should not merely run a predeclared graph. It must be able to observe a result, change the persisted workflow graph, and continue safely with full auditability.
 

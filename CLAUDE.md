@@ -124,7 +124,7 @@ When you encounter schema ambiguity, interface questions, phase boundary edge ca
 
 - **Framework**: Rust `cargo test` for engine; Python `unittest` for SDK
 - **Run commands**: `cargo test -p engine` (primary); SDK tests in `sdk/python/`
-- **Current count**: 1193 Rust tests, 0 failures
+- **Current count**: 1205 Rust tests, 0 failures
 - **CI**: GitHub Actions on push/PR to main
 - **Test-first**: Write tests alongside implementation
 
