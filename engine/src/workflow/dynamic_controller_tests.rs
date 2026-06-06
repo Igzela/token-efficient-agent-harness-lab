@@ -172,15 +172,12 @@ fn test_controller_tick_executes_ready_node() {
     let mut ctrl = DynamicWorkflowController::new(no_auto_fix_config());
     let executor = NoopNodeExecutor;
 
-    let result = ctrl
-        .tick(&store, &run_id, "test", &executor)
-        .expect("tick");
+    let result = ctrl.tick(&store, &run_id, "test", &executor).expect("tick");
 
     assert!(
-        result
-            .actions
-            .iter()
-            .any(|a| matches!(a, ControllerAction::NodeExecuted { node_id, .. } if node_id == "n1")),
+        result.actions.iter().any(
+            |a| matches!(a, ControllerAction::NodeExecuted { node_id, .. } if node_id == "n1")
+        ),
         "first tick should execute n1"
     );
 
@@ -233,8 +230,12 @@ fn test_controller_tick_returns_no_action_when_no_ready_nodes() {
     let run_id = run.get("run_id").and_then(Value::as_str).unwrap();
 
     // Tick both nodes to completion using the store's tick directly
-    store.tick_with_executor(run_id, "test", 0, &NoopNodeExecutor).unwrap();
-    store.tick_with_executor(run_id, "test", 0, &NoopNodeExecutor).unwrap();
+    store
+        .tick_with_executor(run_id, "test", 0, &NoopNodeExecutor)
+        .unwrap();
+    store
+        .tick_with_executor(run_id, "test", 0, &NoopNodeExecutor)
+        .unwrap();
 
     // Run should now be completed (terminal)
     let mut ctrl = DynamicWorkflowController::new(no_auto_fix_config());
@@ -327,15 +328,16 @@ fn test_controller_fails_run_on_node_failure() {
     // With max_retries=0 passed to tick, the node should fail and the run should
     // transition to failed. The controller uses 0 for max_retries in
     // tick_with_executor_and_command.
-    let result = ctrl.tick(&store, run_id, "test", &fail_executor).expect("tick");
+    let result = ctrl
+        .tick(&store, run_id, "test", &fail_executor)
+        .expect("tick");
 
     // The run should be failed (terminal)
     assert_eq!(result.run_status, "failed");
     assert!(!result.should_continue);
-    assert!(result
-        .actions
-        .iter()
-        .any(|a| matches!(a, ControllerAction::NodeExecuted { node_id, .. } if node_id == "fragile")));
+    assert!(result.actions.iter().any(
+        |a| matches!(a, ControllerAction::NodeExecuted { node_id, .. } if node_id == "fragile")
+    ));
 }
 
 #[test]
@@ -599,7 +601,10 @@ fn test_controller_should_continue_false_when_done() {
 
     // Tick until done (single node -> completes in 1 tick)
     let result = ctrl.tick(&store, &run_id, "test", &executor).expect("tick");
-    assert!(!result.should_continue, "single node run should be done after one tick");
+    assert!(
+        !result.should_continue,
+        "single node run should be done after one tick"
+    );
     assert_eq!(result.run_status, "completed");
 }
 
@@ -688,7 +693,10 @@ fn test_controller_mutation_produces_valid_dag() {
         .map(|n| n.get("node_id").and_then(Value::as_str).unwrap())
         .collect();
     for edge in &edges {
-        let from = edge.get("from_node_id").and_then(Value::as_str).unwrap_or("");
+        let from = edge
+            .get("from_node_id")
+            .and_then(Value::as_str)
+            .unwrap_or("");
         let to = edge.get("to_node_id").and_then(Value::as_str).unwrap_or("");
         if !from.is_empty() {
             assert!(

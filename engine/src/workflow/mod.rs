@@ -6,4 +6,7 @@ pub mod dag_mutations;
 pub mod dynamic_controller;
 #[cfg(test)]
 mod dynamic_controller_tests;
+pub mod dynamic_decomposer;
+#[cfg(test)]
+mod dynamic_decomposer_tests;
 pub mod graph_operations;

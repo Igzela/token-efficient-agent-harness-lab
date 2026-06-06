@@ -2,7 +2,7 @@ use rusqlite::Connection;
 
 use super::LocalProductStore;
 
-pub(super) const CURRENT_SCHEMA_VERSION: i64 = 3;
+pub(super) const CURRENT_SCHEMA_VERSION: i64 = 4;
 
 struct Migration {
     version: i64,
@@ -22,6 +22,10 @@ const MIGRATIONS: &[Migration] = &[
         version: 3,
         description: "add supervised patch metadata tables",
     },
+    Migration {
+        version: 4,
+        description: "add scheduler feedback table for feedback-driven routing",
+    },
 ];
 
 impl LocalProductStore {
@@ -39,6 +43,7 @@ impl LocalProductStore {
                     1 => Self::migrate_v1_add_key_columns(conn)?,
                     2 => Self::migrate_v2_add_workflow_run_tables(conn)?,
                     3 => Self::migrate_v3_add_supervised_patch_tables(conn)?,
+                    4 => Self::migrate_v4_add_scheduler_feedback(conn)?,
                     _ => return Err(format!("unknown migration version: {}", migration.version)),
                 }
                 conn.execute_batch(&format!("PRAGMA user_version = {}", migration.version))
@@ -164,6 +169,33 @@ CREATE TABLE IF NOT EXISTS supervised_patch_artifacts (
 CREATE INDEX IF NOT EXISTS idx_supervised_patch_artifacts_workspace ON supervised_patch_artifacts(workspace_id);
 CREATE INDEX IF NOT EXISTS idx_supervised_patch_artifacts_run ON supervised_patch_artifacts(run_id);
 CREATE INDEX IF NOT EXISTS idx_supervised_patch_artifacts_created ON supervised_patch_artifacts(created_at);
+",
+        )
+        .map_err(|e| e.to_string())
+    }
+
+    fn migrate_v4_add_scheduler_feedback(conn: &Connection) -> Result<(), String> {
+        conn.execute_batch(
+            "
+CREATE TABLE IF NOT EXISTS scheduler_feedback (
+    feedback_id TEXT PRIMARY KEY,
+    run_id TEXT NOT NULL,
+    node_id TEXT,
+    executor_type TEXT NOT NULL,
+    task_group TEXT NOT NULL,
+    task_domain TEXT NOT NULL,
+    task_intent TEXT NOT NULL,
+    success INTEGER NOT NULL DEFAULT 0,
+    latency_ms INTEGER NOT NULL DEFAULT 0,
+    retry_count INTEGER NOT NULL DEFAULT 0,
+    quality_score REAL NOT NULL DEFAULT 0.0,
+    cost REAL NOT NULL DEFAULT 0.0,
+    error_domain TEXT,
+    created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_scheduler_feedback_run ON scheduler_feedback(run_id);
+CREATE INDEX IF NOT EXISTS idx_scheduler_feedback_task_group ON scheduler_feedback(task_group);
+CREATE INDEX IF NOT EXISTS idx_scheduler_feedback_created ON scheduler_feedback(created_at);
 ",
         )
         .map_err(|e| e.to_string())

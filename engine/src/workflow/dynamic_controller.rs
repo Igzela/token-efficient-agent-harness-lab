@@ -5,6 +5,10 @@ use serde_json::{json, Value};
 use crate::node_executor::NodeExecutor;
 use crate::storage::local_product_store::LocalProductStore;
 use crate::workflow::dag_manager::types::DAGMutationProposal;
+use crate::workflow::dynamic_decomposer::{
+    node_proposals_to_dag_mutations, Decomposer, DecompositionContext, DecompositionTrigger,
+    RuleBasedDecomposer,
+};
 
 // ---------------------------------------------------------------------------
 // Configuration
@@ -16,6 +20,7 @@ pub struct DynamicControllerConfig {
     pub max_mutations_per_run: u64,
     pub approval_required_for_mutation: bool,
     pub auto_fix_on_failure: bool,
+    pub record_feedback: bool,
 }
 
 impl Default for DynamicControllerConfig {
@@ -25,6 +30,7 @@ impl Default for DynamicControllerConfig {
             max_mutations_per_run: 20,
             approval_required_for_mutation: false,
             auto_fix_on_failure: true,
+            record_feedback: true,
         }
     }
 }
@@ -70,6 +76,7 @@ pub struct ControllerTickResult {
     pub run_status: String,
     pub mutations_applied: u64,
     pub should_continue: bool,
+    pub suggested_executor_type: Option<String>,
 }
 
 // ---------------------------------------------------------------------------
@@ -80,6 +87,7 @@ pub struct DynamicWorkflowController {
     config: DynamicControllerConfig,
     ticks_executed: u64,
     mutations_applied_total: u64,
+    decomposer: Box<dyn Decomposer>,
 }
 
 impl DynamicWorkflowController {
@@ -88,7 +96,13 @@ impl DynamicWorkflowController {
             config,
             ticks_executed: 0,
             mutations_applied_total: 0,
+            decomposer: Box::new(RuleBasedDecomposer::new()),
         }
+    }
+
+    pub fn with_decomposer(mut self, decomposer: Box<dyn Decomposer>) -> Self {
+        self.decomposer = decomposer;
+        self
     }
 
     pub fn ticks_executed(&self) -> u64 {
@@ -128,6 +142,7 @@ impl DynamicWorkflowController {
                 run_status: status,
                 mutations_applied: 0,
                 should_continue: false,
+                suggested_executor_type: None,
             });
         }
 
@@ -139,6 +154,7 @@ impl DynamicWorkflowController {
                 run_status: status,
                 mutations_applied: 0,
                 should_continue: false,
+                suggested_executor_type: None,
             });
         }
 
@@ -149,7 +165,7 @@ impl DynamicWorkflowController {
             .and_then(Value::as_array)
             .cloned()
             .unwrap_or_default();
-        let edges = run
+        let _edges = run
             .get("edges")
             .and_then(Value::as_array)
             .cloned()
@@ -168,7 +184,7 @@ impl DynamicWorkflowController {
         let mut actions: Vec<ControllerAction> = Vec::new();
         let mut mutations_this_tick: u64 = 0;
 
-        // --- Phase 1: auto-fix failed nodes ---
+        // --- Phase 1: auto-fix failed nodes via decomposer ---
         if self.config.auto_fix_on_failure {
             for failed in &failed_nodes {
                 if self.mutations_applied_total >= self.config.max_mutations_per_run {
@@ -183,18 +199,37 @@ impl DynamicWorkflowController {
                     continue;
                 }
 
-                // Skip if a fix node already exists for this failure
-                let fix_id = format!("fix-{}", failed_id);
-                if nodes
+                let error_msg = failed
+                    .get("result")
+                    .and_then(|r| r.get("error_message"))
+                    .and_then(Value::as_str)
+                    .unwrap_or("unknown error")
+                    .to_string();
+
+                let node_ids: Vec<String> = nodes
                     .iter()
-                    .any(|n| n.get("node_id").and_then(Value::as_str) == Some(&fix_id))
-                {
+                    .filter_map(|n| n.get("node_id").and_then(Value::as_str).map(String::from))
+                    .collect();
+
+                let decomp_context = DecompositionContext {
+                    run_id: run_id.to_string(),
+                    existing_nodes: node_ids,
+                    existing_edges: Vec::new(),
+                    feedback_stats: None,
+                    max_nodes: 1000,
+                };
+
+                let decomp_result = self.decomposer.decompose(
+                    DecompositionTrigger::TestFailure {
+                        node_id: failed_id.clone(),
+                        error: error_msg,
+                    },
+                    &decomp_context,
+                );
+
+                if decomp_result.proposals.is_empty() {
                     continue;
                 }
-
-                let test_id = format!("test-{}", fix_id);
-
-                let proposals = build_auto_fix_proposals(run_id, &failed_id, &fix_id, &test_id);
 
                 if self.config.approval_required_for_mutation {
                     actions.push(ControllerAction::ApprovalRequested {
@@ -204,7 +239,10 @@ impl DynamicWorkflowController {
                     continue;
                 }
 
-                let results = store.apply_dag_mutations_batch(run_id, &proposals, actor)?;
+                let dag_proposals =
+                    node_proposals_to_dag_mutations(run_id, &decomp_result.proposals);
+
+                let results = store.apply_dag_mutations_batch(run_id, &dag_proposals, actor)?;
                 let applied_count = results
                     .iter()
                     .filter(|r| r.get("applied").and_then(Value::as_bool).unwrap_or(false))
@@ -221,7 +259,7 @@ impl DynamicWorkflowController {
             }
         }
 
-        // --- Phase 2: quality check completed nodes ---
+        // --- Phase 2: quality check completed nodes via decomposer ---
         for completed in &completed_nodes {
             if self.mutations_applied_total >= self.config.max_mutations_per_run {
                 break;
@@ -236,14 +274,36 @@ impl DynamicWorkflowController {
             }
 
             if !quality_passes(completed) {
-                let review_id = format!("review-{}", node_id);
-                if nodes
+                let quality_reason = completed
+                    .get("result")
+                    .and_then(|r| r.get("quality"))
+                    .and_then(|q| q.get("reason"))
+                    .and_then(Value::as_str)
+                    .unwrap_or("quality check failed")
+                    .to_string();
+
+                let node_ids: Vec<String> = nodes
                     .iter()
-                    .any(|n| n.get("node_id").and_then(Value::as_str) == Some(&review_id))
-                    || edges
-                        .iter()
-                        .any(|e| e.get("to_node_id").and_then(Value::as_str) == Some(&review_id))
-                {
+                    .filter_map(|n| n.get("node_id").and_then(Value::as_str).map(String::from))
+                    .collect();
+
+                let decomp_context = DecompositionContext {
+                    run_id: run_id.to_string(),
+                    existing_nodes: node_ids,
+                    existing_edges: Vec::new(),
+                    feedback_stats: None,
+                    max_nodes: 1000,
+                };
+
+                let decomp_result = self.decomposer.decompose(
+                    DecompositionTrigger::QualityFailure {
+                        node_id: node_id.clone(),
+                        reason: quality_reason,
+                    },
+                    &decomp_context,
+                );
+
+                if decomp_result.proposals.is_empty() {
                     continue;
                 }
 
@@ -258,8 +318,10 @@ impl DynamicWorkflowController {
                     continue;
                 }
 
-                let proposals = build_quality_review_proposals(run_id, &node_id, &review_id);
-                let results = store.apply_dag_mutations_batch(run_id, &proposals, actor)?;
+                let dag_proposals =
+                    node_proposals_to_dag_mutations(run_id, &decomp_result.proposals);
+
+                let results = store.apply_dag_mutations_batch(run_id, &dag_proposals, actor)?;
                 let applied_count = results
                     .iter()
                     .filter(|r| r.get("applied").and_then(Value::as_bool).unwrap_or(false))
@@ -300,6 +362,7 @@ impl DynamicWorkflowController {
                     run_status: status,
                     mutations_applied: mutations_this_tick,
                     should_continue: false,
+                    suggested_executor_type: None,
                 });
             }
         }
@@ -405,11 +468,27 @@ impl DynamicWorkflowController {
 
         let should_continue = !is_terminal(&fresh_status) && (has_pending || has_running);
 
+        // Query feedback store for executor suggestion
+        let suggested_executor_type = if self.config.record_feedback {
+            // Get the first node's task_type to build a task_group for the suggestion
+            let first_node_task = fresh_run
+                .get("nodes")
+                .and_then(Value::as_array)
+                .and_then(|ns| ns.first())
+                .and_then(|n| n.get("task_type").and_then(Value::as_str))
+                .unwrap_or("unknown");
+            let task_group = crate::routing::schemas::make_task_group(first_node_task, "execute");
+            store.suggest_executor_type(&task_group)
+        } else {
+            None
+        };
+
         Ok(ControllerTickResult {
             actions,
             run_status: fresh_status,
             mutations_applied: mutations_this_tick,
             should_continue,
+            suggested_executor_type,
         })
     }
 }

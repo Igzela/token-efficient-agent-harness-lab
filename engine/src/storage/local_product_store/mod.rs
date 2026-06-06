@@ -4,6 +4,7 @@ mod config;
 mod costs;
 mod dispatch;
 mod export_import;
+pub mod feedback;
 mod integrity;
 mod keys;
 mod migrations;
@@ -240,6 +241,26 @@ CREATE TABLE IF NOT EXISTS supervised_patch_artifacts (
 CREATE INDEX IF NOT EXISTS idx_supervised_patch_artifacts_workspace ON supervised_patch_artifacts(workspace_id);
 CREATE INDEX IF NOT EXISTS idx_supervised_patch_artifacts_run ON supervised_patch_artifacts(run_id);
 CREATE INDEX IF NOT EXISTS idx_supervised_patch_artifacts_created ON supervised_patch_artifacts(created_at);
+
+CREATE TABLE IF NOT EXISTS scheduler_feedback (
+    feedback_id TEXT PRIMARY KEY,
+    run_id TEXT NOT NULL,
+    node_id TEXT,
+    executor_type TEXT NOT NULL,
+    task_group TEXT NOT NULL,
+    task_domain TEXT NOT NULL,
+    task_intent TEXT NOT NULL,
+    success INTEGER NOT NULL DEFAULT 0,
+    latency_ms INTEGER NOT NULL DEFAULT 0,
+    retry_count INTEGER NOT NULL DEFAULT 0,
+    quality_score REAL NOT NULL DEFAULT 0.0,
+    cost REAL NOT NULL DEFAULT 0.0,
+    error_domain TEXT,
+    created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_scheduler_feedback_run ON scheduler_feedback(run_id);
+CREATE INDEX IF NOT EXISTS idx_scheduler_feedback_task_group ON scheduler_feedback(task_group);
+CREATE INDEX IF NOT EXISTS idx_scheduler_feedback_created ON scheduler_feedback(created_at);
 ";
 
 pub struct LocalProductStore {

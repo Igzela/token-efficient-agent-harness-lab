@@ -574,7 +574,7 @@ impl LocalProductStore {
                 let output = executor.execute_node(&input);
 
                 // Phase 3: Record result (inside SQLite lock)
-                self.with_conn(|conn| {
+                let tick_result = self.with_conn(|conn| {
                     let now = self.now();
                     let final_status = &output.status;
                     let should_retry = final_status == "failed"
@@ -699,7 +699,29 @@ impl LocalProductStore {
                         "result": output.to_value(),
                         "run": run,
                     }))
-                })
+                })?;
+
+                // Record scheduler feedback for feedback-driven routing
+                let task_group =
+                    crate::routing::schemas::make_task_group(&input.task_type, "execute");
+                let quality_score = output
+                    .estimated_cost
+                    .map(|c| if c > 0.0 { 1.0 / c } else { 1.0 })
+                    .unwrap_or(1.0);
+                let _ = self.insert_scheduler_feedback(
+                    run_id,
+                    Some(&node_id),
+                    &output.executor_type,
+                    &task_group,
+                    output.status == "completed",
+                    output.latency_ms.unwrap_or(0),
+                    attempt,
+                    quality_score,
+                    output.estimated_cost.unwrap_or(0.0),
+                    output.error_domain.as_deref(),
+                );
+
+                Ok(tick_result)
             }
         }
     }

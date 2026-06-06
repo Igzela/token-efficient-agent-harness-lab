@@ -32,9 +32,12 @@ Master document: `docs/dispatch/DISPATCHER_KERNEL_V0_ARCHITECTURE.md`
 - Supervised Autonomous Beta Planning Batch 3-7: IMPLEMENTED
 - Dormant Module Adaptation Track: 4 phases COMPLETE
 - Dynamic Workflow Batch 1 (Persisted Graph Mutation Runtime): COMPLETE (1125 Rust tests)
+- Dynamic Workflow Batch 2 (DynamicWorkflowController): COMPLETE (1149 Rust tests)
+- Dynamic Workflow Batch 3 (Feedback-Driven Routing): COMPLETE (1159 Rust tests)
+- Dynamic Workflow Batch 4 (Dynamic Decomposition): COMPLETE (1205 Rust tests)
 
 **Key Milestones:**
-- 1125 Rust tests pass, 0 failures
+- 1205 Rust tests pass, 0 failures
 - TypeScript strict + readonly lint + build + static export pass
 - `cargo fmt`, `cargo clippy`, handoff guard all pass
 
@@ -119,7 +122,7 @@ When you encounter schema ambiguity, interface questions, phase boundary edge ca
 
 - **Framework**: Rust `cargo test` for engine; Python `unittest` for SDK
 - **Run commands**: `cargo test -p engine` (primary); SDK tests in `sdk/python/`
-- **Current count**: 1149 Rust tests, 0 failures
+- **Current count**: 1205 Rust tests, 0 failures
 - **CI**: GitHub Actions on push/PR to main
 - **Test-first**: Write tests alongside implementation
 
