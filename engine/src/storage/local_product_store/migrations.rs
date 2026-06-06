@@ -2,7 +2,7 @@ use rusqlite::Connection;
 
 use super::LocalProductStore;
 
-pub(super) const CURRENT_SCHEMA_VERSION: i64 = 4;
+pub(super) const CURRENT_SCHEMA_VERSION: i64 = 5;
 
 struct Migration {
     version: i64,
@@ -26,6 +26,10 @@ const MIGRATIONS: &[Migration] = &[
         version: 4,
         description: "add scheduler feedback table for feedback-driven routing",
     },
+    Migration {
+        version: 5,
+        description: "add agent_profiles table and profile_id column on workflow_run_nodes",
+    },
 ];
 
 impl LocalProductStore {
@@ -44,6 +48,7 @@ impl LocalProductStore {
                     2 => Self::migrate_v2_add_workflow_run_tables(conn)?,
                     3 => Self::migrate_v3_add_supervised_patch_tables(conn)?,
                     4 => Self::migrate_v4_add_scheduler_feedback(conn)?,
+                    5 => Self::migrate_v5_add_agent_profiles(conn)?,
                     _ => return Err(format!("unknown migration version: {}", migration.version)),
                 }
                 conn.execute_batch(&format!("PRAGMA user_version = {}", migration.version))
@@ -218,6 +223,43 @@ CREATE INDEX IF NOT EXISTS idx_scheduler_feedback_created ON scheduler_feedback(
             )
             .map_err(|e| e.to_string())?;
         }
+        Ok(())
+    }
+
+    fn migrate_v5_add_agent_profiles(conn: &Connection) -> Result<(), String> {
+        conn.execute_batch(
+            "
+CREATE TABLE IF NOT EXISTS agent_profiles (
+    profile_id TEXT PRIMARY KEY,
+    role TEXT NOT NULL,
+    tools_json TEXT NOT NULL,
+    model_hint TEXT,
+    context_budget_tokens INTEGER,
+    workspace_scope TEXT NOT NULL DEFAULT 'task',
+    executor_preference TEXT,
+    max_retries INTEGER NOT NULL DEFAULT 3,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+",
+        )
+        .map_err(|e| e.to_string())?;
+
+        // Add profile_id column to workflow_run_nodes if missing
+        let columns: Vec<String> = {
+            let mut stmt = conn
+                .prepare("PRAGMA table_info(workflow_run_nodes)")
+                .map_err(|e| e.to_string())?;
+            let rows = stmt
+                .query_map([], |row| row.get::<_, String>(1))
+                .map_err(|e| e.to_string())?;
+            rows.filter_map(|r| r.ok()).collect()
+        };
+        if !columns.contains(&"profile_id".to_string()) {
+            conn.execute_batch("ALTER TABLE workflow_run_nodes ADD COLUMN profile_id TEXT;")
+                .map_err(|e| e.to_string())?;
+        }
+
         Ok(())
     }
 

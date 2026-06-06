@@ -1,3 +1,6 @@
+pub mod agent_profiles;
+#[cfg(test)]
+mod agent_profiles_tests;
 pub mod checkpoint;
 pub mod concurrency;
 pub mod context_pack;

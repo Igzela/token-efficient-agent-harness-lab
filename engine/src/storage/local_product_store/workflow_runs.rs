@@ -1431,11 +1431,17 @@ impl LocalProductStore {
                         .get("node_id")
                         .cloned()
                         .map(|nid| {
-                            json!({
+                            let mut n = json!({
                                 "node_id": nid,
-                                "task_type": proposal.payload.get("node_type").and_then(Value::as_str).unwrap_or("task"),
+                                "task_type": proposal.payload.get("task_type").or_else(|| proposal.payload.get("node_type")).and_then(Value::as_str).unwrap_or("task"),
                                 "status": proposal.payload.get("status").and_then(Value::as_str).unwrap_or("pending"),
-                            })
+                            });
+                            if let Some(pid) = proposal.payload.get("profile_id") {
+                                if let Some(obj) = n.as_object_mut() {
+                                    obj.insert("profile_id".to_string(), pid.clone());
+                                }
+                            }
+                            n
                         })
                         .unwrap_or(Value::Null);
                     self.insert_workflow_node(run_id, &node_value, actor, &proposal.reason)
@@ -1694,11 +1700,12 @@ fn insert_workflow_run_node_locked(
         .get("status")
         .and_then(Value::as_str)
         .unwrap_or("pending");
+    let profile_id = node.get("profile_id").and_then(Value::as_str);
     conn.execute(
         "INSERT OR REPLACE INTO workflow_run_nodes
          (run_id, node_id, task_type, status, node_json,
-          started_at, completed_at, attempt_count, timeout_ms, blocked_reason, leased_at)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+          started_at, completed_at, attempt_count, timeout_ms, blocked_reason, leased_at, profile_id)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
         params![
             run_id,
             node_id,
@@ -1713,6 +1720,7 @@ fn insert_workflow_run_node_locked(
             node.get("timeout_ms").and_then(Value::as_i64),
             node.get("blocked_reason").and_then(Value::as_str),
             node.get("leased_at").and_then(Value::as_str),
+            profile_id,
         ],
     )
     .map_err(|e| e.to_string())?;
@@ -2016,7 +2024,7 @@ fn workflow_run_nodes_locked(
     let mut stmt = conn
         .prepare(
             "SELECT node_json, status, started_at, completed_at, attempt_count,
-                    timeout_ms, blocked_reason, leased_at
+                    timeout_ms, blocked_reason, leased_at, profile_id
              FROM workflow_run_nodes WHERE run_id = ?1 ORDER BY rowid ASC",
         )
         .map_err(|e| e.to_string())?;
@@ -2041,6 +2049,9 @@ fn workflow_run_nodes_locked(
                 }
                 if let Ok(Some(v)) = row.get::<_, Option<String>>(7) {
                     obj.insert("leased_at".to_string(), json!(v));
+                }
+                if let Ok(Some(v)) = row.get::<_, Option<String>>(8) {
+                    obj.insert("profile_id".to_string(), json!(v));
                 }
             }
             Ok(node)

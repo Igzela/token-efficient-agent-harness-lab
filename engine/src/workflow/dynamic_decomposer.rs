@@ -2,6 +2,7 @@ use std::collections::HashMap;
 
 use serde_json::{json, Value};
 
+use crate::workflow::agent_profiles::task_type_to_profile_id;
 use crate::workflow::dag_manager::types::DAGMutationProposal;
 
 // ---------------------------------------------------------------------------
@@ -29,6 +30,7 @@ pub struct NodeProposal {
     pub depends_on: Vec<String>,
     pub reason: String,
     pub priority: u8,
+    pub profile_id: Option<String>,
 }
 
 // ---------------------------------------------------------------------------
@@ -139,6 +141,7 @@ fn decompose_initial_plan(
                 depends_on: Vec::new(),
                 reason: "simple single-step execution".to_string(),
                 priority: 10,
+                profile_id: None,
             }],
             strategy: "simple".to_string(),
             metadata: json!({"complexity": "simple"}),
@@ -154,6 +157,7 @@ fn decompose_initial_plan(
                     depends_on: Vec::new(),
                     reason: "analyze task requirements".to_string(),
                     priority: 10,
+                    profile_id: None,
                 },
                 NodeProposal {
                     node_id: "execute-1".to_string(),
@@ -162,6 +166,7 @@ fn decompose_initial_plan(
                     depends_on: vec!["analyze-1".to_string()],
                     reason: "execute the main task".to_string(),
                     priority: 8,
+                    profile_id: None,
                 },
                 NodeProposal {
                     node_id: "verify-1".to_string(),
@@ -170,6 +175,7 @@ fn decompose_initial_plan(
                     depends_on: vec!["execute-1".to_string()],
                     reason: "verify execution results".to_string(),
                     priority: 6,
+                    profile_id: None,
                 },
             ],
             strategy: "medium".to_string(),
@@ -186,6 +192,7 @@ fn decompose_initial_plan(
                     depends_on: Vec::new(),
                     reason: "create execution plan".to_string(),
                     priority: 10,
+                    profile_id: None,
                 },
                 NodeProposal {
                     node_id: "analyze-1".to_string(),
@@ -194,6 +201,7 @@ fn decompose_initial_plan(
                     depends_on: vec!["plan-1".to_string()],
                     reason: "analyze requirements in detail".to_string(),
                     priority: 9,
+                    profile_id: None,
                 },
                 NodeProposal {
                     node_id: "execute-1".to_string(),
@@ -202,6 +210,7 @@ fn decompose_initial_plan(
                     depends_on: vec!["analyze-1".to_string()],
                     reason: "execute the main task".to_string(),
                     priority: 8,
+                    profile_id: None,
                 },
                 NodeProposal {
                     node_id: "review-1".to_string(),
@@ -210,6 +219,7 @@ fn decompose_initial_plan(
                     depends_on: vec!["execute-1".to_string()],
                     reason: "review execution quality".to_string(),
                     priority: 7,
+                    profile_id: None,
                 },
                 NodeProposal {
                     node_id: "verify-1".to_string(),
@@ -218,6 +228,7 @@ fn decompose_initial_plan(
                     depends_on: vec!["review-1".to_string()],
                     reason: "final verification".to_string(),
                     priority: 6,
+                    profile_id: None,
                 },
             ],
             strategy: "complex".to_string(),
@@ -257,6 +268,7 @@ fn decompose_test_failure(
             depends_on: vec![node_id.to_string()],
             reason: format!("fix failed node {}: {}", node_id, truncate(error, 80)),
             priority: 10,
+            profile_id: None,
         });
     }
 
@@ -270,6 +282,7 @@ fn decompose_test_failure(
             depends_on: vec![fix_id],
             reason: format!("verify fix for failed node {}", node_id),
             priority: 9,
+            profile_id: None,
         });
     }
 
@@ -319,6 +332,7 @@ fn decompose_quality_failure(
                 truncate(reason, 80)
             ),
             priority: 9,
+            profile_id: None,
         }],
         strategy: "quality_review".to_string(),
         metadata: json!({"source_node": node_id, "reason": truncate(reason, 200)}),
@@ -354,6 +368,7 @@ fn decompose_observation(observation: &str, context: &DecompositionContext) -> D
                     truncate(observation, 80)
                 ),
                 priority: 7,
+                profile_id: None,
             }],
             strategy: "alternative_executor".to_string(),
             metadata: json!({"observation": truncate(observation, 200)}),
@@ -394,6 +409,7 @@ fn decompose_user_goal(goal: &str, context: &DecompositionContext) -> Decomposit
         depends_on: Vec::new(),
         reason: format!("analyze user goal: {}", truncate(goal, 80)),
         priority: 10,
+        profile_id: None,
     });
     proposals.push(NodeProposal {
         node_id: execute_id.clone(),
@@ -402,6 +418,7 @@ fn decompose_user_goal(goal: &str, context: &DecompositionContext) -> Decomposit
         depends_on: vec![analyze_id],
         reason: format!("execute user goal: {}", truncate(goal, 80)),
         priority: 9,
+        profile_id: None,
     });
     proposals.push(NodeProposal {
         node_id: verify_id,
@@ -410,12 +427,24 @@ fn decompose_user_goal(goal: &str, context: &DecompositionContext) -> Decomposit
         depends_on: vec![execute_id],
         reason: format!("verify user goal: {}", truncate(goal, 80)),
         priority: 8,
+        profile_id: None,
     });
 
     DecompositionResult {
         proposals,
         strategy: "user_goal".to_string(),
         metadata: json!({"goal": truncate(goal, 200)}),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Profile resolution
+// ---------------------------------------------------------------------------
+
+/// Resolve the profile_id for a proposal if not already set.
+fn resolve_profile_id(proposal: &mut NodeProposal) {
+    if proposal.profile_id.is_none() {
+        proposal.profile_id = Some(task_type_to_profile_id(&proposal.task_type).0);
     }
 }
 
@@ -430,36 +459,42 @@ pub fn node_proposals_to_dag_mutations(
     let mut mutations = Vec::new();
 
     for proposal in proposals {
+        let mut resolved = proposal.clone();
+        resolve_profile_id(&mut resolved);
+
         let mut node_payload = HashMap::new();
-        node_payload.insert("node_id".to_string(), json!(proposal.node_id));
-        node_payload.insert("node_type".to_string(), json!(proposal.node_type));
-        node_payload.insert("task_type".to_string(), json!(proposal.task_type));
+        node_payload.insert("node_id".to_string(), json!(resolved.node_id));
+        node_payload.insert("node_type".to_string(), json!(resolved.node_type));
+        node_payload.insert("task_type".to_string(), json!(resolved.task_type));
         node_payload.insert("status".to_string(), json!("pending"));
+        if let Some(ref pid) = resolved.profile_id {
+            node_payload.insert("profile_id".to_string(), json!(pid));
+        }
 
         mutations.push(DAGMutationProposal {
-            proposal_id: format!("decompose_node_{}", proposal.node_id),
+            proposal_id: format!("decompose_node_{}", resolved.node_id),
             dag_id: run_id.to_string(),
             mutation_type: "add_node".to_string(),
             payload: node_payload,
-            reason: proposal.reason.clone(),
+            reason: resolved.reason.clone(),
             ..Default::default()
         });
 
-        for dep in &proposal.depends_on {
+        for dep in &resolved.depends_on {
             let mut edge_payload = HashMap::new();
             edge_payload.insert(
                 "edge_id".to_string(),
-                json!(format!("edge-{}-{}", dep, proposal.node_id)),
+                json!(format!("edge-{}-{}", dep, resolved.node_id)),
             );
             edge_payload.insert("from_node".to_string(), json!(dep));
-            edge_payload.insert("to_node".to_string(), json!(proposal.node_id));
+            edge_payload.insert("to_node".to_string(), json!(resolved.node_id));
 
             mutations.push(DAGMutationProposal {
-                proposal_id: format!("decompose_edge_{}_{}", dep, proposal.node_id),
+                proposal_id: format!("decompose_edge_{}_{}", dep, resolved.node_id),
                 dag_id: run_id.to_string(),
                 mutation_type: "add_edge".to_string(),
                 payload: edge_payload,
-                reason: format!("dependency: {} -> {}", dep, proposal.node_id),
+                reason: format!("dependency: {} -> {}", dep, resolved.node_id),
                 ..Default::default()
             });
         }
@@ -685,6 +720,7 @@ mod tests {
                 depends_on: vec!["n1".to_string()],
                 reason: "fix failed node".to_string(),
                 priority: 10,
+                profile_id: None,
             },
             NodeProposal {
                 node_id: "test-fix-n1".to_string(),
@@ -693,6 +729,7 @@ mod tests {
                 depends_on: vec!["fix-n1".to_string()],
                 reason: "verify fix".to_string(),
                 priority: 9,
+                profile_id: None,
             },
         ];
 

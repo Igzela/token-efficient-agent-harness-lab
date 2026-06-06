@@ -1,3 +1,4 @@
+mod agent_profiles;
 mod audit;
 mod boundaries;
 mod config;
@@ -160,6 +161,7 @@ CREATE TABLE IF NOT EXISTS workflow_run_nodes (
     timeout_ms INTEGER,
     blocked_reason TEXT,
     leased_at TEXT,
+    profile_id TEXT,
     PRIMARY KEY (run_id, node_id)
 );
 CREATE INDEX IF NOT EXISTS idx_workflow_run_nodes_run ON workflow_run_nodes(run_id);
@@ -261,6 +263,19 @@ CREATE TABLE IF NOT EXISTS scheduler_feedback (
 CREATE INDEX IF NOT EXISTS idx_scheduler_feedback_run ON scheduler_feedback(run_id);
 CREATE INDEX IF NOT EXISTS idx_scheduler_feedback_task_group ON scheduler_feedback(task_group);
 CREATE INDEX IF NOT EXISTS idx_scheduler_feedback_created ON scheduler_feedback(created_at);
+
+CREATE TABLE IF NOT EXISTS agent_profiles (
+    profile_id TEXT PRIMARY KEY,
+    role TEXT NOT NULL,
+    tools_json TEXT NOT NULL,
+    model_hint TEXT,
+    context_budget_tokens INTEGER,
+    workspace_scope TEXT NOT NULL DEFAULT 'task',
+    executor_preference TEXT,
+    max_retries INTEGER NOT NULL DEFAULT 3,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
 ";
 
 pub struct LocalProductStore {
