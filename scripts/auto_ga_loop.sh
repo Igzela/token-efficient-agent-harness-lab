@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
-# auto_ga_loop.sh — Autonomous GA hardening batch loop
+# auto_ga_loop.sh — Autonomous GA hardening batch loop with ultracode
 #
 # Reads NEXT_DECISION.md to find the next incomplete GA batch,
-# launches a Claude Code session to implement it, waits for CI,
-# then repeats until all batches are done or one fails.
+# launches a Claude Code session in ultracode mode (multi-agent workflow),
+# waits for CI to go green, then repeats until all batches are done or one fails.
 #
 # Usage:
-#   ./scripts/auto_ga_loop.sh [--max-batches N] [--skip-ci-wait]
+#   ./scripts/auto_ga_loop.sh [--max-batches N]
 #
 # Requirements:
 #   - claude CLI installed and authenticated
@@ -17,12 +17,10 @@ set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 MAX_BATCHES="${MAX_BATCHES:-7}"
-SKIP_CI_WAIT=false
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --max-batches) MAX_BATCHES="$2"; shift 2 ;;
-        --skip-ci-wait) SKIP_CI_WAIT=true; shift ;;
         *) echo "Unknown option: $1"; exit 1 ;;
     esac
 done
@@ -34,6 +32,34 @@ if [[ -n "$(git status --porcelain)" ]]; then
     echo "ERROR: Working tree is not clean. Commit or stash changes first."
     exit 1
 fi
+
+wait_for_ci_green() {
+    local max_wait=600  # 10 minutes max
+    local elapsed=0
+
+    echo "  Waiting for CI to start..."
+    sleep 15  # give CI time to trigger
+
+    while [[ $elapsed -lt $max_wait ]]; do
+        local status
+        status=$(gh run list --limit 1 --json status,conclusion --jq '.[0] | "\(.status) \(.conclusion)"' 2>/dev/null || echo "unknown")
+
+        if [[ "$status" == "completed success" ]]; then
+            echo "  CI passed."
+            return 0
+        elif [[ "$status" == "completed failure" ]]; then
+            echo "  CI FAILED."
+            return 1
+        fi
+
+        echo "  CI status: $status — waiting 30s... (${elapsed}s elapsed)"
+        sleep 30
+        elapsed=$((elapsed + 30))
+    done
+
+    echo "  CI wait timed out after ${max_wait}s"
+    return 1
+}
 
 COMPLETED=0
 FAILED=false
@@ -50,20 +76,23 @@ for i in $(seq 1 "$MAX_BATCHES"); do
 
     echo ""
     echo "============================================================"
-    echo "  Starting GA-${NEXT_BATCH} (batch ${i}/${MAX_BATCHES})"
+    echo "  Starting GA-${NEXT_BATCH} (batch ${i}/${MAX_BATCHES}) [ultracode]"
     echo "============================================================"
     echo ""
 
-    # Launch Claude Code session
-    PROMPT="You are continuing the GA hardening track for this repository.
+    # Build the ultracode prompt — includes "ultracode" keyword to activate
+    # multi-agent workflow orchestration
+    PROMPT="ultracode
+
+You are continuing the GA hardening track for this repository.
 
 Read docs/SESSION_START_HERE.md, docs/CURRENT_STATUS.md, docs/NEXT_DECISION.md, and docs/MODULE_MAP.md.
 
 Your task: implement GA-${NEXT_BATCH} as described in docs/NEXT_DECISION.md.
 
 Requirements:
-1. Implement the GA-${NEXT_BATCH} scope with tests
-2. Run cargo test -p engine, cargo fmt --check, cargo clippy
+1. Implement the GA-${NEXT_BATCH} scope with tests. Use multi-agent workflow orchestration to parallelize exploration and review.
+2. Run cargo test -p engine, cargo fmt --check, cargo clippy -p engine --all-targets -- -D warnings
 3. Run uv run --no-project python scripts/check_agent_handoff.py
 4. Update docs/CURRENT_STATUS.md and docs/NEXT_DECISION.md to reflect completion
 5. Commit and push
@@ -86,20 +115,13 @@ Do NOT start any work beyond GA-${NEXT_BATCH}. Stop after committing and pushing
         break
     fi
 
-    # Wait for CI to pass before continuing
-    if [[ "$SKIP_CI_WAIT" == "false" ]]; then
-        echo "  Waiting for CI..."
-        sleep 10
-        RUN_ID=$(gh run list --limit 1 --json databaseId --jq '.[0].databaseId')
-        if [[ -n "$RUN_ID" ]]; then
-            if gh run watch "$RUN_ID" --exit-status 2>&1; then
-                echo "  CI passed."
-            else
-                echo "  CI FAILED. Stopping loop."
-                FAILED=true
-                break
-            fi
-        fi
+    # Wait for CI to go green — mandatory
+    echo ""
+    echo "  Verifying CI passes..."
+    if ! wait_for_ci_green; then
+        echo "  CI did not pass after GA-${NEXT_BATCH}. Stopping."
+        FAILED=true
+        break
     fi
 
     # Verify working tree is clean
@@ -116,6 +138,6 @@ if [[ "$FAILED" == "true" ]]; then
     echo "  Status: FAILED (see above)"
     exit 1
 else
-    echo "  Status: ALL DONE"
+    echo "  Status: ALL DONE — all GA batches complete, CI green"
     exit 0
 fi
