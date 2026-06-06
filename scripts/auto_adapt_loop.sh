@@ -18,11 +18,13 @@ set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 MAX_PHASES="${MAX_PHASES:-4}"
+START_PHASE="${START_PHASE:-1}"
 SESSION_NAME="auto-adapt-$$"
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --max-phases) MAX_PHASES="$2"; shift 2 ;;
+        --start-phase) START_PHASE="$2"; shift 2 ;;
         *) echo "Unknown option: $1"; exit 1 ;;
     esac
 done
@@ -145,16 +147,8 @@ tmux new-session -d -s "$SESSION_NAME" -c "$REPO_ROOT" "echo 'Auto-adapt loop st
 COMPLETED=0
 FAILED=false
 
-for i in $(seq 1 "$MAX_PHASES"); do
-    # Find next pending phase from NEXT_DECISION.md
-    # Table format: "| 1. Interface Unification | ... | **Next** |" or "| ... | Pending |"
-    # Exclude rows containing "DONE" (completed production phases table)
-    NEXT_PHASE=$(grep -P '^\| \d+\.' docs/NEXT_DECISION.md | grep -v 'DONE' | grep -oP '^\| \K\d+(?=\.)' | head -1)
-
-    if [[ -z "$NEXT_PHASE" ]]; then
-        # Fallback: sequential
-        NEXT_PHASE=$i
-    fi
+for i in $(seq "$START_PHASE" "$MAX_PHASES"); do
+    NEXT_PHASE=$i
 
     if [[ $NEXT_PHASE -gt $MAX_PHASES ]]; then
         echo "=== All adaptation phases complete ==="
