@@ -15,6 +15,9 @@ use crate::routing::{
 };
 use crate::runtime::FixtureRuntime;
 use crate::task_analyzer::{RuleBasedTaskAnalyzer, TaskAnalysis};
+use crate::workflow::context_pack::{check_budget_compliance, ContextBudget};
+use crate::workflow::dag_manager::DAGManager;
+use crate::workflow::dag_mutations::{self, DAGMutationLimits};
 
 pub const READ_ONLY_PLAN_SCHEMA_VERSION: &str = "read_only_plan.v1";
 pub const PLAN_ADVISORY_SCHEMA_VERSION: &str = "plan_advisory.v1";
@@ -80,6 +83,23 @@ impl ReadOnlyPlanner {
         let resolver = DependencyResolver::new();
         let (valid, errors) = resolver.validate(&graph);
         let execution_order = resolver.execution_order(&graph);
+
+        // Phase 2: Activate DAGManager for graph mutation/validation capabilities
+        let dag_manager = build_dag_manager_from_graph(&graph, created_at);
+        let dag_validation = dag_manager.validate_dag();
+        let dag_topo_order = dag_manager.topological_order();
+        let dag_version = dag_manager.state().version;
+
+        // Phase 2: Activate context_pack budget compliance
+        let context_budget = ContextBudget {
+            max_context_tokens: analysis.context_budget_estimate,
+            preferred_context_tokens: (analysis.context_budget_estimate as f64 * 0.6) as i64,
+            max_response_tokens: Some(analysis.execution_budget_estimate),
+            reserved_response_tokens: None,
+        };
+        let (budget_compliant, budget_reason) =
+            check_budget_compliance(&context_pack_from_budget(&context_budget, &analysis), 0);
+
         let advisory = build_plan_advisory(
             ids,
             &analysis,
@@ -106,11 +126,94 @@ impl ReadOnlyPlanner {
                 "valid": valid,
                 "errors": errors,
             },
+            "dag_manager": {
+                "dag_id": ids.workflow_id,
+                "version": dag_version,
+                "dag_validation_errors": dag_validation,
+                "topological_order": dag_topo_order,
+                "mutation_capable": true,
+                "supported_mutations": dag_mutations::SUPPORTED_DAG_MUTATIONS,
+                "limits": {
+                    "max_nodes": DAGMutationLimits::default().max_nodes,
+                    "max_edges": DAGMutationLimits::default().max_edges,
+                },
+            },
+            "context_budget": {
+                "max_context_tokens": context_budget.max_context_tokens,
+                "preferred_context_tokens": context_budget.preferred_context_tokens,
+                "max_response_tokens": context_budget.max_response_tokens,
+                "compliant": budget_compliant,
+                "reason": budget_reason,
+            },
             "execution_order": execution_order,
             "advisory": advisory,
             "boundaries": read_only_boundaries(),
         }))
     }
+}
+
+fn build_dag_manager_from_graph(
+    graph: &crate::orchestration::WorkflowGraph,
+    timestamp: &str,
+) -> DAGManager {
+    let mut mgr = DAGManager::new(&graph.workflow_id, timestamp);
+    for node in &graph.nodes {
+        let proposal = crate::workflow::dag_manager::types::DAGMutationProposal {
+            proposal_id: format!("init-{}", node.node_id),
+            dag_id: graph.workflow_id.clone(),
+            mutation_type: "add_node".to_string(),
+            target_node_id: None,
+            target_edge_id: None,
+            payload: {
+                let mut m = std::collections::HashMap::new();
+                m.insert("node_id".to_string(), json!(node.node_id));
+                m.insert("node_type".to_string(), json!(node.task_type));
+                m.insert("status".to_string(), json!(node.status));
+                m
+            },
+            reason: "initial_graph_load".to_string(),
+            requires_approval: false,
+            status: "approved".to_string(),
+        };
+        mgr.apply_mutation(&proposal);
+    }
+    for edge in &graph.edges {
+        let proposal = crate::workflow::dag_manager::types::DAGMutationProposal {
+            proposal_id: format!("init-{}", edge.edge_id),
+            dag_id: graph.workflow_id.clone(),
+            mutation_type: "add_edge".to_string(),
+            target_node_id: None,
+            target_edge_id: None,
+            payload: {
+                let mut m = std::collections::HashMap::new();
+                m.insert("edge_id".to_string(), json!(edge.edge_id));
+                m.insert("from_node".to_string(), json!(edge.from_node_id));
+                m.insert("to_node".to_string(), json!(edge.to_node_id));
+                m
+            },
+            reason: "initial_graph_load".to_string(),
+            requires_approval: false,
+            status: "approved".to_string(),
+        };
+        mgr.apply_mutation(&proposal);
+    }
+    mgr
+}
+
+fn context_pack_from_budget(
+    budget: &ContextBudget,
+    analysis: &TaskAnalysis,
+) -> std::collections::HashMap<String, Value> {
+    let mut pack = std::collections::HashMap::new();
+    pack.insert("context_budget".to_string(), budget.to_value());
+    pack.insert("task_domain".to_string(), json!(analysis.task_domain));
+    pack.insert("task_intent".to_string(), json!(analysis.task_intent));
+    pack.insert(
+        "quality_requirement".to_string(),
+        json!(analysis.quality_requirement),
+    );
+    pack.insert("risk_level".to_string(), json!(analysis.risk_level));
+    pack
 }
 
 fn build_plan_advisory(
@@ -375,5 +478,82 @@ mod tests {
             .any(|item| item["code"] == "critical_risk"));
         assert_eq!(plan["boundaries"]["execution"], "disabled");
         assert!(plan.get("execution_result").is_none());
+    }
+
+    #[test]
+    fn plan_includes_dag_manager_metadata() {
+        let planner = ReadOnlyPlanner::new();
+        let ids = WorkflowPlanIds::for_sequence(10);
+        let plan = planner
+            .create_plan(
+                &ids,
+                "Refactor authentication module",
+                "api",
+                "2026-06-06T00:00:00Z",
+            )
+            .unwrap();
+
+        let dag = &plan["dag_manager"];
+        assert_eq!(dag["dag_id"], ids.workflow_id);
+        assert!(dag["version"].as_i64().unwrap() > 0);
+        assert_eq!(dag["mutation_capable"], true);
+        assert!(!dag["supported_mutations"].as_array().unwrap().is_empty());
+        assert_eq!(dag["limits"]["max_nodes"], 1000);
+        assert_eq!(dag["limits"]["max_edges"], 5000);
+        assert!(dag["dag_validation_errors"].as_array().unwrap().is_empty());
+        assert!(!dag["topological_order"].as_array().unwrap().is_empty());
+    }
+
+    #[test]
+    fn plan_includes_context_budget_compliance() {
+        let planner = ReadOnlyPlanner::new();
+        let ids = WorkflowPlanIds::for_sequence(11);
+        let plan = planner
+            .create_plan(
+                &ids,
+                "Write unit tests for the new module",
+                "api",
+                "2026-06-06T00:00:00Z",
+            )
+            .unwrap();
+
+        let cb = &plan["context_budget"];
+        assert!(cb["max_context_tokens"].as_i64().unwrap() > 0);
+        assert!(cb["preferred_context_tokens"].as_i64().unwrap() > 0);
+        assert_eq!(cb["compliant"], true);
+        assert!(cb["reason"].as_str().unwrap().contains("within budget"));
+    }
+
+    #[test]
+    fn dag_manager_validates_graph_structure() {
+        let planner = ReadOnlyPlanner::new();
+        let ids = WorkflowPlanIds::for_sequence(12);
+        let plan = planner
+            .create_plan(
+                &ids,
+                "Design system architecture for microservices",
+                "api",
+                "2026-06-06T00:00:00Z",
+            )
+            .unwrap();
+
+        let dag = &plan["dag_manager"];
+        assert!(dag["dag_validation_errors"].as_array().unwrap().is_empty());
+        let topo = dag["topological_order"].as_array().unwrap();
+        assert!(!topo.is_empty());
+    }
+
+    #[test]
+    fn context_budget_reflects_analysis_complexity() {
+        let planner = ReadOnlyPlanner::new();
+        let ids = WorkflowPlanIds::for_sequence(13);
+        let plan = planner
+            .create_plan(&ids, "Simple typo fix", "api", "2026-06-06T00:00:00Z")
+            .unwrap();
+
+        let cb = &plan["context_budget"];
+        let max_tokens = cb["max_context_tokens"].as_i64().unwrap();
+        let preferred = cb["preferred_context_tokens"].as_i64().unwrap();
+        assert!(preferred <= max_tokens);
     }
 }

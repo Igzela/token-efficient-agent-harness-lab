@@ -4,10 +4,13 @@ mod rules;
 mod scoring;
 
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
+use serde_json::{json, Value};
 
 use super::dispatch_decision::Evidence;
 use crate::runtime::FixtureRuntime;
+use crate::workflow::context_pack::{
+    check_budget_compliance, validate_context_layers, ContextBudget, ContextLayers,
+};
 
 pub const TASK_ANALYSIS_SCHEMA_VERSION: &str = "task_analysis.v1";
 
@@ -46,6 +49,46 @@ pub struct TaskAnalysis {
 impl TaskAnalysis {
     pub fn to_value(&self) -> Value {
         serde_json::to_value(self).expect("TaskAnalysis should serialize to JSON")
+    }
+
+    pub fn context_budget(&self) -> ContextBudget {
+        ContextBudget {
+            max_context_tokens: self.context_budget_estimate,
+            preferred_context_tokens: (self.context_budget_estimate as f64 * 0.6) as i64,
+            max_response_tokens: Some(self.execution_budget_estimate),
+            reserved_response_tokens: None,
+        }
+    }
+
+    pub fn context_pack_validation(&self) -> Value {
+        let budget = self.context_budget();
+        let layers = ContextLayers::default();
+        let layers_value = layers.to_value();
+        let layers_map: std::collections::HashMap<String, Value> =
+            if let Value::Object(obj) = &layers_value {
+                obj.iter().map(|(k, v)| (k.clone(), v.clone())).collect()
+            } else {
+                std::collections::HashMap::new()
+            };
+
+        let layer_errors = validate_context_layers(&layers_map);
+
+        let mut pack_data = std::collections::HashMap::new();
+        pack_data.insert("context_budget".to_string(), budget.to_value());
+        let (budget_compliant, budget_reason) = check_budget_compliance(&pack_data, 0);
+
+        json!({
+            "schema_version": "context_pack_validation.v1",
+            "context_budget": {
+                "max_context_tokens": budget.max_context_tokens,
+                "preferred_context_tokens": budget.preferred_context_tokens,
+                "max_response_tokens": budget.max_response_tokens,
+            },
+            "budget_compliant": budget_compliant,
+            "budget_reason": budget_reason,
+            "layer_validation_errors": layer_errors,
+            "layer_validation_ok": layer_errors.is_empty(),
+        })
     }
 }
 
@@ -135,4 +178,60 @@ pub fn analyze(raw_request: &str, request_source: &str, runtime: &mut FixtureRun
 
 fn round4(value: f64) -> f64 {
     (value * 10_000.0).round() / 10_000.0
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn context_budget_derives_from_analysis() {
+        let analyzer = RuleBasedTaskAnalyzer::new();
+        let analysis = analyzer.analyze("Refactor the auth module", "api");
+        let budget = analysis.context_budget();
+        assert_eq!(budget.max_context_tokens, analysis.context_budget_estimate);
+        assert!(budget.preferred_context_tokens <= budget.max_context_tokens);
+        assert_eq!(
+            budget.max_response_tokens,
+            Some(analysis.execution_budget_estimate)
+        );
+    }
+
+    #[test]
+    fn context_pack_validation_produces_valid_output() {
+        let analyzer = RuleBasedTaskAnalyzer::new();
+        let analysis = analyzer.analyze("Write unit tests", "api");
+        let validation = analysis.context_pack_validation();
+
+        assert_eq!(validation["schema_version"], "context_pack_validation.v1");
+        assert!(validation["budget_compliant"].as_bool().unwrap());
+        assert!(validation["layer_validation_ok"].as_bool().unwrap());
+        assert!(validation["layer_validation_errors"]
+            .as_array()
+            .unwrap()
+            .is_empty());
+    }
+
+    #[test]
+    fn context_budget_scales_with_complexity() {
+        let analyzer = RuleBasedTaskAnalyzer::new();
+        let analysis = analyzer.analyze(
+            "Deploy microservices architecture with CI/CD pipeline and monitoring",
+            "api",
+        );
+        assert!(analysis.context_budget_estimate > 0);
+        assert!(analysis.execution_budget_estimate > 0);
+        assert!(analysis.complexity_score > 0.0);
+    }
+
+    #[test]
+    fn context_pack_validation_includes_budget_fields() {
+        let analyzer = RuleBasedTaskAnalyzer::new();
+        let analysis = analyzer.analyze("Design API", "api");
+        let validation = analysis.context_pack_validation();
+
+        let cb = &validation["context_budget"];
+        assert!(cb["max_context_tokens"].as_i64().unwrap() > 0);
+        assert!(cb["preferred_context_tokens"].as_i64().unwrap() > 0);
+    }
 }
