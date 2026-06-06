@@ -147,15 +147,12 @@ FAILED=false
 
 for i in $(seq 1 "$MAX_PHASES"); do
     # Find next pending phase from NEXT_DECISION.md
-    NEXT_PHASE=$(grep -oP 'Phase \K\d+(?=\.)' docs/NEXT_DECISION.md | head -1)
+    # Table format: "| 1. Interface Unification | ... | **Next** |" or "| ... | Pending |"
+    # Exclude rows containing "DONE" (completed production phases table)
+    NEXT_PHASE=$(grep -P '^\| \d+\.' docs/NEXT_DECISION.md | grep -v 'DONE' | grep -oP '^\| \K\d+(?=\.)' | head -1)
 
     if [[ -z "$NEXT_PHASE" ]]; then
-        # Try alternate pattern: look for "Pending" status
-        NEXT_PHASE=$(grep -oP '\| \K\d+(?=\.)' docs/NEXT_DECISION.md 2>/dev/null | head -1)
-    fi
-
-    if [[ -z "$NEXT_PHASE" ]]; then
-        # Default to sequential
+        # Fallback: sequential
         NEXT_PHASE=$i
     fi
 
