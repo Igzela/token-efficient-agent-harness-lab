@@ -115,12 +115,12 @@ This track authorizes extending existing supervised autonomous beta infrastructu
 | GA-3. Scheduler Stability | Prove lease anti-concurrency with tests. Confirm heartbeat, lease timeout, retry exhausted, cancel, timeout, cleanup failure behavior. Scheduler status API: `running`, `executor_type`, `tick_count`, `error_count`, `last_error`, `last_tick_at`, `active_runs`. | **DONE** — 10 new tests (7 scheduler unit + 3 HTTP endpoint), `active_runs` field added to status API |
 | GA-4. Observability / Audit | Metrics: executor latency, retry count, artifact count, secret block count, active runs, queue length. Audit: CLI tick, artifact capture, approval, export, cleanup/quarantine events. Runbook in existing ops docs. | **DONE** — 3 new tests (metrics enrichment, node_tick audit, approval audit), `artifact_count`/`approval_count`/`executor_latency_avg_ms`/`scheduler_active_runs` added to metrics API, `workflow_run.node_tick` audit event for every node execution |
 | GA-5. Review UI | Dashboard: run/workspace/artifact/diff/changed_files/hash/source_revision/integrity/secret scan/executor/duration/cost/logs. Approve/reject/export/cleanup/quarantine ops. Diff visible before approval. Failure/retry/terminal states clear. | **DONE** — commit ee566c2, WorkflowRuns + SchedulerStatus components, 8 API client functions, typed TS interfaces, Runs/Scheduler tabs |
-| GA-6. SDK/API Completeness | TS/Python SDK: scheduler status, workspace CRUD, capture, approval, export, cleanup/quarantine, workflow tick, artifact diff/detail. Tests: happy path, approval mismatch, artifact tamper, scheduler status. | Pending |
-| GA-7. Soak Test | `scripts/soak_ga_e2e.py` — `--base-url`, `--executor`, `--count`, `--concurrency`. Command executor 50 tasks; real CLI ≥3 tasks. JSON summary: success rate, failure domains, p95 latency, artifact count, cleanup success, cost. Non-zero exit on failure. | Pending |
+| GA-6. SDK/API Completeness | TS/Python SDK: scheduler status, workspace CRUD, capture, approval, export, cleanup/quarantine, workflow tick, artifact diff/detail. Tests: happy path, approval mismatch, artifact tamper, scheduler status. | **DONE** — commit 295467f, 10 new integration tests |
+| GA-7. Soak Test | `scripts/soak_ga_e2e.py` — `--base-url`, `--executor`, `--count`, `--concurrency`. Command executor 50 tasks; real CLI ≥3 tasks. JSON summary: success rate, failure domains, p95 latency, artifact count, cleanup success, cost. Non-zero exit on failure. | **DONE** — commit 0781a71, 10 new integration tests |
 
 **Latest**: GA-5 review UI. 1286 Rust tests pass.
 
-**Next**: GA-6 (SDK/API Completeness) — TS/Python SDK: scheduler status, workspace CRUD, capture, approval, export, cleanup/quarantine, workflow tick, artifact diff/detail. Tests: happy path, approval mismatch, artifact tamper, scheduler status.
+**Next**: All GA batches complete. GA hardening track finished.
 
 **Boundaries that remain intact:**
 - Provider execution remains default-off and env-gated
