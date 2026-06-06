@@ -204,9 +204,10 @@ fn default_error_code(status: StatusCode) -> &'static str {
 
 pub(crate) fn cors_headers() -> HeaderMap {
     let mut headers = HeaderMap::new();
+    let origin = cors_allowed_origin();
     headers.insert(
         header::ACCESS_CONTROL_ALLOW_ORIGIN,
-        HeaderValue::from_static("*"),
+        HeaderValue::from_str(origin).unwrap_or_else(|_| HeaderValue::from_static("*")),
     );
     headers.insert(
         header::ACCESS_CONTROL_ALLOW_METHODS,
@@ -217,6 +218,13 @@ pub(crate) fn cors_headers() -> HeaderMap {
         HeaderValue::from_static("authorization,content-type"),
     );
     headers
+}
+
+fn cors_allowed_origin() -> &'static str {
+    static CORS_ORIGIN: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    CORS_ORIGIN.get_or_init(|| {
+        std::env::var("ACP_CORS_ORIGINS").unwrap_or_else(|_| "*".to_string())
+    })
 }
 
 pub(crate) async fn cors_preflight() -> impl IntoResponse {

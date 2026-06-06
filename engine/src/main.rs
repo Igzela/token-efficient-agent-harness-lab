@@ -94,28 +94,27 @@ async fn main() {
         lan,
     );
 
+    if host == "0.0.0.0" && !require_auth {
+        eprintln!("[acp-warning] LAN-exposed without auth — set ACP_REQUIRE_AUTH=1 for production");
+    }
+    if host == "0.0.0.0" {
+        let cors = std::env::var("ACP_CORS_ORIGINS").unwrap_or_default();
+        if cors.is_empty() || cors == "*" {
+            eprintln!("[acp-warning] CORS allows all origins — set ACP_CORS_ORIGINS for production");
+        }
+    }
+
     let enable_scheduler = std::env::var("ACP_ENABLE_SCHEDULER")
         .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
         .unwrap_or(false);
     let state = if enable_scheduler {
-        let scheduler_config = SchedulerConfig {
-            interval_ms: std::env::var("ACP_SCHEDULER_INTERVAL_MS")
-                .ok()
-                .and_then(|v| v.parse().ok())
-                .unwrap_or(2000),
-            max_concurrent: std::env::var("ACP_SCHEDULER_MAX_CONCURRENT")
-                .ok()
-                .and_then(|v| v.parse().ok())
-                .unwrap_or(4),
-            lease_timeout_ms: std::env::var("ACP_SCHEDULER_LEASE_TIMEOUT_MS")
-                .ok()
-                .and_then(|v| v.parse().ok())
-                .unwrap_or(300_000),
-        };
+        let scheduler_config = SchedulerConfig::from_env();
+        let executor_type = scheduler_config.executor_type.clone();
+        let interval = scheduler_config.interval_ms;
         let mut scheduler = WorkflowScheduler::new(store_for_scheduler, scheduler_config);
         scheduler.start().expect("failed to start scheduler");
         let scheduler_arc = Arc::new(Mutex::new(scheduler));
-        println!("[acp-startup] scheduler=enabled interval={}ms", 2000);
+        println!("[acp-startup] scheduler=enabled interval={}ms executor={}", interval, executor_type);
         state.with_scheduler(scheduler_arc)
     } else {
         state

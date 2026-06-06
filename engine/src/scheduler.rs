@@ -4,7 +4,8 @@ use std::sync::Arc;
 use std::thread::JoinHandle;
 use std::time::Duration;
 
-use crate::node_executor::NoopNodeExecutor;
+use crate::cli::CliNodeExecutor;
+use crate::node_executor::{NoopNodeExecutor, NodeExecutor};
 use crate::storage::local_product_store::LocalProductStore;
 
 #[derive(Debug, Clone)]
@@ -12,6 +13,7 @@ pub struct SchedulerConfig {
     pub interval_ms: u64,
     pub max_concurrent: usize,
     pub lease_timeout_ms: u64,
+    pub executor_type: String,
 }
 
 impl Default for SchedulerConfig {
@@ -20,7 +22,47 @@ impl Default for SchedulerConfig {
             interval_ms: 2000,
             max_concurrent: 4,
             lease_timeout_ms: 300_000,
+            executor_type: "noop".to_string(),
         }
+    }
+}
+
+impl SchedulerConfig {
+    pub fn from_env() -> Self {
+        let interval_ms = std::env::var("ACP_SCHEDULER_INTERVAL_MS")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(2000);
+        let max_concurrent = std::env::var("ACP_SCHEDULER_MAX_CONCURRENT")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(4);
+        let lease_timeout_ms = std::env::var("ACP_SCHEDULER_LEASE_TIMEOUT_MS")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(300_000);
+        let executor_type = std::env::var("ACP_SCHEDULER_EXECUTOR")
+            .unwrap_or_else(|_| "noop".to_string());
+        Self { interval_ms, max_concurrent, lease_timeout_ms, executor_type }
+    }
+}
+
+fn create_scheduler_executor(executor_type: &str) -> Arc<dyn NodeExecutor> {
+    match executor_type {
+        "command" => {
+            Arc::new(crate::node_executor::CommandNodeExecutor::default())
+        }
+        "claude_code_cli" | "codex_cli" => {
+            let config = crate::cli::CliConfig::from_env();
+            match CliNodeExecutor::from_config(&config) {
+                Some(exec) => Arc::new(exec),
+                None => {
+                    eprintln!("[scheduler] CLI executor '{}' not available, falling back to noop", executor_type);
+                    Arc::new(NoopNodeExecutor)
+                }
+            }
+        }
+        _ => Arc::new(NoopNodeExecutor),
     }
 }
 
@@ -63,11 +105,11 @@ impl WorkflowScheduler {
         let error_count = self.error_count.clone();
         let last_tick_at = self.last_tick_at.clone();
         let last_error = self.last_error.clone();
+        let executor = create_scheduler_executor(&config.executor_type);
 
         let handle = std::thread::spawn(move || {
-            let executor = NoopNodeExecutor;
             while running.load(Ordering::SeqCst) {
-                let tick_result = scheduler_tick(&store, &config, &executor);
+                let tick_result = scheduler_tick(&store, &config, &*executor);
                 match tick_result {
                     Ok(ticks) => {
                         tick_count.fetch_add(ticks, Ordering::SeqCst);
@@ -125,6 +167,7 @@ impl WorkflowScheduler {
                 "interval_ms": self.config.interval_ms,
                 "max_concurrent": self.config.max_concurrent,
                 "lease_timeout_ms": self.config.lease_timeout_ms,
+                "executor_type": self.config.executor_type,
             },
             "tick_count": self.tick_count.load(Ordering::SeqCst),
             "error_count": self.error_count.load(Ordering::SeqCst),
@@ -248,6 +291,7 @@ mod tests {
             interval_ms: 50,
             max_concurrent: 1,
             lease_timeout_ms: 300_000,
+            executor_type: "noop".to_string(),
         };
         let mut scheduler = WorkflowScheduler::new(store, config);
         assert!(!scheduler.is_running());
@@ -270,6 +314,7 @@ mod tests {
             interval_ms: 50,
             max_concurrent: 2,
             lease_timeout_ms: 60_000,
+            executor_type: "noop".to_string(),
         };
         let mut scheduler = WorkflowScheduler::new(store, config);
 
@@ -297,6 +342,7 @@ mod tests {
             interval_ms: 50,
             max_concurrent: 4,
             lease_timeout_ms: 300_000,
+            executor_type: "noop".to_string(),
         };
         let mut scheduler = WorkflowScheduler::new(store.clone(), config);
         scheduler.start().unwrap();
@@ -357,6 +403,7 @@ mod tests {
             interval_ms: 50,
             max_concurrent: 1,
             lease_timeout_ms: 300_000,
+            executor_type: "noop".to_string(),
         };
         let mut scheduler = WorkflowScheduler::new(store, config);
         scheduler.start().unwrap();

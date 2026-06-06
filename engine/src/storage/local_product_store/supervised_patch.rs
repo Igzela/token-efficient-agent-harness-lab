@@ -41,7 +41,9 @@ impl LocalProductStore {
         )
         .map_err(|e| e.to_string())?;
 
-        Ok(workspace_dir.to_string_lossy().into_owned())
+        let canonical_workspace = std::fs::canonicalize(&workspace_dir)
+            .map_err(|e| e.to_string())?;
+        Ok(canonical_workspace.to_string_lossy().into_owned())
     }
 
     pub fn update_workspace_status(
