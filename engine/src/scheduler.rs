@@ -80,6 +80,8 @@ pub struct WorkflowScheduler {
     started_at: Option<String>,
     tick_count: Arc<std::sync::atomic::AtomicU64>,
     error_count: Arc<std::sync::atomic::AtomicU64>,
+    retry_count: Arc<std::sync::atomic::AtomicU64>,
+    total_execution_time_ns: Arc<std::sync::atomic::AtomicU64>,
     last_tick_at: Arc<std::sync::Mutex<Option<String>>>,
     last_error: Arc<std::sync::Mutex<Option<String>>>,
 }
@@ -94,6 +96,8 @@ impl WorkflowScheduler {
             started_at: None,
             tick_count: Arc::new(std::sync::atomic::AtomicU64::new(0)),
             error_count: Arc::new(std::sync::atomic::AtomicU64::new(0)),
+            retry_count: Arc::new(std::sync::atomic::AtomicU64::new(0)),
+            total_execution_time_ns: Arc::new(std::sync::atomic::AtomicU64::new(0)),
             last_tick_at: Arc::new(std::sync::Mutex::new(None)),
             last_error: Arc::new(std::sync::Mutex::new(None)),
         }
@@ -109,16 +113,22 @@ impl WorkflowScheduler {
         let running = self.running.clone();
         let tick_count = self.tick_count.clone();
         let error_count = self.error_count.clone();
+        let retry_count = self.retry_count.clone();
+        let total_execution_time_ns = self.total_execution_time_ns.clone();
         let last_tick_at = self.last_tick_at.clone();
         let last_error = self.last_error.clone();
         let executor = create_scheduler_executor(&config.executor_type);
 
         let handle = std::thread::spawn(move || {
             while running.load(Ordering::SeqCst) {
+                let tick_start = std::time::Instant::now();
                 let tick_result = scheduler_tick(&store, &config, &*executor);
+                let tick_elapsed_ns = tick_start.elapsed().as_nanos() as u64;
+                total_execution_time_ns.fetch_add(tick_elapsed_ns, Ordering::SeqCst);
                 match tick_result {
-                    Ok(ticks) => {
-                        tick_count.fetch_add(ticks, Ordering::SeqCst);
+                    Ok(result) => {
+                        tick_count.fetch_add(result.ticks, Ordering::SeqCst);
+                        retry_count.fetch_add(result.retries, Ordering::SeqCst);
                         if let Ok(mut guard) = last_tick_at.lock() {
                             *guard =
                                 Some(chrono::Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string());
@@ -175,6 +185,8 @@ impl WorkflowScheduler {
             },
             "tick_count": self.tick_count.load(Ordering::SeqCst),
             "error_count": self.error_count.load(Ordering::SeqCst),
+            "retry_count": self.retry_count.load(Ordering::SeqCst),
+            "total_execution_time_ns": self.total_execution_time_ns.load(Ordering::SeqCst),
             "last_tick_at": self.last_tick_at.lock().ok().and_then(|g| g.clone()),
             "last_error": self.last_error.lock().ok().and_then(|g| g.clone()),
             "active_runs": active_runs,
@@ -193,26 +205,35 @@ impl Drop for WorkflowScheduler {
     }
 }
 
+struct TickResult {
+    ticks: u64,
+    retries: u64,
+}
+
 fn scheduler_tick(
     store: &LocalProductStore,
     config: &SchedulerConfig,
     executor: &dyn crate::node_executor::NodeExecutor,
-) -> Result<u64, String> {
+) -> Result<TickResult, String> {
     let _recovered = store.recover_stale_leases(config.lease_timeout_ms)?;
 
     let active_runs = store.list_active_workflow_run_ids()?;
     let mut ticks = 0u64;
+    let mut retries = 0u64;
     for run_id in active_runs.iter().take(config.max_concurrent) {
         match store.tick_with_executor(run_id, "scheduler", 0, executor) {
-            Ok(_) => {
+            Ok(result) => {
                 ticks += 1;
+                if result.get("action").and_then(|v| v.as_str()) == Some("node_retry") {
+                    retries += 1;
+                }
             }
             Err(_) => {
                 // terminal or no-ready-node errors are expected; skip
             }
         }
     }
-    Ok(ticks)
+    Ok(TickResult { ticks, retries })
 }
 
 #[cfg(test)]
@@ -421,8 +442,9 @@ mod tests {
         let store = test_store();
         let config = SchedulerConfig::default();
         let executor = NoopNodeExecutor;
-        let ticks = scheduler_tick(&store, &config, &executor).unwrap();
-        assert_eq!(ticks, 0);
+        let result = scheduler_tick(&store, &config, &executor).unwrap();
+        assert_eq!(result.ticks, 0);
+        assert_eq!(result.retries, 0);
     }
 
     #[test]
@@ -440,11 +462,14 @@ mod tests {
 
         // First tick leases and completes the single node
         let r1 = scheduler_tick(&store, &config, &executor).unwrap();
-        assert_eq!(r1, 1);
+        assert_eq!(r1.ticks, 1);
 
         // Second tick finds no ready nodes (already completed)
         let r2 = scheduler_tick(&store, &config, &executor).unwrap();
-        assert_eq!(r2, 0, "second tick should not re-lease completed node");
+        assert_eq!(
+            r2.ticks, 0,
+            "second tick should not re-lease completed node"
+        );
 
         let run = store.get_workflow_run("run-0001").unwrap().unwrap();
         assert_eq!(run["status"], "completed");
@@ -466,7 +491,7 @@ mod tests {
         // Tick with fail executor — node fails, run becomes failed
         let result = scheduler_tick(&store, &config, &executor);
         assert!(result.is_ok());
-        assert_eq!(result.unwrap(), 1);
+        assert_eq!(result.unwrap().ticks, 1);
 
         let run = store.get_workflow_run("run-0001").unwrap().unwrap();
         assert_eq!(
@@ -494,8 +519,8 @@ mod tests {
         let executor = NoopNodeExecutor;
 
         // Scheduler tick should skip cancelled run (0 ticks)
-        let ticks = scheduler_tick(&store, &config, &executor).unwrap();
-        assert_eq!(ticks, 0, "cancelled run should not be ticked");
+        let result = scheduler_tick(&store, &config, &executor).unwrap();
+        assert_eq!(result.ticks, 0, "cancelled run should not be ticked");
 
         let run = store.get_workflow_run(&run_id).unwrap().unwrap();
         assert_eq!(run["status"], "cancelled");
@@ -597,10 +622,75 @@ mod tests {
             executor_type: "noop".to_string(),
         };
         let executor = NoopNodeExecutor;
-        let ticks = scheduler_tick(&store, &config, &executor).unwrap();
+        let result = scheduler_tick(&store, &config, &executor).unwrap();
         assert!(
-            ticks <= 2,
-            "max_concurrent=2 should limit ticks to at most 2, got {ticks}"
+            result.ticks <= 2,
+            "max_concurrent=2 should limit ticks to at most 2, got {}",
+            result.ticks
         );
+    }
+
+    #[test]
+    fn scheduler_status_includes_retry_count() {
+        let store = test_store();
+        let config = SchedulerConfig {
+            interval_ms: 50,
+            max_concurrent: 2,
+            lease_timeout_ms: 60_000,
+            executor_type: "noop".to_string(),
+        };
+        let scheduler = WorkflowScheduler::new(store, config);
+
+        let status = scheduler.status();
+        assert_eq!(status["retry_count"], 0, "retry_count should start at 0");
+    }
+
+    #[test]
+    fn scheduler_status_includes_execution_time() {
+        let store = test_store();
+        create_plan_and_run(&store);
+
+        let config = SchedulerConfig {
+            interval_ms: 50,
+            max_concurrent: 2,
+            lease_timeout_ms: 60_000,
+            executor_type: "noop".to_string(),
+        };
+        let mut scheduler = WorkflowScheduler::new(store, config);
+        assert_eq!(
+            scheduler.status()["total_execution_time_ns"],
+            0,
+            "should start at 0"
+        );
+
+        scheduler.start().unwrap();
+        std::thread::sleep(Duration::from_millis(200));
+        scheduler.stop().unwrap();
+
+        let status = scheduler.status();
+        let exec_time = status["total_execution_time_ns"].as_u64().unwrap();
+        assert!(
+            exec_time > 0,
+            "should accumulate execution time, got {exec_time}"
+        );
+    }
+
+    #[test]
+    fn scheduler_tick_tracks_retries_for_fail_executor() {
+        let store = test_store();
+        create_plan_and_run(&store);
+
+        let config = SchedulerConfig {
+            interval_ms: 50,
+            max_concurrent: 1,
+            lease_timeout_ms: 300_000,
+            executor_type: "fail".to_string(),
+        };
+        let executor = crate::node_executor::FailNodeExecutor::default();
+
+        // Tick with fail executor and max_retries=0 — no retries tracked since we pass max_retries=0 to scheduler_tick
+        let result = scheduler_tick(&store, &config, &executor).unwrap();
+        assert_eq!(result.ticks, 1, "should tick once");
+        assert_eq!(result.retries, 0, "no retries with default max_retries=0");
     }
 }

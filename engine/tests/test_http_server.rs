@@ -1277,6 +1277,17 @@ async fn axum_metrics_reports_operations_summary() {
     assert_eq!(body["estimated_cost_available"], true);
     assert!(body["pricing_configured"].is_boolean());
     assert_eq!(body["boundaries"]["target_repository_writes"], "disabled");
+    // GA-4: new observability fields
+    assert!(
+        body["secret_block_count"].is_number(),
+        "secret_block_count should be present"
+    );
+    assert!(
+        body["queue_length"].is_number(),
+        "queue_length should be present"
+    );
+    assert_eq!(body["secret_block_count"], 0, "no artifacts yet");
+    assert_eq!(body["queue_length"], 0, "no pending nodes");
 }
 
 #[tokio::test]
@@ -4399,4 +4410,255 @@ async fn axum_scheduler_status_reflects_active_runs() {
     let body = response_json(response).await;
     let sched = &body["scheduler"];
     assert_eq!(sched["active_runs"], 1, "should reflect the created run");
+}
+
+// ── GA-4: Observability / Audit tests ─────────────────────────────────
+
+#[tokio::test]
+async fn ga4_metrics_includes_secret_block_and_queue_length() {
+    let dir = tempdir().unwrap();
+    let store = LocalProductStore::new(dir.path().join("test.db")).unwrap();
+
+    // Create a dispatch so dispatch_count >= 1
+    store
+        .record_dispatch(
+            "GA4 dispatch",
+            "test",
+            &json!({"record": {"dispatch_id": "disp-ga4", "final_status": "noop"}}),
+            "test",
+        )
+        .unwrap();
+
+    let app = build_axum_router(AxumApiState::new().with_local_store(store));
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method(Method::GET)
+                .uri("/api/v1/metrics")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = response_json(response).await;
+    assert_eq!(body["secret_block_count"], 0);
+    assert_eq!(body["queue_length"], 0);
+    assert!(body["dispatch_count"].as_i64().unwrap() >= 1);
+}
+
+#[tokio::test]
+async fn ga4_capture_logs_audit_event() {
+    let dir = tempdir().unwrap();
+    let store = LocalProductStore::new(dir.path().join("test.db")).unwrap();
+
+    // Create target files
+    let target_dir = dir.path().join("target");
+    std::fs::create_dir_all(target_dir.join("src")).unwrap();
+    std::fs::write(target_dir.join("src/main.rs"), "fn main() {}").unwrap();
+
+    // Create workspace
+    let ws_path = store
+        .create_workspace_directory("ws-ga4", target_dir.to_str().unwrap())
+        .unwrap();
+    let workspace = store
+        .record_supervised_patch_workspace(
+            &json!({
+                "plan_id": "plan-ga4",
+                "run_id": "run-ga4",
+                "target_id": "ga4-target",
+                "target_repo_path": target_dir.to_string_lossy(),
+                "workspace_path": &ws_path,
+                "source_revision": "abc123",
+                "status": "workspace_created",
+            }),
+            "ga4-actor",
+        )
+        .unwrap();
+    let ws_id = workspace["workspace_id"].as_str().unwrap();
+
+    // Add a new file to workspace for capture
+    std::fs::write(format!("{}/src/new.rs", ws_path), "fn new() {}").unwrap();
+
+    let app = build_axum_router(AxumApiState::new().with_local_store(store));
+
+    // Capture
+    let response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(Method::POST)
+                .uri(format!(
+                    "/api/v1/supervised-patch/workspaces/{ws_id}/capture"
+                ))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+
+    // Check audit log
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method(Method::GET)
+                .uri("/api/v1/audit?limit=50")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = response_json(response).await;
+    let events = body["events"].as_array().unwrap();
+    let capture_event = events
+        .iter()
+        .find(|e| e["action"] == "supervised_patch.capture");
+    assert!(
+        capture_event.is_some(),
+        "should have supervised_patch.capture audit event"
+    );
+    let evt = capture_event.unwrap();
+    assert_eq!(evt["resource"], ws_id);
+    assert!(evt["details"]["changed_files_count"].as_i64().unwrap() >= 1);
+}
+
+#[tokio::test]
+async fn ga4_cleanup_logs_audit_event() {
+    let dir = tempdir().unwrap();
+    let store = LocalProductStore::new(dir.path().join("test.db")).unwrap();
+
+    let target_dir = dir.path().join("target");
+    std::fs::create_dir_all(&target_dir).unwrap();
+    std::fs::write(target_dir.join("file.txt"), "content").unwrap();
+
+    let ws_path = store
+        .create_workspace_directory("ws-cleanup", target_dir.to_str().unwrap())
+        .unwrap();
+    let workspace = store
+        .record_supervised_patch_workspace(
+            &json!({
+                "plan_id": "plan-cleanup",
+                "run_id": "run-cleanup",
+                "target_id": "cleanup-target",
+                "target_repo_path": target_dir.to_string_lossy(),
+                "workspace_path": &ws_path,
+                "source_revision": "abc123",
+                "status": "workspace_created",
+            }),
+            "cleanup-actor",
+        )
+        .unwrap();
+    let ws_id = workspace["workspace_id"].as_str().unwrap();
+
+    let app = build_axum_router(AxumApiState::new().with_local_store(store));
+
+    // Cleanup
+    let response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(Method::POST)
+                .uri(format!(
+                    "/api/v1/supervised-patch/workspaces/{ws_id}/cleanup"
+                ))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+
+    // Check audit log
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method(Method::GET)
+                .uri("/api/v1/audit?limit=50")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = response_json(response).await;
+    let events = body["events"].as_array().unwrap();
+    let cleanup_event = events
+        .iter()
+        .find(|e| e["action"] == "supervised_patch.cleanup");
+    assert!(
+        cleanup_event.is_some(),
+        "should have supervised_patch.cleanup audit event"
+    );
+}
+
+#[tokio::test]
+async fn ga4_quarantine_logs_audit_event() {
+    let dir = tempdir().unwrap();
+    let store = LocalProductStore::new(dir.path().join("test.db")).unwrap();
+
+    let target_dir = dir.path().join("target");
+    std::fs::create_dir_all(&target_dir).unwrap();
+    std::fs::write(target_dir.join("file.txt"), "content").unwrap();
+
+    let ws_path = store
+        .create_workspace_directory("ws-quarantine", target_dir.to_str().unwrap())
+        .unwrap();
+    let workspace = store
+        .record_supervised_patch_workspace(
+            &json!({
+                "plan_id": "plan-quarantine",
+                "run_id": "run-quarantine",
+                "target_id": "quarantine-target",
+                "target_repo_path": target_dir.to_string_lossy(),
+                "workspace_path": &ws_path,
+                "source_revision": "abc123",
+                "status": "workspace_created",
+            }),
+            "quarantine-actor",
+        )
+        .unwrap();
+    let ws_id = workspace["workspace_id"].as_str().unwrap();
+
+    let app = build_axum_router(AxumApiState::new().with_local_store(store));
+
+    // Quarantine
+    let response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(Method::POST)
+                .uri(format!(
+                    "/api/v1/supervised-patch/workspaces/{ws_id}/quarantine"
+                ))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+
+    // Check audit log
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method(Method::GET)
+                .uri("/api/v1/audit?limit=50")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = response_json(response).await;
+    let events = body["events"].as_array().unwrap();
+    let quarantine_event = events
+        .iter()
+        .find(|e| e["action"] == "supervised_patch.quarantine");
+    assert!(
+        quarantine_event.is_some(),
+        "should have supervised_patch.quarantine audit event"
+    );
 }

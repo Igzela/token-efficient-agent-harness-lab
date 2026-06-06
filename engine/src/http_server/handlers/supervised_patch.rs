@@ -170,6 +170,17 @@ pub(crate) async fn api_export_supervised_patch(
         ));
     }
 
+    let _ = store.append_audit(
+        &context.api_key_id,
+        "supervised_patch.export",
+        &artifact_id,
+        &json!({
+            "run_id": run_id,
+            "export_eligible": true,
+            "integrity_ok": true,
+        }),
+    );
+
     Ok((
         cors_headers(),
         Json(json!({
@@ -238,13 +249,21 @@ pub(crate) async fn api_cleanup_supervised_patch_workspace(
     let context = authorize(&state, &headers, "dispatch:read", uri.path(), &request_id.0)?;
     let store = require_store(&state)?;
     match store.cleanup_workspace(&workspace_id, &context.api_key_id) {
-        Ok(workspace) => Ok((
-            cors_headers(),
-            Json(json!({
-                "schema_version": AXUM_API_SCHEMA_VERSION,
-                "workspace": workspace,
-            })),
-        )),
+        Ok(workspace) => {
+            let _ = store.append_audit(
+                &context.api_key_id,
+                "supervised_patch.cleanup",
+                &workspace_id,
+                &json!({"status": "cleaned"}),
+            );
+            Ok((
+                cors_headers(),
+                Json(json!({
+                    "schema_version": AXUM_API_SCHEMA_VERSION,
+                    "workspace": workspace,
+                })),
+            ))
+        }
         Err(e) if e.contains("not found") => Err(not_found("workspace_not_found")),
         Err(e) if e.contains("invalid") => Err(ApiError::with_code(
             StatusCode::CONFLICT,
@@ -265,13 +284,21 @@ pub(crate) async fn api_quarantine_supervised_patch_workspace(
     let context = authorize(&state, &headers, "dispatch:read", uri.path(), &request_id.0)?;
     let store = require_store(&state)?;
     match store.quarantine_workspace(&workspace_id, &context.api_key_id) {
-        Ok(workspace) => Ok((
-            cors_headers(),
-            Json(json!({
-                "schema_version": AXUM_API_SCHEMA_VERSION,
-                "workspace": workspace,
-            })),
-        )),
+        Ok(workspace) => {
+            let _ = store.append_audit(
+                &context.api_key_id,
+                "supervised_patch.quarantine",
+                &workspace_id,
+                &json!({"status": "quarantined"}),
+            );
+            Ok((
+                cors_headers(),
+                Json(json!({
+                    "schema_version": AXUM_API_SCHEMA_VERSION,
+                    "workspace": workspace,
+                })),
+            ))
+        }
         Err(e) if e.contains("not found") => Err(not_found("workspace_not_found")),
         Err(e) if e.contains("invalid") => Err(ApiError::with_code(
             StatusCode::CONFLICT,
@@ -292,13 +319,26 @@ pub(crate) async fn api_capture_supervised_patch(
     let context = authorize(&state, &headers, "dispatch:read", uri.path(), &request_id.0)?;
     let store = require_store(&state)?;
     match store.capture_patch(&workspace_id, &context.api_key_id) {
-        Ok(artifact) => Ok((
-            cors_headers(),
-            Json(json!({
-                "schema_version": AXUM_API_SCHEMA_VERSION,
-                "artifact": artifact,
-            })),
-        )),
+        Ok(artifact) => {
+            let _ = store.append_audit(
+                &context.api_key_id,
+                "supervised_patch.capture",
+                &workspace_id,
+                &json!({
+                    "artifact_id": artifact.get("artifact_id"),
+                    "changed_files_count": artifact.get("changed_files").and_then(|v| v.as_array()).map(|a| a.len()),
+                    "secret_scan_status": artifact.get("secret_scan_status"),
+                    "patch_hash": artifact.get("patch_hash"),
+                }),
+            );
+            Ok((
+                cors_headers(),
+                Json(json!({
+                    "schema_version": AXUM_API_SCHEMA_VERSION,
+                    "artifact": artifact,
+                })),
+            ))
+        }
         Err(e) if e.contains("not found") => Err(not_found("workspace_not_found")),
         Err(e) if e.contains("no files") => Err(ApiError::with_code(
             StatusCode::BAD_REQUEST,

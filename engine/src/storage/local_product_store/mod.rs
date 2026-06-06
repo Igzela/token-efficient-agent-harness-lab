@@ -303,6 +303,20 @@ impl LocalProductStore {
 
     pub fn stats(&self) -> Result<Value, String> {
         self.with_conn(|conn| {
+            let secret_block_count: i64 = conn
+                .query_row(
+                    "SELECT COUNT(*) FROM supervised_patch_artifacts WHERE artifact_json LIKE '%\"secret_scan_status\":\"blocked\"%'",
+                    [],
+                    |row| row.get(0),
+                )
+                .map_err(|e| e.to_string())?;
+            let queue_length: i64 = conn
+                .query_row(
+                    "SELECT COUNT(*) FROM workflow_run_nodes WHERE status = 'pending'",
+                    [],
+                    |row| row.get(0),
+                )
+                .map_err(|e| e.to_string())?;
             Ok(json!({
                 "dispatches": count_table(conn, "dispatch_history")?,
                 "team_members": count_table(conn, "team_members")?,
@@ -312,6 +326,8 @@ impl LocalProductStore {
                 "workflow_runs": count_table(conn, "workflow_runs")?,
                 "supervised_patch_workspaces": count_table(conn, "supervised_patch_workspaces")?,
                 "supervised_patch_artifacts": count_table(conn, "supervised_patch_artifacts")?,
+                "secret_block_count": secret_block_count,
+                "queue_length": queue_length,
             }))
         })
     }

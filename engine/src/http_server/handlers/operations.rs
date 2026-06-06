@@ -26,6 +26,8 @@ pub(crate) async fn api_metrics(
     let mut audit_event_count = 0;
     let mut api_key_count = 0;
     let mut backup_count = 0;
+    let mut secret_block_count = 0;
+    let mut queue_length = 0;
     let mut total_reserved_cost = 0.0;
     let mut total_estimated_cost_usd = 0.0;
     let mut total_input_tokens = 0;
@@ -41,6 +43,8 @@ pub(crate) async fn api_metrics(
         workflow_run_count = stats["workflow_runs"].as_i64().unwrap_or(0);
         audit_event_count = stats["audit_events"].as_i64().unwrap_or(0);
         api_key_count = stats["api_keys"].as_i64().unwrap_or(0);
+        secret_block_count = stats["secret_block_count"].as_i64().unwrap_or(0);
+        queue_length = stats["queue_length"].as_i64().unwrap_or(0);
 
         let costs = store.cost_summary().map_err(internal_error)?;
         total_reserved_cost = costs["total_reserved_cost"].as_f64().unwrap_or(0.0);
@@ -75,6 +79,8 @@ pub(crate) async fn api_metrics(
             "workflow_run_count": workflow_run_count,
             "audit_event_count": audit_event_count,
             "api_key_count": api_key_count,
+            "secret_block_count": secret_block_count,
+            "queue_length": queue_length,
             "backup_count": backup_count,
             "latest_backup_created_at": latest_backup_created_at,
             "total_reserved_cost": total_reserved_cost,
