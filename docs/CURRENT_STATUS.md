@@ -1,6 +1,6 @@
 # Current Status
 
-Last verified: 2026-06-06. Production-grade hosted/self-hosted track Phase 1-7 + real CLI pilot complete. **GA hardening track active (GA-0 through GA-7)**: GA-0 (plan docs) DONE, GA-1 (artifact ignore + persisted review diff) DONE, GA-2 (production profile gate) DONE, GA-3 (scheduler stability) DONE, GA-4 (observability/audit) DONE, GA-5 (review UI) DONE. Next: GA-6 (SDK/API completeness).
+Last verified: 2026-06-06. Production-grade hosted/self-hosted track Phase 1-7 + real CLI pilot complete. **GA hardening track active (GA-0 through GA-7)**: GA-0 (plan docs) DONE, GA-1 (artifact ignore + persisted review diff) DONE, GA-2 (production profile gate) DONE, GA-3 (scheduler stability) DONE, GA-4 (observability/audit) DONE, GA-5 (review UI) DONE, GA-6 (SDK/API completeness) DONE. Next: GA-7 (soak test).
 
 ## Repository State
 
