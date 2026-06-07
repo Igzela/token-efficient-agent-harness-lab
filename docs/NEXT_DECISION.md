@@ -63,9 +63,9 @@ Current assessment:
 | Dimension | Current level | Next gap |
 |---|---|---|
 | Usability | Local/small-team supervised beta is usable. | Longer soak runs and clearer operator controls. |
-| Intelligence | High: routing feedback, rule-based decomposition, quality gates, explicit CLI executor calls, policy decision engine, executor resource pool, queue/priority/backpressure, and decision trace/explainability are wired. | Ops soak/failure-injection coverage. |
-| Dynamicity | High: persisted graph mutation, scheduler dynamic-mode recovery, priority-aware scheduling, and decision trace are complete. | Ops soak/failure-injection coverage. |
-| Productization | Local self-hosted beta is strong; hosted GA is not the current target. | Ops soak/failure-injection coverage. |
+| Intelligence | High: routing feedback, rule-based decomposition, quality gates, explicit CLI executor calls, policy decision engine, executor resource pool, queue/priority/backpressure, and decision trace/explainability are wired. | All phases complete. |
+| Dynamicity | High: persisted graph mutation, scheduler dynamic-mode recovery, priority-aware scheduling, and decision trace are complete. | All phases complete. |
+| Productization | Local self-hosted beta is strong; hosted GA is not the current target. | All phases complete. |
 
 Next macro-orchestrator phases:
 
@@ -75,7 +75,7 @@ Next macro-orchestrator phases:
 | 2 | Resource / Executor Pool | **DONE.** `ExecutorPool` module models executors by capability, availability, concurrency limit, cooldown, failure score, and cost profile. Scheduler/dynamic controller use pool for per-run executor selection. `GET /api/v1/executor-pool` exposes pool status. Dashboard ExecutorPool component shows capacity, health, and cost. TypeScript + Python SDK `fetchExecutorPool()` methods. Schema v8 adds `executor_pool` table. 17 new tests (1243 total). |
 | 3 | Queue / Priority / Backpressure | **DONE.** Workflow runs support priority (1=highest, 10=lowest), deadline_at, sla_ms, tenant_id, queue_position, pause_reason, and degrade_mode. Schema v9 adds 7 columns + priority index. `RunQueue` provides priority-aware sorting, admission check, deadline monitoring. `Backpressure` manages activation/deactivation thresholds, pause cooldowns, effective concurrency. Scheduler uses priority-aware selection; DynamicController checks pause_reason. HTTP: `GET /api/v1/queue/status`, `GET /api/v1/queue/runs`, `PUT /api/v1/queue/runs/{run_id}/priority`, `PUT /api/v1/queue/runs/{run_id}/pause`, `GET /api/v1/queue/tenants`. SDK + Dashboard wired. 62 new tests (1305 total). |
 | 4 | Decision Trace / Explainability | **DONE.** Dashboard shows the decision chain for each run: executor choice, pause reason, graph-mutation reason, quality/routing/cost inputs, and recovery path. Storage: `get_decision_by_id` + 12 tests. HTTP: 3 endpoints (`/decisions`, `/decisions/:id`, `/decisions/stats`). TypeScript + Python SDK methods. Dashboard: `DecisionLog` + `DecisionTrace` components, new "Decisions" tab. 13 new Rust tests (1318 total). |
-| 5 | Ops Soak / Production Drill | A repeatable script runs multi-run, multi-executor, failure recovery, restart recovery, backup/restore dry-run, and dashboard visibility checks, then emits a machine-readable report. |
+| 5 | Ops Soak / Production Drill | **DONE.** `scripts/soak_ops_drill.py` runs multi-run, multi-executor, failure recovery, backup/restore dry-run, and dashboard visibility checks with JSON report. `engine/tests/test_ops_soak.rs` adds 20 integration tests covering soak scenarios (including concurrent ticks, pause/resume, stale lease recovery, tenant queue breakdown, and E2E drill). 1338 total tests. |
 
 Implementation constraints for all phases: extend `scheduler`, `DynamicWorkflowController`, `workflow_runs`, `routing`, `quality`, `node_executor`, and existing dashboard/SDK surfaces. Do not add a parallel scheduler/DAG/runtime, default-on provider execution, target-repository writes, sandbox/container/VM expansion, hosted SaaS deployment, or unattended autonomous workers.
 

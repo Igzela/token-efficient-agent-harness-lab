@@ -40,7 +40,7 @@ Master document: `docs/dispatch/DISPATCHER_KERNEL_V0_ARCHITECTURE.md`
 - Dynamic Workflow Batch 7 + scheduler dynamic-mode recovery: COMPLETE (1208 Rust tests)
 
 **Key Milestones:**
-- 1243 Rust tests pass, 0 failures
+- 1338 Rust tests pass, 0 failures
 - TypeScript strict + readonly lint + build + static export pass
 - `cargo fmt`, `cargo clippy`, handoff guard all pass
 
@@ -127,7 +127,7 @@ When you encounter schema ambiguity, interface questions, phase boundary edge ca
 
 - **Framework**: Rust `cargo test` for engine; Python `unittest` for SDK
 - **Run commands**: `cargo test -p engine` (primary); SDK tests in `sdk/python/`
-- **Current count**: 1226 Rust tests, 0 failures
+- **Current count**: 1338 Rust tests, 0 failures
 - **CI**: GitHub Actions on push/PR to main
 - **Test-first**: Write tests alongside implementation
 
