@@ -137,7 +137,10 @@ mod tests {
             created_at: "2026-06-07T00:00:00Z".to_string(),
         };
         let value = decision.to_value();
-        assert_eq!(value["schema_version"], ORCHESTRATION_DECISION_SCHEMA_VERSION);
+        assert_eq!(
+            value["schema_version"],
+            ORCHESTRATION_DECISION_SCHEMA_VERSION
+        );
         assert_eq!(value["decision_id"], "dec-0001");
         assert_eq!(value["action"], "execute_node");
         assert_eq!(value["confidence"], "high");
@@ -146,13 +149,8 @@ mod tests {
 
     #[test]
     fn test_confidence_from_inputs_high() {
-        let (conf, score) = confidence_from_inputs(
-            "running",
-            Some("pending"),
-            true,
-            Some(0.9),
-            None,
-        );
+        let (conf, score) =
+            confidence_from_inputs("running", Some("pending"), true, Some(0.9), None);
         assert_eq!(conf, DecisionConfidence::High);
         assert!(score >= 0.7);
     }
@@ -172,33 +170,57 @@ mod tests {
 
     #[test]
     fn test_confidence_from_inputs_medium() {
-        let (conf, score) = confidence_from_inputs(
-            "created",
-            Some("pending"),
-            false,
-            None,
-            None,
-        );
+        let (conf, score) = confidence_from_inputs("created", Some("pending"), false, None, None);
         assert_eq!(conf, DecisionConfidence::Medium);
         assert!((0.3..0.7).contains(&score));
     }
 
     #[test]
     fn test_action_to_string() {
-        assert_eq!(action_to_string(&OrchestrationAction::ExecuteNode), "execute_node");
-        assert_eq!(action_to_string(&OrchestrationAction::RetryNode), "retry_node");
-        assert_eq!(action_to_string(&OrchestrationAction::GraphMutated), "graph_mutated");
-        assert_eq!(action_to_string(&OrchestrationAction::RequestApproval), "request_approval");
-        assert_eq!(action_to_string(&OrchestrationAction::RunCompleted), "run_completed");
-        assert_eq!(action_to_string(&OrchestrationAction::RunFailed), "run_failed");
-        assert_eq!(action_to_string(&OrchestrationAction::NoAction), "no_action");
+        assert_eq!(
+            action_to_string(&OrchestrationAction::ExecuteNode),
+            "execute_node"
+        );
+        assert_eq!(
+            action_to_string(&OrchestrationAction::RetryNode),
+            "retry_node"
+        );
+        assert_eq!(
+            action_to_string(&OrchestrationAction::GraphMutated),
+            "graph_mutated"
+        );
+        assert_eq!(
+            action_to_string(&OrchestrationAction::RequestApproval),
+            "request_approval"
+        );
+        assert_eq!(
+            action_to_string(&OrchestrationAction::RunCompleted),
+            "run_completed"
+        );
+        assert_eq!(
+            action_to_string(&OrchestrationAction::RunFailed),
+            "run_failed"
+        );
+        assert_eq!(
+            action_to_string(&OrchestrationAction::NoAction),
+            "no_action"
+        );
     }
 
     #[test]
     fn test_decision_confidence_from_score() {
-        assert_eq!(DecisionConfidence::from_score(1.0), DecisionConfidence::High);
-        assert_eq!(DecisionConfidence::from_score(0.7), DecisionConfidence::High);
-        assert_eq!(DecisionConfidence::from_score(0.5), DecisionConfidence::Medium);
+        assert_eq!(
+            DecisionConfidence::from_score(1.0),
+            DecisionConfidence::High
+        );
+        assert_eq!(
+            DecisionConfidence::from_score(0.7),
+            DecisionConfidence::High
+        );
+        assert_eq!(
+            DecisionConfidence::from_score(0.5),
+            DecisionConfidence::Medium
+        );
         assert_eq!(DecisionConfidence::from_score(0.3), DecisionConfidence::Low);
         assert_eq!(DecisionConfidence::from_score(0.0), DecisionConfidence::Low);
     }

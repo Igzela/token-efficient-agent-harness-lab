@@ -1,10 +1,8 @@
 use serde_json::{json, Value};
 
+use engine::node_executor::{FailNodeExecutor, NoopNodeExecutor};
 use engine::storage::local_product_store::LocalProductStore;
-use engine::workflow::dynamic_controller::{
-    DynamicControllerConfig, DynamicWorkflowController,
-};
-use engine::node_executor::{NoopNodeExecutor, FailNodeExecutor};
+use engine::workflow::dynamic_controller::{DynamicControllerConfig, DynamicWorkflowController};
 
 fn setup_store_with_run() -> (LocalProductStore, String) {
     let store = LocalProductStore::new(":memory:").expect("in-memory store");
@@ -132,7 +130,11 @@ fn test_decision_emitted_for_max_ticks() {
     let run = store
         .create_workflow_run_from_plan(plan_id, "test")
         .expect("create run");
-    let run_id = run.get("run_id").and_then(Value::as_str).unwrap().to_string();
+    let run_id = run
+        .get("run_id")
+        .and_then(Value::as_str)
+        .unwrap()
+        .to_string();
 
     let config = DynamicControllerConfig {
         max_ticks_per_run: 0,
@@ -145,12 +147,18 @@ fn test_decision_emitted_for_max_ticks() {
     ctrl.tick(&store, &run_id, "test", &executor).expect("tick");
 
     let decisions = store.get_decisions_for_run(&run_id, 100).unwrap();
-    assert!(!decisions.is_empty(), "should have a decision for max_ticks");
+    assert!(
+        !decisions.is_empty(),
+        "should have a decision for max_ticks"
+    );
 
     let blocked = &decisions[0];
     assert_eq!(blocked.action, "no_action");
     assert!(blocked.blocked_reason.is_some());
-    assert!(blocked.confidence_score < 0.5, "blocked decision should have low confidence");
+    assert!(
+        blocked.confidence_score < 0.5,
+        "blocked decision should have low confidence"
+    );
 }
 
 #[test]
@@ -166,7 +174,8 @@ fn test_decision_emitted_for_terminal_run() {
         }
     }
 
-    ctrl.tick(&store, &run_id, "test", &executor).expect("tick on terminal");
+    ctrl.tick(&store, &run_id, "test", &executor)
+        .expect("tick on terminal");
 
     let decisions = store.get_decisions_for_run(&run_id, 100).unwrap();
     let terminal_decisions: Vec<_> = decisions
@@ -290,7 +299,9 @@ fn test_decision_mutation_limit_emits_decision() {
 
     let decisions = store.get_decisions_for_run(&run_id, 100).unwrap();
     assert!(
-        decisions.iter().any(|d| d.action == "request_approval" || d.blocked_reason.is_some()),
+        decisions
+            .iter()
+            .any(|d| d.action == "request_approval" || d.blocked_reason.is_some()),
         "mutation limit should emit a decision with blocked reason"
     );
 }
@@ -310,7 +321,10 @@ fn test_multiple_ticks_produce_sequential_decisions() {
         }
     }
 
-    assert!(tick_count >= 2, "should tick at least twice for 2-node graph");
+    assert!(
+        tick_count >= 2,
+        "should tick at least twice for 2-node graph"
+    );
 
     let decisions = store.get_decisions_for_run(&run_id, 100).unwrap();
     assert!(

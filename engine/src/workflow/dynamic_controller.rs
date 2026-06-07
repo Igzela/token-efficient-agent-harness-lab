@@ -10,7 +10,8 @@ use crate::workflow::dynamic_decomposer::{
     RuleBasedDecomposer,
 };
 use crate::workflow::orchestration_decision::{
-    confidence_from_inputs, action_to_string, OrchestrationAction, ORCHESTRATION_DECISION_SCHEMA_VERSION,
+    action_to_string, confidence_from_inputs, OrchestrationAction,
+    ORCHESTRATION_DECISION_SCHEMA_VERSION,
 };
 
 // ---------------------------------------------------------------------------
@@ -892,13 +893,8 @@ fn build_decision(
     task_group: Option<&str>,
 ) -> Value {
     let executor_type = extract_executor_type(executor, node_id, task_type);
-    let (confidence, confidence_score) = confidence_from_inputs(
-        run_status,
-        Some("pending"),
-        false,
-        None,
-        blocked_reason,
-    );
+    let (confidence, confidence_score) =
+        confidence_from_inputs(run_status, Some("pending"), false, None, blocked_reason);
 
     let mut input_signals = json!({
         "run_id": run_id,
