@@ -4273,6 +4273,7 @@ async fn axum_scheduler_status_returns_enabled_when_scheduler_present() {
         max_concurrent: 4,
         lease_timeout_ms: 300_000,
         executor_type: "noop".to_string(),
+        ..Default::default()
     };
     let mut scheduler = WorkflowScheduler::new(Arc::new(store), config);
     scheduler.start().unwrap();
@@ -4390,6 +4391,7 @@ async fn axum_scheduler_status_reflects_active_runs() {
         max_concurrent: 4,
         lease_timeout_ms: 300_000,
         executor_type: "noop".to_string(),
+        ..Default::default()
     };
     let scheduler = WorkflowScheduler::new(store_arc, config);
     let scheduler_arc = Arc::new(Mutex::new(scheduler));
@@ -5660,6 +5662,7 @@ async fn ga6_scheduler_status_reports_config_and_metrics() {
         max_concurrent: 2,
         lease_timeout_ms: 60_000,
         executor_type: "command".to_string(),
+        ..Default::default()
     };
     let mut scheduler = WorkflowScheduler::new(Arc::new(store), config);
     scheduler.start().unwrap();
@@ -5741,4 +5744,230 @@ async fn ga6_export_success_with_matching_approval() {
     assert_eq!(body["export"]["artifact_id"], artifact_id);
     assert_eq!(body["export"]["approval_binding"]["export_eligible"], true);
     assert_eq!(body["export"]["integrity"]["integrity_ok"], true);
+}
+
+#[tokio::test]
+async fn axum_queue_status_returns_200() {
+    let dir = tempdir().unwrap();
+    let store = LocalProductStore::new(dir.path().join("queue.db")).unwrap();
+    let app = build_axum_router(AxumApiState::new().with_local_store(store));
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method(Method::GET)
+                .uri("/api/v1/queue/status")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = response_json(response).await;
+    assert_eq!(body["schema_version"], "axum_api.v1");
+    assert!(body["queue_status"].is_object());
+    assert_eq!(body["backpressure_active"], false);
+}
+
+#[tokio::test]
+async fn axum_queue_runs_returns_array() {
+    let dir = tempdir().unwrap();
+    let store = LocalProductStore::new(dir.path().join("queue-runs.db")).unwrap();
+    let app = build_axum_router(AxumApiState::new().with_local_store(store));
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method(Method::GET)
+                .uri("/api/v1/queue/runs")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = response_json(response).await;
+    assert!(body["runs"].as_array().is_some());
+    assert_eq!(body["limit"], 50);
+    assert_eq!(body["offset"], 0);
+}
+
+#[tokio::test]
+async fn axum_queue_runs_respects_limit_offset() {
+    let dir = tempdir().unwrap();
+    let store = LocalProductStore::new(dir.path().join("queue-page.db")).unwrap();
+    let app = build_axum_router(AxumApiState::new().with_local_store(store));
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method(Method::GET)
+                .uri("/api/v1/queue/runs?limit=10&offset=5")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = response_json(response).await;
+    assert_eq!(body["limit"], 10);
+    assert_eq!(body["offset"], 5);
+}
+
+fn create_plan_and_run(store: &LocalProductStore) -> String {
+    store
+        .create_workflow_plan("Queue test request", "test", "test-actor", |ids, _| {
+            Ok(json!({
+                "schema_version": "read_only_plan.v1",
+                "plan_id": ids.plan_id,
+                "status": "planned_read_only",
+                "workflow_id": ids.workflow_id,
+                "dispatch_id": ids.dispatch_id,
+                "analysis": {"analysis_id": "a-1", "task_domain": "test"},
+                "graph": {
+                    "schema_version": "workflow_graph.v1",
+                    "workflow_id": ids.workflow_id,
+                    "dispatch_id": ids.dispatch_id,
+                    "status": "decomposed",
+                    "created_at": "2026-06-07T00:00:00Z",
+                    "updated_at": "2026-06-07T00:00:00Z",
+                    "nodes": [
+                        {"node_id": "node-a", "task_type": "implementation", "status": "pending"}
+                    ],
+                    "edges": []
+                },
+                "boundaries": {
+                    "execution_authority": "disabled",
+                    "target_repository_writes": "disabled",
+                    "runtime_workers": "disabled",
+                },
+            }))
+        })
+        .expect("failed to create plan");
+    let run = store
+        .create_workflow_run_from_plan("plan-0001", "test-user")
+        .unwrap();
+    run["run_id"].as_str().unwrap().to_string()
+}
+
+#[tokio::test]
+async fn axum_queue_update_run_priority() {
+    let dir = tempdir().unwrap();
+    let store = LocalProductStore::new(dir.path().join("queue-pri.db")).unwrap();
+    let run_id = create_plan_and_run(&store);
+    let app = build_axum_router(AxumApiState::new().with_local_store(store));
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method(Method::PUT)
+                .uri(format!("/api/v1/queue/runs/{run_id}/priority"))
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(json!({"priority": 3}).to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = response_json(response).await;
+    assert_eq!(body["ok"], true);
+    assert_eq!(body["priority"], 3);
+    assert_eq!(body["run_id"], run_id);
+}
+
+#[tokio::test]
+async fn axum_queue_update_priority_rejects_invalid() {
+    let dir = tempdir().unwrap();
+    let store = LocalProductStore::new(dir.path().join("queue-pri-invalid.db")).unwrap();
+    let run_id = create_plan_and_run(&store);
+    let app = build_axum_router(AxumApiState::new().with_local_store(store));
+
+    let response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(Method::PUT)
+                .uri(format!("/api/v1/queue/runs/{run_id}/priority"))
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(json!({"priority": 0}).to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    let body = response_json(response).await;
+    assert_eq!(body["code"], "invalid_priority");
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method(Method::PUT)
+                .uri(format!("/api/v1/queue/runs/{run_id}/priority"))
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(json!({"priority": 11}).to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+}
+
+#[tokio::test]
+async fn axum_queue_set_and_clear_pause() {
+    let dir = tempdir().unwrap();
+    let store = LocalProductStore::new(dir.path().join("queue-pause.db")).unwrap();
+    let run_id = create_plan_and_run(&store);
+    let app = build_axum_router(AxumApiState::new().with_local_store(store));
+
+    let response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(Method::PUT)
+                .uri(format!("/api/v1/queue/runs/{run_id}/pause"))
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(json!({"reason": "rate limit"}).to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = response_json(response).await;
+    assert_eq!(body["pause_reason"], "rate limit");
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method(Method::PUT)
+                .uri(format!("/api/v1/queue/runs/{run_id}/pause"))
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(json!({}).to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = response_json(response).await;
+    assert_eq!(body["pause_reason"], Value::Null);
+}
+
+#[tokio::test]
+async fn axum_queue_tenants_returns_array() {
+    let dir = tempdir().unwrap();
+    let store = LocalProductStore::new(dir.path().join("queue-tenants.db")).unwrap();
+    let app = build_axum_router(AxumApiState::new().with_local_store(store));
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method(Method::GET)
+                .uri("/api/v1/queue/tenants")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = response_json(response).await;
+    assert!(body["tenants"].as_array().is_some());
 }

@@ -26,6 +26,8 @@ pub struct DynamicControllerConfig {
     pub approval_required_for_mutation: bool,
     pub auto_fix_on_failure: bool,
     pub record_feedback: bool,
+    pub admission_check_enabled: bool,
+    pub respect_priority: bool,
 }
 
 impl Default for DynamicControllerConfig {
@@ -36,6 +38,8 @@ impl Default for DynamicControllerConfig {
             approval_required_for_mutation: false,
             auto_fix_on_failure: true,
             record_feedback: true,
+            admission_check_enabled: true,
+            respect_priority: true,
         }
     }
 }
@@ -84,6 +88,10 @@ pub struct ControllerTickResult {
     pub suggested_executor_type: Option<String>,
     pub pool_failure_score: Option<f64>,
     pub pool_active_count: Option<u64>,
+    pub queue_position: Option<i32>,
+    pub priority: Option<i32>,
+    pub admission_allowed: bool,
+    pub admission_reason: Option<String>,
 }
 
 // ---------------------------------------------------------------------------
@@ -154,6 +162,39 @@ impl DynamicWorkflowController {
             .unwrap_or("unknown")
             .to_string();
 
+        let run_priority = run
+            .get("priority")
+            .and_then(Value::as_i64)
+            .map(|p| p as i32);
+        let run_queue_position = run
+            .get("queue_position")
+            .and_then(Value::as_i64)
+            .map(|p| p as i32);
+
+        if self.config.admission_check_enabled {
+            let pause_reason = run
+                .get("pause_reason")
+                .and_then(Value::as_str)
+                .unwrap_or("");
+            if !pause_reason.is_empty() {
+                return Ok(ControllerTickResult {
+                    actions: vec![ControllerAction::NoAction {
+                        reason: format!("run paused: {}", pause_reason),
+                    }],
+                    run_status: status,
+                    mutations_applied: 0,
+                    should_continue: false,
+                    suggested_executor_type: None,
+                    pool_failure_score: None,
+                    pool_active_count: None,
+                    queue_position: run_queue_position,
+                    priority: run_priority,
+                    admission_allowed: false,
+                    admission_reason: Some(pause_reason.to_string()),
+                });
+            }
+        }
+
         if self.ticks_executed >= self.config.max_ticks_per_run {
             let decision = build_decision(
                 run_id,
@@ -189,6 +230,10 @@ impl DynamicWorkflowController {
                 suggested_executor_type: None,
                 pool_failure_score: None,
                 pool_active_count: None,
+                queue_position: run_queue_position,
+                priority: run_priority,
+                admission_allowed: true,
+                admission_reason: None,
             });
         }
 
@@ -264,6 +309,10 @@ impl DynamicWorkflowController {
                 suggested_executor_type: None,
                 pool_failure_score: None,
                 pool_active_count: None,
+                queue_position: run_queue_position,
+                priority: run_priority,
+                admission_allowed: true,
+                admission_reason: None,
             });
         }
 
@@ -301,6 +350,10 @@ impl DynamicWorkflowController {
                     suggested_executor_type: None,
                     pool_failure_score: None,
                     pool_active_count: None,
+                    queue_position: run_queue_position,
+                    priority: run_priority,
+                    admission_allowed: true,
+                    admission_reason: None,
                 });
             }
         }
@@ -435,6 +488,10 @@ impl DynamicWorkflowController {
                     suggested_executor_type: None,
                     pool_failure_score: None,
                     pool_active_count: None,
+                    queue_position: run_queue_position,
+                    priority: run_priority,
+                    admission_allowed: true,
+                    admission_reason: None,
                 });
             }
         }
@@ -495,6 +552,10 @@ impl DynamicWorkflowController {
                 suggested_executor_type: None,
                 pool_failure_score: pool_fs,
                 pool_active_count: pool_ac,
+                queue_position: run_queue_position,
+                priority: run_priority,
+                admission_allowed: true,
+                admission_reason: None,
             });
         }
 
@@ -790,6 +851,10 @@ impl DynamicWorkflowController {
             suggested_executor_type,
             pool_failure_score: pool_fs,
             pool_active_count: pool_ac,
+            queue_position: run_queue_position,
+            priority: run_priority,
+            admission_allowed: true,
+            admission_reason: None,
         })
     }
 
@@ -1506,6 +1571,79 @@ mod tests {
     fn test_node_status_fallback_to_status_field() {
         let node = json!({"node_id": "n1", "status": "pending"});
         assert_eq!(node_status(&node), "pending");
+    }
+
+    #[test]
+    fn test_controller_tick_respects_pause_reason() {
+        let (store, run_id) = setup_store_with_run();
+        store
+            .update_run_pause_reason(&run_id, Some("operator_hold"))
+            .unwrap();
+
+        let config = DynamicControllerConfig {
+            admission_check_enabled: true,
+            ..Default::default()
+        };
+        let mut ctrl = DynamicWorkflowController::new(config);
+        let executor = NoopNodeExecutor;
+
+        let result = ctrl.tick(&store, &run_id, "test", &executor).expect("tick");
+        assert!(!result.admission_allowed, "paused run should be rejected");
+        assert_eq!(result.admission_reason.as_deref(), Some("operator_hold"));
+        assert!(result.actions.iter().any(|a| matches!(
+            a,
+            ControllerAction::NoAction { reason } if reason.contains("paused")
+        )));
+        assert!(!result.should_continue);
+    }
+
+    #[test]
+    fn test_controller_tick_includes_priority_and_queue_position() {
+        let (store, run_id) = setup_store_with_run();
+        store.update_run_priority(&run_id, 3).unwrap();
+
+        let config = DynamicControllerConfig::default();
+        let mut ctrl = DynamicWorkflowController::new(config);
+        let executor = NoopNodeExecutor;
+
+        let result = ctrl.tick(&store, &run_id, "test", &executor).expect("tick");
+        assert_eq!(result.priority, Some(3), "priority should be read from run");
+        assert!(
+            result.admission_allowed,
+            "non-paused run should be admitted"
+        );
+    }
+
+    #[test]
+    fn test_controller_admission_check_disabled_allows_paused_runs() {
+        let (store, run_id) = setup_store_with_run();
+        store
+            .update_run_pause_reason(&run_id, Some("operator_hold"))
+            .unwrap();
+
+        let config = DynamicControllerConfig {
+            admission_check_enabled: false,
+            ..Default::default()
+        };
+        let mut ctrl = DynamicWorkflowController::new(config);
+        let executor = NoopNodeExecutor;
+
+        let result = ctrl.tick(&store, &run_id, "test", &executor).expect("tick");
+        assert!(
+            result.admission_allowed,
+            "with admission check disabled, paused run should proceed"
+        );
+        assert!(result
+            .actions
+            .iter()
+            .any(|a| matches!(a, ControllerAction::NodeExecuted { .. })));
+    }
+
+    #[test]
+    fn test_controller_default_config_has_admission_fields() {
+        let config = DynamicControllerConfig::default();
+        assert!(config.admission_check_enabled);
+        assert!(config.respect_priority);
     }
 
     #[test]

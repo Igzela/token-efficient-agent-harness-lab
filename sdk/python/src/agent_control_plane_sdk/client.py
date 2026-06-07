@@ -256,6 +256,36 @@ class AgentControlPlaneClient:
     def fetch_executor_pool(self) -> dict[str, Any]:
         return self._get("/api/v1/executor-pool")
 
+    def fetch_queue_status(self) -> dict[str, Any]:
+        return self._get("/api/v1/queue/status")
+
+    def fetch_queue_runs(
+        self,
+        limit: int | None = None,
+        offset: int | None = None,
+    ) -> dict[str, Any]:
+        params: dict[str, Any] = {}
+        if limit is not None:
+            params["limit"] = limit
+        if offset is not None:
+            params["offset"] = offset
+        return self._get(_query_path("/api/v1/queue/runs", params))
+
+    def update_run_priority(self, run_id: str, priority: int) -> dict[str, Any]:
+        return self._put(
+            f"/api/v1/queue/runs/{_quote_path_segment(run_id)}/priority",
+            {"priority": priority},
+        )
+
+    def pause_run(self, run_id: str, reason: str | None = None) -> dict[str, Any]:
+        return self._put(
+            f"/api/v1/queue/runs/{_quote_path_segment(run_id)}/pause",
+            {"reason": reason},
+        )
+
+    def fetch_queue_tenants(self) -> dict[str, Any]:
+        return self._get("/api/v1/queue/tenants")
+
     def config(self) -> dict[str, Any]:
         return self._get("/api/v1/config")
 
@@ -422,6 +452,12 @@ class AgentControlPlaneClient:
         data = json.dumps(body).encode("utf-8")
         headers = {**self._headers(), "content-type": "application/json"}
         request = Request(f"{self.base_url}{path}", data=data, headers=headers, method="POST")
+        return self._send(request)
+
+    def _put(self, path: str, body: dict[str, Any]) -> Any:
+        data = json.dumps(body).encode("utf-8")
+        headers = {**self._headers(), "content-type": "application/json"}
+        request = Request(f"{self.base_url}{path}", data=data, headers=headers, method="PUT")
         return self._send(request)
 
     def _headers(self) -> dict[str, str]:

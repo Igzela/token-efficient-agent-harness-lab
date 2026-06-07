@@ -218,6 +218,26 @@ fn axum_routes() -> Router<AxumApiState> {
             get(executor_pool::api_executor_pool_status).options(cors_preflight),
         )
         .route(
+            "/api/v1/queue/status",
+            get(queue::api_queue_status).options(cors_preflight),
+        )
+        .route(
+            "/api/v1/queue/runs",
+            get(queue::api_queue_runs).options(cors_preflight),
+        )
+        .route(
+            "/api/v1/queue/runs/:run_id/priority",
+            put(queue::api_update_run_priority).options(cors_preflight),
+        )
+        .route(
+            "/api/v1/queue/runs/:run_id/pause",
+            put(queue::api_update_run_pause).options(cors_preflight),
+        )
+        .route(
+            "/api/v1/queue/tenants",
+            get(queue::api_queue_tenants).options(cors_preflight),
+        )
+        .route(
             "/api/v1/provider/health",
             get(provider::api_provider_health).options(cors_preflight),
         )

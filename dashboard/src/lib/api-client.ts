@@ -6,6 +6,10 @@ import type {
   ExecutorPoolStatusResponse,
   LocalDashboardState,
   OperationsMetrics,
+  QueueRunListResponse,
+  QueueRunResponse,
+  QueueStatusResponse,
+  QueueTenantListResponse,
   SchedulerStatusResponse,
   SupervisedPatchArtifactCaptureResponse,
   SupervisedPatchArtifactListResponse,
@@ -402,4 +406,41 @@ export async function fetchSchedulerStatus(): Promise<SchedulerStatusResponse> {
 
 export async function fetchExecutorPool(): Promise<ExecutorPoolStatusResponse> {
   return fetchJson<ExecutorPoolStatusResponse>(`${BASE}/api/v1/executor-pool`);
+}
+
+export async function fetchQueueStatus(): Promise<QueueStatusResponse> {
+  return fetchJson<QueueStatusResponse>(`${BASE}/api/v1/queue/status`);
+}
+
+export async function fetchQueueRuns(params: {
+  limit?: number;
+  offset?: number;
+} = {}): Promise<QueueRunListResponse> {
+  return fetchJson<QueueRunListResponse>(withQuery("/api/v1/queue/runs", params));
+}
+
+export async function updateRunPriority(runId: string, priority: number): Promise<QueueRunResponse> {
+  return fetchJson<QueueRunResponse>(
+    `${BASE}/api/v1/queue/runs/${encodeURIComponent(runId)}/priority`,
+    {
+      method: "PUT",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ priority }),
+    },
+  );
+}
+
+export async function pauseRun(runId: string, reason?: string | null): Promise<QueueRunResponse> {
+  return fetchJson<QueueRunResponse>(
+    `${BASE}/api/v1/queue/runs/${encodeURIComponent(runId)}/pause`,
+    {
+      method: "PUT",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ reason: reason ?? null }),
+    },
+  );
+}
+
+export async function fetchQueueTenants(): Promise<QueueTenantListResponse> {
+  return fetchJson<QueueTenantListResponse>(`${BASE}/api/v1/queue/tenants`);
 }

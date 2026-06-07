@@ -689,3 +689,77 @@ export interface ExecutorPoolStatus {
   total_active: number;
   total_capacity: number;
 }
+
+export interface QueueConfig {
+  max_concurrent: number;
+  max_queued: number;
+  backpressure_enabled: boolean;
+  backpressure_activation: number;
+}
+
+export interface TenantQueueInfo {
+  tenant_id: string;
+  run_count: number;
+  avg_priority: number;
+}
+
+export interface QueueRunSummary {
+  run_id: string;
+  run_sequence: number;
+  workflow_id: string;
+  status: string;
+  priority: number;
+  deadline_at: string | null;
+  sla_ms: number | null;
+  tenant_id: string;
+  queue_position: number | null;
+  pause_reason: string | null;
+  degrade_mode: string | null;
+  created_at: string;
+  started_at: string | null;
+}
+
+export interface QueueStatus {
+  schema_version: string;
+  total_queued: number;
+  total_running: number;
+  total_paused: number;
+  total_completed: number;
+  total_failed: number;
+  avg_priority: number;
+  overdue_count: number;
+  capacity_utilization: number;
+  queue_depth_ratio: number;
+  backpressure_active: boolean;
+  effective_concurrency: number;
+  queue_config: QueueConfig;
+  tenant_counts: TenantQueueInfo[];
+}
+
+export interface QueueStatusResponse {
+  schema_version: "axum_api.v1";
+  queue: QueueStatus;
+}
+
+export interface QueueRunListResponse {
+  schema_version: "axum_api.v1";
+  runs: QueueRunSummary[];
+}
+
+export interface QueueRunResponse {
+  schema_version: "axum_api.v1";
+  run: QueueRunSummary;
+}
+
+export interface QueueTenantListResponse {
+  schema_version: "axum_api.v1";
+  tenants: TenantQueueInfo[];
+}
+
+export interface UpdatePriorityRequest {
+  priority: number;
+}
+
+export interface PauseRunRequest {
+  reason: string | null;
+}

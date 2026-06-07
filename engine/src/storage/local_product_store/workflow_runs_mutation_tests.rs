@@ -836,3 +836,276 @@ fn test_workflow_run_detail_includes_mutation_events() {
         "get_workflow_run should include mutation events in the events array"
     );
 }
+
+#[test]
+fn test_list_active_workflow_runs_prioritized_ordering() {
+    let store = new_test_store();
+    let plan1 = create_test_plan(&store);
+    let pid1 = plan1.get("plan_id").and_then(Value::as_str).unwrap();
+    let plan2 = create_test_plan(&store);
+    let pid2 = plan2.get("plan_id").and_then(Value::as_str).unwrap();
+    let plan3 = create_test_plan(&store);
+    let pid3 = plan3.get("plan_id").and_then(Value::as_str).unwrap();
+
+    store
+        .create_workflow_run_with_queue_metadata(pid1, "test", 10, None, None, None)
+        .unwrap();
+    store
+        .create_workflow_run_with_queue_metadata(pid2, "test", 1, None, None, None)
+        .unwrap();
+    store
+        .create_workflow_run_with_queue_metadata(pid3, "test", 5, None, None, None)
+        .unwrap();
+
+    let runs = store.list_active_workflow_runs_prioritized().unwrap();
+    assert_eq!(runs.len(), 3);
+    // Priority 1 (highest) should come first
+    assert_eq!(runs[0].get("priority").and_then(Value::as_i64), Some(1));
+    assert_eq!(runs[1].get("priority").and_then(Value::as_i64), Some(5));
+    assert_eq!(runs[2].get("priority").and_then(Value::as_i64), Some(10));
+}
+
+#[test]
+fn test_list_active_workflow_runs_paused_go_last() {
+    let store = new_test_store();
+    let plan1 = create_test_plan(&store);
+    let pid1 = plan1.get("plan_id").and_then(Value::as_str).unwrap();
+    let plan2 = create_test_plan(&store);
+    let pid2 = plan2.get("plan_id").and_then(Value::as_str).unwrap();
+
+    let run1 = store
+        .create_workflow_run_with_queue_metadata(pid1, "test", 1, None, None, None)
+        .unwrap();
+    store
+        .create_workflow_run_with_queue_metadata(pid2, "test", 10, None, None, None)
+        .unwrap();
+
+    let run1_id = run1.get("run_id").and_then(Value::as_str).unwrap();
+    store
+        .update_run_pause_reason(run1_id, Some("operator_paused"))
+        .unwrap();
+
+    let runs = store.list_active_workflow_runs_prioritized().unwrap();
+    assert_eq!(runs.len(), 2);
+    // Non-paused priority 10 comes before paused priority 1
+    assert_eq!(runs[0].get("priority").and_then(Value::as_i64), Some(10));
+    assert_eq!(
+        runs[1].get("pause_reason").and_then(Value::as_str),
+        Some("operator_paused")
+    );
+}
+
+#[test]
+fn test_update_run_priority() {
+    let store = new_test_store();
+    let run = run_from_plan(&store);
+    let run_id = run.get("run_id").and_then(Value::as_str).unwrap();
+
+    store.update_run_priority(run_id, 3).unwrap();
+    let updated = store.get_workflow_run(run_id).unwrap().unwrap();
+    assert_eq!(
+        updated.get("priority").and_then(Value::as_i64),
+        Some(3),
+        "priority should be updated to 3"
+    );
+}
+
+#[test]
+fn test_update_run_pause_reason_set_and_clear() {
+    let store = new_test_store();
+    let run = run_from_plan(&store);
+    let run_id = run.get("run_id").and_then(Value::as_str).unwrap();
+
+    store
+        .update_run_pause_reason(run_id, Some("pool_saturated"))
+        .unwrap();
+    let updated = store.get_workflow_run(run_id).unwrap().unwrap();
+    assert_eq!(
+        updated.get("pause_reason").and_then(Value::as_str),
+        Some("pool_saturated")
+    );
+
+    store.update_run_pause_reason(run_id, None).unwrap();
+    let cleared = store.get_workflow_run(run_id).unwrap().unwrap();
+    assert!(
+        cleared.get("pause_reason").unwrap().is_null(),
+        "pause_reason should be null after clearing"
+    );
+}
+
+#[test]
+fn test_update_run_degrade_mode_set_and_clear() {
+    let store = new_test_store();
+    let run = run_from_plan(&store);
+    let run_id = run.get("run_id").and_then(Value::as_str).unwrap();
+
+    store
+        .update_run_degrade_mode(run_id, Some("reduced_concurrency"))
+        .unwrap();
+    let updated = store.get_workflow_run(run_id).unwrap().unwrap();
+    assert_eq!(
+        updated.get("degrade_mode").and_then(Value::as_str),
+        Some("reduced_concurrency")
+    );
+
+    store.update_run_degrade_mode(run_id, None).unwrap();
+    let cleared = store.get_workflow_run(run_id).unwrap().unwrap();
+    assert!(
+        cleared.get("degrade_mode").unwrap().is_null(),
+        "degrade_mode should be null after clearing"
+    );
+}
+
+#[test]
+fn test_set_run_queue_position_set_and_clear() {
+    let store = new_test_store();
+    let run = run_from_plan(&store);
+    let run_id = run.get("run_id").and_then(Value::as_str).unwrap();
+
+    store.set_run_queue_position(run_id, Some(7)).unwrap();
+    let updated = store.get_workflow_run(run_id).unwrap().unwrap();
+    assert_eq!(
+        updated.get("queue_position").and_then(Value::as_i64),
+        Some(7)
+    );
+
+    store.set_run_queue_position(run_id, None).unwrap();
+    let cleared = store.get_workflow_run(run_id).unwrap().unwrap();
+    assert!(
+        cleared.get("queue_position").unwrap().is_null(),
+        "queue_position should be null after clearing"
+    );
+}
+
+#[test]
+fn test_get_queue_status_empty() {
+    let store = new_test_store();
+    let status = store.get_queue_status().unwrap();
+    assert_eq!(status.get("total_queued").and_then(Value::as_i64), Some(0));
+    assert_eq!(status.get("total_running").and_then(Value::as_i64), Some(0));
+    assert_eq!(status.get("total_paused").and_then(Value::as_i64), Some(0));
+    assert_eq!(
+        status.get("total_completed").and_then(Value::as_i64),
+        Some(0)
+    );
+    assert_eq!(status.get("total_failed").and_then(Value::as_i64), Some(0));
+    assert_eq!(status.get("overdue_count").and_then(Value::as_i64), Some(0));
+}
+
+#[test]
+fn test_get_queue_status_with_runs() {
+    let store = new_test_store();
+    let plan1 = create_test_plan(&store);
+    let pid1 = plan1.get("plan_id").and_then(Value::as_str).unwrap();
+    let plan2 = create_test_plan(&store);
+    let pid2 = plan2.get("plan_id").and_then(Value::as_str).unwrap();
+
+    let _run1 = store.create_workflow_run_from_plan(pid1, "test").unwrap();
+    let run2 = store
+        .create_workflow_run_with_queue_metadata(pid2, "test", 3, None, None, None)
+        .unwrap();
+
+    // Pause run2
+    let run2_id = run2.get("run_id").and_then(Value::as_str).unwrap();
+    store
+        .update_run_pause_reason(run2_id, Some("quota_exceeded"))
+        .unwrap();
+
+    let status = store.get_queue_status().unwrap();
+    // run1 is "created" (not paused) = queued; run2 is "created" but paused
+    assert_eq!(status.get("total_queued").and_then(Value::as_i64), Some(1));
+    assert_eq!(status.get("total_paused").and_then(Value::as_i64), Some(1));
+}
+
+#[test]
+fn test_list_tenants_with_quota_empty() {
+    let store = new_test_store();
+    let tenants = store.list_tenants_with_quota().unwrap();
+    assert!(tenants.is_empty());
+}
+
+#[test]
+fn test_list_tenants_with_quota_groups_correctly() {
+    let store = new_test_store();
+    let plan1 = create_test_plan(&store);
+    let pid1 = plan1.get("plan_id").and_then(Value::as_str).unwrap();
+    let plan2 = create_test_plan(&store);
+    let pid2 = plan2.get("plan_id").and_then(Value::as_str).unwrap();
+    let plan3 = create_test_plan(&store);
+    let pid3 = plan3.get("plan_id").and_then(Value::as_str).unwrap();
+
+    store
+        .create_workflow_run_with_queue_metadata(pid1, "test", 3, None, None, Some("tenant-a"))
+        .unwrap();
+    store
+        .create_workflow_run_with_queue_metadata(pid2, "test", 7, None, None, Some("tenant-a"))
+        .unwrap();
+    store
+        .create_workflow_run_with_queue_metadata(pid3, "test", 5, None, None, Some("tenant-b"))
+        .unwrap();
+
+    let tenants = store.list_tenants_with_quota().unwrap();
+    assert_eq!(tenants.len(), 2);
+
+    let tenant_a = tenants
+        .iter()
+        .find(|t| t.get("tenant_id").and_then(Value::as_str) == Some("tenant-a"))
+        .unwrap();
+    assert_eq!(tenant_a.get("run_count").and_then(Value::as_i64), Some(2));
+    let avg = tenant_a
+        .get("avg_priority")
+        .and_then(Value::as_f64)
+        .unwrap();
+    assert!(
+        (avg - 5.0).abs() < 0.01,
+        "avg_priority should be ~5.0, got {avg}"
+    );
+
+    let tenant_b = tenants
+        .iter()
+        .find(|t| t.get("tenant_id").and_then(Value::as_str) == Some("tenant-b"))
+        .unwrap();
+    assert_eq!(tenant_b.get("run_count").and_then(Value::as_i64), Some(1));
+}
+
+#[test]
+fn test_create_workflow_run_with_queue_metadata() {
+    let store = new_test_store();
+    let plan = create_test_plan(&store);
+    let pid = plan.get("plan_id").and_then(Value::as_str).unwrap();
+
+    let run = store
+        .create_workflow_run_with_queue_metadata(
+            pid,
+            "test",
+            2,
+            Some("2026-12-31T23:59:59Z"),
+            Some(60000),
+            Some("tenant-x"),
+        )
+        .unwrap();
+
+    assert_eq!(run.get("priority").and_then(Value::as_i64), Some(2));
+    assert_eq!(
+        run.get("deadline_at").and_then(Value::as_str),
+        Some("2026-12-31T23:59:59Z")
+    );
+    assert_eq!(run.get("sla_ms").and_then(Value::as_i64), Some(60000));
+    assert_eq!(
+        run.get("tenant_id").and_then(Value::as_str),
+        Some("tenant-x")
+    );
+    assert!(run.get("pause_reason").unwrap().is_null());
+    assert!(run.get("degrade_mode").unwrap().is_null());
+}
+
+#[test]
+fn test_default_priority_is_five() {
+    let store = new_test_store();
+    let run = run_from_plan(&store);
+    assert_eq!(
+        run.get("priority").and_then(Value::as_i64),
+        Some(5),
+        "default priority should be 5"
+    );
+}

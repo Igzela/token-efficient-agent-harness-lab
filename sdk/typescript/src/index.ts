@@ -59,6 +59,10 @@ import type {
   ImportResponse,
   OperationsMetricsResponse,
   ExecutorPoolStatus,
+  QueueStatusResponse,
+  QueueRunListResponse,
+  QueueRunResponse,
+  QueueTenantListResponse,
 } from "./wire-types.js";
 
 export interface AgentControlPlaneClientOptions {
@@ -346,6 +350,26 @@ export class AgentControlPlaneClient {
     return this.getJson<ExecutorPoolStatus>("/api/v1/executor-pool");
   }
 
+  fetchQueueStatus(): Promise<QueueStatusResponse> {
+    return this.getJson<QueueStatusResponse>("/api/v1/queue/status");
+  }
+
+  fetchQueueRuns(limit?: number, offset?: number): Promise<QueueRunListResponse> {
+    return this.getJson<QueueRunListResponse>(`/api/v1/queue/runs${queryString({ limit, offset })}`);
+  }
+
+  updateRunPriority(runId: string, priority: number): Promise<QueueRunResponse> {
+    return this.putJson<QueueRunResponse>(`/api/v1/queue/runs/${encodeURIComponent(runId)}/priority`, { priority });
+  }
+
+  pauseRun(runId: string, reason?: string | null): Promise<QueueRunResponse> {
+    return this.putJson<QueueRunResponse>(`/api/v1/queue/runs/${encodeURIComponent(runId)}/pause`, { reason: reason ?? null });
+  }
+
+  fetchQueueTenants(): Promise<QueueTenantListResponse> {
+    return this.getJson<QueueTenantListResponse>("/api/v1/queue/tenants");
+  }
+
   config(): Promise<ConfigResponse> {
     return this.getJson<ConfigResponse>("/api/v1/config");
   }
@@ -511,6 +535,18 @@ export class AgentControlPlaneClient {
         "content-type": "application/json",
       },
       method: "POST",
+    });
+    return parseResponse<T>(response);
+  }
+
+  private async putJson<T>(path: string, body: unknown): Promise<T> {
+    const response = await this.fetchImpl(`${this.baseUrl}${path}`, {
+      body: JSON.stringify(body),
+      headers: {
+        ...this.headers(),
+        "content-type": "application/json",
+      },
+      method: "PUT",
     });
     return parseResponse<T>(response);
   }

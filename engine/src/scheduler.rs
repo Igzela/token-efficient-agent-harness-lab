@@ -16,6 +16,7 @@ use crate::routing::{
     RoutingObservationStore,
 };
 use crate::storage::local_product_store::LocalProductStore;
+use crate::workflow::backpressure::{Backpressure, BackpressureConfig};
 use crate::workflow::dynamic_controller::{
     ControllerAction, DynamicControllerConfig, DynamicWorkflowController,
 };
@@ -26,6 +27,10 @@ pub struct SchedulerConfig {
     pub max_concurrent: usize,
     pub lease_timeout_ms: u64,
     pub executor_type: String,
+    pub queue_enabled: bool,
+    pub max_queued: usize,
+    pub backpressure_enabled: bool,
+    pub backpressure_activation: f64,
 }
 
 impl Default for SchedulerConfig {
@@ -35,6 +40,10 @@ impl Default for SchedulerConfig {
             max_concurrent: 4,
             lease_timeout_ms: 300_000,
             executor_type: "noop".to_string(),
+            queue_enabled: true,
+            max_queued: 100,
+            backpressure_enabled: true,
+            backpressure_activation: 0.8,
         }
     }
 }
@@ -55,11 +64,39 @@ impl SchedulerConfig {
             .unwrap_or(300_000);
         let executor_type =
             std::env::var("ACP_SCHEDULER_EXECUTOR").unwrap_or_else(|_| "noop".to_string());
+        let queue_enabled = std::env::var("ACP_QUEUE_ENABLED")
+            .map(|v| {
+                !matches!(
+                    v.as_str(),
+                    "0" | "false" | "FALSE" | "no" | "NO" | "off" | "OFF"
+                )
+            })
+            .unwrap_or(true);
+        let max_queued = std::env::var("ACP_MAX_QUEUED")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(100);
+        let backpressure_enabled = std::env::var("ACP_BACKPRESSURE_ENABLED")
+            .map(|v| {
+                !matches!(
+                    v.as_str(),
+                    "0" | "false" | "FALSE" | "no" | "NO" | "off" | "OFF"
+                )
+            })
+            .unwrap_or(true);
+        let backpressure_activation = std::env::var("ACP_BACKPRESSURE_ACTIVATION")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(0.8);
         Self {
             interval_ms,
             max_concurrent,
             lease_timeout_ms,
             executor_type,
+            queue_enabled,
+            max_queued,
+            backpressure_enabled,
+            backpressure_activation,
         }
     }
 }
@@ -216,6 +253,10 @@ impl WorkflowScheduler {
             "last_tick_at": self.last_tick_at.lock().ok().and_then(|g| g.clone()),
             "last_error": self.last_error.lock().ok().and_then(|g| g.clone()),
             "active_runs": active_runs,
+            "queue_enabled": self.config.queue_enabled,
+            "backpressure_active": false,
+            "queue_depth": 0,
+            "paused_runs_count": 0,
             "executor_pool": pool_snapshot,
             "dormant_modules_active": {
                 "work_queue": true,
@@ -246,6 +287,10 @@ struct TickResult {
     retries: u64,
     aggregations: u64,
     adaptation_recommendations: Vec<AdaptationRecommendation>,
+    paused_runs: Vec<String>,
+    degraded_runs: Vec<String>,
+    backpressure_active: bool,
+    queue_depth: usize,
 }
 
 #[derive(Debug, Clone)]
@@ -296,7 +341,60 @@ fn scheduler_tick(
 
     let _recovered = store.recover_stale_leases(config.lease_timeout_ms)?;
 
-    let active_runs = store.list_active_workflow_run_ids()?;
+    let mut paused_runs = Vec::new();
+    let mut degraded_runs = Vec::new();
+    let mut backpressure_active = false;
+    let mut queue_depth = 0usize;
+
+    let active_runs: Vec<String> = if config.queue_enabled {
+        let prioritized = store.list_active_workflow_runs_prioritized()?;
+        queue_depth = prioritized.len();
+        let mut selected = Vec::new();
+        for run in &prioritized {
+            let run_id = run
+                .get("run_id")
+                .and_then(Value::as_str)
+                .unwrap_or("")
+                .to_string();
+            let pause = run.get("pause_reason").and_then(Value::as_str);
+            let degrade = run.get("degrade_mode").and_then(Value::as_str);
+            if pause.is_some() {
+                paused_runs.push(run_id);
+            } else if degrade.is_some() {
+                degraded_runs.push(run_id.clone());
+                selected.push(run_id);
+            } else {
+                selected.push(run_id);
+            }
+        }
+        selected
+    } else {
+        store.list_active_workflow_run_ids()?
+    };
+
+    if config.queue_enabled && config.backpressure_enabled {
+        let total_active = active_runs.len();
+        let total_capacity = config.max_concurrent.max(1);
+        let utilization = total_active as f64 / total_capacity as f64;
+
+        let mut bp = Backpressure::new(BackpressureConfig {
+            activation_threshold: config.backpressure_activation,
+            ..Default::default()
+        });
+        let now_ms = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis() as u64;
+        let decision = bp.evaluate(utilization, queue_depth, config.max_queued, 0, now_ms);
+        backpressure_active = decision.active;
+
+        for run_id in &decision.runs_to_pause {
+            store.update_run_pause_reason(run_id, Some("backpressure"))?;
+            store.update_run_degrade_mode(run_id, decision.degrade_mode.as_deref())?;
+            paused_runs.push(run_id.clone());
+        }
+    }
+
     let mut ticks = 0u64;
     let mut retries = 0u64;
     let mut aggregations = 0u64;
@@ -469,6 +567,10 @@ fn scheduler_tick(
         retries,
         aggregations,
         adaptation_recommendations: recommendations,
+        paused_runs,
+        degraded_runs,
+        backpressure_active,
+        queue_depth,
     })
 }
 
@@ -479,7 +581,61 @@ fn dynamic_scheduler_tick(
     pool: &Arc<ExecutorPool>,
 ) -> Result<TickResult, String> {
     let _recovered = store.recover_stale_leases(config.lease_timeout_ms)?;
-    let mut active_runs = store.list_active_workflow_run_ids()?;
+
+    let mut paused_runs = Vec::new();
+    let mut degraded_runs = Vec::new();
+    let mut backpressure_active = false;
+    let mut queue_depth = 0usize;
+
+    let mut active_runs: Vec<String> = if config.queue_enabled {
+        let prioritized = store.list_active_workflow_runs_prioritized()?;
+        queue_depth = prioritized.len();
+        let mut selected = Vec::new();
+        for run in &prioritized {
+            let run_id = run
+                .get("run_id")
+                .and_then(Value::as_str)
+                .unwrap_or("")
+                .to_string();
+            let pause = run.get("pause_reason").and_then(Value::as_str);
+            let degrade = run.get("degrade_mode").and_then(Value::as_str);
+            if pause.is_some() {
+                paused_runs.push(run_id);
+            } else if degrade.is_some() {
+                degraded_runs.push(run_id.clone());
+                selected.push(run_id);
+            } else {
+                selected.push(run_id);
+            }
+        }
+        selected
+    } else {
+        store.list_active_workflow_run_ids()?
+    };
+
+    if config.queue_enabled && config.backpressure_enabled {
+        let total_active = active_runs.len();
+        let total_capacity = config.max_concurrent.max(1);
+        let utilization = total_active as f64 / total_capacity as f64;
+
+        let mut bp = Backpressure::new(BackpressureConfig {
+            activation_threshold: config.backpressure_activation,
+            ..Default::default()
+        });
+        let now_ms = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis() as u64;
+        let decision = bp.evaluate(utilization, queue_depth, config.max_queued, 0, now_ms);
+        backpressure_active = decision.active;
+
+        for run_id in &decision.runs_to_pause {
+            store.update_run_pause_reason(run_id, Some("backpressure"))?;
+            store.update_run_degrade_mode(run_id, decision.degrade_mode.as_deref())?;
+            paused_runs.push(run_id.clone());
+        }
+    }
+
     for run in store.list_workflow_runs_with_offset(500, 0)? {
         let Some(run_id) = run.get("run_id").and_then(Value::as_str) else {
             continue;
@@ -548,6 +704,10 @@ fn dynamic_scheduler_tick(
         retries,
         aggregations,
         adaptation_recommendations: Vec::new(),
+        paused_runs,
+        degraded_runs,
+        backpressure_active,
+        queue_depth,
     })
 }
 
@@ -721,6 +881,7 @@ mod tests {
             max_concurrent: 1,
             lease_timeout_ms: 300_000,
             executor_type: "noop".to_string(),
+            ..Default::default()
         };
         let mut scheduler = WorkflowScheduler::new(store, config);
         assert!(!scheduler.is_running());
@@ -744,6 +905,7 @@ mod tests {
             max_concurrent: 2,
             lease_timeout_ms: 60_000,
             executor_type: "noop".to_string(),
+            ..Default::default()
         };
         let mut scheduler = WorkflowScheduler::new(store, config);
 
@@ -773,6 +935,7 @@ mod tests {
             max_concurrent: 4,
             lease_timeout_ms: 300_000,
             executor_type: "noop".to_string(),
+            ..Default::default()
         };
         let mut scheduler = WorkflowScheduler::new(store.clone(), config);
         scheduler.start().unwrap();
@@ -834,6 +997,7 @@ mod tests {
             max_concurrent: 1,
             lease_timeout_ms: 300_000,
             executor_type: "noop".to_string(),
+            ..Default::default()
         };
         let mut scheduler = WorkflowScheduler::new(store, config);
         scheduler.start().unwrap();
@@ -862,6 +1026,7 @@ mod tests {
             max_concurrent: 1,
             lease_timeout_ms: 300_000,
             executor_type: "noop".to_string(),
+            ..Default::default()
         };
         let executor = NoopNodeExecutor;
         let pool = test_pool();
@@ -891,6 +1056,7 @@ mod tests {
             max_concurrent: 1,
             lease_timeout_ms: 300_000,
             executor_type: "fail".to_string(),
+            ..Default::default()
         };
         let executor = crate::node_executor::FailNodeExecutor::default();
         let pool = test_pool();
@@ -917,6 +1083,7 @@ mod tests {
             max_concurrent: 1,
             lease_timeout_ms: 300_000,
             executor_type: "dynamic".to_string(),
+            ..Default::default()
         };
         let fail_executor = crate::node_executor::FailNodeExecutor::default();
         let pool = test_pool();
@@ -972,6 +1139,7 @@ mod tests {
             max_concurrent: 1,
             lease_timeout_ms: 300_000,
             executor_type: "fail".to_string(),
+            ..Default::default()
         };
         let fail_executor = crate::node_executor::FailNodeExecutor::default();
         let pool = test_pool();
@@ -984,6 +1152,7 @@ mod tests {
             max_concurrent: 1,
             lease_timeout_ms: 300_000,
             executor_type: "dynamic".to_string(),
+            ..Default::default()
         };
         let noop_executor = NoopNodeExecutor;
         let recover = scheduler_tick(&store, &dynamic_config, &noop_executor, &pool).unwrap();
@@ -1017,6 +1186,7 @@ mod tests {
             max_concurrent: 4,
             lease_timeout_ms: 300_000,
             executor_type: "noop".to_string(),
+            ..Default::default()
         };
         let executor = NoopNodeExecutor;
         let pool = test_pool();
@@ -1048,6 +1218,7 @@ mod tests {
             max_concurrent: 1,
             lease_timeout_ms: 60_000,
             executor_type: "noop".to_string(),
+            ..Default::default()
         };
         let mut scheduler = WorkflowScheduler::new(store.clone(), config);
         scheduler.start().unwrap();
@@ -1094,6 +1265,7 @@ mod tests {
             max_concurrent: 2,
             lease_timeout_ms: 60_000,
             executor_type: "noop".to_string(),
+            ..Default::default()
         };
         let scheduler = WorkflowScheduler::new(store.clone(), config);
 
@@ -1123,6 +1295,7 @@ mod tests {
             max_concurrent: 2,
             lease_timeout_ms: 300_000,
             executor_type: "noop".to_string(),
+            ..Default::default()
         };
         let executor = NoopNodeExecutor;
         let pool = test_pool();
@@ -1142,6 +1315,7 @@ mod tests {
             max_concurrent: 2,
             lease_timeout_ms: 60_000,
             executor_type: "noop".to_string(),
+            ..Default::default()
         };
         let scheduler = WorkflowScheduler::new(store, config);
 
@@ -1159,6 +1333,7 @@ mod tests {
             max_concurrent: 2,
             lease_timeout_ms: 60_000,
             executor_type: "noop".to_string(),
+            ..Default::default()
         };
         let mut scheduler = WorkflowScheduler::new(store, config);
         assert_eq!(
@@ -1189,6 +1364,7 @@ mod tests {
             max_concurrent: 1,
             lease_timeout_ms: 300_000,
             executor_type: "fail".to_string(),
+            ..Default::default()
         };
         let executor = crate::node_executor::FailNodeExecutor::default();
         let pool = test_pool();
@@ -1209,6 +1385,7 @@ mod tests {
             max_concurrent: 1,
             lease_timeout_ms: 300_000,
             executor_type: "noop".to_string(),
+            ..Default::default()
         };
         let executor = NoopNodeExecutor;
         let pool = test_pool();
@@ -1231,6 +1408,7 @@ mod tests {
             max_concurrent: 4,
             lease_timeout_ms: 300_000,
             executor_type: "noop".to_string(),
+            ..Default::default()
         };
         let executor = NoopNodeExecutor;
         let pool = test_pool();
@@ -1274,6 +1452,7 @@ mod tests {
             max_concurrent: 1,
             lease_timeout_ms: 300_000,
             executor_type: "fail".to_string(),
+            ..Default::default()
         };
         let executor = crate::node_executor::FailNodeExecutor::default();
         let pool = test_pool();
@@ -1316,6 +1495,7 @@ mod tests {
             max_concurrent: 1,
             lease_timeout_ms: 300_000,
             executor_type: "noop".to_string(),
+            ..Default::default()
         };
         let executor = NoopNodeExecutor;
         let pool = test_pool();
@@ -1339,6 +1519,7 @@ mod tests {
             max_concurrent: 1,
             lease_timeout_ms: 300_000,
             executor_type: "fail".to_string(),
+            ..Default::default()
         };
         let executor = crate::node_executor::FailNodeExecutor::default();
         let pool = test_pool();
@@ -1472,5 +1653,161 @@ mod tests {
         // WorkflowEngine should transition created → running and start ready nodes
         assert_eq!(result.status, "running");
         assert_eq!(result.nodes[0].status, "running");
+    }
+
+    #[test]
+    fn scheduler_config_default_has_queue_fields() {
+        let config = SchedulerConfig::default();
+        assert!(config.queue_enabled);
+        assert_eq!(config.max_queued, 100);
+        assert!(config.backpressure_enabled);
+        assert_eq!(config.backpressure_activation, 0.8);
+    }
+
+    #[test]
+    fn scheduler_tick_queue_enabled_uses_prioritized_ordering() {
+        let store = test_store();
+        let _id1 = create_plan_and_run(&store);
+        let _id2 = create_plan_and_run(&store);
+
+        store.update_run_priority("run-0001", 10).unwrap();
+        store.update_run_priority("run-0002", 1).unwrap();
+
+        let config = SchedulerConfig {
+            interval_ms: 50,
+            max_concurrent: 2,
+            lease_timeout_ms: 300_000,
+            executor_type: "noop".to_string(),
+            queue_enabled: true,
+            max_queued: 100,
+            backpressure_enabled: false,
+            backpressure_activation: 0.8,
+        };
+        let executor = NoopNodeExecutor;
+        let pool = test_pool();
+        let result = scheduler_tick(&store, &config, &executor, &pool).unwrap();
+        assert_eq!(result.ticks, 2, "both runs should be processed");
+        assert_eq!(
+            result.queue_depth, 2,
+            "queue_depth should reflect total active"
+        );
+        assert!(!result.backpressure_active);
+        assert!(result.paused_runs.is_empty());
+    }
+
+    #[test]
+    fn scheduler_tick_queue_enabled_skips_paused_runs() {
+        let store = test_store();
+        let _id1 = create_plan_and_run(&store);
+        let _id2 = create_plan_and_run(&store);
+
+        store
+            .update_run_pause_reason("run-0001", Some("operator_hold"))
+            .unwrap();
+
+        let config = SchedulerConfig {
+            interval_ms: 50,
+            max_concurrent: 2,
+            lease_timeout_ms: 300_000,
+            executor_type: "noop".to_string(),
+            queue_enabled: true,
+            max_queued: 100,
+            backpressure_enabled: false,
+            backpressure_activation: 0.8,
+        };
+        let executor = NoopNodeExecutor;
+        let pool = test_pool();
+        let result = scheduler_tick(&store, &config, &executor, &pool).unwrap();
+        assert_eq!(result.ticks, 1, "only non-paused run should tick");
+        assert_eq!(result.paused_runs.len(), 1);
+        assert_eq!(result.paused_runs[0], "run-0001");
+    }
+
+    #[test]
+    fn scheduler_tick_queue_disabled_uses_fifo() {
+        let store = test_store();
+        let _id1 = create_plan_and_run(&store);
+        let _id2 = create_plan_and_run(&store);
+
+        store.update_run_priority("run-0001", 10).unwrap();
+        store.update_run_priority("run-0002", 1).unwrap();
+
+        let config = SchedulerConfig {
+            interval_ms: 50,
+            max_concurrent: 2,
+            lease_timeout_ms: 300_000,
+            executor_type: "noop".to_string(),
+            queue_enabled: false,
+            max_queued: 100,
+            backpressure_enabled: false,
+            backpressure_activation: 0.8,
+        };
+        let executor = NoopNodeExecutor;
+        let pool = test_pool();
+        let result = scheduler_tick(&store, &config, &executor, &pool).unwrap();
+        assert_eq!(result.ticks, 2, "FIFO should process both runs");
+        assert_eq!(
+            result.queue_depth, 0,
+            "queue_depth not tracked in FIFO mode"
+        );
+    }
+
+    #[test]
+    fn scheduler_tick_backpressure_pauses_overloaded_runs() {
+        let store = test_store();
+        for _ in 0..5 {
+            create_plan_and_run(&store);
+        }
+
+        let config = SchedulerConfig {
+            interval_ms: 50,
+            max_concurrent: 1,
+            lease_timeout_ms: 300_000,
+            executor_type: "noop".to_string(),
+            queue_enabled: true,
+            max_queued: 100,
+            backpressure_enabled: true,
+            backpressure_activation: 0.1,
+        };
+        let executor = NoopNodeExecutor;
+        let pool = test_pool();
+        let result = scheduler_tick(&store, &config, &executor, &pool).unwrap();
+        assert!(result.backpressure_active, "backpressure should activate");
+    }
+
+    #[test]
+    fn scheduler_tick_backpressure_disabled_no_pause() {
+        let store = test_store();
+        for _ in 0..5 {
+            create_plan_and_run(&store);
+        }
+
+        let config = SchedulerConfig {
+            interval_ms: 50,
+            max_concurrent: 1,
+            lease_timeout_ms: 300_000,
+            executor_type: "noop".to_string(),
+            queue_enabled: true,
+            max_queued: 100,
+            backpressure_enabled: false,
+            backpressure_activation: 0.1,
+        };
+        let executor = NoopNodeExecutor;
+        let pool = test_pool();
+        let result = scheduler_tick(&store, &config, &executor, &pool).unwrap();
+        assert!(!result.backpressure_active);
+        assert!(result.paused_runs.is_empty());
+    }
+
+    #[test]
+    fn scheduler_status_includes_queue_info() {
+        let store = test_store();
+        let config = SchedulerConfig::default();
+        let scheduler = WorkflowScheduler::new(store, config);
+        let status = scheduler.status();
+        assert_eq!(status["queue_enabled"], true);
+        assert_eq!(status["backpressure_active"], false);
+        assert_eq!(status["queue_depth"], 0);
+        assert_eq!(status["paused_runs_count"], 0);
     }
 }

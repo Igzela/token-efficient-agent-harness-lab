@@ -76,8 +76,10 @@ impl LocalProductStore {
             conn.execute(
                 "INSERT INTO workflow_runs
                  (run_sequence, run_id, plan_id, created_at, updated_at, status, workflow_id,
-                  dispatch_id, started_at, completed_at, result_json, boundaries_json, run_json)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, NULL, NULL, NULL, ?9, ?10)",
+                  dispatch_id, started_at, completed_at, result_json, boundaries_json, run_json,
+                  priority, deadline_at, sla_ms, tenant_id, queue_position, pause_reason, degrade_mode)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, NULL, NULL, NULL, ?9, ?10,
+                         5, NULL, NULL, NULL, NULL, NULL, NULL)",
                 params![
                     sequence,
                     run_id,
@@ -148,7 +150,9 @@ impl LocalProductStore {
                 .prepare(
                     "SELECT run_sequence, run_id, plan_id, created_at, updated_at, status,
                             workflow_id, dispatch_id, started_at, completed_at, result_json,
-                            last_heartbeat_at, boundaries_json, run_json
+                            last_heartbeat_at, boundaries_json, run_json,
+                            priority, deadline_at, sla_ms, tenant_id, queue_position,
+                            pause_reason, degrade_mode
                      FROM workflow_runs
                      WHERE lower(run_id) LIKE ?1 ESCAPE '\\'
                         OR lower(COALESCE(plan_id, '')) LIKE ?1 ESCAPE '\\'
@@ -176,7 +180,9 @@ impl LocalProductStore {
                 .prepare(
                     "SELECT run_sequence, run_id, plan_id, created_at, updated_at, status,
                             workflow_id, dispatch_id, started_at, completed_at, result_json,
-                            last_heartbeat_at, boundaries_json, run_json
+                            last_heartbeat_at, boundaries_json, run_json,
+                            priority, deadline_at, sla_ms, tenant_id, queue_position,
+                            pause_reason, degrade_mode
                      FROM workflow_runs
                      ORDER BY run_sequence DESC
                      LIMIT ?1 OFFSET ?2",
@@ -208,7 +214,9 @@ impl LocalProductStore {
                 .prepare(
                     "SELECT run_sequence, run_id, plan_id, created_at, updated_at, status,
                             workflow_id, dispatch_id, started_at, completed_at, result_json,
-                            last_heartbeat_at, boundaries_json, run_json
+                            last_heartbeat_at, boundaries_json, run_json,
+                            priority, deadline_at, sla_ms, tenant_id, queue_position,
+                            pause_reason, degrade_mode
                      FROM workflow_runs
                      WHERE run_id = ?1
                      LIMIT 1",
@@ -920,6 +928,323 @@ impl LocalProductStore {
                 .collect();
             Ok(ids)
         })
+    }
+
+    pub fn list_active_workflow_runs_prioritized(&self) -> Result<Vec<Value>, String> {
+        self.with_conn(|conn| {
+            let mut stmt = conn
+                .prepare(
+                    "SELECT run_id, run_sequence, workflow_id, status, priority, deadline_at,
+                            sla_ms, tenant_id, queue_position, pause_reason, degrade_mode,
+                            created_at, started_at
+                     FROM workflow_runs
+                     WHERE status IN ('running', 'created')
+                     ORDER BY CASE WHEN pause_reason IS NOT NULL THEN 1 ELSE 0 END,
+                              priority ASC, created_at ASC",
+                )
+                .map_err(|e| e.to_string())?;
+            let rows = stmt
+                .query_map([], |row| {
+                    Ok(json!({
+                        "run_id": row.get::<_, String>(0)?,
+                        "run_sequence": row.get::<_, i64>(1)?,
+                        "workflow_id": row.get::<_, String>(2)?,
+                        "status": row.get::<_, String>(3)?,
+                        "priority": row.get::<_, i64>(4)?,
+                        "deadline_at": row.get::<_, Option<String>>(5)?,
+                        "sla_ms": row.get::<_, Option<i64>>(6)?,
+                        "tenant_id": row.get::<_, Option<String>>(7)?,
+                        "queue_position": row.get::<_, Option<i64>>(8)?,
+                        "pause_reason": row.get::<_, Option<String>>(9)?,
+                        "degrade_mode": row.get::<_, Option<String>>(10)?,
+                        "created_at": row.get::<_, String>(11)?,
+                        "started_at": row.get::<_, Option<String>>(12)?,
+                    }))
+                })
+                .map_err(|e| e.to_string())?;
+            collect_values(rows)
+        })
+    }
+
+    pub fn update_run_priority(&self, run_id: &str, priority: i64) -> Result<(), String> {
+        self.with_conn(|conn| {
+            let updated = self.now();
+            conn.execute(
+                "UPDATE workflow_runs SET priority = ?1, updated_at = ?2 WHERE run_id = ?3",
+                params![priority, updated, run_id],
+            )
+            .map_err(|e| e.to_string())?;
+            Ok(())
+        })
+    }
+
+    pub fn update_run_pause_reason(
+        &self,
+        run_id: &str,
+        pause_reason: Option<&str>,
+    ) -> Result<(), String> {
+        self.with_conn(|conn| {
+            let updated = self.now();
+            conn.execute(
+                "UPDATE workflow_runs SET pause_reason = ?1, updated_at = ?2 WHERE run_id = ?3",
+                params![pause_reason, updated, run_id],
+            )
+            .map_err(|e| e.to_string())?;
+            Ok(())
+        })
+    }
+
+    pub fn update_run_degrade_mode(
+        &self,
+        run_id: &str,
+        degrade_mode: Option<&str>,
+    ) -> Result<(), String> {
+        self.with_conn(|conn| {
+            let updated = self.now();
+            conn.execute(
+                "UPDATE workflow_runs SET degrade_mode = ?1, updated_at = ?2 WHERE run_id = ?3",
+                params![degrade_mode, updated, run_id],
+            )
+            .map_err(|e| e.to_string())?;
+            Ok(())
+        })
+    }
+
+    pub fn set_run_queue_position(
+        &self,
+        run_id: &str,
+        position: Option<i32>,
+    ) -> Result<(), String> {
+        self.with_conn(|conn| {
+            let updated = self.now();
+            conn.execute(
+                "UPDATE workflow_runs SET queue_position = ?1, updated_at = ?2 WHERE run_id = ?3",
+                params![position, updated, run_id],
+            )
+            .map_err(|e| e.to_string())?;
+            Ok(())
+        })
+    }
+
+    pub fn get_queue_status(&self) -> Result<Value, String> {
+        self.with_conn(|conn| {
+            let total_queued: i64 = conn
+                .query_row(
+                    "SELECT COUNT(*) FROM workflow_runs WHERE status IN ('created') AND pause_reason IS NULL",
+                    [],
+                    |row| row.get(0),
+                )
+                .map_err(|e| e.to_string())?;
+            let total_running: i64 = conn
+                .query_row(
+                    "SELECT COUNT(*) FROM workflow_runs WHERE status = 'running'",
+                    [],
+                    |row| row.get(0),
+                )
+                .map_err(|e| e.to_string())?;
+            let total_paused: i64 = conn
+                .query_row(
+                    "SELECT COUNT(*) FROM workflow_runs WHERE pause_reason IS NOT NULL",
+                    [],
+                    |row| row.get(0),
+                )
+                .map_err(|e| e.to_string())?;
+            let total_completed: i64 = conn
+                .query_row(
+                    "SELECT COUNT(*) FROM workflow_runs WHERE status = 'completed'",
+                    [],
+                    |row| row.get(0),
+                )
+                .map_err(|e| e.to_string())?;
+            let total_failed: i64 = conn
+                .query_row(
+                    "SELECT COUNT(*) FROM workflow_runs WHERE status = 'failed'",
+                    [],
+                    |row| row.get(0),
+                )
+                .map_err(|e| e.to_string())?;
+            let avg_priority: Value = conn
+                .query_row(
+                    "SELECT COALESCE(AVG(priority), 5.0) FROM workflow_runs WHERE status IN ('created', 'running')",
+                    [],
+                    |row| {
+                        let avg: f64 = row.get(0)?;
+                        Ok(json!(avg))
+                    },
+                )
+                .unwrap_or(json!(5.0));
+            let overdue_count: i64 = conn
+                .query_row(
+                    "SELECT COUNT(*) FROM workflow_runs
+                     WHERE deadline_at IS NOT NULL AND deadline_at < datetime('now')
+                       AND status IN ('created', 'running')",
+                    [],
+                    |row| row.get(0),
+                )
+                .map_err(|e| e.to_string())?;
+            Ok(json!({
+                "total_queued": total_queued,
+                "total_running": total_running,
+                "total_paused": total_paused,
+                "total_completed": total_completed,
+                "total_failed": total_failed,
+                "avg_priority": avg_priority,
+                "overdue_count": overdue_count,
+            }))
+        })
+    }
+
+    pub fn list_tenants_with_quota(&self) -> Result<Vec<Value>, String> {
+        self.with_conn(|conn| {
+            let mut stmt = conn
+                .prepare(
+                    "SELECT tenant_id, COUNT(*) as run_count, AVG(priority) as avg_priority
+                     FROM workflow_runs
+                     WHERE status IN ('created', 'running') AND tenant_id IS NOT NULL
+                     GROUP BY tenant_id",
+                )
+                .map_err(|e| e.to_string())?;
+            let rows = stmt
+                .query_map([], |row| {
+                    Ok(json!({
+                        "tenant_id": row.get::<_, String>(0)?,
+                        "run_count": row.get::<_, i64>(1)?,
+                        "avg_priority": row.get::<_, f64>(2)?,
+                    }))
+                })
+                .map_err(|e| e.to_string())?;
+            collect_values(rows)
+        })
+    }
+
+    pub fn create_workflow_run_with_queue_metadata(
+        &self,
+        plan_id: &str,
+        actor: &str,
+        priority: i64,
+        deadline_at: Option<&str>,
+        sla_ms: Option<i64>,
+        tenant_id: Option<&str>,
+    ) -> Result<Value, String> {
+        let plan = self
+            .get_workflow_plan(plan_id)?
+            .ok_or_else(|| format!("plan not found: {plan_id}"))?;
+        let graph = required_object(&plan, "graph")?;
+        let workflow_id = plan
+            .get("workflow_id")
+            .and_then(Value::as_str)
+            .or_else(|| graph.get("workflow_id").and_then(Value::as_str))
+            .ok_or_else(|| format!("plan {plan_id} missing workflow_id"))?;
+        let dispatch_id = plan
+            .get("dispatch_id")
+            .and_then(Value::as_str)
+            .or_else(|| graph.get("dispatch_id").and_then(Value::as_str))
+            .unwrap_or("");
+        let nodes = graph
+            .get("nodes")
+            .and_then(Value::as_array)
+            .ok_or_else(|| format!("plan {plan_id} graph missing nodes"))?;
+        let edges = graph
+            .get("edges")
+            .and_then(Value::as_array)
+            .ok_or_else(|| format!("plan {plan_id} graph missing edges"))?;
+
+        let run_id = self.with_conn(|conn| {
+            let sequence = next_sequence(conn, "workflow_runs", "run_sequence")?;
+            let run_id = format!("run-{sequence:04}");
+            let created_at = self.now();
+            let boundaries = workflow_run_boundaries();
+            let run = json!({
+                "schema_version": WORKFLOW_RUN_SCHEMA_VERSION,
+                "run_sequence": sequence,
+                "run_id": run_id,
+                "plan_id": plan_id,
+                "workflow_id": workflow_id,
+                "dispatch_id": dispatch_id,
+                "status": "created",
+                "created_at": created_at,
+                "updated_at": created_at,
+                "started_at": null,
+                "completed_at": null,
+                "result": null,
+                "graph": graph,
+                "boundaries": boundaries,
+                "priority": priority,
+                "deadline_at": deadline_at,
+                "sla_ms": sla_ms,
+                "tenant_id": tenant_id,
+                "queue_position": null,
+                "pause_reason": null,
+                "degrade_mode": null,
+            });
+            conn.execute(
+                "INSERT INTO workflow_runs
+                 (run_sequence, run_id, plan_id, created_at, updated_at, status, workflow_id,
+                  dispatch_id, started_at, completed_at, result_json, boundaries_json, run_json,
+                  priority, deadline_at, sla_ms, tenant_id, queue_position, pause_reason, degrade_mode)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, NULL, NULL, NULL, ?9, ?10,
+                         ?11, ?12, ?13, ?14, NULL, NULL, NULL)",
+                params![
+                    sequence,
+                    run_id,
+                    plan_id,
+                    created_at,
+                    created_at,
+                    "created",
+                    workflow_id,
+                    null_if_empty(dispatch_id),
+                    boundaries.to_string(),
+                    run.to_string(),
+                    priority,
+                    deadline_at,
+                    sla_ms,
+                    tenant_id,
+                ],
+            )
+            .map_err(|e| e.to_string())?;
+
+            for node in nodes {
+                insert_workflow_run_node_locked(conn, &run_id, node)?;
+            }
+            for edge in edges {
+                insert_workflow_run_edge_locked(conn, &run_id, edge)?;
+            }
+            insert_workflow_run_event_locked(
+                conn,
+                &run_id,
+                None,
+                "workflow_run.created",
+                actor,
+                &json!({
+                    "plan_id": plan_id,
+                    "workflow_id": workflow_id,
+                    "dispatch_id": dispatch_id,
+                    "priority": priority,
+                    "tenant_id": tenant_id,
+                    "metadata_only": true,
+                }),
+                &created_at,
+            )?;
+            append_audit_locked(
+                conn,
+                &created_at,
+                actor,
+                "workflow_run.create",
+                &run_id,
+                &json!({
+                    "plan_id": plan_id,
+                    "workflow_id": workflow_id,
+                    "dispatch_id": dispatch_id,
+                    "priority": priority,
+                    "tenant_id": tenant_id,
+                    "metadata_only": true,
+                }),
+            )?;
+            Ok(run_id)
+        })?;
+
+        self.get_workflow_run(&run_id)?
+            .ok_or_else(|| format!("workflow run not found after create: {run_id}"))
     }
 
     pub fn set_pending_node_to_running_for_test(&self, leased_at: &str) -> Result<i64, String> {
@@ -1929,7 +2254,7 @@ fn workflow_run_summary_row(row: &Row<'_>) -> rusqlite::Result<Value> {
     let boundaries_text: String = row.get(12)?;
     let boundaries: Value =
         serde_json::from_str(&boundaries_text).unwrap_or_else(|_| workflow_run_boundaries());
-    Ok(workflow_run_value(
+    let mut value = workflow_run_value(
         row.get::<_, i64>(0)?,
         &row.get::<_, String>(1)?,
         row.get::<_, Option<String>>(2)?.as_deref(),
@@ -1944,7 +2269,32 @@ fn workflow_run_summary_row(row: &Row<'_>) -> rusqlite::Result<Value> {
         row.get::<_, Option<String>>(11)?.as_deref(),
         &boundaries,
         &run,
-    ))
+    );
+    // Overlay queue/priority columns (indices 14-20) if present
+    if let Some(obj) = value.as_object_mut() {
+        if let Ok(priority) = row.get::<_, i64>(14) {
+            obj.insert("priority".to_string(), json!(priority));
+        }
+        if let Ok(deadline_at) = row.get::<_, Option<String>>(15) {
+            obj.insert("deadline_at".to_string(), json!(deadline_at));
+        }
+        if let Ok(sla_ms) = row.get::<_, Option<i64>>(16) {
+            obj.insert("sla_ms".to_string(), json!(sla_ms));
+        }
+        if let Ok(tenant_id) = row.get::<_, Option<String>>(17) {
+            obj.insert("tenant_id".to_string(), json!(tenant_id));
+        }
+        if let Ok(queue_position) = row.get::<_, Option<i64>>(18) {
+            obj.insert("queue_position".to_string(), json!(queue_position));
+        }
+        if let Ok(pause_reason) = row.get::<_, Option<String>>(19) {
+            obj.insert("pause_reason".to_string(), json!(pause_reason));
+        }
+        if let Ok(degrade_mode) = row.get::<_, Option<String>>(20) {
+            obj.insert("degrade_mode".to_string(), json!(degrade_mode));
+        }
+    }
+    Ok(value)
 }
 
 fn workflow_run_value(
@@ -2276,7 +2626,9 @@ fn get_run_row(conn: &rusqlite::Connection, run_id: &str) -> Result<Value, Strin
         .prepare(
             "SELECT run_sequence, run_id, plan_id, created_at, updated_at, status,
                     workflow_id, dispatch_id, started_at, completed_at, result_json,
-                    last_heartbeat_at, boundaries_json, run_json
+                    last_heartbeat_at, boundaries_json, run_json,
+                    priority, deadline_at, sla_ms, tenant_id, queue_position,
+                    pause_reason, degrade_mode
              FROM workflow_runs WHERE run_id = ?1 LIMIT 1",
         )
         .map_err(|e| e.to_string())?;

@@ -2,7 +2,7 @@ use rusqlite::Connection;
 
 use super::LocalProductStore;
 
-pub(super) const CURRENT_SCHEMA_VERSION: i64 = 8;
+pub(super) const CURRENT_SCHEMA_VERSION: i64 = 9;
 
 struct Migration {
     version: i64,
@@ -42,6 +42,10 @@ const MIGRATIONS: &[Migration] = &[
         version: 8,
         description: "add executor_pool table for resource/executor pool tracking",
     },
+    Migration {
+        version: 9,
+        description: "add queue/priority/backpressure columns to workflow_runs",
+    },
 ];
 
 impl LocalProductStore {
@@ -64,6 +68,7 @@ impl LocalProductStore {
                     6 => Self::migrate_v6_add_tool_registry(conn)?,
                     7 => Self::migrate_v7_add_orchestration_decisions(conn)?,
                     8 => Self::migrate_v8_add_executor_pool(conn)?,
+                    9 => Self::migrate_v9_add_queue_priority(conn)?,
                     _ => return Err(format!("unknown migration version: {}", migration.version)),
                 }
                 conn.execute_batch(&format!("PRAGMA user_version = {}", migration.version))
@@ -353,10 +358,41 @@ CREATE TABLE IF NOT EXISTS executor_pool (
         .map_err(|e| e.to_string())
     }
 
+    fn migrate_v9_add_queue_priority(conn: &Connection) -> Result<(), String> {
+        let has_priority = column_exists(conn, "workflow_runs", "priority")?;
+        if !has_priority {
+            conn.execute_batch(
+                "ALTER TABLE workflow_runs ADD COLUMN priority INTEGER NOT NULL DEFAULT 5;
+                 ALTER TABLE workflow_runs ADD COLUMN deadline_at TEXT;
+                 ALTER TABLE workflow_runs ADD COLUMN sla_ms INTEGER;
+                 ALTER TABLE workflow_runs ADD COLUMN tenant_id TEXT;
+                 ALTER TABLE workflow_runs ADD COLUMN queue_position INTEGER;
+                 ALTER TABLE workflow_runs ADD COLUMN pause_reason TEXT;
+                 ALTER TABLE workflow_runs ADD COLUMN degrade_mode TEXT;",
+            )
+            .map_err(|e| e.to_string())?;
+        }
+        conn.execute_batch(
+            "CREATE INDEX IF NOT EXISTS idx_workflow_runs_priority ON workflow_runs(priority, created_at);",
+        )
+        .map_err(|e| e.to_string())
+    }
+
     pub fn schema_version(&self) -> Result<i64, String> {
         self.with_conn(|conn| {
             conn.query_row("PRAGMA user_version", [], |row| row.get(0))
                 .map_err(|e| e.to_string())
         })
     }
+}
+
+fn column_exists(conn: &Connection, table: &str, column: &str) -> Result<bool, String> {
+    let sql = format!("PRAGMA table_info({table})");
+    let mut stmt = conn.prepare(&sql).map_err(|e| e.to_string())?;
+    let columns: Vec<String> = stmt
+        .query_map([], |row| row.get::<_, String>(1))
+        .map_err(|e| e.to_string())?
+        .filter_map(|r| r.ok())
+        .collect();
+    Ok(columns.contains(&column.to_string()))
 }
