@@ -2,9 +2,9 @@
 
 ## Product Scope
 
-**What**: Local deterministic harness and self-hosted agent-control-plane for studying token-efficient agent workflows. Provides deterministic dispatch planning, local API/dashboard access, app-owned SQLite state, and cost-of-pass metrics.
+**What**: Local deterministic harness and self-hosted macro-orchestrator control plane for studying token-efficient agent workflows. Provides deterministic dispatch planning, local API/dashboard access, app-owned SQLite state, dynamic workflow state, executor coordination primitives, and cost-of-pass metrics.
 
-**What NOT**: Not a cloud production SaaS or autonomous-agent runtime. No real model-provider calls by default, no sandbox/process/container/VM isolation, no autonomous workers, no target-repo writes. CLI executor is explicit opt-in via `ACP_ENABLE_CLI_EXECUTION=1`.
+**What NOT**: Not a cloud production SaaS, coding-agent runtime, or autonomous-agent runtime. No real model-provider calls by default, no sandbox/process/container/VM isolation, no autonomous workers, no target-repo writes. CLI executor is explicit opt-in via `ACP_ENABLE_CLI_EXECUTION=1`.
 
 **Target user**: Solo developer or small local team studying deterministic agent infrastructure on one machine or LAN.
 

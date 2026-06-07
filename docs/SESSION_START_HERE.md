@@ -4,7 +4,7 @@ Read this file first in any new AI session on this repository.
 
 ## Project Identity
 
-Token-Efficient Agent Harness Lab is a local deterministic harness for studying event-sourced agent workflow infrastructure.
+Token-Efficient Agent Harness Lab is a local deterministic harness and self-hosted macro-orchestrator control plane for studying event-sourced agent workflow infrastructure.
 
 ## Current State
 
@@ -66,12 +66,13 @@ Additional active architecture track:
 | Post-R7 Wire/Type Governance Hardening | Implemented; `app_layer` remains dormant/unwired reference code and `scripts/check_wire_codegen_drift.sh` protects generated wire files |
 | Supervised Autonomous Beta Planning | Batch 0-6 governance/module/model/read-only-planner/durable-state/advisory/design-gate work recorded. `WorkflowGraph` is canonical planning model. Batch 7 Slice A-F implemented: app-owned workspace/artifact metadata, read-only HTTP/SDK/dashboard visibility, approval-binding contract, and supervised execution runtime primitives (NodeExecutor trait, CommandNodeExecutor with shell-metachar rejection, workflow tick, workspace lifecycle, capture_patch with source manifest diff, integrity validation, export gate, E2E closed-loop test). 1222 Rust tests pass. No target repo writes, sandbox/process/container/VM execution, real workers, provider calls, push/merge/deploy/apply controls, or default-on execution. |
 | Dynamic Workflow Direction | Complete; Batches 1-7 plus scheduler dynamic-mode recovery are implemented. Opt-in dynamic mode can observe a failed node, mutate the persisted graph with fix/test nodes, mark the failed node recovered, resume the run, and complete follow-up execution. 1208 Rust tests pass. |
+| Macro-Orchestrator Direction | Current product direction. Next work should add policy decisions, executor resource pools, queue/backpressure, decision trace, and ops soak on top of existing scheduler/dynamic workflow modules, without creating a parallel runtime. |
 
 ## What This Project Is Not
 
 - **Not CA-8.** The CA-7 baseline is sealed. No CA-8 exists.
 - **Not Stage 5.** No Stage 5 implementation has been started.
-- **Not a cloud production SaaS.** No default-on real model providers, sandbox isolation runtime, workers, hosted service, or production deployment targets.
+- **Not a cloud production SaaS or coding-agent runtime.** No default-on real model providers, sandbox isolation runtime, workers, hosted service, or production deployment targets.
 - **No real provider/model calls by default.** Provider adapters are explicit env-gated beta paths; CI uses stub/mock paths and does not call real provider APIs.
 - **No sandbox/process/container/VM isolation runtime.** Sandbox claims are logical file-claim tracking only. Existing local CLI executor subprocess invocation is a separate, explicit opt-in exception via `ACP_ENABLE_CLI_EXECUTION=1`.
 - **No autonomous workers.** No real concurrent workers are spawned.

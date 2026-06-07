@@ -1,6 +1,6 @@
 # Module Map
 
-The legacy Python reference implementation (`src/harness_core/`) and its test suite (`tests/`) have been retired. The Rust `engine/` is now the sole runtime implementation. Python is retained only as the REST SDK (`sdk/python/`) and utility scripts.
+The legacy Python reference implementation (`src/harness_core/`) and its test suite (`tests/`) have been retired. The Rust `engine/` is now the sole runtime implementation. Python is retained only as the REST SDK (`sdk/python/`) and utility scripts. Current product direction is a local/small-team self-hosted macro-orchestrator control plane, not a coding-agent runtime.
 
 ## Reachability Classification
 
@@ -15,7 +15,7 @@ Batch 1 classified modules for the supervised autonomous beta planning track. Cl
 | Class | Modules |
 | --- | --- |
 | active | `engine/src/main.rs`, `engine/src/http_server/`, `engine/src/scheduler.rs`, `engine/src/read_only_planner.rs`, `engine/src/dispatch_engine.rs`, `engine/src/task_analyzer/`, `engine/src/model_selector.rs`, `engine/src/budget_manager.rs`, `engine/src/executor_adapter.rs`, `engine/src/dispatch_ledger.rs`, `engine/src/provider/`, `engine/src/cli/`, `engine/src/node_executor.rs`, `engine/src/storage/local_product_store/`, `engine/src/storage/backup_manager.rs`, `engine/src/infrastructure/auth.rs`, `engine/src/infrastructure/rate_limiter.rs`, `engine/src/workflow/dynamic_controller.rs`, `dashboard/`, `sdk/typescript/`, `sdk/python/`, `codegen/generate_wire_types.py`, `wire_contract/v1/`, primary smoke/ops/check/pilot scripts |
-| partial | `engine/src/orchestration/`, `engine/src/workflow/dag_manager/`, `engine/src/workflow/concurrency/`, `engine/src/workflow/context_pack/`, `engine/src/workflow/checkpoint.rs`, `engine/src/workflow/dag_mutations.rs`, `engine/src/workflow/dynamic_decomposer.rs`, `engine/src/workflow/agent_profiles.rs`, `engine/src/workflow/tool_registry.rs`, `engine/src/quality/`, `engine/src/routing/`, `engine/src/ecosystem/`, `engine/src/doc_generator.rs`, `engine/src/harness/` |
+| partial | `engine/src/orchestration/`, `engine/src/workflow/dag_manager/`, `engine/src/workflow/concurrency/`, `engine/src/workflow/context_pack/`, `engine/src/workflow/checkpoint.rs`, `engine/src/workflow/dag_mutations.rs`, `engine/src/workflow/dynamic_decomposer.rs`, `engine/src/workflow/agent_profiles.rs`, `engine/src/workflow/tool_registry.rs`, `engine/src/quality/`, `engine/src/routing/`, `engine/src/ecosystem/`, `engine/src/doc_generator.rs`, `engine/src/harness/`. `routing/`, `quality/`, and `orchestration/` are no longer treated as merely dormant ideas: they are partially active in advisory, scheduler, quality, feedback, and dynamic-workflow paths, and the next macro-orchestrator phase should bring them under a unified policy decision layer. |
 | reference-only | `engine/src/event_source/` (append-only event sourcing, incompatible with SQLite CRUD), `engine/src/event_schema.rs` (wire contract parity), `engine/src/errors.rs` (event store error types) |
 | library-only | `engine/src/runtime.rs`, `engine/src/evaluation_stub.rs`, `engine/src/wire_types.rs`, `engine/src/harness/model_profiles/`, `tools/check_security_baseline.py`, dashboard/static and security test helpers |
 
@@ -44,6 +44,19 @@ Adapter status after Batch 7 (all batches complete):
 | `DAGState` | `WorkflowGraph` | Convert approved graph-mutation snapshots into canonical planning records. | Test-first; no execution authority. |
 | `WorkflowGraph` | `DagState` | Feed concurrency scheduling from canonical planning records. | Drop-only view; preserve node ids/status and edge dependencies. |
 | `WorkflowGraph` | persisted app-owned SQLite rows | Store read-only planner state in Batch 3, workflow run state in Batch 4, recommendation-only advisory metadata in Batch 5, and agent profile metadata in Batch 5. Batch 6 adds tool registry metadata. Batch 7 Slice A adds separate app-owned supervised patch metadata tables, Slice B adds GET-only metadata visibility, Slice C adds SDK read-only visibility, Slice D adds approval-binding design, Slice E adds dashboard visibility, and Slice F adds supervised execution runtime primitives with E2E trial. Dynamic scheduler mode mutates persisted run graphs after failures and continues fix/test execution. | App-owned state only; no target repo writes, provider default-on execution, sandbox isolation, deploy, merge, or apply authority. |
+
+## Macro-Orchestrator Responsibility Map
+
+The next product layer should coordinate existing modules instead of creating a parallel runtime:
+
+| Responsibility | Existing modules | Next macro-orchestrator role |
+| --- | --- | --- |
+| Runtime state | `engine/src/storage/local_product_store/workflow_runs.rs`, `engine/src/scheduler.rs` | Persist run/node/edge/event state, scheduler lease state, recovery state, and future queue/backpressure metadata. |
+| Dynamic graph | `engine/src/workflow/dynamic_controller.rs`, `engine/src/workflow/dag_manager/`, `engine/src/workflow/dynamic_decomposer.rs` | Own observed-result-driven graph mutation, fix/test follow-up generation, and replayable mutation audit. |
+| Policy inputs | `engine/src/routing/`, `engine/src/quality/`, `engine/src/budget_manager.rs`, `engine/src/provider/`, `engine/src/storage/local_product_store/costs.rs` | Feed a future unified `OrchestrationDecision` with routing, quality, cost, provider-gate, budget, and feedback signals. |
+| Executor resources | `engine/src/node_executor.rs`, `engine/src/cli/` | Become the executor pool with capabilities, availability, concurrency limits, cooldowns, failure score, and cost profile. |
+| Approval and audit | `workflow_run_approvals`, `engine/src/storage/local_product_store/audit.rs`, `engine/src/storage/local_product_store/provider_audit.rs` | Bind decisions, graph mutations, executor choices, approval requirements, and export eligibility to durable evidence. |
+| Operator surface | `dashboard/`, `sdk/typescript/`, `sdk/python/`, `engine/src/http_server/handlers/` | Expose decision traces, resource-pool status, queue state, pause reasons, recovery paths, and ops drill results. |
 
 ## Rust Engine Modules
 

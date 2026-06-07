@@ -30,7 +30,7 @@ The responsible coding agent may choose any of the following without asking for 
 
 Current status: **ALL BATCHES COMPLETE and scheduler dynamic mode wired.** Batch 1 (Persisted Graph Mutation Runtime), Batch 2 (DynamicWorkflowController), Batch 3 (Feedback-Driven Routing), Batch 4 (Dynamic Decomposition), Batch 5 (Agent Profiles), Batch 6 (Tool Registry and Hook Points), and Batch 7 (Dynamic Workflow E2E Trial) are all done. The scheduler can opt into dynamic orchestration through `ACP_ENABLE_DYNAMIC_WORKFLOW=1`, `ACP_SCHEDULER_MODE=dynamic`, or `ACP_SCHEDULER_EXECUTOR=dynamic`: failed nodes can trigger persisted graph mutation, be marked recovered, schedule fix/test nodes, resume the run, and continue to completion. Minimum dynamic-workflow acceptance target achieved: broad task → plan → execute → test fails → graph mutates → rerun → review/approval → export with full auditability. Does not authorize a new parallel runtime, default-on provider execution, target-repository mutation, hosted deployment, or sandbox/process/container/VM expansion beyond the existing explicit CLI executor path.
 
-Reference model: Claude Code dynamic workflows move orchestration into a workflow script/runtime that can coordinate many subagents, keep intermediate results outside the main conversation context, run in the background, expose progress, and resume/inspect runs. For this repository, the equivalent should be implemented as a Rust control-plane layer over the existing `workflow_runs`, `scheduler`, `dag_manager`, `workflow_engine`, `node_executor`, `quality`, and `routing` modules rather than a second scheduler or DAG kernel.
+Reference model: dynamic workflows move orchestration into a durable control plane that can coordinate many work items, keep intermediate state outside the main conversation context, expose progress, and resume/inspect runs. For this repository, dynamic workflow remains a capability inside the Rust control plane over the existing `workflow_runs`, `scheduler`, `dag_manager`, `workflow_engine`, `node_executor`, `quality`, and `routing` modules rather than a second scheduler or DAG kernel.
 
 Current architecture assessment:
 
@@ -53,6 +53,31 @@ Recommended dynamic-workflow implementation batches:
 | 7 | Dynamic Workflow E2E Trial | **DONE** (1208 tests). E2E trial proves: broad task → plan → execute → test fails → graph mutates with fix/test nodes → rerun → review/approval → export. Scheduler dynamic mode regression proves failed-node recovery can resume the persisted run and complete follow-up fix/test nodes. Asserts graph mutation events, patch contents, test logs, integrity, approval binding, and cleanup/quarantine behavior. ALL 7 BATCHES COMPLETE. Minimum acceptance target achieved. |
 
 Minimum acceptance target: a broad task should not merely run a predeclared graph. It must be able to observe a result, change the persisted workflow graph, and continue safely with full auditability.
+
+## Macro-Orchestrator Direction
+
+Product direction: **local/small-team self-hosted macro-orchestrator control plane.** The product goal is not to become a coding-agent runtime. The next stage should coordinate workflows, executors, resources, policies, approval points, audit evidence, and recovery decisions across the existing runtime path.
+
+Current assessment:
+
+| Dimension | Current level | Next gap |
+|---|---|---|
+| Usability | Local/small-team supervised beta is usable. | Longer soak runs and clearer operator controls. |
+| Intelligence | Medium: routing feedback, rule-based decomposition, quality gates, and explicit CLI executor calls are wired. | Unified policy decision layer that explains every scheduler/controller choice. |
+| Dynamicity | High: persisted graph mutation and scheduler dynamic-mode recovery are complete. | Better cross-run resource and queue decisions. |
+| Productization | Local self-hosted beta is strong; hosted GA is not the current target. | Resource pool, queue/backpressure, decision trace, and production drill coverage. |
+
+Next macro-orchestrator phases:
+
+| Order | Phase | Done When |
+|---|---|---|
+| 1 | Policy Decision Engine | Scheduler/controller ticks emit a structured `OrchestrationDecision` with inputs, selected action, selected executor, blocked reason, confidence, and audit id. It reuses existing `routing`, `quality`, cost, approval, and feedback modules without creating a parallel policy kernel. |
+| 2 | Resource / Executor Pool | Executors are modeled by capability, availability, concurrency limit, cooldown, failure score, and cost profile. Dashboard/SDK can read executor-pool status. |
+| 3 | Queue / Priority / Backpressure | Workflow runs support priority, deadline, tenant/project quota, queue position, and backpressure pause reason. Overload produces an explainable pause/degrade decision instead of blind ticking. |
+| 4 | Decision Trace / Explainability | Dashboard shows the decision chain for each run: executor choice, pause reason, graph-mutation reason, quality/routing/cost inputs, and recovery path. |
+| 5 | Ops Soak / Production Drill | A repeatable script runs multi-run, multi-executor, failure recovery, restart recovery, backup/restore dry-run, and dashboard visibility checks, then emits a machine-readable report. |
+
+Implementation constraints for all phases: extend `scheduler`, `DynamicWorkflowController`, `workflow_runs`, `routing`, `quality`, `node_executor`, and existing dashboard/SDK surfaces. Do not add a parallel scheduler/DAG/runtime, default-on provider execution, target-repository writes, sandbox/container/VM expansion, hosted SaaS deployment, or unattended autonomous workers.
 
 ## Supervised Autonomous Beta Planning
 

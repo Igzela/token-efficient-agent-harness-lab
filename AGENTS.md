@@ -1,6 +1,6 @@
 # Agent Instructions
 
-This repository is the Token-Efficient Agent Harness Lab.
+This repository is the Token-Efficient Agent Harness Lab: a local deterministic harness and self-hosted macro-orchestrator control plane for studying token-efficient agent workflows.
 
 ## Current Status
 
@@ -36,6 +36,7 @@ The Stage 0-4 task-book scope is complete.
 - Supervised autonomous beta planning started as a planning-only track in `docs/adr/0002-supervised-planning-track.md`. Batch 0-6 governance/module/model/read-only-planner/durable-state/advisory/design-gate work is recorded, with `WorkflowGraph` selected as canonical planning model. Batch 7 Slice A-F and the production-grade track now add supervised execution runtime primitives in app-owned detached workspaces: `NodeExecutor`, explicit tick/scheduler paths, workspace lifecycle, patch capture, integrity validation, approval binding, and export gating. These are supervised local runtime primitives, not target-repo writes, sandbox/process/container/VM isolation, provider default-on execution, hosted deployment, or unattended autonomous workers.
 - Current Rust test count: 1208 pass.
 - Dynamic Workflow: ALL 7 BATCHES COMPLETE plus scheduler dynamic-mode recovery. Minimum acceptance target achieved.
+- Macro-Orchestrator Direction: current product direction. Next work should add policy decisions, executor resource pools, queue/backpressure, decision trace, and ops soak on top of existing scheduler/dynamic workflow modules, without creating a parallel runtime or coding-agent runtime.
 - Existing CLI executor routing is a pre-existing local subprocess exception and is explicit opt-in via `ACP_ENABLE_CLI_EXECUTION=1`. Any expansion requires explicit scope and human approval.
 
 This project is now in autonomous maintainer mode for repository advancement. The responsible coding agent may keep advancing approved documentation, test, CI, hardening, dispatch-kernel, and local small-team self-hosting tracks without waiting for a new human instruction on every commit. New cloud/SaaS, hosted production, real-provider, target-write, or real-execution tracks still require explicit scope and human approval.
