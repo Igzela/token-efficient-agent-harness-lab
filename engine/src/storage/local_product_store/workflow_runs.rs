@@ -948,13 +948,13 @@ impl LocalProductStore {
         self.with_conn(|conn| {
             let now = self.now();
             let mut stmt = conn
-                .prepare("SELECT node_id, leased_at FROM workflow_run_nodes WHERE status = 'running' AND leased_at IS NOT NULL")
+                .prepare("SELECT run_id, node_id, leased_at FROM workflow_run_nodes WHERE status = 'running' AND leased_at IS NOT NULL")
                 .map_err(|e| e.to_string())?;
-            let stale_nodes: Vec<(String, String)> = stmt
-                .query_map([], |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)))
+            let stale_nodes: Vec<(String, String, String)> = stmt
+                .query_map([], |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?, row.get::<_, String>(2)?)))
                 .map_err(|e| e.to_string())?
                 .filter_map(|r| r.ok())
-                .filter(|(_, leased_at)| {
+                .filter(|(_, _, leased_at)| {
                     if let (Ok(lease_time), Ok(now_time)) = (
                         chrono::NaiveDateTime::parse_from_str(leased_at, "%Y-%m-%dT%H:%M:%SZ"),
                         chrono::NaiveDateTime::parse_from_str(&now, "%Y-%m-%dT%H:%M:%SZ"),
@@ -966,10 +966,10 @@ impl LocalProductStore {
                 })
                 .collect();
             let count = stale_nodes.len() as i64;
-            for (node_id, _) in &stale_nodes {
+            for (run_id, node_id, _) in &stale_nodes {
                 conn.execute(
-                    "UPDATE workflow_run_nodes SET status = 'pending', leased_at = NULL WHERE node_id = ?1 AND status = 'running'",
-                    params![node_id],
+                    "UPDATE workflow_run_nodes SET status = 'pending', leased_at = NULL WHERE run_id = ?1 AND node_id = ?2 AND status = 'running'",
+                    params![run_id, node_id],
                 ).map_err(|e| e.to_string())?;
             }
             Ok(count)
