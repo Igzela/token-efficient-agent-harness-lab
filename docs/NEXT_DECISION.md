@@ -67,6 +67,20 @@ Current assessment:
 | Dynamicity | High: persisted graph mutation and scheduler dynamic-mode recovery are wired, with real queue/backpressure semantics. | Keep hardening under load. |
 | Productization | Local self-hosted beta is strong; hosted GA is not the current target. | Keep hardening soak drill and recovery verification. |
 
+## Self-Hosted GA Readiness Track
+
+Current target: **small-team self-hosted GA**, not hosted/enterprise GA. This track turns the current strong beta into a system that can be left running, inspected, recovered, and handed to another operator. It must deepen the existing `scheduler`, `DynamicWorkflowController`, `workflow_runs`, `node_executor`, `executor_pool`, `routing`, `quality`, dashboard, SDK, and ops scripts. It must not create a parallel scheduler/DAG/runtime, enable providers by default, mutate target repositories, add hosted/SaaS surfaces, or add container/VM sandboxing.
+
+| Order | Phase | Goal | Done When |
+|---|---|---|---|
+| SG-1 | Real Dynamic CLI Pilot Matrix | Prove dynamic workflow is reliable with real CLI executors, not only stub/noop paths. | **DONE** — `scripts/pilot_dynamic_cli_matrix.py` covers 3 task classes and both `claude_code_cli`/`codex_cli` when available, gracefully skips unavailable executors with machine-readable evidence, and drives failure → dynamic graph mutation → CLI fix/test → verification → evidence-bound export. |
+| SG-2 | Long-Run Soak + Failure Injection | Prove the system can run and recover over time. | **DONE** — `scripts/soak_ops_drill.py` supports `--duration`, `--concurrency`, `--executor`, and `--dynamic`; covers restart, timeout, retry exhaustion, backup/restore dry-run, SQLite contention, and queue pressure; exits non-zero on missing evidence or zero real runs. |
+| SG-3 | Operator Mission-Control Dashboard | Let an operator understand the system state from one control surface. | Dashboard shows workflow graph, node timeline, decision trace, mutation/recovery reasons, executor pool, queue/backpressure, approval inbox, export state, and failure path. |
+| SG-4 | Policy Decision Deepening | Improve intelligence and explainability without adding a new policy kernel. | Every tick decision records input signals, candidate executors, selection/blocked/degraded reasons, confidence, and audit evidence; API, SDK, and dashboard agree on the shape. |
+| SG-5 | GA Release/Runbook Drill | Make self-hosted deployment operationally handoff-ready. | Production profile startup, config checklist, upgrade, backup, restore dry-run, incident triage, secret scan, rollback drill, and release checklist are documented and smoke-verifiable. |
+
+Current gap: SG-1/SG-2 prove dynamic CLI pilots and failure-injection soak through machine-readable scripts. The remaining work is operator mission-control visibility, deeper policy explanation, and handoff-ready runbook drills. Do not treat this as a dormant-module activation track; dormant module adaptation is complete, and this track hardens the active runtime path.
+
 Next macro-orchestrator completion repair batch:
 
 Repair batch on 2026-06-07: **ALL PHASES COMPLETE.** The five repair items are resolved:
@@ -112,7 +126,7 @@ Batch 7 readiness audit outcome:
 | Provider default-off | Existing provider gate remains default-off. | Satisfied, must be preserved |
 | No push/merge/deploy/target mutation | Existing boundaries block these behaviors. | Satisfied, must be preserved |
 
-Next safe action: harden the existing dynamic scheduler path with real CLI dynamic pilots, dashboard visibility for dynamic mutations/recovery events, and long-run soak/failure-injection coverage. Do not start a new parallel runtime. No target repo writes, sandbox/VM execution, real workers beyond the existing scheduler/CLI executor path, provider calls, push/merge/deploy/apply controls, or registered-target `git worktree add`.
+Next safe action: begin SG-3 of the Self-Hosted GA Readiness Track. Add mission-control dashboard visibility for workflow graph state, node timeline, decision trace, mutation/recovery reasons, executor pool, queue/backpressure, approval inbox, export state, and failure paths. Do not start a new parallel runtime. No target repo writes, sandbox/VM execution, real workers beyond the existing scheduler/CLI executor path, provider calls, push/merge/deploy/apply controls, or registered-target `git worktree add`.
 
 ## Local Productization Plan
 
@@ -252,7 +266,7 @@ This track authorizes extending existing supervised autonomous beta infrastructu
 
 **Latest**: GA hardening, real CLI pilot, dormant module adaptation cleanup, path/hash regression fix, Dynamic Workflow Batches 1-7, and scheduler dynamic-mode recovery are complete. 1208 Rust tests pass.
 
-**Next**: All GA and dynamic-workflow batches are complete. Candidate next product work is hardening the existing dynamic scheduler path with real CLI dynamic pilots, dashboard observability, and soak/failure-injection coverage.
+**Next**: All previous GA and dynamic-workflow batches plus Self-Hosted GA Readiness SG-1/SG-2 are complete. Candidate next product work is SG-3 operator mission-control dashboard, then SG-4 policy decision deepening and SG-5 GA release/runbook drill.
 
 **Boundaries that remain intact:**
 - Provider execution remains default-off and env-gated

@@ -8,6 +8,8 @@
 
 **Target user**: Solo developer or small local team studying deterministic agent infrastructure on one machine or LAN.
 
+**Next product track**: Self-Hosted GA Readiness Track. SG-1/SG-2 are complete. The remaining goal is to make the current strong beta more observable, explainable, and handoff-ready for small-team self-hosted use. This track deepens the existing runtime path; it does not authorize hosted SaaS, target repo writes, new sandbox/container/VM execution, provider default-on behavior, or a parallel scheduler/DAG/runtime.
+
 ## Architecture Summary
 
 Deterministic, rule-based pipeline:
@@ -39,9 +41,10 @@ Master document: `docs/dispatch/DISPATCHER_KERNEL_V0_ARCHITECTURE.md`
 - Dynamic Workflow Batch 6 (Tool Registry): COMPLETE (1205 Rust tests)
 - Dynamic Workflow Batch 7 + scheduler dynamic-mode recovery: COMPLETE (1208 Rust tests)
 - Macro-Orchestrator Phase 1-5 repair batch: COMPLETE (all tick paths persist decisions, executor-pool binds to execution, queue/backpressure correct, operator surfaces aligned, soak script truthful)
+- Self-Hosted GA Readiness Track: SG-1/SG-2 COMPLETE (real dynamic CLI pilot matrix and long-run soak/failure injection); SG-3 mission-control dashboard NEXT
 
 **Key Milestones:**
-- 1338 Rust tests pass, 0 failures
+- 1339 Rust tests pass, 0 failures
 - TypeScript strict + readonly lint + build + static export pass
 - `cargo fmt`, `cargo clippy`, handoff guard all pass
 
@@ -128,7 +131,7 @@ When you encounter schema ambiguity, interface questions, phase boundary edge ca
 
 - **Framework**: Rust `cargo test` for engine; Python `unittest` for SDK
 - **Run commands**: `cargo test -p engine` (primary); SDK tests in `sdk/python/`
-- **Current count**: 1338 Rust tests, 0 failures
+- **Current count**: 1339 Rust tests, 0 failures
 - **CI**: GitHub Actions on push/PR to main
 - **Test-first**: Write tests alongside implementation
 

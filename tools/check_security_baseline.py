@@ -126,6 +126,10 @@ ALLOWED_TEST_IMPORTS: dict[str, set[str]] = {
         "urllib.request",
         "urllib.error",
     },
+    "scripts/pilot_dynamic_cli_matrix.py": {
+        "urllib.request",
+        "urllib.error",
+    },
     "scripts/soak_ops_drill.py": {
         "urllib.request",
         "urllib.error",

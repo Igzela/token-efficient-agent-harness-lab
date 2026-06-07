@@ -12,6 +12,9 @@ use crate::http_server::{
     WorkflowRunActionApiRequest, WorkflowRunApprovalApiRequest, WorkflowRunCreateApiRequest,
     WorkflowRunEventApiRequest, WorkflowRunTickApiRequest, AXUM_API_SCHEMA_VERSION,
 };
+use crate::workflow::dynamic_controller::{
+    ControllerAction, ControllerTickResult, DynamicControllerConfig, DynamicWorkflowController,
+};
 use crate::workflow::orchestration_decision::{
     action_to_string, confidence_from_inputs, OrchestrationAction,
 };
@@ -294,6 +297,23 @@ pub(crate) async fn api_tick_workflow_run(
                 Err(e) => Err(internal_error(e)),
             }
         }
+        "dynamic" | "dynamic_noop" | "dynamic_workflow" => {
+            use crate::node_executor::NoopNodeExecutor;
+            let executor = NoopNodeExecutor;
+            let mut controller = DynamicWorkflowController::new(DynamicControllerConfig {
+                max_ticks_per_run: 1,
+                executor_pool_accounting_enabled: false,
+                ..DynamicControllerConfig::default()
+            });
+            match controller.tick(&store, &run_id, actor, &executor) {
+                Ok(result) => Ok((
+                    cors_headers(),
+                    Json(json_response("tick", controller_tick_to_value(&result))),
+                )),
+                Err(e) if e.starts_with("workflow run not found:") => Err(not_found()),
+                Err(e) => Err(internal_error(e)),
+            }
+        }
         "claude_code_cli" | "codex_cli" => {
             let cli_config = crate::cli::CliConfig::from_env();
             match crate::cli::CliNodeExecutor::from_config(&cli_config) {
@@ -363,6 +383,46 @@ fn json_response(key: &str, value: serde_json::Value) -> serde_json::Value {
     );
     map.insert(key.to_string(), value);
     serde_json::Value::Object(map)
+}
+
+fn controller_tick_to_value(result: &ControllerTickResult) -> serde_json::Value {
+    json!({
+        "action": "dynamic_tick",
+        "actions": result.actions.iter().map(controller_action_to_value).collect::<Vec<_>>(),
+        "run_status": result.run_status,
+        "mutations_applied": result.mutations_applied,
+        "should_continue": result.should_continue,
+        "suggested_executor_type": result.suggested_executor_type,
+        "pool_failure_score": result.pool_failure_score,
+        "pool_active_count": result.pool_active_count,
+        "queue_position": result.queue_position,
+        "priority": result.priority,
+        "admission_allowed": result.admission_allowed,
+        "admission_reason": result.admission_reason,
+    })
+}
+
+fn controller_action_to_value(action: &ControllerAction) -> serde_json::Value {
+    match action {
+        ControllerAction::NodeExecuted { node_id, status } => {
+            json!({"type": "node_executed", "node_id": node_id, "status": status})
+        }
+        ControllerAction::NodeRetried { node_id, attempt } => {
+            json!({"type": "node_retried", "node_id": node_id, "attempt": attempt})
+        }
+        ControllerAction::GraphMutated {
+            proposal_id,
+            mutation_type,
+        } => {
+            json!({"type": "graph_mutated", "proposal_id": proposal_id, "mutation_type": mutation_type})
+        }
+        ControllerAction::ApprovalRequested { node_id, reason } => {
+            json!({"type": "approval_requested", "node_id": node_id, "reason": reason})
+        }
+        ControllerAction::RunCompleted => json!({"type": "run_completed"}),
+        ControllerAction::RunFailed { reason } => json!({"type": "run_failed", "reason": reason}),
+        ControllerAction::NoAction { reason } => json!({"type": "no_action", "reason": reason}),
+    }
 }
 
 fn record_tick_decision(

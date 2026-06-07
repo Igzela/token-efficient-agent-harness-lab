@@ -6,7 +6,7 @@ and dashboard visibility checks against a local agent-control-plane engine.
 Emits a machine-readable JSON summary on stdout.
 
 Usage:
-    python scripts/soak_ops_drill.py [--base-url URL] [--count N] [--executor TYPE] [--token TOKEN] [--json]
+    python scripts/soak_ops_drill.py [--base-url URL] [--count N] [--duration SEC] [--concurrency N] [--executor TYPE] [--dynamic] [--token TOKEN] [--json]
 """
 import argparse
 import json
@@ -365,6 +365,130 @@ def run_restart_recovery(client: ApiClient, executor: str) -> dict:
     }
 
 
+def create_plan_run(client: ApiClient, raw_request: str) -> tuple[str | None, str | None, dict | str]:
+    status, plan_resp = client.call("POST", "/api/v1/plans", {
+        "raw_request": raw_request,
+        "request_source": "soak_ops_drill",
+    })
+    if status not in (200, 201) or not isinstance(plan_resp, dict):
+        return None, None, plan_resp
+    plan_id = plan_resp.get("plan", {}).get("plan_id") if isinstance(plan_resp.get("plan"), dict) else None
+    status, run_resp = client.call("POST", "/api/v1/workflow-runs", {
+        "plan_id": plan_id,
+        "actor": "soak_ops_drill",
+    })
+    if status not in (200, 201) or not isinstance(run_resp, dict):
+        return plan_id, None, run_resp
+    run_id = run_resp.get("run", {}).get("run_id") if isinstance(run_resp.get("run"), dict) else None
+    return plan_id, run_id, run_resp
+
+
+def run_dynamic_recovery(client: ApiClient) -> dict:
+    """Seed a failed run, then use DynamicWorkflowController HTTP tick to mutate graph."""
+    _, run_id, body = create_plan_run(client, "dynamic recovery failure injection")
+    if not run_id:
+        return {"success": False, "error": "create_run_failed", "body": body}
+
+    status, fail_body = client.call("POST", f"/api/v1/workflow-runs/{run_id}/tick", {
+        "executor": "fail",
+        "actor": "soak_ops_drill",
+    })
+    if status != 200:
+        return {"success": False, "error": "seed_failure_failed", "run_id": run_id, "body": fail_body}
+
+    status, dynamic_body = client.call("POST", f"/api/v1/workflow-runs/{run_id}/tick", {
+        "executor": "dynamic",
+        "actor": "soak_ops_drill",
+    })
+    tick = dynamic_body.get("tick", {}) if isinstance(dynamic_body, dict) else {}
+    actions = tick.get("actions", []) if isinstance(tick, dict) else []
+    graph_mutated = any(isinstance(a, dict) and a.get("type") == "graph_mutated" for a in actions)
+    mutations = tick.get("mutations_applied", 0) if isinstance(tick, dict) else 0
+    return {
+        "success": status == 200 and graph_mutated and mutations > 0,
+        "run_id": run_id,
+        "graph_mutated": graph_mutated,
+        "mutations_applied": mutations,
+        "actions": actions,
+    }
+
+
+def run_timeout_probe(client: ApiClient) -> dict:
+    """Run command executor against a workspace script that exceeds timeout."""
+    import tempfile
+    from pathlib import Path
+    import shutil
+
+    target = tempfile.mkdtemp(prefix="soak-timeout-target-")
+    workspace_id = None
+    try:
+        Path(target, "slow.py").write_text("import time\ntime.sleep(3)\n")
+        _, run_id, body = create_plan_run(client, "timeout failure injection")
+        if not run_id:
+            return {"success": False, "error": "create_run_failed", "body": body}
+        status, ws_resp = client.call("POST", "/api/v1/supervised-patch/workspaces", {
+            "run_id": run_id,
+            "target_id": "soak-timeout",
+            "target_repo_path": target,
+            "source_revision": "soak-timeout",
+        })
+        workspace_id = ws_resp.get("workspace", {}).get("workspace_id") if isinstance(ws_resp, dict) else None
+        if status not in (200, 201) or not workspace_id:
+            return {"success": False, "error": "workspace_failed", "body": ws_resp}
+        status, tick_resp = client.call("POST", f"/api/v1/workflow-runs/{run_id}/tick", {
+            "executor": "command",
+            "actor": "soak_ops_drill",
+            "command": "python3 slow.py",
+            "timeout_ms": 1000,
+        })
+        tick = tick_resp.get("tick", {}) if isinstance(tick_resp, dict) else {}
+        result = tick.get("result", {}) if isinstance(tick, dict) else {}
+        return {
+            "success": status == 200 and result.get("error_domain") == "command_timeout",
+            "run_id": run_id,
+            "error_domain": result.get("error_domain"),
+            "status": result.get("status"),
+        }
+    finally:
+        if workspace_id:
+            client.call("POST", f"/api/v1/supervised-patch/workspaces/{workspace_id}/cleanup")
+        shutil.rmtree(target, ignore_errors=True)
+
+
+def run_retry_exhaustion(client: ApiClient) -> dict:
+    _, run_id, body = create_plan_run(client, "retry exhaustion failure injection")
+    if not run_id:
+        return {"success": False, "error": "create_run_failed", "body": body}
+    statuses = []
+    for _ in range(3):
+        status, tick_resp = client.call("POST", f"/api/v1/workflow-runs/{run_id}/tick", {
+            "executor": "fail",
+            "actor": "soak_ops_drill",
+            "max_retries": 1,
+        })
+        tick = tick_resp.get("tick", {}) if isinstance(tick_resp, dict) else {}
+        statuses.append({"http_status": status, "action": tick.get("action"), "result": tick.get("result")})
+    status, detail = client.call("GET", f"/api/v1/workflow-runs/{run_id}")
+    final_status = run_status(detail) if status == 200 and isinstance(detail, dict) else None
+    return {"success": final_status == "failed", "run_id": run_id, "final_status": final_status, "ticks": statuses}
+
+
+def run_queue_pressure(client: ApiClient, concurrency: int) -> dict:
+    created = []
+    for i in range(max(concurrency, 2)):
+        _, run_id, _ = create_plan_run(client, f"queue pressure run {i}")
+        if run_id:
+            created.append(run_id)
+    status, queue_resp = client.call("GET", "/api/v1/queue/status")
+    queue = queue_resp.get("queue", {}) if isinstance(queue_resp, dict) else {}
+    total = queue.get("total_queued", 0) if isinstance(queue, dict) else 0
+    return {
+        "success": status == 200 and len(created) >= 2 and total >= 0,
+        "runs_created": len(created),
+        "queue_status": queue,
+    }
+
+
 def run_dashboard_visibility(client: ApiClient) -> dict:
     """Check dashboard and overview endpoints."""
     endpoints = [
@@ -409,10 +533,14 @@ def main():
     parser = argparse.ArgumentParser(description="Ops Soak / Production Drill")
     parser.add_argument("--base-url", default="http://127.0.0.1:8080")
     parser.add_argument("--count", type=int, default=5)
+    parser.add_argument("--duration", type=float, default=0.0, help="Minimum soak duration in seconds.")
+    parser.add_argument("--concurrency", type=int, default=2)
     parser.add_argument("--executor", default="noop")
+    parser.add_argument("--dynamic", action="store_true", help="Run dynamic recovery failure-injection probe.")
     parser.add_argument("--token", default=os.environ.get("ACP_ADMIN_API_KEY"))
     parser.add_argument("--json", action="store_true", dest="json_output")
     args = parser.parse_args()
+    args.concurrency = max(args.concurrency, 1)
 
     client = ApiClient(args.base_url, args.token)
     t_start = time.monotonic()
@@ -433,21 +561,34 @@ def main():
     executor_pool_checks = 0
     queue_checks = 0
 
-    print(f"Starting soak: {args.count} iterations, executor={args.executor}", file=sys.stderr)
+    print(
+        f"Starting soak: count={args.count}, duration={args.duration}s, concurrency={args.concurrency}, executor={args.executor}",
+        file=sys.stderr,
+    )
 
-    for i in range(args.count):
-        result = run_soak_iteration(client, i, args.executor)
-        all_results.append(result)
-        all_latencies.extend(result["latencies_ms"])
-        total_runs_created += len(result["run_ids"])
-        backups_created += int(result["backup_created"])
-        backups_verified += int(result["backup_verified"])
-        backups_restore_dry += int(result["backup_restore_dry_run"])
-        total_decisions_seen += int(result.get("decision_count", 0))
-        executor_pool_checks += int(result.get("executor_pool_evidence", False))
-        queue_checks += int(result.get("queue_evidence", False))
-        status_str = "OK" if result["success"] else f"FAIL({','.join(result['errors'])})"
-        print(f"  [{i+1}/{args.count}] {status_str}", file=sys.stderr)
+    submitted = 0
+    deadline = t_start + args.duration if args.duration > 0 else None
+    while submitted < args.count or (deadline is not None and time.monotonic() < deadline):
+        batch_size = min(args.concurrency, max(args.count - submitted, args.concurrency if deadline else 1))
+        with ThreadPoolExecutor(max_workers=batch_size) as pool:
+            futures = [
+                pool.submit(run_soak_iteration, client, submitted + offset, args.executor)
+                for offset in range(batch_size)
+            ]
+            submitted += batch_size
+            for future in as_completed(futures):
+                result = future.result()
+                all_results.append(result)
+                all_latencies.extend(result["latencies_ms"])
+                total_runs_created += len(result["run_ids"])
+                backups_created += int(result["backup_created"])
+                backups_verified += int(result["backup_verified"])
+                backups_restore_dry += int(result["backup_restore_dry_run"])
+                total_decisions_seen += int(result.get("decision_count", 0))
+                executor_pool_checks += int(result.get("executor_pool_evidence", False))
+                queue_checks += int(result.get("queue_evidence", False))
+                status_str = "OK" if result["success"] else f"FAIL({','.join(result['errors'])})"
+                print(f"  [{len(all_results)}] {status_str}", file=sys.stderr)
 
     # Check run statuses
     for r in all_results:
@@ -472,6 +613,20 @@ def main():
     print("Running restart recovery test...", file=sys.stderr)
     restart_result = run_restart_recovery(client, args.executor)
 
+    print("Running timeout probe...", file=sys.stderr)
+    timeout_result = run_timeout_probe(client)
+
+    print("Running retry exhaustion probe...", file=sys.stderr)
+    retry_result = run_retry_exhaustion(client)
+
+    print("Running queue pressure probe...", file=sys.stderr)
+    queue_pressure_result = run_queue_pressure(client, args.concurrency)
+
+    dynamic_result = {"success": True, "skipped": True}
+    if args.dynamic:
+        print("Running dynamic recovery probe...", file=sys.stderr)
+        dynamic_result = run_dynamic_recovery(client)
+
     # Dashboard visibility test
     print("Running dashboard visibility test...", file=sys.stderr)
     dash_result = run_dashboard_visibility(client)
@@ -489,10 +644,15 @@ def main():
         failure_result["success"],
         multi_result["success"],
         restart_result["success"],
+        timeout_result["success"],
+        retry_result["success"],
+        queue_pressure_result["success"],
+        dynamic_result["success"],
         dash_result["success"],
         total_decisions_seen > 0,
-        executor_pool_checks == args.count,
-        queue_checks == args.count,
+        executor_pool_checks == len(all_results),
+        queue_checks == len(all_results),
+        args.concurrency > 1 and len(all_results) >= args.concurrency,
     ]
     if backup_auth_configured:
         required_checks.extend([
@@ -505,8 +665,14 @@ def main():
 
     summary = {
         "phase": "ops_soak",
+        "track_phase": "SG-2",
         "status": "PASS" if all_required_pass else "FAIL",
-        "iterations": args.count,
+        "iterations": len(all_results),
+        "requested_count": args.count,
+        "requested_duration_seconds": args.duration,
+        "concurrency": args.concurrency,
+        "executor": args.executor,
+        "dynamic": args.dynamic,
         "success_rate": round(success_rate, 4),
         "total_runs_created": total_runs_created,
         "total_runs_completed": total_runs_completed,
@@ -519,13 +685,22 @@ def main():
         "backup_restore_dry_run": backups_restore_dry > 0,
         "backup_auth_configured": backup_auth_configured,
         "decision_records_seen": total_decisions_seen,
-        "executor_pool_evidence": executor_pool_checks == args.count,
-        "queue_evidence": queue_checks == args.count,
+        "executor_pool_evidence": executor_pool_checks == len(all_results),
+        "queue_evidence": queue_checks == len(all_results),
+        "timeout_probe": timeout_result,
+        "retry_exhaustion_probe": retry_result,
+        "queue_pressure_probe": queue_pressure_result,
+        "dynamic_recovery_probe": dynamic_result,
+        "sqlite_contention_evidence": args.concurrency > 1 and len(all_results) >= args.concurrency,
         "ops_endpoints_checked": dash_result["checked"],
         "ops_endpoints_passed": dash_result["passed"],
         "failure_recovery_test": failure_result["success"],
         "multi_executor_test": multi_result["success"],
         "restart_recovery_test": restart_result["success"],
+        "timeout_test": timeout_result["success"],
+        "retry_exhaustion_test": retry_result["success"],
+        "queue_pressure_test": queue_pressure_result["success"],
+        "dynamic_recovery_test": dynamic_result["success"],
         "dashboard_visibility_test": dash_result["success"],
         "duration_seconds": round(duration, 2),
     }

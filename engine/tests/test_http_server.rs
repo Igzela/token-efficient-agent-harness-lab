@@ -4151,6 +4151,107 @@ async fn axum_tick_with_fail_executor_marks_run_failed() {
 }
 
 #[tokio::test]
+async fn axum_dynamic_tick_recovers_failed_run_with_graph_mutation() {
+    let dir = tempdir().unwrap();
+    let store = LocalProductStore::new(dir.path().join("tick-dynamic.db")).unwrap();
+    let app = build_axum_router(AxumApiState::new().with_local_store(store));
+
+    let plan_resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(Method::POST)
+                .uri("/api/v1/plans")
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(
+                    json!({"raw_request": "dynamic recovery test", "request_source": "test"})
+                        .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(plan_resp.status(), StatusCode::OK);
+    let plan_body = response_json(plan_resp).await;
+    let plan_id = plan_body["plan"]["plan_id"].as_str().unwrap();
+
+    let run_resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(Method::POST)
+                .uri("/api/v1/workflow-runs")
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(json!({"plan_id": plan_id}).to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let run_body = response_json(run_resp).await;
+    let run_id = run_body["run"]["run_id"].as_str().unwrap();
+
+    let fail_resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(Method::POST)
+                .uri(format!("/api/v1/workflow-runs/{run_id}/tick"))
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(
+                    json!({"actor": "test", "executor": "fail"}).to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(fail_resp.status(), StatusCode::OK);
+
+    let dynamic_resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(Method::POST)
+                .uri(format!("/api/v1/workflow-runs/{run_id}/tick"))
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(
+                    json!({"actor": "test", "executor": "dynamic"}).to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(dynamic_resp.status(), StatusCode::OK);
+    let dynamic_body = response_json(dynamic_resp).await;
+    assert_eq!(dynamic_body["tick"]["action"], "dynamic_tick");
+    assert!(
+        dynamic_body["tick"]["mutations_applied"].as_i64().unwrap() >= 1,
+        "dynamic tick should apply a recovery mutation: {dynamic_body}"
+    );
+    let actions = dynamic_body["tick"]["actions"].as_array().unwrap();
+    assert!(
+        actions.iter().any(|a| a["type"] == "graph_mutated"),
+        "dynamic tick should report graph_mutated: {dynamic_body}"
+    );
+
+    let detail_resp = app
+        .oneshot(
+            Request::builder()
+                .method(Method::GET)
+                .uri(format!("/api/v1/workflow-runs/{run_id}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let detail_body = response_json(detail_resp).await;
+    assert_eq!(detail_body["run"]["status"], "running");
+    assert!(
+        detail_body["run"]["nodes"].as_array().unwrap().len() >= 3,
+        "failed run should have original plus recovery nodes"
+    );
+}
+
+#[tokio::test]
 async fn axum_tick_with_claude_code_cli_unavailable_returns_400() {
     let dir = tempdir().unwrap();
     let store = LocalProductStore::new(dir.path().join("tick-cli-400.db")).unwrap();
