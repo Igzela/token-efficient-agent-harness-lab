@@ -66,7 +66,7 @@ For each autonomous session:
 
 1. Inspect `git status --short --branch` and read the session bootstrap docs.
 2. Choose the highest-value safe task from failing verification, CI/docs/test drift, concrete review findings, or narrowly scoped hardening.
-3. **Use Workflow tool for multi-step implementation tasks.** Write a workflow script to `.claude/workflows/` with parallel agents for independent subtasks (e.g., Rust module + API endpoint + SDK + Dashboard). Use `model: 'opus'` for implementation agents and `model: 'sonnet'` for verification. Do NOT implement multi-file features sequentially by hand when Workflow can orchestrate.
+3. **All sessions must use Workflow tool for implementation.** Write a workflow script to `.claude/workflows/` with `parallel()` for independent subtasks and `pipeline()` for sequential dependencies. Use `model: 'opus'` for implementation agents and `model: 'sonnet'` for verification. The only exception is trivial single-line edits (typo, doc wording, env var). Anything touching 2+ files goes through Workflow.
 4. Update or add tests before behavior changes.
 5. Run the full verification suite: `cargo test -p engine`, `cargo fmt --check`, `cargo clippy -p engine --all-targets -- -D warnings`, TypeScript build/test, dashboard build, `uv run --no-project python scripts/check_agent_handoff.py`, `bash scripts/check_wire_codegen_drift.sh`.
 6. **CI must be green before starting the next batch.** After pushing, use `gh run list --limit 3` to check CI status. If CI fails, fix and re-push. A green CI is required before the next session's work is considered safe to build on.
@@ -91,7 +91,7 @@ For each autonomous session:
 5. **Document maintenance**: Keep handoff surface current and small
 6. **Autonomous closeout**: Run `uv run --no-project python scripts/check_agent_handoff.py` before commit
 7. **Single forward plan**: `docs/NEXT_DECISION.md` is the only roadmap surface
-8. **Ultracode mode requires Workflow tool**: When `/effort ultracode` is active, all multi-step, multi-file, or cross-module tasks must use Workflow tool for dynamic multi-agent orchestration. Never use direct `Agent` tool calls or sequential `await agent(...)` for tasks that should be parallelized or orchestrated.
+8. **Workflow tool is the default for all implementation**: All sessions use Workflow tool for any task touching 2+ files. Write script to `.claude/workflows/`, use `parallel()`/`pipeline()`, launch with `Workflow({scriptPath})`. Only trivial single-line edits bypass Workflow.
 
 ## Documentation Maintenance
 

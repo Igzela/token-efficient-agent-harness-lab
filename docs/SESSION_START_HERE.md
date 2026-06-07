@@ -116,15 +116,17 @@ Before proposing any new track, read `docs/CURRENT_STATUS.md` and `docs/NEXT_DEC
 
 ## Implementation Strategy
 
-**For multi-step implementation tasks (new module + API + SDK + Dashboard):**
-1. Write a workflow script to `.claude/workflows/<task-name>.md` with `export const meta = { name, description, phases }`.
-2. Use `parallel()` or `pipeline()` for independent subtasks (e.g., Rust module + API endpoint in parallel, then SDK + Dashboard in parallel, then verification).
-3. Use `model: 'opus'` for implementation agents, `model: 'sonnet'` for verification/checks.
-4. Launch via `Workflow({scriptPath: ".claude/workflows/<task-name>.md"})`.
-5. After workflow completes, fix any issues found by verification agent, then commit/push.
-6. Wait for CI green before starting the next batch.
+**All sessions must use Workflow tool for implementation.** This is the default, not optional.
 
-**For small fixes (doc drift, single test, formatting):** Direct Edit/Read is fine.
+1. Write a workflow script to `.claude/workflows/<task-name>.md` with `export const meta = { name, description, phases }`.
+2. Use `parallel()` for independent subtasks (e.g., Rust module + API endpoint in parallel, then SDK + Dashboard in parallel).
+3. Use `pipeline()` when tasks have sequential dependencies (e.g., Wave 1 code → Wave 2 integration → Wave 3 verify).
+4. Use `model: 'opus'` for implementation agents, `model: 'sonnet'` for verification/checks.
+5. Launch via `Workflow({scriptPath: ".claude/workflows/<task-name>.md"})`.
+6. After workflow completes, fix any issues found by verification agent, then commit/push.
+7. Wait for CI green before starting the next batch.
+
+**The only exception is trivial single-line edits** (typo fixes, doc wording, env var changes). Anything touching 2+ files goes through Workflow.
 
 ## Autonomous Session Closeout
 
