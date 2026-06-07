@@ -25,7 +25,7 @@ The responsible coding agent may choose any of the following without asking for 
 | Supervised autonomous beta planning | Batch 0-7 Slice A-F complete. Slice F adds supervised execution runtime primitives: NodeExecutor trait, CommandNodeExecutor (shell-metachar rejection, allowlist, no `sh -c`), workflow tick endpoint, workspace lifecycle (create/cleanup/quarantine), capture_patch with source manifest diff, approval binding with bound fields, integrity validation, export gate, E2E closed-loop test. 1222 Rust tests pass, clippy clean. No target repo writes, sandbox/process/container/VM execution, real workers, provider calls, push/merge/deploy/apply controls, or default-on execution. |
 | Architecture refactor (R-series) | **SEALED AT R7.** R1–R7 are complete. R8 is not approved. The `checkpoint.rs` split and `dispatch_decision.rs` split are deferred. No further R-series file splitting is approved. |
 | Dormant module adaptation | 4-phase strategy to selectively activate 23,939 lines of dormant code. Phase 1: Interface Unification (trait Evaluator, Provider adapter, GraphOperations) — COMPLETE. Phase 2: Zero-Conflict Activation (DAGManager in planner, context_pack in task_analyzer, WorkQueue+ResultAggregator+FeedbackIntegrator with AutoPolicies in scheduler) — COMPLETE. Phase 3: Adapted Activation (QualityGateEvaluator, AdvisorBroker in dispatch, ConflictResolver+HumanApprovalGate+WorkflowEngine in scheduler) — COMPLETE (1332 tests). Phase 4: Dead Code Cleanup — COMPLETE (~9,400 lines removed, 1099 tests). All 4 phases done. All boundaries intact. |
-| HA hardening | Production-grade resilience track. Observability wiring, deep health, graceful shutdown, retry jitter, and circuit breaker are DONE (1367 tests). Remaining: HA-1 Scheduler Resilience, HA-2 Automated Backup, HA-3 Deep Health + Resource Monitoring, HA-5 TLS Inbound, HA-6 Secret Encryption at Rest. All phases are independent or have documented dependencies. No new external dependencies. |
+| HA hardening | Production-grade resilience track. Observability wiring, deep health, graceful shutdown, retry jitter, and circuit breaker are DONE (1367 tests). Remaining: HA-1 Scheduler Resilience + Persistent Heartbeat, HA-2 Automated Backup, HA-3 Deep Health + Resource Monitoring + External Monitoring, HA-5 TLS Inbound, HA-6 Secret Encryption at Rest. User-requested: PostgreSQL optional storage backend, persistent heartbeat, external monitoring. All phases are independent or have documented dependencies. |
 
 ## Dynamic Workflow Direction
 
@@ -77,14 +77,14 @@ Current target: **small-team self-hosted GA**, not hosted/enterprise GA. This tr
 | SG-1 | Real Dynamic CLI Pilot Matrix | Prove dynamic workflow is reliable with real CLI executors, not only stub/noop paths. | **DONE** — `scripts/pilot_dynamic_cli_matrix.py` covers 3 task classes and both `claude_code_cli`/`codex_cli` when available, records unavailable executors as machine-readable skip evidence, treats all-skip as a non-zero failure, requires CLI fix/verify ticks to return completed results, and drives failure → dynamic graph mutation → CLI fix/test → verification → evidence-bound export. |
 | SG-2 | Long-Run Soak + Failure Injection | Prove the system can run and recover over time. | **DONE** — `scripts/soak_ops_drill.py` supports `--duration`, `--concurrency`, `--executor`, `--dynamic`, and `--restart-command`; covers operator-supplied engine restart recovery, timeout, retry exhaustion, backup/restore dry-run, SQLite contention evidence, and queue pressure with real queued/running/backpressure evidence; exits non-zero on missing evidence or zero real runs. |
 | SG-3 | Operator Mission-Control Dashboard | Let an operator understand the system state from one control surface. | **DONE** — Mission Control tab composes existing workflow graph, node timeline, decision trace, mutation/recovery reasons, executor pool, queue/backpressure, approval inbox, export state, and failure path state. |
-| SG-4 | Policy Decision Deepening | Improve intelligence and explainability without adding a new policy kernel. | **DONE** — OrchestrationDecision v2 enriches every tick decision with quality_signal, routing_signal, cost_signal, approval_signal, queue_signal, executor_pool_signal, candidate_executors, and degraded_reason. All 3 tick paths (scheduler, dynamic controller, HTTP handler) persist enriched decisions. Dashboard DecisionLog/DecisionTrace show degraded badges, candidate executors, pool failure scores, and quality signals. SDK + dashboard types aligned. 1348 Rust tests pass. |
+| SG-4 | Policy Decision Deepening | Improve intelligence and explainability without adding a new policy kernel. | **DONE** — OrchestrationDecision v2 enriches every tick decision with quality_signal, routing_signal, cost_signal, approval_signal, queue_signal, executor_pool_signal, candidate_executors, and degraded_reason. All 3 tick paths (scheduler, dynamic controller, HTTP handler) persist enriched decisions. Dashboard DecisionLog/DecisionTrace show degraded badges, candidate executors, pool failure scores, and quality signals. SDK + dashboard types aligned. 1367 Rust tests pass. |
 | SG-5 | GA Release/Runbook Drill | Make self-hosted deployment operationally handoff-ready. | **DONE** — docs/RUNBOOK.md covers startup, config, upgrade, backup, restore dry-run, incident triage, secret scan, rollback drill, and release checklist. scripts/ga_release_checklist.py validates all pre-release gates. scripts/ga_rollback_drill.py exercises backup→verify→restore-dry-run→integrity→metrics flow. |
 
-Current gap: SG-1 through SG-5 are complete. The Self-Hosted GA Readiness Track is done. Do not treat this as a dormant-module activation track; dormant module adaptation is complete, and this track hardened the active runtime path.
+Current gap: SG-1 through SG-5 are complete. The Self-Hosted GA Readiness Track is done. Do not treat this as a dormant-module activation track; dormant module adaptation is complete, and this track hardened the active runtime path. The next track is HA Hardening (see below).
 
 ## High-Availability Hardening Track
 
-Current target: **production-grade local/small-team HA**. The Self-Hosted GA track proved the system can run, recover, and be handed off. This track addresses the remaining HA gaps that prevent production use: single-point-of-failure, no encryption, no deep monitoring, no automated resilience.
+Current target: **production-grade local/small-team HA**. The Self-Hosted GA track proved the system can run, recover, and be handed off. This track addresses the remaining HA gaps that prevent production use: single-point-of-failure, no encryption, no deep monitoring, no automated resilience. User requested: PostgreSQL migration, persistent heartbeat with external monitoring, and circuit breaker (done).
 
 **Completed (2026-06-07):**
 - Wired `MetricsCollector` + `RequestTracer` into runtime (AxumApiState, middleware, scheduler)
@@ -92,31 +92,32 @@ Current target: **production-grade local/small-team HA**. The Self-Hosted GA tra
 - `GET /api/v1/metrics/observability` exposes real-time request metrics and scheduler snapshots
 - Graceful shutdown via SIGTERM/SIGINT with `tokio::signal`
 - Deterministic ±20% jitter in retry `compute_delay_ms` (golden ratio, no `rand` dependency)
-- Circuit breaker for provider calls (HA-4): `CircuitBreaker` module with Closed/Open/HalfOpen state machine, configurable failure threshold and recovery timeout, `CircuitBreakerProvider` wrapper, `CircuitBreakerRegistry` for status reporting, `GET /api/v1/circuit-breaker/status` endpoint, 14 new tests
+- Circuit breaker for provider calls (HA-4): `CircuitBreaker` module with Closed/Open/HalfOpen state machine, configurable failure threshold and recovery timeout (`ACP_CIRCUIT_BREAKER_THRESHOLD`, `ACP_CIRCUIT_BREAKER_RECOVERY_MS`), `CircuitBreakerProvider` wrapper, `CircuitBreakerRegistry` for status reporting, `GET /api/v1/circuit-breaker/status` endpoint, 14 new tests
+- Docs simplified from 136 to 16 files (historical closeout reports, stage specs, trial reports, MVP specs, design-only docs removed)
 
 **Remaining gaps and planned phases:**
 
 | Order | Phase | Goal | Scope | Done When |
 |---|---|---|---|---|
-| HA-1 | Scheduler Resilience | Scheduler thread survives panics and persists liveness | Wrap scheduler tick in `catch_unwind`; write periodic heartbeat to SQLite (`scheduler_heartbeat` table); `/api/v1/health` reads persisted heartbeat; restart scheduler thread on panic with backoff | Scheduler thread auto-recovers from panic; heartbeat persists across restarts; health endpoint reports stale heartbeat; 5+ new tests |
+| HA-1 | Scheduler Resilience + Persistent Heartbeat | Scheduler thread survives panics, persists liveness, heartbeats externalize | Wrap scheduler tick in `catch_unwind`; write periodic heartbeat to SQLite (`scheduler_heartbeat` table); `/api/v1/health` reads persisted heartbeat; restart scheduler thread on panic with backoff; **user-requested: persistent heartbeat with external monitoring** | Scheduler thread auto-recovers from panic; heartbeat persists across restarts; health endpoint reports stale heartbeat; 5+ new tests |
 | HA-2 | Automated Backup + Retention | Backups happen without operator intervention | Timer-based backup in scheduler loop (configurable interval via `ACP_BACKUP_INTERVAL_SEC`); retention policy (`ACP_BACKUP_RETAIN_COUNT`, default 5); WAL checkpoint before backup (`PRAGMA wal_checkpoint(TRUNCATE)`); backup age/count in `/api/v1/metrics` | Backups auto-created on interval; old backups pruned; WAL checkpoint runs before copy; backup metrics visible; 5+ new tests |
-| HA-3 | Deep Health + Resource Monitoring | Health endpoint reports real system state | Check disk space (`statvfs` or `df`); check memory (read `/proc/meminfo` or `sysinfo`); check DB file size vs disk free; check scheduler thread liveness via persisted heartbeat; aggregate into `healthy`/`degraded`/`unhealthy` with per-check detail | Health returns degraded on low disk (<10%), unhealthy on DB unreachable, degraded on stale scheduler; all checks in response JSON; 5+ new tests |
+| HA-3 | Deep Health + Resource Monitoring + External Monitoring | Health endpoint reports real system state; external monitoring hooks | Check disk space (`statvfs` or `df`); check memory (read `/proc/meminfo` or `sysinfo`); check DB file size vs disk free; check scheduler thread liveness via persisted heartbeat; aggregate into `healthy`/`degraded`/`unhealthy` with per-check detail; **user-requested: external monitoring integration** (e.g., `GET /api/v1/health` returns structured JSON for external pollers; optional webhook/alert endpoint) | Health returns degraded on low disk (<10%), unhealthy on DB unreachable, degraded on stale scheduler; all checks in response JSON; external monitoring consumable; 5+ new tests |
 | ~~HA-4~~ | ~~Circuit Breaker for Providers~~ | ~~Stop hammering a dead provider~~ | ~~State machine: `closed` → `open` → `half_open` → `closed`/`open`; per-provider circuit breaker; `GET /api/v1/circuit-breaker/status`~~ | **DONE** — `CircuitBreaker` module with 14 tests, `CircuitBreakerProvider` wrapper, `CircuitBreakerRegistry`, status endpoint |
 | HA-5 | TLS Inbound | Encrypt incoming traffic | Accept `ACP_TLS_CERT_PATH` + `ACP_TLS_KEY_PATH` env vars; use `axum_server::bind_rustls()` when certs provided, fall back to plain TCP when absent; log TLS startup; dashboard/SDK work unchanged | Engine starts with TLS when certs provided; plain TCP fallback when absent; health endpoint reachable over HTTPS; 3+ new tests |
 | HA-6 | Secret Encryption at Rest | Protect SQLite data from file-level theft | Use `PRAGMA key` with `sodium` or `SEE` extension for encrypted SQLite; accept `ACP_DB_ENCRYPTION_KEY` env var; fallback to plain SQLite when not set (backward compatible); backup includes encryption key metadata | DB unreadable without key; backup restore works with key; plain fallback preserved; 3+ new tests |
 
 **Boundaries that remain intact:**
 - No clustering/replication (single-node is the target deployment)
-- No external dependency (PostgreSQL, Redis, etc.)
+- PostgreSQL is approved as an optional storage backend (user-requested); SQLite remains the default
 - No cloud SaaS or hosted production deployment
 - No target repo writes, sandbox expansion, or unattended workers
 - Provider execution remains default-off and env-gated
 
 **Dependencies between phases:**
-- HA-1 (scheduler resilience) is independent — start first
+- HA-1 (scheduler resilience + persistent heartbeat) is independent — start first; user-requested persistent heartbeat with external monitoring
 - HA-2 (automated backup) depends on HA-1 (uses scheduler loop for timer)
-- HA-3 (deep health) depends on HA-1 (reads persisted heartbeat)
-- ~~HA-4 (circuit breaker)~~ is **DONE**
+- HA-3 (deep health + external monitoring) depends on HA-1 (reads persisted heartbeat); user-requested external monitoring integration
+- ~~HA-4 (circuit breaker)~~ is **DONE** — 14 tests, CircuitBreaker + CircuitBreakerProvider + CircuitBreakerRegistry + status endpoint
 - HA-5 (TLS) is independent — can run in parallel
 - HA-6 (encryption at rest) is independent — can run in parallel
 

@@ -8,7 +8,7 @@
 
 **Target user**: Solo developer or small local team studying deterministic agent infrastructure on one machine or LAN.
 
-**Next product track**: Self-Hosted GA Readiness Track. SG-1 through SG-5 are complete. The track made the current strong beta explainable and handoff-ready for small-team self-hosted use. This track deepened the existing runtime path; it did not authorize hosted SaaS, target repo writes, new sandbox/container/VM execution, provider default-on behavior, or a parallel scheduler/DAG/runtime.
+**Next product track**: High-Availability Hardening Track. Self-Hosted GA Readiness Track SG-1 through SG-5 are complete. HA-4 circuit breaker is done. Remaining: HA-1 Scheduler Resilience + Persistent Heartbeat, HA-2 Automated Backup, HA-3 Deep Health + Resource Monitoring + External Monitoring, HA-5 TLS, HA-6 Secret Encryption. User requested: PostgreSQL optional storage backend, persistent heartbeat, external monitoring.
 
 ## Architecture Summary
 
@@ -132,7 +132,7 @@ When you encounter schema ambiguity, interface questions, phase boundary edge ca
 
 - **Framework**: Rust `cargo test` for engine; Python `unittest` for SDK
 - **Run commands**: `cargo test -p engine` (primary); SDK tests in `sdk/python/`
-- **Current count**: 1348 Rust tests, 0 failures
+- **Current count**: 1367 Rust tests, 0 failures
 - **CI**: GitHub Actions on push/PR to main
 - **Test-first**: Write tests alongside implementation
 
