@@ -21,7 +21,7 @@ use crate::workflow::dynamic_controller::{
     ControllerAction, DynamicControllerConfig, DynamicWorkflowController,
 };
 use crate::workflow::orchestration_decision::{
-    action_to_string, confidence_from_inputs, OrchestrationAction,
+    action_to_string, build_enriched_input_signals, confidence_from_inputs, OrchestrationAction,
 };
 
 #[derive(Debug, Clone)]
@@ -451,6 +451,29 @@ fn scheduler_tick(
         if backpressure_active {
             let (bp_conf, bp_score) =
                 confidence_from_inputs("running", None, false, None, Some("backpressure"));
+            let bp_base = serde_json::json!({
+                "source": "scheduler_backpressure",
+                "active": true,
+                "paused_count": decision.runs_to_pause.len(),
+                "utilization": utilization,
+            });
+            let bp_queue_signal = json!({
+                "backpressure_active": true,
+                "degrade_mode": decision.degrade_mode,
+                "effective_concurrency": decision.effective_concurrency,
+            });
+            let bp_pool_signal = json!({"utilization": utilization});
+            let bp_enriched = build_enriched_input_signals(
+                &bp_base,
+                None,
+                None,
+                None,
+                None,
+                Some(&bp_queue_signal),
+                Some(&bp_pool_signal),
+                None,
+                None,
+            );
             let _ = store.record_orchestration_decision(
                 "scheduler",
                 None,
@@ -460,12 +483,7 @@ fn scheduler_tick(
                 None,
                 bp_conf.as_str(),
                 bp_score,
-                &serde_json::json!({
-                    "source": "scheduler_backpressure",
-                    "active": true,
-                    "paused_count": decision.runs_to_pause.len(),
-                    "utilization": utilization,
-                }),
+                &bp_enriched,
             );
         }
     }
@@ -557,6 +575,34 @@ fn scheduler_tick(
                     None,
                     None,
                 );
+
+                // Enrich with quality and executor_pool signals
+                let tick_quality = result.get("result").and_then(|r| r.get("quality")).cloned();
+                let exec_type = pool_executor_arc.executor_type_name();
+                let tick_pool_signal = pool
+                    .snapshot()
+                    .iter()
+                    .find(|e| e.executor_type == exec_type)
+                    .map(|e| {
+                        json!({
+                            "failure_score": e.status.failure_score,
+                            "active_count": e.status.active_count,
+                        })
+                    });
+
+                let tick_base = serde_json::json!({"source": "scheduler_tick", "action": action});
+                let tick_enriched = build_enriched_input_signals(
+                    &tick_base,
+                    tick_quality.as_ref(),
+                    None,
+                    None,
+                    None,
+                    None,
+                    tick_pool_signal.as_ref(),
+                    None,
+                    None,
+                );
+
                 let _ = store.record_orchestration_decision(
                     run_id,
                     tick_node_id,
@@ -566,7 +612,7 @@ fn scheduler_tick(
                     None,
                     tick_confidence.as_str(),
                     tick_score,
-                    &serde_json::json!({"source": "scheduler_tick", "action": action}),
+                    &tick_enriched,
                 );
 
                 // Phase 2: Record outcome for adaptive routing feedback

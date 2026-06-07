@@ -18,12 +18,24 @@ pub struct DecisionRecord {
     pub confidence_score: f64,
     pub input_signals: Value,
     pub created_at: String,
+    pub quality_signal: Option<Value>,
+    pub routing_signal: Option<Value>,
+    pub cost_signal: Option<Value>,
+    pub approval_signal: Option<Value>,
+    pub queue_signal: Option<Value>,
+    pub executor_pool_signal: Option<Value>,
+    pub candidate_executors: Option<String>,
+    pub degraded_reason: Option<String>,
 }
 
 impl DecisionRecord {
     pub fn to_value(&self) -> Value {
         let confidence_label = self.confidence.clone();
         let confidence_numeric = self.confidence_score;
+        let candidates_value: Value = match &self.candidate_executors {
+            Some(json_str) => serde_json::from_str(json_str).unwrap_or(Value::Null),
+            None => Value::Null,
+        };
         json!({
             "schema_version": ORCHESTRATION_DECISION_LOG_SCHEMA_VERSION,
             "decision_id": self.decision_id,
@@ -40,6 +52,14 @@ impl DecisionRecord {
             "confidence_label": confidence_label,
             "input_signals": self.input_signals,
             "created_at": self.created_at,
+            "quality_signal": self.quality_signal,
+            "routing_signal": self.routing_signal,
+            "cost_signal": self.cost_signal,
+            "approval_signal": self.approval_signal,
+            "queue_signal": self.queue_signal,
+            "executor_pool_signal": self.executor_pool_signal,
+            "candidate_executors": candidates_value,
+            "degraded_reason": self.degraded_reason,
         })
     }
 }
@@ -64,6 +84,47 @@ impl LocalProductStore {
         confidence_score: f64,
         input_signals: &Value,
     ) -> Result<DecisionRecord, String> {
+        self.record_orchestration_decision_enriched(
+            run_id,
+            node_id,
+            action,
+            action_reason,
+            selected_executor,
+            blocked_reason,
+            confidence,
+            confidence_score,
+            input_signals,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
+    }
+
+    pub fn record_orchestration_decision_enriched(
+        &self,
+        run_id: &str,
+        node_id: Option<&str>,
+        action: &str,
+        action_reason: &str,
+        selected_executor: &str,
+        blocked_reason: Option<&str>,
+        confidence: &str,
+        confidence_score: f64,
+        input_signals: &Value,
+        quality_signal: Option<&Value>,
+        routing_signal: Option<&Value>,
+        cost_signal: Option<&Value>,
+        approval_signal: Option<&Value>,
+        queue_signal: Option<&Value>,
+        executor_pool_signal: Option<&Value>,
+        candidate_executors: Option<&[String]>,
+        degraded_reason: Option<&str>,
+    ) -> Result<DecisionRecord, String> {
         let created_at = self.now();
         let nanos = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -71,12 +132,22 @@ impl LocalProductStore {
             .as_nanos();
         let decision_id = format!("decision-{}-{}", run_id, nanos);
 
+        let quality_json = quality_signal.map(|v| v.to_string());
+        let routing_json = routing_signal.map(|v| v.to_string());
+        let cost_json = cost_signal.map(|v| v.to_string());
+        let approval_json = approval_signal.map(|v| v.to_string());
+        let queue_json = queue_signal.map(|v| v.to_string());
+        let pool_json = executor_pool_signal.map(|v| v.to_string());
+        let candidates_json = candidate_executors.map(|c| json!(c).to_string());
+
         self.with_conn(|conn| {
             conn.execute(
                 "INSERT INTO orchestration_decisions
                  (decision_id, run_id, node_id, action, action_reason, selected_executor,
-                  blocked_reason, confidence, confidence_score, input_signals_json, created_at)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+                  blocked_reason, confidence, confidence_score, input_signals_json, created_at,
+                  quality_signal_json, routing_signal_json, cost_signal_json, approval_signal_json,
+                  queue_signal_json, executor_pool_signal_json, candidate_executors_json, degraded_reason)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19)",
                 params![
                     decision_id,
                     run_id,
@@ -89,6 +160,14 @@ impl LocalProductStore {
                     confidence_score,
                     input_signals.to_string(),
                     created_at,
+                    quality_json,
+                    routing_json,
+                    cost_json,
+                    approval_json,
+                    queue_json,
+                    pool_json,
+                    candidates_json,
+                    degraded_reason,
                 ],
             )
             .map_err(|e| e.to_string())?;
@@ -107,6 +186,14 @@ impl LocalProductStore {
             confidence_score,
             input_signals: input_signals.clone(),
             created_at,
+            quality_signal: quality_signal.cloned(),
+            routing_signal: routing_signal.cloned(),
+            cost_signal: cost_signal.cloned(),
+            approval_signal: approval_signal.cloned(),
+            queue_signal: queue_signal.cloned(),
+            executor_pool_signal: executor_pool_signal.cloned(),
+            candidate_executors: candidates_json,
+            degraded_reason: degraded_reason.map(str::to_string),
         })
     }
 
@@ -120,7 +207,10 @@ impl LocalProductStore {
                 .prepare(
                     "SELECT decision_id, run_id, node_id, action, action_reason,
                             selected_executor, blocked_reason, confidence, confidence_score,
-                            input_signals_json, created_at
+                            input_signals_json, created_at,
+                            quality_signal_json, routing_signal_json, cost_signal_json,
+                            approval_signal_json, queue_signal_json, executor_pool_signal_json,
+                            candidate_executors_json, degraded_reason
                      FROM orchestration_decisions
                      WHERE run_id = ?1
                      ORDER BY decision_id ASC
@@ -149,7 +239,10 @@ impl LocalProductStore {
                         .prepare(
                             "SELECT decision_id, run_id, node_id, action, action_reason,
                                     selected_executor, blocked_reason, confidence, confidence_score,
-                                    input_signals_json, created_at
+                                    input_signals_json, created_at,
+                                    quality_signal_json, routing_signal_json, cost_signal_json,
+                                    approval_signal_json, queue_signal_json, executor_pool_signal_json,
+                                    candidate_executors_json, degraded_reason
                              FROM orchestration_decisions
                              WHERE lower(run_id) LIKE ?1
                                 OR lower(action) LIKE ?1
@@ -170,7 +263,10 @@ impl LocalProductStore {
                 .prepare(
                     "SELECT decision_id, run_id, node_id, action, action_reason,
                             selected_executor, blocked_reason, confidence, confidence_score,
-                            input_signals_json, created_at
+                            input_signals_json, created_at,
+                            quality_signal_json, routing_signal_json, cost_signal_json,
+                            approval_signal_json, queue_signal_json, executor_pool_signal_json,
+                            candidate_executors_json, degraded_reason
                      FROM orchestration_decisions
                      ORDER BY decision_id DESC
                      LIMIT ?1 OFFSET ?2",
@@ -189,7 +285,10 @@ impl LocalProductStore {
                 .prepare(
                     "SELECT decision_id, run_id, node_id, action, action_reason,
                             selected_executor, blocked_reason, confidence, confidence_score,
-                            input_signals_json, created_at
+                            input_signals_json, created_at,
+                            quality_signal_json, routing_signal_json, cost_signal_json,
+                            approval_signal_json, queue_signal_json, executor_pool_signal_json,
+                            candidate_executors_json, degraded_reason
                      FROM orchestration_decisions
                      WHERE decision_id = ?1",
                 )
@@ -261,6 +360,14 @@ impl LocalProductStore {
 fn decision_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<DecisionRecord> {
     let input_text: String = row.get(9)?;
     let input_signals: Value = serde_json::from_str(&input_text).unwrap_or(Value::Null);
+
+    let quality_json: Option<String> = row.get(11)?;
+    let routing_json: Option<String> = row.get(12)?;
+    let cost_json: Option<String> = row.get(13)?;
+    let approval_json: Option<String> = row.get(14)?;
+    let queue_json: Option<String> = row.get(15)?;
+    let pool_json: Option<String> = row.get(16)?;
+
     Ok(DecisionRecord {
         decision_id: row.get(0)?,
         run_id: row.get(1)?,
@@ -273,6 +380,14 @@ fn decision_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<DecisionRecord> {
         confidence_score: row.get(8)?,
         input_signals,
         created_at: row.get(10)?,
+        quality_signal: quality_json.and_then(|s| serde_json::from_str(&s).ok()),
+        routing_signal: routing_json.and_then(|s| serde_json::from_str(&s).ok()),
+        cost_signal: cost_json.and_then(|s| serde_json::from_str(&s).ok()),
+        approval_signal: approval_json.and_then(|s| serde_json::from_str(&s).ok()),
+        queue_signal: queue_json.and_then(|s| serde_json::from_str(&s).ok()),
+        executor_pool_signal: pool_json.and_then(|s| serde_json::from_str(&s).ok()),
+        candidate_executors: row.get(17)?,
+        degraded_reason: row.get(18)?,
     })
 }
 

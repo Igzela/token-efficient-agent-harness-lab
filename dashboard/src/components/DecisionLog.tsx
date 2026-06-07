@@ -74,6 +74,7 @@ function StatsTiles({ stats }: { stats: DecisionLogStats }) {
 function DecisionRow({ decision }: { decision: DecisionRecord }) {
   const [expanded, setExpanded] = useState(false);
   const hasSignals = decision.input_signals && Object.keys(decision.input_signals).length > 0;
+  const poolFailure = decision.executor_pool_signal?.failure_score as number | undefined;
 
   return (
     <>
@@ -81,9 +82,19 @@ function DecisionRow({ decision }: { decision: DecisionRecord }) {
         <td className="mono" style={{ fontSize: "0.75rem" }}>{decision.decision_id.slice(0, 12)}</td>
         <td>
           <span className={`pill ${actionBadge(decision.action)}`}>{decision.action}</span>
+          {decision.degraded_reason && (
+            <span className="pill risk" title={decision.degraded_reason} style={{ marginLeft: 4 }}>degraded</span>
+          )}
         </td>
         <td style={{ maxWidth: 280 }} title={decision.reason}>{decision.reason}</td>
-        <td>{decision.executor ?? "—"}</td>
+        <td>
+          {decision.executor ?? "—"}
+          {decision.candidate_executors && decision.candidate_executors.length > 0 && (
+            <span className="muted" style={{ fontSize: "0.7rem", display: "block" }}>
+              candidates: {decision.candidate_executors.join(", ")}
+            </span>
+          )}
+        </td>
         <td>
           <span className={`pill ${confidencePill(decision.confidence)}`}>
             {(decision.confidence * 100).toFixed(0)}%
@@ -91,7 +102,7 @@ function DecisionRow({ decision }: { decision: DecisionRecord }) {
         </td>
         <td className="mono" style={{ fontSize: "0.75rem" }}>{decision.confidence_label}</td>
         <td>{formatTimestamp(decision.created_at)}</td>
-        <td>
+        <td style={{ display: "flex", gap: 4, flexWrap: "wrap" }}>
           {hasSignals && (
             <button
               className="pill info"
@@ -101,6 +112,22 @@ function DecisionRow({ decision }: { decision: DecisionRecord }) {
             >
               {expanded ? "hide" : "signals"}
             </button>
+          )}
+          {poolFailure != null && (
+            <span
+              className={`pill ${poolFailure >= 0.7 ? "risk" : poolFailure >= 0.4 ? "warn" : "ok"}`}
+              title={`executor pool failure_score: ${poolFailure}`}
+            >
+              pool {poolFailure.toFixed(2)}
+            </span>
+          )}
+          {decision.quality_signal && (
+            <span
+              className={`pill ${decision.quality_signal.pass === false ? "risk" : "ok"}`}
+              title={JSON.stringify(decision.quality_signal)}
+            >
+              quality {decision.quality_signal.pass === false ? "fail" : "pass"}
+            </span>
           )}
         </td>
       </tr>

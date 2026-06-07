@@ -26,9 +26,9 @@ Token-Efficient Agent Harness Lab is a local deterministic harness and self-host
 | Trial 4 real-use pilot | Closed — `TRIAL_4_REAL_USE_PILOT_PASS_AFTER_FIXES` |
 | Trial 5 CLI execution beta | Closed — `TRIAL_5_CLI_EXECUTION_BETA_PASS_AFTER_FIXES` |
 
-Tests: 1339 Rust pass. Primary cutover verification is `bash scripts/verify_rust_typescript_stack.sh`.
+Tests: 1348 Rust pass. Primary cutover verification is `bash scripts/verify_rust_typescript_stack.sh`.
 
-Macro-Orchestrator Phase 1-5 repair batch is complete. Self-Hosted GA Readiness SG-1 through SG-3 are complete: real dynamic CLI pilot matrix, long-run soak/failure injection, and mission-control dashboard visibility are implemented. Next safe work is SG-4 policy decision deepening.
+Macro-Orchestrator Phase 1-5 repair batch is complete. Self-Hosted GA Readiness SG-1 through SG-4 are complete: real dynamic CLI pilot matrix, long-run soak/failure injection, mission-control dashboard visibility, and enriched policy decision signals are implemented. Next safe work is SG-5 GA release/runbook drill.
 
 ## Toolchain
 

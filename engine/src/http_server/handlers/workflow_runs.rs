@@ -444,6 +444,22 @@ fn record_tick_decision(
     };
     let (confidence, score) =
         confidence_from_inputs("running", node_id.or(Some("pending")), true, None, None);
+
+    let quality_signal = result.get("result").and_then(|r| r.get("quality")).cloned();
+
+    let base = serde_json::json!({"source": "http_tick", "action": action_str});
+    let enriched = crate::workflow::orchestration_decision::build_enriched_input_signals(
+        &base,
+        quality_signal.as_ref(),
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+    );
+
     let _ = store.record_orchestration_decision(
         run_id,
         node_id,
@@ -453,7 +469,7 @@ fn record_tick_decision(
         None,
         confidence.as_str(),
         score,
-        &serde_json::json!({"source": "http_tick", "action": action_str}),
+        &enriched,
     );
 }
 

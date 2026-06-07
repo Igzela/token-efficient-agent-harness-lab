@@ -11,7 +11,7 @@ use crate::workflow::dynamic_decomposer::{
     RuleBasedDecomposer,
 };
 use crate::workflow::orchestration_decision::{
-    action_to_string, confidence_from_inputs, OrchestrationAction,
+    action_to_string, build_enriched_input_signals, confidence_from_inputs, OrchestrationAction,
     ORCHESTRATION_DECISION_SCHEMA_VERSION,
 };
 
@@ -197,8 +197,19 @@ impl DynamicWorkflowController {
             }
         }
 
+        let degrade_mode = run
+            .get("degrade_mode")
+            .and_then(Value::as_str)
+            .map(String::from);
+
         if self.ticks_executed >= self.config.max_ticks_per_run {
-            let decision = build_decision(
+            let max_ticks_queue = json!({
+                "queue_position": run_queue_position,
+                "priority": run_priority,
+                "admission_allowed": true,
+                "admission_reason": null,
+            });
+            let decision = build_decision_enriched(
                 run_id,
                 None,
                 OrchestrationAction::NoAction,
@@ -206,6 +217,13 @@ impl DynamicWorkflowController {
                 executor,
                 Some("max_ticks_per_run reached"),
                 "running",
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                Some(&max_ticks_queue),
                 None,
                 None,
             );
@@ -269,7 +287,13 @@ impl DynamicWorkflowController {
                 )
             };
 
-            let decision = build_decision(
+            let terminal_queue = json!({
+                "queue_position": run_queue_position,
+                "priority": run_priority,
+                "admission_allowed": true,
+                "admission_reason": null,
+            });
+            let decision = build_decision_enriched(
                 run_id,
                 None,
                 action.clone(),
@@ -279,6 +303,13 @@ impl DynamicWorkflowController {
                 &status,
                 None,
                 None,
+                None,
+                None,
+                None,
+                None,
+                Some(&terminal_queue),
+                None,
+                degrade_mode.as_deref(),
             );
             self.decisions.push(decision.clone());
             let _ = store.record_orchestration_decision(
@@ -521,7 +552,12 @@ impl DynamicWorkflowController {
         };
 
         if !pool_acquired {
-            let decision = build_decision(
+            let (pool_fs, pool_ac) = self.pool_metrics(&phase4_executor_type);
+            let pool_exhausted_signal = match (pool_fs, pool_ac) {
+                (Some(fs), Some(ac)) => Some(json!({"failure_score": fs, "active_count": ac})),
+                _ => None,
+            };
+            let decision = build_decision_enriched(
                 run_id,
                 None,
                 OrchestrationAction::NoAction,
@@ -530,6 +566,13 @@ impl DynamicWorkflowController {
                 Some("pool_capacity_exhausted"),
                 &status,
                 None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                pool_exhausted_signal.as_ref(),
                 None,
             );
             self.decisions.push(decision.clone());
@@ -595,7 +638,19 @@ impl DynamicWorkflowController {
                     .get("executor_type")
                     .and_then(Value::as_str)
                     .unwrap_or("unknown");
-                self.record_decision(
+
+                // Extract quality signal from node result
+                let node_quality = tick_result
+                    .get("result")
+                    .and_then(|r| r.get("quality"))
+                    .cloned();
+                let (pool_fs, pool_ac) = self.pool_metrics(&phase4_executor_type);
+                let node_pool_signal = match (pool_fs, pool_ac) {
+                    (Some(fs), Some(ac)) => Some(json!({"failure_score": fs, "active_count": ac})),
+                    _ => None,
+                };
+
+                self.record_decision_enriched(
                     store,
                     run_id,
                     Some(&node_id),
@@ -605,6 +660,13 @@ impl DynamicWorkflowController {
                     None,
                     &status,
                     None,
+                    None,
+                    node_quality.as_ref(),
+                    None,
+                    None,
+                    None,
+                    None,
+                    node_pool_signal.as_ref(),
                     None,
                 );
                 actions.push(ControllerAction::NodeExecuted {
@@ -912,7 +974,49 @@ impl DynamicWorkflowController {
         task_type: Option<&str>,
         task_group: Option<&str>,
     ) {
-        let decision = build_decision(
+        self.record_decision_enriched(
+            store,
+            run_id,
+            node_id,
+            action,
+            action_reason,
+            executor,
+            blocked_reason,
+            run_status,
+            task_type,
+            task_group,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn record_decision_enriched(
+        &mut self,
+        store: &LocalProductStore,
+        run_id: &str,
+        node_id: Option<&str>,
+        action: OrchestrationAction,
+        action_reason: &str,
+        executor: &dyn NodeExecutor,
+        blocked_reason: Option<&str>,
+        run_status: &str,
+        task_type: Option<&str>,
+        task_group: Option<&str>,
+        quality_signal: Option<&Value>,
+        routing_signal: Option<&Value>,
+        cost_signal: Option<&Value>,
+        approval_signal: Option<&Value>,
+        queue_signal: Option<&Value>,
+        pool_signal: Option<&Value>,
+        degraded_reason: Option<&str>,
+    ) {
+        let decision = build_decision_enriched(
             run_id,
             node_id,
             action.clone(),
@@ -922,6 +1026,13 @@ impl DynamicWorkflowController {
             run_status,
             task_type,
             task_group,
+            quality_signal,
+            routing_signal,
+            cost_signal,
+            approval_signal,
+            queue_signal,
+            pool_signal,
+            degraded_reason,
         );
         self.decisions.push(decision.clone());
         let _ = store.record_orchestration_decision(
@@ -1105,6 +1216,45 @@ fn build_decision(
     task_type: Option<&str>,
     task_group: Option<&str>,
 ) -> Value {
+    build_decision_enriched(
+        run_id,
+        node_id,
+        action,
+        action_reason,
+        executor,
+        blocked_reason,
+        run_status,
+        task_type,
+        task_group,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn build_decision_enriched(
+    run_id: &str,
+    node_id: Option<&str>,
+    action: OrchestrationAction,
+    action_reason: &str,
+    executor: &dyn NodeExecutor,
+    blocked_reason: Option<&str>,
+    run_status: &str,
+    task_type: Option<&str>,
+    task_group: Option<&str>,
+    quality_signal: Option<&Value>,
+    routing_signal: Option<&Value>,
+    cost_signal: Option<&Value>,
+    approval_signal: Option<&Value>,
+    queue_signal: Option<&Value>,
+    pool_signal: Option<&Value>,
+    degraded_reason: Option<&str>,
+) -> Value {
     let executor_type = extract_executor_type(executor, node_id, task_type);
     let (confidence, confidence_score) =
         confidence_from_inputs(run_status, Some("pending"), false, None, blocked_reason);
@@ -1132,6 +1282,18 @@ fn build_decision(
             .insert("task_group".to_string(), json!(tg));
     }
 
+    let enriched = build_enriched_input_signals(
+        &input_signals,
+        quality_signal,
+        routing_signal,
+        cost_signal,
+        approval_signal,
+        queue_signal,
+        pool_signal,
+        None,
+        degraded_reason,
+    );
+
     json!({
         "schema_version": ORCHESTRATION_DECISION_SCHEMA_VERSION,
         "decision_id": format!("decision-{}-{}", run_id, node_id.unwrap_or("run")),
@@ -1143,7 +1305,7 @@ fn build_decision(
         "blocked_reason": blocked_reason,
         "confidence": confidence.as_str(),
         "confidence_score": confidence_score,
-        "input_signals": input_signals,
+        "input_signals": enriched,
     })
 }
 

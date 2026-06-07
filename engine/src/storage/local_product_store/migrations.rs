@@ -2,7 +2,7 @@ use rusqlite::Connection;
 
 use super::LocalProductStore;
 
-pub(super) const CURRENT_SCHEMA_VERSION: i64 = 9;
+pub(super) const CURRENT_SCHEMA_VERSION: i64 = 10;
 
 struct Migration {
     version: i64,
@@ -46,6 +46,10 @@ const MIGRATIONS: &[Migration] = &[
         version: 9,
         description: "add queue/priority/backpressure columns to workflow_runs",
     },
+    Migration {
+        version: 10,
+        description: "add policy signal columns to orchestration_decisions",
+    },
 ];
 
 impl LocalProductStore {
@@ -69,6 +73,7 @@ impl LocalProductStore {
                     7 => Self::migrate_v7_add_orchestration_decisions(conn)?,
                     8 => Self::migrate_v8_add_executor_pool(conn)?,
                     9 => Self::migrate_v9_add_queue_priority(conn)?,
+                    10 => Self::migrate_v10_add_decision_policy_signals(conn)?,
                     _ => return Err(format!("unknown migration version: {}", migration.version)),
                 }
                 conn.execute_batch(&format!("PRAGMA user_version = {}", migration.version))
@@ -376,6 +381,24 @@ CREATE TABLE IF NOT EXISTS executor_pool (
             "CREATE INDEX IF NOT EXISTS idx_workflow_runs_priority ON workflow_runs(priority, created_at);",
         )
         .map_err(|e| e.to_string())
+    }
+
+    fn migrate_v10_add_decision_policy_signals(conn: &Connection) -> Result<(), String> {
+        let has_col = column_exists(conn, "orchestration_decisions", "quality_signal_json")?;
+        if !has_col {
+            conn.execute_batch(
+                "ALTER TABLE orchestration_decisions ADD COLUMN quality_signal_json TEXT;
+                 ALTER TABLE orchestration_decisions ADD COLUMN routing_signal_json TEXT;
+                 ALTER TABLE orchestration_decisions ADD COLUMN cost_signal_json TEXT;
+                 ALTER TABLE orchestration_decisions ADD COLUMN approval_signal_json TEXT;
+                 ALTER TABLE orchestration_decisions ADD COLUMN queue_signal_json TEXT;
+                 ALTER TABLE orchestration_decisions ADD COLUMN executor_pool_signal_json TEXT;
+                 ALTER TABLE orchestration_decisions ADD COLUMN candidate_executors_json TEXT;
+                 ALTER TABLE orchestration_decisions ADD COLUMN degraded_reason TEXT;",
+            )
+            .map_err(|e| e.to_string())?;
+        }
+        Ok(())
     }
 
     pub fn schema_version(&self) -> Result<i64, String> {

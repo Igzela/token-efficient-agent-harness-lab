@@ -60,6 +60,7 @@ function TraceEntry({ decision, isLast }: TraceEntryProps) {
   const [expanded, setExpanded] = useState(false);
   const borderColor = confidenceBorder(decision.confidence);
   const hasSignals = decision.input_signals && Object.keys(decision.input_signals).length > 0;
+  const poolFailure = decision.executor_pool_signal?.failure_score as number | undefined;
 
   return (
     <div style={{ display: "flex", gap: 12 }}>
@@ -88,11 +89,35 @@ function TraceEntry({ decision, isLast }: TraceEntryProps) {
       >
         <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
           <span className={`pill ${actionBadge(decision.action)}`}>{decision.action}</span>
+          {decision.degraded_reason && (
+            <span className="pill risk" title={decision.degraded_reason}>degraded</span>
+          )}
           <span className={`pill ${decision.confidence >= 0.8 ? "ok" : decision.confidence >= 0.5 ? "warn" : "risk"}`}>
             {(decision.confidence * 100).toFixed(0)}% conf
           </span>
           {decision.executor && (
             <span className="pill info">{decision.executor}</span>
+          )}
+          {decision.candidate_executors && decision.candidate_executors.length > 0 && (
+            <span className="muted" style={{ fontSize: "0.75rem" }}>
+              candidates: {decision.candidate_executors.join(", ")}
+            </span>
+          )}
+          {poolFailure != null && (
+            <span
+              className={`pill ${poolFailure >= 0.7 ? "risk" : poolFailure >= 0.4 ? "warn" : "ok"}`}
+              title={`executor pool failure_score: ${poolFailure}`}
+            >
+              pool {poolFailure.toFixed(2)}
+            </span>
+          )}
+          {decision.quality_signal && (
+            <span
+              className={`pill ${decision.quality_signal.pass === false ? "risk" : "ok"}`}
+              title={JSON.stringify(decision.quality_signal)}
+            >
+              quality {decision.quality_signal.pass === false ? "fail" : "pass"}
+            </span>
           )}
           {decision.node_id && <span className="mono" style={{ fontSize: "0.75rem" }}>{decision.node_id}</span>}
           <span className="muted" style={{ fontSize: "0.75rem" }}>{formatTimestamp(decision.created_at)}</span>

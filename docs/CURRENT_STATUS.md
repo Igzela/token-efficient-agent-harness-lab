@@ -1,11 +1,11 @@
 # Current Status
 
-Last verified: 2026-06-07. Production-grade hosted/self-hosted track Phase 1-7, GA hardening, real Claude Code CLI pilot, dormant module adaptation, Dynamic Workflow Batches 1-7, Macro-Orchestrator Phase 1-5 repair batch, and Self-Hosted GA Readiness SG-1 through SG-3 are all complete. Dynamic workflow is wired into the scheduler through opt-in dynamic mode (`ACP_ENABLE_DYNAMIC_WORKFLOW=1`, `ACP_SCHEDULER_MODE=dynamic`, or `ACP_SCHEDULER_EXECUTOR=dynamic`) and into explicit HTTP tick via `executor=dynamic`: failed nodes can trigger persisted graph mutation, schedule fix/test nodes, resume the run, and continue to completion with audit evidence. The product direction is a local/small-team self-hosted macro-orchestrator control plane, not a coding-agent runtime.
+Last verified: 2026-06-07. Production-grade hosted/self-hosted track Phase 1-7, GA hardening, real Claude Code CLI pilot, dormant module adaptation, Dynamic Workflow Batches 1-7, Macro-Orchestrator Phase 1-5 repair batch, and Self-Hosted GA Readiness SG-1 through SG-4 are all complete. Dynamic workflow is wired into the scheduler through opt-in dynamic mode (`ACP_ENABLE_DYNAMIC_WORKFLOW=1`, `ACP_SCHEDULER_MODE=dynamic`, or `ACP_SCHEDULER_EXECUTOR=dynamic`) and into explicit HTTP tick via `executor=dynamic`: failed nodes can trigger persisted graph mutation, schedule fix/test nodes, resume the run, and continue to completion with audit evidence. The product direction is a local/small-team self-hosted macro-orchestrator control plane, not a coding-agent runtime.
 
 ## Repository State
 
 - Branch: `feat/dashboard-ux-polish` with the Rust + TypeScript agent-control-plane cutover complete and local production-like ops hardening implemented. Rust `engine/` is the primary runtime/API/storage/provider-gated control plane; `dashboard/` and `sdk/typescript/` are the primary TypeScript surfaces. Python retained as REST SDK (`sdk/python/`) and utility scripts only.
-- Tests: **1339 Rust pass**, 0 failures (1318 baseline + 20 ops soak tests + 1 dynamic HTTP tick test). Python SDK tests run separately under `sdk/python/`.
+- Tests: **1348 Rust pass**, 0 failures (1339 baseline + 9 SG-4 policy signal tests). Python SDK tests run separately under `sdk/python/`.
 - CI: latest `tests` workflow on `feat/dashboard-ux-polish` is green as of 2026-06-07.
 - Dynamic Workflow: **ALL 7 BATCHES COMPLETE** plus scheduler dynamic-mode integration. Dynamicity: High for supervised local workflows.
 - Security baseline: ALL CHECKS PASSED.
@@ -17,9 +17,9 @@ Last verified: 2026-06-07. Production-grade hosted/self-hosted track Phase 1-7, 
 | Dimension | Current assessment | Evidence | Needed next |
 |---|---|---|---|
 | Local supervised usability | Strong beta | CLI executor pilot, scheduler dynamic mode, workspace/capture/export loop, dashboard/SDK controls, 1339 Rust tests, green CI | Longer production-profile deployment rehearsal |
-| Small-team self-hosted GA | SG-1 through SG-3 complete; SG-4 next | Auth/CORS/profile/audit/backup/metrics exist; dynamic workflows, CLI pilot matrix script, long-run soak/failure injection, machine-readable reports, and mission-control dashboard visibility work | Self-Hosted GA Readiness Track: policy decision deepening, release/runbook drill |
+| Small-team self-hosted GA | SG-1 through SG-4 complete; SG-5 next | Auth/CORS/profile/audit/backup/metrics exist; dynamic workflows, CLI pilot matrix script, long-run soak/failure injection, machine-readable reports, mission-control dashboard visibility, and enriched policy decision signals | Self-Hosted GA Readiness Track: GA release/runbook drill |
 | Hosted/enterprise readiness | Not current target | Local auth, CORS, audit, backup, and metrics exist | Requires separately approved hosted/cloud, multi-tenant, sandbox/isolation, resource quota, and operations tracks |
-| Intelligence | Medium-high | Routing feedback, rule-based decomposition, quality gates, real Claude/Codex CLI execution, policy decision records, executor-pool structures, queue/priority/backpressure, and decision trace surfaces are wired | Keep hardening: policy decisions, resource selection, queue/backpressure, operator visibility, and soak verification are real across ordinary and dynamic paths |
+| Intelligence | High | Routing feedback, rule-based decomposition, quality gates, real Claude/Codex CLI execution, enriched policy decision records with quality/routing/cost/approval/queue/pool signals, executor-pool structures, queue/priority/backpressure, and decision trace surfaces are wired across all tick paths | Continue deepening under SG-5 runbook drill |
 | Dynamicity | High | All 7 batches complete plus scheduler dynamic mode: broad task → plan → execute → fail → graph mutates → fix/test nodes run → approval/export. | All DONE. Minimum acceptance target ACHIEVED. |
 | Architecture fit | Good foundation | Existing modules: `workflow_runs`, `scheduler`, `node_executor`, `dag_manager`, `workflow_engine`, `quality`, `routing`, `workflow/dynamic_controller.rs`, `workflow/orchestration_decision.rs` | Keep hardening the existing runtime path; do not create a parallel scheduler/DAG kernel |
 

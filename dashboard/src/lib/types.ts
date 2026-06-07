@@ -576,6 +576,14 @@ export interface DecisionRecord {
   confidence_label: string;
   input_signals: Record<string, unknown>;
   created_at: string;
+  quality_signal?: Record<string, unknown> | null;
+  routing_signal?: Record<string, unknown> | null;
+  cost_signal?: Record<string, unknown> | null;
+  approval_signal?: Record<string, unknown> | null;
+  queue_signal?: Record<string, unknown> | null;
+  executor_pool_signal?: Record<string, unknown> | null;
+  candidate_executors?: string[] | null;
+  degraded_reason?: string | null;
 }
 
 export interface DecisionLogStats {
