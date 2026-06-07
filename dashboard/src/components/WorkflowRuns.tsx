@@ -194,7 +194,7 @@ function RunDetail({
     ]).then(([evResult, apResult]) => {
       if (evResult.status === "fulfilled") setEvents(evResult.value.events);
       if (apResult.status === "fulfilled") setApprovals(apResult.value.approvals);
-    }).finally(() => setLoadingExtra);
+    }).finally(() => setLoadingExtra(false));
   }, [run.run_id]);
 
   const isTerminal = ["completed", "failed", "cancelled"].includes(run.status);

@@ -28,7 +28,7 @@ Token-Efficient Agent Harness Lab is a local deterministic harness and self-host
 
 Tests: 1339 Rust pass. Primary cutover verification is `bash scripts/verify_rust_typescript_stack.sh`.
 
-Macro-Orchestrator Phase 1-5 repair batch is complete. Self-Hosted GA Readiness SG-1/SG-2 are complete: real dynamic CLI pilot matrix and long-run soak/failure injection emit machine-readable evidence. Next safe work is SG-3 mission-control dashboard visibility.
+Macro-Orchestrator Phase 1-5 repair batch is complete. Self-Hosted GA Readiness SG-1 through SG-3 are complete: real dynamic CLI pilot matrix, long-run soak/failure injection, and mission-control dashboard visibility are implemented. Next safe work is SG-4 policy decision deepening.
 
 ## Toolchain
 
@@ -68,7 +68,7 @@ Additional active architecture track:
 | Post-R7 Wire/Type Governance Hardening | Implemented; `app_layer` remains dormant/unwired reference code and `scripts/check_wire_codegen_drift.sh` protects generated wire files |
 | Supervised Autonomous Beta Planning | Batch 0-6 governance/module/model/read-only-planner/durable-state/advisory/design-gate work recorded. `WorkflowGraph` is canonical planning model. Batch 7 Slice A-F implemented: app-owned workspace/artifact metadata, read-only HTTP/SDK/dashboard visibility, approval-binding contract, and supervised execution runtime primitives (NodeExecutor trait, CommandNodeExecutor with shell-metachar rejection, workflow tick, workspace lifecycle, capture_patch with source manifest diff, integrity validation, export gate, E2E closed-loop test). 1339 Rust tests pass. No target repo writes, sandbox/process/container/VM execution, real workers, provider calls, push/merge/deploy/apply controls, or default-on execution. |
 | Dynamic Workflow Direction | Complete; Batches 1-7 plus scheduler dynamic-mode recovery are implemented. Opt-in dynamic mode can observe a failed node, mutate the persisted graph with fix/test nodes, mark the failed node recovered, resume the run, and complete follow-up execution. 1339 Rust tests pass. |
-| Macro-Orchestrator Direction | Current product direction. Phase 1-5 repair batch and Self-Hosted GA Readiness SG-1/SG-2 COMPLETE. Next safe work is SG-3 mission-control dashboard visibility. |
+| Macro-Orchestrator Direction | Current product direction. Phase 1-5 repair batch and Self-Hosted GA Readiness SG-1 through SG-3 COMPLETE. Next safe work is SG-4 policy decision deepening. |
 
 ## What This Project Is Not
 

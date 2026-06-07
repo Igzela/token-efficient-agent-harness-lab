@@ -17,6 +17,7 @@ import { Costs } from "@/components/Costs";
 import { Dispatches } from "@/components/Dispatches";
 import { Health } from "@/components/Health";
 import { Metric } from "@/components/Metric";
+import { MissionControl } from "@/components/MissionControl";
 import { Operations } from "@/components/Operations";
 import { Routing } from "@/components/Routing";
 import { DecisionLog } from "@/components/DecisionLog";
@@ -28,9 +29,10 @@ import { Settings } from "@/components/Settings";
 import { Team } from "@/components/Team";
 import { WorkflowRuns } from "@/components/WorkflowRuns";
 
-type Tab = "dispatches" | "routing" | "decisions" | "team" | "costs" | "operations" | "runs" | "patches" | "scheduler" | "pool" | "queue" | "settings" | "health" | "backups" | "audit";
+type Tab = "mission" | "dispatches" | "routing" | "decisions" | "team" | "costs" | "operations" | "runs" | "patches" | "scheduler" | "pool" | "queue" | "settings" | "health" | "backups" | "audit";
 
 const tabs: { id: Tab; label: string }[] = [
+  { id: "mission", label: "Mission Control" },
   { id: "dispatches", label: "Dispatches" },
   { id: "routing", label: "Routing" },
   { id: "decisions", label: "Decisions" },
@@ -89,10 +91,10 @@ const emptyDashboard: LocalDashboardState = {
 };
 
 function readTabFromHash(): Tab {
-  if (typeof window === "undefined") return "dispatches";
+  if (typeof window === "undefined") return "mission";
   const hash = window.location.hash.replace(/^#/, "");
   if (tabs.some((t) => t.id === hash)) return hash as Tab;
-  return "dispatches";
+  return "mission";
 }
 
 export default function DashboardPage() {
@@ -343,6 +345,7 @@ export default function DashboardPage() {
         </nav>
 
         <div role="tabpanel" id={`tabpanel-${tab}`} aria-labelledby={`tab-${tab}`}>
+          {tab === "mission" && <MissionControl />}
           {tab === "dispatches" && (
             <Dispatches
               dispatches={dashboard.dispatches}

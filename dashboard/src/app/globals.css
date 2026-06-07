@@ -872,6 +872,87 @@ button:disabled:active {
   margin-top: 4px;
 }
 
+.mission-picker {
+  align-items: center;
+  display: flex;
+  gap: 10px;
+}
+
+.mission-picker select {
+  min-width: min(560px, 100%);
+}
+
+.mission-layout {
+  display: grid;
+  gap: 12px;
+  grid-template-columns: minmax(0, 1.35fr) minmax(320px, 0.85fr);
+}
+
+.mission-graph {
+  display: grid;
+  gap: 8px;
+}
+
+.mission-node {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  display: grid;
+  gap: 6px;
+  padding: 10px;
+}
+
+.mission-node-meta,
+.mission-edge-list {
+  color: var(--muted);
+  display: flex;
+  flex-wrap: wrap;
+  font-size: 12px;
+  gap: 8px;
+}
+
+.mission-edge-list {
+  border-top: 1px solid var(--border);
+  padding-top: 8px;
+}
+
+.mission-timeline,
+.mission-decision-list {
+  display: grid;
+  gap: 8px;
+  max-height: 420px;
+  overflow: auto;
+  padding-right: 4px;
+}
+
+.mission-timeline-item,
+.mission-decision,
+.mission-signal {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+}
+
+.mission-timeline-item,
+.mission-signal {
+  align-items: center;
+  display: grid;
+  gap: 8px;
+  grid-template-columns: max-content max-content minmax(120px, 0.8fr) minmax(160px, 1fr);
+  padding: 8px 10px;
+}
+
+.mission-decision {
+  display: grid;
+  gap: 6px;
+  padding: 10px;
+}
+
+.mission-decision p {
+  font-size: 13px;
+  line-height: 1.45;
+}
+
 .detail-fields {
   font-size: 13px;
 }
@@ -999,6 +1080,9 @@ details pre {
   .metrics,
   .routing-grid,
   .detail-summary,
+  .mission-layout,
+  .mission-timeline-item,
+  .mission-signal,
   .setup-list {
     grid-template-columns: 1fr;
   }
@@ -1021,6 +1105,11 @@ details pre {
 
   .inline-json {
     max-width: 100%;
+  }
+
+  .mission-picker {
+    align-items: stretch;
+    display: grid;
   }
 }
 
