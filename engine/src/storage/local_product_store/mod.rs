@@ -3,6 +3,7 @@ mod audit;
 mod boundaries;
 mod config;
 mod costs;
+mod decisions;
 mod dispatch;
 mod export_import;
 pub mod feedback;
@@ -305,6 +306,23 @@ CREATE TABLE IF NOT EXISTS tool_hooks (
     enabled INTEGER NOT NULL DEFAULT 1,
     created_at TEXT NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS orchestration_decisions (
+    decision_id TEXT PRIMARY KEY,
+    run_id TEXT NOT NULL,
+    node_id TEXT,
+    action TEXT NOT NULL,
+    action_reason TEXT NOT NULL,
+    selected_executor TEXT NOT NULL,
+    blocked_reason TEXT,
+    confidence TEXT NOT NULL,
+    confidence_score REAL NOT NULL,
+    input_signals_json TEXT NOT NULL,
+    created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_orchestration_decisions_run ON orchestration_decisions(run_id);
+CREATE INDEX IF NOT EXISTS idx_orchestration_decisions_action ON orchestration_decisions(action);
+CREATE INDEX IF NOT EXISTS idx_orchestration_decisions_created ON orchestration_decisions(created_at);
 ";
 
 pub struct LocalProductStore {

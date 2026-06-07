@@ -2,7 +2,7 @@ use rusqlite::Connection;
 
 use super::LocalProductStore;
 
-pub(super) const CURRENT_SCHEMA_VERSION: i64 = 6;
+pub(super) const CURRENT_SCHEMA_VERSION: i64 = 7;
 
 struct Migration {
     version: i64,
@@ -34,6 +34,10 @@ const MIGRATIONS: &[Migration] = &[
         version: 6,
         description: "add tool_capabilities, tool_allowlists, and tool_hooks tables",
     },
+    Migration {
+        version: 7,
+        description: "add orchestration_decisions table for policy decision trace",
+    },
 ];
 
 impl LocalProductStore {
@@ -54,6 +58,7 @@ impl LocalProductStore {
                     4 => Self::migrate_v4_add_scheduler_feedback(conn)?,
                     5 => Self::migrate_v5_add_agent_profiles(conn)?,
                     6 => Self::migrate_v6_add_tool_registry(conn)?,
+                    7 => Self::migrate_v7_add_orchestration_decisions(conn)?,
                     _ => return Err(format!("unknown migration version: {}", migration.version)),
                 }
                 conn.execute_batch(&format!("PRAGMA user_version = {}", migration.version))
@@ -298,6 +303,30 @@ CREATE TABLE IF NOT EXISTS tool_hooks (
     enabled INTEGER NOT NULL DEFAULT 1,
     created_at TEXT NOT NULL
 );
+",
+        )
+        .map_err(|e| e.to_string())
+    }
+
+    fn migrate_v7_add_orchestration_decisions(conn: &Connection) -> Result<(), String> {
+        conn.execute_batch(
+            "
+CREATE TABLE IF NOT EXISTS orchestration_decisions (
+    decision_id TEXT PRIMARY KEY,
+    run_id TEXT NOT NULL,
+    node_id TEXT,
+    action TEXT NOT NULL,
+    action_reason TEXT NOT NULL,
+    selected_executor TEXT NOT NULL,
+    blocked_reason TEXT,
+    confidence TEXT NOT NULL,
+    confidence_score REAL NOT NULL,
+    input_signals_json TEXT NOT NULL,
+    created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_orchestration_decisions_run ON orchestration_decisions(run_id);
+CREATE INDEX IF NOT EXISTS idx_orchestration_decisions_action ON orchestration_decisions(action);
+CREATE INDEX IF NOT EXISTS idx_orchestration_decisions_created ON orchestration_decisions(created_at);
 ",
         )
         .map_err(|e| e.to_string())

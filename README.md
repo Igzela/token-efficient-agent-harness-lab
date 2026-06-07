@@ -41,7 +41,7 @@ cargo test -p engine
 cd sdk/python && PYTHONPATH=src uv run --no-project python -m unittest discover -s tests
 ```
 
-Current result: 1208 Rust tests pass. Python SDK tests run separately under `sdk/python/`.
+Current result: 1226 Rust tests pass. Python SDK tests run separately under `sdk/python/`.
 
 ## How To Run Without Docker
 

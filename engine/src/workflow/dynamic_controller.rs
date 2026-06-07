@@ -2,12 +2,15 @@ use std::collections::HashMap;
 
 use serde_json::{json, Value};
 
-use crate::node_executor::NodeExecutor;
+use crate::node_executor::{NodeExecutor, NoopNodeExecutor};
 use crate::storage::local_product_store::LocalProductStore;
 use crate::workflow::dag_manager::types::DAGMutationProposal;
 use crate::workflow::dynamic_decomposer::{
     node_proposals_to_dag_mutations, Decomposer, DecompositionContext, DecompositionTrigger,
     RuleBasedDecomposer,
+};
+use crate::workflow::orchestration_decision::{
+    confidence_from_inputs, action_to_string, OrchestrationAction, ORCHESTRATION_DECISION_SCHEMA_VERSION,
 };
 
 // ---------------------------------------------------------------------------
@@ -88,6 +91,7 @@ pub struct DynamicWorkflowController {
     ticks_executed: u64,
     mutations_applied_total: u64,
     decomposer: Box<dyn Decomposer>,
+    decisions: Vec<Value>,
 }
 
 impl DynamicWorkflowController {
@@ -97,6 +101,7 @@ impl DynamicWorkflowController {
             ticks_executed: 0,
             mutations_applied_total: 0,
             decomposer: Box::new(RuleBasedDecomposer::new()),
+            decisions: Vec::new(),
         }
     }
 
@@ -111,6 +116,10 @@ impl DynamicWorkflowController {
 
     pub fn mutations_applied_total(&self) -> u64 {
         self.mutations_applied_total
+    }
+
+    pub fn decisions(&self) -> &[Value] {
+        &self.decisions
     }
 
     /// Execute a single controller tick for the given run.
@@ -135,6 +144,30 @@ impl DynamicWorkflowController {
             .to_string();
 
         if self.ticks_executed >= self.config.max_ticks_per_run {
+            let decision = build_decision(
+                run_id,
+                None,
+                OrchestrationAction::NoAction,
+                "max_ticks_per_run reached",
+                executor,
+                Some("max_ticks_per_run reached"),
+                "running",
+                None,
+                None,
+            );
+            self.decisions.push(decision.clone());
+            let _ = store.record_orchestration_decision(
+                run_id,
+                None,
+                action_to_string(&OrchestrationAction::NoAction),
+                "max_ticks_per_run reached",
+                decision["selected_executor"].as_str().unwrap_or("unknown"),
+                Some("max_ticks_per_run reached"),
+                decision["confidence"].as_str().unwrap_or("low"),
+                decision["confidence_score"].as_f64().unwrap_or(0.0),
+                decision.get("input_signals").unwrap_or(&Value::Null),
+            );
+
             return Ok(ControllerTickResult {
                 actions: vec![ControllerAction::NoAction {
                     reason: "max_ticks_per_run reached".to_string(),
@@ -167,6 +200,39 @@ impl DynamicWorkflowController {
             status == "failed" && self.config.auto_fix_on_failure && !failed_nodes.is_empty();
 
         if is_terminal(&status) && !terminal_repair_allowed {
+            let (action, blocked_reason) = if status == "completed" {
+                (OrchestrationAction::RunCompleted, None)
+            } else {
+                (
+                    OrchestrationAction::RunFailed,
+                    Some("node_failure".to_string()),
+                )
+            };
+
+            let decision = build_decision(
+                run_id,
+                None,
+                action.clone(),
+                &format!("run is already terminal: {status}"),
+                executor,
+                blocked_reason.as_deref(),
+                &status,
+                None,
+                None,
+            );
+            self.decisions.push(decision.clone());
+            let _ = store.record_orchestration_decision(
+                run_id,
+                None,
+                action_to_string(&action),
+                &format!("run is already terminal: {status}"),
+                decision["selected_executor"].as_str().unwrap_or("unknown"),
+                blocked_reason.as_deref(),
+                decision["confidence"].as_str().unwrap_or("low"),
+                decision["confidence_score"].as_f64().unwrap_or(0.0),
+                decision.get("input_signals").unwrap_or(&Value::Null),
+            );
+
             let mut actions = vec![ControllerAction::NoAction {
                 reason: format!("run is already terminal: {status}"),
             }];
@@ -293,6 +359,18 @@ impl DynamicWorkflowController {
                 self.mutations_applied_total += applied_count;
 
                 if applied_count > 0 {
+                    self.record_decision(
+                        store,
+                        run_id,
+                        Some(&node_id),
+                        OrchestrationAction::GraphMutated,
+                        &format!("quality_review_{}", node_id),
+                        &NoopNodeExecutor,
+                        None,
+                        &status,
+                        None,
+                        None,
+                    );
                     actions.push(ControllerAction::GraphMutated {
                         proposal_id: format!("quality_review_{}", node_id),
                         mutation_type: "add_node".to_string(),
@@ -315,6 +393,18 @@ impl DynamicWorkflowController {
                     }),
                     actor,
                 )?;
+                self.record_decision(
+                    store,
+                    run_id,
+                    None,
+                    OrchestrationAction::RequestApproval,
+                    "max_mutations_per_run reached; approval required to continue",
+                    executor,
+                    Some("max_mutations_per_run reached"),
+                    &status,
+                    None,
+                    None,
+                );
                 actions.push(ControllerAction::ApprovalRequested {
                     node_id: "*".to_string(),
                     reason: "max_mutations_per_run reached; approval required to continue"
@@ -351,6 +441,22 @@ impl DynamicWorkflowController {
                     .and_then(Value::as_str)
                     .unwrap_or("unknown")
                     .to_string();
+                let _executor_type = tick_result
+                    .get("executor_type")
+                    .and_then(Value::as_str)
+                    .unwrap_or("unknown");
+                self.record_decision(
+                    store,
+                    run_id,
+                    Some(&node_id),
+                    OrchestrationAction::ExecuteNode,
+                    &format!("node {} executed with status {}", node_id, result_status),
+                    executor,
+                    None,
+                    &status,
+                    None,
+                    None,
+                );
                 actions.push(ControllerAction::NodeExecuted {
                     node_id,
                     status: result_status,
@@ -381,9 +487,44 @@ impl DynamicWorkflowController {
                     .get("attempt")
                     .and_then(Value::as_i64)
                     .unwrap_or(0);
+                self.record_decision(
+                    store,
+                    run_id,
+                    Some(&node_id),
+                    OrchestrationAction::RetryNode,
+                    &format!("node {} retry attempt {}", node_id, attempt),
+                    executor,
+                    None,
+                    &status,
+                    None,
+                    None,
+                );
                 actions.push(ControllerAction::NodeRetried { node_id, attempt });
             }
             "completed" => {
+                let decision = build_decision(
+                    run_id,
+                    None,
+                    OrchestrationAction::RunCompleted,
+                    "run completed after tick",
+                    executor,
+                    None,
+                    "completed",
+                    None,
+                    None,
+                );
+                self.decisions.push(decision.clone());
+                let _ = store.record_orchestration_decision(
+                    run_id,
+                    None,
+                    action_to_string(&OrchestrationAction::RunCompleted),
+                    "run completed after tick",
+                    decision["selected_executor"].as_str().unwrap_or("unknown"),
+                    None,
+                    decision["confidence"].as_str().unwrap_or("high"),
+                    decision["confidence_score"].as_f64().unwrap_or(1.0),
+                    decision.get("input_signals").unwrap_or(&Value::Null),
+                );
                 actions.push(ControllerAction::RunCompleted);
             }
             "failed" => {
@@ -393,16 +534,61 @@ impl DynamicWorkflowController {
                     .and_then(Value::as_str)
                     .unwrap_or("node_failure")
                     .to_string();
+                let decision = build_decision(
+                    run_id,
+                    None,
+                    OrchestrationAction::RunFailed,
+                    &reason,
+                    executor,
+                    Some(&reason),
+                    "failed",
+                    None,
+                    None,
+                );
+                self.decisions.push(decision.clone());
+                let _ = store.record_orchestration_decision(
+                    run_id,
+                    None,
+                    action_to_string(&OrchestrationAction::RunFailed),
+                    &reason,
+                    decision["selected_executor"].as_str().unwrap_or("unknown"),
+                    Some(&reason),
+                    decision["confidence"].as_str().unwrap_or("low"),
+                    decision["confidence_score"].as_f64().unwrap_or(0.0),
+                    decision.get("input_signals").unwrap_or(&Value::Null),
+                );
                 actions.push(ControllerAction::RunFailed { reason });
             }
             "no_ready_node" => {
-                // No ready node but run is not terminal — might be waiting on
-                // mutations we just applied, or blocked nodes.
+                let decision = build_decision(
+                    run_id,
+                    None,
+                    OrchestrationAction::NoAction,
+                    "no ready node available",
+                    executor,
+                    None,
+                    &status,
+                    None,
+                    None,
+                );
+                self.decisions.push(decision.clone());
                 actions.push(ControllerAction::NoAction {
                     reason: "no ready node available".to_string(),
                 });
             }
             other => {
+                let decision = build_decision(
+                    run_id,
+                    None,
+                    OrchestrationAction::NoAction,
+                    &format!("tick returned action: {other}"),
+                    executor,
+                    None,
+                    &status,
+                    None,
+                    None,
+                );
+                self.decisions.push(decision.clone());
                 actions.push(ControllerAction::NoAction {
                     reason: format!("tick returned action: {other}"),
                 });
@@ -497,6 +683,44 @@ impl DynamicWorkflowController {
             should_continue,
             suggested_executor_type,
         })
+    }
+
+    fn record_decision(
+        &mut self,
+        store: &LocalProductStore,
+        run_id: &str,
+        node_id: Option<&str>,
+        action: OrchestrationAction,
+        action_reason: &str,
+        executor: &dyn NodeExecutor,
+        blocked_reason: Option<&str>,
+        run_status: &str,
+        task_type: Option<&str>,
+        task_group: Option<&str>,
+    ) {
+        let decision = build_decision(
+            run_id,
+            node_id,
+            action.clone(),
+            action_reason,
+            executor,
+            blocked_reason,
+            run_status,
+            task_type,
+            task_group,
+        );
+        self.decisions.push(decision.clone());
+        let _ = store.record_orchestration_decision(
+            run_id,
+            node_id,
+            action_to_string(&action),
+            action_reason,
+            decision["selected_executor"].as_str().unwrap_or("unknown"),
+            blocked_reason,
+            decision["confidence"].as_str().unwrap_or("medium"),
+            decision["confidence_score"].as_f64().unwrap_or(0.5),
+            decision.get("input_signals").unwrap_or(&Value::Null),
+        );
     }
 
     fn apply_failed_node_recovery(
@@ -600,6 +824,18 @@ impl DynamicWorkflowController {
                     actor,
                     "dynamic workflow recovery nodes scheduled",
                 )?;
+                self.record_decision(
+                    store,
+                    run_id,
+                    Some(&failed_id),
+                    OrchestrationAction::GraphMutated,
+                    &format!("auto_fix_{}", failed_id),
+                    &NoopNodeExecutor,
+                    None,
+                    "running",
+                    None,
+                    None,
+                );
                 actions.push(ControllerAction::GraphMutated {
                     proposal_id: format!("auto_fix_{}", failed_id),
                     mutation_type: "add_node".to_string(),
@@ -642,6 +878,80 @@ fn quality_passes(node: &Value) -> bool {
         }
         _ => true,
     }
+}
+
+fn build_decision(
+    run_id: &str,
+    node_id: Option<&str>,
+    action: OrchestrationAction,
+    action_reason: &str,
+    executor: &dyn NodeExecutor,
+    blocked_reason: Option<&str>,
+    run_status: &str,
+    task_type: Option<&str>,
+    task_group: Option<&str>,
+) -> Value {
+    let executor_type = extract_executor_type(executor, node_id, task_type);
+    let (confidence, confidence_score) = confidence_from_inputs(
+        run_status,
+        Some("pending"),
+        false,
+        None,
+        blocked_reason,
+    );
+
+    let mut input_signals = json!({
+        "run_id": run_id,
+        "run_status": run_status,
+    });
+    if let Some(nid) = node_id {
+        input_signals
+            .as_object_mut()
+            .unwrap()
+            .insert("node_id".to_string(), json!(nid));
+    }
+    if let Some(tt) = task_type {
+        input_signals
+            .as_object_mut()
+            .unwrap()
+            .insert("task_type".to_string(), json!(tt));
+    }
+    if let Some(tg) = task_group {
+        input_signals
+            .as_object_mut()
+            .unwrap()
+            .insert("task_group".to_string(), json!(tg));
+    }
+
+    json!({
+        "schema_version": ORCHESTRATION_DECISION_SCHEMA_VERSION,
+        "decision_id": format!("decision-{}-{}", run_id, node_id.unwrap_or("run")),
+        "run_id": run_id,
+        "node_id": node_id,
+        "action": action_to_string(&action),
+        "action_reason": action_reason,
+        "selected_executor": executor_type,
+        "blocked_reason": blocked_reason,
+        "confidence": confidence.as_str(),
+        "confidence_score": confidence_score,
+        "input_signals": input_signals,
+    })
+}
+
+fn extract_executor_type(
+    executor: &dyn NodeExecutor,
+    node_id: Option<&str>,
+    task_type: Option<&str>,
+) -> String {
+    let input = crate::node_executor::NodeExecutionInput {
+        node_id: node_id.unwrap_or("").to_string(),
+        task_type: task_type.unwrap_or("unknown").to_string(),
+        run_id: String::new(),
+        workflow_id: String::new(),
+        node_metadata: serde_json::json!({}),
+    };
+    let output = executor.execute_node(&input);
+    output.executor_type
 }
 
 fn build_auto_fix_proposals(
