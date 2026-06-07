@@ -1,5 +1,6 @@
 pub mod anthropic;
 pub mod audit;
+pub mod circuit_breaker_provider;
 pub mod config;
 pub mod cost_gate;
 pub mod credential;

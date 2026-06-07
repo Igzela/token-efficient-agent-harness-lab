@@ -5,9 +5,11 @@ use engine::http_server::{build_axum_router, build_axum_router_with_dashboard, A
 use engine::infrastructure::auth::{
     hash_api_key, validate_token_shape, APIKey, Tenant, TenantResolver,
 };
+use engine::infrastructure::circuit_breaker::{CircuitBreaker, CircuitBreakerRegistry};
 use engine::infrastructure::rate_limiter::RateLimiter;
 use engine::provider::anthropic::AnthropicProvider;
 use engine::provider::audit::ProviderAuditRecorder;
+use engine::provider::circuit_breaker_provider::CircuitBreakerProvider;
 use engine::provider::config::CredentialRef;
 use engine::provider::config::{provider_pricing_from_env, ProviderConfig};
 use engine::provider::credential::CredentialBoundary;
@@ -57,13 +59,19 @@ async fn main() {
     }
     let store_arc = Arc::new(store);
     let store_for_scheduler = store_arc.clone();
+    let cb_registry = Arc::new(CircuitBreakerRegistry::new());
     let cli_config = CliConfig::from_env();
     let multi_executor = build_multi_executor(&cli_config);
     let base_engine = DispatchEngine::with_multi_executor(multi_executor);
     let state = configure_auth(
-        build_state_with_provider(AxumApiState::new().with_engine(base_engine), &store_arc)
-            .with_local_store_arc(store_arc)
-            .with_backup_dir(backup_dir),
+        build_state_with_provider(
+            AxumApiState::new().with_engine(base_engine),
+            &store_arc,
+            &cb_registry,
+        )
+        .with_local_store_arc(store_arc)
+        .with_backup_dir(backup_dir)
+        .with_circuit_breaker_registry(cb_registry),
     );
 
     let require_auth = std::env::var("ACP_REQUIRE_AUTH")
@@ -246,7 +254,11 @@ fn configure_auth(state: AxumApiState) -> AxumApiState {
     state.with_auth(resolver, RateLimiter::new(60.0, 10_000), Some(10_000), 0.0)
 }
 
-fn build_state_with_provider(state: AxumApiState, store: &Arc<LocalProductStore>) -> AxumApiState {
+fn build_state_with_provider(
+    state: AxumApiState,
+    store: &Arc<LocalProductStore>,
+    cb_registry: &Arc<CircuitBreakerRegistry>,
+) -> AxumApiState {
     let provider_type = match std::env::var("ACP_PROVIDER_TYPE") {
         Ok(v) if !v.trim().is_empty() => v,
         _ => return state,
@@ -289,7 +301,7 @@ fn build_state_with_provider(state: AxumApiState, store: &Arc<LocalProductStore>
         "2026-01-01T00:00:00Z",
     );
 
-    let provider: Arc<dyn Provider> = match provider_type.as_str() {
+    let base_provider: Arc<dyn Provider> = match provider_type.as_str() {
         "stub" => Arc::new(StubProvider::new("stub-env")),
         "openai_compatible" => {
             let mut config = ProviderConfig::new(
@@ -332,6 +344,24 @@ fn build_state_with_provider(state: AxumApiState, store: &Arc<LocalProductStore>
             return state;
         }
     };
+
+    // Wrap provider with circuit breaker protection.
+    let cb_threshold = std::env::var("ACP_CIRCUIT_BREAKER_THRESHOLD")
+        .ok()
+        .and_then(|v| v.parse::<u64>().ok())
+        .unwrap_or(5);
+    let cb_recovery_ms = std::env::var("ACP_CIRCUIT_BREAKER_RECOVERY_MS")
+        .ok()
+        .and_then(|v| v.parse::<u64>().ok())
+        .unwrap_or(30_000);
+    let provider_cb = Arc::new(CircuitBreaker::new(
+        format!("provider:{}", base_provider.provider_id()),
+        cb_threshold,
+        cb_recovery_ms,
+    ));
+    cb_registry.register(provider_cb.clone());
+    let provider: Arc<dyn Provider> =
+        Arc::new(CircuitBreakerProvider::new(base_provider, provider_cb));
 
     let recorder = Arc::new(ProviderAuditRecorder::with_store(store.clone()));
     state.with_provider_and_audit(provider, recorder)

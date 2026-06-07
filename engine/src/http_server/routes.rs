@@ -277,6 +277,10 @@ fn axum_routes() -> Router<AxumApiState> {
             "/api/v1/backups/:backup_id/restore/dry-run",
             post(backups::api_restore_backup_dry_run).options(cors_preflight),
         )
+        .route(
+            "/api/v1/circuit-breaker/status",
+            get(operations::api_circuit_breaker_status).options(cors_preflight),
+        )
 }
 
 async fn serve_dashboard_asset(State(state): State<AxumApiState>, uri: Uri) -> Response {

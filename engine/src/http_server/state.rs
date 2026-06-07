@@ -4,6 +4,7 @@ use std::sync::{Arc, Mutex};
 
 use crate::dispatch_engine::DispatchEngine;
 use crate::infrastructure::auth::TenantResolver;
+use crate::infrastructure::circuit_breaker::CircuitBreakerRegistry;
 use crate::infrastructure::observability::{MetricsCollector, RequestTracer};
 use crate::infrastructure::rate_limiter::RateLimiter;
 use crate::provider::Provider;
@@ -41,6 +42,7 @@ pub struct AxumApiState {
     pub(crate) scheduler: Option<Arc<Mutex<WorkflowScheduler>>>,
     pub(crate) metrics: Arc<MetricsCollector>,
     pub(crate) tracer: Arc<RequestTracer>,
+    pub(crate) circuit_breaker_registry: Arc<CircuitBreakerRegistry>,
 }
 
 impl Default for AxumApiState {
@@ -64,6 +66,7 @@ impl AxumApiState {
             scheduler: None,
             metrics: Arc::new(MetricsCollector::new(10_000)),
             tracer: Arc::new(RequestTracer::new()),
+            circuit_breaker_registry: Arc::new(CircuitBreakerRegistry::new()),
         }
     }
 
@@ -137,6 +140,11 @@ impl AxumApiState {
     ) -> Self {
         self.metrics = metrics;
         self.tracer = tracer;
+        self
+    }
+
+    pub fn with_circuit_breaker_registry(mut self, registry: Arc<CircuitBreakerRegistry>) -> Self {
+        self.circuit_breaker_registry = registry;
         self
     }
 

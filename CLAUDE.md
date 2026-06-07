@@ -42,9 +42,10 @@ Master document: `docs/dispatch/DISPATCHER_KERNEL_V0_ARCHITECTURE.md`
 - Dynamic Workflow Batch 7 + scheduler dynamic-mode recovery: COMPLETE (1208 Rust tests)
 - Macro-Orchestrator Phase 1-5 repair batch: COMPLETE (all tick paths persist decisions, executor-pool binds to execution, queue/backpressure correct, operator surfaces aligned, soak script truthful)
 - Self-Hosted GA Readiness Track: SG-1 through SG-5 COMPLETE (real dynamic CLI pilot matrix, long-run soak/failure injection, mission-control dashboard visibility, enriched policy decision signals, and runbook/release/rollback handoff readiness)
+- Circuit Breaker (HA-4): COMPLETE (Closed/Open/HalfOpen state machine, CircuitBreakerProvider wrapper, CircuitBreakerRegistry, status endpoint, 14 new tests)
 
 **Key Milestones:**
-- 1348 Rust tests pass, 0 failures
+- 1367 Rust tests pass, 0 failures
 - TypeScript strict + readonly lint + build + static export pass
 - `cargo fmt`, `cargo clippy`, handoff guard all pass
 

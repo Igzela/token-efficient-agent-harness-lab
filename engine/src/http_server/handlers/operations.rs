@@ -150,3 +150,36 @@ pub(crate) async fn api_observability_metrics(
         })),
     ))
 }
+
+pub(crate) async fn api_circuit_breaker_status(
+    State(state): State<AxumApiState>,
+    headers: HeaderMap,
+    uri: Uri,
+    Extension(request_id): Extension<RequestId>,
+) -> Result<impl IntoResponse, ApiError> {
+    authorize(&state, &headers, "health:read", uri.path(), &request_id.0)?;
+
+    let snapshots = state.circuit_breaker_registry.snapshots();
+    let total = snapshots.len();
+    let open_count = snapshots
+        .iter()
+        .filter(|s| s.state == crate::infrastructure::circuit_breaker::CircuitState::Open)
+        .count();
+    let half_open_count = snapshots
+        .iter()
+        .filter(|s| s.state == crate::infrastructure::circuit_breaker::CircuitState::HalfOpen)
+        .count();
+    let closed_count = total - open_count - half_open_count;
+
+    Ok((
+        cors_headers(),
+        Json(json!({
+            "schema_version": "circuit_breaker_status.v1",
+            "total_breakers": total,
+            "open": open_count,
+            "half_open": half_open_count,
+            "closed": closed_count,
+            "breakers": snapshots,
+        })),
+    ))
+}
