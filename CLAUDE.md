@@ -40,7 +40,7 @@ Master document: `docs/dispatch/DISPATCHER_KERNEL_V0_ARCHITECTURE.md`
 - Dynamic Workflow Batch 7 + scheduler dynamic-mode recovery: COMPLETE (1208 Rust tests)
 
 **Key Milestones:**
-- 1226 Rust tests pass, 0 failures
+- 1243 Rust tests pass, 0 failures
 - TypeScript strict + readonly lint + build + static export pass
 - `cargo fmt`, `cargo clippy`, handoff guard all pass
 
@@ -66,11 +66,13 @@ For each autonomous session:
 
 1. Inspect `git status --short --branch` and read the session bootstrap docs.
 2. Choose the highest-value safe task from failing verification, CI/docs/test drift, concrete review findings, or narrowly scoped hardening.
-3. Update or add tests before behavior changes.
-4. Run the relevant verification command, plus `uv run --no-project python scripts/check_agent_handoff.py` (includes toolchain and `scripts/check_wire_codegen_drift.sh` guards).
-5. Update the smallest necessary handoff surface before commit.
-6. Commit in English and push when the working tree only contains this session's intended changes.
-7. Leave the next action, latest commit, verification, and residual risks in the final report.
+3. **Use Workflow tool for multi-step implementation tasks.** Write a workflow script to `.claude/workflows/` with parallel agents for independent subtasks (e.g., Rust module + API endpoint + SDK + Dashboard). Use `model: 'opus'` for implementation agents and `model: 'sonnet'` for verification. Do NOT implement multi-file features sequentially by hand when Workflow can orchestrate.
+4. Update or add tests before behavior changes.
+5. Run the full verification suite: `cargo test -p engine`, `cargo fmt --check`, `cargo clippy -p engine --all-targets -- -D warnings`, TypeScript build/test, dashboard build, `uv run --no-project python scripts/check_agent_handoff.py`, `bash scripts/check_wire_codegen_drift.sh`.
+6. **CI must be green before starting the next batch.** After pushing, use `gh run list --limit 3` to check CI status. If CI fails, fix and re-push. A green CI is required before the next session's work is considered safe to build on.
+7. Update the smallest necessary handoff surface before commit.
+8. Commit in English and push when the working tree only contains this session's intended changes.
+9. Leave the next action, latest commit, verification, and residual risks in the final report.
 
 ## Architecture Refactor R-series
 

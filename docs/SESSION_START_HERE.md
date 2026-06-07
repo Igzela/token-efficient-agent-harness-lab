@@ -114,6 +114,18 @@ Do **not** start any of the following without explicit human approval:
 
 Before proposing any new track, read `docs/CURRENT_STATUS.md` and `docs/NEXT_DECISION.md` first.
 
+## Implementation Strategy
+
+**For multi-step implementation tasks (new module + API + SDK + Dashboard):**
+1. Write a workflow script to `.claude/workflows/<task-name>.md` with `export const meta = { name, description, phases }`.
+2. Use `parallel()` or `pipeline()` for independent subtasks (e.g., Rust module + API endpoint in parallel, then SDK + Dashboard in parallel, then verification).
+3. Use `model: 'opus'` for implementation agents, `model: 'sonnet'` for verification/checks.
+4. Launch via `Workflow({scriptPath: ".claude/workflows/<task-name>.md"})`.
+5. After workflow completes, fix any issues found by verification agent, then commit/push.
+6. Wait for CI green before starting the next batch.
+
+**For small fixes (doc drift, single test, formatting):** Direct Edit/Read is fine.
+
 ## Autonomous Session Closeout
 
 A session is not complete until it leaves a durable handoff:
