@@ -657,3 +657,35 @@ export interface SchedulerStatus {
     active_runs: number;
   };
 }
+
+export interface ExecutorPoolCapabilities {
+  supported_task_types: string[];
+  supported_task_domains: string[];
+  requires_auth: boolean;
+  requires_cli: boolean;
+  max_timeout_ms: number;
+}
+
+export interface ExecutorPoolEntry {
+  executor_type: string;
+  capabilities: ExecutorPoolCapabilities;
+  available: boolean;
+  active_count: number;
+  concurrency_limit: number;
+  cooldown_until: string | null;
+  failure_score: number;
+  cost_per_execution_usd: number | null;
+  daily_cost_usd: number;
+  daily_cost_limit_usd: number | null;
+  total_executions: number;
+  success_rate: number;
+  avg_latency_ms: number;
+  last_executed_at: string | null;
+}
+
+export interface ExecutorPoolStatus {
+  schema_version: string;
+  executors: ExecutorPoolEntry[];
+  total_active: number;
+  total_capacity: number;
+}

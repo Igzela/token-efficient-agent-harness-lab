@@ -214,6 +214,10 @@ fn axum_routes() -> Router<AxumApiState> {
             get(scheduler::api_scheduler_status).options(cors_preflight),
         )
         .route(
+            "/api/v1/executor-pool",
+            get(executor_pool::api_executor_pool_status).options(cors_preflight),
+        )
+        .route(
             "/api/v1/provider/health",
             get(provider::api_provider_health).options(cors_preflight),
         )

@@ -642,3 +642,48 @@ test("schedulerStatus gets scheduler health", async () => {
   assert.equal(result.scheduler.interval_ms, 2000);
   assert.ok(calls[0].url.includes("/api/v1/scheduler/status"));
 });
+
+test("fetchExecutorPool sends GET to executor-pool endpoint", async () => {
+  const { calls, fetchImpl } = captureFetch({
+    schema_version: "executor_pool.v1",
+    executors: [
+      {
+        executor_type: "mock",
+        capabilities: {
+          supported_task_types: ["generate", "review"],
+          supported_task_domains: ["code", "docs"],
+          requires_auth: false,
+          requires_cli: false,
+          max_timeout_ms: 30000,
+        },
+        available: true,
+        active_count: 0,
+        concurrency_limit: 4,
+        cooldown_until: null,
+        failure_score: 0.0,
+        cost_per_execution_usd: null,
+        daily_cost_usd: 0.0,
+        daily_cost_limit_usd: null,
+        total_executions: 42,
+        success_rate: 1.0,
+        avg_latency_ms: 150,
+        last_executed_at: "2026-06-07T00:00:00Z",
+      },
+    ],
+    total_active: 0,
+    total_capacity: 4,
+  });
+  const client = new AgentControlPlaneClient({ baseUrl: "http://127.0.0.1:8080", fetchImpl });
+
+  const result = await client.fetchExecutorPool();
+
+  assert.equal(result.schema_version, "executor_pool.v1");
+  assert.equal(result.executors.length, 1);
+  assert.equal(result.executors[0].executor_type, "mock");
+  assert.equal(result.executors[0].capabilities.requires_auth, false);
+  assert.equal(result.executors[0].available, true);
+  assert.equal(result.total_active, 0);
+  assert.equal(result.total_capacity, 4);
+  assert.equal(calls[0].url, "http://127.0.0.1:8080/api/v1/executor-pool");
+  assert.equal(calls[0].init.method, "GET");
+});

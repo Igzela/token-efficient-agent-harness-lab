@@ -40,6 +40,9 @@ impl LocalProductStore {
                 "tool_capabilities",
                 "tool_allowlists",
                 "tool_hooks",
+                "agent_profiles",
+                "orchestration_decisions",
+                "executor_pool",
             ];
             let mut table_reports = Vec::new();
             for table in &tables {

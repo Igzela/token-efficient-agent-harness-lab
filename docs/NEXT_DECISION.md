@@ -63,16 +63,16 @@ Current assessment:
 | Dimension | Current level | Next gap |
 |---|---|---|
 | Usability | Local/small-team supervised beta is usable. | Longer soak runs and clearer operator controls. |
-| Intelligence | Medium: routing feedback, rule-based decomposition, quality gates, explicit CLI executor calls, and policy decision engine are wired. | Resource/executor pool for dynamic executor capability and availability modeling. |
+| Intelligence | Medium-High: routing feedback, rule-based decomposition, quality gates, explicit CLI executor calls, policy decision engine, and executor resource pool are wired. | Queue/priority/backpressure for workflow run scheduling. |
 | Dynamicity | High: persisted graph mutation and scheduler dynamic-mode recovery are complete. | Better cross-run resource and queue decisions. |
-| Productization | Local self-hosted beta is strong; hosted GA is not the current target. | Resource pool, queue/backpressure, decision trace, and production drill coverage. |
+| Productization | Local self-hosted beta is strong; hosted GA is not the current target. | Queue/backpressure, decision trace, and production drill coverage. |
 
 Next macro-orchestrator phases:
 
 | Order | Phase | Done When |
 |---|---|---|
 | 1 | Policy Decision Engine | **DONE.** Scheduler/controller ticks emit a structured `OrchestrationDecision` with inputs, selected action, selected executor, blocked reason, confidence, and audit id. It reuses existing `routing`, `quality`, cost, approval, and feedback modules without creating a parallel policy kernel. |
-| 2 | Resource / Executor Pool | Executors are modeled by capability, availability, concurrency limit, cooldown, failure score, and cost profile. Dashboard/SDK can read executor-pool status. |
+| 2 | Resource / Executor Pool | **DONE.** `ExecutorPool` module models executors by capability, availability, concurrency limit, cooldown, failure score, and cost profile. Scheduler/dynamic controller use pool for per-run executor selection. `GET /api/v1/executor-pool` exposes pool status. Dashboard ExecutorPool component shows capacity, health, and cost. TypeScript + Python SDK `fetchExecutorPool()` methods. Schema v8 adds `executor_pool` table. 17 new tests (1243 total). |
 | 3 | Queue / Priority / Backpressure | Workflow runs support priority, deadline, tenant/project quota, queue position, and backpressure pause reason. Overload produces an explainable pause/degrade decision instead of blind ticking. |
 | 4 | Decision Trace / Explainability | Dashboard shows the decision chain for each run: executor choice, pause reason, graph-mutation reason, quality/routing/cost inputs, and recovery path. |
 | 5 | Ops Soak / Production Drill | A repeatable script runs multi-run, multi-executor, failure recovery, restart recovery, backup/restore dry-run, and dashboard visibility checks, then emits a machine-readable report. |

@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::sync::Arc;
 
 use serde_json::{json, Value};
 
@@ -81,6 +82,8 @@ pub struct ControllerTickResult {
     pub mutations_applied: u64,
     pub should_continue: bool,
     pub suggested_executor_type: Option<String>,
+    pub pool_failure_score: Option<f64>,
+    pub pool_active_count: Option<u64>,
 }
 
 // ---------------------------------------------------------------------------
@@ -93,6 +96,7 @@ pub struct DynamicWorkflowController {
     mutations_applied_total: u64,
     decomposer: Box<dyn Decomposer>,
     decisions: Vec<Value>,
+    executor_pool: Option<Arc<crate::executor_pool::ExecutorPool>>,
 }
 
 impl DynamicWorkflowController {
@@ -103,11 +107,17 @@ impl DynamicWorkflowController {
             mutations_applied_total: 0,
             decomposer: Box::new(RuleBasedDecomposer::new()),
             decisions: Vec::new(),
+            executor_pool: None,
         }
     }
 
     pub fn with_decomposer(mut self, decomposer: Box<dyn Decomposer>) -> Self {
         self.decomposer = decomposer;
+        self
+    }
+
+    pub fn with_executor_pool(mut self, pool: Arc<crate::executor_pool::ExecutorPool>) -> Self {
+        self.executor_pool = Some(pool);
         self
     }
 
@@ -177,6 +187,8 @@ impl DynamicWorkflowController {
                 mutations_applied: 0,
                 should_continue: false,
                 suggested_executor_type: None,
+                pool_failure_score: None,
+                pool_active_count: None,
             });
         }
 
@@ -250,6 +262,8 @@ impl DynamicWorkflowController {
                 mutations_applied: 0,
                 should_continue: false,
                 suggested_executor_type: None,
+                pool_failure_score: None,
+                pool_active_count: None,
             });
         }
 
@@ -285,6 +299,8 @@ impl DynamicWorkflowController {
                     mutations_applied: mutations_this_tick,
                     should_continue: false,
                     suggested_executor_type: None,
+                    pool_failure_score: None,
+                    pool_active_count: None,
                 });
             }
         }
@@ -417,12 +433,79 @@ impl DynamicWorkflowController {
                     mutations_applied: mutations_this_tick,
                     should_continue: false,
                     suggested_executor_type: None,
+                    pool_failure_score: None,
+                    pool_active_count: None,
                 });
             }
         }
 
         // --- Phase 4: tick the executor for one ready node ---
+
+        // Determine the executor type for pool acquire
+        let phase4_executor_type = extract_executor_type(executor, None, None);
+
+        // If pool is present, try to acquire; proceed if executor not in pool (fallback)
+        let pool_acquired = self
+            .executor_pool
+            .as_ref()
+            .map(|pool| {
+                // If executor type is not registered in pool, allow execution (fallback)
+                if pool.get(&phase4_executor_type).is_none() {
+                    true
+                } else {
+                    pool.acquire(&phase4_executor_type)
+                }
+            })
+            .unwrap_or(true);
+
+        if !pool_acquired {
+            let decision = build_decision(
+                run_id,
+                None,
+                OrchestrationAction::NoAction,
+                "executor pool acquire failed; capacity exhausted",
+                executor,
+                Some("pool_capacity_exhausted"),
+                &status,
+                None,
+                None,
+            );
+            self.decisions.push(decision.clone());
+            let _ = store.record_orchestration_decision(
+                run_id,
+                None,
+                action_to_string(&OrchestrationAction::NoAction),
+                "executor pool acquire failed; capacity exhausted",
+                decision["selected_executor"].as_str().unwrap_or("unknown"),
+                Some("pool_capacity_exhausted"),
+                decision["confidence"].as_str().unwrap_or("low"),
+                decision["confidence_score"].as_f64().unwrap_or(0.0),
+                decision.get("input_signals").unwrap_or(&Value::Null),
+            );
+            actions.push(ControllerAction::NoAction {
+                reason: "executor pool acquire failed; capacity exhausted".to_string(),
+            });
+
+            let (pool_fs, pool_ac) = self.pool_metrics(&phase4_executor_type);
+            return Ok(ControllerTickResult {
+                actions,
+                run_status: status,
+                mutations_applied: mutations_this_tick,
+                should_continue: true,
+                suggested_executor_type: None,
+                pool_failure_score: pool_fs,
+                pool_active_count: pool_ac,
+            });
+        }
+
         let tick_result = store.tick_with_executor_and_command(run_id, actor, 0, executor, None)?;
+
+        // Extract latency from tick result for pool release
+        let tick_latency_ms = tick_result
+            .get("result")
+            .and_then(|r| r.get("latency_ms"))
+            .and_then(Value::as_u64)
+            .unwrap_or(0);
 
         let action_str = tick_result
             .get("action")
@@ -596,6 +679,14 @@ impl DynamicWorkflowController {
             }
         }
 
+        // Release the pool slot based on tick outcome
+        if pool_acquired {
+            let tick_success = !matches!(action_str, "failed");
+            if let Some(pool) = self.executor_pool.as_ref() {
+                pool.release(&phase4_executor_type, tick_success, tick_latency_ms, None);
+            }
+        }
+
         let run_after_tick = store.get_workflow_run(run_id)?.unwrap_or(run.clone());
         let status_after_tick = run_after_tick
             .get("status")
@@ -662,7 +753,7 @@ impl DynamicWorkflowController {
             });
         }
 
-        // Query feedback store for executor suggestion
+        // Query feedback store for executor suggestion, then pool as fallback
         let suggested_executor_type = if self.config.record_feedback {
             // Get the first node's task_type to build a task_group for the suggestion
             let first_node_task = fresh_run
@@ -672,10 +763,24 @@ impl DynamicWorkflowController {
                 .and_then(|n| n.get("task_type").and_then(Value::as_str))
                 .unwrap_or("unknown");
             let task_group = crate::routing::schemas::make_task_group(first_node_task, "execute");
-            store.suggest_executor_type(&task_group)
+            store.suggest_executor_type(&task_group).or_else(|| {
+                self.executor_pool
+                    .as_ref()
+                    .and_then(|pool| pool.best_for_task(first_node_task, "execute"))
+            })
         } else {
-            None
+            self.executor_pool.as_ref().and_then(|pool| {
+                let first_node_task = fresh_run
+                    .get("nodes")
+                    .and_then(Value::as_array)
+                    .and_then(|ns| ns.first())
+                    .and_then(|n| n.get("task_type").and_then(Value::as_str))
+                    .unwrap_or("unknown");
+                pool.best_for_task(first_node_task, "execute")
+            })
         };
+
+        let (pool_fs, pool_ac) = self.pool_metrics(&phase4_executor_type);
 
         Ok(ControllerTickResult {
             actions,
@@ -683,7 +788,23 @@ impl DynamicWorkflowController {
             mutations_applied: mutations_this_tick,
             should_continue,
             suggested_executor_type,
+            pool_failure_score: pool_fs,
+            pool_active_count: pool_ac,
         })
+    }
+
+    fn pool_metrics(&self, executor_type: &str) -> (Option<f64>, Option<u64>) {
+        match self.executor_pool.as_ref() {
+            Some(pool) => {
+                let snapshot = pool.snapshot();
+                let entry = snapshot.iter().find(|e| e.executor_type == executor_type);
+                match entry {
+                    Some(e) => (Some(e.status.failure_score), Some(e.status.active_count)),
+                    None => (None, None),
+                }
+            }
+            None => (None, None),
+        }
     }
 
     fn record_decision(

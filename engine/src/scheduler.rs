@@ -5,6 +5,7 @@ use std::thread::JoinHandle;
 use std::time::Duration;
 
 use crate::cli::CliNodeExecutor;
+use crate::executor_pool::{self, ExecutorPool};
 use crate::node_executor::{NodeExecutor, NoopNodeExecutor};
 use crate::orchestration::{
     ConflictResolver, HumanApprovalGate, ResultAggregator, TaskDecomposer, WorkQueue,
@@ -95,6 +96,7 @@ pub struct WorkflowScheduler {
     total_execution_time_ns: Arc<std::sync::atomic::AtomicU64>,
     last_tick_at: Arc<std::sync::Mutex<Option<String>>>,
     last_error: Arc<std::sync::Mutex<Option<String>>>,
+    executor_pool: Arc<ExecutorPool>,
 }
 
 impl WorkflowScheduler {
@@ -111,6 +113,7 @@ impl WorkflowScheduler {
             total_execution_time_ns: Arc::new(std::sync::atomic::AtomicU64::new(0)),
             last_tick_at: Arc::new(std::sync::Mutex::new(None)),
             last_error: Arc::new(std::sync::Mutex::new(None)),
+            executor_pool: Arc::new(ExecutorPool::new()),
         }
     }
 
@@ -119,6 +122,10 @@ impl WorkflowScheduler {
             return Err("scheduler already running".to_string());
         }
         self.running.store(true, Ordering::SeqCst);
+
+        let cli_enabled = crate::cli::CliConfig::from_env().enabled;
+        executor_pool::register_default_executors(&self.executor_pool, cli_enabled);
+
         let store = self.store.clone();
         let config = self.config.clone();
         let running = self.running.clone();
@@ -129,11 +136,13 @@ impl WorkflowScheduler {
         let last_tick_at = self.last_tick_at.clone();
         let last_error = self.last_error.clone();
         let executor = create_scheduler_executor(&config.executor_type);
+        let pool = self.executor_pool.clone();
 
         let handle = std::thread::spawn(move || {
             while running.load(Ordering::SeqCst) {
+                pool.tick_cooldowns();
                 let tick_start = std::time::Instant::now();
-                let tick_result = scheduler_tick(&store, &config, &*executor);
+                let tick_result = scheduler_tick(&store, &config, &*executor, &pool);
                 let tick_elapsed_ns = tick_start.elapsed().as_nanos() as u64;
                 total_execution_time_ns.fetch_add(tick_elapsed_ns, Ordering::SeqCst);
                 match tick_result {
@@ -178,12 +187,17 @@ impl WorkflowScheduler {
         self.running.load(Ordering::SeqCst)
     }
 
+    pub fn executor_pool(&self) -> &Arc<ExecutorPool> {
+        &self.executor_pool
+    }
+
     pub fn status(&self) -> Value {
         let active_runs = self
             .store
             .list_active_workflow_run_ids()
             .map(|ids| ids.len())
             .unwrap_or(0);
+        let pool_snapshot = self.executor_pool.snapshot();
         json!({
             "schema_version": "scheduler.v1",
             "running": self.is_running(),
@@ -202,6 +216,7 @@ impl WorkflowScheduler {
             "last_tick_at": self.last_tick_at.lock().ok().and_then(|g| g.clone()),
             "last_error": self.last_error.lock().ok().and_then(|g| g.clone()),
             "active_runs": active_runs,
+            "executor_pool": pool_snapshot,
             "dormant_modules_active": {
                 "work_queue": true,
                 "result_aggregator": true,
@@ -273,9 +288,10 @@ fn scheduler_tick(
     store: &LocalProductStore,
     config: &SchedulerConfig,
     executor: &dyn crate::node_executor::NodeExecutor,
+    pool: &Arc<ExecutorPool>,
 ) -> Result<TickResult, String> {
     if dynamic_workflow_enabled(config) {
-        return dynamic_scheduler_tick(store, config, executor);
+        return dynamic_scheduler_tick(store, config, executor, pool);
     }
 
     let _recovered = store.recover_stale_leases(config.lease_timeout_ms)?;
@@ -330,12 +346,27 @@ fn scheduler_tick(
             }
         }
 
+        // Pool: acquire best executor for task
+        let best_executor = pool.best_for_task("scheduler", "auto");
+        let acquired = best_executor.as_deref().and_then(|et| {
+            if pool.acquire(et) {
+                Some(et.to_string())
+            } else {
+                None
+            }
+        });
+
         match store.tick_with_executor(run_id, "scheduler", 0, executor) {
             Ok(result) => {
                 ticks += 1;
                 let action = result.get("action").and_then(|v| v.as_str());
                 if action == Some("node_retry") {
                     retries += 1;
+                }
+
+                // Pool: release on success
+                if let Some(ref et) = acquired {
+                    pool.release(et, true, 0, None);
                 }
 
                 // Phase 2: Record outcome for adaptive routing feedback
@@ -427,6 +458,9 @@ fn scheduler_tick(
             }
             Err(_) => {
                 // terminal or no-ready-node errors are expected; skip
+                if let Some(ref et) = acquired {
+                    pool.release(et, false, 0, None);
+                }
             }
         }
     }
@@ -442,6 +476,7 @@ fn dynamic_scheduler_tick(
     store: &LocalProductStore,
     config: &SchedulerConfig,
     executor: &dyn crate::node_executor::NodeExecutor,
+    pool: &Arc<ExecutorPool>,
 ) -> Result<TickResult, String> {
     let _recovered = store.recover_stale_leases(config.lease_timeout_ms)?;
     let mut active_runs = store.list_active_workflow_run_ids()?;
@@ -460,7 +495,18 @@ fn dynamic_scheduler_tick(
     let mut aggregations = 0u64;
 
     for run_id in active_runs.iter().take(config.max_concurrent) {
-        let mut controller = DynamicWorkflowController::new(DynamicControllerConfig::default());
+        // Pool: acquire best executor for task
+        let best_executor = pool.best_for_task("scheduler", "auto");
+        let acquired = best_executor.as_deref().and_then(|et| {
+            if pool.acquire(et) {
+                Some(et.to_string())
+            } else {
+                None
+            }
+        });
+
+        let mut controller = DynamicWorkflowController::new(DynamicControllerConfig::default())
+            .with_executor_pool(Arc::clone(pool));
         match controller.tick(store, run_id, "scheduler", executor) {
             Ok(result) => {
                 let did_work = result
@@ -482,9 +528,17 @@ fn dynamic_scheduler_tick(
                 {
                     aggregations += 1;
                 }
+
+                // Pool: release on success
+                if let Some(ref et) = acquired {
+                    pool.release(et, true, 0, None);
+                }
             }
             Err(_) => {
                 // terminal or no-ready-node errors are expected; skip
+                if let Some(ref et) = acquired {
+                    pool.release(et, false, 0, None);
+                }
             }
         }
     }
@@ -587,6 +641,12 @@ mod tests {
 
     fn test_store() -> Arc<LocalProductStore> {
         Arc::new(LocalProductStore::new(":memory:").unwrap())
+    }
+
+    fn test_pool() -> Arc<ExecutorPool> {
+        let pool = ExecutorPool::new();
+        executor_pool::register_default_executors(&pool, false);
+        Arc::new(pool)
     }
 
     fn make_plan_value(ids: &crate::read_only_planner::WorkflowPlanIds) -> Value {
@@ -786,7 +846,8 @@ mod tests {
         let store = test_store();
         let config = SchedulerConfig::default();
         let executor = NoopNodeExecutor;
-        let result = scheduler_tick(&store, &config, &executor).unwrap();
+        let pool = test_pool();
+        let result = scheduler_tick(&store, &config, &executor, &pool).unwrap();
         assert_eq!(result.ticks, 0);
         assert_eq!(result.retries, 0);
     }
@@ -803,13 +864,14 @@ mod tests {
             executor_type: "noop".to_string(),
         };
         let executor = NoopNodeExecutor;
+        let pool = test_pool();
 
         // First tick leases and completes the single node
-        let r1 = scheduler_tick(&store, &config, &executor).unwrap();
+        let r1 = scheduler_tick(&store, &config, &executor, &pool).unwrap();
         assert_eq!(r1.ticks, 1);
 
         // Second tick finds no ready nodes (already completed)
-        let r2 = scheduler_tick(&store, &config, &executor).unwrap();
+        let r2 = scheduler_tick(&store, &config, &executor, &pool).unwrap();
         assert_eq!(
             r2.ticks, 0,
             "second tick should not re-lease completed node"
@@ -831,9 +893,10 @@ mod tests {
             executor_type: "fail".to_string(),
         };
         let executor = crate::node_executor::FailNodeExecutor::default();
+        let pool = test_pool();
 
         // Tick with fail executor — node fails, run becomes failed
-        let result = scheduler_tick(&store, &config, &executor);
+        let result = scheduler_tick(&store, &config, &executor, &pool);
         assert!(result.is_ok());
         assert_eq!(result.unwrap().ticks, 1);
 
@@ -856,8 +919,9 @@ mod tests {
             executor_type: "dynamic".to_string(),
         };
         let fail_executor = crate::node_executor::FailNodeExecutor::default();
+        let pool = test_pool();
 
-        let first = scheduler_tick(&store, &config, &fail_executor).unwrap();
+        let first = scheduler_tick(&store, &config, &fail_executor, &pool).unwrap();
         assert_eq!(first.ticks, 1);
 
         let run = store.get_workflow_run(&run_id).unwrap().unwrap();
@@ -886,9 +950,9 @@ mod tests {
         );
 
         let noop_executor = NoopNodeExecutor;
-        let second = scheduler_tick(&store, &config, &noop_executor).unwrap();
+        let second = scheduler_tick(&store, &config, &noop_executor, &pool).unwrap();
         assert_eq!(second.ticks, 1, "fix node should execute");
-        let third = scheduler_tick(&store, &config, &noop_executor).unwrap();
+        let third = scheduler_tick(&store, &config, &noop_executor, &pool).unwrap();
         assert_eq!(third.ticks, 1, "verification node should execute");
 
         let run = store.get_workflow_run(&run_id).unwrap().unwrap();
@@ -910,7 +974,8 @@ mod tests {
             executor_type: "fail".to_string(),
         };
         let fail_executor = crate::node_executor::FailNodeExecutor::default();
-        scheduler_tick(&store, &old_config, &fail_executor).unwrap();
+        let pool = test_pool();
+        scheduler_tick(&store, &old_config, &fail_executor, &pool).unwrap();
         let run = store.get_workflow_run(&run_id).unwrap().unwrap();
         assert_eq!(run["status"], "failed");
 
@@ -921,7 +986,7 @@ mod tests {
             executor_type: "dynamic".to_string(),
         };
         let noop_executor = NoopNodeExecutor;
-        let recover = scheduler_tick(&store, &dynamic_config, &noop_executor).unwrap();
+        let recover = scheduler_tick(&store, &dynamic_config, &noop_executor, &pool).unwrap();
         assert_eq!(recover.ticks, 1, "terminal failed run should be recovered");
 
         let run = store.get_workflow_run(&run_id).unwrap().unwrap();
@@ -932,7 +997,7 @@ mod tests {
             .iter()
             .any(|node| { node["node_id"] == "fix-node-a" && node["db_status"] == "completed" }));
 
-        scheduler_tick(&store, &dynamic_config, &noop_executor).unwrap();
+        scheduler_tick(&store, &dynamic_config, &noop_executor, &pool).unwrap();
         let run = store.get_workflow_run(&run_id).unwrap().unwrap();
         assert_eq!(run["status"], "completed");
     }
@@ -954,9 +1019,10 @@ mod tests {
             executor_type: "noop".to_string(),
         };
         let executor = NoopNodeExecutor;
+        let pool = test_pool();
 
         // Scheduler tick should skip cancelled run (0 ticks)
-        let result = scheduler_tick(&store, &config, &executor).unwrap();
+        let result = scheduler_tick(&store, &config, &executor, &pool).unwrap();
         assert_eq!(result.ticks, 0, "cancelled run should not be ticked");
 
         let run = store.get_workflow_run(&run_id).unwrap().unwrap();
@@ -1059,7 +1125,8 @@ mod tests {
             executor_type: "noop".to_string(),
         };
         let executor = NoopNodeExecutor;
-        let result = scheduler_tick(&store, &config, &executor).unwrap();
+        let pool = test_pool();
+        let result = scheduler_tick(&store, &config, &executor, &pool).unwrap();
         assert!(
             result.ticks <= 2,
             "max_concurrent=2 should limit ticks to at most 2, got {}",
@@ -1124,9 +1191,10 @@ mod tests {
             executor_type: "fail".to_string(),
         };
         let executor = crate::node_executor::FailNodeExecutor::default();
+        let pool = test_pool();
 
         // Tick with fail executor and max_retries=0 — no retries tracked since we pass max_retries=0 to scheduler_tick
-        let result = scheduler_tick(&store, &config, &executor).unwrap();
+        let result = scheduler_tick(&store, &config, &executor, &pool).unwrap();
         assert_eq!(result.ticks, 1, "should tick once");
         assert_eq!(result.retries, 0, "no retries with default max_retries=0");
     }
@@ -1143,9 +1211,10 @@ mod tests {
             executor_type: "noop".to_string(),
         };
         let executor = NoopNodeExecutor;
+        let pool = test_pool();
 
         // Tick once: node completes, run becomes completed
-        let result = scheduler_tick(&store, &config, &executor).unwrap();
+        let result = scheduler_tick(&store, &config, &executor, &pool).unwrap();
         assert_eq!(result.ticks, 1);
         assert_eq!(result.aggregations, 1, "should aggregate completed run");
     }
@@ -1164,13 +1233,14 @@ mod tests {
             executor_type: "noop".to_string(),
         };
         let executor = NoopNodeExecutor;
+        let pool = test_pool();
 
         // Before ticking, the run is active — no aggregation yet
         let active = store.list_active_workflow_run_ids().unwrap();
         assert_eq!(active.len(), 1);
 
         // Tick to completion
-        let result = scheduler_tick(&store, &config, &executor).unwrap();
+        let result = scheduler_tick(&store, &config, &executor, &pool).unwrap();
         assert!(result.aggregations > 0, "should aggregate after completion");
 
         let run = store.get_workflow_run(&run_id).unwrap().unwrap();
@@ -1206,9 +1276,10 @@ mod tests {
             executor_type: "fail".to_string(),
         };
         let executor = crate::node_executor::FailNodeExecutor::default();
+        let pool = test_pool();
 
         // Tick with fail executor — records outcome for adaptation
-        let result = scheduler_tick(&store, &config, &executor).unwrap();
+        let result = scheduler_tick(&store, &config, &executor, &pool).unwrap();
         assert_eq!(result.ticks, 1);
         // Recommendation depends on failure rate thresholds; just verify it doesn't panic
         let _ = result.adaptation_recommendations;
@@ -1247,9 +1318,10 @@ mod tests {
             executor_type: "noop".to_string(),
         };
         let executor = NoopNodeExecutor;
+        let pool = test_pool();
 
         // Tick: node completes → conflict resolver and approval gate run without panic
-        let result = scheduler_tick(&store, &config, &executor).unwrap();
+        let result = scheduler_tick(&store, &config, &executor, &pool).unwrap();
         assert_eq!(result.ticks, 1);
         assert_eq!(result.aggregations, 1, "should aggregate after completion");
 
@@ -1269,9 +1341,10 @@ mod tests {
             executor_type: "fail".to_string(),
         };
         let executor = crate::node_executor::FailNodeExecutor::default();
+        let pool = test_pool();
 
         // Tick with fail executor — conflict resolver handles failed nodes
-        let result = scheduler_tick(&store, &config, &executor).unwrap();
+        let result = scheduler_tick(&store, &config, &executor, &pool).unwrap();
         assert_eq!(result.ticks, 1);
 
         let run = store.get_workflow_run("run-0001").unwrap().unwrap();

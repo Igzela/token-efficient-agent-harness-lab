@@ -253,6 +253,9 @@ class AgentControlPlaneClient:
     def scheduler_status(self) -> dict[str, Any]:
         return self._get("/api/v1/scheduler/status")
 
+    def fetch_executor_pool(self) -> dict[str, Any]:
+        return self._get("/api/v1/executor-pool")
+
     def config(self) -> dict[str, Any]:
         return self._get("/api/v1/config")
 

@@ -3,6 +3,7 @@ import type {
   AuditListResponse,
   BackupVerification,
   DispatchListResponse,
+  ExecutorPoolStatusResponse,
   LocalDashboardState,
   OperationsMetrics,
   SchedulerStatusResponse,
@@ -397,4 +398,8 @@ export async function fetchPlanDetail(planId: string): Promise<WorkflowPlanDetai
 
 export async function fetchSchedulerStatus(): Promise<SchedulerStatusResponse> {
   return fetchJson<SchedulerStatusResponse>(`${BASE}/api/v1/scheduler/status`);
+}
+
+export async function fetchExecutorPool(): Promise<ExecutorPoolStatusResponse> {
+  return fetchJson<ExecutorPoolStatusResponse>(`${BASE}/api/v1/executor-pool`);
 }

@@ -2,7 +2,7 @@ use rusqlite::Connection;
 
 use super::LocalProductStore;
 
-pub(super) const CURRENT_SCHEMA_VERSION: i64 = 7;
+pub(super) const CURRENT_SCHEMA_VERSION: i64 = 8;
 
 struct Migration {
     version: i64,
@@ -38,6 +38,10 @@ const MIGRATIONS: &[Migration] = &[
         version: 7,
         description: "add orchestration_decisions table for policy decision trace",
     },
+    Migration {
+        version: 8,
+        description: "add executor_pool table for resource/executor pool tracking",
+    },
 ];
 
 impl LocalProductStore {
@@ -59,6 +63,7 @@ impl LocalProductStore {
                     5 => Self::migrate_v5_add_agent_profiles(conn)?,
                     6 => Self::migrate_v6_add_tool_registry(conn)?,
                     7 => Self::migrate_v7_add_orchestration_decisions(conn)?,
+                    8 => Self::migrate_v8_add_executor_pool(conn)?,
                     _ => return Err(format!("unknown migration version: {}", migration.version)),
                 }
                 conn.execute_batch(&format!("PRAGMA user_version = {}", migration.version))
@@ -327,6 +332,22 @@ CREATE TABLE IF NOT EXISTS orchestration_decisions (
 CREATE INDEX IF NOT EXISTS idx_orchestration_decisions_run ON orchestration_decisions(run_id);
 CREATE INDEX IF NOT EXISTS idx_orchestration_decisions_action ON orchestration_decisions(action);
 CREATE INDEX IF NOT EXISTS idx_orchestration_decisions_created ON orchestration_decisions(created_at);
+",
+        )
+        .map_err(|e| e.to_string())
+    }
+
+    fn migrate_v8_add_executor_pool(conn: &Connection) -> Result<(), String> {
+        conn.execute_batch(
+            "
+CREATE TABLE IF NOT EXISTS executor_pool (
+    executor_type TEXT PRIMARY KEY,
+    capabilities_json TEXT NOT NULL DEFAULT '{}',
+    status_json TEXT NOT NULL DEFAULT '{}',
+    cost_profile_json TEXT NOT NULL DEFAULT '{}',
+    metrics_json TEXT NOT NULL DEFAULT '{}',
+    updated_at TEXT NOT NULL
+);
 ",
         )
         .map_err(|e| e.to_string())

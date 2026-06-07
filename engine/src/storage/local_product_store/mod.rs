@@ -5,6 +5,7 @@ mod config;
 mod costs;
 mod decisions;
 mod dispatch;
+mod executor_pool_store;
 mod export_import;
 pub mod feedback;
 mod integrity;

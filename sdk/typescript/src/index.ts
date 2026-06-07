@@ -58,6 +58,7 @@ import type {
   StorageIntegrityResponse,
   ImportResponse,
   OperationsMetricsResponse,
+  ExecutorPoolStatus,
 } from "./wire-types.js";
 
 export interface AgentControlPlaneClientOptions {
@@ -339,6 +340,10 @@ export class AgentControlPlaneClient {
 
   schedulerStatus(): Promise<SchedulerStatus> {
     return this.getJson<SchedulerStatus>("/api/v1/scheduler/status");
+  }
+
+  fetchExecutorPool(): Promise<ExecutorPoolStatus> {
+    return this.getJson<ExecutorPoolStatus>("/api/v1/executor-pool");
   }
 
   config(): Promise<ConfigResponse> {

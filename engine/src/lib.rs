@@ -16,6 +16,7 @@ pub mod evaluation_stub;
 pub mod event_schema;
 pub mod event_source;
 pub mod executor_adapter;
+pub mod executor_pool;
 pub mod harness;
 pub mod http_server;
 pub mod infrastructure;

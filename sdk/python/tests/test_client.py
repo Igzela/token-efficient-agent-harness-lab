@@ -719,5 +719,52 @@ class ClientTickWorkflowRunTest(unittest.TestCase):
         self.assertIn("/api/v1/scheduler/status", req.full_url)
 
 
+class ClientFetchExecutorPoolTest(unittest.TestCase):
+    @patch("agent_control_plane_sdk.client.urlopen")
+    def test_fetch_executor_pool_sends_get(self, mock_urlopen):
+        mock_urlopen.return_value = mock_response({
+            "schema_version": "executor_pool.v1",
+            "executors": [
+                {
+                    "executor_type": "mock",
+                    "capabilities": {
+                        "supported_task_types": ["generate", "review"],
+                        "supported_task_domains": ["code", "docs"],
+                        "requires_auth": False,
+                        "requires_cli": False,
+                        "max_timeout_ms": 30000,
+                    },
+                    "available": True,
+                    "active_count": 0,
+                    "concurrency_limit": 4,
+                    "cooldown_until": None,
+                    "failure_score": 0.0,
+                    "cost_per_execution_usd": None,
+                    "daily_cost_usd": 0.0,
+                    "daily_cost_limit_usd": None,
+                    "total_executions": 42,
+                    "success_rate": 1.0,
+                    "avg_latency_ms": 150,
+                    "last_executed_at": "2026-06-07T00:00:00Z",
+                },
+            ],
+            "total_active": 0,
+            "total_capacity": 4,
+        })
+        client = AgentControlPlaneClient("http://localhost:8080")
+        result = client.fetch_executor_pool()
+        self.assertEqual(result["schema_version"], "executor_pool.v1")
+        self.assertEqual(len(result["executors"]), 1)
+        self.assertEqual(result["executors"][0]["executor_type"], "mock")
+        self.assertFalse(result["executors"][0]["capabilities"]["requires_auth"])
+        self.assertTrue(result["executors"][0]["available"])
+        self.assertEqual(result["total_active"], 0)
+        self.assertEqual(result["total_capacity"], 4)
+        args, _ = mock_urlopen.call_args
+        req = args[0]
+        self.assertEqual(req.method, "GET")
+        self.assertEqual(req.full_url, "http://localhost:8080/api/v1/executor-pool")
+
+
 if __name__ == "__main__":
     unittest.main()

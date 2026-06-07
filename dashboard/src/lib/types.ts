@@ -19,6 +19,8 @@ import type {
   TaskIntent,
 } from "../../../sdk/typescript/src/generated-wire-types";
 
+export type { ExecutorType } from "../../../sdk/typescript/src/generated-wire-types";
+
 export type { RequestSource } from "../../../sdk/typescript/src/generated-wire-types";
 
 export interface DispatchRequest {
@@ -426,6 +428,39 @@ export interface WorkflowPlanDetailResponse {
   plan: WorkflowPlan;
 }
 
+// Executor pool types
+
+export interface ExecutorPoolCapabilities {
+  max_concurrent: number;
+  supported_executor_types: string[];
+  supports_cooldown: boolean;
+  supports_failure_tracking: boolean;
+}
+
+export interface ExecutorPoolEntry {
+  executor_type: string;
+  status: "available" | "unavailable" | "cooldown";
+  active_count: number;
+  capacity: number;
+  failure_score: number;
+  success_rate: number;
+  avg_latency_ms: number;
+  cost_per_execution: number;
+  daily_cost: number;
+  cooldown_until: string | null;
+  last_failure_at: string | null;
+  total_executions: number;
+}
+
+export interface ExecutorPoolStatus {
+  schema_version: string;
+  capabilities: ExecutorPoolCapabilities;
+  entries: ExecutorPoolEntry[];
+  total_active: number;
+  total_capacity: number;
+  updated_at: string;
+}
+
 // Scheduler types
 
 export interface SchedulerConfig {
@@ -456,6 +491,11 @@ export interface SchedulerStatusResponse {
   tenant_id?: string;
   request_id?: string;
   scheduler: SchedulerStatus;
+}
+
+export interface ExecutorPoolStatusResponse {
+  schema_version: "axum_api.v1";
+  pool: ExecutorPoolStatus;
 }
 
 export interface DispatchBundle {
