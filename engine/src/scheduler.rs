@@ -199,8 +199,10 @@ impl WorkflowScheduler {
                         tick_count.fetch_add(result.ticks, Ordering::SeqCst);
                         retry_count.fetch_add(result.retries, Ordering::SeqCst);
                         queue_depth_live.store(result.queue_depth as u64, Ordering::SeqCst);
-                        paused_runs_count_live.store(result.paused_runs.len() as u64, Ordering::SeqCst);
-                        backpressure_active_live.store(result.backpressure_active, Ordering::SeqCst);
+                        paused_runs_count_live
+                            .store(result.paused_runs.len() as u64, Ordering::SeqCst);
+                        backpressure_active_live
+                            .store(result.backpressure_active, Ordering::SeqCst);
                         if let Ok(mut guard) = last_tick_at.lock() {
                             *guard =
                                 Some(chrono::Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string());
@@ -400,18 +402,40 @@ fn scheduler_tick(
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap_or_default()
             .as_millis() as u64;
-        let overdue_ids: Vec<String> = active_runs.iter().filter(|id| {
-            store.get_workflow_run(id).ok().flatten().map_or(false, |r| {
-                r.get("status").and_then(|v| v.as_str()) == Some("running")
-                    && r.get("started_at").and_then(|v| v.as_str()).map_or(false, |s| {
-                        chrono::DateTime::parse_from_rfc3339(s).ok().map_or(false, |t| {
-                            (chrono::Utc::now() - t.with_timezone(&chrono::Utc)).num_seconds() > 300
-                        })
+        let overdue_ids: Vec<String> = active_runs
+            .iter()
+            .filter(|id| {
+                store
+                    .get_workflow_run(id)
+                    .ok()
+                    .flatten()
+                    .map_or(false, |r| {
+                        r.get("status").and_then(|v| v.as_str()) == Some("running")
+                            && r.get("started_at")
+                                .and_then(|v| v.as_str())
+                                .map_or(false, |s| {
+                                    chrono::DateTime::parse_from_rfc3339(s).ok().map_or(
+                                        false,
+                                        |t| {
+                                            (chrono::Utc::now() - t.with_timezone(&chrono::Utc))
+                                                .num_seconds()
+                                                > 300
+                                        },
+                                    )
+                                })
                     })
             })
-        }).cloned().collect();
+            .cloned()
+            .collect();
         let overdue_count = overdue_ids.len();
-        let decision = bp.evaluate(utilization, queue_depth, config.max_queued, overdue_count, now_ms, Some(&overdue_ids));
+        let decision = bp.evaluate(
+            utilization,
+            queue_depth,
+            config.max_queued,
+            overdue_count,
+            now_ms,
+            Some(&overdue_ids),
+        );
         backpressure_active = decision.active;
 
         for run_id in &decision.runs_to_pause {
@@ -422,9 +446,8 @@ fn scheduler_tick(
 
         // Record backpressure decision
         if backpressure_active {
-            let (bp_conf, bp_score) = confidence_from_inputs(
-                "running", None, false, None, Some("backpressure"),
-            );
+            let (bp_conf, bp_score) =
+                confidence_from_inputs("running", None, false, None, Some("backpressure"));
             let _ = store.record_orchestration_decision(
                 "scheduler",
                 None,
@@ -1172,7 +1195,8 @@ mod tests {
         let fail_executor = crate::node_executor::FailNodeExecutor::default();
         let pool = empty_pool();
 
-        let first = scheduler_tick(&store, &config, Arc::new(fail_executor.clone()), &pool).unwrap();
+        let first =
+            scheduler_tick(&store, &config, Arc::new(fail_executor.clone()), &pool).unwrap();
         assert_eq!(first.ticks, 1);
 
         let run = store.get_workflow_run(&run_id).unwrap().unwrap();
@@ -1201,9 +1225,11 @@ mod tests {
         );
 
         let noop_executor = NoopNodeExecutor;
-        let second = scheduler_tick(&store, &config, Arc::new(noop_executor.clone()), &pool).unwrap();
+        let second =
+            scheduler_tick(&store, &config, Arc::new(noop_executor.clone()), &pool).unwrap();
         assert_eq!(second.ticks, 1, "fix node should execute");
-        let third = scheduler_tick(&store, &config, Arc::new(noop_executor.clone()), &pool).unwrap();
+        let third =
+            scheduler_tick(&store, &config, Arc::new(noop_executor.clone()), &pool).unwrap();
         assert_eq!(third.ticks, 1, "verification node should execute");
 
         let run = store.get_workflow_run(&run_id).unwrap().unwrap();
@@ -1242,7 +1268,13 @@ mod tests {
             ..Default::default()
         };
         let noop_executor = NoopNodeExecutor;
-        let recover = scheduler_tick(&store, &dynamic_config, Arc::new(noop_executor.clone()), &pool).unwrap();
+        let recover = scheduler_tick(
+            &store,
+            &dynamic_config,
+            Arc::new(noop_executor.clone()),
+            &pool,
+        )
+        .unwrap();
         assert_eq!(recover.ticks, 1, "terminal failed run should be recovered");
 
         let run = store.get_workflow_run(&run_id).unwrap().unwrap();
@@ -1253,7 +1285,13 @@ mod tests {
             .iter()
             .any(|node| { node["node_id"] == "fix-node-a" && node["db_status"] == "completed" }));
 
-        scheduler_tick(&store, &dynamic_config, Arc::new(noop_executor.clone()), &pool).unwrap();
+        scheduler_tick(
+            &store,
+            &dynamic_config,
+            Arc::new(noop_executor.clone()),
+            &pool,
+        )
+        .unwrap();
         let run = store.get_workflow_run(&run_id).unwrap().unwrap();
         assert_eq!(run["status"], "completed");
     }

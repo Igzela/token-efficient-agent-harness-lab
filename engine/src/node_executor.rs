@@ -51,7 +51,9 @@ pub trait NodeExecutor: Send + Sync {
 pub struct NoopNodeExecutor;
 
 impl NodeExecutor for NoopNodeExecutor {
-    fn executor_type_name(&self) -> &str { "noop" }
+    fn executor_type_name(&self) -> &str {
+        "noop"
+    }
     fn execute_node(&self, _input: &NodeExecutionInput) -> NodeExecutionOutput {
         NodeExecutionOutput {
             status: "completed".to_string(),
@@ -81,7 +83,9 @@ impl Default for StubNodeExecutor {
 }
 
 impl NodeExecutor for StubNodeExecutor {
-    fn executor_type_name(&self) -> &str { "stub" }
+    fn executor_type_name(&self) -> &str {
+        "stub"
+    }
     fn execute_node(&self, input: &NodeExecutionInput) -> NodeExecutionOutput {
         let output = self
             .output_template
@@ -119,7 +123,9 @@ impl Default for FailNodeExecutor {
 }
 
 impl NodeExecutor for FailNodeExecutor {
-    fn executor_type_name(&self) -> &str { "fail" }
+    fn executor_type_name(&self) -> &str {
+        "fail"
+    }
     fn execute_node(&self, _input: &NodeExecutionInput) -> NodeExecutionOutput {
         NodeExecutionOutput {
             status: "failed".to_string(),
@@ -219,7 +225,9 @@ impl CommandNodeExecutor {
 }
 
 impl NodeExecutor for CommandNodeExecutor {
-    fn executor_type_name(&self) -> &str { "command" }
+    fn executor_type_name(&self) -> &str {
+        "command"
+    }
     fn execute_node(&self, input: &NodeExecutionInput) -> NodeExecutionOutput {
         let start = std::time::Instant::now();
         let command = input

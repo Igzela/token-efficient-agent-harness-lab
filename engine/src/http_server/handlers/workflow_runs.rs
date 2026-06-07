@@ -8,12 +8,12 @@ use crate::http_server::middleware::{
     authorize, cors_headers, internal_error, require_store, ApiError, RequestId,
 };
 use crate::http_server::state::AxumApiState;
-use crate::workflow::orchestration_decision::{
-    action_to_string, confidence_from_inputs, OrchestrationAction,
-};
 use crate::http_server::{
     WorkflowRunActionApiRequest, WorkflowRunApprovalApiRequest, WorkflowRunCreateApiRequest,
     WorkflowRunEventApiRequest, WorkflowRunTickApiRequest, AXUM_API_SCHEMA_VERSION,
+};
+use crate::workflow::orchestration_decision::{
+    action_to_string, confidence_from_inputs, OrchestrationAction,
 };
 
 pub(crate) async fn api_create_workflow_run(
@@ -348,7 +348,10 @@ fn record_tick_decision(
     result: &serde_json::Value,
     executor_type: &str,
 ) {
-    let action_str = result.get("action").and_then(|v| v.as_str()).unwrap_or("tick");
+    let action_str = result
+        .get("action")
+        .and_then(|v| v.as_str())
+        .unwrap_or("tick");
     let node_id = result.get("node_id").and_then(|v| v.as_str());
     let action = match action_str {
         "node_completed" => OrchestrationAction::RunCompleted,
@@ -356,13 +359,8 @@ fn record_tick_decision(
         "node_retry" => OrchestrationAction::RetryNode,
         _ => OrchestrationAction::ExecuteNode,
     };
-    let (confidence, score) = confidence_from_inputs(
-        "running",
-        node_id.or(Some("pending")),
-        true,
-        None,
-        None,
-    );
+    let (confidence, score) =
+        confidence_from_inputs("running", node_id.or(Some("pending")), true, None, None);
     let _ = store.record_orchestration_decision(
         run_id,
         node_id,

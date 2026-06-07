@@ -139,7 +139,13 @@ pub(crate) async fn api_update_run_priority(
     AxumPath(run_id): AxumPath<String>,
     Json(request): Json<PriorityUpdateRequest>,
 ) -> Result<impl IntoResponse, ApiError> {
-    let context = authorize(&state, &headers, "dispatch:write", uri.path(), &request_id.0)?;
+    let context = authorize(
+        &state,
+        &headers,
+        "dispatch:write",
+        uri.path(),
+        &request_id.0,
+    )?;
     if request.priority < 1 || request.priority > 10 {
         return Err(ApiError::with_code(
             StatusCode::BAD_REQUEST,
@@ -175,7 +181,13 @@ pub(crate) async fn api_update_run_pause(
     AxumPath(run_id): AxumPath<String>,
     Json(request): Json<PauseUpdateRequest>,
 ) -> Result<impl IntoResponse, ApiError> {
-    let context = authorize(&state, &headers, "dispatch:write", uri.path(), &request_id.0)?;
+    let context = authorize(
+        &state,
+        &headers,
+        "dispatch:write",
+        uri.path(),
+        &request_id.0,
+    )?;
     let store = require_store(&state)?;
     match store.update_run_pause_reason(&run_id, request.reason.as_deref()) {
         Ok(()) => {}

@@ -970,11 +970,12 @@ impl LocalProductStore {
         self.with_conn(|conn| {
             ensure_run_exists_locked(conn, run_id)?;
             let updated = self.now();
-            let rows = conn.execute(
-                "UPDATE workflow_runs SET priority = ?1, updated_at = ?2 WHERE run_id = ?3",
-                params![priority, updated, run_id],
-            )
-            .map_err(|e| e.to_string())?;
+            let rows = conn
+                .execute(
+                    "UPDATE workflow_runs SET priority = ?1, updated_at = ?2 WHERE run_id = ?3",
+                    params![priority, updated, run_id],
+                )
+                .map_err(|e| e.to_string())?;
             if rows == 0 {
                 return Err(format!("workflow run not found: {run_id}"));
             }
@@ -990,11 +991,12 @@ impl LocalProductStore {
         self.with_conn(|conn| {
             ensure_run_exists_locked(conn, run_id)?;
             let updated = self.now();
-            let rows = conn.execute(
-                "UPDATE workflow_runs SET pause_reason = ?1, updated_at = ?2 WHERE run_id = ?3",
-                params![pause_reason, updated, run_id],
-            )
-            .map_err(|e| e.to_string())?;
+            let rows = conn
+                .execute(
+                    "UPDATE workflow_runs SET pause_reason = ?1, updated_at = ?2 WHERE run_id = ?3",
+                    params![pause_reason, updated, run_id],
+                )
+                .map_err(|e| e.to_string())?;
             if rows == 0 {
                 return Err(format!("workflow run not found: {run_id}"));
             }
@@ -1010,11 +1012,12 @@ impl LocalProductStore {
         self.with_conn(|conn| {
             ensure_run_exists_locked(conn, run_id)?;
             let updated = self.now();
-            let rows = conn.execute(
-                "UPDATE workflow_runs SET degrade_mode = ?1, updated_at = ?2 WHERE run_id = ?3",
-                params![degrade_mode, updated, run_id],
-            )
-            .map_err(|e| e.to_string())?;
+            let rows = conn
+                .execute(
+                    "UPDATE workflow_runs SET degrade_mode = ?1, updated_at = ?2 WHERE run_id = ?3",
+                    params![degrade_mode, updated, run_id],
+                )
+                .map_err(|e| e.to_string())?;
             if rows == 0 {
                 return Err(format!("workflow run not found: {run_id}"));
             }
