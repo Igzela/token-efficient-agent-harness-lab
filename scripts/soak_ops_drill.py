@@ -6,11 +6,12 @@ and dashboard visibility checks against a local agent-control-plane engine.
 Emits a machine-readable JSON summary on stdout.
 
 Usage:
-    python scripts/soak_ops_drill.py [--base-url URL] [--count N] [--duration SEC] [--concurrency N] [--executor TYPE] [--dynamic] [--token TOKEN] [--json]
+    python scripts/soak_ops_drill.py [--base-url URL] [--count N] [--duration SEC] [--concurrency N] [--executor TYPE] [--dynamic] [--restart-command CMD] [--token TOKEN] [--json]
 """
 import argparse
 import json
 import os
+import subprocess
 import sys
 import time
 import urllib.request
@@ -292,8 +293,20 @@ def run_multi_executor(client: ApiClient) -> dict:
     return {"success": all_expected, "runs": len(run_ids), "statuses": statuses}
 
 
-def run_restart_recovery(client: ApiClient, executor: str) -> dict:
-    """Test restart recovery: create run, pause, resume, tick to completion."""
+def run_restart_recovery(
+    client: ApiClient,
+    executor: str,
+    restart_command: str | None,
+    restart_timeout: float = 60.0,
+) -> dict:
+    """Test recovery across an operator-supplied engine restart command."""
+    if not restart_command:
+        return {
+            "success": False,
+            "error": "restart_command_required",
+            "detail": "Pass --restart-command to prove process restart recovery.",
+        }
+
     # Create plan
     status, plan_resp = client.call("POST", "/api/v1/plans", {
         "raw_request": "restart recovery test",
@@ -312,56 +325,107 @@ def run_restart_recovery(client: ApiClient, executor: str) -> dict:
 
     run_id = (run_resp.get("run", {}).get("run_id") if isinstance(run_resp.get("run"), dict) else None)
 
-    # Tick once so the run has active nodes
-    status, _ = client.call("POST", f"/api/v1/workflow-runs/{run_id}/tick", {
-        "executor": executor,
-        "actor": "soak_ops_drill",
-    })
-    if status != 200:
-        return {"success": False, "error": "initial_tick_failed", "step": "initial_tick", "run_id": run_id}
-
-    # Pause the run
-    status, _ = client.call("PUT", f"/api/v1/queue/runs/{run_id}/pause", {
+    # Pause before restart so the recovery proof is tied to persisted run state.
+    status, pause_body = client.call("PUT", f"/api/v1/queue/runs/{run_id}/pause", {
         "reason": "restart-recovery-test",
     })
     if status != 200:
-        return {"success": False, "error": "pause_failed", "step": "pause", "run_id": run_id}
+        return {
+            "success": False,
+            "error": "pause_failed",
+            "step": "pause",
+            "run_id": run_id,
+            "body": pause_body,
+        }
 
-    # Verify paused state
+    try:
+        completed = subprocess.run(
+            restart_command,
+            shell=True,
+            capture_output=True,
+            text=True,
+            timeout=restart_timeout,
+        )
+    except subprocess.TimeoutExpired:
+        return {
+            "success": False,
+            "error": "restart_command_timeout",
+            "run_id": run_id,
+        }
+    except OSError as exc:
+        return {
+            "success": False,
+            "error": "restart_command_failed_to_start",
+            "detail": str(exc),
+            "run_id": run_id,
+        }
+
+    restart_evidence = {
+        "returncode": completed.returncode,
+        "stdout_tail": completed.stdout[-500:],
+        "stderr_tail": completed.stderr[-500:],
+    }
+    if completed.returncode != 0:
+        return {
+            "success": False,
+            "error": "restart_command_failed",
+            "run_id": run_id,
+            "restart": restart_evidence,
+        }
+
+    if not client.wait_for_health(retries=max(int(restart_timeout), 1), delay=1.0):
+        return {
+            "success": False,
+            "error": "health_not_restored",
+            "run_id": run_id,
+            "restart": restart_evidence,
+        }
+
     status, detail = client.call("GET", f"/api/v1/workflow-runs/{run_id}")
-    paused_ok = status == 200 and isinstance(detail, dict)
+    if status != 200 or not isinstance(detail, dict):
+        return {
+            "success": False,
+            "error": "run_not_readable_after_restart",
+            "run_id": run_id,
+            "restart": restart_evidence,
+        }
+    after_restart_status = run_status(detail)
 
     # Resume the run
-    status, _ = client.call("POST", f"/api/v1/workflow-runs/{run_id}/resume", {
+    status, resume_body = client.call("POST", f"/api/v1/workflow-runs/{run_id}/resume", {
         "reason": "restart-recovery-test-resume",
     })
     if status != 200:
-        return {"success": False, "error": "resume_failed", "step": "resume", "run_id": run_id}
+        return {
+            "success": False,
+            "error": "resume_failed",
+            "step": "resume",
+            "run_id": run_id,
+            "body": resume_body,
+            "after_restart_status": after_restart_status,
+            "restart": restart_evidence,
+        }
 
-    # Tick to completion after resume
-    for _ in range(3):
-        status, tick_resp = client.call("POST", f"/api/v1/workflow-runs/{run_id}/tick", {
-            "executor": executor,
-            "actor": "soak_ops_drill",
-        })
+    terminal = False
+    final_status = None
+    poll_deadline = time.monotonic() + restart_timeout
+    while time.monotonic() < poll_deadline:
+        status, detail = client.call("GET", f"/api/v1/workflow-runs/{run_id}")
         if status != 200:
             break
-        tick_action = None
-        if isinstance(tick_resp, dict):
-            tick_data = tick_resp.get("tick") if isinstance(tick_resp.get("tick"), dict) else tick_resp
-            tick_action = tick_data.get("action")
-        if tick_action in ("completed", "no_ready_nodes"):
+        final_status = run_status(detail) if isinstance(detail, dict) else None
+        if final_status in ("completed", "failed"):
+            terminal = True
             break
-
-    # Verify terminal
-    status, detail = client.call("GET", f"/api/v1/workflow-runs/{run_id}")
-    terminal = status == 200 and isinstance(detail, dict) and run_status(detail) in ("completed", "failed")
+        time.sleep(1.0)
 
     return {
         "success": terminal,
-        "paused_detected": paused_ok,
-        "resumed_and_terminal": terminal,
+        "after_restart_status": after_restart_status,
+        "final_status": final_status,
         "run_id": run_id,
+        "executor": executor,
+        "restart": restart_evidence,
     }
 
 
@@ -481,11 +545,25 @@ def run_queue_pressure(client: ApiClient, concurrency: int) -> dict:
             created.append(run_id)
     status, queue_resp = client.call("GET", "/api/v1/queue/status")
     queue = queue_resp.get("queue", {}) if isinstance(queue_resp, dict) else {}
-    total = queue.get("total_queued", 0) if isinstance(queue, dict) else 0
-    return {
-        "success": status == 200 and len(created) >= 2 and total >= 0,
+    required_keys = ("total_queued", "total_running", "backpressure_active")
+    has_shape = isinstance(queue, dict) and all(k in queue for k in required_keys)
+    total_queued = queue.get("total_queued", 0) if isinstance(queue, dict) else 0
+    total_running = queue.get("total_running", 0) if isinstance(queue, dict) else 0
+    backpressure_active = queue.get("backpressure_active") if isinstance(queue, dict) else None
+    observed_load = int(total_queued or 0) + int(total_running or 0)
+    success = status == 200 and len(created) >= 2 and has_shape and (
+        observed_load > 0 or backpressure_active is True
+    )
+    result = {
+        "success": success,
         "runs_created": len(created),
         "queue_status": queue,
+        "observed_load": observed_load,
+    }
+    if not success:
+        result["error"] = "queue_pressure_not_observed"
+    return {
+        **result,
     }
 
 
@@ -537,6 +615,8 @@ def main():
     parser.add_argument("--concurrency", type=int, default=2)
     parser.add_argument("--executor", default="noop")
     parser.add_argument("--dynamic", action="store_true", help="Run dynamic recovery failure-injection probe.")
+    parser.add_argument("--restart-command", help="Command that restarts the running engine for recovery proof.")
+    parser.add_argument("--restart-timeout", type=float, default=60.0)
     parser.add_argument("--token", default=os.environ.get("ACP_ADMIN_API_KEY"))
     parser.add_argument("--json", action="store_true", dest="json_output")
     args = parser.parse_args()
@@ -611,7 +691,12 @@ def main():
 
     # Restart recovery test
     print("Running restart recovery test...", file=sys.stderr)
-    restart_result = run_restart_recovery(client, args.executor)
+    restart_result = run_restart_recovery(
+        client,
+        args.executor,
+        args.restart_command,
+        args.restart_timeout,
+    )
 
     print("Running timeout probe...", file=sys.stderr)
     timeout_result = run_timeout_probe(client)

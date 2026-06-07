@@ -1,6 +1,9 @@
 import importlib.util
+import io
 import sys
+import tempfile
 import unittest
+from unittest.mock import patch
 from pathlib import Path
 
 
@@ -52,6 +55,50 @@ class Sg1PilotMatrixTests(unittest.TestCase):
         self.assertTrue(self.sg1.tick_result_status(body, "failed"))
         self.assertFalse(self.sg1.tick_result_status(body, "completed"))
 
+    def test_all_skipped_executors_return_nonzero(self):
+        class HealthyClient:
+            def __init__(self, base_url, token=None):
+                pass
+
+            def wait_for_health(self, timeout):
+                return True
+
+        probe = {
+            "executor": "codex_cli",
+            "resolved_binary": None,
+            "available": False,
+        }
+        with patch.object(self.sg1, "ApiClient", HealthyClient), \
+             patch.object(self.sg1, "executor_probe", return_value=probe), \
+             patch("sys.stdout", new_callable=io.StringIO):
+            self.assertEqual(self.sg1.main(["--executor", "codex_cli"]), 1)
+
+    def test_run_task_fails_when_fix_tick_does_not_complete(self):
+        with tempfile.TemporaryDirectory() as workspace:
+            Path(workspace, "ok.txt").write_text("needle\n")
+            client = FakeClient([
+                (200, {"plan": {"plan_id": "plan-1"}}),
+                (200, {"run": {"run_id": "run-1"}}),
+                (200, {"workspace": {"workspace_id": "ws-1"}}),
+                (200, {"tick": {"result": {"status": "failed"}}}),
+                (200, {"tick": {"mutations_applied": 1, "actions": [{"type": "graph_mutated"}]}}),
+                (200, {"tick": {"result": {"status": "failed", "error_domain": "cli_error"}}}),
+                (200, {}),
+            ])
+            task = self.sg1.TaskClass(
+                name="unit",
+                request="unit",
+                files={},
+                fix_command="fix",
+                verify_command="verify",
+                expected={"ok.txt": "needle"},
+            )
+
+            result = self.sg1.run_task(client, "codex_cli", task, 1000)
+
+            self.assertEqual(result["status"], "FAIL")
+            self.assertEqual(result["failed_step"], "fix_tick")
+
 
 class Sg2SoakProbeTests(unittest.TestCase):
     def setUp(self):
@@ -80,6 +127,24 @@ class Sg2SoakProbeTests(unittest.TestCase):
         result = self.soak.run_retry_exhaustion(client)
         self.assertTrue(result["success"])
         self.assertEqual(result["final_status"], "failed")
+
+    def test_queue_pressure_requires_real_queue_evidence(self):
+        client = FakeClient([
+            (200, {"plan": {"plan_id": "plan-1"}}),
+            (200, {"run": {"run_id": "run-1"}}),
+            (200, {"plan": {"plan_id": "plan-2"}}),
+            (200, {"run": {"run_id": "run-2"}}),
+            (200, {"queue": {"total_queued": 0}}),
+        ])
+        result = self.soak.run_queue_pressure(client, 2)
+        self.assertFalse(result["success"])
+        self.assertEqual(result["error"], "queue_pressure_not_observed")
+
+    def test_restart_recovery_requires_restart_command(self):
+        client = FakeClient([])
+        result = self.soak.run_restart_recovery(client, "noop", None)
+        self.assertFalse(result["success"])
+        self.assertEqual(result["error"], "restart_command_required")
 
 
 if __name__ == "__main__":

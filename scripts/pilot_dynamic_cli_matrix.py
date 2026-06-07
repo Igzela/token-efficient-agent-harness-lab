@@ -207,13 +207,20 @@ def run_task(client: ApiClient, executor: str, task: TaskClass, timeout_ms: int)
             f"/api/v1/workflow-runs/{run_id}/tick",
             {"executor": executor, "actor": "sg1", "command": task.fix_command, "timeout_ms": timeout_ms},
         )
+        evidence["fix_tick_status"] = fix[0]
+        evidence["fix_tick"] = fix[1] if isinstance(fix[1], dict) else {"raw": fix[1]}
+        if fix[0] != 200 or not tick_result_status(fix[1], "completed"):
+            return fail_result(executor, task, "fix_tick", fix[0], fix[1], evidence, started)
+
         verify = client.call(
             "POST",
             f"/api/v1/workflow-runs/{run_id}/tick",
             {"executor": executor, "actor": "sg1", "command": task.verify_command, "timeout_ms": timeout_ms},
         )
-        evidence["fix_tick_status"] = fix[0]
         evidence["verify_tick_status"] = verify[0]
+        evidence["verify_tick"] = verify[1] if isinstance(verify[1], dict) else {"raw": verify[1]}
+        if verify[0] != 200 or not tick_result_status(verify[1], "completed"):
+            return fail_result(executor, task, "verify_tick", verify[0], verify[1], evidence, started)
 
         status, ws_detail = client.call("GET", f"/api/v1/supervised-patch/workspaces/{workspace_id}")
         workspace_path = workspace_path_from(ws_detail)
@@ -373,7 +380,7 @@ def main(argv: list[str] | None = None) -> int:
     report["fail_count"] = len(failures)
     report["skip_count"] = len(report["skipped"])
     print(json.dumps(report, indent=2))
-    return 0 if report["status"] in {"PASS", "SKIP"} else 1
+    return 0 if report["status"] == "PASS" else 1
 
 
 if __name__ == "__main__":
