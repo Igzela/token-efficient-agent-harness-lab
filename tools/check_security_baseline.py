@@ -134,6 +134,14 @@ ALLOWED_TEST_IMPORTS: dict[str, set[str]] = {
         "urllib.request",
         "urllib.error",
     },
+    "scripts/ga_rollback_drill.py": {
+        "urllib.request",
+        "urllib.error",
+    },
+    "scripts/ga_release_checklist.py": {
+        "urllib.request",
+        "urllib.error",
+    },
 }
 
 # Paths to exclude from active routing guard (test fixtures contain
