@@ -49,7 +49,7 @@ fn make_decision() -> DispatchDecision {
 
 #[test]
 fn test_all_five_checks_present() {
-    let evaluator = EvaluationStub::default();
+    let evaluator = EvaluationStub;
     let mut rt = FixtureRuntime::new();
     let result = evaluator.evaluate(&make_execution_result(), &make_decision(), &mut rt);
     let check_names: Vec<&str> = result.checks.iter().map(|c| c.name.as_str()).collect();
@@ -62,7 +62,7 @@ fn test_all_five_checks_present() {
 
 #[test]
 fn test_noop_output_present_is_warning() {
-    let evaluator = EvaluationStub::default();
+    let evaluator = EvaluationStub;
     let mut rt = FixtureRuntime::new();
     let result = evaluator.evaluate(&make_execution_result(), &make_decision(), &mut rt);
     let output_check = result
@@ -75,7 +75,7 @@ fn test_noop_output_present_is_warning() {
 
 #[test]
 fn test_boundary_compliance_noop() {
-    let evaluator = EvaluationStub::default();
+    let evaluator = EvaluationStub;
     let mut rt = FixtureRuntime::new();
     let result = evaluator.evaluate(&make_execution_result(), &make_decision(), &mut rt);
     let bc = result
@@ -88,7 +88,7 @@ fn test_boundary_compliance_noop() {
 
 #[test]
 fn test_error_free_no_error() {
-    let evaluator = EvaluationStub::default();
+    let evaluator = EvaluationStub;
     let mut rt = FixtureRuntime::new();
     let result = evaluator.evaluate(&make_execution_result(), &make_decision(), &mut rt);
     let ef = result
@@ -101,7 +101,7 @@ fn test_error_free_no_error() {
 
 #[test]
 fn test_human_review_required() {
-    let evaluator = EvaluationStub::default();
+    let evaluator = EvaluationStub;
     let mut rt = FixtureRuntime::new();
     let mut decision = make_decision();
     decision.execution_policy = serde_json::json!({"executor_type": "noop", "execution_allowed": true, "requires_human_review": true, "max_retries": 0});
@@ -116,7 +116,7 @@ fn test_human_review_required() {
 
 #[test]
 fn test_overall_status_pass() {
-    let evaluator = EvaluationStub::default();
+    let evaluator = EvaluationStub;
     let mut rt = FixtureRuntime::new();
     let result = evaluator.evaluate(&make_execution_result(), &make_decision(), &mut rt);
     assert_eq!(result.status, "pass");
@@ -124,7 +124,7 @@ fn test_overall_status_pass() {
 
 #[test]
 fn test_overall_status_needs_human_review() {
-    let evaluator = EvaluationStub::default();
+    let evaluator = EvaluationStub;
     let mut rt = FixtureRuntime::new();
     let mut decision = make_decision();
     decision.execution_policy = serde_json::json!({"executor_type": "noop", "execution_allowed": true, "requires_human_review": true, "max_retries": 0});
@@ -134,7 +134,7 @@ fn test_overall_status_needs_human_review() {
 
 #[test]
 fn test_to_value() {
-    let evaluator = EvaluationStub::default();
+    let evaluator = EvaluationStub;
     let mut rt = FixtureRuntime::new();
     let result = evaluator.evaluate(&make_execution_result(), &make_decision(), &mut rt);
     let v = result.to_value();
@@ -145,7 +145,7 @@ fn test_to_value() {
 
 #[test]
 fn test_result_links_to_decision() {
-    let evaluator = EvaluationStub::default();
+    let evaluator = EvaluationStub;
     let mut rt = FixtureRuntime::new();
     let result = evaluator.evaluate(&make_execution_result(), &make_decision(), &mut rt);
     assert_eq!(result.dispatch_id, "disp-001");

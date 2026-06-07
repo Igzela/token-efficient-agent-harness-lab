@@ -14,7 +14,7 @@ fn test_dispatch_returns_valid_json() {
 fn test_dispatch_record_has_dispatch_id() {
     let engine = DispatchEngine::new();
     let v = engine.dispatch("Summarize the README", "test_fixture");
-    assert!(v["record"]["dispatch_id"].as_str().unwrap().len() > 0);
+    assert!(!v["record"]["dispatch_id"].as_str().unwrap().is_empty());
 }
 
 #[test]
@@ -28,9 +28,12 @@ fn test_dispatch_final_status_not_executed() {
 fn test_dispatch_populates_record_fields() {
     let engine = DispatchEngine::new();
     let v = engine.dispatch("Test request", "test_fixture");
-    assert!(v["record"]["task_analysis_id"].as_str().unwrap().len() > 0);
-    assert!(v["record"]["decision_id"].as_str().unwrap().len() > 0);
-    assert!(v["record"]["budget_reservation_id"].as_str().unwrap().len() > 0);
+    assert!(!v["record"]["task_analysis_id"].as_str().unwrap().is_empty());
+    assert!(!v["record"]["decision_id"].as_str().unwrap().is_empty());
+    assert!(!v["record"]["budget_reservation_id"]
+        .as_str()
+        .unwrap()
+        .is_empty());
 }
 
 #[test]
@@ -75,7 +78,7 @@ fn test_decision_has_shadow_routes_or_reason() {
     let v = engine.dispatch("Summarize the README", "test_fixture");
     let has_routes = v["decision"]["shadow_routes"]
         .as_array()
-        .map_or(false, |a| !a.is_empty());
+        .is_some_and(|a| !a.is_empty());
     let has_reason = v["decision"]["no_shadow_route_reason"].as_str().is_some();
     assert!(has_routes || has_reason);
 }
@@ -209,8 +212,8 @@ macro_rules! golden_e2e {
             let raw_request = request["raw_request"].as_str().unwrap();
             let request_source = request["request_source"].as_str().unwrap_or("test_fixture");
             let v = engine.dispatch(raw_request, request_source);
-            assert!(v["record"]["dispatch_id"].as_str().unwrap().len() > 0);
-            assert!(v["record"]["task_analysis_id"].as_str().unwrap().len() > 0);
+            assert!(!v["record"]["dispatch_id"].as_str().unwrap().is_empty());
+            assert!(!v["record"]["task_analysis_id"].as_str().unwrap().is_empty());
             let status = v["record"]["final_status"].as_str().unwrap();
             assert!([
                 "not_executed",

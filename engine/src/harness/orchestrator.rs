@@ -106,7 +106,7 @@ mod tests {
 
     #[test]
     fn result_serializes() {
-        let v = serde_json::to_value(&Stage1Orchestrator::new().orchestrate("r1", &[])).unwrap();
+        let v = serde_json::to_value(Stage1Orchestrator::new().orchestrate("r1", &[])).unwrap();
         assert_eq!(v["run_id"], "r1");
     }
 }

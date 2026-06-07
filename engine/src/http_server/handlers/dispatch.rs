@@ -1,12 +1,12 @@
-use axum::extract::{Path as AxumPath, Query, State};
-use axum::http::HeaderMap;
+use axum::extract::{Extension, Path as AxumPath, Query, State};
+use axum::http::{HeaderMap, Uri};
 use axum::response::IntoResponse;
 use axum::Json;
 use serde_json::json;
 use std::sync::Arc;
 
 use crate::http_server::middleware::{
-    authorize, cors_headers, internal_error, require_store, ApiError,
+    authorize, cors_headers, internal_error, require_store, ApiError, RequestId,
 };
 use crate::http_server::state::AxumApiState;
 use crate::http_server::{DispatchApiRequest, AXUM_API_SCHEMA_VERSION};
@@ -15,19 +15,28 @@ use crate::provider::cost_gate::{check_cost_gates, CostGateConfig};
 pub(crate) async fn api_dispatch(
     State(state): State<AxumApiState>,
     headers: HeaderMap,
+    uri: Uri,
+    Extension(request_id): Extension<RequestId>,
     Json(request): Json<DispatchApiRequest>,
 ) -> Result<impl IntoResponse, ApiError> {
-    let context = authorize(&state, &headers, "dispatch:read")?;
+    let context = authorize(&state, &headers, "dispatch:read", uri.path(), &request_id.0)?;
     if request.raw_request.trim().is_empty() {
-        return Err(ApiError::new(
+        return Err(ApiError::with_code(
             axum::http::StatusCode::BAD_REQUEST,
+            "raw_request_required",
             "raw_request is required",
         ));
     }
 
     let is_provider = state.executor_type() == "provider";
     if is_provider {
-        authorize(&state, &headers, "dispatch:execute")?;
+        authorize(
+            &state,
+            &headers,
+            "dispatch:execute",
+            uri.path(),
+            &request_id.0,
+        )?;
     }
 
     let request_source = request.request_source.as_deref().unwrap_or("api");
@@ -88,9 +97,11 @@ pub(crate) async fn api_dispatch(
 pub(crate) async fn api_dispatches(
     State(state): State<AxumApiState>,
     headers: HeaderMap,
+    uri: Uri,
+    Extension(request_id): Extension<RequestId>,
     Query(params): Query<std::collections::HashMap<String, String>>,
 ) -> Result<impl IntoResponse, ApiError> {
-    authorize(&state, &headers, "dispatch:read")?;
+    authorize(&state, &headers, "dispatch:read", uri.path(), &request_id.0)?;
     let store = require_store(&state)?;
     let limit = params
         .get("limit")
@@ -115,9 +126,11 @@ pub(crate) async fn api_dispatches(
 pub(crate) async fn api_dispatch_detail(
     State(state): State<AxumApiState>,
     headers: HeaderMap,
+    uri: Uri,
+    Extension(request_id): Extension<RequestId>,
     AxumPath(dispatch_id): AxumPath<String>,
 ) -> Result<impl IntoResponse, ApiError> {
-    authorize(&state, &headers, "dispatch:read")?;
+    authorize(&state, &headers, "dispatch:read", uri.path(), &request_id.0)?;
     let store = require_store(&state)?;
     match store.get_dispatch(&dispatch_id).map_err(internal_error)? {
         Some(dispatch) => Ok((
@@ -127,8 +140,9 @@ pub(crate) async fn api_dispatch_detail(
                 "dispatch": dispatch,
             })),
         )),
-        None => Err(ApiError::new(
+        None => Err(ApiError::with_code(
             axum::http::StatusCode::NOT_FOUND,
+            "dispatch_not_found",
             "dispatch not found",
         )),
     }

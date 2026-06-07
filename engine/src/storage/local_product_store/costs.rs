@@ -39,6 +39,14 @@ impl LocalProductStore {
                     |row| row.get(0),
                 )
                 .map_err(|e| e.to_string())?;
+            let estimated_cost_rows: i64 = conn
+                .query_row(
+                    "SELECT COUNT(*) FROM dispatch_history WHERE estimated_cost_usd IS NOT NULL",
+                    [],
+                    |row| row.get(0),
+                )
+                .map_err(|e| e.to_string())?;
+            let estimated_cost_available = estimated_cost_rows > 0;
             let cost_utilization = if total_reserved_cost > 0.0 {
                 total_estimated_cost_usd / total_reserved_cost
             } else {
@@ -97,6 +105,7 @@ impl LocalProductStore {
                 "total_estimated_cost_usd": total_estimated_cost_usd,
                 "total_input_tokens": total_input_tokens,
                 "total_output_tokens": total_output_tokens,
+                "estimated_cost_available": estimated_cost_available,
                 "cost_utilization": cost_utilization,
                 "by_tier": collect_values(tier_rows)?,
                 "daily": collect_values(daily_rows)?,

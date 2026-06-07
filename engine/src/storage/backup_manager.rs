@@ -26,6 +26,21 @@ pub struct RestoreResult {
     pub duration_ms: f64,
 }
 
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct BackupVerification {
+    pub backup_id: String,
+    pub success: bool,
+    pub checksum_ok: bool,
+    pub integrity_ok: bool,
+    pub records_checked: i64,
+    pub size_bytes: u64,
+    pub backup_path: String,
+    pub target_path: Option<String>,
+    pub restore_would_overwrite: bool,
+    pub dry_run: bool,
+    pub errors: Vec<String>,
+}
+
 pub struct BackupManager {
     backup_dir: PathBuf,
     _lock: Mutex<()>,
@@ -206,6 +221,91 @@ impl BackupManager {
         }
 
         Ok(result)
+    }
+
+    pub fn verify_backup(&self, backup_id: &str) -> Result<BackupVerification, String> {
+        self.verify_backup_for_target(backup_id, None, false)
+    }
+
+    pub fn restore_dry_run(
+        &self,
+        backup_id: &str,
+        target_path: &Path,
+    ) -> Result<BackupVerification, String> {
+        self.verify_backup_for_target(backup_id, Some(target_path), true)
+    }
+
+    fn verify_backup_for_target(
+        &self,
+        backup_id: &str,
+        target_path: Option<&Path>,
+        dry_run: bool,
+    ) -> Result<BackupVerification, String> {
+        let backup = self
+            .get_backup(backup_id)?
+            .ok_or_else(|| format!("backup not found: {backup_id}"))?;
+        let backup_path = Path::new(&backup.backup_path);
+        let mut errors = Vec::new();
+
+        let mut checksum_ok = false;
+        if backup_path.exists() {
+            match compute_checksum(backup_path) {
+                Ok(actual) if actual == backup.checksum => checksum_ok = true,
+                Ok(actual) => errors.push(format!(
+                    "checksum mismatch: expected {}, got {}",
+                    backup.checksum, actual
+                )),
+                Err(e) => errors.push(format!("checksum failed: {e}")),
+            }
+        } else {
+            errors.push(format!("backup file not found: {}", backup.backup_path));
+        }
+
+        let mut integrity_ok = false;
+        let mut records_checked = 0;
+        if backup_path.exists() {
+            match Connection::open(backup_path) {
+                Ok(conn) => {
+                    let integrity: String = conn
+                        .query_row("PRAGMA integrity_check", [], |row| row.get(0))
+                        .unwrap_or_else(|_| "error".to_string());
+                    if integrity == "ok" {
+                        integrity_ok = true;
+                    } else {
+                        errors.push(format!("integrity check failed: {integrity}"));
+                    }
+
+                    for table in [
+                        "dispatch_history",
+                        "local_config",
+                        "team_members",
+                        "api_key_metadata",
+                        "audit_log",
+                        "provider_audit_events",
+                    ] {
+                        let sql = format!("SELECT COUNT(*) FROM {table}");
+                        if let Ok(count) = conn.query_row(&sql, [], |row| row.get::<_, i64>(0)) {
+                            records_checked += count;
+                        }
+                    }
+                }
+                Err(e) => errors.push(format!("backup open failed: {e}")),
+            }
+        }
+
+        Ok(BackupVerification {
+            backup_id: backup.backup_id,
+            success: errors.is_empty() && checksum_ok && integrity_ok,
+            checksum_ok,
+            integrity_ok,
+            records_checked,
+            size_bytes: backup.size_bytes,
+            backup_path: backup.backup_path,
+            target_path: target_path.map(|p| p.display().to_string()),
+            restore_would_overwrite: target_path.map(|p| p.exists()).unwrap_or(false),
+            dry_run,
+            errors,
+        })
     }
 
     pub fn delete_backup(&self, backup_id: &str) -> Result<bool, String> {

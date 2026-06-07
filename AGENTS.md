@@ -1,6 +1,6 @@
 # Agent Instructions
 
-This repository is the Token-Efficient Agent Harness Lab.
+This repository is the Token-Efficient Agent Harness Lab: a local deterministic harness and self-hosted macro-orchestrator control plane for studying token-efficient agent workflows.
 
 ## Current Status
 
@@ -29,14 +29,17 @@ The Stage 0-4 task-book scope is complete.
 - Dispatch Kernel Phase 6B-2 local API key + tenant boundary implemented and hardened (1654 tests).
 - Dispatch Kernel Phase 7 SDK + Documentation System implemented (sdk.py, doc_generator.py).
 - Language migration preparation approved: Rust core + axum API target, TypeScript dashboard/SDK target, Python SDK retained. Rust engine parity now covers wire schemas, golden fixtures, dispatch, routing/orchestration, infrastructure, storage, SDK/migrator helpers, doc generation, and a local axum API router. Phase 5 codegen plus TypeScript/Python REST SDK packages are implemented. Phase 6 dashboard is implemented with static export support. Phase 7 local Docker deploy is implemented as an optional verification path. Native local runtime is implemented so one Rust process can serve API + static dashboard with `ACP_DASHBOARD_DIR=dashboard/out`; Phase 8 closeout is recorded in `docs/AGENT_CONTROL_PLANE_MIGRATION_CLOSEOUT.md`. Rust + TypeScript cutover is complete: Rust `engine/` is the primary runtime/API/storage/provider-gated control plane, `dashboard/` and `sdk/typescript/` are the primary TypeScript surfaces. Python legacy reference retired; Python retained as REST SDK and utility scripts only.
-- Local small-team productization is implemented: app-owned SQLite dispatch history/config/team/API-key metadata/audit/cost state, live dashboard API state, optional local API key role boundary, export, confirmed local backup, and SDK methods. Broader provider execution beyond the explicit env-gated local beta path, target writes, sandbox/process/container/VM isolation, runtime workers, cloud SaaS, and hosted production deployment remain disallowed.
+- Local small-team productization is implemented: app-owned SQLite dispatch history/config/team/API-key metadata/audit/cost/plan/workflow-run state, live dashboard API state, optional local API key role boundary, export, confirmed local backup, operations metrics, backup verify/restore dry-run, audit redaction, provider pricing visibility, local ops/restore smoke scripts, and SDK methods. Broader provider execution beyond the explicit env-gated local beta path, target writes, sandbox/process/container/VM isolation, runtime workers, cloud SaaS, and hosted production deployment remain disallowed.
 - GitHub private repository published.
 - Architecture Refactor R-series sealed at R7. R8 is not approved. The `checkpoint.rs` split and `dispatch_decision.rs` split are deferred. No further R-series file splitting is approved.
 - Post-R7 wire/type governance hardening implemented: dormant `app_layer` annotation, Rust golden fixture typed round-trip guardrail, active execution-result schema enums, generated/manual TypeScript split, schema-driven enum codegen with drift enforcement via `scripts/check_wire_codegen_drift.sh`, and localized dashboard union reuse.
-- Current Rust test count: 1161 pass.
+- Supervised autonomous beta planning started as a planning-only track in `docs/adr/0002-supervised-planning-track.md`. Batch 0-6 governance/module/model/read-only-planner/durable-state/advisory/design-gate work is recorded, with `WorkflowGraph` selected as canonical planning model. Batch 7 Slice A-F and the production-grade track now add supervised execution runtime primitives in app-owned detached workspaces: `NodeExecutor`, explicit tick/scheduler paths, workspace lifecycle, patch capture, integrity validation, approval binding, and export gating. These are supervised local runtime primitives, not target-repo writes, sandbox/process/container/VM isolation, provider default-on execution, hosted deployment, or unattended autonomous workers.
+- Current Rust test count: 1348 pass.
+- Dynamic Workflow: ALL 7 BATCHES COMPLETE plus scheduler dynamic-mode recovery. Minimum acceptance target achieved.
+- Macro-Orchestrator Direction: current product direction. Phase 1-5 repair batch COMPLETE. Self-Hosted GA Readiness Track SG-1 through SG-5 COMPLETE: real dynamic CLI pilot matrix, long-run soak/failure injection, mission-control dashboard visibility, enriched policy decision signals, and runbook/release/rollback handoff readiness. Track done.
 - Existing CLI executor routing is a pre-existing local subprocess exception and is explicit opt-in via `ACP_ENABLE_CLI_EXECUTION=1`. Any expansion requires explicit scope and human approval.
 
-This project is now in autonomous maintainer mode for repository advancement. The responsible coding agent may keep advancing approved documentation, test, CI, hardening, dispatch-kernel, and local small-team self-hosting tracks without waiting for a new human instruction on every commit. New cloud/SaaS, hosted production, real-provider, target-write, or real-execution tracks still require explicit scope and human approval.
+This project is now in autonomous maintainer mode for repository advancement. The responsible coding agent may keep advancing approved documentation, test, CI, hardening, dispatch-kernel, and local small-team self-hosting tracks without waiting for a new human instruction on every commit. The Self-Hosted GA Readiness Track is the active approved local/small-team self-hosting track and must deepen existing runtime modules only. New cloud/SaaS, hosted production, real-provider, target-write, new sandbox/container/VM, or unattended autonomous-worker tracks still require explicit scope and human approval.
 
 ## New Session Bootstrap
 
@@ -63,6 +66,10 @@ Before doing any work:
 ## Autonomous Advancement Authority
 
 The responsible coding agent is expected to move this repository forward end to end when work is inside the safe scope below. This authority applies to the external coding agent maintaining the repo; it does not authorize implementing runtime autonomous workers inside the harness.
+
+Planning-only supervised beta work may classify modules, design schemas, and create non-executable app-owned planning records. It does not authorize runtime autonomous workers, target repository writes, sandbox/process/container/VM execution, deploy/merge controls, or default-on provider calls.
+
+Batch 6 supervised-execution contracts and Batch 7 Slice A-E metadata/read-only/design/dashboard visibility did not by themselves authorize runtime execution. Slice F and the production-grade track authorize supervised execution primitives in app-owned detached workspaces. Implementing sandbox/process/container/VM behavior, target repository writes, provider default-on execution, hosted deployment, push/merge/deploy/apply controls, or unattended autonomous workers still requires a separate explicit human-approved batch.
 
 Allowed autonomous advancement:
 
@@ -96,6 +103,8 @@ If another agent has in-progress changes, do not overwrite them. Either build on
 
 ## Hard Boundaries
 
+The production-grade hosted/self-hosted productization track (user-approved 2026-06-06) is authorized. It extends existing modules (node_executor, workflow_runs, supervised_patch, http_server) without creating parallel runtime kernels. See `docs/NEXT_DECISION.md` for phase details and constraints.
+
 Do not modify:
 
 - docs/stage0/events.jsonl
@@ -126,6 +135,7 @@ Allowed by default:
 - packaging planning
 - architecture audit updates
 - approved dispatch-kernel phase work that respects all hard boundaries
+- supervised autonomous beta planning batches that remain non-executable and respect ADR-0002
 
 Requires explicit approval:
 

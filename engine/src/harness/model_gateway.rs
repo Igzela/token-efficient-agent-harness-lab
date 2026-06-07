@@ -371,7 +371,7 @@ mod tests {
         let registry = create_default_registry();
         let err = registry.get_tier("nonexistent").unwrap_err();
         assert_eq!(err.tier, "nonexistent");
-        assert!(err.available.len() > 0);
+        assert!(!err.available.is_empty());
     }
 
     #[test]

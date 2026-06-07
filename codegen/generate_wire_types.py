@@ -190,7 +190,7 @@ def render_python(schemas: dict[str, dict]) -> str:
     lines.append("from __future__ import annotations")
     lines.append("")
     lines.append("from dataclasses import dataclass")
-    lines.append("from typing import Any, Literal, TypedDict")
+    lines.append("from typing import Any, Literal, NotRequired, TypedDict")
     lines.append("")
 
     enums = enum_values(schemas)
@@ -245,7 +245,7 @@ def render_python(schemas: dict[str, dict]) -> str:
         ("DispatchBundle", [("record", "DispatchRecord"), ("analysis", "TaskAnalysis"), ("decision", "DispatchDecision"), ("execution_result", "ExecutionResult"), ("evaluation_result", "EvaluationResult")]),
         ("LocalTierCost", [("selected_tier", "str"), ("dispatch_count", "int"), ("reserved_cost", "float"), ("estimated_cost_usd", "float"), ("input_tokens", "int"), ("output_tokens", "int")]),
         ("LocalDailyCost", [("date", "str"), ("dispatch_count", "int"), ("reserved_cost", "float"), ("estimated_cost_usd", "float")]),
-        ("LocalCostSummary", [("schema_version", 'Literal["local_cost_summary.v2"]'), ("currency", "str"), ("dispatch_count", "int"), ("total_reserved_cost", "float"), ("total_estimated_cost_usd", "float"), ("total_input_tokens", "int"), ("total_output_tokens", "int"), ("cost_utilization", "float"), ("by_tier", "list[LocalTierCost]"), ("daily", "list[LocalDailyCost]")]),
+        ("LocalCostSummary", [("schema_version", 'Literal["local_cost_summary.v2"]'), ("currency", "str"), ("dispatch_count", "int"), ("total_reserved_cost", "float"), ("total_estimated_cost_usd", "float"), ("total_input_tokens", "int"), ("total_output_tokens", "int"), ("estimated_cost_available", "bool"), ("pricing_configured", "NotRequired[bool]"), ("cost_utilization", "float"), ("by_tier", "list[LocalTierCost]"), ("daily", "list[LocalDailyCost]")]),
         ("LocalDispatchCostRow", [("history_id", "int"), ("dispatch_id", "str"), ("created_at", "str"), ("selected_tier", "str"), ("reserved_cost", "float"), ("input_tokens", "int"), ("output_tokens", "int"), ("estimated_cost_usd", "float"), ("executor_type", "str"), ("latency_ms", "int | None")]),
         ("LocalDispatchCostDetail", [("schema_version", 'Literal["local_dispatch_cost_detail.v1"]'), ("dispatches", "list[LocalDispatchCostRow]")]),
         ("ApiStatus", [("schema_version", 'Literal["axum_api.v1"]'), ("status", "str"), ("tenant_id", "str")]),

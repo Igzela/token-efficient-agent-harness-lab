@@ -1,6 +1,7 @@
 use std::collections::{HashMap, HashSet};
 
 use super::schemas::WorkflowGraph;
+use crate::workflow::graph_operations::GraphOperations;
 
 #[derive(Default)]
 pub struct DependencyResolver;
@@ -163,5 +164,167 @@ impl DependencyResolver {
             }
         }
         false
+    }
+}
+
+/// Pairs a `DependencyResolver` with a `WorkflowGraph` so `GraphOperations`
+/// can be implemented without changing the resolver's method signatures.
+pub struct ResolvableGraph<'a> {
+    resolver: &'a DependencyResolver,
+    graph: &'a WorkflowGraph,
+}
+
+impl<'a> ResolvableGraph<'a> {
+    pub fn new(resolver: &'a DependencyResolver, graph: &'a WorkflowGraph) -> Self {
+        Self { resolver, graph }
+    }
+}
+
+impl<'a> GraphOperations for ResolvableGraph<'a> {
+    fn validate(&self) -> (bool, Vec<String>) {
+        self.resolver.validate(self.graph)
+    }
+
+    fn topological_order(&self) -> Vec<String> {
+        self.resolver
+            .execution_order(self.graph)
+            .into_iter()
+            .flatten()
+            .collect()
+    }
+
+    fn ready_nodes(&self, completed: &HashSet<String>) -> Vec<String> {
+        // DependencyResolver.ready_nodes reads from graph status, but the trait
+        // passes completed explicitly. Filter to nodes whose deps are all completed.
+        let mut ready = Vec::new();
+        for node in &self.graph.nodes {
+            if node.status != "pending" {
+                continue;
+            }
+            let deps: Vec<String> = self
+                .graph
+                .edges
+                .iter()
+                .filter(|e| e.to_node_id == node.node_id && e.edge_type == "dependency")
+                .map(|e| e.from_node_id.clone())
+                .collect();
+            if deps.iter().all(|d| completed.contains(d.as_str())) {
+                ready.push(node.node_id.clone());
+            }
+        }
+        ready.sort();
+        ready
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn make_graph_node(id: &str, status: &str) -> super::super::schemas::WorkflowNode {
+        super::super::schemas::WorkflowNode {
+            schema_version: "workflow_node.v1".to_string(),
+            node_id: id.to_string(),
+            workflow_id: "wf1".to_string(),
+            task_type: "task".to_string(),
+            assigned_agent_id: None,
+            status: status.to_string(),
+            input_refs: vec![],
+            output_ref: None,
+            budget: 0.0,
+            cost_incurred: 0.0,
+            error: None,
+            created_at: "t0".to_string(),
+            started_at: None,
+            completed_at: None,
+        }
+    }
+
+    fn make_graph_edge(from: &str, to: &str) -> super::super::schemas::WorkflowEdge {
+        super::super::schemas::WorkflowEdge {
+            schema_version: "workflow_edge.v1".to_string(),
+            edge_id: format!("{}->{}", from, to),
+            from_node_id: from.to_string(),
+            to_node_id: to.to_string(),
+            edge_type: "dependency".to_string(),
+        }
+    }
+
+    fn make_graph(
+        nodes: Vec<super::super::schemas::WorkflowNode>,
+        edges: Vec<super::super::schemas::WorkflowEdge>,
+    ) -> WorkflowGraph {
+        WorkflowGraph {
+            schema_version: "workflow_graph.v1".to_string(),
+            workflow_id: "wf1".to_string(),
+            dispatch_id: "disp-0001".to_string(),
+            nodes,
+            edges,
+            status: "created".to_string(),
+            created_at: "t0".to_string(),
+            updated_at: "t0".to_string(),
+            started_at: None,
+            completed_at: None,
+            result: None,
+        }
+    }
+
+    #[test]
+    fn resolvable_graph_validate_ok() {
+        let graph = make_graph(
+            vec![
+                make_graph_node("a", "pending"),
+                make_graph_node("b", "pending"),
+            ],
+            vec![make_graph_edge("a", "b")],
+        );
+        let resolver = DependencyResolver::new();
+        let rg = ResolvableGraph::new(&resolver, &graph);
+        let (ok, errs) = rg.validate();
+        assert!(ok, "errors: {:?}", errs);
+    }
+
+    #[test]
+    fn resolvable_graph_validate_cycle() {
+        let graph = make_graph(
+            vec![
+                make_graph_node("a", "pending"),
+                make_graph_node("b", "pending"),
+            ],
+            vec![make_graph_edge("a", "b"), make_graph_edge("b", "a")],
+        );
+        let resolver = DependencyResolver::new();
+        let rg = ResolvableGraph::new(&resolver, &graph);
+        let (ok, errs) = rg.validate();
+        assert!(!ok);
+        assert!(errs.iter().any(|e| e.contains("cycle")));
+    }
+
+    #[test]
+    fn resolvable_graph_ready_nodes_with_completed() {
+        let graph = make_graph(
+            vec![
+                make_graph_node("a", "completed"),
+                make_graph_node("b", "pending"),
+                make_graph_node("c", "pending"),
+            ],
+            vec![make_graph_edge("a", "b"), make_graph_edge("a", "c")],
+        );
+        let resolver = DependencyResolver::new();
+        let rg = ResolvableGraph::new(&resolver, &graph);
+        let mut completed = HashSet::new();
+        completed.insert("a".to_string());
+        let ready = rg.ready_nodes(&completed);
+        assert_eq!(ready, vec!["b", "c"]);
+    }
+
+    #[test]
+    fn resolvable_graph_dyn_dispatch() {
+        let graph = make_graph(vec![make_graph_node("a", "pending")], vec![]);
+        let resolver = DependencyResolver::new();
+        let rg = ResolvableGraph::new(&resolver, &graph);
+        let ops: &dyn GraphOperations = &rg;
+        let (ok, _) = ops.validate();
+        assert!(ok);
     }
 }

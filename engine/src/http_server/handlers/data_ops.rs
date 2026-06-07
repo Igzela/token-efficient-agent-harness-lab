@@ -1,11 +1,11 @@
-use axum::extract::State;
-use axum::http::{HeaderMap, StatusCode};
+use axum::extract::{Extension, State};
+use axum::http::{HeaderMap, StatusCode, Uri};
 use axum::response::IntoResponse;
 use axum::Json;
 use serde_json::json;
 
 use crate::http_server::middleware::{
-    authorize, cors_headers, internal_error, require_store, ApiError,
+    authorize, cors_headers, internal_error, require_store, ApiError, RequestId,
 };
 use crate::http_server::state::AxumApiState;
 use crate::http_server::{ImportApiRequest, AXUM_API_SCHEMA_VERSION};
@@ -14,8 +14,10 @@ use crate::storage::local_product_store::local_boundaries;
 pub(crate) async fn api_config(
     State(state): State<AxumApiState>,
     headers: HeaderMap,
+    uri: Uri,
+    Extension(request_id): Extension<RequestId>,
 ) -> Result<impl IntoResponse, ApiError> {
-    authorize(&state, &headers, "config:read")?;
+    authorize(&state, &headers, "config:read", uri.path(), &request_id.0)?;
     let store = require_store(&state)?;
     let exec_type = state.executor_type();
     let prov_enabled = state.provider_enabled();
@@ -32,8 +34,10 @@ pub(crate) async fn api_config(
 pub(crate) async fn api_export(
     State(state): State<AxumApiState>,
     headers: HeaderMap,
+    uri: Uri,
+    Extension(request_id): Extension<RequestId>,
 ) -> Result<impl IntoResponse, ApiError> {
-    authorize(&state, &headers, "export:read")?;
+    authorize(&state, &headers, "export:read", uri.path(), &request_id.0)?;
     let store = require_store(&state)?;
     let exec_type = state.executor_type();
     let prov_enabled = state.provider_enabled();
@@ -50,8 +54,10 @@ pub(crate) async fn api_export(
 pub(crate) async fn api_integrity(
     State(state): State<AxumApiState>,
     headers: HeaderMap,
+    uri: Uri,
+    Extension(request_id): Extension<RequestId>,
 ) -> Result<impl IntoResponse, ApiError> {
-    authorize(&state, &headers, "health:read")?;
+    authorize(&state, &headers, "health:read", uri.path(), &request_id.0)?;
     let store = require_store(&state)?;
     let report = store.check_integrity().map_err(internal_error)?;
     Ok((
@@ -74,6 +80,8 @@ pub(crate) async fn api_integrity(
 pub(crate) async fn api_import(
     State(state): State<AxumApiState>,
     headers: HeaderMap,
+    uri: Uri,
+    Extension(request_id): Extension<RequestId>,
     Json(request): Json<ImportApiRequest>,
 ) -> Result<impl IntoResponse, ApiError> {
     if state.tenant_resolver.is_none() {
@@ -82,7 +90,7 @@ pub(crate) async fn api_import(
             "admin auth is required for import",
         ));
     }
-    let context = authorize(&state, &headers, "config:admin")?;
+    let context = authorize(&state, &headers, "config:admin", uri.path(), &request_id.0)?;
     if request.confirm_import != Some(true) {
         return Err(ApiError::new(
             StatusCode::BAD_REQUEST,
@@ -101,6 +109,8 @@ pub(crate) async fn api_import(
             &json!({
                 "imported": {
                     "dispatches": result.imported.dispatches,
+                    "plans": result.imported.plans,
+                    "workflow_runs": result.imported.workflow_runs,
                     "config": result.imported.config,
                     "team": result.imported.team,
                     "audit": result.imported.audit,
@@ -115,6 +125,8 @@ pub(crate) async fn api_import(
             "schema_version": AXUM_API_SCHEMA_VERSION,
             "imported": {
                 "dispatches": result.imported.dispatches,
+                "plans": result.imported.plans,
+                "workflow_runs": result.imported.workflow_runs,
                 "config": result.imported.config,
                 "team": result.imported.team,
                 "audit": result.imported.audit,

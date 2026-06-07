@@ -30,6 +30,9 @@ class AgentControlPlaneClient:
     def dashboard(self) -> dict[str, Any]:
         return self._get("/api/v1/dashboard")
 
+    def metrics(self) -> dict[str, Any]:
+        return self._get("/api/v1/metrics")
+
     def dispatches(
         self,
         limit: int | None = None,
@@ -44,6 +47,268 @@ class AgentControlPlaneClient:
         if search:
             params["search"] = search
         return self._get(_query_path("/api/v1/dispatches", params))
+
+    def plans(
+        self,
+        limit: int | None = None,
+        offset: int | None = None,
+        search: str | None = None,
+    ) -> dict[str, Any]:
+        params: dict[str, Any] = {}
+        if limit is not None:
+            params["limit"] = limit
+        if offset is not None:
+            params["offset"] = offset
+        if search:
+            params["search"] = search
+        return self._get(_query_path("/api/v1/plans", params))
+
+    def create_plan(
+        self,
+        raw_request: str,
+        request_source: RequestSource = "api",
+    ) -> dict[str, Any]:
+        return self._post(
+            "/api/v1/plans",
+            {"raw_request": raw_request, "request_source": request_source},
+        )
+
+    def plan(self, plan_id: str) -> dict[str, Any]:
+        return self._get(f"/api/v1/plans/{_quote_path_segment(plan_id)}")
+
+    def workflow_runs(
+        self,
+        limit: int | None = None,
+        offset: int | None = None,
+        search: str | None = None,
+    ) -> dict[str, Any]:
+        params: dict[str, Any] = {}
+        if limit is not None:
+            params["limit"] = limit
+        if offset is not None:
+            params["offset"] = offset
+        if search:
+            params["search"] = search
+        return self._get(_query_path("/api/v1/workflow-runs", params))
+
+    def create_workflow_run(self, plan_id: str) -> dict[str, Any]:
+        return self._post("/api/v1/workflow-runs", {"plan_id": plan_id})
+
+    def workflow_run(self, run_id: str) -> dict[str, Any]:
+        return self._get(f"/api/v1/workflow-runs/{_quote_path_segment(run_id)}")
+
+    def workflow_run_events(self, run_id: str, limit: int | None = None) -> dict[str, Any]:
+        params: dict[str, Any] = {}
+        if limit is not None:
+            params["limit"] = limit
+        return self._get(
+            _query_path(f"/api/v1/workflow-runs/{_quote_path_segment(run_id)}/events", params)
+        )
+
+    def record_workflow_run_event(
+        self,
+        run_id: str,
+        event_type: str,
+        node_id: str | None = None,
+        details: Any | None = None,
+    ) -> dict[str, Any]:
+        payload: dict[str, Any] = {"event_type": event_type}
+        if node_id is not None:
+            payload["node_id"] = node_id
+        if details is not None:
+            payload["details"] = details
+        return self._post(
+            f"/api/v1/workflow-runs/{_quote_path_segment(run_id)}/events",
+            payload,
+        )
+
+    def workflow_run_approvals(self, run_id: str, limit: int | None = None) -> dict[str, Any]:
+        params: dict[str, Any] = {}
+        if limit is not None:
+            params["limit"] = limit
+        return self._get(
+            _query_path(f"/api/v1/workflow-runs/{_quote_path_segment(run_id)}/approvals", params)
+        )
+
+    def record_workflow_run_approval(
+        self,
+        run_id: str,
+        node_id: str,
+        decision: str,
+        reason: str | None = None,
+    ) -> dict[str, Any]:
+        payload = {"node_id": node_id, "decision": decision}
+        if reason is not None:
+            payload["reason"] = reason
+        return self._post(
+            f"/api/v1/workflow-runs/{_quote_path_segment(run_id)}/approvals",
+            payload,
+        )
+
+    def resume_workflow_run(self, run_id: str, reason: str | None = None) -> dict[str, Any]:
+        payload: dict[str, Any] = {}
+        if reason is not None:
+            payload["reason"] = reason
+        return self._post(f"/api/v1/workflow-runs/{_quote_path_segment(run_id)}/resume", payload)
+
+    def cancel_workflow_run(self, run_id: str, reason: str | None = None) -> dict[str, Any]:
+        payload: dict[str, Any] = {}
+        if reason is not None:
+            payload["reason"] = reason
+        return self._post(f"/api/v1/workflow-runs/{_quote_path_segment(run_id)}/cancel", payload)
+
+    def supervised_patch_workspaces(self, limit: int | None = None) -> dict[str, Any]:
+        params: dict[str, Any] = {}
+        if limit is not None:
+            params["limit"] = limit
+        return self._get(_query_path("/api/v1/supervised-patch/workspaces", params))
+
+    def supervised_patch_workspace_detail(self, workspace_id: str) -> dict[str, Any]:
+        return self._get(
+            f"/api/v1/supervised-patch/workspaces/{_quote_path_segment(workspace_id)}"
+        )
+
+    def supervised_patch_artifacts(self, limit: int | None = None) -> dict[str, Any]:
+        params: dict[str, Any] = {}
+        if limit is not None:
+            params["limit"] = limit
+        return self._get(_query_path("/api/v1/supervised-patch/artifacts", params))
+
+    def supervised_patch_artifact_detail(self, artifact_id: str) -> dict[str, Any]:
+        return self._get(
+            f"/api/v1/supervised-patch/artifacts/{_quote_path_segment(artifact_id)}"
+        )
+
+    def create_supervised_patch_workspace(
+        self,
+        run_id: str,
+        target_id: str,
+        target_repo_path: str,
+        source_revision: str,
+        plan_id: str | None = None,
+        source_tree_hash: str | None = None,
+    ) -> dict[str, Any]:
+        body: dict[str, Any] = {
+            "run_id": run_id,
+            "target_id": target_id,
+            "target_repo_path": target_repo_path,
+            "source_revision": source_revision,
+        }
+        if plan_id is not None:
+            body["plan_id"] = plan_id
+        if source_tree_hash is not None:
+            body["source_tree_hash"] = source_tree_hash
+        return self._post("/api/v1/supervised-patch/workspaces", body)
+
+    def cleanup_supervised_patch_workspace(self, workspace_id: str) -> dict[str, Any]:
+        return self._post(
+            f"/api/v1/supervised-patch/workspaces/{_quote_path_segment(workspace_id)}/cleanup",
+            {},
+        )
+
+    def quarantine_supervised_patch_workspace(self, workspace_id: str) -> dict[str, Any]:
+        return self._post(
+            f"/api/v1/supervised-patch/workspaces/{_quote_path_segment(workspace_id)}/quarantine",
+            {},
+        )
+
+    def capture_supervised_patch(self, workspace_id: str) -> dict[str, Any]:
+        return self._post(
+            f"/api/v1/supervised-patch/workspaces/{_quote_path_segment(workspace_id)}/capture",
+            {},
+        )
+
+    def export_supervised_patch_artifact(
+        self, artifact_id: str, run_id: str
+    ) -> dict[str, Any]:
+        return self._post(
+            f"/api/v1/supervised-patch/artifacts/{_quote_path_segment(artifact_id)}/export",
+            {"run_id": run_id},
+        )
+
+    def tick_workflow_run(
+        self,
+        run_id: str,
+        actor: str | None = None,
+        max_retries: int | None = None,
+        executor: str | None = None,
+        timeout_ms: int | None = None,
+        command: str | None = None,
+    ) -> dict[str, Any]:
+        body: dict[str, Any] = {}
+        if actor is not None:
+            body["actor"] = actor
+        if max_retries is not None:
+            body["max_retries"] = max_retries
+        if executor is not None:
+            body["executor"] = executor
+        if timeout_ms is not None:
+            body["timeout_ms"] = timeout_ms
+        if command is not None:
+            body["command"] = command
+        return self._post(
+            f"/api/v1/workflow-runs/{_quote_path_segment(run_id)}/tick", body
+        )
+
+    def scheduler_status(self) -> dict[str, Any]:
+        return self._get("/api/v1/scheduler/status")
+
+    def fetch_executor_pool(self) -> dict[str, Any]:
+        return self._get("/api/v1/executor-pool")
+
+    def fetch_queue_status(self) -> dict[str, Any]:
+        return self._get("/api/v1/queue/status")
+
+    def fetch_queue_runs(
+        self,
+        limit: int | None = None,
+        offset: int | None = None,
+    ) -> dict[str, Any]:
+        params: dict[str, Any] = {}
+        if limit is not None:
+            params["limit"] = limit
+        if offset is not None:
+            params["offset"] = offset
+        return self._get(_query_path("/api/v1/queue/runs", params))
+
+    def update_run_priority(self, run_id: str, priority: int) -> dict[str, Any]:
+        return self._put(
+            f"/api/v1/queue/runs/{_quote_path_segment(run_id)}/priority",
+            {"priority": priority},
+        )
+
+    def pause_run(self, run_id: str, reason: str | None = None) -> dict[str, Any]:
+        return self._put(
+            f"/api/v1/queue/runs/{_quote_path_segment(run_id)}/pause",
+            {"reason": reason},
+        )
+
+    def fetch_queue_tenants(self) -> dict[str, Any]:
+        return self._get("/api/v1/queue/tenants")
+
+    def decisions(
+        self,
+        limit: int | None = None,
+        offset: int | None = None,
+        search: str | None = None,
+        run_id: str | None = None,
+    ) -> dict[str, Any]:
+        params: dict[str, Any] = {}
+        if limit is not None:
+            params["limit"] = limit
+        if offset is not None:
+            params["offset"] = offset
+        if search:
+            params["search"] = search
+        if run_id:
+            params["run_id"] = run_id
+        return self._get(_query_path("/api/v1/decisions", params))
+
+    def decision_detail(self, decision_id: str) -> dict[str, Any]:
+        return self._get(f"/api/v1/decisions/{_quote_path_segment(decision_id)}")
+
+    def decision_stats(self) -> dict[str, Any]:
+        return self._get("/api/v1/decisions/stats")
 
     def config(self) -> dict[str, Any]:
         return self._get("/api/v1/config")
@@ -67,12 +332,18 @@ class AgentControlPlaneClient:
         self,
         limit: int | None = None,
         offset: int | None = None,
+        search: str | None = None,
+        redact: bool | None = None,
     ) -> dict[str, Any]:
         params: dict[str, Any] = {}
         if limit is not None:
             params["limit"] = limit
         if offset is not None:
             params["offset"] = offset
+        if search:
+            params["search"] = search
+        if redact is not None:
+            params["redact"] = "true" if redact else "false"
         return self._get(_query_path("/api/v1/audit", params))
 
     def provider_health(self) -> dict[str, Any]:
@@ -172,6 +443,15 @@ class AgentControlPlaneClient:
     def list_backups(self) -> dict[str, Any]:
         return self._get("/api/v1/backups")
 
+    def verify_backup(self, backup_id: str) -> dict[str, Any]:
+        return self._get(f"/api/v1/backups/{_quote_path_segment(backup_id)}/verify")
+
+    def restore_backup_dry_run(self, backup_id: str) -> dict[str, Any]:
+        return self._post(
+            f"/api/v1/backups/{_quote_path_segment(backup_id)}/restore/dry-run",
+            {"confirm_restore_dry_run": True},
+        )
+
     def delete_backup(self, backup_id: str) -> dict[str, Any]:
         url = f"{self.base_url}/api/v1/backups/{_quote_path_segment(backup_id)}"
         req = Request(url, method="DELETE")
@@ -196,6 +476,12 @@ class AgentControlPlaneClient:
         data = json.dumps(body).encode("utf-8")
         headers = {**self._headers(), "content-type": "application/json"}
         request = Request(f"{self.base_url}{path}", data=data, headers=headers, method="POST")
+        return self._send(request)
+
+    def _put(self, path: str, body: dict[str, Any]) -> Any:
+        data = json.dumps(body).encode("utf-8")
+        headers = {**self._headers(), "content-type": "application/json"}
+        request = Request(f"{self.base_url}{path}", data=data, headers=headers, method="PUT")
         return self._send(request)
 
     def _headers(self) -> dict[str, str]:

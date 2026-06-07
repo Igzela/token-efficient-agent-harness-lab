@@ -6,6 +6,7 @@ use crate::dispatch_engine::DispatchEngine;
 use crate::infrastructure::auth::TenantResolver;
 use crate::infrastructure::rate_limiter::RateLimiter;
 use crate::provider::Provider;
+use crate::scheduler::WorkflowScheduler;
 use crate::storage::local_product_store::LocalProductStore;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -36,6 +37,7 @@ pub struct AxumApiState {
     pub(crate) local_store: Option<Arc<LocalProductStore>>,
     pub(crate) backup_dir: Option<Arc<PathBuf>>,
     pub(crate) provider: Option<Arc<dyn Provider>>,
+    pub(crate) scheduler: Option<Arc<Mutex<WorkflowScheduler>>>,
 }
 
 impl Default for AxumApiState {
@@ -56,6 +58,7 @@ impl AxumApiState {
             local_store: None,
             backup_dir: None,
             provider: None,
+            scheduler: None,
         }
     }
 
@@ -114,6 +117,11 @@ impl AxumApiState {
 
     pub fn with_engine(mut self, engine: DispatchEngine) -> Self {
         self.engine = Arc::new(engine);
+        self
+    }
+
+    pub fn with_scheduler(mut self, scheduler: Arc<Mutex<WorkflowScheduler>>) -> Self {
+        self.scheduler = Some(scheduler);
         self
     }
 

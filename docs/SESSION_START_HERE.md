@@ -4,7 +4,7 @@ Read this file first in any new AI session on this repository.
 
 ## Project Identity
 
-Token-Efficient Agent Harness Lab is a local deterministic harness for studying event-sourced agent workflow infrastructure.
+Token-Efficient Agent Harness Lab is a local deterministic harness and self-hosted macro-orchestrator control plane for studying event-sourced agent workflow infrastructure.
 
 ## Current State
 
@@ -26,7 +26,9 @@ Token-Efficient Agent Harness Lab is a local deterministic harness for studying 
 | Trial 4 real-use pilot | Closed — `TRIAL_4_REAL_USE_PILOT_PASS_AFTER_FIXES` |
 | Trial 5 CLI execution beta | Closed — `TRIAL_5_CLI_EXECUTION_BETA_PASS_AFTER_FIXES` |
 
-Tests: 1161 Rust pass. Primary cutover verification is `bash scripts/verify_rust_typescript_stack.sh`.
+Tests: 1348 Rust pass. Primary cutover verification is `bash scripts/verify_rust_typescript_stack.sh`.
+
+Macro-Orchestrator Phase 1-5 repair batch is complete. Self-Hosted GA Readiness Track SG-1 through SG-5 is complete: real dynamic CLI pilot matrix, long-run soak/failure injection, mission-control dashboard visibility, enriched policy decision signals, and runbook/release/rollback handoff readiness. The track is done; maintain repo health until the user provides new direction.
 
 ## Toolchain
 
@@ -59,20 +61,28 @@ Additional active architecture track:
 | Language Migration Phase 8 — Closeout | Implemented; closeout recorded in `docs/AGENT_CONTROL_PLANE_MIGRATION_CLOSEOUT.md` |
 | Agent-Control-Plane Native Local Runtime | Implemented; Rust engine can serve API plus static dashboard from one local process via `ACP_DASHBOARD_DIR=dashboard/out`; Docker is optional |
 | Agent-Control-Plane Local Small-Team Productization | Implemented; Rust engine persists app-owned SQLite dispatch history/config/team/API-key metadata/audit/cost state, dashboard reads live local API state, SDKs cover local state endpoints, and export/confirmed backup are available without Docker |
+| Production-like Local Beta Ops Hardening | Implemented; `.env.production-like.local.example`, guarded local startup script, metrics endpoint, Operations dashboard tab, ops check, backup verify/restore dry-run smoke, secret scan, audit redaction, provider pricing visibility, read-only advisory risk-gate repair, and scope templates are available for local trials |
 | Rust Provider Stack Stage 1 + Stage 2 audit/usage bridge | Implemented as explicit env-gated beta path; provider health/audit endpoints, persistent provider audit events, and dispatch usage columns exist; CI uses stub/mock paths and does not call real provider APIs |
 | Rust + TypeScript Cutover | Complete; Rust `engine/` is the primary runtime/API/storage/provider-gated control plane, `dashboard/` and `sdk/typescript/` are the primary TypeScript surfaces; Python retained as REST SDK and utility scripts only |
 | Architecture Refactor R-series | Sealed at R7; R8 is not approved. No further R-series file splitting is approved |
 | Post-R7 Wire/Type Governance Hardening | Implemented; `app_layer` remains dormant/unwired reference code and `scripts/check_wire_codegen_drift.sh` protects generated wire files |
+| Supervised Autonomous Beta Planning | Batch 0-6 governance/module/model/read-only-planner/durable-state/advisory/design-gate work recorded. `WorkflowGraph` is canonical planning model. Batch 7 Slice A-F implemented: app-owned workspace/artifact metadata, read-only HTTP/SDK/dashboard visibility, approval-binding contract, and supervised execution runtime primitives (NodeExecutor trait, CommandNodeExecutor with shell-metachar rejection, workflow tick, workspace lifecycle, capture_patch with source manifest diff, integrity validation, export gate, E2E closed-loop test). 1339 Rust tests pass. No target repo writes, sandbox/process/container/VM execution, real workers, provider calls, push/merge/deploy/apply controls, or default-on execution. |
+| Dynamic Workflow Direction | Complete; Batches 1-7 plus scheduler dynamic-mode recovery are implemented. Opt-in dynamic mode can observe a failed node, mutate the persisted graph with fix/test nodes, mark the failed node recovered, resume the run, and complete follow-up execution. 1339 Rust tests pass. |
+| Macro-Orchestrator Direction | Current product direction. Phase 1-5 repair batch and Self-Hosted GA Readiness Track SG-1 through SG-5 COMPLETE. Track done. |
 
 ## What This Project Is Not
 
 - **Not CA-8.** The CA-7 baseline is sealed. No CA-8 exists.
 - **Not Stage 5.** No Stage 5 implementation has been started.
-- **Not a cloud production SaaS.** No default-on real model providers, sandbox isolation runtime, workers, hosted service, or production deployment targets.
+- **Not a cloud production SaaS or coding-agent runtime.** No default-on real model providers, sandbox isolation runtime, workers, hosted service, or production deployment targets.
 - **No real provider/model calls by default.** Provider adapters are explicit env-gated beta paths; CI uses stub/mock paths and does not call real provider APIs.
 - **No sandbox/process/container/VM isolation runtime.** Sandbox claims are logical file-claim tracking only. Existing local CLI executor subprocess invocation is a separate, explicit opt-in exception via `ACP_ENABLE_CLI_EXECUTION=1`.
 - **No autonomous workers.** No real concurrent workers are spawned.
 - **No target repo writes by default.** Target repositories are read-only. The app never writes to them.
+
+Production-grade hosted/self-hosted productization track was explicitly approved by user on 2026-06-06. This track extends existing supervised autonomous beta infrastructure with real CLI executor integration, persistent scheduling, dashboard controls, SDK productization, and security hardening. It does NOT create parallel runtime kernels. See `docs/NEXT_DECISION.md` for phase details and done-when criteria.
+
+Planning-only modules may generate non-executable plans, app-owned planning metadata, and design-gate documents. They do not grant runtime worker, execution, target-write, sandbox, deploy, apply, run, or merge authority.
 
 ## Must-Read Order
 
@@ -106,6 +116,20 @@ Do **not** start any of the following without explicit human approval:
 
 Before proposing any new track, read `docs/CURRENT_STATUS.md` and `docs/NEXT_DECISION.md` first.
 
+## Implementation Strategy
+
+**All sessions must use Workflow tool for implementation.** This is the default, not optional.
+
+1. Write a workflow script to `.claude/workflows/<task-name>.md` with `export const meta = { name, description, phases }`.
+2. Use `parallel()` for independent subtasks (e.g., Rust module + API endpoint in parallel, then SDK + Dashboard in parallel).
+3. Use `pipeline()` when tasks have sequential dependencies (e.g., Wave 1 code → Wave 2 integration → Wave 3 verify).
+4. Use `model: 'opus'` for implementation agents, `model: 'sonnet'` for verification/checks.
+5. Launch via `Workflow({scriptPath: ".claude/workflows/<task-name>.md"})`.
+6. After workflow completes, fix any issues found by verification agent, then commit/push.
+7. Wait for CI green before starting the next batch.
+
+**The only exception is trivial single-line edits** (typo fixes, doc wording, env var changes). Anything touching 2+ files goes through Workflow.
+
 ## Autonomous Session Closeout
 
 A session is not complete until it leaves a durable handoff:
@@ -114,7 +138,8 @@ A session is not complete until it leaves a durable handoff:
 2. `uv run --no-project python scripts/check_agent_handoff.py` passes (includes toolchain and `scripts/check_wire_codegen_drift.sh` guards).
 3. Handoff docs reflect the current branch, status, test count, stable commits, limitations, and next action.
 4. The commit message is in English and the active branch is pushed when the tree contains only this session's intended changes.
-5. The final report states latest commit, verification, remaining risks, and the next safe action.
+5. After push, **wait for CI to pass** before starting the next batch. Use `gh run list --limit 3` to check status; if CI fails, fix and re-push before continuing. A green CI is required before the next session's work is considered safe to build on.
+6. The final report states latest commit, CI status, verification, remaining risks, and the next safe action.
 
 ## Documentation Maintenance
 

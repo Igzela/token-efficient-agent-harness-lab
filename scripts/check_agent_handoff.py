@@ -54,7 +54,6 @@ REQUIRED_FILES = {
         "**SEALED AT R7**",
         "R8 is not approved.",
         "Post-R7 Wire/Type Governance Hardening",
-        "`app_layer` is annotated as dormant/unwired parity reference code",
         "scripts/check_wire_codegen_drift.sh",
     ],
     "docs/NEXT_DECISION.md": [
@@ -69,8 +68,6 @@ REQUIRED_FILES = {
     "docs/MODULE_MAP.md": [
         "# Module Map",
         "| Module | Stage | Purpose |",
-        "`engine/src/app_layer/`",
-        "Dormant/unwired parity code retained for reference",
         "`scripts/check_wire_codegen_drift.sh`",
     ],
     "scripts/verify_rust_typescript_stack.sh": [

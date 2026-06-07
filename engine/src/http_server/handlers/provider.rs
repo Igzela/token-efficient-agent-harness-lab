@@ -1,11 +1,11 @@
-use axum::extract::{Query, State};
-use axum::http::HeaderMap;
+use axum::extract::{Extension, Query, State};
+use axum::http::{HeaderMap, Uri};
 use axum::response::IntoResponse;
 use axum::Json;
 use serde_json::json;
 
 use crate::http_server::middleware::{
-    authorize, cors_headers, internal_error, require_store, ApiError,
+    authorize, cors_headers, internal_error, require_store, ApiError, RequestId,
 };
 use crate::http_server::state::AxumApiState;
 use crate::http_server::AXUM_API_SCHEMA_VERSION;
@@ -13,8 +13,10 @@ use crate::http_server::AXUM_API_SCHEMA_VERSION;
 pub(crate) async fn api_provider_health(
     State(state): State<AxumApiState>,
     headers: HeaderMap,
+    uri: Uri,
+    Extension(request_id): Extension<RequestId>,
 ) -> Result<impl IntoResponse, ApiError> {
-    authorize(&state, &headers, "health:read")?;
+    authorize(&state, &headers, "health:read", uri.path(), &request_id.0)?;
     let Some(provider) = &state.provider else {
         return Ok((
             cors_headers(),
@@ -54,9 +56,11 @@ pub(crate) async fn api_provider_health(
 pub(crate) async fn api_provider_audit(
     State(state): State<AxumApiState>,
     headers: HeaderMap,
+    uri: Uri,
+    Extension(request_id): Extension<RequestId>,
     Query(params): Query<std::collections::HashMap<String, String>>,
 ) -> Result<impl IntoResponse, ApiError> {
-    authorize(&state, &headers, "audit:read")?;
+    authorize(&state, &headers, "audit:read", uri.path(), &request_id.0)?;
     let store = require_store(&state)?;
     let limit = params
         .get("limit")

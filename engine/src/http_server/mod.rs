@@ -22,6 +22,67 @@ pub struct DispatchApiRequest {
 }
 
 #[derive(Debug, Clone, PartialEq, Deserialize)]
+pub struct ReadOnlyPlanApiRequest {
+    pub raw_request: String,
+    pub request_source: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+pub struct WorkflowRunCreateApiRequest {
+    pub plan_id: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+pub struct WorkflowRunEventApiRequest {
+    pub node_id: Option<String>,
+    pub event_type: String,
+    pub details: Option<Value>,
+}
+
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+pub struct WorkflowRunApprovalApiRequest {
+    pub node_id: String,
+    pub decision: String,
+    pub reason: Option<String>,
+    pub bound_patch_hash: Option<String>,
+    pub bound_source_revision: Option<String>,
+    pub bound_changed_files: Option<Vec<String>>,
+    pub expires_at: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+pub struct WorkflowRunActionApiRequest {
+    pub reason: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+pub struct WorkflowRunTickApiRequest {
+    pub actor: Option<String>,
+    pub max_retries: Option<i64>,
+    pub executor: Option<String>,
+    pub timeout_ms: Option<u64>,
+    pub command: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+pub struct SupervisedPatchWorkspaceCreateRequest {
+    pub run_id: String,
+    pub target_id: String,
+    pub target_repo_path: String,
+    pub source_revision: String,
+    pub plan_id: Option<String>,
+    pub source_tree_hash: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+pub struct SupervisedPatchArtifactRecordRequest {
+    pub workspace_id: String,
+    pub patch_hash: String,
+    pub changed_files: Vec<String>,
+    pub redaction_status: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Deserialize)]
 pub struct BackupApiRequest {
     pub label: Option<String>,
     pub confirm_local_backup: Option<bool>,
@@ -61,6 +122,11 @@ pub struct ImportApiRequest {
 #[derive(Debug, Clone, PartialEq, Deserialize)]
 pub struct RestoreApiRequest {
     pub confirm_restore: Option<bool>,
+}
+
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+pub struct RestoreDryRunApiRequest {
+    pub confirm_restore_dry_run: Option<bool>,
 }
 
 fn path_parameter(name: &str) -> Value {
@@ -170,10 +236,254 @@ pub fn openapi_document() -> serde_json::Value {
                     }
                 }
             },
+            "/api/v1/plans": {
+                "get": {
+                    "summary": "List persisted read-only workflow plans",
+                    "description": "Requires dispatch:read scope. Plans are app-owned metadata only and include recommendation-only advisory status; they do not execute workers or write target repositories.",
+                    "parameters": [
+                        {"name": "limit", "in": "query", "schema": {"type": "integer", "default": 100, "minimum": 0, "maximum": 500}},
+                        {"name": "offset", "in": "query", "schema": {"type": "integer", "default": 0, "minimum": 0}},
+                        {"name": "search", "in": "query", "schema": {"type": "string"}, "description": "Case-insensitive match across plan id, request text, source, status, workflow id, and dispatch id."}
+                    ],
+                    "responses": {"200": {"description": "Read-only workflow plan list"}}
+                },
+                "post": {
+                    "summary": "Create a read-only workflow plan",
+                    "description": "Generates a canonical WorkflowGraph plan with recommendation-only quality/routing/retry/observability advisory metadata. No execution, provider call, worker spawn, sandbox/process execution, target write, deploy, merge, or approval control is performed.",
+                    "requestBody": json_request_body(&["raw_request"], json!({
+                        "raw_request": {"type": "string"},
+                        "request_source": {"type": "string", "default": "api"}
+                    })),
+                    "responses": {
+                        "200": {"description": "Read-only workflow plan"},
+                        "400": {"description": "Invalid request"},
+                        "401": {"description": "Unauthorized"},
+                        "403": {"description": "Forbidden"}
+                    }
+                }
+            },
+            "/api/v1/plans/{plan_id}": {
+                "get": {
+                    "summary": "Get a read-only workflow plan by ID",
+                    "description": "Requires dispatch:read scope. Returns app-owned planning metadata plus recommendation-only advisory status.",
+                    "parameters": [path_parameter("plan_id")],
+                    "responses": {
+                        "200": {"description": "Read-only workflow plan"},
+                        "404": {"description": "Plan not found"}
+                    }
+                }
+            },
+            "/api/v1/workflow-runs": {
+                "get": {
+                    "summary": "List inert durable workflow run metadata",
+                    "description": "Requires dispatch:read scope. Returns app-owned run metadata only; no workers, execution, provider calls, target writes, approval authority, deploy, or merge controls.",
+                    "parameters": [
+                        {"name": "limit", "in": "query", "schema": {"type": "integer", "default": 100, "minimum": 0, "maximum": 500}},
+                        {"name": "offset", "in": "query", "schema": {"type": "integer", "default": 0, "minimum": 0}},
+                        {"name": "search", "in": "query", "schema": {"type": "string"}}
+                    ],
+                    "responses": {"200": {"description": "Workflow run metadata list"}}
+                },
+                "post": {
+                    "summary": "Create inert workflow run metadata from a read-only plan",
+                    "description": "Persists run/node/edge/event metadata only. It does not execute, resume execution, spawn workers, call providers, or write target repositories.",
+                    "requestBody": json_request_body(&["plan_id"], json!({
+                        "plan_id": {"type": "string"}
+                    })),
+                    "responses": {
+                        "200": {"description": "Workflow run metadata"},
+                        "400": {"description": "Invalid request"},
+                        "401": {"description": "Unauthorized"},
+                        "403": {"description": "Forbidden"},
+                        "404": {"description": "Plan not found"}
+                    }
+                }
+            },
+            "/api/v1/workflow-runs/{run_id}": {
+                "get": {
+                    "summary": "Get inert workflow run metadata by ID",
+                    "parameters": [path_parameter("run_id")],
+                    "responses": {
+                        "200": {"description": "Workflow run metadata"},
+                        "404": {"description": "Workflow run not found"}
+                    }
+                }
+            },
+            "/api/v1/workflow-runs/{run_id}/events": {
+                "get": {
+                    "summary": "List workflow run metadata events",
+                    "parameters": [path_parameter("run_id"), {"name": "limit", "in": "query", "schema": {"type": "integer", "default": 100, "minimum": 0, "maximum": 500}}],
+                    "responses": {"200": {"description": "Workflow run metadata events"}}
+                },
+                "post": {
+                    "summary": "Append workflow run metadata event",
+                    "description": "Appends an event record only; does not trigger execution.",
+                    "requestBody": json_request_body(&["event_type"], json!({
+                        "node_id": {"type": "string"},
+                        "event_type": {"type": "string"},
+                        "details": {"type": "object"}
+                    })),
+                    "responses": {"200": {"description": "Workflow run metadata event"}}
+                }
+            },
+            "/api/v1/workflow-runs/{run_id}/approvals": {
+                "get": {
+                    "summary": "List workflow run approval metadata",
+                    "parameters": [path_parameter("run_id"), {"name": "limit", "in": "query", "schema": {"type": "integer", "default": 100, "minimum": 0, "maximum": 500}}],
+                    "responses": {"200": {"description": "Workflow run approval metadata"}}
+                },
+                "post": {
+                    "summary": "Record workflow run approval metadata",
+                    "description": "Records approval metadata only; does not grant execution authority.",
+                    "requestBody": json_request_body(&["node_id", "decision"], json!({
+                        "node_id": {"type": "string"},
+                        "decision": {"type": "string", "enum": ["requested", "approved", "rejected"]},
+                        "reason": {"type": "string"}
+                    })),
+                    "responses": {"200": {"description": "Workflow run approval metadata"}}
+                }
+            },
+            "/api/v1/workflow-runs/{run_id}/resume": {
+                "post": {
+                    "summary": "Record workflow run resume metadata",
+                    "description": "Records resume intent and status metadata only; no execution resume authority.",
+                    "parameters": [path_parameter("run_id")],
+                    "requestBody": json_request_body(&[], json!({"reason": {"type": "string"}})),
+                    "responses": {"200": {"description": "Workflow run metadata"}}
+                }
+            },
+            "/api/v1/workflow-runs/{run_id}/cancel": {
+                "post": {
+                    "summary": "Record workflow run cancel metadata",
+                    "description": "Records cancel intent and status metadata only; no worker or process cancellation authority.",
+                    "parameters": [path_parameter("run_id")],
+                    "requestBody": json_request_body(&[], json!({"reason": {"type": "string"}})),
+                    "responses": {"200": {"description": "Workflow run metadata"}}
+                }
+            },
+            "/api/v1/workflow-runs/{run_id}/tick": {
+                "post": {
+                    "summary": "Advance workflow run by one tick",
+                    "description": "Finds a ready node (all predecessors completed), leases it, executes via noop/stub, and records the result. Returns the tick result with node execution details. Returns 409 if the run is already terminal.",
+                    "parameters": [path_parameter("run_id")],
+                    "requestBody": json_request_body(&[], json!({"actor": {"type": "string"}})),
+                    "responses": {
+                        "200": {"description": "Tick result with node execution details"},
+                        "404": {"description": "Workflow run not found"},
+                        "409": {"description": "Run is in terminal state"}
+                    }
+                }
+            },
+            "/api/v1/supervised-patch/workspaces": {
+                "get": {
+                    "summary": "List supervised patch workspace metadata",
+                    "description": "Requires dispatch:read scope. Returns app-owned Slice A metadata only; it does not create workspace directories, generate patches, execute workers, call providers, or write target repositories.",
+                    "parameters": [
+                        {"name": "limit", "in": "query", "schema": {"type": "integer", "default": 100, "minimum": 0, "maximum": 500}}
+                    ],
+                    "responses": {"200": {"description": "Supervised patch workspace metadata list"}}
+                },
+                "post": {
+                    "summary": "Create a supervised patch workspace",
+                    "description": "Creates a detached workspace directory outside the target repository and records workspace metadata. Requires dispatch:read scope.",
+                    "requestBody": json_request_body(&["run_id", "target_id", "target_repo_path", "source_revision"], json!({
+                        "run_id": {"type": "string"},
+                        "target_id": {"type": "string"},
+                        "target_repo_path": {"type": "string"},
+                        "source_revision": {"type": "string"},
+                        "plan_id": {"type": "string"},
+                        "source_tree_hash": {"type": "string"}
+                    })),
+                    "responses": {
+                        "200": {"description": "Created workspace metadata"},
+                        "400": {"description": "Invalid request"},
+                        "401": {"description": "Unauthorized"},
+                        "403": {"description": "Forbidden"}
+                    }
+                }
+            },
+            "/api/v1/supervised-patch/workspaces/{workspace_id}": {
+                "get": {
+                    "summary": "Get supervised patch workspace metadata by ID",
+                    "description": "Requires dispatch:read scope. Returns app-owned metadata only and grants no execution authority.",
+                    "parameters": [path_parameter("workspace_id")],
+                    "responses": {
+                        "200": {"description": "Supervised patch workspace metadata"},
+                        "404": {"description": "Supervised patch workspace not found"}
+                    }
+                }
+            },
+            "/api/v1/supervised-patch/workspaces/{workspace_id}/cleanup": {
+                "post": {
+                    "summary": "Clean up a supervised patch workspace",
+                    "description": "Removes the workspace directory and transitions status to cleaned. Requires dispatch:read scope.",
+                    "parameters": [path_parameter("workspace_id")],
+                    "responses": {
+                        "200": {"description": "Workspace cleaned up"},
+                        "404": {"description": "Workspace not found"},
+                        "409": {"description": "Invalid status transition"}
+                    }
+                }
+            },
+            "/api/v1/supervised-patch/workspaces/{workspace_id}/quarantine": {
+                "post": {
+                    "summary": "Quarantine a supervised patch workspace",
+                    "description": "Transitions workspace status to quarantined. Requires dispatch:read scope.",
+                    "parameters": [path_parameter("workspace_id")],
+                    "responses": {
+                        "200": {"description": "Workspace quarantined"},
+                        "404": {"description": "Workspace not found"},
+                        "409": {"description": "Invalid status transition"}
+                    }
+                }
+            },
+            "/api/v1/supervised-patch/artifacts": {
+                "get": {
+                    "summary": "List supervised patch artifact metadata",
+                    "description": "Requires dispatch:read scope. Returns app-owned artifact metadata only; it does not expose patch files, run redaction, approve export, apply patches, or mutate target repositories.",
+                    "parameters": [
+                        {"name": "limit", "in": "query", "schema": {"type": "integer", "default": 100, "minimum": 0, "maximum": 500}}
+                    ],
+                    "responses": {"200": {"description": "Supervised patch artifact metadata list"}}
+                },
+                "post": {
+                    "summary": "Record a supervised patch artifact",
+                    "description": "Records patch artifact metadata linked to a workspace. Requires dispatch:read scope.",
+                    "requestBody": json_request_body(&["workspace_id", "patch_hash", "changed_files"], json!({
+                        "workspace_id": {"type": "string"},
+                        "patch_hash": {"type": "string"},
+                        "changed_files": {"type": "array", "items": {"type": "string"}},
+                        "redaction_status": {"type": "string", "enum": ["pending", "redacted", "failed"]}
+                    })),
+                    "responses": {
+                        "200": {"description": "Recorded artifact metadata"},
+                        "400": {"description": "Invalid request"},
+                        "404": {"description": "Workspace not found"}
+                    }
+                }
+            },
+            "/api/v1/supervised-patch/artifacts/{artifact_id}": {
+                "get": {
+                    "summary": "Get supervised patch artifact metadata by ID",
+                    "description": "Requires dispatch:read scope. Returns app-owned artifact metadata only and grants no patch apply/export authority.",
+                    "parameters": [path_parameter("artifact_id")],
+                    "responses": {
+                        "200": {"description": "Supervised patch artifact metadata"},
+                        "404": {"description": "Supervised patch artifact not found"}
+                    }
+                }
+            },
             "/api/v1/dashboard": {
                 "get": {
                     "summary": "Read local dashboard state from SQLite-backed runtime state",
                     "responses": {"200": {"description": "Dashboard state"}}
+                }
+            },
+            "/api/v1/metrics": {
+                "get": {
+                    "summary": "Read local operational metrics",
+                    "description": "Requires health:read scope. Reports dispatch, audit, key, backup, cost, token, provider, auth, and local boundary summary.",
+                    "responses": {"200": {"description": "Operational metrics"}}
                 }
             },
             "/api/v1/config": {
@@ -261,7 +571,9 @@ pub fn openapi_document() -> serde_json::Value {
                     "summary": "Read local audit log",
                     "parameters": [
                         {"name": "limit", "in": "query", "schema": {"type": "integer", "default": 100, "minimum": 0, "maximum": 500}},
-                        {"name": "offset", "in": "query", "schema": {"type": "integer", "default": 0, "minimum": 0}}
+                        {"name": "offset", "in": "query", "schema": {"type": "integer", "default": 0, "minimum": 0}},
+                        {"name": "search", "in": "query", "schema": {"type": "string"}, "description": "Case-insensitive match across audit actor, action, resource, and details."},
+                        {"name": "redact", "in": "query", "schema": {"type": "boolean", "default": false}, "description": "When true, sensitive detail keys are redacted in the response."}
                     ],
                     "responses": {"200": {"description": "Audit log"}}
                 }
@@ -296,6 +608,18 @@ pub fn openapi_document() -> serde_json::Value {
                     "parameters": [path_parameter("backup_id")],
                     "responses": {
                         "200": {"description": "Backup deleted"},
+                        "404": {"description": "Backup not found"},
+                        "403": {"description": "Forbidden"}
+                    }
+                }
+            },
+            "/api/v1/backups/{backup_id}/verify": {
+                "get": {
+                    "summary": "Verify a local backup",
+                    "description": "Requires backup:admin scope. Checks backup checksum, SQLite integrity, and table row counts without modifying the live store.",
+                    "parameters": [path_parameter("backup_id")],
+                    "responses": {
+                        "200": {"description": "Backup verification result"},
                         "404": {"description": "Backup not found"},
                         "403": {"description": "Forbidden"}
                     }
@@ -395,12 +719,52 @@ pub fn openapi_document() -> serde_json::Value {
                     }
                 }
             },
+            "/api/v1/decisions": {
+                "get": {
+                    "summary": "List orchestration decision log entries",
+                    "description": "Requires dispatch:read scope. Returns persisted orchestration decision records with optional filtering by run_id and text search.",
+                    "parameters": [
+                        {"name": "limit", "in": "query", "schema": {"type": "integer", "default": 100, "minimum": 0, "maximum": 500}},
+                        {"name": "offset", "in": "query", "schema": {"type": "integer", "default": 0, "minimum": 0}},
+                        {"name": "search", "in": "query", "schema": {"type": "string"}, "description": "Case-insensitive match across run_id, action, selected_executor, and confidence."},
+                        {"name": "run_id", "in": "query", "schema": {"type": "string"}, "description": "Filter decisions by workflow run ID."}
+                    ],
+                    "responses": {"200": {"description": "Decision log entries"}}
+                }
+            },
+            "/api/v1/decisions/stats": {
+                "get": {
+                    "summary": "Orchestration decision log statistics",
+                    "description": "Requires dispatch:read scope. Returns aggregate stats: total decisions, breakdown by action, and average confidence score.",
+                    "responses": {"200": {"description": "Decision log statistics"}}
+                }
+            },
+            "/api/v1/decisions/{decision_id}": {
+                "get": {
+                    "summary": "Get a single orchestration decision by ID",
+                    "description": "Requires dispatch:read scope. Returns a single decision record with full input signals.",
+                    "parameters": [path_parameter("decision_id")],
+                    "responses": {
+                        "200": {"description": "Decision detail"},
+                        "404": {"description": "Decision not found"}
+                    }
+                }
+            },
             "/api/v1/provider/health": {
                 "get": {
                     "summary": "Provider health check",
                     "description": "Reports provider status: noop if no provider configured, ok if enabled, error if disabled or unavailable.",
                     "responses": {
                         "200": {"description": "Provider health status"}
+                    }
+                }
+            },
+            "/api/v1/scheduler/status": {
+                "get": {
+                    "summary": "Workflow scheduler status",
+                    "description": "Reports scheduler health, tick count, error count, and configuration. Returns enabled=false when ACP_ENABLE_SCHEDULER is not set.",
+                    "responses": {
+                        "200": {"description": "Scheduler status"}
                     }
                 }
             },
@@ -452,6 +816,21 @@ pub fn openapi_document() -> serde_json::Value {
                         "404": {"description": "Backup not found"}
                     }
                 }
+            },
+            "/api/v1/backups/{backup_id}/restore/dry-run": {
+                "post": {
+                    "summary": "Dry-run a backup restore",
+                    "description": "Requires backup:admin scope and confirm_restore_dry_run=true. Verifies the backup and reports whether restore would overwrite the live app-owned SQLite DB without modifying it.",
+                    "parameters": [path_parameter("backup_id")],
+                    "requestBody": json_request_body(&["confirm_restore_dry_run"], json!({
+                        "confirm_restore_dry_run": {"type": "boolean", "const": true}
+                    })),
+                    "responses": {
+                        "200": {"description": "Restore dry-run verification result"},
+                        "400": {"description": "Missing confirmation"},
+                        "404": {"description": "Backup not found"}
+                    }
+                }
             }
         }
     })
@@ -493,6 +872,38 @@ mod tests {
             "get",
             "dispatch_id",
         );
+        assert_path_parameter(&doc, "/api/v1/plans/{plan_id}", "get", "plan_id");
+        assert_path_parameter(&doc, "/api/v1/workflow-runs/{run_id}", "get", "run_id");
+        assert_path_parameter(
+            &doc,
+            "/api/v1/workflow-runs/{run_id}/events",
+            "get",
+            "run_id",
+        );
+        assert_path_parameter(
+            &doc,
+            "/api/v1/workflow-runs/{run_id}/approvals",
+            "get",
+            "run_id",
+        );
+        assert_path_parameter(
+            &doc,
+            "/api/v1/workflow-runs/{run_id}/resume",
+            "post",
+            "run_id",
+        );
+        assert_path_parameter(
+            &doc,
+            "/api/v1/workflow-runs/{run_id}/cancel",
+            "post",
+            "run_id",
+        );
+        assert_path_parameter(
+            &doc,
+            "/api/v1/workflow-runs/{run_id}/tick",
+            "post",
+            "run_id",
+        );
         assert_path_parameter(&doc, "/api/v1/team/{user_id}", "put", "user_id");
         assert_path_parameter(&doc, "/api/v1/team/{user_id}", "delete", "user_id");
         assert_path_parameter(&doc, "/api/v1/backups/{backup_id}", "delete", "backup_id");
@@ -512,6 +923,21 @@ mod tests {
     fn test_openapi_mutation_routes_document_request_bodies() {
         let doc = openapi_document();
 
+        assert_required_body_fields(&doc, "/api/v1/plans", "post", &["raw_request"]);
+        assert_required_body_fields(&doc, "/api/v1/workflow-runs", "post", &["plan_id"]);
+        assert_required_body_fields(&doc, "/api/v1/workflow-runs/{run_id}/tick", "post", &[]);
+        assert_required_body_fields(
+            &doc,
+            "/api/v1/workflow-runs/{run_id}/events",
+            "post",
+            &["event_type"],
+        );
+        assert_required_body_fields(
+            &doc,
+            "/api/v1/workflow-runs/{run_id}/approvals",
+            "post",
+            &["node_id", "decision"],
+        );
         assert_required_body_fields(&doc, "/api/v1/team/{user_id}", "put", &["role"]);
         assert_required_body_fields(&doc, "/api/v1/backups", "post", &["confirm_local_backup"]);
         assert_required_body_fields(
@@ -553,5 +979,31 @@ mod tests {
                 "{path} {method} must require {field}"
             );
         }
+    }
+
+    #[test]
+    fn test_openapi_decisions_routes_documented() {
+        let doc = openapi_document();
+        let paths = doc["paths"].as_object().expect("paths should be an object");
+
+        assert!(
+            paths.contains_key("/api/v1/decisions"),
+            "OpenAPI document must include /api/v1/decisions"
+        );
+        assert!(
+            paths.contains_key("/api/v1/decisions/stats"),
+            "OpenAPI document must include /api/v1/decisions/stats"
+        );
+        assert!(
+            paths.contains_key("/api/v1/decisions/{decision_id}"),
+            "OpenAPI document must include /api/v1/decisions/{{decision_id}}"
+        );
+
+        assert_path_parameter(
+            &doc,
+            "/api/v1/decisions/{decision_id}",
+            "get",
+            "decision_id",
+        );
     }
 }

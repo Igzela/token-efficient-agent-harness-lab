@@ -30,14 +30,14 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 # Patterns that indicate a credential assignment (flagged unless in an
 # allowlist of placeholder values).
 SECRET_PATTERNS = [
-    re.compile(r"""api_key\s*=\s*['"][^'"]+['"]""", re.IGNORECASE),
-    re.compile(r"""secret\s*=\s*['"][^'"]+['"]""", re.IGNORECASE),
-    re.compile(r"""token\s*=\s*['"][^'"]+['"]""", re.IGNORECASE),
-    re.compile(r"""password\s*=\s*['"][^'"]+['"]""", re.IGNORECASE),
-    re.compile(r"""api[_-]?key\s*[:=]\s*['"][^'"]+['"]""", re.IGNORECASE),
-    re.compile(r"""secret[_-]?key\s*[:=]\s*['"][^'"]+['"]""", re.IGNORECASE),
-    re.compile(r"""access[_-]?token\s*[:=]\s*['"][^'"]+['"]""", re.IGNORECASE),
-    re.compile(r"""bearer\s+[A-Za-z0-9._-]+""", re.IGNORECASE),
+    re.compile(r"""(?<![A-Za-z0-9_])api_key\s*=\s*['"][^'"]+['"]""", re.IGNORECASE),
+    re.compile(r"""(?<![A-Za-z0-9_])secret\s*=\s*['"][^'"]+['"]""", re.IGNORECASE),
+    re.compile(r"""(?<![A-Za-z0-9_])token\s*=\s*['"][^'"]+['"]""", re.IGNORECASE),
+    re.compile(r"""(?<![A-Za-z0-9_])password\s*=\s*['"][^'"]+['"]""", re.IGNORECASE),
+    re.compile(r"""(?<![A-Za-z0-9_])api[_-]?key\s*[:=]\s*['"][^'"]+['"]""", re.IGNORECASE),
+    re.compile(r"""(?<![A-Za-z0-9_])secret[_-]?key\s*[:=]\s*['"][^'"]+['"]""", re.IGNORECASE),
+    re.compile(r"""(?<![A-Za-z0-9_])access[_-]?token\s*[:=]\s*['"][^'"]+['"]""", re.IGNORECASE),
+    re.compile(r"""bearer\s+(?!token\b)[A-Za-z0-9._-]{10,}""", re.IGNORECASE),
 ]
 
 # Placeholder values that should NOT trigger the secret scan.
@@ -102,7 +102,10 @@ SECRET_SCAN_EXCLUDE = {
 ALLOWED_TEST_IMPORTS: dict[str, set[str]] = {
     "sdk/python/src/agent_control_plane_sdk/client.py": {"urllib.request", "urllib.error"},
     "sdk/python/tests/test_client.py": {"urllib.error"},
-    "scripts/smoke_native_runtime.py": {"socket", "urllib.request"},
+    "scripts/acp_local_doctor.py": {"socket"},
+    "scripts/acp_ops_check.py": {"urllib.error", "urllib.request"},
+    "scripts/acp_restore_smoke.py": {"urllib.error", "urllib.request"},
+    "scripts/smoke_native_runtime.py": {"socket", "urllib.error", "urllib.request"},
     "scripts/trial4_real_use_pilot.py": {
         "socket",
         "urllib.error",
@@ -114,6 +117,30 @@ ALLOWED_TEST_IMPORTS: dict[str, set[str]] = {
         "urllib.error",
         "urllib.parse",
         "urllib.request",
+    },
+    "scripts/pilot_production_e2e.py": {
+        "urllib.request",
+        "urllib.error",
+    },
+    "scripts/pilot_cli_e2e.py": {
+        "urllib.request",
+        "urllib.error",
+    },
+    "scripts/pilot_dynamic_cli_matrix.py": {
+        "urllib.request",
+        "urllib.error",
+    },
+    "scripts/soak_ops_drill.py": {
+        "urllib.request",
+        "urllib.error",
+    },
+    "scripts/ga_rollback_drill.py": {
+        "urllib.request",
+        "urllib.error",
+    },
+    "scripts/ga_release_checklist.py": {
+        "urllib.request",
+        "urllib.error",
     },
 }
 

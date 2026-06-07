@@ -40,6 +40,7 @@ impl Executor for ProviderExecutor {
                 .analysis_snapshot
                 .get("selected_model")
                 .and_then(|v| v.as_str())
+                .or_else(|| self.provider.default_model())
                 .unwrap_or("unknown")
                 .to_string(),
             prompt: raw_request.to_string(),
@@ -47,9 +48,7 @@ impl Executor for ProviderExecutor {
         };
 
         let provider = self.provider.clone();
-        let response = tokio::task::block_in_place(|| {
-            tokio::runtime::Handle::current().block_on(provider.invoke(&request))
-        });
+        let response = invoke_provider_blocking(provider, &request);
 
         match response {
             Ok(resp) => {
@@ -130,6 +129,31 @@ impl Executor for ProviderExecutor {
     }
 }
 
+fn invoke_provider_blocking(
+    provider: Arc<dyn Provider>,
+    request: &ProviderRequest,
+) -> Result<super::ProviderResponse, ProviderError> {
+    let request = request.clone();
+    let provider_id = request.provider_id.clone();
+    std::thread::spawn(move || {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("provider runtime");
+        runtime.block_on(provider.invoke(&request))
+    })
+    .join()
+    .unwrap_or_else(|_| {
+        Err(ProviderError {
+            schema_version: "provider_error.v1".to_string(),
+            provider_id,
+            error_domain: "provider_runtime".to_string(),
+            message: "provider runtime thread panicked".to_string(),
+            retryable: true,
+        })
+    })
+}
+
 pub fn make_not_executed_result(
     decision: &DispatchDecision,
     dispatch_id: &str,
@@ -165,6 +189,37 @@ mod tests {
     use super::*;
     use crate::dispatch_decision::DispatchDecision;
     use crate::provider::stub::StubProvider;
+    use crate::provider::{ProviderResponse, ProviderResult};
+
+    struct ModelEchoProvider;
+
+    #[async_trait::async_trait]
+    impl Provider for ModelEchoProvider {
+        fn provider_id(&self) -> &str {
+            "model-echo"
+        }
+
+        fn is_enabled(&self) -> bool {
+            true
+        }
+
+        fn default_model(&self) -> Option<&str> {
+            Some("configured-model")
+        }
+
+        async fn invoke(&self, request: &ProviderRequest) -> ProviderResult {
+            Ok(ProviderResponse {
+                schema_version: "provider_response.v1".to_string(),
+                provider_id: self.provider_id().to_string(),
+                model: request.model.clone(),
+                output: request.model.clone(),
+                input_tokens: Some(1),
+                output_tokens: Some(1),
+                estimated_cost: Some(0.001),
+                provider_request_id: None,
+            })
+        }
+    }
 
     fn make_decision() -> DispatchDecision {
         DispatchDecision {
@@ -198,6 +253,20 @@ mod tests {
         assert_eq!(result.usage_source, Some("provider_reported".to_string()));
         assert_eq!(result.dispatch_id, "disp-0001");
         assert_eq!(result.decision_id, "dec-0001");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn provider_executor_uses_provider_default_model_when_decision_has_none() {
+        let provider = Arc::new(ModelEchoProvider);
+        let executor = ProviderExecutor::new(provider);
+        let mut decision = make_decision();
+        decision.analysis_snapshot = serde_json::json!({});
+        let mut runtime = FixtureRuntime::new();
+
+        let result = executor.execute(&decision, "hello", "disp-model", &mut runtime);
+
+        assert_eq!(result.status, "provider_completed");
+        assert_eq!(result.output.as_deref(), Some("configured-model"));
     }
 
     #[tokio::test(flavor = "multi_thread")]

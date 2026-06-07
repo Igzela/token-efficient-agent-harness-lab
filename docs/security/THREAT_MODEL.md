@@ -1,7 +1,7 @@
 # Threat Model — Local Agent Control Plane
 
-Last updated: 2026-05-30
-Scope: Rust engine, TypeScript dashboard/SDK, local SQLite state, env-gated provider adapters
+Last updated: 2026-06-05
+Scope: Rust engine, TypeScript dashboard/SDK, local SQLite state, env-gated provider adapters, Batch 6 supervised-execution design-gate risks, Batch 7 Slice A storage-only supervised patch metadata, Slice B read-only HTTP metadata views, Slice C read-only SDK metadata wrappers, and Slice D approval-binding design. Batch 6/7 risks are not implemented runtime features.
 
 ---
 
@@ -17,6 +17,8 @@ Scope: Rust engine, TypeScript dashboard/SDK, local SQLite state, env-gated prov
 | Audit log | Immutable record of all state mutations | High — tampering breaks accountability |
 | Source code (Rust `engine/`, TypeScript `dashboard/`, `sdk/`) | All runtime logic | High — controls all system behavior |
 | Static dashboard export | Pre-built Next.js UI served by the engine | Low — read-only interface |
+| Future target workspace | Planned app-owned detached patch workspace/snapshot area for any later supervised patch artifact beta | Critical — Slice A stores metadata only, Slice B exposes read-only metadata views, and Slice C adds read-only SDK wrappers; runtime workspace creation not implemented |
+| Future execution artifacts | Planned patch artifacts, diffs, evidence manifests, rollback/quarantine evidence, and captured files | High — Slice A stores metadata only, Slice B exposes read-only metadata views, and Slice C adds read-only SDK wrappers; patch file capture/redaction/export not implemented |
 
 ---
 
@@ -31,6 +33,7 @@ Scope: Rust engine, TypeScript dashboard/SDK, local SQLite state, env-gated prov
 | Plugin boundary | Registered plugins with valid manifests | Unregistered or malformed plugins | `PluginSystem` validation, thread-safe `RLock` execution |
 | SQLite boundary | App-owned local state | External data sources | WAL mode, foreign keys, `PRAGMA integrity_check` |
 | CLI executor boundary | Engine process | External CLI tools (`claude`, `codex`) | `spawn_blocking` for async safety, timeout via `ACP_CLI_TIMEOUT_MS` |
+| Future supervised-execution boundary | Planned sandbox/workspace/approval/rollback/artifact contracts and Batch 7 patch-workspace plan | Host filesystem, network, target repos, external tools | Slice A metadata only; runtime controls not implemented |
 
 ---
 
@@ -44,7 +47,9 @@ Scope: Rust engine, TypeScript dashboard/SDK, local SQLite state, env-gated prov
 
 **Controls:**
 - `check_security_baseline.py` scans for credential patterns in source
+- `scripts/acp_secret_scan.py` scans tracked files plus local env files before real local trials
 - `redact_secrets()` and `redact_audit_fields()` in provider audit path
+- `/api/v1/audit?redact=true` redacts sensitive audit detail keys for operator-facing review
 - API keys are hashed; raw keys shown once on creation/rotation
 - `.env` is gitignored; `.env.example` documents vars without values
 
@@ -130,6 +135,9 @@ Scope: Rust engine, TypeScript dashboard/SDK, local SQLite state, env-gated prov
 
 **Controls:**
 - `confirm_restore=true` required for restore endpoint
+- `GET /api/v1/backups/:id/verify` checks checksum, SQLite integrity, and table row counts without modifying the live store
+- `POST /api/v1/backups/:id/restore/dry-run` reports restore readiness without overwriting the live store
+- `scripts/acp_restore_smoke.py` exercises create backup → verify → restore dry-run by default
 - `restore_backup_with_verify()` performs post-restore integrity check
 - Backup creation requires `backup:admin` scope and `confirm_local_backup=true`
 - Admin audit events for all backup operations
@@ -146,6 +154,61 @@ Scope: Rust engine, TypeScript dashboard/SDK, local SQLite state, env-gated prov
 - Path canonicalization and prefix checks in checkpoint manager
 - Backup paths constrained to app-owned directory
 - No user-supplied paths in backup/restore endpoints (backup IDs only)
+
+---
+
+### T-009: Sandbox Escape In A Future Execution Beta
+
+**Description:** Code or tools run during a future supervised execution beta escape the intended isolation boundary and access host files, network, processes, credentials, or other workflow state.
+
+**Impact:** Critical — host compromise or credential exposure.
+
+**Controls:**
+- Not implemented today.
+- ADR-0002 Batch 6 requires a selected isolation primitive, resource limits, default-deny network policy, read-only target mount, writable scratch-only policy, audit events, and failure handling before Batch 7 can start.
+- ADR-0002 Batch 7 Slice A stores only app-owned workspace/artifact metadata. Slice B exposes only read-only GET metadata views. Slice C exposes the same views through SDK GET wrappers. This is not a process/container/VM sandbox and is acceptable only while target commands, shell execution, package managers, external CLIs, providers, and workers remain forbidden. Any later command execution requires a separate isolation primitive decision.
+
+---
+
+### T-010: Target Workspace Boundary Failure
+
+**Description:** A future execution workspace reads or writes outside its intended scope, mutates a registered target repository directly, or leaks target data through artifacts.
+
+**Impact:** High — unauthorized target mutation or data exfiltration.
+
+**Controls:**
+- Not implemented today.
+- Current app behavior remains read-only for target repositories.
+- ADR-0002 Batch 6 requires an isolated harness-owned workspace, source revision evidence, writable path inventory, final diff/artifact inventory, and no direct target-repo mutation before Batch 7 can start.
+- ADR-0002 Batch 7 Slice A rejects registered-target `git worktree add` for metadata records and validates that planned workspace canonical paths are outside registered target repositories. Slice B only exposes this metadata through `dispatch:read` GET routes, and Slice C only wraps those routes in SDK GET methods. It does not create workspace directories or copy target files.
+
+---
+
+### T-011: Approval Bypass In Future Execution
+
+**Description:** A future execution path proceeds without a required human approval, uses stale approval, accepts approval from the wrong identity/scope, or ignores revocation.
+
+**Impact:** Critical — human-gated actions execute without valid authorization.
+
+**Controls:**
+- Not implemented today.
+- Batch 4 approval records are inert metadata and do not grant execution authority.
+- ADR-0002 Batch 6 requires authenticated approver identity, scoped approval authority, decision expiry, revocation behavior, and immutable audit events before Batch 7 can start.
+- ADR-0002 Batch 7 Slice A stores patch workspace/artifact metadata that future approval evidence can bind to, and Slice B/C expose read-only metadata views, but the patch-review approval gate is not wired.
+- ADR-0002 Batch 7 Slice D defines the docs-only `supervised_patch_approval_binding.v1` contract. Future implementation must validate artifact/workspace ids, patch hash, changed-files hash, approver identity, `workflow:patch_review` scope, expiry, revocation, and stale reasons before any artifact export can become eligible. Wrong-hash, wrong-scope, wrong-identity, expired, revoked, rejected, or stale bindings must block export and emit app-owned events/audit records.
+
+---
+
+### T-012: Rollback Or Artifact-Capture Failure
+
+**Description:** A future execution failure leaves app state or workspace state partially rolled back, loses evidence, captures secrets without redaction, or stores artifacts in a target repository.
+
+**Impact:** High — inconsistent state, unrecoverable workspace, or sensitive data exposure.
+
+**Controls:**
+- Not implemented today.
+- ADR-0002 Batch 6 requires all-or-nothing transitions, rollback verification, app-owned artifact storage, redaction before display/export, read-only artifact access, and explicit cleanup rules before Batch 7 can start.
+- ADR-0002 Batch 7 Slice A implements minimum app-owned SQLite metadata storage for `supervised_patch_workspace.v1` and `supervised_patch_artifact.v1`, plus normalized changed-file validation and export/import/integrity coverage. Slice B exposes metadata through read-only `dispatch:read` GET routes, and Slice C adds SDK GET wrappers. Rollback runtime, patch file capture, redaction runtime, access/export gate, and cleanup runtime are not implemented.
 
 ---
 
@@ -169,6 +232,18 @@ Scope: Rust engine, TypeScript dashboard/SDK, local SQLite state, env-gated prov
 | C-014 | Thread-safe plugin execution (RLock) | T-003 |
 | C-015 | CORS headers on all API responses | T-003 |
 | C-016 | Request body size limit on HTTP server | T-003 |
+| C-017 | Production-like local ops check (`acp_ops_check.py`) | T-003, T-004, T-006 |
+| C-018 | Backup verify and restore dry-run | T-007 |
+| C-019 | Local env secret scan (`acp_secret_scan.py`) | T-001 |
+
+## 4.1 Design Gates Not Yet Implemented
+
+| ID | Planning control | Addresses |
+|----|------------------|-----------|
+| DG-001 | ADR-0002 Batch 6 sandbox/workspace/approval/rollback/artifact contracts | T-009, T-010, T-011, T-012 |
+| DG-002 | Batch 7 must receive separate human approval before any supervised execution implementation | T-009, T-010, T-011, T-012 |
+| DG-003 | ADR-0002 Batch 7 Slice A/B/C stores only app-owned patch workspace/artifact metadata, rejects registered-target worktree mutation/path placement, and exposes only read-only metadata views through HTTP and SDK GET surfaces | T-009, T-010, T-011, T-012 |
+| DG-004 | ADR-0002 Batch 7 Slice D specifies the approval-binding contract for future patch-review/export gate: evidence binding, scope, identity, expiry, revocation, stale reasons, and export blocking rules | T-011, T-012 |
 
 ---
 
@@ -193,3 +268,7 @@ Provider API keys live in environment variables, which may be visible in process
 ### RR-005: No Rate Limit Persistence
 
 Rate limiter state is in-memory. Restart resets rate limits. **Acceptable** for local use; would need persistent storage for production deployment.
+
+### RR-006: No Execution-Phase Controls
+
+Sandbox isolation, target workspace writes, approval broker wiring, rollback engine, and artifact-capture runtime are not implemented. **Acceptable** for the current Slice A-D state because no execution authority or export runtime exists. Any approved runtime slice must test controls for T-009 through T-012 before supervised execution beta can be considered.

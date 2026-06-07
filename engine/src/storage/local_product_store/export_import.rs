@@ -7,6 +7,10 @@ pub const LOCAL_IMPORT_SCHEMA_VERSION: &str = "local_team_export.v1";
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct ImportCounts {
     pub dispatches: i64,
+    pub plans: i64,
+    pub workflow_runs: i64,
+    pub supervised_patch_workspaces: i64,
+    pub supervised_patch_artifacts: i64,
     pub config: i64,
     pub team: i64,
     pub audit: i64,
@@ -120,6 +124,52 @@ impl LocalProductStore {
             }
         }
 
+        if let Some(plans) = snapshot.get("plans").and_then(Value::as_array) {
+            for plan in plans {
+                match self.import_workflow_plan(plan) {
+                    Ok(true) => counts.plans += 1,
+                    Ok(false) => {}
+                    Err(e) => errors.push(format!("plan: {e}")),
+                }
+            }
+        }
+
+        if let Some(runs) = snapshot.get("workflow_runs").and_then(Value::as_array) {
+            for run in runs {
+                match self.import_workflow_run(run) {
+                    Ok(true) => counts.workflow_runs += 1,
+                    Ok(false) => {}
+                    Err(e) => errors.push(format!("workflow_run: {e}")),
+                }
+            }
+        }
+
+        if let Some(workspaces) = snapshot
+            .get("supervised_patch_workspaces")
+            .and_then(Value::as_array)
+        {
+            for workspace in workspaces {
+                match self.import_supervised_patch_workspace(workspace) {
+                    Ok(true) => counts.supervised_patch_workspaces += 1,
+                    Ok(false) => {}
+                    Err(e) => errors.push(format!("supervised_patch_workspace: {e}")),
+                }
+            }
+        }
+
+        if let Some(artifacts) = snapshot
+            .get("supervised_patch_artifacts")
+            .and_then(Value::as_array)
+        {
+            for artifact in artifacts {
+                match self.import_supervised_patch_artifact(artifact) {
+                    Ok(true) => counts.supervised_patch_artifacts += 1,
+                    Ok(false) => {}
+                    Err(e) => errors.push(format!("supervised_patch_artifact: {e}")),
+                }
+            }
+        }
+
         Ok(ImportResult {
             imported: counts,
             errors,
@@ -135,6 +185,10 @@ impl LocalProductStore {
             "schema_version": LOCAL_TEAM_EXPORT_SCHEMA_VERSION,
             "generated_at": self.now(),
             "dispatches": self.list_dispatches(10_000)?,
+            "plans": self.search_workflow_plans(10_000, 0, None)?,
+            "workflow_runs": self.export_workflow_runs(10_000)?,
+            "supervised_patch_workspaces": self.export_supervised_patch_workspaces(10_000)?,
+            "supervised_patch_artifacts": self.export_supervised_patch_artifacts(10_000)?,
             "config": self.config_snapshot()?,
             "team": self.team_snapshot()?,
             "costs": self.cost_summary()?,

@@ -2,219 +2,122 @@
 
 ## Product Scope
 
-**What**: A local deterministic harness and self-hosted agent-control-plane for studying token-efficient agent workflows. It provides deterministic dispatch planning, local API/dashboard access, app-owned SQLite history/config/team state, and cost-of-pass metrics.
+**What**: Local deterministic harness and self-hosted macro-orchestrator control plane for studying token-efficient agent workflows. Provides deterministic dispatch planning, local API/dashboard access, app-owned SQLite state, dynamic workflow state, executor coordination primitives, and cost-of-pass metrics.
 
-**What NOT**: Not a cloud production SaaS or autonomous-agent runtime. No real model-provider calls by default, no sandbox/process/container/VM isolation runtime, no autonomous workers, no target-repo writes, and no hosted production deployment. Existing local CLI executor subprocess invocation is a separate, explicit opt-in exception via `ACP_ENABLE_CLI_EXECUTION=1`.
+**What NOT**: Not a cloud production SaaS, coding-agent runtime, or autonomous-agent runtime. No real model-provider calls by default, no sandbox/process/container/VM isolation, no autonomous workers, no target-repo writes. CLI executor is explicit opt-in via `ACP_ENABLE_CLI_EXECUTION=1`.
 
-**Target user**: Solo developer or small local team studying and operating deterministic agent infrastructure patterns on one machine or a LAN.
+**Target user**: Solo developer or small local team studying deterministic agent infrastructure on one machine or LAN.
+
+**Next product track**: Self-Hosted GA Readiness Track. SG-1 through SG-5 are complete. The track made the current strong beta explainable and handoff-ready for small-team self-hosted use. This track deepened the existing runtime path; it did not authorize hosted SaaS, target repo writes, new sandbox/container/VM execution, provider default-on behavior, or a parallel scheduler/DAG/runtime.
 
 ## Architecture Summary
 
-The dispatch kernel uses a **deterministic, rule-based pipeline**:
-
+Deterministic, rule-based pipeline:
+```
 Request → TaskAnalyzer → ModelSelector → BudgetManager → DispatchDecision → Executor → Evaluation → Ledger
+```
 
-Key design principles:
+Key principles:
 - Rule-based only (no LLM calls in dispatch kernel)
 - Dataclass schemas, no pydantic
-- Phase boundaries enforce safety (Phase 1-2: no real providers, Phase 3+: provider calls allowed with gates)
+- Phase boundaries enforce safety
 - Event-sourced ledger for auditability
 
-Master architecture document: `docs/dispatch/DISPATCHER_KERNEL_V0_ARCHITECTURE.md`. ALL implementation work must follow this document. It is the single source of truth for:
+Master document: `docs/dispatch/DISPATCHER_KERNEL_V0_ARCHITECTURE.md`
 
-- Phase definitions, goals, success criteria, and promotion gates
-- Schema definitions and field-level contracts
-- Component responsibilities and interfaces
-- Testing strategy and pass/fail thresholds
-- Cross-phase architecture decisions and rationale
+## Current State (2026-06-07)
 
-## Current State (as of 2026-05-30)
+**Stable Components:**
+- Dispatch Kernel Phases 1-7 (including 6A, 6B-1/2/3, Gates 1-3): STABLE
+- Language migration: COMPLETE (Rust engine is sole runtime)
+- Dashboard UX Polish + Production-like Local Ops Hardening: IMPLEMENTED
+- Supervised Autonomous Beta Planning Batch 3-7: IMPLEMENTED
+- Dormant Module Adaptation Track: 4 phases COMPLETE
+- Dynamic Workflow Batch 1 (Persisted Graph Mutation Runtime): COMPLETE (1125 Rust tests)
+- Dynamic Workflow Batch 2 (DynamicWorkflowController): COMPLETE (1149 Rust tests)
+- Dynamic Workflow Batch 3 (Feedback-Driven Routing): COMPLETE (1159 Rust tests)
+- Dynamic Workflow Batch 4 (Dynamic Decomposition): COMPLETE (1205 Rust tests)
+- Dynamic Workflow Batch 5 (Agent Profiles): COMPLETE (1193 Rust tests)
+- Dynamic Workflow Batch 6 (Tool Registry): COMPLETE (1205 Rust tests)
+- Dynamic Workflow Batch 7 + scheduler dynamic-mode recovery: COMPLETE (1208 Rust tests)
+- Macro-Orchestrator Phase 1-5 repair batch: COMPLETE (all tick paths persist decisions, executor-pool binds to execution, queue/backpressure correct, operator surfaces aligned, soak script truthful)
+- Self-Hosted GA Readiness Track: SG-1 through SG-5 COMPLETE (real dynamic CLI pilot matrix, long-run soak/failure injection, mission-control dashboard visibility, enriched policy decision signals, and runbook/release/rollback handoff readiness)
 
-- **Original Stage 0-4 task-book**: Complete and sealed.
-- **Harness App MVP0-MVP8**: Complete local operations console.
-- **Trials 0-5**: Closed, with target repo onboarding, multi-repo generalization, real-use pilot, and CLI execution beta complete.
-- **Python legacy reference**: **RETIRED** — `src/harness_core/`, root `tests/`, `demos/`, and root `pyproject.toml` removed (commit c3a23f5). Python retained only as REST SDK (`sdk/python/`) and utility scripts (`scripts/`, `tools/`, `codegen/`). Rust `engine/` is the sole runtime implementation.
-- **Dispatch Kernel Phase 1-6A**: All phases STABLE (Phase 6A: 5 source modules, 5 test files, 1596 tests).
-- **Phase 5 — Multi-Agent Orchestration**: STABLE (11 orchestration modules, 1454 tests, GPT approved after 3 review rounds).
-- **Phase 6A — Local Durable API/Storage**: STABLE (5 source modules, 5 test files, 1596 tests, GPT approved after 2 review rounds).
-- **Phase 6B-1 — Per-server Route Isolation**: Implemented (http_server.py refactored, 1603 tests).
-- **Phase 6B-2 — Local API Key + Tenant Boundary**: STABLE (auth.py, auth middleware, 1654 tests, GPT approved).
-- **Phase 6B-3 + Phase 7**: STABLE (rate_limiter, backup_manager, plugin_system, plugin_registry, sdk, doc_generator; GPT approved).
-- **Phase 7 P7-T3 CommunityProfileRegistry + P7-T4 ToolAdapterManager**: IMPLEMENTED (community_profiles.py, tool_adapter.py; 58 new tests).
-- **Phase 7 P7-T5 Dashboard + P7-T8 Benchmark**: IMPLEMENTED (dashboard.py, benchmark.py; 99 new tests).
-- **Phase 6B-3 Gate 3 — Plugin Thread Safety**: STABLE (RLock in PluginSystem, locks in PluginRegistry; 2089 total).
-- **Language migration Phase 0**: IMPLEMENTED (wire_contract/v1 JSON schemas, Python golden fixtures, stdlib parity runner; 2089 Python tests).
-- **Language migration Phase 1**: IMPLEMENTED (Rust `engine` crate with deterministic runtime, event schema, task analyzer, dispatch decision parity).
-- **Language migration Phase 2**: IMPLEMENTED (Rust selector, budget manager, noop executor, evaluation stub, ledger, dispatch engine).
-- **Language migration Phase 3**: IMPLEMENTED (routing/ 7 modules + orchestration/ 10 modules; 385 Rust tests total).
-- **Language migration Phase 4**: IMPLEMENTED (infrastructure/: observability, auth, rate_limiter, plugin_system, plugin_registry).
-- **Language migration Phase 5**: IMPLEMENTED (ecosystem/: community_profiles, tool_adapter, dashboard, benchmark).
-- **Language migration Phase 6**: IMPLEMENTED (storage/: durable_store via rusqlite, health_checker, backup_manager).
-- **Language migration Phase 7**: IMPLEMENTED (sdk, storage_migrator).
-- **Language migration Rust engine/API parity**: IMPLEMENTED (`http_server` local axum router for health/ready/openapi/dispatch, disabled-by-default `provider` trait boundary, `doc_generator`).
-- **Agent-Control-Plane Phase 5 SDK + Codegen**: IMPLEMENTED (`codegen/generate_wire_types.py`, generated Rust/TypeScript/Python wire types, TypeScript REST SDK with Node test coverage, Python REST SDK with 8 tests). Full nested types from all 6 wire_contract schemas for SDK surfaces; Rust includes generated boundary value types.
-- **Agent-Control-Plane Phase 6 Dashboard**: IMPLEMENTED (`dashboard/` Next.js App Router, read-only views, static export support, no executable controls).
-- **Agent-Control-Plane Phase 7 Docker**: IMPLEMENTED (`deploy/Dockerfile.engine`, `deploy/Dockerfile.dashboard`, `docker-compose.yml`, optional local API + dashboard smoke).
-- **Agent-Control-Plane Phase 8 Closeout**: IMPLEMENTED (`docs/AGENT_CONTROL_PLANE_MIGRATION_CLOSEOUT.md`).
-- **Agent-Control-Plane Native Local Runtime**: IMPLEMENTED (`ACP_DASHBOARD_DIR=dashboard/out cargo run -p engine` serves API + dashboard from one Rust process; Docker optional).
-- **Agent-Control-Plane Local Small-Team Productization**: IMPLEMENTED (`engine/src/storage/local_product_store/`, live dashboard API state, SQLite dispatch history/config/team/API-key metadata/audit/cost state, export, admin-auth-confirmed local backup, SDK local-state methods). Still no cloud SaaS, target writes, real workers, or sandbox/process isolation runtime.
-- **Phase 6B-3 Gate 1**: IMPLEMENTED (scope checks, rate limiting, 403/429 responses).
-- **Security hardening**: redaction logging, http_server body size limit + CORS, checkpoint path traversal fix, 42 new tests for coverage gaps.
-- **Productization Phase 2 — Permission Governance**: IMPLEMENTED (API key create/revoke/rotate/delete/scopes, team member create/update-role/delete, last_used_at tracking, expires_at support, revoked_at enforcement, admin audit events, team:admin scope gating, SDK CRUD methods, dashboard management UI).
-- **Productization Phase 3 — Cost Governance**: IMPLEMENTED (cost_summary v2: reserved vs estimated, token usage, utilization ratio, daily trend; dispatch_cost_details endpoint; dashboard enhanced Costs view; typed SDK cost responses; 15 new Rust tests, 1056 total).
-- **Productization Phase 4 — Data Operations**: IMPLEMENTED (versioned SQLite migrations via PRAGMA user_version; check_integrity() with PRAGMA integrity_check and per-table row counts; import_snapshot() for idempotent import from export JSON; GET /api/v1/storage/integrity and POST /api/v1/import and POST /api/v1/backups/:id/restore endpoints; backup restore hardened with restore_backup_with_verify(); data-directory documentation; 19 new Rust tests, 1075 total).
-- **Productization Phase 5 — Native Packaging**: IMPLEMENTED (.env.example with all 16 env vars; install.sh/upgrade.sh scripts; package-release.sh builds release binary + static dashboard tarball; smoke_release.sh verifies extracted artifact; 4 MB release tarball).
-- **Rust + TypeScript Cutover**: COMPLETE (`engine/` is the primary runtime/API/storage/provider-gated control plane; `dashboard/` and `sdk/typescript/` are the primary TypeScript surfaces; `scripts/verify_rust_typescript_stack.sh` is the primary cutover verification. Python retained as REST SDK and utility scripts only).
-- **Architecture Refactor R1**: IMPLEMENTED (`engine/src/http_server/` module directory: mod.rs, state.rs, middleware.rs, routes.rs, server_context.rs, handlers/{health,dispatch,team,keys,costs,backups,audit,provider,dashboard,data_ops}). 1140 Rust tests pass.
-- **Architecture Refactor R2**: IMPLEMENTED (`engine/src/storage/local_product_store/` module directory: mod.rs, dispatch.rs, config.rs, team.rs, keys.rs, audit.rs, provider_audit.rs, costs.rs, migrations.rs, integrity.rs, export_import.rs, boundaries.rs). 1140 Rust tests pass.
-- **Architecture Refactor R3**: IMPLEMENTED (`engine/src/task_analyzer/` module directory: mod.rs, rules.rs, classify.rs, risk.rs, scoring.rs). 1144 Rust tests pass.
-- **Architecture Refactor R4**: IMPLEMENTED (`engine/src/workflow/dag_manager/` module directory: mod.rs, types.rs, helpers.rs, mutations.rs, compensate.rs). 1144 Rust tests pass.
-- **Architecture Refactor R5**: IMPLEMENTED (`engine/src/workflow/context_pack/` module directory: mod.rs, rules.rs, types.rs, validation.rs, budget.rs). 1144 Rust tests pass.
-- **Architecture Refactor R6**: IMPLEMENTED (`engine/src/harness/model_profiles/` module directory: mod.rs, constants.rs, types.rs, validation.rs, shadow.rs). 1144 Rust tests pass.
-- **Architecture Refactor R7**: IMPLEMENTED (`engine/src/workflow/concurrency/` module directory: mod.rs, dag_types.rs, types.rs, controller.rs, helpers.rs). 1144 Rust tests pass.
-- **Architecture Refactor R-series**: **SEALED AT R7**. R8 is not approved. `checkpoint.rs` split and `dispatch_decision.rs` split deferred. No further R-series file splitting is approved.
-- **Post-R7 Wire/Type Governance Hardening**: IMPLEMENTED (`app_layer` dormant-reference annotation, 20-fixture Rust typed round-trip guardrail, active CLI/provider execution-result schema enums, generated/manual TypeScript split behind compatibility re-export, schema-driven practical enum extraction, `--check` codegen mode, CI/autonomous-closeout `scripts/check_wire_codegen_drift.sh` guard, localized dashboard union reuse). Post-R7 real-use, developer-experience audit fixes, Trial 4 duplicate-dispatch regression coverage, and Trial 5 malformed-CLI-output regressions bring the current suite to 1161 Rust tests pass.
-
-See `docs/CURRENT_STATUS.md` for detailed phase closeout records.
+**Key Milestones:**
+- 1348 Rust tests pass, 0 failures
+- TypeScript strict + readonly lint + build + static export pass
+- `cargo fmt`, `cargo clippy`, handoff guard all pass
 
 ## Known Technical Debt
 
-**Phase 1 carry-over:**
+See `docs/CURRENT_STATUS.md` for full details. Key items:
 - Compound "or" negations only match first phrase
-- Evidence spans use placeholder (0, 0) positions
-- Budget pressure is diagnostic only, doesn't change model selection
-- fallback_tier conflates fallback/escalation semantics
-
-**Phase 2 carry-over:**
-- Pasteback stores raw_output inline (no redaction)
-- ManualSessionStore lacks strict transition validation
-- Boundary compliance is heuristic, not authoritative
+- Evidence spans use placeholder positions
+- Budget pressure is diagnostic only
 - Token estimates are rough char/4
-
-**Phase 3 carry-over:**
-- Only env credential backend active (file/keyring/vault are schema-reserved)
-- Audit recorder is in-memory (no persistent store)
-- OpenAI-compatible path only; Anthropic/local are future adapters
-- Cost depends on configured pricing and provider-reported usage
-
-**Phase 4 carry-over:**
-- routing_experiment_id is supported but usually None until richer experiment tracking exists
-- History and observation stores are in-memory only
-- Promotion logic is deterministic threshold-based, not statistical
-- Adaptive routing depends on quality/cost observations supplied by upstream evaluators
-
-See `docs/CURRENT_STATUS.md` for full details.
-
-## Session Log
-
-- **2026-05-27→05-28**: Dispatch Kernel Phases 1-5, 6A, 6B-1/2/3, Gates 1-3, Phase 7 all STABLE through iterative GPT review. 2089 Python tests. Language migration Phases 0-7 complete. Rust engine/API parity implemented. SDK + codegen + dashboard + Docker deployed. See `docs/CURRENT_STATUS.md` for full track history.
-- **2026-05-29**: Provider infrastructure (audit/redaction/RetryFallbackManager), Rust + TypeScript cutover, Productization Phases 1-6 (Provider Safety Gate, Permission Governance, Cost Governance, Data Operations, Native Packaging, Dashboard Controls). 1086 Rust tests, 13 TS SDK tests, 17 Python SDK tests. All verification passing.
-- **2026-05-30**: Long-Run Hardening (part 1) — SQLite contention tests (6 tests for concurrent writes, reads-during-writes, audit events, deadlock prevention, data integrity) and provider failure matrix tests (21 tests covering retry exhaustion, fallback routing, budget-exhausted mid-retry, non-retryable errors, disabled provider, cost gate blocks, audit trail, governance blocks, backoff strategies). 27 new Rust tests (1113 total).
-- **2026-05-30**: Long-Run Hardening (part 2) — Audit integrity tests (7 tests: mutation audit correctness, ordering monotonicity, persistence across reopen, concurrent writes, integrity report row count). Enhanced smoke_release.sh: tarball structure, install smoke, data preservation, port retry, integrity endpoint. 7 new Rust tests (1120 total).
-- **2026-05-30**: CLI Executor Routing — Complexity-based dispatch to Claude Code CLI / Codex CLI. New `engine/src/cli/` module with `ClaudeCodeCliExecutor`, `CodexCliExecutor`, `MultiExecutor`, `CliConfig`. Existing local subprocess exception is explicit opt-in via `ACP_ENABLE_CLI_EXECUTION=1`. Complexity threshold 0.7 escalates to CLI tiers when enabled. 10 new Rust tests (1130 total).
-- **2026-05-30**: P1 Local-Beta Follow-Up — 7 items: GET /api/v1/keys metadata-only key list endpoint, search/filter/pagination for dispatches and audit, bookmarkable dashboard tabs via URL hash, 60-second auto-refresh with visibility-aware pausing, Docker volume persistence for SQLite, key reveal modal replacing alert(), dashboard split from 1358-line monolith into 12 focused components. 4 new Rust tests (1140 total).
-- **2026-05-30**: P2 Local-Beta Polish & Type Hardening — CSS design token cleanup (#c0392b → var(--risk), utility classes), TypeScript SDK type hardening (22 new focused response interfaces, 21 methods typed, ExecutorType/ExecutionStatus extended for CLI executors), dashboard component quality (usePaginatedSearch hook, SearchBar, Pagination components), Next.js app polish (loading.tsx, error.tsx, metadata, favicon). 0 new Rust tests (1140 total), 16 SDK tests pass.
-- **2026-05-30**: Toolchain Consolidation & Drift Guard — Standardized all authoritative docs to `uv run --no-project python` (8 stale bare python3 references fixed across 9 files). README toolchain table added. verify_rust_typescript_stack.sh preflight extended (bun/cargo/uv). `scripts/check_toolchain_drift.sh` drift guard added for stale JS/Python toolchain references. Integrated into autonomous closeout workflow. CI already aligned. 0 new Rust tests (1140 total). `uv.lock` intentionally not added.
-- **2026-05-30**: Python Legacy Reference Retirement — Removed `src/harness_core/` (58 files), root `tests/` (121 files), `demos/` (2 files), legacy tools (2 files), root `pyproject.toml`. Relocated `test_security_baseline.py` and `test_dashboard_static.py` to `tools/`. Updated CI workflow, handoff script, and all living docs. Python now means SDK + utility scripts only. 0 new Rust tests (1140 total).
-- **2026-05-30**: Architecture Refactor R1 — http_server split. Replaced 2077-line `engine/src/http_server.rs` monolith with `engine/src/http_server/` module directory (16 files): mod.rs, state.rs, middleware.rs, routes.rs, server_context.rs, handlers/{health,dispatch,team,keys,costs,backups,audit,provider,dashboard,data_ops}. Public API unchanged. 1140 Rust tests pass. Commit `f2c5ac3`.
-- **2026-05-30**: Architecture Refactor R2 — local_product_store split. Replaced 1365-line `engine/src/storage/local_product_store.rs` monolith with `engine/src/storage/local_product_store/` module directory (12 files): mod.rs, dispatch.rs, config.rs, team.rs, keys.rs, audit.rs, provider_audit.rs, costs.rs, migrations.rs, integrity.rs, export_import.rs, boundaries.rs. Public API unchanged. 1140 Rust tests pass. Commit `3c9439b`. GPT PASS.
-- **2026-05-30**: Architecture Refactor R3 — task_analyzer split. Replaced 1117-line `engine/src/task_analyzer.rs` monolith with `engine/src/task_analyzer/` module directory (5 files): mod.rs, rules.rs, classify.rs, risk.rs, scoring.rs. Public API unchanged. 1140 Rust tests pass. Commit `8813a4d`. GPT PASS.
-- **2026-05-30**: Architecture Refactor R4 — dag_manager split. Replaced 1186-line `engine/src/workflow/dag_manager.rs` monolith with `engine/src/workflow/dag_manager/` module directory (5 files): mod.rs, types.rs, helpers.rs, mutations.rs, compensate.rs. Public API unchanged. 1144 Rust tests pass. Commit `7b9aac1`. GPT PASS (requires_approval re-export fix applied, docs patched). CLOSED.
-- **2026-05-30**: Architecture Refactor R5 — context_pack split. Replaced 1003-line `engine/src/workflow/context_pack.rs` monolith with `engine/src/workflow/context_pack/` module directory (5 files): mod.rs, rules.rs, types.rs, validation.rs, budget.rs. Public API unchanged. 1144 Rust tests pass.
-- **2026-05-30**: Architecture Refactor R6 — model_profiles split. Replaced 840-line `engine/src/harness/model_profiles.rs` monolith with `engine/src/harness/model_profiles/` module directory (5 files): mod.rs, constants.rs, types.rs, validation.rs, shadow.rs. Public API unchanged. 1144 Rust tests pass.
-- **2026-05-30**: Architecture Refactor R7 — concurrency split. Replaced 674-line `engine/src/workflow/concurrency.rs` monolith with `engine/src/workflow/concurrency/` module directory (5 files): mod.rs, dag_types.rs, types.rs, controller.rs, helpers.rs. Public API unchanged. 1144 Rust tests pass.
-- **2026-05-30**: Post-R7 closeout + wire/type governance hardening — sealed R-series at R7; deferred R8, checkpoint.rs split, and dispatch_decision.rs split; annotated dormant app_layer; added typed fixture round-trips and active enum checks; aligned execution-result schemas; split generated/manual TypeScript types; extracted practical schema enums in codegen; added `--check` drift enforcement in CI and handoff checks; reused generated enum aliases in dashboard types. 2 new Rust tests (1146 total).
-- Previous BLOCK findings (b6d5bc1): HIGH-1 rate limit not wired, HIGH-2 scope enforcement missing, HIGH-3 plugin locks unused
-- Gate 1 addresses: HIGH-1 (rate limiter in ServerContext + _check_rate_limit), HIGH-2 (scope enforcement + AuthorizationDecision + 403/429)
-- Gate 2 addresses: atomic restore, WAL safety, failure-mode coverage
-- HIGH-3 (plugin locks) deferred to Gate 3
-- Status: Gate 1 STABLE, Gate 2 STABLE, Gate 3 STABLE
-
-### GPT Gate Feedback Summary (2026-05-28)
-All dispatch kernel review gates (6B-1, 6B-2, 6B-3 Gates 1-3, Phase 7 hardening) passed after iterative fixes. Key P0 fixes: empty-scope bypass, stale scope re-registration, WAL checkpoint before sidecar removal, atomic restore with checksum verification. Full details archived in git history.
-
-## External Dependencies
-
-- **Python stdlib only** — zero runtime dependencies, no third-party packages. Provider adapters use injectable transport (urllib used only in demo scripts).
-- **No runtime LLM dependencies** in dispatch kernel itself (provider is pluggable)
-
-## Test Strategy
-
-- **Framework**: Rust `cargo test` for engine; Python `unittest` for SDK
-- **Run command**: `cargo test -p engine` (primary); `cd sdk/python && PYTHONPATH=src uv run --no-project python -m unittest discover -s tests` (SDK)
-- **Current count**: 1161 Rust tests pass, 0 failures (as of 2026-05-31)
-- **Coverage**: Phase boundary contracts, schema validation, golden fixtures
-- **CI**: GitHub Actions on push/PR to main — runs security baseline + Rust/TS/SDK tests
-- **Test-first**: Write tests alongside implementation. Follow the test strategy in Section 4.25 of the architecture book.
 
 ## New Session Bootstrap
 
-Start every Claude Code, Codex, or other coding-agent session by reading:
-
+Start every session by reading:
 1. `docs/SESSION_START_HERE.md`
 2. `docs/CURRENT_STATUS.md`
 3. `docs/NEXT_DECISION.md`
 4. `docs/MODULE_MAP.md`
-
-Do not infer a new Stage 5, CA-8, production track, or provider-integration track from old phase names. The original Stage 0-4 work is complete; Dispatch Kernel Phases 1-7 (including 6A, 6B-1/2/3, Gates 1-3) are all complete and stable.
-
-## Next Action
-
-Use `docs/NEXT_DECISION.md` for the current forward plan. Do not rely on older phase logs as next-action authority.
 
 ## Autonomous Advancement Protocol
 
 For each autonomous session:
 
 1. Inspect `git status --short --branch` and read the session bootstrap docs.
-2. Choose the highest-value safe task from failing verification, CI/docs/test drift, wire-governance drift, concrete review findings, or narrowly scoped hardening.
-3. Update or add tests before behavior changes.
-4. Run the relevant verification command, plus `uv run --no-project python scripts/check_agent_handoff.py` (includes toolchain and `scripts/check_wire_codegen_drift.sh` guards).
-5. Update the smallest necessary handoff surface before commit: `docs/CURRENT_STATUS.md`, `docs/NEXT_DECISION.md`, `docs/MODULE_MAP.md`, `README.md`, `CLAUDE.md`, and `AGENTS.md` when their facts changed.
-6. Commit in English and push when the working tree only contains this session's intended changes.
-7. Leave the next action, latest commit, verification, and residual risks in the final report.
+2. Choose the highest-value safe task from failing verification, CI/docs/test drift, concrete review findings, or narrowly scoped hardening.
+3. **All sessions must use Workflow tool for implementation.** Write a workflow script to `.claude/workflows/` with `parallel()` for independent subtasks and `pipeline()` for sequential dependencies. Use `model: 'opus'` for implementation agents and `model: 'sonnet'` for verification. The only exception is trivial single-line edits (typo, doc wording, env var). Anything touching 2+ files goes through Workflow.
+4. Update or add tests before behavior changes.
+5. Run the full verification suite: `cargo test -p engine`, `cargo fmt --check`, `cargo clippy -p engine --all-targets -- -D warnings`, TypeScript build/test, dashboard build, `uv run --no-project python scripts/check_agent_handoff.py`, `bash scripts/check_wire_codegen_drift.sh`.
+6. **CI must be green before starting the next batch.** After pushing, use `gh run list --limit 3` to check CI status. If CI fails, fix and re-push. A green CI is required before the next session's work is considered safe to build on.
+7. Update the smallest necessary handoff surface before commit.
+8. Commit in English and push when the working tree only contains this session's intended changes.
+9. Leave the next action, latest commit, verification, and residual risks in the final report.
 
-This protocol authorizes the coding agent to advance the repository. It does not authorize adding runtime autonomous workers to the harness.
+## Architecture Refactor R-series
+
+**Architecture Refactor R-series**: **SEALED AT R7**. R8 is not approved. The `checkpoint.rs` split and `dispatch_decision.rs` split are deferred. No further R-series file splitting is approved.
+
+## Post-R7 Wire/Type Governance Hardening
+
+**Post-R7 Wire/Type Governance Hardening**: IMPLEMENTED (`app_layer` dormant-reference annotation, Rust typed round-trip guardrail, active execution-result schema enums, generated/manual TypeScript split, schema-driven enum codegen with drift enforcement via `scripts/check_wire_codegen_drift.sh`, localized dashboard union reuse).
 
 ## Rules
 
-1. **Always reference the architecture book** before making implementation decisions. If the book is ambiguous or too coarse, discuss with GPT (see below).
-2. **Never deviate from schemas** defined in the architecture book without updating the book first.
-3. **Phase boundaries are sacred**: Phase 1-2 MUST NOT call real providers, add sandbox isolation, expand subprocess execution beyond the existing CLI executor path, write to target repos, or start autonomous workers. Current provider execution is an explicit env-gated local beta path and must stay default-off unless a future approved plan changes that boundary.
-4. **When blocked or facing coarse granularity**: Discuss with GPT in the same ChatGPT session used for architecture review. Iterate until both agree, then update the architecture book before implementing.
-5. **Document maintenance**: Keep the authoritative handoff surface current and small. Prefer shortening existing docs or deleting stale planning docs over adding files.
-6. **Autonomous closeout**: Run `uv run --no-project python scripts/check_agent_handoff.py` before commit. A commit is incomplete if the handoff docs no longer tell the next session what changed, how it was verified, and what should happen next.
-7. **Single forward plan**: `docs/NEXT_DECISION.md` is the only roadmap / next-steps / productization-plan surface. Do not create parallel planning documents. If the phase order, goals, or done-when criteria change, update `docs/NEXT_DECISION.md` and only the directly affected handoff docs.
+1. **Reference architecture book** before implementation decisions
+2. **Never deviate from schemas** without updating the book first
+3. **Phase boundaries are sacred**: Follow safety constraints strictly
+4. **When blocked**: Discuss with GPT, iterate until agreement, then update architecture book
+5. **Document maintenance**: Keep handoff surface current and small
+6. **Autonomous closeout**: Run `uv run --no-project python scripts/check_agent_handoff.py` before commit
+7. **Single forward plan**: `docs/NEXT_DECISION.md` is the only roadmap surface
+8. **Workflow tool is the default for all implementation**: All sessions use Workflow tool for any task touching 2+ files. Write script to `.claude/workflows/`, use `parallel()`/`pipeline()`, launch with `Workflow({scriptPath})`. Only trivial single-line edits bypass Workflow.
 
-## Documentation Maintenance Rule
+## Documentation Maintenance
 
-Before committing, update the smallest necessary handoff surface if the change affects status, scope, tests, commands, boundaries, modules, or next steps.
+Before committing, update smallest necessary handoff surface if change affects:
+- Status, scope, tests, commands, boundaries, modules, or next steps
 
 Authoritative surfaces:
-
-- `docs/CURRENT_STATUS.md` — current state, verification, test counts, stable tracks, limitations
-- `docs/NEXT_DECISION.md` — single forward plan, local productization phases, allowed/disallowed paths
+- `docs/CURRENT_STATUS.md` — current state, verification, test counts
+- `docs/NEXT_DECISION.md` — single forward plan
 - `docs/MODULE_MAP.md` — source/test ownership
-- `README.md`, `CLAUDE.md`, `AGENTS.md` — quickstart, agent workflow, hard boundaries
-
-Do not add new roadmap, next-steps, closeout, status, or productization documents unless the user explicitly asks for a new artifact. Prefer shortening or deleting stale documents. If no document update is needed, say why in the completion report.
+- `README.md`, `CLAUDE.md`, `AGENTS.md` — quickstart, agent workflow, boundaries
 
 ## GPT Collaboration Protocol
 
 ChatGPT session: https://chatgpt.com/c/69fc96b0-2e48-839f-a031-557e9e2317ca
 
-When you encounter:
-- Schema ambiguity or missing fields
-- Component interface questions
-- Phase boundary edge cases
-- Cross-phase integration uncertainties
-
-Discuss with GPT, then:
+When you encounter schema ambiguity, interface questions, phase boundary edge cases, or cross-phase integration uncertainties:
 1. Get GPT's analysis
-2. Independently audit GPT's suggestions (don't accept blindly)
-3. Share both perspectives with the user if needed
-4. Update the architecture book with agreed changes
-5. Push to GitHub so GPT can reference the latest version
+2. Independently audit suggestions
+3. Share perspectives with user if needed
+4. Update architecture book with agreed changes
+5. Push to GitHub for GPT reference
 
 ## Code Style
 
@@ -223,3 +126,16 @@ Discuss with GPT, then:
 - Deterministic, testable, auditable
 - No comments unless WHY is non-obvious
 - Commit messages: English, concise, focus on why
+
+## Test Strategy
+
+- **Framework**: Rust `cargo test` for engine; Python `unittest` for SDK
+- **Run commands**: `cargo test -p engine` (primary); SDK tests in `sdk/python/`
+- **Current count**: 1348 Rust tests, 0 failures
+- **CI**: GitHub Actions on push/PR to main
+- **Test-first**: Write tests alongside implementation
+
+## External Dependencies
+
+- Python stdlib only — zero runtime dependencies
+- No runtime LLM dependencies in dispatch kernel

@@ -10,17 +10,12 @@ fn setup() -> (TempDir, BackupManager) {
 }
 
 fn create_test_db(path: &Path) {
-    let store = engine::storage::durable_store::DurableStore::new(path.to_str().unwrap()).unwrap();
-    store
-        .save_plan(
-            "p1",
-            &serde_json::json!({"test": true}),
-            None,
-            Some("2025-01-01"),
-            false,
-        )
-        .unwrap();
-    store.close().unwrap();
+    let conn = rusqlite::Connection::open(path).unwrap();
+    conn.execute_batch(
+        "CREATE TABLE plans (id TEXT PRIMARY KEY, data TEXT);
+         INSERT INTO plans (id, data) VALUES ('p1', '{\"test\": true}');",
+    )
+    .unwrap();
 }
 
 #[test]

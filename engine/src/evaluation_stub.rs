@@ -34,6 +34,15 @@ impl EvaluationResult {
     }
 }
 
+pub trait Evaluator: Send + Sync {
+    fn evaluate(
+        &self,
+        result: &ExecutionResult,
+        decision: &DispatchDecision,
+        runtime: &mut FixtureRuntime,
+    ) -> EvaluationResult;
+}
+
 #[derive(Default)]
 pub struct EvaluationStub;
 
@@ -104,5 +113,16 @@ impl EvaluationStub {
             retry_reason: None,
             created_at: runtime.now(),
         }
+    }
+}
+
+impl Evaluator for EvaluationStub {
+    fn evaluate(
+        &self,
+        result: &ExecutionResult,
+        decision: &DispatchDecision,
+        runtime: &mut FixtureRuntime,
+    ) -> EvaluationResult {
+        EvaluationStub::evaluate(self, result, decision, runtime)
     }
 }

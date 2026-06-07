@@ -1,7 +1,17 @@
+import { EmptyState } from "./EmptyState";
+
 export function Routing({ rows }: { rows: Array<{ confidence: number; fallback: string; group: string; selected: string }> }) {
-  if (rows.length === 0) return <p className="muted">No routing decisions</p>;
+  if (rows.length === 0) {
+    return (
+      <EmptyState
+        title="No routing decisions yet"
+        description="Routing choices are derived from local dispatch records. Create a dispatch to see selected tier, fallback tier, and confidence."
+        tone="info"
+      />
+    );
+  }
   return (
-    <section style={{ display: "grid", gap: 10, gridTemplateColumns: "repeat(3, minmax(0, 1fr))" }}>
+    <section className="routing-grid">
       {rows.map((r, i) => (
         <article className="card stack" key={i}>
           <div className="heading-row">

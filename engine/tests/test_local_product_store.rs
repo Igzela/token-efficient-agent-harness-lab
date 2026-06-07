@@ -1,6 +1,7 @@
 use engine::provider::audit::{
     ProviderAuditEvent, ProviderAuditRecorder, PROVIDER_AUDIT_EVENT_SCHEMA_VERSION,
 };
+use engine::read_only_planner::ReadOnlyPlanner;
 use engine::storage::local_product_store::LocalProductStore;
 use serde_json::{json, Value};
 use std::sync::{Arc, Barrier};
@@ -421,6 +422,503 @@ fn dispatch_history_missing_execution_result_uses_defaults() {
     assert!(d["latency_ms"].is_null());
 }
 
+fn make_workflow_plan(ids: &engine::storage::local_product_store::WorkflowPlanIds) -> Value {
+    json!({
+        "schema_version": "read_only_plan.v1",
+        "plan_id": ids.plan_id,
+        "status": "planned_read_only",
+        "workflow_id": ids.workflow_id,
+        "dispatch_id": ids.dispatch_id,
+        "analysis": {"analysis_id": "analysis-0001", "task_domain": "docs"},
+        "graph": {
+            "schema_version": "workflow_graph.v1",
+            "workflow_id": ids.workflow_id,
+            "dispatch_id": ids.dispatch_id,
+            "status": "decomposed",
+            "nodes": [],
+            "edges": [],
+        },
+        "boundaries": {
+            "execution": "disabled",
+            "target_repository_writes": "disabled",
+            "runtime_workers": "disabled",
+        },
+    })
+}
+
+fn make_workflow_plan_with_nodes(
+    ids: &engine::storage::local_product_store::WorkflowPlanIds,
+) -> Value {
+    json!({
+        "schema_version": "read_only_plan.v1",
+        "plan_id": ids.plan_id,
+        "status": "planned_read_only",
+        "workflow_id": ids.workflow_id,
+        "dispatch_id": ids.dispatch_id,
+        "analysis": {"analysis_id": "analysis-0001", "task_domain": "docs"},
+        "graph": {
+            "schema_version": "workflow_graph.v1",
+            "workflow_id": ids.workflow_id,
+            "dispatch_id": ids.dispatch_id,
+            "status": "decomposed",
+            "created_at": "2026-06-05T00:00:00Z",
+            "updated_at": "2026-06-05T00:00:00Z",
+            "nodes": [
+                {
+                    "schema_version": "workflow_node.v1",
+                    "node_id": "node-a",
+                    "workflow_id": ids.workflow_id,
+                    "task_type": "analysis",
+                    "assigned_agent_id": null,
+                    "status": "pending",
+                    "input_refs": [],
+                    "output_ref": null,
+                    "budget": 0.1,
+                    "cost_incurred": 0.0,
+                    "error": null,
+                    "created_at": "2026-06-05T00:00:00Z",
+                    "started_at": null,
+                    "completed_at": null
+                },
+                {
+                    "schema_version": "workflow_node.v1",
+                    "node_id": "node-b",
+                    "workflow_id": ids.workflow_id,
+                    "task_type": "docs",
+                    "assigned_agent_id": null,
+                    "status": "pending",
+                    "input_refs": ["node-a"],
+                    "output_ref": null,
+                    "budget": 0.2,
+                    "cost_incurred": 0.0,
+                    "error": null,
+                    "created_at": "2026-06-05T00:00:00Z",
+                    "started_at": null,
+                    "completed_at": null
+                }
+            ],
+            "edges": [
+                {
+                    "schema_version": "workflow_edge.v1",
+                    "edge_id": "edge-a-b",
+                    "from_node_id": "node-a",
+                    "to_node_id": "node-b",
+                    "edge_type": "dependency"
+                }
+            ],
+            "started_at": null,
+            "completed_at": null,
+            "result": null
+        },
+        "boundaries": {
+            "execution": "disabled",
+            "target_repository_writes": "disabled",
+            "runtime_workers": "disabled",
+        },
+    })
+}
+
+#[test]
+fn workflow_plans_create_list_get_and_audit() {
+    let dir = tempdir().unwrap();
+    let store = LocalProductStore::new(dir.path().join("test.db")).unwrap();
+
+    let created = store
+        .create_workflow_plan("Plan docs only", "api", "actor", |ids, _created_at| {
+            Ok(make_workflow_plan(ids))
+        })
+        .unwrap();
+
+    assert_eq!(created["plan_id"], "plan-0001");
+    assert_eq!(created["status"], "planned_read_only");
+    assert_eq!(created["workflow_id"], "wf-plan-0001");
+    assert_eq!(created["dispatch_id"], "plan-dispatch-0001");
+    assert_eq!(created["boundaries"]["execution"], "disabled");
+
+    let listed = store.search_workflow_plans(10, 0, None).unwrap();
+    assert_eq!(listed.len(), 1);
+    assert_eq!(listed[0]["plan_id"], "plan-0001");
+
+    let fetched = store.get_workflow_plan("plan-0001").unwrap().unwrap();
+    assert_eq!(fetched["raw_request"], "Plan docs only");
+    assert_eq!(fetched["graph"]["workflow_id"], "wf-plan-0001");
+
+    let audit = store.audit_events(10).unwrap();
+    assert!(audit
+        .iter()
+        .any(|event| event["action"] == "workflow_plan.create"));
+}
+
+#[test]
+fn workflow_plans_persist_read_only_advisory_metadata() {
+    let dir = tempdir().unwrap();
+    let store = LocalProductStore::new(dir.path().join("test.db")).unwrap();
+    let planner = ReadOnlyPlanner::new();
+
+    let created = store
+        .create_workflow_plan("Plan docs only", "api", "actor", |ids, created_at| {
+            planner.create_plan(ids, "Plan docs only", "api", created_at)
+        })
+        .unwrap();
+
+    assert_eq!(created["advisory"]["schema_version"], "plan_advisory.v1");
+    assert_eq!(created["advisory"]["mode"], "recommendation_only");
+    assert_eq!(
+        created["advisory"]["decision"]["target_repository_writes"],
+        "disabled"
+    );
+    assert_eq!(
+        created["advisory"]["retry"]["provider_invocation"],
+        "not_invoked"
+    );
+
+    let fetched = store.get_workflow_plan("plan-0001").unwrap().unwrap();
+    assert_eq!(fetched["advisory"]["schema_version"], "plan_advisory.v1");
+    assert_eq!(
+        fetched["advisory"]["routing"]["adaptive_routing_available"],
+        false
+    );
+}
+
+#[test]
+fn workflow_plan_search_filters_and_paginates() {
+    let dir = tempdir().unwrap();
+    let store = LocalProductStore::new(dir.path().join("test.db")).unwrap();
+
+    store
+        .create_workflow_plan("Alpha workflow plan", "api", "actor", |ids, _created_at| {
+            Ok(make_workflow_plan(ids))
+        })
+        .unwrap();
+    store
+        .create_workflow_plan(
+            "Beta routing proposal",
+            "dashboard",
+            "actor",
+            |ids, _created_at| Ok(make_workflow_plan(ids)),
+        )
+        .unwrap();
+
+    let alpha = store.search_workflow_plans(10, 0, Some("alpha")).unwrap();
+    assert_eq!(alpha.len(), 1);
+    assert_eq!(alpha[0]["plan_id"], "plan-0001");
+
+    let source = store
+        .search_workflow_plans(10, 0, Some("DASHBOARD"))
+        .unwrap();
+    assert_eq!(source.len(), 1);
+    assert_eq!(source[0]["plan_id"], "plan-0002");
+
+    let paged = store.search_workflow_plans(1, 1, Some("plan")).unwrap();
+    assert_eq!(paged.len(), 1);
+    assert_eq!(paged[0]["plan_id"], "plan-0001");
+}
+
+#[test]
+fn workflow_runs_create_from_plan_persists_nodes_edges_events_and_approvals() {
+    let dir = tempdir().unwrap();
+    let store = LocalProductStore::new(dir.path().join("test.db")).unwrap();
+    let plan = store
+        .create_workflow_plan("Plan run state", "api", "actor", |ids, _created_at| {
+            Ok(make_workflow_plan_with_nodes(ids))
+        })
+        .unwrap();
+
+    let run = store
+        .create_workflow_run_from_plan(plan["plan_id"].as_str().unwrap(), "actor")
+        .unwrap();
+    assert_eq!(run["run_id"], "run-0001");
+    assert_eq!(run["plan_id"], "plan-0001");
+    assert_eq!(run["workflow_id"], "wf-plan-0001");
+    assert_eq!(run["status"], "created");
+    assert_eq!(run["boundaries"]["execution_authority"], "disabled");
+    assert_eq!(run["boundaries"]["runtime_workers"], "disabled");
+    assert!(run.get("execution_result").is_none());
+    assert_eq!(run["nodes"].as_array().unwrap().len(), 2);
+    assert_eq!(run["edges"].as_array().unwrap().len(), 1);
+
+    let listed = store
+        .search_workflow_runs(10, 0, Some("plan-0001"))
+        .unwrap();
+    assert_eq!(listed.len(), 1);
+    assert_eq!(listed[0]["run_id"], "run-0001");
+
+    let fetched = store.get_workflow_run("run-0001").unwrap().unwrap();
+    assert_eq!(fetched["nodes"][1]["node_id"], "node-b");
+
+    let event = store
+        .append_workflow_run_event(
+            "run-0001",
+            Some("node-a"),
+            "node_status_observed",
+            &json!({"status": "ready"}),
+            "actor",
+        )
+        .unwrap();
+    assert_eq!(event["event_id"], "workflow-event-0002");
+    assert_eq!(event["event_type"], "node_status_observed");
+
+    let approval = store
+        .record_workflow_run_approval(
+            "run-0001",
+            "node-a",
+            "approved",
+            "reviewer",
+            Some("metadata only"),
+            None,
+            None,
+            None,
+            None,
+        )
+        .unwrap();
+    assert_eq!(approval["approval_id"], "workflow-approval-0001");
+    assert_eq!(approval["decision"], "approved");
+
+    let events = store.workflow_run_events("run-0001", 10).unwrap();
+    assert_eq!(events.len(), 2);
+    assert_eq!(events[0]["event_type"], "workflow_run.created");
+    assert_eq!(events[1]["event_type"], "node_status_observed");
+
+    let approvals = store.workflow_run_approvals("run-0001", 10).unwrap();
+    assert_eq!(approvals.len(), 1);
+    assert_eq!(approvals[0]["actor"], "reviewer");
+}
+
+#[test]
+fn workflow_run_resume_and_cancel_are_metadata_only() {
+    let dir = tempdir().unwrap();
+    let store = LocalProductStore::new(dir.path().join("test.db")).unwrap();
+    let plan = store
+        .create_workflow_plan("Plan run actions", "api", "actor", |ids, _created_at| {
+            Ok(make_workflow_plan_with_nodes(ids))
+        })
+        .unwrap();
+    store
+        .create_workflow_run_from_plan(plan["plan_id"].as_str().unwrap(), "actor")
+        .unwrap();
+
+    let resumed = store
+        .request_workflow_run_resume("run-0001", "operator", Some("manual resume"))
+        .unwrap();
+    assert_eq!(resumed["status"], "running");
+    assert_eq!(
+        resumed["boundaries"]["resume_execution_authority"],
+        "disabled"
+    );
+    assert!(resumed.get("execution_result").is_none());
+
+    let cancelled = store
+        .request_workflow_run_cancel("run-0001", "operator", Some("stop metadata run"))
+        .unwrap();
+    assert_eq!(cancelled["status"], "cancelled");
+    assert_eq!(
+        cancelled["boundaries"]["cancel_execution_authority"],
+        "disabled"
+    );
+    assert!(cancelled.get("execution_result").is_none());
+
+    let events = store.workflow_run_events("run-0001", 10).unwrap();
+    assert!(events
+        .iter()
+        .any(|event| event["event_type"] == "workflow_resume_requested"));
+    assert!(events
+        .iter()
+        .any(|event| event["event_type"] == "workflow_cancel_requested"));
+}
+
+#[test]
+fn supervised_patch_workspace_records_metadata_only_boundary_evidence() {
+    let target_dir = tempdir().unwrap();
+    let workspace_root = tempdir().unwrap();
+    let dir = tempdir().unwrap();
+    let store = LocalProductStore::new(dir.path().join("test.db")).unwrap();
+    let workspace_path = workspace_root.path().join("workspaces").join("ws-001");
+
+    let workspace = store
+        .record_supervised_patch_workspace(
+            &json!({
+                "plan_id": "plan-0001",
+                "run_id": "run-0001",
+                "target_id": "target-001",
+                "target_repo_path": target_dir.path().to_string_lossy(),
+                "workspace_path": workspace_path.to_string_lossy(),
+                "source_revision": "abc123",
+                "source_tree_hash": "tree123",
+            }),
+            "operator",
+        )
+        .unwrap();
+
+    assert_eq!(workspace["schema_version"], "supervised_patch_workspace.v1");
+    assert_eq!(workspace["workspace_id"], "patch-workspace-0001");
+    assert_eq!(workspace["status"], "requested");
+    assert_eq!(workspace["metadata_only"], true);
+    assert_eq!(workspace["execution_authority"], "disabled");
+    assert_eq!(
+        workspace["boundary"]["target_repository_writes"],
+        "disabled"
+    );
+    assert_eq!(
+        workspace["boundary"]["workspace_directory_creation"],
+        "not_performed"
+    );
+    assert_eq!(
+        workspace["boundary"]["registered_git_worktree"],
+        "forbidden"
+    );
+
+    let listed = store.supervised_patch_workspaces(10).unwrap();
+    assert_eq!(listed.len(), 1);
+    let fetched = store
+        .get_supervised_patch_workspace("patch-workspace-0001")
+        .unwrap()
+        .unwrap();
+    assert_eq!(fetched["target_id"], "target-001");
+
+    let stats = store.stats().unwrap();
+    assert_eq!(stats["supervised_patch_workspaces"], 1);
+    assert_eq!(stats["supervised_patch_artifacts"], 0);
+
+    let audit = store.audit_events(10).unwrap();
+    assert!(audit
+        .iter()
+        .any(|event| event["action"] == "supervised_patch.workspace_record"));
+}
+
+#[test]
+fn supervised_patch_workspace_rejects_registered_target_paths() {
+    let target_dir = tempdir().unwrap();
+    let dir = tempdir().unwrap();
+    let store = LocalProductStore::new(dir.path().join("test.db")).unwrap();
+    let workspace_path = target_dir
+        .path()
+        .join(".agent-control-plane")
+        .join("ws-001");
+
+    let result = store.record_supervised_patch_workspace(
+        &json!({
+            "run_id": "run-0001",
+            "target_id": "target-001",
+            "target_repo_path": target_dir.path().to_string_lossy(),
+            "workspace_path": workspace_path.to_string_lossy(),
+            "source_revision": "abc123",
+        }),
+        "operator",
+    );
+
+    assert!(result.is_err());
+    assert!(result
+        .unwrap_err()
+        .contains("outside registered target repository"));
+    assert_eq!(store.supervised_patch_workspaces(10).unwrap().len(), 0);
+}
+
+#[test]
+fn supervised_patch_artifact_records_metadata_without_apply_authority() {
+    let target_dir = tempdir().unwrap();
+    let workspace_root = tempdir().unwrap();
+    let dir = tempdir().unwrap();
+    let store = LocalProductStore::new(dir.path().join("test.db")).unwrap();
+    let workspace_path = workspace_root.path().join("workspaces").join("ws-001");
+    store
+        .record_supervised_patch_workspace(
+            &json!({
+                "plan_id": "plan-0001",
+                "run_id": "run-0001",
+                "target_id": "target-001",
+                "target_repo_path": target_dir.path().to_string_lossy(),
+                "workspace_path": workspace_path.to_string_lossy(),
+                "source_revision": "abc123",
+            }),
+            "operator",
+        )
+        .unwrap();
+
+    let artifact = store
+        .record_supervised_patch_artifact(
+            &json!({
+                "workspace_id": "patch-workspace-0001",
+                "patch_hash": "sha256-patch",
+                "changed_files": ["src/lib.rs", "README.md"],
+                "redaction_status": "redacted",
+                "storage_refs": {"patch": "app-owned://patches/patch-artifact-0001"},
+            }),
+            "operator",
+        )
+        .unwrap();
+
+    assert_eq!(artifact["schema_version"], "supervised_patch_artifact.v1");
+    assert_eq!(artifact["artifact_id"], "patch-artifact-0001");
+    assert_eq!(artifact["workspace_id"], "patch-workspace-0001");
+    assert_eq!(artifact["metadata_only"], true);
+    assert_eq!(artifact["execution_authority"], "disabled");
+    assert_eq!(artifact["patch_apply_authority"], "disabled");
+    assert_eq!(artifact["artifact_file_created"], false);
+    assert_eq!(artifact["changed_files"].as_array().unwrap().len(), 2);
+
+    let fetched = store
+        .get_supervised_patch_artifact("patch-artifact-0001")
+        .unwrap()
+        .unwrap();
+    assert_eq!(fetched["patch_hash"], "sha256-patch");
+    assert_eq!(store.supervised_patch_artifacts(10).unwrap().len(), 1);
+
+    let stats = store.stats().unwrap();
+    assert_eq!(stats["supervised_patch_workspaces"], 1);
+    assert_eq!(stats["supervised_patch_artifacts"], 1);
+}
+
+#[test]
+fn supervised_patch_artifact_rejects_unsafe_changed_files() {
+    let target_dir = tempdir().unwrap();
+    let workspace_root = tempdir().unwrap();
+    let dir = tempdir().unwrap();
+    let store = LocalProductStore::new(dir.path().join("test.db")).unwrap();
+    let workspace_path = workspace_root.path().join("workspaces").join("ws-001");
+    store
+        .record_supervised_patch_workspace(
+            &json!({
+                "run_id": "run-0001",
+                "target_id": "target-001",
+                "target_repo_path": target_dir.path().to_string_lossy(),
+                "workspace_path": workspace_path.to_string_lossy(),
+                "source_revision": "abc123",
+            }),
+            "operator",
+        )
+        .unwrap();
+
+    let result = store.record_supervised_patch_artifact(
+        &json!({
+            "workspace_id": "patch-workspace-0001",
+            "patch_hash": "sha256-patch",
+            "changed_files": ["../secret.txt"],
+        }),
+        "operator",
+    );
+
+    assert!(result.is_err());
+    assert!(result
+        .unwrap_err()
+        .contains("changed file must be normalized"));
+    assert_eq!(store.supervised_patch_artifacts(10).unwrap().len(), 0);
+
+    let backslash_result = store.record_supervised_patch_artifact(
+        &json!({
+            "workspace_id": "patch-workspace-0001",
+            "patch_hash": "sha256-patch",
+            "changed_files": ["src\\lib.rs"],
+        }),
+        "operator",
+    );
+
+    assert!(backslash_result.is_err());
+    assert!(backslash_result
+        .unwrap_err()
+        .contains("changed file must use forward slashes"));
+    assert_eq!(store.supervised_patch_artifacts(10).unwrap().len(), 0);
+}
+
 // --- cost_summary v2 tests ---
 
 #[test]
@@ -437,6 +935,7 @@ fn cost_summary_empty_store() {
     assert_eq!(summary["total_estimated_cost_usd"], 0.0);
     assert_eq!(summary["total_input_tokens"], 0);
     assert_eq!(summary["total_output_tokens"], 0);
+    assert_eq!(summary["estimated_cost_available"], false);
     assert_eq!(summary["cost_utilization"], 0.0);
     assert_eq!(summary["by_tier"].as_array().unwrap().len(), 0);
     assert_eq!(summary["daily"].as_array().unwrap().len(), 0);
@@ -477,7 +976,26 @@ fn cost_summary_aggregates_reserved_and_estimated() {
     assert_eq!(summary["total_estimated_cost_usd"], 0.008);
     assert_eq!(summary["total_input_tokens"], 300);
     assert_eq!(summary["total_output_tokens"], 130);
+    assert_eq!(summary["estimated_cost_available"], true);
     assert!((summary["cost_utilization"].as_f64().unwrap() - 0.4).abs() < 0.001);
+}
+
+#[test]
+fn cost_summary_distinguishes_token_usage_without_estimated_cost() {
+    let dir = tempdir().unwrap();
+    let store = LocalProductStore::new(dir.path().join("test.db")).unwrap();
+    let bundle = make_bundle_with_usage("d1", "provider", Some(100), Some(50), None, Some(100));
+    store
+        .record_dispatch("req1", "api", &bundle, "actor")
+        .unwrap();
+
+    let summary = store.cost_summary().unwrap();
+
+    assert_eq!(summary["dispatch_count"], 1);
+    assert_eq!(summary["total_input_tokens"], 100);
+    assert_eq!(summary["total_output_tokens"], 50);
+    assert_eq!(summary["total_estimated_cost_usd"], 0.0);
+    assert_eq!(summary["estimated_cost_available"], false);
 }
 
 #[test]
@@ -1022,4 +1540,256 @@ fn test_list_api_key_metadata() {
     // Limit works
     let keys = store.list_api_key_metadata(1).unwrap();
     assert_eq!(keys.len(), 1);
+}
+
+// ---------------------------------------------------------------------------
+// GA-1: Artifact Ignore + Persisted Diff
+// ---------------------------------------------------------------------------
+
+fn setup_workspace_with_target(
+    store: &LocalProductStore,
+    dir: &tempfile::TempDir,
+    run_id: &str,
+    target_files: Vec<(&str, &str)>,
+) -> (String, String) {
+    let target_dir = dir.path().join(format!("target_{run_id}"));
+    std::fs::create_dir_all(&target_dir).unwrap();
+    for (name, content) in &target_files {
+        let path = target_dir.join(name);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, content).unwrap();
+    }
+    let ws_path = store
+        .create_workspace_directory(run_id, target_dir.to_str().unwrap())
+        .unwrap();
+    let workspace = store
+        .record_supervised_patch_workspace(
+            &json!({
+                "plan_id": "plan-ga1",
+                "run_id": run_id,
+                "target_id": "ga1-target",
+                "target_repo_path": target_dir.to_string_lossy(),
+                "workspace_path": &ws_path,
+                "source_revision": "abc123",
+                "status": "workspace_created",
+            }),
+            "operator",
+        )
+        .unwrap();
+    let ws_id = workspace["workspace_id"].as_str().unwrap().to_string();
+    (ws_path, ws_id)
+}
+
+#[test]
+fn ga1_capture_excludes_target_dir() {
+    let dir = tempdir().unwrap();
+    let store = LocalProductStore::new(dir.path().join("test.db")).unwrap();
+
+    let (ws_path, ws_id) = setup_workspace_with_target(
+        &store,
+        &dir,
+        "run-ga1-target",
+        vec![
+            ("src/lib.rs", "fn main() {}\n"),
+            ("Cargo.toml", "[package]\n"),
+        ],
+    );
+
+    // Simulate build: add target/ with artifacts
+    let target_build = std::path::PathBuf::from(&ws_path).join("target");
+    std::fs::create_dir_all(target_build.join("debug")).unwrap();
+    std::fs::write(target_build.join("debug").join("app"), "binary\x00data").unwrap();
+
+    // Also add a real source change
+    std::fs::write(
+        std::path::PathBuf::from(&ws_path)
+            .join("src")
+            .join("lib.rs"),
+        "fn main() { println!(\"hello\"); }\n",
+    )
+    .unwrap();
+
+    let artifact = store.capture_patch(&ws_id, "operator").unwrap();
+    let changed: Vec<&str> = artifact["changed_files"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|v| v.as_str().unwrap())
+        .collect();
+
+    // Core assertion: target/ build artifacts must not appear in patch
+    assert!(
+        changed.iter().all(|f| !f.contains("target/")),
+        "target/ should be excluded from changed_files: {:?}",
+        changed
+    );
+    // Verify the patch is non-empty (at least the source change was detected)
+    assert!(
+        !changed.is_empty(),
+        "changed_files should not be empty after modifying src/lib.rs"
+    );
+}
+
+#[test]
+fn ga1_capture_excludes_node_modules() {
+    let dir = tempdir().unwrap();
+    let store = LocalProductStore::new(dir.path().join("test.db")).unwrap();
+
+    let (ws_path, ws_id) = setup_workspace_with_target(
+        &store,
+        &dir,
+        "run-ga1-nm",
+        vec![("index.js", "console.log('hi');\n")],
+    );
+
+    // Add node_modules
+    let nm = std::path::PathBuf::from(&ws_path).join("node_modules");
+    std::fs::create_dir_all(&nm).unwrap();
+    std::fs::write(nm.join("pkg.js"), "module.exports = {};").unwrap();
+
+    // Add real change
+    std::fs::write(
+        std::path::PathBuf::from(&ws_path).join("index.js"),
+        "console.log('hello');\n",
+    )
+    .unwrap();
+
+    let artifact = store.capture_patch(&ws_id, "operator").unwrap();
+    let changed: Vec<&str> = artifact["changed_files"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|v| v.as_str().unwrap())
+        .collect();
+
+    assert!(
+        changed.iter().all(|f| !f.contains("node_modules")),
+        "node_modules should be excluded: {:?}",
+        changed
+    );
+}
+
+#[test]
+fn ga1_capture_excludes_binary_files() {
+    let dir = tempdir().unwrap();
+    let store = LocalProductStore::new(dir.path().join("test.db")).unwrap();
+
+    let (ws_path, ws_id) = setup_workspace_with_target(
+        &store,
+        &dir,
+        "run-ga1-bin",
+        vec![("src/main.rs", "fn main() {}\n")],
+    );
+
+    // Add a binary file
+    std::fs::write(
+        std::path::PathBuf::from(&ws_path).join("image.png"),
+        b"\x89PNG\r\n\x1a\n\x00binary\x00data",
+    )
+    .unwrap();
+
+    // Add a real change
+    std::fs::write(
+        std::path::PathBuf::from(&ws_path)
+            .join("src")
+            .join("main.rs"),
+        "fn main() { println!(\"hi\"); }\n",
+    )
+    .unwrap();
+
+    let artifact = store.capture_patch(&ws_id, "operator").unwrap();
+    let changed: Vec<&str> = artifact["changed_files"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|v| v.as_str().unwrap())
+        .collect();
+
+    assert!(
+        changed.iter().all(|f| !f.contains("image.png")),
+        "binary files should be excluded: {:?}",
+        changed
+    );
+}
+
+#[test]
+fn ga1_capture_persists_review_diff() {
+    let dir = tempdir().unwrap();
+    let store = LocalProductStore::new(dir.path().join("test.db")).unwrap();
+
+    let (ws_path, ws_id) = setup_workspace_with_target(
+        &store,
+        &dir,
+        "run-ga1-diff",
+        vec![("src/lib.rs", "fn add(a: i32, b: i32) -> i32 { a + b }\n")],
+    );
+
+    // Add a new file and modify existing
+    std::fs::write(
+        std::path::PathBuf::from(&ws_path)
+            .join("src")
+            .join("greeting.rs"),
+        "pub fn greet(name: &str) -> String {\n    format!(\"Hello, {name}!\")\n}\n",
+    )
+    .unwrap();
+    std::fs::write(
+        std::path::PathBuf::from(&ws_path)
+            .join("src")
+            .join("lib.rs"),
+        "fn add(a: i32, b: i32) -> i32 { a + b }\npub mod greeting;\n",
+    )
+    .unwrap();
+
+    let artifact = store.capture_patch(&ws_id, "operator").unwrap();
+
+    let review_diff = artifact["review_diff"].as_str().unwrap();
+    assert!(
+        !review_diff.is_empty(),
+        "review_diff should be persisted and non-empty"
+    );
+    assert!(
+        review_diff.contains("+++ b/src/greeting.rs"),
+        "review_diff should contain added file header"
+    );
+    assert!(
+        review_diff.contains("pub fn greet"),
+        "review_diff should contain added file content"
+    );
+    assert!(
+        review_diff.contains("--- a/src/lib.rs"),
+        "review_diff should contain modified file header"
+    );
+}
+
+#[test]
+fn ga1_review_diff_survives_artifact_read() {
+    let dir = tempdir().unwrap();
+    let store = LocalProductStore::new(dir.path().join("test.db")).unwrap();
+
+    let (ws_path, ws_id) = setup_workspace_with_target(
+        &store,
+        &dir,
+        "run-ga1-persist",
+        vec![("README.md", "# Test\n")],
+    );
+
+    std::fs::write(
+        std::path::PathBuf::from(&ws_path).join("README.md"),
+        "# Test Project\n\nUpdated.\n",
+    )
+    .unwrap();
+
+    let artifact = store.capture_patch(&ws_id, "operator").unwrap();
+    let art_id = artifact["artifact_id"].as_str().unwrap();
+
+    // Read artifact back from store
+    let stored = store
+        .get_supervised_patch_artifact(art_id)
+        .unwrap()
+        .unwrap();
+    let stored_diff = stored["review_diff"].as_str().unwrap();
+    assert!(
+        stored_diff.contains("--- a/README.md"),
+        "persisted artifact should contain review_diff"
+    );
 }

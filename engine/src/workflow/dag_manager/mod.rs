@@ -265,6 +265,24 @@ impl DAGManager {
     }
 }
 
+impl super::graph_operations::GraphOperations for DAGManager {
+    fn validate(&self) -> (bool, Vec<String>) {
+        let errors = self.validate_dag();
+        (errors.is_empty(), errors)
+    }
+
+    fn topological_order(&self) -> Vec<String> {
+        DAGManager::topological_order(self)
+    }
+
+    fn ready_nodes(&self, completed: &HashSet<String>) -> Vec<String> {
+        DAGManager::nodes_ready(self, completed)
+            .into_iter()
+            .map(|n| n.node_id.clone())
+            .collect()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

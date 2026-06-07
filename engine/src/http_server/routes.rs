@@ -7,11 +7,14 @@ use std::fs;
 use std::path::{Component, Path, PathBuf};
 
 use super::handlers::*;
-use super::middleware::cors_preflight;
+use super::middleware::{cors_layer, cors_preflight, request_id_layer};
 use super::state::AxumApiState;
 
 pub fn build_axum_router(state: AxumApiState) -> Router {
-    axum_routes().with_state(state)
+    axum_routes()
+        .layer(axum::middleware::from_fn(cors_layer))
+        .layer(axum::middleware::from_fn(request_id_layer))
+        .with_state(state)
 }
 
 pub fn build_axum_router_with_dashboard(
@@ -20,6 +23,8 @@ pub fn build_axum_router_with_dashboard(
 ) -> Router {
     axum_routes()
         .fallback(serve_dashboard_asset)
+        .layer(axum::middleware::from_fn(cors_layer))
+        .layer(axum::middleware::from_fn(request_id_layer))
         .with_state(state.with_dashboard_dir(dashboard_dir))
 }
 
@@ -38,6 +43,10 @@ fn axum_routes() -> Router<AxumApiState> {
             get(health::api_openapi).options(cors_preflight),
         )
         .route(
+            "/api/v1/metrics",
+            get(operations::api_metrics).options(cors_preflight),
+        )
+        .route(
             "/api/v1/dispatch",
             post(dispatch::api_dispatch).options(cors_preflight),
         )
@@ -48,6 +57,85 @@ fn axum_routes() -> Router<AxumApiState> {
         .route(
             "/api/v1/dispatches/:dispatch_id",
             get(dispatch::api_dispatch_detail).options(cors_preflight),
+        )
+        .route(
+            "/api/v1/plans",
+            get(plans::api_plans)
+                .post(plans::api_create_plan)
+                .options(cors_preflight),
+        )
+        .route(
+            "/api/v1/plans/:plan_id",
+            get(plans::api_plan_detail).options(cors_preflight),
+        )
+        .route(
+            "/api/v1/workflow-runs",
+            get(workflow_runs::api_workflow_runs)
+                .post(workflow_runs::api_create_workflow_run)
+                .options(cors_preflight),
+        )
+        .route(
+            "/api/v1/workflow-runs/:run_id",
+            get(workflow_runs::api_workflow_run_detail).options(cors_preflight),
+        )
+        .route(
+            "/api/v1/workflow-runs/:run_id/events",
+            get(workflow_runs::api_workflow_run_events)
+                .post(workflow_runs::api_create_workflow_run_event)
+                .options(cors_preflight),
+        )
+        .route(
+            "/api/v1/workflow-runs/:run_id/approvals",
+            get(workflow_runs::api_workflow_run_approvals)
+                .post(workflow_runs::api_create_workflow_run_approval)
+                .options(cors_preflight),
+        )
+        .route(
+            "/api/v1/workflow-runs/:run_id/resume",
+            post(workflow_runs::api_resume_workflow_run).options(cors_preflight),
+        )
+        .route(
+            "/api/v1/workflow-runs/:run_id/cancel",
+            post(workflow_runs::api_cancel_workflow_run).options(cors_preflight),
+        )
+        .route(
+            "/api/v1/workflow-runs/:run_id/tick",
+            post(workflow_runs::api_tick_workflow_run).options(cors_preflight),
+        )
+        .route(
+            "/api/v1/supervised-patch/workspaces",
+            get(supervised_patch::api_supervised_patch_workspaces)
+                .post(supervised_patch::api_create_supervised_patch_workspace)
+                .options(cors_preflight),
+        )
+        .route(
+            "/api/v1/supervised-patch/workspaces/:workspace_id",
+            get(supervised_patch::api_supervised_patch_workspace_detail).options(cors_preflight),
+        )
+        .route(
+            "/api/v1/supervised-patch/workspaces/:workspace_id/cleanup",
+            post(supervised_patch::api_cleanup_supervised_patch_workspace).options(cors_preflight),
+        )
+        .route(
+            "/api/v1/supervised-patch/workspaces/:workspace_id/quarantine",
+            post(supervised_patch::api_quarantine_supervised_patch_workspace)
+                .options(cors_preflight),
+        )
+        .route(
+            "/api/v1/supervised-patch/artifacts",
+            get(supervised_patch::api_supervised_patch_artifacts).options(cors_preflight),
+        )
+        .route(
+            "/api/v1/supervised-patch/workspaces/:workspace_id/capture",
+            post(supervised_patch::api_capture_supervised_patch).options(cors_preflight),
+        )
+        .route(
+            "/api/v1/supervised-patch/artifacts/:artifact_id",
+            get(supervised_patch::api_supervised_patch_artifact_detail).options(cors_preflight),
+        )
+        .route(
+            "/api/v1/supervised-patch/artifacts/:artifact_id/export",
+            post(supervised_patch::api_export_supervised_patch).options(cors_preflight),
         )
         .route(
             "/api/v1/dashboard",
@@ -96,6 +184,10 @@ fn axum_routes() -> Router<AxumApiState> {
             delete(backups::api_delete_backup).options(cors_preflight),
         )
         .route(
+            "/api/v1/backups/:backup_id/verify",
+            get(backups::api_verify_backup).options(cors_preflight),
+        )
+        .route(
             "/api/v1/keys",
             get(keys::api_list_keys)
                 .post(keys::api_create_key)
@@ -118,6 +210,46 @@ fn axum_routes() -> Router<AxumApiState> {
             post(keys::api_update_key_scopes).options(cors_preflight),
         )
         .route(
+            "/api/v1/scheduler/status",
+            get(scheduler::api_scheduler_status).options(cors_preflight),
+        )
+        .route(
+            "/api/v1/executor-pool",
+            get(executor_pool::api_executor_pool_status).options(cors_preflight),
+        )
+        .route(
+            "/api/v1/queue/status",
+            get(queue::api_queue_status).options(cors_preflight),
+        )
+        .route(
+            "/api/v1/queue/runs",
+            get(queue::api_queue_runs).options(cors_preflight),
+        )
+        .route(
+            "/api/v1/queue/runs/:run_id/priority",
+            put(queue::api_update_run_priority).options(cors_preflight),
+        )
+        .route(
+            "/api/v1/queue/runs/:run_id/pause",
+            put(queue::api_update_run_pause).options(cors_preflight),
+        )
+        .route(
+            "/api/v1/queue/tenants",
+            get(queue::api_queue_tenants).options(cors_preflight),
+        )
+        .route(
+            "/api/v1/decisions",
+            get(decisions::api_decisions).options(cors_preflight),
+        )
+        .route(
+            "/api/v1/decisions/stats",
+            get(decisions::api_decision_stats).options(cors_preflight),
+        )
+        .route(
+            "/api/v1/decisions/:decision_id",
+            get(decisions::api_decision_detail).options(cors_preflight),
+        )
+        .route(
             "/api/v1/provider/health",
             get(provider::api_provider_health).options(cors_preflight),
         )
@@ -136,6 +268,10 @@ fn axum_routes() -> Router<AxumApiState> {
         .route(
             "/api/v1/backups/:backup_id/restore",
             post(backups::api_restore_backup).options(cors_preflight),
+        )
+        .route(
+            "/api/v1/backups/:backup_id/restore/dry-run",
+            post(backups::api_restore_backup_dry_run).options(cors_preflight),
         )
 }
 

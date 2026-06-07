@@ -10,6 +10,7 @@ import sys
 import tempfile
 import time
 from pathlib import Path
+from urllib.error import HTTPError
 from urllib.request import Request, urlopen
 
 
@@ -31,6 +32,14 @@ def fetch_text(url: str, timeout: float = 2.0) -> str:
 
 def fetch_json(url: str, timeout: float = 2.0) -> dict:
     return json.loads(fetch_text(url, timeout=timeout))
+
+
+def fetch_error_json(url: str, timeout: float = 2.0) -> tuple[int, dict]:
+    try:
+        fetch_text(url, timeout=timeout)
+    except HTTPError as error:
+        return error.code, json.loads(error.read().decode("utf-8"))
+    raise RuntimeError(f"expected HTTP error from {url}")
 
 
 def post_json(url: str, body: dict, timeout: float = 2.0) -> dict:
@@ -110,6 +119,10 @@ def main() -> int:
             if dispatch.get("execution_result", {}).get("executor_type") != "noop":
                 raise RuntimeError("dispatch did not use noop executor")
 
+            dispatches = fetch_json(f"{base_url}/api/v1/dispatches?limit=2&search=docs")
+            if len(dispatches.get("dispatches", [])) != 1:
+                raise RuntimeError(f"dispatch search did not return the persisted record: {dispatches}")
+
             dashboard_state = fetch_json(f"{base_url}/api/v1/dashboard")
             if dashboard_state.get("counts", {}).get("dispatches") != 1:
                 raise RuntimeError(f"dashboard did not read persisted dispatch state: {dashboard_state}")
@@ -119,6 +132,14 @@ def main() -> int:
             export_state = fetch_json(f"{base_url}/api/v1/export")
             if export_state.get("schema_version") != "local_team_export.v1":
                 raise RuntimeError(f"unexpected export payload: {export_state}")
+
+            audit = fetch_json(f"{base_url}/api/v1/audit?limit=2&search=dispatch")
+            if not audit.get("events"):
+                raise RuntimeError(f"audit search did not return dispatch audit events: {audit}")
+
+            status, backup_error = fetch_error_json(f"{base_url}/api/v1/backups")
+            if status != 401 or backup_error.get("code") != "backup_admin_required":
+                raise RuntimeError(f"backup boundary error was not structured: {backup_error}")
 
             dashboard = fetch_text(f"{base_url}/")
             if "Agent Control Plane" not in dashboard:

@@ -1,3 +1,8 @@
+//! Reference-only module: event.v1 schema validation and idempotency hashing.
+//!
+//! Retained for parity with wire_contract/v1 event schemas and golden fixtures.
+//! The active runtime uses `LocalProductStore` audit events instead.
+
 use std::collections::HashSet;
 use std::sync::LazyLock;
 
