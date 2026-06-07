@@ -4,6 +4,7 @@ use std::sync::{Arc, Mutex};
 
 use crate::dispatch_engine::DispatchEngine;
 use crate::infrastructure::auth::TenantResolver;
+use crate::infrastructure::observability::{MetricsCollector, RequestTracer};
 use crate::infrastructure::rate_limiter::RateLimiter;
 use crate::provider::Provider;
 use crate::scheduler::WorkflowScheduler;
@@ -38,6 +39,8 @@ pub struct AxumApiState {
     pub(crate) backup_dir: Option<Arc<PathBuf>>,
     pub(crate) provider: Option<Arc<dyn Provider>>,
     pub(crate) scheduler: Option<Arc<Mutex<WorkflowScheduler>>>,
+    pub(crate) metrics: Arc<MetricsCollector>,
+    pub(crate) tracer: Arc<RequestTracer>,
 }
 
 impl Default for AxumApiState {
@@ -59,6 +62,8 @@ impl AxumApiState {
             backup_dir: None,
             provider: None,
             scheduler: None,
+            metrics: Arc::new(MetricsCollector::new(10_000)),
+            tracer: Arc::new(RequestTracer::new()),
         }
     }
 
@@ -122,6 +127,16 @@ impl AxumApiState {
 
     pub fn with_scheduler(mut self, scheduler: Arc<Mutex<WorkflowScheduler>>) -> Self {
         self.scheduler = Some(scheduler);
+        self
+    }
+
+    pub fn with_observability(
+        mut self,
+        metrics: Arc<MetricsCollector>,
+        tracer: Arc<RequestTracer>,
+    ) -> Self {
+        self.metrics = metrics;
+        self.tracer = tracer;
         self
     }
 

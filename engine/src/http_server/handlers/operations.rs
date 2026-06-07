@@ -116,3 +116,37 @@ pub(crate) async fn api_metrics(
         })),
     ))
 }
+
+pub(crate) async fn api_observability_metrics(
+    State(state): State<AxumApiState>,
+    headers: HeaderMap,
+    uri: Uri,
+    Extension(request_id): Extension<RequestId>,
+) -> Result<impl IntoResponse, ApiError> {
+    authorize(&state, &headers, "health:read", uri.path(), &request_id.0)?;
+
+    let metrics = state.metrics.query(None, None);
+    let snapshots = state.metrics.query_snapshots(None);
+    let total_requests = metrics.len();
+    let error_count = metrics
+        .iter()
+        .filter(|m| m.status == "error" || m.status.starts_with('5'))
+        .count();
+    let avg_duration = if total_requests > 0 {
+        metrics.iter().map(|m| m.duration_ms).sum::<f64>() / total_requests as f64
+    } else {
+        0.0
+    };
+
+    Ok((
+        cors_headers(),
+        Json(json!({
+            "schema_version": "observability.v1",
+            "total_requests": total_requests,
+            "error_count": error_count,
+            "avg_duration_ms": (avg_duration * 100.0).round() / 100.0,
+            "recent_metrics": metrics.iter().rev().take(50).cloned().collect::<Vec<_>>(),
+            "snapshots": snapshots,
+        })),
+    ))
+}

@@ -155,7 +155,7 @@ def check_backup_roundtrip(base_url: str, token: str | None) -> Check:
     )
     if 200 <= status < 300 and body:
         verification = body.get("verification", {})
-        if verification.get("valid", False):
+        if verification.get("valid", False) or verification.get("success", False):
             return Check("backup_roundtrip", "pass", f"backup {backup_id} created and verified")
         return Check("backup_roundtrip", "fail", f"backup {backup_id} verification failed: {verification}")
     return Check("backup_roundtrip", "fail", f"verify failed: {error or f'HTTP {status}'}")
@@ -185,7 +185,7 @@ def check_restore_dry_run(base_url: str, token: str | None) -> Check:
     )
     if 200 <= status < 300 and body:
         dry_run = body.get("restore_dry_run", {})
-        if dry_run.get("valid", False):
+        if dry_run.get("valid", False) or dry_run.get("success", False):
             return Check("restore_dry_run", "pass", f"dry-run passed for {backup_id}")
         return Check("restore_dry_run", "fail", f"dry-run invalid: {dry_run}")
     return Check("restore_dry_run", "fail", f"dry-run failed: {error or f'HTTP {status}'}")

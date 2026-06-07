@@ -47,6 +47,10 @@ fn axum_routes() -> Router<AxumApiState> {
             get(operations::api_metrics).options(cors_preflight),
         )
         .route(
+            "/api/v1/metrics/observability",
+            get(operations::api_observability_metrics).options(cors_preflight),
+        )
+        .route(
             "/api/v1/dispatch",
             post(dispatch::api_dispatch).options(cors_preflight),
         )

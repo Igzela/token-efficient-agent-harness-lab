@@ -281,12 +281,36 @@ pub(crate) async fn cors_preflight() -> impl IntoResponse {
 
 pub(crate) async fn request_id_layer(mut request: Request, next: Next) -> Response {
     let request_id = uuid::Uuid::new_v4().to_string();
+    let method = request.method().to_string();
+    let path = request.uri().path().to_string();
+    // Extract metrics collector before request is moved into next.run()
+    let metrics_collector = request
+        .extensions()
+        .get::<axum::extract::State<super::state::AxumApiState>>()
+        .map(|s| s.metrics.clone());
     request
         .extensions_mut()
         .insert(RequestId(request_id.clone()));
+    let start = std::time::Instant::now();
     let mut response = next.run(request).await;
+    let duration_ms = start.elapsed().as_secs_f64() * 1000.0;
     if let Ok(val) = HeaderValue::from_str(&request_id) {
         response.headers_mut().insert("x-request-id", val);
+    }
+    let status = response.status().as_u16().to_string();
+    if let Some(metrics) = metrics_collector {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs_f64();
+        metrics.record(crate::infrastructure::observability::RequestMetric {
+            request_id,
+            component: "http".to_string(),
+            action: format!("{} {}", method, path),
+            duration_ms,
+            status,
+            timestamp: now,
+        });
     }
     response
 }

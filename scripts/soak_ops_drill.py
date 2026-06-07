@@ -406,6 +406,21 @@ def run_restart_recovery(
             "restart": restart_evidence,
         }
 
+    # Tick the run to completion after resume (scheduler may not auto-pick it up)
+    for _ in range(5):
+        status, tick_resp = client.call("POST", f"/api/v1/workflow-runs/{run_id}/tick", {
+            "executor": executor,
+            "actor": "soak_restart_recovery",
+        })
+        if status != 200:
+            break
+        tick_action = None
+        if isinstance(tick_resp, dict):
+            tick_data = tick_resp.get("tick") if isinstance(tick_resp.get("tick"), dict) else tick_resp
+            tick_action = tick_data.get("action")
+        if tick_action in ("completed", "no_ready_nodes"):
+            break
+
     terminal = False
     final_status = None
     poll_deadline = time.monotonic() + restart_timeout

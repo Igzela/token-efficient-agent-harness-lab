@@ -140,6 +140,7 @@ pub struct WorkflowScheduler {
     queue_depth_live: Arc<std::sync::atomic::AtomicU64>,
     paused_runs_count_live: Arc<std::sync::atomic::AtomicU64>,
     backpressure_active_live: Arc<AtomicBool>,
+    metrics: Option<Arc<crate::infrastructure::observability::MetricsCollector>>,
 }
 
 impl WorkflowScheduler {
@@ -160,7 +161,16 @@ impl WorkflowScheduler {
             queue_depth_live: Arc::new(std::sync::atomic::AtomicU64::new(0)),
             paused_runs_count_live: Arc::new(std::sync::atomic::AtomicU64::new(0)),
             backpressure_active_live: Arc::new(AtomicBool::new(false)),
+            metrics: None,
         }
+    }
+
+    pub fn with_metrics(
+        mut self,
+        metrics: Arc<crate::infrastructure::observability::MetricsCollector>,
+    ) -> Self {
+        self.metrics = Some(metrics);
+        self
     }
 
     pub fn start(&mut self) -> Result<(), String> {
@@ -186,6 +196,7 @@ impl WorkflowScheduler {
         let queue_depth_live = self.queue_depth_live.clone();
         let paused_runs_count_live = self.paused_runs_count_live.clone();
         let backpressure_active_live = self.backpressure_active_live.clone();
+        let metrics = self.metrics.clone();
 
         let handle = std::thread::spawn(move || {
             while running.load(Ordering::SeqCst) {
@@ -193,7 +204,12 @@ impl WorkflowScheduler {
                 let tick_start = std::time::Instant::now();
                 let tick_result = scheduler_tick(&store, &config, executor.clone(), &pool);
                 let tick_elapsed_ns = tick_start.elapsed().as_nanos() as u64;
+                let tick_elapsed_ms = tick_elapsed_ns as f64 / 1_000_000.0;
                 total_execution_time_ns.fetch_add(tick_elapsed_ns, Ordering::SeqCst);
+                let now = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_secs_f64();
                 match tick_result {
                     Ok(result) => {
                         tick_count.fetch_add(result.ticks, Ordering::SeqCst);
@@ -207,11 +223,38 @@ impl WorkflowScheduler {
                             *guard =
                                 Some(chrono::Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string());
                         }
+                        if let Some(ref m) = metrics {
+                            m.record_snapshot(
+                                crate::infrastructure::observability::MetricSnapshot {
+                                    name: "scheduler.tick".to_string(),
+                                    value: tick_elapsed_ms,
+                                    labels: [
+                                        ("executor".to_string(), config.executor_type.clone()),
+                                        ("status".to_string(), "ok".to_string()),
+                                    ]
+                                    .into(),
+                                    timestamp: now,
+                                },
+                            );
+                        }
                     }
                     Err(e) => {
                         error_count.fetch_add(1, Ordering::SeqCst);
                         if let Ok(mut guard) = last_error.lock() {
-                            *guard = Some(e);
+                            *guard = Some(e.clone());
+                        }
+                        if let Some(ref m) = metrics {
+                            m.record(crate::infrastructure::observability::RequestMetric {
+                                request_id: format!(
+                                    "scheduler-tick-{}",
+                                    tick_count.load(Ordering::SeqCst)
+                                ),
+                                component: "scheduler".to_string(),
+                                action: "tick".to_string(),
+                                duration_ms: tick_elapsed_ms,
+                                status: "error".to_string(),
+                                timestamp: now,
+                            });
                         }
                     }
                 }

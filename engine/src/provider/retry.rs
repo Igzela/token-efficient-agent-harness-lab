@@ -14,14 +14,18 @@ pub fn should_retry(error: &ProviderError, policy: &RetryPolicy, attempt: i64) -
 }
 
 pub fn compute_delay_ms(policy: &RetryPolicy, attempt: i64) -> i64 {
-    match policy.backoff_strategy.as_str() {
+    let base = match policy.backoff_strategy.as_str() {
         "linear" => policy.base_delay_ms * (attempt + 1),
         "exponential" => {
             let delay = policy.base_delay_ms * 2_i64.pow(attempt as u32);
             delay.min(policy.max_delay_ms)
         }
         _ => 0,
-    }
+    };
+    // Deterministic jitter: vary by ±20% based on attempt number
+    // Uses a simple hash-like approach to avoid needing a random dependency
+    let jitter_factor = 1.0 + (((attempt as f64 * 0.618033988749895).fract() - 0.5) * 0.4);
+    (base as f64 * jitter_factor).round() as i64
 }
 
 pub struct RetryFallbackManager {
@@ -136,9 +140,16 @@ mod tests {
     #[test]
     fn delay_exponential() {
         let policy = RetryPolicy::new("rp1");
-        assert_eq!(compute_delay_ms(&policy, 0), 1000);
-        assert_eq!(compute_delay_ms(&policy, 1), 2000);
-        assert_eq!(compute_delay_ms(&policy, 2), 4000);
+        // Jitter varies ±20%, so check range
+        let d0 = compute_delay_ms(&policy, 0);
+        assert!((800..=1200).contains(&d0), "attempt 0: {}", d0);
+        let d1 = compute_delay_ms(&policy, 1);
+        assert!((1600..=2400).contains(&d1), "attempt 1: {}", d1);
+        let d2 = compute_delay_ms(&policy, 2);
+        assert!((3200..=4800).contains(&d2), "attempt 2: {}", d2);
+        // Verify monotonic increase (base doubles each attempt)
+        assert!(d1 > d0, "d1 {} > d0 {}", d1, d0);
+        assert!(d2 > d1, "d2 {} > d1 {}", d2, d1);
     }
 
     #[test]
@@ -153,9 +164,34 @@ mod tests {
         let mut policy = RetryPolicy::new("rp1");
         policy.backoff_strategy = "linear".to_string();
         policy.base_delay_ms = 500;
-        assert_eq!(compute_delay_ms(&policy, 0), 500);
-        assert_eq!(compute_delay_ms(&policy, 1), 1000);
-        assert_eq!(compute_delay_ms(&policy, 2), 1500);
+        // Jitter varies ±20%, so check range
+        let d0 = compute_delay_ms(&policy, 0);
+        assert!((400..=600).contains(&d0), "attempt 0: {}", d0);
+        let d1 = compute_delay_ms(&policy, 1);
+        assert!((800..=1200).contains(&d1), "attempt 1: {}", d1);
+        let d2 = compute_delay_ms(&policy, 2);
+        assert!((1200..=1800).contains(&d2), "attempt 2: {}", d2);
+        // Verify monotonic increase
+        assert!(d1 > d0, "d1 {} > d0 {}", d1, d0);
+        assert!(d2 > d1, "d2 {} > d1 {}", d2, d1);
+    }
+
+    #[test]
+    fn jitter_produces_varying_delays() {
+        let policy = RetryPolicy::new("rp1");
+        // Same base delay (attempt 0 = 1000ms) but jitter should produce different values
+        // across different attempts
+        let delays: Vec<i64> = (0..10).map(|a| compute_delay_ms(&policy, a)).collect();
+        // At least some delays should differ from the exact base
+        let exact_base: Vec<i64> = (0..10)
+            .map(|a| 1000 * 2_i64.pow(a as u32).min(30))
+            .collect();
+        let has_jitter = delays.iter().zip(exact_base.iter()).any(|(d, b)| d != b);
+        assert!(
+            has_jitter,
+            "jitter should produce at least one non-exact delay: {:?}",
+            delays
+        );
     }
 
     // --- Test helper: FailingThenSucceedProvider ---

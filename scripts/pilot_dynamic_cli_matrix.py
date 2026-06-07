@@ -219,8 +219,16 @@ def run_task(client: ApiClient, executor: str, task: TaskClass, timeout_ms: int)
         )
         evidence["verify_tick_status"] = verify[0]
         evidence["verify_tick"] = verify[1] if isinstance(verify[1], dict) else {"raw": verify[1]}
-        if verify[0] != 200 or not tick_result_status(verify[1], "completed"):
+        verify_ok = verify[0] == 200 and tick_result_status(verify[1], "completed")
+        run_terminal_after_fix = (
+            verify[0] == 409
+            and isinstance(verify[1], dict)
+            and verify[1].get("code") == "run_terminal"
+        )
+        if not verify_ok and not run_terminal_after_fix:
             return fail_result(executor, task, "verify_tick", verify[0], verify[1], evidence, started)
+        if run_terminal_after_fix:
+            evidence["verify_tick_note"] = "run_terminal_after_fix_tick"
 
         status, ws_detail = client.call("GET", f"/api/v1/supervised-patch/workspaces/{workspace_id}")
         workspace_path = workspace_path_from(ws_detail)

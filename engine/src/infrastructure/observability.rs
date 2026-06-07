@@ -180,3 +180,87 @@ impl RequestTracer {
         self.spans.lock().unwrap().clear();
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn metrics_collector_records_and_queries() {
+        let collector = MetricsCollector::new(100);
+        collector.record(RequestMetric {
+            request_id: "r1".into(),
+            component: "http".into(),
+            action: "GET /health".into(),
+            duration_ms: 1.5,
+            status: "200".into(),
+            timestamp: 1000.0,
+        });
+        collector.record(RequestMetric {
+            request_id: "r2".into(),
+            component: "scheduler".into(),
+            action: "tick".into(),
+            duration_ms: 5.0,
+            status: "error".into(),
+            timestamp: 1001.0,
+        });
+        assert_eq!(collector.count(None), 2);
+        assert_eq!(collector.count(Some("http")), 1);
+        assert_eq!(collector.count(Some("scheduler")), 1);
+        let errors = collector.query(Some("scheduler"), None);
+        assert_eq!(errors[0].status, "error");
+    }
+
+    #[test]
+    fn metrics_collector_bounded_ring() {
+        let collector = MetricsCollector::new(2);
+        for i in 0..5 {
+            collector.record(RequestMetric {
+                request_id: format!("r{}", i),
+                component: "test".into(),
+                action: "a".into(),
+                duration_ms: 0.0,
+                status: "ok".into(),
+                timestamp: i as f64,
+            });
+        }
+        assert_eq!(collector.count(None), 2);
+        let metrics = collector.query(None, None);
+        assert_eq!(metrics[0].request_id, "r3");
+        assert_eq!(metrics[1].request_id, "r4");
+    }
+
+    #[test]
+    fn tracer_spans_lifecycle() {
+        let tracer = RequestTracer::new();
+        let (trace_id, span_id) = tracer.start_span("request", None, None, 100.0);
+        assert!(trace_id.starts_with("trace-"));
+        assert!(span_id.starts_with("span-"));
+
+        let span = tracer.get_span(&span_id).unwrap();
+        assert_eq!(span.status, "in_progress");
+        assert!(span.end_time.is_none());
+
+        let ended = tracer.end_span(&span_id, "ok", 105.0).unwrap();
+        assert_eq!(ended.status, "ok");
+        assert_eq!(ended.end_time, Some(105.0));
+
+        let trace_spans = tracer.get_trace_spans(&trace_id);
+        assert_eq!(trace_spans.len(), 1);
+    }
+
+    #[test]
+    fn snapshot_recording() {
+        let collector = MetricsCollector::new(100);
+        collector.record_snapshot(MetricSnapshot {
+            name: "scheduler.tick".into(),
+            value: 42.0,
+            labels: [("executor".into(), "noop".into())].into(),
+            timestamp: 1000.0,
+        });
+        let snaps = collector.query_snapshots(None);
+        assert_eq!(snaps.len(), 1);
+        assert_eq!(snaps[0].name, "scheduler.tick");
+        assert_eq!(snaps[0].value, 42.0);
+    }
+}
