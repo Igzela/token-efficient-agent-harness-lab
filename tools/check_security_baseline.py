@@ -126,6 +126,10 @@ ALLOWED_TEST_IMPORTS: dict[str, set[str]] = {
         "urllib.request",
         "urllib.error",
     },
+    "scripts/soak_ops_drill.py": {
+        "urllib.request",
+        "urllib.error",
+    },
 }
 
 # Paths to exclude from active routing guard (test fixtures contain
