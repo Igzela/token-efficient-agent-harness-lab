@@ -77,9 +77,9 @@ Current target: **small-team self-hosted GA**, not hosted/enterprise GA. This tr
 | SG-2 | Long-Run Soak + Failure Injection | Prove the system can run and recover over time. | **DONE** — `scripts/soak_ops_drill.py` supports `--duration`, `--concurrency`, `--executor`, and `--dynamic`; covers restart, timeout, retry exhaustion, backup/restore dry-run, SQLite contention, and queue pressure; exits non-zero on missing evidence or zero real runs. |
 | SG-3 | Operator Mission-Control Dashboard | Let an operator understand the system state from one control surface. | **DONE** — Mission Control tab composes existing workflow graph, node timeline, decision trace, mutation/recovery reasons, executor pool, queue/backpressure, approval inbox, export state, and failure path state. |
 | SG-4 | Policy Decision Deepening | Improve intelligence and explainability without adding a new policy kernel. | **DONE** — OrchestrationDecision v2 enriches every tick decision with quality_signal, routing_signal, cost_signal, approval_signal, queue_signal, executor_pool_signal, candidate_executors, and degraded_reason. All 3 tick paths (scheduler, dynamic controller, HTTP handler) persist enriched decisions. Dashboard DecisionLog/DecisionTrace show degraded badges, candidate executors, pool failure scores, and quality signals. SDK + dashboard types aligned. 1348 Rust tests pass. |
-| SG-5 | GA Release/Runbook Drill | Make self-hosted deployment operationally handoff-ready. | Production profile startup, config checklist, upgrade, backup, restore dry-run, incident triage, secret scan, rollback drill, and release checklist are documented and smoke-verifiable. |
+| SG-5 | GA Release/Runbook Drill | Make self-hosted deployment operationally handoff-ready. | **DONE** — docs/RUNBOOK.md covers startup, config, upgrade, backup, restore dry-run, incident triage, secret scan, rollback drill, and release checklist. scripts/ga_release_checklist.py validates all pre-release gates. scripts/ga_rollback_drill.py exercises backup→verify→restore-dry-run→integrity→metrics flow. |
 
-Current gap: SG-1 through SG-4 prove dynamic CLI pilots, failure-injection soak, operator mission-control visibility, and enriched policy decision signals. The remaining work is SG-5 handoff-ready runbook drills. Do not treat this as a dormant-module activation track; dormant module adaptation is complete, and this track hardens the active runtime path.
+Current gap: SG-1 through SG-5 are complete. The Self-Hosted GA Readiness Track is done. Do not treat this as a dormant-module activation track; dormant module adaptation is complete, and this track hardened the active runtime path.
 
 Next macro-orchestrator completion repair batch:
 
@@ -126,7 +126,7 @@ Batch 7 readiness audit outcome:
 | Provider default-off | Existing provider gate remains default-off. | Satisfied, must be preserved |
 | No push/merge/deploy/target mutation | Existing boundaries block these behaviors. | Satisfied, must be preserved |
 
-Next safe action: begin SG-5 of the Self-Hosted GA Readiness Track. Make self-hosted deployment operationally handoff-ready with production profile startup, config checklist, upgrade, backup, restore dry-run, incident triage, secret scan, rollback drill, and release checklist. Do not start a new parallel runtime or policy engine. No target repo writes, sandbox/VM execution, real workers beyond the existing scheduler/CLI executor path, provider calls, push/merge/deploy/apply controls, or registered-target `git worktree add`.
+Next safe action: SG-1 through SG-5 are complete. The Self-Hosted GA Readiness Track is done. Maintain repo health until the user provides new direction.
 
 ## Local Productization Plan
 
@@ -266,7 +266,7 @@ This track authorizes extending existing supervised autonomous beta infrastructu
 
 **Latest**: GA hardening, real CLI pilot, dormant module adaptation cleanup, path/hash regression fix, Dynamic Workflow Batches 1-7, and scheduler dynamic-mode recovery are complete. 1208 Rust tests pass.
 
-**Next**: All previous GA and dynamic-workflow batches plus Self-Hosted GA Readiness SG-1 through SG-3 are complete. Candidate next product work is SG-4 policy decision deepening, then SG-5 GA release/runbook drill.
+**Next**: All previous GA and dynamic-workflow batches plus Self-Hosted GA Readiness SG-1 through SG-5 are complete. The Self-Hosted GA Readiness Track is done. Maintain repo health until the user provides new direction.
 
 **Boundaries that remain intact:**
 - Provider execution remains default-off and env-gated
