@@ -25,6 +25,7 @@ The responsible coding agent may choose any of the following without asking for 
 | Supervised autonomous beta planning | Batch 0-7 Slice A-F complete. Slice F adds supervised execution runtime primitives: NodeExecutor trait, CommandNodeExecutor (shell-metachar rejection, allowlist, no `sh -c`), workflow tick endpoint, workspace lifecycle (create/cleanup/quarantine), capture_patch with source manifest diff, approval binding with bound fields, integrity validation, export gate, E2E closed-loop test. 1222 Rust tests pass, clippy clean. No target repo writes, sandbox/process/container/VM execution, real workers, provider calls, push/merge/deploy/apply controls, or default-on execution. |
 | Architecture refactor (R-series) | **SEALED AT R7.** R1–R7 are complete. R8 is not approved. The `checkpoint.rs` split and `dispatch_decision.rs` split are deferred. No further R-series file splitting is approved. |
 | Dormant module adaptation | 4-phase strategy to selectively activate 23,939 lines of dormant code. Phase 1: Interface Unification (trait Evaluator, Provider adapter, GraphOperations) — COMPLETE. Phase 2: Zero-Conflict Activation (DAGManager in planner, context_pack in task_analyzer, WorkQueue+ResultAggregator+FeedbackIntegrator with AutoPolicies in scheduler) — COMPLETE. Phase 3: Adapted Activation (QualityGateEvaluator, AdvisorBroker in dispatch, ConflictResolver+HumanApprovalGate+WorkflowEngine in scheduler) — COMPLETE (1332 tests). Phase 4: Dead Code Cleanup — COMPLETE (~9,400 lines removed, 1099 tests). All 4 phases done. All boundaries intact. |
+| HA hardening | Production-grade resilience track. Observability wiring, deep health, graceful shutdown, and retry jitter are DONE (1353 tests). Remaining: HA-1 Scheduler Resilience, HA-2 Automated Backup, HA-3 Deep Health + Resource Monitoring, HA-4 Circuit Breaker, HA-5 TLS Inbound, HA-6 Secret Encryption at Rest. All phases are independent or have documented dependencies. No new external dependencies. |
 
 ## Dynamic Workflow Direction
 
@@ -80,6 +81,43 @@ Current target: **small-team self-hosted GA**, not hosted/enterprise GA. This tr
 | SG-5 | GA Release/Runbook Drill | Make self-hosted deployment operationally handoff-ready. | **DONE** — docs/RUNBOOK.md covers startup, config, upgrade, backup, restore dry-run, incident triage, secret scan, rollback drill, and release checklist. scripts/ga_release_checklist.py validates all pre-release gates. scripts/ga_rollback_drill.py exercises backup→verify→restore-dry-run→integrity→metrics flow. |
 
 Current gap: SG-1 through SG-5 are complete. The Self-Hosted GA Readiness Track is done. Do not treat this as a dormant-module activation track; dormant module adaptation is complete, and this track hardened the active runtime path.
+
+## High-Availability Hardening Track
+
+Current target: **production-grade local/small-team HA**. The Self-Hosted GA track proved the system can run, recover, and be handed off. This track addresses the remaining HA gaps that prevent production use: single-point-of-failure, no encryption, no deep monitoring, no automated resilience.
+
+**Completed (2026-06-07):**
+- Wired `MetricsCollector` + `RequestTracer` into runtime (AxumApiState, middleware, scheduler)
+- Deep `/api/v1/health` checks DB integrity + scheduler liveness (30s threshold)
+- `GET /api/v1/metrics/observability` exposes real-time request metrics and scheduler snapshots
+- Graceful shutdown via SIGTERM/SIGINT with `tokio::signal`
+- Deterministic ±20% jitter in retry `compute_delay_ms` (golden ratio, no `rand` dependency)
+
+**Remaining gaps and planned phases:**
+
+| Order | Phase | Goal | Scope | Done When |
+|---|---|---|---|---|
+| HA-1 | Scheduler Resilience | Scheduler thread survives panics and persists liveness | Wrap scheduler tick in `catch_unwind`; write periodic heartbeat to SQLite (`scheduler_heartbeat` table); `/api/v1/health` reads persisted heartbeat; restart scheduler thread on panic with backoff | Scheduler thread auto-recovers from panic; heartbeat persists across restarts; health endpoint reports stale heartbeat; 5+ new tests |
+| HA-2 | Automated Backup + Retention | Backups happen without operator intervention | Timer-based backup in scheduler loop (configurable interval via `ACP_BACKUP_INTERVAL_SEC`); retention policy (`ACP_BACKUP_RETAIN_COUNT`, default 5); WAL checkpoint before backup (`PRAGMA wal_checkpoint(TRUNCATE)`); backup age/count in `/api/v1/metrics` | Backups auto-created on interval; old backups pruned; WAL checkpoint runs before copy; backup metrics visible; 5+ new tests |
+| HA-3 | Deep Health + Resource Monitoring | Health endpoint reports real system state | Check disk space (`statvfs` or `df`); check memory (read `/proc/meminfo` or `sysinfo`); check DB file size vs disk free; check scheduler thread liveness via persisted heartbeat; aggregate into `healthy`/`degraded`/`unhealthy` with per-check detail | Health returns degraded on low disk (<10%), unhealthy on DB unreachable, degraded on stale scheduler; all checks in response JSON; 5+ new tests |
+| HA-4 | Circuit Breaker for Providers | Stop hammering a dead provider | State machine: `closed` (normal) → `open` (failure count > threshold in window) → `half_open` (probe after cooldown) → `closed` (probe succeeds) or `open` (probe fails); per-provider state in `ExecutorPool`; `GET /api/v1/executor-pool` shows circuit state | Provider fast-fails when circuit open; half-open probe after 30s cooldown; circuit state visible in API; 8+ new tests |
+| HA-5 | TLS Inbound | Encrypt incoming traffic | Accept `ACP_TLS_CERT_PATH` + `ACP_TLS_KEY_PATH` env vars; use `axum_server::bind_rustls()` when certs provided, fall back to plain TCP when absent; log TLS startup; dashboard/SDK work unchanged | Engine starts with TLS when certs provided; plain TCP fallback when absent; health endpoint reachable over HTTPS; 3+ new tests |
+| HA-6 | Secret Encryption at Rest | Protect SQLite data from file-level theft | Use `PRAGMA key` with `sodium` or `SEE` extension for encrypted SQLite; accept `ACP_DB_ENCRYPTION_KEY` env var; fallback to plain SQLite when not set (backward compatible); backup includes encryption key metadata | DB unreadable without key; backup restore works with key; plain fallback preserved; 3+ new tests |
+
+**Boundaries that remain intact:**
+- No clustering/replication (single-node is the target deployment)
+- No external dependency (PostgreSQL, Redis, etc.)
+- No cloud SaaS or hosted production deployment
+- No target repo writes, sandbox expansion, or unattended workers
+- Provider execution remains default-off and env-gated
+
+**Dependencies between phases:**
+- HA-1 (scheduler resilience) is independent — start first
+- HA-2 (automated backup) depends on HA-1 (uses scheduler loop for timer)
+- HA-3 (deep health) depends on HA-1 (reads persisted heartbeat)
+- HA-4 (circuit breaker) is independent — can run in parallel with HA-1
+- HA-5 (TLS) is independent — can run in parallel
+- HA-6 (encryption at rest) is independent — can run in parallel
 
 Next macro-orchestrator completion repair batch:
 
