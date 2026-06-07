@@ -766,5 +766,76 @@ class ClientFetchExecutorPoolTest(unittest.TestCase):
         self.assertEqual(req.full_url, "http://localhost:8080/api/v1/executor-pool")
 
 
+class ClientDecisionsTest(unittest.TestCase):
+    @patch("agent_control_plane_sdk.client.urlopen")
+    def test_decisions_sends_get_with_query_params(self, mock_urlopen):
+        mock_urlopen.return_value = mock_response({
+            "schema_version": "axum_api.v1",
+            "decisions": [{"decision_id": "d-0001", "action": "dispatch", "confidence": 0.95}],
+            "total": 1,
+            "limit": 25,
+            "offset": 0,
+        })
+        client = AgentControlPlaneClient("http://localhost:8080")
+        result = client.decisions(limit=25, offset=10, search="parser", run_id="run-0001")
+        self.assertEqual(result["decisions"][0]["decision_id"], "d-0001")
+        args, _ = mock_urlopen.call_args
+        req = args[0]
+        self.assertEqual(req.method, "GET")
+        self.assertIn("/api/v1/decisions?", req.full_url)
+        self.assertIn("limit=25", req.full_url)
+        self.assertIn("offset=10", req.full_url)
+        self.assertIn("search=parser", req.full_url)
+        self.assertIn("run_id=run-0001", req.full_url)
+
+    @patch("agent_control_plane_sdk.client.urlopen")
+    def test_decisions_encodes_special_chars_in_search(self, mock_urlopen):
+        mock_urlopen.return_value = mock_response({
+            "schema_version": "axum_api.v1",
+            "decisions": [],
+            "total": 0,
+            "limit": 100,
+            "offset": 0,
+        })
+        client = AgentControlPlaneClient("http://localhost:8080")
+        client.decisions(search="foo&bar=baz")
+        args, _ = mock_urlopen.call_args
+        req = args[0]
+        self.assertIn("search=foo%26bar%3Dbaz", req.full_url)
+
+
+class ClientDecisionDetailTest(unittest.TestCase):
+    @patch("agent_control_plane_sdk.client.urlopen")
+    def test_decision_detail_sends_get(self, mock_urlopen):
+        mock_urlopen.return_value = mock_response({
+            "schema_version": "axum_api.v1",
+            "decision": {"decision_id": "d/1 needs review", "action": "dispatch"},
+        })
+        client = AgentControlPlaneClient("http://localhost:8080")
+        result = client.decision_detail("d/1 needs review")
+        self.assertEqual(result["decision"]["decision_id"], "d/1 needs review")
+        args, _ = mock_urlopen.call_args
+        req = args[0]
+        self.assertEqual(req.method, "GET")
+        self.assertIn("/api/v1/decisions/d%2F1%20needs%20review", req.full_url)
+
+
+class ClientDecisionStatsTest(unittest.TestCase):
+    @patch("agent_control_plane_sdk.client.urlopen")
+    def test_decision_stats_sends_get(self, mock_urlopen):
+        mock_urlopen.return_value = mock_response({
+            "schema_version": "axum_api.v1",
+            "stats": {"total_decisions": 42, "by_action": {"dispatch": 30, "defer": 12}, "avg_confidence": 0.87},
+        })
+        client = AgentControlPlaneClient("http://localhost:8080")
+        result = client.decision_stats()
+        self.assertEqual(result["stats"]["total_decisions"], 42)
+        self.assertEqual(result["stats"]["avg_confidence"], 0.87)
+        args, _ = mock_urlopen.call_args
+        req = args[0]
+        self.assertEqual(req.method, "GET")
+        self.assertEqual(req.full_url, "http://localhost:8080/api/v1/decisions/stats")
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -19,6 +19,7 @@ import { Health } from "@/components/Health";
 import { Metric } from "@/components/Metric";
 import { Operations } from "@/components/Operations";
 import { Routing } from "@/components/Routing";
+import { DecisionLog } from "@/components/DecisionLog";
 import { ExecutorPool } from "@/components/ExecutorPool";
 import { QueueStatusComponent } from "@/components/QueueStatus";
 import { SchedulerStatus } from "@/components/SchedulerStatus";
@@ -27,11 +28,12 @@ import { Settings } from "@/components/Settings";
 import { Team } from "@/components/Team";
 import { WorkflowRuns } from "@/components/WorkflowRuns";
 
-type Tab = "dispatches" | "routing" | "team" | "costs" | "operations" | "runs" | "patches" | "scheduler" | "pool" | "queue" | "settings" | "health" | "backups" | "audit";
+type Tab = "dispatches" | "routing" | "decisions" | "team" | "costs" | "operations" | "runs" | "patches" | "scheduler" | "pool" | "queue" | "settings" | "health" | "backups" | "audit";
 
 const tabs: { id: Tab; label: string }[] = [
   { id: "dispatches", label: "Dispatches" },
   { id: "routing", label: "Routing" },
+  { id: "decisions", label: "Decisions" },
   { id: "team", label: "Team" },
   { id: "costs", label: "Costs" },
   { id: "operations", label: "Operations" },
@@ -348,6 +350,7 @@ export default function DashboardPage() {
             />
           )}
           {tab === "routing" && <Routing rows={routingRows} />}
+          {tab === "decisions" && <DecisionLog />}
           {tab === "team" && (
             <Team dashboard={dashboard} refreshDashboard={(d) => setDashboard(d)} />
           )}

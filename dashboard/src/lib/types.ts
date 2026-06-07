@@ -561,6 +561,51 @@ export interface QueueRunResponse {
   run: QueueRunSummary;
 }
 
+export interface DecisionRecord {
+  decision_id: string;
+  run_id: string | null;
+  dispatch_id: string;
+  analysis_id: string;
+  selected_tier: string;
+  confidence: number;
+  confidence_label: string;
+  action: string;
+  reason: string;
+  executor: string | null;
+  input_signals: Record<string, unknown>;
+  created_at: string;
+}
+
+export interface DecisionLogStats {
+  total_decisions: number;
+  by_action: Record<string, number>;
+  avg_confidence: number;
+}
+
+export interface DecisionListResponse {
+  schema_version: "axum_api.v1";
+  tenant_id?: string;
+  request_id?: string;
+  decisions: DecisionRecord[];
+  total: number;
+  limit: number;
+  offset: number;
+}
+
+export interface DecisionDetailResponse {
+  schema_version: "axum_api.v1";
+  tenant_id?: string;
+  request_id?: string;
+  decision: DecisionRecord;
+}
+
+export interface DecisionStatsResponse {
+  schema_version: "axum_api.v1";
+  tenant_id?: string;
+  request_id?: string;
+  stats: DecisionLogStats;
+}
+
 export interface QueueTenantListResponse {
   schema_version: "axum_api.v1";
   tenants: TenantQueueInfo[];

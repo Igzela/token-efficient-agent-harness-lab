@@ -178,6 +178,27 @@ impl LocalProductStore {
         })
     }
 
+    pub fn get_decision_by_id(&self, decision_id: &str) -> Result<Option<DecisionRecord>, String> {
+        self.with_conn(|conn| {
+            let mut stmt = conn
+                .prepare(
+                    "SELECT decision_id, run_id, node_id, action, action_reason,
+                            selected_executor, blocked_reason, confidence, confidence_score,
+                            input_signals_json, created_at
+                     FROM orchestration_decisions
+                     WHERE decision_id = ?1",
+                )
+                .map_err(|e| e.to_string())?;
+            let mut rows = stmt
+                .query_map(params![decision_id], decision_row)
+                .map_err(|e| e.to_string())?;
+            match rows.next() {
+                Some(row) => Ok(Some(row.map_err(|e| e.to_string())?)),
+                None => Ok(None),
+            }
+        })
+    }
+
     pub fn decision_log_stats(&self) -> Result<DecisionLogStats, String> {
         self.with_conn(|conn| {
             let total_decisions: i64 = conn
@@ -258,4 +279,175 @@ fn collect_decisions(
         records.push(row.map_err(|e| e.to_string())?);
     }
     Ok(records)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn test_store() -> LocalProductStore {
+        LocalProductStore::new(":memory:").expect("failed to create in-memory store")
+    }
+
+    fn record_test_decision(
+        store: &LocalProductStore,
+        run_id: &str,
+        action: &str,
+        executor: &str,
+    ) -> DecisionRecord {
+        store
+            .record_orchestration_decision(
+                run_id,
+                Some("node-1"),
+                action,
+                "test reason",
+                executor,
+                None,
+                "high",
+                0.95,
+                &json!({"source": "test"}),
+            )
+            .expect("failed to record decision")
+    }
+
+    #[test]
+    fn test_record_decision_returns_valid_record() {
+        let store = test_store();
+        let rec = record_test_decision(&store, "run-1", "dispatch", "executor-a");
+        assert!(rec.decision_id.starts_with("decision-run-1-"));
+        assert_eq!(rec.run_id, "run-1");
+        assert_eq!(rec.action, "dispatch");
+        assert_eq!(rec.selected_executor, "executor-a");
+        assert_eq!(rec.confidence, "high");
+        assert_eq!(rec.confidence_score, 0.95);
+        assert_eq!(rec.input_signals, json!({"source": "test"}));
+    }
+
+    #[test]
+    fn test_record_decision_persists_to_store() {
+        let store = test_store();
+        let rec = record_test_decision(&store, "run-1", "dispatch", "executor-a");
+        let found = store
+            .get_decision_by_id(&rec.decision_id)
+            .expect("lookup failed");
+        assert!(found.is_some());
+        let found = found.unwrap();
+        assert_eq!(found.decision_id, rec.decision_id);
+        assert_eq!(found.action, "dispatch");
+    }
+
+    #[test]
+    fn test_get_decisions_for_run_empty() {
+        let store = test_store();
+        let results = store
+            .get_decisions_for_run("nonexistent-run", 100)
+            .expect("query failed");
+        assert!(results.is_empty());
+    }
+
+    #[test]
+    fn test_get_decisions_for_run_ordering() {
+        let store = test_store();
+        let rec1 = record_test_decision(&store, "run-2", "dispatch", "executor-a");
+        let rec2 = record_test_decision(&store, "run-2", "block", "executor-b");
+        let rec3 = record_test_decision(&store, "run-2", "retry", "executor-a");
+        let results = store
+            .get_decisions_for_run("run-2", 100)
+            .expect("query failed");
+        assert_eq!(results.len(), 3);
+        assert_eq!(results[0].decision_id, rec1.decision_id);
+        assert_eq!(results[1].decision_id, rec2.decision_id);
+        assert_eq!(results[2].decision_id, rec3.decision_id);
+    }
+
+    #[test]
+    fn test_get_decisions_for_run_respects_limit() {
+        let store = test_store();
+        for i in 0..5 {
+            record_test_decision(&store, "run-3", &format!("action-{i}"), "executor-a");
+        }
+        let results = store
+            .get_decisions_for_run("run-3", 2)
+            .expect("query failed");
+        assert_eq!(results.len(), 2);
+    }
+
+    #[test]
+    fn test_get_decision_by_id_found() {
+        let store = test_store();
+        let rec = record_test_decision(&store, "run-4", "dispatch", "executor-x");
+        let found = store
+            .get_decision_by_id(&rec.decision_id)
+            .expect("lookup failed");
+        assert!(found.is_some());
+        assert_eq!(found.unwrap(), rec);
+    }
+
+    #[test]
+    fn test_get_decision_by_id_not_found() {
+        let store = test_store();
+        let found = store
+            .get_decision_by_id("nonexistent-id")
+            .expect("lookup failed");
+        assert!(found.is_none());
+    }
+
+    #[test]
+    fn test_search_decisions_no_filter() {
+        let store = test_store();
+        record_test_decision(&store, "run-5", "dispatch", "executor-a");
+        record_test_decision(&store, "run-5", "block", "executor-b");
+        let results = store.search_decisions(100, 0, None).expect("search failed");
+        assert_eq!(results.len(), 2);
+    }
+
+    #[test]
+    fn test_search_decisions_by_action() {
+        let store = test_store();
+        record_test_decision(&store, "run-6", "dispatch", "executor-a");
+        record_test_decision(&store, "run-6", "block", "executor-b");
+        record_test_decision(&store, "run-6", "retry", "executor-a");
+        let results = store
+            .search_decisions(100, 0, Some("dispatch"))
+            .expect("search failed");
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].action, "dispatch");
+    }
+
+    #[test]
+    fn test_search_decisions_by_executor() {
+        let store = test_store();
+        record_test_decision(&store, "run-7", "dispatch", "executor-alpha");
+        record_test_decision(&store, "run-7", "block", "executor-beta");
+        record_test_decision(&store, "run-7", "retry", "executor-alpha");
+        let results = store
+            .search_decisions(100, 0, Some("alpha"))
+            .expect("search failed");
+        assert_eq!(results.len(), 2);
+        for r in &results {
+            assert_eq!(r.selected_executor, "executor-alpha");
+        }
+    }
+
+    #[test]
+    fn test_decision_log_stats_empty() {
+        let store = test_store();
+        let stats = store.decision_log_stats().expect("stats failed");
+        assert_eq!(stats.total_decisions, 0);
+        assert_eq!(stats.by_action, json!({}));
+        assert_eq!(stats.avg_confidence, 0.0);
+    }
+
+    #[test]
+    fn test_decision_log_stats_with_data() {
+        let store = test_store();
+        record_test_decision(&store, "run-8", "dispatch", "executor-a");
+        record_test_decision(&store, "run-8", "dispatch", "executor-b");
+        record_test_decision(&store, "run-8", "block", "executor-a");
+        let stats = store.decision_log_stats().expect("stats failed");
+        assert_eq!(stats.total_decisions, 3);
+        assert!(stats.avg_confidence > 0.0);
+        let by_action = stats.by_action.as_array().expect("expected array");
+        assert_eq!(by_action.len(), 2);
+    }
 }

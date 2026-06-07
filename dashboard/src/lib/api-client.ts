@@ -2,6 +2,9 @@ import type {
   ApiStatus,
   AuditListResponse,
   BackupVerification,
+  DecisionDetailResponse,
+  DecisionListResponse,
+  DecisionStatsResponse,
   DispatchListResponse,
   ExecutorPoolStatusResponse,
   LocalDashboardState,
@@ -443,4 +446,23 @@ export async function pauseRun(runId: string, reason?: string | null): Promise<Q
 
 export async function fetchQueueTenants(): Promise<QueueTenantListResponse> {
   return fetchJson<QueueTenantListResponse>(`${BASE}/api/v1/queue/tenants`);
+}
+
+export async function fetchDecisions(params: {
+  limit?: number;
+  offset?: number;
+  search?: string;
+  run_id?: string;
+} = {}): Promise<DecisionListResponse> {
+  return fetchJson<DecisionListResponse>(withQuery("/api/v1/decisions", params));
+}
+
+export async function fetchDecisionDetail(decisionId: string): Promise<DecisionDetailResponse> {
+  return fetchJson<DecisionDetailResponse>(
+    `${BASE}/api/v1/decisions/${encodeURIComponent(decisionId)}`,
+  );
+}
+
+export async function fetchDecisionStats(): Promise<DecisionStatsResponse> {
+  return fetchJson<DecisionStatsResponse>(`${BASE}/api/v1/decisions/stats`);
 }

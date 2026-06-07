@@ -719,6 +719,37 @@ pub fn openapi_document() -> serde_json::Value {
                     }
                 }
             },
+            "/api/v1/decisions": {
+                "get": {
+                    "summary": "List orchestration decision log entries",
+                    "description": "Requires dispatch:read scope. Returns persisted orchestration decision records with optional filtering by run_id and text search.",
+                    "parameters": [
+                        {"name": "limit", "in": "query", "schema": {"type": "integer", "default": 100, "minimum": 0, "maximum": 500}},
+                        {"name": "offset", "in": "query", "schema": {"type": "integer", "default": 0, "minimum": 0}},
+                        {"name": "search", "in": "query", "schema": {"type": "string"}, "description": "Case-insensitive match across run_id, action, selected_executor, and confidence."},
+                        {"name": "run_id", "in": "query", "schema": {"type": "string"}, "description": "Filter decisions by workflow run ID."}
+                    ],
+                    "responses": {"200": {"description": "Decision log entries"}}
+                }
+            },
+            "/api/v1/decisions/stats": {
+                "get": {
+                    "summary": "Orchestration decision log statistics",
+                    "description": "Requires dispatch:read scope. Returns aggregate stats: total decisions, breakdown by action, and average confidence score.",
+                    "responses": {"200": {"description": "Decision log statistics"}}
+                }
+            },
+            "/api/v1/decisions/{decision_id}": {
+                "get": {
+                    "summary": "Get a single orchestration decision by ID",
+                    "description": "Requires dispatch:read scope. Returns a single decision record with full input signals.",
+                    "parameters": [path_parameter("decision_id")],
+                    "responses": {
+                        "200": {"description": "Decision detail"},
+                        "404": {"description": "Decision not found"}
+                    }
+                }
+            },
             "/api/v1/provider/health": {
                 "get": {
                     "summary": "Provider health check",
@@ -948,5 +979,31 @@ mod tests {
                 "{path} {method} must require {field}"
             );
         }
+    }
+
+    #[test]
+    fn test_openapi_decisions_routes_documented() {
+        let doc = openapi_document();
+        let paths = doc["paths"].as_object().expect("paths should be an object");
+
+        assert!(
+            paths.contains_key("/api/v1/decisions"),
+            "OpenAPI document must include /api/v1/decisions"
+        );
+        assert!(
+            paths.contains_key("/api/v1/decisions/stats"),
+            "OpenAPI document must include /api/v1/decisions/stats"
+        );
+        assert!(
+            paths.contains_key("/api/v1/decisions/{decision_id}"),
+            "OpenAPI document must include /api/v1/decisions/{{decision_id}}"
+        );
+
+        assert_path_parameter(
+            &doc,
+            "/api/v1/decisions/{decision_id}",
+            "get",
+            "decision_id",
+        );
     }
 }

@@ -238,6 +238,18 @@ fn axum_routes() -> Router<AxumApiState> {
             get(queue::api_queue_tenants).options(cors_preflight),
         )
         .route(
+            "/api/v1/decisions",
+            get(decisions::api_decisions).options(cors_preflight),
+        )
+        .route(
+            "/api/v1/decisions/stats",
+            get(decisions::api_decision_stats).options(cors_preflight),
+        )
+        .route(
+            "/api/v1/decisions/:decision_id",
+            get(decisions::api_decision_detail).options(cors_preflight),
+        )
+        .route(
             "/api/v1/provider/health",
             get(provider::api_provider_health).options(cors_preflight),
         )

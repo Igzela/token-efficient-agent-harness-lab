@@ -3,6 +3,7 @@ pub(crate) mod backups;
 pub(crate) mod costs;
 pub(crate) mod dashboard;
 pub(crate) mod data_ops;
+pub(crate) mod decisions;
 pub(crate) mod dispatch;
 pub(crate) mod executor_pool;
 pub(crate) mod health;

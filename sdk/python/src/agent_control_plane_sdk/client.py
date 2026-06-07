@@ -286,6 +286,30 @@ class AgentControlPlaneClient:
     def fetch_queue_tenants(self) -> dict[str, Any]:
         return self._get("/api/v1/queue/tenants")
 
+    def decisions(
+        self,
+        limit: int | None = None,
+        offset: int | None = None,
+        search: str | None = None,
+        run_id: str | None = None,
+    ) -> dict[str, Any]:
+        params: dict[str, Any] = {}
+        if limit is not None:
+            params["limit"] = limit
+        if offset is not None:
+            params["offset"] = offset
+        if search:
+            params["search"] = search
+        if run_id:
+            params["run_id"] = run_id
+        return self._get(_query_path("/api/v1/decisions", params))
+
+    def decision_detail(self, decision_id: str) -> dict[str, Any]:
+        return self._get(f"/api/v1/decisions/{_quote_path_segment(decision_id)}")
+
+    def decision_stats(self) -> dict[str, Any]:
+        return self._get("/api/v1/decisions/stats")
+
     def config(self) -> dict[str, Any]:
         return self._get("/api/v1/config")
 

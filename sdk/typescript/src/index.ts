@@ -2,6 +2,9 @@ export type * from "./wire-types.js";
 
 import type {
   ApiStatus,
+  DecisionDetailResponse,
+  DecisionListResponse,
+  DecisionStatsResponse,
   DispatchBundle,
   DispatchRequest,
   PlanCreateRequest,
@@ -111,6 +114,13 @@ export interface ProviderAuditOptions {
 
 export interface CostDetailsOptions {
   limit?: number;
+}
+
+export interface DecisionListOptions {
+  limit?: number;
+  offset?: number;
+  search?: string;
+  run_id?: string;
 }
 
 export class AgentControlPlaneClient {
@@ -368,6 +378,23 @@ export class AgentControlPlaneClient {
 
   fetchQueueTenants(): Promise<QueueTenantListResponse> {
     return this.getJson<QueueTenantListResponse>("/api/v1/queue/tenants");
+  }
+
+  decisions(options: DecisionListOptions = {}): Promise<DecisionListResponse> {
+    return this.getJson<DecisionListResponse>(`/api/v1/decisions${queryString({
+      limit: options.limit,
+      offset: options.offset,
+      search: options.search,
+      run_id: options.run_id,
+    })}`);
+  }
+
+  decisionDetail(decisionId: string): Promise<DecisionDetailResponse> {
+    return this.getJson<DecisionDetailResponse>(`/api/v1/decisions/${encodeURIComponent(decisionId)}`);
+  }
+
+  decisionStats(): Promise<DecisionStatsResponse> {
+    return this.getJson<DecisionStatsResponse>("/api/v1/decisions/stats");
   }
 
   config(): Promise<ConfigResponse> {
