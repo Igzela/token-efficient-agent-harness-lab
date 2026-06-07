@@ -94,7 +94,7 @@ function TraceEntry({ decision, isLast }: TraceEntryProps) {
           {decision.executor && (
             <span className="pill info">{decision.executor}</span>
           )}
-          <span className="mono" style={{ fontSize: "0.75rem" }}>{decision.selected_tier}</span>
+          {decision.node_id && <span className="mono" style={{ fontSize: "0.75rem" }}>{decision.node_id}</span>}
           <span className="muted" style={{ fontSize: "0.75rem" }}>{formatTimestamp(decision.created_at)}</span>
         </div>
 

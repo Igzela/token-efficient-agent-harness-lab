@@ -22,17 +22,22 @@ pub struct DecisionRecord {
 
 impl DecisionRecord {
     pub fn to_value(&self) -> Value {
+        let confidence_label = self.confidence.clone();
+        let confidence_numeric = self.confidence_score;
         json!({
             "schema_version": ORCHESTRATION_DECISION_LOG_SCHEMA_VERSION,
             "decision_id": self.decision_id,
             "run_id": self.run_id,
             "node_id": self.node_id,
             "action": self.action,
+            "reason": self.action_reason,
             "action_reason": self.action_reason,
+            "executor": self.selected_executor,
             "selected_executor": self.selected_executor,
             "blocked_reason": self.blocked_reason,
-            "confidence": self.confidence,
+            "confidence": confidence_numeric,
             "confidence_score": self.confidence_score,
+            "confidence_label": confidence_label,
             "input_signals": self.input_signals,
             "created_at": self.created_at,
         })

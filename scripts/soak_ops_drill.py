@@ -81,7 +81,7 @@ def run_soak_iteration(client: ApiClient, iteration: int, executor: str) -> dict
     })
     plan_id = None
     if status in (200, 201) and isinstance(plan_resp, dict):
-        plan_id = plan_resp.get("plan_id")
+        plan_id = (plan_resp.get("plan", {}).get("plan_id") if isinstance(plan_resp.get("plan"), dict) else None)
     else:
         errors.append("create_plan")
 
@@ -93,7 +93,7 @@ def run_soak_iteration(client: ApiClient, iteration: int, executor: str) -> dict
             "actor": "soak_ops_drill",
         })
         if status in (200, 201) and isinstance(run_resp, dict):
-            run_id = run_resp.get("run_id")
+            run_id = (run_resp.get("run", {}).get("run_id") if isinstance(run_resp.get("run"), dict) else None)
             run_ids.append(run_id)
         else:
             errors.append("create_run")
@@ -102,7 +102,7 @@ def run_soak_iteration(client: ApiClient, iteration: int, executor: str) -> dict
     if run_id:
         for _ in range(3):
             status, tick_resp = timed_call("POST", f"/api/v1/workflow-runs/{run_id}/tick", {
-                "executor_type": executor,
+                "executor": executor,
                 "actor": "soak_ops_drill",
             })
             if status != 200:
@@ -156,15 +156,15 @@ def run_soak_iteration(client: ApiClient, iteration: int, executor: str) -> dict
     # m. Verify backup
     backup_verified = False
     if backup_id:
-        status, _ = timed_call("POST", f"/api/v1/backups/{backup_id}/verify")
+        status, _ = timed_call("GET", f"/api/v1/backups/{backup_id}/verify")
         if status == 200:
             backup_verified = True
 
     # n. Restore dry-run
     backup_restore_dry = False
     if backup_id:
-        status, _ = timed_call("POST", f"/api/v1/backups/{backup_id}/restore", {
-            "confirm_restore": False,
+        status, _ = timed_call("POST", f"/api/v1/backups/{backup_id}/restore/dry-run", {
+            "confirm_restore_dry_run": True,
         })
         if status == 200:
             backup_restore_dry = True
@@ -190,7 +190,7 @@ def run_failure_recovery(client: ApiClient, executor: str) -> dict:
     if status not in (200, 201) or not isinstance(plan_resp, dict):
         return {"success": False, "error": "create_plan_failed"}
 
-    plan_id = plan_resp.get("plan_id")
+    plan_id = (plan_resp.get("plan", {}).get("plan_id") if isinstance(plan_resp.get("plan"), dict) else None)
     status, run_resp = client.call("POST", "/api/v1/workflow-runs", {
         "plan_id": plan_id,
         "actor": "soak_ops_drill",
@@ -198,11 +198,11 @@ def run_failure_recovery(client: ApiClient, executor: str) -> dict:
     if status not in (200, 201) or not isinstance(run_resp, dict):
         return {"success": False, "error": "create_run_failed"}
 
-    run_id = run_resp.get("run_id")
+    run_id = (run_resp.get("run", {}).get("run_id") if isinstance(run_resp.get("run"), dict) else None)
 
     # Tick with fail executor
     client.call("POST", f"/api/v1/workflow-runs/{run_id}/tick", {
-        "executor_type": "fail",
+        "executor": "fail",
         "actor": "soak_ops_drill",
     })
 
@@ -225,17 +225,17 @@ def run_multi_executor(client: ApiClient) -> dict:
         })
         if status not in (200, 201):
             continue
-        plan_id = plan_resp.get("plan_id")
+        plan_id = (plan_resp.get("plan", {}).get("plan_id") if isinstance(plan_resp.get("plan"), dict) else None)
         status, run_resp = client.call("POST", "/api/v1/workflow-runs", {
             "plan_id": plan_id,
             "actor": "soak_ops_drill",
         })
         if status in (200, 201):
-            run_ids.append(run_resp.get("run_id"))
+            run_ids.append((run_resp.get("run", {}).get("run_id") if isinstance(run_resp.get("run"), dict) else None))
 
     for run_id in run_ids:
         client.call("POST", f"/api/v1/workflow-runs/{run_id}/tick", {
-            "executor_type": "noop",
+            "executor": "noop",
             "actor": "soak_ops_drill",
         })
 
@@ -258,7 +258,7 @@ def run_restart_recovery(client: ApiClient, executor: str) -> dict:
     if status not in (200, 201) or not isinstance(plan_resp, dict):
         return {"success": False, "error": "create_plan_failed", "step": "create_plan"}
 
-    plan_id = plan_resp.get("plan_id")
+    plan_id = (plan_resp.get("plan", {}).get("plan_id") if isinstance(plan_resp.get("plan"), dict) else None)
     status, run_resp = client.call("POST", "/api/v1/workflow-runs", {
         "plan_id": plan_id,
         "actor": "soak_ops_drill",
@@ -266,11 +266,11 @@ def run_restart_recovery(client: ApiClient, executor: str) -> dict:
     if status not in (200, 201) or not isinstance(run_resp, dict):
         return {"success": False, "error": "create_run_failed", "step": "create_run"}
 
-    run_id = run_resp.get("run_id")
+    run_id = (run_resp.get("run", {}).get("run_id") if isinstance(run_resp.get("run"), dict) else None)
 
     # Tick once so the run has active nodes
     status, _ = client.call("POST", f"/api/v1/workflow-runs/{run_id}/tick", {
-        "executor_type": executor,
+        "executor": executor,
         "actor": "soak_ops_drill",
     })
     if status != 200:
@@ -297,7 +297,7 @@ def run_restart_recovery(client: ApiClient, executor: str) -> dict:
     # Tick to completion after resume
     for _ in range(3):
         status, tick_resp = client.call("POST", f"/api/v1/workflow-runs/{run_id}/tick", {
-            "executor_type": executor,
+            "executor": executor,
             "actor": "soak_ops_drill",
         })
         if status != 200:
@@ -435,6 +435,10 @@ def main():
         "duration_seconds": round(duration, 2),
     }
 
+    if total_runs_created == 0:
+        print("ERROR: zero runs created — engine did not produce any runs", file=sys.stderr)
+        sys.exit(1)
+
     if args.json_output:
         print(json.dumps(summary, indent=2))
     else:
@@ -447,6 +451,21 @@ def main():
         print(f"  Restart recovery: {summary['restart_recovery_test']}")
         print(f"  Dashboard visibility: {summary['dashboard_visibility_test']}")
         print(f"  Duration: {summary['duration_seconds']}s")
+
+    required_evidence = [
+        ("runs_created", total_runs_created > 0),
+        ("backup_created", summary["backup_created"]),
+        ("backup_verified", summary["backup_verified"]),
+        ("backup_restore_dry_run", summary["backup_restore_dry_run"]),
+        ("failure_recovery_test", summary["failure_recovery_test"]),
+        ("multi_executor_test", summary["multi_executor_test"]),
+        ("restart_recovery_test", summary["restart_recovery_test"]),
+        ("dashboard_visibility_test", summary["dashboard_visibility_test"]),
+    ]
+    missing = [name for name, ok in required_evidence if not ok]
+    if missing:
+        print(f"ERROR: required evidence missing: {', '.join(missing)}", file=sys.stderr)
+        sys.exit(1)
 
     sys.exit(0 if summary["status"] == "PASS" else 1)
 

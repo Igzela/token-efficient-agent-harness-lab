@@ -89,6 +89,7 @@ impl CliNodeExecutor {
 }
 
 impl NodeExecutor for CliNodeExecutor {
+    fn executor_type_name(&self) -> &str { "cli" }
     fn execute_node(&self, input: &NodeExecutionInput) -> NodeExecutionOutput {
         let start = std::time::Instant::now();
         let executor_type = self.resolve_executor(input);

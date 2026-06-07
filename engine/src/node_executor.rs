@@ -43,12 +43,15 @@ impl NodeExecutionOutput {
 /// Trait for executing individual workflow nodes.
 pub trait NodeExecutor: Send + Sync {
     fn execute_node(&self, input: &NodeExecutionInput) -> NodeExecutionOutput;
+    fn executor_type_name(&self) -> &str;
 }
 
 /// Noop executor that always succeeds immediately.
+#[derive(Clone)]
 pub struct NoopNodeExecutor;
 
 impl NodeExecutor for NoopNodeExecutor {
+    fn executor_type_name(&self) -> &str { "noop" }
     fn execute_node(&self, _input: &NodeExecutionInput) -> NodeExecutionOutput {
         NodeExecutionOutput {
             status: "completed".to_string(),
@@ -78,6 +81,7 @@ impl Default for StubNodeExecutor {
 }
 
 impl NodeExecutor for StubNodeExecutor {
+    fn executor_type_name(&self) -> &str { "stub" }
     fn execute_node(&self, input: &NodeExecutionInput) -> NodeExecutionOutput {
         let output = self
             .output_template
@@ -99,6 +103,7 @@ impl NodeExecutor for StubNodeExecutor {
 }
 
 /// Failure executor that always fails (for testing retry logic).
+#[derive(Clone)]
 pub struct FailNodeExecutor {
     pub error_domain: String,
     pub error_message: String,
@@ -114,6 +119,7 @@ impl Default for FailNodeExecutor {
 }
 
 impl NodeExecutor for FailNodeExecutor {
+    fn executor_type_name(&self) -> &str { "fail" }
     fn execute_node(&self, _input: &NodeExecutionInput) -> NodeExecutionOutput {
         NodeExecutionOutput {
             status: "failed".to_string(),
@@ -213,6 +219,7 @@ impl CommandNodeExecutor {
 }
 
 impl NodeExecutor for CommandNodeExecutor {
+    fn executor_type_name(&self) -> &str { "command" }
     fn execute_node(&self, input: &NodeExecutionInput) -> NodeExecutionOutput {
         let start = std::time::Instant::now();
         let command = input

@@ -237,16 +237,16 @@ fn test_soak_backpressure_lifecycle() {
     };
     let mut bp = Backpressure::new(config);
 
-    let d1 = bp.evaluate(0.9, 0, 100, 0, 1000);
+    let d1 = bp.evaluate(0.9, 0, 100, 0, 1000, None);
     assert!(d1.active, "should activate at 0.9 utilization");
 
-    let d2 = bp.evaluate(0.3, 0, 100, 0, 2000);
+    let d2 = bp.evaluate(0.3, 0, 100, 0, 2000, None);
     assert!(
         d2.active,
         "should remain active above deactivation threshold"
     );
 
-    let d3 = bp.evaluate(0.05, 0, 100, 0, 3000);
+    let d3 = bp.evaluate(0.05, 0, 100, 0, 3000, None);
     assert!(!d3.active, "should deactivate below threshold");
 }
 

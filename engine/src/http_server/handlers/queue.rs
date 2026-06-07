@@ -11,6 +11,10 @@ use crate::http_server::middleware::{
 use crate::http_server::state::AxumApiState;
 use crate::http_server::AXUM_API_SCHEMA_VERSION;
 
+fn not_found() -> ApiError {
+    ApiError::with_code(StatusCode::NOT_FOUND, "not_found", "workflow run not found")
+}
+
 #[derive(Debug, Deserialize)]
 pub(crate) struct QueueRunsQuery {
     pub limit: Option<usize>,
@@ -37,18 +41,33 @@ pub(crate) async fn api_queue_status(
     let store = require_store(&state)?;
     let queue_status = store.get_queue_status().map_err(internal_error)?;
 
-    let (backpressure_active, effective_concurrency) = match &state.scheduler {
-        Some(scheduler) => {
-            let guard = scheduler
-                .lock()
-                .map_err(|e| internal_error(format!("scheduler lock: {e}")))?;
-            let pool = guard.executor_pool();
-            (
-                pool.total_active() >= pool.total_capacity(),
-                pool.total_capacity(),
-            )
-        }
-        None => (false, 0),
+    let (backpressure_active, effective_concurrency, total_active, total_capacity) =
+        match &state.scheduler {
+            Some(scheduler) => {
+                let guard = scheduler
+                    .lock()
+                    .map_err(|e| internal_error(format!("scheduler lock: {e}")))?;
+                let pool = guard.executor_pool();
+                let ta = pool.total_active();
+                let tc = pool.total_capacity();
+                (ta >= tc, tc, ta, tc)
+            }
+            None => (false, 0, 0, 0),
+        };
+
+    let total_queued = queue_status
+        .get("total_queued")
+        .and_then(|v| v.as_i64())
+        .unwrap_or(0) as usize;
+    let capacity_utilization = if total_capacity > 0 {
+        total_active as f64 / total_capacity as f64
+    } else {
+        0.0
+    };
+    let queue_depth_ratio = if total_capacity > 0 {
+        total_queued as f64 / total_capacity as f64
+    } else {
+        0.0
     };
 
     Ok((
@@ -57,12 +76,24 @@ pub(crate) async fn api_queue_status(
             "schema_version": AXUM_API_SCHEMA_VERSION,
             "tenant_id": context.tenant_id,
             "request_id": context.request_id,
-            "queue_status": queue_status,
-            "backpressure_active": backpressure_active,
-            "effective_concurrency": effective_concurrency,
-            "queue_config": {
-                "max_priority": 10,
-                "min_priority": 1,
+            "queue": {
+                "total_queued": queue_status.get("total_queued"),
+                "total_running": queue_status.get("total_running"),
+                "total_paused": queue_status.get("total_paused"),
+                "total_completed": queue_status.get("total_completed"),
+                "total_failed": queue_status.get("total_failed"),
+                "avg_priority": queue_status.get("avg_priority"),
+                "overdue_count": queue_status.get("overdue_count"),
+                "capacity_utilization": capacity_utilization,
+                "queue_depth_ratio": queue_depth_ratio,
+                "backpressure_active": backpressure_active,
+                "effective_concurrency": effective_concurrency,
+                "queue_config": {
+                    "max_concurrent": total_capacity,
+                    "max_queued": 100,
+                    "backpressure_enabled": true,
+                    "backpressure_activation": 0.8,
+                },
             },
         })),
     ))
@@ -108,7 +139,7 @@ pub(crate) async fn api_update_run_priority(
     AxumPath(run_id): AxumPath<String>,
     Json(request): Json<PriorityUpdateRequest>,
 ) -> Result<impl IntoResponse, ApiError> {
-    let context = authorize(&state, &headers, "health:read", uri.path(), &request_id.0)?;
+    let context = authorize(&state, &headers, "dispatch:write", uri.path(), &request_id.0)?;
     if request.priority < 1 || request.priority > 10 {
         return Err(ApiError::with_code(
             StatusCode::BAD_REQUEST,
@@ -117,9 +148,11 @@ pub(crate) async fn api_update_run_priority(
         ));
     }
     let store = require_store(&state)?;
-    store
-        .update_run_priority(&run_id, request.priority as i64)
-        .map_err(internal_error)?;
+    match store.update_run_priority(&run_id, request.priority as i64) {
+        Ok(()) => {}
+        Err(e) if e.starts_with("workflow run not found:") => return Err(not_found()),
+        Err(e) => return Err(internal_error(e)),
+    }
 
     Ok((
         cors_headers(),
@@ -142,11 +175,13 @@ pub(crate) async fn api_update_run_pause(
     AxumPath(run_id): AxumPath<String>,
     Json(request): Json<PauseUpdateRequest>,
 ) -> Result<impl IntoResponse, ApiError> {
-    let context = authorize(&state, &headers, "health:read", uri.path(), &request_id.0)?;
+    let context = authorize(&state, &headers, "dispatch:write", uri.path(), &request_id.0)?;
     let store = require_store(&state)?;
-    store
-        .update_run_pause_reason(&run_id, request.reason.as_deref())
-        .map_err(internal_error)?;
+    match store.update_run_pause_reason(&run_id, request.reason.as_deref()) {
+        Ok(()) => {}
+        Err(e) if e.starts_with("workflow run not found:") => return Err(not_found()),
+        Err(e) => return Err(internal_error(e)),
+    }
 
     Ok((
         cors_headers(),

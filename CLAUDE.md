@@ -38,6 +38,7 @@ Master document: `docs/dispatch/DISPATCHER_KERNEL_V0_ARCHITECTURE.md`
 - Dynamic Workflow Batch 5 (Agent Profiles): COMPLETE (1193 Rust tests)
 - Dynamic Workflow Batch 6 (Tool Registry): COMPLETE (1205 Rust tests)
 - Dynamic Workflow Batch 7 + scheduler dynamic-mode recovery: COMPLETE (1208 Rust tests)
+- Macro-Orchestrator Phase 1-5 repair batch: COMPLETE (all tick paths persist decisions, executor-pool binds to execution, queue/backpressure correct, operator surfaces aligned, soak script truthful)
 
 **Key Milestones:**
 - 1338 Rust tests pass, 0 failures

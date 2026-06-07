@@ -8,6 +8,9 @@ use crate::http_server::middleware::{
     authorize, cors_headers, internal_error, require_store, ApiError, RequestId,
 };
 use crate::http_server::state::AxumApiState;
+use crate::workflow::orchestration_decision::{
+    action_to_string, confidence_from_inputs, OrchestrationAction,
+};
 use crate::http_server::{
     WorkflowRunActionApiRequest, WorkflowRunApprovalApiRequest, WorkflowRunCreateApiRequest,
     WorkflowRunEventApiRequest, WorkflowRunTickApiRequest, AXUM_API_SCHEMA_VERSION,
@@ -255,7 +258,10 @@ pub(crate) async fn api_tick_workflow_run(
                 &executor,
                 request.command.as_deref(),
             ) {
-                Ok(result) => Ok((cors_headers(), Json(json_response("tick", result)))),
+                Ok(result) => {
+                    record_tick_decision(&store, &run_id, &result, "command");
+                    Ok((cors_headers(), Json(json_response("tick", result))))
+                }
                 Err(e) if e.starts_with("workflow run not found:") => Err(not_found()),
                 Err(e) if e.contains("terminal") => Err(ApiError::with_code(
                     StatusCode::CONFLICT,
@@ -276,7 +282,10 @@ pub(crate) async fn api_tick_workflow_run(
                         &executor,
                         request.command.as_deref(),
                     ) {
-                        Ok(result) => Ok((cors_headers(), Json(json_response("tick", result)))),
+                        Ok(result) => {
+                            record_tick_decision(&store, &run_id, &result, executor_type);
+                            Ok((cors_headers(), Json(json_response("tick", result))))
+                        }
                         Err(e) if e.starts_with("workflow run not found:") => Err(not_found()),
                         Err(e) if e.contains("terminal") => Err(ApiError::with_code(
                             StatusCode::CONFLICT,
@@ -301,7 +310,10 @@ pub(crate) async fn api_tick_workflow_run(
             }
         }
         _ => match store.tick_with_retry(&run_id, actor, max_retries) {
-            Ok(result) => Ok((cors_headers(), Json(json_response("tick", result)))),
+            Ok(result) => {
+                record_tick_decision(&store, &run_id, &result, "noop");
+                Ok((cors_headers(), Json(json_response("tick", result))))
+            }
             Err(e) if e.starts_with("workflow run not found:") => Err(not_found()),
             Err(e) if e.contains("terminal") => Err(ApiError::with_code(
                 StatusCode::CONFLICT,
@@ -328,6 +340,40 @@ fn json_response(key: &str, value: serde_json::Value) -> serde_json::Value {
     );
     map.insert(key.to_string(), value);
     serde_json::Value::Object(map)
+}
+
+fn record_tick_decision(
+    store: &crate::storage::local_product_store::LocalProductStore,
+    run_id: &str,
+    result: &serde_json::Value,
+    executor_type: &str,
+) {
+    let action_str = result.get("action").and_then(|v| v.as_str()).unwrap_or("tick");
+    let node_id = result.get("node_id").and_then(|v| v.as_str());
+    let action = match action_str {
+        "node_completed" => OrchestrationAction::RunCompleted,
+        "node_failed" => OrchestrationAction::RunFailed,
+        "node_retry" => OrchestrationAction::RetryNode,
+        _ => OrchestrationAction::ExecuteNode,
+    };
+    let (confidence, score) = confidence_from_inputs(
+        "running",
+        node_id.or(Some("pending")),
+        true,
+        None,
+        None,
+    );
+    let _ = store.record_orchestration_decision(
+        run_id,
+        node_id,
+        action_to_string(&action),
+        "http tick result",
+        executor_type,
+        None,
+        confidence.as_str(),
+        score,
+        &serde_json::json!({"source": "http_tick", "action": action_str}),
+    );
 }
 
 fn not_found() -> ApiError {

@@ -89,7 +89,7 @@ function DecisionRow({ decision }: { decision: DecisionRecord }) {
             {(decision.confidence * 100).toFixed(0)}%
           </span>
         </td>
-        <td className="mono" style={{ fontSize: "0.75rem" }}>{decision.selected_tier}</td>
+        <td className="mono" style={{ fontSize: "0.75rem" }}>{decision.confidence_label}</td>
         <td>{formatTimestamp(decision.created_at)}</td>
         <td>
           {hasSignals && (

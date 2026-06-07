@@ -78,6 +78,7 @@ impl Backpressure {
         max_queue: usize,
         overdue_count: usize,
         current_timestamp_ms: u64,
+        overdue_run_ids: Option<&[String]>,
     ) -> BackpressureDecision {
         if !self.config.enabled {
             return BackpressureDecision {
@@ -126,8 +127,14 @@ impl Backpressure {
         if overdue_count > 0 && self.paused_runs.len() < self.config.max_paused_runs {
             let can_pause = self.config.max_paused_runs - self.paused_runs.len();
             let to_pause = overdue_count.min(can_pause);
-            for i in 0..to_pause {
-                runs_to_pause.push(format!("overdue_{}", i));
+            if let Some(real_ids) = overdue_run_ids {
+                for id in real_ids.iter().take(to_pause) {
+                    runs_to_pause.push(id.clone());
+                }
+            } else {
+                for i in 0..to_pause {
+                    runs_to_pause.push(format!("overdue_{}", i));
+                }
             }
         }
 
@@ -213,7 +220,7 @@ mod tests {
     fn test_evaluate_below_threshold() {
         let config = BackpressureConfig::default();
         let mut bp = Backpressure::new(config);
-        let decision = bp.evaluate(0.5, 30, 100, 0, 1000);
+        let decision = bp.evaluate(0.5, 30, 100, 0, 1000, None);
         assert!(!decision.active);
         assert_eq!(decision.action, "none");
     }
@@ -222,7 +229,7 @@ mod tests {
     fn test_evaluate_activates_on_high_utilization() {
         let config = BackpressureConfig::default();
         let mut bp = Backpressure::new(config);
-        let decision = bp.evaluate(0.9, 30, 100, 0, 1000);
+        let decision = bp.evaluate(0.9, 30, 100, 0, 1000, None);
         assert!(decision.active);
         assert_eq!(decision.action, "pause_and_throttle");
         assert!(decision.degrade_mode.is_some());
@@ -232,7 +239,7 @@ mod tests {
     fn test_evaluate_activates_on_high_queue_depth() {
         let config = BackpressureConfig::default();
         let mut bp = Backpressure::new(config);
-        let decision = bp.evaluate(0.5, 90, 100, 0, 1000);
+        let decision = bp.evaluate(0.5, 90, 100, 0, 1000, None);
         assert!(decision.active);
     }
 
@@ -242,11 +249,11 @@ mod tests {
         let mut bp = Backpressure::new(config);
 
         // Activate first
-        bp.evaluate(0.9, 90, 100, 0, 1000);
+        bp.evaluate(0.9, 90, 100, 0, 1000, None);
         assert!(bp.is_active);
 
         // Deactivate
-        let decision = bp.evaluate(0.3, 20, 100, 0, 2000);
+        let decision = bp.evaluate(0.3, 20, 100, 0, 2000, None);
         assert!(!decision.active);
         assert!(!bp.is_active);
     }
@@ -258,7 +265,7 @@ mod tests {
             ..Default::default()
         };
         let mut bp = Backpressure::new(config);
-        let decision = bp.evaluate(0.99, 99, 100, 0, 1000);
+        let decision = bp.evaluate(0.99, 99, 100, 0, 1000, None);
         assert!(!decision.active);
         assert_eq!(decision.reason, "backpressure disabled");
     }
@@ -342,7 +349,7 @@ mod tests {
     fn test_evaluate_with_overdue_runs() {
         let config = BackpressureConfig::default();
         let mut bp = Backpressure::new(config);
-        let decision = bp.evaluate(0.9, 50, 100, 3, 1000);
+        let decision = bp.evaluate(0.9, 50, 100, 3, 1000, None);
         assert!(decision.active);
         assert_eq!(decision.runs_to_pause.len(), 3);
     }
@@ -354,8 +361,35 @@ mod tests {
             ..Default::default()
         };
         let mut bp = Backpressure::new(config);
-        let decision = bp.evaluate(0.9, 50, 100, 5, 1000);
+        let decision = bp.evaluate(0.9, 50, 100, 5, 1000, None);
         assert!(decision.active);
         assert_eq!(decision.runs_to_pause.len(), 2);
+    }
+
+    #[test]
+    fn test_evaluate_uses_real_run_ids() {
+        let config = BackpressureConfig::default();
+        let mut bp = Backpressure::new(config);
+        let real_ids = vec![
+            "run-alpha".to_string(),
+            "run-beta".to_string(),
+            "run-gamma".to_string(),
+        ];
+        let decision = bp.evaluate(0.9, 50, 100, 3, 1000, Some(&real_ids));
+        assert!(decision.active);
+        assert_eq!(decision.runs_to_pause.len(), 3);
+        assert_eq!(decision.runs_to_pause[0], "run-alpha");
+        assert_eq!(decision.runs_to_pause[1], "run-beta");
+        assert_eq!(decision.runs_to_pause[2], "run-gamma");
+    }
+
+    #[test]
+    fn test_evaluate_synthetic_when_no_real_ids() {
+        let config = BackpressureConfig::default();
+        let mut bp = Backpressure::new(config);
+        let decision = bp.evaluate(0.9, 50, 100, 3, 1000, None);
+        assert!(decision.active);
+        assert_eq!(decision.runs_to_pause.len(), 3);
+        assert_eq!(decision.runs_to_pause[0], "overdue_0");
     }
 }

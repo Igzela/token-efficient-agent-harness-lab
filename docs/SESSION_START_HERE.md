@@ -28,6 +28,8 @@ Token-Efficient Agent Harness Lab is a local deterministic harness and self-host
 
 Tests: 1338 Rust pass. Primary cutover verification is `bash scripts/verify_rust_typescript_stack.sh`.
 
+Macro-Orchestrator Phase 1-5 repair batch is complete. All tick paths persist decisions, executor-pool binds to execution, queue/backpressure use correct scopes and real run ids, operator surfaces agree on shapes, and the soak script exercises real runs with non-zero exit guards.
+
 ## Toolchain
 
 | Layer | Tool | Notes |
@@ -66,7 +68,7 @@ Additional active architecture track:
 | Post-R7 Wire/Type Governance Hardening | Implemented; `app_layer` remains dormant/unwired reference code and `scripts/check_wire_codegen_drift.sh` protects generated wire files |
 | Supervised Autonomous Beta Planning | Batch 0-6 governance/module/model/read-only-planner/durable-state/advisory/design-gate work recorded. `WorkflowGraph` is canonical planning model. Batch 7 Slice A-F implemented: app-owned workspace/artifact metadata, read-only HTTP/SDK/dashboard visibility, approval-binding contract, and supervised execution runtime primitives (NodeExecutor trait, CommandNodeExecutor with shell-metachar rejection, workflow tick, workspace lifecycle, capture_patch with source manifest diff, integrity validation, export gate, E2E closed-loop test). 1338 Rust tests pass. No target repo writes, sandbox/process/container/VM execution, real workers, provider calls, push/merge/deploy/apply controls, or default-on execution. |
 | Dynamic Workflow Direction | Complete; Batches 1-7 plus scheduler dynamic-mode recovery are implemented. Opt-in dynamic mode can observe a failed node, mutate the persisted graph with fix/test nodes, mark the failed node recovered, resume the run, and complete follow-up execution. 1338 Rust tests pass. |
-| Macro-Orchestrator Direction | Current product direction. Next work should add policy decisions, executor resource pools, queue/backpressure, decision trace, and ops soak on top of existing scheduler/dynamic workflow modules, without creating a parallel runtime. |
+| Macro-Orchestrator Direction | Current product direction. Phase 1-5 repair batch COMPLETE. Next safe work is hardening the existing dynamic scheduler path with real CLI dynamic pilots, dashboard observability, and long-run soak/failure-injection coverage. |
 
 ## What This Project Is Not
 

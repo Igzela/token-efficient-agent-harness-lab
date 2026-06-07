@@ -5765,8 +5765,8 @@ async fn axum_queue_status_returns_200() {
     assert_eq!(response.status(), StatusCode::OK);
     let body = response_json(response).await;
     assert_eq!(body["schema_version"], "axum_api.v1");
-    assert!(body["queue_status"].is_object());
-    assert_eq!(body["backpressure_active"], false);
+    assert!(body["queue"].is_object());
+    assert_eq!(body["queue"]["backpressure_active"], false);
 }
 
 #[tokio::test]

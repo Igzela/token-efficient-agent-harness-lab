@@ -20,6 +20,9 @@ use crate::workflow::backpressure::{Backpressure, BackpressureConfig};
 use crate::workflow::dynamic_controller::{
     ControllerAction, DynamicControllerConfig, DynamicWorkflowController,
 };
+use crate::workflow::orchestration_decision::{
+    action_to_string, confidence_from_inputs, OrchestrationAction,
+};
 
 #[derive(Debug, Clone)]
 pub struct SchedulerConfig {
@@ -134,6 +137,9 @@ pub struct WorkflowScheduler {
     last_tick_at: Arc<std::sync::Mutex<Option<String>>>,
     last_error: Arc<std::sync::Mutex<Option<String>>>,
     executor_pool: Arc<ExecutorPool>,
+    queue_depth_live: Arc<std::sync::atomic::AtomicU64>,
+    paused_runs_count_live: Arc<std::sync::atomic::AtomicU64>,
+    backpressure_active_live: Arc<AtomicBool>,
 }
 
 impl WorkflowScheduler {
@@ -151,6 +157,9 @@ impl WorkflowScheduler {
             last_tick_at: Arc::new(std::sync::Mutex::new(None)),
             last_error: Arc::new(std::sync::Mutex::new(None)),
             executor_pool: Arc::new(ExecutorPool::new()),
+            queue_depth_live: Arc::new(std::sync::atomic::AtomicU64::new(0)),
+            paused_runs_count_live: Arc::new(std::sync::atomic::AtomicU64::new(0)),
+            backpressure_active_live: Arc::new(AtomicBool::new(false)),
         }
     }
 
@@ -174,18 +183,24 @@ impl WorkflowScheduler {
         let last_error = self.last_error.clone();
         let executor = create_scheduler_executor(&config.executor_type);
         let pool = self.executor_pool.clone();
+        let queue_depth_live = self.queue_depth_live.clone();
+        let paused_runs_count_live = self.paused_runs_count_live.clone();
+        let backpressure_active_live = self.backpressure_active_live.clone();
 
         let handle = std::thread::spawn(move || {
             while running.load(Ordering::SeqCst) {
                 pool.tick_cooldowns();
                 let tick_start = std::time::Instant::now();
-                let tick_result = scheduler_tick(&store, &config, &*executor, &pool);
+                let tick_result = scheduler_tick(&store, &config, executor.clone(), &pool);
                 let tick_elapsed_ns = tick_start.elapsed().as_nanos() as u64;
                 total_execution_time_ns.fetch_add(tick_elapsed_ns, Ordering::SeqCst);
                 match tick_result {
                     Ok(result) => {
                         tick_count.fetch_add(result.ticks, Ordering::SeqCst);
                         retry_count.fetch_add(result.retries, Ordering::SeqCst);
+                        queue_depth_live.store(result.queue_depth as u64, Ordering::SeqCst);
+                        paused_runs_count_live.store(result.paused_runs.len() as u64, Ordering::SeqCst);
+                        backpressure_active_live.store(result.backpressure_active, Ordering::SeqCst);
                         if let Ok(mut guard) = last_tick_at.lock() {
                             *guard =
                                 Some(chrono::Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string());
@@ -254,9 +269,9 @@ impl WorkflowScheduler {
             "last_error": self.last_error.lock().ok().and_then(|g| g.clone()),
             "active_runs": active_runs,
             "queue_enabled": self.config.queue_enabled,
-            "backpressure_active": false,
-            "queue_depth": 0,
-            "paused_runs_count": 0,
+            "backpressure_active": self.backpressure_active_live.load(Ordering::SeqCst),
+            "queue_depth": self.queue_depth_live.load(Ordering::SeqCst),
+            "paused_runs_count": self.paused_runs_count_live.load(Ordering::SeqCst),
             "executor_pool": pool_snapshot,
             "dormant_modules_active": {
                 "work_queue": true,
@@ -332,11 +347,11 @@ impl SchedulerModules {
 fn scheduler_tick(
     store: &LocalProductStore,
     config: &SchedulerConfig,
-    executor: &dyn crate::node_executor::NodeExecutor,
+    executor_arc: Arc<dyn crate::node_executor::NodeExecutor>,
     pool: &Arc<ExecutorPool>,
 ) -> Result<TickResult, String> {
     if dynamic_workflow_enabled(config) {
-        return dynamic_scheduler_tick(store, config, executor, pool);
+        return dynamic_scheduler_tick(store, config, executor_arc, pool);
     }
 
     let _recovered = store.recover_stale_leases(config.lease_timeout_ms)?;
@@ -385,13 +400,47 @@ fn scheduler_tick(
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap_or_default()
             .as_millis() as u64;
-        let decision = bp.evaluate(utilization, queue_depth, config.max_queued, 0, now_ms);
+        let overdue_ids: Vec<String> = active_runs.iter().filter(|id| {
+            store.get_workflow_run(id).ok().flatten().map_or(false, |r| {
+                r.get("status").and_then(|v| v.as_str()) == Some("running")
+                    && r.get("started_at").and_then(|v| v.as_str()).map_or(false, |s| {
+                        chrono::DateTime::parse_from_rfc3339(s).ok().map_or(false, |t| {
+                            (chrono::Utc::now() - t.with_timezone(&chrono::Utc)).num_seconds() > 300
+                        })
+                    })
+            })
+        }).cloned().collect();
+        let overdue_count = overdue_ids.len();
+        let decision = bp.evaluate(utilization, queue_depth, config.max_queued, overdue_count, now_ms, Some(&overdue_ids));
         backpressure_active = decision.active;
 
         for run_id in &decision.runs_to_pause {
             store.update_run_pause_reason(run_id, Some("backpressure"))?;
             store.update_run_degrade_mode(run_id, decision.degrade_mode.as_deref())?;
             paused_runs.push(run_id.clone());
+        }
+
+        // Record backpressure decision
+        if backpressure_active {
+            let (bp_conf, bp_score) = confidence_from_inputs(
+                "running", None, false, None, Some("backpressure"),
+            );
+            let _ = store.record_orchestration_decision(
+                "scheduler",
+                None,
+                "backpressure_pause",
+                &decision.reason,
+                "backpressure",
+                None,
+                bp_conf.as_str(),
+                bp_score,
+                &serde_json::json!({
+                    "source": "scheduler_backpressure",
+                    "active": true,
+                    "paused_count": decision.runs_to_pause.len(),
+                    "utilization": utilization,
+                }),
+            );
         }
     }
 
@@ -444,17 +493,17 @@ fn scheduler_tick(
             }
         }
 
-        // Pool: acquire best executor for task
+        // Pool: acquire best executor for task and use it for actual execution
         let best_executor = pool.best_for_task("scheduler", "auto");
-        let acquired = best_executor.as_deref().and_then(|et| {
-            if pool.acquire(et) {
-                Some(et.to_string())
-            } else {
-                None
+        let (acquired_type, pool_executor_arc) = match best_executor {
+            Some(ref et) if pool.acquire(et) => {
+                let exec = pool.get(et).unwrap_or_else(|| Arc::new(NoopNodeExecutor));
+                (Some(et.clone()), exec)
             }
-        });
+            _ => (None, Arc::clone(&executor_arc)),
+        };
 
-        match store.tick_with_executor(run_id, "scheduler", 0, executor) {
+        match store.tick_with_executor(run_id, "scheduler", 0, &*pool_executor_arc) {
             Ok(result) => {
                 ticks += 1;
                 let action = result.get("action").and_then(|v| v.as_str());
@@ -463,9 +512,36 @@ fn scheduler_tick(
                 }
 
                 // Pool: release on success
-                if let Some(ref et) = acquired {
+                if let Some(ref et) = acquired_type {
                     pool.release(et, true, 0, None);
                 }
+
+                // Record OrchestrationDecision for tick result
+                let tick_node_id = result.get("node_id").and_then(|v| v.as_str());
+                let tick_action = match action {
+                    Some("node_completed") => OrchestrationAction::RunCompleted,
+                    Some("node_failed") => OrchestrationAction::RunFailed,
+                    Some("node_retry") => OrchestrationAction::RetryNode,
+                    _ => OrchestrationAction::ExecuteNode,
+                };
+                let (tick_confidence, tick_score) = confidence_from_inputs(
+                    "running",
+                    tick_node_id.or(Some("pending")),
+                    true,
+                    None,
+                    None,
+                );
+                let _ = store.record_orchestration_decision(
+                    run_id,
+                    tick_node_id,
+                    action_to_string(&tick_action),
+                    "scheduler tick result",
+                    pool_executor_arc.executor_type_name(),
+                    None,
+                    tick_confidence.as_str(),
+                    tick_score,
+                    &serde_json::json!({"source": "scheduler_tick", "action": action}),
+                );
 
                 // Phase 2: Record outcome for adaptive routing feedback
                 if action == Some("node_completed") || action == Some("node_failed") {
@@ -556,7 +632,7 @@ fn scheduler_tick(
             }
             Err(_) => {
                 // terminal or no-ready-node errors are expected; skip
-                if let Some(ref et) = acquired {
+                if let Some(ref et) = acquired_type {
                     pool.release(et, false, 0, None);
                 }
             }
@@ -577,7 +653,7 @@ fn scheduler_tick(
 fn dynamic_scheduler_tick(
     store: &LocalProductStore,
     config: &SchedulerConfig,
-    executor: &dyn crate::node_executor::NodeExecutor,
+    executor_arc: Arc<dyn crate::node_executor::NodeExecutor>,
     pool: &Arc<ExecutorPool>,
 ) -> Result<TickResult, String> {
     let _recovered = store.recover_stale_leases(config.lease_timeout_ms)?;
@@ -626,7 +702,7 @@ fn dynamic_scheduler_tick(
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap_or_default()
             .as_millis() as u64;
-        let decision = bp.evaluate(utilization, queue_depth, config.max_queued, 0, now_ms);
+        let decision = bp.evaluate(utilization, queue_depth, config.max_queued, 0, now_ms, None);
         backpressure_active = decision.active;
 
         for run_id in &decision.runs_to_pause {
@@ -651,19 +727,19 @@ fn dynamic_scheduler_tick(
     let mut aggregations = 0u64;
 
     for run_id in active_runs.iter().take(config.max_concurrent) {
-        // Pool: acquire best executor for task
+        // Pool: acquire best executor for task and use it for actual execution
         let best_executor = pool.best_for_task("scheduler", "auto");
-        let acquired = best_executor.as_deref().and_then(|et| {
-            if pool.acquire(et) {
-                Some(et.to_string())
-            } else {
-                None
+        let (acquired_type, pool_executor_arc) = match best_executor {
+            Some(ref et) if pool.acquire(et) => {
+                let exec = pool.get(et).unwrap_or_else(|| Arc::new(NoopNodeExecutor));
+                (Some(et.clone()), exec)
             }
-        });
+            _ => (None, executor_arc.clone()),
+        };
 
         let mut controller = DynamicWorkflowController::new(DynamicControllerConfig::default())
             .with_executor_pool(Arc::clone(pool));
-        match controller.tick(store, run_id, "scheduler", executor) {
+        match controller.tick(store, run_id, "scheduler", &*pool_executor_arc) {
             Ok(result) => {
                 let did_work = result
                     .actions
@@ -686,13 +762,13 @@ fn dynamic_scheduler_tick(
                 }
 
                 // Pool: release on success
-                if let Some(ref et) = acquired {
+                if let Some(ref et) = acquired_type {
                     pool.release(et, true, 0, None);
                 }
             }
             Err(_) => {
                 // terminal or no-ready-node errors are expected; skip
-                if let Some(ref et) = acquired {
+                if let Some(ref et) = acquired_type {
                     pool.release(et, false, 0, None);
                 }
             }
@@ -807,6 +883,10 @@ mod tests {
         let pool = ExecutorPool::new();
         executor_pool::register_default_executors(&pool, false);
         Arc::new(pool)
+    }
+
+    fn empty_pool() -> Arc<ExecutorPool> {
+        Arc::new(ExecutorPool::new())
     }
 
     fn make_plan_value(ids: &crate::read_only_planner::WorkflowPlanIds) -> Value {
@@ -1011,7 +1091,7 @@ mod tests {
         let config = SchedulerConfig::default();
         let executor = NoopNodeExecutor;
         let pool = test_pool();
-        let result = scheduler_tick(&store, &config, &executor, &pool).unwrap();
+        let result = scheduler_tick(&store, &config, Arc::new(executor.clone()), &pool).unwrap();
         assert_eq!(result.ticks, 0);
         assert_eq!(result.retries, 0);
     }
@@ -1032,11 +1112,11 @@ mod tests {
         let pool = test_pool();
 
         // First tick leases and completes the single node
-        let r1 = scheduler_tick(&store, &config, &executor, &pool).unwrap();
+        let r1 = scheduler_tick(&store, &config, Arc::new(executor.clone()), &pool).unwrap();
         assert_eq!(r1.ticks, 1);
 
         // Second tick finds no ready nodes (already completed)
-        let r2 = scheduler_tick(&store, &config, &executor, &pool).unwrap();
+        let r2 = scheduler_tick(&store, &config, Arc::new(executor.clone()), &pool).unwrap();
         assert_eq!(
             r2.ticks, 0,
             "second tick should not re-lease completed node"
@@ -1059,12 +1139,16 @@ mod tests {
             ..Default::default()
         };
         let executor = crate::node_executor::FailNodeExecutor::default();
-        let pool = test_pool();
+        let pool = empty_pool();
 
-        // Tick with fail executor — node fails, run becomes failed
-        let result = scheduler_tick(&store, &config, &executor, &pool);
+        // Tick with fail executor — node fails
+        let result = scheduler_tick(&store, &config, Arc::new(executor.clone()), &pool);
         assert!(result.is_ok());
         assert_eq!(result.unwrap().ticks, 1);
+
+        // Second tick triggers completion check (no ready nodes left after failure)
+        let result2 = scheduler_tick(&store, &config, Arc::new(executor.clone()), &pool);
+        assert!(result2.is_ok());
 
         let run = store.get_workflow_run("run-0001").unwrap().unwrap();
         assert_eq!(
@@ -1086,9 +1170,9 @@ mod tests {
             ..Default::default()
         };
         let fail_executor = crate::node_executor::FailNodeExecutor::default();
-        let pool = test_pool();
+        let pool = empty_pool();
 
-        let first = scheduler_tick(&store, &config, &fail_executor, &pool).unwrap();
+        let first = scheduler_tick(&store, &config, Arc::new(fail_executor.clone()), &pool).unwrap();
         assert_eq!(first.ticks, 1);
 
         let run = store.get_workflow_run(&run_id).unwrap().unwrap();
@@ -1117,9 +1201,9 @@ mod tests {
         );
 
         let noop_executor = NoopNodeExecutor;
-        let second = scheduler_tick(&store, &config, &noop_executor, &pool).unwrap();
+        let second = scheduler_tick(&store, &config, Arc::new(noop_executor.clone()), &pool).unwrap();
         assert_eq!(second.ticks, 1, "fix node should execute");
-        let third = scheduler_tick(&store, &config, &noop_executor, &pool).unwrap();
+        let third = scheduler_tick(&store, &config, Arc::new(noop_executor.clone()), &pool).unwrap();
         assert_eq!(third.ticks, 1, "verification node should execute");
 
         let run = store.get_workflow_run(&run_id).unwrap().unwrap();
@@ -1142,8 +1226,11 @@ mod tests {
             ..Default::default()
         };
         let fail_executor = crate::node_executor::FailNodeExecutor::default();
-        let pool = test_pool();
-        scheduler_tick(&store, &old_config, &fail_executor, &pool).unwrap();
+        let pool = empty_pool();
+        scheduler_tick(&store, &old_config, Arc::new(fail_executor.clone()), &pool).unwrap();
+
+        // Second tick triggers completion check for the failed node
+        let _ = scheduler_tick(&store, &old_config, Arc::new(fail_executor.clone()), &pool);
         let run = store.get_workflow_run(&run_id).unwrap().unwrap();
         assert_eq!(run["status"], "failed");
 
@@ -1155,7 +1242,7 @@ mod tests {
             ..Default::default()
         };
         let noop_executor = NoopNodeExecutor;
-        let recover = scheduler_tick(&store, &dynamic_config, &noop_executor, &pool).unwrap();
+        let recover = scheduler_tick(&store, &dynamic_config, Arc::new(noop_executor.clone()), &pool).unwrap();
         assert_eq!(recover.ticks, 1, "terminal failed run should be recovered");
 
         let run = store.get_workflow_run(&run_id).unwrap().unwrap();
@@ -1166,7 +1253,7 @@ mod tests {
             .iter()
             .any(|node| { node["node_id"] == "fix-node-a" && node["db_status"] == "completed" }));
 
-        scheduler_tick(&store, &dynamic_config, &noop_executor, &pool).unwrap();
+        scheduler_tick(&store, &dynamic_config, Arc::new(noop_executor.clone()), &pool).unwrap();
         let run = store.get_workflow_run(&run_id).unwrap().unwrap();
         assert_eq!(run["status"], "completed");
     }
@@ -1192,7 +1279,7 @@ mod tests {
         let pool = test_pool();
 
         // Scheduler tick should skip cancelled run (0 ticks)
-        let result = scheduler_tick(&store, &config, &executor, &pool).unwrap();
+        let result = scheduler_tick(&store, &config, Arc::new(executor.clone()), &pool).unwrap();
         assert_eq!(result.ticks, 0, "cancelled run should not be ticked");
 
         let run = store.get_workflow_run(&run_id).unwrap().unwrap();
@@ -1299,7 +1386,7 @@ mod tests {
         };
         let executor = NoopNodeExecutor;
         let pool = test_pool();
-        let result = scheduler_tick(&store, &config, &executor, &pool).unwrap();
+        let result = scheduler_tick(&store, &config, Arc::new(executor.clone()), &pool).unwrap();
         assert!(
             result.ticks <= 2,
             "max_concurrent=2 should limit ticks to at most 2, got {}",
@@ -1370,7 +1457,7 @@ mod tests {
         let pool = test_pool();
 
         // Tick with fail executor and max_retries=0 — no retries tracked since we pass max_retries=0 to scheduler_tick
-        let result = scheduler_tick(&store, &config, &executor, &pool).unwrap();
+        let result = scheduler_tick(&store, &config, Arc::new(executor.clone()), &pool).unwrap();
         assert_eq!(result.ticks, 1, "should tick once");
         assert_eq!(result.retries, 0, "no retries with default max_retries=0");
     }
@@ -1391,7 +1478,7 @@ mod tests {
         let pool = test_pool();
 
         // Tick once: node completes, run becomes completed
-        let result = scheduler_tick(&store, &config, &executor, &pool).unwrap();
+        let result = scheduler_tick(&store, &config, Arc::new(executor.clone()), &pool).unwrap();
         assert_eq!(result.ticks, 1);
         assert_eq!(result.aggregations, 1, "should aggregate completed run");
     }
@@ -1418,7 +1505,7 @@ mod tests {
         assert_eq!(active.len(), 1);
 
         // Tick to completion
-        let result = scheduler_tick(&store, &config, &executor, &pool).unwrap();
+        let result = scheduler_tick(&store, &config, Arc::new(executor.clone()), &pool).unwrap();
         assert!(result.aggregations > 0, "should aggregate after completion");
 
         let run = store.get_workflow_run(&run_id).unwrap().unwrap();
@@ -1458,7 +1545,7 @@ mod tests {
         let pool = test_pool();
 
         // Tick with fail executor — records outcome for adaptation
-        let result = scheduler_tick(&store, &config, &executor, &pool).unwrap();
+        let result = scheduler_tick(&store, &config, Arc::new(executor.clone()), &pool).unwrap();
         assert_eq!(result.ticks, 1);
         // Recommendation depends on failure rate thresholds; just verify it doesn't panic
         let _ = result.adaptation_recommendations;
@@ -1501,7 +1588,7 @@ mod tests {
         let pool = test_pool();
 
         // Tick: node completes → conflict resolver and approval gate run without panic
-        let result = scheduler_tick(&store, &config, &executor, &pool).unwrap();
+        let result = scheduler_tick(&store, &config, Arc::new(executor.clone()), &pool).unwrap();
         assert_eq!(result.ticks, 1);
         assert_eq!(result.aggregations, 1, "should aggregate after completion");
 
@@ -1522,11 +1609,14 @@ mod tests {
             ..Default::default()
         };
         let executor = crate::node_executor::FailNodeExecutor::default();
-        let pool = test_pool();
+        let pool = empty_pool();
 
         // Tick with fail executor — conflict resolver handles failed nodes
-        let result = scheduler_tick(&store, &config, &executor, &pool).unwrap();
+        let result = scheduler_tick(&store, &config, Arc::new(executor.clone()), &pool).unwrap();
         assert_eq!(result.ticks, 1);
+
+        // Second tick triggers completion check
+        let _ = scheduler_tick(&store, &config, Arc::new(executor.clone()), &pool);
 
         let run = store.get_workflow_run("run-0001").unwrap().unwrap();
         assert_eq!(run["status"], "failed");
@@ -1685,7 +1775,7 @@ mod tests {
         };
         let executor = NoopNodeExecutor;
         let pool = test_pool();
-        let result = scheduler_tick(&store, &config, &executor, &pool).unwrap();
+        let result = scheduler_tick(&store, &config, Arc::new(executor.clone()), &pool).unwrap();
         assert_eq!(result.ticks, 2, "both runs should be processed");
         assert_eq!(
             result.queue_depth, 2,
@@ -1717,7 +1807,7 @@ mod tests {
         };
         let executor = NoopNodeExecutor;
         let pool = test_pool();
-        let result = scheduler_tick(&store, &config, &executor, &pool).unwrap();
+        let result = scheduler_tick(&store, &config, Arc::new(executor.clone()), &pool).unwrap();
         assert_eq!(result.ticks, 1, "only non-paused run should tick");
         assert_eq!(result.paused_runs.len(), 1);
         assert_eq!(result.paused_runs[0], "run-0001");
@@ -1744,7 +1834,7 @@ mod tests {
         };
         let executor = NoopNodeExecutor;
         let pool = test_pool();
-        let result = scheduler_tick(&store, &config, &executor, &pool).unwrap();
+        let result = scheduler_tick(&store, &config, Arc::new(executor.clone()), &pool).unwrap();
         assert_eq!(result.ticks, 2, "FIFO should process both runs");
         assert_eq!(
             result.queue_depth, 0,
@@ -1771,7 +1861,7 @@ mod tests {
         };
         let executor = NoopNodeExecutor;
         let pool = test_pool();
-        let result = scheduler_tick(&store, &config, &executor, &pool).unwrap();
+        let result = scheduler_tick(&store, &config, Arc::new(executor.clone()), &pool).unwrap();
         assert!(result.backpressure_active, "backpressure should activate");
     }
 
@@ -1794,7 +1884,7 @@ mod tests {
         };
         let executor = NoopNodeExecutor;
         let pool = test_pool();
-        let result = scheduler_tick(&store, &config, &executor, &pool).unwrap();
+        let result = scheduler_tick(&store, &config, Arc::new(executor.clone()), &pool).unwrap();
         assert!(!result.backpressure_active);
         assert!(result.paused_runs.is_empty());
     }

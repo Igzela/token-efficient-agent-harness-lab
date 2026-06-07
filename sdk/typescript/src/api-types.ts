@@ -767,14 +767,16 @@ export interface PauseRunRequest {
 export interface DecisionRecord {
   decision_id: string;
   run_id: string | null;
-  dispatch_id: string;
-  analysis_id: string;
-  selected_tier: string;
-  confidence: number;
-  confidence_label: string;
+  node_id: string | null;
   action: string;
   reason: string;
+  action_reason?: string;
   executor: string | null;
+  selected_executor?: string;
+  blocked_reason: string | null;
+  confidence: number;
+  confidence_score: number;
+  confidence_label: string;
   input_signals: Record<string, unknown>;
   created_at: string;
 }

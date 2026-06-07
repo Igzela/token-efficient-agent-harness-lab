@@ -968,12 +968,16 @@ impl LocalProductStore {
 
     pub fn update_run_priority(&self, run_id: &str, priority: i64) -> Result<(), String> {
         self.with_conn(|conn| {
+            ensure_run_exists_locked(conn, run_id)?;
             let updated = self.now();
-            conn.execute(
+            let rows = conn.execute(
                 "UPDATE workflow_runs SET priority = ?1, updated_at = ?2 WHERE run_id = ?3",
                 params![priority, updated, run_id],
             )
             .map_err(|e| e.to_string())?;
+            if rows == 0 {
+                return Err(format!("workflow run not found: {run_id}"));
+            }
             Ok(())
         })
     }
@@ -984,12 +988,16 @@ impl LocalProductStore {
         pause_reason: Option<&str>,
     ) -> Result<(), String> {
         self.with_conn(|conn| {
+            ensure_run_exists_locked(conn, run_id)?;
             let updated = self.now();
-            conn.execute(
+            let rows = conn.execute(
                 "UPDATE workflow_runs SET pause_reason = ?1, updated_at = ?2 WHERE run_id = ?3",
                 params![pause_reason, updated, run_id],
             )
             .map_err(|e| e.to_string())?;
+            if rows == 0 {
+                return Err(format!("workflow run not found: {run_id}"));
+            }
             Ok(())
         })
     }
@@ -1000,12 +1008,16 @@ impl LocalProductStore {
         degrade_mode: Option<&str>,
     ) -> Result<(), String> {
         self.with_conn(|conn| {
+            ensure_run_exists_locked(conn, run_id)?;
             let updated = self.now();
-            conn.execute(
+            let rows = conn.execute(
                 "UPDATE workflow_runs SET degrade_mode = ?1, updated_at = ?2 WHERE run_id = ?3",
                 params![degrade_mode, updated, run_id],
             )
             .map_err(|e| e.to_string())?;
+            if rows == 0 {
+                return Err(format!("workflow run not found: {run_id}"));
+            }
             Ok(())
         })
     }
@@ -1016,12 +1028,16 @@ impl LocalProductStore {
         position: Option<i32>,
     ) -> Result<(), String> {
         self.with_conn(|conn| {
+            ensure_run_exists_locked(conn, run_id)?;
             let updated = self.now();
-            conn.execute(
+            let rows = conn.execute(
                 "UPDATE workflow_runs SET queue_position = ?1, updated_at = ?2 WHERE run_id = ?3",
                 params![position, updated, run_id],
             )
             .map_err(|e| e.to_string())?;
+            if rows == 0 {
+                return Err(format!("workflow run not found: {run_id}"));
+            }
             Ok(())
         })
     }

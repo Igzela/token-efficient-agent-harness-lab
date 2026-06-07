@@ -717,6 +717,17 @@ impl DynamicWorkflowController {
                     None,
                 );
                 self.decisions.push(decision.clone());
+                let _ = store.record_orchestration_decision(
+                    run_id,
+                    None,
+                    action_to_string(&OrchestrationAction::NoAction),
+                    "no ready node available",
+                    decision["selected_executor"].as_str().unwrap_or("unknown"),
+                    None,
+                    decision["confidence"].as_str().unwrap_or("medium"),
+                    decision["confidence_score"].as_f64().unwrap_or(0.5),
+                    decision.get("input_signals").unwrap_or(&Value::Null),
+                );
                 actions.push(ControllerAction::NoAction {
                     reason: "no ready node available".to_string(),
                 });
@@ -734,6 +745,17 @@ impl DynamicWorkflowController {
                     None,
                 );
                 self.decisions.push(decision.clone());
+                let _ = store.record_orchestration_decision(
+                    run_id,
+                    None,
+                    action_to_string(&OrchestrationAction::NoAction),
+                    &format!("tick returned action: {other}"),
+                    decision["selected_executor"].as_str().unwrap_or("unknown"),
+                    None,
+                    decision["confidence"].as_str().unwrap_or("medium"),
+                    decision["confidence_score"].as_f64().unwrap_or(0.5),
+                    decision.get("input_signals").unwrap_or(&Value::Null),
+                );
                 actions.push(ControllerAction::NoAction {
                     reason: format!("tick returned action: {other}"),
                 });
@@ -1122,18 +1144,10 @@ fn build_decision(
 
 fn extract_executor_type(
     executor: &dyn NodeExecutor,
-    node_id: Option<&str>,
-    task_type: Option<&str>,
+    _node_id: Option<&str>,
+    _task_type: Option<&str>,
 ) -> String {
-    let input = crate::node_executor::NodeExecutionInput {
-        node_id: node_id.unwrap_or("").to_string(),
-        task_type: task_type.unwrap_or("unknown").to_string(),
-        run_id: String::new(),
-        workflow_id: String::new(),
-        node_metadata: serde_json::json!({}),
-    };
-    let output = executor.execute_node(&input);
-    output.executor_type
+    executor.executor_type_name().to_string()
 }
 
 fn build_auto_fix_proposals(
