@@ -1118,6 +1118,7 @@ impl LocalProductStore {
             "cancelled",
             "blocked",
             "waiting_human",
+            "recovered",
         ];
         if !valid_statuses.contains(&new_status) {
             return Err(format!("invalid node status: {new_status}"));
@@ -1909,6 +1910,8 @@ fn update_workflow_run_status_locked(
     };
     let completed_at_sql = if matches!(status, "completed" | "failed" | "cancelled") {
         ", completed_at = ?3"
+    } else if status == "running" {
+        ", completed_at = NULL"
     } else {
         ""
     };
@@ -2205,7 +2208,16 @@ fn find_ready_node_locked(
         .collect();
 
     for node_id in pending_nodes {
-        // Check if all predecessor nodes are completed
+        // Check if all predecessor nodes are completed. Recovery/fix nodes are
+        // allowed to depend on failed or recovered nodes; ordinary downstream
+        // work still requires completed predecessors.
+        let target_task_type: String = conn
+            .query_row(
+                "SELECT task_type FROM workflow_run_nodes WHERE run_id = ?1 AND node_id = ?2",
+                params![run_id, node_id],
+                |row| row.get(0),
+            )
+            .map_err(|e| e.to_string())?;
         let mut edge_stmt = conn
             .prepare(
                 "SELECT wrn.status FROM workflow_run_edges wre
@@ -2219,7 +2231,10 @@ fn find_ready_node_locked(
             .filter_map(|r| r.ok())
             .collect();
 
-        if predecessor_statuses.iter().all(|s| s == "completed") {
+        if predecessor_statuses.iter().all(|s| {
+            s == "completed"
+                || (target_task_type == "fix" && matches!(s.as_str(), "failed" | "recovered"))
+        }) {
             return Ok(Some(node_id));
         }
     }
@@ -2242,9 +2257,12 @@ fn check_run_completion_locked(
     if statuses.is_empty() {
         return Ok((true, false));
     }
-    let all_done = statuses
-        .iter()
-        .all(|s| s == "completed" || s == "failed" || s == "cancelled");
+    let all_done = statuses.iter().all(|s| {
+        matches!(
+            s.as_str(),
+            "completed" | "failed" | "cancelled" | "recovered"
+        )
+    });
     let has_failure = statuses.iter().any(|s| s == "failed");
     Ok((all_done, has_failure))
 }

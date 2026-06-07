@@ -28,7 +28,7 @@ The responsible coding agent may choose any of the following without asking for 
 
 ## Dynamic Workflow Direction
 
-Current status: **ALL BATCHES COMPLETE.** Batch 1 (Persisted Graph Mutation Runtime), Batch 2 (DynamicWorkflowController), Batch 3 (Feedback-Driven Routing), Batch 4 (Dynamic Decomposition), Batch 5 (Agent Profiles), Batch 6 (Tool Registry and Hook Points), and Batch 7 (Dynamic Workflow E2E Trial) are all done. Minimum dynamic-workflow acceptance target achieved: broad task → plan → execute → test fails → graph mutates → rerun → review/approval → export with full auditability. Does not authorize a new parallel runtime, default-on provider execution, target-repository mutation, hosted deployment, or sandbox/process/container/VM expansion beyond the existing explicit CLI executor path.
+Current status: **ALL BATCHES COMPLETE and scheduler dynamic mode wired.** Batch 1 (Persisted Graph Mutation Runtime), Batch 2 (DynamicWorkflowController), Batch 3 (Feedback-Driven Routing), Batch 4 (Dynamic Decomposition), Batch 5 (Agent Profiles), Batch 6 (Tool Registry and Hook Points), and Batch 7 (Dynamic Workflow E2E Trial) are all done. The scheduler can opt into dynamic orchestration through `ACP_ENABLE_DYNAMIC_WORKFLOW=1`, `ACP_SCHEDULER_MODE=dynamic`, or `ACP_SCHEDULER_EXECUTOR=dynamic`: failed nodes can trigger persisted graph mutation, be marked recovered, schedule fix/test nodes, resume the run, and continue to completion. Minimum dynamic-workflow acceptance target achieved: broad task → plan → execute → test fails → graph mutates → rerun → review/approval → export with full auditability. Does not authorize a new parallel runtime, default-on provider execution, target-repository mutation, hosted deployment, or sandbox/process/container/VM expansion beyond the existing explicit CLI executor path.
 
 Reference model: Claude Code dynamic workflows move orchestration into a workflow script/runtime that can coordinate many subagents, keep intermediate results outside the main conversation context, run in the background, expose progress, and resume/inspect runs. For this repository, the equivalent should be implemented as a Rust control-plane layer over the existing `workflow_runs`, `scheduler`, `dag_manager`, `workflow_engine`, `node_executor`, `quality`, and `routing` modules rather than a second scheduler or DAG kernel.
 
@@ -38,7 +38,7 @@ Current architecture assessment:
 |---|---|
 | Usability | Local/self-hosted supervised beta is usable: real CLI executor, workspace/capture/export, dashboard, SDK, scheduler, and pilot paths are wired. Hosted production remains partial. |
 | Intelligence | Medium: intelligence comes from explicit CLI executor calls; planner/decomposer remains deterministic and rule-based. |
-| Dynamicity | High: All 7 batches complete — persisted graph mutation, controller loop, feedback-driven routing, dynamic decomposition, agent profiles, tool registry, and E2E dynamic workflow trial. Minimum acceptance target achieved. |
+| Dynamicity | High: All 7 batches complete plus scheduler dynamic mode — persisted graph mutation, controller loop, feedback-driven routing, dynamic decomposition, agent profiles, tool registry, E2E dynamic workflow trial, and runtime recovery of failed nodes into fix/test follow-up graph execution. Minimum acceptance target achieved. |
 
 Recommended dynamic-workflow implementation batches:
 
@@ -50,13 +50,13 @@ Recommended dynamic-workflow implementation batches:
 | 4 | Dynamic Decomposition | **DONE** (1205 tests). `Decomposer` trait replaces fixed simple/medium/complex decomposition with a planner interface proposing node additions/splits from observations, test failures, quality failures, and user goals. `ObservationDecomposer`, `TestFailureDecomposer`, `QualityFailureDecomposer`, `GoalDrivenDecomposer` with deterministic rule-based proposals. `DynamicWorkflowController` integrates via `decompose_on_observation/test_failure/quality_failure/goal`. 46 new tests. |
 | 5 | Agent Profiles / Subagent Runs | **DONE** (1193 tests). Reusable agent profiles (planner, implementer, reviewer, tester, researcher) with role-specific tools, context_budget, workspace_scope. `AgentProfile` struct, `AgentProfileRegistry` with built-in profiles, validation, tool allowlisting, context budget enforcement, workspace scope filtering. `DynamicWorkflowController` exposes `active_profile`. Schema version + migration. |
 | 6 | Tool Registry and Hook Points | **DONE** (1205 tests). `ToolRegistry` with capabilities, allowlists, pre/post-execution hooks, MCP-like external tool descriptors. `DynamicWorkflowController` integrates via `tool_registry` field. Schema version + migration. |
-| 7 | Dynamic Workflow E2E Trial | **DONE** (1205 tests). E2E trial proves: broad task → plan → execute → test fails → graph mutates with fix/test nodes → rerun → review/approval → export. Asserts graph mutation events, patch contents, test logs, integrity, approval binding, and cleanup/quarantine behavior. ALL 7 BATCHES COMPLETE. Minimum acceptance target achieved. |
+| 7 | Dynamic Workflow E2E Trial | **DONE** (1208 tests). E2E trial proves: broad task → plan → execute → test fails → graph mutates with fix/test nodes → rerun → review/approval → export. Scheduler dynamic mode regression proves failed-node recovery can resume the persisted run and complete follow-up fix/test nodes. Asserts graph mutation events, patch contents, test logs, integrity, approval binding, and cleanup/quarantine behavior. ALL 7 BATCHES COMPLETE. Minimum acceptance target achieved. |
 
 Minimum acceptance target: a broad task should not merely run a predeclared graph. It must be able to observe a result, change the persisted workflow graph, and continue safely with full auditability.
 
 ## Supervised Autonomous Beta Planning
 
-Current level: supervised execution beta with explicit opt-in runtime primitives. It is not yet a dynamic autonomous workflow runtime.
+Current level: supervised dynamic-workflow beta with explicit opt-in runtime primitives. It is not a hosted autonomous SaaS runtime: sandbox isolation, multi-tenant production controls, provider default-on behavior, target-repo mutation, push/merge/deploy/apply controls, and unattended provider execution remain out of scope.
 
 Authoritative ADR: `docs/adr/0002-supervised-planning-track.md`.
 
@@ -80,14 +80,14 @@ Batch 7 readiness audit outcome:
 | Prerequisite | Current evidence | Status |
 |---|---|---|
 | Isolation primitive selected | ADR-0002 selects app-owned detached patch workspace/snapshot for the first patch artifact slice and rejects registered-target `git worktree add` because it mutates target `.git/worktrees`. Slice A records metadata/path evidence only. No process/container/VM execution primitive is selected. | Storage-only metadata implemented; execution primitive not selected |
-| Target workspace contract | Slice A stores source revision evidence, target/workspace canonical paths, lifecycle status, and boundary JSON in app-owned SQLite. Slice B exposes this metadata through read-only GET routes, and Slice C adds read-only SDK wrappers. Path-boundary tests reject workspace paths inside registered target repositories. It does not create directories or copy files. | Metadata schema/storage/API/SDK visibility implemented; lifecycle runtime missing |
+| Target workspace contract | Slice F creates app-owned detached workspaces, copies target contents into that detached directory, records source manifest evidence, and keeps registered target repositories read-only. Path-boundary tests reject workspace paths inside registered target repositories. | Lifecycle runtime implemented for app-owned workspaces; sandbox isolation still missing |
 | Approval broker scope/gate | ADR-0002 defines future `workflow:patch_review`-style evidence binding for patch artifact export. Slice D specifies `supervised_patch_approval_binding.v1`, validation rules, export-eligibility checks, and blocking conditions. Batch 4 approvals remain `metadata_only` and `execution_authority=disabled`; no gate is wired. | Contract specified; implementation missing |
 | Rollback strategy/tests | ADR-0002 defines app-owned workspace discard/quarantine and target `.git` unchanged checks. No workspace rollback or failure-mode tests exist. | Design specified; tests missing |
-| Artifact capture schema/storage | Slice A stores `supervised_patch_artifact.v1` metadata in app-owned SQLite with patch hash, normalized changed files, redaction status, storage refs, export/import, integrity, and stats coverage. Slice B exposes metadata only through read-only GET routes, and Slice C adds read-only SDK wrappers. It does not create patch files, run redaction, or expose/export artifacts through an approval gate. | Metadata schema/storage/API/SDK visibility implemented; capture runtime missing |
+| Artifact capture schema/storage | Slice F captures server-generated patch artifacts from workspace diffs, excludes ignored build/dot artifacts, scans for secrets, stores patch hash and changed files, validates integrity, binds approval to patch hash/source/changed files/expiry, and gates export on binding + integrity. | Capture/export runtime implemented for app-owned artifacts; target apply/merge remains disallowed |
 | Provider default-off | Existing provider gate remains default-off. | Satisfied, must be preserved |
 | No push/merge/deploy/target mutation | Existing boundaries block these behaviors. | Satisfied, must be preserved |
 
-Next safe action: if the user approves a new implementation batch, start Dynamic Workflow Direction Batch 1 with persisted graph mutation runtime and replay tests. Otherwise continue repo maintenance, docs drift repair, and focused regression hardening. No target repo writes, sandbox/VM execution, real workers beyond the existing scheduler/CLI executor path, provider calls, push/merge/deploy/apply controls, or registered-target `git worktree add`.
+Next safe action: harden the existing dynamic scheduler path with real CLI dynamic pilots, dashboard visibility for dynamic mutations/recovery events, and long-run soak/failure-injection coverage. Do not start a new parallel runtime. No target repo writes, sandbox/VM execution, real workers beyond the existing scheduler/CLI executor path, provider calls, push/merge/deploy/apply controls, or registered-target `git worktree add`.
 
 ## Local Productization Plan
 
@@ -96,7 +96,7 @@ Current level: local self-hosted MVP / internal beta.
 Implemented:
 
 - one Rust engine process serves API plus static dashboard without Docker
-- local SQLite persists dispatch history, read-only workflow plans, inert workflow run state, config, team/API-key metadata, audit, costs, provider audit, and provider usage columns
+- local SQLite persists dispatch history, read-only workflow plans, workflow run/node/edge/event/approval state, dynamic graph mutation events, scheduler feedback, config, team/API-key metadata, audit, costs, provider audit, and provider usage columns
 - dashboard reads live local state
 - TypeScript and Python SDKs cover local API, state, provider health/audit, supervised patch metadata, export, and backup
 - provider execution is explicit, env-gated, auth-gated, execute-scope-gated, audited, and budget-capped
@@ -111,10 +111,11 @@ Implemented:
 - Dashboard UX polish: ARIA tab roles + keyboard navigation, modal focus traps with Escape key, keyboard-accessible dispatch table rows, form labels on Team inputs, aria-label on icon buttons and search input, CSS spinner animation replacing plain-text loading states, shared EmptyState/StateBanner/BoundaryBadges components, local setup checklist plus setup/auth helper scripts, permission-aware Backups/Audit/Provider states, structured API error codes, server-side dispatch/audit pagination/search, actionable empty states, consolidated visual utility classes, and readable dispatch/provider/audit summaries with raw JSON behind details
 - Production-like local beta ops hardening: guarded `.env.production-like.local.example` and startup script, `/api/v1/metrics`, dashboard Operations tab, `acp_ops_check.py`, backup verify and restore dry-run API/UI/script smoke, local env secret scan, audit redaction query, provider pricing visibility, read-only advisory risk-gate repair, and least-privilege scope templates
 - Supervised planning Batch 3: `/api/v1/plans` creates/lists/reads non-executable app-owned `WorkflowGraph` plans in SQLite; SDKs expose plan methods
-- Supervised planning Batch 4: `/api/v1/workflow-runs` creates/lists/reads inert workflow run metadata from plans, stores nodes/edges/events/approvals, records resume/cancel intent as metadata only, and exposes SDK methods
+- Supervised planning Batch 4: `/api/v1/workflow-runs` creates/lists/reads workflow run metadata from plans, stores nodes/edges/events/approvals, records resume/cancel intent, and exposes SDK methods. Later supervised execution work adds explicit tick/scheduler execution over this state.
 - Supervised planning Batch 5: read-only plan records include recommendation-only quality/routing/retry/observability advisory metadata for status/block/recommendation decisions only
 - Supervised planning Batch 6: ADR-0002 and `docs/security/THREAT_MODEL.md` document sandbox/workspace/approval-broker/rollback/artifact-capture contracts and execution-phase risks as planning-only gates
-- Supervised planning Batch 7 Slice A/B/C/D/E: app-owned SQLite `supervised_patch_workspaces` and `supervised_patch_artifacts` metadata records, schema v3 migration, path-boundary validation outside registered target repositories, normalized changed-file validation, stats, integrity, export/import coverage, GET-only HTTP metadata visibility, TypeScript/Python SDK GET wrappers, docs-only `supervised_patch_approval_binding.v1` contract, and dashboard read-only supervised patch metadata visibility (read-only tab with list/detail drill-down, boundary badges; typecheck/lint/build verified; no Rust/API/storage changes). No workspace creation, patch generation, approval/export gate implementation, rollback engine, target writes, workers, provider calls, create/update/delete supervised-patch routes, export runtime, or execution controls.
+- Supervised planning Batch 7 Slice A-F: app-owned SQLite `supervised_patch_workspaces` and `supervised_patch_artifacts` metadata records, path-boundary validation outside registered target repositories, normalized changed-file validation, HTTP/SDK/dashboard visibility, `supervised_patch_approval_binding.v1`, workspace lifecycle, patch capture, integrity validation, approval-gated export, and E2E command/CLI executor patch flow. No target writes, sandbox/process/container/VM execution, provider calls, push/merge/deploy/apply controls, or default-on execution.
+- Dynamic Workflow Batches 1-7 plus scheduler dynamic-mode recovery: persisted graph mutation, controller observe→tick→mutate loop, feedback records, dynamic decomposition, agent profiles, tool registry metadata, E2E dynamic trial, and runtime failed-node recovery into fix/test follow-up execution.
 
 Next productization phases:
 
@@ -224,9 +225,9 @@ This track authorizes extending existing supervised autonomous beta infrastructu
 | GA-6. SDK/API Completeness | TS/Python SDK: scheduler status, workspace CRUD, capture, approval, export, cleanup/quarantine, workflow tick, artifact diff/detail. Tests: happy path, approval mismatch, artifact tamper, scheduler status. | **DONE** — commit 295467f, 10 new integration tests |
 | GA-7. Soak Test | `scripts/soak_ga_e2e.py` — `--base-url`, `--executor`, `--count`, `--concurrency`. Command executor 50 tasks; real CLI ≥3 tasks. JSON summary: success rate, failure domains, p95 latency, artifact count, cleanup success, cost. Non-zero exit on failure. | **DONE** — commit 0781a71, 10 new integration tests |
 
-**Latest**: GA hardening, real CLI pilot, dormant module adaptation cleanup, and the path/hash regression fix are complete. 1099 Rust tests pass.
+**Latest**: GA hardening, real CLI pilot, dormant module adaptation cleanup, path/hash regression fix, Dynamic Workflow Batches 1-7, and scheduler dynamic-mode recovery are complete. 1208 Rust tests pass.
 
-**Next**: All GA batches complete. GA hardening track finished. Candidate next product direction is Dynamic Workflow Direction above.
+**Next**: All GA and dynamic-workflow batches are complete. Candidate next product work is hardening the existing dynamic scheduler path with real CLI dynamic pilots, dashboard observability, and soak/failure-injection coverage.
 
 **Boundaries that remain intact:**
 - Provider execution remains default-off and env-gated
@@ -251,7 +252,7 @@ The following are **not** allowed without explicit human approval and a new impl
 
 A planning-only module may store app-owned non-executable plans or approval metadata. That does not approve approval controls, execution controls, runtime workers, target writes, or sandbox execution.
 
-Batch 6 design contracts, Batch 7 readiness audit, Batch 7 implementation-plan artifact, Batch 7 Slice A storage metadata, Batch 7 Slice B read-only HTTP metadata views, Batch 7 Slice C read-only SDK wrappers, Batch 7 Slice D approval-binding design, and Batch 7 Slice E dashboard read-only visibility do not approve any sandbox/process/container/VM implementation, target workspace writer, approval broker wiring, rollback engine, artifact-capture runtime, worker process, provider call, push, merge, deploy, apply, run, export runtime, or execution control.
+Batch 6 design contracts and Batch 7 Slice A-E metadata/read-only/design/dashboard visibility did not by themselves approve runtime execution. Slice F and the production-grade track now implement explicit supervised execution primitives in app-owned workspaces. They still do not approve sandbox/process/container/VM implementation, target-repository mutation, provider calls, push, merge, deploy, apply, hosted production, default-on execution, or unattended autonomous workers.
 
 The local small-team track does not approve cloud hosting, default-on provider calls, sandbox isolation, subprocess expansion beyond the existing CLI executor path, target-repo writes, hosted deployment, or real autonomous workers.
 

@@ -134,18 +134,6 @@ impl DynamicWorkflowController {
             .unwrap_or("unknown")
             .to_string();
 
-        if is_terminal(&status) {
-            return Ok(ControllerTickResult {
-                actions: vec![ControllerAction::NoAction {
-                    reason: format!("run is already terminal: {status}"),
-                }],
-                run_status: status,
-                mutations_applied: 0,
-                should_continue: false,
-                suggested_executor_type: None,
-            });
-        }
-
         if self.ticks_executed >= self.config.max_ticks_per_run {
             return Ok(ControllerTickResult {
                 actions: vec![ControllerAction::NoAction {
@@ -175,6 +163,28 @@ impl DynamicWorkflowController {
             .iter()
             .filter(|n| node_status(n) == "failed")
             .collect();
+        let terminal_repair_allowed =
+            status == "failed" && self.config.auto_fix_on_failure && !failed_nodes.is_empty();
+
+        if is_terminal(&status) && !terminal_repair_allowed {
+            let mut actions = vec![ControllerAction::NoAction {
+                reason: format!("run is already terminal: {status}"),
+            }];
+            if status == "completed" {
+                actions.push(ControllerAction::RunCompleted);
+            } else if status == "failed" {
+                actions.push(ControllerAction::RunFailed {
+                    reason: "node_failure".to_string(),
+                });
+            }
+            return Ok(ControllerTickResult {
+                actions,
+                run_status: status,
+                mutations_applied: 0,
+                should_continue: false,
+                suggested_executor_type: None,
+            });
+        }
 
         let completed_nodes: Vec<&Value> = nodes
             .iter()
@@ -185,77 +195,30 @@ impl DynamicWorkflowController {
         let mut mutations_this_tick: u64 = 0;
 
         // --- Phase 1: auto-fix failed nodes via decomposer ---
-        if self.config.auto_fix_on_failure {
-            for failed in &failed_nodes {
-                if self.mutations_applied_total >= self.config.max_mutations_per_run {
-                    break;
-                }
-                let failed_id = failed
-                    .get("node_id")
-                    .and_then(Value::as_str)
-                    .unwrap_or("")
-                    .to_string();
-                if failed_id.is_empty() {
-                    continue;
-                }
+        let repaired_terminal = self.apply_failed_node_recovery(
+            store,
+            run_id,
+            actor,
+            &nodes,
+            &mut actions,
+            &mut mutations_this_tick,
+        )?;
 
-                let error_msg = failed
-                    .get("result")
-                    .and_then(|r| r.get("error_message"))
-                    .and_then(Value::as_str)
-                    .unwrap_or("unknown error")
-                    .to_string();
-
-                let node_ids: Vec<String> = nodes
-                    .iter()
-                    .filter_map(|n| n.get("node_id").and_then(Value::as_str).map(String::from))
-                    .collect();
-
-                let decomp_context = DecompositionContext {
-                    run_id: run_id.to_string(),
-                    existing_nodes: node_ids,
-                    existing_edges: Vec::new(),
-                    feedback_stats: None,
-                    max_nodes: 1000,
-                };
-
-                let decomp_result = self.decomposer.decompose(
-                    DecompositionTrigger::TestFailure {
-                        node_id: failed_id.clone(),
-                        error: error_msg,
-                    },
-                    &decomp_context,
-                );
-
-                if decomp_result.proposals.is_empty() {
-                    continue;
-                }
-
-                if self.config.approval_required_for_mutation {
-                    actions.push(ControllerAction::ApprovalRequested {
-                        node_id: failed_id.clone(),
-                        reason: format!("auto-fix for failed node {} requires approval", failed_id),
-                    });
-                    continue;
-                }
-
-                let dag_proposals =
-                    node_proposals_to_dag_mutations(run_id, &decomp_result.proposals);
-
-                let results = store.apply_dag_mutations_batch(run_id, &dag_proposals, actor)?;
-                let applied_count = results
-                    .iter()
-                    .filter(|r| r.get("applied").and_then(Value::as_bool).unwrap_or(false))
-                    .count() as u64;
-                mutations_this_tick += applied_count;
-                self.mutations_applied_total += applied_count;
-
-                if applied_count > 0 {
-                    actions.push(ControllerAction::GraphMutated {
-                        proposal_id: format!("auto_fix_{}", failed_id),
-                        mutation_type: "add_node".to_string(),
-                    });
-                }
+        if terminal_repair_allowed {
+            if repaired_terminal {
+                store.request_workflow_run_resume(
+                    run_id,
+                    actor,
+                    Some("dynamic workflow recovery nodes scheduled"),
+                )?;
+            } else {
+                return Ok(ControllerTickResult {
+                    actions,
+                    run_status: status,
+                    mutations_applied: mutations_this_tick,
+                    should_continue: false,
+                    suggested_executor_type: None,
+                });
             }
         }
 
@@ -446,6 +409,35 @@ impl DynamicWorkflowController {
             }
         }
 
+        let run_after_tick = store.get_workflow_run(run_id)?.unwrap_or(run.clone());
+        let status_after_tick = run_after_tick
+            .get("status")
+            .and_then(Value::as_str)
+            .unwrap_or("unknown")
+            .to_string();
+        if status_after_tick == "failed" && self.config.auto_fix_on_failure {
+            let nodes_after_tick = run_after_tick
+                .get("nodes")
+                .and_then(Value::as_array)
+                .cloned()
+                .unwrap_or_default();
+            let repaired = self.apply_failed_node_recovery(
+                store,
+                run_id,
+                actor,
+                &nodes_after_tick,
+                &mut actions,
+                &mut mutations_this_tick,
+            )?;
+            if repaired {
+                store.request_workflow_run_resume(
+                    run_id,
+                    actor,
+                    Some("dynamic workflow recovered after failed tick"),
+                )?;
+            }
+        }
+
         // --- Phase 5: determine should_continue ---
         let fresh_run = store.get_workflow_run(run_id)?.unwrap_or(run);
         let fresh_status = fresh_run
@@ -467,6 +459,21 @@ impl DynamicWorkflowController {
             .unwrap_or(false);
 
         let should_continue = !is_terminal(&fresh_status) && (has_pending || has_running);
+        if fresh_status == "completed"
+            && !actions
+                .iter()
+                .any(|action| matches!(action, ControllerAction::RunCompleted))
+        {
+            actions.push(ControllerAction::RunCompleted);
+        } else if fresh_status == "failed"
+            && !actions
+                .iter()
+                .any(|action| matches!(action, ControllerAction::RunFailed { .. }))
+        {
+            actions.push(ControllerAction::RunFailed {
+                reason: "node_failure".to_string(),
+            });
+        }
 
         // Query feedback store for executor suggestion
         let suggested_executor_type = if self.config.record_feedback {
@@ -490,6 +497,118 @@ impl DynamicWorkflowController {
             should_continue,
             suggested_executor_type,
         })
+    }
+
+    fn apply_failed_node_recovery(
+        &mut self,
+        store: &LocalProductStore,
+        run_id: &str,
+        actor: &str,
+        nodes: &[Value],
+        actions: &mut Vec<ControllerAction>,
+        mutations_this_tick: &mut u64,
+    ) -> Result<bool, String> {
+        if !self.config.auto_fix_on_failure {
+            return Ok(false);
+        }
+
+        let failed_nodes: Vec<&Value> = nodes
+            .iter()
+            .filter(|n| node_status(n) == "failed")
+            .collect();
+        let mut recovered_any = false;
+
+        for failed in failed_nodes {
+            if self.mutations_applied_total >= self.config.max_mutations_per_run {
+                break;
+            }
+            let failed_id = failed
+                .get("node_id")
+                .and_then(Value::as_str)
+                .unwrap_or("")
+                .to_string();
+            if failed_id.is_empty() {
+                continue;
+            }
+
+            let error_msg = failed
+                .get("result")
+                .and_then(|r| r.get("error_message"))
+                .and_then(Value::as_str)
+                .unwrap_or("unknown error")
+                .to_string();
+
+            let node_ids: Vec<String> = nodes
+                .iter()
+                .filter_map(|n| n.get("node_id").and_then(Value::as_str).map(String::from))
+                .collect();
+
+            let decomp_context = DecompositionContext {
+                run_id: run_id.to_string(),
+                existing_nodes: node_ids,
+                existing_edges: Vec::new(),
+                feedback_stats: None,
+                max_nodes: 1000,
+            };
+
+            let decomp_result = self.decomposer.decompose(
+                DecompositionTrigger::TestFailure {
+                    node_id: failed_id.clone(),
+                    error: error_msg,
+                },
+                &decomp_context,
+            );
+
+            if decomp_result.proposals.is_empty() {
+                continue;
+            }
+
+            if self.config.approval_required_for_mutation {
+                actions.push(ControllerAction::ApprovalRequested {
+                    node_id: failed_id.clone(),
+                    reason: format!("auto-fix for failed node {} requires approval", failed_id),
+                });
+                continue;
+            }
+
+            let remaining = self
+                .config
+                .max_mutations_per_run
+                .saturating_sub(self.mutations_applied_total);
+            if decomp_result.proposals.len() as u64 > remaining {
+                actions.push(ControllerAction::ApprovalRequested {
+                    node_id: failed_id.clone(),
+                    reason: "auto-fix would exceed max_mutations_per_run".to_string(),
+                });
+                break;
+            }
+
+            let dag_proposals = node_proposals_to_dag_mutations(run_id, &decomp_result.proposals);
+            let results = store.apply_dag_mutations_batch(run_id, &dag_proposals, actor)?;
+            let applied_count = results
+                .iter()
+                .filter(|r| r.get("applied").and_then(Value::as_bool).unwrap_or(false))
+                .count() as u64;
+            *mutations_this_tick += applied_count;
+            self.mutations_applied_total += applied_count;
+
+            if applied_count > 0 {
+                store.update_workflow_node_status(
+                    run_id,
+                    &failed_id,
+                    "recovered",
+                    actor,
+                    "dynamic workflow recovery nodes scheduled",
+                )?;
+                actions.push(ControllerAction::GraphMutated {
+                    proposal_id: format!("auto_fix_{}", failed_id),
+                    mutation_type: "add_node".to_string(),
+                });
+                recovered_any = true;
+            }
+        }
+
+        Ok(recovered_any)
     }
 }
 

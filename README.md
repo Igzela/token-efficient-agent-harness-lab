@@ -4,7 +4,7 @@
 
 Token-Efficient Agent Harness Lab is a local deterministic harness for studying event-sourced agent workflow infrastructure from Stage 0 through Stage 4. It includes JSONL event validation, projections, project/task workflow primitives, quality gates, controlled intelligence stubs, and Stage 4 runtime-control abstractions.
 
-Current status: Stage 0-4 complete, Harness App MVP0-MVP8 complete, Trials 0-5 closed, and the agent-control-plane cutover is complete for the Rust + TypeScript stack. The primary local runtime is Rust `engine/` with axum API, SQLite state, provider safety gates, permission governance, cost governance, data operations, native packaging, dashboard controls, production-like local beta operations checks, a read-only planner API that stores non-executable `WorkflowGraph` plans with recommendation-only advisory metadata, inert durable workflow run/node/edge/event/approval metadata, and Batch 7 Slice A/B/C/D supervised patch workspace/artifact metadata in app-owned SQLite plus read-only HTTP/SDK visibility and docs-only approval-binding design. Supervised execution runtime remains NO-GO: no workspace directory creation, patch generation, approval/export gate implementation, export runtime, target writes, sandbox/process/container/VM execution, workers, provider calls, or apply/push/merge/deploy controls. The primary UI and SDK surface is TypeScript (`dashboard/` and `sdk/typescript/`). Python is retained as the Python REST SDK and utility scripts only; the legacy Python reference implementation has been retired. Security hardening complete. Dormant module adaptation track complete (1099 Rust tests pass).
+Current status: Stage 0-4 complete, Harness App MVP0-MVP8 complete, Trials 0-5 closed, and the agent-control-plane cutover is complete for the Rust + TypeScript stack. The primary local runtime is Rust `engine/` with axum API, SQLite state, provider safety gates, permission governance, cost governance, data operations, native packaging, dashboard controls, production-like local beta operations checks, read-only `WorkflowGraph` plans, workflow run/node/edge/event/approval state, supervised patch workspace/artifact runtime primitives, and opt-in dynamic workflow scheduling. Dynamic mode can observe a failed node, mutate the persisted graph with fix/test nodes, mark the failed node recovered, resume the run, and continue to completion. The primary UI and SDK surface is TypeScript (`dashboard/` and `sdk/typescript/`). Python is retained as the Python REST SDK and utility scripts only; the legacy Python reference implementation has been retired. Security hardening, GA hardening, dormant module adaptation, and Dynamic Workflow Batches 1-7 are complete (1208 Rust tests pass).
 
 **New sessions should start with [docs/SESSION_START_HERE.md](docs/SESSION_START_HERE.md).**
 
@@ -41,7 +41,7 @@ cargo test -p engine
 cd sdk/python && PYTHONPATH=src uv run --no-project python -m unittest discover -s tests
 ```
 
-Current result: 1099 Rust tests pass. Python SDK tests run separately under `sdk/python/`.
+Current result: 1208 Rust tests pass. Python SDK tests run separately under `sdk/python/`.
 
 ## How To Run Without Docker
 
@@ -186,14 +186,14 @@ bundle = client.dispatch("Summarize docs without provider calls")
 ## Safety Boundaries
 
 - No real model calls by default; the local beta provider path remains explicit and env-gated.
-- No real agents.
+- No unattended real agents; explicit supervised local workflow execution exists behind opt-in gates.
 - No real sandbox/process/container/VM isolation runtime.
-- Batch 6 sandbox/workspace/approval/rollback/artifact-capture contracts plus Batch 7 Slice A/B/C/D supervised patch metadata storage, read-only HTTP/SDK visibility, and approval-binding design are not runtime execution capability.
+- Supervised patch execution is limited to app-owned detached workspaces, explicit workflow tick/executor selection, artifact capture, approval binding, and export gating. It is not target-repo mutation or production autonomy.
 - Existing local CLI executor subprocess invocation is a separate, explicit opt-in exception via `ACP_ENABLE_CLI_EXECUTION=1`.
 - No production concurrency or real concurrent workers.
 - No provider failover.
 - No cloud production Web UI, hosted deployment, or remote SaaS service.
-- Local dashboard views remain non-executable and target repositories remain read-only.
+- Dashboard/SDK controls operate on app-owned workflow/workspace/artifact state; target repositories remain read-only.
 - No destructive runtime filesystem behavior.
 
 ## Repository Structure
@@ -248,6 +248,6 @@ Full closeout report: [`docs/CA7_CONTROLLED_ADAPTIVE_CLOSEOUT_REPORT.md`](docs/C
 
 ## Next Recommended Work
 
-Keep the repo moving through the autonomous maintainer loop: repair CI/docs/test drift, maintain wire governance, keep docs current, and fix focused regressions. The R-series is sealed at R7. R8 is not approved. No further file splitting is approved. Supervised autonomous beta Batch 7 Slice A/B/C/D is app-owned metadata plus read-only HTTP/SDK visibility and approval-binding design; runtime remains NO-GO. Any work that adds cloud hosting, broadens model provider integration, adds sandbox isolation, expands subprocess execution beyond the existing CLI executor path, mutates target repos, adds workspace creation, patch generation, hosted deployment, wires approval/run/deploy/merge/apply/run controls, or adds real autonomous workers still requires explicit approval.
+Keep the repo moving through the autonomous maintainer loop: repair CI/docs/test drift, maintain wire governance, keep docs current, and fix focused regressions. The R-series is sealed at R7. R8 is not approved. No further file splitting is approved. Dynamic Workflow Batches 1-7 and scheduler dynamic-mode recovery are complete. Next safe work is hardening the existing dynamic scheduler path, dashboard observability, and soak/failure-injection coverage. Any work that adds cloud hosting, broadens model provider integration, adds sandbox isolation, expands subprocess execution beyond the existing CLI executor path, mutates target repos, adds hosted deployment, wires deploy/merge/apply controls, or adds unattended autonomous workers still requires explicit approval.
 
 Python legacy reference implementation has been retired. Python is now retained only as the REST SDK (`sdk/python/`) and utility scripts (`scripts/`, `tools/`, `codegen/`).

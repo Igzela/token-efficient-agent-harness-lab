@@ -15,6 +15,9 @@ use crate::routing::{
     RoutingObservationStore,
 };
 use crate::storage::local_product_store::LocalProductStore;
+use crate::workflow::dynamic_controller::{
+    ControllerAction, DynamicControllerConfig, DynamicWorkflowController,
+};
 
 #[derive(Debug, Clone)]
 pub struct SchedulerConfig {
@@ -190,6 +193,7 @@ impl WorkflowScheduler {
                 "max_concurrent": self.config.max_concurrent,
                 "lease_timeout_ms": self.config.lease_timeout_ms,
                 "executor_type": self.config.executor_type,
+                "dynamic_workflow_enabled": dynamic_workflow_enabled(&self.config),
             },
             "tick_count": self.tick_count.load(Ordering::SeqCst),
             "error_count": self.error_count.load(Ordering::SeqCst),
@@ -270,6 +274,10 @@ fn scheduler_tick(
     config: &SchedulerConfig,
     executor: &dyn crate::node_executor::NodeExecutor,
 ) -> Result<TickResult, String> {
+    if dynamic_workflow_enabled(config) {
+        return dynamic_scheduler_tick(store, config, executor);
+    }
+
     let _recovered = store.recover_stale_leases(config.lease_timeout_ms)?;
 
     let active_runs = store.list_active_workflow_run_ids()?;
@@ -428,6 +436,87 @@ fn scheduler_tick(
         aggregations,
         adaptation_recommendations: recommendations,
     })
+}
+
+fn dynamic_scheduler_tick(
+    store: &LocalProductStore,
+    config: &SchedulerConfig,
+    executor: &dyn crate::node_executor::NodeExecutor,
+) -> Result<TickResult, String> {
+    let _recovered = store.recover_stale_leases(config.lease_timeout_ms)?;
+    let mut active_runs = store.list_active_workflow_run_ids()?;
+    for run in store.list_workflow_runs_with_offset(500, 0)? {
+        let Some(run_id) = run.get("run_id").and_then(Value::as_str) else {
+            continue;
+        };
+        if run.get("status").and_then(Value::as_str) == Some("failed")
+            && !active_runs.iter().any(|id| id == run_id)
+        {
+            active_runs.push(run_id.to_string());
+        }
+    }
+    let mut ticks = 0u64;
+    let mut retries = 0u64;
+    let mut aggregations = 0u64;
+
+    for run_id in active_runs.iter().take(config.max_concurrent) {
+        let mut controller = DynamicWorkflowController::new(DynamicControllerConfig::default());
+        match controller.tick(store, run_id, "scheduler", executor) {
+            Ok(result) => {
+                let did_work = result
+                    .actions
+                    .iter()
+                    .any(|action| !matches!(action, ControllerAction::NoAction { .. }));
+                if did_work {
+                    ticks += 1;
+                }
+                retries += result
+                    .actions
+                    .iter()
+                    .filter(|action| matches!(action, ControllerAction::NodeRetried { .. }))
+                    .count() as u64;
+                if result
+                    .actions
+                    .iter()
+                    .any(|action| matches!(action, ControllerAction::RunCompleted))
+                {
+                    aggregations += 1;
+                }
+            }
+            Err(_) => {
+                // terminal or no-ready-node errors are expected; skip
+            }
+        }
+    }
+
+    Ok(TickResult {
+        ticks,
+        retries,
+        aggregations,
+        adaptation_recommendations: Vec::new(),
+    })
+}
+
+fn dynamic_workflow_enabled(config: &SchedulerConfig) -> bool {
+    env_flag_enabled("ACP_ENABLE_DYNAMIC_WORKFLOW")
+        || std::env::var("ACP_SCHEDULER_MODE")
+            .map(|mode| mode.eq_ignore_ascii_case("dynamic"))
+            .unwrap_or(false)
+        || matches!(
+            config.executor_type.as_str(),
+            "dynamic" | "dynamic_noop" | "dynamic_workflow"
+        )
+}
+
+fn env_flag_enabled(key: &str) -> bool {
+    std::env::var(key)
+        .map(|value| {
+            matches!(
+                value.as_str(),
+                "1" | "true" | "TRUE" | "yes" | "YES" | "on" | "ON"
+            )
+        })
+        .unwrap_or(false)
 }
 
 fn build_graph_from_run(run_data: &Value, run_id: &str) -> crate::orchestration::WorkflowGraph {
@@ -602,6 +691,7 @@ mod tests {
         assert_eq!(status["running"], false);
         assert_eq!(status["tick_count"], 0);
         assert_eq!(status["config"]["interval_ms"], 50);
+        assert_eq!(status["config"]["dynamic_workflow_enabled"], false);
 
         scheduler.start().unwrap();
         std::thread::sleep(Duration::from_millis(120));
@@ -752,6 +842,99 @@ mod tests {
             run["status"], "failed",
             "run should be failed after node failure"
         );
+    }
+
+    #[test]
+    fn scheduler_dynamic_mode_recovers_failed_node_and_completes_followup_graph() {
+        let store = test_store();
+        let run_id = create_plan_and_run(&store);
+
+        let config = SchedulerConfig {
+            interval_ms: 50,
+            max_concurrent: 1,
+            lease_timeout_ms: 300_000,
+            executor_type: "dynamic".to_string(),
+        };
+        let fail_executor = crate::node_executor::FailNodeExecutor::default();
+
+        let first = scheduler_tick(&store, &config, &fail_executor).unwrap();
+        assert_eq!(first.ticks, 1);
+
+        let run = store.get_workflow_run(&run_id).unwrap().unwrap();
+        assert_eq!(
+            run["status"], "running",
+            "dynamic controller should resume the run after scheduling recovery nodes"
+        );
+        let nodes = run["nodes"].as_array().unwrap();
+        assert!(
+            nodes
+                .iter()
+                .any(|node| { node["node_id"] == "node-a" && node["db_status"] == "recovered" }),
+            "failed node should be marked recovered after fix/test nodes are scheduled"
+        );
+        assert!(
+            nodes
+                .iter()
+                .any(|node| { node["node_id"] == "fix-node-a" && node["db_status"] == "pending" }),
+            "dynamic decomposer should add a pending fix node"
+        );
+        assert!(
+            nodes.iter().any(|node| {
+                node["node_id"] == "test-fix-node-a" && node["db_status"] == "pending"
+            }),
+            "dynamic decomposer should add a pending verification node"
+        );
+
+        let noop_executor = NoopNodeExecutor;
+        let second = scheduler_tick(&store, &config, &noop_executor).unwrap();
+        assert_eq!(second.ticks, 1, "fix node should execute");
+        let third = scheduler_tick(&store, &config, &noop_executor).unwrap();
+        assert_eq!(third.ticks, 1, "verification node should execute");
+
+        let run = store.get_workflow_run(&run_id).unwrap().unwrap();
+        assert_eq!(
+            run["status"], "completed",
+            "run should complete after dynamic recovery nodes complete"
+        );
+    }
+
+    #[test]
+    fn scheduler_dynamic_mode_recovers_terminal_failed_run() {
+        let store = test_store();
+        let run_id = create_plan_and_run(&store);
+
+        let old_config = SchedulerConfig {
+            interval_ms: 50,
+            max_concurrent: 1,
+            lease_timeout_ms: 300_000,
+            executor_type: "fail".to_string(),
+        };
+        let fail_executor = crate::node_executor::FailNodeExecutor::default();
+        scheduler_tick(&store, &old_config, &fail_executor).unwrap();
+        let run = store.get_workflow_run(&run_id).unwrap().unwrap();
+        assert_eq!(run["status"], "failed");
+
+        let dynamic_config = SchedulerConfig {
+            interval_ms: 50,
+            max_concurrent: 1,
+            lease_timeout_ms: 300_000,
+            executor_type: "dynamic".to_string(),
+        };
+        let noop_executor = NoopNodeExecutor;
+        let recover = scheduler_tick(&store, &dynamic_config, &noop_executor).unwrap();
+        assert_eq!(recover.ticks, 1, "terminal failed run should be recovered");
+
+        let run = store.get_workflow_run(&run_id).unwrap().unwrap();
+        assert_eq!(run["status"], "running");
+        assert!(run["nodes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|node| { node["node_id"] == "fix-node-a" && node["db_status"] == "completed" }));
+
+        scheduler_tick(&store, &dynamic_config, &noop_executor).unwrap();
+        let run = store.get_workflow_run(&run_id).unwrap().unwrap();
+        assert_eq!(run["status"], "completed");
     }
 
     #[test]

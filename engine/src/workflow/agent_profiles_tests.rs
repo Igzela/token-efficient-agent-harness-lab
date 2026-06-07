@@ -3,9 +3,8 @@ use serde_json::{json, Value};
 use super::agent_profiles::*;
 use super::dynamic_decomposer::{
     node_proposals_to_dag_mutations, Decomposer, DecompositionContext, DecompositionTrigger,
-    NodeProposal, RuleBasedDecomposer,
+    RuleBasedDecomposer,
 };
-use crate::node_executor::NoopNodeExecutor;
 use crate::storage::local_product_store::LocalProductStore;
 
 // ---------------------------------------------------------------------------
@@ -469,8 +468,6 @@ fn test_controller_attaches_review_profile() {
 #[test]
 fn test_decomposer_attaches_profile_to_proposals() {
     // Verify all decomposition triggers produce proposals that resolve to correct profiles
-    let decomposer = RuleBasedDecomposer::new();
-
     // Initial plan (complex) — use high threshold to trigger complex decomposition
     let complex_decomposer = RuleBasedDecomposer {
         complexity_threshold: 0.9,
