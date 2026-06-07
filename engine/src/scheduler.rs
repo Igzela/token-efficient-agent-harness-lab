@@ -259,9 +259,12 @@ impl WorkflowScheduler {
             "config": {
                 "interval_ms": self.config.interval_ms,
                 "max_concurrent": self.config.max_concurrent,
+                "max_queued": self.config.max_queued,
                 "lease_timeout_ms": self.config.lease_timeout_ms,
                 "executor_type": self.config.executor_type,
                 "dynamic_workflow_enabled": dynamic_workflow_enabled(&self.config),
+                "backpressure_enabled": self.config.backpressure_enabled,
+                "backpressure_activation": self.config.backpressure_activation,
             },
             "tick_count": self.tick_count.load(Ordering::SeqCst),
             "error_count": self.error_count.load(Ordering::SeqCst),
@@ -760,8 +763,11 @@ fn dynamic_scheduler_tick(
             _ => (None, executor_arc.clone()),
         };
 
-        let mut controller = DynamicWorkflowController::new(DynamicControllerConfig::default())
-            .with_executor_pool(Arc::clone(pool));
+        let mut controller = DynamicWorkflowController::new(DynamicControllerConfig {
+            executor_pool_accounting_enabled: false,
+            ..DynamicControllerConfig::default()
+        })
+        .with_executor_pool(Arc::clone(pool));
         match controller.tick(store, run_id, "scheduler", &*pool_executor_arc) {
             Ok(result) => {
                 let did_work = result
@@ -910,6 +916,22 @@ mod tests {
 
     fn empty_pool() -> Arc<ExecutorPool> {
         Arc::new(ExecutorPool::new())
+    }
+
+    fn stub_only_pool() -> Arc<ExecutorPool> {
+        let pool = ExecutorPool::new();
+        pool.register(crate::executor_pool::ExecutorEntry {
+            executor_type: "stub".to_string(),
+            executor: Arc::new(crate::node_executor::StubNodeExecutor::default()),
+            capabilities: crate::executor_pool::ExecutorCapabilities::default(),
+            status: crate::executor_pool::ExecutorStatus {
+                concurrency_limit: 1,
+                ..Default::default()
+            },
+            cost_profile: crate::executor_pool::CostProfile::default(),
+            metrics: crate::executor_pool::ExecutorMetrics::default(),
+        });
+        Arc::new(pool)
     }
 
     fn make_plan_value(ids: &crate::read_only_planner::WorkflowPlanIds) -> Value {
@@ -1117,6 +1139,36 @@ mod tests {
         let result = scheduler_tick(&store, &config, Arc::new(executor.clone()), &pool).unwrap();
         assert_eq!(result.ticks, 0);
         assert_eq!(result.retries, 0);
+    }
+
+    #[test]
+    fn dynamic_scheduler_uses_pool_executor_without_double_accounting() {
+        let store = test_store();
+        let run_id = create_plan_and_run(&store);
+        let config = SchedulerConfig {
+            executor_type: "dynamic".to_string(),
+            max_concurrent: 1,
+            queue_enabled: false,
+            backpressure_enabled: false,
+            ..Default::default()
+        };
+        let pool = stub_only_pool();
+
+        let result = scheduler_tick(&store, &config, Arc::new(NoopNodeExecutor), &pool).unwrap();
+        assert_eq!(result.ticks, 1);
+        assert_eq!(pool.total_active(), 0, "pool slot should be released once");
+
+        let run = store.get_workflow_run(&run_id).unwrap().unwrap();
+        assert_eq!(run["status"], "completed");
+
+        let stub = pool
+            .snapshot()
+            .into_iter()
+            .find(|entry| entry.executor_type == "stub")
+            .unwrap();
+        assert_eq!(stub.metrics.total_executions, 1);
+        assert_eq!(stub.metrics.successful_executions, 1);
+        assert_eq!(stub.metrics.failed_executions, 0);
     }
 
     #[test]

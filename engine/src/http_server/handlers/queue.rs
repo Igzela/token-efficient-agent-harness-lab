@@ -41,19 +41,48 @@ pub(crate) async fn api_queue_status(
     let store = require_store(&state)?;
     let queue_status = store.get_queue_status().map_err(internal_error)?;
 
-    let (backpressure_active, effective_concurrency, total_active, total_capacity) =
-        match &state.scheduler {
-            Some(scheduler) => {
-                let guard = scheduler
-                    .lock()
-                    .map_err(|e| internal_error(format!("scheduler lock: {e}")))?;
-                let pool = guard.executor_pool();
-                let ta = pool.total_active();
-                let tc = pool.total_capacity();
-                (ta >= tc, tc, ta, tc)
-            }
-            None => (false, 0, 0, 0),
-        };
+    let (
+        backpressure_active,
+        effective_concurrency,
+        total_active,
+        total_capacity,
+        max_queued,
+        backpressure_enabled,
+        backpressure_activation,
+    ) = match &state.scheduler {
+        Some(scheduler) => {
+            let guard = scheduler
+                .lock()
+                .map_err(|e| internal_error(format!("scheduler lock: {e}")))?;
+            let scheduler_status = guard.status();
+            let config = scheduler_status.get("config").and_then(|v| v.as_object());
+            let pool = guard.executor_pool();
+            let ta = pool.total_active();
+            let tc = pool.total_capacity();
+            (
+                scheduler_status
+                    .get("backpressure_active")
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(ta >= tc),
+                tc,
+                ta,
+                tc,
+                config
+                    .and_then(|c| c.get("max_queued"))
+                    .and_then(|v| v.as_u64())
+                    .unwrap_or(0),
+                config
+                    .and_then(|c| c.get("backpressure_enabled"))
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(false),
+                config
+                    .and_then(|c| c.get("backpressure_activation"))
+                    .and_then(|v| v.as_f64())
+                    .unwrap_or(0.0),
+            )
+        }
+        None => (false, 0, 0, 0, 0, false, 0.0),
+    };
 
     let total_queued = queue_status
         .get("total_queued")
@@ -90,9 +119,9 @@ pub(crate) async fn api_queue_status(
                 "effective_concurrency": effective_concurrency,
                 "queue_config": {
                     "max_concurrent": total_capacity,
-                    "max_queued": 100,
-                    "backpressure_enabled": true,
-                    "backpressure_activation": 0.8,
+                    "max_queued": max_queued,
+                    "backpressure_enabled": backpressure_enabled,
+                    "backpressure_activation": backpressure_activation,
                 },
             },
         })),

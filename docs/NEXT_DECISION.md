@@ -77,7 +77,7 @@ Repair batch on 2026-06-07: **ALL PHASES COMPLETE.** The five repair items are r
 | 2 | Resource / Executor Pool repair | **DONE** — Selected/acquired executor binds to actual execution. Metrics tied to real executor. Regression tests verify. |
 | 3 | Queue / Priority / Backpressure repair | **DONE** — Queue mutations use write/admin scope, real run ids, row-count validation, consistent deadline handling, and live scheduler/queue status. |
 | 4 | Decision Trace / Operator Visibility repair | **DONE** — Dashboard, SDK, scheduler status, queue status, decision endpoints, and OpenAPI agree on shapes and field names. No hard-coded values. |
-| 5 | Ops Soak / Production Drill repair | **DONE** — Soak script matches real API shapes, creates real runs, exercises all evidence paths, and exits non-zero on missing required evidence. |
+| 5 | Ops Soak / Production Drill repair | **DONE** — Soak script matches real API shapes, creates real runs, supports auth-on admin-token drills for backup evidence, exercises all evidence paths, and exits non-zero on missing required evidence. |
 
 ## Supervised Autonomous Beta Planning
 

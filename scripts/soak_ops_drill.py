@@ -6,10 +6,11 @@ and dashboard visibility checks against a local agent-control-plane engine.
 Emits a machine-readable JSON summary on stdout.
 
 Usage:
-    python scripts/soak_ops_drill.py [--base-url URL] [--count N] [--executor TYPE] [--json]
+    python scripts/soak_ops_drill.py [--base-url URL] [--count N] [--executor TYPE] [--token TOKEN] [--json]
 """
 import argparse
 import json
+import os
 import sys
 import time
 import urllib.request
@@ -18,14 +19,17 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 
 
 class ApiClient:
-    def __init__(self, base_url: str):
+    def __init__(self, base_url: str, token: str | None = None):
         self.base_url = base_url.rstrip("/")
+        self.token = token
 
     def call(self, method: str, path: str, body: dict | None = None) -> tuple[int, dict | str]:
         url = f"{self.base_url}{path}"
         data = json.dumps(body).encode() if body else None
         req = urllib.request.Request(url, data=data, method=method)
         req.add_header("Content-Type", "application/json")
+        if self.token:
+            req.add_header("Authorization", f"Bearer {self.token}")
         try:
             with urllib.request.urlopen(req, timeout=30) as resp:
                 raw = resp.read().decode()
@@ -127,19 +131,39 @@ def run_soak_iteration(client: ApiClient, iteration: int, executor: str) -> dict
         errors.append("scheduler_status")
 
     # h. Check executor pool
-    status, _ = timed_call("GET", "/api/v1/executor-pool")
+    executor_pool_evidence = False
+    status, pool_resp = timed_call("GET", "/api/v1/executor-pool")
     if status != 200:
         errors.append("executor_pool")
+    elif isinstance(pool_resp, dict):
+        pool = pool_resp.get("executor_pool") if isinstance(pool_resp.get("executor_pool"), dict) else {}
+        executors = pool.get("executors") if isinstance(pool, dict) else []
+        executor_pool_evidence = bool(executors)
+        if not executor_pool_evidence:
+            errors.append("executor_pool_empty")
 
     # i. Check queue status
-    status, _ = timed_call("GET", "/api/v1/queue/status")
+    queue_evidence = False
+    status, queue_resp = timed_call("GET", "/api/v1/queue/status")
     if status != 200:
         errors.append("queue_status")
+    elif isinstance(queue_resp, dict):
+        queue = queue_resp.get("queue") if isinstance(queue_resp.get("queue"), dict) else {}
+        queue_evidence = all(k in queue for k in ("total_queued", "total_running", "backpressure_active"))
+        if not queue_evidence:
+            errors.append("queue_status_incomplete")
 
     # j. Check decisions
-    status, _ = timed_call("GET", "/api/v1/decisions")
+    decision_count = 0
+    status, decision_resp = timed_call("GET", "/api/v1/decisions")
     if status != 200:
         errors.append("decisions")
+    elif isinstance(decision_resp, dict):
+        decisions = decision_resp.get("decisions")
+        if isinstance(decisions, list):
+            decision_count = len(decisions)
+        if decision_count == 0:
+            errors.append("decisions_empty")
 
     # k. Check metrics
     status, _ = timed_call("GET", "/api/v1/metrics")
@@ -187,6 +211,9 @@ def run_soak_iteration(client: ApiClient, iteration: int, executor: str) -> dict
         "backup_verified": backup_verified,
         "backup_restore_dry_run": backup_restore_dry,
         "backup_skipped": backup_skipped,
+        "decision_count": decision_count,
+        "executor_pool_evidence": executor_pool_evidence,
+        "queue_evidence": queue_evidence,
     }
 
 
@@ -215,20 +242,21 @@ def run_failure_recovery(client: ApiClient, executor: str) -> dict:
         "actor": "soak_ops_drill",
     })
 
-    # Verify terminal
+    # Verify failed terminal status; completed would mean the fail executor was not used.
     status, run_detail = client.call("GET", f"/api/v1/workflow-runs/{run_id}")
     if status == 200 and isinstance(run_detail, dict):
         st = run_status(run_detail)
-        terminal = st in ("completed", "failed")
-        return {"success": terminal, "status": st}
+        return {"success": st == "failed", "status": st}
 
     return {"success": False, "error": "fetch_failed"}
 
 
 def run_multi_executor(client: ApiClient) -> dict:
-    """Create 3 runs, tick all, verify terminal."""
+    """Create runs with distinguishable executors and verify terminal outcomes."""
     run_ids = []
-    for i in range(3):
+    expected = {}
+    executors = [("noop", "completed"), ("fail", "failed")]
+    for i, (executor, expected_status) in enumerate(executors):
         status, plan_resp = client.call("POST", "/api/v1/plans", {
             "raw_request": f"multi-executor test {i}",
             "request_source": "soak_ops_drill",
@@ -241,21 +269,27 @@ def run_multi_executor(client: ApiClient) -> dict:
             "actor": "soak_ops_drill",
         })
         if status in (200, 201):
-            run_ids.append((run_resp.get("run", {}).get("run_id") if isinstance(run_resp.get("run"), dict) else None))
+            run_id = (run_resp.get("run", {}).get("run_id") if isinstance(run_resp.get("run"), dict) else None)
+            if run_id:
+                run_ids.append((run_id, executor))
+                expected[run_id] = expected_status
 
-    for run_id in run_ids:
+    for run_id, executor in run_ids:
         client.call("POST", f"/api/v1/workflow-runs/{run_id}/tick", {
-            "executor": "noop",
+            "executor": executor,
             "actor": "soak_ops_drill",
         })
 
-    all_terminal = True
-    for run_id in run_ids:
+    all_expected = len(run_ids) == len(executors)
+    statuses = {}
+    for run_id, _ in run_ids:
         status, detail = client.call("GET", f"/api/v1/workflow-runs/{run_id}")
-        if status != 200 or (isinstance(detail, dict) and run_status(detail) not in ("completed", "failed")):
-            all_terminal = False
+        st = run_status(detail) if status == 200 and isinstance(detail, dict) else None
+        statuses[run_id] = st
+        if st != expected.get(run_id):
+            all_expected = False
 
-    return {"success": all_terminal, "runs": len(run_ids)}
+    return {"success": all_expected, "runs": len(run_ids), "statuses": statuses}
 
 
 def run_restart_recovery(client: ApiClient, executor: str) -> dict:
@@ -376,10 +410,11 @@ def main():
     parser.add_argument("--base-url", default="http://127.0.0.1:8080")
     parser.add_argument("--count", type=int, default=5)
     parser.add_argument("--executor", default="noop")
+    parser.add_argument("--token", default=os.environ.get("ACP_ADMIN_API_KEY"))
     parser.add_argument("--json", action="store_true", dest="json_output")
     args = parser.parse_args()
 
-    client = ApiClient(args.base_url)
+    client = ApiClient(args.base_url, args.token)
     t_start = time.monotonic()
 
     if not client.wait_for_health():
@@ -394,6 +429,9 @@ def main():
     backups_created = 0
     backups_verified = 0
     backups_restore_dry = 0
+    total_decisions_seen = 0
+    executor_pool_checks = 0
+    queue_checks = 0
 
     print(f"Starting soak: {args.count} iterations, executor={args.executor}", file=sys.stderr)
 
@@ -405,6 +443,9 @@ def main():
         backups_created += int(result["backup_created"])
         backups_verified += int(result["backup_verified"])
         backups_restore_dry += int(result["backup_restore_dry_run"])
+        total_decisions_seen += int(result.get("decision_count", 0))
+        executor_pool_checks += int(result.get("executor_pool_evidence", False))
+        queue_checks += int(result.get("queue_evidence", False))
         status_str = "OK" if result["success"] else f"FAIL({','.join(result['errors'])})"
         print(f"  [{i+1}/{args.count}] {status_str}", file=sys.stderr)
 
@@ -449,6 +490,9 @@ def main():
         multi_result["success"],
         restart_result["success"],
         dash_result["success"],
+        total_decisions_seen > 0,
+        executor_pool_checks == args.count,
+        queue_checks == args.count,
     ]
     if backup_auth_configured:
         required_checks.extend([
@@ -474,6 +518,9 @@ def main():
         "backup_verified": backups_verified > 0,
         "backup_restore_dry_run": backups_restore_dry > 0,
         "backup_auth_configured": backup_auth_configured,
+        "decision_records_seen": total_decisions_seen,
+        "executor_pool_evidence": executor_pool_checks == args.count,
+        "queue_evidence": queue_checks == args.count,
         "ops_endpoints_checked": dash_result["checked"],
         "ops_endpoints_passed": dash_result["passed"],
         "failure_recovery_test": failure_result["success"],

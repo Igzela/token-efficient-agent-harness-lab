@@ -28,6 +28,7 @@ pub struct DynamicControllerConfig {
     pub record_feedback: bool,
     pub admission_check_enabled: bool,
     pub respect_priority: bool,
+    pub executor_pool_accounting_enabled: bool,
 }
 
 impl Default for DynamicControllerConfig {
@@ -40,6 +41,7 @@ impl Default for DynamicControllerConfig {
             record_feedback: true,
             admission_check_enabled: true,
             respect_priority: true,
+            executor_pool_accounting_enabled: true,
         }
     }
 }
@@ -502,18 +504,21 @@ impl DynamicWorkflowController {
         let phase4_executor_type = extract_executor_type(executor, None, None);
 
         // If pool is present, try to acquire; proceed if executor not in pool (fallback)
-        let pool_acquired = self
-            .executor_pool
-            .as_ref()
-            .map(|pool| {
-                // If executor type is not registered in pool, allow execution (fallback)
-                if pool.get(&phase4_executor_type).is_none() {
-                    true
-                } else {
-                    pool.acquire(&phase4_executor_type)
-                }
-            })
-            .unwrap_or(true);
+        let pool_acquired = if self.config.executor_pool_accounting_enabled {
+            self.executor_pool
+                .as_ref()
+                .map(|pool| {
+                    // If executor type is not registered in pool, allow execution (fallback)
+                    if pool.get(&phase4_executor_type).is_none() {
+                        true
+                    } else {
+                        pool.acquire(&phase4_executor_type)
+                    }
+                })
+                .unwrap_or(true)
+        } else {
+            true
+        };
 
         if !pool_acquired {
             let decision = build_decision(
@@ -763,7 +768,7 @@ impl DynamicWorkflowController {
         }
 
         // Release the pool slot based on tick outcome
-        if pool_acquired {
+        if self.config.executor_pool_accounting_enabled && pool_acquired {
             let tick_success = !matches!(action_str, "failed");
             if let Some(pool) = self.executor_pool.as_ref() {
                 pool.release(&phase4_executor_type, tick_success, tick_latency_ms, None);

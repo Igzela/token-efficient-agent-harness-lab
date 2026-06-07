@@ -13,7 +13,7 @@ function queueError(error: unknown): QueueError {
   if (error instanceof ApiError && (error.status === 401 || error.status === 403)) {
     return {
       message: error.status === 403
-        ? "The current API key lacks queue:read scope for queue status."
+        ? "The current API key lacks health:read scope for queue status."
         : "Queue status requires protected local API access.",
       type: "permission",
     };

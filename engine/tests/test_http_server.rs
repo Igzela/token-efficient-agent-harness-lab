@@ -4091,6 +4091,66 @@ async fn axum_tick_with_unknown_executor_falls_back_to_noop() {
 }
 
 #[tokio::test]
+async fn axum_tick_with_fail_executor_marks_run_failed() {
+    let dir = tempdir().unwrap();
+    let store = LocalProductStore::new(dir.path().join("tick-fail.db")).unwrap();
+    let app = build_axum_router(AxumApiState::new().with_local_store(store));
+
+    let plan_resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(Method::POST)
+                .uri("/api/v1/plans")
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(
+                    json!({"raw_request": "fail test", "request_source": "test"}).to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(plan_resp.status(), StatusCode::OK);
+    let plan_body = response_json(plan_resp).await;
+    let plan_id = plan_body["plan"]["plan_id"].as_str().unwrap();
+
+    let run_resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(Method::POST)
+                .uri("/api/v1/workflow-runs")
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(json!({"plan_id": plan_id}).to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let run_body = response_json(run_resp).await;
+    let run_id = run_body["run"]["run_id"].as_str().unwrap();
+
+    let tick_resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(Method::POST)
+                .uri(format!("/api/v1/workflow-runs/{run_id}/tick"))
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(
+                    json!({"actor": "test", "executor": "fail"}).to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(tick_resp.status(), StatusCode::OK);
+    let tick_body = response_json(tick_resp).await;
+    assert_eq!(tick_body["tick"]["executor_type"], "fail");
+    assert_eq!(tick_body["tick"]["result"]["status"], "failed");
+    assert_eq!(tick_body["tick"]["run"]["status"], "failed");
+}
+
+#[tokio::test]
 async fn axum_tick_with_claude_code_cli_unavailable_returns_400() {
     let dir = tempdir().unwrap();
     let store = LocalProductStore::new(dir.path().join("tick-cli-400.db")).unwrap();

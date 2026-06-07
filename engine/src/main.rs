@@ -322,6 +322,7 @@ fn local_admin_scope_list() -> Vec<String> {
         "cost:read",
         "dispatch:execute",
         "dispatch:read",
+        "dispatch:write",
         "export:read",
         "health:read",
         "team:admin",
@@ -394,6 +395,14 @@ fn production_profile_violations_inner(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn local_admin_scope_list_covers_operator_mutations() {
+        let scopes = local_admin_scope_list();
+        assert!(scopes.iter().any(|scope| scope == "backup:admin"));
+        assert!(scopes.iter().any(|scope| scope == "dispatch:write"));
+        assert!(scopes.iter().any(|scope| scope == "health:read"));
+    }
 
     #[test]
     fn ga2_production_profile_clean_config_passes() {
