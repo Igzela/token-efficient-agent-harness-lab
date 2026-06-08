@@ -155,4 +155,5 @@ The next phase is hardening the active macro-orchestrator path. It is not anothe
 | Module | Stage | Purpose | Main public APIs | Related tests |
 | --- | --- | --- | --- | --- |
 | `deploy/`, `docker-compose.yml` | Agent-Control-Plane Phase 7 | Optional local Docker build/run definitions for Rust API and dashboard. | `deploy/Dockerfile.engine`, `deploy/Dockerfile.dashboard`, compose services | `docker compose build`, `docker compose up --build -d` |
+| `engine/tests/test_pg_integration.rs` | HA Hardening + PostgreSQL | PostgreSQL integration tests gated behind `pg-tests` cargo feature. Requires `ACP_TEST_DATABASE_URL` env var pointing to a live PostgreSQL instance. | `test_pg_*` integration tests | `cargo test -p engine --features pg-tests` |
 | `docs/AGENT_CONTROL_PLANE_MIGRATION_CLOSEOUT.md` | Agent-Control-Plane Phase 8 | Migration closeout record. | Closeout status | `uv run --no-project python scripts/check_agent_handoff.py` |

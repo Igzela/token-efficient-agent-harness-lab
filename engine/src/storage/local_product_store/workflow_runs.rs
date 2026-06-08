@@ -154,6 +154,26 @@ impl LocalProductStore {
                     "graph": graph,
                     "boundaries": boundaries,
                 });
+                let boundaries_json = boundaries.to_string();
+                let run_json = run.to_string();
+                let dispatch_opt = null_if_empty(dispatch_id);
+                let status_str = "created";
+                let plan_ref: &str = plan_id;
+                let wf_ref: &str = workflow_id;
+                let run_ref: &str = &run_id;
+                let cat_ref: &str = &created_at;
+                let params: Vec<&(dyn postgres::types::ToSql + Sync)> = vec![
+                    &sequence,
+                    &run_id as &(dyn postgres::types::ToSql + Sync),
+                    &plan_ref,
+                    &cat_ref,
+                    &cat_ref,
+                    &status_str,
+                    &wf_ref,
+                    &dispatch_opt,
+                    &boundaries_json,
+                    &run_json,
+                ];
                 tx.execute(
                     "INSERT INTO workflow_runs
                      (run_sequence, run_id, plan_id, created_at, updated_at, status, workflow_id,
@@ -161,18 +181,7 @@ impl LocalProductStore {
                       priority, deadline_at, sla_ms, tenant_id, queue_position, pause_reason, degrade_mode)
                      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, NULL, NULL, NULL, $9, $10,
                              5, NULL, NULL, NULL, NULL, NULL, NULL)",
-                    &[
-                        &sequence,
-                        &run_id,
-                        &plan_id,
-                        &created_at,
-                        &created_at,
-                        &"created",
-                        &workflow_id,
-                        &null_if_empty(dispatch_id),
-                        &boundaries.to_string(),
-                        &run.to_string(),
-                    ],
+                    &params,
                 )
                 .map_err(|e| e.to_string())?;
 
@@ -3957,11 +3966,14 @@ fn pg_append_audit(
     resource: &str,
     details: &Value,
 ) -> Result<(), String> {
+    let details_json = details.to_string();
+    let params: Vec<&(dyn postgres::types::ToSql + Sync)> =
+        vec![&now, &actor, &action, &resource, &details_json];
     client
         .execute(
             "INSERT INTO audit_log (created_at, actor, action, resource, details_json)
              VALUES ($1, $2, $3, $4, $5)",
-            &[&now, &actor, &action, &resource, &details.to_string()],
+            &params,
         )
         .map_err(|e| e.to_string())?;
     Ok(())
@@ -3986,6 +3998,33 @@ fn pg_insert_workflow_run_node(
         .and_then(Value::as_str)
         .unwrap_or("pending");
     let profile_id = node.get("profile_id").and_then(Value::as_str);
+    let node_json = node.to_string();
+    let started_at = node.get("started_at").and_then(Value::as_str);
+    let completed_at = node.get("completed_at").and_then(Value::as_str);
+    let attempt_count: i32 = node
+        .get("attempt_count")
+        .and_then(Value::as_i64)
+        .unwrap_or(0) as i32;
+    let timeout_ms: Option<i32> = node
+        .get("timeout_ms")
+        .and_then(Value::as_i64)
+        .map(|v| v as i32);
+    let blocked_reason = node.get("blocked_reason").and_then(Value::as_str);
+    let leased_at = node.get("leased_at").and_then(Value::as_str);
+    let params: Vec<&(dyn postgres::types::ToSql + Sync)> = vec![
+        &run_id,
+        &node_id,
+        &task_type,
+        &status,
+        &node_json,
+        &started_at,
+        &completed_at,
+        &attempt_count,
+        &timeout_ms,
+        &blocked_reason,
+        &leased_at,
+        &profile_id,
+    ];
     client
         .execute(
             "INSERT INTO workflow_run_nodes
@@ -3998,20 +4037,7 @@ fn pg_insert_workflow_run_node(
               attempt_count = EXCLUDED.attempt_count, timeout_ms = EXCLUDED.timeout_ms,
               blocked_reason = EXCLUDED.blocked_reason, leased_at = EXCLUDED.leased_at,
               profile_id = EXCLUDED.profile_id",
-            &[
-                &run_id,
-                &node_id,
-                &task_type,
-                &status,
-                &node.to_string(),
-                &node.get("started_at").and_then(Value::as_str),
-                &node.get("completed_at").and_then(Value::as_str),
-                &node.get("attempt_count").and_then(Value::as_i64).unwrap_or(0),
-                &node.get("timeout_ms").and_then(Value::as_i64),
-                &node.get("blocked_reason").and_then(Value::as_str),
-                &node.get("leased_at").and_then(Value::as_str),
-                &profile_id,
-            ],
+            &params,
         )
         .map_err(|e| e.to_string())?;
     Ok(())
@@ -4039,6 +4065,15 @@ fn pg_insert_workflow_run_edge(
         .get("edge_type")
         .and_then(Value::as_str)
         .unwrap_or("dependency");
+    let edge_json = edge.to_string();
+    let params: Vec<&(dyn postgres::types::ToSql + Sync)> = vec![
+        &run_id,
+        &edge_id,
+        &from_node_id,
+        &to_node_id,
+        &edge_type,
+        &edge_json,
+    ];
     client
         .execute(
             "INSERT INTO workflow_run_edges
@@ -4047,14 +4082,7 @@ fn pg_insert_workflow_run_edge(
              ON CONFLICT (run_id, edge_id) DO UPDATE SET
               from_node_id = EXCLUDED.from_node_id, to_node_id = EXCLUDED.to_node_id,
               edge_type = EXCLUDED.edge_type, edge_json = EXCLUDED.edge_json",
-            &[
-                &run_id,
-                &edge_id,
-                &from_node_id,
-                &to_node_id,
-                &edge_type,
-                &edge.to_string(),
-            ],
+            &params,
         )
         .map_err(|e| e.to_string())?;
     Ok(())
@@ -4077,21 +4105,23 @@ fn pg_insert_workflow_run_event(
 ) -> Result<Value, String> {
     let sequence = pg_next_event_sequence(client)?;
     let event_id = format!("workflow-event-{sequence:04}");
+    let details_json = details.to_string();
+    let params: Vec<&(dyn postgres::types::ToSql + Sync)> = vec![
+        &sequence,
+        &event_id,
+        &run_id,
+        &node_id,
+        &event_type,
+        &actor,
+        &created_at,
+        &details_json,
+    ];
     client
         .execute(
             "INSERT INTO workflow_run_events
              (event_sequence, event_id, run_id, node_id, event_type, actor, created_at, details_json)
              VALUES ($1, $2, $3, $4, $5, $6, $7, $8)",
-            &[
-                &sequence,
-                &event_id,
-                &run_id,
-                &node_id,
-                &event_type,
-                &actor,
-                &created_at,
-                &details.to_string(),
-            ],
+            &params,
         )
         .map_err(|e| e.to_string())?;
     Ok(json!({
@@ -4304,8 +4334,12 @@ fn pg_workflow_run_summary_row(row: &postgres::Row) -> Value {
     let boundaries_text: String = row.get(12);
     let boundaries: Value =
         serde_json::from_str(&boundaries_text).unwrap_or_else(|_| workflow_run_boundaries());
+    let run_seq: i64 = row.get(0);
+    let priority: i32 = row.get(14);
+    let sla_ms: Option<i32> = row.get(16);
+    let queue_pos: Option<i32> = row.get(18);
     let mut value = workflow_run_value(
-        row.get::<_, i64>(0),
+        run_seq,
         &row.get::<_, String>(1),
         row.get::<_, Option<String>>(2).as_deref(),
         &row.get::<_, String>(3),
@@ -4321,19 +4355,19 @@ fn pg_workflow_run_summary_row(row: &postgres::Row) -> Value {
         &run,
     );
     if let Some(obj) = value.as_object_mut() {
-        obj.insert("priority".to_string(), json!(row.get::<_, i64>(14)));
+        obj.insert("priority".to_string(), json!(priority as i64));
         obj.insert(
             "deadline_at".to_string(),
             json!(row.get::<_, Option<String>>(15)),
         );
-        obj.insert("sla_ms".to_string(), json!(row.get::<_, Option<i64>>(16)));
+        obj.insert("sla_ms".to_string(), json!(sla_ms.map(|v| v as i64)));
         obj.insert(
             "tenant_id".to_string(),
             json!(row.get::<_, Option<String>>(17)),
         );
         obj.insert(
             "queue_position".to_string(),
-            json!(row.get::<_, Option<i64>>(18)),
+            json!(queue_pos.map(|v| v as i64)),
         );
         obj.insert(
             "pause_reason".to_string(),
@@ -4409,9 +4443,11 @@ fn pg_workflow_run_nodes(
                 if let Some(v) = row.get::<_, Option<String>>(3) {
                     obj.insert("completed_at".to_string(), json!(v));
                 }
-                obj.insert("attempt_count".to_string(), json!(row.get::<_, i64>(4)));
-                if let Some(v) = row.get::<_, Option<i64>>(5) {
-                    obj.insert("timeout_ms".to_string(), json!(v));
+                let attempt: i32 = row.get(4);
+                obj.insert("attempt_count".to_string(), json!(attempt as i64));
+                let timeout: Option<i32> = row.get(5);
+                if let Some(v) = timeout {
+                    obj.insert("timeout_ms".to_string(), json!(v as i64));
                 }
                 if let Some(v) = row.get::<_, Option<String>>(6) {
                     obj.insert("blocked_reason".to_string(), json!(v));

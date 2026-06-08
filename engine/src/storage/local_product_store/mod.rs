@@ -405,6 +405,18 @@ impl LocalProductStore {
         (self.clock)()
     }
 
+    pub fn is_postgres(&self) -> bool {
+        #[cfg(feature = "pg")]
+        {
+            matches!(&self.db, DatabaseConnection::Pg(_))
+        }
+        #[cfg(not(feature = "pg"))]
+        {
+            let _ = &self.db;
+            false
+        }
+    }
+
     pub fn is_memory(&self) -> bool {
         match &self.db {
             DatabaseConnection::Sqlite(_) => self.db_path == Path::new(":memory:"),

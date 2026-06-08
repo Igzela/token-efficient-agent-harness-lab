@@ -132,8 +132,8 @@ When you encounter schema ambiguity, interface questions, phase boundary edge ca
 ## Test Strategy
 
 - **Framework**: Rust `cargo test` for engine; Python `unittest` for SDK
-- **Run commands**: `cargo test -p engine` (primary); SDK tests in `sdk/python/`
-- **Current count**: 1367 Rust tests, 0 failures
+- **Run commands**: `cargo test -p engine` (primary); SDK tests in `sdk/python/`; PostgreSQL integration: `cargo test -p engine --features pg-tests` (requires `ACP_TEST_DATABASE_URL`)
+- **Current count**: 1378 Rust tests, 0 failures
 - **CI**: GitHub Actions on push/PR to main
 - **Test-first**: Write tests alongside implementation
 

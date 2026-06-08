@@ -115,6 +115,12 @@ scripts/start_production_like_local.sh
 
 This profile keeps auth, cost caps, audit, backups, and explicit provider execution enabled for local beta trials. Optional `ACP_PROVIDER_INPUT_COST_PER_1K_USD` and `ACP_PROVIDER_OUTPUT_COST_PER_1K_USD` values make `estimated_cost_usd` visible; without them the API/dashboard report `pricing_configured=false` instead of implying a real zero cost. It is still local-only and is not a cloud production deployment.
 
+PostgreSQL integration tests (requires a running PostgreSQL instance):
+
+```bash
+ACP_TEST_DATABASE_URL=postgres://user:pass@localhost:5432/testdb cargo test -p engine --features pg-tests
+```
+
 Operational checks:
 
 ```bash

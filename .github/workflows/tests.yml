@@ -48,6 +48,32 @@ jobs:
       - name: Run clippy
         run: cargo clippy -p engine -- -D warnings
 
+  pg-integration-tests:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: testuser
+          POSTGRES_PASSWORD: testpass
+          POSTGRES_DB: testdb
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd="pg_isready -U testuser"
+          --health-interval=5s
+          --health-timeout=5s
+          --health-retries=5
+    env:
+      ACP_TEST_DATABASE_URL: postgres://testuser:testpass@localhost:5432/testdb
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v6
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+      - name: Run PostgreSQL integration tests
+        run: cargo test -p engine --features pg-tests -- --test-threads=1
+
   typescript-tests:
     runs-on: ubuntu-latest
     steps:

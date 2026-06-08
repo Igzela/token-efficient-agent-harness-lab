@@ -178,18 +178,22 @@ async fn main() {
         let interval = scheduler_config.interval_ms;
         let mut scheduler = WorkflowScheduler::new(store_for_scheduler, scheduler_config);
         if backup_interval_sec > 0 {
-            let bm = engine::storage::backup_manager::BackupManager::new(&backup_dir_for_auto)
-                .expect("failed to create backup manager for auto-backup");
-            scheduler = scheduler.with_auto_backup(
-                Arc::new(bm),
-                db_path.display().to_string(),
-                backup_interval_sec,
-                backup_retain_count,
-            );
-            println!(
-                "[acp-startup] auto_backup=enabled interval={}s retain={}",
-                backup_interval_sec, backup_retain_count
-            );
+            if std::env::var("ACP_DATABASE_URL").is_ok() {
+                eprintln!("[acp-warning] ACP_BACKUP_INTERVAL_SEC={} is ignored in PostgreSQL mode — use pg_dump or your managed backup service. App auto-backup disabled.", backup_interval_sec);
+            } else {
+                let bm = engine::storage::backup_manager::BackupManager::new(&backup_dir_for_auto)
+                    .expect("failed to create backup manager for auto-backup");
+                scheduler = scheduler.with_auto_backup(
+                    Arc::new(bm),
+                    db_path.display().to_string(),
+                    backup_interval_sec,
+                    backup_retain_count,
+                );
+                println!(
+                    "[acp-startup] auto_backup=enabled interval={}s retain={}",
+                    backup_interval_sec, backup_retain_count
+                );
+            }
         } else {
             println!("[acp-startup] auto_backup=disabled");
         }
@@ -216,6 +220,11 @@ async fn main() {
 
     let tls_cert_path = std::env::var("ACP_TLS_CERT_PATH").ok();
     let tls_key_path = std::env::var("ACP_TLS_KEY_PATH").ok();
+
+    if let Err(e) = validate_tls_config(tls_cert_path.as_deref(), tls_key_path.as_deref()) {
+        eprintln!("[acp-fatal] {}", e);
+        std::process::exit(1);
+    }
 
     match (tls_cert_path, tls_key_path) {
         (Some(cert_path), Some(key_path)) => {
@@ -255,9 +264,9 @@ async fn main() {
                     std::process::exit(1);
                 });
         }
-        _ => {
+        (None, None) => {
             println!(
-                "[acp-startup] TLS disabled (set ACP_TLS_CERT_PATH and ACP_TLS_KEY_PATH to enable)"
+                "[acp-startup] TLS disabled (neither ACP_TLS_CERT_PATH nor ACP_TLS_KEY_PATH set)"
             );
             println!("engine listening on {}", addr);
             let listener = tokio::net::TcpListener::bind(&addr).await.unwrap();
@@ -266,6 +275,7 @@ async fn main() {
                 .await
                 .unwrap();
         }
+        _ => unreachable!("validate_tls_config already rejected single-sided TLS env vars"),
     }
     println!("[acp-shutdown] engine stopped gracefully");
 }
@@ -517,6 +527,24 @@ fn build_multi_executor(config: &CliConfig) -> MultiExecutor {
     MultiExecutor::new(executors).with_default(Box::new(NoopExecutor))
 }
 
+/// Validates TLS env var consistency. Returns `Err` when exactly one of
+/// `ACP_TLS_CERT_PATH` / `ACP_TLS_KEY_PATH` is set, because both are
+/// required to enable TLS.
+pub fn validate_tls_config(cert: Option<&str>, key: Option<&str>) -> Result<(), String> {
+    match (cert, key) {
+        (Some(_), Some(_)) => Ok(()),
+        (None, None) => Ok(()),
+        (Some(_), None) => Err(
+            "ACP_TLS_CERT_PATH is set but ACP_TLS_KEY_PATH is not. Both must be set to enable TLS."
+                .to_string(),
+        ),
+        (None, Some(_)) => Err(
+            "ACP_TLS_KEY_PATH is set but ACP_TLS_CERT_PATH is not. Both must be set to enable TLS."
+                .to_string(),
+        ),
+    }
+}
+
 pub fn production_profile_violations(host: &str, require_auth: bool) -> Vec<&'static str> {
     let cors = std::env::var("ACP_CORS_ORIGINS").unwrap_or_default();
     let has_backup_dir = std::env::var("ACP_BACKUP_DIR").is_ok();
@@ -608,6 +636,34 @@ mod tests {
             violations.iter().any(|v| v.contains("LAN-exposed")),
             "should reject LAN without auth: {:?}",
             violations
+        );
+    }
+
+    #[test]
+    fn tls_single_sided_env_not_allowed() {
+        // both unset → ok
+        assert!(validate_tls_config(None, None).is_ok());
+        // both set → ok
+        assert!(validate_tls_config(Some("/tmp/cert.pem"), Some("/tmp/key.pem")).is_ok());
+        // cert only → err
+        let err = validate_tls_config(Some("/tmp/cert.pem"), None).unwrap_err();
+        assert!(
+            err.contains("ACP_TLS_CERT_PATH"),
+            "should mention cert env var: {err}"
+        );
+        assert!(
+            err.contains("ACP_TLS_KEY_PATH"),
+            "should mention key env var: {err}"
+        );
+        // key only → err
+        let err = validate_tls_config(None, Some("/tmp/key.pem")).unwrap_err();
+        assert!(
+            err.contains("ACP_TLS_KEY_PATH"),
+            "should mention key env var: {err}"
+        );
+        assert!(
+            err.contains("ACP_TLS_CERT_PATH"),
+            "should mention cert env var: {err}"
         );
     }
 }

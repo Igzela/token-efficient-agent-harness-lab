@@ -47,23 +47,25 @@ impl LocalProductStore {
             }),
             #[cfg(feature = "pg")]
             DatabaseConnection::Pg(_) => self.with_pg_conn(|client| {
+                let tick_i64 = tick_count as i64;
+                let err_i64 = error_count as i64;
                 client
                     .execute(
                         "UPDATE scheduler_heartbeat
-                         SET last_heartbeat_at = $1,
-                             tick_count = $2,
-                             error_count = $3,
-                             uptime_seconds = $4,
-                             metadata_json = $5,
-                             updated_at = $6
+                         SET last_heartbeat_at = $1::text,
+                             tick_count = $2::bigint,
+                             error_count = $3::bigint,
+                             uptime_seconds = $4::double precision,
+                             metadata_json = $5::text,
+                             updated_at = $6::text
                          WHERE id = 1",
                         &[
-                            &now,
-                            &(tick_count as i64),
-                            &(error_count as i64),
+                            &now as &(dyn postgres::types::ToSql + Sync),
+                            &tick_i64,
+                            &err_i64,
                             &uptime_seconds,
-                            &metadata_json,
-                            &now,
+                            &metadata_json as &(dyn postgres::types::ToSql + Sync),
+                            &now as &(dyn postgres::types::ToSql + Sync),
                         ],
                     )
                     .map_err(|e| e.to_string())?;
@@ -116,12 +118,12 @@ impl LocalProductStore {
 
                 match rows.into_iter().next() {
                     Some(row) => {
-                        let tick_i64: i64 = row.get(1);
-                        let err_i64: i64 = row.get(2);
+                        let tick_i32: i32 = row.get(1);
+                        let err_i32: i32 = row.get(2);
                         Ok(Some(SchedulerHeartbeatRow {
                             last_heartbeat_at: row.get(0),
-                            tick_count: tick_i64 as u64,
-                            error_count: err_i64 as u64,
+                            tick_count: tick_i32 as u64,
+                            error_count: err_i32 as u64,
                             uptime_seconds: row.get(3),
                             metadata_json: row.get(4),
                             updated_at: row.get(5),

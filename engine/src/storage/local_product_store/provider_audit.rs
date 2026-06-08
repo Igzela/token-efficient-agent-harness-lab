@@ -36,6 +36,21 @@ impl LocalProductStore {
             }),
             #[cfg(feature = "pg")]
             DatabaseConnection::Pg(_) => self.with_pg_conn(|client| {
+                let eid: &str = &event.event_id;
+                let did: &str = &event.dispatch_id;
+                let pid: &str = &event.provider_id;
+                let etype: &str = &event.event_type;
+                let itc: Option<i32> = event.input_token_count.map(|v| v as i32);
+                let otc: Option<i32> = event.output_token_count.map(|v| v as i32);
+                let cost = event.cost;
+                let cur = event.currency.as_deref();
+                let lat: Option<i32> = event.latency_ms.map(|v| v as i32);
+                let edom = event.error_domain.as_deref();
+                let rs: &str = &event.redaction_status;
+                let cat: &str = &event.created_at;
+                let params: Vec<&(dyn postgres::types::ToSql + Sync)> = vec![
+                    &eid, &did, &pid, &etype, &itc, &otc, &cost, &cur, &lat, &edom, &rs, &cat,
+                ];
                 client
                     .execute(
                         "INSERT INTO provider_audit_events
@@ -44,20 +59,7 @@ impl LocalProductStore {
                       latency_ms, error_domain, redaction_status, created_at)
                      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
                      ON CONFLICT DO NOTHING",
-                        &[
-                            &event.event_id,
-                            &event.dispatch_id,
-                            &event.provider_id,
-                            &event.event_type,
-                            &event.input_token_count,
-                            &event.output_token_count,
-                            &event.cost,
-                            &event.currency,
-                            &event.latency_ms,
-                            &event.error_domain,
-                            &event.redaction_status,
-                            &event.created_at,
-                        ],
+                        &params,
                     )
                     .map_err(|e| e.to_string())?;
                 Ok(())
@@ -162,6 +164,7 @@ impl LocalProductStore {
             }),
             #[cfg(feature = "pg")]
             DatabaseConnection::Pg(_) => self.with_pg_conn(|client| {
+                let p1: &str = dispatch_id;
                 let rows = client
                     .query(
                         "SELECT event_id, dispatch_id, provider_id, event_type,
@@ -170,7 +173,7 @@ impl LocalProductStore {
                          FROM provider_audit_events
                          WHERE dispatch_id = $1
                          ORDER BY created_at DESC",
-                        &[&dispatch_id],
+                        &[&p1],
                     )
                     .map_err(|e| e.to_string())?;
                 pg_provider_audit_rows(rows)
@@ -183,16 +186,19 @@ impl LocalProductStore {
 fn pg_provider_audit_rows(rows: Vec<postgres::Row>) -> Result<Vec<Value>, String> {
     let mut result = Vec::new();
     for row in &rows {
+        let itc: Option<i32> = row.get(4);
+        let otc: Option<i32> = row.get(5);
+        let lat: Option<i32> = row.get(8);
         result.push(json!({
             "event_id": row.get::<_, String>(0),
             "dispatch_id": row.get::<_, String>(1),
             "provider_id": row.get::<_, String>(2),
             "event_type": row.get::<_, String>(3),
-            "input_token_count": row.get::<_, Option<i64>>(4),
-            "output_token_count": row.get::<_, Option<i64>>(5),
+            "input_token_count": itc.map(|v| v as i64),
+            "output_token_count": otc.map(|v| v as i64),
             "cost": row.get::<_, Option<f64>>(6),
             "currency": row.get::<_, Option<String>>(7),
-            "latency_ms": row.get::<_, Option<i64>>(8),
+            "latency_ms": lat.map(|v| v as i64),
             "error_domain": row.get::<_, Option<String>>(9),
             "redaction_status": row.get::<_, String>(10),
             "created_at": row.get::<_, String>(11),

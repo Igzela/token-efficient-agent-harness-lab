@@ -167,6 +167,10 @@ Primary Rust + TypeScript cutover verification:
 
 bash scripts/verify_rust_typescript_stack.sh
 
+PostgreSQL integration tests (requires running PostgreSQL + `ACP_TEST_DATABASE_URL`):
+
+cargo test -p engine --features pg-tests
+
 Python SDK verification:
 
 cd sdk/python && PYTHONPATH=src uv run --no-project python -m unittest discover -s tests

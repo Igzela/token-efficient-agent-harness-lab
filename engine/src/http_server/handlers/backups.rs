@@ -71,6 +71,13 @@ pub(crate) async fn api_create_backup(
             "file-backed local store is required for backup",
         ));
     }
+    if store.is_postgres() {
+        return Err(ApiError::with_code(
+            StatusCode::BAD_REQUEST,
+            "backup_not_supported",
+            "PostgreSQL mode: use pg_dump or managed backup. App file-copy backup is not available for PostgreSQL backends.",
+        ));
+    }
     store.checkpoint_wal().map_err(internal_error)?;
 
     let backup_dir = backup_dir_for_state(&state, store.db_path());
@@ -209,6 +216,13 @@ pub(crate) async fn api_restore_backup(
             "file-backed local store is required for restore",
         ));
     }
+    if store.is_postgres() {
+        return Err(ApiError::with_code(
+            StatusCode::BAD_REQUEST,
+            "backup_not_supported",
+            "PostgreSQL mode: use pg_restore or managed backup. App file-copy restore is not available for PostgreSQL backends.",
+        ));
+    }
     let backup_dir = backup_dir_for_state(&state, store.db_path());
     let manager = BackupManager::new(&backup_dir).map_err(internal_error)?;
     let result = manager
@@ -269,6 +283,13 @@ pub(crate) async fn api_restore_backup_dry_run(
             StatusCode::BAD_REQUEST,
             "file_store_required",
             "file-backed local store is required for restore dry-run",
+        ));
+    }
+    if store.is_postgres() {
+        return Err(ApiError::with_code(
+            StatusCode::BAD_REQUEST,
+            "backup_not_supported",
+            "PostgreSQL mode: use pg_dump/pg_restore or managed backup. App file-copy backup is not available for PostgreSQL backends.",
         ));
     }
     let backup_dir = backup_dir_for_state(&state, store.db_path());
