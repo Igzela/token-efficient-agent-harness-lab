@@ -2,7 +2,7 @@
 
 ## Default Recommendation
 
-**Autonomously maintain and advance safe repository work.** The completed Stage 0–4 task-book scope, CA-7 sealed baseline, Harness App MVP0–MVP8, Trials 0–3, Reliability Hardening 1, and Dispatch Kernel Phase 1–7 (including 6A, 6B-1/2/3, Gates 1–3, and all Phase 7 modules: sdk, doc_generator, community_profiles, tool_adapter, dashboard, benchmark) are complete. The responsible coding agent should keep the repo healthy and fix CI/docs/test drift plus wire-governance gaps. Do not continue R-series file splitting.
+**Autonomously maintain and advance safe repository work.** The completed Stage 0–4 task-book scope, CA-7 sealed baseline, Harness App MVP0–MVP8, Trials 0–3, Reliability Hardening 1, Dispatch Kernel Phase 1–7 (including 6A, 6B-1/2/3, Gates 1–3, and all Phase 7 modules), Self-Hosted GA Readiness Track SG-1 through SG-5, and HA Hardening Track (HA-1 through HA-6) are complete. The responsible coding agent should keep the repo healthy and fix CI/docs/test drift plus wire-governance gaps. Do not continue R-series file splitting. The next unapproved track is PostgreSQL optional storage backend — this requires explicit user approval.
 
 This is standing authorization for the external coding agent maintaining this repository. It is not authorization to implement real autonomous workers inside the harness runtime.
 
@@ -166,7 +166,7 @@ Batch 7 readiness audit outcome:
 | Provider default-off | Existing provider gate remains default-off. | Satisfied, must be preserved |
 | No push/merge/deploy/target mutation | Existing boundaries block these behaviors. | Satisfied, must be preserved |
 
-Next safe action: SG-1 through SG-5 are complete. The Self-Hosted GA Readiness Track is done. Maintain repo health until the user provides new direction.
+Next safe action: All tracks complete including HA Hardening (HA-1 through HA-6). Maintain repo health until the user provides new direction (e.g., PostgreSQL optional storage backend).
 
 ## Local Productization Plan
 
