@@ -3,7 +3,7 @@ use serde_json::{json, Value};
 use std::ffi::OsString;
 use std::path::{Component, Path, PathBuf};
 
-use super::{append_audit_locked, collect_values, LocalProductStore};
+use super::{append_audit_locked, collect_values, DatabaseConnection, LocalProductStore};
 
 pub const SUPERVISED_PATCH_WORKSPACE_SCHEMA_VERSION: &str = "supervised_patch_workspace.v1";
 pub const SUPERVISED_PATCH_ARTIFACT_SCHEMA_VERSION: &str = "supervised_patch_artifact.v1";
@@ -90,21 +90,34 @@ impl LocalProductStore {
             ));
         }
         let now = self.now();
-        self.with_conn(|conn| {
-            conn.execute(
-                "UPDATE supervised_patch_workspaces SET status = ?1, updated_at = ?2 WHERE workspace_id = ?3",
-                params![new_status, now, workspace_id],
-            ).map_err(|e| e.to_string())?;
-            append_audit_locked(
-                conn,
-                &now,
-                actor,
-                "supervised_patch.workspace_status_update",
-                workspace_id,
-                &json!({"from": current_status, "to": new_status, "metadata_only": true}),
-            )?;
-            Ok(())
-        })?;
+        match &self.db {
+            DatabaseConnection::Sqlite(_) => self.with_conn(|conn| {
+                conn.execute(
+                    "UPDATE supervised_patch_workspaces SET status = ?1, updated_at = ?2 WHERE workspace_id = ?3",
+                    params![new_status, now, workspace_id],
+                ).map_err(|e| e.to_string())?;
+                append_audit_locked(
+                    conn,
+                    &now,
+                    actor,
+                    "supervised_patch.workspace_status_update",
+                    workspace_id,
+                    &json!({"from": current_status, "to": new_status, "metadata_only": true}),
+                )?;
+                Ok(())
+            })?,
+            #[cfg(feature = "pg")]
+            DatabaseConnection::Pg(_) => self.with_pg_conn(|client| {
+                client.execute(
+                    "UPDATE supervised_patch_workspaces SET status = $1, updated_at = $2 WHERE workspace_id = $3",
+                    &[&new_status, &now, &workspace_id],
+                ).map_err(|e| e.to_string())?;
+                let audit_details =
+                    json!({"from": current_status, "to": new_status, "metadata_only": true}).to_string();
+                pg_append_audit(client, &now, actor, "supervised_patch.workspace_status_update", workspace_id, &audit_details)?;
+                Ok(())
+            })?,
+        }
         self.get_supervised_patch_workspace(workspace_id)?
             .ok_or_else(|| format!("workspace not found after update: {workspace_id}"))
     }
@@ -322,65 +335,133 @@ impl LocalProductStore {
         let target_repo_canonical_path = required_str(&boundary, "target_repo_canonical_path")?;
         let workspace_canonical_path = required_str(&boundary, "workspace_canonical_path")?;
 
-        self.with_conn(|conn| {
-            let sequence =
-                next_sequence(conn, "supervised_patch_workspaces", "workspace_sequence")?;
-            let workspace_id = format!("patch-workspace-{sequence:04}");
-            let created_at = self.now();
-            let workspace = json!({
-                "schema_version": SUPERVISED_PATCH_WORKSPACE_SCHEMA_VERSION,
-                "workspace_sequence": sequence,
-                "workspace_id": workspace_id.clone(),
-                "plan_id": plan_id,
-                "run_id": run_id,
-                "target_id": target_id,
-                "target_repo_path": target_repo_path,
-                "target_repo_canonical_path": target_repo_canonical_path,
-                "workspace_path": workspace_path,
-                "workspace_canonical_path": workspace_canonical_path,
-                "source_revision": source_revision,
-                "source_tree_hash": source_tree_hash,
-                "status": status,
-                "created_at": created_at,
-                "updated_at": created_at,
-                "boundary": boundary.clone(),
-                "metadata_only": true,
-                "execution_authority": "disabled",
-            });
-            conn.execute(
-                "INSERT INTO supervised_patch_workspaces
-                 (workspace_sequence, workspace_id, plan_id, run_id, target_id,
-                  target_repo_path, target_repo_canonical_path, workspace_path,
-                  workspace_canonical_path, source_revision, source_tree_hash, status,
-                  created_at, updated_at, boundary_json, workspace_json)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)",
-                params![
-                    sequence,
-                    workspace_id,
-                    plan_id,
-                    run_id,
-                    target_id,
-                    target_repo_path,
-                    target_repo_canonical_path,
-                    workspace_path,
-                    workspace_canonical_path,
-                    source_revision,
-                    source_tree_hash,
-                    status,
-                    created_at,
-                    created_at,
-                    boundary.to_string(),
-                    workspace.to_string(),
-                ],
-            )
-            .map_err(|e| e.to_string())?;
-            append_audit_locked(
-                conn,
-                &created_at,
-                actor,
-                "supervised_patch.workspace_record",
-                &workspace_id,
-                &json!({
+        match &self.db {
+            DatabaseConnection::Sqlite(_) => self.with_conn(|conn| {
+                let sequence =
+                    next_sequence(conn, "supervised_patch_workspaces", "workspace_sequence")?;
+                let workspace_id = format!("patch-workspace-{sequence:04}");
+                let created_at = self.now();
+                let workspace = json!({
+                    "schema_version": SUPERVISED_PATCH_WORKSPACE_SCHEMA_VERSION,
+                    "workspace_sequence": sequence,
+                    "workspace_id": workspace_id.clone(),
+                    "plan_id": plan_id,
+                    "run_id": run_id,
+                    "target_id": target_id,
+                    "target_repo_path": target_repo_path,
+                    "target_repo_canonical_path": target_repo_canonical_path,
+                    "workspace_path": workspace_path,
+                    "workspace_canonical_path": workspace_canonical_path,
+                    "source_revision": source_revision,
+                    "source_tree_hash": source_tree_hash,
+                    "status": status,
+                    "created_at": created_at,
+                    "updated_at": created_at,
+                    "boundary": boundary.clone(),
+                    "metadata_only": true,
+                    "execution_authority": "disabled",
+                });
+                conn.execute(
+                    "INSERT INTO supervised_patch_workspaces
+                     (workspace_sequence, workspace_id, plan_id, run_id, target_id,
+                      target_repo_path, target_repo_canonical_path, workspace_path,
+                      workspace_canonical_path, source_revision, source_tree_hash, status,
+                      created_at, updated_at, boundary_json, workspace_json)
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)",
+                    params![
+                        sequence,
+                        workspace_id,
+                        plan_id,
+                        run_id,
+                        target_id,
+                        target_repo_path,
+                        target_repo_canonical_path,
+                        workspace_path,
+                        workspace_canonical_path,
+                        source_revision,
+                        source_tree_hash,
+                        status,
+                        created_at,
+                        created_at,
+                        boundary.to_string(),
+                        workspace.to_string(),
+                    ],
+                )
+                .map_err(|e| e.to_string())?;
+                append_audit_locked(
+                    conn,
+                    &created_at,
+                    actor,
+                    "supervised_patch.workspace_record",
+                    &workspace_id,
+                    &json!({
+                        "run_id": run_id,
+                        "plan_id": plan_id,
+                        "target_id": target_id,
+                        "source_revision": source_revision,
+                        "metadata_only": true,
+                        "target_repository_writes": "disabled",
+                        "registered_git_worktree": "forbidden",
+                        "workspace_directory_creation": "not_performed",
+                        "execution_authority": "disabled",
+                    }),
+                )?;
+                Ok(workspace)
+            }),
+            #[cfg(feature = "pg")]
+            DatabaseConnection::Pg(_) => self.with_pg_conn(|client| {
+                let sequence =
+                    pg_next_sequence(client, "supervised_patch_workspaces", "workspace_sequence")?;
+                let workspace_id = format!("patch-workspace-{sequence:04}");
+                let created_at = self.now();
+                let workspace = json!({
+                    "schema_version": SUPERVISED_PATCH_WORKSPACE_SCHEMA_VERSION,
+                    "workspace_sequence": sequence,
+                    "workspace_id": workspace_id.clone(),
+                    "plan_id": plan_id,
+                    "run_id": run_id,
+                    "target_id": target_id,
+                    "target_repo_path": target_repo_path,
+                    "target_repo_canonical_path": target_repo_canonical_path,
+                    "workspace_path": workspace_path,
+                    "workspace_canonical_path": workspace_canonical_path,
+                    "source_revision": source_revision,
+                    "source_tree_hash": source_tree_hash,
+                    "status": status,
+                    "created_at": created_at,
+                    "updated_at": created_at,
+                    "boundary": boundary.clone(),
+                    "metadata_only": true,
+                    "execution_authority": "disabled",
+                });
+                client.execute(
+                    "INSERT INTO supervised_patch_workspaces
+                     (workspace_sequence, workspace_id, plan_id, run_id, target_id,
+                      target_repo_path, target_repo_canonical_path, workspace_path,
+                      workspace_canonical_path, source_revision, source_tree_hash, status,
+                      created_at, updated_at, boundary_json, workspace_json)
+                     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)",
+                    &[
+                        &sequence,
+                        &workspace_id,
+                        &plan_id,
+                        &run_id,
+                        &target_id,
+                        &target_repo_path,
+                        &target_repo_canonical_path,
+                        &workspace_path,
+                        &workspace_canonical_path,
+                        &source_revision,
+                        &source_tree_hash,
+                        &status,
+                        &created_at,
+                        &created_at,
+                        &boundary.to_string(),
+                        &workspace.to_string(),
+                    ],
+                )
+                .map_err(|e| e.to_string())?;
+                let audit_details = json!({
                     "run_id": run_id,
                     "plan_id": plan_id,
                     "target_id": target_id,
@@ -390,85 +471,147 @@ impl LocalProductStore {
                     "registered_git_worktree": "forbidden",
                     "workspace_directory_creation": "not_performed",
                     "execution_authority": "disabled",
-                }),
-            )?;
-            Ok(workspace)
-        })
+                }).to_string();
+                pg_append_audit(client, &created_at, actor, "supervised_patch.workspace_record", &workspace_id, &audit_details)?;
+                Ok(workspace)
+            }),
+        }
     }
 
     pub fn get_supervised_patch_workspace_for_run(
         &self,
         run_id: &str,
     ) -> Result<Option<Value>, String> {
-        self.with_conn(|conn| {
-            let mut stmt = conn
-                .prepare(
-                    "SELECT workspace_sequence, workspace_id, plan_id, run_id, target_id,
-                            target_repo_path, target_repo_canonical_path, workspace_path,
-                            workspace_canonical_path, source_revision, source_tree_hash, status,
-                            created_at, updated_at, boundary_json, workspace_json
-                     FROM supervised_patch_workspaces
-                     WHERE run_id = ?1
-                     ORDER BY workspace_sequence DESC
-                     LIMIT 1",
-                )
-                .map_err(|e| e.to_string())?;
-            let mut rows = stmt
-                .query_map(params![run_id], supervised_patch_workspace_row)
-                .map_err(|e| e.to_string())?;
-            match rows.next() {
-                Some(Ok(value)) => Ok(Some(value)),
-                Some(Err(e)) => Err(e.to_string()),
-                None => Ok(None),
-            }
-        })
+        match &self.db {
+            DatabaseConnection::Sqlite(_) => self.with_conn(|conn| {
+                let mut stmt = conn
+                    .prepare(
+                        "SELECT workspace_sequence, workspace_id, plan_id, run_id, target_id,
+                                target_repo_path, target_repo_canonical_path, workspace_path,
+                                workspace_canonical_path, source_revision, source_tree_hash, status,
+                                created_at, updated_at, boundary_json, workspace_json
+                         FROM supervised_patch_workspaces
+                         WHERE run_id = ?1
+                         ORDER BY workspace_sequence DESC
+                         LIMIT 1",
+                    )
+                    .map_err(|e| e.to_string())?;
+                let mut rows = stmt
+                    .query_map(params![run_id], supervised_patch_workspace_row)
+                    .map_err(|e| e.to_string())?;
+                match rows.next() {
+                    Some(Ok(value)) => Ok(Some(value)),
+                    Some(Err(e)) => Err(e.to_string()),
+                    None => Ok(None),
+                }
+            }),
+            #[cfg(feature = "pg")]
+            DatabaseConnection::Pg(_) => self.with_pg_conn(|client| {
+                let rows = client
+                    .query(
+                        "SELECT workspace_sequence, workspace_id, plan_id, run_id, target_id,
+                                target_repo_path, target_repo_canonical_path, workspace_path,
+                                workspace_canonical_path, source_revision, source_tree_hash, status,
+                                created_at, updated_at, boundary_json, workspace_json
+                         FROM supervised_patch_workspaces
+                         WHERE run_id = $1
+                         ORDER BY workspace_sequence DESC
+                         LIMIT 1",
+                        &[&run_id],
+                    )
+                    .map_err(|e| e.to_string())?;
+                match rows.into_iter().next() {
+                    Some(row) => Ok(Some(pg_supervised_patch_workspace_row(&row))),
+                    None => Ok(None),
+                }
+            }),
+        }
     }
 
     pub fn get_supervised_patch_workspace(
         &self,
         workspace_id: &str,
     ) -> Result<Option<Value>, String> {
-        self.with_conn(|conn| {
-            let mut stmt = conn
-                .prepare(
-                    "SELECT workspace_sequence, workspace_id, plan_id, run_id, target_id,
-                            target_repo_path, target_repo_canonical_path, workspace_path,
-                            workspace_canonical_path, source_revision, source_tree_hash, status,
-                            created_at, updated_at, boundary_json, workspace_json
-                     FROM supervised_patch_workspaces
-                     WHERE workspace_id = ?1
-                     LIMIT 1",
-                )
-                .map_err(|e| e.to_string())?;
-            let mut rows = stmt
-                .query_map(params![workspace_id], supervised_patch_workspace_row)
-                .map_err(|e| e.to_string())?;
-            match rows.next() {
-                Some(Ok(value)) => Ok(Some(value)),
-                Some(Err(e)) => Err(e.to_string()),
-                None => Ok(None),
-            }
-        })
+        match &self.db {
+            DatabaseConnection::Sqlite(_) => self.with_conn(|conn| {
+                let mut stmt = conn
+                    .prepare(
+                        "SELECT workspace_sequence, workspace_id, plan_id, run_id, target_id,
+                                target_repo_path, target_repo_canonical_path, workspace_path,
+                                workspace_canonical_path, source_revision, source_tree_hash, status,
+                                created_at, updated_at, boundary_json, workspace_json
+                         FROM supervised_patch_workspaces
+                         WHERE workspace_id = ?1
+                         LIMIT 1",
+                    )
+                    .map_err(|e| e.to_string())?;
+                let mut rows = stmt
+                    .query_map(params![workspace_id], supervised_patch_workspace_row)
+                    .map_err(|e| e.to_string())?;
+                match rows.next() {
+                    Some(Ok(value)) => Ok(Some(value)),
+                    Some(Err(e)) => Err(e.to_string()),
+                    None => Ok(None),
+                }
+            }),
+            #[cfg(feature = "pg")]
+            DatabaseConnection::Pg(_) => self.with_pg_conn(|client| {
+                let rows = client
+                    .query(
+                        "SELECT workspace_sequence, workspace_id, plan_id, run_id, target_id,
+                                target_repo_path, target_repo_canonical_path, workspace_path,
+                                workspace_canonical_path, source_revision, source_tree_hash, status,
+                                created_at, updated_at, boundary_json, workspace_json
+                         FROM supervised_patch_workspaces
+                         WHERE workspace_id = $1
+                         LIMIT 1",
+                        &[&workspace_id],
+                    )
+                    .map_err(|e| e.to_string())?;
+                match rows.into_iter().next() {
+                    Some(row) => Ok(Some(pg_supervised_patch_workspace_row(&row))),
+                    None => Ok(None),
+                }
+            }),
+        }
     }
 
     pub fn supervised_patch_workspaces(&self, limit: i64) -> Result<Vec<Value>, String> {
-        self.with_conn(|conn| {
-            let mut stmt = conn
-                .prepare(
-                    "SELECT workspace_sequence, workspace_id, plan_id, run_id, target_id,
-                            target_repo_path, target_repo_canonical_path, workspace_path,
-                            workspace_canonical_path, source_revision, source_tree_hash, status,
-                            created_at, updated_at, boundary_json, workspace_json
-                     FROM supervised_patch_workspaces
-                     ORDER BY workspace_sequence DESC
-                     LIMIT ?1",
-                )
-                .map_err(|e| e.to_string())?;
-            let rows = stmt
-                .query_map(params![limit], supervised_patch_workspace_row)
-                .map_err(|e| e.to_string())?;
-            collect_values(rows)
-        })
+        match &self.db {
+            DatabaseConnection::Sqlite(_) => self.with_conn(|conn| {
+                let mut stmt = conn
+                    .prepare(
+                        "SELECT workspace_sequence, workspace_id, plan_id, run_id, target_id,
+                                target_repo_path, target_repo_canonical_path, workspace_path,
+                                workspace_canonical_path, source_revision, source_tree_hash, status,
+                                created_at, updated_at, boundary_json, workspace_json
+                         FROM supervised_patch_workspaces
+                         ORDER BY workspace_sequence DESC
+                         LIMIT ?1",
+                    )
+                    .map_err(|e| e.to_string())?;
+                let rows = stmt
+                    .query_map(params![limit], supervised_patch_workspace_row)
+                    .map_err(|e| e.to_string())?;
+                collect_values(rows)
+            }),
+            #[cfg(feature = "pg")]
+            DatabaseConnection::Pg(_) => self.with_pg_conn(|client| {
+                let rows = client
+                    .query(
+                        "SELECT workspace_sequence, workspace_id, plan_id, run_id, target_id,
+                                target_repo_path, target_repo_canonical_path, workspace_path,
+                                workspace_canonical_path, source_revision, source_tree_hash, status,
+                                created_at, updated_at, boundary_json, workspace_json
+                         FROM supervised_patch_workspaces
+                         ORDER BY workspace_sequence DESC
+                         LIMIT $1",
+                        &[&limit],
+                    )
+                    .map_err(|e| e.to_string())?;
+                Ok(rows.iter().map(pg_supervised_patch_workspace_row).collect())
+            }),
+        }
     }
 
     pub fn export_supervised_patch_workspaces(&self, limit: i64) -> Result<Vec<Value>, String> {
@@ -525,89 +668,107 @@ impl LocalProductStore {
             &boundary,
         )?;
 
-        self.with_conn(|conn| {
-            let sequence =
-                next_sequence(conn, "supervised_patch_workspaces", "workspace_sequence")?;
-            let created_at = optional_str(workspace, "created_at")
-                .map(str::to_string)
-                .unwrap_or_else(|| self.now());
-            let updated_at = optional_str(workspace, "updated_at")
-                .map(str::to_string)
-                .unwrap_or_else(|| created_at.clone());
-            let mut workspace_record = workspace.clone();
-            let object = workspace_record
-                .as_object_mut()
-                .ok_or_else(|| "supervised patch workspace must be an object".to_string())?;
-            object.insert(
-                "schema_version".to_string(),
-                json!(SUPERVISED_PATCH_WORKSPACE_SCHEMA_VERSION),
-            );
-            object.insert("workspace_sequence".to_string(), json!(sequence));
-            object.insert("workspace_id".to_string(), json!(workspace_id));
-            object.insert(
-                "plan_id".to_string(),
-                plan_id.map(Value::from).unwrap_or(Value::Null),
-            );
-            object.insert("run_id".to_string(), json!(run_id));
-            object.insert("target_id".to_string(), json!(target_id));
-            object.insert("target_repo_path".to_string(), json!(target_repo_path));
-            object.insert(
-                "target_repo_canonical_path".to_string(),
-                json!(target_repo_canonical_path),
-            );
-            object.insert("workspace_path".to_string(), json!(workspace_path));
-            object.insert(
-                "workspace_canonical_path".to_string(),
-                json!(workspace_canonical_path),
-            );
-            object.insert("source_revision".to_string(), json!(source_revision));
-            object.insert(
-                "source_tree_hash".to_string(),
-                source_tree_hash.map(Value::from).unwrap_or(Value::Null),
-            );
-            object.insert("status".to_string(), json!(status));
-            object.insert("created_at".to_string(), json!(created_at));
-            object.insert("updated_at".to_string(), json!(updated_at));
-            object.insert("boundary".to_string(), boundary.clone());
-            object.insert("metadata_only".to_string(), json!(true));
-            object.insert("execution_authority".to_string(), json!("disabled"));
-            conn.execute(
-                "INSERT INTO supervised_patch_workspaces
-                 (workspace_sequence, workspace_id, plan_id, run_id, target_id,
-                  target_repo_path, target_repo_canonical_path, workspace_path,
-                  workspace_canonical_path, source_revision, source_tree_hash, status,
-                  created_at, updated_at, boundary_json, workspace_json)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)",
-                params![
-                    sequence,
+        match &self.db {
+            DatabaseConnection::Sqlite(_) => self.with_conn(|conn| {
+                let sequence =
+                    next_sequence(conn, "supervised_patch_workspaces", "workspace_sequence")?;
+                let created_at = optional_str(workspace, "created_at")
+                    .map(str::to_string)
+                    .unwrap_or_else(|| self.now());
+                let updated_at = optional_str(workspace, "updated_at")
+                    .map(str::to_string)
+                    .unwrap_or_else(|| created_at.clone());
+                let workspace_record = build_import_workspace_record(
+                    workspace, workspace_id, sequence, plan_id, run_id, target_id,
+                    target_repo_path, target_repo_canonical_path, workspace_path,
+                    workspace_canonical_path, source_revision, source_tree_hash,
+                    status, &boundary, &created_at, &updated_at,
+                )?;
+                conn.execute(
+                    "INSERT INTO supervised_patch_workspaces
+                     (workspace_sequence, workspace_id, plan_id, run_id, target_id,
+                      target_repo_path, target_repo_canonical_path, workspace_path,
+                      workspace_canonical_path, source_revision, source_tree_hash, status,
+                      created_at, updated_at, boundary_json, workspace_json)
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)",
+                    params![
+                        sequence,
+                        workspace_id,
+                        plan_id,
+                        run_id,
+                        target_id,
+                        target_repo_path,
+                        target_repo_canonical_path,
+                        workspace_path,
+                        workspace_canonical_path,
+                        source_revision,
+                        source_tree_hash,
+                        status,
+                        created_at,
+                        updated_at,
+                        boundary.to_string(),
+                        workspace_record.to_string(),
+                    ],
+                )
+                .map_err(|e| e.to_string())?;
+                append_audit_locked(
+                    conn,
+                    &self.now(),
+                    "import",
+                    "supervised_patch.workspace_import",
                     workspace_id,
-                    plan_id,
-                    run_id,
-                    target_id,
-                    target_repo_path,
-                    target_repo_canonical_path,
-                    workspace_path,
-                    workspace_canonical_path,
-                    source_revision,
-                    source_tree_hash,
-                    status,
-                    created_at,
-                    updated_at,
-                    boundary.to_string(),
-                    workspace_record.to_string(),
-                ],
-            )
-            .map_err(|e| e.to_string())?;
-            append_audit_locked(
-                conn,
-                &self.now(),
-                "import",
-                "supervised_patch.workspace_import",
-                workspace_id,
-                &json!({"run_id": run_id, "metadata_only": true}),
-            )?;
-            Ok(true)
-        })
+                    &json!({"run_id": run_id, "metadata_only": true}),
+                )?;
+                Ok(true)
+            }),
+            #[cfg(feature = "pg")]
+            DatabaseConnection::Pg(_) => self.with_pg_conn(|client| {
+                let sequence =
+                    pg_next_sequence(client, "supervised_patch_workspaces", "workspace_sequence")?;
+                let created_at = optional_str(workspace, "created_at")
+                    .map(str::to_string)
+                    .unwrap_or_else(|| self.now());
+                let updated_at = optional_str(workspace, "updated_at")
+                    .map(str::to_string)
+                    .unwrap_or_else(|| created_at.clone());
+                let workspace_record = build_import_workspace_record(
+                    workspace, workspace_id, sequence, plan_id, run_id, target_id,
+                    target_repo_path, target_repo_canonical_path, workspace_path,
+                    workspace_canonical_path, source_revision, source_tree_hash,
+                    status, &boundary, &created_at, &updated_at,
+                )?;
+                client.execute(
+                    "INSERT INTO supervised_patch_workspaces
+                     (workspace_sequence, workspace_id, plan_id, run_id, target_id,
+                      target_repo_path, target_repo_canonical_path, workspace_path,
+                      workspace_canonical_path, source_revision, source_tree_hash, status,
+                      created_at, updated_at, boundary_json, workspace_json)
+                     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)",
+                    &[
+                        &sequence,
+                        &workspace_id,
+                        &plan_id,
+                        &run_id,
+                        &target_id,
+                        &target_repo_path,
+                        &target_repo_canonical_path,
+                        &workspace_path,
+                        &workspace_canonical_path,
+                        &source_revision,
+                        &source_tree_hash,
+                        &status,
+                        &created_at,
+                        &updated_at,
+                        &boundary.to_string(),
+                        &workspace_record.to_string(),
+                    ],
+                )
+                .map_err(|e| e.to_string())?;
+                let audit_details = json!({"run_id": run_id, "metadata_only": true}).to_string();
+                pg_append_audit(client, &self.now(), "import", "supervised_patch.workspace_import", workspace_id, &audit_details)?;
+                Ok(true)
+            }),
+        }
     }
 
     pub fn record_supervised_patch_artifact(
@@ -648,62 +809,128 @@ impl LocalProductStore {
         let target_id = required_str(&workspace, "target_id")?;
         let source_revision = required_str(&workspace, "source_revision")?;
 
-        self.with_conn(|conn| {
-            let sequence = next_sequence(conn, "supervised_patch_artifacts", "artifact_sequence")?;
-            let artifact_id = format!("patch-artifact-{sequence:04}");
-            let created_at = self.now();
-            let artifact = json!({
-                "schema_version": SUPERVISED_PATCH_ARTIFACT_SCHEMA_VERSION,
-                "artifact_sequence": sequence,
-                "artifact_id": artifact_id.clone(),
-                "workspace_id": workspace_id,
-                "run_id": run_id,
-                "plan_id": plan_id,
-                "target_id": target_id,
-                "source_revision": source_revision,
-                "artifact_type": artifact_type,
-                "patch_hash": patch_hash,
-                "changed_files": changed_files.clone(),
-                "redaction_status": redaction_status,
-                "review_diff": review_diff,
-                "storage_refs": storage_refs.clone(),
-                "retention_expires_at": retention_expires_at,
-                "created_at": created_at,
-                "metadata_only": true,
-                "execution_authority": "disabled",
-                "patch_apply_authority": "disabled",
-                "artifact_file_created": false,
-            });
-            conn.execute(
-                "INSERT INTO supervised_patch_artifacts
-                 (artifact_sequence, artifact_id, workspace_id, run_id, plan_id, target_id,
-                  source_revision, artifact_type, patch_hash, changed_files_json,
-                  redaction_status, created_at, artifact_json)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
-                params![
-                    sequence,
-                    artifact_id,
-                    workspace_id,
-                    run_id,
-                    plan_id,
-                    target_id,
-                    source_revision,
-                    artifact_type,
-                    patch_hash,
-                    changed_files.to_string(),
-                    redaction_status,
-                    created_at,
-                    artifact.to_string(),
-                ],
-            )
-            .map_err(|e| e.to_string())?;
-            append_audit_locked(
-                conn,
-                &created_at,
-                actor,
-                "supervised_patch.artifact_record",
-                &artifact_id,
-                &json!({
+        match &self.db {
+            DatabaseConnection::Sqlite(_) => self.with_conn(|conn| {
+                let sequence =
+                    next_sequence(conn, "supervised_patch_artifacts", "artifact_sequence")?;
+                let artifact_id = format!("patch-artifact-{sequence:04}");
+                let created_at = self.now();
+                let artifact = json!({
+                    "schema_version": SUPERVISED_PATCH_ARTIFACT_SCHEMA_VERSION,
+                    "artifact_sequence": sequence,
+                    "artifact_id": artifact_id.clone(),
+                    "workspace_id": workspace_id,
+                    "run_id": run_id,
+                    "plan_id": plan_id,
+                    "target_id": target_id,
+                    "source_revision": source_revision,
+                    "artifact_type": artifact_type,
+                    "patch_hash": patch_hash,
+                    "changed_files": changed_files.clone(),
+                    "redaction_status": redaction_status,
+                    "review_diff": review_diff,
+                    "storage_refs": storage_refs.clone(),
+                    "retention_expires_at": retention_expires_at,
+                    "created_at": created_at,
+                    "metadata_only": true,
+                    "execution_authority": "disabled",
+                    "patch_apply_authority": "disabled",
+                    "artifact_file_created": false,
+                });
+                conn.execute(
+                    "INSERT INTO supervised_patch_artifacts
+                     (artifact_sequence, artifact_id, workspace_id, run_id, plan_id, target_id,
+                      source_revision, artifact_type, patch_hash, changed_files_json,
+                      redaction_status, created_at, artifact_json)
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
+                    params![
+                        sequence,
+                        artifact_id,
+                        workspace_id,
+                        run_id,
+                        plan_id,
+                        target_id,
+                        source_revision,
+                        artifact_type,
+                        patch_hash,
+                        changed_files.to_string(),
+                        redaction_status,
+                        created_at,
+                        artifact.to_string(),
+                    ],
+                )
+                .map_err(|e| e.to_string())?;
+                append_audit_locked(
+                    conn,
+                    &created_at,
+                    actor,
+                    "supervised_patch.artifact_record",
+                    &artifact_id,
+                    &json!({
+                        "workspace_id": workspace_id,
+                        "run_id": run_id,
+                        "target_id": target_id,
+                        "artifact_type": artifact_type,
+                        "metadata_only": true,
+                        "execution_authority": "disabled",
+                        "patch_apply_authority": "disabled",
+                    }),
+                )?;
+                Ok(artifact)
+            }),
+            #[cfg(feature = "pg")]
+            DatabaseConnection::Pg(_) => self.with_pg_conn(|client| {
+                let sequence =
+                    pg_next_sequence(client, "supervised_patch_artifacts", "artifact_sequence")?;
+                let artifact_id = format!("patch-artifact-{sequence:04}");
+                let created_at = self.now();
+                let artifact = json!({
+                    "schema_version": SUPERVISED_PATCH_ARTIFACT_SCHEMA_VERSION,
+                    "artifact_sequence": sequence,
+                    "artifact_id": artifact_id.clone(),
+                    "workspace_id": workspace_id,
+                    "run_id": run_id,
+                    "plan_id": plan_id,
+                    "target_id": target_id,
+                    "source_revision": source_revision,
+                    "artifact_type": artifact_type,
+                    "patch_hash": patch_hash,
+                    "changed_files": changed_files.clone(),
+                    "redaction_status": redaction_status,
+                    "review_diff": review_diff,
+                    "storage_refs": storage_refs.clone(),
+                    "retention_expires_at": retention_expires_at,
+                    "created_at": created_at,
+                    "metadata_only": true,
+                    "execution_authority": "disabled",
+                    "patch_apply_authority": "disabled",
+                    "artifact_file_created": false,
+                });
+                client
+                    .execute(
+                        "INSERT INTO supervised_patch_artifacts
+                     (artifact_sequence, artifact_id, workspace_id, run_id, plan_id, target_id,
+                      source_revision, artifact_type, patch_hash, changed_files_json,
+                      redaction_status, created_at, artifact_json)
+                     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)",
+                        &[
+                            &sequence,
+                            &artifact_id,
+                            &workspace_id,
+                            &run_id,
+                            &plan_id,
+                            &target_id,
+                            &source_revision,
+                            &artifact_type,
+                            &patch_hash,
+                            &changed_files.to_string(),
+                            &redaction_status,
+                            &created_at,
+                            &artifact.to_string(),
+                        ],
+                    )
+                    .map_err(|e| e.to_string())?;
+                let audit_details = json!({
                     "workspace_id": workspace_id,
                     "run_id": run_id,
                     "target_id": target_id,
@@ -711,55 +938,101 @@ impl LocalProductStore {
                     "metadata_only": true,
                     "execution_authority": "disabled",
                     "patch_apply_authority": "disabled",
-                }),
-            )?;
-            Ok(artifact)
-        })
+                })
+                .to_string();
+                pg_append_audit(
+                    client,
+                    &created_at,
+                    actor,
+                    "supervised_patch.artifact_record",
+                    &artifact_id,
+                    &audit_details,
+                )?;
+                Ok(artifact)
+            }),
+        }
     }
 
     pub fn get_supervised_patch_artifact(
         &self,
         artifact_id: &str,
     ) -> Result<Option<Value>, String> {
-        self.with_conn(|conn| {
-            let mut stmt = conn
-                .prepare(
-                    "SELECT artifact_sequence, artifact_id, workspace_id, run_id, plan_id,
-                            target_id, source_revision, artifact_type, patch_hash,
-                            changed_files_json, redaction_status, created_at, artifact_json
-                     FROM supervised_patch_artifacts
-                     WHERE artifact_id = ?1
-                     LIMIT 1",
-                )
-                .map_err(|e| e.to_string())?;
-            let mut rows = stmt
-                .query_map(params![artifact_id], supervised_patch_artifact_row)
-                .map_err(|e| e.to_string())?;
-            match rows.next() {
-                Some(Ok(value)) => Ok(Some(value)),
-                Some(Err(e)) => Err(e.to_string()),
-                None => Ok(None),
-            }
-        })
+        match &self.db {
+            DatabaseConnection::Sqlite(_) => self.with_conn(|conn| {
+                let mut stmt = conn
+                    .prepare(
+                        "SELECT artifact_sequence, artifact_id, workspace_id, run_id, plan_id,
+                                target_id, source_revision, artifact_type, patch_hash,
+                                changed_files_json, redaction_status, created_at, artifact_json
+                         FROM supervised_patch_artifacts
+                         WHERE artifact_id = ?1
+                         LIMIT 1",
+                    )
+                    .map_err(|e| e.to_string())?;
+                let mut rows = stmt
+                    .query_map(params![artifact_id], supervised_patch_artifact_row)
+                    .map_err(|e| e.to_string())?;
+                match rows.next() {
+                    Some(Ok(value)) => Ok(Some(value)),
+                    Some(Err(e)) => Err(e.to_string()),
+                    None => Ok(None),
+                }
+            }),
+            #[cfg(feature = "pg")]
+            DatabaseConnection::Pg(_) => self.with_pg_conn(|client| {
+                let rows = client
+                    .query(
+                        "SELECT artifact_sequence, artifact_id, workspace_id, run_id, plan_id,
+                                target_id, source_revision, artifact_type, patch_hash,
+                                changed_files_json, redaction_status, created_at, artifact_json
+                         FROM supervised_patch_artifacts
+                         WHERE artifact_id = $1
+                         LIMIT 1",
+                        &[&artifact_id],
+                    )
+                    .map_err(|e| e.to_string())?;
+                match rows.into_iter().next() {
+                    Some(row) => Ok(Some(pg_supervised_patch_artifact_row(&row))),
+                    None => Ok(None),
+                }
+            }),
+        }
     }
 
     pub fn supervised_patch_artifacts(&self, limit: i64) -> Result<Vec<Value>, String> {
-        self.with_conn(|conn| {
-            let mut stmt = conn
-                .prepare(
-                    "SELECT artifact_sequence, artifact_id, workspace_id, run_id, plan_id,
-                            target_id, source_revision, artifact_type, patch_hash,
-                            changed_files_json, redaction_status, created_at, artifact_json
-                     FROM supervised_patch_artifacts
-                     ORDER BY artifact_sequence DESC
-                     LIMIT ?1",
-                )
-                .map_err(|e| e.to_string())?;
-            let rows = stmt
-                .query_map(params![limit], supervised_patch_artifact_row)
-                .map_err(|e| e.to_string())?;
-            collect_values(rows)
-        })
+        match &self.db {
+            DatabaseConnection::Sqlite(_) => self.with_conn(|conn| {
+                let mut stmt = conn
+                    .prepare(
+                        "SELECT artifact_sequence, artifact_id, workspace_id, run_id, plan_id,
+                                target_id, source_revision, artifact_type, patch_hash,
+                                changed_files_json, redaction_status, created_at, artifact_json
+                         FROM supervised_patch_artifacts
+                         ORDER BY artifact_sequence DESC
+                         LIMIT ?1",
+                    )
+                    .map_err(|e| e.to_string())?;
+                let rows = stmt
+                    .query_map(params![limit], supervised_patch_artifact_row)
+                    .map_err(|e| e.to_string())?;
+                collect_values(rows)
+            }),
+            #[cfg(feature = "pg")]
+            DatabaseConnection::Pg(_) => self.with_pg_conn(|client| {
+                let rows = client
+                    .query(
+                        "SELECT artifact_sequence, artifact_id, workspace_id, run_id, plan_id,
+                                target_id, source_revision, artifact_type, patch_hash,
+                                changed_files_json, redaction_status, created_at, artifact_json
+                         FROM supervised_patch_artifacts
+                         ORDER BY artifact_sequence DESC
+                         LIMIT $1",
+                        &[&limit],
+                    )
+                    .map_err(|e| e.to_string())?;
+                Ok(rows.iter().map(pg_supervised_patch_artifact_row).collect())
+            }),
+        }
     }
 
     pub fn export_supervised_patch_artifacts(&self, limit: i64) -> Result<Vec<Value>, String> {
@@ -805,47 +1078,17 @@ impl LocalProductStore {
             ));
         }
 
-        self.with_conn(|conn| {
-            let sequence = next_sequence(conn, "supervised_patch_artifacts", "artifact_sequence")?;
-            let created_at = optional_str(artifact, "created_at")
-                .map(str::to_string)
-                .unwrap_or_else(|| self.now());
-            let mut artifact_record = artifact.clone();
-            let object = artifact_record
-                .as_object_mut()
-                .ok_or_else(|| "supervised patch artifact must be an object".to_string())?;
-            object.insert(
-                "schema_version".to_string(),
-                json!(SUPERVISED_PATCH_ARTIFACT_SCHEMA_VERSION),
-            );
-            object.insert("artifact_sequence".to_string(), json!(sequence));
-            object.insert("artifact_id".to_string(), json!(artifact_id));
-            object.insert("workspace_id".to_string(), json!(workspace_id));
-            object.insert("run_id".to_string(), json!(run_id));
-            object.insert(
-                "plan_id".to_string(),
-                plan_id.map(Value::from).unwrap_or(Value::Null),
-            );
-            object.insert("target_id".to_string(), json!(target_id));
-            object.insert("source_revision".to_string(), json!(source_revision));
-            object.insert("artifact_type".to_string(), json!(artifact_type));
-            object.insert("patch_hash".to_string(), json!(patch_hash));
-            object.insert("changed_files".to_string(), changed_files.clone());
-            object.insert("redaction_status".to_string(), json!(redaction_status));
-            object.insert("created_at".to_string(), json!(created_at));
-            object.insert("metadata_only".to_string(), json!(true));
-            object.insert("execution_authority".to_string(), json!("disabled"));
-            object.insert("patch_apply_authority".to_string(), json!("disabled"));
-            object.insert("artifact_file_created".to_string(), json!(false));
-            conn.execute(
-                "INSERT INTO supervised_patch_artifacts
-                 (artifact_sequence, artifact_id, workspace_id, run_id, plan_id, target_id,
-                  source_revision, artifact_type, patch_hash, changed_files_json,
-                  redaction_status, created_at, artifact_json)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
-                params![
-                    sequence,
+        match &self.db {
+            DatabaseConnection::Sqlite(_) => self.with_conn(|conn| {
+                let sequence =
+                    next_sequence(conn, "supervised_patch_artifacts", "artifact_sequence")?;
+                let created_at = optional_str(artifact, "created_at")
+                    .map(str::to_string)
+                    .unwrap_or_else(|| self.now());
+                let artifact_record = build_import_artifact_record(
+                    artifact,
                     artifact_id,
+                    sequence,
                     workspace_id,
                     run_id,
                     plan_id,
@@ -853,23 +1096,102 @@ impl LocalProductStore {
                     source_revision,
                     artifact_type,
                     patch_hash,
-                    changed_files.to_string(),
+                    &changed_files,
                     redaction_status,
-                    created_at,
-                    artifact_record.to_string(),
-                ],
-            )
-            .map_err(|e| e.to_string())?;
-            append_audit_locked(
-                conn,
-                &self.now(),
-                "import",
-                "supervised_patch.artifact_import",
-                artifact_id,
-                &json!({"workspace_id": workspace_id, "metadata_only": true}),
-            )?;
-            Ok(true)
-        })
+                    &created_at,
+                )?;
+                conn.execute(
+                    "INSERT INTO supervised_patch_artifacts
+                     (artifact_sequence, artifact_id, workspace_id, run_id, plan_id, target_id,
+                      source_revision, artifact_type, patch_hash, changed_files_json,
+                      redaction_status, created_at, artifact_json)
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
+                    params![
+                        sequence,
+                        artifact_id,
+                        workspace_id,
+                        run_id,
+                        plan_id,
+                        target_id,
+                        source_revision,
+                        artifact_type,
+                        patch_hash,
+                        changed_files.to_string(),
+                        redaction_status,
+                        created_at,
+                        artifact_record.to_string(),
+                    ],
+                )
+                .map_err(|e| e.to_string())?;
+                append_audit_locked(
+                    conn,
+                    &self.now(),
+                    "import",
+                    "supervised_patch.artifact_import",
+                    artifact_id,
+                    &json!({"workspace_id": workspace_id, "metadata_only": true}),
+                )?;
+                Ok(true)
+            }),
+            #[cfg(feature = "pg")]
+            DatabaseConnection::Pg(_) => self.with_pg_conn(|client| {
+                let sequence =
+                    pg_next_sequence(client, "supervised_patch_artifacts", "artifact_sequence")?;
+                let created_at = optional_str(artifact, "created_at")
+                    .map(str::to_string)
+                    .unwrap_or_else(|| self.now());
+                let artifact_record = build_import_artifact_record(
+                    artifact,
+                    artifact_id,
+                    sequence,
+                    workspace_id,
+                    run_id,
+                    plan_id,
+                    target_id,
+                    source_revision,
+                    artifact_type,
+                    patch_hash,
+                    &changed_files,
+                    redaction_status,
+                    &created_at,
+                )?;
+                client
+                    .execute(
+                        "INSERT INTO supervised_patch_artifacts
+                     (artifact_sequence, artifact_id, workspace_id, run_id, plan_id, target_id,
+                      source_revision, artifact_type, patch_hash, changed_files_json,
+                      redaction_status, created_at, artifact_json)
+                     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)",
+                        &[
+                            &sequence,
+                            &artifact_id,
+                            &workspace_id,
+                            &run_id,
+                            &plan_id,
+                            &target_id,
+                            &source_revision,
+                            &artifact_type,
+                            &patch_hash,
+                            &changed_files.to_string(),
+                            &redaction_status,
+                            &created_at,
+                            &artifact_record.to_string(),
+                        ],
+                    )
+                    .map_err(|e| e.to_string())?;
+                let audit_details =
+                    json!({"workspace_id": workspace_id, "metadata_only": true}).to_string();
+                pg_append_audit(
+                    client,
+                    &self.now(),
+                    "import",
+                    "supervised_patch.artifact_import",
+                    artifact_id,
+                    &audit_details,
+                )?;
+                Ok(true)
+            }),
+        }
     }
 }
 
@@ -1191,6 +1513,226 @@ fn next_sequence(conn: &rusqlite::Connection, table: &str, column: &str) -> Resu
     let sql = format!("SELECT COALESCE(MAX({column}), 0) + 1 FROM {table}");
     conn.query_row(&sql, [], |row| row.get(0))
         .map_err(|e| e.to_string())
+}
+
+fn build_import_workspace_record(
+    workspace: &Value,
+    workspace_id: &str,
+    sequence: i64,
+    plan_id: Option<&str>,
+    run_id: &str,
+    target_id: &str,
+    target_repo_path: &str,
+    target_repo_canonical_path: &str,
+    workspace_path: &str,
+    workspace_canonical_path: &str,
+    source_revision: &str,
+    source_tree_hash: Option<&str>,
+    status: &str,
+    boundary: &Value,
+    created_at: &str,
+    updated_at: &str,
+) -> Result<Value, String> {
+    let mut workspace_record = workspace.clone();
+    let object = workspace_record
+        .as_object_mut()
+        .ok_or_else(|| "supervised patch workspace must be an object".to_string())?;
+    object.insert(
+        "schema_version".to_string(),
+        json!(SUPERVISED_PATCH_WORKSPACE_SCHEMA_VERSION),
+    );
+    object.insert("workspace_sequence".to_string(), json!(sequence));
+    object.insert("workspace_id".to_string(), json!(workspace_id));
+    object.insert(
+        "plan_id".to_string(),
+        plan_id.map(Value::from).unwrap_or(Value::Null),
+    );
+    object.insert("run_id".to_string(), json!(run_id));
+    object.insert("target_id".to_string(), json!(target_id));
+    object.insert("target_repo_path".to_string(), json!(target_repo_path));
+    object.insert(
+        "target_repo_canonical_path".to_string(),
+        json!(target_repo_canonical_path),
+    );
+    object.insert("workspace_path".to_string(), json!(workspace_path));
+    object.insert(
+        "workspace_canonical_path".to_string(),
+        json!(workspace_canonical_path),
+    );
+    object.insert("source_revision".to_string(), json!(source_revision));
+    object.insert(
+        "source_tree_hash".to_string(),
+        source_tree_hash.map(Value::from).unwrap_or(Value::Null),
+    );
+    object.insert("status".to_string(), json!(status));
+    object.insert("created_at".to_string(), json!(created_at));
+    object.insert("updated_at".to_string(), json!(updated_at));
+    object.insert("boundary".to_string(), boundary.clone());
+    object.insert("metadata_only".to_string(), json!(true));
+    object.insert("execution_authority".to_string(), json!("disabled"));
+    Ok(workspace_record)
+}
+
+fn build_import_artifact_record(
+    artifact: &Value,
+    artifact_id: &str,
+    sequence: i64,
+    workspace_id: &str,
+    run_id: &str,
+    plan_id: Option<&str>,
+    target_id: &str,
+    source_revision: &str,
+    artifact_type: &str,
+    patch_hash: &str,
+    changed_files: &Value,
+    redaction_status: &str,
+    created_at: &str,
+) -> Result<Value, String> {
+    let mut artifact_record = artifact.clone();
+    let object = artifact_record
+        .as_object_mut()
+        .ok_or_else(|| "supervised patch artifact must be an object".to_string())?;
+    object.insert(
+        "schema_version".to_string(),
+        json!(SUPERVISED_PATCH_ARTIFACT_SCHEMA_VERSION),
+    );
+    object.insert("artifact_sequence".to_string(), json!(sequence));
+    object.insert("artifact_id".to_string(), json!(artifact_id));
+    object.insert("workspace_id".to_string(), json!(workspace_id));
+    object.insert("run_id".to_string(), json!(run_id));
+    object.insert(
+        "plan_id".to_string(),
+        plan_id.map(Value::from).unwrap_or(Value::Null),
+    );
+    object.insert("target_id".to_string(), json!(target_id));
+    object.insert("source_revision".to_string(), json!(source_revision));
+    object.insert("artifact_type".to_string(), json!(artifact_type));
+    object.insert("patch_hash".to_string(), json!(patch_hash));
+    object.insert("changed_files".to_string(), changed_files.clone());
+    object.insert("redaction_status".to_string(), json!(redaction_status));
+    object.insert("created_at".to_string(), json!(created_at));
+    object.insert("metadata_only".to_string(), json!(true));
+    object.insert("execution_authority".to_string(), json!("disabled"));
+    object.insert("patch_apply_authority".to_string(), json!("disabled"));
+    object.insert("artifact_file_created".to_string(), json!(false));
+    Ok(artifact_record)
+}
+
+#[cfg(feature = "pg")]
+fn pg_next_sequence(
+    client: &mut impl postgres::GenericClient,
+    table: &str,
+    column: &str,
+) -> Result<i64, String> {
+    let sql = format!("SELECT COALESCE(MAX({column}), 0) + 1 FROM {table}");
+    let val: i64 = client
+        .query_one(&sql, &[])
+        .map_err(|e| e.to_string())?
+        .get(0);
+    Ok(val)
+}
+
+#[cfg(feature = "pg")]
+fn pg_append_audit(
+    client: &mut impl postgres::GenericClient,
+    now: &str,
+    actor: &str,
+    action: &str,
+    resource: &str,
+    details: &str,
+) -> Result<(), String> {
+    client
+        .execute(
+            "INSERT INTO audit_log (created_at, actor, action, resource, details_json)
+             VALUES ($1, $2, $3, $4, $5)",
+            &[&now, &actor, &action, &resource, &details],
+        )
+        .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+#[cfg(feature = "pg")]
+fn pg_supervised_patch_workspace_row(row: &postgres::Row) -> Value {
+    let boundary_text: String = row.get(14);
+    let workspace_text: String = row.get(15);
+    let boundary: Value = serde_json::from_str(&boundary_text).unwrap_or(Value::Null);
+    let mut workspace: Value = serde_json::from_str(&workspace_text).unwrap_or(Value::Null);
+    if let Some(object) = workspace.as_object_mut() {
+        object.insert(
+            "workspace_sequence".to_string(),
+            json!(row.get::<_, i64>(0)),
+        );
+        object.insert("workspace_id".to_string(), json!(row.get::<_, String>(1)));
+        object.insert("plan_id".to_string(), pg_optional_row_string(row, 2));
+        object.insert("run_id".to_string(), json!(row.get::<_, String>(3)));
+        object.insert("target_id".to_string(), json!(row.get::<_, String>(4)));
+        object.insert(
+            "target_repo_path".to_string(),
+            json!(row.get::<_, String>(5)),
+        );
+        object.insert(
+            "target_repo_canonical_path".to_string(),
+            json!(row.get::<_, String>(6)),
+        );
+        object.insert("workspace_path".to_string(), json!(row.get::<_, String>(7)));
+        object.insert(
+            "workspace_canonical_path".to_string(),
+            json!(row.get::<_, String>(8)),
+        );
+        object.insert(
+            "source_revision".to_string(),
+            json!(row.get::<_, String>(9)),
+        );
+        object.insert(
+            "source_tree_hash".to_string(),
+            pg_optional_row_string(row, 10),
+        );
+        object.insert("status".to_string(), json!(row.get::<_, String>(11)));
+        object.insert("created_at".to_string(), json!(row.get::<_, String>(12)));
+        object.insert("updated_at".to_string(), json!(row.get::<_, String>(13)));
+        object.insert("boundary".to_string(), boundary);
+        object.insert("metadata_only".to_string(), json!(true));
+        object.insert("execution_authority".to_string(), json!("disabled"));
+    }
+    workspace
+}
+
+#[cfg(feature = "pg")]
+fn pg_supervised_patch_artifact_row(row: &postgres::Row) -> Value {
+    let changed_files_text: String = row.get(9);
+    let artifact_text: String = row.get(12);
+    let changed_files: Value = serde_json::from_str(&changed_files_text).unwrap_or(Value::Null);
+    let mut artifact: Value = serde_json::from_str(&artifact_text).unwrap_or(Value::Null);
+    if let Some(object) = artifact.as_object_mut() {
+        object.insert("artifact_sequence".to_string(), json!(row.get::<_, i64>(0)));
+        object.insert("artifact_id".to_string(), json!(row.get::<_, String>(1)));
+        object.insert("workspace_id".to_string(), json!(row.get::<_, String>(2)));
+        object.insert("run_id".to_string(), json!(row.get::<_, String>(3)));
+        object.insert("plan_id".to_string(), pg_optional_row_string(row, 4));
+        object.insert("target_id".to_string(), json!(row.get::<_, String>(5)));
+        object.insert(
+            "source_revision".to_string(),
+            json!(row.get::<_, String>(6)),
+        );
+        object.insert("artifact_type".to_string(), json!(row.get::<_, String>(7)));
+        object.insert("patch_hash".to_string(), json!(row.get::<_, String>(8)));
+        object.insert("changed_files".to_string(), changed_files);
+        object.insert(
+            "redaction_status".to_string(),
+            json!(row.get::<_, String>(10)),
+        );
+        object.insert("created_at".to_string(), json!(row.get::<_, String>(11)));
+        object.insert("metadata_only".to_string(), json!(true));
+        object.insert("execution_authority".to_string(), json!("disabled"));
+        object.insert("patch_apply_authority".to_string(), json!("disabled"));
+    }
+    artifact
+}
+
+#[cfg(feature = "pg")]
+fn pg_optional_row_string(row: &postgres::Row, index: usize) -> Value {
+    let value: Option<String> = row.get(index);
+    value.map(Value::String).unwrap_or(Value::Null)
 }
 
 fn path_string(path: &Path) -> String {

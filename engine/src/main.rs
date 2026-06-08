@@ -43,12 +43,30 @@ async fn main() {
     let db_path = local_db_path();
     let backup_dir = local_backup_dir(&db_path);
     let backup_dir_for_auto = backup_dir.clone();
-    let store = LocalProductStore::new(&db_path).expect("failed to open local SQLite store");
-    if store.is_encrypted() {
-        println!("[acp-startup] db_encryption=enabled");
+
+    let store = if let Ok(_pg_url) = std::env::var("ACP_DATABASE_URL") {
+        #[cfg(feature = "pg")]
+        {
+            println!("[acp-startup] db_backend=postgresql");
+            LocalProductStore::new_postgres(&_pg_url, || {
+                chrono::Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string()
+            })
+            .expect("failed to open PostgreSQL store")
+        }
+        #[cfg(not(feature = "pg"))]
+        {
+            eprintln!("[acp-fatal] ACP_DATABASE_URL is set but the 'pg' feature is not enabled. Rebuild with --features pg.");
+            std::process::exit(1);
+        }
     } else {
-        println!("[acp-startup] db_encryption=disabled (set ACP_DB_ENCRYPTION_KEY to enable)");
-    }
+        let s = LocalProductStore::new(&db_path).expect("failed to open local SQLite store");
+        if s.is_encrypted() {
+            println!("[acp-startup] db_backend=sqlite db_encryption=enabled");
+        } else {
+            println!("[acp-startup] db_backend=sqlite db_encryption=disabled (set ACP_DB_ENCRYPTION_KEY to enable)");
+        }
+        s
+    };
     if std::env::var("ACP_ADMIN_API_KEY").is_ok() {
         store
             .upsert_team_member("local-admin", "Local Admin", "admin")

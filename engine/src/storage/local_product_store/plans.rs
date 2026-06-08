@@ -3,7 +3,7 @@ use serde_json::{json, Value};
 
 use crate::read_only_planner::WorkflowPlanIds;
 
-use super::{append_audit_locked, collect_values, LocalProductStore};
+use super::{append_audit_locked, collect_values, DatabaseConnection, LocalProductStore};
 
 impl LocalProductStore {
     pub fn create_workflow_plan<F>(
@@ -16,73 +16,146 @@ impl LocalProductStore {
     where
         F: FnOnce(&WorkflowPlanIds, &str) -> Result<Value, String>,
     {
-        self.with_conn(|conn| {
-            let sequence: i64 = conn
-                .query_row(
-                    "SELECT COALESCE(MAX(plan_sequence), 0) + 1 FROM workflow_plans",
-                    [],
-                    |row| row.get(0),
+        let mut build_plan = Some(build_plan);
+        match &self.db {
+            DatabaseConnection::Sqlite(_) => self.with_conn(|conn| {
+                let sequence: i64 = conn
+                    .query_row(
+                        "SELECT COALESCE(MAX(plan_sequence), 0) + 1 FROM workflow_plans",
+                        [],
+                        |row| row.get(0),
+                    )
+                    .map_err(|e| e.to_string())?;
+                let ids = WorkflowPlanIds::for_sequence(sequence);
+                let created_at = self.now();
+                let plan = build_plan.take().unwrap()(&ids, &created_at)?;
+                let status = plan
+                    .get("status")
+                    .and_then(Value::as_str)
+                    .unwrap_or("planned_read_only");
+                let graph = required_object(&plan, "graph")?;
+                let analysis = required_object(&plan, "analysis")?;
+                let boundaries = required_object(&plan, "boundaries")?;
+
+                conn.execute(
+                    "INSERT INTO workflow_plans
+                     (plan_sequence, plan_id, created_at, updated_at, raw_request, request_source,
+                      status, workflow_id, dispatch_id, graph_json, analysis_json, boundaries_json, plan_json)
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
+                    params![
+                        sequence,
+                        ids.plan_id,
+                        created_at,
+                        created_at,
+                        raw_request,
+                        request_source,
+                        status,
+                        ids.workflow_id,
+                        ids.dispatch_id,
+                        graph.to_string(),
+                        analysis.to_string(),
+                        boundaries.to_string(),
+                        plan.to_string(),
+                    ],
                 )
                 .map_err(|e| e.to_string())?;
-            let ids = WorkflowPlanIds::for_sequence(sequence);
-            let created_at = self.now();
-            let plan = build_plan(&ids, &created_at)?;
-            let status = plan
-                .get("status")
-                .and_then(Value::as_str)
-                .unwrap_or("planned_read_only");
-            let graph = required_object(&plan, "graph")?;
-            let analysis = required_object(&plan, "analysis")?;
-            let boundaries = required_object(&plan, "boundaries")?;
-
-            conn.execute(
-                "INSERT INTO workflow_plans
-                 (plan_sequence, plan_id, created_at, updated_at, raw_request, request_source,
-                  status, workflow_id, dispatch_id, graph_json, analysis_json, boundaries_json, plan_json)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
-                params![
+                append_audit_locked(
+                    conn,
+                    &created_at,
+                    actor,
+                    "workflow_plan.create",
+                    &ids.plan_id,
+                    &json!({
+                        "request_source": request_source,
+                        "status": status,
+                        "workflow_id": ids.workflow_id,
+                        "dispatch_id": ids.dispatch_id,
+                    }),
+                )?;
+                Ok(workflow_plan_value(
                     sequence,
-                    ids.plan_id,
-                    created_at,
-                    created_at,
+                    &ids.plan_id,
+                    &created_at,
+                    &created_at,
                     raw_request,
                     request_source,
                     status,
-                    ids.workflow_id,
-                    ids.dispatch_id,
-                    graph.to_string(),
-                    analysis.to_string(),
-                    boundaries.to_string(),
-                    plan.to_string(),
-                ],
-            )
-            .map_err(|e| e.to_string())?;
-            append_audit_locked(
-                conn,
-                &created_at,
-                actor,
-                "workflow_plan.create",
-                &ids.plan_id,
-                &json!({
+                    &ids.workflow_id,
+                    &ids.dispatch_id,
+                    &plan,
+                ))
+            }),
+            #[cfg(feature = "pg")]
+            DatabaseConnection::Pg(_) => self.with_pg_conn(|client| {
+                let sequence: i64 = client
+                    .query_one(
+                        "SELECT COALESCE(MAX(plan_sequence), 0) + 1 FROM workflow_plans",
+                        &[],
+                    )
+                    .map_err(|e| e.to_string())?
+                    .get(0);
+                let ids = WorkflowPlanIds::for_sequence(sequence);
+                let created_at = self.now();
+                let plan = build_plan.take().unwrap()(&ids, &created_at)?;
+                let status = plan
+                    .get("status")
+                    .and_then(Value::as_str)
+                    .unwrap_or("planned_read_only");
+                let graph = required_object(&plan, "graph")?;
+                let analysis = required_object(&plan, "analysis")?;
+                let boundaries = required_object(&plan, "boundaries")?;
+
+                client
+                    .execute(
+                        "INSERT INTO workflow_plans
+                         (plan_sequence, plan_id, created_at, updated_at, raw_request, request_source,
+                          status, workflow_id, dispatch_id, graph_json, analysis_json, boundaries_json, plan_json)
+                         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)",
+                        &[
+                            &sequence,
+                            &ids.plan_id,
+                            &created_at,
+                            &created_at,
+                            &raw_request,
+                            &request_source,
+                            &status,
+                            &ids.workflow_id,
+                            &ids.dispatch_id,
+                            &graph.to_string(),
+                            &analysis.to_string(),
+                            &boundaries.to_string(),
+                            &plan.to_string(),
+                        ],
+                    )
+                    .map_err(|e| e.to_string())?;
+                let details = json!({
                     "request_source": request_source,
                     "status": status,
                     "workflow_id": ids.workflow_id,
                     "dispatch_id": ids.dispatch_id,
-                }),
-            )?;
-            Ok(workflow_plan_value(
-                sequence,
-                &ids.plan_id,
-                &created_at,
-                &created_at,
-                raw_request,
-                request_source,
-                status,
-                &ids.workflow_id,
-                &ids.dispatch_id,
-                &plan,
-            ))
-        })
+                })
+                .to_string();
+                client
+                    .execute(
+                        "INSERT INTO audit_log (created_at, actor, action, resource, details_json)
+                         VALUES ($1, $2, $3, $4, $5)",
+                        &[&created_at, &actor, &"workflow_plan.create", &ids.plan_id, &details],
+                    )
+                    .map_err(|e| e.to_string())?;
+                Ok(workflow_plan_value(
+                    sequence,
+                    &ids.plan_id,
+                    &created_at,
+                    &created_at,
+                    raw_request,
+                    request_source,
+                    status,
+                    &ids.workflow_id,
+                    &ids.dispatch_id,
+                    &plan,
+                ))
+            }),
+        }
     }
 
     pub fn search_workflow_plans(
@@ -95,27 +168,49 @@ impl LocalProductStore {
             return self.list_workflow_plans_with_offset(limit, offset);
         };
         let pattern = format!("%{}%", escape_like(&search.to_lowercase()));
-        self.with_conn(|conn| {
-            let mut stmt = conn
-                .prepare(
-                    "SELECT plan_sequence, plan_id, created_at, updated_at, raw_request, request_source,
-                            status, workflow_id, dispatch_id, plan_json
-                     FROM workflow_plans
-                     WHERE lower(plan_id) LIKE ?1 ESCAPE '\\'
-                        OR lower(raw_request) LIKE ?1 ESCAPE '\\'
-                        OR lower(request_source) LIKE ?1 ESCAPE '\\'
-                        OR lower(status) LIKE ?1 ESCAPE '\\'
-                        OR lower(workflow_id) LIKE ?1 ESCAPE '\\'
-                        OR lower(dispatch_id) LIKE ?1 ESCAPE '\\'
-                     ORDER BY plan_sequence DESC
-                     LIMIT ?2 OFFSET ?3",
-                )
-                .map_err(|e| e.to_string())?;
-            let rows = stmt
-                .query_map(params![pattern, limit, offset], workflow_plan_row)
-                .map_err(|e| e.to_string())?;
-            collect_values(rows)
-        })
+        match &self.db {
+            DatabaseConnection::Sqlite(_) => self.with_conn(|conn| {
+                let mut stmt = conn
+                    .prepare(
+                        "SELECT plan_sequence, plan_id, created_at, updated_at, raw_request, request_source,
+                                status, workflow_id, dispatch_id, plan_json
+                         FROM workflow_plans
+                         WHERE lower(plan_id) LIKE ?1 ESCAPE '\\'
+                            OR lower(raw_request) LIKE ?1 ESCAPE '\\'
+                            OR lower(request_source) LIKE ?1 ESCAPE '\\'
+                            OR lower(status) LIKE ?1 ESCAPE '\\'
+                            OR lower(workflow_id) LIKE ?1 ESCAPE '\\'
+                            OR lower(dispatch_id) LIKE ?1 ESCAPE '\\'
+                         ORDER BY plan_sequence DESC
+                         LIMIT ?2 OFFSET ?3",
+                    )
+                    .map_err(|e| e.to_string())?;
+                let rows = stmt
+                    .query_map(params![pattern, limit, offset], workflow_plan_row)
+                    .map_err(|e| e.to_string())?;
+                collect_values(rows)
+            }),
+            #[cfg(feature = "pg")]
+            DatabaseConnection::Pg(_) => self.with_pg_conn(|client| {
+                let rows = client
+                    .query(
+                        "SELECT plan_sequence, plan_id, created_at, updated_at, raw_request, request_source,
+                                status, workflow_id, dispatch_id, plan_json
+                         FROM workflow_plans
+                         WHERE lower(plan_id) LIKE $1 ESCAPE '\\'
+                            OR lower(raw_request) LIKE $1 ESCAPE '\\'
+                            OR lower(request_source) LIKE $1 ESCAPE '\\'
+                            OR lower(status) LIKE $1 ESCAPE '\\'
+                            OR lower(workflow_id) LIKE $1 ESCAPE '\\'
+                            OR lower(dispatch_id) LIKE $1 ESCAPE '\\'
+                         ORDER BY plan_sequence DESC
+                         LIMIT $2 OFFSET $3",
+                        &[&pattern, &limit, &offset],
+                    )
+                    .map_err(|e| e.to_string())?;
+                pg_collect_workflow_plans(rows)
+            }),
+        }
     }
 
     pub fn list_workflow_plans_with_offset(
@@ -123,43 +218,107 @@ impl LocalProductStore {
         limit: i64,
         offset: i64,
     ) -> Result<Vec<Value>, String> {
-        self.with_conn(|conn| {
-            let mut stmt = conn
-                .prepare(
-                    "SELECT plan_sequence, plan_id, created_at, updated_at, raw_request, request_source,
-                            status, workflow_id, dispatch_id, plan_json
-                     FROM workflow_plans
-                     ORDER BY plan_sequence DESC
-                     LIMIT ?1 OFFSET ?2",
-                )
-                .map_err(|e| e.to_string())?;
-            let rows = stmt
-                .query_map(params![limit, offset], workflow_plan_row)
-                .map_err(|e| e.to_string())?;
-            collect_values(rows)
-        })
+        match &self.db {
+            DatabaseConnection::Sqlite(_) => self.with_conn(|conn| {
+                let mut stmt = conn
+                    .prepare(
+                        "SELECT plan_sequence, plan_id, created_at, updated_at, raw_request, request_source,
+                                status, workflow_id, dispatch_id, plan_json
+                         FROM workflow_plans
+                         ORDER BY plan_sequence DESC
+                         LIMIT ?1 OFFSET ?2",
+                    )
+                    .map_err(|e| e.to_string())?;
+                let rows = stmt
+                    .query_map(params![limit, offset], workflow_plan_row)
+                    .map_err(|e| e.to_string())?;
+                collect_values(rows)
+            }),
+            #[cfg(feature = "pg")]
+            DatabaseConnection::Pg(_) => self.with_pg_conn(|client| {
+                let rows = client
+                    .query(
+                        "SELECT plan_sequence, plan_id, created_at, updated_at, raw_request, request_source,
+                                status, workflow_id, dispatch_id, plan_json
+                         FROM workflow_plans
+                         ORDER BY plan_sequence DESC
+                         LIMIT $1 OFFSET $2",
+                        &[&limit, &offset],
+                    )
+                    .map_err(|e| e.to_string())?;
+                pg_collect_workflow_plans(rows)
+            }),
+        }
     }
 
     pub fn get_workflow_plan(&self, plan_id: &str) -> Result<Option<Value>, String> {
-        self.with_conn(|conn| {
-            let mut stmt = conn
-                .prepare(
-                    "SELECT plan_sequence, plan_id, created_at, updated_at, raw_request, request_source,
-                            status, workflow_id, dispatch_id, plan_json
-                     FROM workflow_plans
-                     WHERE plan_id = ?1
-                     LIMIT 1",
-                )
-                .map_err(|e| e.to_string())?;
-            let mut rows = stmt
-                .query_map(params![plan_id], workflow_plan_row)
-                .map_err(|e| e.to_string())?;
-            match rows.next() {
-                Some(Ok(value)) => Ok(Some(value)),
-                Some(Err(e)) => Err(e.to_string()),
-                None => Ok(None),
-            }
-        })
+        match &self.db {
+            DatabaseConnection::Sqlite(_) => self.with_conn(|conn| {
+                let mut stmt = conn
+                    .prepare(
+                        "SELECT plan_sequence, plan_id, created_at, updated_at, raw_request, request_source,
+                                status, workflow_id, dispatch_id, plan_json
+                         FROM workflow_plans
+                         WHERE plan_id = ?1
+                         LIMIT 1",
+                    )
+                    .map_err(|e| e.to_string())?;
+                let mut rows = stmt
+                    .query_map(params![plan_id], workflow_plan_row)
+                    .map_err(|e| e.to_string())?;
+                match rows.next() {
+                    Some(Ok(value)) => Ok(Some(value)),
+                    Some(Err(e)) => Err(e.to_string()),
+                    None => Ok(None),
+                }
+            }),
+            #[cfg(feature = "pg")]
+            DatabaseConnection::Pg(_) => self.with_pg_conn(|client| {
+                let rows = client
+                    .query(
+                        "SELECT plan_sequence, plan_id, created_at, updated_at, raw_request, request_source,
+                                status, workflow_id, dispatch_id, plan_json
+                         FROM workflow_plans
+                         WHERE plan_id = $1
+                         LIMIT 1",
+                        &[&plan_id],
+                    )
+                    .map_err(|e| e.to_string())?;
+                match rows.into_iter().next() {
+                    Some(row) => Ok(Some(pg_workflow_plan_row(&row))),
+                    None => Ok(None),
+                }
+            }),
+        }
+    }
+
+    pub fn update_workflow_plan_status(
+        &self,
+        plan_id: &str,
+        new_status: &str,
+    ) -> Result<bool, String> {
+        let now = self.now();
+        match &self.db {
+            DatabaseConnection::Sqlite(_) => self.with_conn(|conn| {
+                let updated = conn
+                    .execute(
+                        "UPDATE workflow_plans SET status = ?1, updated_at = ?2 WHERE plan_id = ?3",
+                        params![new_status, now, plan_id],
+                    )
+                    .map_err(|e| e.to_string())?;
+                Ok(updated > 0)
+            }),
+            #[cfg(feature = "pg")]
+            DatabaseConnection::Pg(_) => self.with_pg_conn(|client| {
+                let updated = client
+                    .execute(
+                        "UPDATE workflow_plans SET status = $1, updated_at = $2 WHERE plan_id = $3",
+                        &[&new_status, &now, &plan_id],
+                    )
+                    .map_err(|e| e.to_string())?;
+                Ok(updated > 0)
+            }),
+        }
     }
 
     pub fn import_workflow_plan(&self, plan: &Value) -> Result<bool, String> {
@@ -194,56 +353,111 @@ impl LocalProductStore {
         let analysis = required_object(plan, "analysis")?;
         let boundaries = required_object(plan, "boundaries")?;
 
-        self.with_conn(|conn| {
-            let sequence: i64 = conn
-                .query_row(
-                    "SELECT COALESCE(MAX(plan_sequence), 0) + 1 FROM workflow_plans",
-                    [],
-                    |row| row.get(0),
+        match &self.db {
+            DatabaseConnection::Sqlite(_) => self.with_conn(|conn| {
+                let sequence: i64 = conn
+                    .query_row(
+                        "SELECT COALESCE(MAX(plan_sequence), 0) + 1 FROM workflow_plans",
+                        [],
+                        |row| row.get(0),
+                    )
+                    .map_err(|e| e.to_string())?;
+                let created_at = plan
+                    .get("created_at")
+                    .and_then(Value::as_str)
+                    .map(str::to_string)
+                    .unwrap_or_else(|| self.now());
+                let updated_at = plan
+                    .get("updated_at")
+                    .and_then(Value::as_str)
+                    .map(str::to_string)
+                    .unwrap_or_else(|| created_at.clone());
+                conn.execute(
+                    "INSERT INTO workflow_plans
+                     (plan_sequence, plan_id, created_at, updated_at, raw_request, request_source,
+                      status, workflow_id, dispatch_id, graph_json, analysis_json, boundaries_json, plan_json)
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
+                    params![
+                        sequence,
+                        plan_id,
+                        created_at,
+                        updated_at,
+                        raw_request,
+                        request_source,
+                        status,
+                        workflow_id,
+                        dispatch_id,
+                        graph.to_string(),
+                        analysis.to_string(),
+                        boundaries.to_string(),
+                        plan.to_string(),
+                    ],
                 )
                 .map_err(|e| e.to_string())?;
-            let created_at = plan
-                .get("created_at")
-                .and_then(Value::as_str)
-                .map(str::to_string)
-                .unwrap_or_else(|| self.now());
-            let updated_at = plan
-                .get("updated_at")
-                .and_then(Value::as_str)
-                .map(str::to_string)
-                .unwrap_or_else(|| created_at.clone());
-            conn.execute(
-                "INSERT INTO workflow_plans
-                 (plan_sequence, plan_id, created_at, updated_at, raw_request, request_source,
-                  status, workflow_id, dispatch_id, graph_json, analysis_json, boundaries_json, plan_json)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
-                params![
-                    sequence,
+                append_audit_locked(
+                    conn,
+                    &self.now(),
+                    "import",
+                    "workflow_plan.import",
                     plan_id,
-                    created_at,
-                    updated_at,
-                    raw_request,
-                    request_source,
-                    status,
-                    workflow_id,
-                    dispatch_id,
-                    graph.to_string(),
-                    analysis.to_string(),
-                    boundaries.to_string(),
-                    plan.to_string(),
-                ],
-            )
-            .map_err(|e| e.to_string())?;
-            append_audit_locked(
-                conn,
-                &self.now(),
-                "import",
-                "workflow_plan.import",
-                plan_id,
-                &json!({"workflow_id": workflow_id, "dispatch_id": dispatch_id}),
-            )?;
-            Ok(true)
-        })
+                    &json!({"workflow_id": workflow_id, "dispatch_id": dispatch_id}),
+                )?;
+                Ok(true)
+            }),
+            #[cfg(feature = "pg")]
+            DatabaseConnection::Pg(_) => self.with_pg_conn(|client| {
+                let sequence: i64 = client
+                    .query_one(
+                        "SELECT COALESCE(MAX(plan_sequence), 0) + 1 FROM workflow_plans",
+                        &[],
+                    )
+                    .map_err(|e| e.to_string())?
+                    .get(0);
+                let created_at = plan
+                    .get("created_at")
+                    .and_then(Value::as_str)
+                    .map(str::to_string)
+                    .unwrap_or_else(|| self.now());
+                let updated_at = plan
+                    .get("updated_at")
+                    .and_then(Value::as_str)
+                    .map(str::to_string)
+                    .unwrap_or_else(|| created_at.clone());
+                client
+                    .execute(
+                        "INSERT INTO workflow_plans
+                         (plan_sequence, plan_id, created_at, updated_at, raw_request, request_source,
+                          status, workflow_id, dispatch_id, graph_json, analysis_json, boundaries_json, plan_json)
+                         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)",
+                        &[
+                            &sequence,
+                            &plan_id,
+                            &created_at,
+                            &updated_at,
+                            &raw_request,
+                            &request_source,
+                            &status,
+                            &workflow_id,
+                            &dispatch_id,
+                            &graph.to_string(),
+                            &analysis.to_string(),
+                            &boundaries.to_string(),
+                            &plan.to_string(),
+                        ],
+                    )
+                    .map_err(|e| e.to_string())?;
+                let now = self.now();
+                let details = json!({"workflow_id": workflow_id, "dispatch_id": dispatch_id}).to_string();
+                client
+                    .execute(
+                        "INSERT INTO audit_log (created_at, actor, action, resource, details_json)
+                         VALUES ($1, $2, $3, $4, $5)",
+                        &[&now, &"import", &"workflow_plan.import", &plan_id, &details],
+                    )
+                    .map_err(|e| e.to_string())?;
+                Ok(true)
+            }),
+        }
     }
 }
 
@@ -262,6 +476,29 @@ fn workflow_plan_row(row: &Row<'_>) -> rusqlite::Result<Value> {
         &row.get::<_, String>(8)?,
         &plan,
     ))
+}
+
+#[cfg(feature = "pg")]
+fn pg_workflow_plan_row(row: &postgres::Row) -> Value {
+    let plan_text: String = row.get(9);
+    let plan: Value = serde_json::from_str(&plan_text).unwrap_or(Value::Null);
+    workflow_plan_value(
+        row.get::<_, i64>(0),
+        &row.get::<_, String>(1),
+        &row.get::<_, String>(2),
+        &row.get::<_, String>(3),
+        &row.get::<_, String>(4),
+        &row.get::<_, String>(5),
+        &row.get::<_, String>(6),
+        &row.get::<_, String>(7),
+        &row.get::<_, String>(8),
+        &plan,
+    )
+}
+
+#[cfg(feature = "pg")]
+fn pg_collect_workflow_plans(rows: Vec<postgres::Row>) -> Result<Vec<Value>, String> {
+    Ok(rows.iter().map(|row| pg_workflow_plan_row(row)).collect())
 }
 
 fn workflow_plan_value(

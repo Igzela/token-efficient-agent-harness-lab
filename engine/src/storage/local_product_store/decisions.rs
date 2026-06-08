@@ -1,7 +1,7 @@
 use rusqlite::params;
 use serde_json::{json, Value};
 
-use super::LocalProductStore;
+use super::{DatabaseConnection, LocalProductStore};
 
 pub const ORCHESTRATION_DECISION_LOG_SCHEMA_VERSION: &str = "orchestration_decision_log.v1";
 
@@ -140,39 +140,76 @@ impl LocalProductStore {
         let pool_json = executor_pool_signal.map(|v| v.to_string());
         let candidates_json = candidate_executors.map(|c| json!(c).to_string());
 
-        self.with_conn(|conn| {
-            conn.execute(
-                "INSERT INTO orchestration_decisions
-                 (decision_id, run_id, node_id, action, action_reason, selected_executor,
-                  blocked_reason, confidence, confidence_score, input_signals_json, created_at,
-                  quality_signal_json, routing_signal_json, cost_signal_json, approval_signal_json,
-                  queue_signal_json, executor_pool_signal_json, candidate_executors_json, degraded_reason)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19)",
-                params![
-                    decision_id,
-                    run_id,
-                    node_id,
-                    action,
-                    action_reason,
-                    selected_executor,
-                    blocked_reason,
-                    confidence,
-                    confidence_score,
-                    input_signals.to_string(),
-                    created_at,
-                    quality_json,
-                    routing_json,
-                    cost_json,
-                    approval_json,
-                    queue_json,
-                    pool_json,
-                    candidates_json,
-                    degraded_reason,
-                ],
-            )
-            .map_err(|e| e.to_string())?;
-            Ok(())
-        })?;
+        match &self.db {
+            DatabaseConnection::Sqlite(_) => self.with_conn(|conn| {
+                conn.execute(
+                    "INSERT INTO orchestration_decisions
+                     (decision_id, run_id, node_id, action, action_reason, selected_executor,
+                      blocked_reason, confidence, confidence_score, input_signals_json, created_at,
+                      quality_signal_json, routing_signal_json, cost_signal_json, approval_signal_json,
+                      queue_signal_json, executor_pool_signal_json, candidate_executors_json, degraded_reason)
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19)",
+                    params![
+                        decision_id,
+                        run_id,
+                        node_id,
+                        action,
+                        action_reason,
+                        selected_executor,
+                        blocked_reason,
+                        confidence,
+                        confidence_score,
+                        input_signals.to_string(),
+                        created_at,
+                        quality_json,
+                        routing_json,
+                        cost_json,
+                        approval_json,
+                        queue_json,
+                        pool_json,
+                        candidates_json,
+                        degraded_reason,
+                    ],
+                )
+                .map_err(|e| e.to_string())?;
+                Ok(())
+            })?,
+            #[cfg(feature = "pg")]
+            DatabaseConnection::Pg(_) => self.with_pg_conn(|client| {
+                client
+                    .execute(
+                        "INSERT INTO orchestration_decisions
+                         (decision_id, run_id, node_id, action, action_reason, selected_executor,
+                          blocked_reason, confidence, confidence_score, input_signals_json, created_at,
+                          quality_signal_json, routing_signal_json, cost_signal_json, approval_signal_json,
+                          queue_signal_json, executor_pool_signal_json, candidate_executors_json, degraded_reason)
+                         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19)",
+                        &[
+                            &decision_id,
+                            &run_id,
+                            &node_id,
+                            &action,
+                            &action_reason,
+                            &selected_executor,
+                            &blocked_reason,
+                            &confidence,
+                            &confidence_score,
+                            &input_signals.to_string(),
+                            &created_at,
+                            &quality_json,
+                            &routing_json,
+                            &cost_json,
+                            &approval_json,
+                            &queue_json,
+                            &pool_json,
+                            &candidates_json,
+                            &degraded_reason,
+                        ],
+                    )
+                    .map_err(|e| e.to_string())?;
+                Ok(())
+            })?,
+        }
 
         Ok(DecisionRecord {
             decision_id,
@@ -202,26 +239,47 @@ impl LocalProductStore {
         run_id: &str,
         limit: i64,
     ) -> Result<Vec<DecisionRecord>, String> {
-        self.with_conn(|conn| {
-            let mut stmt = conn
-                .prepare(
-                    "SELECT decision_id, run_id, node_id, action, action_reason,
-                            selected_executor, blocked_reason, confidence, confidence_score,
-                            input_signals_json, created_at,
-                            quality_signal_json, routing_signal_json, cost_signal_json,
-                            approval_signal_json, queue_signal_json, executor_pool_signal_json,
-                            candidate_executors_json, degraded_reason
-                     FROM orchestration_decisions
-                     WHERE run_id = ?1
-                     ORDER BY decision_id ASC
-                     LIMIT ?2",
-                )
-                .map_err(|e| e.to_string())?;
-            let rows = stmt
-                .query_map(params![run_id, limit], decision_row)
-                .map_err(|e| e.to_string())?;
-            collect_decisions(rows)
-        })
+        match &self.db {
+            DatabaseConnection::Sqlite(_) => self.with_conn(|conn| {
+                let mut stmt = conn
+                    .prepare(
+                        "SELECT decision_id, run_id, node_id, action, action_reason,
+                                selected_executor, blocked_reason, confidence, confidence_score,
+                                input_signals_json, created_at,
+                                quality_signal_json, routing_signal_json, cost_signal_json,
+                                approval_signal_json, queue_signal_json, executor_pool_signal_json,
+                                candidate_executors_json, degraded_reason
+                         FROM orchestration_decisions
+                         WHERE run_id = ?1
+                         ORDER BY decision_id ASC
+                         LIMIT ?2",
+                    )
+                    .map_err(|e| e.to_string())?;
+                let rows = stmt
+                    .query_map(params![run_id, limit], decision_row)
+                    .map_err(|e| e.to_string())?;
+                collect_decisions(rows)
+            }),
+            #[cfg(feature = "pg")]
+            DatabaseConnection::Pg(_) => self.with_pg_conn(|client| {
+                let rows = client
+                    .query(
+                        "SELECT decision_id, run_id, node_id, action, action_reason,
+                                selected_executor, blocked_reason, confidence, confidence_score,
+                                input_signals_json, created_at,
+                                quality_signal_json, routing_signal_json, cost_signal_json,
+                                approval_signal_json, queue_signal_json, executor_pool_signal_json,
+                                candidate_executors_json, degraded_reason
+                         FROM orchestration_decisions
+                         WHERE run_id = $1
+                         ORDER BY decision_id ASC
+                         LIMIT $2",
+                        &[&run_id, &limit],
+                    )
+                    .map_err(|e| e.to_string())?;
+                pg_collect_decisions(rows)
+            }),
+        }
     }
 
     pub fn search_decisions(
@@ -230,130 +288,248 @@ impl LocalProductStore {
         offset: i64,
         search: Option<&str>,
     ) -> Result<Vec<DecisionRecord>, String> {
-        self.with_conn(|conn| {
-            if let Some(raw_search) = search {
-                let trimmed = raw_search.trim().to_lowercase();
-                if !trimmed.is_empty() {
-                    let needle = format!("%{trimmed}%");
-                    let mut stmt = conn
-                        .prepare(
-                            "SELECT decision_id, run_id, node_id, action, action_reason,
-                                    selected_executor, blocked_reason, confidence, confidence_score,
-                                    input_signals_json, created_at,
-                                    quality_signal_json, routing_signal_json, cost_signal_json,
-                                    approval_signal_json, queue_signal_json, executor_pool_signal_json,
-                                    candidate_executors_json, degraded_reason
-                             FROM orchestration_decisions
-                             WHERE lower(run_id) LIKE ?1
-                                OR lower(action) LIKE ?1
-                                OR lower(selected_executor) LIKE ?1
-                                OR lower(confidence) LIKE ?1
-                             ORDER BY decision_id DESC
-                             LIMIT ?2 OFFSET ?3",
-                        )
-                        .map_err(|e| e.to_string())?;
-                    let rows = stmt
-                        .query_map(params![needle, limit, offset], decision_row)
-                        .map_err(|e| e.to_string())?;
-                    return collect_decisions(rows);
+        match &self.db {
+            DatabaseConnection::Sqlite(_) => self.with_conn(|conn| {
+                if let Some(raw_search) = search {
+                    let trimmed = raw_search.trim().to_lowercase();
+                    if !trimmed.is_empty() {
+                        let needle = format!("%{trimmed}%");
+                        let mut stmt = conn
+                            .prepare(
+                                "SELECT decision_id, run_id, node_id, action, action_reason,
+                                        selected_executor, blocked_reason, confidence, confidence_score,
+                                        input_signals_json, created_at,
+                                        quality_signal_json, routing_signal_json, cost_signal_json,
+                                        approval_signal_json, queue_signal_json, executor_pool_signal_json,
+                                        candidate_executors_json, degraded_reason
+                                 FROM orchestration_decisions
+                                 WHERE lower(run_id) LIKE ?1
+                                    OR lower(action) LIKE ?1
+                                    OR lower(selected_executor) LIKE ?1
+                                    OR lower(confidence) LIKE ?1
+                                 ORDER BY decision_id DESC
+                                 LIMIT ?2 OFFSET ?3",
+                            )
+                            .map_err(|e| e.to_string())?;
+                        let rows = stmt
+                            .query_map(params![needle, limit, offset], decision_row)
+                            .map_err(|e| e.to_string())?;
+                        return collect_decisions(rows);
+                    }
                 }
-            }
 
-            let mut stmt = conn
-                .prepare(
-                    "SELECT decision_id, run_id, node_id, action, action_reason,
-                            selected_executor, blocked_reason, confidence, confidence_score,
-                            input_signals_json, created_at,
-                            quality_signal_json, routing_signal_json, cost_signal_json,
-                            approval_signal_json, queue_signal_json, executor_pool_signal_json,
-                            candidate_executors_json, degraded_reason
-                     FROM orchestration_decisions
-                     ORDER BY decision_id DESC
-                     LIMIT ?1 OFFSET ?2",
-                )
-                .map_err(|e| e.to_string())?;
-            let rows = stmt
-                .query_map(params![limit, offset], decision_row)
-                .map_err(|e| e.to_string())?;
-            collect_decisions(rows)
-        })
+                let mut stmt = conn
+                    .prepare(
+                        "SELECT decision_id, run_id, node_id, action, action_reason,
+                                selected_executor, blocked_reason, confidence, confidence_score,
+                                input_signals_json, created_at,
+                                quality_signal_json, routing_signal_json, cost_signal_json,
+                                approval_signal_json, queue_signal_json, executor_pool_signal_json,
+                                candidate_executors_json, degraded_reason
+                         FROM orchestration_decisions
+                         ORDER BY decision_id DESC
+                         LIMIT ?1 OFFSET ?2",
+                    )
+                    .map_err(|e| e.to_string())?;
+                let rows = stmt
+                    .query_map(params![limit, offset], decision_row)
+                    .map_err(|e| e.to_string())?;
+                collect_decisions(rows)
+            }),
+            #[cfg(feature = "pg")]
+            DatabaseConnection::Pg(_) => self.with_pg_conn(|client| {
+                if let Some(raw_search) = search {
+                    let trimmed = raw_search.trim().to_lowercase();
+                    if !trimmed.is_empty() {
+                        let needle = format!("%{trimmed}%");
+                        let rows = client
+                            .query(
+                                "SELECT decision_id, run_id, node_id, action, action_reason,
+                                        selected_executor, blocked_reason, confidence, confidence_score,
+                                        input_signals_json, created_at,
+                                        quality_signal_json, routing_signal_json, cost_signal_json,
+                                        approval_signal_json, queue_signal_json, executor_pool_signal_json,
+                                        candidate_executors_json, degraded_reason
+                                 FROM orchestration_decisions
+                                 WHERE lower(run_id) LIKE $1
+                                    OR lower(action) LIKE $1
+                                    OR lower(selected_executor) LIKE $1
+                                    OR lower(confidence) LIKE $1
+                                 ORDER BY decision_id DESC
+                                 LIMIT $2 OFFSET $3",
+                                &[&needle, &limit, &offset],
+                            )
+                            .map_err(|e| e.to_string())?;
+                        return pg_collect_decisions(rows);
+                    }
+                }
+
+                let rows = client
+                    .query(
+                        "SELECT decision_id, run_id, node_id, action, action_reason,
+                                selected_executor, blocked_reason, confidence, confidence_score,
+                                input_signals_json, created_at,
+                                quality_signal_json, routing_signal_json, cost_signal_json,
+                                approval_signal_json, queue_signal_json, executor_pool_signal_json,
+                                candidate_executors_json, degraded_reason
+                         FROM orchestration_decisions
+                         ORDER BY decision_id DESC
+                         LIMIT $1 OFFSET $2",
+                        &[&limit, &offset],
+                    )
+                    .map_err(|e| e.to_string())?;
+                pg_collect_decisions(rows)
+            }),
+        }
     }
 
     pub fn get_decision_by_id(&self, decision_id: &str) -> Result<Option<DecisionRecord>, String> {
-        self.with_conn(|conn| {
-            let mut stmt = conn
-                .prepare(
-                    "SELECT decision_id, run_id, node_id, action, action_reason,
-                            selected_executor, blocked_reason, confidence, confidence_score,
-                            input_signals_json, created_at,
-                            quality_signal_json, routing_signal_json, cost_signal_json,
-                            approval_signal_json, queue_signal_json, executor_pool_signal_json,
-                            candidate_executors_json, degraded_reason
-                     FROM orchestration_decisions
-                     WHERE decision_id = ?1",
-                )
-                .map_err(|e| e.to_string())?;
-            let mut rows = stmt
-                .query_map(params![decision_id], decision_row)
-                .map_err(|e| e.to_string())?;
-            match rows.next() {
-                Some(row) => Ok(Some(row.map_err(|e| e.to_string())?)),
-                None => Ok(None),
-            }
-        })
+        match &self.db {
+            DatabaseConnection::Sqlite(_) => self.with_conn(|conn| {
+                let mut stmt = conn
+                    .prepare(
+                        "SELECT decision_id, run_id, node_id, action, action_reason,
+                                selected_executor, blocked_reason, confidence, confidence_score,
+                                input_signals_json, created_at,
+                                quality_signal_json, routing_signal_json, cost_signal_json,
+                                approval_signal_json, queue_signal_json, executor_pool_signal_json,
+                                candidate_executors_json, degraded_reason
+                         FROM orchestration_decisions
+                         WHERE decision_id = ?1",
+                    )
+                    .map_err(|e| e.to_string())?;
+                let mut rows = stmt
+                    .query_map(params![decision_id], decision_row)
+                    .map_err(|e| e.to_string())?;
+                match rows.next() {
+                    Some(row) => Ok(Some(row.map_err(|e| e.to_string())?)),
+                    None => Ok(None),
+                }
+            }),
+            #[cfg(feature = "pg")]
+            DatabaseConnection::Pg(_) => self.with_pg_conn(|client| {
+                let rows = client
+                    .query(
+                        "SELECT decision_id, run_id, node_id, action, action_reason,
+                                selected_executor, blocked_reason, confidence, confidence_score,
+                                input_signals_json, created_at,
+                                quality_signal_json, routing_signal_json, cost_signal_json,
+                                approval_signal_json, queue_signal_json, executor_pool_signal_json,
+                                candidate_executors_json, degraded_reason
+                         FROM orchestration_decisions
+                         WHERE decision_id = $1",
+                        &[&decision_id],
+                    )
+                    .map_err(|e| e.to_string())?;
+                match rows.into_iter().next() {
+                    Some(row) => Ok(Some(pg_decision_row(&row))),
+                    None => Ok(None),
+                }
+            }),
+        }
     }
 
     pub fn decision_log_stats(&self) -> Result<DecisionLogStats, String> {
-        self.with_conn(|conn| {
-            let total_decisions: i64 = conn
-                .query_row("SELECT COUNT(*) FROM orchestration_decisions", [], |row| {
-                    row.get(0)
+        match &self.db {
+            DatabaseConnection::Sqlite(_) => self.with_conn(|conn| {
+                let total_decisions: i64 = conn
+                    .query_row("SELECT COUNT(*) FROM orchestration_decisions", [], |row| {
+                        row.get(0)
+                    })
+                    .map_err(|e| e.to_string())?;
+
+                if total_decisions == 0 {
+                    return Ok(DecisionLogStats {
+                        total_decisions: 0,
+                        by_action: json!({}),
+                        avg_confidence: 0.0,
+                    });
+                }
+
+                let avg_confidence: f64 = conn
+                    .query_row(
+                        "SELECT COALESCE(AVG(confidence_score), 0) FROM orchestration_decisions",
+                        [],
+                        |row| row.get(0),
+                    )
+                    .map_err(|e| e.to_string())?;
+
+                let mut stmt = conn
+                    .prepare(
+                        "SELECT action, COUNT(*), COALESCE(AVG(confidence_score), 0)
+                         FROM orchestration_decisions
+                         GROUP BY action",
+                    )
+                    .map_err(|e| e.to_string())?;
+                let rows = stmt
+                    .query_map([], |row| {
+                        let action: String = row.get(0)?;
+                        let count: i64 = row.get(1)?;
+                        let avg_conf: f64 = row.get(2)?;
+                        Ok(json!({
+                            "action": action,
+                            "count": count,
+                            "avg_confidence": avg_conf,
+                        }))
+                    })
+                    .map_err(|e| e.to_string())?;
+                let by_action: Vec<Value> = rows.filter_map(|r| r.ok()).collect();
+
+                Ok(DecisionLogStats {
+                    total_decisions,
+                    by_action: json!(by_action),
+                    avg_confidence,
                 })
-                .map_err(|e| e.to_string())?;
+            }),
+            #[cfg(feature = "pg")]
+            DatabaseConnection::Pg(_) => self.with_pg_conn(|client| {
+                let total_decisions: i64 = client
+                    .query_one("SELECT COUNT(*) FROM orchestration_decisions", &[])
+                    .map_err(|e| e.to_string())?
+                    .get(0);
 
-            if total_decisions == 0 {
-                return Ok(DecisionLogStats {
-                    total_decisions: 0,
-                    by_action: json!({}),
-                    avg_confidence: 0.0,
-                });
-            }
+                if total_decisions == 0 {
+                    return Ok(DecisionLogStats {
+                        total_decisions: 0,
+                        by_action: json!({}),
+                        avg_confidence: 0.0,
+                    });
+                }
 
-            let avg_confidence: f64 = conn
-                .query_row(
-                    "SELECT COALESCE(AVG(confidence_score), 0) FROM orchestration_decisions",
-                    [],
-                    |row| row.get(0),
-                )
-                .map_err(|e| e.to_string())?;
+                let avg_confidence: f64 = client
+                    .query_one(
+                        "SELECT COALESCE(AVG(confidence_score), 0) FROM orchestration_decisions",
+                        &[],
+                    )
+                    .map_err(|e| e.to_string())?
+                    .get(0);
 
-            let mut stmt = conn
-                .prepare(
-                    "SELECT action, COUNT(*), COALESCE(AVG(confidence_score), 0)
-                     FROM orchestration_decisions
-                     GROUP BY action",
-                )
-                .map_err(|e| e.to_string())?;
-            let rows = stmt
-                .query_map([], |row| {
-                    let action: String = row.get(0)?;
-                    let count: i64 = row.get(1)?;
-                    let avg_conf: f64 = row.get(2)?;
-                    Ok(json!({
-                        "action": action,
-                        "count": count,
-                        "avg_confidence": avg_conf,
-                    }))
+                let rows = client
+                    .query(
+                        "SELECT action, COUNT(*), COALESCE(AVG(confidence_score), 0)
+                         FROM orchestration_decisions
+                         GROUP BY action",
+                        &[],
+                    )
+                    .map_err(|e| e.to_string())?;
+                let by_action: Vec<Value> = rows
+                    .iter()
+                    .map(|row| {
+                        json!({
+                            "action": row.get::<_, String>(0),
+                            "count": row.get::<_, i64>(1),
+                            "avg_confidence": row.get::<_, f64>(2),
+                        })
+                    })
+                    .collect();
+
+                Ok(DecisionLogStats {
+                    total_decisions,
+                    by_action: json!(by_action),
+                    avg_confidence,
                 })
-                .map_err(|e| e.to_string())?;
-            let by_action: Vec<Value> = rows.filter_map(|r| r.ok()).collect();
-
-            Ok(DecisionLogStats {
-                total_decisions,
-                by_action: json!(by_action),
-                avg_confidence,
-            })
-        })
+            }),
+        }
     }
 }
 
@@ -391,6 +567,41 @@ fn decision_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<DecisionRecord> {
     })
 }
 
+#[cfg(feature = "pg")]
+fn pg_decision_row(row: &postgres::Row) -> DecisionRecord {
+    let input_text: String = row.get(9);
+    let input_signals: Value = serde_json::from_str(&input_text).unwrap_or(Value::Null);
+
+    let quality_json: Option<String> = row.get(11);
+    let routing_json: Option<String> = row.get(12);
+    let cost_json: Option<String> = row.get(13);
+    let approval_json: Option<String> = row.get(14);
+    let queue_json: Option<String> = row.get(15);
+    let pool_json: Option<String> = row.get(16);
+
+    DecisionRecord {
+        decision_id: row.get(0),
+        run_id: row.get(1),
+        node_id: row.get(2),
+        action: row.get(3),
+        action_reason: row.get(4),
+        selected_executor: row.get(5),
+        blocked_reason: row.get(6),
+        confidence: row.get(7),
+        confidence_score: row.get(8),
+        input_signals,
+        created_at: row.get(10),
+        quality_signal: quality_json.and_then(|s| serde_json::from_str(&s).ok()),
+        routing_signal: routing_json.and_then(|s| serde_json::from_str(&s).ok()),
+        cost_signal: cost_json.and_then(|s| serde_json::from_str(&s).ok()),
+        approval_signal: approval_json.and_then(|s| serde_json::from_str(&s).ok()),
+        queue_signal: queue_json.and_then(|s| serde_json::from_str(&s).ok()),
+        executor_pool_signal: pool_json.and_then(|s| serde_json::from_str(&s).ok()),
+        candidate_executors: row.get(17),
+        degraded_reason: row.get(18),
+    }
+}
+
 fn collect_decisions(
     rows: rusqlite::MappedRows<'_, impl FnMut(&rusqlite::Row) -> rusqlite::Result<DecisionRecord>>,
 ) -> Result<Vec<DecisionRecord>, String> {
@@ -399,6 +610,11 @@ fn collect_decisions(
         records.push(row.map_err(|e| e.to_string())?);
     }
     Ok(records)
+}
+
+#[cfg(feature = "pg")]
+fn pg_collect_decisions(rows: Vec<postgres::Row>) -> Result<Vec<DecisionRecord>, String> {
+    Ok(rows.iter().map(pg_decision_row).collect())
 }
 
 #[cfg(test)]

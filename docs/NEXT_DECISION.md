@@ -2,7 +2,7 @@
 
 ## Default Recommendation
 
-**Autonomously maintain and advance safe repository work.** The completed Stage 0–4 task-book scope, CA-7 sealed baseline, Harness App MVP0–MVP8, Trials 0–3, Reliability Hardening 1, Dispatch Kernel Phase 1–7 (including 6A, 6B-1/2/3, Gates 1–3, and all Phase 7 modules), Self-Hosted GA Readiness Track SG-1 through SG-5, and HA Hardening Track (HA-1 through HA-6) are complete. The responsible coding agent should keep the repo healthy and fix CI/docs/test drift plus wire-governance gaps. Do not continue R-series file splitting. The next unapproved track is PostgreSQL optional storage backend — this requires explicit user approval.
+**Autonomously maintain and advance safe repository work.** The completed Stage 0–4 task-book scope, CA-7 sealed baseline, Harness App MVP0–MVP8, Trials 0–3, Reliability Hardening 1, Dispatch Kernel Phase 1–7 (including 6A, 6B-1/2/3, Gates 1–3, and all Phase 7 modules), Self-Hosted GA Readiness Track SG-1 through SG-5, HA Hardening Track (HA-1 through HA-6), and PostgreSQL optional storage backend are complete. The responsible coding agent should keep the repo healthy and fix CI/docs/test drift plus wire-governance gaps. Do not continue R-series file splitting. No new track is approved.
 
 This is standing authorization for the external coding agent maintaining this repository. It is not authorization to implement real autonomous workers inside the harness runtime.
 
@@ -25,7 +25,8 @@ The responsible coding agent may choose any of the following without asking for 
 | Supervised autonomous beta planning | Batch 0-7 Slice A-F complete. Slice F adds supervised execution runtime primitives: NodeExecutor trait, CommandNodeExecutor (shell-metachar rejection, allowlist, no `sh -c`), workflow tick endpoint, workspace lifecycle (create/cleanup/quarantine), capture_patch with source manifest diff, approval binding with bound fields, integrity validation, export gate, E2E closed-loop test. 1222 Rust tests pass, clippy clean. No target repo writes, sandbox/process/container/VM execution, real workers, provider calls, push/merge/deploy/apply controls, or default-on execution. |
 | Architecture refactor (R-series) | **SEALED AT R7.** R1–R7 are complete. R8 is not approved. The `checkpoint.rs` split and `dispatch_decision.rs` split are deferred. No further R-series file splitting is approved. |
 | Dormant module adaptation | 4-phase strategy to selectively activate 23,939 lines of dormant code. Phase 1: Interface Unification (trait Evaluator, Provider adapter, GraphOperations) — COMPLETE. Phase 2: Zero-Conflict Activation (DAGManager in planner, context_pack in task_analyzer, WorkQueue+ResultAggregator+FeedbackIntegrator with AutoPolicies in scheduler) — COMPLETE. Phase 3: Adapted Activation (QualityGateEvaluator, AdvisorBroker in dispatch, ConflictResolver+HumanApprovalGate+WorkflowEngine in scheduler) — COMPLETE (1332 tests). Phase 4: Dead Code Cleanup — COMPLETE (~9,400 lines removed, 1099 tests). All 4 phases done. All boundaries intact. |
-| HA hardening | **COMPLETE (2026-06-08).** All 6 phases done: HA-1 Scheduler Resilience + Persistent Heartbeat, HA-2 Automated Backup + Retention, HA-3 Deep Health + Resource Monitoring + External Monitoring, HA-4 Circuit Breaker, HA-5 TLS Inbound, HA-6 Secret Encryption at Rest. 1378 tests pass. PostgreSQL optional storage backend remains a future option. |
+| HA hardening | **COMPLETE (2026-06-08).** All 6 phases done: HA-1 Scheduler Resilience + Persistent Heartbeat, HA-2 Automated Backup + Retention, HA-3 Deep Health + Resource Monitoring + External Monitoring, HA-4 Circuit Breaker, HA-5 TLS Inbound, HA-6 Secret Encryption at Rest. 1378 tests pass. |
+| PostgreSQL backend | **COMPLETE (2026-06-08).** Optional PostgreSQL storage via `ACP_DATABASE_URL` and `--features pg`. All 141 methods ported. SQLite remains default. |
 
 ## Dynamic Workflow Direction
 
@@ -84,7 +85,7 @@ Current gap: SG-1 through SG-5 are complete. The Self-Hosted GA Readiness Track 
 
 ## High-Availability Hardening Track
 
-Current target: **production-grade local/small-team HA**. The Self-Hosted GA track proved the system can run, recover, and be handed off. This track addresses the remaining HA gaps that prevent production use: single-point-of-failure, no encryption, no deep monitoring, no automated resilience. User requested: PostgreSQL migration, persistent heartbeat with external monitoring, and circuit breaker (done).
+Current target: **production-grade local/small-team HA**. The Self-Hosted GA track proved the system can run, recover, and be handed off. This track addresses the remaining HA gaps that prevent production use: single-point-of-failure, no encryption, no deep monitoring, no automated resilience. User requested: PostgreSQL optional storage backend (done), persistent heartbeat with external monitoring, and circuit breaker (done).
 
 **Completed (2026-06-07):**
 - Wired `MetricsCollector` + `RequestTracer` into runtime (AxumApiState, middleware, scheduler)
@@ -120,6 +121,8 @@ Current target: **production-grade local/small-team HA**. The Self-Hosted GA tra
 - ~~HA-4 (circuit breaker)~~ is **DONE** — 14 tests, CircuitBreaker + CircuitBreakerProvider + CircuitBreakerRegistry + status endpoint
 - HA-5 (TLS) is independent — can run in parallel
 - HA-6 (encryption at rest) is independent — can run in parallel
+
+**PostgreSQL optional storage backend (2026-06-08):** COMPLETE. `LocalProductStore` supports both SQLite (default) and PostgreSQL (opt-in via `ACP_DATABASE_URL`). The `pg` cargo feature gates `postgres`, `r2d2`, `r2d2_postgres` dependencies. All 141 methods have dual SQLite/PostgreSQL code paths using `DatabaseConnection` enum dispatch. PostgreSQL DDL translates all 22 tables. Migration runner uses `schema_migrations` table. Connection pooling via `r2d2` (sync). Backup remains SQLite-only. Env var: `ACP_DATABASE_URL=postgres://user:pass@host:5432/dbname`. Build: `cargo build --features pg`.
 
 Next macro-orchestrator completion repair batch:
 

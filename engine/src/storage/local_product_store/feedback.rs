@@ -1,6 +1,6 @@
 use rusqlite::params;
 
-use super::LocalProductStore;
+use super::{DatabaseConnection, LocalProductStore};
 
 // ---------------------------------------------------------------------------
 // FeedbackRecord
@@ -84,33 +84,64 @@ impl LocalProductStore {
             .unwrap_or_default()
             .as_nanos();
         let feedback_id = format!("feedback-{}-{}", run_id, nanos);
+        let success_int = if success { 1 } else { 0 };
 
-        self.with_conn(|conn| {
-            conn.execute(
-                "INSERT INTO scheduler_feedback
-                 (feedback_id, run_id, node_id, executor_type, task_group, task_domain, task_intent,
-                  success, latency_ms, retry_count, quality_score, cost, error_domain, created_at)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)",
-                params![
-                    feedback_id,
-                    run_id,
-                    node_id,
-                    executor_type,
-                    task_group,
-                    task_domain,
-                    task_intent,
-                    if success { 1 } else { 0 },
-                    latency_ms,
-                    retry_count,
-                    quality_score,
-                    cost,
-                    error_domain,
-                    created_at,
-                ],
-            )
-            .map_err(|e| e.to_string())?;
-            Ok(())
-        })?;
+        match &self.db {
+            DatabaseConnection::Sqlite(_) => self.with_conn(|conn| {
+                conn.execute(
+                    "INSERT INTO scheduler_feedback
+                     (feedback_id, run_id, node_id, executor_type, task_group, task_domain, task_intent,
+                      success, latency_ms, retry_count, quality_score, cost, error_domain, created_at)
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)",
+                    params![
+                        feedback_id,
+                        run_id,
+                        node_id,
+                        executor_type,
+                        task_group,
+                        task_domain,
+                        task_intent,
+                        success_int,
+                        latency_ms,
+                        retry_count,
+                        quality_score,
+                        cost,
+                        error_domain,
+                        created_at,
+                    ],
+                )
+                .map_err(|e| e.to_string())?;
+                Ok(())
+            })?,
+            #[cfg(feature = "pg")]
+            DatabaseConnection::Pg(_) => self.with_pg_conn(|client| {
+                client
+                    .execute(
+                        "INSERT INTO scheduler_feedback
+                         (feedback_id, run_id, node_id, executor_type, task_group, task_domain, task_intent,
+                          success, latency_ms, retry_count, quality_score, cost, error_domain, created_at)
+                         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)",
+                        &[
+                            &feedback_id,
+                            &run_id,
+                            &node_id,
+                            &executor_type,
+                            &task_group,
+                            &task_domain,
+                            &task_intent,
+                            &success_int,
+                            &latency_ms,
+                            &retry_count,
+                            &quality_score,
+                            &cost,
+                            &error_domain,
+                            &created_at,
+                        ],
+                    )
+                    .map_err(|e| e.to_string())?;
+                Ok(())
+            })?,
+        }
 
         Ok(FeedbackRecord {
             feedback_id,
@@ -131,22 +162,39 @@ impl LocalProductStore {
     }
 
     pub fn get_feedback_for_run(&self, run_id: &str) -> Result<Vec<FeedbackRecord>, String> {
-        self.with_conn(|conn| {
-            let mut stmt = conn
-                .prepare(
-                    "SELECT feedback_id, run_id, node_id, executor_type, task_group,
-                            task_domain, task_intent, success, latency_ms, retry_count,
-                            quality_score, cost, error_domain, created_at
-                     FROM scheduler_feedback
-                     WHERE run_id = ?1
-                     ORDER BY created_at ASC",
-                )
-                .map_err(|e| e.to_string())?;
-            let rows = stmt
-                .query_map(params![run_id], feedback_row)
-                .map_err(|e| e.to_string())?;
-            collect_feedback(rows)
-        })
+        match &self.db {
+            DatabaseConnection::Sqlite(_) => self.with_conn(|conn| {
+                let mut stmt = conn
+                    .prepare(
+                        "SELECT feedback_id, run_id, node_id, executor_type, task_group,
+                                task_domain, task_intent, success, latency_ms, retry_count,
+                                quality_score, cost, error_domain, created_at
+                         FROM scheduler_feedback
+                         WHERE run_id = ?1
+                         ORDER BY created_at ASC",
+                    )
+                    .map_err(|e| e.to_string())?;
+                let rows = stmt
+                    .query_map(params![run_id], feedback_row)
+                    .map_err(|e| e.to_string())?;
+                collect_feedback(rows)
+            }),
+            #[cfg(feature = "pg")]
+            DatabaseConnection::Pg(_) => self.with_pg_conn(|client| {
+                let rows = client
+                    .query(
+                        "SELECT feedback_id, run_id, node_id, executor_type, task_group,
+                                task_domain, task_intent, success, latency_ms, retry_count,
+                                quality_score, cost, error_domain, created_at
+                         FROM scheduler_feedback
+                         WHERE run_id = $1
+                         ORDER BY created_at ASC",
+                        &[&run_id],
+                    )
+                    .map_err(|e| e.to_string())?;
+                pg_collect_feedback(rows)
+            }),
+        }
     }
 
     pub fn get_feedback_for_task_group(
@@ -154,156 +202,312 @@ impl LocalProductStore {
         task_group: &str,
         limit: i64,
     ) -> Result<Vec<FeedbackRecord>, String> {
-        self.with_conn(|conn| {
-            let mut stmt = conn
-                .prepare(
-                    "SELECT feedback_id, run_id, node_id, executor_type, task_group,
-                            task_domain, task_intent, success, latency_ms, retry_count,
-                            quality_score, cost, error_domain, created_at
-                     FROM scheduler_feedback
-                     WHERE task_group = ?1
-                     ORDER BY created_at DESC
-                     LIMIT ?2",
-                )
-                .map_err(|e| e.to_string())?;
-            let rows = stmt
-                .query_map(params![task_group, limit], feedback_row)
-                .map_err(|e| e.to_string())?;
-            collect_feedback(rows)
-        })
+        match &self.db {
+            DatabaseConnection::Sqlite(_) => self.with_conn(|conn| {
+                let mut stmt = conn
+                    .prepare(
+                        "SELECT feedback_id, run_id, node_id, executor_type, task_group,
+                                task_domain, task_intent, success, latency_ms, retry_count,
+                                quality_score, cost, error_domain, created_at
+                         FROM scheduler_feedback
+                         WHERE task_group = ?1
+                         ORDER BY created_at DESC
+                         LIMIT ?2",
+                    )
+                    .map_err(|e| e.to_string())?;
+                let rows = stmt
+                    .query_map(params![task_group, limit], feedback_row)
+                    .map_err(|e| e.to_string())?;
+                collect_feedback(rows)
+            }),
+            #[cfg(feature = "pg")]
+            DatabaseConnection::Pg(_) => self.with_pg_conn(|client| {
+                let rows = client
+                    .query(
+                        "SELECT feedback_id, run_id, node_id, executor_type, task_group,
+                                task_domain, task_intent, success, latency_ms, retry_count,
+                                quality_score, cost, error_domain, created_at
+                         FROM scheduler_feedback
+                         WHERE task_group = $1
+                         ORDER BY created_at DESC
+                         LIMIT $2",
+                        &[&task_group, &limit],
+                    )
+                    .map_err(|e| e.to_string())?;
+                pg_collect_feedback(rows)
+            }),
+        }
     }
 
     pub fn get_feedback_stats(&self, task_group: &str) -> Result<FeedbackStoreStats, String> {
-        self.with_conn(|conn| {
-            let total_records: i64 = conn
-                .query_row(
-                    "SELECT COUNT(*) FROM scheduler_feedback WHERE task_group = ?1",
-                    params![task_group],
-                    |row| row.get(0),
-                )
-                .map_err(|e| e.to_string())?;
+        match &self.db {
+            DatabaseConnection::Sqlite(_) => self.with_conn(|conn| {
+                let total_records: i64 = conn
+                    .query_row(
+                        "SELECT COUNT(*) FROM scheduler_feedback WHERE task_group = ?1",
+                        params![task_group],
+                        |row| row.get(0),
+                    )
+                    .map_err(|e| e.to_string())?;
 
-            if total_records == 0 {
-                return Ok(FeedbackStoreStats {
-                    total_records: 0,
-                    success_rate: 0.0,
-                    avg_latency_ms: 0.0,
-                    avg_quality: 0.0,
-                    avg_cost: 0.0,
-                    by_executor_type: serde_json::json!({}),
-                });
-            }
+                if total_records == 0 {
+                    return Ok(FeedbackStoreStats {
+                        total_records: 0,
+                        success_rate: 0.0,
+                        avg_latency_ms: 0.0,
+                        avg_quality: 0.0,
+                        avg_cost: 0.0,
+                        by_executor_type: serde_json::json!({}),
+                    });
+                }
 
-            let success_count: i64 = conn
-                .query_row(
-                    "SELECT COUNT(*) FROM scheduler_feedback WHERE task_group = ?1 AND success = 1",
-                    params![task_group],
-                    |row| row.get(0),
-                )
-                .map_err(|e| e.to_string())?;
-            let success_rate = success_count as f64 / total_records as f64;
+                let success_count: i64 = conn
+                    .query_row(
+                        "SELECT COUNT(*) FROM scheduler_feedback WHERE task_group = ?1 AND success = 1",
+                        params![task_group],
+                        |row| row.get(0),
+                    )
+                    .map_err(|e| e.to_string())?;
+                let success_rate = success_count as f64 / total_records as f64;
 
-            let avg_latency_ms: f64 = conn
-                .query_row(
-                    "SELECT COALESCE(AVG(latency_ms), 0) FROM scheduler_feedback WHERE task_group = ?1",
-                    params![task_group],
-                    |row| row.get(0),
-                )
-                .map_err(|e| e.to_string())?;
+                let avg_latency_ms: f64 = conn
+                    .query_row(
+                        "SELECT COALESCE(AVG(latency_ms), 0) FROM scheduler_feedback WHERE task_group = ?1",
+                        params![task_group],
+                        |row| row.get(0),
+                    )
+                    .map_err(|e| e.to_string())?;
 
-            let avg_quality: f64 = conn
-                .query_row(
-                    "SELECT COALESCE(AVG(quality_score), 0) FROM scheduler_feedback WHERE task_group = ?1",
-                    params![task_group],
-                    |row| row.get(0),
-                )
-                .map_err(|e| e.to_string())?;
+                let avg_quality: f64 = conn
+                    .query_row(
+                        "SELECT COALESCE(AVG(quality_score), 0) FROM scheduler_feedback WHERE task_group = ?1",
+                        params![task_group],
+                        |row| row.get(0),
+                    )
+                    .map_err(|e| e.to_string())?;
 
-            let avg_cost: f64 = conn
-                .query_row(
-                    "SELECT COALESCE(AVG(cost), 0) FROM scheduler_feedback WHERE task_group = ?1",
-                    params![task_group],
-                    |row| row.get(0),
-                )
-                .map_err(|e| e.to_string())?;
+                let avg_cost: f64 = conn
+                    .query_row(
+                        "SELECT COALESCE(AVG(cost), 0) FROM scheduler_feedback WHERE task_group = ?1",
+                        params![task_group],
+                        |row| row.get(0),
+                    )
+                    .map_err(|e| e.to_string())?;
 
-            let mut exec_stmt = conn
-                .prepare(
-                    "SELECT executor_type, COUNT(*), SUM(CASE WHEN success = 1 THEN 1 ELSE 0 END),
-                            COALESCE(AVG(latency_ms), 0), COALESCE(AVG(quality_score), 0), COALESCE(AVG(cost), 0)
-                     FROM scheduler_feedback
-                     WHERE task_group = ?1
-                     GROUP BY executor_type",
-                )
-                .map_err(|e| e.to_string())?;
-            let exec_rows = exec_stmt
-                .query_map(params![task_group], |row| {
-                    let executor_type: String = row.get(0)?;
-                    let count: i64 = row.get(1)?;
-                    let successes: i64 = row.get(2)?;
-                    let avg_lat: f64 = row.get(3)?;
-                    let avg_q: f64 = row.get(4)?;
-                    let avg_c: f64 = row.get(5)?;
-                    Ok(serde_json::json!({
-                        "executor_type": executor_type,
-                        "count": count,
-                        "success_count": successes,
-                        "success_rate": if count > 0 { successes as f64 / count as f64 } else { 0.0 },
-                        "avg_latency_ms": avg_lat,
-                        "avg_quality": avg_q,
-                        "avg_cost": avg_c,
-                    }))
+                let mut exec_stmt = conn
+                    .prepare(
+                        "SELECT executor_type, COUNT(*), SUM(CASE WHEN success = 1 THEN 1 ELSE 0 END),
+                                COALESCE(AVG(latency_ms), 0), COALESCE(AVG(quality_score), 0), COALESCE(AVG(cost), 0)
+                         FROM scheduler_feedback
+                         WHERE task_group = ?1
+                         GROUP BY executor_type",
+                    )
+                    .map_err(|e| e.to_string())?;
+                let exec_rows = exec_stmt
+                    .query_map(params![task_group], |row| {
+                        let executor_type: String = row.get(0)?;
+                        let count: i64 = row.get(1)?;
+                        let successes: i64 = row.get(2)?;
+                        let avg_lat: f64 = row.get(3)?;
+                        let avg_q: f64 = row.get(4)?;
+                        let avg_c: f64 = row.get(5)?;
+                        Ok(serde_json::json!({
+                            "executor_type": executor_type,
+                            "count": count,
+                            "success_count": successes,
+                            "success_rate": if count > 0 { successes as f64 / count as f64 } else { 0.0 },
+                            "avg_latency_ms": avg_lat,
+                            "avg_quality": avg_q,
+                            "avg_cost": avg_c,
+                        }))
+                    })
+                    .map_err(|e| e.to_string())?;
+
+                let mut by_executor = Vec::new();
+                for row in exec_rows {
+                    by_executor.push(row.map_err(|e| e.to_string())?);
+                }
+
+                Ok(FeedbackStoreStats {
+                    total_records,
+                    success_rate,
+                    avg_latency_ms,
+                    avg_quality,
+                    avg_cost,
+                    by_executor_type: serde_json::Value::Array(by_executor),
                 })
-                .map_err(|e| e.to_string())?;
+            }),
+            #[cfg(feature = "pg")]
+            DatabaseConnection::Pg(_) => self.with_pg_conn(|client| {
+                let total_records: i64 = client
+                    .query_one(
+                        "SELECT COUNT(*) FROM scheduler_feedback WHERE task_group = $1",
+                        &[&task_group],
+                    )
+                    .map_err(|e| e.to_string())?
+                    .get(0);
 
-            let mut by_executor = Vec::new();
-            for row in exec_rows {
-                by_executor.push(row.map_err(|e| e.to_string())?);
-            }
+                if total_records == 0 {
+                    return Ok(FeedbackStoreStats {
+                        total_records: 0,
+                        success_rate: 0.0,
+                        avg_latency_ms: 0.0,
+                        avg_quality: 0.0,
+                        avg_cost: 0.0,
+                        by_executor_type: serde_json::json!({}),
+                    });
+                }
 
-            Ok(FeedbackStoreStats {
-                total_records,
-                success_rate,
-                avg_latency_ms,
-                avg_quality,
-                avg_cost,
-                by_executor_type: serde_json::Value::Array(by_executor),
-            })
-        })
+                let success_count: i64 = client
+                    .query_one(
+                        "SELECT COUNT(*) FROM scheduler_feedback WHERE task_group = $1 AND success = 1",
+                        &[&task_group],
+                    )
+                    .map_err(|e| e.to_string())?
+                    .get(0);
+                let success_rate = success_count as f64 / total_records as f64;
+
+                let avg_latency_ms: f64 = client
+                    .query_one(
+                        "SELECT COALESCE(AVG(latency_ms), 0) FROM scheduler_feedback WHERE task_group = $1",
+                        &[&task_group],
+                    )
+                    .map_err(|e| e.to_string())?
+                    .get(0);
+
+                let avg_quality: f64 = client
+                    .query_one(
+                        "SELECT COALESCE(AVG(quality_score), 0) FROM scheduler_feedback WHERE task_group = $1",
+                        &[&task_group],
+                    )
+                    .map_err(|e| e.to_string())?
+                    .get(0);
+
+                let avg_cost: f64 = client
+                    .query_one(
+                        "SELECT COALESCE(AVG(cost), 0) FROM scheduler_feedback WHERE task_group = $1",
+                        &[&task_group],
+                    )
+                    .map_err(|e| e.to_string())?
+                    .get(0);
+
+                let exec_rows = client
+                    .query(
+                        "SELECT executor_type, COUNT(*), SUM(CASE WHEN success = 1 THEN 1 ELSE 0 END),
+                                COALESCE(AVG(latency_ms), 0), COALESCE(AVG(quality_score), 0), COALESCE(AVG(cost), 0)
+                         FROM scheduler_feedback
+                         WHERE task_group = $1
+                         GROUP BY executor_type",
+                        &[&task_group],
+                    )
+                    .map_err(|e| e.to_string())?;
+
+                let by_executor: Vec<serde_json::Value> = exec_rows
+                    .iter()
+                    .map(|row| {
+                        let executor_type: String = row.get(0);
+                        let count: i64 = row.get(1);
+                        let successes: i64 = row.get(2);
+                        let avg_lat: f64 = row.get(3);
+                        let avg_q: f64 = row.get(4);
+                        let avg_c: f64 = row.get(5);
+                        serde_json::json!({
+                            "executor_type": executor_type,
+                            "count": count,
+                            "success_count": successes,
+                            "success_rate": if count > 0 { successes as f64 / count as f64 } else { 0.0 },
+                            "avg_latency_ms": avg_lat,
+                            "avg_quality": avg_q,
+                            "avg_cost": avg_c,
+                        })
+                    })
+                    .collect();
+
+                Ok(FeedbackStoreStats {
+                    total_records,
+                    success_rate,
+                    avg_latency_ms,
+                    avg_quality,
+                    avg_cost,
+                    by_executor_type: serde_json::Value::Array(by_executor),
+                })
+            }),
+        }
     }
 
     pub fn suggest_executor_type(&self, task_group: &str) -> Option<String> {
-        self.with_conn(|conn| {
-            let mut stmt = conn
-                .prepare(
-                    "SELECT executor_type,
-                            COUNT(*) as cnt,
-                            SUM(CASE WHEN success = 1 THEN 1 ELSE 0 END) as successes
-                     FROM scheduler_feedback
-                     WHERE task_group = ?1
-                     GROUP BY executor_type
-                     ORDER BY (CAST(successes AS REAL) / cnt) DESC, cnt DESC
-                     LIMIT 1",
-                )
-                .map_err(|e| e.to_string())?;
-            let result = stmt
-                .query_row(params![task_group], |row| {
-                    let executor_type: String = row.get(0)?;
-                    let cnt: i64 = row.get(1)?;
-                    let successes: i64 = row.get(2)?;
-                    let rate = if cnt > 0 {
-                        successes as f64 / cnt as f64
-                    } else {
-                        0.0
-                    };
-                    Ok((executor_type, cnt, rate))
-                })
-                .ok();
+        match &self.db {
+            DatabaseConnection::Sqlite(_) => self
+                .with_conn(|conn| {
+                    let mut stmt = conn
+                        .prepare(
+                            "SELECT executor_type,
+                                    COUNT(*) as cnt,
+                                    SUM(CASE WHEN success = 1 THEN 1 ELSE 0 END) as successes
+                             FROM scheduler_feedback
+                             WHERE task_group = ?1
+                             GROUP BY executor_type
+                             ORDER BY (CAST(successes AS REAL) / cnt) DESC, cnt DESC
+                             LIMIT 1",
+                        )
+                        .map_err(|e| e.to_string())?;
+                    let result = stmt
+                        .query_row(params![task_group], |row| {
+                            let executor_type: String = row.get(0)?;
+                            let cnt: i64 = row.get(1)?;
+                            let successes: i64 = row.get(2)?;
+                            let rate = if cnt > 0 {
+                                successes as f64 / cnt as f64
+                            } else {
+                                0.0
+                            };
+                            Ok((executor_type, cnt, rate))
+                        })
+                        .ok();
 
-            Ok(result.and_then(|r| if r.2 > 0.0 { Some(r.0) } else { None }))
-        })
-        .ok()
-        .flatten()
+                    Ok(result.and_then(|r| if r.2 > 0.0 { Some(r.0) } else { None }))
+                })
+                .ok()
+                .flatten(),
+            #[cfg(feature = "pg")]
+            DatabaseConnection::Pg(_) => self
+                .with_pg_conn(|client| {
+                    let rows = client
+                        .query(
+                            "SELECT executor_type,
+                                    COUNT(*) as cnt,
+                                    SUM(CASE WHEN success = 1 THEN 1 ELSE 0 END) as successes
+                             FROM scheduler_feedback
+                             WHERE task_group = $1
+                             GROUP BY executor_type
+                             ORDER BY (CAST(successes AS REAL) / cnt) DESC, cnt DESC
+                             LIMIT 1",
+                            &[&task_group],
+                        )
+                        .map_err(|e| e.to_string())?;
+
+                    match rows.into_iter().next() {
+                        Some(row) => {
+                            let executor_type: String = row.get(0);
+                            let cnt: i64 = row.get(1);
+                            let successes: i64 = row.get(2);
+                            let rate = if cnt > 0 {
+                                successes as f64 / cnt as f64
+                            } else {
+                                0.0
+                            };
+                            Ok(if rate > 0.0 {
+                                Some(executor_type)
+                            } else {
+                                None
+                            })
+                        }
+                        None => Ok(None),
+                    }
+                })
+                .ok()
+                .flatten(),
+        }
     }
 }
 
@@ -338,4 +542,29 @@ fn collect_feedback(
         records.push(row.map_err(|e| e.to_string())?);
     }
     Ok(records)
+}
+
+#[cfg(feature = "pg")]
+fn pg_feedback_row(row: &postgres::Row) -> FeedbackRecord {
+    FeedbackRecord {
+        feedback_id: row.get(0),
+        run_id: row.get(1),
+        node_id: row.get(2),
+        executor_type: row.get(3),
+        task_group: row.get(4),
+        task_domain: row.get(5),
+        task_intent: row.get(6),
+        success: row.get::<_, i64>(7) != 0,
+        latency_ms: row.get(8),
+        retry_count: row.get(9),
+        quality_score: row.get(10),
+        cost: row.get(11),
+        error_domain: row.get(12),
+        created_at: row.get(13),
+    }
+}
+
+#[cfg(feature = "pg")]
+fn pg_collect_feedback(rows: Vec<postgres::Row>) -> Result<Vec<FeedbackRecord>, String> {
+    Ok(rows.iter().map(pg_feedback_row).collect())
 }

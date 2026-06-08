@@ -1,7 +1,7 @@
 use rusqlite::params;
 use serde_json::Value;
 
-use super::LocalProductStore;
+use super::{DatabaseConnection, LocalProductStore};
 use crate::workflow::tool_registry::{
     HookAction, HookResult, HookType, RiskLevel, ToolCapability, ToolDescriptor, ToolHook,
 };
@@ -69,70 +69,131 @@ impl LocalProductStore {
         let input_json = input_schema.map(|v| v.to_string());
         let output_json = output_schema.map(|v| v.to_string());
         let now = self.now();
-        self.with_conn(|conn| {
-            conn.execute(
-                "INSERT INTO tool_capabilities
-                 (tool_name, description, input_schema_json, output_schema_json,
-                  requires_approval, risk_level, created_at)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
-                 ON CONFLICT(tool_name) DO UPDATE SET
-                  description = excluded.description,
-                  input_schema_json = excluded.input_schema_json,
-                  output_schema_json = excluded.output_schema_json,
-                  requires_approval = excluded.requires_approval,
-                  risk_level = excluded.risk_level",
-                params![
-                    name,
-                    description,
-                    input_json,
-                    output_json,
-                    requires_approval as i64,
-                    risk_level,
-                    now,
-                ],
-            )
-            .map_err(|e| e.to_string())?;
-            Ok(())
-        })
+        let approval_i64 = requires_approval as i64;
+        match &self.db {
+            DatabaseConnection::Sqlite(_) => self.with_conn(|conn| {
+                conn.execute(
+                    "INSERT INTO tool_capabilities
+                     (tool_name, description, input_schema_json, output_schema_json,
+                      requires_approval, risk_level, created_at)
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+                     ON CONFLICT(tool_name) DO UPDATE SET
+                      description = excluded.description,
+                      input_schema_json = excluded.input_schema_json,
+                      output_schema_json = excluded.output_schema_json,
+                      requires_approval = excluded.requires_approval,
+                      risk_level = excluded.risk_level",
+                    params![
+                        name,
+                        description,
+                        input_json,
+                        output_json,
+                        approval_i64,
+                        risk_level,
+                        now,
+                    ],
+                )
+                .map_err(|e| e.to_string())?;
+                Ok(())
+            }),
+            #[cfg(feature = "pg")]
+            DatabaseConnection::Pg(_) => self.with_pg_conn(|client| {
+                client
+                    .execute(
+                        "INSERT INTO tool_capabilities
+                         (tool_name, description, input_schema_json, output_schema_json,
+                          requires_approval, risk_level, created_at)
+                         VALUES ($1, $2, $3, $4, $5, $6, $7)
+                         ON CONFLICT(tool_name) DO UPDATE SET
+                          description = EXCLUDED.description,
+                          input_schema_json = EXCLUDED.input_schema_json,
+                          output_schema_json = EXCLUDED.output_schema_json,
+                          requires_approval = EXCLUDED.requires_approval,
+                          risk_level = EXCLUDED.risk_level",
+                        &[
+                            &name,
+                            &description,
+                            &input_json,
+                            &output_json,
+                            &approval_i64,
+                            &risk_level,
+                            &now,
+                        ],
+                    )
+                    .map_err(|e| e.to_string())?;
+                Ok(())
+            }),
+        }
     }
 
     pub fn get_tool_capability(&self, name: &str) -> Result<Option<ToolCapability>, String> {
-        self.with_conn(|conn| {
-            let mut stmt = conn
-                .prepare(
-                    "SELECT tool_name, description, input_schema_json, output_schema_json,
-                            requires_approval, risk_level, created_at
-                     FROM tool_capabilities WHERE tool_name = ?1 LIMIT 1",
-                )
-                .map_err(|e| e.to_string())?;
-            let mut rows = stmt
-                .query_map(params![name], capability_row)
-                .map_err(|e| e.to_string())?;
-            match rows.next() {
-                Some(row) => Ok(Some(row.map_err(|e| e.to_string())?)),
-                None => Ok(None),
-            }
-        })
+        match &self.db {
+            DatabaseConnection::Sqlite(_) => self.with_conn(|conn| {
+                let mut stmt = conn
+                    .prepare(
+                        "SELECT tool_name, description, input_schema_json, output_schema_json,
+                                requires_approval, risk_level, created_at
+                         FROM tool_capabilities WHERE tool_name = ?1 LIMIT 1",
+                    )
+                    .map_err(|e| e.to_string())?;
+                let mut rows = stmt
+                    .query_map(params![name], capability_row)
+                    .map_err(|e| e.to_string())?;
+                match rows.next() {
+                    Some(row) => Ok(Some(row.map_err(|e| e.to_string())?)),
+                    None => Ok(None),
+                }
+            }),
+            #[cfg(feature = "pg")]
+            DatabaseConnection::Pg(_) => self.with_pg_conn(|client| {
+                let rows = client
+                    .query(
+                        "SELECT tool_name, description, input_schema_json, output_schema_json,
+                                requires_approval, risk_level, created_at
+                         FROM tool_capabilities WHERE tool_name = $1 LIMIT 1",
+                        &[&name],
+                    )
+                    .map_err(|e| e.to_string())?;
+                match rows.into_iter().next() {
+                    Some(row) => Ok(Some(pg_capability_row(&row))),
+                    None => Ok(None),
+                }
+            }),
+        }
     }
 
     pub fn list_tool_capabilities(&self) -> Result<Vec<ToolCapability>, String> {
-        self.with_conn(|conn| {
-            let mut stmt = conn
-                .prepare(
-                    "SELECT tool_name, description, input_schema_json, output_schema_json,
-                            requires_approval, risk_level, created_at
-                     FROM tool_capabilities ORDER BY tool_name",
-                )
-                .map_err(|e| e.to_string())?;
-            let rows = stmt
-                .query_map([], capability_row)
-                .map_err(|e| e.to_string())?;
-            let mut caps = Vec::new();
-            for row in rows {
-                caps.push(row.map_err(|e| e.to_string())?);
-            }
-            Ok(caps)
-        })
+        match &self.db {
+            DatabaseConnection::Sqlite(_) => self.with_conn(|conn| {
+                let mut stmt = conn
+                    .prepare(
+                        "SELECT tool_name, description, input_schema_json, output_schema_json,
+                                requires_approval, risk_level, created_at
+                         FROM tool_capabilities ORDER BY tool_name",
+                    )
+                    .map_err(|e| e.to_string())?;
+                let rows = stmt
+                    .query_map([], capability_row)
+                    .map_err(|e| e.to_string())?;
+                let mut caps = Vec::new();
+                for row in rows {
+                    caps.push(row.map_err(|e| e.to_string())?);
+                }
+                Ok(caps)
+            }),
+            #[cfg(feature = "pg")]
+            DatabaseConnection::Pg(_) => self.with_pg_conn(|client| {
+                let rows = client
+                    .query(
+                        "SELECT tool_name, description, input_schema_json, output_schema_json,
+                                requires_approval, risk_level, created_at
+                         FROM tool_capabilities ORDER BY tool_name",
+                        &[],
+                    )
+                    .map_err(|e| e.to_string())?;
+                Ok(rows.iter().map(pg_capability_row).collect())
+            }),
+        }
     }
 
     pub fn set_tool_allowlist(
@@ -141,52 +202,100 @@ impl LocalProductStore {
         tool_names: &[String],
     ) -> Result<(), String> {
         let now = self.now();
-        self.with_conn(|conn| {
-            conn.execute(
-                "DELETE FROM tool_allowlists WHERE profile_id = ?1",
-                params![profile_id],
-            )
-            .map_err(|e| e.to_string())?;
-            let mut stmt = conn
-                .prepare(
-                    "INSERT INTO tool_allowlists (profile_id, tool_name, created_at)
-                     VALUES (?1, ?2, ?3)",
+        match &self.db {
+            DatabaseConnection::Sqlite(_) => self.with_conn(|conn| {
+                conn.execute(
+                    "DELETE FROM tool_allowlists WHERE profile_id = ?1",
+                    params![profile_id],
                 )
                 .map_err(|e| e.to_string())?;
-            for tool in tool_names {
-                stmt.execute(params![profile_id, tool, now])
+                let mut stmt = conn
+                    .prepare(
+                        "INSERT INTO tool_allowlists (profile_id, tool_name, created_at)
+                         VALUES (?1, ?2, ?3)",
+                    )
                     .map_err(|e| e.to_string())?;
-            }
-            Ok(())
-        })
+                for tool in tool_names {
+                    stmt.execute(params![profile_id, tool, now])
+                        .map_err(|e| e.to_string())?;
+                }
+                Ok(())
+            }),
+            #[cfg(feature = "pg")]
+            DatabaseConnection::Pg(_) => self.with_pg_conn(|client| {
+                client
+                    .execute(
+                        "DELETE FROM tool_allowlists WHERE profile_id = $1",
+                        &[&profile_id],
+                    )
+                    .map_err(|e| e.to_string())?;
+                for tool in tool_names {
+                    client
+                        .execute(
+                            "INSERT INTO tool_allowlists (profile_id, tool_name, created_at)
+                             VALUES ($1, $2, $3)",
+                            &[&profile_id, tool, &now],
+                        )
+                        .map_err(|e| e.to_string())?;
+                }
+                Ok(())
+            }),
+        }
     }
 
     pub fn check_tool_allowed(&self, profile_id: &str, tool_name: &str) -> Result<bool, String> {
-        self.with_conn(|conn| {
-            let count: i64 = conn
-                .query_row(
-                    "SELECT COUNT(*) FROM tool_allowlists WHERE profile_id = ?1",
-                    params![profile_id],
-                    |row| row.get(0),
-                )
-                .map_err(|e| e.to_string())?;
+        match &self.db {
+            DatabaseConnection::Sqlite(_) => self.with_conn(|conn| {
+                let count: i64 = conn
+                    .query_row(
+                        "SELECT COUNT(*) FROM tool_allowlists WHERE profile_id = ?1",
+                        params![profile_id],
+                        |row| row.get(0),
+                    )
+                    .map_err(|e| e.to_string())?;
 
-            // No allowlist for this profile -> everything allowed
-            if count == 0 {
-                return Ok(true);
-            }
+                // No allowlist for this profile -> everything allowed
+                if count == 0 {
+                    return Ok(true);
+                }
 
-            let found: i64 = conn
-                .query_row(
-                    "SELECT COUNT(*) FROM tool_allowlists
-                     WHERE profile_id = ?1 AND tool_name = ?2",
-                    params![profile_id, tool_name],
-                    |row| row.get(0),
-                )
-                .map_err(|e| e.to_string())?;
+                let found: i64 = conn
+                    .query_row(
+                        "SELECT COUNT(*) FROM tool_allowlists
+                         WHERE profile_id = ?1 AND tool_name = ?2",
+                        params![profile_id, tool_name],
+                        |row| row.get(0),
+                    )
+                    .map_err(|e| e.to_string())?;
 
-            Ok(found > 0)
-        })
+                Ok(found > 0)
+            }),
+            #[cfg(feature = "pg")]
+            DatabaseConnection::Pg(_) => self.with_pg_conn(|client| {
+                let count: i64 = client
+                    .query_one(
+                        "SELECT COUNT(*) FROM tool_allowlists WHERE profile_id = $1",
+                        &[&profile_id],
+                    )
+                    .map_err(|e| e.to_string())?
+                    .get(0);
+
+                if count == 0 {
+                    return Ok(true);
+                }
+
+                let found: i64 = client
+                    .query_one(
+                        "SELECT COUNT(*) FROM tool_allowlists
+                         WHERE profile_id = $1 AND tool_name = $2",
+                        &[&profile_id, &tool_name],
+                    )
+                    .map_err(|e| e.to_string())?
+                    .get(0);
+
+                Ok(found > 0)
+            }),
+        }
     }
 
     pub fn add_tool_hook(
@@ -201,31 +310,60 @@ impl LocalProductStore {
         let condition_json = condition.map(|v| v.to_string());
         let config_json = action_config.map(|v| v.to_string());
         let now = self.now();
-        self.with_conn(|conn| {
-            conn.execute(
-                "INSERT INTO tool_hooks
-                 (hook_id, hook_type, tool_name, condition_json, action,
-                  action_config_json, enabled, created_at)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, 1, ?7)
-                 ON CONFLICT(hook_id) DO UPDATE SET
-                  hook_type = excluded.hook_type,
-                  tool_name = excluded.tool_name,
-                  condition_json = excluded.condition_json,
-                  action = excluded.action,
-                  action_config_json = excluded.action_config_json",
-                params![
-                    hook_id,
-                    hook_type,
-                    tool_name,
-                    condition_json,
-                    action,
-                    config_json,
-                    now
-                ],
-            )
-            .map_err(|e| e.to_string())?;
-            Ok(())
-        })
+        match &self.db {
+            DatabaseConnection::Sqlite(_) => self.with_conn(|conn| {
+                conn.execute(
+                    "INSERT INTO tool_hooks
+                     (hook_id, hook_type, tool_name, condition_json, action,
+                      action_config_json, enabled, created_at)
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, 1, ?7)
+                     ON CONFLICT(hook_id) DO UPDATE SET
+                      hook_type = excluded.hook_type,
+                      tool_name = excluded.tool_name,
+                      condition_json = excluded.condition_json,
+                      action = excluded.action,
+                      action_config_json = excluded.action_config_json",
+                    params![
+                        hook_id,
+                        hook_type,
+                        tool_name,
+                        condition_json,
+                        action,
+                        config_json,
+                        now
+                    ],
+                )
+                .map_err(|e| e.to_string())?;
+                Ok(())
+            }),
+            #[cfg(feature = "pg")]
+            DatabaseConnection::Pg(_) => self.with_pg_conn(|client| {
+                client
+                    .execute(
+                        "INSERT INTO tool_hooks
+                         (hook_id, hook_type, tool_name, condition_json, action,
+                          action_config_json, enabled, created_at)
+                         VALUES ($1, $2, $3, $4, $5, $6, 1, $7)
+                         ON CONFLICT(hook_id) DO UPDATE SET
+                          hook_type = EXCLUDED.hook_type,
+                          tool_name = EXCLUDED.tool_name,
+                          condition_json = EXCLUDED.condition_json,
+                          action = EXCLUDED.action,
+                          action_config_json = EXCLUDED.action_config_json",
+                        &[
+                            &hook_id,
+                            &hook_type,
+                            &tool_name,
+                            &condition_json,
+                            &action,
+                            &config_json,
+                            &now,
+                        ],
+                    )
+                    .map_err(|e| e.to_string())?;
+                Ok(())
+            }),
+        }
     }
 
     pub fn evaluate_hooks(
@@ -309,41 +447,77 @@ impl LocalProductStore {
     }
 
     pub fn set_hook_enabled(&self, hook_id: &str, enabled: bool) -> Result<bool, String> {
-        self.with_conn(|conn| {
-            let affected = conn
-                .execute(
-                    "UPDATE tool_hooks SET enabled = ?1 WHERE hook_id = ?2",
-                    params![enabled as i64, hook_id],
-                )
-                .map_err(|e| e.to_string())?;
-            Ok(affected > 0)
-        })
+        let enabled_i64 = enabled as i64;
+        match &self.db {
+            DatabaseConnection::Sqlite(_) => self.with_conn(|conn| {
+                let affected = conn
+                    .execute(
+                        "UPDATE tool_hooks SET enabled = ?1 WHERE hook_id = ?2",
+                        params![enabled_i64, hook_id],
+                    )
+                    .map_err(|e| e.to_string())?;
+                Ok(affected > 0)
+            }),
+            #[cfg(feature = "pg")]
+            DatabaseConnection::Pg(_) => self.with_pg_conn(|client| {
+                let affected = client
+                    .execute(
+                        "UPDATE tool_hooks SET enabled = $1 WHERE hook_id = $2",
+                        &[&enabled_i64, &hook_id],
+                    )
+                    .map_err(|e| e.to_string())?;
+                Ok(affected > 0)
+            }),
+        }
     }
 
     pub fn delete_all_hooks(&self) -> Result<(), String> {
-        self.with_conn(|conn| {
-            conn.execute("DELETE FROM tool_hooks", [])
-                .map_err(|e| e.to_string())?;
-            Ok(())
-        })
+        match &self.db {
+            DatabaseConnection::Sqlite(_) => self.with_conn(|conn| {
+                conn.execute("DELETE FROM tool_hooks", [])
+                    .map_err(|e| e.to_string())?;
+                Ok(())
+            }),
+            #[cfg(feature = "pg")]
+            DatabaseConnection::Pg(_) => self.with_pg_conn(|client| {
+                client
+                    .execute("DELETE FROM tool_hooks", &[])
+                    .map_err(|e| e.to_string())?;
+                Ok(())
+            }),
+        }
     }
 
     fn list_enabled_hooks(&self) -> Result<Vec<ToolHook>, String> {
-        self.with_conn(|conn| {
-            let mut stmt = conn
-                .prepare(
-                    "SELECT hook_id, hook_type, tool_name, condition_json, action,
-                            action_config_json, enabled, created_at
-                     FROM tool_hooks WHERE enabled = 1 ORDER BY rowid",
-                )
-                .map_err(|e| e.to_string())?;
-            let rows = stmt.query_map([], hook_row).map_err(|e| e.to_string())?;
-            let mut hooks = Vec::new();
-            for row in rows {
-                hooks.push(row.map_err(|e| e.to_string())?);
-            }
-            Ok(hooks)
-        })
+        match &self.db {
+            DatabaseConnection::Sqlite(_) => self.with_conn(|conn| {
+                let mut stmt = conn
+                    .prepare(
+                        "SELECT hook_id, hook_type, tool_name, condition_json, action,
+                                action_config_json, enabled, created_at
+                         FROM tool_hooks WHERE enabled = 1 ORDER BY rowid",
+                    )
+                    .map_err(|e| e.to_string())?;
+                let rows = stmt.query_map([], hook_row).map_err(|e| e.to_string())?;
+                let mut hooks = Vec::new();
+                for row in rows {
+                    hooks.push(row.map_err(|e| e.to_string())?);
+                }
+                Ok(hooks)
+            }),
+            #[cfg(feature = "pg")]
+            DatabaseConnection::Pg(_) => self.with_pg_conn(|client| {
+                let rows = client
+                    .query(
+                        "SELECT hook_id, hook_type, tool_name, condition_json, action,
+                                action_config_json, enabled, created_at
+                         FROM tool_hooks WHERE enabled = 1 ORDER BY hook_id",
+                        &[],
+                    )
+                    .map_err(|e| e.to_string())?;
+                Ok(rows.iter().map(pg_hook_row).collect())
+            }),
+        }
     }
 
     pub fn get_mcp_descriptors(&self) -> Result<Vec<ToolDescriptor>, String> {
@@ -391,6 +565,50 @@ fn resolve_json_path<'a>(value: &'a Value, path: &str) -> Option<&'a Value> {
         current = current.get(part)?;
     }
     Some(current)
+}
+
+#[cfg(feature = "pg")]
+fn pg_capability_row(row: &postgres::Row) -> ToolCapability {
+    let tool_name: String = row.get(0);
+    let description: String = row.get(1);
+    let input_schema_json: Option<String> = row.get(2);
+    let output_schema_json: Option<String> = row.get(3);
+    let requires_approval: i64 = row.get(4);
+    let risk_level_str: String = row.get(5);
+    let created_at: String = row.get(6);
+
+    ToolCapability {
+        tool_name,
+        description,
+        input_schema: input_schema_json.and_then(|s| serde_json::from_str(&s).ok()),
+        output_schema: output_schema_json.and_then(|s| serde_json::from_str(&s).ok()),
+        requires_approval: requires_approval != 0,
+        risk_level: RiskLevel::parse_str(&risk_level_str).unwrap_or(RiskLevel::Low),
+        created_at,
+    }
+}
+
+#[cfg(feature = "pg")]
+fn pg_hook_row(row: &postgres::Row) -> ToolHook {
+    let hook_id: String = row.get(0);
+    let hook_type_str: String = row.get(1);
+    let tool_name: Option<String> = row.get(2);
+    let condition_json: Option<String> = row.get(3);
+    let action_str: String = row.get(4);
+    let action_config_json: Option<String> = row.get(5);
+    let enabled: i64 = row.get(6);
+    let created_at: String = row.get(7);
+
+    ToolHook {
+        hook_id,
+        hook_type: HookType::parse_str(&hook_type_str).unwrap_or(HookType::PreExecution),
+        tool_name,
+        condition: condition_json.and_then(|s| serde_json::from_str(&s).ok()),
+        action: HookAction::parse_str(&action_str).unwrap_or(HookAction::Log),
+        action_config: action_config_json.and_then(|s| serde_json::from_str(&s).ok()),
+        enabled: enabled != 0,
+        created_at,
+    }
 }
 
 // ---------------------------------------------------------------------------

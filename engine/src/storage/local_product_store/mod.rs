@@ -12,6 +12,8 @@ mod heartbeat;
 mod integrity;
 mod keys;
 mod migrations;
+#[cfg(feature = "pg")]
+pub mod pg_backend;
 mod plans;
 mod provider_audit;
 mod supervised_patch;
@@ -26,6 +28,13 @@ use rusqlite::{params, Connection};
 use serde_json::{json, Value};
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
+
+#[cfg(feature = "pg")]
+use postgres::NoTls;
+#[cfg(feature = "pg")]
+use r2d2::Pool;
+#[cfg(feature = "pg")]
+use r2d2_postgres::PostgresConnectionManager;
 
 pub use crate::read_only_planner::WorkflowPlanIds;
 pub use boundaries::local_boundaries;
@@ -327,9 +336,15 @@ CREATE INDEX IF NOT EXISTS idx_orchestration_decisions_action ON orchestration_d
 CREATE INDEX IF NOT EXISTS idx_orchestration_decisions_created ON orchestration_decisions(created_at);
 ";
 
+pub enum DatabaseConnection {
+    Sqlite(Mutex<Connection>),
+    #[cfg(feature = "pg")]
+    Pg(Pool<PostgresConnectionManager<NoTls>>),
+}
+
 pub struct LocalProductStore {
     db_path: PathBuf,
-    conn: Mutex<Connection>,
+    db: DatabaseConnection,
     clock: Box<dyn Fn() -> String + Send + Sync>,
     encryption_active: bool,
 }
@@ -369,7 +384,7 @@ impl LocalProductStore {
         conn.execute_batch(DDL).map_err(|e| e.to_string())?;
         let store = Self {
             db_path: path,
-            conn: Mutex::new(conn),
+            db: DatabaseConnection::Sqlite(Mutex::new(conn)),
             clock: Box::new(clock),
             encryption_active: encryption_key.is_some(),
         };
@@ -391,22 +406,87 @@ impl LocalProductStore {
     }
 
     pub fn is_memory(&self) -> bool {
-        self.db_path == Path::new(":memory:")
+        match &self.db {
+            DatabaseConnection::Sqlite(_) => self.db_path == Path::new(":memory:"),
+            #[cfg(feature = "pg")]
+            DatabaseConnection::Pg(_) => false,
+        }
     }
 
     pub(super) fn with_conn<F, R>(&self, f: F) -> Result<R, String>
     where
         F: FnOnce(&Connection) -> Result<R, String>,
     {
-        let guard = self.conn.lock().map_err(|e| e.to_string())?;
-        f(&guard)
+        match &self.db {
+            DatabaseConnection::Sqlite(conn) => {
+                let guard = conn.lock().map_err(|e| e.to_string())?;
+                f(&guard)
+            }
+            #[cfg(feature = "pg")]
+            DatabaseConnection::Pg(_) => {
+                Err("with_conn called on PostgreSQL store; use with_pg_conn".into())
+            }
+        }
     }
 
     pub fn checkpoint_wal(&self) -> Result<(), String> {
-        self.with_conn(|conn| {
-            conn.execute_batch("PRAGMA wal_checkpoint(FULL);")
-                .map_err(|e| e.to_string())
-        })
+        match &self.db {
+            DatabaseConnection::Sqlite(_) => self.with_conn(|conn| {
+                conn.execute_batch("PRAGMA wal_checkpoint(FULL);")
+                    .map_err(|e| e.to_string())
+            }),
+            #[cfg(feature = "pg")]
+            DatabaseConnection::Pg(_) => Ok(()),
+        }
+    }
+
+    #[cfg(feature = "pg")]
+    pub fn new_postgres(
+        pg_url: &str,
+        clock: impl Fn() -> String + Send + Sync + 'static,
+    ) -> Result<Self, String> {
+        let manager = PostgresConnectionManager::new(
+            pg_url.parse().map_err(|e| format!("invalid PG URL: {e}"))?,
+            NoTls,
+        );
+        let pool = Pool::builder()
+            .max_size(5)
+            .build(manager)
+            .map_err(|e| format!("r2d2 pool creation failed: {e}"))?;
+        {
+            let mut client = pool.get().map_err(|e| format!("PG pool get failed: {e}"))?;
+            client
+                .batch_execute(pg_backend::ddl::PG_DDL)
+                .map_err(|e| format!("PG DDL execution failed: {e}"))?;
+        }
+        let store = Self {
+            db_path: PathBuf::from(pg_url),
+            db: DatabaseConnection::Pg(pool),
+            clock: Box::new(clock),
+            encryption_active: false,
+        };
+        store.ensure_default_config()?;
+        store.run_pg_migrations()?;
+        Ok(store)
+    }
+
+    #[cfg(feature = "pg")]
+    pub(super) fn with_pg_conn<F, R>(&self, f: F) -> Result<R, String>
+    where
+        F: FnOnce(&mut postgres::Client) -> Result<R, String>,
+    {
+        match &self.db {
+            DatabaseConnection::Pg(pool) => {
+                let mut client = pool.get().map_err(|e| format!("PG pool get failed: {e}"))?;
+                f(&mut client)
+            }
+            _ => Err("with_pg_conn called on SQLite store".into()),
+        }
+    }
+
+    #[cfg(feature = "pg")]
+    fn run_pg_migrations(&self) -> Result<(), String> {
+        self.run_pg_migrations_internal()
     }
 
     pub fn stats(&self) -> Result<Value, String> {

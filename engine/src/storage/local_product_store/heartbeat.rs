@@ -1,7 +1,7 @@
 use rusqlite::params;
 use serde::{Deserialize, Serialize};
 
-use super::LocalProductStore;
+use super::{DatabaseConnection, LocalProductStore};
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct SchedulerHeartbeatRow {
@@ -22,60 +22,115 @@ impl LocalProductStore {
         metadata_json: &str,
     ) -> Result<(), String> {
         let now = self.now();
-        self.with_conn(|conn| {
-            conn.execute(
-                "UPDATE scheduler_heartbeat
-                 SET last_heartbeat_at = ?1,
-                     tick_count = ?2,
-                     error_count = ?3,
-                     uptime_seconds = ?4,
-                     metadata_json = ?5,
-                     updated_at = ?6
-                 WHERE id = 1",
-                params![
-                    now,
-                    tick_count as i64,
-                    error_count as i64,
-                    uptime_seconds,
-                    metadata_json,
-                    now
-                ],
-            )
-            .map_err(|e| e.to_string())?;
-            Ok(())
-        })
+        match &self.db {
+            DatabaseConnection::Sqlite(_) => self.with_conn(|conn| {
+                conn.execute(
+                    "UPDATE scheduler_heartbeat
+                     SET last_heartbeat_at = ?1,
+                         tick_count = ?2,
+                         error_count = ?3,
+                         uptime_seconds = ?4,
+                         metadata_json = ?5,
+                         updated_at = ?6
+                     WHERE id = 1",
+                    params![
+                        now,
+                        tick_count as i64,
+                        error_count as i64,
+                        uptime_seconds,
+                        metadata_json,
+                        now
+                    ],
+                )
+                .map_err(|e| e.to_string())?;
+                Ok(())
+            }),
+            #[cfg(feature = "pg")]
+            DatabaseConnection::Pg(_) => self.with_pg_conn(|client| {
+                client
+                    .execute(
+                        "UPDATE scheduler_heartbeat
+                         SET last_heartbeat_at = $1,
+                             tick_count = $2,
+                             error_count = $3,
+                             uptime_seconds = $4,
+                             metadata_json = $5,
+                             updated_at = $6
+                         WHERE id = 1",
+                        &[
+                            &now,
+                            &(tick_count as i64),
+                            &(error_count as i64),
+                            &uptime_seconds,
+                            &metadata_json,
+                            &now,
+                        ],
+                    )
+                    .map_err(|e| e.to_string())?;
+                Ok(())
+            }),
+        }
     }
 
     pub fn read_heartbeat(&self) -> Result<Option<SchedulerHeartbeatRow>, String> {
-        self.with_conn(|conn| {
-            let mut stmt = conn
-                .prepare(
-                    "SELECT last_heartbeat_at, tick_count, error_count,
-                            uptime_seconds, metadata_json, updated_at
-                     FROM scheduler_heartbeat WHERE id = 1",
-                )
-                .map_err(|e| e.to_string())?;
+        match &self.db {
+            DatabaseConnection::Sqlite(_) => self.with_conn(|conn| {
+                let mut stmt = conn
+                    .prepare(
+                        "SELECT last_heartbeat_at, tick_count, error_count,
+                                uptime_seconds, metadata_json, updated_at
+                         FROM scheduler_heartbeat WHERE id = 1",
+                    )
+                    .map_err(|e| e.to_string())?;
 
-            let mut rows = stmt
-                .query_map([], |row| {
-                    let tick_i64: i64 = row.get(1)?;
-                    let err_i64: i64 = row.get(2)?;
-                    Ok(SchedulerHeartbeatRow {
-                        last_heartbeat_at: row.get(0)?,
-                        tick_count: tick_i64 as u64,
-                        error_count: err_i64 as u64,
-                        uptime_seconds: row.get(3)?,
-                        metadata_json: row.get(4)?,
-                        updated_at: row.get(5)?,
+                let mut rows = stmt
+                    .query_map([], |row| {
+                        let tick_i64: i64 = row.get(1)?;
+                        let err_i64: i64 = row.get(2)?;
+                        Ok(SchedulerHeartbeatRow {
+                            last_heartbeat_at: row.get(0)?,
+                            tick_count: tick_i64 as u64,
+                            error_count: err_i64 as u64,
+                            uptime_seconds: row.get(3)?,
+                            metadata_json: row.get(4)?,
+                            updated_at: row.get(5)?,
+                        })
                     })
-                })
-                .map_err(|e| e.to_string())?;
+                    .map_err(|e| e.to_string())?;
 
-            match rows.next() {
-                Some(row) => Ok(Some(row.map_err(|e| e.to_string())?)),
-                None => Ok(None),
-            }
-        })
+                match rows.next() {
+                    Some(row) => Ok(Some(row.map_err(|e| e.to_string())?)),
+                    None => Ok(None),
+                }
+            }),
+            #[cfg(feature = "pg")]
+            DatabaseConnection::Pg(_) => self.with_pg_conn(|client| {
+                let rows = client
+                    .query(
+                        "SELECT last_heartbeat_at, tick_count, error_count,
+                                uptime_seconds, metadata_json, updated_at
+                         FROM scheduler_heartbeat WHERE id = 1",
+                        &[],
+                    )
+                    .map_err(|e| e.to_string())?;
+
+                match rows.into_iter().next() {
+                    Some(row) => {
+                        let tick_i64: i64 = row.get(1);
+                        let err_i64: i64 = row.get(2);
+                        Ok(Some(SchedulerHeartbeatRow {
+                            last_heartbeat_at: row.get(0),
+                            tick_count: tick_i64 as u64,
+                            error_count: err_i64 as u64,
+                            uptime_seconds: row.get(3),
+                            metadata_json: row.get(4),
+                            updated_at: row.get(5),
+                        }))
+                    }
+                    None => Ok(None),
+                }
+            }),
+        }
     }
 }
 
