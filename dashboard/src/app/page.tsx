@@ -27,11 +27,14 @@ import { SchedulerStatus } from "@/components/SchedulerStatus";
 import { SupervisedPatch } from "@/components/SupervisedPatch";
 import { Settings } from "@/components/Settings";
 import { Team } from "@/components/Team";
+import { WelcomePanel } from "@/components/WelcomePanel";
+import { TabGroup, type TabGroupDef } from "@/components/TabGroup";
+import { TermTooltip } from "@/components/TermTooltip";
 import { WorkflowRuns } from "@/components/WorkflowRuns";
 
 type Tab = "mission" | "dispatches" | "routing" | "decisions" | "team" | "costs" | "operations" | "runs" | "patches" | "scheduler" | "pool" | "queue" | "settings" | "health" | "backups" | "audit";
 
-const tabs: { id: Tab; label: string }[] = [
+const allTabs: { id: Tab; label: string }[] = [
   { id: "mission", label: "Mission Control" },
   { id: "dispatches", label: "Dispatches" },
   { id: "routing", label: "Routing" },
@@ -48,6 +51,42 @@ const tabs: { id: Tab; label: string }[] = [
   { id: "health", label: "Health" },
   { id: "backups", label: "Backups" },
   { id: "audit", label: "Audit" },
+];
+
+const tabGroups: TabGroupDef[] = [
+  {
+    label: "Monitor",
+    tabs: [
+      { id: "mission", label: "Mission Control" },
+      { id: "dispatches", label: "Dispatches" },
+      { id: "routing", label: "Routing" },
+      { id: "decisions", label: "Decisions" },
+      { id: "costs", label: "Costs" },
+    ],
+  },
+  {
+    label: "System",
+    tabs: [
+      { id: "scheduler", label: "Scheduler" },
+      { id: "pool", label: "Pool" },
+      { id: "queue", label: "Queue" },
+      { id: "runs", label: "Runs" },
+      { id: "patches", label: "Patches" },
+      { id: "operations", label: "Operations" },
+    ],
+    collapsible: true,
+  },
+  {
+    label: "Admin",
+    tabs: [
+      { id: "team", label: "Team" },
+      { id: "settings", label: "Settings" },
+      { id: "health", label: "Health" },
+      { id: "backups", label: "Backups" },
+      { id: "audit", label: "Audit" },
+    ],
+    collapsible: true,
+  },
 ];
 
 const emptyDashboard: LocalDashboardState = {
@@ -93,7 +132,7 @@ const emptyDashboard: LocalDashboardState = {
 function readTabFromHash(): Tab {
   if (typeof window === "undefined") return "mission";
   const hash = window.location.hash.replace(/^#/, "");
-  if (tabs.some((t) => t.id === hash)) return hash as Tab;
+  if (allTabs.some((t) => t.id === hash)) return hash as Tab;
   return "mission";
 }
 
@@ -227,33 +266,37 @@ export default function DashboardPage() {
   const setupSteps = useMemo(
     () => [
       {
-        detail: health === "healthy" ? "Engine API is reachable." : "Start the Rust engine on 127.0.0.1.",
+        detail: health === "healthy"
+          ? "Engine API is reachable."
+          : "Start the engine: ACP_ADMIN_TOKEN=test123 PORT=9999 ./target/debug/engine",
         label: "Engine reachable",
         state: health === "healthy" ? "done" : "warn",
       },
       {
-        detail: ready === "ready" ? "Runtime readiness checks pass." : "Readiness endpoint is not reporting ready.",
+        detail: ready === "ready"
+          ? "Runtime readiness checks pass."
+          : "Check scheduler status in the Scheduler tab.",
         label: "Runtime ready",
         state: ready === "ready" ? "done" : "warn",
       },
       {
         detail: hasLocalToken
           ? "A local API key is stored for protected tabs."
-          : "Needed for backups, audit history, and team administration.",
+          : "Set ACP_ADMIN_TOKEN env var to enable protected endpoints.",
         label: "Admin key available",
         state: hasLocalToken ? "done" : "todo",
       },
       {
         detail: dashboard.counts.dispatches > 0
           ? `${dashboard.counts.dispatches} dispatch record${dashboard.counts.dispatches === 1 ? "" : "s"} persisted.`
-          : "Create a noop dispatch through the API to populate history.",
+          : "Use the curl command in the Dispatches tab to create your first dispatch.",
         label: "First dispatch recorded",
         state: dashboard.counts.dispatches > 0 ? "done" : "todo",
       },
       {
         detail: dashboard.counts.team_members > 0 || dashboard.counts.api_keys > 0
           ? `${dashboard.counts.team_members} member${dashboard.counts.team_members === 1 ? "" : "s"}, ${dashboard.counts.api_keys} key${dashboard.counts.api_keys === 1 ? "" : "s"}.`
-          : "Add a local member and scoped API key when protected mode is enabled.",
+          : "Configure members and API keys in the Team tab.",
         label: "Team boundary configured",
         state: dashboard.counts.team_members > 0 || dashboard.counts.api_keys > 0 ? "done" : "todo",
       },
@@ -269,8 +312,8 @@ export default function DashboardPage() {
             <p className="eyebrow">Agent Control Plane</p>
             <h1>Local Operations Console</h1>
             <p className="hero-copy">
-              Monitor local dispatch history, team state, cost usage, audit events, and data
-              operations without enabling cloud or target-repo execution paths.
+              A local control plane for studying agent workflows. Monitor dispatches, track
+              costs, manage your team, and review audit history — all on your machine.
             </p>
             <BoundaryBadges
               authStatus={authStatus}
@@ -292,6 +335,14 @@ export default function DashboardPage() {
             <button onClick={toggleTheme} type="button" className="topbar-btn" aria-label={theme === "dark" ? "Switch to light mode" : "Switch to dark mode"}>
               {theme === "dark" ? "Light" : "Dark"}
             </button>
+            <a
+              className="topbar-btn"
+              href="https://github.com/anthropics/agent-control-plane"
+              target="_blank"
+              rel="noopener noreferrer"
+            >
+              Docs
+            </a>
           </div>
         </header>
 
@@ -311,40 +362,13 @@ export default function DashboardPage() {
           <Metric label="Team" value={dashboard.counts.team_members.toString()} detail={`${dashboard.counts.api_keys} keys`} />
         </section>
 
+        <WelcomePanel dispatchCount={dashboard.counts.dispatches} />
+
         <SetupChecklist steps={setupSteps} />
 
-        <nav className="nav" aria-label="Dashboard sections" role="tablist">
-          {tabs.map((item) => (
-            <button
-              aria-selected={item.id === tab}
-              aria-controls={`tabpanel-${item.id}`}
-              className="tab"
-              id={`tab-${item.id}`}
-              key={item.id}
-              onClick={() => setTab(item.id)}
-              onKeyDown={(e) => {
-                const idx = tabs.findIndex((t) => t.id === item.id);
-                if (e.key === "ArrowRight") {
-                  e.preventDefault();
-                  const next = tabs[(idx + 1) % tabs.length];
-                  setTab(next.id);
-                  document.getElementById(`tab-${next.id}`)?.focus();
-                } else if (e.key === "ArrowLeft") {
-                  e.preventDefault();
-                  const prev = tabs[(idx - 1 + tabs.length) % tabs.length];
-                  setTab(prev.id);
-                  document.getElementById(`tab-${prev.id}`)?.focus();
-                }
-              }}
-              role="tab"
-              type="button"
-            >
-              {item.label}
-            </button>
-          ))}
-        </nav>
+        <TabGroup groups={tabGroups} activeTab={tab} onTabChange={(id) => setTab(id as Tab)} />
 
-        <div role="tabpanel" id={`tabpanel-${tab}`} aria-labelledby={`tab-${tab}`}>
+        <div role="tabpanel">
           {tab === "mission" && <MissionControl />}
           {tab === "dispatches" && (
             <Dispatches

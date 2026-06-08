@@ -11,6 +11,7 @@ import {
 import type {
   WorkflowRun,
   WorkflowRunApproval,
+  WorkflowRunEdge,
   WorkflowRunEvent,
   WorkflowRunNode,
 } from "@/lib/types";
@@ -18,6 +19,20 @@ import { ConfirmDialog, type ConfirmAction } from "./ConfirmDialog";
 import { EmptyState } from "./EmptyState";
 import { SearchBar } from "./SearchBar";
 import { StateBanner } from "./StateBanner";
+
+function getRunNodes(run: WorkflowRun): WorkflowRunNode[] {
+  const r = run as unknown as Record<string, unknown>;
+  return (r.nodes as WorkflowRunNode[])
+    ?? ((r.graph as Record<string, unknown>)?.nodes as WorkflowRunNode[])
+    ?? [];
+}
+
+function getRunEdges(run: WorkflowRun): WorkflowRunEdge[] {
+  const r = run as unknown as Record<string, unknown>;
+  return (r.edges as WorkflowRunEdge[])
+    ?? ((r.graph as Record<string, unknown>)?.edges as WorkflowRunEdge[])
+    ?? [];
+}
 
 type RunError = {
   message: string;
@@ -223,10 +238,10 @@ function RunDetail({
     }
   }
 
-  const completedNodes = run.nodes.filter((n) => n.status === "completed").length;
-  const failedNodes = run.nodes.filter((n) => n.status === "failed").length;
-  const totalCost = run.nodes.reduce((sum, n) => sum + n.cost_incurred, 0);
-  const totalLatency = run.nodes.reduce((sum, n) => sum + (n.latency_ms ?? 0), 0);
+  const completedNodes = getRunNodes(run).filter((n) => n.status === "completed").length;
+  const failedNodes = getRunNodes(run).filter((n) => n.status === "failed").length;
+  const totalCost = getRunNodes(run).reduce((sum, n) => sum + n.cost_incurred, 0);
+  const totalLatency = getRunNodes(run).reduce((sum, n) => sum + (n.latency_ms ?? 0), 0);
 
   return (
     <div className="card stack">
@@ -251,7 +266,7 @@ function RunDetail({
         </div>
         <div className="summary-tile">
           <span className="metric-label">Nodes</span>
-          <strong>{completedNodes}/{run.nodes.length}</strong>
+          <strong>{completedNodes}/{getRunNodes(run).length}</strong>
         </div>
         <div className="summary-tile">
           <span className="metric-label">Cost</span>
@@ -288,7 +303,7 @@ function RunDetail({
       )}
 
       <div className="subcard stack">
-        <h4>Nodes ({run.nodes.length})</h4>
+        <h4>Nodes ({getRunNodes(run).length})</h4>
         {selectedNode ? (
           <NodeDetail node={selectedNode} onBack={() => setSelectedNode(null)} />
         ) : (
@@ -305,7 +320,7 @@ function RunDetail({
               </tr>
             </thead>
             <tbody>
-              {run.nodes.map((node) => (
+              {getRunNodes(run).map((node) => (
                 <NodeRow key={node.node_id} node={node} onClick={() => setSelectedNode(node)} />
               ))}
             </tbody>
@@ -428,9 +443,14 @@ export function WorkflowRuns() {
       ) : runs.length === 0 && !error ? (
         <EmptyState
           title="No workflow runs"
-          description="Workflow runs will appear here once created from plans via the API."
+          description="Create a plan via the API to start a workflow run."
           tone="info"
-        />
+        >
+          <div className="command-block">
+            <span className="label">Create a plan</span>
+            <code>{`curl -X POST http://127.0.0.1:9999/api/v1/plans -H "content-type: application/json" -d '{"raw_request":"Implement feature X","request_source":"manual"}'`}</code>
+          </div>
+        </EmptyState>
       ) : (
         <table className="table">
           <thead>
@@ -446,13 +466,13 @@ export function WorkflowRuns() {
           </thead>
           <tbody>
             {runs.map((run) => {
-              const completed = run.nodes.filter((n) => n.status === "completed").length;
+              const completed = getRunNodes(run).filter((n) => n.status === "completed").length;
               return (
                 <tr key={run.run_id}>
                   <td className="mono" style={{ fontSize: "0.8rem" }}>{run.run_id.slice(0, 12)}</td>
                   <td><span className={`pill ${statusPill(run.status)}`}>{run.status}</span></td>
                   <td className="mono" style={{ fontSize: "0.8rem" }}>{run.workflow_id.slice(0, 12)}</td>
-                  <td>{completed}/{run.nodes.length}</td>
+                  <td>{completed}/{getRunNodes(run).length}</td>
                   <td>{run.initiated_by}</td>
                   <td>{run.created_at}</td>
                   <td>

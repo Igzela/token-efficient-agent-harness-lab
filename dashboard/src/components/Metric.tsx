@@ -1,3 +1,5 @@
+import type { ReactNode } from "react";
+
 export function Metric({
   detail,
   label,
@@ -5,7 +7,7 @@ export function Metric({
   value,
 }: {
   detail?: string;
-  label: string;
+  label: ReactNode;
   tone?: "ok" | "warn" | "info";
   value: string;
 }) {

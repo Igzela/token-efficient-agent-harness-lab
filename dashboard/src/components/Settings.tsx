@@ -4,6 +4,19 @@ import type { LocalDashboardState } from "@/lib/types";
 import { EmptyState } from "./EmptyState";
 import { StateBanner } from "./StateBanner";
 
+const envVars = [
+  { name: "ACP_ADMIN_TOKEN", desc: "Admin API key for protected endpoints" },
+  { name: "ACP_REQUIRE_AUTH", desc: "Enable authentication (1 = required)" },
+  { name: "ACP_PROVIDER_TYPE", desc: "Provider adapter (openai, anthropic, stub)" },
+  { name: "ACP_ENABLE_PROVIDER_EXECUTION", desc: "Enable real provider calls (1 = on)" },
+  { name: "ACP_DATABASE_URL", desc: "PostgreSQL connection string (optional)" },
+  { name: "ACP_DB_PATH", desc: "SQLite database path" },
+  { name: "ACP_BACKUP_INTERVAL_SEC", desc: "Automated backup interval in seconds" },
+  { name: "ACP_TLS_CERT_PATH", desc: "TLS certificate path for HTTPS" },
+  { name: "ACP_TLS_KEY_PATH", desc: "TLS private key path for HTTPS" },
+  { name: "ACP_DB_ENCRYPTION_KEY", desc: "SQLCipher encryption key" },
+];
+
 export function Settings({ dashboard }: { dashboard: LocalDashboardState }) {
   const [providerHealth, setProviderHealth] = useState<Record<string, unknown> | null>(null);
   const [providerError, setProviderError] = useState<string | null>(null);
@@ -51,6 +64,15 @@ export function Settings({ dashboard }: { dashboard: LocalDashboardState }) {
       ) : (
         <p className="muted"><span className="spinner" />Loading...</p>
       )}
+      <h3 className="section-subhead">Environment Variables</h3>
+      <div className="stack readable-list">
+        {envVars.map((v) => (
+          <div key={v.name} className="kv-row">
+            <span className="muted mono" style={{ fontSize: "12px" }}>{v.name}</span>
+            <span style={{ fontSize: "13px" }}>{v.desc}</span>
+          </div>
+        ))}
+      </div>
     </section>
   );
 }

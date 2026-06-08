@@ -1,4 +1,14 @@
 import type { LocalDashboardState } from "@/lib/types";
+import { TermTooltip } from "./TermTooltip";
+
+const boundaryExplanations: Record<string, string> = {
+  deployment: "Where the system runs",
+  docker_required: "Whether Docker is needed",
+  provider_transport: "How model calls are routed",
+  runtime_workers: "Background worker processes",
+  sandbox_process_execution: "Isolated process execution",
+  target_repository_writes: "Whether the app can write to target repos",
+};
 
 export function Health({
   dashboard,
@@ -12,6 +22,13 @@ export function Health({
   return (
     <section className="card stack">
       <h2>Health</h2>
+      <p className="muted" style={{ fontSize: "13px" }}>
+        {health === "healthy" && ready === "ready"
+          ? "All systems operational. The engine API is reachable and runtime readiness checks pass."
+          : health === "healthy"
+            ? "Engine API is reachable but runtime readiness is not confirmed. Check scheduler and executor status."
+            : "Engine API is not reachable. Start the engine with: ACP_ADMIN_TOKEN=test123 PORT=9999 ./target/debug/engine"}
+      </p>
       <div className="metrics">
         <div className="metric">
           <span className="metric-label">API</span>
@@ -25,6 +42,7 @@ export function Health({
         </div>
       </div>
       <h3 className="section-subhead">State Counts</h3>
+      <p className="muted" style={{ fontSize: "12px" }}>These counts reflect persisted state in the local SQLite database.</p>
       <div className="stack readable-list">
         <div className="kv-row">
           <span className="muted">Dispatches</span>
@@ -47,7 +65,9 @@ export function Health({
       <div className="stack readable-list">
         {Object.entries(dashboard.boundaries).map(([key, value]) => (
           <div key={key} className="kv-row">
-            <span className="muted">{key}</span>
+            <span className="muted">
+              <TermTooltip term={key}>{boundaryExplanations[key] ?? key}</TermTooltip>
+            </span>
             <span className="mono">{String(value)}</span>
           </div>
         ))}

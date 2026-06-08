@@ -339,9 +339,14 @@ export function MissionControl() {
       ) : runs.length === 0 ? (
         <EmptyState
           title="No workflow runs"
-          description="Mission-control state appears after workflow runs are created."
+          description="Create a plan to populate mission control state."
           tone="info"
-        />
+        >
+          <div className="command-block">
+            <span className="label">Create a plan</span>
+            <code>{`curl -X POST http://127.0.0.1:9999/api/v1/plans -H "content-type: application/json" -d '{"raw_request":"Implement feature","request_source":"manual"}'`}</code>
+          </div>
+        </EmptyState>
       ) : (
         <>
           <label className="mission-picker">

@@ -181,9 +181,14 @@ export function Dispatches({
         {dispatches.length === 0 ? (
           <EmptyState
             title="No gate records"
-            description="Quality gate summaries will appear after dispatch records are present."
+            description="Create a dispatch to see quality gate records."
             tone="info"
-          />
+          >
+            <div className="command-block">
+              <span className="label">Create a dispatch</span>
+              <code>{noopDispatchCommand}</code>
+            </div>
+          </EmptyState>
         ) : (
           <ul className="compact-list">
             {dispatches.slice(0, 5).map((d) => (

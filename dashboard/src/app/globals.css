@@ -204,9 +204,74 @@ h3 {
 }
 
 .nav {
-  grid-template-columns: repeat(auto-fit, minmax(96px, 1fr));
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
   margin-bottom: 16px;
+}
+
+.tab-group {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.tab-group-label {
+  color: var(--muted);
+  font-size: 10px;
+  font-weight: 650;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  padding-left: 2px;
+}
+
+.tab-group-tabs {
+  display: grid;
   gap: 6px;
+  grid-template-columns: repeat(auto-fit, minmax(96px, 1fr));
+}
+
+.tab-toggle {
+  color: var(--muted);
+  font-size: 12px;
+  min-height: 28px;
+}
+
+.welcome-panel {
+  background: linear-gradient(135deg, var(--accent-soft), var(--panel));
+  border: 1px solid var(--accent);
+  border-radius: var(--radius);
+  padding: 20px;
+  margin-bottom: 16px;
+}
+
+.welcome-header {
+  align-items: center;
+  display: flex;
+  justify-content: space-between;
+  margin-bottom: 8px;
+}
+
+.welcome-steps {
+  display: grid;
+  gap: 12px;
+  list-style: none;
+  margin: 12px 0 0;
+  padding: 0;
+  counter-reset: step;
+}
+
+.welcome-steps li {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 12px;
+}
+
+.welcome-steps li strong {
+  display: block;
+  font-size: 14px;
+  margin-bottom: 6px;
 }
 
 .subcard {
@@ -1075,7 +1140,6 @@ details pre {
   .grid,
   .wide-grid,
   .status-strip,
-  .nav,
   .split,
   .metrics,
   .routing-grid,
@@ -1087,7 +1151,7 @@ details pre {
     grid-template-columns: 1fr;
   }
 
-  .nav {
+  .tab-group-tabs {
     grid-template-columns: repeat(4, 1fr);
   }
 
@@ -1114,7 +1178,7 @@ details pre {
 }
 
 @media (max-width: 480px) {
-  .nav {
+  .tab-group-tabs {
     grid-template-columns: repeat(2, 1fr);
   }
 

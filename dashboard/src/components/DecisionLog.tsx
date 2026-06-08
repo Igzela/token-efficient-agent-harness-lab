@@ -3,6 +3,7 @@ import { ApiError, fetchDecisionStats, fetchDecisions } from "@/lib/api-client";
 import type { DecisionListResponse, DecisionLogStats, DecisionRecord } from "@/lib/types";
 import { EmptyState } from "./EmptyState";
 import { StateBanner } from "./StateBanner";
+import { TermTooltip } from "./TermTooltip";
 
 type DecisionError = {
   message: string;
@@ -54,17 +55,17 @@ function StatsTiles({ stats }: { stats: DecisionLogStats }) {
   return (
     <div className="detail-summary">
       <div className="summary-tile">
-        <span className="metric-label">Total decisions</span>
+        <span className="metric-label"><TermTooltip term="decision">Total decisions</TermTooltip></span>
         <strong>{stats.total_decisions}</strong>
       </div>
       <div className="summary-tile">
-        <span className="metric-label">Avg confidence</span>
+        <span className="metric-label"><TermTooltip term="confidence">Avg confidence</TermTooltip></span>
         <strong>{(stats.avg_confidence * 100).toFixed(1)}%</strong>
       </div>
-      {Object.entries(stats.by_action).map(([action, count]) => (
-        <div className="summary-tile" key={action}>
-          <span className="metric-label">{action}</span>
-          <strong>{count}</strong>
+      {(Array.isArray(stats.by_action) ? stats.by_action : []).map((entry) => (
+        <div className="summary-tile" key={entry.action}>
+          <span className="metric-label">{entry.action}</span>
+          <strong>{entry.count}</strong>
         </div>
       ))}
     </div>
@@ -204,9 +205,14 @@ export function DecisionLog() {
       ) : data.decisions.length === 0 ? (
         <EmptyState
           title="No decisions recorded"
-          description="Decision records will appear here once dispatches are processed."
+          description="Send a dispatch through the API to see routing decisions."
           tone="info"
-        />
+        >
+          <div className="command-block">
+            <span className="label">Create a dispatch</span>
+            <code>{`curl -X POST http://127.0.0.1:9999/api/v1/dispatch -H "content-type: application/json" -d '{"raw_request":"Review docs","request_source":"manual"}'`}</code>
+          </div>
+        </EmptyState>
       ) : (
         <>
           {stats && <StatsTiles stats={stats} />}
@@ -217,9 +223,9 @@ export function DecisionLog() {
                 <th>ID</th>
                 <th>Action</th>
                 <th>Reason</th>
-                <th>Executor</th>
-                <th>Confidence</th>
-                <th>Tier</th>
+                <th><TermTooltip term="executor">Executor</TermTooltip></th>
+                <th><TermTooltip term="confidence">Confidence</TermTooltip></th>
+                <th><TermTooltip term="tier">Tier</TermTooltip></th>
                 <th>Created</th>
                 <th></th>
               </tr>

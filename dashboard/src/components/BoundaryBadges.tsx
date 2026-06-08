@@ -1,12 +1,22 @@
 import type { LocalBoundaries } from "@/lib/types";
+import { TermTooltip } from "./TermTooltip";
 
-const boundaryLabels: Array<[keyof LocalBoundaries, string]> = [
+const boundaryLabels: Array<[keyof LocalBoundaries, string, string?]> = [
   ["deployment", "Deployment"],
-  ["provider_transport", "Providers"],
-  ["target_repository_writes", "Target writes"],
-  ["sandbox_process_execution", "Sandbox"],
-  ["runtime_workers", "Workers"],
+  ["provider_transport", "Providers", "tier"],
+  ["target_repository_writes", "Target writes", "executor"],
+  ["sandbox_process_execution", "Sandbox", "executor"],
+  ["runtime_workers", "Workers", "executor"],
 ];
+
+function humanize(value: unknown): string {
+  const s = String(value);
+  if (s === "local-only") return "Local";
+  if (s === "noop" || s === "stub/off") return "Stub (testing)";
+  if (s === "disabled") return "Off";
+  if (s === "enabled") return "On";
+  return s;
+}
 
 export function BoundaryBadges({
   authStatus,
@@ -30,9 +40,9 @@ export function BoundaryBadges({
       <span className={`boundary-badge ${authStatus === "ok" ? "ok" : "warn"}`}>
         Auth: {authLabel}
       </span>
-      {boundaryLabels.map(([key, label]) => (
+      {boundaryLabels.map(([key, label, term]) => (
         <span className="boundary-badge" key={key}>
-          {label}: {String(boundaries[key])}
+          {term ? <TermTooltip term={term}>{label}</TermTooltip> : label}: {humanize(boundaries[key])}
         </span>
       ))}
     </div>
