@@ -26,13 +26,13 @@ Token-Efficient Agent Harness Lab is a local deterministic harness and self-host
 | Trial 4 real-use pilot | Closed — `TRIAL_4_REAL_USE_PILOT_PASS_AFTER_FIXES` |
 | Trial 5 CLI execution beta | Closed — `TRIAL_5_CLI_EXECUTION_BETA_PASS_AFTER_FIXES` |
 
-Tests: 1367 Rust pass (14 circuit breaker tests). Primary cutover verification is `bash scripts/verify_rust_typescript_stack.sh`.
+Tests: 1378 Rust pass. Primary cutover verification is `bash scripts/verify_rust_typescript_stack.sh`.
 
-Macro-Orchestrator Phase 1-5 repair batch is complete. Self-Hosted GA Readiness Track SG-1 through SG-5 is complete: real dynamic CLI pilot matrix, long-run soak/failure injection, mission-control dashboard visibility, enriched policy decision signals, and runbook/release/rollback handoff readiness. HA Hardening Track started: observability, deep health, graceful shutdown, retry jitter, and circuit breaker (HA-4) are done. Docs simplified from 136 to 16 files. Next: HA-1 Scheduler Resilience (persistent heartbeat + PostgreSQL) and HA-3 Deep Health + Resource Monitoring (external monitoring).
+Macro-Orchestrator Phase 1-5 repair batch is complete. Self-Hosted GA Readiness Track SG-1 through SG-5 is complete. HA Hardening Track is COMPLETE (HA-1 through HA-6): scheduler resilience with persistent heartbeat, automated backup with retention, deep health with resource monitoring, circuit breaker, TLS inbound, and SQLite encryption at rest. Docs simplified from 136 to 16 files.
 
 | Active Track | Status |
 |---|---|
-| HA Hardening Track | Started — HA-4 circuit breaker done; HA-1 and HA-3 next |
+| HA Hardening Track | **COMPLETE** — All 6 phases done (HA-1 through HA-6), 1378 tests |
 
 ## Toolchain
 

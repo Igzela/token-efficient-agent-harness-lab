@@ -42,7 +42,13 @@ async fn main() {
 
     let db_path = local_db_path();
     let backup_dir = local_backup_dir(&db_path);
+    let backup_dir_for_auto = backup_dir.clone();
     let store = LocalProductStore::new(&db_path).expect("failed to open local SQLite store");
+    if store.is_encrypted() {
+        println!("[acp-startup] db_encryption=enabled");
+    } else {
+        println!("[acp-startup] db_encryption=disabled (set ACP_DB_ENCRYPTION_KEY to enable)");
+    }
     if std::env::var("ACP_ADMIN_API_KEY").is_ok() {
         store
             .upsert_team_member("local-admin", "Local Admin", "admin")
@@ -140,11 +146,35 @@ async fn main() {
     let enable_scheduler = std::env::var("ACP_ENABLE_SCHEDULER")
         .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
         .unwrap_or(false);
+    let backup_interval_sec: u64 = std::env::var("ACP_BACKUP_INTERVAL_SEC")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(0);
+    let backup_retain_count: usize = std::env::var("ACP_BACKUP_RETAIN_COUNT")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(5);
     let state = if enable_scheduler {
         let scheduler_config = SchedulerConfig::from_env();
         let executor_type = scheduler_config.executor_type.clone();
         let interval = scheduler_config.interval_ms;
         let mut scheduler = WorkflowScheduler::new(store_for_scheduler, scheduler_config);
+        if backup_interval_sec > 0 {
+            let bm = engine::storage::backup_manager::BackupManager::new(&backup_dir_for_auto)
+                .expect("failed to create backup manager for auto-backup");
+            scheduler = scheduler.with_auto_backup(
+                Arc::new(bm),
+                db_path.display().to_string(),
+                backup_interval_sec,
+                backup_retain_count,
+            );
+            println!(
+                "[acp-startup] auto_backup=enabled interval={}s retain={}",
+                backup_interval_sec, backup_retain_count
+            );
+        } else {
+            println!("[acp-startup] auto_backup=disabled");
+        }
         scheduler.start().expect("failed to start scheduler");
         let scheduler_arc = Arc::new(Mutex::new(scheduler));
         println!(
@@ -166,12 +196,59 @@ async fn main() {
         _ => build_axum_router(state),
     };
 
-    let listener = tokio::net::TcpListener::bind(&addr).await.unwrap();
-    println!("engine listening on {}", addr);
-    axum::serve(listener, router)
-        .with_graceful_shutdown(shutdown_signal())
-        .await
-        .unwrap();
+    let tls_cert_path = std::env::var("ACP_TLS_CERT_PATH").ok();
+    let tls_key_path = std::env::var("ACP_TLS_KEY_PATH").ok();
+
+    match (tls_cert_path, tls_key_path) {
+        (Some(cert_path), Some(key_path)) => {
+            let tls_config =
+                axum_server::tls_rustls::RustlsConfig::from_pem_chain_file(&cert_path, &key_path)
+                    .await
+                    .unwrap_or_else(|e| {
+                        eprintln!(
+                            "[acp-fatal] Failed to load TLS cert/key: cert={}, key={}, error={}",
+                            cert_path, key_path, e
+                        );
+                        std::process::exit(1);
+                    });
+            println!(
+                "[acp-startup] TLS enabled, cert={}, key={}",
+                cert_path, key_path
+            );
+            println!("engine listening on {} (HTTPS)", addr);
+            let handle = axum_server::Handle::new();
+            tokio::spawn({
+                let handle = handle.clone();
+                async move {
+                    shutdown_signal().await;
+                    handle.graceful_shutdown(Some(std::time::Duration::from_secs(10)));
+                }
+            });
+            let socket_addr: std::net::SocketAddr = addr.parse().unwrap_or_else(|e| {
+                eprintln!("[acp-fatal] Invalid bind address '{}': {}", addr, e);
+                std::process::exit(1);
+            });
+            axum_server::bind_rustls(socket_addr, tls_config)
+                .handle(handle)
+                .serve(router.into_make_service())
+                .await
+                .unwrap_or_else(|e| {
+                    eprintln!("[acp-fatal] TLS server error: {}", e);
+                    std::process::exit(1);
+                });
+        }
+        _ => {
+            println!(
+                "[acp-startup] TLS disabled (set ACP_TLS_CERT_PATH and ACP_TLS_KEY_PATH to enable)"
+            );
+            println!("engine listening on {}", addr);
+            let listener = tokio::net::TcpListener::bind(&addr).await.unwrap();
+            axum::serve(listener, router)
+                .with_graceful_shutdown(shutdown_signal())
+                .await
+                .unwrap();
+        }
+    }
     println!("[acp-shutdown] engine stopped gracefully");
 }
 

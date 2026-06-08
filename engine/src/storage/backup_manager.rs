@@ -16,6 +16,8 @@ pub struct BackupRecord {
     pub source_path: String,
     pub backup_path: String,
     pub checksum: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub encryption_key_hash: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -66,6 +68,17 @@ impl BackupManager {
         backup_id: &str,
         now: &str,
     ) -> Result<BackupRecord, String> {
+        self.create_backup_with_encryption(source_path, label, backup_id, now, None)
+    }
+
+    pub fn create_backup_with_encryption(
+        &self,
+        source_path: &Path,
+        label: &str,
+        backup_id: &str,
+        now: &str,
+        encryption_key: Option<&str>,
+    ) -> Result<BackupRecord, String> {
         if !source_path.exists() {
             return Err(format!("source file not found: {}", source_path.display()));
         }
@@ -86,6 +99,12 @@ impl BackupManager {
 
         let checksum = compute_checksum(&dest)?;
 
+        let encryption_key_hash = encryption_key.map(|key| {
+            let mut hasher = Sha256::new();
+            hasher.update(key.as_bytes());
+            hex::encode(hasher.finalize())
+        });
+
         Ok(BackupRecord {
             backup_id: backup_id.to_string(),
             created_at: now.to_string(),
@@ -94,6 +113,7 @@ impl BackupManager {
             source_path: source_path.display().to_string(),
             backup_path: dest.display().to_string(),
             checksum,
+            encryption_key_hash,
         })
     }
 
@@ -308,6 +328,29 @@ impl BackupManager {
         })
     }
 
+    pub fn verify_encryption_key(
+        &self,
+        backup_id: &str,
+        current_key: Option<&str>,
+    ) -> Result<bool, String> {
+        let backup = self
+            .get_backup(backup_id)?
+            .ok_or_else(|| format!("backup not found: {backup_id}"))?;
+
+        match &backup.encryption_key_hash {
+            None => Ok(true),
+            Some(stored_hash) => match current_key {
+                None => Ok(false),
+                Some(key) => {
+                    let mut hasher = Sha256::new();
+                    hasher.update(key.as_bytes());
+                    let computed = hex::encode(hasher.finalize());
+                    Ok(computed == *stored_hash)
+                }
+            },
+        }
+    }
+
     pub fn delete_backup(&self, backup_id: &str) -> Result<bool, String> {
         let backup_path = self.backup_dir.join(format!("{backup_id}.db"));
         if backup_path.exists() {
@@ -329,6 +372,40 @@ impl BackupManager {
             }
         }
         Ok(false)
+    }
+
+    pub fn prune_backups(&self, retain_count: usize) -> Result<Vec<String>, String> {
+        let mut backups = self.list_backups()?;
+        backups.sort_by(|a, b| b.created_at.cmp(&a.created_at));
+
+        let mut deleted = Vec::new();
+        for record in backups.iter().skip(retain_count) {
+            self.delete_backup(&record.backup_id)?;
+            deleted.push(record.backup_id.clone());
+        }
+        Ok(deleted)
+    }
+
+    pub fn backup_stats(&self) -> serde_json::Value {
+        let backups = self.list_backups().unwrap_or_default();
+        let count = backups.len();
+        let total_size_bytes: u64 = backups.iter().map(|b| b.size_bytes).sum();
+        let oldest_created_at = backups
+            .iter()
+            .min_by(|a, b| a.created_at.cmp(&b.created_at))
+            .map(|b| serde_json::Value::String(b.created_at.clone()))
+            .unwrap_or(serde_json::Value::Null);
+        let newest_created_at = backups
+            .iter()
+            .max_by(|a, b| a.created_at.cmp(&b.created_at))
+            .map(|b| serde_json::Value::String(b.created_at.clone()))
+            .unwrap_or(serde_json::Value::Null);
+        serde_json::json!({
+            "count": count,
+            "total_size_bytes": total_size_bytes,
+            "oldest_created_at": oldest_created_at,
+            "newest_created_at": newest_created_at,
+        })
     }
 
     pub fn save_metadata(&self, records: &[BackupRecord]) -> Result<(), String> {

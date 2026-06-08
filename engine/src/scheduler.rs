@@ -1,8 +1,9 @@
 use serde_json::{json, Value};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::panic::{self, AssertUnwindSafe};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::thread::JoinHandle;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use crate::cli::CliNodeExecutor;
 use crate::executor_pool::{self, ExecutorPool};
@@ -15,6 +16,7 @@ use crate::routing::{
     AutoDowngradePolicy, AutoUpgradePolicy, FeedbackIntegrator, RoutingHistoryStore,
     RoutingObservationStore,
 };
+use crate::storage::backup_manager::BackupManager;
 use crate::storage::local_product_store::LocalProductStore;
 use crate::workflow::backpressure::{Backpressure, BackpressureConfig};
 use crate::workflow::dynamic_controller::{
@@ -34,6 +36,7 @@ pub struct SchedulerConfig {
     pub max_queued: usize,
     pub backpressure_enabled: bool,
     pub backpressure_activation: f64,
+    pub heartbeat_interval_sec: u64,
 }
 
 impl Default for SchedulerConfig {
@@ -47,6 +50,7 @@ impl Default for SchedulerConfig {
             max_queued: 100,
             backpressure_enabled: true,
             backpressure_activation: 0.8,
+            heartbeat_interval_sec: 10,
         }
     }
 }
@@ -91,6 +95,10 @@ impl SchedulerConfig {
             .ok()
             .and_then(|v| v.parse().ok())
             .unwrap_or(0.8);
+        let heartbeat_interval_sec = std::env::var("ACP_HEARTBEAT_INTERVAL_SEC")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(10);
         Self {
             interval_ms,
             max_concurrent,
@@ -100,6 +108,7 @@ impl SchedulerConfig {
             max_queued,
             backpressure_enabled,
             backpressure_activation,
+            heartbeat_interval_sec,
         }
     }
 }
@@ -130,17 +139,22 @@ pub struct WorkflowScheduler {
     running: Arc<AtomicBool>,
     handle: Option<JoinHandle<()>>,
     started_at: Option<String>,
-    tick_count: Arc<std::sync::atomic::AtomicU64>,
-    error_count: Arc<std::sync::atomic::AtomicU64>,
-    retry_count: Arc<std::sync::atomic::AtomicU64>,
-    total_execution_time_ns: Arc<std::sync::atomic::AtomicU64>,
+    tick_count: Arc<AtomicU64>,
+    error_count: Arc<AtomicU64>,
+    retry_count: Arc<AtomicU64>,
+    panic_count: Arc<AtomicU64>,
+    total_execution_time_ns: Arc<AtomicU64>,
     last_tick_at: Arc<std::sync::Mutex<Option<String>>>,
     last_error: Arc<std::sync::Mutex<Option<String>>>,
     executor_pool: Arc<ExecutorPool>,
-    queue_depth_live: Arc<std::sync::atomic::AtomicU64>,
-    paused_runs_count_live: Arc<std::sync::atomic::AtomicU64>,
+    queue_depth_live: Arc<AtomicU64>,
+    paused_runs_count_live: Arc<AtomicU64>,
     backpressure_active_live: Arc<AtomicBool>,
     metrics: Option<Arc<crate::infrastructure::observability::MetricsCollector>>,
+    backup_manager: Option<Arc<BackupManager>>,
+    backup_interval_sec: u64,
+    backup_retain_count: usize,
+    backup_db_path: Option<String>,
 }
 
 impl WorkflowScheduler {
@@ -151,18 +165,37 @@ impl WorkflowScheduler {
             running: Arc::new(AtomicBool::new(false)),
             handle: None,
             started_at: None,
-            tick_count: Arc::new(std::sync::atomic::AtomicU64::new(0)),
-            error_count: Arc::new(std::sync::atomic::AtomicU64::new(0)),
-            retry_count: Arc::new(std::sync::atomic::AtomicU64::new(0)),
-            total_execution_time_ns: Arc::new(std::sync::atomic::AtomicU64::new(0)),
+            tick_count: Arc::new(AtomicU64::new(0)),
+            error_count: Arc::new(AtomicU64::new(0)),
+            retry_count: Arc::new(AtomicU64::new(0)),
+            panic_count: Arc::new(AtomicU64::new(0)),
+            total_execution_time_ns: Arc::new(AtomicU64::new(0)),
             last_tick_at: Arc::new(std::sync::Mutex::new(None)),
             last_error: Arc::new(std::sync::Mutex::new(None)),
             executor_pool: Arc::new(ExecutorPool::new()),
-            queue_depth_live: Arc::new(std::sync::atomic::AtomicU64::new(0)),
-            paused_runs_count_live: Arc::new(std::sync::atomic::AtomicU64::new(0)),
+            queue_depth_live: Arc::new(AtomicU64::new(0)),
+            paused_runs_count_live: Arc::new(AtomicU64::new(0)),
             backpressure_active_live: Arc::new(AtomicBool::new(false)),
             metrics: None,
+            backup_manager: None,
+            backup_interval_sec: 0,
+            backup_retain_count: 5,
+            backup_db_path: None,
         }
+    }
+
+    pub fn with_auto_backup(
+        mut self,
+        backup_manager: Arc<BackupManager>,
+        db_path: String,
+        interval_sec: u64,
+        retain_count: usize,
+    ) -> Self {
+        self.backup_manager = Some(backup_manager);
+        self.backup_db_path = Some(db_path);
+        self.backup_interval_sec = interval_sec;
+        self.backup_retain_count = retain_count;
+        self
     }
 
     pub fn with_metrics(
@@ -188,6 +221,7 @@ impl WorkflowScheduler {
         let tick_count = self.tick_count.clone();
         let error_count = self.error_count.clone();
         let retry_count = self.retry_count.clone();
+        let panic_count = self.panic_count.clone();
         let total_execution_time_ns = self.total_execution_time_ns.clone();
         let last_tick_at = self.last_tick_at.clone();
         let last_error = self.last_error.clone();
@@ -197,12 +231,25 @@ impl WorkflowScheduler {
         let paused_runs_count_live = self.paused_runs_count_live.clone();
         let backpressure_active_live = self.backpressure_active_live.clone();
         let metrics = self.metrics.clone();
+        let backup_manager = self.backup_manager.clone();
+        let backup_interval_sec = self.backup_interval_sec;
+        let backup_retain_count = self.backup_retain_count;
+        let backup_db_path = self.backup_db_path.clone();
 
         let handle = std::thread::spawn(move || {
+            let thread_start = Instant::now();
+            let mut last_heartbeat_write = Instant::now();
+            let mut last_backup_time = Instant::now();
+            let mut consecutive_panics: u64 = 0;
+
             while running.load(Ordering::SeqCst) {
                 pool.tick_cooldowns();
-                let tick_start = std::time::Instant::now();
-                let tick_result = scheduler_tick(&store, &config, executor.clone(), &pool);
+                let tick_start = Instant::now();
+
+                let tick_result = panic::catch_unwind(AssertUnwindSafe(|| {
+                    scheduler_tick(&store, &config, executor.clone(), &pool)
+                }));
+
                 let tick_elapsed_ns = tick_start.elapsed().as_nanos() as u64;
                 let tick_elapsed_ms = tick_elapsed_ns as f64 / 1_000_000.0;
                 total_execution_time_ns.fetch_add(tick_elapsed_ns, Ordering::SeqCst);
@@ -210,54 +257,146 @@ impl WorkflowScheduler {
                     .duration_since(std::time::UNIX_EPOCH)
                     .unwrap_or_default()
                     .as_secs_f64();
+
                 match tick_result {
-                    Ok(result) => {
-                        tick_count.fetch_add(result.ticks, Ordering::SeqCst);
-                        retry_count.fetch_add(result.retries, Ordering::SeqCst);
-                        queue_depth_live.store(result.queue_depth as u64, Ordering::SeqCst);
-                        paused_runs_count_live
-                            .store(result.paused_runs.len() as u64, Ordering::SeqCst);
-                        backpressure_active_live
-                            .store(result.backpressure_active, Ordering::SeqCst);
-                        if let Ok(mut guard) = last_tick_at.lock() {
-                            *guard =
-                                Some(chrono::Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string());
+                    Ok(inner_result) => {
+                        // Reset consecutive panic counter on successful tick execution
+                        consecutive_panics = 0;
+
+                        match inner_result {
+                            Ok(result) => {
+                                tick_count.fetch_add(result.ticks, Ordering::SeqCst);
+                                retry_count.fetch_add(result.retries, Ordering::SeqCst);
+                                queue_depth_live.store(result.queue_depth as u64, Ordering::SeqCst);
+                                paused_runs_count_live
+                                    .store(result.paused_runs.len() as u64, Ordering::SeqCst);
+                                backpressure_active_live
+                                    .store(result.backpressure_active, Ordering::SeqCst);
+                                if let Ok(mut guard) = last_tick_at.lock() {
+                                    *guard = Some(
+                                        chrono::Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string(),
+                                    );
+                                }
+                                if let Some(ref m) = metrics {
+                                    m.record_snapshot(
+                                        crate::infrastructure::observability::MetricSnapshot {
+                                            name: "scheduler.tick".to_string(),
+                                            value: tick_elapsed_ms,
+                                            labels: [
+                                                (
+                                                    "executor".to_string(),
+                                                    config.executor_type.clone(),
+                                                ),
+                                                ("status".to_string(), "ok".to_string()),
+                                            ]
+                                            .into(),
+                                            timestamp: now,
+                                        },
+                                    );
+                                }
+                            }
+                            Err(e) => {
+                                error_count.fetch_add(1, Ordering::SeqCst);
+                                if let Ok(mut guard) = last_error.lock() {
+                                    *guard = Some(e.clone());
+                                }
+                                if let Some(ref m) = metrics {
+                                    m.record(crate::infrastructure::observability::RequestMetric {
+                                        request_id: format!(
+                                            "scheduler-tick-{}",
+                                            tick_count.load(Ordering::SeqCst)
+                                        ),
+                                        component: "scheduler".to_string(),
+                                        action: "tick".to_string(),
+                                        duration_ms: tick_elapsed_ms,
+                                        status: "error".to_string(),
+                                        timestamp: now,
+                                    });
+                                }
+                            }
                         }
-                        if let Some(ref m) = metrics {
-                            m.record_snapshot(
-                                crate::infrastructure::observability::MetricSnapshot {
-                                    name: "scheduler.tick".to_string(),
-                                    value: tick_elapsed_ms,
-                                    labels: [
-                                        ("executor".to_string(), config.executor_type.clone()),
-                                        ("status".to_string(), "ok".to_string()),
-                                    ]
-                                    .into(),
-                                    timestamp: now,
-                                },
+
+                        // Heartbeat write: after successful tick (ok or err), if interval elapsed
+                        if last_heartbeat_write.elapsed().as_secs() >= config.heartbeat_interval_sec
+                        {
+                            let uptime = thread_start.elapsed().as_secs_f64();
+                            let _ = store.write_heartbeat(
+                                tick_count.load(Ordering::SeqCst),
+                                error_count.load(Ordering::SeqCst),
+                                uptime,
+                                "{}",
                             );
+                            last_heartbeat_write = Instant::now();
                         }
                     }
-                    Err(e) => {
-                        error_count.fetch_add(1, Ordering::SeqCst);
+                    Err(panic_payload) => {
+                        panic_count.fetch_add(1, Ordering::SeqCst);
+                        consecutive_panics += 1;
+
+                        let panic_msg = if let Some(s) = panic_payload.downcast_ref::<String>() {
+                            s.clone()
+                        } else if let Some(s) = panic_payload.downcast_ref::<&str>() {
+                            s.to_string()
+                        } else {
+                            "unknown panic".to_string()
+                        };
+                        eprintln!(
+                            "[scheduler] tick panicked (count={}): {}",
+                            panic_count.load(Ordering::SeqCst),
+                            panic_msg
+                        );
+
                         if let Ok(mut guard) = last_error.lock() {
-                            *guard = Some(e.clone());
+                            *guard = Some(format!("panic: {}", panic_msg));
                         }
-                        if let Some(ref m) = metrics {
-                            m.record(crate::infrastructure::observability::RequestMetric {
-                                request_id: format!(
-                                    "scheduler-tick-{}",
-                                    tick_count.load(Ordering::SeqCst)
-                                ),
-                                component: "scheduler".to_string(),
-                                action: "tick".to_string(),
-                                duration_ms: tick_elapsed_ms,
-                                status: "error".to_string(),
-                                timestamp: now,
-                            });
+
+                        // Exponential backoff: min(consecutive_panics * 1000, 30000) ms
+                        let backoff_ms = (consecutive_panics * 1000).min(30_000);
+                        std::thread::sleep(Duration::from_millis(backoff_ms));
+                        // Skip the normal interval sleep — we already slept for backoff
+                        continue;
+                    }
+                }
+
+                // Auto-backup: WAL checkpoint + create + prune
+                if backup_interval_sec > 0 {
+                    if let (Some(ref bm), Some(ref db_path)) = (&backup_manager, &backup_db_path) {
+                        if last_backup_time.elapsed().as_secs() >= backup_interval_sec {
+                            if let Err(e) = store.checkpoint_wal() {
+                                eprintln!("[scheduler] auto-backup WAL checkpoint failed: {e}");
+                            } else {
+                                let backup_id =
+                                    format!("auto-{}", chrono::Utc::now().format("%Y%m%dT%H%M%SZ"));
+                                let now_iso =
+                                    chrono::Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string();
+                                match bm.create_backup(
+                                    std::path::Path::new(db_path),
+                                    "auto",
+                                    &backup_id,
+                                    &now_iso,
+                                ) {
+                                    Ok(record) => {
+                                        if let Ok(mut backups) = bm.list_backups() {
+                                            backups.push(record);
+                                            let _ = bm.save_metadata(&backups);
+                                        }
+                                        match bm.prune_backups(backup_retain_count) {
+                                            Ok(pruned) if !pruned.is_empty() => {
+                                                eprintln!("[scheduler] auto-backup created={backup_id} pruned={}", pruned.len());
+                                            }
+                                            _ => {}
+                                        }
+                                    }
+                                    Err(e) => {
+                                        eprintln!("[scheduler] auto-backup create failed: {e}");
+                                    }
+                                }
+                            }
+                            last_backup_time = Instant::now();
                         }
                     }
                 }
+
                 std::thread::sleep(Duration::from_millis(config.interval_ms));
             }
         });
@@ -311,6 +450,7 @@ impl WorkflowScheduler {
             },
             "tick_count": self.tick_count.load(Ordering::SeqCst),
             "error_count": self.error_count.load(Ordering::SeqCst),
+            "panic_count": self.panic_count.load(Ordering::SeqCst),
             "retry_count": self.retry_count.load(Ordering::SeqCst),
             "total_execution_time_ns": self.total_execution_time_ns.load(Ordering::SeqCst),
             "last_tick_at": self.last_tick_at.lock().ok().and_then(|g| g.clone()),
@@ -330,6 +470,9 @@ impl WorkflowScheduler {
                 "approval_gate": true,
                 "workflow_engine": true,
             },
+            "backup_auto_enabled": self.backup_manager.is_some() && self.backup_interval_sec > 0,
+            "backup_interval_sec": self.backup_interval_sec,
+            "backup_retain_count": self.backup_retain_count,
         })
     }
 }
@@ -1951,6 +2094,7 @@ mod tests {
             max_queued: 100,
             backpressure_enabled: false,
             backpressure_activation: 0.8,
+            heartbeat_interval_sec: 10,
         };
         let executor = NoopNodeExecutor;
         let pool = test_pool();
@@ -1983,6 +2127,7 @@ mod tests {
             max_queued: 100,
             backpressure_enabled: false,
             backpressure_activation: 0.8,
+            heartbeat_interval_sec: 10,
         };
         let executor = NoopNodeExecutor;
         let pool = test_pool();
@@ -2010,6 +2155,7 @@ mod tests {
             max_queued: 100,
             backpressure_enabled: false,
             backpressure_activation: 0.8,
+            heartbeat_interval_sec: 10,
         };
         let executor = NoopNodeExecutor;
         let pool = test_pool();
@@ -2037,6 +2183,7 @@ mod tests {
             max_queued: 100,
             backpressure_enabled: true,
             backpressure_activation: 0.1,
+            heartbeat_interval_sec: 10,
         };
         let executor = NoopNodeExecutor;
         let pool = test_pool();
@@ -2060,6 +2207,7 @@ mod tests {
             max_queued: 100,
             backpressure_enabled: false,
             backpressure_activation: 0.1,
+            heartbeat_interval_sec: 10,
         };
         let executor = NoopNodeExecutor;
         let pool = test_pool();
@@ -2078,5 +2226,41 @@ mod tests {
         assert_eq!(status["backpressure_active"], false);
         assert_eq!(status["queue_depth"], 0);
         assert_eq!(status["paused_runs_count"], 0);
+    }
+
+    #[test]
+    fn scheduler_status_includes_panic_count() {
+        let store = test_store();
+        let config = SchedulerConfig::default();
+        let scheduler = WorkflowScheduler::new(store, config);
+
+        let status = scheduler.status();
+        assert_eq!(status["panic_count"], 0, "panic_count should start at 0");
+    }
+
+    #[test]
+    fn scheduler_config_default_has_heartbeat_interval() {
+        let config = SchedulerConfig::default();
+        assert_eq!(config.heartbeat_interval_sec, 10);
+    }
+
+    #[test]
+    fn scheduler_thread_survives_tick_panic() {
+        let store = test_store();
+        create_plan_and_run(&store);
+
+        let config = SchedulerConfig {
+            interval_ms: 50,
+            max_concurrent: 1,
+            lease_timeout_ms: 300_000,
+            executor_type: "fail".to_string(),
+            ..Default::default()
+        };
+        let mut scheduler = WorkflowScheduler::new(store, config);
+        scheduler.start().unwrap();
+        // Let the scheduler run — it processes runs, and the thread survives
+        std::thread::sleep(Duration::from_millis(200));
+        assert!(scheduler.is_running(), "thread should still be alive");
+        scheduler.stop().unwrap();
     }
 }

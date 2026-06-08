@@ -43,6 +43,7 @@ impl LocalProductStore {
                 "agent_profiles",
                 "orchestration_decisions",
                 "executor_pool",
+                "scheduler_heartbeat",
             ];
             let mut table_reports = Vec::new();
             for table in &tables {

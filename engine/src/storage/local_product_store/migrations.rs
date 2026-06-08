@@ -2,7 +2,7 @@ use rusqlite::Connection;
 
 use super::LocalProductStore;
 
-pub(super) const CURRENT_SCHEMA_VERSION: i64 = 10;
+pub(super) const CURRENT_SCHEMA_VERSION: i64 = 11;
 
 struct Migration {
     version: i64,
@@ -50,6 +50,10 @@ const MIGRATIONS: &[Migration] = &[
         version: 10,
         description: "add policy signal columns to orchestration_decisions",
     },
+    Migration {
+        version: 11,
+        description: "add scheduler_heartbeat table for persistent heartbeat",
+    },
 ];
 
 impl LocalProductStore {
@@ -74,6 +78,7 @@ impl LocalProductStore {
                     8 => Self::migrate_v8_add_executor_pool(conn)?,
                     9 => Self::migrate_v9_add_queue_priority(conn)?,
                     10 => Self::migrate_v10_add_decision_policy_signals(conn)?,
+                    11 => Self::migrate_v11_add_scheduler_heartbeat(conn)?,
                     _ => return Err(format!("unknown migration version: {}", migration.version)),
                 }
                 conn.execute_batch(&format!("PRAGMA user_version = {}", migration.version))
@@ -399,6 +404,25 @@ CREATE TABLE IF NOT EXISTS executor_pool (
             .map_err(|e| e.to_string())?;
         }
         Ok(())
+    }
+
+    fn migrate_v11_add_scheduler_heartbeat(conn: &Connection) -> Result<(), String> {
+        conn.execute_batch(
+            "
+CREATE TABLE IF NOT EXISTS scheduler_heartbeat (
+    id INTEGER PRIMARY KEY CHECK (id = 1),
+    last_heartbeat_at TEXT NOT NULL DEFAULT '',
+    tick_count INTEGER NOT NULL DEFAULT 0,
+    error_count INTEGER NOT NULL DEFAULT 0,
+    uptime_seconds REAL NOT NULL DEFAULT 0.0,
+    metadata_json TEXT NOT NULL DEFAULT '{}',
+    updated_at TEXT NOT NULL DEFAULT ''
+);
+INSERT OR IGNORE INTO scheduler_heartbeat (id, last_heartbeat_at, tick_count, error_count, uptime_seconds, metadata_json, updated_at)
+VALUES (1, '', 0, 0, 0.0, '{}', '');
+",
+        )
+        .map_err(|e| e.to_string())
     }
 
     pub fn schema_version(&self) -> Result<i64, String> {

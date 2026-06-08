@@ -25,7 +25,7 @@ Key principles:
 
 Master document: `docs/dispatch/DISPATCHER_KERNEL_V0_ARCHITECTURE.md`
 
-## Current State (2026-06-07)
+## Current State (2026-06-08)
 
 **Stable Components:**
 - Dispatch Kernel Phases 1-7 (including 6A, 6B-1/2/3, Gates 1-3): STABLE
@@ -43,9 +43,10 @@ Master document: `docs/dispatch/DISPATCHER_KERNEL_V0_ARCHITECTURE.md`
 - Macro-Orchestrator Phase 1-5 repair batch: COMPLETE (all tick paths persist decisions, executor-pool binds to execution, queue/backpressure correct, operator surfaces aligned, soak script truthful)
 - Self-Hosted GA Readiness Track: SG-1 through SG-5 COMPLETE (real dynamic CLI pilot matrix, long-run soak/failure injection, mission-control dashboard visibility, enriched policy decision signals, and runbook/release/rollback handoff readiness)
 - Circuit Breaker (HA-4): COMPLETE (Closed/Open/HalfOpen state machine, CircuitBreakerProvider wrapper, CircuitBreakerRegistry, status endpoint, 14 new tests)
+- HA Hardening Track (HA-1, HA-2, HA-3, HA-5, HA-6): COMPLETE (scheduler resilience + persistent heartbeat, automated backup + retention, deep health + resource monitoring + external monitoring, TLS inbound, SQLite encryption at rest)
 
 **Key Milestones:**
-- 1367 Rust tests pass, 0 failures
+- 1378 Rust tests pass, 0 failures
 - TypeScript strict + readonly lint + build + static export pass
 - `cargo fmt`, `cargo clippy`, handoff guard all pass
 

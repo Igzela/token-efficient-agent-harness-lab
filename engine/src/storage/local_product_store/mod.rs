@@ -8,6 +8,7 @@ mod dispatch;
 mod executor_pool_store;
 mod export_import;
 pub mod feedback;
+mod heartbeat;
 mod integrity;
 mod keys;
 mod migrations;
@@ -330,16 +331,27 @@ pub struct LocalProductStore {
     db_path: PathBuf,
     conn: Mutex<Connection>,
     clock: Box<dyn Fn() -> String + Send + Sync>,
+    encryption_active: bool,
 }
 
 impl LocalProductStore {
     pub fn new(path: impl AsRef<Path>) -> Result<Self, String> {
-        Self::new_with_clock(path, utc_now)
+        let key = std::env::var("ACP_DB_ENCRYPTION_KEY").ok();
+        Self::new_with_encryption(path, utc_now, key.as_deref())
     }
 
     pub fn new_with_clock(
         path: impl AsRef<Path>,
         clock: impl Fn() -> String + Send + Sync + 'static,
+    ) -> Result<Self, String> {
+        let key = std::env::var("ACP_DB_ENCRYPTION_KEY").ok();
+        Self::new_with_encryption(path, clock, key.as_deref())
+    }
+
+    pub fn new_with_encryption(
+        path: impl AsRef<Path>,
+        clock: impl Fn() -> String + Send + Sync + 'static,
+        encryption_key: Option<&str>,
     ) -> Result<Self, String> {
         let path = path.as_ref().to_path_buf();
         if let Some(parent) = path.parent() {
@@ -348,6 +360,10 @@ impl LocalProductStore {
             }
         }
         let conn = Connection::open(&path).map_err(|e| e.to_string())?;
+        if let Some(key) = encryption_key {
+            conn.execute_batch(&format!("PRAGMA key = '{}';", key.replace('\'', "''")))
+                .map_err(|e| format!("Failed to set encryption key: {}", e))?;
+        }
         conn.execute_batch("PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON;")
             .map_err(|e| e.to_string())?;
         conn.execute_batch(DDL).map_err(|e| e.to_string())?;
@@ -355,10 +371,15 @@ impl LocalProductStore {
             db_path: path,
             conn: Mutex::new(conn),
             clock: Box::new(clock),
+            encryption_active: encryption_key.is_some(),
         };
         store.ensure_default_config()?;
         store.run_migrations()?;
         Ok(store)
+    }
+
+    pub fn is_encrypted(&self) -> bool {
+        self.encryption_active
     }
 
     pub fn db_path(&self) -> &Path {

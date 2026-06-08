@@ -72,15 +72,42 @@ pub(crate) async fn api_metrics(
         }
     }
 
-    let scheduler_active_runs = match &state.scheduler {
-        Some(scheduler) => scheduler
-            .lock()
-            .ok()
-            .and_then(|g| g.status().get("active_runs").cloned())
-            .and_then(|v| v.as_u64())
-            .unwrap_or(0),
-        None => 0,
-    };
+    let mut scheduler_active_runs: u64 = 0;
+    let mut scheduler_panic_count: u64 = 0;
+    let mut scheduler_retry_count: u64 = 0;
+    let mut backup_auto_enabled = false;
+    let mut backup_interval_sec: u64 = 0;
+    let mut backup_retain_count: usize = 0;
+
+    if let Some(scheduler) = &state.scheduler {
+        if let Ok(guard) = scheduler.lock() {
+            let status = guard.status();
+            scheduler_active_runs = status
+                .get("active_runs")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
+            scheduler_panic_count = status
+                .get("panic_count")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
+            scheduler_retry_count = status
+                .get("retry_count")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
+            backup_auto_enabled = status
+                .get("backup_auto_enabled")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false);
+            backup_interval_sec = status
+                .get("backup_interval_sec")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
+            backup_retain_count = status
+                .get("backup_retain_count")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0) as usize;
+        }
+    }
 
     Ok((
         cors_headers(),
@@ -101,7 +128,12 @@ pub(crate) async fn api_metrics(
             "approval_count": approval_count,
             "executor_latency_avg_ms": executor_latency_avg_ms,
             "scheduler_active_runs": scheduler_active_runs,
+            "scheduler_panic_count": scheduler_panic_count,
+            "scheduler_retry_count": scheduler_retry_count,
             "backup_count": backup_count,
+            "backup_auto_enabled": backup_auto_enabled,
+            "backup_interval_sec": backup_interval_sec,
+            "backup_retain_count": backup_retain_count,
             "latest_backup_created_at": latest_backup_created_at,
             "total_reserved_cost": total_reserved_cost,
             "total_estimated_cost_usd": total_estimated_cost_usd,
