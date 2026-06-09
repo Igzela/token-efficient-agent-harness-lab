@@ -32,5 +32,25 @@ services:
       engine:
         condition: service_healthy
 
+  combined:
+    profiles: ["combined"]
+    build:
+      context: .
+      dockerfile: deploy/Dockerfile.combined
+    ports:
+      - "${COMBINED_PORT:-8080}:8080"
+    environment:
+      - HOST=0.0.0.0
+      - PORT=8080
+      - ACP_DB_PATH=/data/local-team.db
+      - ACP_BACKUP_DIR=/data/backups
+    volumes:
+      - acp-data:/data
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/api/v1/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+
 volumes:
   acp-data:

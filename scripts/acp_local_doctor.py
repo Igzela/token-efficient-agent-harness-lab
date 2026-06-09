@@ -121,7 +121,7 @@ def auth_check() -> Check:
 def collect_checks(repo_root: Path, port: int) -> list[Check]:
     home = Path.home()
     dashboard_out = repo_root / "dashboard" / "out" / "index.html"
-    engine_bin = repo_root / "target" / "debug" / ("engine.exe" if sys.platform == "win32" else "engine")
+    engine_bin = repo_root / "target" / "debug" / ("agent-control-plane.exe" if sys.platform == "win32" else "agent-control-plane")
     return [
         command_check("node", ["--version"]),
         command_check("npm", ["--version"]),

@@ -2,6 +2,16 @@
 name = "engine"
 version = "0.1.0"
 edition = "2021"
+description = "Local deterministic harness and macro-orchestrator control plane for studying agent workflows"
+license = "MIT"
+repository = "https://github.com/Igzela/token-efficient-agent-harness-lab"
+readme = "../README.md"
+keywords = ["agent", "workflow", "control-plane", "deterministic", "local"]
+categories = ["command-line-utilities", "web-programming"]
+
+[[bin]]
+name = "agent-control-plane"
+path = "src/main.rs"
 
 [dependencies]
 serde = { version = "1", features = ["derive"] }

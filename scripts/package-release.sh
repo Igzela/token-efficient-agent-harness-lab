@@ -19,7 +19,7 @@ echo ""
 echo "Building release binary..."
 cd "${REPO_ROOT}"
 cargo build --release -p engine 2>&1 | tail -3
-BINARY="${REPO_ROOT}/target/release/engine"
+BINARY="${REPO_ROOT}/target/release/agent-control-plane"
 if [[ ! -f "${BINARY}" ]]; then
     echo "Error: release binary not found after build"
     exit 1

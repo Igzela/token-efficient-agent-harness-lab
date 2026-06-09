@@ -1,6 +1,6 @@
 # Token-Efficient Agent Harness Lab
 
-[![CI](https://github.com/user/token-efficient-agent-harness-lab/actions/workflows/tests.yml/badge.svg)](https://github.com/user/token-efficient-agent-harness-lab/actions/workflows/tests.yml)
+[![CI](https://github.com/Igzela/token-efficient-agent-harness-lab/actions/workflows/tests.yml/badge.svg)](https://github.com/Igzela/token-efficient-agent-harness-lab/actions/workflows/tests.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Rust](https://img.shields.io/badge/Rust-stable-orange.svg)](https://www.rust-lang.org/)
 [![Tests](https://img.shields.io/badge/tests-1379%20passing-brightgreen.svg)](#running-tests)
@@ -13,7 +13,7 @@ A local deterministic harness and self-hosted macro-orchestrator control plane f
 
 ```bash
 # Clone and build
-git clone https://github.com/user/token-efficient-agent-harness-lab.git
+git clone https://github.com/Igzela/token-efficient-agent-harness-lab.git
 cd token-efficient-agent-harness-lab
 cargo build -p engine
 
@@ -26,6 +26,55 @@ ACP_DASHBOARD_DIR=dashboard/out cargo run -p engine
 **Prerequisites:** Rust stable toolchain, [Bun](https://bun.sh/) (for dashboard), Python 3.10+ with [uv](https://docs.astral.sh/uv/) (for scripts).
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for detailed setup instructions.
+
+## Installation
+
+### Option 1: Pre-built Binary (easiest)
+
+Download the latest release for your platform from [GitHub Releases](https://github.com/Igzela/token-efficient-agent-harness-lab/releases):
+
+```bash
+# Linux x86_64
+curl -fsSL https://github.com/Igzela/token-efficient-agent-harness-lab/releases/latest/download/agent-control-plane-0.1.0-linux-x86_64.tar.gz | tar xz
+sudo ./agent-control-plane-0.1.0-linux-x86_64/install.sh
+```
+
+Or use the one-line installer:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/Igzela/token-efficient-agent-harness-lab/main/scripts/install-from-release.sh | bash
+```
+
+Available platforms: `linux-x86_64`, `linux-aarch64`, `darwin-x86_64`, `darwin-aarch64`.
+
+### Option 2: Docker
+
+```bash
+# One command — engine + dashboard in a single container
+docker run -d -p 8080:8080 -v acp-data:/data igzela/agent-control-plane:latest
+
+# Or with docker compose
+git clone https://github.com/Igzela/token-efficient-agent-harness-lab.git
+cd token-efficient-agent-harness-lab
+docker compose --profile combined up -d
+```
+
+### Option 3: From Source
+
+```bash
+git clone https://github.com/Igzela/token-efficient-agent-harness-lab.git
+cd token-efficient-agent-harness-lab
+cargo build --release -p engine
+cd dashboard && bun install --frozen-lockfile && bun run build:static && cd ..
+ACP_DASHBOARD_DIR=dashboard/out ./target/release/agent-control-plane
+```
+
+### Option 4: cargo install (from git)
+
+```bash
+cargo install --git https://github.com/Igzela/token-efficient-agent-harness-lab agent-control-plane
+agent-control-plane
+```
 
 ## What This Project Is Not
 

@@ -24,7 +24,7 @@ if [[ ! -f "${TARGET}" ]]; then
     exit 1
 fi
 
-BINARY="${REPO_ROOT}/target/release/engine"
+BINARY="${REPO_ROOT}/target/release/agent-control-plane"
 if [[ ! -f "${BINARY}" ]]; then
     echo "Error: release binary not found at ${BINARY}"
     echo "Run 'cargo build --release -p engine' first."

@@ -1,0 +1,34 @@
+# Stage 1: Build static dashboard
+FROM oven/bun:1 AS dashboard-builder
+WORKDIR /app
+COPY dashboard/package.json dashboard/bun.lock* ./
+RUN bun install --frozen-lockfile || bun install
+COPY dashboard/ .
+RUN bun run build:static
+
+# Stage 2: Build Rust engine
+FROM rust:bookworm AS rust-builder
+WORKDIR /app
+COPY Cargo.toml Cargo.lock* ./
+COPY engine/ engine/
+RUN cargo build --release -p engine
+
+# Stage 3: Runtime
+FROM debian:bookworm-slim
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    ca-certificates curl \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY --from=rust-builder /app/target/release/agent-control-plane /usr/local/bin/agent-control-plane
+COPY --from=dashboard-builder /app/out /dashboard
+
+ENV ACP_DASHBOARD_DIR=/dashboard
+ENV HOST=0.0.0.0
+ENV PORT=8080
+
+EXPOSE 8080
+
+HEALTHCHECK --interval=10s --timeout=5s --retries=3 \
+    CMD curl -f http://localhost:8080/api/v1/health || exit 1
+
+CMD ["agent-control-plane"]
