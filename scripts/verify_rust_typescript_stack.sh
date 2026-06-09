@@ -69,7 +69,7 @@ PORT="${PORT}" \
 ACP_DB_PATH="${TMP_DIR}/local-team.db" \
 ACP_BACKUP_DIR="${TMP_DIR}/backups" \
 ACP_DASHBOARD_DIR="${ROOT}/dashboard/out" \
-"${ROOT}/target/debug/engine" >"${TMP_DIR}/engine.log" 2>&1 &
+"${ROOT}/target/debug/agent-control-plane" >"${TMP_DIR}/engine.log" 2>&1 &
 ENGINE_PID="$!"
 
 for _ in {1..80}; do

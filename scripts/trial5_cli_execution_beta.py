@@ -506,7 +506,7 @@ def main() -> int:
     args = parser.parse_args()
 
     repo_root = args.repo_root.resolve()
-    engine_bin = (args.engine_bin or repo_root / "target/debug/engine").resolve()
+    engine_bin = (args.engine_bin or repo_root / "target/debug/agent-control-plane").resolve()
     dashboard_dir = (args.dashboard_dir or repo_root / "dashboard/out").resolve()
 
     if not engine_bin.exists():

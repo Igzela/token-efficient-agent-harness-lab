@@ -16,7 +16,10 @@ from urllib.request import Request, urlopen
 
 def default_engine_bin(repo_root: Path) -> Path:
     suffix = ".exe" if sys.platform == "win32" else ""
-    return repo_root / "target" / "debug" / f"engine{suffix}"
+    # New binary name; fall back to legacy name for compatibility
+    new_name = repo_root / "target" / "debug" / f"agent-control-plane{suffix}"
+    old_name = repo_root / "target" / "debug" / f"engine{suffix}"
+    return new_name if new_name.exists() else old_name
 
 
 def free_port() -> int:
