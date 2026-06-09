@@ -1,16 +1,33 @@
 # Token-Efficient Agent Harness Lab
 
-## What This Project Is
+[![CI](https://github.com/user/token-efficient-agent-harness-lab/actions/workflows/tests.yml/badge.svg)](https://github.com/user/token-efficient-agent-harness-lab/actions/workflows/tests.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+[![Rust](https://img.shields.io/badge/Rust-stable-orange.svg)](https://www.rust-lang.org/)
+[![Tests](https://img.shields.io/badge/tests-1379%20passing-brightgreen.svg)](#running-tests)
 
-Token-Efficient Agent Harness Lab is a local deterministic harness and self-hosted macro-orchestrator control plane for studying event-sourced agent workflow infrastructure from Stage 0 through Stage 4. It includes JSONL event validation, projections, project/task workflow primitives, quality gates, controlled intelligence stubs, Stage 4 runtime-control abstractions, and local workflow orchestration primitives.
+A local deterministic harness and self-hosted macro-orchestrator control plane for studying event-sourced agent workflow infrastructure. Includes a Rust engine with axum API, SQLite state, TypeScript dashboard and SDK, and Python SDK.
 
-Current status: Stage 0-4 complete, Harness App MVP0-MVP8 complete, Trials 0-5 closed, and the agent-control-plane cutover is complete for the Rust + TypeScript stack. The primary local runtime is Rust `engine/` with axum API, SQLite state, provider safety gates, permission governance, cost governance, data operations, native packaging, dashboard controls, production-like local beta operations checks, read-only `WorkflowGraph` plans, workflow run/node/edge/event/approval state, supervised patch workspace/artifact runtime primitives, opt-in dynamic workflow scheduling, and Macro-Orchestrator Phase 1-5 all complete. Dynamic mode can observe a failed node, mutate the persisted graph with fix/test nodes, mark the failed node recovered, resume the run, and continue to completion. The product direction is a local/small-team self-hosted macro-orchestrator, not a coding-agent runtime. Self-Hosted GA Readiness SG-1 through SG-5 are all complete: real dynamic CLI pilot matrix, long-run soak/failure injection, mission-control dashboard visibility, enriched policy decision signals, and runbook/release/rollback handoff readiness. The primary UI and SDK surface is TypeScript (`dashboard/` and `sdk/typescript/`). Python is retained as the Python REST SDK and utility scripts only; the legacy Python reference implementation has been retired. Security hardening, GA hardening, dormant module adaptation, Dynamic Workflow Batches 1-7, Macro-Orchestrator Phase 1-5 repair batch, Self-Hosted GA Readiness Track, and HA-4 circuit breaker are all complete (1367 Rust tests pass). HA Hardening Track in progress: HA-1 Scheduler Resilience + Persistent Heartbeat, HA-3 Deep Health + External Monitoring next.
+> **This is a local research tool, not a cloud SaaS.** It does not call real model providers by default, run autonomous agents, or isolate work in sandboxes.
 
-**New sessions should start with [docs/SESSION_START_HERE.md](docs/SESSION_START_HERE.md).**
+## Quick Start
 
-Coding agents may autonomously advance safe repository work inside the documented boundaries. They must keep the smallest necessary handoff surface current after each commit-sized change, then run `uv run --no-project python scripts/check_agent_handoff.py` before commit.
+```bash
+# Clone and build
+git clone https://github.com/user/token-efficient-agent-harness-lab.git
+cd token-efficient-agent-harness-lab
+cargo build -p engine
 
-Local-team productization work is tracked in [docs/NEXT_DECISION.md](docs/NEXT_DECISION.md); do not add parallel roadmap documents.
+# Build and serve dashboard
+cd dashboard && bun install --frozen-lockfile && bun run build:static && cd ..
+ACP_DASHBOARD_DIR=dashboard/out cargo run -p engine
+# Open http://127.0.0.1:8080
+```
+
+**Prerequisites:** Rust stable toolchain, [Bun](https://bun.sh/) (for dashboard), Python 3.10+ with [uv](https://docs.astral.sh/uv/) (for scripts).
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) for detailed setup instructions.
+
+## What This Project Is Not
 
 ## What This Project Is Not
 
@@ -41,7 +58,7 @@ cargo test -p engine
 cd sdk/python && PYTHONPATH=src uv run --no-project python -m unittest discover -s tests
 ```
 
-Current result: 1367 Rust tests pass. Python SDK tests run separately under `sdk/python/`.
+Current result: 1379 Rust tests pass. Python SDK tests run separately under `sdk/python/`.
 
 ## How To Run Without Docker
 
@@ -252,8 +269,10 @@ Controlled Adaptive Orchestrator Kernel minimum threshold reached (CA-0 through 
 
 Full closeout report: [`docs/CA7_CONTROLLED_ADAPTIVE_CLOSEOUT_REPORT.md`](docs/CA7_CONTROLLED_ADAPTIVE_CLOSEOUT_REPORT.md)
 
-## Next Recommended Work
+## Contributing
 
-Keep the repo moving through the autonomous maintainer loop: repair CI/docs/test drift, maintain wire governance, keep docs current, and fix focused regressions. The R-series is sealed at R7. R8 is not approved. No further file splitting is approved. Dynamic Workflow Batches 1-7, scheduler dynamic-mode recovery, Macro-Orchestrator Phase 1-5 repair batch, and Self-Hosted GA Readiness Track SG-1 through SG-5 are all complete. The next safe work is maintaining repo health until the user provides new direction. Any work that adds cloud hosting, broadens model provider integration, adds sandbox isolation, expands subprocess execution beyond the existing CLI executor path, mutates target repos, adds hosted deployment, wires deploy/merge/apply controls, or adds unattended autonomous workers still requires explicit approval.
+Contributions are welcome! Please read [CONTRIBUTING.md](CONTRIBUTING.md) for setup instructions, code style, and PR guidelines.
 
-Python legacy reference implementation has been retired. Python is now retained only as the REST SDK (`sdk/python/`) and utility scripts (`scripts/`, `tools/`, `codegen/`).
+## License
+
+This project is licensed under the MIT License — see [LICENSE](LICENSE) for details.

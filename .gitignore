@@ -19,10 +19,12 @@ sdk/python/dist/
 sdk/python/src/*.egg-info/
 
 .claude/settings.local.json
-CLAUDE.md
+.claude/scheduled_tasks.lock
+.claude/workflows/
 
 # Build outputs
 dist/
+gpt_snapshot.txt
 
 # Separate workspace
 claude-drive/
