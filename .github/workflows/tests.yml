@@ -136,4 +136,9 @@ jobs:
       - name: Check out repository
         uses: actions/checkout@v6
       - name: Build local Docker services
-        run: docker compose build
+        run: |
+          for i in 1 2 3; do
+            docker compose build && break
+            echo "Attempt $i failed, retrying..."
+            sleep 10
+          done
