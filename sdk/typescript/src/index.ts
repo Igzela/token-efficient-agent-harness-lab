@@ -248,6 +248,12 @@ export class AgentControlPlaneClient {
     })}`);
   }
 
+  generatedProposals(options: { limit?: number } = {}): Promise<ProposalListResponse> {
+    return this.getJson<ProposalListResponse>(`/api/v1/proposals/generated${queryString({
+      limit: options.limit,
+    })}`);
+  }
+
   createProposal(request: ProposalCreateRequest): Promise<ProposalResponse> {
     return this.postJson<ProposalResponse>("/api/v1/proposals", {
       title: request.title,

@@ -115,6 +115,10 @@ class AgentControlPlaneClient:
             params["status"] = status
         return self._get(_query_path("/api/v1/proposals", params))
 
+    def generated_proposals(self, limit: int = 50) -> dict[str, Any]:
+        """Get auto-generated policy proposal candidates from feedback and simulation."""
+        return self._get(f"/api/v1/proposals/generated?limit={limit}")
+
     def create_proposal(
         self,
         payload: dict[str, Any],

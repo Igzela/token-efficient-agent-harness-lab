@@ -464,6 +464,22 @@ pub(crate) async fn api_rollback_policy_proposal(
     ))
 }
 
+pub(crate) async fn api_generated_proposals(
+    State(state): State<AxumApiState>,
+    headers: HeaderMap,
+    uri: Uri,
+    Extension(request_id): Extension<RequestId>,
+    Query(params): Query<std::collections::HashMap<String, String>>,
+) -> Result<impl IntoResponse, ApiError> {
+    authorize(&state, &headers, "dispatch:read", uri.path(), &request_id.0)?;
+    let store = require_store(&state)?;
+    let limit = query_i64(&params, "limit", 50).clamp(0, 500);
+    Ok((
+        cors_headers(),
+        Json(store.generated_proposals(limit).map_err(internal_error)?),
+    ))
+}
+
 fn require_auth_for_policy_override(state: &AxumApiState) -> Result<(), ApiError> {
     if state.tenant_resolver.is_none() {
         return Err(ApiError::with_code(

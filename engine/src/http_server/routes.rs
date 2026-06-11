@@ -113,6 +113,10 @@ fn axum_routes() -> Router<AxumApiState> {
             post(dispatch::api_rollback_policy_proposal).options(cors_preflight),
         )
         .route(
+            "/api/v1/proposals/generated",
+            get(dispatch::api_generated_proposals).options(cors_preflight),
+        )
+        .route(
             "/api/v1/plans",
             get(plans::api_plans)
                 .post(plans::api_create_plan)

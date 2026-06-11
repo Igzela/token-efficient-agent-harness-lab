@@ -7,6 +7,7 @@ import {
   fetchFeedbackCostOfPass,
   fetchFeedbackPatterns,
   fetchFeedbackTraces,
+  fetchGeneratedProposals,
   fetchProposals,
   fetchPolicySimulationReport,
   fetchSimulationReport,
@@ -81,6 +82,7 @@ export function DynamicRegulator() {
   const [loading, setLoading] = useState(true);
   const [confirmAction, setConfirmAction] = useState<ConfirmAction>(null);
   const [busy, setBusy] = useState(false);
+  const [generatedProposals, setGeneratedProposals] = useState<any[]>([]);
 
   function load() {
     setLoading(true);
@@ -92,8 +94,9 @@ export function DynamicRegulator() {
       fetchSimulationReport({ limit: 50 }),
       fetchPolicySimulationReport({ limit: 50, policy: "complexity_aware" }),
       fetchProposals({ limit: 20 }),
+      fetchGeneratedProposals({ limit: 10 }),
     ])
-      .then(([metrics, traces, costs, patterns, simulation, policySimulation, proposals]) => {
+      .then(([metrics, traces, costs, patterns, simulation, policySimulation, proposals, generated]) => {
         setData({
           metrics,
           traces,
@@ -103,6 +106,7 @@ export function DynamicRegulator() {
           policySimulation,
           proposals: proposals.proposals,
         });
+        setGeneratedProposals(generated.candidates || []);
         setError(null);
       })
       .catch((e) => {
@@ -379,6 +383,46 @@ export function DynamicRegulator() {
                 </table>
               )}
             </div>
+          </div>
+
+          <div className="subcard stack">
+            <h3>Generated Suggestions</h3>
+            <p style={{ fontSize: "0.8rem", color: "var(--text-muted, #888)", margin: 0 }}>
+              Auto-generated from feedback patterns and simulation evidence — not active until approved
+            </p>
+            {generatedProposals.length === 0 ? (
+              <EmptyState title="No generated suggestions" description="Generated proposals appear when feedback patterns and simulation evidence suggest routing changes." />
+            ) : (
+              <table>
+                <thead>
+                  <tr>
+                    <th>Suggestion</th>
+                    <th>Key</th>
+                    <th>Tier</th>
+                    <th>Confidence</th>
+                    <th>Risk</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {generatedProposals.slice(0, 6).map((c) => (
+                    <tr key={c.proposal_id ?? c.candidate_id}>
+                      <td>{c.title ?? c.proposal_id}</td>
+                      <td>{c.policy_key ?? c.task_class ?? "unknown"}</td>
+                      <td>{c.target_tier ?? "unknown"}</td>
+                      <td>{c.confidence != null ? Math.round(c.confidence * 100) + "%" : "n/a"}</td>
+                      <td>
+                        <span style={{
+                          color: c.risk_level === "high" ? "var(--color-risk, #e74c3c)" : c.risk_level === "medium" ? "var(--color-warn, #f39c12)" : "var(--color-ok, #27ae60)",
+                          fontWeight: 600,
+                        }}>
+                          {c.risk_level ?? "unknown"}
+                        </span>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            )}
           </div>
 
           <div className="subcard stack">
