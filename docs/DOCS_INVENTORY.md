@@ -20,7 +20,7 @@ Last updated: 2026-06-11 (Phase 5 active trial playbook)
 | `docs/DYNAMIC_GLOBAL_REGULATOR_PLAN.md` | 616 | strategic-reference | NEXT_DECISION | keep |
 | `docs/DYNAMIC_REGULATOR_PHASE_0_5_COMPLETION_MATRIX.md` | 421 | operational | NEXT_DECISION | keep |
 | `docs/PHASE5_AUTO_ADJUSTMENT_AUDIT.md` | 130 | operational | NEXT_DECISION | keep |
-| `docs/PHASE5_ACTIVE_TRIAL_PLAYBOOK.md` | 396 | operational | CURRENT_STATUS, NEXT_DECISION, DYNAMIC_REGULATOR_PHASE_0_5_COMPLETION_MATRIX | keep |
+| `docs/PHASE5_ACTIVE_TRIAL_PLAYBOOK.md` | 439 | operational | CURRENT_STATUS, NEXT_DECISION, DYNAMIC_REGULATOR_PHASE_0_5_COMPLETION_MATRIX | keep |
 | `docs/MODULE_MAP.md` | 176 | operational | README, SESSION_START, CURRENT_STATUS | keep |
 | `docs/RUNBOOK.md` | 360 | operational | CURRENT_STATUS | keep |
 | `docs/DATA_DIRECTORY.md` | 190 | operational | CURRENT_STATUS | keep |

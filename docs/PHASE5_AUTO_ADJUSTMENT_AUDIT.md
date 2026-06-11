@@ -2,7 +2,7 @@
 
 Date: 2026-06-11
 
-Status: **ACTIVE_CORE_HARDENED - active apply + rollback implemented under strict gates; final Phase 5 seal requires the real-world trial in `docs/PHASE5_ACTIVE_TRIAL_PLAYBOOK.md`.**
+Status: **PARTIAL / ACTIVE_CORE_HARDENED / TRIAL_PLAYBOOK_READY - active apply + rollback are implemented under strict gates; final Phase 5 seal requires real-world trial evidence from `docs/PHASE5_ACTIVE_TRIAL_PLAYBOOK.md`.**
 
 ## Audit Summary
 

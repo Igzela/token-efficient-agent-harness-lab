@@ -2,7 +2,7 @@
 
 Date: 2026-06-11
 
-Status: **TRIAL PLAYBOOK READY - Phase 5 remains PARTIAL / ACTIVE_CORE_HARDENED until this drill is completed and signed off.**
+Status: **PARTIAL / ACTIVE_CORE_HARDENED / TRIAL_PLAYBOOK_READY - Phase 5 is not final DONE until this drill is completed and signed off.**
 
 This playbook is the real-world acceptance drill for Phase 5 active auto-adjustment. It validates that the active apply and rollback core can be operated safely under real workflow conditions without expanding automation scope.
 
@@ -149,6 +149,7 @@ Verify:
 - `decisions` contains policy decisions for generated candidates when candidates exist.
 - `snapshot_previews` contains deterministic preview objects when candidates exist.
 - No row is created in `controlled_loop_policy_proposals`.
+- No active row is created in `controlled_loop_policy_snapshots`.
 - `active_routing_policy` does not change.
 - `GET /api/v1/audit?limit=50&search=auto_adjustment` has no `auto_adjustment.apply.accepted` event for the dry-run.
 
@@ -157,9 +158,12 @@ SQLite inspection, when using a local SQLite data file:
 ```bash
 sqlite3 "$ACP_DATABASE_PATH" \
   "SELECT COUNT(*) FROM controlled_loop_policy_proposals;"
+
+sqlite3 "$ACP_DATABASE_PATH" \
+  "SELECT COUNT(*) FROM controlled_loop_policy_snapshots WHERE status = 'active';"
 ```
 
-If a proposal count already exists from previous manual testing, record the before and after counts and verify they are equal.
+If proposal or snapshot rows already exist from previous manual testing, record the before and after counts and verify they are equal.
 
 ## Active Apply Trial
 
@@ -232,6 +236,43 @@ sqlite3 "$ACP_DATABASE_PATH" \
   "SELECT adjustment_id, snapshot_id, status, policy_key, target_tier FROM controlled_loop_policy_snapshots WHERE adjustment_id = '$ADJUSTMENT_ID';"
 ```
 
+## Re-Entry Rejection Drill
+
+Attempt to apply the same candidate again:
+
+```bash
+curl -sS -X POST \
+  -H "Authorization: Bearer $ACP_ADMIN_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"confirm_auto_adjustment":true,"candidate_id":"'"$CANDIDATE_ID"'"}' \
+  "http://127.0.0.1:8080/api/v1/auto-adjustments/apply"
+```
+
+Verify:
+
+- The response is either `auto_adjustment_apply_result.v1` with `applied: false`, or an HTTP rejection such as `BAD_REQUEST`, according to the current API shape.
+- `blocked_reasons` includes a duplicate candidate, active candidate, or active `policy_key` reason.
+- `GET /api/v1/audit?limit=50&search=auto_adjustment.apply.rejected` includes `auto_adjustment.apply.rejected`.
+- `active_routing_policy` remains unchanged from the post-apply state.
+- No additional active row is created for the same `policy_key` in `controlled_loop_policy_snapshots`.
+
+Attempt another candidate with the same `policy_key`, if one exists in the generated candidate set:
+
+```bash
+curl -sS -X POST \
+  -H "Authorization: Bearer $ACP_ADMIN_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"confirm_auto_adjustment":true,"candidate_id":"'"$SAME_POLICY_KEY_CANDIDATE_ID"'"}' \
+  "http://127.0.0.1:8080/api/v1/auto-adjustments/apply"
+```
+
+Verify:
+
+- The request is rejected before policy mutation.
+- `blocked_reasons` identifies an existing active adjustment for the `policy_key`.
+- Audit contains `auto_adjustment.apply.rejected`.
+- `active_routing_policy` remains unchanged.
+
 ## Rollback Drill
 
 Call rollback for the active `adjustment_id`:
@@ -283,7 +324,7 @@ curl -sS -X POST \
 
 Corrupted hash rollback must be exercised only in an isolated trial database. Do not corrupt a shared or production-like operator database. In an isolated SQLite drill, mutate one snapshot hash, call rollback, verify rejection, then discard the database.
 
-## Failure Playbook
+## Failure Response Playbook
 
 If apply is rejected:
 
@@ -328,7 +369,7 @@ If CI fails after PR:
 - Fix the failing check on the PR branch or revert PR #39 if the docs/scripts introduced the failure.
 - Re-run handoff guard and CI.
 
-If PostgreSQL behaves differently:
+If migration mismatch or PostgreSQL behavior differs:
 
 - Do not mark PostgreSQL accepted.
 - Record the exact PostgreSQL version, `ACP_TEST_DATABASE_URL` availability, failing command, and failure output.
@@ -349,13 +390,14 @@ If env gates behave unexpectedly:
 - Restart with only the intended env variables.
 - Verify dry-run wins over active before any apply attempt.
 
-## Code Rollback Plan
+## Runtime Rollback and Code Rollback Plan
 
+- When an active adjustment has already been applied, use the runtime rollback endpoint before any code revert.
+- After runtime rollback, verify `active_routing_policy`, `controlled_loop_policy_snapshots`, `controlled_loop_policy_proposals`, and audit log evidence.
 - If PR #39 docs or any optional trial support scripts are wrong, revert PR #39.
 - If PR #38 hardening broke operation, revert PR #38 after recording the failing safety-hardening behavior.
 - If PR #37 active apply or rollback path is unsafe, revert PR #37 after runtime rollback is complete.
-- When an active adjustment has already been applied, use the runtime rollback endpoint before any code revert.
-- After runtime rollback, verify `active_routing_policy`, `controlled_loop_policy_snapshots`, `controlled_loop_policy_proposals`, and audit log evidence.
+- Never revert blindly before considering runtime rollback of active policy state.
 - After code revert, rerun CI and `uv run --no-project python scripts/check_agent_handoff.py`.
 
 ## Acceptance Checklist
@@ -365,6 +407,7 @@ Complete this checklist manually before Phase 5 final seal:
 - [ ] Disabled mode verified.
 - [ ] Dry-run mode verified.
 - [ ] Active apply verified.
+- [ ] Re-entry rejection verified.
 - [ ] Rollback verified.
 - [ ] Corrupted rollback rejected.
 - [ ] Repeated rollback rejected or safe no-op verified.
