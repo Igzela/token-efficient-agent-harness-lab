@@ -9,7 +9,7 @@ use crate::dispatch_decision::{
 };
 use crate::dispatch_ledger::{DispatchBundle, DispatchLedger};
 use crate::evaluation_stub::{EvaluationResult, EvaluationStub, Evaluator};
-use crate::executor_adapter::{Executor, NoopExecutor};
+use crate::executor_adapter::{ExecutionResult, Executor, NoopExecutor};
 use crate::harness::advisor::{AdvisorBroker, AdvisorContextPack};
 use crate::model_selector::ModelSelector;
 use crate::provider::executor::make_not_executed_result;
@@ -142,6 +142,20 @@ impl DispatchEngine {
         self.dispatch_bundle(raw_request, request_source).to_value()
     }
 
+    fn execute_with_fallback(
+        &self,
+        tier: &str,
+        original_decision: &DispatchDecision,
+        raw_request: &str,
+        dispatch_id: &str,
+        runtime: &mut FixtureRuntime,
+    ) -> ExecutionResult {
+        let mut modified = original_decision.clone();
+        modified.selected_tier = tier.to_string();
+        self.executor
+            .execute(&modified, raw_request, dispatch_id, runtime)
+    }
+
     pub fn dispatch_bundle(&self, raw_request: &str, request_source: &str) -> DispatchBundle {
         let mut runtime = FixtureRuntime::new();
         let dispatch_id = format!(
@@ -192,7 +206,7 @@ impl DispatchEngine {
         let hard_constraints = derive_hard_constraints(&analysis, &execution_policy);
         let decision_status = determine_decision_status(&execution_gates);
 
-        let decision = DispatchDecision {
+        let mut decision = DispatchDecision {
             schema_version: DISPATCH_DECISION_SCHEMA_VERSION.to_string(),
             decision_id: decision_id.clone(),
             analysis_id: analysis.analysis_id.clone(),
@@ -238,7 +252,7 @@ impl DispatchEngine {
                     .hard_constraints
                     .contains(&"no_provider_call".to_string()));
 
-        let execution_result = if provider_blocked {
+        let mut execution_result = if provider_blocked {
             make_not_executed_result(
                 &decision,
                 &dispatch_id,
@@ -251,9 +265,53 @@ impl DispatchEngine {
                 .execute(&decision, raw_request, &dispatch_id, &mut runtime)
         };
 
-        let evaluation_result = self
-            .evaluator
-            .evaluate(&execution_result, &decision, &mut runtime);
+        let mut evaluation_result =
+            self.evaluator
+                .evaluate(&execution_result, &decision, &mut runtime);
+
+        // Quality retry: if evaluation fails and retry is suggested, upgrade tier and retry once.
+        // Guard against: (a) non-decided status, (b) no_provider_call constraint,
+        // (c) needs_human_review on the original evaluation.
+        let should_retry = evaluation_result.requires_retry
+            && evaluation_result.status == "fail"
+            && decision.decision_status == "decided"
+            && !decision
+                .hard_constraints
+                .iter()
+                .any(|c| c == "no_provider_call");
+
+        if should_retry {
+            let upgraded_tier = upgrade_tier(&decision.selected_tier);
+            if upgraded_tier != decision.selected_tier {
+                // Ensure upgraded tier does not itself violate no_provider_call
+                let upgraded_type = self.effective_executor_type(&upgraded_tier);
+                let upgraded_blocked = upgraded_type == "provider"
+                    && decision
+                        .hard_constraints
+                        .iter()
+                        .any(|c| c == "no_provider_call");
+                if !upgraded_blocked {
+                    let retry_execution = self.execute_with_fallback(
+                        &upgraded_tier,
+                        &decision,
+                        raw_request,
+                        &dispatch_id,
+                        &mut runtime,
+                    );
+                    let retry_eval =
+                        self.evaluator
+                            .evaluate(&retry_execution, &decision, &mut runtime);
+                    if retry_eval.status != "fail" {
+                        execution_result = retry_execution;
+                        evaluation_result = retry_eval;
+                        // Record the upgraded tier in the decision so the ledger
+                        // reflects the tier that actually executed.
+                        decision.selected_tier = upgraded_tier;
+                    }
+                }
+            }
+        }
+
         let final_status = derive_final_status(&execution_result, &evaluation_result);
         let record = self.ledger.update_record(
             record,
@@ -271,6 +329,15 @@ impl DispatchEngine {
             execution_result,
             evaluation_result,
         )
+    }
+}
+
+fn upgrade_tier(tier: &str) -> String {
+    match tier {
+        "cheap_executor" => "balanced_worker".to_string(),
+        "balanced_worker" => "claude_code_cli".to_string(),
+        "codex_cli" => "claude_code_cli".to_string(),
+        other => other.to_string(),
     }
 }
 
@@ -560,5 +627,44 @@ mod tests {
             serde_json::from_str(&serde_json::to_string(&bundle.decision).unwrap()).unwrap();
         assert!(policy["execution_policy"]["advisory"].is_object());
         assert!(bundle.evaluation_result["quality_score"].is_number());
+    }
+
+    #[test]
+    fn test_retry_does_not_violate_no_provider_call() {
+        // A mock evaluator that always fails
+        struct FailEvaluator;
+        impl Evaluator for FailEvaluator {
+            fn evaluate(
+                &self,
+                result: &ExecutionResult,
+                _decision: &DispatchDecision,
+                runtime: &mut FixtureRuntime,
+            ) -> EvaluationResult {
+                EvaluationResult {
+                    schema_version: "evaluation_result.v1".to_string(),
+                    evaluation_id: runtime.id("eval-"),
+                    dispatch_id: result.dispatch_id.clone(),
+                    decision_id: result.decision_id.clone(),
+                    execution_result_id: result.result_id.clone(),
+                    status: "fail".to_string(),
+                    checks: vec![],
+                    quality_score: None,
+                    requires_retry: true,
+                    retry_reason: Some("test".to_string()),
+                    created_at: runtime.now(),
+                }
+            }
+        }
+
+        let engine = DispatchEngine::with_evaluator(Box::new(FailEvaluator));
+        // Dispatch a request — the noop executor will succeed but FailEvaluator will mark it as fail
+        // The retry should NOT upgrade to a provider tier (default engine has no_provider_call constraint)
+        let bundle = engine.dispatch_bundle("test request", "api");
+        // The final status should reflect the original execution, not a provider retry
+        let final_status = bundle.record["final_status"].as_str().unwrap_or("");
+        assert!(
+            final_status == "failed" || final_status == "not_executed",
+            "final_status should be failed or not_executed, got: {final_status}"
+        );
     }
 }

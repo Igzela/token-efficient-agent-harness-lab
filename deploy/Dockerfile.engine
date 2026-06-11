@@ -2,6 +2,8 @@ FROM rust:bookworm AS builder
 WORKDIR /app
 COPY Cargo.toml Cargo.lock ./
 COPY engine/ engine/
+ENV CARGO_NET_RETRY=10
+ENV CARGO_HTTP_HTTP2=false
 RUN cargo build --release -p engine
 
 FROM debian:bookworm-slim

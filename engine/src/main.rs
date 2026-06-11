@@ -1,5 +1,6 @@
 use engine::cli::{ClaudeCodeCliExecutor, CliConfig, CodexCliExecutor, MultiExecutor};
 use engine::dispatch_engine::DispatchEngine;
+use engine::executor::HybridExecutor;
 use engine::executor_adapter::NoopExecutor;
 use engine::http_server::{build_axum_router, build_axum_router_with_dashboard, AxumApiState};
 use engine::infrastructure::auth::{
@@ -85,29 +86,71 @@ async fn main() {
     let store_for_scheduler = store_arc.clone();
     let cb_registry = Arc::new(CircuitBreakerRegistry::new());
     let cli_config = CliConfig::from_env();
-    let multi_executor = build_multi_executor(&cli_config);
-    let base_engine = DispatchEngine::with_multi_executor(multi_executor);
+    let execution_mode = std::env::var("ACP_EXECUTION_MODE")
+        .unwrap_or_else(|_| "off".to_string())
+        .to_lowercase();
+
+    let (base_engine, _exec_type_label) = match execution_mode.as_str() {
+        "provider" => {
+            let provider = build_provider_for_engine(&store_arc, &cb_registry)
+                .expect("ACP_EXECUTION_MODE=provider requires ACP_PROVIDER_TYPE + ACP_ENABLE_PROVIDER_EXECUTION=1");
+            let engine = DispatchEngine::with_provider_executor(provider);
+            (engine, "provider".to_string())
+        }
+        "cli" => {
+            let multi_executor = build_multi_executor(&cli_config);
+            let engine = DispatchEngine::with_multi_executor(multi_executor);
+            (engine, "cli".to_string())
+        }
+        "auto" => {
+            let provider = build_provider_for_engine(&store_arc, &cb_registry).ok();
+            let cli_executors = build_cli_executor_map(&cli_config);
+            let threshold: f64 = std::env::var("ACP_HYBRID_COMPLEXITY_THRESHOLD")
+                .ok()
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(0.5);
+            let hybrid =
+                HybridExecutor::new(provider, cli_executors, Box::new(NoopExecutor), threshold);
+            let engine = DispatchEngine::with_executor(Box::new(hybrid));
+            (engine, "auto".to_string())
+        }
+        _ => {
+            // "off" or unrecognized — default noop-fallback multi executor
+            let multi_executor = build_multi_executor(&cli_config);
+            let engine = DispatchEngine::with_multi_executor(multi_executor);
+            (engine, "noop".to_string())
+        }
+    };
+
     let state = configure_auth(
         build_state_with_provider(
             AxumApiState::new().with_engine(base_engine),
             &store_arc,
             &cb_registry,
         )
-        .with_local_store_arc(store_arc)
+        .with_local_store_arc(store_arc.clone())
         .with_backup_dir(backup_dir)
-        .with_circuit_breaker_registry(cb_registry),
+        .with_circuit_breaker_registry(cb_registry.clone()),
     );
 
     let require_auth = std::env::var("ACP_REQUIRE_AUTH")
         .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
         .unwrap_or(false);
-    if state.executor_type() == "provider" && !require_auth {
+    let may_use_provider = state.executor_type() == "provider"
+        || (execution_mode == "auto"
+            && build_provider_for_engine(&store_arc, &cb_registry).is_ok());
+    if may_use_provider && !require_auth {
         panic!(
             "ACP_REQUIRE_AUTH=1 is required when ACP_ENABLE_PROVIDER_EXECUTION=1 and a real provider is configured"
         );
     }
 
     let exec_type = state.executor_type();
+    let exec_type_display = if execution_mode == "auto" {
+        "auto(hybrid)".to_string()
+    } else {
+        exec_type.to_string()
+    };
     let _prov_enabled = state.provider_enabled();
     let lan = if host == "0.0.0.0" {
         "lan-exposed"
@@ -127,8 +170,9 @@ async fn main() {
         cli_config.claude_code_enabled, cli_config.codex_enabled
     );
     println!(
-        "[acp-startup] executor={} cli=[{}] auth={} host={} budget_per_dispatch={} budget_daily={} lan={}",
-        exec_type,
+        "[acp-startup] execution_mode={} executor={} cli=[{}] auth={} host={} budget_per_dispatch={} budget_daily={} lan={}",
+        execution_mode,
+        exec_type_display,
         cli_summary,
         if require_auth { "on" } else { "off" },
         addr,
@@ -494,6 +538,133 @@ fn local_admin_scope_list() -> Vec<String> {
     .into_iter()
     .map(String::from)
     .collect()
+}
+
+/// Build a provider Arc for engine injection (separate from the API state provider).
+/// Returns `Err` if ACP_PROVIDER_TYPE is unset or ACP_ENABLE_PROVIDER_EXECUTION is not "1".
+fn build_provider_for_engine(
+    _store: &Arc<LocalProductStore>,
+    cb_registry: &Arc<CircuitBreakerRegistry>,
+) -> Result<Arc<dyn engine::provider::Provider>, String> {
+    let provider_type =
+        std::env::var("ACP_PROVIDER_TYPE").map_err(|_| "ACP_PROVIDER_TYPE not set".to_string())?;
+    if provider_type.trim().is_empty() {
+        return Err("ACP_PROVIDER_TYPE is empty".to_string());
+    }
+
+    let enable_execution = std::env::var("ACP_ENABLE_PROVIDER_EXECUTION")
+        .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+        .unwrap_or(false);
+    if !enable_execution {
+        return Err("ACP_ENABLE_PROVIDER_EXECUTION not enabled".to_string());
+    }
+
+    if provider_type == "stub" {
+        let provider: Arc<dyn engine::provider::Provider> = Arc::new(StubProvider::new("stub-env"));
+        return Ok(provider);
+    }
+
+    let api_key_env = std::env::var("ACP_API_KEY").unwrap_or_default();
+    let model = std::env::var("ACP_MODEL").unwrap_or_else(|_| "default".to_string());
+    let base_url = std::env::var("ACP_BASE_URL").unwrap_or_default();
+    let pricing = provider_pricing_from_env();
+
+    let boundary = CredentialBoundary::new("env").expect("env credential backend");
+    let cred_ref = CredentialRef::new(
+        &api_key_env,
+        "env",
+        "***",
+        "provider:auto",
+        "2026-01-01T00:00:00Z",
+    );
+
+    let base_provider: Arc<dyn engine::provider::Provider> = match provider_type.as_str() {
+        "openai_compatible" => {
+            let mut config = ProviderConfig::new(
+                "openai-env",
+                "openai_compatible",
+                &base_url,
+                &model,
+                &api_key_env,
+                "2026-01-01T00:00:00Z",
+            );
+            config.apply_pricing(&pricing);
+            Arc::new(OpenAiProvider::new(
+                config,
+                boundary,
+                cred_ref,
+                Arc::new(ReqwestTransport::new()),
+                None,
+            ))
+        }
+        "anthropic" => {
+            let mut config = ProviderConfig::new(
+                "anthropic-env",
+                "anthropic",
+                &base_url,
+                &model,
+                &api_key_env,
+                "2026-01-01T00:00:00Z",
+            );
+            config.apply_pricing(&pricing);
+            Arc::new(AnthropicProvider::new(
+                config,
+                boundary,
+                cred_ref,
+                Arc::new(ReqwestTransport::new()),
+                None,
+            ))
+        }
+        other => return Err(format!("unknown ACP_PROVIDER_TYPE: {other}")),
+    };
+
+    // Wrap with circuit breaker
+    let cb_threshold = std::env::var("ACP_CIRCUIT_BREAKER_THRESHOLD")
+        .ok()
+        .and_then(|v| v.parse::<u64>().ok())
+        .unwrap_or(5);
+    let cb_recovery_ms = std::env::var("ACP_CIRCUIT_BREAKER_RECOVERY_MS")
+        .ok()
+        .and_then(|v| v.parse::<u64>().ok())
+        .unwrap_or(30_000);
+    let provider_cb = Arc::new(CircuitBreaker::new(
+        format!("provider:{}", base_provider.provider_id()),
+        cb_threshold,
+        cb_recovery_ms,
+    ));
+    cb_registry.register(provider_cb.clone());
+    Ok(Arc::new(CircuitBreakerProvider::new(
+        base_provider,
+        provider_cb,
+    )))
+}
+
+/// Build a HashMap of CLI executors for HybridExecutor construction.
+fn build_cli_executor_map(
+    config: &CliConfig,
+) -> HashMap<String, Box<dyn engine::executor_adapter::Executor>> {
+    let mut executors: HashMap<String, Box<dyn engine::executor_adapter::Executor>> =
+        HashMap::new();
+
+    if config.claude_code_enabled {
+        if let Some(ref bin) = config.claude_code_bin {
+            executors.insert(
+                "claude_code_cli".to_string(),
+                Box::new(ClaudeCodeCliExecutor::new(bin.clone(), config.timeout_ms)),
+            );
+        }
+    }
+
+    if config.codex_enabled {
+        if let Some(ref bin) = config.codex_bin {
+            executors.insert(
+                "codex_cli".to_string(),
+                Box::new(CodexCliExecutor::new(bin.clone(), config.timeout_ms)),
+            );
+        }
+    }
+
+    executors
 }
 
 fn build_multi_executor(config: &CliConfig) -> MultiExecutor {

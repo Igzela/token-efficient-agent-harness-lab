@@ -262,6 +262,7 @@ bundle = client.dispatch("Summarize docs without provider calls")
 - No real sandbox/process/container/VM isolation runtime.
 - Supervised patch execution is limited to app-owned detached workspaces, explicit workflow tick/executor selection, artifact capture, approval binding, and export gating. It is not target-repo mutation or production autonomy.
 - Existing local CLI executor subprocess invocation is a separate, explicit opt-in exception via `ACP_ENABLE_CLI_EXECUTION=1`.
+- `ACP_EXECUTION_MODE` controls how dispatch requests are routed: `off` (default, noop), `provider` (API only), `cli` (CLI executor only), or `auto` (hybrid mode that scores task complexity and routes low-complexity tasks to the Provider API and high-complexity tasks to the CLI executor; the threshold is configurable via `ACP_HYBRID_COMPLEXITY_THRESHOLD`, default 0.5).
 - No production concurrency or real concurrent workers.
 - No provider failover.
 - No cloud production Web UI, hosted deployment, or remote SaaS service.
