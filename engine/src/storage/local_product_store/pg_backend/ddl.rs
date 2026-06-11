@@ -1,4 +1,4 @@
-/// Full PostgreSQL DDL for all 22 local_product_store tables.
+/// Full PostgreSQL DDL for all local_product_store tables.
 ///
 /// Translation from SQLite:
 /// - INTEGER PRIMARY KEY AUTOINCREMENT -> BIGSERIAL PRIMARY KEY
@@ -327,4 +327,22 @@ CREATE TABLE IF NOT EXISTS scheduler_heartbeat (
     metadata_json TEXT NOT NULL DEFAULT '{}',
     updated_at TEXT NOT NULL DEFAULT ''
 );
+
+CREATE TABLE IF NOT EXISTS controlled_loop_policy_proposals (
+    proposal_sequence BIGSERIAL PRIMARY KEY,
+    proposal_id TEXT NOT NULL UNIQUE,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    status TEXT NOT NULL,
+    title TEXT NOT NULL,
+    summary TEXT,
+    task_domain TEXT NOT NULL,
+    task_intent TEXT NOT NULL,
+    target_tier TEXT NOT NULL,
+    evidence_json TEXT NOT NULL,
+    approval_json TEXT,
+    proposal_json TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_policy_proposals_status ON controlled_loop_policy_proposals(status);
+CREATE INDEX IF NOT EXISTS idx_policy_proposals_key ON controlled_loop_policy_proposals(task_domain, task_intent, status);
 ";

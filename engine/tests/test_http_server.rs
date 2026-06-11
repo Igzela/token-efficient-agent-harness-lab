@@ -129,6 +129,118 @@ async fn axum_dispatch_rejects_empty_request() {
 }
 
 #[tokio::test]
+async fn axum_policy_proposal_activation_requires_confirmation_and_affects_dispatch() {
+    let dir = tempdir().unwrap();
+    let store = LocalProductStore::new(dir.path().join("policy.db")).unwrap();
+    let mut resolver = TenantResolver::new();
+    let scopes = HashSet::from([
+        "dispatch:read".to_string(),
+        "team:admin".to_string(),
+        "health:read".to_string(),
+    ]);
+    resolver.add_tenant(Tenant {
+        tenant_id: "local".to_string(),
+        name: "Local".to_string(),
+        scopes: scopes.clone(),
+        rate_limit: Some(100),
+    });
+    let (_key, raw_key) = resolver
+        .create_api_key("local", Some(scopes), None, 1.0)
+        .unwrap();
+    let app = build_axum_router(AxumApiState::new().with_local_store(store).with_auth(
+        resolver,
+        RateLimiter::new(60.0, 100),
+        Some(100),
+        1.0,
+    ));
+
+    let created = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(Method::POST)
+                .uri("/api/v1/proposals")
+                .header(header::AUTHORIZATION, format!("Bearer {raw_key}"))
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(
+                    json!({
+                        "task_domain": "docs",
+                        "task_intent": "review",
+                        "target_tier": "verifier",
+                        "payload": {"type": "tier_map_override"},
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(created.status(), StatusCode::OK);
+    let body = response_json(created).await;
+    let proposal_id = body["proposal"]["proposal_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    assert_eq!(body["proposal"]["status"], "pending");
+
+    let missing_confirm = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(Method::POST)
+                .uri(format!("/api/v1/proposals/{proposal_id}/approve"))
+                .header(header::AUTHORIZATION, format!("Bearer {raw_key}"))
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(json!({"reason": "pilot"}).to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(missing_confirm.status(), StatusCode::BAD_REQUEST);
+
+    let approved = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(Method::POST)
+                .uri(format!("/api/v1/proposals/{proposal_id}/approve"))
+                .header(header::AUTHORIZATION, format!("Bearer {raw_key}"))
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(
+                    json!({"reason": "pilot", "confirm_policy_override": true}).to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(approved.status(), StatusCode::OK);
+    let body = response_json(approved).await;
+    assert_eq!(body["proposal"]["status"], "active");
+
+    let dispatch = app
+        .oneshot(
+            Request::builder()
+                .method(Method::POST)
+                .uri("/api/v1/dispatch")
+                .header(header::AUTHORIZATION, format!("Bearer {raw_key}"))
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(
+                    json!({
+                        "raw_request": "Review docs for consistency",
+                        "request_source": "api"
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(dispatch.status(), StatusCode::OK);
+    let body = response_json(dispatch).await;
+    assert_eq!(body["decision"]["selected_tier"], "verifier");
+}
+
+#[tokio::test]
 async fn axum_local_store_persists_dispatch_history_and_dashboard_summary() {
     let dir = tempdir().unwrap();
     let db_path = dir.path().join("local-team.db");

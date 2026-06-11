@@ -6,6 +6,14 @@ use serde::{Deserialize, Serialize};
 use super::dispatch_decision::{RejectedCandidate, ShadowRoute, MODEL_TIERS};
 use super::task_analyzer::TaskAnalysis;
 
+pub const SAFE_POLICY_OVERRIDE_TIERS: &[&str] = &[
+    "cheap_executor",
+    "balanced_worker",
+    "strong_planner",
+    "verifier",
+    "advisor",
+];
+
 static DEFAULT_TIER_MAP: LazyLock<HashMap<&'static str, &'static str>> = LazyLock::new(|| {
     let mut m = HashMap::new();
     m.insert("code_generate", "codex_cli");
@@ -48,6 +56,12 @@ pub struct DispatchRoutingPolicy {
 }
 
 impl DispatchRoutingPolicy {
+    pub fn with_tier_override(mut self, task_domain: &str, task_intent: &str, tier: &str) -> Self {
+        let key = format!("{task_domain}_{task_intent}");
+        self.tier_map.insert(key, tier.to_string());
+        self
+    }
+
     pub fn select_tier(&self, analysis: &TaskAnalysis) -> String {
         let key = format!("{}_{}", analysis.task_domain, analysis.task_intent);
         let mut tier = self
@@ -62,6 +76,10 @@ impl DispatchRoutingPolicy {
         }
         tier
     }
+}
+
+pub fn is_safe_policy_override_tier(tier: &str) -> bool {
+    SAFE_POLICY_OVERRIDE_TIERS.contains(&tier)
 }
 
 impl Default for DispatchRoutingPolicy {

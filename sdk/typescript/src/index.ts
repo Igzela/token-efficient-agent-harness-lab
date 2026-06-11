@@ -44,6 +44,14 @@ import type {
   AuditResponse,
   ProviderHealthStatus,
   ProviderAuditResponse,
+  DispatchMetricsResponse,
+  FeedbackCostOfPassResponse,
+  FeedbackTraceListResponse,
+  ProposalActionRequest,
+  ProposalCreateRequest,
+  ProposalListResponse,
+  ProposalResponse,
+  SimulationReportResponse,
   BackupListResponse,
   BackupCreateResponse,
   BackupDeleteResponse,
@@ -123,6 +131,33 @@ export interface DecisionListOptions {
   run_id?: string;
 }
 
+export interface DispatchMetricsOptions {
+  limit?: number;
+}
+
+export interface FeedbackTraceOptions {
+  limit?: number;
+  offset?: number;
+  task_class?: string;
+  tier?: string;
+  status?: string;
+}
+
+export interface FeedbackCostOfPassOptions {
+  task_class?: string;
+  tier?: string;
+}
+
+export interface SimulationReportOptions {
+  limit?: number;
+}
+
+export interface ProposalListOptions {
+  limit?: number;
+  offset?: number;
+  status?: string;
+}
+
 export class AgentControlPlaneClient {
   private readonly baseUrl: string;
   private readonly apiKey?: string;
@@ -152,6 +187,116 @@ export class AgentControlPlaneClient {
 
   metrics(): Promise<OperationsMetricsResponse> {
     return this.getJson<OperationsMetricsResponse>("/api/v1/metrics");
+  }
+
+  dispatchMetrics(options: DispatchMetricsOptions = {}): Promise<DispatchMetricsResponse> {
+    return this.getJson<DispatchMetricsResponse>(`/api/v1/dispatch-metrics${queryString({
+      limit: options.limit,
+    })}`);
+  }
+
+  feedbackTraces(options: FeedbackTraceOptions = {}): Promise<FeedbackTraceListResponse> {
+    return this.getJson<FeedbackTraceListResponse>(`/api/v1/feedback/traces${queryString({
+      limit: options.limit,
+      offset: options.offset,
+      task_class: options.task_class,
+      tier: options.tier,
+      status: options.status,
+    })}`);
+  }
+
+  feedbackCostOfPass(options: FeedbackCostOfPassOptions = {}): Promise<FeedbackCostOfPassResponse> {
+    return this.getJson<FeedbackCostOfPassResponse>(`/api/v1/feedback/cost-of-pass${queryString({
+      task_class: options.task_class,
+      tier: options.tier,
+    })}`);
+  }
+
+  simulationReport(options: SimulationReportOptions = {}): Promise<SimulationReportResponse> {
+    return this.getJson<SimulationReportResponse>(`/api/v1/simulation/report${queryString({
+      limit: options.limit,
+    })}`);
+  }
+
+  proposals(options: ProposalListOptions = {}): Promise<ProposalListResponse> {
+    return this.getJson<ProposalListResponse>(`/api/v1/proposals${queryString({
+      limit: options.limit,
+      offset: options.offset,
+      status: options.status,
+    })}`);
+  }
+
+  createProposal(request: ProposalCreateRequest): Promise<ProposalResponse> {
+    return this.postJson<ProposalResponse>("/api/v1/proposals", {
+      title: request.title,
+      summary: request.summary,
+      task_class: request.task_class,
+      task_domain: request.task_domain,
+      task_intent: request.task_intent,
+      tier: request.tier,
+      target_tier: request.target_tier,
+      payload: request.payload,
+      evidence: request.evidence,
+    });
+  }
+
+  proposal(proposalId: string): Promise<ProposalResponse> {
+    return this.getJson<ProposalResponse>(`/api/v1/proposals/${encodeURIComponent(proposalId)}`);
+  }
+
+  approveProposal(
+    proposalId: string,
+    request: ProposalActionRequest = {},
+  ): Promise<ProposalResponse> {
+    return this.postJson<ProposalResponse>(
+      `/api/v1/proposals/${encodeURIComponent(proposalId)}/approve`,
+      {
+        actor: request.actor,
+        reason: request.reason,
+        confirm_policy_override: request.confirm_policy_override ?? true,
+      },
+    );
+  }
+
+  rejectProposal(
+    proposalId: string,
+    request: ProposalActionRequest = {},
+  ): Promise<ProposalResponse> {
+    return this.postJson<ProposalResponse>(
+      `/api/v1/proposals/${encodeURIComponent(proposalId)}/reject`,
+      {
+        actor: request.actor,
+        reason: request.reason,
+      },
+    );
+  }
+
+  rollbackProposal(
+    proposalId: string,
+    request: ProposalActionRequest = {},
+  ): Promise<ProposalResponse> {
+    return this.postJson<ProposalResponse>(
+      `/api/v1/proposals/${encodeURIComponent(proposalId)}/rollback`,
+      {
+        actor: request.actor,
+        reason: request.reason,
+        confirm_policy_override: request.confirm_policy_override ?? true,
+      },
+    );
+  }
+
+  deactivateProposal(
+    proposalId: string,
+    request: ProposalActionRequest = {},
+  ): Promise<ProposalResponse> {
+    return this.postJson<ProposalResponse>(
+      `/api/v1/proposals/${encodeURIComponent(proposalId)}/deactivate`,
+      {
+        actor: request.actor,
+        reason: request.reason,
+        confirm_policy_override: request.confirm_policy_override ?? true,
+      },
+    );
   }
 
   dispatches(options: DispatchListOptions = {}): Promise<DispatchListResponse> {

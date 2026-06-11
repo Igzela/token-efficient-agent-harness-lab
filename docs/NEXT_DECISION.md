@@ -4,7 +4,7 @@
 
 The project is in **Real-World Testing Mode**. The Dynamic Global Regulator is validated through real tasks, real branches, real commits, real PRs, real CI, and gated auto-merge.
 
-**Next implementation priority:** Real-world pilot matrix + feedback trace schema. See `docs/REAL_WORLD_TESTING_PLAYBOOK.md` for the operational execution guide.
+**Next implementation priority:** Validate Dynamic Global Regulator MVP + Phase 4 controlled loop through real-world pilot tasks, CI, and targeted hardening. See `docs/REAL_WORLD_TESTING_PLAYBOOK.md` for the operational execution guide.
 
 **Agent Autonomous Maintenance Mode is active.** Agents autonomously maintain repo health, docs hygiene, CI correctness, and low-risk PR flow. CI green is the merge/success standard. Documentation maintenance means update/prune/archive, not accumulate. See playbook section "Agent Autonomous Maintenance Mode" for the full loop and rules.
 
@@ -48,10 +48,8 @@ Autonomously maintain repo health and fix CI/docs/test drift. The following path
 - Autonomous maintenance: repair stale docs, CI breakage, test drift, wire-codegen drift
 - Regression hardening: add/repair tests for existing behavior
 - Real-world pilot matrix: execute first 10 tasks from playbook
-- Feedback trace schema: define structured trace for outcome attribution
-- Shadow routing stub: log regulator's alternative alongside real decision
-- Dashboard metrics: dispatch outcome distribution view
-- Context assembly: cross-node output propagation
+- Dynamic regulator hardening: focused tests and CI fixes for metrics/traces/cost/simulation/proposal paths
+- Controlled-loop validation: verify human-approved safe tier overrides do not expand provider/CLI/hard-constraint boundaries
 - Architecture/doc closeout: update records after accepted changes
 
 ## Before Starting Autonomous Work

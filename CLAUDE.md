@@ -25,7 +25,7 @@
 - Dashboard Onboarding UX ON-1 through ON-5: COMPLETE
 
 **Key facts:**
-- 1390 Rust tests pass, 0 failures
+- 1396 Rust tests pass, 0 failures
 - TypeScript strict + readonly lint + build + static export pass
 - `cargo fmt`, `cargo clippy`, handoff guard all pass
 - **Architecture Refactor R-series**: **SEALED AT R7**. R8 is not approved.
@@ -117,7 +117,7 @@ Prefer prune/archive/link over adding more prose.
 
 - **Framework**: Rust `cargo test` for engine; Python `unittest` for SDK
 - **Run commands**: `cargo test -p engine` (primary); SDK tests in `sdk/python/`; PostgreSQL integration: `cargo test -p engine --features pg-tests` (requires `ACP_TEST_DATABASE_URL`)
-- **Current count**: 1390 Rust tests, 0 failures
+- **Current count**: 1396 Rust tests, 0 failures
 - **CI**: GitHub Actions on push/PR to main
 - **Test-first**: Write tests alongside implementation
 

@@ -2,7 +2,7 @@ use rusqlite::Connection;
 
 use super::LocalProductStore;
 
-pub(super) const CURRENT_SCHEMA_VERSION: i64 = 11;
+pub(super) const CURRENT_SCHEMA_VERSION: i64 = 12;
 
 struct Migration {
     version: i64,
@@ -54,6 +54,10 @@ const MIGRATIONS: &[Migration] = &[
         version: 11,
         description: "add scheduler_heartbeat table for persistent heartbeat",
     },
+    Migration {
+        version: 12,
+        description: "add controlled loop policy proposal table",
+    },
 ];
 
 impl LocalProductStore {
@@ -79,6 +83,7 @@ impl LocalProductStore {
                     9 => Self::migrate_v9_add_queue_priority(conn)?,
                     10 => Self::migrate_v10_add_decision_policy_signals(conn)?,
                     11 => Self::migrate_v11_add_scheduler_heartbeat(conn)?,
+                    12 => Self::migrate_v12_add_policy_proposals(conn)?,
                     _ => return Err(format!("unknown migration version: {}", migration.version)),
                 }
                 conn.execute_batch(&format!("PRAGMA user_version = {}", migration.version))
@@ -420,6 +425,31 @@ CREATE TABLE IF NOT EXISTS scheduler_heartbeat (
 );
 INSERT OR IGNORE INTO scheduler_heartbeat (id, last_heartbeat_at, tick_count, error_count, uptime_seconds, metadata_json, updated_at)
 VALUES (1, '', 0, 0, 0.0, '{}', '');
+",
+        )
+        .map_err(|e| e.to_string())
+    }
+
+    fn migrate_v12_add_policy_proposals(conn: &Connection) -> Result<(), String> {
+        conn.execute_batch(
+            "
+CREATE TABLE IF NOT EXISTS controlled_loop_policy_proposals (
+    proposal_sequence INTEGER PRIMARY KEY,
+    proposal_id TEXT NOT NULL UNIQUE,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    status TEXT NOT NULL,
+    title TEXT NOT NULL,
+    summary TEXT,
+    task_domain TEXT NOT NULL,
+    task_intent TEXT NOT NULL,
+    target_tier TEXT NOT NULL,
+    evidence_json TEXT NOT NULL,
+    approval_json TEXT,
+    proposal_json TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_policy_proposals_status ON controlled_loop_policy_proposals(status);
+CREATE INDEX IF NOT EXISTS idx_policy_proposals_key ON controlled_loop_policy_proposals(task_domain, task_intent, status);
 ",
         )
         .map_err(|e| e.to_string())

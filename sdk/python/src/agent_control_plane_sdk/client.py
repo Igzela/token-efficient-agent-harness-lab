@@ -33,6 +33,173 @@ class AgentControlPlaneClient:
     def metrics(self) -> dict[str, Any]:
         return self._get("/api/v1/metrics")
 
+    def dispatch_metrics(self, limit: int | None = None) -> dict[str, Any]:
+        params: dict[str, Any] = {}
+        if limit is not None:
+            params["limit"] = limit
+        return self._get(_query_path("/api/v1/dispatch-metrics", params))
+
+    def feedback_traces(
+        self,
+        limit: int | None = None,
+        offset: int | None = None,
+        task_class: str | None = None,
+        tier: str | None = None,
+        status: str | None = None,
+    ) -> dict[str, Any]:
+        params: dict[str, Any] = {}
+        if limit is not None:
+            params["limit"] = limit
+        if offset is not None:
+            params["offset"] = offset
+        if task_class:
+            params["task_class"] = task_class
+        if tier:
+            params["tier"] = tier
+        if status:
+            params["status"] = status
+        return self._get(_query_path("/api/v1/feedback/traces", params))
+
+    def feedback_cost_of_pass(
+        self,
+        task_class: str | None = None,
+        tier: str | None = None,
+    ) -> dict[str, Any]:
+        params: dict[str, Any] = {}
+        if task_class:
+            params["task_class"] = task_class
+        if tier:
+            params["tier"] = tier
+        return self._get(_query_path("/api/v1/feedback/cost-of-pass", params))
+
+    def simulation_report(self, limit: int | None = None) -> dict[str, Any]:
+        params: dict[str, Any] = {}
+        if limit is not None:
+            params["limit"] = limit
+        return self._get(_query_path("/api/v1/simulation/report", params))
+
+    def proposals(
+        self,
+        limit: int | None = None,
+        offset: int | None = None,
+        status: str | None = None,
+    ) -> dict[str, Any]:
+        params: dict[str, Any] = {}
+        if limit is not None:
+            params["limit"] = limit
+        if offset is not None:
+            params["offset"] = offset
+        if status:
+            params["status"] = status
+        return self._get(_query_path("/api/v1/proposals", params))
+
+    def create_proposal(
+        self,
+        payload: dict[str, Any],
+        title: str | None = None,
+        summary: str | None = None,
+        task_class: str | None = None,
+        task_domain: str | None = None,
+        task_intent: str | None = None,
+        tier: str | None = None,
+        target_tier: str | None = None,
+        evidence: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        body: dict[str, Any] = {"payload": payload}
+        if title is not None:
+            body["title"] = title
+        if summary is not None:
+            body["summary"] = summary
+        if task_class is not None:
+            body["task_class"] = task_class
+        if task_domain is not None:
+            body["task_domain"] = task_domain
+        if task_intent is not None:
+            body["task_intent"] = task_intent
+        if tier is not None:
+            body["tier"] = tier
+        if target_tier is not None:
+            body["target_tier"] = target_tier
+        if evidence is not None:
+            body["evidence"] = evidence
+        return self._post("/api/v1/proposals", body)
+
+    def proposal(self, proposal_id: str) -> dict[str, Any]:
+        return self._get(f"/api/v1/proposals/{_quote_path_segment(proposal_id)}")
+
+    def approve_proposal(
+        self,
+        proposal_id: str,
+        actor: str | None = None,
+        reason: str | None = None,
+        confirm_policy_override: bool = True,
+    ) -> dict[str, Any]:
+        return self._proposal_action(
+            proposal_id,
+            "approve",
+            actor=actor,
+            reason=reason,
+            confirm_policy_override=confirm_policy_override,
+        )
+
+    def reject_proposal(
+        self,
+        proposal_id: str,
+        actor: str | None = None,
+        reason: str | None = None,
+    ) -> dict[str, Any]:
+        return self._proposal_action(proposal_id, "reject", actor=actor, reason=reason)
+
+    def rollback_proposal(
+        self,
+        proposal_id: str,
+        actor: str | None = None,
+        reason: str | None = None,
+        confirm_policy_override: bool = True,
+    ) -> dict[str, Any]:
+        return self._proposal_action(
+            proposal_id,
+            "rollback",
+            actor=actor,
+            reason=reason,
+            confirm_policy_override=confirm_policy_override,
+        )
+
+    def deactivate_proposal(
+        self,
+        proposal_id: str,
+        actor: str | None = None,
+        reason: str | None = None,
+        confirm_policy_override: bool = True,
+    ) -> dict[str, Any]:
+        return self._proposal_action(
+            proposal_id,
+            "deactivate",
+            actor=actor,
+            reason=reason,
+            confirm_policy_override=confirm_policy_override,
+        )
+
+    def _proposal_action(
+        self,
+        proposal_id: str,
+        action: str,
+        actor: str | None = None,
+        reason: str | None = None,
+        confirm_policy_override: bool | None = None,
+    ) -> dict[str, Any]:
+        body: dict[str, Any] = {}
+        if actor is not None:
+            body["actor"] = actor
+        if reason is not None:
+            body["reason"] = reason
+        if confirm_policy_override is not None:
+            body["confirm_policy_override"] = confirm_policy_override
+        return self._post(
+            f"/api/v1/proposals/{_quote_path_segment(proposal_id)}/{action}",
+            body,
+        )
+
     def dispatches(
         self,
         limit: int | None = None,

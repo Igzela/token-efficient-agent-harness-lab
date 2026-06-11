@@ -1,3 +1,4 @@
+use engine::node_executor::{NodeExecutionInput, NodeExecutionOutput, NodeExecutor};
 use engine::provider::audit::{
     ProviderAuditEvent, ProviderAuditRecorder, PROVIDER_AUDIT_EVENT_SCHEMA_VERSION,
 };
@@ -7,6 +8,34 @@ use serde_json::{json, Value};
 use std::sync::{Arc, Barrier};
 use std::thread;
 use tempfile::tempdir;
+
+struct ContextEchoExecutor;
+
+impl NodeExecutor for ContextEchoExecutor {
+    fn execute_node(&self, input: &NodeExecutionInput) -> NodeExecutionOutput {
+        let output = input
+            .node_metadata
+            .get("context_injection")
+            .cloned()
+            .unwrap_or(Value::Null)
+            .to_string();
+        NodeExecutionOutput {
+            status: "completed".to_string(),
+            executor_type: "context_echo".to_string(),
+            output: Some(output),
+            error_domain: None,
+            error_message: None,
+            input_tokens: Some(0),
+            output_tokens: Some(0),
+            estimated_cost: Some(0.0),
+            latency_ms: Some(0),
+        }
+    }
+
+    fn executor_type_name(&self) -> &str {
+        "context_echo"
+    }
+}
 
 fn make_event(event_id: &str, dispatch_id: &str, event_type: &str) -> ProviderAuditEvent {
     ProviderAuditEvent {
@@ -682,6 +711,40 @@ fn workflow_runs_create_from_plan_persists_nodes_edges_events_and_approvals() {
     let approvals = store.workflow_run_approvals("run-0001", 10).unwrap();
     assert_eq!(approvals.len(), 1);
     assert_eq!(approvals[0]["actor"], "reviewer");
+}
+
+#[test]
+fn workflow_tick_injects_completed_predecessor_context_into_metadata() {
+    let dir = tempdir().unwrap();
+    let store = LocalProductStore::new(dir.path().join("test.db")).unwrap();
+    let plan = store
+        .create_workflow_plan(
+            "Plan context assembly",
+            "api",
+            "actor",
+            |ids, _created_at| Ok(make_workflow_plan_with_nodes(ids)),
+        )
+        .unwrap();
+    store
+        .create_workflow_run_from_plan(plan["plan_id"].as_str().unwrap(), "actor")
+        .unwrap();
+
+    let executor = ContextEchoExecutor;
+    let first = store
+        .tick_with_executor("run-0001", "actor", 0, &executor)
+        .unwrap();
+    assert_eq!(first["node_id"], "node-a");
+
+    let second = store
+        .tick_with_executor("run-0001", "actor", 0, &executor)
+        .unwrap();
+    assert_eq!(second["node_id"], "node-b");
+    let output = second["result"]["output"].as_str().unwrap();
+    let injection: Value = serde_json::from_str(output).unwrap();
+    assert_eq!(injection["schema_version"], "context_injection.v1");
+    assert_eq!(injection["target_node_id"], "node-b");
+    assert_eq!(injection["sources"][0]["from_node_id"], "node-a");
+    assert_eq!(injection["injection_surface"], "node_metadata_only");
 }
 
 #[test]

@@ -250,6 +250,101 @@ test("metrics sends GET to operations metrics endpoint", async () => {
   assert.equal(calls[0].init.method, "GET");
 });
 
+test("dispatchMetrics sends limit query param", async () => {
+  const { calls, fetchImpl } = captureFetch({ schema_version: "axum_api.v1", metrics: [] });
+  const client = new AgentControlPlaneClient({ baseUrl: "http://127.0.0.1:8080", fetchImpl });
+
+  await client.dispatchMetrics({ limit: 30 });
+
+  assert.equal(calls[0].url, "http://127.0.0.1:8080/api/v1/dispatch-metrics?limit=30");
+  assert.equal(calls[0].init.method, "GET");
+});
+
+test("feedback readers send filters to feedback endpoints", async () => {
+  const { calls, fetchImpl } = captureFetch({ schema_version: "axum_api.v1", traces: [], rows: [] });
+  const client = new AgentControlPlaneClient({ baseUrl: "http://127.0.0.1:8080", fetchImpl });
+
+  await client.feedbackTraces({
+    limit: 25,
+    offset: 50,
+    task_class: "docs cleanup",
+    tier: "standard",
+    status: "passed",
+  });
+  await client.feedbackCostOfPass({
+    task_class: "docs cleanup",
+    tier: "standard",
+  });
+
+  assert.equal(
+    calls[0].url,
+    "http://127.0.0.1:8080/api/v1/feedback/traces?limit=25&offset=50&task_class=docs+cleanup&tier=standard&status=passed",
+  );
+  assert.equal(calls[0].init.method, "GET");
+  assert.equal(
+    calls[1].url,
+    "http://127.0.0.1:8080/api/v1/feedback/cost-of-pass?task_class=docs+cleanup&tier=standard",
+  );
+  assert.equal(calls[1].init.method, "GET");
+});
+
+test("simulationReport sends limit query param", async () => {
+  const { calls, fetchImpl } = captureFetch({ schema_version: "axum_api.v1", report: [] });
+  const client = new AgentControlPlaneClient({ baseUrl: "http://127.0.0.1:8080", fetchImpl });
+
+  await client.simulationReport({ limit: 12 });
+
+  assert.equal(calls[0].url, "http://127.0.0.1:8080/api/v1/simulation/report?limit=12");
+  assert.equal(calls[0].init.method, "GET");
+});
+
+test("proposal methods call controlled-loop endpoints", async () => {
+  const { calls, fetchImpl } = captureFetch({
+    schema_version: "axum_api.v1",
+    proposal: { proposal_id: "proposal-0001", status: "pending" },
+    proposals: [],
+  });
+  const client = new AgentControlPlaneClient({ baseUrl: "http://127.0.0.1:8080", fetchImpl });
+
+  await client.proposals({ limit: 20, offset: 40, status: "pending" });
+  await client.createProposal({
+    title: "Tune docs routing",
+    summary: "Use standard tier for docs cleanup",
+    task_class: "docs cleanup",
+    tier: "standard",
+    payload: { selected_tier: "standard" },
+    evidence: { samples: 10 },
+  });
+  await client.proposal("proposal/0001");
+  await client.approveProposal("proposal/0001", { actor: "human", reason: "reviewed" });
+  await client.rejectProposal("proposal/0001", { reason: "insufficient evidence" });
+  await client.rollbackProposal("proposal/0001", { reason: "regression" });
+  await client.deactivateProposal("proposal/0001", { reason: "superseded" });
+
+  assert.equal(calls[0].url, "http://127.0.0.1:8080/api/v1/proposals?limit=20&offset=40&status=pending");
+  assert.equal(calls[0].init.method, "GET");
+  assert.equal(calls[1].url, "http://127.0.0.1:8080/api/v1/proposals");
+  assert.equal(calls[1].init.method, "POST");
+  assert.deepEqual(JSON.parse(calls[1].init.body), {
+    title: "Tune docs routing",
+    summary: "Use standard tier for docs cleanup",
+    task_class: "docs cleanup",
+    tier: "standard",
+    payload: { selected_tier: "standard" },
+    evidence: { samples: 10 },
+  });
+  assert.equal(calls[2].url, "http://127.0.0.1:8080/api/v1/proposals/proposal%2F0001");
+  assert.equal(calls[2].init.method, "GET");
+  assert.equal(calls[3].url, "http://127.0.0.1:8080/api/v1/proposals/proposal%2F0001/approve");
+  assert.deepEqual(JSON.parse(calls[3].init.body), { actor: "human", reason: "reviewed", confirm_policy_override: true });
+  assert.equal(calls[4].url, "http://127.0.0.1:8080/api/v1/proposals/proposal%2F0001/reject");
+  assert.deepEqual(JSON.parse(calls[4].init.body), { reason: "insufficient evidence" });
+  assert.equal(calls[5].url, "http://127.0.0.1:8080/api/v1/proposals/proposal%2F0001/rollback");
+  assert.deepEqual(JSON.parse(calls[5].init.body), { reason: "regression", confirm_policy_override: true });
+  assert.equal(calls[6].url, "http://127.0.0.1:8080/api/v1/proposals/proposal%2F0001/deactivate");
+  assert.deepEqual(JSON.parse(calls[6].init.body), { reason: "superseded", confirm_policy_override: true });
+});
+
 test("providerAudit sends pagination query params", async () => {
   const { calls, fetchImpl } = captureFetch({ schema_version: "axum_api.v1", events: [] });
   const client = new AgentControlPlaneClient({ baseUrl: "http://127.0.0.1:8080", fetchImpl });

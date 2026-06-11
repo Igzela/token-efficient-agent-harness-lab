@@ -15,6 +15,7 @@ import { Backups } from "@/components/Backups";
 import { BoundaryBadges } from "@/components/BoundaryBadges";
 import { Costs } from "@/components/Costs";
 import { Dispatches } from "@/components/Dispatches";
+import { DynamicRegulator } from "@/components/DynamicRegulator";
 import { Health } from "@/components/Health";
 import { Metric } from "@/components/Metric";
 import { MissionControl } from "@/components/MissionControl";
@@ -32,12 +33,13 @@ import { TabGroup, type TabGroupDef } from "@/components/TabGroup";
 import { TermTooltip } from "@/components/TermTooltip";
 import { WorkflowRuns } from "@/components/WorkflowRuns";
 
-type Tab = "mission" | "dispatches" | "routing" | "decisions" | "team" | "costs" | "operations" | "runs" | "patches" | "scheduler" | "pool" | "queue" | "settings" | "health" | "backups" | "audit";
+type Tab = "mission" | "dispatches" | "routing" | "regulator" | "decisions" | "team" | "costs" | "operations" | "runs" | "patches" | "scheduler" | "pool" | "queue" | "settings" | "health" | "backups" | "audit";
 
 const allTabs: { id: Tab; label: string }[] = [
   { id: "mission", label: "Mission Control" },
   { id: "dispatches", label: "Dispatches" },
   { id: "routing", label: "Routing" },
+  { id: "regulator", label: "Regulator" },
   { id: "decisions", label: "Decisions" },
   { id: "team", label: "Team" },
   { id: "costs", label: "Costs" },
@@ -60,6 +62,7 @@ const tabGroups: TabGroupDef[] = [
       { id: "mission", label: "Mission Control" },
       { id: "dispatches", label: "Dispatches" },
       { id: "routing", label: "Routing" },
+      { id: "regulator", label: "Regulator" },
       { id: "decisions", label: "Decisions" },
       { id: "costs", label: "Costs" },
     ],
@@ -377,6 +380,7 @@ export default function DashboardPage() {
             />
           )}
           {tab === "routing" && <Routing rows={routingRows} />}
+          {tab === "regulator" && <DynamicRegulator />}
           {tab === "decisions" && <DecisionLog />}
           {tab === "team" && (
             <Team dashboard={dashboard} refreshDashboard={(d) => setDashboard(d)} />

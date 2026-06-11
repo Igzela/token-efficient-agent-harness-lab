@@ -569,6 +569,163 @@ export interface OperationsMetricsResponse {
   boundaries: Boundaries;
 }
 
+export interface DispatchMetricBucket {
+  dispatch_count: number;
+  success_count: number;
+  failure_count: number;
+  success_rate: number;
+  total_reserved_cost: number;
+  total_estimated_cost_usd: number;
+  estimated_cost_available: boolean;
+  estimated_cost_rows: number;
+  total_input_tokens: number;
+  total_output_tokens: number;
+  [key: string]: unknown;
+}
+
+export interface DispatchMetrics {
+  schema_version: "dispatch_metrics.v1";
+  limit: number;
+  totals: DispatchMetricBucket;
+  by_tier: DispatchMetricBucket[];
+  by_task_class: DispatchMetricBucket[];
+  by_final_status: DispatchMetricBucket[];
+  by_evaluation_status: DispatchMetricBucket[];
+}
+
+export interface DispatchMetricsResponse {
+  schema_version: "axum_api.v1";
+  metrics: DispatchMetrics;
+  limit?: number;
+}
+
+export interface FeedbackTrace {
+  trace_id: string;
+  created_at: string;
+  task_class: string;
+  tier: string;
+  status: string;
+  dispatch_id?: string | null;
+  run_id?: string | null;
+  node_id?: string | null;
+  executor_type?: ExecutorType | string | null;
+  success?: boolean | null;
+  latency_ms?: number | null;
+  cost_usd?: number | null;
+  quality_score?: number | null;
+  retry_count?: number | null;
+  error_domain?: string | null;
+  metadata?: Record<string, unknown> | null;
+  [key: string]: unknown;
+}
+
+export interface FeedbackTraceListResponse {
+  schema_version: "axum_api.v1";
+  traces: FeedbackTrace[];
+  total?: number;
+  limit?: number;
+  offset?: number;
+}
+
+export interface FeedbackCostOfPass {
+  task_class: string;
+  tier: string;
+  pass_count: number;
+  total_count: number;
+  pass_rate: number;
+  average_cost_usd: number;
+  median_cost_usd?: number | null;
+  p95_cost_usd?: number | null;
+  [key: string]: unknown;
+}
+
+export interface FeedbackCostOfPassResponse {
+  schema_version: "axum_api.v1";
+  rows: FeedbackCostOfPass[];
+}
+
+export interface SimulationReportItem {
+  scenario_id: string;
+  created_at?: string | null;
+  task_class?: string | null;
+  tier?: string | null;
+  status: string;
+  baseline_cost_usd?: number | null;
+  simulated_cost_usd?: number | null;
+  cost_delta_usd?: number | null;
+  pass_rate_delta?: number | null;
+  recommendation?: string | null;
+  [key: string]: unknown;
+}
+
+export interface SimulationReportResponse {
+  schema_version: "axum_api.v1";
+  report: SimulationReportItem[];
+  limit?: number;
+  summary?: Record<string, unknown>;
+}
+
+export type ProposalStatus =
+  | "pending"
+  | "approved"
+  | "rejected"
+  | "active"
+  | "inactive"
+  | "rolled_back"
+  | "superseded"
+  | string;
+
+export interface ControlledLoopProposal {
+  proposal_id: string;
+  created_at: string;
+  updated_at?: string | null;
+  title?: string | null;
+  summary?: string | null;
+  status: ProposalStatus;
+  task_class?: string | null;
+  tier?: string | null;
+  target_tier?: string | null;
+  policy_key?: string | null;
+  proposed_by?: string | null;
+  requires_human_approval?: boolean;
+  evidence?: Record<string, unknown> | null;
+  payload?: Record<string, unknown> | null;
+  approval?: Record<string, unknown> | null;
+  rollback?: Record<string, unknown> | null;
+  [key: string]: unknown;
+}
+
+export interface ProposalListResponse {
+  schema_version: "axum_api.v1";
+  proposals: ControlledLoopProposal[];
+  total?: number;
+  limit?: number;
+  offset?: number;
+}
+
+export interface ProposalResponse {
+  schema_version: "axum_api.v1";
+  proposal: ControlledLoopProposal;
+}
+
+export interface ProposalCreateRequest {
+  title?: string;
+  summary?: string;
+  task_class?: string;
+  task_domain?: string;
+  task_intent?: string;
+  tier?: string;
+  target_tier?: string;
+  payload: Record<string, unknown>;
+  evidence?: Record<string, unknown>;
+}
+
+export interface ProposalActionRequest {
+  actor?: string;
+  reason?: string;
+  confirm_policy_override?: boolean;
+}
+
 export interface StorageIntegrityResponse {
   schema_version: "axum_api.v1";
   integrity: {
