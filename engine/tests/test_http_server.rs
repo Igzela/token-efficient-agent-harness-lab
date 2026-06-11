@@ -6553,7 +6553,12 @@ async fn test_dispatch_metrics_with_data() {
 
     assert_eq!(response.status(), StatusCode::OK);
     let body = response_json(response).await;
-    assert!(body["metrics"]["totals"]["dispatch_count"].as_i64().unwrap() >= 1);
+    assert!(
+        body["metrics"]["totals"]["dispatch_count"]
+            .as_i64()
+            .unwrap()
+            >= 1
+    );
 }
 
 #[tokio::test]
