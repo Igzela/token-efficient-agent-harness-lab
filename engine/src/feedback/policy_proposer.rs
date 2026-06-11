@@ -156,7 +156,7 @@ impl PolicyProposer {
                         target_tier: target.to_string(),
                         source: "pattern_detector".to_string(),
                         evidence: make_evidence(pattern, simulation),
-                        confidence: pattern.rate * 0.8,
+                        confidence: failure_concentration_confidence(pattern.rate),
                         risk_level,
                         requires_human_approval: true,
                         safety_flags: SafetyFlags::all_safe(),
@@ -189,7 +189,7 @@ impl PolicyProposer {
                         target_tier: "balanced_worker".to_string(),
                         source: "pattern_detector".to_string(),
                         evidence: make_evidence(pattern, simulation),
-                        confidence: pattern.rate * 0.7,
+                        confidence: failure_concentration_confidence(pattern.rate),
                         risk_level,
                         requires_human_approval: true,
                         safety_flags: SafetyFlags::all_safe(),
@@ -240,8 +240,8 @@ impl PolicyProposer {
                         target_tier: target.to_string(),
                         source: "simulation".to_string(),
                         evidence: make_evidence(pattern, Some(sim)),
-                        confidence: 0.6,
-                        risk_level: "medium".to_string(),
+                        confidence: high_cost_confidence(&pattern.severity),
+                        risk_level: severity_to_risk(&pattern.severity),
                         requires_human_approval: true,
                         safety_flags: SafetyFlags::all_safe(),
                     });
@@ -294,6 +294,21 @@ fn severity_to_risk(severity: &PatternSeverity) -> String {
         PatternSeverity::High => "high".to_string(),
         PatternSeverity::Medium => "medium".to_string(),
         PatternSeverity::Low => "low".to_string(),
+    }
+}
+
+fn failure_concentration_confidence(rate: f64) -> f64 {
+    if rate >= 0.8 {
+        (0.85 + ((rate - 0.8) * 0.5)).min(0.95)
+    } else {
+        rate * 0.8
+    }
+}
+
+fn high_cost_confidence(severity: &PatternSeverity) -> f64 {
+    match severity {
+        PatternSeverity::High => 0.9,
+        PatternSeverity::Medium | PatternSeverity::Low => 0.6,
     }
 }
 

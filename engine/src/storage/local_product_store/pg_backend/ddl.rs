@@ -345,4 +345,27 @@ CREATE TABLE IF NOT EXISTS controlled_loop_policy_proposals (
 );
 CREATE INDEX IF NOT EXISTS idx_policy_proposals_status ON controlled_loop_policy_proposals(status);
 CREATE INDEX IF NOT EXISTS idx_policy_proposals_key ON controlled_loop_policy_proposals(task_domain, task_intent, status);
+
+CREATE TABLE IF NOT EXISTS controlled_loop_policy_snapshots (
+    snapshot_sequence BIGSERIAL PRIMARY KEY,
+    adjustment_id TEXT NOT NULL UNIQUE,
+    snapshot_id TEXT NOT NULL UNIQUE,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    status TEXT NOT NULL,
+    actor TEXT NOT NULL,
+    created_by TEXT NOT NULL,
+    source TEXT NOT NULL,
+    candidate_id TEXT NOT NULL,
+    proposal_id TEXT NOT NULL,
+    policy_key TEXT NOT NULL,
+    target_tier TEXT NOT NULL,
+    active_policy_before_json TEXT NOT NULL,
+    rollback_target_json TEXT NOT NULL,
+    evidence_ids_json TEXT NOT NULL,
+    safety_hash TEXT NOT NULL,
+    snapshot_json TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_policy_snapshots_status ON controlled_loop_policy_snapshots(status);
+CREATE INDEX IF NOT EXISTS idx_policy_snapshots_proposal ON controlled_loop_policy_snapshots(proposal_id);
 ";

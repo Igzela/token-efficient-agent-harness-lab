@@ -38,6 +38,7 @@ const INTEGRITY_TABLES: &[&str] = &[
     "executor_pool",
     "scheduler_heartbeat",
     "controlled_loop_policy_proposals",
+    "controlled_loop_policy_snapshots",
 ];
 
 impl LocalProductStore {
