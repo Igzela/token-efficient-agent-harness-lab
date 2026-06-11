@@ -7179,3 +7179,237 @@ async fn test_shadow_simulation_does_not_mutate_routing_policy() {
         "default"
     );
 }
+
+// ── Generated proposals safety proof tests ──────────────────────────────
+
+fn make_generated_app() -> (axum::Router, String) {
+    let dir = tempdir().unwrap();
+    let store = LocalProductStore::new(dir.path().join("generated-proof.db")).unwrap();
+
+    // Seed 5 failing dispatches on cheap_executor for code_generate to trigger
+    // TierFailureConcentration pattern
+    for i in 0..5 {
+        store
+            .record_dispatch(
+                &format!("task {i}"),
+                "api",
+                &json!({
+                    "record": {"dispatch_id": format!("disp-gen-{i}"), "final_status": "failed"},
+                    "decision": {"selected_tier": "cheap_executor", "routing_policy": "default",
+                        "budget_reservation": {"reserved_cost": 0.01},
+                        "shadow_routes": []},
+                    "analysis": {"task_class": "code_generate"},
+                    "execution_result": {"executor_type": "noop", "status": "failed", "success": false},
+                    "evaluation_result": {"status": "fail"}
+                }),
+                "test",
+            )
+            .unwrap();
+    }
+
+    let mut resolver = TenantResolver::new();
+    let mut admin_scopes = HashSet::new();
+    admin_scopes.insert("dispatch:read".to_string());
+    admin_scopes.insert("team:admin".to_string());
+    admin_scopes.insert("health:read".to_string());
+    resolver.add_tenant(Tenant {
+        tenant_id: "local".to_string(),
+        name: "Local".to_string(),
+        scopes: admin_scopes.clone(),
+        rate_limit: Some(10_000),
+    });
+    let (_key, raw_key) = resolver
+        .create_api_key("local", Some(admin_scopes), None, 1.0)
+        .unwrap();
+    let app = build_axum_router(AxumApiState::new().with_local_store(store).with_auth(
+        resolver,
+        RateLimiter::new(60.0, 10_000),
+        Some(10_000),
+        1.0,
+    ));
+    (app, raw_key)
+}
+
+#[tokio::test]
+async fn test_generated_endpoint_returns_candidates_with_evidence() {
+    let (app, key) = make_generated_app();
+
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .method(Method::GET)
+                .uri("/api/v1/proposals/generated?limit=50")
+                .header(header::AUTHORIZATION, format!("Bearer {key}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body = response_json(resp).await;
+    assert_eq!(body["schema_version"], "generated_proposals.v1");
+    let candidates = body["candidates"].as_array().unwrap();
+    assert!(
+        !candidates.is_empty(),
+        "should generate candidates from seeded failure data"
+    );
+    let first = &candidates[0];
+    assert!(
+        !first["evidence"]["evidence_trace_ids"]
+            .as_array()
+            .unwrap()
+            .is_empty(),
+        "generated candidate must include evidence_trace_ids"
+    );
+}
+
+#[tokio::test]
+async fn test_generated_endpoint_does_not_persist_proposals() {
+    let (app, key) = make_generated_app();
+
+    // Get initial proposal count
+    let resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(Method::GET)
+                .uri("/api/v1/proposals?limit=500")
+                .header(header::AUTHORIZATION, format!("Bearer {key}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let before = response_json(resp).await;
+    let count_before = before["proposals"].as_array().unwrap().len();
+
+    // Call generated endpoint
+    let resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(Method::GET)
+                .uri("/api/v1/proposals/generated?limit=50")
+                .header(header::AUTHORIZATION, format!("Bearer {key}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+
+    // Verify no new rows were created
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .method(Method::GET)
+                .uri("/api/v1/proposals?limit=500")
+                .header(header::AUTHORIZATION, format!("Bearer {key}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let after = response_json(resp).await;
+    let count_after = after["proposals"].as_array().unwrap().len();
+    assert_eq!(
+        count_before, count_after,
+        "GET generated must not create proposal rows"
+    );
+}
+
+#[tokio::test]
+async fn test_generated_endpoint_does_not_change_active_routing_policy() {
+    let (app, key) = make_generated_app();
+
+    // Verify no active policy before
+    let resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(Method::GET)
+                .uri("/api/v1/proposals?status=active&limit=500")
+                .header(header::AUTHORIZATION, format!("Bearer {key}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let before = response_json(resp).await;
+    assert!(
+        before["proposals"].as_array().unwrap().is_empty(),
+        "no active proposals before generated call"
+    );
+
+    // Call generated endpoint
+    let resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(Method::GET)
+                .uri("/api/v1/proposals/generated?limit=50")
+                .header(header::AUTHORIZATION, format!("Bearer {key}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+
+    // Verify still no active proposals
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .method(Method::GET)
+                .uri("/api/v1/proposals?status=active&limit=500")
+                .header(header::AUTHORIZATION, format!("Bearer {key}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let after = response_json(resp).await;
+    assert!(
+        after["proposals"].as_array().unwrap().is_empty(),
+        "GET generated must not activate any proposals"
+    );
+}
+
+#[tokio::test]
+async fn test_generated_candidates_have_safety_flags_and_approval_requirement() {
+    let (app, key) = make_generated_app();
+
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .method(Method::GET)
+                .uri("/api/v1/proposals/generated?limit=50")
+                .header(header::AUTHORIZATION, format!("Bearer {key}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body = response_json(resp).await;
+    let candidates = body["candidates"].as_array().unwrap();
+    assert!(!candidates.is_empty());
+
+    for candidate in candidates {
+        assert_eq!(
+            candidate["requires_human_approval"], true,
+            "every generated candidate must require human approval"
+        );
+        assert_eq!(
+            candidate["evidence"]["safety_flags"]["no_auto_activation"], true,
+            "every generated candidate must have no_auto_activation flag"
+        );
+        assert_ne!(
+            candidate["status"].as_str().unwrap_or(""),
+            "active",
+            "generated candidates must never have active status"
+        );
+    }
+}

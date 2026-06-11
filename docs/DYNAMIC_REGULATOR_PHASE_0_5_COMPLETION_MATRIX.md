@@ -201,17 +201,19 @@ Generated: 2026-06-11 | PR: #31 | Commit: 713af59
 - SQLite + PostgreSQL dual-backend support for all proposal operations
 - Audit trail for all lifecycle events (create, approve, reject, deactivate, rollback, supersede)
 
-**Missing from plan:**
-- PolicyProposer in `engine/src/feedback/policy_proposer.rs`
-- ProposalValidator in `engine/src/feedback/proposal_validator.rs`
-- ProposalSerializer in `engine/src/feedback/proposal_serializer.rs`
-- `GET /api/v1/proposals/generated` endpoint
-- Generated candidates include evidence, confidence, safety flags
-- Dashboard generated suggestions section
-- TS+Python SDK `generatedProposals()`/`generated_proposals()`
+**Implemented in PR #35:**
+- PolicyProposer in `engine/src/feedback/policy_proposer.rs` — generates `ProposalCandidate` from Phase 2 `DetectedPattern` + Phase 3 `SimulationResult`
+- ProposalValidator in `engine/src/feedback/proposal_validator.rs` — validates generated candidates (safe tier, domain, intent, evidence, confidence) and manual create requests
+- ProposalSerializer in `engine/src/feedback/proposal_serializer.rs` — `serialize_candidate_to_proposal_request()` and `serialize_candidate_to_api_response()` for existing schema compatibility
+- `GET /api/v1/proposals/generated` — read-only endpoint (`dispatch:read` scope), returns auto-generated candidates without persisting or activating
+- `generated_proposals()` store method — reads traces, detects patterns, runs simulation, calls PolicyProposer; returns candidates as API response values
+- Generated candidates include evidence (pattern_ids, trace_ids, simulation deltas), confidence, risk_level, safety_flags (all safe), requires_human_approval=true
+- Dashboard: generated suggestions section in `DynamicRegulator.tsx` — labeled "not active until approved"
+- TS SDK: `generatedProposals()` method
+- Python SDK: `generated_proposals()` method
 
 **Tests Present:**
-- 11 tests: store lifecycle test (`proposal_lifecycle_builds_active_policy`), store CLI tier rejection test, HTTP integration test (full create→approve→dispatch lifecycle with confirmation guard), integrity table check, SDK tests for CRUD and confirmation guards (TS: 5, Python: 4)
+- 29 tests: store lifecycle test (`proposal_lifecycle_builds_active_policy`), store CLI tier rejection test, HTTP integration test (full create→approve→dispatch lifecycle with confirmation guard), integrity table check, SDK tests for CRUD and confirmation guards (TS: 5, Python: 4), PolicyProposer tests (6), ProposalValidator tests (8), ProposalSerializer tests (4), generated proposals safety proof tests (4)
 
 **Tests Missing:**
 - No HTTP test proving proposals cannot override CLI tiers through the HTTP endpoint (only tested at store level)
