@@ -319,6 +319,12 @@ Controlled Adaptive Orchestrator Kernel minimum threshold reached (CA-0 through 
 
 Full closeout report: [`docs/CA7_CONTROLLED_ADAPTIVE_CLOSEOUT_REPORT.md`](docs/CA7_CONTROLLED_ADAPTIVE_CLOSEOUT_REPORT.md)
 
+## Agent Maintenance
+
+Coding agents maintaining this repository are authorized to autonomously advance safe repository work: documentation repair, regression fixes, CI hardening, and wire-governance drift repair. Agents must run `scripts/check_agent_handoff.py` before committing to verify handoff surface consistency.
+
+R-series is sealed at R7. R8 is not approved. No further R-series file splitting is approved.
+
 ## Contributing
 
 Contributions are welcome! Please read [CONTRIBUTING.md](CONTRIBUTING.md) for setup instructions, code style, and PR guidelines.
