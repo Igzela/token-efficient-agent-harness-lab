@@ -1,10 +1,10 @@
 # Next Decision
 
-## Default Recommendation
+## Active Track: Real-World Testing Mode
 
-All prior tracks complete (Dispatch Kernel 1-7, Dynamic Workflow 1-7, Macro-Orchestrator 1-5, Self-Hosted GA SG-1–SG-5, HA-1–HA-6, Dormant Adaptation, Productization 1-7, PostgreSQL backend). Autonomously maintain repo health and fix CI/docs/test drift. No new track is approved without user direction.
+The project has entered **Real-World Testing Mode**. The old posture of blanket restriction is replaced with controlled autonomy. Except for necessary safety gates and security components, the system is authorized to operate on real tasks, real branches, real commits, real PRs, real CI, and gated auto-merge.
 
-This is standing authorization for the external coding agent maintaining this repository. It is not authorization to implement real autonomous workers inside the harness runtime.
+**Dynamic Global Regulator** is the active strategic direction, validated through real-world testing. See `docs/DYNAMIC_GLOBAL_REGULATOR_PLAN.md`.
 
 This file is the single forward-plan surface. Do not add parallel roadmap, next-steps, or productization-plan documents; update this file and prune stale planning text instead.
 
@@ -24,35 +24,42 @@ This file is the single forward-plan surface. Do not add parallel roadmap, next-
 | **ON-4** | Copy + boundary fixes | ✅ Done |
 | **ON-5** | Polish | ✅ Done |
 
+## Dynamic Global Regulator
+
+`docs/DYNAMIC_GLOBAL_REGULATOR_PLAN.md` defines the 7-phase roadmap for the Dynamic Global Regulator. Phases are implemented incrementally through real-world testing. Each phase has explicit acceptance tests, safety gates, and rollback strategy.
+
 ## Allowed Next Paths
 
-| Path | Status |
+The following paths are allowed under Real-World Testing Mode. Autonomously maintain repo health and fix CI/docs/test drift.
+
+## Allowed Actions (Real-World Testing Mode)
+
+| Action | Gate |
 |---|---|
-| Autonomous maintenance | Repair stale docs, CI breakage, test drift, wire-codegen drift. |
-| Regression hardening | Add/repair tests for existing behavior when risk is found. |
-| Dashboard Onboarding UX | **ACTIVE** — ON-1 through ON-5. |
-| Architecture/doc closeout | Update records after accepted changes. |
-| Demo/docs polish | Refine when gaps identified. |
-| CLI executor routing | Opt-in via `ACP_ENABLE_CLI_EXECUTION=1`. Maintenance only. |
-| Dynamic workflow | All 7 batches complete. Scheduler dynamic mode wired. Maintenance. |
-| Macro-orchestrator | All 5 phases complete. Maintenance. |
-| Language migration | Rust+TS cutover complete. Python = REST SDK only. |
-| HA hardening | All 6 phases complete. 1378 tests. |
-| PostgreSQL backend | Complete. Optional via `ACP_DATABASE_URL`. |
+| Branch creation | Any task that needs isolation |
+| Target repo edits via branch + PR | CI must pass before merge |
+| Commits | Must pass fmt/clippy |
+| PR creation | Auto-created for non-trivial changes |
+| CI triggering and CI repair | CI failures fixed before merge |
+| Docs/tests/small code fixes | Low-risk, auto-merge eligible |
+| Dynamic workflow fix/test node injection | Within existing bounds |
+| Low-risk auto-merge after CI green | See Auto-Merge Policy in regulator plan |
 
 ## Disallowed by Default
 
-The following require explicit human approval and a new implementation plan:
+The following require explicit human approval and a new implementation plan under the safety gate framework:
 
-- MVP9 — no scope defined
-- Provider/model productionization — no broadening beyond existing env-gated local beta
-- Sandbox/process/container/VM execution — no expansion beyond CLI executor path
-- Runtime autonomous workers — no concurrent worker processes
-- Target repo writes — no mutation of registered repositories
-- Approval/run/execute/deploy/merge controls — no execution mechanisms
-- Cloud productionization — no hosted/SaaS/multi-tenant deployment
+## Requires Safety Gate / Explicit Approval
 
-Planning-only metadata does not approve execution. Supervised execution primitives in app-owned workspaces do not approve sandbox, target mutation, or hosted deployment.
+| Action | Requirement |
+|---|---|
+| Provider/CLI execution boundary expansion | Explicit user approval |
+| Auth/security boundary changes | Explicit user approval |
+| Database migrations | Explicit user approval |
+| Release/tag/deploy | Explicit user approval |
+| Active YAML/rublic/policy mutation | Explicit user approval |
+| Destructive or irreversible operations | Explicit user approval |
+| Sandbox/process/container/VM expansion | Explicit user approval |
 
 ## Before Starting Autonomous Work
 
