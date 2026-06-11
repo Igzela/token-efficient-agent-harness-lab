@@ -5,7 +5,7 @@ export type ConfirmAction =
   | { type: "deleteMember" | "revokeKey" | "deleteKey" | "rotateKey"; id: string }
   | { type: "cleanupWorkspace" | "quarantineWorkspace" | "capturePatch"; workspaceId: string }
   | { type: "approveArtifact" | "rejectArtifact" | "exportArtifact"; artifactId: string; runId: string }
-  | { type: "approveProposal" | "rejectProposal" | "rollbackProposal"; proposalId: string }
+  | { type: "approveProposal" | "rejectProposal" | "rollbackProposal" | "deactivateProposal"; proposalId: string }
   | { type: "tickRun" | "cancelRun"; runId: string }
   | null;
 
@@ -86,7 +86,9 @@ export function ConfirmDialog({
                                 ? `Reject proposal ${(action as { proposalId: string }).proposalId.slice(0, 12)}? The controlled loop will not apply it.`
                                 : action.type === "rollbackProposal"
                                   ? `Rollback proposal ${(action as { proposalId: string }).proposalId.slice(0, 12)}? This requires human confirmation.`
-                                  : action.type === "tickRun"
+                                  : action.type === "deactivateProposal"
+                                    ? `Deactivate proposal ${(action as { proposalId: string }).proposalId.slice(0, 12)}? The policy will no longer be applied.`
+                                    : action.type === "tickRun"
                                     ? `Execute one tick on run ${(action as { runId: string }).runId.slice(0, 12)}? This will advance the next ready node.`
                                     : action.type === "cancelRun"
                                       ? `Cancel run ${(action as { runId: string }).runId.slice(0, 12)}? This will stop execution.`

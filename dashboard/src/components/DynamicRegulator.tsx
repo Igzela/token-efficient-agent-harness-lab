@@ -1,11 +1,15 @@
 import { useEffect, useMemo, useState } from "react";
 import {
   ApiError,
+  approveProposal,
+  deactivateProposal,
   fetchDispatchMetrics,
   fetchFeedbackCostOfPass,
   fetchFeedbackTraces,
   fetchProposals,
   fetchSimulationReport,
+  rejectProposal,
+  rollbackProposal,
 } from "@/lib/api-client";
 import type {
   ControlledLoopProposal,
@@ -14,6 +18,7 @@ import type {
   FeedbackTraceListResponse,
   SimulationReportResponse,
 } from "@/lib/types";
+import { ConfirmDialog, type ConfirmAction } from "./ConfirmDialog";
 import { EmptyState } from "./EmptyState";
 import { Metric } from "./Metric";
 import { StateBanner } from "./StateBanner";
@@ -66,6 +71,8 @@ export function DynamicRegulator() {
   const [data, setData] = useState<RegulatorData>(emptyData);
   const [error, setError] = useState<RegulatorError | null>(null);
   const [loading, setLoading] = useState(true);
+  const [confirmAction, setConfirmAction] = useState<ConfirmAction>(null);
+  const [busy, setBusy] = useState(false);
 
   function load() {
     setLoading(true);
@@ -96,6 +103,28 @@ export function DynamicRegulator() {
   useEffect(() => {
     load();
   }, []);
+
+  async function doConfirm() {
+    if (!confirmAction || !("proposalId" in confirmAction)) return;
+    setBusy(true);
+    try {
+      if (confirmAction.type === "approveProposal") {
+        await approveProposal(confirmAction.proposalId);
+      } else if (confirmAction.type === "rejectProposal") {
+        await rejectProposal(confirmAction.proposalId);
+      } else if (confirmAction.type === "rollbackProposal") {
+        await rollbackProposal(confirmAction.proposalId);
+      } else if (confirmAction.type === "deactivateProposal") {
+        await deactivateProposal(confirmAction.proposalId);
+      }
+      load();
+    } catch {
+      setError({ message: "Proposal action failed", type: "error" });
+    } finally {
+      setBusy(false);
+      setConfirmAction(null);
+    }
+  }
 
   const totals = data.metrics?.metrics.totals;
   const topTiers = useMemo(
@@ -241,6 +270,7 @@ export function DynamicRegulator() {
                       <th>Status</th>
                       <th>Key</th>
                       <th>Tier</th>
+                      <th>Actions</th>
                     </tr>
                   </thead>
                   <tbody>
@@ -250,6 +280,46 @@ export function DynamicRegulator() {
                         <td>{proposal.status}</td>
                         <td>{proposal.policy_key ?? proposal.task_class ?? "unknown"}</td>
                         <td>{proposal.target_tier ?? proposal.tier ?? "unknown"}</td>
+                        <td>
+                          {proposal.status === "pending" && (
+                            <span style={{ display: "inline-flex", gap: "4px" }}>
+                              <button
+                                type="button"
+                                disabled={busy}
+                                onClick={() => setConfirmAction({ type: "approveProposal", proposalId: proposal.proposal_id })}
+                              >
+                                Approve
+                              </button>
+                              <button
+                                type="button"
+                                className="risk-action"
+                                disabled={busy}
+                                onClick={() => setConfirmAction({ type: "rejectProposal", proposalId: proposal.proposal_id })}
+                              >
+                                Reject
+                              </button>
+                            </span>
+                          )}
+                          {proposal.status === "active" && (
+                            <span style={{ display: "inline-flex", gap: "4px" }}>
+                              <button
+                                type="button"
+                                disabled={busy}
+                                onClick={() => setConfirmAction({ type: "rollbackProposal", proposalId: proposal.proposal_id })}
+                              >
+                                Rollback
+                              </button>
+                              <button
+                                type="button"
+                                className="risk-action"
+                                disabled={busy}
+                                onClick={() => setConfirmAction({ type: "deactivateProposal", proposalId: proposal.proposal_id })}
+                              >
+                                Deactivate
+                              </button>
+                            </span>
+                          )}
+                        </td>
                       </tr>
                     ))}
                   </tbody>
@@ -289,6 +359,11 @@ export function DynamicRegulator() {
           </div>
         </>
       ) : null}
+      <ConfirmDialog
+        action={confirmAction}
+        onConfirm={doConfirm}
+        onCancel={() => setConfirmAction(null)}
+      />
     </section>
   );
 }
