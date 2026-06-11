@@ -71,6 +71,10 @@ fn axum_routes() -> Router<AxumApiState> {
             get(dispatch::api_feedback_traces).options(cors_preflight),
         )
         .route(
+            "/api/v1/feedback/patterns",
+            get(dispatch::api_feedback_patterns).options(cors_preflight),
+        )
+        .route(
             "/api/v1/feedback/cost-of-pass",
             get(dispatch::api_feedback_cost_of_pass).options(cors_preflight),
         )

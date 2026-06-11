@@ -5,6 +5,7 @@ import {
   deactivateProposal,
   fetchDispatchMetrics,
   fetchFeedbackCostOfPass,
+  fetchFeedbackPatterns,
   fetchFeedbackTraces,
   fetchProposals,
   fetchSimulationReport,
@@ -15,6 +16,7 @@ import type {
   ControlledLoopProposal,
   DispatchMetricsResponse,
   FeedbackCostOfPassResponse,
+  FeedbackPatternListResponse,
   FeedbackTraceListResponse,
   SimulationReportResponse,
 } from "@/lib/types";
@@ -27,6 +29,7 @@ type RegulatorData = {
   metrics: DispatchMetricsResponse | null;
   traces: FeedbackTraceListResponse | null;
   costs: FeedbackCostOfPassResponse | null;
+  patterns: FeedbackPatternListResponse | null;
   simulation: SimulationReportResponse | null;
   proposals: ControlledLoopProposal[];
 };
@@ -40,6 +43,7 @@ const emptyData: RegulatorData = {
   metrics: null,
   traces: null,
   costs: null,
+  patterns: null,
   simulation: null,
   proposals: [],
 };
@@ -80,14 +84,16 @@ export function DynamicRegulator() {
       fetchDispatchMetrics({ limit: 200 }),
       fetchFeedbackTraces({ limit: 20 }),
       fetchFeedbackCostOfPass(),
+      fetchFeedbackPatterns({ limit: 20 }),
       fetchSimulationReport({ limit: 50 }),
       fetchProposals({ limit: 20 }),
     ])
-      .then(([metrics, traces, costs, simulation, proposals]) => {
+      .then(([metrics, traces, costs, patterns, simulation, proposals]) => {
         setData({
           metrics,
           traces,
           costs,
+          patterns,
           simulation,
           proposals: proposals.proposals,
         });
@@ -133,6 +139,7 @@ export function DynamicRegulator() {
   );
   const traces = data.traces?.traces ?? [];
   const costRows = data.costs?.rows ?? [];
+  const patternRows = data.patterns?.patterns ?? [];
   const simulationRows = data.simulation?.report ?? [];
 
   return (
@@ -227,6 +234,45 @@ export function DynamicRegulator() {
                 </table>
               )}
             </div>
+          </div>
+
+          <div className="subcard stack">
+            <h3>Feedback Patterns</h3>
+            {patternRows.length === 0 ? (
+              <EmptyState title="No patterns detected" description="Feedback patterns emerge from aggregate dispatch outcomes over time." />
+            ) : (
+              <table>
+                <thead>
+                  <tr>
+                    <th>Pattern Type</th>
+                    <th>Affected</th>
+                    <th>Count</th>
+                    <th>Rate</th>
+                    <th>Severity</th>
+                    <th>Recommendation</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {patternRows.slice(0, 10).map((p) => (
+                    <tr key={p.pattern_id}>
+                      <td>{p.pattern_type}</td>
+                      <td>{p.affected_tier ?? p.affected_task_class ?? "n/a"}</td>
+                      <td>{p.count}</td>
+                      <td>{formatRate(p.rate)}</td>
+                      <td>
+                        <span style={{
+                          color: p.severity === "high" ? "var(--color-risk, #e74c3c)" : p.severity === "medium" ? "var(--color-warn, #f39c12)" : "var(--color-ok, #27ae60)",
+                          fontWeight: 600,
+                        }}>
+                          {p.severity}
+                        </span>
+                      </td>
+                      <td>{p.recommendation_hint}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            )}
           </div>
 
           <div className="grid two">

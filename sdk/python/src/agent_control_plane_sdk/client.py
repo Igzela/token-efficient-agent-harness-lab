@@ -72,6 +72,18 @@ class AgentControlPlaneClient:
             params["tier"] = tier
         return self._get(_query_path("/api/v1/feedback/cost-of-pass", params))
 
+    def feedback_patterns(
+        self,
+        task_class: str | None = None,
+        tier: str | None = None,
+    ) -> dict[str, Any]:
+        params: dict[str, Any] = {}
+        if task_class:
+            params["task_class"] = task_class
+        if tier:
+            params["tier"] = tier
+        return self._get(_query_path("/api/v1/feedback/patterns", params))
+
     def simulation_report(self, limit: int | None = None) -> dict[str, Any]:
         params: dict[str, Any] = {}
         if limit is not None:

@@ -6685,3 +6685,331 @@ async fn test_simulation_report_with_shadow_routes() {
     assert_eq!(shadow_routes[0]["tier"], "cheap_executor");
     assert_eq!(shadow_routes[1]["tier"], "premium_worker");
 }
+
+#[tokio::test]
+async fn test_feedback_patterns_empty() {
+    let dir = tempdir().unwrap();
+    let store = LocalProductStore::new(dir.path().join("patterns-empty.db")).unwrap();
+    let app = build_axum_router(AxumApiState::new().with_local_store(store));
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method(Method::GET)
+                .uri("/api/v1/feedback/patterns")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = response_json(response).await;
+    assert_eq!(body["schema_version"], "feedback_patterns.v1");
+    assert_eq!(body["total"], 0);
+    assert!(body["patterns"].as_array().unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn test_feedback_patterns_with_dispatch_data() {
+    let dir = tempdir().unwrap();
+    let store = LocalProductStore::new(dir.path().join("patterns-data.db")).unwrap();
+
+    for i in 0..5 {
+        let status = if i < 4 { "failed" } else { "completed" };
+        store
+            .record_dispatch(
+                &format!("Pattern dispatch {i}"),
+                "api",
+                &json!({
+                    "record": {"dispatch_id": format!("disp-pat-{i}"), "final_status": status},
+                    "decision": {"selected_tier": "fragile_worker", "budget_reservation": {"reserved_cost": 0.05}},
+                    "analysis": {"risk_level": "high"},
+                    "execution_result": {"executor_type": "noop"},
+                }),
+                "test",
+            )
+            .unwrap();
+    }
+
+    let app = build_axum_router(AxumApiState::new().with_local_store(store));
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method(Method::GET)
+                .uri("/api/v1/feedback/patterns")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = response_json(response).await;
+    assert_eq!(body["schema_version"], "feedback_patterns.v1");
+    let patterns = body["patterns"].as_array().unwrap();
+    assert!(!patterns.is_empty());
+
+    let first = &patterns[0];
+    assert!(first["pattern_id"].as_str().is_some());
+    assert!(first["pattern_type"].as_str().is_some());
+    assert!(first["severity"].as_str().is_some());
+    let evidence = first["evidence_trace_ids"].as_array().unwrap();
+    assert!(!evidence.is_empty());
+}
+
+#[tokio::test]
+async fn test_feedback_patterns_with_task_class_filter() {
+    let dir = tempdir().unwrap();
+    let store = LocalProductStore::new(dir.path().join("patterns-filter.db")).unwrap();
+
+    for i in 0..4 {
+        store
+            .record_dispatch(
+                &format!("Code review dispatch {i}"),
+                "api",
+                &json!({
+                    "record": {"dispatch_id": format!("disp-cr-{i}"), "final_status": "failed"},
+                    "decision": {"selected_tier": "balanced_worker", "budget_reservation": {"reserved_cost": 0.05}},
+                    "analysis": {"risk_level": "high", "task_class": "code_review"},
+                    "execution_result": {"executor_type": "noop"},
+                }),
+                "test",
+            )
+            .unwrap();
+    }
+
+    for i in 0..4 {
+        store
+            .record_dispatch(
+                &format!("Docs dispatch {i}"),
+                "api",
+                &json!({
+                    "record": {"dispatch_id": format!("disp-docs-{i}"), "final_status": "completed"},
+                    "decision": {"selected_tier": "balanced_worker", "budget_reservation": {"reserved_cost": 0.02}},
+                    "analysis": {"risk_level": "low", "task_class": "docs_update"},
+                    "execution_result": {"executor_type": "noop"},
+                }),
+                "test",
+            )
+            .unwrap();
+    }
+
+    let app = build_axum_router(AxumApiState::new().with_local_store(store));
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method(Method::GET)
+                .uri("/api/v1/feedback/patterns?task_class=code_review")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = response_json(response).await;
+    let patterns = body["patterns"].as_array().unwrap();
+    for pattern in patterns {
+        let tc = pattern["affected_task_class"].as_str().unwrap_or("");
+        assert!(
+            tc.eq_ignore_ascii_case("code_review") || tc.is_empty(),
+            "unexpected task_class in filtered result: {tc}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn test_feedback_traces_returns_stable_schema() {
+    let dir = tempdir().unwrap();
+    let store = LocalProductStore::new(dir.path().join("traces-schema.db")).unwrap();
+
+    store
+        .record_dispatch(
+            "Trace schema check",
+            "api",
+            &json!({
+                "record": {"dispatch_id": "disp-trace-schema", "final_status": "completed"},
+                "decision": {
+                    "selected_tier": "balanced_worker",
+                    "budget_reservation": {"reserved_cost": 0.08}
+                },
+                "analysis": {"risk_level": "low"},
+                "execution_result": {"executor_type": "noop", "estimated_cost": 0.004},
+                "evaluation_result": {"status": "pass"},
+            }),
+            "test",
+        )
+        .unwrap();
+
+    let app = build_axum_router(AxumApiState::new().with_local_store(store));
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method(Method::GET)
+                .uri("/api/v1/feedback/traces")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = response_json(response).await;
+    assert_eq!(body["schema_version"], "feedback_traces.v1");
+    assert!(body["total"].as_u64().unwrap() >= 1);
+
+    let traces = body["traces"].as_array().unwrap();
+    assert!(!traces.is_empty());
+    let trace = &traces[0];
+    assert!(trace["trace_id"].as_str().is_some());
+    assert!(trace["dispatch_id"].as_str().is_some());
+    assert!(trace["decision"].is_object() || trace["decision"].is_null());
+    assert!(trace["execution"].is_object() || trace["execution"].is_null());
+    assert!(trace["evaluation"].is_object() || trace["evaluation"].is_null());
+}
+
+#[tokio::test]
+async fn test_feedback_traces_supports_filters() {
+    let dir = tempdir().unwrap();
+    let store = LocalProductStore::new(dir.path().join("traces-filters.db")).unwrap();
+
+    store
+        .record_dispatch(
+            "Filter test alpha",
+            "api",
+            &json!({
+                "record": {"dispatch_id": "disp-filter-a", "final_status": "completed"},
+                "decision": {"selected_tier": "premium_worker", "budget_reservation": {"reserved_cost": 0.2}},
+                "analysis": {"risk_level": "low", "task_class": "code_review"},
+                "execution_result": {"executor_type": "noop"},
+            }),
+            "test",
+        )
+        .unwrap();
+
+    store
+        .record_dispatch(
+            "Filter test beta",
+            "api",
+            &json!({
+                "record": {"dispatch_id": "disp-filter-b", "final_status": "failed"},
+                "decision": {"selected_tier": "cheap_executor", "budget_reservation": {"reserved_cost": 0.01}},
+                "analysis": {"risk_level": "high", "task_class": "docs_update"},
+                "execution_result": {"executor_type": "noop"},
+            }),
+            "test",
+        )
+        .unwrap();
+
+    let app = build_axum_router(AxumApiState::new().with_local_store(store));
+
+    let resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(Method::GET)
+                .uri("/api/v1/feedback/traces?task_class=code_review")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body = response_json(resp).await;
+    for trace in body["traces"].as_array().unwrap() {
+        assert_eq!(trace["task_class"], "code_review");
+    }
+
+    let resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(Method::GET)
+                .uri("/api/v1/feedback/traces?tier=premium_worker")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body = response_json(resp).await;
+    for trace in body["traces"].as_array().unwrap() {
+        assert_eq!(trace["tier"], "premium_worker");
+    }
+
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .method(Method::GET)
+                .uri("/api/v1/feedback/traces?status=fail")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body = response_json(resp).await;
+    for trace in body["traces"].as_array().unwrap() {
+        assert_eq!(trace["status"], "fail");
+    }
+}
+
+#[tokio::test]
+async fn test_cost_of_pass_still_works() {
+    let dir = tempdir().unwrap();
+    let store = LocalProductStore::new(dir.path().join("cop-data.db")).unwrap();
+
+    store
+        .record_dispatch(
+            "Cost aggregation A",
+            "api",
+            &json!({
+                "record": {"dispatch_id": "disp-cop-a", "final_status": "completed"},
+                "decision": {"selected_tier": "balanced_worker", "budget_reservation": {"reserved_cost": 0.10}},
+                "analysis": {"risk_level": "low", "task_class": "code_review"},
+                "execution_result": {"executor_type": "noop", "estimated_cost": 0.05},
+            }),
+            "test",
+        )
+        .unwrap();
+
+    store
+        .record_dispatch(
+            "Cost aggregation B",
+            "api",
+            &json!({
+                "record": {"dispatch_id": "disp-cop-b", "final_status": "completed"},
+                "decision": {"selected_tier": "balanced_worker", "budget_reservation": {"reserved_cost": 0.08}},
+                "analysis": {"risk_level": "low", "task_class": "code_review"},
+                "execution_result": {"executor_type": "noop", "estimated_cost": 0.03},
+            }),
+            "test",
+        )
+        .unwrap();
+
+    let app = build_axum_router(AxumApiState::new().with_local_store(store));
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method(Method::GET)
+                .uri("/api/v1/feedback/cost-of-pass")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = response_json(response).await;
+    assert_eq!(body["schema_version"], "feedback_cost_of_pass.v1");
+    let rows = body["rows"].as_array().unwrap();
+    assert!(!rows.is_empty());
+
+    let code_review_row = rows
+        .iter()
+        .find(|r| r["task_class"] == "code_review")
+        .expect("expected code_review cost-of-pass row");
+    assert_eq!(code_review_row["dispatch_count"].as_i64().unwrap(), 2);
+    assert!(code_review_row["average_cost_usd"].as_f64().unwrap() > 0.0);
+}

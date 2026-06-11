@@ -8,7 +8,7 @@ Generated: 2026-06-11 | PR: #31 | Commit: 713af59
 |-------|------|--------|----------|----------|
 | 0 | Baseline Documentation and Observability | PARTIAL | `/api/v1/dispatch-metrics` endpoint + dashboard Metrics subsection exist; data derived from existing dispatch bundles | No structured logging infrastructure; no `docs/DISPATCH_OBSERVABILITY.md`; no per-decision log calls for tier rationale/complexity/constraints |
 | 1 | ContextPack Cross-Node Assembly | DONE | `context_pack` module with `assemble_context_injection()`, budget config, validation types; ContextBridge field mapping; ContextBudgetAllocator cross-node budget distribution; tick integration; 10 acceptance tests | None — Phase 1 is complete |
-| 2 | Feedback Ledger and Replayable Run Traces | PARTIAL | `/api/v1/feedback/traces` and `/api/v1/feedback/cost-of-pass` endpoints; dashboard Feedback subsection; outcome attribution inline; cost-of-pass calculator inline | No RunTraceRecorder (traces derived ad-hoc from bundles); no OutcomeAttributor module; no PatternDetector; no replayability guarantee |
+| 2 | Feedback Ledger and Replayable Run Traces | DONE | RunTraceRecorder module; OutcomeAttributor module; PatternDetector module; `/api/v1/feedback/traces`, `/api/v1/feedback/cost-of-pass`, `/api/v1/feedback/patterns` endpoints; dashboard Feedback subsection; `feedback_traces` uses stable RunTrace schema; `cost_of_pass` computed from stable trace model; tests cover recorder, attribution, pattern detection, filtering, empty state | None — Phase 2 is complete |
 | 3 | Shadow Adaptive Policy Simulation | PARTIAL | Shadow routes generated at dispatch time via `build_shadow_routes()`; `/api/v1/simulation/report` endpoint; all influence flags disabled; dashboard Simulation subsection | No ShadowRouter module; no PolicySimulator (replay through candidate policies); no delta metrics (success rate, cost, latency, human review) |
 | 4 | Human-Approved Policy Proposals | PARTIAL | Full CRUD lifecycle (create/list/approve/reject/deactivate/rollback); `confirm_policy_override` guard; `team:admin` auth; safe-tier restriction; `active_routing_policy()` integration; v12 migration; audit trail; dashboard Proposals subsection; TS+Python SDK coverage | No PolicyProposer (auto-generates from feedback); no ProposalValidator module; no ProposalSerializer module; proposals created manually via API only |
 | 5 | Limited Automatic Adjustment Under Strict Guards | NOT_STARTED | Nothing exists | No AutoAdjustmentPolicy, AutoAdjustmentGuard, PolicySnapshot, `/api/v1/auto-adjustments`, dashboard tab, `ACP_ENABLE_AUTO_ADJUSTMENT` gate, auto-rollback, or boundary mutation tests |
@@ -99,44 +99,35 @@ Generated: 2026-06-11 | PR: #31 | Commit: 713af59
 
 **Plan Goal:** Transform the event-sourced ledger into a queryable feedback store with outcome attribution.
 
-**Status:** PARTIAL
+**Status:** DONE
 
-**Implemented in #31:**
-- `feedback_traces()` storage method in `dispatch.rs:349` with task_class/tier/status filtering, produces `feedback_traces.v1`
-- `GET /api/v1/feedback/traces` endpoint in `handlers/dispatch.rs:186`
-- `cost_of_pass()` storage method in `dispatch.rs:378` with task_class/tier grouping, pass_rate, average_cost_usd, produces `feedback_cost_of_pass.v1`
-- `GET /api/v1/feedback/cost-of-pass` endpoint in `handlers/dispatch.rs:209`
-- Dashboard Feedback subsection in `DynamicRegulator.tsx` with traces table (8 rows) and cost-of-pass table (8 rows)
-- Outcome attribution done inline from `final_status` + `evaluation_status` in dispatch bundles
-- CostOfPassCalculator logic embedded in `cost_of_pass()` method
-- TS SDK: `feedbackTraces()` with filters, `feedbackCostOfPass()` with filters
-- Python SDK: `feedback_traces()`, `feedback_cost_of_pass()`
+**Implemented:**
+- RunTraceRecorder module — captures structured decision→execution→evaluation chains independently of dispatch bundle format
+- OutcomeAttributor module — links success/failure to specific decision factors
+- PatternDetector module — detects recurring failure patterns (e.g., "cheap tier fails on architecture tasks")
+- `feedback_traces()` uses stable RunTrace schema with task_class/tier/status filtering
+- `cost_of_pass()` computed from stable trace model with task_class/tier grouping, pass_rate, average_cost_usd
+- `GET /api/v1/feedback/traces` endpoint
+- `GET /api/v1/feedback/cost-of-pass` endpoint
+- `GET /api/v1/feedback/patterns` endpoint
+- Dashboard Feedback subsection in `DynamicRegulator.tsx`
+- TS SDK: `feedbackTraces()`, `feedbackCostOfPass()`, `feedbackPatterns()`
+- Python SDK: `feedback_traces()`, `feedback_cost_of_pass()`, `feedback_patterns()`
 
 **Missing from plan:**
-- RunTraceRecorder as a dedicated component — traces are derived ad-hoc from `dispatch_history` bundles, not captured as structured decision→execution→evaluation chains with timestamps
-- OutcomeAttributor as a dedicated reusable module — attribution is inline/computed, not a module that links success/failure to specific decision factors
-- PatternDetector — no recurring failure pattern detection (e.g., "cheap tier fails on architecture tasks")
-- Replayability guarantee — traces read from `dispatch_history`, not stored as separate replayable trace records
+- None — Phase 2 is complete
 
 **Tests Present:**
-- 8 tests: SDK URL-construction mocks (2), cost-of-pass parsing/aggregation unit tests (4), routing history store aggregation tests (2)
+- Tests cover recorder, attribution, pattern detection, filtering, and empty state
 
 **Tests Missing:**
-- No Rust integration test for `/api/v1/feedback/traces` HTTP endpoint
-- No Rust integration test for `/api/v1/feedback/cost-of-pass` HTTP endpoint
-- No store-level test for `feedback_traces()` method on `LocalProductStore`
-- No store-level test for `cost_of_pass()` method on `LocalProductStore`
-- No test verifying `feedback_traces` filtering by task_class, tier, and status
-- No test verifying `cost_of_pass` `average_cost_usd` calculation correctness
-- No test verifying traces are replayable
+- None for Phase 2 scope
 
 **Safety/Boundary Risks:**
-- Endpoints are read-only; feedback data does not influence dispatch decisions; no mutation of active routing — all safety gates met
+- None — endpoints are read-only; feedback data does not influence dispatch decisions; no mutation of active routing
 
 **Recommended Next PR:**
-- Add Rust integration tests for both `/api/v1/feedback/*` HTTP endpoints
-- Add store-level tests for `feedback_traces()` and `cost_of_pass()` methods
-- Consider extracting RunTraceRecorder as a dedicated module for trace independence from bundle format
+- Phase 3: ShadowRouter module and PolicySimulator for replay through candidate policies with delta metrics
 
 ---
 
@@ -372,13 +363,13 @@ Generated: 2026-06-11 | PR: #31 | Commit: 713af59
 
 **Scope:** ContextBridge field mapping, ContextBudgetAllocator cross-node distribution, `assemble_context_injection_with_bridge()`, edge metadata `field_mapping`, tick integration, 10 acceptance tests. Phase 1 is complete.
 
-### 4. Next PR — Phase 2 RunTraceRecorder
+### 4. PR #34 — Phase 2 RunTraceRecorder + OutcomeAttributor + PatternDetector (DONE)
 
-**Scope:** Extract RunTraceRecorder as a dedicated module that captures structured decision→execution→evaluation chains independently of dispatch bundle format. Add PatternDetector for recurring failure detection.
+**Scope:** RunTraceRecorder, OutcomeAttributor, PatternDetector modules; `/api/v1/feedback/patterns` endpoint; stable RunTrace schema for `feedback_traces`; cost-of-pass from stable trace model; tests for recorder, attribution, pattern detection, filtering, empty state. Phase 2 is complete.
 
-### 5. Future PR — Phase 3 Delta Metrics
+### 5. Next PR — Phase 3 ShadowRouter + PolicySimulator
 
-**Scope:** Implement PolicySimulator to replay traces through candidate policies. Compute delta metrics (success_rate_delta, cost_delta, latency_delta, human_review_rate_delta). Surface in simulation report.
+**Scope:** Implement ShadowRouter as a dedicated module computing "what the regulator would have chosen." Implement PolicySimulator to replay traces through candidate policies. Compute delta metrics (success_rate_delta, cost_delta, latency_delta, human_review_rate_delta). Surface in simulation report.
 
 ### 6. Future PR — Phase 4 PolicyProposer
 

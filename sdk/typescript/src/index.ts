@@ -46,6 +46,7 @@ import type {
   ProviderAuditResponse,
   DispatchMetricsResponse,
   FeedbackCostOfPassResponse,
+  FeedbackPatternListResponse,
   FeedbackTraceListResponse,
   ProposalActionRequest,
   ProposalCreateRequest,
@@ -148,6 +149,11 @@ export interface FeedbackCostOfPassOptions {
   tier?: string;
 }
 
+export interface FeedbackPatternOptions {
+  task_class?: string;
+  tier?: string;
+}
+
 export interface SimulationReportOptions {
   limit?: number;
 }
@@ -207,6 +213,13 @@ export class AgentControlPlaneClient {
 
   feedbackCostOfPass(options: FeedbackCostOfPassOptions = {}): Promise<FeedbackCostOfPassResponse> {
     return this.getJson<FeedbackCostOfPassResponse>(`/api/v1/feedback/cost-of-pass${queryString({
+      task_class: options.task_class,
+      tier: options.tier,
+    })}`);
+  }
+
+  feedbackPatterns(options: FeedbackPatternOptions = {}): Promise<FeedbackPatternListResponse> {
+    return this.getJson<FeedbackPatternListResponse>(`/api/v1/feedback/patterns${queryString({
       task_class: options.task_class,
       tier: options.tier,
     })}`);

@@ -206,6 +206,24 @@ pub(crate) async fn api_feedback_traces(
     Ok((cors_headers(), Json(traces)))
 }
 
+pub(crate) async fn api_feedback_patterns(
+    State(state): State<AxumApiState>,
+    headers: HeaderMap,
+    uri: Uri,
+    Extension(request_id): Extension<RequestId>,
+    Query(params): Query<std::collections::HashMap<String, String>>,
+) -> Result<impl IntoResponse, ApiError> {
+    authorize(&state, &headers, "dispatch:read", uri.path(), &request_id.0)?;
+    let store = require_store(&state)?;
+    let patterns = store
+        .feedback_patterns(
+            params.get("task_class").map(String::as_str),
+            params.get("tier").map(String::as_str),
+        )
+        .map_err(internal_error)?;
+    Ok((cors_headers(), Json(patterns)))
+}
+
 pub(crate) async fn api_feedback_cost_of_pass(
     State(state): State<AxumApiState>,
     headers: HeaderMap,

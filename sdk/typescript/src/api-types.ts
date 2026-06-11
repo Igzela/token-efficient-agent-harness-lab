@@ -644,6 +644,23 @@ export interface FeedbackCostOfPassResponse {
   rows: FeedbackCostOfPass[];
 }
 
+export interface FeedbackPattern {
+  task_class: string;
+  tier: string;
+  pattern_type: string;
+  occurrences: number;
+  avg_cost_usd: number;
+  avg_latency_ms: number;
+  pass_rate: number;
+  suggestion?: string | null;
+  [key: string]: unknown;
+}
+
+export interface FeedbackPatternListResponse {
+  schema_version: "axum_api.v1";
+  patterns: FeedbackPattern[];
+}
+
 export interface SimulationReportItem {
   scenario_id: string;
   created_at?: string | null;
