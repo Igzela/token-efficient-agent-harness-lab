@@ -4,7 +4,7 @@
 
 ## Project Identity
 
-Token-Efficient Agent Harness Lab is a local deterministic harness and self-hosted macro-orchestrator control plane for studying event-sourced agent workflow infrastructure.
+Token-Efficient Agent Harness Lab is a local deterministic harness and self-hosted macro-orchestrator control plane for studying event-sourced agent workflow infrastructure. See [`docs/ARCHITECTURE_BOOK.md`](ARCHITECTURE_BOOK.md) for the full system architecture, data flows, API surface, and safety boundaries.
 
 ## Current State
 

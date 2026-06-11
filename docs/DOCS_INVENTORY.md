@@ -1,6 +1,6 @@
 # Docs Inventory
 
-Last updated: 2026-06-11 (Phase 5 final DONE seal)
+Last updated: 2026-06-11 (Architecture Book added)
 
 ## Classification Key
 
@@ -27,10 +27,11 @@ Last updated: 2026-06-11 (Phase 5 final DONE seal)
 | `docs/security/THREAT_MODEL.md` | 274 | operational | CURRENT_STATUS | keep |
 | `docs/security/SCOPE_TEMPLATES.md` | 46 | operational | CURRENT_STATUS | keep |
 | `docs/dispatch/DISPATCHER_KERNEL_V0_ARCHITECTURE.md` | 1975 | strategic-reference | CURRENT_STATUS | keep |
+| `docs/ARCHITECTURE_BOOK.md` | ~550 | authoritative | SESSION_START, CURRENT_STATUS, NEXT_DECISION | keep |
 
 ## Summary
 
-- **Keep:** 14 files (authoritative + operational + strategic-reference)
+- **Keep:** 15 files (authoritative + operational + strategic-reference)
 - **Archive:** 0 files
 - **Delete:** 0 (conservative; archive first, delete later if unused)
 
@@ -46,4 +47,5 @@ Last updated: 2026-06-11 (Phase 5 final DONE seal)
 - `docs/MODULE_MAP.md` — code changes, module ownership decisions
 - `docs/CURRENT_STATUS.md` — status audit or update
 - `docs/DOCS_INVENTORY.md` — adding, moving, archiving, or deleting docs
+- `docs/ARCHITECTURE_BOOK.md` — understanding system architecture, data flows, API surface, safety boundaries
 - `docs/DYNAMIC_GLOBAL_REGULATOR_PLAN.md` — strategic architecture planning only
