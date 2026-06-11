@@ -385,6 +385,16 @@ pub fn openapi_document() -> serde_json::Value {
                     "responses": {"200": {"description": "Proposal rolled back"}}
                 }
             },
+            "/api/v1/auto-adjustments": {
+                "get": {
+                    "summary": "Read Phase 5 auto-adjustment dry-run report",
+                    "description": "Requires dispatch:read scope. Read-only dry-run eligibility report; no active apply or rollback endpoints are available.",
+                    "parameters": [
+                        {"name": "limit", "in": "query", "schema": {"type": "integer", "default": 50, "minimum": 0, "maximum": 500}}
+                    ],
+                    "responses": {"200": {"description": "Auto-adjustment dry-run report"}}
+                }
+            },
             "/api/v1/plans": {
                 "get": {
                     "summary": "List persisted read-only workflow plans",

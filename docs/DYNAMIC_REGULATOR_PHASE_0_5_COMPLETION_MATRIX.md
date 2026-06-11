@@ -11,7 +11,7 @@ Generated: 2026-06-11 | PR: #31 | Commit: 713af59
 | 2 | Feedback Ledger and Replayable Run Traces | DONE | RunTraceRecorder module; OutcomeAttributor module; PatternDetector module; `/api/v1/feedback/traces`, `/api/v1/feedback/cost-of-pass`, `/api/v1/feedback/patterns` endpoints; dashboard Feedback subsection; `feedback_traces` uses stable RunTrace schema; `cost_of_pass` computed from stable trace model; tests cover recorder, attribution, pattern detection, filtering, empty state | None — Phase 2 is complete |
 | 3 | Shadow Adaptive Policy Simulation | DONE | Shadow routes generated at dispatch time via `build_shadow_routes()`; `/api/v1/simulation/report` endpoint; all influence flags disabled; dashboard Simulation subsection; ShadowRouter; PolicySimulator; delta metrics; `/api/v1/simulation/policy-delta` endpoint; dashboard delta display; SDK methods | None — Phase 3 is complete |
 | 4 | Human-Approved Policy Proposals | DONE | Full CRUD lifecycle (create/list/approve/reject/deactivate/rollback); `confirm_policy_override` guard; `team:admin` auth; safe-tier restriction; `active_routing_policy()` integration; v12 migration; audit trail; dashboard Proposals subsection; TS+Python SDK coverage; PolicyProposer; ProposalValidator; ProposalSerializer; GET /api/v1/proposals/generated; generated candidates with evidence/confidence/safety flags; dashboard generated suggestions; SDK generatedProposals()/generated_proposals() | None — Phase 4 is complete |
-| 5 | Limited Automatic Adjustment Under Strict Guards | NOT_STARTED | Nothing exists | No AutoAdjustmentPolicy, AutoAdjustmentGuard, PolicySnapshot, `/api/v1/auto-adjustments`, dashboard tab, `ACP_ENABLE_AUTO_ADJUSTMENT` gate, auto-rollback, or boundary mutation tests |
+| 5 | Limited Automatic Adjustment Under Strict Guards | PARTIAL | AutoAdjustmentPolicy, AutoAdjustmentGuard, PolicySnapshotPreview, `GET /api/v1/auto-adjustments`, default-off/dry-run gates, no-mutation tests | Active apply not approved; rollback endpoint not approved; no dashboard/SDK changes because Bun is absent locally |
 
 ## Phase Details
 
@@ -239,35 +239,45 @@ Generated: 2026-06-11 | PR: #31 | Commit: 713af59
 
 **Plan Goal:** Allow a narrow class of policy adjustments to apply automatically, with strict guardrails.
 
-**Status:** NOT_STARTED
+**Status:** PARTIAL
 
-**Implemented in #31:**
-- Nothing.
+**Implemented in Phase 5 dry-run PR:**
+- `AutoAdjustmentPolicy` in `engine/src/feedback/auto_adjustment_policy.rs` emits `auto_adjustment_policy_decision.v1`
+- `AutoAdjustmentGuard` in `engine/src/feedback/auto_adjustment_guard.rs` emits `auto_adjustment_guard_decision.v1`
+- `PolicySnapshotPreview` in `engine/src/feedback/policy_snapshot.rs` emits preview-only `policy_snapshot.v1`
+- `GET /api/v1/auto-adjustments` read-only endpoint requiring `dispatch:read`
+- `auto_adjustments_report()` store read model derives generated candidates, policy decisions, guard state, and snapshot previews
+- Default-off gate: disabled unless `ACP_ENABLE_AUTO_ADJUSTMENT=1`
+- Dry-run gate: dry-run only when `ACP_AUTO_ADJUSTMENT_DRY_RUN=1`
+- Active mode blocked even when `ACP_ENABLE_AUTO_ADJUSTMENT=1`
+- Audit doc: `docs/PHASE5_AUTO_ADJUSTMENT_AUDIT.md`
 
 **Missing from plan:**
-- AutoAdjustmentPolicy — whitelist of adjustment types allowed without human approval
-- AutoAdjustmentGuard — enforces adjustment magnitude limit, rate limit, rollback trigger
-- PolicySnapshot — captures full policy state before each auto-adjustment
-- `/api/v1/auto-adjustments` endpoint showing adjustment history and current state
 - Dashboard Auto-Adjustments tab with timeline and rollback controls
-- `ACP_ENABLE_AUTO_ADJUSTMENT=0` default environment variable gate
-- Auto-rollback trigger on success rate degradation
-- Rate limiting for auto-adjustments
-- Before/after state recording for each adjustment
-- Human manual revert controls
-- Tests: no safety/auth/provider/CLI/hard-constraint boundary mutation
+- Active automatic adjustment / POST apply endpoint
+- Rollback endpoint and persisted rollback snapshots
+- Auto-rollback trigger on success-rate degradation
+- Rate limiting for active adjustments
+- Before/after persisted state recording for active adjustments
+- Human manual revert controls for auto-adjustments
+- TS/Python SDK methods and dashboard surface, deferred because Bun is unavailable locally and no active controls are approved
 
 **Tests Present:**
-- 0 tests (consistent with NOT_STARTED status)
+- AutoAdjustmentPolicy unit tests: accepts only high-confidence safe generated candidates; rejects unsafe CLI tiers, missing evidence, weak confidence, missing simulation, simulation regression, and failed safety flags
+- AutoAdjustmentGuard unit tests: disabled by default; dry-run requires env gate plus dry-run env; active apply remains blocked
+- PolicySnapshotPreview unit test: deterministic read-only snapshot preview
+- HTTP integration test: `GET /api/v1/auto-adjustments` disabled mode, dry-run mode, decisions/snapshot previews, no proposal row creation, no active policy mutation
 
 **Tests Missing:**
-- All Phase 5 tests are missing — component does not exist
+- Active apply/rollback tests are intentionally missing because active apply and rollback endpoints are not approved or implemented
 
 **Safety/Boundary Risks:**
-- N/A — nothing is implemented
+- Dry-run report exists but cannot mutate policy.
+- Active apply remains blocked; future implementation must add persisted snapshots, deterministic rollback, and audit events before approval.
+- No provider/CLI/auth/security/deploy boundary expansion, target repo write, DB migration, release/tag/deploy, or dashboard one-click enable was added.
 
 **Recommended Next PR:**
-- Phase 5 should not begin until Phases 0–4 gaps are closed and tested
+- Review dry-run evidence. If approved separately, implement active apply plus persisted rollback in a follow-up PR. Do not mark Phase 5 DONE until active apply and rollback are implemented and tested.
 
 ---
 
@@ -275,18 +285,18 @@ Generated: 2026-06-11 | PR: #31 | Commit: 713af59
 
 | Component | Exists? | Evidence |
 |-----------|---------|----------|
-| AutoAdjustmentPolicy (whitelist of adjustment types) | No | No file, struct, or enum defines allowed adjustment types |
-| AutoAdjustmentGuard (magnitude limit, rate limit, rollback trigger) | No | No guard module or enforcement logic exists |
-| Whitelist of allowed adjustment types | No | No whitelist definition anywhere in codebase |
-| Magnitude caps on adjustments | No | No magnitude limit logic exists |
-| Rate limits on adjustments | No | No rate limiting logic exists |
-| PolicySnapshot (before/after state capture) | No | No snapshot capture mechanism exists |
-| Auto-rollback on degradation | No | No auto-rollback trigger logic exists |
-| `/api/v1/auto-adjustments` endpoint | No | No route registered in `routes.rs` |
+| AutoAdjustmentPolicy (whitelist of adjustment types) | Yes | `engine/src/feedback/auto_adjustment_policy.rs` |
+| AutoAdjustmentGuard (magnitude limit, rate limit, rollback trigger) | Partial | Dry-run/default-off guard exists; active magnitude/rate/rollback gates deferred until active apply approval |
+| Whitelist of allowed adjustment types | Yes | Policy requires generated candidate shape, safe override tier, `tier_map_override`, evidence, simulation, safety flags, and strict confidence |
+| Magnitude caps on adjustments | Partial | Active adjustment count is always 0; active magnitude caps deferred |
+| Rate limits on adjustments | Partial | Active adjustment count is always 0; active rate limits deferred |
+| PolicySnapshot (before/after state capture) | Partial | `PolicySnapshotPreview` exists; no persisted active snapshot |
+| Auto-rollback on degradation | No | Requires future active apply/rollback approval |
+| `/api/v1/auto-adjustments` endpoint | Yes | GET read-only route registered in `routes.rs` |
 | Dashboard Auto-Adjustments tab with timeline | No | No component in dashboard |
-| Human manual revert controls | No | No revert UI or API for auto-adjustments |
-| `ACP_ENABLE_AUTO_ADJUSTMENT=0` default gate | No | No environment variable defined |
-| Boundary mutation tests (no safety/auth/provider/CLI/hard-constraint mutation) | No | No tests exist because no component exists |
+| Human manual revert controls | No | Not approved for dry-run PR |
+| `ACP_ENABLE_AUTO_ADJUSTMENT=0` default gate | Yes | Guard is disabled unless `ACP_ENABLE_AUTO_ADJUSTMENT=1` |
+| Boundary mutation tests (no safety/auth/provider/CLI/hard-constraint mutation) | Partial | Dry-run tests prove no proposal rows and no active routing change; active mutation tests deferred because active mutation is not implemented |
 
 ## Overclaims Fixed
 
@@ -366,17 +376,17 @@ Generated: 2026-06-11 | PR: #31 | Commit: 713af59
 
 **Scope:** RunTraceRecorder, OutcomeAttributor, PatternDetector modules; `/api/v1/feedback/patterns` endpoint; stable RunTrace schema for `feedback_traces`; cost-of-pass from stable trace model; tests for recorder, attribution, pattern detection, filtering, empty state. Phase 2 is complete.
 
-### 5. Next PR — Phase 3 ShadowRouter + PolicySimulator
+### 5. PR #34 + Follow-up — Phase 3 ShadowRouter + PolicySimulator (DONE)
 
-**Scope:** Implement ShadowRouter as a dedicated module computing "what the regulator would have chosen." Implement PolicySimulator to replay traces through candidate policies. Compute delta metrics (success_rate_delta, cost_delta, latency_delta, human_review_rate_delta). Surface in simulation report.
+**Scope:** ShadowRouter computes "what the regulator would have chosen." PolicySimulator replays traces through candidate policies and computes delta metrics (success_rate_delta, cost_delta, latency_delta, human_review_rate_delta). `/api/v1/simulation/policy-delta` surfaces the report.
 
-### 6. Future PR — Phase 4 PolicyProposer
+### 6. PR #35 — Phase 4 PolicyProposer (DONE)
 
-**Scope:** Implement PolicyProposer to auto-generate proposals from feedback patterns and simulation results. Implement ProposalValidator (safety constraint checking) and ProposalSerializer (human-readable output with evidence and rollback plan). Wire dashboard ConfirmDialog for approve/reject/rollback actions.
+**Scope:** PolicyProposer auto-generates proposals from feedback patterns and simulation results. ProposalValidator checks safety constraints. ProposalSerializer produces generated proposal responses with evidence and safety flags. Generated proposals remain read-only until human-approved through the existing proposal lifecycle.
 
-### 7. Future PR — Phase 5 Implementation
+### 7. Phase 5 Dry-Run PR — AutoAdjustment Guard (PARTIAL)
 
-**Scope:** Only after Phases 0–4 are fully implemented and tested. Implement AutoAdjustmentPolicy (whitelist), AutoAdjustmentGuard (magnitude/rate/rollback), PolicySnapshot, `/api/v1/auto-adjustments`, dashboard timeline, `ACP_ENABLE_AUTO_ADJUSTMENT=0` gate, auto-rollback trigger, manual revert controls, boundary mutation tests.
+**Scope:** Implement AutoAdjustmentPolicy, AutoAdjustmentGuard, PolicySnapshotPreview, `GET /api/v1/auto-adjustments`, default-off/dry-run gates, and no-mutation tests. Active apply and rollback remain future work requiring separate explicit human approval.
 
 ## Merge Decision
 
