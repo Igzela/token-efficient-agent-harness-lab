@@ -14,9 +14,9 @@ The project is in **Real-World Testing Mode**. The Dynamic Global Regulator is v
 
 **Architecture Refactor R-series**: **SEALED AT R7.** R8 is not approved. No further R-series file splitting is approved.
 
-## Disallowed by Default
+## Requires Explicit Human Approval
 
-The following require explicit human approval and a new implementation plan (also called "Requires Explicit Human Approval"):
+The following require explicit human approval and a new implementation plan:
 
 ## Safety Gates
 
