@@ -2,56 +2,51 @@
 
 This repository is the Token-Efficient Agent Harness Lab: a local deterministic harness and self-hosted macro-orchestrator control plane for studying token-efficient agent workflows.
 
-## Current Status
+## Current State (2026-06-11)
 
-The Stage 0-4 task-book scope is complete.
+**Active tracks:**
+- **Real-World Testing Mode** — validated through real tasks, branches, commits, PRs, CI, gated auto-merge
+- **Agent Autonomous Maintenance Mode** — agents maintain docs/CI/tests/low-risk PR flow under playbook gates
 
-- Stage 0: schema validation and manual workflow simulation complete.
-- Stage 1: deterministic local runtime complete.
-- Stage 2: quality runtime complete.
-- Stage 3: controlled intelligence stubs complete.
-- Stage 4: advanced runtime abstractions complete.
-- Project closeout complete.
-- CA-7 sealed baseline complete.
-- Harness App MVP0-MVP8 complete (local operations console).
-- Trial 0 closed — real target `PASS` verdict.
-- Trial 1 closed — `ACCEPTABLE_FOR_MULTI_TASK_TRIAL_AFTER_HARDENING`.
-- Trial 2 final verification closed — `TRIAL_2_FINAL_VERIFICATION_PASS`.
-- Trial 3 multi-repo generalization and target merge closed.
-- Trial 4 real-use pilot closed — `TRIAL_4_REAL_USE_PILOT_PASS_AFTER_FIXES`.
-- Trial 5 CLI execution beta closed — `TRIAL_5_CLI_EXECUTION_BETA_PASS_AFTER_FIXES`.
-- Reliability Hardening 1 complete (negated risk and triage differentiation).
-- Dispatch Kernel Phase 3 provider-adapter boundary stable and CA-7 compliant.
-- Dispatch Kernel Phase 4 adaptive routing stable.
-- Dispatch Kernel Phase 5 multi-agent orchestration stable (1454 tests, GPT approved).
-- Dispatch Kernel Phase 6A local durable API/storage stable (1596 tests, GPT approved after 2 review rounds).
-- Dispatch Kernel Phase 6B-1 per-server route isolation implemented (1603 tests).
-- Dispatch Kernel Phase 6B-2 local API key + tenant boundary implemented and hardened (1654 tests).
-- Dispatch Kernel Phase 7 SDK + Documentation System implemented (sdk.py, doc_generator.py).
-- Language migration preparation approved: Rust core + axum API target, TypeScript dashboard/SDK target, Python SDK retained. Rust engine parity now covers wire schemas, golden fixtures, dispatch, routing/orchestration, infrastructure, storage, SDK/migrator helpers, doc generation, and a local axum API router. Phase 5 codegen plus TypeScript/Python REST SDK packages are implemented. Phase 6 dashboard is implemented with static export support. Phase 7 local Docker deploy is implemented as an optional verification path. Native local runtime is implemented so one Rust process can serve API + static dashboard with `ACP_DASHBOARD_DIR=dashboard/out`; Phase 8 closeout is recorded in `docs/AGENT_CONTROL_PLANE_MIGRATION_CLOSEOUT.md`. Rust + TypeScript cutover is complete: Rust `engine/` is the primary runtime/API/storage/provider-gated control plane, `dashboard/` and `sdk/typescript/` are the primary TypeScript surfaces. Python legacy reference retired; Python retained as REST SDK and utility scripts only.
-- Local small-team productization is implemented: app-owned SQLite dispatch history/config/team/API-key metadata/audit/cost/plan/workflow-run state, live dashboard API state, optional local API key role boundary, export, confirmed local backup, operations metrics, backup verify/restore dry-run, audit redaction, provider pricing visibility, local ops/restore smoke scripts, and SDK methods. Broader provider execution beyond the explicit env-gated local beta path, target writes, sandbox/process/container/VM isolation, runtime workers, cloud SaaS, and hosted production deployment remain disallowed.
-- GitHub private repository published.
-- Architecture Refactor R-series sealed at R7. R8 is not approved. The `checkpoint.rs` split and `dispatch_decision.rs` split are deferred. No further R-series file splitting is approved.
-- Post-R7 wire/type governance hardening implemented: dormant `app_layer` annotation, Rust golden fixture typed round-trip guardrail, active execution-result schema enums, generated/manual TypeScript split, schema-driven enum codegen with drift enforcement via `scripts/check_wire_codegen_drift.sh`, and localized dashboard union reuse.
-- Supervised autonomous beta planning started as a planning-only track in `docs/adr/0002-supervised-planning-track.md`. Batch 0-6 governance/module/model/read-only-planner/durable-state/advisory/design-gate work is recorded, with `WorkflowGraph` selected as canonical planning model. Batch 7 Slice A-F and the production-grade track now add supervised execution runtime primitives in app-owned detached workspaces: `NodeExecutor`, explicit tick/scheduler paths, workspace lifecycle, patch capture, integrity validation, approval binding, and export gating. These are supervised local runtime primitives, not target-repo writes, sandbox/process/container/VM isolation, provider default-on execution, hosted deployment, or unattended autonomous workers.
-- Current Rust test count: 1367 pass.
-- Dynamic Workflow: ALL 7 BATCHES COMPLETE plus scheduler dynamic-mode recovery. Minimum acceptance target achieved.
-- Macro-Orchestrator Direction: current product direction. Phase 1-5 repair batch COMPLETE. Self-Hosted GA Readiness Track SG-1 through SG-5 COMPLETE: real dynamic CLI pilot matrix, long-run soak/failure injection, mission-control dashboard visibility, enriched policy decision signals, and runbook/release/rollback handoff readiness. Track done.
-- HA Hardening Track: started. HA-4 circuit breaker DONE (14 tests). Remaining: HA-1 Scheduler Resilience + Persistent Heartbeat, HA-2 Automated Backup, HA-3 Deep Health + Resource Monitoring + External Monitoring, HA-5 TLS, HA-6 Secret Encryption. User requested: PostgreSQL optional storage backend, persistent heartbeat, external monitoring.
-- Existing CLI executor routing is a pre-existing local subprocess exception and is explicit opt-in via `ACP_ENABLE_CLI_EXECUTION=1`. Any expansion requires explicit scope and human approval.
+**Complete tracks:**
+- Dispatch Kernel Phases 1–7 (including 6A, 6B-1/2/3, Gates 1–3): STABLE
+- Language migration: COMPLETE (Rust engine is sole runtime)
+- Dynamic Workflow Batches 1–7 + scheduler dynamic-mode: COMPLETE
+- Macro-Orchestrator Phases 1–5 repair batch: COMPLETE
+- Self-Hosted GA Readiness Track SG-1 through SG-5: COMPLETE
+- HA Hardening Track HA-1 through HA-6: COMPLETE
+- HybridExecutor with `ACP_EXECUTION_MODE`: COMPLETE
 
-This project is now in autonomous maintainer mode for repository advancement. The responsible coding agent may keep advancing approved documentation, test, CI, hardening, dispatch-kernel, and local small-team self-hosting tracks without waiting for a new human instruction on every commit. The Self-Hosted GA Readiness Track is the active approved local/small-team self-hosting track and must deepen existing runtime modules only. New cloud/SaaS, hosted production, real-provider, target-write, new sandbox/container/VM, or unattended autonomous-worker tracks still require explicit scope and human approval.
+**Key facts:**
+- 1390 Rust tests pass, 0 failures
+- Architecture Refactor R-series sealed at R7. R8 is not approved.
+- Post-R7 wire/type governance hardening implemented: `scripts/check_wire_codegen_drift.sh`
+
+## App Runtime vs Agent Maintenance Boundary
+
+**App/runtime** does not write target repos by default. Target repositories remain protected from direct app writes.
+
+**Agent maintenance** may create branches, commits, PRs, and low-risk merges only through branch+PR workflow under `docs/REAL_WORLD_TESTING_PLAYBOOK.md` gates. This is a repository workflow mode, not an app-runtime feature.
+
+**Requires explicit human approval:** Provider/CLI execution boundary expansion, auth/security boundary changes, DB migrations, release/tag/deploy, active YAML/rubric/policy mutation, destructive operations.
+
+## Minimal Agent Reading Model
+
+**Default:** Read `AGENTS.md` only.
+
+**Read conditionally:**
+- `docs/NEXT_DECISION.md` — when choosing or validating next work
+- `docs/REAL_WORLD_TESTING_PLAYBOOK.md` — when opening PRs, auto-merging, fixing CI, cleaning docs, or running real-world pilot tasks
+- `docs/MODULE_MAP.md` — when changing code or deciding module ownership
+- `docs/CURRENT_STATUS.md` — when status facts are unclear or when updating status
+- `docs/DOCS_INVENTORY.md` — when adding, moving, archiving, or deleting docs
+- `docs/DYNAMIC_GLOBAL_REGULATOR_PLAN.md` — only for strategic architecture planning
 
 ## New Session Bootstrap
 
-Every Codex, Claude Code, or other coding-agent session must start by reading:
+Read this file first. Then conditionally read other docs based on your task type (see Minimal Agent Reading Model above).
 
-1. `docs/SESSION_START_HERE.md`
-2. `docs/CURRENT_STATUS.md`
-3. `docs/NEXT_DECISION.md`
-4. `docs/MODULE_MAP.md`
-
-Treat those files as the handoff surface. If they disagree with `README.md`, `CLAUDE.md`, or recent git history, repair the documentation before continuing feature work.
+If authoritative docs disagree with `README.md`, `CLAUDE.md`, or recent git history, repair the documentation before continuing feature work.
 
 ## Default Agent Behavior
 
@@ -80,25 +75,28 @@ Allowed autonomous advancement:
 - harden completed dispatch-kernel phases when evidence or review findings identify concrete defects
 - advance the next documented dispatch-kernel phase when it is already described in the architecture book and can be implemented without broadening real provider behavior beyond the existing explicit env-gated local beta path, sandbox isolation, subprocess execution beyond the existing CLI executor path, target repo writes, deployment, or concurrent worker processes
 - update architecture, module maps, and closeout reports required to make the new state durable
+- create branches, commits, PRs, and low-risk merges through branch+PR workflow under `docs/REAL_WORLD_TESTING_PLAYBOOK.md` gates
 
 Not allowed under autonomous authority:
 
 - create a new cloud product surface, hosted service, or production runtime
 - broaden real model-provider calls beyond the existing explicit env-gated local beta path, add secrets, add default-on provider execution, expand subprocess execution beyond the existing CLI executor path, add containers, VMs, target-repo mutation, approval/run/deploy controls, or real autonomous workers
 - bypass the architecture book, phase gates, tests, or documentation maintenance rule
+- provider/CLI execution boundary expansion, auth/security boundary changes, DB migrations, release/tag/deploy, active YAML/rubric/policy mutation, destructive operations (all require explicit human approval)
 
 ## Autonomous Advancement Loop
 
 For every autonomous session:
 
-1. Read the bootstrap docs, inspect `git status --short --branch`, and identify whether another agent has uncommitted work.
-2. Pick the highest-value safe task from failing verification, documented next phase work, concrete review findings, stale docs, or narrowly scoped hardening.
-3. Write or update tests first when behavior changes.
-4. Implement the smallest coherent change and run the relevant verification command.
-5. Update `docs/CURRENT_STATUS.md`, `docs/NEXT_DECISION.md`, `docs/MODULE_MAP.md`, `README.md`, `CLAUDE.md`, and this file when their facts changed.
-6. Run `uv run --no-project python scripts/check_agent_handoff.py` before commit (includes toolchain and wire-codegen drift guards).
-7. Commit with an English message and push the active branch when the working tree contains only this session's intended changes.
-8. Leave the next session a clear handoff: latest commit, verification run, remaining risk, and next recommended action.
+1. Read this file, inspect `git status --short --branch`, and identify whether another agent has uncommitted work.
+2. Conditionally read `docs/NEXT_DECISION.md` and `docs/REAL_WORLD_TESTING_PLAYBOOK.md` based on task type.
+3. Pick the highest-value safe task from failing verification, documented next phase work, concrete review findings, stale docs, or narrowly scoped hardening.
+4. Write or update tests first when behavior changes.
+5. Implement the smallest coherent change and run the relevant verification command.
+6. Update `docs/CURRENT_STATUS.md`, `docs/NEXT_DECISION.md`, `docs/MODULE_MAP.md`, `README.md`, `CLAUDE.md`, and this file when their facts changed.
+7. Run `uv run --no-project python scripts/check_agent_handoff.py` before commit (includes toolchain and wire-codegen drift guards).
+8. Commit with an English message and push the active branch when the working tree contains only this session's intended changes.
+9. Leave the next session a clear handoff: latest commit, verification run, remaining risk, and next recommended action.
 
 If another agent has in-progress changes, do not overwrite them. Either build on them deliberately after reading the files, or leave them untouched and record the conflict in the handoff.
 
@@ -137,6 +135,7 @@ Allowed by default:
 - architecture audit updates
 - approved dispatch-kernel phase work that respects all hard boundaries
 - supervised autonomous beta planning batches that remain non-executable and respect ADR-0002
+- branch+PR workflow for docs/tests/CI/small code fixes under `docs/REAL_WORLD_TESTING_PLAYBOOK.md` gates
 
 Requires explicit approval:
 
@@ -147,6 +146,12 @@ Requires explicit approval:
 - benchmarking framework
 - cloud or hosted deployment work
 - broad runtime refactors
+- provider/CLI execution boundary expansion
+- auth/security boundary changes
+- DB migrations
+- release/tag/deploy
+- active YAML/rubric/policy mutation
+- destructive operations
 
 ## Documentation Maintenance Rule
 

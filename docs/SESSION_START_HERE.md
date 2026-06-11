@@ -1,5 +1,7 @@
 # Session Start Here
 
+> **Note:** This file is a concise human/new-session summary. Claude Code should use `CLAUDE.md` as default entrypoint. Other agents should use `AGENTS.md` as default entrypoint. Read this file only when a human or new assistant needs a broad project summary.
+
 Read this file first in any new AI session on this repository.
 
 ## Project Identity
@@ -76,6 +78,10 @@ Additional active architecture track:
 | Supervised Autonomous Beta Planning | Batch 0-6 governance/module/model/read-only-planner/durable-state/advisory/design-gate work recorded. `WorkflowGraph` is canonical planning model. Batch 7 Slice A-F implemented: app-owned workspace/artifact metadata, read-only HTTP/SDK/dashboard visibility, approval-binding contract, and supervised execution runtime primitives (NodeExecutor trait, CommandNodeExecutor with shell-metachar rejection, workflow tick, workspace lifecycle, capture_patch with source manifest diff, integrity validation, export gate, E2E closed-loop test). 1339 Rust tests pass. No target repo writes by the app runtime, no sandbox/process/container/VM execution, no real workers, no default provider calls, no push/deploy/apply controls. Agent maintenance may perform branch+PR work under `docs/REAL_WORLD_TESTING_PLAYBOOK.md` gates. |
 | Dynamic Workflow Direction | Complete; Batches 1-7 plus scheduler dynamic-mode recovery are implemented. Opt-in dynamic mode can observe a failed node, mutate the persisted graph with fix/test nodes, mark the failed node recovered, resume the run, and complete follow-up execution. 1339 Rust tests pass. |
 | Macro-Orchestrator Direction | Current product direction. Phase 1-5 repair batch and Self-Hosted GA Readiness Track SG-1 through SG-5 COMPLETE. Track done. |
+
+## Autonomous Session Closeout
+
+Before committing, run `uv run --no-project python scripts/check_agent_handoff.py` to verify the handoff surface is consistent. Update only the authoritative docs whose facts changed. Prefer prune/archive/link over adding more prose.
 
 ## What This Project Is Not
 
