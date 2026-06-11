@@ -11,7 +11,7 @@ Generated: 2026-06-11 | PR: #31 | Commit: 713af59
 | 2 | Feedback Ledger and Replayable Run Traces | DONE | RunTraceRecorder module; OutcomeAttributor module; PatternDetector module; `/api/v1/feedback/traces`, `/api/v1/feedback/cost-of-pass`, `/api/v1/feedback/patterns` endpoints; dashboard Feedback subsection; `feedback_traces` uses stable RunTrace schema; `cost_of_pass` computed from stable trace model; tests cover recorder, attribution, pattern detection, filtering, empty state | None — Phase 2 is complete |
 | 3 | Shadow Adaptive Policy Simulation | DONE | Shadow routes generated at dispatch time via `build_shadow_routes()`; `/api/v1/simulation/report` endpoint; all influence flags disabled; dashboard Simulation subsection; ShadowRouter; PolicySimulator; delta metrics; `/api/v1/simulation/policy-delta` endpoint; dashboard delta display; SDK methods | None — Phase 3 is complete |
 | 4 | Human-Approved Policy Proposals | DONE | Full CRUD lifecycle (create/list/approve/reject/deactivate/rollback); `confirm_policy_override` guard; `team:admin` auth; safe-tier restriction; `active_routing_policy()` integration; v12 migration; audit trail; dashboard Proposals subsection; TS+Python SDK coverage; PolicyProposer; ProposalValidator; ProposalSerializer; GET /api/v1/proposals/generated; generated candidates with evidence/confidence/safety flags; dashboard generated suggestions; SDK generatedProposals()/generated_proposals() | None — Phase 4 is complete |
-| 5 | Limited Automatic Adjustment Under Strict Guards | DONE | AutoAdjustmentPolicy, AutoAdjustmentGuard, PolicySnapshotPreview, PolicySnapshotRecord, `GET /api/v1/auto-adjustments`, `POST /api/v1/auto-adjustments/apply`, `POST /api/v1/auto-adjustments/{adjustment_id}/rollback`, default-off/dry-run/active gates, persistent snapshots, audit events, apply/rollback tests | No dashboard/SDK changes; no background scheduling; high-risk PR requires human review |
+| 5 | Limited Automatic Adjustment Under Strict Guards | PARTIAL / ACTIVE_CORE_DONE | PR #37 active core plus PR #38 hardening: AutoAdjustmentPolicy, AutoAdjustmentGuard, PolicySnapshotPreview/Record, `GET /api/v1/auto-adjustments`, active apply/rollback endpoints, default-off/dry-run/active gates, persistent snapshots, stable candidate IDs, per-policy active guard, stale rollback checks, audit events, apply/rollback tests | Final DONE still requires hardening acceptance, real-world trial playbook, and seal PR; no dashboard/SDK changes; no background scheduling; high-risk PR requires human review |
 
 ## Phase Details
 
@@ -59,7 +59,7 @@ Generated: 2026-06-11 | PR: #31 | Commit: 713af59
 
 **Plan Goal:** Enable completed nodes to pass outputs as context to downstream nodes.
 
-**Status:** DONE
+**Status:** PARTIAL / ACTIVE_CORE_DONE
 
 **Implemented in #31:**
 - `context_pack` module (`engine/src/workflow/context_pack/`) with `assembly.rs`, `budget.rs`, `rules.rs`, `types.rs`, `validation.rs`
@@ -242,6 +242,8 @@ Generated: 2026-06-11 | PR: #31 | Commit: 713af59
 **Status:** DONE
 
 **Implemented in Phase 5 PRs:**
+- PR #37: active apply + rollback core under strict gates.
+- PR #38: safety hardening for re-entry, stale data, storage parity, HTTP safety, audit details, and boundary invariants.
 - `AutoAdjustmentPolicy` in `engine/src/feedback/auto_adjustment_policy.rs` emits `auto_adjustment_policy_decision.v1`
 - `AutoAdjustmentGuard` in `engine/src/feedback/auto_adjustment_guard.rs` emits `auto_adjustment_guard_decision.v1`
 - `PolicySnapshotPreview` and `PolicySnapshotRecord` in `engine/src/feedback/policy_snapshot.rs`
@@ -253,10 +255,15 @@ Generated: 2026-06-11 | PR: #31 | Commit: 713af59
 - Default-off gate: disabled unless `ACP_ENABLE_AUTO_ADJUSTMENT=1`
 - Dry-run gate: read-only mode when `ACP_AUTO_ADJUSTMENT_DRY_RUN=1`
 - Active gate: apply only when `ACP_AUTO_ADJUSTMENT_ACTIVE=1` and dry-run is unset
+- Stable generated candidate IDs derived from candidate content rather than list order
+- Active apply rejects duplicate candidate re-entry and rejects a second active auto-adjustment for the same `policy_key`
+- Rollback rejects corrupted snapshots, non-active adjustment status, missing snapshots, and stale linked proposal state before mutating policy
+- SQLite and PostgreSQL snapshot indexes cover status, proposal, adjustment lookup, policy key, and active-per-key enforcement
 - Audit events for apply accepted/rejected, snapshot created, rollback accepted/rejected
 - Audit doc: `docs/PHASE5_AUTO_ADJUSTMENT_AUDIT.md`
 
 **Missing from plan:**
+- Real-world trial playbook execution and final seal PR
 - Dashboard Auto-Adjustments tab with timeline and rollback controls
 - Auto-rollback trigger on success-rate degradation
 - TS/Python SDK methods and dashboard surface, deferred because dashboard/TS changes were out of approved scope
@@ -269,15 +276,20 @@ Generated: 2026-06-11 | PR: #31 | Commit: 713af59
 - HTTP integration test: apply env gates, confirmation, active apply, active adjustment listing, and audit events
 - HTTP integration test: admin scope required
 - HTTP integration test: rollback confirmation, corrupted hash rejection, exact prior policy restore, repeated rollback block, and audit events
+- HTTP integration test: duplicate apply and same-policy active re-entry are blocked without mutating active policy; different policy key remains allowed
+- HTTP integration test: rollback requires `team:admin`, missing snapshots are rejected, and stale linked proposal state is blocked without changing active policy
+- HTTP integration test: unsafe CLI/provider tier proposal creation is rejected
+- Storage test: SQLite migration v13/integrity includes `controlled_loop_policy_snapshots`; SQLite and PostgreSQL DDL include required snapshot indexes
 
 **Safety/Boundary Risks:**
 - Default and dry-run modes cannot mutate policy.
 - Active apply is limited to one safe tier-map candidate per request.
+- Active apply allows only one active auto-adjustment per `policy_key`.
 - Snapshot persistence is a narrow DB schema addition supporting SQLite and PostgreSQL DDL.
 - No provider/CLI/auth/security/deploy boundary expansion, target repo write, release/tag/deploy, background scheduling, batch apply, or dashboard one-click enable was added.
 
 **Recommended Next PR:**
-- Human review the high-risk active apply + rollback PR. Do not auto-merge.
+- Run the real-world trial playbook and final Phase 5 seal PR after hardening is reviewed. Do not auto-merge.
 
 ---
 
@@ -291,12 +303,12 @@ Generated: 2026-06-11 | PR: #31 | Commit: 713af59
 | Magnitude caps on adjustments | Yes | Apply handles exactly one generated candidate per request |
 | Rate limits on adjustments | Partial | One adjustment per request; no background scheduler or batch apply; external API rate limits still apply |
 | PolicySnapshot (before/after state capture) | Yes | `PolicySnapshotPreview` + persistent `PolicySnapshotRecord` in `controlled_loop_policy_snapshots` |
-| Auto-rollback on degradation | No | Requires future active apply/rollback approval |
+| Auto-rollback on degradation | No | Requires future explicit approval; no background scheduler was added |
 | `/api/v1/auto-adjustments` endpoint | Yes | GET report route plus POST apply/rollback routes registered in `routes.rs` |
 | Dashboard Auto-Adjustments tab with timeline | No | No component in dashboard |
 | Human manual revert controls | Yes | Confirmed rollback endpoint restores prior policy for affected key |
 | `ACP_ENABLE_AUTO_ADJUSTMENT=0` default gate | Yes | Guard is disabled unless `ACP_ENABLE_AUTO_ADJUSTMENT=1` |
-| Boundary mutation tests (no safety/auth/provider/CLI/hard-constraint mutation) | Yes | Dry-run no-mutation tests plus active apply/rollback tests for gates, admin auth, confirmation, hash validation, and exact restore |
+| Boundary mutation tests (no safety/auth/provider/CLI/hard-constraint mutation) | Yes | Dry-run no-mutation tests plus active apply/rollback tests for gates, admin auth, confirmation, hash validation, exact restore, unsafe tier rejection, safety flags, and stale-state blocks |
 
 ## Overclaims Fixed
 
@@ -384,9 +396,9 @@ Generated: 2026-06-11 | PR: #31 | Commit: 713af59
 
 **Scope:** PolicyProposer auto-generates proposals from feedback patterns and simulation results. ProposalValidator checks safety constraints. ProposalSerializer produces generated proposal responses with evidence and safety flags. Generated proposals remain read-only until human-approved through the existing proposal lifecycle.
 
-### 7. Phase 5 Auto-Adjustment Guard (DONE)
+### 7. Phase 5 Auto-Adjustment Guard (PARTIAL / ACTIVE_CORE_DONE)
 
-**Scope:** Implement AutoAdjustmentPolicy, AutoAdjustmentGuard, PolicySnapshotPreview/Record, persistent snapshots, `GET /api/v1/auto-adjustments`, `POST /api/v1/auto-adjustments/apply`, rollback endpoint, default-off/dry-run/active gates, audit events, and safety tests. Active apply remains high-risk and requires human review; do not auto-merge.
+**Scope:** Implement AutoAdjustmentPolicy, AutoAdjustmentGuard, PolicySnapshotPreview/Record, persistent snapshots, `GET /api/v1/auto-adjustments`, `POST /api/v1/auto-adjustments/apply`, rollback endpoint, default-off/dry-run/active gates, audit events, and safety tests. PR #38 hardens the active core. Final DONE requires hardening acceptance, real-world trial playbook, and a seal PR. Active apply remains high-risk and requires human review; do not auto-merge.
 
 ## Merge Decision
 

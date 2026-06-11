@@ -24,6 +24,8 @@ impl LocalProductStore {
                 &json!({
                     "confirmation_flag": false,
                     "blocked_reasons": ["confirm_auto_adjustment is required"],
+                    "actor": actor,
+                    "source": "auto_adjustment",
                 }),
             )?;
             return Err("confirm_auto_adjustment is required".to_string());
@@ -39,6 +41,8 @@ impl LocalProductStore {
                     "confirmation_flag": true,
                     "mode": guard.mode,
                     "blocked_reasons": guard.blocked_reasons,
+                    "actor": actor,
+                    "source": "auto_adjustment",
                 }),
             )?;
             return Err("active auto-adjustment gates are not enabled".to_string());
@@ -47,6 +51,7 @@ impl LocalProductStore {
         let candidate_id = request.get("candidate_id").and_then(Value::as_str);
         let candidate = self.select_auto_adjustment_candidate(candidate_id)?;
         let mut blocked_reasons = Vec::new();
+        let policy_key = policy_key(&candidate);
 
         let validation = ProposalValidator::validate_generated(&candidate);
         if !validation.valid {
@@ -57,6 +62,8 @@ impl LocalProductStore {
         if !policy_decision.eligible {
             blocked_reasons.extend(policy_decision.blocked_reasons.clone());
         }
+        blocked_reasons
+            .extend(self.active_auto_adjustment_conflicts(&policy_key, &candidate.candidate_id)?);
 
         if !blocked_reasons.is_empty() {
             self.audit_auto_adjustment_rejected(
@@ -65,10 +72,12 @@ impl LocalProductStore {
                 &candidate.candidate_id,
                 &json!({
                     "candidate_id": candidate.candidate_id,
-                    "policy_key": policy_key(&candidate),
+                    "policy_key": policy_key,
                     "target_tier": candidate.target_tier,
+                    "actor": actor,
                     "confirmation_flag": true,
                     "blocked_reasons": blocked_reasons,
+                    "source": "auto_adjustment",
                 }),
             )?;
             return Ok(apply_result(
@@ -109,6 +118,7 @@ impl LocalProductStore {
                 "actor": actor,
                 "confirmation_flag": true,
                 "blocked_reasons": [],
+                "source": "auto_adjustment",
             }),
         )?;
 
@@ -142,14 +152,31 @@ impl LocalProductStore {
                     "adjustment_id": adjustment_id,
                     "confirmation_flag": false,
                     "blocked_reasons": ["confirm_auto_adjustment_rollback is required"],
+                    "actor": actor,
+                    "source": "auto_adjustment",
                 }),
             )?;
             return Err("confirm_auto_adjustment_rollback is required".to_string());
         }
 
-        let mut snapshot = self
-            .get_policy_snapshot(adjustment_id)?
-            .ok_or_else(|| format!("auto-adjustment not found: {adjustment_id}"))?;
+        let mut snapshot = match self.get_policy_snapshot(adjustment_id)? {
+            Some(snapshot) => snapshot,
+            None => {
+                self.audit_auto_adjustment_rejected(
+                    actor,
+                    "auto_adjustment.rollback.rejected",
+                    adjustment_id,
+                    &json!({
+                        "adjustment_id": adjustment_id,
+                        "actor": actor,
+                        "confirmation_flag": true,
+                        "blocked_reasons": [format!("auto-adjustment not found: {adjustment_id}")],
+                        "source": "auto_adjustment",
+                    }),
+                )?;
+                return Err(format!("auto-adjustment not found: {adjustment_id}"));
+            }
+        };
         let mut blocked_reasons = Vec::new();
         if snapshot.status != "active" {
             blocked_reasons.push(format!(
@@ -160,6 +187,7 @@ impl LocalProductStore {
         if !snapshot.hash_is_valid() {
             blocked_reasons.push("snapshot safety hash mismatch".to_string());
         }
+        blocked_reasons.extend(self.rollback_proposal_state_reasons(&snapshot)?);
         if !blocked_reasons.is_empty() {
             self.audit_auto_adjustment_rejected(
                 actor,
@@ -175,6 +203,7 @@ impl LocalProductStore {
                     "actor": actor,
                     "confirmation_flag": true,
                     "blocked_reasons": blocked_reasons,
+                    "source": "auto_adjustment",
                 }),
             )?;
             return Ok(rollback_result(
@@ -210,6 +239,7 @@ impl LocalProductStore {
                 "actor": actor,
                 "confirmation_flag": true,
                 "blocked_reasons": [],
+                "source": "auto_adjustment",
             }),
         )?;
 
@@ -248,6 +278,49 @@ impl LocalProductStore {
                 .next()
                 .ok_or_else(|| "no generated candidate available".to_string()),
         }
+    }
+
+    fn active_auto_adjustment_conflicts(
+        &self,
+        policy_key: &str,
+        candidate_id: &str,
+    ) -> Result<Vec<String>, String> {
+        let active = self.list_policy_snapshots(Some("active"))?;
+        let mut reasons = Vec::new();
+        for snapshot in active {
+            if snapshot["policy_key"].as_str() == Some(policy_key) {
+                reasons.push(format!(
+                    "active auto-adjustment already exists for policy_key {policy_key}"
+                ));
+            }
+            if snapshot["candidate_id"].as_str() == Some(candidate_id) {
+                reasons.push(format!("candidate_id {candidate_id} is already active"));
+            }
+        }
+        reasons.sort();
+        reasons.dedup();
+        Ok(reasons)
+    }
+
+    fn rollback_proposal_state_reasons(
+        &self,
+        snapshot: &PolicySnapshotRecord,
+    ) -> Result<Vec<String>, String> {
+        let proposal = self.get_policy_proposal(&snapshot.proposal_id)?;
+        let Some(proposal) = proposal else {
+            return Ok(vec![format!(
+                "linked proposal {} is missing",
+                snapshot.proposal_id
+            )]);
+        };
+        let status = str_at(&proposal, &["status"]).unwrap_or("");
+        if status != "active" {
+            return Ok(vec![format!(
+                "linked proposal {} is not active: {status}",
+                snapshot.proposal_id
+            )]);
+        }
+        Ok(Vec::new())
     }
 
     fn create_policy_snapshot(
@@ -293,6 +366,7 @@ impl LocalProductStore {
                         "actor": actor,
                         "confirmation_flag": true,
                         "blocked_reasons": [],
+                        "source": "auto_adjustment",
                     }),
                 )?;
                 Ok(record)
@@ -324,6 +398,7 @@ impl LocalProductStore {
                     "actor": actor,
                     "confirmation_flag": true,
                     "blocked_reasons": [],
+                    "source": "auto_adjustment",
                 })
                 .to_string();
                 client
