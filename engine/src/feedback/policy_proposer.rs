@@ -1,11 +1,13 @@
 use std::collections::HashMap;
 
 use serde::{Deserialize, Serialize};
+use serde_json::json;
 
 use crate::dispatch_decision::{TASK_DOMAINS, TASK_INTENTS};
 
 use super::pattern_detector::{DetectedPattern, PatternSeverity, PatternType};
 use super::policy_simulator::SimulationResult;
+use super::policy_snapshot::stable_hash;
 
 pub const PROPOSAL_CANDIDATE_SCHEMA_VERSION: &str = "policy_proposal_candidate.v1";
 pub const MIN_CONFIDENCE_THRESHOLD: f64 = 0.5;
@@ -112,8 +114,6 @@ impl PolicyProposer {
         }
 
         let mut candidates = Vec::new();
-        let mut seq = 0u64;
-
         for pattern in patterns {
             match pattern.pattern_type {
                 PatternType::TierFailureConcentration => {
@@ -136,10 +136,16 @@ impl PolicyProposer {
                     };
 
                     let risk_level = severity_to_risk(&pattern.severity);
-                    seq += 1;
+                    let policy_key = format!("tier_override:{}->{}", tier, target);
                     candidates.push(ProposalCandidate {
                         schema_version: PROPOSAL_CANDIDATE_SCHEMA_VERSION.to_string(),
-                        candidate_id: format!("proposal-{seq:04}"),
+                        candidate_id: stable_candidate_id(
+                            pattern,
+                            &domain,
+                            &intent,
+                            &policy_key,
+                            target,
+                        ),
                         title: format!("Route {} away from {} due to high failure rate", tc, tier),
                         summary: format!(
                             "Tier '{}' has a failure rate of {:.1}% for task class '{}'. \
@@ -152,7 +158,7 @@ impl PolicyProposer {
                         task_domain: domain,
                         task_intent: intent,
                         task_class: tc.clone(),
-                        policy_key: format!("tier_override:{}->{}", tier, target),
+                        policy_key,
                         target_tier: target.to_string(),
                         source: "pattern_detector".to_string(),
                         evidence: make_evidence(pattern, simulation),
@@ -171,10 +177,16 @@ impl PolicyProposer {
                     };
 
                     let risk_level = severity_to_risk(&pattern.severity);
-                    seq += 1;
+                    let policy_key = format!("task_class_tier_override:{}->balanced_worker", tc);
                     candidates.push(ProposalCandidate {
                         schema_version: PROPOSAL_CANDIDATE_SCHEMA_VERSION.to_string(),
-                        candidate_id: format!("proposal-{seq:04}"),
+                        candidate_id: stable_candidate_id(
+                            pattern,
+                            &domain,
+                            &intent,
+                            &policy_key,
+                            "balanced_worker",
+                        ),
                         title: format!("Route {} to balanced_worker due to high failure rate", tc),
                         summary: format!(
                             "Task class '{}' has a failure rate of {:.1}%. \
@@ -185,7 +197,7 @@ impl PolicyProposer {
                         task_domain: domain,
                         task_intent: intent,
                         task_class: tc.clone(),
-                        policy_key: format!("task_class_tier_override:{}->balanced_worker", tc),
+                        policy_key,
                         target_tier: "balanced_worker".to_string(),
                         source: "pattern_detector".to_string(),
                         evidence: make_evidence(pattern, simulation),
@@ -217,10 +229,16 @@ impl PolicyProposer {
                         continue;
                     }
 
-                    seq += 1;
+                    let policy_key = format!("tier_override:{}->{}", tier, target);
                     candidates.push(ProposalCandidate {
                         schema_version: PROPOSAL_CANDIDATE_SCHEMA_VERSION.to_string(),
-                        candidate_id: format!("proposal-{seq:04}"),
+                        candidate_id: stable_candidate_id(
+                            pattern,
+                            &domain,
+                            &intent,
+                            &policy_key,
+                            target,
+                        ),
                         title: format!(
                             "Downgrade {} from {} to {} for cost optimization",
                             tc, tier, target
@@ -236,7 +254,7 @@ impl PolicyProposer {
                         task_domain: domain,
                         task_intent: intent,
                         task_class: tc.clone(),
-                        policy_key: format!("tier_override:{}->{}", tier, target),
+                        policy_key,
                         target_tier: target.to_string(),
                         source: "simulation".to_string(),
                         evidence: make_evidence(pattern, Some(sim)),
@@ -310,6 +328,26 @@ fn high_cost_confidence(severity: &PatternSeverity) -> f64 {
         PatternSeverity::High => 0.9,
         PatternSeverity::Medium | PatternSeverity::Low => 0.6,
     }
+}
+
+fn stable_candidate_id(
+    pattern: &DetectedPattern,
+    task_domain: &str,
+    task_intent: &str,
+    policy_key: &str,
+    target_tier: &str,
+) -> String {
+    let hash = stable_hash(&json!({
+        "schema_version": PROPOSAL_CANDIDATE_SCHEMA_VERSION,
+        "pattern_id": pattern.pattern_id,
+        "pattern_type": format!("{:?}", pattern.pattern_type),
+        "task_domain": task_domain,
+        "task_intent": task_intent,
+        "policy_key": policy_key,
+        "target_tier": target_tier,
+        "evidence_trace_ids": pattern.evidence_trace_ids,
+    }));
+    format!("proposal-{}", &hash[..12])
 }
 
 fn make_evidence(

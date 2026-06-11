@@ -377,6 +377,11 @@ CREATE TABLE IF NOT EXISTS controlled_loop_policy_snapshots (
 );
 CREATE INDEX IF NOT EXISTS idx_policy_snapshots_status ON controlled_loop_policy_snapshots(status);
 CREATE INDEX IF NOT EXISTS idx_policy_snapshots_proposal ON controlled_loop_policy_snapshots(proposal_id);
+CREATE INDEX IF NOT EXISTS idx_policy_snapshots_adjustment ON controlled_loop_policy_snapshots(adjustment_id);
+CREATE INDEX IF NOT EXISTS idx_policy_snapshots_policy_key ON controlled_loop_policy_snapshots(policy_key);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_policy_snapshots_active_policy_key
+    ON controlled_loop_policy_snapshots(policy_key)
+    WHERE status = 'active';
 ";
 
 pub enum DatabaseConnection {

@@ -2,11 +2,13 @@
 
 Date: 2026-06-11
 
-Status: **DONE — active apply + rollback implemented under strict gates**
+Status: **PARTIAL / ACTIVE_CORE_DONE — PR #37 active core implemented; PR #38 safety hardening in progress**
 
 ## Audit Summary
 
 Phase 5 implements a minimal active auto-adjustment loop for safe tier-map changes only. Default mode remains disabled. Dry-run mode remains read-only. Active apply requires two explicit environment gates, configured auth, `team:admin`, and request confirmation.
+
+PR #37 implemented the active apply + rollback core. PR #38 hardens that core before any real-world trial: re-entry protection, stable generated candidate identity, stale rollback checks, SQLite/PostgreSQL index parity, HTTP-level safety tests, audit details, and boundary invariant coverage. Phase 5 final DONE still requires hardening acceptance, a real-world trial playbook run, and a final seal PR.
 
 Implemented surfaces:
 
@@ -18,6 +20,8 @@ Implemented surfaces:
 - `POST /api/v1/auto-adjustments/apply` applies exactly one generated candidate per request.
 - `POST /api/v1/auto-adjustments/{adjustment_id}/rollback` restores the previous safe tier-map policy for the affected key after hash validation.
 - Audit events cover apply accepted/rejected, snapshot created, rollback accepted/rejected.
+- Active apply permits at most one active auto-adjustment per `policy_key`.
+- Generated candidate IDs are content-stable rather than list-order-based.
 
 ## Scope Boundaries
 
@@ -41,6 +45,7 @@ Not included:
 - Automatic background scheduling.
 - Auto-merge.
 - Release/tag/deploy behavior.
+- Final Phase 5 DONE seal.
 
 ## Runtime Gates
 
@@ -62,6 +67,8 @@ Active apply requires:
 - `ProposalValidator` success
 - `AutoAdjustmentPolicy` eligibility
 - safe target tier
+- no existing active auto-adjustment for the same `policy_key`
+- current generated candidate ID still resolves to the same evidence-backed candidate
 - persisted `PolicySnapshotRecord` before proposal activation
 
 The apply path creates a controlled-loop policy proposal, creates a persistent snapshot, then activates the proposal through the existing proposal approval lifecycle. It does not bypass `active_routing_policy()`.
@@ -76,6 +83,7 @@ Rollback requires:
 - existing snapshot
 - matching deterministic snapshot safety hash
 - active adjustment status
+- linked proposal still active
 
 Rollback marks the active proposal rolled back, restores the previously active proposal for the same policy key when one existed, marks the snapshot rolled back, and records audit evidence. Corrupted snapshot hashes and repeated rollback attempts are safely rejected as blocked results.
 
@@ -93,18 +101,30 @@ Covered by Rust tests:
 - Apply requires confirmation.
 - Apply accepts only with active gates and a valid generated candidate.
 - Apply creates one active adjustment and one active proposal.
+- Apply rejects duplicate candidate re-entry.
+- Apply rejects a second active auto-adjustment for the same policy key.
+- Apply allows a different policy key when the generated candidate remains valid.
 - Apply writes snapshot and audit events.
+- Apply rejected audit events include `blocked_reasons`.
+- Rollback requires `team:admin`.
 - Rollback requires confirmation.
+- Missing snapshot rollback is rejected.
 - Rollback validates snapshot hash.
+- Rollback validates linked proposal state before mutating policy.
 - Corrupted snapshot rollback is blocked.
+- Stale proposal-state rollback is blocked without changing the current active policy.
 - Rollback restores the exact prior active policy for the affected policy key.
 - Repeated rollback is safely blocked.
 - Rollback writes audit events.
+- Rollback rejected audit events include `blocked_reasons`.
 - Policy rejects unsafe CLI/provider tiers, missing evidence, weak confidence, missing simulation evidence, simulation success regression, and failed safety flags.
 - Generated proposals endpoint remains read-only.
+- SQLite migration v13 and PostgreSQL DDL include snapshot indexes for status, proposal, adjustment lookup, policy key, and active-per-key enforcement.
 
 ## Remaining Limits
 
-- Dashboard and SDK wiring are intentionally not included in this PR.
+- Dashboard and SDK wiring are intentionally not included in PR #38.
 - PostgreSQL DDL supports fresh PG stores; PostgreSQL integration test execution still depends on `ACP_TEST_DATABASE_URL` and `pg-tests`.
 - This remains a high-risk policy mutation feature and requires human PR review before merge.
+- Candidate staleness is evidence-based because generated candidates do not carry timestamps: apply reselects from the current generated candidate set and reruns `ProposalValidator` plus `AutoAdjustmentPolicy`.
+- Phase 5 final DONE is not claimed until the hardening PR, real-world trial playbook, and seal PR are complete.

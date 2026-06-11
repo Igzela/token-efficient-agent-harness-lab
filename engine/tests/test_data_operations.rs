@@ -4,6 +4,8 @@ use engine::storage::local_product_store::{
 use serde_json::{json, Value};
 use tempfile::tempdir;
 
+const PG_DDL_TEXT: &str = include_str!("../src/storage/local_product_store/pg_backend/ddl.rs");
+
 fn make_export_snapshot() -> Value {
     json!({
         "schema_version": LOCAL_TEAM_EXPORT_SCHEMA_VERSION,
@@ -97,6 +99,39 @@ fn fresh_database_starts_at_version_0_before_migrations() {
             .query_row("PRAGMA user_version", [], |row| row.get(0))
             .unwrap();
         assert_eq!(version, 13);
+    }
+}
+
+#[test]
+fn policy_snapshot_indexes_exist_in_sqlite_and_pg_ddl() {
+    let dir = tempdir().unwrap();
+    let db_path = dir.path().join("test.db");
+    let _store = LocalProductStore::new(&db_path).unwrap();
+    let conn = rusqlite::Connection::open(&db_path).unwrap();
+    let mut stmt = conn
+        .prepare("PRAGMA index_list('controlled_loop_policy_snapshots')")
+        .unwrap();
+    let indexes = stmt
+        .query_map([], |row| row.get::<_, String>(1))
+        .unwrap()
+        .collect::<Result<Vec<_>, _>>()
+        .unwrap();
+
+    for expected in [
+        "idx_policy_snapshots_status",
+        "idx_policy_snapshots_proposal",
+        "idx_policy_snapshots_adjustment",
+        "idx_policy_snapshots_policy_key",
+        "idx_policy_snapshots_active_policy_key",
+    ] {
+        assert!(
+            indexes.iter().any(|name| name == expected),
+            "missing SQLite index {expected}"
+        );
+        assert!(
+            PG_DDL_TEXT.contains(expected),
+            "missing PostgreSQL DDL index {expected}"
+        );
     }
 }
 
