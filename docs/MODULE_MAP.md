@@ -82,6 +82,23 @@ The next phase is hardening the active macro-orchestrator path. It is not anothe
 | Phase 4 operator visibility | `engine/src/http_server/handlers/`, `dashboard/`, `sdk/typescript/`, `sdk/python/`, `engine/src/http_server/routes.rs` | **DONE** |
 | Phase 5 ops soak truthfulness | `scripts/soak_ops_drill.py`, `engine/tests/test_ops_soak.rs`, local backup/restore handlers, workflow-run handlers | **DONE** |
 
+## Real-World Testing Task Ownership
+
+Map Playbook task classes to likely module ownership. `REAL_WORLD_TESTING_PLAYBOOK.md` says what to do; this section says where to do it.
+
+| Task class | Primary modules/files | Boundary note |
+|---|---|---|
+| docs-only cleanup | `CLAUDE.md`, `AGENTS.md`, `README.md`, `docs/` | Low-risk, auto-merge eligible |
+| test-only repair | `engine/tests/`, `sdk/python/tests/`, `sdk/typescript/` | Low-risk, auto-merge eligible |
+| CI correctness fix | `.github/workflows/tests.yml`, `scripts/verify_rust_typescript_stack.sh` | Low-risk if no boundary change |
+| small low-risk code fix | Module owning the defect (see table below) | <50 lines, no boundary change, auto-merge eligible |
+| dispatch observability logging | `engine/src/dispatch_engine.rs`, `engine/src/task_analyzer/`, `engine/src/model_selector.rs` | Read-only metrics, no routing change |
+| feedback trace schema | `engine/src/storage/local_product_store/`, `engine/src/http_server/handlers/` | Schema addition only, no behavior change |
+| shadow routing stub | `engine/src/model_selector.rs`, `engine/src/dispatch_engine.rs` | Log-only, no decision override |
+| dashboard dispatch metrics | `dashboard/`, `engine/src/http_server/handlers/` | Read-only UI, no mutation |
+| policy proposal schema | `engine/src/storage/local_product_store/`, `engine/src/http_server/handlers/` | Schema + CRUD, requires approval gate |
+| cross-node context assembly | `engine/src/workflow/context_pack/`, `engine/src/scheduler.rs` | Additive, budget-enforced |
+
 ## Rust Engine Modules
 
 | Module | Stage | Purpose | Main public APIs | Related tests |

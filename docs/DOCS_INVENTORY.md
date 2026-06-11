@@ -37,10 +37,16 @@ Last updated: 2026-06-11 (governance cleanup PR #28)
 - **Archive:** 6 files (unreferenced by any authoritative doc)
 - **Delete:** 0 (conservative; archive first, delete later if unused)
 
-## Authoritative Read Order
+## Agent Read Order
 
-1. `README.md`
-2. `docs/CURRENT_STATUS.md`
-3. `docs/NEXT_DECISION.md`
-4. `docs/REAL_WORLD_TESTING_PLAYBOOK.md`
-5. `docs/DYNAMIC_GLOBAL_REGULATOR_PLAN.md` (when strategic context needed)
+**Default entrypoints (read one):**
+- `CLAUDE.md` — Claude Code default entrypoint
+- `AGENTS.md` — generic agent default entrypoint
+
+**Conditional reads (read based on task type):**
+- `docs/NEXT_DECISION.md` — choosing or validating next work
+- `docs/REAL_WORLD_TESTING_PLAYBOOK.md` — PRs, auto-merge, CI fix, docs cleanup, pilot tasks
+- `docs/MODULE_MAP.md` — code changes, module ownership decisions
+- `docs/CURRENT_STATUS.md` — status audit or update
+- `docs/DOCS_INVENTORY.md` — adding, moving, archiving, or deleting docs
+- `docs/DYNAMIC_GLOBAL_REGULATOR_PLAN.md` — strategic architecture planning only

@@ -32,9 +32,9 @@ Minimum dynamic-workflow acceptance target: given a broad task, the system can i
 
 ## New Session / Documentation Discipline
 
-New Codex, Claude Code, or other coding-agent sessions must start with `docs/SESSION_START_HERE.md`, then this file, then `docs/NEXT_DECISION.md`.
+Claude Code sessions use `CLAUDE.md` as default entrypoint. Other agents use `AGENTS.md` as default entrypoint. Read `docs/NEXT_DECISION.md` when choosing next work, `docs/REAL_WORLD_TESTING_PLAYBOOK.md` for PR/merge/CI work, and this file when status facts are unclear.
 
-The responsible coding agent has standing authority to autonomously advance repository-safe work: documentation repair, focused regression fixes, CI/security/test hardening, wire-governance drift repair, and architecture-book-defined dispatch-kernel phase work that remains deterministic, local, test-first, and does not broaden real provider behavior beyond the existing explicit env-gated beta paths, add sandbox isolation, expand subprocess execution beyond the existing CLI executor path, add target repo writes, deployment, or real runtime workers.
+The responsible coding agent has standing authority to autonomously advance repository-safe work: documentation repair, focused regression fixes, CI/security/test hardening, wire-governance drift repair, and architecture-book-defined dispatch-kernel phase work that remains deterministic, local, test-first, and does not broaden real provider behavior beyond the existing explicit env-gated beta paths, add sandbox isolation, expand subprocess execution beyond the existing CLI executor path, add deployment, or real runtime workers. App/runtime does not write target repos by default. Agent maintenance may create branches, commits, PRs, and low-risk merges only through branch+PR workflow under `docs/REAL_WORLD_TESTING_PLAYBOOK.md` gates. Provider/CLI execution boundary expansion, auth/security boundary changes, DB migrations, release/tag/deploy, active YAML/rubric/policy mutation, and destructive operations require explicit human approval.
 
 After every commit-sized change, update only the authoritative handoff docs whose facts changed. `docs/NEXT_DECISION.md` is the single forward-plan surface; do not add parallel roadmap, next-steps, status, closeout, or productization documents unless the user explicitly asks for a new artifact.
 
