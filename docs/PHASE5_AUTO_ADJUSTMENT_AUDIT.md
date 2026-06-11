@@ -2,13 +2,13 @@
 
 Date: 2026-06-11
 
-Status: **PARTIAL / ACTIVE_CORE_DONE — PR #37 active core implemented; PR #38 safety hardening in progress**
+Status: **ACTIVE_CORE_HARDENED - active apply + rollback implemented under strict gates; final Phase 5 seal requires the real-world trial in `docs/PHASE5_ACTIVE_TRIAL_PLAYBOOK.md`.**
 
 ## Audit Summary
 
-Phase 5 implements a minimal active auto-adjustment loop for safe tier-map changes only. Default mode remains disabled. Dry-run mode remains read-only. Active apply requires two explicit environment gates, configured auth, `team:admin`, and request confirmation.
+Phase 5 implements a minimal active auto-adjustment core for safe tier-map changes only. Default mode remains disabled. Dry-run mode remains read-only. Active apply requires two explicit environment gates, configured auth, `team:admin`, and request confirmation. The core is not final-sealed until the real-world active trial and rollback drill are completed.
 
-PR #37 implemented the active apply + rollback core. PR #38 hardens that core before any real-world trial: re-entry protection, stable generated candidate identity, stale rollback checks, SQLite/PostgreSQL index parity, HTTP-level safety tests, audit details, and boundary invariant coverage. Phase 5 final DONE still requires hardening acceptance, a real-world trial playbook run, and a final seal PR.
+PR #37 implemented the active apply + rollback core. PR #38 hardened that core before any real-world trial: re-entry protection, stable generated candidate identity, stale rollback checks, SQLite/PostgreSQL index parity, HTTP-level safety tests, audit details, and boundary invariant coverage. Phase 5 final DONE still requires the real-world trial playbook run, operator signoff, and a final seal PR.
 
 Implemented surfaces:
 
@@ -45,7 +45,7 @@ Not included:
 - Automatic background scheduling.
 - Auto-merge.
 - Release/tag/deploy behavior.
-- Final Phase 5 DONE seal.
+- Final Phase 5 seal.
 
 ## Runtime Gates
 
@@ -127,4 +127,4 @@ Covered by Rust tests:
 - PostgreSQL DDL supports fresh PG stores; PostgreSQL integration test execution still depends on `ACP_TEST_DATABASE_URL` and `pg-tests`.
 - This remains a high-risk policy mutation feature and requires human PR review before merge.
 - Candidate staleness is evidence-based because generated candidates do not carry timestamps: apply reselects from the current generated candidate set and reruns `ProposalValidator` plus `AutoAdjustmentPolicy`.
-- Phase 5 final DONE is not claimed until the hardening PR, real-world trial playbook, and seal PR are complete.
+- Final Phase 5 seal requires `docs/PHASE5_ACTIVE_TRIAL_PLAYBOOK.md` completion and operator signoff.
