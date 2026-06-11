@@ -6244,3 +6244,439 @@ async fn axum_queue_tenants_returns_array() {
     let body = response_json(response).await;
     assert!(body["tenants"].as_array().is_some());
 }
+
+// ── Safety gate invariant tests ──────────────────────────────────────
+
+async fn create_test_proposal(app: &axum::Router, raw_key: &str) -> String {
+    let resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(Method::POST)
+                .uri("/api/v1/proposals")
+                .header(header::AUTHORIZATION, format!("Bearer {raw_key}"))
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(
+                    json!({
+                        "task_domain": "docs",
+                        "task_intent": "review",
+                        "target_tier": "verifier",
+                        "payload": {"type": "tier_map_override"},
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body = response_json(resp).await;
+    body["proposal"]["proposal_id"]
+        .as_str()
+        .unwrap()
+        .to_string()
+}
+
+#[tokio::test]
+async fn test_proposal_rejects_cli_tier_override() {
+    let (app, admin_key) = make_admin_app();
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method(Method::POST)
+                .uri("/api/v1/proposals")
+                .header(header::AUTHORIZATION, format!("Bearer {admin_key}"))
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(
+                    json!({
+                        "task_domain": "docs",
+                        "task_intent": "review",
+                        "target_tier": "codex_cli",
+                        "payload": {"type": "tier_map_override"},
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    let body = response_json(response).await;
+    assert_eq!(body["code"], "invalid_policy_proposal");
+}
+
+#[tokio::test]
+async fn test_proposal_approve_requires_team_admin() {
+    let dir = tempdir().unwrap();
+    let store = LocalProductStore::new(dir.path().join("safety-admin.db")).unwrap();
+    let mut resolver = TenantResolver::new();
+    let admin_scopes = HashSet::from([
+        "dispatch:read".to_string(),
+        "team:admin".to_string(),
+        "health:read".to_string(),
+    ]);
+    resolver.add_tenant(Tenant {
+        tenant_id: "local".to_string(),
+        name: "Local".to_string(),
+        scopes: admin_scopes.clone(),
+        rate_limit: Some(10_000),
+    });
+    let (_admin_key, admin_raw) = resolver
+        .create_api_key("local", Some(admin_scopes), None, 1.0)
+        .unwrap();
+
+    let non_admin_scopes = HashSet::from(["dispatch:read".to_string(), "health:read".to_string()]);
+    resolver.add_tenant(Tenant {
+        tenant_id: "readonly".to_string(),
+        name: "Readonly".to_string(),
+        scopes: non_admin_scopes.clone(),
+        rate_limit: Some(10_000),
+    });
+    let (_readonly_key, readonly_raw) = resolver
+        .create_api_key("readonly", Some(non_admin_scopes), None, 1.0)
+        .unwrap();
+
+    let app = build_axum_router(AxumApiState::new().with_local_store(store).with_auth(
+        resolver,
+        RateLimiter::new(60.0, 10_000),
+        Some(10_000),
+        1.0,
+    ));
+
+    let proposal_id = create_test_proposal(&app, &admin_raw).await;
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method(Method::POST)
+                .uri(format!("/api/v1/proposals/{proposal_id}/approve"))
+                .header(header::AUTHORIZATION, format!("Bearer {readonly_raw}"))
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(
+                    json!({"reason": "test", "confirm_policy_override": true}).to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::FORBIDDEN);
+}
+
+#[tokio::test]
+async fn test_proposal_rollback_requires_confirm_policy_override() {
+    let (app, admin_key) = make_admin_app();
+    let proposal_id = create_test_proposal(&app, &admin_key).await;
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method(Method::POST)
+                .uri(format!("/api/v1/proposals/{proposal_id}/rollback"))
+                .header(header::AUTHORIZATION, format!("Bearer {admin_key}"))
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(json!({"reason": "test"}).to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    let body = response_json(response).await;
+    assert_eq!(body["code"], "invalid_policy_proposal");
+    assert!(
+        body["error"]
+            .as_str()
+            .unwrap()
+            .contains("confirm_policy_override"),
+        "error should mention confirm_policy_override requirement"
+    );
+}
+
+#[tokio::test]
+async fn test_proposal_deactivate_requires_confirm_policy_override() {
+    let (app, admin_key) = make_admin_app();
+
+    // First approve a proposal so it becomes active (required for deactivate)
+    let proposal_id = create_test_proposal(&app, &admin_key).await;
+    let approve_resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(Method::POST)
+                .uri(format!("/api/v1/proposals/{proposal_id}/approve"))
+                .header(header::AUTHORIZATION, format!("Bearer {admin_key}"))
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(
+                    json!({"reason": "activate for deactivate test", "confirm_policy_override": true})
+                        .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(approve_resp.status(), StatusCode::OK);
+
+    // Now try deactivate without confirm_policy_override
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method(Method::POST)
+                .uri(format!("/api/v1/proposals/{proposal_id}/deactivate"))
+                .header(header::AUTHORIZATION, format!("Bearer {admin_key}"))
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(json!({"reason": "test"}).to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    let body = response_json(response).await;
+    assert_eq!(body["code"], "invalid_policy_proposal");
+    assert!(
+        body["error"]
+            .as_str()
+            .unwrap()
+            .contains("confirm_policy_override"),
+        "error should mention confirm_policy_override requirement"
+    );
+}
+
+#[tokio::test]
+async fn test_proposal_approve_requires_auth_configured() {
+    let dir = tempdir().unwrap();
+    let store = LocalProductStore::new(dir.path().join("safety-noauth.db")).unwrap();
+
+    // Create proposal via store directly (no auth needed for store operations)
+    let proposal = store
+        .create_policy_proposal(
+            &json!({
+                "task_domain": "docs",
+                "task_intent": "review",
+                "target_tier": "verifier",
+                "payload": {"type": "tier_map_override"},
+            }),
+            "test-actor",
+        )
+        .unwrap();
+    let proposal_id = proposal["proposal_id"].as_str().unwrap();
+
+    // Build router WITHOUT auth configured
+    let app = build_axum_router(AxumApiState::new().with_local_store(store));
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method(Method::POST)
+                .uri(format!("/api/v1/proposals/{proposal_id}/approve"))
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(
+                    json!({"reason": "test", "confirm_policy_override": true}).to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::FORBIDDEN);
+    let body = response_json(response).await;
+    assert_eq!(body["code"], "auth_required_for_policy_override");
+}
+
+#[tokio::test]
+async fn test_dispatch_metrics_empty_store() {
+    let dir = tempdir().unwrap();
+    let store = LocalProductStore::new(dir.path().join("metrics-empty.db")).unwrap();
+    let app = build_axum_router(AxumApiState::new().with_local_store(store));
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method(Method::GET)
+                .uri("/api/v1/dispatch-metrics")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = response_json(response).await;
+    assert_eq!(body["schema_version"], "axum_api.v1");
+    assert_eq!(body["metrics"]["totals"]["dispatch_count"], 0);
+    assert_eq!(body["metrics"]["totals"]["success_count"], 0);
+}
+
+#[tokio::test]
+async fn test_dispatch_metrics_with_data() {
+    let dir = tempdir().unwrap();
+    let db_path = dir.path().join("metrics-data.db");
+
+    {
+        let store = LocalProductStore::new(&db_path).unwrap();
+        let app = build_axum_router(AxumApiState::new().with_local_store(store));
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method(Method::POST)
+                    .uri("/api/v1/dispatch")
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(
+                        json!({
+                            "raw_request": "Test dispatch for metrics",
+                            "request_source": "api"
+                        })
+                        .to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+    }
+
+    let store = LocalProductStore::new(&db_path).unwrap();
+    let app = build_axum_router(AxumApiState::new().with_local_store(store));
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method(Method::GET)
+                .uri("/api/v1/dispatch-metrics")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = response_json(response).await;
+    assert!(body["metrics"]["totals"]["dispatch_count"].as_i64().unwrap() >= 1);
+}
+
+#[tokio::test]
+async fn test_feedback_traces_empty() {
+    let dir = tempdir().unwrap();
+    let store = LocalProductStore::new(dir.path().join("traces-empty.db")).unwrap();
+    let app = build_axum_router(AxumApiState::new().with_local_store(store));
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method(Method::GET)
+                .uri("/api/v1/feedback/traces")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = response_json(response).await;
+    assert_eq!(body["schema_version"], "feedback_traces.v1");
+    assert_eq!(body["total"], 0);
+    assert!(body["traces"].as_array().unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn test_feedback_cost_of_pass_empty() {
+    let dir = tempdir().unwrap();
+    let store = LocalProductStore::new(dir.path().join("cop-empty.db")).unwrap();
+    let app = build_axum_router(AxumApiState::new().with_local_store(store));
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method(Method::GET)
+                .uri("/api/v1/feedback/cost-of-pass")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = response_json(response).await;
+    assert_eq!(body["schema_version"], "feedback_cost_of_pass.v1");
+    assert!(body["rows"].as_array().unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn test_simulation_report_empty() {
+    let dir = tempdir().unwrap();
+    let store = LocalProductStore::new(dir.path().join("sim-empty.db")).unwrap();
+    let app = build_axum_router(AxumApiState::new().with_local_store(store));
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method(Method::GET)
+                .uri("/api/v1/simulation/report")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = response_json(response).await;
+    assert_eq!(body["schema_version"], "dispatch_simulation_report.v1");
+    assert_eq!(body["totals"]["dispatch_count"], 0);
+    assert_eq!(body["totals"]["shadow_route_count"], 0);
+    assert!(body["report"].as_array().unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn test_simulation_report_with_shadow_routes() {
+    let dir = tempdir().unwrap();
+    let store = LocalProductStore::new(dir.path().join("sim-shadow.db")).unwrap();
+    store
+        .record_dispatch(
+            "Simulation shadow dispatch",
+            "api",
+            &json!({
+                "record": {"dispatch_id": "disp-shadow", "final_status": "not_executed"},
+                "decision": {
+                    "selected_tier": "balanced_worker",
+                    "budget_reservation": {"reserved_cost": 0.1},
+                    "shadow_routes": [
+                        {"tier": "cheap_executor", "score": 0.8},
+                        {"tier": "premium_worker", "score": 0.6}
+                    ]
+                },
+                "analysis": {"risk_level": "low"},
+                "execution_result": {"executor_type": "noop"},
+            }),
+            "test",
+        )
+        .unwrap();
+
+    let app = build_axum_router(AxumApiState::new().with_local_store(store));
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method(Method::GET)
+                .uri("/api/v1/simulation/report")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = response_json(response).await;
+    assert_eq!(body["schema_version"], "dispatch_simulation_report.v1");
+    assert!(body["totals"]["dispatch_count"].as_i64().unwrap() >= 1);
+    assert!(body["totals"]["shadow_route_count"].as_i64().unwrap() >= 2);
+
+    let report = body["report"].as_array().unwrap();
+    assert!(report.len() >= 1);
+    assert_eq!(report[0]["dispatch_id"], "disp-shadow");
+    assert_eq!(report[0]["status"], "shadow_only");
+    let shadow_routes = report[0]["shadow_routes"].as_array().unwrap();
+    assert_eq!(shadow_routes.len(), 2);
+    assert_eq!(shadow_routes[0]["tier"], "cheap_executor");
+    assert_eq!(shadow_routes[1]["tier"], "premium_worker");
+}
