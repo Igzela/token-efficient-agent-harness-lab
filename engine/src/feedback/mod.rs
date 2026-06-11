@@ -26,7 +26,10 @@ pub use policy_proposer::{
 pub use policy_simulator::{
     PolicyCandidate, PolicySimulator, SimulationResult, POLICY_SIMULATION_SCHEMA_VERSION,
 };
-pub use policy_snapshot::{PolicySnapshotPreview, POLICY_SNAPSHOT_SCHEMA_VERSION};
+pub use policy_snapshot::{
+    snapshot_safety_hash, PolicySnapshotPreview, PolicySnapshotRecord,
+    POLICY_SNAPSHOT_SCHEMA_VERSION,
+};
 pub use proposal_serializer::{
     serialize_candidate_to_api_response, serialize_candidate_to_proposal_request,
 };

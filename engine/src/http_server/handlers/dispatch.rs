@@ -10,8 +10,8 @@ use crate::http_server::middleware::{
 };
 use crate::http_server::state::AxumApiState;
 use crate::http_server::{
-    DispatchApiRequest, PolicyProposalActionRequest, PolicyProposalCreateRequest,
-    AXUM_API_SCHEMA_VERSION,
+    AutoAdjustmentApplyRequest, AutoAdjustmentRollbackRequest, DispatchApiRequest,
+    PolicyProposalActionRequest, PolicyProposalCreateRequest, AXUM_API_SCHEMA_VERSION,
 };
 use crate::provider::cost_gate::{check_cost_gates, CostGateConfig};
 
@@ -498,6 +498,49 @@ pub(crate) async fn api_auto_adjustments(
                 .map_err(internal_error)?,
         ),
     ))
+}
+
+pub(crate) async fn api_apply_auto_adjustment(
+    State(state): State<AxumApiState>,
+    headers: HeaderMap,
+    uri: Uri,
+    Extension(request_id): Extension<RequestId>,
+    Json(request): Json<AutoAdjustmentApplyRequest>,
+) -> Result<impl IntoResponse, ApiError> {
+    require_auth_for_policy_override(&state)?;
+    let context = authorize(&state, &headers, "team:admin", uri.path(), &request_id.0)?;
+    let store = require_store(&state)?;
+    let actor = request
+        .actor
+        .clone()
+        .unwrap_or_else(|| context.api_key_id.clone());
+    let request_value = serde_json::to_value(request).map_err(|e| internal_error(e.to_string()))?;
+    let result = store
+        .apply_auto_adjustment(&request_value, &actor)
+        .map_err(bad_policy_request)?;
+    Ok((cors_headers(), Json(result)))
+}
+
+pub(crate) async fn api_rollback_auto_adjustment(
+    State(state): State<AxumApiState>,
+    headers: HeaderMap,
+    uri: Uri,
+    Extension(request_id): Extension<RequestId>,
+    AxumPath(adjustment_id): AxumPath<String>,
+    Json(request): Json<AutoAdjustmentRollbackRequest>,
+) -> Result<impl IntoResponse, ApiError> {
+    require_auth_for_policy_override(&state)?;
+    let context = authorize(&state, &headers, "team:admin", uri.path(), &request_id.0)?;
+    let store = require_store(&state)?;
+    let actor = request
+        .actor
+        .clone()
+        .unwrap_or_else(|| context.api_key_id.clone());
+    let request_value = serde_json::to_value(request).map_err(|e| internal_error(e.to_string()))?;
+    let result = store
+        .rollback_auto_adjustment(&adjustment_id, &request_value, &actor)
+        .map_err(bad_policy_request)?;
+    Ok((cors_headers(), Json(result)))
 }
 
 fn require_auth_for_policy_override(state: &AxumApiState) -> Result<(), ApiError> {

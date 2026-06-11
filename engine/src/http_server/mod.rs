@@ -149,6 +149,20 @@ pub struct PolicyProposalActionRequest {
     pub confirm_policy_override: Option<bool>,
 }
 
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct AutoAdjustmentApplyRequest {
+    pub actor: Option<String>,
+    pub candidate_id: Option<String>,
+    pub confirm_auto_adjustment: Option<bool>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct AutoAdjustmentRollbackRequest {
+    pub actor: Option<String>,
+    pub reason: Option<String>,
+    pub confirm_auto_adjustment_rollback: Option<bool>,
+}
+
 fn path_parameter(name: &str) -> Value {
     json!({
         "name": name,
@@ -387,12 +401,37 @@ pub fn openapi_document() -> serde_json::Value {
             },
             "/api/v1/auto-adjustments": {
                 "get": {
-                    "summary": "Read Phase 5 auto-adjustment dry-run report",
-                    "description": "Requires dispatch:read scope. Read-only dry-run eligibility report; no active apply or rollback endpoints are available.",
+                    "summary": "Read Phase 5 auto-adjustment report",
+                    "description": "Requires dispatch:read scope. Default mode is disabled; dry-run is read-only; active mode requires both ACP_ENABLE_AUTO_ADJUSTMENT=1 and ACP_AUTO_ADJUSTMENT_ACTIVE=1.",
                     "parameters": [
                         {"name": "limit", "in": "query", "schema": {"type": "integer", "default": 50, "minimum": 0, "maximum": 500}}
                     ],
-                    "responses": {"200": {"description": "Auto-adjustment dry-run report"}}
+                    "responses": {"200": {"description": "Auto-adjustment report"}}
+                }
+            },
+            "/api/v1/auto-adjustments/apply": {
+                "post": {
+                    "summary": "Apply one generated auto-adjustment",
+                    "description": "Requires configured auth, team:admin scope, confirm_auto_adjustment=true, ACP_ENABLE_AUTO_ADJUSTMENT=1, ACP_AUTO_ADJUSTMENT_ACTIVE=1, and dry-run unset. Applies one safe tier-map override after persisting a rollback snapshot.",
+                    "requestBody": json_request_body(&["confirm_auto_adjustment"], json!({
+                        "actor": {"type": "string"},
+                        "candidate_id": {"type": "string"},
+                        "confirm_auto_adjustment": {"type": "boolean"}
+                    })),
+                    "responses": {"200": {"description": "Auto-adjustment apply result"}}
+                }
+            },
+            "/api/v1/auto-adjustments/{adjustment_id}/rollback": {
+                "post": {
+                    "summary": "Rollback one auto-adjustment",
+                    "description": "Requires configured auth, team:admin scope, confirm_auto_adjustment_rollback=true, and a valid snapshot safety hash.",
+                    "parameters": [path_parameter("adjustment_id")],
+                    "requestBody": json_request_body(&["confirm_auto_adjustment_rollback"], json!({
+                        "actor": {"type": "string"},
+                        "reason": {"type": "string"},
+                        "confirm_auto_adjustment_rollback": {"type": "boolean"}
+                    })),
+                    "responses": {"200": {"description": "Auto-adjustment rollback result"}}
                 }
             },
             "/api/v1/plans": {

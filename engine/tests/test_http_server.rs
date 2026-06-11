@@ -1,5 +1,7 @@
 use std::collections::HashSet;
 use std::fs;
+use std::path::PathBuf;
+use std::sync::OnceLock;
 
 use axum::body::{to_bytes, Body};
 use axum::http::{header, Method, Request, StatusCode};
@@ -9,7 +11,8 @@ use engine::infrastructure::rate_limiter::RateLimiter;
 use engine::provider::audit::{ProviderAuditEvent, PROVIDER_AUDIT_EVENT_SCHEMA_VERSION};
 use engine::storage::local_product_store::LocalProductStore;
 use serde_json::{json, Value};
-use tempfile::tempdir;
+use tempfile::{tempdir, TempDir};
+use tokio::sync::Mutex;
 use tower::ServiceExt;
 
 async fn response_json(response: axum::response::Response) -> Value {
@@ -20,6 +23,11 @@ async fn response_json(response: axum::response::Response) -> Value {
 async fn response_text(response: axum::response::Response) -> String {
     let bytes = to_bytes(response.into_body(), 1_048_576).await.unwrap();
     String::from_utf8(bytes.to_vec()).unwrap()
+}
+
+fn auto_adjustment_env_lock() -> &'static Mutex<()> {
+    static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+    LOCK.get_or_init(|| Mutex::new(()))
 }
 
 fn provider_audit_event(event_id: &str, created_at: &str) -> ProviderAuditEvent {
@@ -7182,9 +7190,17 @@ async fn test_shadow_simulation_does_not_mutate_routing_policy() {
 
 // ── Generated proposals safety proof tests ──────────────────────────────
 
-fn make_generated_app() -> (axum::Router, String) {
+struct GeneratedAppFixture {
+    app: axum::Router,
+    key: String,
+    db_path: PathBuf,
+    _dir: TempDir,
+}
+
+fn make_generated_fixture() -> GeneratedAppFixture {
     let dir = tempdir().unwrap();
-    let store = LocalProductStore::new(dir.path().join("generated-proof.db")).unwrap();
+    let db_path = dir.path().join("generated-proof.db");
+    let store = LocalProductStore::new(&db_path).unwrap();
 
     // Seed 5 failing dispatches on cheap_executor for code_generate to trigger
     // TierFailureConcentration pattern
@@ -7207,11 +7223,47 @@ fn make_generated_app() -> (axum::Router, String) {
             .unwrap();
     }
 
+    // Seed high-cost strong_planner traces for code_debug. These produce a
+    // high-confidence cost-optimization candidate with non-regressing simulation
+    // deltas for active-apply tests.
+    for i in 0..3 {
+        let success = i == 0;
+        store
+            .record_dispatch(
+                &format!("debug task {i}"),
+                "api",
+                &json!({
+                    "record": {
+                        "dispatch_id": format!("disp-cost-{i}"),
+                        "final_status": if success { "completed" } else { "failed" }
+                    },
+                    "decision": {
+                        "selected_tier": "strong_planner",
+                        "routing_policy": "default",
+                        "budget_reservation": {"reserved_cost": 1.00},
+                        "shadow_routes": []
+                    },
+                    "analysis": {"task_class": "code_debug", "human_review_flag": true},
+                    "execution_result": {
+                        "executor_type": "noop",
+                        "status": if success { "completed" } else { "failed" },
+                        "success": success,
+                        "estimated_cost": 1.00,
+                        "latency_ms": 1000
+                    },
+                    "evaluation_result": {"status": if success { "pass" } else { "fail" }}
+                }),
+                "test",
+            )
+            .unwrap();
+    }
+
     let mut resolver = TenantResolver::new();
     let mut admin_scopes = HashSet::new();
     admin_scopes.insert("dispatch:read".to_string());
     admin_scopes.insert("team:admin".to_string());
     admin_scopes.insert("health:read".to_string());
+    admin_scopes.insert("audit:read".to_string());
     resolver.add_tenant(Tenant {
         tenant_id: "local".to_string(),
         name: "Local".to_string(),
@@ -7227,7 +7279,48 @@ fn make_generated_app() -> (axum::Router, String) {
         Some(10_000),
         1.0,
     ));
-    (app, raw_key)
+    GeneratedAppFixture {
+        app,
+        key: raw_key,
+        db_path,
+        _dir: dir,
+    }
+}
+
+fn make_generated_app() -> (axum::Router, String) {
+    let fixture = make_generated_fixture();
+    (fixture.app, fixture.key)
+}
+
+async fn generated_high_cost_candidate_id(app: &axum::Router, key: &str) -> String {
+    let resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(Method::GET)
+                .uri("/api/v1/proposals/generated?limit=50")
+                .header(header::AUTHORIZATION, format!("Bearer {key}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body = response_json(resp).await;
+    body["candidates"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|candidate| {
+            candidate["policy_key"]
+                .as_str()
+                .unwrap_or("")
+                .contains("strong_planner->balanced_worker")
+                && candidate["confidence"].as_f64().unwrap_or(0.0) >= 0.85
+        })
+        .and_then(|candidate| candidate["proposal_id"].as_str())
+        .unwrap()
+        .to_string()
 }
 
 #[tokio::test]
@@ -7420,14 +7513,17 @@ impl Drop for AutoAdjustmentEnvCleanup {
     fn drop(&mut self) {
         std::env::remove_var("ACP_ENABLE_AUTO_ADJUSTMENT");
         std::env::remove_var("ACP_AUTO_ADJUSTMENT_DRY_RUN");
+        std::env::remove_var("ACP_AUTO_ADJUSTMENT_ACTIVE");
     }
 }
 
 #[tokio::test]
 async fn test_auto_adjustments_endpoint_disabled_and_dry_run_read_only() {
+    let _env_lock = auto_adjustment_env_lock().lock().await;
     let _cleanup = AutoAdjustmentEnvCleanup;
     std::env::remove_var("ACP_ENABLE_AUTO_ADJUSTMENT");
     std::env::remove_var("ACP_AUTO_ADJUSTMENT_DRY_RUN");
+    std::env::remove_var("ACP_AUTO_ADJUSTMENT_ACTIVE");
 
     let (app, key) = make_generated_app();
 
@@ -7548,4 +7644,442 @@ async fn test_auto_adjustments_endpoint_disabled_and_dry_run_read_only() {
         active_after["proposals"].as_array().unwrap().is_empty(),
         "dry-run must not activate active_routing_policy"
     );
+}
+
+#[tokio::test]
+async fn test_auto_adjustment_apply_env_gates_and_confirmation() {
+    let _env_lock = auto_adjustment_env_lock().lock().await;
+    let _cleanup = AutoAdjustmentEnvCleanup;
+    std::env::remove_var("ACP_ENABLE_AUTO_ADJUSTMENT");
+    std::env::remove_var("ACP_AUTO_ADJUSTMENT_DRY_RUN");
+    std::env::remove_var("ACP_AUTO_ADJUSTMENT_ACTIVE");
+
+    let GeneratedAppFixture { app, key, .. } = make_generated_fixture();
+    let candidate_id = generated_high_cost_candidate_id(&app, &key).await;
+
+    let missing_confirm = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(Method::POST)
+                .uri("/api/v1/auto-adjustments/apply")
+                .header(header::AUTHORIZATION, format!("Bearer {key}"))
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(json!({}).to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(missing_confirm.status(), StatusCode::BAD_REQUEST);
+
+    let default_blocked = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(Method::POST)
+                .uri("/api/v1/auto-adjustments/apply")
+                .header(header::AUTHORIZATION, format!("Bearer {key}"))
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(
+                    json!({"confirm_auto_adjustment": true, "candidate_id": candidate_id.clone()})
+                        .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(default_blocked.status(), StatusCode::BAD_REQUEST);
+
+    std::env::set_var("ACP_ENABLE_AUTO_ADJUSTMENT", "1");
+    let only_enable_blocked = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(Method::POST)
+                .uri("/api/v1/auto-adjustments/apply")
+                .header(header::AUTHORIZATION, format!("Bearer {key}"))
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(
+                    json!({"confirm_auto_adjustment": true, "candidate_id": candidate_id.clone()})
+                        .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(only_enable_blocked.status(), StatusCode::BAD_REQUEST);
+
+    std::env::set_var("ACP_AUTO_ADJUSTMENT_ACTIVE", "1");
+    std::env::set_var("ACP_AUTO_ADJUSTMENT_DRY_RUN", "1");
+    let dry_run_blocks_apply = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(Method::POST)
+                .uri("/api/v1/auto-adjustments/apply")
+                .header(header::AUTHORIZATION, format!("Bearer {key}"))
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(
+                    json!({"confirm_auto_adjustment": true, "candidate_id": candidate_id.clone()})
+                        .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(dry_run_blocks_apply.status(), StatusCode::BAD_REQUEST);
+
+    std::env::remove_var("ACP_AUTO_ADJUSTMENT_DRY_RUN");
+    let active_apply = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(Method::POST)
+                .uri("/api/v1/auto-adjustments/apply")
+                .header(header::AUTHORIZATION, format!("Bearer {key}"))
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(
+                    json!({"confirm_auto_adjustment": true, "candidate_id": candidate_id.clone()})
+                        .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(active_apply.status(), StatusCode::OK);
+    let body = response_json(active_apply).await;
+    assert_eq!(body["applied"], true);
+    assert_eq!(body["status"], "active");
+    assert!(body["adjustment_id"]
+        .as_str()
+        .unwrap()
+        .starts_with("auto-adjustment-"));
+    assert!(body["snapshot_id"]
+        .as_str()
+        .unwrap()
+        .starts_with("policy-snapshot-"));
+
+    let active = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(Method::GET)
+                .uri("/api/v1/proposals?status=active&limit=500")
+                .header(header::AUTHORIZATION, format!("Bearer {key}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let active_body = response_json(active).await;
+    assert_eq!(active_body["proposals"].as_array().unwrap().len(), 1);
+
+    let report = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(Method::GET)
+                .uri("/api/v1/auto-adjustments?limit=50")
+                .header(header::AUTHORIZATION, format!("Bearer {key}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let report_body = response_json(report).await;
+    assert_eq!(report_body["mode"], "active");
+    assert_eq!(report_body["active_apply_available"], true);
+    assert_eq!(
+        report_body["active_auto_adjustments"]
+            .as_array()
+            .unwrap()
+            .len(),
+        1
+    );
+
+    let audit = app
+        .oneshot(
+            Request::builder()
+                .method(Method::GET)
+                .uri("/api/v1/audit?limit=100")
+                .header(header::AUTHORIZATION, format!("Bearer {key}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let audit_body = response_json(audit).await;
+    let actions: Vec<_> = audit_body["events"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|event| event["action"].as_str())
+        .collect();
+    assert!(actions.contains(&"auto_adjustment.snapshot.created"));
+    assert!(actions.contains(&"auto_adjustment.apply.accepted"));
+}
+
+#[tokio::test]
+async fn test_auto_adjustment_requires_team_admin() {
+    let _env_lock = auto_adjustment_env_lock().lock().await;
+    let _cleanup = AutoAdjustmentEnvCleanup;
+    std::env::set_var("ACP_ENABLE_AUTO_ADJUSTMENT", "1");
+    std::env::set_var("ACP_AUTO_ADJUSTMENT_ACTIVE", "1");
+    std::env::remove_var("ACP_AUTO_ADJUSTMENT_DRY_RUN");
+
+    let dir = tempdir().unwrap();
+    let store = LocalProductStore::new(dir.path().join("readonly-auto.db")).unwrap();
+    let mut resolver = TenantResolver::new();
+    let scopes = HashSet::from(["dispatch:read".to_string()]);
+    resolver.add_tenant(Tenant {
+        tenant_id: "local".to_string(),
+        name: "Local".to_string(),
+        scopes: scopes.clone(),
+        rate_limit: Some(10_000),
+    });
+    let (_key, raw_key) = resolver
+        .create_api_key("local", Some(scopes), None, 1.0)
+        .unwrap();
+    let app = build_axum_router(AxumApiState::new().with_local_store(store).with_auth(
+        resolver,
+        RateLimiter::new(60.0, 10_000),
+        Some(10_000),
+        1.0,
+    ));
+
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .method(Method::POST)
+                .uri("/api/v1/auto-adjustments/apply")
+                .header(header::AUTHORIZATION, format!("Bearer {raw_key}"))
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(
+                    json!({"confirm_auto_adjustment": true}).to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::FORBIDDEN);
+}
+
+#[tokio::test]
+async fn test_auto_adjustment_rollback_restores_previous_policy_and_validates_hash() {
+    let _env_lock = auto_adjustment_env_lock().lock().await;
+    let _cleanup = AutoAdjustmentEnvCleanup;
+    std::env::set_var("ACP_ENABLE_AUTO_ADJUSTMENT", "1");
+    std::env::set_var("ACP_AUTO_ADJUSTMENT_ACTIVE", "1");
+    std::env::remove_var("ACP_AUTO_ADJUSTMENT_DRY_RUN");
+
+    let GeneratedAppFixture {
+        app,
+        key,
+        db_path,
+        _dir,
+    } = make_generated_fixture();
+    let candidate_id = generated_high_cost_candidate_id(&app, &key).await;
+
+    let previous = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(Method::POST)
+                .uri("/api/v1/proposals")
+                .header(header::AUTHORIZATION, format!("Bearer {key}"))
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(
+                    json!({
+                        "task_domain": "code",
+                        "task_intent": "debug",
+                        "target_tier": "verifier",
+                        "payload": {"type": "tier_map_override"},
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(previous.status(), StatusCode::OK);
+    let previous_body = response_json(previous).await;
+    let previous_id = previous_body["proposal"]["proposal_id"].as_str().unwrap();
+
+    let previous_approve = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(Method::POST)
+                .uri(format!("/api/v1/proposals/{previous_id}/approve"))
+                .header(header::AUTHORIZATION, format!("Bearer {key}"))
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(
+                    json!({"confirm_policy_override": true}).to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(previous_approve.status(), StatusCode::OK);
+
+    let applied = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(Method::POST)
+                .uri("/api/v1/auto-adjustments/apply")
+                .header(header::AUTHORIZATION, format!("Bearer {key}"))
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(
+                    json!({"confirm_auto_adjustment": true, "candidate_id": candidate_id})
+                        .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(applied.status(), StatusCode::OK);
+    let applied_body = response_json(applied).await;
+    let adjustment_id = applied_body["adjustment_id"].as_str().unwrap().to_string();
+
+    let missing_confirm = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(Method::POST)
+                .uri(format!("/api/v1/auto-adjustments/{adjustment_id}/rollback"))
+                .header(header::AUTHORIZATION, format!("Bearer {key}"))
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(json!({}).to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(missing_confirm.status(), StatusCode::BAD_REQUEST);
+
+    let conn = rusqlite::Connection::open(&db_path).unwrap();
+    conn.execute(
+        "UPDATE controlled_loop_policy_snapshots
+         SET safety_hash = 'corrupted'
+         WHERE adjustment_id = ?1",
+        [&adjustment_id],
+    )
+    .unwrap();
+    let corrupted = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(Method::POST)
+                .uri(format!("/api/v1/auto-adjustments/{adjustment_id}/rollback"))
+                .header(header::AUTHORIZATION, format!("Bearer {key}"))
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(
+                    json!({"confirm_auto_adjustment_rollback": true}).to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(corrupted.status(), StatusCode::OK);
+    let corrupted_body = response_json(corrupted).await;
+    assert_eq!(corrupted_body["rolled_back"], false);
+    assert!(corrupted_body["blocked_reasons"][0]
+        .as_str()
+        .unwrap()
+        .contains("hash"));
+
+    let real_hash: String = conn
+        .query_row(
+            "SELECT json_extract(snapshot_json, '$.safety_hash')
+             FROM controlled_loop_policy_snapshots
+             WHERE adjustment_id = ?1",
+            [&adjustment_id],
+            |row| row.get(0),
+        )
+        .unwrap();
+    conn.execute(
+        "UPDATE controlled_loop_policy_snapshots
+         SET safety_hash = ?1
+         WHERE adjustment_id = ?2",
+        (&real_hash, &adjustment_id),
+    )
+    .unwrap();
+
+    let rolled_back = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(Method::POST)
+                .uri(format!("/api/v1/auto-adjustments/{adjustment_id}/rollback"))
+                .header(header::AUTHORIZATION, format!("Bearer {key}"))
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(
+                    json!({"confirm_auto_adjustment_rollback": true}).to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(rolled_back.status(), StatusCode::OK);
+    let rollback_body = response_json(rolled_back).await;
+    assert_eq!(rollback_body["rolled_back"], true);
+    assert_eq!(rollback_body["status"], "rolled_back");
+
+    let active = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(Method::GET)
+                .uri("/api/v1/proposals?status=active&limit=500")
+                .header(header::AUTHORIZATION, format!("Bearer {key}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let active_body = response_json(active).await;
+    let proposals = active_body["proposals"].as_array().unwrap();
+    assert_eq!(proposals.len(), 1);
+    assert_eq!(proposals[0]["proposal_id"], previous_id);
+    assert_eq!(proposals[0]["target_tier"], "verifier");
+
+    let repeated = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(Method::POST)
+                .uri(format!("/api/v1/auto-adjustments/{adjustment_id}/rollback"))
+                .header(header::AUTHORIZATION, format!("Bearer {key}"))
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(
+                    json!({"confirm_auto_adjustment_rollback": true}).to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(repeated.status(), StatusCode::OK);
+    let repeated_body = response_json(repeated).await;
+    assert_eq!(repeated_body["rolled_back"], false);
+
+    let audit = app
+        .oneshot(
+            Request::builder()
+                .method(Method::GET)
+                .uri("/api/v1/audit?limit=100")
+                .header(header::AUTHORIZATION, format!("Bearer {key}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let audit_body = response_json(audit).await;
+    let actions: Vec<_> = audit_body["events"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|event| event["action"].as_str())
+        .collect();
+    assert!(actions.contains(&"auto_adjustment.rollback.rejected"));
+    assert!(actions.contains(&"auto_adjustment.rollback.accepted"));
 }

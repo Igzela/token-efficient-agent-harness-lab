@@ -2,81 +2,109 @@
 
 Date: 2026-06-11
 
-Status: **PARTIAL — dry-run infrastructure only**
+Status: **DONE — active apply + rollback implemented under strict gates**
 
 ## Audit Summary
 
-Phase 5 can safely proceed only as a read-only dry-run implementation. The repository now has the Phase 2-4 foundations needed to evaluate generated proposal candidates without mutating routing policy:
+Phase 5 implements a minimal active auto-adjustment loop for safe tier-map changes only. Default mode remains disabled. Dry-run mode remains read-only. Active apply requires two explicit environment gates, configured auth, `team:admin`, and request confirmation.
 
-- Phase 2 feedback: `RunTraceRecorder`, `OutcomeAttributor`, `PatternDetector`, `/api/v1/feedback/patterns`
-- Phase 3 simulation: `ShadowRouter`, `PolicySimulator`, `/api/v1/simulation/policy-delta`
-- Phase 4 generated proposals: `PolicyProposer`, `ProposalValidator`, `ProposalSerializer`, `GET /api/v1/proposals/generated`
-- Proposal lifecycle: create/list/get/approve/reject/deactivate/rollback, `active_routing_policy()`, `confirm_policy_override`, `team:admin`, safe-tier validation, and audit log events
-
-## Prerequisites Confirmed
-
-- PR #35 merged to `main` as `676e1b23cf0fd50372a3bbb62d8f985f0a5bb76a`.
-- Latest `tests` GitHub workflow on `main` passed for `676e1b23`.
-- Local `cargo test -p engine` passed before work.
-- `uv run --no-project python scripts/check_agent_handoff.py` passed before work.
-- Generated proposals remain read-only and are not persisted or activated.
-- Proposal rollback exists for active manual proposals.
-- Active policy can be inspected via `active_routing_policy()`.
-- Safe-tier validation exists through `is_safe_policy_override_tier()`.
-- Proposal lifecycle audit events exist for create and status transitions.
-
-## Approved Scope
-
-Approved implementation scope is dry-run only:
+Implemented surfaces:
 
 - `AutoAdjustmentPolicy` evaluates generated candidates and emits `auto_adjustment_policy_decision.v1`.
-- `AutoAdjustmentGuard` reports disabled/dry-run state and keeps active mode blocked.
+- `AutoAdjustmentGuard` enforces disabled, dry-run, and active modes.
 - `PolicySnapshotPreview` emits deterministic read-only `policy_snapshot.v1` previews.
-- `GET /api/v1/auto-adjustments` returns gate state, dry-run decisions, and snapshot previews.
-- Store report uses generated candidates and does not create, approve, activate, deactivate, or rollback proposals.
+- `PolicySnapshotRecord` persists pre-apply policy snapshots with deterministic safety hashes.
+- `GET /api/v1/auto-adjustments` returns disabled/dry-run/active gate state, decisions, snapshot previews, and active adjustments.
+- `POST /api/v1/auto-adjustments/apply` applies exactly one generated candidate per request.
+- `POST /api/v1/auto-adjustments/{adjustment_id}/rollback` restores the previous safe tier-map policy for the affected key after hash validation.
+- Audit events cover apply accepted/rejected, snapshot created, rollback accepted/rejected.
 
-## Disallowed Scope
+## Scope Boundaries
 
-The following remain explicitly not approved:
+Approved:
 
-- Active automatic adjustment
-- `POST /api/v1/auto-adjustments/apply`
-- Auto-adjustment rollback endpoint
-- Auto-approval or auto-activation of generated proposals
-- Provider/CLI/auth/security/deploy boundary expansion
-- Hard constraint mutation
-- Target repository writes
-- DB migrations
-- Release/tag/deploy behavior
-- Dashboard, TypeScript SDK, or Python SDK changes in this PR
+- Persistent policy snapshots.
+- Active apply endpoint for safe tier-map overrides.
+- Rollback endpoint for auto-adjustments.
+- Strict env gates.
+- Admin auth and confirmation requirements.
+- Narrow SQLite/PG schema addition for snapshot persistence.
 
-## Remaining Risks
+Not included:
 
-- Dry-run decisions can identify eligible candidates, but active apply is intentionally unavailable.
-- Snapshot support is preview-only and not persisted.
-- Future active apply must prove deterministic snapshot persistence and rollback before approval.
-- Full stack verifier is blocked locally because `bun` is missing from `PATH`; dashboard/TS changes are intentionally avoided.
+- Provider/CLI execution boundary expansion.
+- Auth/security/deploy boundary changes.
+- Target repository writes.
+- Hard constraint mutation.
+- Multi-adjustment batch apply.
+- Dashboard/TypeScript SDK changes.
+- Automatic background scheduling.
+- Auto-merge.
+- Release/tag/deploy behavior.
 
-## Runtime Gate
+## Runtime Gates
 
-- Default mode is disabled when `ACP_ENABLE_AUTO_ADJUSTMENT` is unset.
-- Dry-run mode requires both `ACP_ENABLE_AUTO_ADJUSTMENT=1` and `ACP_AUTO_ADJUSTMENT_DRY_RUN=1`.
-- Active mode is reserved and unreachable in this PR even when `ACP_ENABLE_AUTO_ADJUSTMENT=1`.
+- Default mode: disabled when `ACP_ENABLE_AUTO_ADJUSTMENT` is unset.
+- Dry-run mode: `ACP_ENABLE_AUTO_ADJUSTMENT=1` and `ACP_AUTO_ADJUSTMENT_DRY_RUN=1`.
+- Active mode: `ACP_ENABLE_AUTO_ADJUSTMENT=1` and `ACP_AUTO_ADJUSTMENT_ACTIVE=1`.
+- Dry-run wins over active: `ACP_AUTO_ADJUSTMENT_DRY_RUN=1` blocks active apply even if active is set.
 
-## Rollback Strategy For Future Active Mode
+## Apply Path
 
-Future active implementation must create a persisted `policy_snapshot.v1` before activation. Rollback must restore `active_policy_before`, record an audit event, and prove the active routing policy matches the snapshot. Until that exists, dry-run remains the maximum approved scope.
+Active apply requires:
+
+- configured auth
+- `team:admin`
+- `confirm_auto_adjustment=true`
+- active env gates
+- dry-run unset
+- one generated candidate
+- `ProposalValidator` success
+- `AutoAdjustmentPolicy` eligibility
+- safe target tier
+- persisted `PolicySnapshotRecord` before proposal activation
+
+The apply path creates a controlled-loop policy proposal, creates a persistent snapshot, then activates the proposal through the existing proposal approval lifecycle. It does not bypass `active_routing_policy()`.
+
+## Rollback Path
+
+Rollback requires:
+
+- configured auth
+- `team:admin`
+- `confirm_auto_adjustment_rollback=true`
+- existing snapshot
+- matching deterministic snapshot safety hash
+- active adjustment status
+
+Rollback marks the active proposal rolled back, restores the previously active proposal for the same policy key when one existed, marks the snapshot rolled back, and records audit evidence. Corrupted snapshot hashes and repeated rollback attempts are safely rejected as blocked results.
 
 ## Test Matrix
 
-Required dry-run tests:
+Covered by Rust tests:
 
 - Disabled mode is default.
-- `GET /api/v1/auto-adjustments` reports disabled mode when the env gate is absent.
-- Dry-run produces policy decisions and snapshot previews.
-- Dry-run does not create `controlled_loop_policy_proposals` rows.
-- Dry-run does not activate proposals or mutate `active_routing_policy()`.
-- Policy rejects unsafe CLI/provider tiers, missing evidence, weak confidence, missing simulation evidence, simulation regression, and failed safety flags.
-- Guard blocks active apply and reports `max_adjustments_remaining = 0`.
-- Existing generated proposals endpoint remains read-only.
-- Existing Phase 1-4 and proposal lifecycle tests still pass.
+- Dry-run remains read-only and creates no proposal rows.
+- Dry-run does not mutate active routing policy.
+- Apply rejects by default.
+- Apply rejects with only `ACP_ENABLE_AUTO_ADJUSTMENT=1`.
+- Apply rejects when dry-run is enabled.
+- Apply requires `team:admin`.
+- Apply requires confirmation.
+- Apply accepts only with active gates and a valid generated candidate.
+- Apply creates one active adjustment and one active proposal.
+- Apply writes snapshot and audit events.
+- Rollback requires confirmation.
+- Rollback validates snapshot hash.
+- Corrupted snapshot rollback is blocked.
+- Rollback restores the exact prior active policy for the affected policy key.
+- Repeated rollback is safely blocked.
+- Rollback writes audit events.
+- Policy rejects unsafe CLI/provider tiers, missing evidence, weak confidence, missing simulation evidence, simulation success regression, and failed safety flags.
+- Generated proposals endpoint remains read-only.
+
+## Remaining Limits
+
+- Dashboard and SDK wiring are intentionally not included in this PR.
+- PostgreSQL DDL supports fresh PG stores; PostgreSQL integration test execution still depends on `ACP_TEST_DATABASE_URL` and `pg-tests`.
+- This remains a high-risk policy mutation feature and requires human PR review before merge.

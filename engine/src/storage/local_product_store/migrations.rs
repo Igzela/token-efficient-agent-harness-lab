@@ -2,7 +2,7 @@ use rusqlite::Connection;
 
 use super::LocalProductStore;
 
-pub(super) const CURRENT_SCHEMA_VERSION: i64 = 12;
+pub(super) const CURRENT_SCHEMA_VERSION: i64 = 13;
 
 struct Migration {
     version: i64,
@@ -58,6 +58,10 @@ const MIGRATIONS: &[Migration] = &[
         version: 12,
         description: "add controlled loop policy proposal table",
     },
+    Migration {
+        version: 13,
+        description: "add controlled loop policy snapshot table",
+    },
 ];
 
 impl LocalProductStore {
@@ -84,6 +88,7 @@ impl LocalProductStore {
                     10 => Self::migrate_v10_add_decision_policy_signals(conn)?,
                     11 => Self::migrate_v11_add_scheduler_heartbeat(conn)?,
                     12 => Self::migrate_v12_add_policy_proposals(conn)?,
+                    13 => Self::migrate_v13_add_policy_snapshots(conn)?,
                     _ => return Err(format!("unknown migration version: {}", migration.version)),
                 }
                 conn.execute_batch(&format!("PRAGMA user_version = {}", migration.version))
@@ -450,6 +455,36 @@ CREATE TABLE IF NOT EXISTS controlled_loop_policy_proposals (
 );
 CREATE INDEX IF NOT EXISTS idx_policy_proposals_status ON controlled_loop_policy_proposals(status);
 CREATE INDEX IF NOT EXISTS idx_policy_proposals_key ON controlled_loop_policy_proposals(task_domain, task_intent, status);
+",
+        )
+        .map_err(|e| e.to_string())
+    }
+
+    fn migrate_v13_add_policy_snapshots(conn: &Connection) -> Result<(), String> {
+        conn.execute_batch(
+            "
+CREATE TABLE IF NOT EXISTS controlled_loop_policy_snapshots (
+    snapshot_sequence INTEGER PRIMARY KEY,
+    adjustment_id TEXT NOT NULL UNIQUE,
+    snapshot_id TEXT NOT NULL UNIQUE,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    status TEXT NOT NULL,
+    actor TEXT NOT NULL,
+    created_by TEXT NOT NULL,
+    source TEXT NOT NULL,
+    candidate_id TEXT NOT NULL,
+    proposal_id TEXT NOT NULL,
+    policy_key TEXT NOT NULL,
+    target_tier TEXT NOT NULL,
+    active_policy_before_json TEXT NOT NULL,
+    rollback_target_json TEXT NOT NULL,
+    evidence_ids_json TEXT NOT NULL,
+    safety_hash TEXT NOT NULL,
+    snapshot_json TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_policy_snapshots_status ON controlled_loop_policy_snapshots(status);
+CREATE INDEX IF NOT EXISTS idx_policy_snapshots_proposal ON controlled_loop_policy_snapshots(proposal_id);
 ",
         )
         .map_err(|e| e.to_string())

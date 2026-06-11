@@ -658,22 +658,18 @@ impl LocalProductStore {
             "mode": guard.mode,
             "env_gate": guard.env_gate,
             "dry_run": guard.dry_run,
-            "no_live_mutation": true,
-            "active_apply_available": false,
-            "rollback_endpoint_available": false,
-            "guard": guard,
+            "no_live_mutation": guard.mode != "active",
+            "active_apply_available": guard.mode == "active",
+            "rollback_endpoint_available": true,
+            "guard": guard.clone(),
             "decisions": decisions,
             "snapshot_previews": snapshot_previews,
-            "active_auto_adjustments": [],
-            "blocked_reasons": [
-                "active automatic adjustment is not approved",
-                "POST apply endpoint is not implemented",
-                "rollback endpoint is not implemented"
-            ],
+            "active_auto_adjustments": self.active_auto_adjustments().map_err(|e| e.to_string())?,
+            "blocked_reasons": guard.blocked_reasons.clone(),
         }))
     }
 
-    fn generated_proposal_candidates(
+    pub(super) fn generated_proposal_candidates(
         &self,
         limit: i64,
     ) -> Result<Vec<GeneratedProposalCandidate>, String> {

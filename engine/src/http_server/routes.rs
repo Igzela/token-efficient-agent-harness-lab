@@ -121,6 +121,14 @@ fn axum_routes() -> Router<AxumApiState> {
             get(dispatch::api_auto_adjustments).options(cors_preflight),
         )
         .route(
+            "/api/v1/auto-adjustments/apply",
+            post(dispatch::api_apply_auto_adjustment).options(cors_preflight),
+        )
+        .route(
+            "/api/v1/auto-adjustments/:adjustment_id/rollback",
+            post(dispatch::api_rollback_auto_adjustment).options(cors_preflight),
+        )
+        .route(
             "/api/v1/plans",
             get(plans::api_plans)
                 .post(plans::api_create_plan)
