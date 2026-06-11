@@ -9,6 +9,8 @@ A local deterministic harness and self-hosted macro-orchestrator control plane f
 
 > **This is a local research tool, not a cloud SaaS.** It does not call real model providers by default, run autonomous agents, or isolate work in sandboxes.
 
+For the full system architecture, data flows, API surface, and safety boundaries, see [`docs/ARCHITECTURE_BOOK.md`](docs/ARCHITECTURE_BOOK.md).
+
 ## Quick Start
 
 ```bash
