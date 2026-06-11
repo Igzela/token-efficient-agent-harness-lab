@@ -3,7 +3,7 @@ use serde_json::{json, Value};
 
 use super::{append_audit_locked, collect_values, DatabaseConnection, LocalProductStore};
 use crate::workflow::context_pack::{
-    assemble_context_injection, ContextAssemblyConfig, ContextSource,
+    assemble_context_injection_with_bridge, ContextAssemblyConfig, ContextSource,
 };
 use crate::workflow::dag_manager::{types::DAGMutationProposal, DAGManager};
 
@@ -1281,11 +1281,11 @@ impl LocalProductStore {
             return Ok(None);
         }
 
-        let sources = match &self.db {
+        let (sources, mappings) = match &self.db {
             DatabaseConnection::Sqlite(_) => self.with_conn(|conn| {
                 let mut stmt = conn
                     .prepare(
-                        "SELECT e.edge_id, e.from_node_id, n.node_json
+                        "SELECT e.edge_id, e.from_node_id, n.node_json, e.edge_json
                          FROM workflow_run_edges e
                          JOIN workflow_run_nodes n
                            ON n.run_id = e.run_id AND n.node_id = e.from_node_id
@@ -1300,29 +1300,35 @@ impl LocalProductStore {
                         let edge_id: String = row.get(0)?;
                         let from_node_id: String = row.get(1)?;
                         let node_json_text: String = row.get(2)?;
+                        let edge_json_text: String = row.get(3)?;
                         let node_json: Value =
                             serde_json::from_str(&node_json_text).unwrap_or(Value::Null);
-                        Ok((edge_id, from_node_id, node_json))
+                        let edge_json: Value =
+                            serde_json::from_str(&edge_json_text).unwrap_or(Value::Null);
+                        Ok((edge_id, from_node_id, node_json, edge_json))
                     })
                     .map_err(|e| e.to_string())?;
                 let mut sources = Vec::new();
+                let mut mappings = Vec::new();
                 for row in rows {
-                    let (edge_id, from_node_id, node_json) = row.map_err(|e| e.to_string())?;
+                    let (edge_id, from_node_id, node_json, edge_json) =
+                        row.map_err(|e| e.to_string())?;
                     if let Some(output) = completed_node_output(&node_json) {
                         sources.push(ContextSource {
                             edge_id,
                             from_node_id,
                             output,
                         });
+                        mappings.push(edge_json.get("field_mapping").cloned());
                     }
                 }
-                Ok(sources)
+                Ok((sources, mappings))
             })?,
             #[cfg(feature = "pg")]
             DatabaseConnection::Pg(_) => self.with_pg_conn(|client| {
                 let rows = client
                     .query(
-                        "SELECT e.edge_id, e.from_node_id, n.node_json
+                        "SELECT e.edge_id, e.from_node_id, n.node_json, e.edge_json
                          FROM workflow_run_edges e
                          JOIN workflow_run_nodes n
                            ON n.run_id = e.run_id AND n.node_id = e.from_node_id
@@ -1334,23 +1340,30 @@ impl LocalProductStore {
                     )
                     .map_err(|e| e.to_string())?;
                 let mut sources = Vec::new();
+                let mut mappings = Vec::new();
                 for row in rows {
                     let node_json_text: String = row.get(2);
+                    let edge_json_text: String = row.get(3);
                     let node_json: Value =
                         serde_json::from_str(&node_json_text).unwrap_or(Value::Null);
+                    let edge_json: Value =
+                        serde_json::from_str(&edge_json_text).unwrap_or(Value::Null);
                     if let Some(output) = completed_node_output(&node_json) {
                         sources.push(ContextSource {
                             edge_id: row.get(0),
                             from_node_id: row.get(1),
                             output,
                         });
+                        mappings.push(edge_json.get("field_mapping").cloned());
                     }
                 }
-                Ok(sources)
+                Ok((sources, mappings))
             })?,
         };
 
-        Ok(assemble_context_injection(node_id, &sources, &config))
+        Ok(assemble_context_injection_with_bridge(
+            node_id, &sources, &mappings, &config,
+        ))
     }
 
     pub fn validate_approval_binding(

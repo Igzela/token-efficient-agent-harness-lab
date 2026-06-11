@@ -85,6 +85,64 @@ pub fn assemble_context_injection(
     }))
 }
 
+pub fn assemble_context_injection_with_bridge(
+    target_node_id: &str,
+    sources: &[ContextSource],
+    field_mappings: &[Option<Value>],
+    config: &ContextAssemblyConfig,
+) -> Option<Value> {
+    if !config.enabled || sources.is_empty() {
+        return None;
+    }
+
+    let mut remaining = config.max_context_tokens;
+    let mut assembled = Vec::new();
+    let mut total_estimated_tokens = 0_usize;
+    let mut truncated = false;
+
+    for (i, source) in sources.iter().enumerate() {
+        if remaining == 0 {
+            truncated = true;
+            break;
+        }
+        let mapping = field_mappings.get(i).and_then(|m| m.as_ref());
+        let (bridged_output, mapping_decisions) = bridge_context_fields(&source.output, mapping);
+        let output_text = output_to_text(&bridged_output);
+        let estimated_tokens = estimate_tokens(&output_text);
+        let include_tokens = estimated_tokens.min(remaining);
+        let included_output = if estimated_tokens > include_tokens {
+            truncated = true;
+            Value::String(truncate_to_tokens(&output_text, include_tokens))
+        } else {
+            bridged_output
+        };
+        remaining = remaining.saturating_sub(include_tokens);
+        total_estimated_tokens += estimated_tokens;
+
+        assembled.push(json!({
+            "edge_id": source.edge_id,
+            "from_node_id": source.from_node_id,
+            "estimated_tokens": estimated_tokens,
+            "included_tokens": include_tokens,
+            "truncated": estimated_tokens > include_tokens,
+            "mapping_decisions": mapping_decisions,
+            "output": included_output,
+        }));
+    }
+
+    Some(json!({
+        "schema_version": "context_injection.v1",
+        "target_node_id": target_node_id,
+        "source": "completed_predecessor_node_results",
+        "injection_surface": "node_metadata_only",
+        "max_context_tokens": config.max_context_tokens,
+        "total_estimated_tokens": total_estimated_tokens,
+        "included_source_count": assembled.len(),
+        "truncated": truncated,
+        "sources": assembled,
+    }))
+}
+
 fn output_to_text(value: &Value) -> String {
     match value {
         Value::String(text) => text.clone(),
@@ -99,6 +157,44 @@ fn estimate_tokens(text: &str) -> usize {
 fn truncate_to_tokens(text: &str, max_tokens: usize) -> String {
     let max_chars = max_tokens.saturating_mul(4);
     text.chars().take(max_chars).collect()
+}
+
+pub fn bridge_context_fields(
+    output: &Value,
+    field_mapping: Option<&Value>,
+) -> (Value, Vec<String>) {
+    let mapping = match field_mapping {
+        Some(m) if m.is_object() => m,
+        _ => return (output.clone(), vec!["default_passthrough".to_string()]),
+    };
+
+    let source = if output.is_string() {
+        let mut m = serde_json::Map::new();
+        m.insert("value".to_string(), output.clone());
+        Value::Object(m)
+    } else if output.is_object() {
+        output.clone()
+    } else {
+        return (output.clone(), vec!["default_passthrough".to_string()]);
+    };
+
+    let source_obj = source.as_object().unwrap();
+    let mapping_obj = mapping.as_object().unwrap();
+    let mut result = serde_json::Map::new();
+    let mut decisions = Vec::new();
+
+    for (src_key, dest_key) in mapping_obj {
+        let dest_key = match dest_key.as_str() {
+            Some(s) => s.to_string(),
+            None => continue,
+        };
+        if let Some(val) = source_obj.get(src_key) {
+            result.insert(dest_key.clone(), val.clone());
+            decisions.push(format!("mapped {} -> {}", src_key, dest_key));
+        }
+    }
+
+    (Value::Object(result), decisions)
 }
 
 #[cfg(test)]
@@ -142,6 +238,119 @@ mod tests {
             },
         );
 
+        assert!(injection.is_none());
+    }
+
+    #[test]
+    fn bridge_maps_output_fields() {
+        let output = json!({"a": 1, "b": 2});
+        let mapping = json!({"a": "x"});
+        let (result, decisions) = bridge_context_fields(&output, Some(&mapping));
+        assert_eq!(result.get("x").unwrap(), &json!(1));
+        assert!(result.get("b").is_none());
+        assert_eq!(decisions, vec!["mapped a -> x"]);
+    }
+
+    #[test]
+    fn bridge_no_mapping_passthrough() {
+        let output = json!({"a": 1});
+        let (result, decisions) = bridge_context_fields(&output, None);
+        assert_eq!(result, output);
+        assert_eq!(decisions, vec!["default_passthrough"]);
+    }
+
+    #[test]
+    fn bridge_string_output_with_mapping() {
+        let output = json!("hello");
+        let mapping = json!({"value": "text"});
+        let (result, decisions) = bridge_context_fields(&output, Some(&mapping));
+        assert_eq!(result.get("text").unwrap(), &json!("hello"));
+        assert_eq!(decisions, vec!["mapped value -> text"]);
+    }
+
+    #[test]
+    fn bridge_invalid_mapping_passthrough() {
+        let output = json!({"a": 1});
+        let mapping = Value::Bool(true);
+        let (result, decisions) = bridge_context_fields(&output, Some(&mapping));
+        assert_eq!(result, output);
+        assert_eq!(decisions, vec!["default_passthrough"]);
+    }
+
+    #[test]
+    fn bridge_variant_applies_mapping() {
+        let injection = assemble_context_injection_with_bridge(
+            "node-b",
+            &[ContextSource {
+                edge_id: "edge-a-b".to_string(),
+                from_node_id: "node-a".to_string(),
+                output: json!({"x": 10, "y": 20}),
+            }],
+            &[Some(json!({"x": "alpha"}))],
+            &ContextAssemblyConfig {
+                enabled: true,
+                max_context_tokens: 200,
+            },
+        )
+        .unwrap();
+
+        let src = &injection["sources"][0];
+        assert_eq!(src["output"]["alpha"], json!(10));
+        assert!(src["output"]["y"].is_null());
+        assert_eq!(src["mapping_decisions"][0], "mapped x -> alpha");
+    }
+
+    #[test]
+    fn bridge_variant_passthrough_when_no_mapping() {
+        let injection = assemble_context_injection_with_bridge(
+            "node-b",
+            &[ContextSource {
+                edge_id: "edge-a-b".to_string(),
+                from_node_id: "node-a".to_string(),
+                output: json!({"x": 10}),
+            }],
+            &[None],
+            &ContextAssemblyConfig {
+                enabled: true,
+                max_context_tokens: 200,
+            },
+        )
+        .unwrap();
+
+        let src = &injection["sources"][0];
+        assert_eq!(src["output"], json!({"x": 10}));
+        assert_eq!(src["mapping_decisions"][0], "default_passthrough");
+    }
+
+    #[test]
+    fn bridge_variant_disabled_returns_none() {
+        let injection = assemble_context_injection_with_bridge(
+            "node-b",
+            &[ContextSource {
+                edge_id: "edge-a-b".to_string(),
+                from_node_id: "node-a".to_string(),
+                output: json!("done"),
+            }],
+            &[None],
+            &ContextAssemblyConfig {
+                enabled: false,
+                max_context_tokens: 200,
+            },
+        );
+        assert!(injection.is_none());
+    }
+
+    #[test]
+    fn bridge_variant_empty_sources_returns_none() {
+        let injection = assemble_context_injection_with_bridge(
+            "node-b",
+            &[],
+            &[],
+            &ContextAssemblyConfig {
+                enabled: true,
+                max_context_tokens: 200,
+            },
+        );
         assert!(injection.is_none());
     }
 }

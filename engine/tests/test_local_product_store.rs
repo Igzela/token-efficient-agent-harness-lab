@@ -5,9 +5,11 @@ use engine::provider::audit::{
 use engine::read_only_planner::ReadOnlyPlanner;
 use engine::storage::local_product_store::LocalProductStore;
 use serde_json::{json, Value};
-use std::sync::{Arc, Barrier};
+use std::sync::{Arc, Barrier, Mutex};
 use std::thread;
 use tempfile::tempdir;
+
+static ENV_LOCK: Mutex<()> = Mutex::new(());
 
 struct ContextEchoExecutor;
 
@@ -34,6 +36,57 @@ impl NodeExecutor for ContextEchoExecutor {
 
     fn executor_type_name(&self) -> &str {
         "context_echo"
+    }
+}
+
+struct ContextPreservingExecutor;
+
+impl NodeExecutor for ContextPreservingExecutor {
+    fn execute_node(&self, input: &NodeExecutionInput) -> NodeExecutionOutput {
+        let has_context = input.node_metadata.get("context_injection").is_some();
+        let original_input = input.node_metadata.get("input").cloned();
+        let output = json!({
+            "has_context_injection": has_context,
+            "original_input": original_input,
+        })
+        .to_string();
+        NodeExecutionOutput {
+            status: "completed".to_string(),
+            executor_type: "preserving".to_string(),
+            output: Some(output),
+            error_domain: None,
+            error_message: None,
+            input_tokens: Some(0),
+            output_tokens: Some(0),
+            estimated_cost: Some(0.0),
+            latency_ms: Some(0),
+        }
+    }
+
+    fn executor_type_name(&self) -> &str {
+        "preserving"
+    }
+}
+
+struct LargeOutputExecutor;
+
+impl NodeExecutor for LargeOutputExecutor {
+    fn execute_node(&self, _input: &NodeExecutionInput) -> NodeExecutionOutput {
+        NodeExecutionOutput {
+            status: "completed".to_string(),
+            executor_type: "large_output".to_string(),
+            output: Some("x".repeat(200)),
+            error_domain: None,
+            error_message: None,
+            input_tokens: Some(0),
+            output_tokens: Some(0),
+            estimated_cost: Some(0.0),
+            latency_ms: Some(0),
+        }
+    }
+
+    fn executor_type_name(&self) -> &str {
+        "large_output"
     }
 }
 
@@ -533,6 +586,222 @@ fn make_workflow_plan_with_nodes(
                     "from_node_id": "node-a",
                     "to_node_id": "node-b",
                     "edge_type": "dependency"
+                }
+            ],
+            "started_at": null,
+            "completed_at": null,
+            "result": null
+        },
+        "boundaries": {
+            "execution": "disabled",
+            "target_repository_writes": "disabled",
+            "runtime_workers": "disabled",
+        },
+    })
+}
+
+fn make_workflow_plan_three_nodes(
+    ids: &engine::storage::local_product_store::WorkflowPlanIds,
+) -> Value {
+    json!({
+        "schema_version": "read_only_plan.v1",
+        "plan_id": ids.plan_id,
+        "status": "planned_read_only",
+        "workflow_id": ids.workflow_id,
+        "dispatch_id": ids.dispatch_id,
+        "analysis": {"analysis_id": "analysis-0001", "task_domain": "docs"},
+        "graph": {
+            "schema_version": "workflow_graph.v1",
+            "workflow_id": ids.workflow_id,
+            "dispatch_id": ids.dispatch_id,
+            "status": "decomposed",
+            "created_at": "2026-06-05T00:00:00Z",
+            "updated_at": "2026-06-05T00:00:00Z",
+            "nodes": [
+                {
+                    "schema_version": "workflow_node.v1",
+                    "node_id": "node-a",
+                    "workflow_id": ids.workflow_id,
+                    "task_type": "analysis",
+                    "assigned_agent_id": null,
+                    "status": "pending",
+                    "input_refs": [],
+                    "output_ref": null,
+                    "budget": 0.1,
+                    "cost_incurred": 0.0,
+                    "error": null,
+                    "created_at": "2026-06-05T00:00:00Z",
+                    "started_at": null,
+                    "completed_at": null
+                },
+                {
+                    "schema_version": "workflow_node.v1",
+                    "node_id": "node-b",
+                    "workflow_id": ids.workflow_id,
+                    "task_type": "docs",
+                    "assigned_agent_id": null,
+                    "status": "pending",
+                    "input_refs": [],
+                    "output_ref": null,
+                    "budget": 0.1,
+                    "cost_incurred": 0.0,
+                    "error": null,
+                    "created_at": "2026-06-05T00:00:00Z",
+                    "started_at": null,
+                    "completed_at": null
+                },
+                {
+                    "schema_version": "workflow_node.v1",
+                    "node_id": "node-c",
+                    "workflow_id": ids.workflow_id,
+                    "task_type": "docs",
+                    "assigned_agent_id": null,
+                    "status": "pending",
+                    "input_refs": ["node-a", "node-b"],
+                    "output_ref": null,
+                    "budget": 0.2,
+                    "cost_incurred": 0.0,
+                    "error": null,
+                    "created_at": "2026-06-05T00:00:00Z",
+                    "started_at": null,
+                    "completed_at": null
+                }
+            ],
+            "edges": [
+                {
+                    "schema_version": "workflow_edge.v1",
+                    "edge_id": "edge-a-c",
+                    "from_node_id": "node-a",
+                    "to_node_id": "node-c",
+                    "edge_type": "dependency"
+                },
+                {
+                    "schema_version": "workflow_edge.v1",
+                    "edge_id": "edge-b-c",
+                    "from_node_id": "node-b",
+                    "to_node_id": "node-c",
+                    "edge_type": "dependency"
+                }
+            ],
+            "started_at": null,
+            "completed_at": null,
+            "result": null
+        },
+        "boundaries": {
+            "execution": "disabled",
+            "target_repository_writes": "disabled",
+            "runtime_workers": "disabled",
+        },
+    })
+}
+
+fn make_workflow_plan_no_predecessor(
+    ids: &engine::storage::local_product_store::WorkflowPlanIds,
+) -> Value {
+    json!({
+        "schema_version": "read_only_plan.v1",
+        "plan_id": ids.plan_id,
+        "status": "planned_read_only",
+        "workflow_id": ids.workflow_id,
+        "dispatch_id": ids.dispatch_id,
+        "analysis": {"analysis_id": "analysis-0001", "task_domain": "docs"},
+        "graph": {
+            "schema_version": "workflow_graph.v1",
+            "workflow_id": ids.workflow_id,
+            "dispatch_id": ids.dispatch_id,
+            "status": "decomposed",
+            "created_at": "2026-06-05T00:00:00Z",
+            "updated_at": "2026-06-05T00:00:00Z",
+            "nodes": [
+                {
+                    "schema_version": "workflow_node.v1",
+                    "node_id": "node-x",
+                    "workflow_id": ids.workflow_id,
+                    "task_type": "analysis",
+                    "assigned_agent_id": null,
+                    "status": "pending",
+                    "input_refs": [],
+                    "output_ref": null,
+                    "budget": 0.1,
+                    "cost_incurred": 0.0,
+                    "error": null,
+                    "created_at": "2026-06-05T00:00:00Z",
+                    "started_at": null,
+                    "completed_at": null
+                }
+            ],
+            "edges": [],
+            "started_at": null,
+            "completed_at": null,
+            "result": null
+        },
+        "boundaries": {
+            "execution": "disabled",
+            "target_repository_writes": "disabled",
+            "runtime_workers": "disabled",
+        },
+    })
+}
+
+fn make_workflow_plan_with_field_mapping(
+    ids: &engine::storage::local_product_store::WorkflowPlanIds,
+) -> Value {
+    json!({
+        "schema_version": "read_only_plan.v1",
+        "plan_id": ids.plan_id,
+        "status": "planned_read_only",
+        "workflow_id": ids.workflow_id,
+        "dispatch_id": ids.dispatch_id,
+        "analysis": {"analysis_id": "analysis-0001", "task_domain": "docs"},
+        "graph": {
+            "schema_version": "workflow_graph.v1",
+            "workflow_id": ids.workflow_id,
+            "dispatch_id": ids.dispatch_id,
+            "status": "decomposed",
+            "created_at": "2026-06-05T00:00:00Z",
+            "updated_at": "2026-06-05T00:00:00Z",
+            "nodes": [
+                {
+                    "schema_version": "workflow_node.v1",
+                    "node_id": "node-a",
+                    "workflow_id": ids.workflow_id,
+                    "task_type": "analysis",
+                    "assigned_agent_id": null,
+                    "status": "pending",
+                    "input_refs": [],
+                    "output_ref": null,
+                    "budget": 0.1,
+                    "cost_incurred": 0.0,
+                    "error": null,
+                    "created_at": "2026-06-05T00:00:00Z",
+                    "started_at": null,
+                    "completed_at": null
+                },
+                {
+                    "schema_version": "workflow_node.v1",
+                    "node_id": "node-b",
+                    "workflow_id": ids.workflow_id,
+                    "task_type": "docs",
+                    "assigned_agent_id": null,
+                    "status": "pending",
+                    "input_refs": ["node-a"],
+                    "output_ref": null,
+                    "budget": 0.2,
+                    "cost_incurred": 0.0,
+                    "error": null,
+                    "created_at": "2026-06-05T00:00:00Z",
+                    "started_at": null,
+                    "completed_at": null
+                }
+            ],
+            "edges": [
+                {
+                    "schema_version": "workflow_edge.v1",
+                    "edge_id": "edge-a-b",
+                    "from_node_id": "node-a",
+                    "to_node_id": "node-b",
+                    "edge_type": "dependency",
+                    "field_mapping": {"value": "analysis_result"}
                 }
             ],
             "started_at": null,
@@ -1855,4 +2124,395 @@ fn ga1_review_diff_survives_artifact_read() {
         stored_diff.contains("--- a/README.md"),
         "persisted artifact should contain review_diff"
     );
+}
+
+#[test]
+fn context_assembly_disabled_env_no_injection() {
+    let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    std::env::set_var("ACP_CONTEXT_ASSEMBLY_ENABLED", "0");
+    let dir = tempdir().unwrap();
+    let store = LocalProductStore::new(dir.path().join("ctx_disabled.db")).unwrap();
+    let plan = store
+        .create_workflow_plan("ctx disabled", "api", "actor", |ids, _| {
+            Ok(make_workflow_plan_with_nodes(ids))
+        })
+        .unwrap();
+    store
+        .create_workflow_run_from_plan(plan["plan_id"].as_str().unwrap(), "actor")
+        .unwrap();
+
+    let executor = ContextEchoExecutor;
+    let first = store
+        .tick_with_executor("run-0001", "actor", 0, &executor)
+        .unwrap();
+    assert_eq!(first["node_id"], "node-a");
+
+    let second = store
+        .tick_with_executor("run-0001", "actor", 0, &executor)
+        .unwrap();
+    assert_eq!(second["node_id"], "node-b");
+    let output = second["result"]["output"].as_str().unwrap();
+    let injection: Value = serde_json::from_str(output).unwrap();
+    assert!(
+        injection.is_null(),
+        "context_injection should be Null when disabled"
+    );
+
+    std::env::remove_var("ACP_CONTEXT_ASSEMBLY_ENABLED");
+}
+
+#[test]
+fn context_assembly_multiple_predecessors_all_included() {
+    let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let dir = tempdir().unwrap();
+    let store = LocalProductStore::new(dir.path().join("ctx_multi.db")).unwrap();
+    let plan = store
+        .create_workflow_plan("ctx multi", "api", "actor", |ids, _| {
+            Ok(make_workflow_plan_three_nodes(ids))
+        })
+        .unwrap();
+    store
+        .create_workflow_run_from_plan(plan["plan_id"].as_str().unwrap(), "actor")
+        .unwrap();
+
+    let executor = ContextEchoExecutor;
+    store
+        .tick_with_executor("run-0001", "actor", 0, &executor)
+        .unwrap();
+    store
+        .tick_with_executor("run-0001", "actor", 0, &executor)
+        .unwrap();
+
+    let third = store
+        .tick_with_executor("run-0001", "actor", 0, &executor)
+        .unwrap();
+    assert_eq!(third["node_id"], "node-c");
+    let output = third["result"]["output"].as_str().unwrap();
+    let injection: Value = serde_json::from_str(output).unwrap();
+    assert_eq!(injection["schema_version"], "context_injection.v1");
+
+    let sources = injection["sources"].as_array().unwrap();
+    assert_eq!(
+        sources.len(),
+        2,
+        "should have 2 sources from two predecessors"
+    );
+    let from_ids: Vec<&str> = sources
+        .iter()
+        .map(|s| s["from_node_id"].as_str().unwrap())
+        .collect();
+    assert!(from_ids.contains(&"node-a"), "should include node-a");
+    assert!(from_ids.contains(&"node-b"), "should include node-b");
+}
+
+#[test]
+fn context_assembly_over_budget_truncation() {
+    let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    std::env::set_var("ACP_CONTEXT_ASSEMBLY_MAX_TOKENS", "5");
+    let dir = tempdir().unwrap();
+    let store = LocalProductStore::new(dir.path().join("ctx_trunc.db")).unwrap();
+    let plan = store
+        .create_workflow_plan("ctx trunc", "api", "actor", |ids, _| {
+            Ok(make_workflow_plan_with_nodes(ids))
+        })
+        .unwrap();
+    store
+        .create_workflow_run_from_plan(plan["plan_id"].as_str().unwrap(), "actor")
+        .unwrap();
+
+    let large_executor = LargeOutputExecutor;
+    store
+        .tick_with_executor("run-0001", "actor", 0, &large_executor)
+        .unwrap();
+
+    let echo = ContextEchoExecutor;
+    let second = store
+        .tick_with_executor("run-0001", "actor", 0, &echo)
+        .unwrap();
+    assert_eq!(second["node_id"], "node-b");
+    let output = second["result"]["output"].as_str().unwrap();
+    let injection: Value = serde_json::from_str(output).unwrap();
+
+    let source = &injection["sources"][0];
+    assert_eq!(source["truncated"], true, "source should be truncated");
+    let included = source["included_tokens"].as_u64().unwrap();
+    let estimated = source["estimated_tokens"].as_u64().unwrap();
+    assert!(
+        included < estimated,
+        "included_tokens ({included}) should be less than estimated_tokens ({estimated})"
+    );
+    assert_eq!(
+        injection["truncated"], true,
+        "top-level truncated should be true"
+    );
+
+    std::env::remove_var("ACP_CONTEXT_ASSEMBLY_MAX_TOKENS");
+}
+
+#[test]
+fn context_assembly_no_predecessor_no_injection() {
+    let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let dir = tempdir().unwrap();
+    let store = LocalProductStore::new(dir.path().join("ctx_nopred.db")).unwrap();
+    let plan = store
+        .create_workflow_plan("ctx nopred", "api", "actor", |ids, _| {
+            Ok(make_workflow_plan_no_predecessor(ids))
+        })
+        .unwrap();
+    store
+        .create_workflow_run_from_plan(plan["plan_id"].as_str().unwrap(), "actor")
+        .unwrap();
+
+    let executor = ContextEchoExecutor;
+    let tick = store
+        .tick_with_executor("run-0001", "actor", 0, &executor)
+        .unwrap();
+    assert_eq!(tick["node_id"], "node-x");
+    let output = tick["result"]["output"].as_str().unwrap();
+    let injection: Value = serde_json::from_str(output).unwrap();
+    assert!(
+        injection.is_null(),
+        "no predecessors means no context_injection"
+    );
+}
+
+#[test]
+fn context_assembly_preserves_existing_input() {
+    let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let dir = tempdir().unwrap();
+    let store = LocalProductStore::new(dir.path().join("ctx_preserve.db")).unwrap();
+    let plan = store
+        .create_workflow_plan("ctx preserve", "api", "actor", |ids, _| {
+            let mut plan = make_workflow_plan_with_nodes(ids);
+            let node_b = plan["graph"]["nodes"]
+                .as_array_mut()
+                .unwrap()
+                .iter_mut()
+                .find(|n| n["node_id"] == "node-b")
+                .unwrap();
+            node_b.as_object_mut().unwrap().insert(
+                "input".to_string(),
+                json!({"existing_key": "existing_value"}),
+            );
+            Ok(plan)
+        })
+        .unwrap();
+    store
+        .create_workflow_run_from_plan(plan["plan_id"].as_str().unwrap(), "actor")
+        .unwrap();
+
+    let executor = ContextEchoExecutor;
+    store
+        .tick_with_executor("run-0001", "actor", 0, &executor)
+        .unwrap();
+
+    let preserving = ContextPreservingExecutor;
+    let second = store
+        .tick_with_executor("run-0001", "actor", 0, &preserving)
+        .unwrap();
+    assert_eq!(second["node_id"], "node-b");
+    let output = second["result"]["output"].as_str().unwrap();
+    let parsed: Value = serde_json::from_str(output).unwrap();
+    assert_eq!(parsed["has_context_injection"], true);
+    assert_eq!(
+        parsed["original_input"],
+        json!({"existing_key": "existing_value"}),
+        "existing input should not be overwritten by context injection"
+    );
+}
+
+#[test]
+fn context_assembly_edge_field_mapping() {
+    let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let dir = tempdir().unwrap();
+    let store = LocalProductStore::new(dir.path().join("ctx_mapping.db")).unwrap();
+    let plan = store
+        .create_workflow_plan("ctx mapping", "api", "actor", |ids, _| {
+            Ok(make_workflow_plan_with_field_mapping(ids))
+        })
+        .unwrap();
+    store
+        .create_workflow_run_from_plan(plan["plan_id"].as_str().unwrap(), "actor")
+        .unwrap();
+
+    let executor = ContextEchoExecutor;
+    store
+        .tick_with_executor("run-0001", "actor", 0, &executor)
+        .unwrap();
+
+    let second = store
+        .tick_with_executor("run-0001", "actor", 0, &executor)
+        .unwrap();
+    assert_eq!(second["node_id"], "node-b");
+    let output = second["result"]["output"].as_str().unwrap();
+    let injection: Value = serde_json::from_str(output).unwrap();
+    let source = &injection["sources"][0];
+    let decisions = source["mapping_decisions"].as_array().unwrap();
+    assert!(
+        decisions
+            .iter()
+            .any(|d| d.as_str().unwrap().contains("analysis_result")),
+        "mapping_decisions should reference the field_mapping, got: {decisions:?}"
+    );
+}
+
+#[test]
+fn context_assembly_missing_mapping_fallback() {
+    let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let dir = tempdir().unwrap();
+    let store = LocalProductStore::new(dir.path().join("ctx_nomapping.db")).unwrap();
+    let plan = store
+        .create_workflow_plan("ctx nomapping", "api", "actor", |ids, _| {
+            Ok(make_workflow_plan_with_nodes(ids))
+        })
+        .unwrap();
+    store
+        .create_workflow_run_from_plan(plan["plan_id"].as_str().unwrap(), "actor")
+        .unwrap();
+
+    let executor = ContextEchoExecutor;
+    store
+        .tick_with_executor("run-0001", "actor", 0, &executor)
+        .unwrap();
+
+    let second = store
+        .tick_with_executor("run-0001", "actor", 0, &executor)
+        .unwrap();
+    assert_eq!(second["node_id"], "node-b");
+    let output = second["result"]["output"].as_str().unwrap();
+    let injection: Value = serde_json::from_str(output).unwrap();
+    let source = &injection["sources"][0];
+    let decisions = source["mapping_decisions"].as_array().unwrap();
+    assert_eq!(
+        decisions[0].as_str().unwrap(),
+        "default_passthrough",
+        "no field_mapping should yield default_passthrough"
+    );
+    assert!(
+        !source["output"].is_null(),
+        "passthrough should include full predecessor output"
+    );
+}
+
+#[test]
+fn context_assembly_failed_predecessor_not_injected() {
+    let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let dir = tempdir().unwrap();
+    let store = LocalProductStore::new(dir.path().join("ctx_failpred.db")).unwrap();
+    let plan = store
+        .create_workflow_plan("ctx failpred", "api", "actor", |ids, _| {
+            Ok(make_workflow_plan_three_nodes(ids))
+        })
+        .unwrap();
+    store
+        .create_workflow_run_from_plan(plan["plan_id"].as_str().unwrap(), "actor")
+        .unwrap();
+
+    let executor = ContextEchoExecutor;
+    store
+        .tick_with_executor("run-0001", "actor", 0, &executor)
+        .unwrap();
+
+    let fail = engine::node_executor::FailNodeExecutor::default();
+    store
+        .tick_with_executor("run-0001", "actor", 0, &fail)
+        .unwrap();
+
+    let result = store
+        .tick_with_executor("run-0001", "actor", 0, &executor)
+        .unwrap();
+    assert_eq!(
+        result["action"].as_str().unwrap(),
+        "no_ready_node",
+        "node-c should not be ready when predecessor node-b failed"
+    );
+}
+
+#[test]
+fn context_assembly_does_not_alter_provider_cli_fields() {
+    let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let dir = tempdir().unwrap();
+    let store = LocalProductStore::new(dir.path().join("ctx_nocli.db")).unwrap();
+    let plan = store
+        .create_workflow_plan("ctx nocli", "api", "actor", |ids, _| {
+            Ok(make_workflow_plan_with_nodes(ids))
+        })
+        .unwrap();
+    store
+        .create_workflow_run_from_plan(plan["plan_id"].as_str().unwrap(), "actor")
+        .unwrap();
+
+    let executor = ContextEchoExecutor;
+    store
+        .tick_with_executor("run-0001", "actor", 0, &executor)
+        .unwrap();
+
+    let preserving = ContextPreservingExecutor;
+    let second = store
+        .tick_with_executor("run-0001", "actor", 0, &preserving)
+        .unwrap();
+    let output = second["result"]["output"].as_str().unwrap();
+    let parsed: Value = serde_json::from_str(output).unwrap();
+    assert_eq!(parsed["has_context_injection"], true);
+
+    let run = store.get_workflow_run("run-0001").unwrap().unwrap();
+    let node_b = run["nodes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|n| n["node_id"] == "node-b")
+        .unwrap();
+    let meta_keys: Vec<&str> = node_b
+        .as_object()
+        .unwrap()
+        .keys()
+        .map(|k| k.as_str())
+        .collect();
+    for forbidden in &["provider_type", "cli_binary", "auth_token", "api_key"] {
+        assert!(
+            !meta_keys.contains(forbidden),
+            "node_metadata should not contain {forbidden}, found keys: {meta_keys:?}"
+        );
+    }
+}
+
+#[test]
+fn context_assembly_persisted_in_node_metadata() {
+    let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let dir = tempdir().unwrap();
+    let store = LocalProductStore::new(dir.path().join("ctx_persist.db")).unwrap();
+    let plan = store
+        .create_workflow_plan("ctx persist", "api", "actor", |ids, _| {
+            Ok(make_workflow_plan_with_nodes(ids))
+        })
+        .unwrap();
+    store
+        .create_workflow_run_from_plan(plan["plan_id"].as_str().unwrap(), "actor")
+        .unwrap();
+
+    let executor = ContextEchoExecutor;
+    store
+        .tick_with_executor("run-0001", "actor", 0, &executor)
+        .unwrap();
+    store
+        .tick_with_executor("run-0001", "actor", 0, &executor)
+        .unwrap();
+
+    let run = store.get_workflow_run("run-0001").unwrap().unwrap();
+    let node_b = run["nodes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|n| n["node_id"] == "node-b")
+        .unwrap();
+    let output = node_b["result"]["output"]
+        .as_str()
+        .expect("node-b result should have output field");
+    let injection: Value = serde_json::from_str(output).unwrap();
+    assert_eq!(
+        injection["schema_version"], "context_injection.v1",
+        "context_injection should be persisted in node-b result output"
+    );
+    assert_eq!(injection["target_node_id"], "node-b");
+    assert_eq!(injection["sources"][0]["from_node_id"], "node-a");
 }

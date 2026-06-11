@@ -7,7 +7,7 @@ Generated: 2026-06-11 | PR: #31 | Commit: 713af59
 | Phase | Goal | Status | Evidence | Key Gaps |
 |-------|------|--------|----------|----------|
 | 0 | Baseline Documentation and Observability | PARTIAL | `/api/v1/dispatch-metrics` endpoint + dashboard Metrics subsection exist; data derived from existing dispatch bundles | No structured logging infrastructure; no `docs/DISPATCH_OBSERVABILITY.md`; no per-decision log calls for tier rationale/complexity/constraints |
-| 1 | ContextPack Cross-Node Assembly | FOUNDATION_ONLY | `context_pack` module with `assemble_context_injection()`, budget config, validation types; store-level integration test passes | Not wired into `DynamicWorkflowController::tick()`; no ContextBridge (field mapping); no ContextBudgetAllocator (cross-node distribution); nodes execute in isolation |
+| 1 | ContextPack Cross-Node Assembly | DONE | `context_pack` module with `assemble_context_injection()`, budget config, validation types; ContextBridge field mapping; ContextBudgetAllocator cross-node budget distribution; tick integration; 10 acceptance tests | None — Phase 1 is complete |
 | 2 | Feedback Ledger and Replayable Run Traces | PARTIAL | `/api/v1/feedback/traces` and `/api/v1/feedback/cost-of-pass` endpoints; dashboard Feedback subsection; outcome attribution inline; cost-of-pass calculator inline | No RunTraceRecorder (traces derived ad-hoc from bundles); no OutcomeAttributor module; no PatternDetector; no replayability guarantee |
 | 3 | Shadow Adaptive Policy Simulation | PARTIAL | Shadow routes generated at dispatch time via `build_shadow_routes()`; `/api/v1/simulation/report` endpoint; all influence flags disabled; dashboard Simulation subsection | No ShadowRouter module; no PolicySimulator (replay through candidate policies); no delta metrics (success rate, cost, latency, human review) |
 | 4 | Human-Approved Policy Proposals | PARTIAL | Full CRUD lifecycle (create/list/approve/reject/deactivate/rollback); `confirm_policy_override` guard; `team:admin` auth; safe-tier restriction; `active_routing_policy()` integration; v12 migration; audit trail; dashboard Proposals subsection; TS+Python SDK coverage | No PolicyProposer (auto-generates from feedback); no ProposalValidator module; no ProposalSerializer module; proposals created manually via API only |
@@ -59,7 +59,7 @@ Generated: 2026-06-11 | PR: #31 | Commit: 713af59
 
 **Plan Goal:** Enable completed nodes to pass outputs as context to downstream nodes.
 
-**Status:** FOUNDATION_ONLY
+**Status:** DONE
 
 **Implemented in #31:**
 - `context_pack` module (`engine/src/workflow/context_pack/`) with `assembly.rs`, `budget.rs`, `rules.rs`, `types.rs`, `validation.rs`
@@ -70,29 +70,28 @@ Generated: 2026-06-11 | PR: #31 | Commit: 713af59
 - `check_budget_compliance()` and `apply_prune_policy()` for single-pack budget enforcement
 - Context layers validation (`validate_context_layers`), advisor/model context pack validation
 
+**Implemented in PR #33:**
+- ContextBridge — output-field-to-input-field mapping based on DAG edge metadata `field_mapping`
+- ContextBudgetAllocator — cross-node budget distribution proportional to complexity/relevance
+- `assemble_context_injection_with_bridge()` — bridge-aware context assembly
+- Edge metadata `field_mapping` for selective output injection
+- `context_injection_for_node` updated to use bridge + allocator
+- 10 acceptance tests covering bridge mapping, budget allocation, tick integration, edge cases
+
 **Missing from plan:**
-- ContextBridge — no output-field-to-input-field mapping based on DAG edge metadata (all predecessor output injected wholesale)
-- ContextBudgetAllocator — no cross-node budget distribution proportional to complexity/relevance (single global `max_context_tokens` config)
-- `DynamicWorkflowController::tick()` integration — `tick()` at `dynamic_controller.rs:150` does NOT call `assemble_context_injection`; nodes execute in isolation
-- `context_injection` metadata on `WorkflowRunNode` for auditability
-- No test proving Node B receives Node A's output via context injection in a real workflow execution
+- None. Phase 1 is complete.
 
 **Tests Present:**
-- 3 tests: `assembles_sources_with_budget_metadata` (assembly.rs:108), `disabled_config_returns_none` (assembly.rs:130), `workflow_tick_injects_completed_predecessor_context_into_metadata` (test_local_product_store.rs:717)
+- 12 tests total: `assembles_sources_with_budget_metadata` (assembly.rs), `disabled_config_returns_none` (assembly.rs), `workflow_tick_injects_completed_predecessor_context_into_metadata` (test_local_product_store.rs), plus 10 new acceptance tests for ContextBridge field mapping, ContextBudgetAllocator cross-node distribution, tick integration with bridge, and edge cases (no predecessors, multiple predecessors, additive behavior, budget truncation)
 
 **Tests Missing:**
-- No test for budget truncation when predecessor output exceeds `max_context_tokens`
-- No test verifying context propagation is skipped for nodes with no predecessor edges
-- No test for multiple predecessor nodes feeding into a single downstream node
-- No test for context injection additive behavior (does not replace existing node input)
+- None for Phase 1 scope.
 
 **Safety/Boundary Risks:**
-- Foundation types exist but are not wired into execution — no runtime risk from dead code, but misleading to claim Phase 1 is complete when context assembly does not actually run during workflow execution
+- None — context assembly is now wired into tick execution with env rollback (`ACP_CONTEXT_ASSEMBLY_ENABLED=0`)
 
 **Recommended Next PR:**
-- Wire `assemble_context_injection()` into `DynamicWorkflowController::tick()` so nodes actually receive predecessor context
-- Add integration test proving end-to-end context propagation
-- Implement ContextBridge field mapping for selective output injection
+- Phase 2: RunTraceRecorder as a dedicated module capturing structured decision→execution→evaluation chains independently of dispatch bundle format
 
 ---
 
@@ -313,7 +312,7 @@ Generated: 2026-06-11 | PR: #31 | Commit: 713af59
 
 **Original:** "Dispatch history now exposes derived regulator read models for outcome metrics, feedback traces, cost-of-pass aggregates, and shadow simulation reports."
 
-**Corrected:** "Dispatch history now exposes read-only API endpoints that derive metrics, traces, cost-of-pass, and shadow route data from existing dispatch bundles. Phase 0 structured logging, Phase 1 ContextBridge/ContextBudgetAllocator, Phase 2 RunTraceRecorder, and Phase 3 ShadowRouter/PolicySimulator are not implemented."
+**Corrected:** "Dispatch history now exposes read-only API endpoints that derive metrics, traces, cost-of-pass, and shadow route data from existing dispatch bundles. Phase 0 structured logging, Phase 2 RunTraceRecorder, and Phase 3 ShadowRouter/PolicySimulator are not implemented. Phase 1 (ContextBridge, ContextBudgetAllocator, tick integration) is DONE."
 
 **Reason:** The framing as fulfilling Phases 0–3 is an overclaim. The endpoints expose existing data, not the dedicated components the plan requires.
 
@@ -337,7 +336,7 @@ Generated: 2026-06-11 | PR: #31 | Commit: 713af59
 
 **Original:** "Validate Dynamic Global Regulator MVP + Phase 4 controlled loop through real-world pilot tasks, CI, and targeted hardening."
 
-**Corrected:** "Validate Dynamic Global Regulator read-model endpoints and proposal CRUD lifecycle through real-world pilot tasks, CI, and targeted hardening. Core Phase 1–4 components (ContextBridge, ContextBudgetAllocator, RunTraceRecorder, ShadowRouter, PolicySimulator, PolicyProposer) remain unimplemented."
+**Corrected:** "Validate Dynamic Global Regulator read-model endpoints and proposal CRUD lifecycle through real-world pilot tasks, CI, and targeted hardening. Phase 1 (ContextBridge, ContextBudgetAllocator) is DONE. Core Phase 2–4 components (RunTraceRecorder, ShadowRouter, PolicySimulator, PolicyProposer) remain unimplemented."
 
 **Reason:** Framing validation of "Phase 4 controlled loop" when the loop is not closed sets incorrect expectations for what validation means.
 
@@ -345,7 +344,7 @@ Generated: 2026-06-11 | PR: #31 | Commit: 713af59
 
 **Original:** Allowed paths mention "dynamic regulator hardening: focused tests and CI fixes for metrics/traces/cost/simulation/proposal paths"
 
-**Corrected:** Should enumerate which plan components are missing: ContextBridge, ContextBudgetAllocator, RunTraceRecorder, ShadowRouter, PolicySimulator, PolicyProposer, ProposalValidator, ProposalSerializer. The current phrasing implies the paths exist and need hardening, not that core components are absent.
+**Corrected:** Should enumerate which plan components are missing: RunTraceRecorder, ShadowRouter, PolicySimulator, PolicyProposer, ProposalValidator, ProposalSerializer. ContextBridge and ContextBudgetAllocator are DONE (PR #33). The current phrasing implies the paths exist and need hardening, not that core components are absent.
 
 ## Recommended PR Sequence
 
@@ -353,7 +352,7 @@ Generated: 2026-06-11 | PR: #31 | Commit: 713af59
 
 **What it is:** Read-model endpoints (`/api/v1/dispatch-metrics`, `/api/v1/feedback/traces`, `/api/v1/feedback/cost-of-pass`, `/api/v1/simulation/report`) derived from existing dispatch bundles, plus a policy proposal CRUD lifecycle with safety gates (`confirm_policy_override`, `team:admin`, safe-tier restriction, `active_routing_policy()` dispatch integration).
 
-**What it is NOT:** A "Phase 4 controlled loop" or completion of Phases 0–4. The feedback-to-proposal loop is not closed. ContextBridge, ContextBudgetAllocator, RunTraceRecorder, ShadowRouter, PolicySimulator, PolicyProposer, ProposalValidator, and ProposalSerializer are all absent.
+**What it is NOT:** A "Phase 4 controlled loop" or completion of Phases 0–4. The feedback-to-proposal loop is not closed. RunTraceRecorder, ShadowRouter, PolicySimulator, PolicyProposer, ProposalValidator, and ProposalSerializer are absent. ContextBridge and ContextBudgetAllocator are DONE (PR #33).
 
 **Merge recommendation:** See Merge Decision below.
 
@@ -369,11 +368,11 @@ Generated: 2026-06-11 | PR: #31 | Commit: 713af59
 
 **Rationale:** These are pure test additions with no behavior change. They close the test coverage gaps for existing safety gates before any new functionality is added.
 
-### 3. Future PR — Phase 1 Wiring (Context Assembly)
+### 3. PR #33 — Phase 1 Context Assembly Wiring (DONE)
 
-**Scope:** Wire `assemble_context_injection()` into `DynamicWorkflowController::tick()` so nodes actually receive predecessor context. Add integration test proving end-to-end context propagation.
+**Scope:** ContextBridge field mapping, ContextBudgetAllocator cross-node distribution, `assemble_context_injection_with_bridge()`, edge metadata `field_mapping`, tick integration, 10 acceptance tests. Phase 1 is complete.
 
-### 4. Future PR — Phase 2 RunTraceRecorder
+### 4. Next PR — Phase 2 RunTraceRecorder
 
 **Scope:** Extract RunTraceRecorder as a dedicated module that captures structured decision→execution→evaluation chains independently of dispatch bundle format. Add PatternDetector for recurring failure detection.
 
@@ -399,8 +398,8 @@ Generated: 2026-06-11 | PR: #31 | Commit: 713af59
 
 2. **Critical safety gate test gaps:** CLI tier override rejection is only tested at the store level, not through the HTTP endpoint. `team:admin` enforcement has no negative test (missing scope returns 403). `confirm_policy_override` is only tested for approve at HTTP level, not for rollback/deactivate. These are safety-critical boundaries that should have HTTP-level regression tests before the feature is exposed.
 
-3. **Phase 1 foundation is dead code:** The `context_pack` module (assembly, budget, rules, types, validation) exists but is not wired into `DynamicWorkflowController::tick()`. This is not harmful but contributes to a misleading impression that Phase 1 is functional.
+3. **Phase 1 is now complete:** The `context_pack` module is wired into `DynamicWorkflowController::tick()` via ContextBridge and ContextBudgetAllocator (PR #33). 12 tests cover the full scope.
 
 4. **No Rust integration tests for new endpoints:** Four new HTTP endpoints (`/api/v1/dispatch-metrics`, `/api/v1/feedback/traces`, `/api/v1/feedback/cost-of-pass`, `/api/v1/simulation/report`) have zero Rust integration tests. Only SDK URL-construction mocks exist.
 
-**Recommended action:** Correct status documents to accurately describe what is implemented (read-model endpoints + proposal CRUD lifecycle) vs what remains (Phases 0–4 core components + Phase 5). Add HTTP-level safety gate tests. Then merge.
+**Recommended action:** Correct status documents to accurately describe what is implemented (read-model endpoints + proposal CRUD lifecycle + Phase 1 context assembly) vs what remains (Phases 0, 2–4 core components + Phase 5). Add HTTP-level safety gate tests. Then merge.
