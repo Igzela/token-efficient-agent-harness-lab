@@ -48,8 +48,8 @@ Autonomously maintain repo health and fix CI/docs/test drift. The following path
 - Autonomous maintenance: repair stale docs, CI breakage, test drift, wire-codegen drift
 - Regression hardening: add/repair tests for existing behavior
 - Real-world pilot matrix: execute first 10 tasks from playbook
-- Dynamic regulator hardening: focused tests and CI fixes for metrics/traces/cost/simulation/proposal paths
-- Proposal CRUD lifecycle validation: verify human-approved safe tier overrides do not expand provider/CLI/hard-constraint boundaries
+- Dynamic regulator hardening: safety gate HTTP tests complete (PR #32); remaining: store-level tests for reject/rollback/deactivate/list-filter flows, Phase 1 context assembly wiring into tick
+- Proposal CRUD lifecycle validation: safety gate tests pass; remaining: verify end-to-end proposal→dispatch integration with real tier override
 - Architecture/doc closeout: update records after accepted changes
 
 ## Before Starting Autonomous Work
