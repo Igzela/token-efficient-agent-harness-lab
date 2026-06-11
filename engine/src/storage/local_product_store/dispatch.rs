@@ -4,7 +4,8 @@ use std::collections::BTreeMap;
 
 use super::{append_audit_locked, collect_values, str_at, DatabaseConnection, LocalProductStore};
 use crate::feedback::{
-    OutcomeAttributor, PatternDetector, PolicyCandidate, PolicySimulator, RunTraceRecorder,
+    serialize_candidate_to_api_response, OutcomeAttributor, PatternDetector, PolicyCandidate,
+    PolicyProposer, PolicySimulator, RunTraceRecorder,
 };
 
 impl LocalProductStore {
@@ -606,6 +607,40 @@ impl LocalProductStore {
 
         let result = PolicySimulator::simulate(&traces, &policy);
         serde_json::to_value(&result).map_err(|e| e.to_string())
+    }
+
+    pub fn generated_proposals(&self, limit: i64) -> Result<Value, String> {
+        let dispatches = self.dispatches_for_read_models(limit, 0)?;
+        let traces: Vec<_> = dispatches
+            .iter()
+            .map(RunTraceRecorder::record_from_dispatch)
+            .collect();
+
+        let detector = PatternDetector::default();
+        let patterns = detector.detect(&traces);
+
+        let sim_result = PolicySimulator::simulate(&traces, &PolicyCandidate::Balanced);
+
+        let proposer = PolicyProposer::default();
+        let candidates = proposer.propose(
+            &patterns,
+            if sim_result.input_trace_count > 0 {
+                Some(&sim_result)
+            } else {
+                None
+            },
+        );
+
+        let api_candidates: Vec<Value> = candidates
+            .iter()
+            .map(serialize_candidate_to_api_response)
+            .collect();
+
+        Ok(json!({
+            "schema_version": "generated_proposals.v1",
+            "total": api_candidates.len(),
+            "candidates": api_candidates,
+        }))
     }
 
     fn dispatches_for_read_models(&self, limit: i64, offset: i64) -> Result<Vec<Value>, String> {

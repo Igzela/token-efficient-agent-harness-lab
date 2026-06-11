@@ -9,8 +9,8 @@ Generated: 2026-06-11 | PR: #31 | Commit: 713af59
 | 0 | Baseline Documentation and Observability | PARTIAL | `/api/v1/dispatch-metrics` endpoint + dashboard Metrics subsection exist; data derived from existing dispatch bundles | No structured logging infrastructure; no `docs/DISPATCH_OBSERVABILITY.md`; no per-decision log calls for tier rationale/complexity/constraints |
 | 1 | ContextPack Cross-Node Assembly | DONE | `context_pack` module with `assemble_context_injection()`, budget config, validation types; ContextBridge field mapping; ContextBudgetAllocator cross-node budget distribution; tick integration; 10 acceptance tests | None — Phase 1 is complete |
 | 2 | Feedback Ledger and Replayable Run Traces | DONE | RunTraceRecorder module; OutcomeAttributor module; PatternDetector module; `/api/v1/feedback/traces`, `/api/v1/feedback/cost-of-pass`, `/api/v1/feedback/patterns` endpoints; dashboard Feedback subsection; `feedback_traces` uses stable RunTrace schema; `cost_of_pass` computed from stable trace model; tests cover recorder, attribution, pattern detection, filtering, empty state | None — Phase 2 is complete |
-| 3 | Shadow Adaptive Policy Simulation | PARTIAL | Shadow routes generated at dispatch time via `build_shadow_routes()`; `/api/v1/simulation/report` endpoint; all influence flags disabled; dashboard Simulation subsection | No ShadowRouter module; no PolicySimulator (replay through candidate policies); no delta metrics (success rate, cost, latency, human review) |
-| 4 | Human-Approved Policy Proposals | PARTIAL | Full CRUD lifecycle (create/list/approve/reject/deactivate/rollback); `confirm_policy_override` guard; `team:admin` auth; safe-tier restriction; `active_routing_policy()` integration; v12 migration; audit trail; dashboard Proposals subsection; TS+Python SDK coverage | No PolicyProposer (auto-generates from feedback); no ProposalValidator module; no ProposalSerializer module; proposals created manually via API only |
+| 3 | Shadow Adaptive Policy Simulation | DONE | Shadow routes generated at dispatch time via `build_shadow_routes()`; `/api/v1/simulation/report` endpoint; all influence flags disabled; dashboard Simulation subsection; ShadowRouter; PolicySimulator; delta metrics; `/api/v1/simulation/policy-delta` endpoint; dashboard delta display; SDK methods | None — Phase 3 is complete |
+| 4 | Human-Approved Policy Proposals | DONE | Full CRUD lifecycle (create/list/approve/reject/deactivate/rollback); `confirm_policy_override` guard; `team:admin` auth; safe-tier restriction; `active_routing_policy()` integration; v12 migration; audit trail; dashboard Proposals subsection; TS+Python SDK coverage; PolicyProposer; ProposalValidator; ProposalSerializer; GET /api/v1/proposals/generated; generated candidates with evidence/confidence/safety flags; dashboard generated suggestions; SDK generatedProposals()/generated_proposals() | None — Phase 4 is complete |
 | 5 | Limited Automatic Adjustment Under Strict Guards | NOT_STARTED | Nothing exists | No AutoAdjustmentPolicy, AutoAdjustmentGuard, PolicySnapshot, `/api/v1/auto-adjustments`, dashboard tab, `ACP_ENABLE_AUTO_ADJUSTMENT` gate, auto-rollback, or boundary mutation tests |
 
 ## Phase Details
@@ -174,7 +174,7 @@ Generated: 2026-06-11 | PR: #31 | Commit: 713af59
 
 **Plan Goal:** Generate structured policy change proposals that require human approval before activation.
 
-**Status:** PARTIAL
+**Status:** DONE
 
 **Implemented in #31:**
 - `create_policy_proposal()` in `policy_proposals.rs:23` with `validate_proposal_request`, `validate_policy_override`, audit logging
@@ -202,12 +202,13 @@ Generated: 2026-06-11 | PR: #31 | Commit: 713af59
 - Audit trail for all lifecycle events (create, approve, reject, deactivate, rollback, supersede)
 
 **Missing from plan:**
-- PolicyProposer as an automated component — proposals are created manually via API, not auto-generated from feedback patterns + shadow simulation results
-- No automatic proposal generation from feedback traces/simulation data
-- Dashboard `DynamicRegulator.tsx` renders proposals as read-only table — no action buttons invoke approve/reject/rollback despite `ConfirmDialog` supporting these action types
-- No proposal creation form in dashboard
-- No evidence visualization in dashboard proposals view
-- No proposal detail view in dashboard
+- PolicyProposer in `engine/src/feedback/policy_proposer.rs`
+- ProposalValidator in `engine/src/feedback/proposal_validator.rs`
+- ProposalSerializer in `engine/src/feedback/proposal_serializer.rs`
+- `GET /api/v1/proposals/generated` endpoint
+- Generated candidates include evidence, confidence, safety flags
+- Dashboard generated suggestions section
+- TS+Python SDK `generatedProposals()`/`generated_proposals()`
 
 **Tests Present:**
 - 11 tests: store lifecycle test (`proposal_lifecycle_builds_active_policy`), store CLI tier rejection test, HTTP integration test (full create→approve→dispatch lifecycle with confirmation guard), integrity table check, SDK tests for CRUD and confirmation guards (TS: 5, Python: 4)

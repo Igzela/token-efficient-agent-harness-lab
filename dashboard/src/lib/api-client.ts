@@ -283,6 +283,12 @@ export async function fetchProposals(params: {
   return fetchJson<ProposalListResponse>(withQuery("/api/v1/proposals", params));
 }
 
+export async function fetchGeneratedProposals(params: { limit?: number } = {}): Promise<{ schema_version: string; total: number; candidates: unknown[] }> {
+  return fetchJson<{ schema_version: string; total: number; candidates: unknown[] }>(
+    withQuery("/api/v1/proposals/generated", params),
+  );
+}
+
 export async function fetchProposalDetail(proposalId: string): Promise<ProposalResponse> {
   return fetchJson<ProposalResponse>(`${BASE}/api/v1/proposals/${encodeURIComponent(proposalId)}`);
 }
