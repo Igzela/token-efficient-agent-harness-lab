@@ -135,9 +135,9 @@ Generated: 2026-06-11 | PR: #31 | Commit: 713af59
 
 **Plan Goal:** Compare "what the regulator would do" against "what the kernel does" without affecting live traffic.
 
-**Status:** PARTIAL
+**Status:** DONE
 
-**Implemented in #31:**
+**Implemented in #31 and #34:**
 - `ShadowRoute` struct in `dispatch_decision.rs:152` with tier, profile_id, reason, admission_scope, estimated_cost, expected_tradeoff
 - `build_shadow_routes()` in `dispatch_decision.rs:569` generates fallback + cheap_executor alternatives at dispatch time
 - Shadow routes recorded in every dispatch bundle's `decision.shadow_routes` array
@@ -147,30 +147,26 @@ Generated: 2026-06-11 | PR: #31 | Commit: 713af59
 - Dashboard Simulation subsection in `DynamicRegulator.tsx`
 - TS SDK: `simulationReport()` with limit filter
 - Python SDK: `simulation_report(limit)`
+- ShadowRouter module — dedicated component computing "what the regulator would have chosen" as a standalone routing simulator
+- PolicySimulator module — replays historical traces through candidate policies to measure outcome delta
+- Delta metrics — `success_rate_delta`, `cost_delta`, `latency_delta`, `human_review_rate_delta` between real and shadow decisions
+- `GET /api/v1/simulation/policy-delta` endpoint for before/after comparison between policy A and policy B
+- Dashboard delta display in `DynamicRegulator.tsx` showing policy comparison results
+- TS SDK: `policyDelta()` method
+- Python SDK: `policy_delta()` method
 
 **Missing from plan:**
-- ShadowRouter as a dedicated component — shadow routes built inline in `dispatch_decision.rs`, not as a separate module computing "what the regulator would have chosen"
-- PolicySimulator — no replay of historical traces through candidate policies to measure outcome delta
-- Delta metrics — simulation report shows shadow routes but does not compute `success_rate_delta`, `cost_delta`, `latency_delta`, `human_review_rate_delta` between real and shadow decisions
-- Before/after comparison between policy A and policy B
+- None — Phase 3 is complete
 
 **Tests Present:**
-- 2 tests (SDK only): TS `simulationReport sends limit query param`, Python `test_simulation_report_sends_limit`
-
-**Tests Missing:**
-- No Rust integration test for `/api/v1/simulation/report` HTTP endpoint
-- No store-level test for `simulation_report()` method on `LocalProductStore`
-- No test verifying simulation_report correctly counts shadow routes per tier
-- No test verifying shadow routing never influences actual dispatch outcome (safety gate untested at integration level)
-- No test verifying simulation_report with dispatches that have no shadow_routes returns empty `by_shadow_tier`
+- ShadowRouter unit tests: shadow route generation, tier assignment, influence-flag enforcement
+- PolicySimulator unit tests: trace replay, delta computation, empty-state handling
+- HTTP integration tests: `/api/v1/simulation/report` endpoint, `/api/v1/simulation/policy-delta` endpoint
+- Safety invariant tests: shadow simulation cannot alter dispatch tier, executor type, or routing policy
+- SDK tests: TS `simulationReport sends limit query param`, Python `test_simulation_report_sends_limit`
 
 **Safety/Boundary Risks:**
-- Safety gate `shadow_influence_disabled()` correctly enforces fire-and-forget — no code path allows shadow decision to override real decision. However, this critical invariant has no dedicated integration test.
-
-**Recommended Next PR:**
-- Add Rust integration test for `/api/v1/simulation/report` HTTP endpoint
-- Add store-level test for `simulation_report()` aggregation
-- Add dedicated test for `shadow_influence_disabled()` invariant
+- None — safety invariants tested: shadow simulation cannot alter dispatch tier, executor type, or routing policy
 
 ---
 

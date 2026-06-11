@@ -4,7 +4,7 @@
 
 The project is in **Real-World Testing Mode**. The Dynamic Global Regulator is validated through real tasks, real branches, real commits, real PRs, real CI, and gated auto-merge.
 
-**Next implementation priority:** Phase 3 ShadowRouter/PolicySimulator implementation. Phase 1 (ContextBridge, ContextBudgetAllocator, tick integration) is DONE; Phase 2 (RunTraceRecorder, OutcomeAttributor, PatternDetector, feedback patterns endpoint) is DONE. Remaining work: Phase 3 ShadowRouter module and PolicySimulator for replay through candidate policies with delta metrics, Phase 4 PolicyProposer auto-generation from feedback patterns and simulation results, Phase 5 auto-adjustment under strict guards. See `docs/REAL_WORLD_TESTING_PLAYBOOK.md` for the operational execution guide.
+**Next implementation priority:** Phase 4 PolicyProposer implementation. Phase 1 (ContextBridge, ContextBudgetAllocator, tick integration) is DONE; Phase 2 (RunTraceRecorder, OutcomeAttributor, PatternDetector, feedback patterns endpoint) is DONE; Phase 3 (ShadowRouter, PolicySimulator, delta metrics, policy-delta endpoint, dashboard delta display, SDK methods) is DONE. Remaining work: Phase 4 PolicyProposer auto-generation from feedback patterns and simulation results, Phase 5 auto-adjustment under strict guards. See `docs/REAL_WORLD_TESTING_PLAYBOOK.md` for the operational execution guide.
 
 **Agent Autonomous Maintenance Mode is active.** Agents autonomously maintain repo health, docs hygiene, CI correctness, and low-risk PR flow. CI green is the merge/success standard. Documentation maintenance means update/prune/archive, not accumulate. See playbook section "Agent Autonomous Maintenance Mode" for the full loop and rules.
 
@@ -48,7 +48,7 @@ Autonomously maintain repo health and fix CI/docs/test drift. The following path
 - Autonomous maintenance: repair stale docs, CI breakage, test drift, wire-codegen drift
 - Regression hardening: add/repair tests for existing behavior
 - Real-world pilot matrix: execute first 10 tasks from playbook
-- Dynamic regulator hardening: safety gate HTTP tests complete (PR #32); Phase 1 DONE (PR #33); Phase 2 DONE (RunTraceRecorder, OutcomeAttributor, PatternDetector, patterns endpoint); remaining: store-level tests for reject/rollback/deactivate/list-filter flows, Phase 3 ShadowRouter/PolicySimulator
+- Dynamic regulator hardening: safety gate HTTP tests complete (PR #32); Phase 1 DONE (PR #33); Phase 2 DONE (RunTraceRecorder, OutcomeAttributor, PatternDetector, patterns endpoint); Phase 3 DONE (ShadowRouter, PolicySimulator, delta metrics, policy-delta endpoint); remaining: store-level tests for reject/rollback/deactivate/list-filter flows, Phase 4 PolicyProposer
 - Proposal CRUD lifecycle validation: safety gate tests pass; remaining: verify end-to-end proposal→dispatch integration with real tier override
 - Architecture/doc closeout: update records after accepted changes
 

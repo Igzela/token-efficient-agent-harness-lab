@@ -90,6 +90,16 @@ class AgentControlPlaneClient:
             params["limit"] = limit
         return self._get(_query_path("/api/v1/simulation/report", params))
 
+    def policy_simulation_report(
+        self, limit: int | None = None, policy: str | None = None
+    ) -> dict[str, Any]:
+        params: dict[str, Any] = {}
+        if limit is not None:
+            params["limit"] = limit
+        if policy is not None:
+            params["policy"] = policy
+        return self._get(_query_path("/api/v1/simulation/policy-delta", params))
+
     def proposals(
         self,
         limit: int | None = None,

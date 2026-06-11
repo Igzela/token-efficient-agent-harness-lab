@@ -53,6 +53,8 @@ import type {
   ProposalListResponse,
   ProposalResponse,
   SimulationReportResponse,
+  PolicySimulationResult,
+  PolicySimulationReportOptions,
   BackupListResponse,
   BackupCreateResponse,
   BackupDeleteResponse,
@@ -228,6 +230,13 @@ export class AgentControlPlaneClient {
   simulationReport(options: SimulationReportOptions = {}): Promise<SimulationReportResponse> {
     return this.getJson<SimulationReportResponse>(`/api/v1/simulation/report${queryString({
       limit: options.limit,
+    })}`);
+  }
+
+  policySimulationReport(options: PolicySimulationReportOptions = {}): Promise<PolicySimulationResult> {
+    return this.getJson<PolicySimulationResult>(`/api/v1/simulation/policy-delta${queryString({
+      limit: options.limit,
+      policy: options.policy,
     })}`);
   }
 

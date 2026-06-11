@@ -83,6 +83,10 @@ fn axum_routes() -> Router<AxumApiState> {
             get(dispatch::api_simulation_report).options(cors_preflight),
         )
         .route(
+            "/api/v1/simulation/policy-delta",
+            get(dispatch::api_policy_simulation_report).options(cors_preflight),
+        )
+        .route(
             "/api/v1/proposals",
             get(dispatch::api_policy_proposals)
                 .post(dispatch::api_create_policy_proposal)

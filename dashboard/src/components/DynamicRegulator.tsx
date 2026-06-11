@@ -8,6 +8,7 @@ import {
   fetchFeedbackPatterns,
   fetchFeedbackTraces,
   fetchProposals,
+  fetchPolicySimulationReport,
   fetchSimulationReport,
   rejectProposal,
   rollbackProposal,
@@ -18,6 +19,7 @@ import type {
   FeedbackCostOfPassResponse,
   FeedbackPatternListResponse,
   FeedbackTraceListResponse,
+  PolicySimulationResult,
   SimulationReportResponse,
 } from "@/lib/types";
 import { ConfirmDialog, type ConfirmAction } from "./ConfirmDialog";
@@ -31,6 +33,7 @@ type RegulatorData = {
   costs: FeedbackCostOfPassResponse | null;
   patterns: FeedbackPatternListResponse | null;
   simulation: SimulationReportResponse | null;
+  policySimulation: PolicySimulationResult | null;
   proposals: ControlledLoopProposal[];
 };
 
@@ -45,6 +48,7 @@ const emptyData: RegulatorData = {
   costs: null,
   patterns: null,
   simulation: null,
+  policySimulation: null,
   proposals: [],
 };
 
@@ -86,15 +90,17 @@ export function DynamicRegulator() {
       fetchFeedbackCostOfPass(),
       fetchFeedbackPatterns({ limit: 20 }),
       fetchSimulationReport({ limit: 50 }),
+      fetchPolicySimulationReport({ limit: 50, policy: "complexity_aware" }),
       fetchProposals({ limit: 20 }),
     ])
-      .then(([metrics, traces, costs, patterns, simulation, proposals]) => {
+      .then(([metrics, traces, costs, patterns, simulation, policySimulation, proposals]) => {
         setData({
           metrics,
           traces,
           costs,
           patterns,
           simulation,
+          policySimulation,
           proposals: proposals.proposals,
         });
         setError(null);
@@ -141,6 +147,7 @@ export function DynamicRegulator() {
   const costRows = data.costs?.rows ?? [];
   const patternRows = data.patterns?.patterns ?? [];
   const simulationRows = data.simulation?.report ?? [];
+  const policyDelta = data.policySimulation;
 
   return (
     <section className="card stack">
@@ -376,6 +383,54 @@ export function DynamicRegulator() {
 
           <div className="subcard stack">
             <h3>Shadow Simulation</h3>
+            <p style={{ fontSize: "0.8rem", color: "var(--text-muted, #888)", margin: 0 }}>
+              shadow-only, no live routing effect
+            </p>
+            {policyDelta && policyDelta.input_trace_count > 0 && (
+              <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: "8px", marginTop: "4px" }}>
+                <div className="subcard" style={{ padding: "8px" }}>
+                  <div style={{ fontSize: "0.75rem", color: "var(--text-muted, #888)" }}>Success Rate</div>
+                  <div style={{ fontWeight: 600 }}>
+                    {formatRate(policyDelta.actual_success_rate)} → {formatRate(policyDelta.simulated_success_rate)}
+                  </div>
+                  <div style={{ color: policyDelta.success_rate_delta >= 0 ? "var(--color-ok, #27ae60)" : "var(--color-risk, #e74c3c)", fontWeight: 600 }}>
+                    {policyDelta.success_rate_delta >= 0 ? "+" : ""}{formatRate(policyDelta.success_rate_delta)}
+                  </div>
+                </div>
+                <div className="subcard" style={{ padding: "8px" }}>
+                  <div style={{ fontSize: "0.75rem", color: "var(--text-muted, #888)" }}>Avg Cost</div>
+                  <div style={{ fontWeight: 600 }}>
+                    {formatCost(policyDelta.actual_average_cost)} → {formatCost(policyDelta.simulated_average_cost)}
+                  </div>
+                  <div style={{ color: policyDelta.cost_delta <= 0 ? "var(--color-ok, #27ae60)" : "var(--color-risk, #e74c3c)", fontWeight: 600 }}>
+                    {policyDelta.cost_delta >= 0 ? "+" : ""}{formatCost(policyDelta.cost_delta)}
+                  </div>
+                </div>
+                <div className="subcard" style={{ padding: "8px" }}>
+                  <div style={{ fontSize: "0.75rem", color: "var(--text-muted, #888)" }}>Avg Latency</div>
+                  <div style={{ fontWeight: 600 }}>
+                    {Math.round(policyDelta.actual_average_latency_ms)}ms → {Math.round(policyDelta.simulated_average_latency_ms)}ms
+                  </div>
+                  <div style={{ color: policyDelta.latency_delta <= 0 ? "var(--color-ok, #27ae60)" : "var(--color-risk, #e74c3c)", fontWeight: 600 }}>
+                    {policyDelta.latency_delta >= 0 ? "+" : ""}{Math.round(policyDelta.latency_delta)}ms
+                  </div>
+                </div>
+                <div className="subcard" style={{ padding: "8px" }}>
+                  <div style={{ fontSize: "0.75rem", color: "var(--text-muted, #888)" }}>Human Review Rate</div>
+                  <div style={{ fontWeight: 600 }}>
+                    {formatRate(policyDelta.actual_human_review_rate)} → {formatRate(policyDelta.simulated_human_review_rate)}
+                  </div>
+                  <div style={{ color: policyDelta.human_review_rate_delta <= 0 ? "var(--color-ok, #27ae60)" : "var(--color-warn, #f39c12)", fontWeight: 600 }}>
+                    {policyDelta.human_review_rate_delta >= 0 ? "+" : ""}{formatRate(policyDelta.human_review_rate_delta)}
+                  </div>
+                </div>
+              </div>
+            )}
+            {policyDelta && (
+              <div style={{ fontSize: "0.75rem", color: "var(--text-muted, #888)" }}>
+                scenario: {policyDelta.scenario_id} | candidate: {policyDelta.candidate_policy_id} | traces: {policyDelta.input_trace_count}
+              </div>
+            )}
             {simulationRows.length === 0 ? (
               <EmptyState title="No simulation rows" description="Shadow routes appear after dispatch decisions include diagnostic alternatives." />
             ) : (

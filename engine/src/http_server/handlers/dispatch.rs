@@ -258,6 +258,30 @@ pub(crate) async fn api_simulation_report(
     ))
 }
 
+pub(crate) async fn api_policy_simulation_report(
+    State(state): State<AxumApiState>,
+    headers: HeaderMap,
+    uri: Uri,
+    Extension(request_id): Extension<RequestId>,
+    Query(params): Query<std::collections::HashMap<String, String>>,
+) -> Result<impl IntoResponse, ApiError> {
+    authorize(&state, &headers, "dispatch:read", uri.path(), &request_id.0)?;
+    let store = require_store(&state)?;
+    let limit = query_i64(&params, "limit", 100).clamp(0, 500);
+    let policy = params
+        .get("policy")
+        .cloned()
+        .unwrap_or_else(|| "cheapest".to_string());
+    Ok((
+        cors_headers(),
+        Json(
+            store
+                .policy_simulation_report_with_policy(limit, &policy)
+                .map_err(internal_error)?,
+        ),
+    ))
+}
+
 pub(crate) async fn api_policy_proposals(
     State(state): State<AxumApiState>,
     headers: HeaderMap,

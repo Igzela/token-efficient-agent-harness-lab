@@ -20,6 +20,7 @@ import type {
   QueueStatusResponse,
   QueueTenantListResponse,
   SchedulerStatusResponse,
+  PolicySimulationResult,
   SimulationReportResponse,
   SupervisedPatchArtifactCaptureResponse,
   SupervisedPatchArtifactListResponse,
@@ -268,6 +269,10 @@ export async function fetchFeedbackCostOfPass(params: {
 
 export async function fetchSimulationReport(params: { limit?: number } = {}): Promise<SimulationReportResponse> {
   return fetchJson<SimulationReportResponse>(withQuery("/api/v1/simulation/report", params));
+}
+
+export async function fetchPolicySimulationReport(params: { limit?: number; policy?: string } = {}): Promise<PolicySimulationResult> {
+  return fetchJson<PolicySimulationResult>(withQuery("/api/v1/simulation/policy-delta", params));
 }
 
 export async function fetchProposals(params: {

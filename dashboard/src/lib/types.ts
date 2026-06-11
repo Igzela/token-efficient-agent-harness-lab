@@ -310,6 +310,28 @@ export interface SimulationReportResponse {
   summary?: Record<string, unknown>;
 }
 
+export interface PolicySimulationResult {
+  schema_version: string;
+  scenario_id: string;
+  candidate_policy_id: string;
+  input_trace_count: number;
+  actual_success_rate: number;
+  simulated_success_rate: number;
+  success_rate_delta: number;
+  actual_average_cost: number;
+  simulated_average_cost: number;
+  cost_delta: number;
+  actual_average_latency_ms: number;
+  simulated_average_latency_ms: number;
+  latency_delta: number;
+  actual_human_review_rate: number;
+  simulated_human_review_rate: number;
+  human_review_rate_delta: number;
+  assumptions: string[];
+  evidence_trace_ids: string[];
+  safety: string;
+}
+
 export type ProposalStatus =
   | "pending"
   | "approved"

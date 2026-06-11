@@ -3,7 +3,9 @@ use serde_json::{json, Value};
 use std::collections::BTreeMap;
 
 use super::{append_audit_locked, collect_values, str_at, DatabaseConnection, LocalProductStore};
-use crate::feedback::{OutcomeAttributor, PatternDetector, RunTraceRecorder};
+use crate::feedback::{
+    OutcomeAttributor, PatternDetector, PolicyCandidate, PolicySimulator, RunTraceRecorder,
+};
 
 impl LocalProductStore {
     pub fn record_dispatch(
@@ -577,6 +579,33 @@ impl LocalProductStore {
             "report": dispatch_reports,
             "dispatches": dispatch_reports,
         }))
+    }
+
+    pub fn policy_simulation_report(&self, limit: i64) -> Result<Value, String> {
+        self.policy_simulation_report_with_policy(limit, "cheapest")
+    }
+
+    pub fn policy_simulation_report_with_policy(
+        &self,
+        limit: i64,
+        policy_name: &str,
+    ) -> Result<Value, String> {
+        let limit = limit.clamp(0, 500);
+        let policy = match policy_name {
+            "balanced" => PolicyCandidate::Balanced,
+            "strong" => PolicyCandidate::Strong,
+            "complexity_aware" => PolicyCandidate::ComplexityAware,
+            _ => PolicyCandidate::Cheapest,
+        };
+
+        let dispatches = self.dispatches_for_read_models(limit, 0)?;
+        let traces: Vec<_> = dispatches
+            .iter()
+            .map(RunTraceRecorder::record_from_dispatch)
+            .collect();
+
+        let result = PolicySimulator::simulate(&traces, &policy);
+        serde_json::to_value(&result).map_err(|e| e.to_string())
     }
 
     fn dispatches_for_read_models(&self, limit: i64, offset: i64) -> Result<Vec<Value>, String> {

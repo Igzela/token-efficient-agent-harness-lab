@@ -7013,3 +7013,169 @@ async fn test_cost_of_pass_still_works() {
     assert_eq!(code_review_row["dispatch_count"].as_i64().unwrap(), 2);
     assert!(code_review_row["average_cost_usd"].as_f64().unwrap() > 0.0);
 }
+
+#[tokio::test]
+async fn test_policy_simulation_report_empty() {
+    let dir = tempdir().unwrap();
+    let store = LocalProductStore::new(dir.path().join("psim-empty.db")).unwrap();
+    let app = build_axum_router(AxumApiState::new().with_local_store(store));
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method(Method::GET)
+                .uri("/api/v1/simulation/policy-delta")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = response_json(response).await;
+    assert_eq!(body["schema_version"], "policy_simulation_report.v1");
+    assert_eq!(body["input_trace_count"], 0);
+    assert_eq!(body["safety"], "shadow_only / no_live_influence");
+    assert_eq!(body["success_rate_delta"], 0.0);
+}
+
+#[tokio::test]
+async fn test_policy_simulation_report_with_traces() {
+    let dir = tempdir().unwrap();
+    let store = LocalProductStore::new(dir.path().join("psim-traces.db")).unwrap();
+    store
+        .record_dispatch(
+            "Pass dispatch",
+            "api",
+            &json!({
+                "record": {"dispatch_id": "disp-pass", "final_status": "completed"},
+                "decision": {"selected_tier": "balanced_worker", "budget_reservation": {"reserved_cost": 0.05}, "shadow_routes": []},
+                "analysis": {"task_class": "implementation"},
+                "execution_result": {"executor_type": "noop", "status": "completed", "success": true, "latency_ms": 1000, "estimated_cost": 0.03},
+                "evaluation_result": {"status": "pass"}
+            }),
+            "test",
+        )
+        .unwrap();
+    store
+        .record_dispatch(
+            "Fail dispatch",
+            "api",
+            &json!({
+                "record": {"dispatch_id": "disp-fail", "final_status": "failed"},
+                "decision": {"selected_tier": "cheap_executor", "budget_reservation": {"reserved_cost": 0.02}, "shadow_routes": []},
+                "analysis": {"task_class": "code_review"},
+                "execution_result": {"executor_type": "noop", "status": "failed", "success": false, "latency_ms": 500, "estimated_cost": 0.01},
+                "evaluation_result": {"status": "fail"}
+            }),
+            "test",
+        )
+        .unwrap();
+
+    let app = build_axum_router(AxumApiState::new().with_local_store(store));
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method(Method::GET)
+                .uri("/api/v1/simulation/policy-delta?policy=cheapest")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = response_json(response).await;
+    assert_eq!(body["schema_version"], "policy_simulation_report.v1");
+    assert_eq!(body["input_trace_count"], 2);
+    assert_eq!(body["safety"], "shadow_only / no_live_influence");
+    assert!(body["success_rate_delta"].is_f64());
+    assert!(body["cost_delta"].is_f64());
+    assert!(body["latency_delta"].is_f64());
+    assert!(body["human_review_rate_delta"].is_f64());
+    assert!(body["actual_success_rate"].is_f64());
+    assert!(body["simulated_success_rate"].is_f64());
+    assert_eq!(body["evidence_trace_ids"].as_array().unwrap().len(), 2);
+}
+
+#[tokio::test]
+async fn test_shadow_simulation_does_not_alter_dispatch_tier() {
+    let dir = tempdir().unwrap();
+    let store = LocalProductStore::new(dir.path().join("psim-notier.db")).unwrap();
+    store
+        .record_dispatch(
+            "Tier check",
+            "api",
+            &json!({
+                "record": {"dispatch_id": "disp-tier", "final_status": "completed"},
+                "decision": {"selected_tier": "balanced_worker", "budget_reservation": {"reserved_cost": 0.05}, "shadow_routes": []},
+                "analysis": {"task_class": "implementation"},
+                "execution_result": {"executor_type": "noop", "status": "completed", "success": true, "latency_ms": 1000},
+                "evaluation_result": {"status": "pass"}
+            }),
+            "test",
+        )
+        .unwrap();
+
+    let _report = store.policy_simulation_report(10).unwrap();
+
+    let dispatches = store.list_dispatches(10).unwrap();
+    assert_eq!(dispatches.len(), 1);
+    let bundle = &dispatches[0]["bundle"];
+    assert_eq!(bundle["decision"]["selected_tier"], "balanced_worker");
+}
+
+#[tokio::test]
+async fn test_shadow_simulation_does_not_alter_executor_type() {
+    let dir = tempdir().unwrap();
+    let store = LocalProductStore::new(dir.path().join("psim-noexec.db")).unwrap();
+    store
+        .record_dispatch(
+            "Exec check",
+            "api",
+            &json!({
+                "record": {"dispatch_id": "disp-exec", "final_status": "completed"},
+                "decision": {"selected_tier": "strong_planner", "budget_reservation": {"reserved_cost": 0.1}, "shadow_routes": []},
+                "analysis": {"task_class": "architecture"},
+                "execution_result": {"executor_type": "cli", "status": "completed", "success": true, "latency_ms": 5000},
+                "evaluation_result": {"status": "pass"}
+            }),
+            "test",
+        )
+        .unwrap();
+
+    let _report = store
+        .policy_simulation_report_with_policy(10, "cheapest")
+        .unwrap();
+
+    let dispatches = store.list_dispatches(10).unwrap();
+    assert_eq!(
+        dispatches[0]["bundle"]["execution_result"]["executor_type"],
+        "cli"
+    );
+}
+
+#[tokio::test]
+async fn test_shadow_simulation_does_not_mutate_routing_policy() {
+    let dir = tempdir().unwrap();
+    let store = LocalProductStore::new(dir.path().join("psim-nopol.db")).unwrap();
+    store
+        .record_dispatch(
+            "Policy check",
+            "api",
+            &json!({
+                "record": {"dispatch_id": "disp-pol", "final_status": "completed"},
+                "decision": {"selected_tier": "balanced_worker", "routing_policy": "default", "budget_reservation": {"reserved_cost": 0.05}, "shadow_routes": []},
+                "analysis": {"task_class": "implementation"},
+                "execution_result": {"executor_type": "noop", "status": "completed", "success": true},
+                "evaluation_result": {"status": "pass"}
+            }),
+            "test",
+        )
+        .unwrap();
+
+    let _report = store.policy_simulation_report(10).unwrap();
+
+    let dispatches = store.list_dispatches(10).unwrap();
+    assert_eq!(
+        dispatches[0]["bundle"]["decision"]["routing_policy"],
+        "default"
+    );
+}
