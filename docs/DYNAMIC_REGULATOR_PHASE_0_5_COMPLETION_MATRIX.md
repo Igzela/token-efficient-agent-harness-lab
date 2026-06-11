@@ -71,18 +71,18 @@ Generated: 2026-06-11 | PR: #31 | Commit: 713af59
 - Context layers validation (`validate_context_layers`), advisor/model context pack validation
 
 **Implemented in PR #33:**
-- ContextBridge — output-field-to-input-field mapping based on DAG edge metadata `field_mapping`
-- ContextBudgetAllocator — cross-node budget distribution proportional to complexity/relevance
-- `assemble_context_injection_with_bridge()` — bridge-aware context assembly
-- Edge metadata `field_mapping` for selective output injection
-- `context_injection_for_node` updated to use bridge + allocator
-- 10 acceptance tests covering bridge mapping, budget allocation, tick integration, edge cases
+- ContextBridge — `bridge_context_fields()` maps output fields to context fields based on edge metadata `field_mapping`; passthrough when no mapping
+- ContextBudgetAllocator — `allocate_context_budget()` distributes budget across predecessors deterministically by `from_node_id` sort order
+- `assemble_context_injection_with_bridge()` — uses `allocate_context_budget()` for budget distribution, then applies ContextBridge per source
+- Edge metadata `field_mapping` — `context_injection_for_node` reads `edge_json.field_mapping` from `workflow_run_edges`
+- Context injection persistence — `persist_context_injection()` writes `context_injection` into `node_json` before execution, surviving Phase 3 result merge
+- 11 acceptance tests + 14 unit tests
 
 **Missing from plan:**
 - None. Phase 1 is complete.
 
 **Tests Present:**
-- 12 tests total: `assembles_sources_with_budget_metadata` (assembly.rs), `disabled_config_returns_none` (assembly.rs), `workflow_tick_injects_completed_predecessor_context_into_metadata` (test_local_product_store.rs), plus 10 new acceptance tests for ContextBridge field mapping, ContextBudgetAllocator cross-node distribution, tick integration with bridge, and edge cases (no predecessors, multiple predecessors, additive behavior, budget truncation)
+- 25 tests total: 4 bridge unit tests (assembly.rs), 6 budget allocator unit tests (budget.rs), 4 assembly_with_bridge unit tests (assembly.rs), 11 integration tests (test_local_product_store.rs) — including `context_assembly_persisted_in_node_json_directly` which reads back node via `get_workflow_run` and asserts `node_json.context_injection` survives execution
 
 **Tests Missing:**
 - None for Phase 1 scope.

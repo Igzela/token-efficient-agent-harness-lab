@@ -966,10 +966,11 @@ impl LocalProductStore {
                     self.context_injection_for_node(run_id, &node_id)?
                 {
                     if let Some(obj) = node_metadata.as_object_mut() {
-                        obj.insert("context_injection".to_string(), context_injection);
+                        obj.insert("context_injection".to_string(), context_injection.clone());
                     } else {
-                        node_metadata = json!({"context_injection": context_injection});
+                        node_metadata = json!({"context_injection": context_injection.clone()});
                     }
+                    self.persist_context_injection(run_id, &node_id, &context_injection)?;
                 }
                 // Inject command override if provided
                 if let Some(cmd) = command_override {
@@ -1364,6 +1365,58 @@ impl LocalProductStore {
         Ok(assemble_context_injection_with_bridge(
             node_id, &sources, &mappings, &config,
         ))
+    }
+
+    fn persist_context_injection(
+        &self,
+        run_id: &str,
+        node_id: &str,
+        context_injection: &Value,
+    ) -> Result<(), String> {
+        match &self.db {
+            DatabaseConnection::Sqlite(_) => self.with_conn(|conn| {
+                let node_json_text: String = conn
+                    .query_row(
+                        "SELECT node_json FROM workflow_run_nodes WHERE run_id = ?1 AND node_id = ?2",
+                        params![run_id, node_id],
+                        |row| row.get(0),
+                    )
+                    .map_err(|e| e.to_string())?;
+                let mut node_json: Value =
+                    serde_json::from_str(&node_json_text).unwrap_or(Value::Null);
+                if let Some(obj) = node_json.as_object_mut() {
+                    obj.insert("context_injection".to_string(), context_injection.clone());
+                }
+                conn.execute(
+                    "UPDATE workflow_run_nodes SET node_json = ?1 WHERE run_id = ?2 AND node_id = ?3",
+                    params![node_json.to_string(), run_id, node_id],
+                )
+                .map_err(|e| e.to_string())?;
+                Ok(())
+            }),
+            #[cfg(feature = "pg")]
+            DatabaseConnection::Pg(_) => self.with_pg_conn(|client| {
+                let row = client
+                    .query_one(
+                        "SELECT node_json FROM workflow_run_nodes WHERE run_id = $1 AND node_id = $2",
+                        &[&run_id, &node_id],
+                    )
+                    .map_err(|e| e.to_string())?;
+                let node_json_text: String = row.get(0);
+                let mut node_json: Value =
+                    serde_json::from_str(&node_json_text).unwrap_or(Value::Null);
+                if let Some(obj) = node_json.as_object_mut() {
+                    obj.insert("context_injection".to_string(), context_injection.clone());
+                }
+                client
+                    .execute(
+                        "UPDATE workflow_run_nodes SET node_json = $1 WHERE run_id = $2 AND node_id = $3",
+                        &[&node_json.to_string(), &run_id, &node_id],
+                    )
+                    .map_err(|e| e.to_string())?;
+                Ok(())
+            }),
+        }
     }
 
     pub fn validate_approval_binding(

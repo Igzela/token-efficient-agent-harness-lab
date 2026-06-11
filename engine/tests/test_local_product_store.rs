@@ -2516,3 +2516,44 @@ fn context_assembly_persisted_in_node_metadata() {
     assert_eq!(injection["target_node_id"], "node-b");
     assert_eq!(injection["sources"][0]["from_node_id"], "node-a");
 }
+
+#[test]
+fn context_assembly_persisted_in_node_json_directly() {
+    let dir = tempdir().unwrap();
+    let store = LocalProductStore::new(dir.path().join("test.db")).unwrap();
+    let plan = store
+        .create_workflow_plan(
+            "Plan persistence check",
+            "api",
+            "actor",
+            |ids, _created_at| Ok(make_workflow_plan_with_nodes(ids)),
+        )
+        .unwrap();
+    store
+        .create_workflow_run_from_plan(plan["plan_id"].as_str().unwrap(), "actor")
+        .unwrap();
+
+    let executor = ContextEchoExecutor;
+    store
+        .tick_with_executor("run-0001", "actor", 0, &executor)
+        .unwrap();
+    store
+        .tick_with_executor("run-0001", "actor", 0, &executor)
+        .unwrap();
+
+    let run = store.get_workflow_run("run-0001").unwrap().unwrap();
+    let node_b = run["nodes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|n| n["node_id"] == "node-b")
+        .unwrap();
+
+    let ci = node_b
+        .get("context_injection")
+        .expect("node-b node_json must have context_injection field persisted");
+    assert_eq!(ci["schema_version"], "context_injection.v1");
+    assert_eq!(ci["target_node_id"], "node-b");
+    assert_eq!(ci["sources"][0]["from_node_id"], "node-a");
+    assert_eq!(ci["injection_surface"], "node_metadata_only");
+}

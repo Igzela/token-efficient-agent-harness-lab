@@ -1,5 +1,7 @@
 use serde_json::{json, Value};
 
+use super::budget::allocate_context_budget;
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct ContextAssemblyConfig {
     pub enabled: bool,
@@ -95,28 +97,27 @@ pub fn assemble_context_injection_with_bridge(
         return None;
     }
 
-    let mut remaining = config.max_context_tokens;
+    let allocations = allocate_context_budget(sources, config.max_context_tokens);
     let mut assembled = Vec::new();
     let mut total_estimated_tokens = 0_usize;
     let mut truncated = false;
 
     for (i, source) in sources.iter().enumerate() {
-        if remaining == 0 {
-            truncated = true;
-            break;
-        }
         let mapping = field_mappings.get(i).and_then(|m| m.as_ref());
         let (bridged_output, mapping_decisions) = bridge_context_fields(&source.output, mapping);
         let output_text = output_to_text(&bridged_output);
         let estimated_tokens = estimate_tokens(&output_text);
-        let include_tokens = estimated_tokens.min(remaining);
+        let (_, allocated_tokens, was_truncated) = &allocations[i];
+        let include_tokens = *allocated_tokens;
         let included_output = if estimated_tokens > include_tokens {
             truncated = true;
             Value::String(truncate_to_tokens(&output_text, include_tokens))
         } else {
             bridged_output
         };
-        remaining = remaining.saturating_sub(include_tokens);
+        if *was_truncated {
+            truncated = true;
+        }
         total_estimated_tokens += estimated_tokens;
 
         assembled.push(json!({
@@ -124,7 +125,7 @@ pub fn assemble_context_injection_with_bridge(
             "from_node_id": source.from_node_id,
             "estimated_tokens": estimated_tokens,
             "included_tokens": include_tokens,
-            "truncated": estimated_tokens > include_tokens,
+            "truncated": *was_truncated,
             "mapping_decisions": mapping_decisions,
             "output": included_output,
         }));
