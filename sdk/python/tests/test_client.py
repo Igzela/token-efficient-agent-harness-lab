@@ -296,6 +296,97 @@ class ClientLocalStateTest(unittest.TestCase):
         self.assertEqual(req.full_url, "http://localhost:8080/api/v1/metrics")
 
     @patch("agent_control_plane_sdk.client.urlopen")
+    def test_dispatch_metrics_sends_limit(self, mock_urlopen):
+        mock_urlopen.return_value = mock_response({"schema_version": "axum_api.v1", "metrics": []})
+        client = AgentControlPlaneClient("http://localhost:8080")
+        client.dispatch_metrics(limit=30)
+
+        args, _ = mock_urlopen.call_args
+        req = args[0]
+        self.assertEqual(req.method, "GET")
+        self.assertEqual(req.full_url, "http://localhost:8080/api/v1/dispatch-metrics?limit=30")
+
+    @patch("agent_control_plane_sdk.client.urlopen")
+    def test_feedback_readers_send_filters(self, mock_urlopen):
+        mock_urlopen.return_value = mock_response({"schema_version": "axum_api.v1", "traces": [], "rows": []})
+        client = AgentControlPlaneClient("http://localhost:8080")
+        client.feedback_traces(
+            limit=25,
+            offset=50,
+            task_class="docs cleanup",
+            tier="standard",
+            status="passed",
+        )
+        client.feedback_cost_of_pass(task_class="docs cleanup", tier="standard")
+
+        urls = [call.args[0].full_url for call in mock_urlopen.call_args_list]
+        self.assertEqual(
+            urls,
+            [
+                "http://localhost:8080/api/v1/feedback/traces?limit=25&offset=50&task_class=docs+cleanup&tier=standard&status=passed",
+                "http://localhost:8080/api/v1/feedback/cost-of-pass?task_class=docs+cleanup&tier=standard",
+            ],
+        )
+
+    @patch("agent_control_plane_sdk.client.urlopen")
+    def test_simulation_report_sends_limit(self, mock_urlopen):
+        mock_urlopen.return_value = mock_response({"schema_version": "axum_api.v1", "report": []})
+        client = AgentControlPlaneClient("http://localhost:8080")
+        client.simulation_report(limit=12)
+
+        args, _ = mock_urlopen.call_args
+        req = args[0]
+        self.assertEqual(req.method, "GET")
+        self.assertEqual(req.full_url, "http://localhost:8080/api/v1/simulation/report?limit=12")
+
+    @patch("agent_control_plane_sdk.client.urlopen")
+    def test_proposal_methods_call_controlled_loop_endpoints(self, mock_urlopen):
+        mock_urlopen.return_value = mock_response({
+            "schema_version": "axum_api.v1",
+            "proposal": {"proposal_id": "proposal-0001", "status": "pending"},
+            "proposals": [],
+        })
+        client = AgentControlPlaneClient("http://localhost:8080")
+        client.proposals(limit=20, offset=40, status="pending")
+        client.create_proposal(
+            title="Tune docs routing",
+            summary="Use standard tier for docs cleanup",
+            task_class="docs cleanup",
+            tier="standard",
+            payload={"selected_tier": "standard"},
+            evidence={"samples": 10},
+        )
+        client.proposal("proposal/0001")
+        client.approve_proposal("proposal/0001", actor="human", reason="reviewed")
+        client.reject_proposal("proposal/0001", reason="insufficient evidence")
+        client.rollback_proposal("proposal/0001", reason="regression")
+        client.deactivate_proposal("proposal/0001", reason="superseded")
+
+        calls = [call.args[0] for call in mock_urlopen.call_args_list]
+        self.assertEqual(calls[0].method, "GET")
+        self.assertEqual(calls[0].full_url, "http://localhost:8080/api/v1/proposals?limit=20&offset=40&status=pending")
+        self.assertEqual(calls[1].method, "POST")
+        self.assertEqual(calls[1].full_url, "http://localhost:8080/api/v1/proposals")
+        self.assertEqual(json.loads(calls[1].data), {
+            "payload": {"selected_tier": "standard"},
+            "title": "Tune docs routing",
+            "summary": "Use standard tier for docs cleanup",
+            "task_class": "docs cleanup",
+            "tier": "standard",
+            "evidence": {"samples": 10},
+        })
+        self.assertEqual(calls[2].method, "GET")
+        self.assertIn("/api/v1/proposals/proposal%2F0001", calls[2].full_url)
+        self.assertIn("/api/v1/proposals/proposal%2F0001/approve", calls[3].full_url)
+        self.assertEqual(json.loads(calls[3].data), {"actor": "human", "reason": "reviewed", "confirm_policy_override": True})
+        self.assertIn("/api/v1/proposals/proposal%2F0001/reject", calls[4].full_url)
+        self.assertEqual(json.loads(calls[4].data), {"reason": "insufficient evidence"})
+        self.assertIn("/api/v1/proposals/proposal%2F0001/rollback", calls[5].full_url)
+        self.assertEqual(json.loads(calls[5].data), {"reason": "regression", "confirm_policy_override": True})
+        self.assertIn("/api/v1/proposals/proposal%2F0001/deactivate", calls[6].full_url)
+        self.assertEqual(json.loads(calls[6].data), {"reason": "superseded", "confirm_policy_override": True})
+
+    @patch("agent_control_plane_sdk.client.urlopen")
     def test_provider_audit_sends_pagination_query_params(self, mock_urlopen):
         mock_urlopen.return_value = mock_response({"schema_version": "axum_api.v1", "events": []})
         client = AgentControlPlaneClient("http://localhost:8080")

@@ -18,7 +18,7 @@ This repository is the Token-Efficient Agent Harness Lab: a local deterministic 
 - HybridExecutor with `ACP_EXECUTION_MODE`: COMPLETE
 
 **Key facts:**
-- 1390 Rust tests pass, 0 failures
+- 1396 Rust tests pass, 0 failures
 - Architecture Refactor R-series sealed at R7. R8 is not approved.
 - Post-R7 wire/type governance hardening implemented: `scripts/check_wire_codegen_drift.sh`
 

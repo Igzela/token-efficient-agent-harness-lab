@@ -11,7 +11,7 @@ use crate::dispatch_ledger::{DispatchBundle, DispatchLedger};
 use crate::evaluation_stub::{EvaluationResult, EvaluationStub, Evaluator};
 use crate::executor_adapter::{ExecutionResult, Executor, NoopExecutor};
 use crate::harness::advisor::{AdvisorBroker, AdvisorContextPack};
-use crate::model_selector::ModelSelector;
+use crate::model_selector::{DispatchRoutingPolicy, ModelSelector};
 use crate::provider::executor::make_not_executed_result;
 use crate::runtime::FixtureRuntime;
 use crate::task_analyzer::{RuleBasedTaskAnalyzer, TaskAnalysis};
@@ -142,6 +142,16 @@ impl DispatchEngine {
         self.dispatch_bundle(raw_request, request_source).to_value()
     }
 
+    pub fn dispatch_with_policy(
+        &self,
+        raw_request: &str,
+        request_source: &str,
+        policy: DispatchRoutingPolicy,
+    ) -> Value {
+        self.dispatch_bundle_with_policy(raw_request, request_source, policy)
+            .to_value()
+    }
+
     fn execute_with_fallback(
         &self,
         tier: &str,
@@ -157,6 +167,25 @@ impl DispatchEngine {
     }
 
     pub fn dispatch_bundle(&self, raw_request: &str, request_source: &str) -> DispatchBundle {
+        self.dispatch_bundle_with_selector(raw_request, request_source, &self.selector)
+    }
+
+    pub fn dispatch_bundle_with_policy(
+        &self,
+        raw_request: &str,
+        request_source: &str,
+        policy: DispatchRoutingPolicy,
+    ) -> DispatchBundle {
+        let selector = ModelSelector::new(Some(policy));
+        self.dispatch_bundle_with_selector(raw_request, request_source, &selector)
+    }
+
+    fn dispatch_bundle_with_selector(
+        &self,
+        raw_request: &str,
+        request_source: &str,
+        selector: &ModelSelector,
+    ) -> DispatchBundle {
         let mut runtime = FixtureRuntime::new();
         let dispatch_id = format!(
             "disp-{:04}",
@@ -167,7 +196,7 @@ impl DispatchEngine {
         let analysis =
             self.analyzer
                 .analyze_with_runtime(raw_request, request_source, &mut runtime);
-        let selection = self.selector.select(&analysis);
+        let selection = selector.select(&analysis);
         let budget_reservation = self.budget_manager.create_reservation(
             &decision_id,
             &analysis,

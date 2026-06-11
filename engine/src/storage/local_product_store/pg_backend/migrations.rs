@@ -1,6 +1,6 @@
 use super::super::LocalProductStore;
 
-pub(super) const CURRENT_PG_VERSION: i64 = 11;
+pub(super) const CURRENT_PG_VERSION: i64 = 12;
 
 struct PgMigration {
     version: i64,
@@ -51,6 +51,10 @@ const PG_MIGRATIONS: &[PgMigration] = &[
     PgMigration {
         version: 11,
         description: "add scheduler_heartbeat table for persistent heartbeat",
+    },
+    PgMigration {
+        version: 12,
+        description: "add controlled loop policy proposal table",
     },
 ];
 
@@ -120,7 +124,7 @@ impl LocalProductStore {
                     continue;
                 }
                 let sql = match migration.version {
-                    1..=9 | 11 => {
+                    1..=9 | 11 | 12 => {
                         // PG DDL already includes all tables/columns for these versions.
                         // Record as applied with no-op.
                         ""

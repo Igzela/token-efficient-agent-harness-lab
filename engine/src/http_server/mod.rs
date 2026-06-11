@@ -12,7 +12,7 @@ pub const HTTP_SERVER_SCHEMA_VERSION: &str = "http_server.v1";
 pub const AXUM_API_SCHEMA_VERSION: &str = "axum_api.v1";
 pub const MAX_BODY_SIZE: usize = 1_048_576;
 
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
 #[derive(Debug, Clone, PartialEq, Deserialize)]
@@ -129,6 +129,26 @@ pub struct RestoreDryRunApiRequest {
     pub confirm_restore_dry_run: Option<bool>,
 }
 
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
+pub struct PolicyProposalCreateRequest {
+    pub title: Option<String>,
+    pub summary: Option<String>,
+    pub task_class: Option<String>,
+    pub task_domain: Option<String>,
+    pub task_intent: Option<String>,
+    pub tier: Option<String>,
+    pub target_tier: Option<String>,
+    pub payload: Option<Value>,
+    pub evidence: Option<Value>,
+}
+
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+pub struct PolicyProposalActionRequest {
+    pub actor: Option<String>,
+    pub reason: Option<String>,
+    pub confirm_policy_override: Option<bool>,
+}
+
 fn path_parameter(name: &str) -> Value {
     json!({
         "name": name,
@@ -234,6 +254,135 @@ pub fn openapi_document() -> serde_json::Value {
                         "200": {"description": "Dispatch detail"},
                         "404": {"description": "Dispatch not found"}
                     }
+                }
+            },
+            "/api/v1/dispatch-metrics": {
+                "get": {
+                    "summary": "Read derived dispatch metrics",
+                    "description": "Requires dispatch:read scope. Derived from persisted dispatch history; does not affect routing or execution.",
+                    "parameters": [
+                        {"name": "limit", "in": "query", "schema": {"type": "integer", "default": 100, "minimum": 0, "maximum": 500}}
+                    ],
+                    "responses": {"200": {"description": "Dispatch metrics"}}
+                }
+            },
+            "/api/v1/feedback/traces": {
+                "get": {
+                    "summary": "Read replayable feedback traces",
+                    "description": "Requires dispatch:read scope. Derived from persisted dispatch bundles; read-only analysis.",
+                    "parameters": [
+                        {"name": "limit", "in": "query", "schema": {"type": "integer", "default": 100, "minimum": 0, "maximum": 500}},
+                        {"name": "offset", "in": "query", "schema": {"type": "integer", "default": 0, "minimum": 0}},
+                        {"name": "task_class", "in": "query", "schema": {"type": "string"}},
+                        {"name": "tier", "in": "query", "schema": {"type": "string"}},
+                        {"name": "status", "in": "query", "schema": {"type": "string"}}
+                    ],
+                    "responses": {"200": {"description": "Feedback traces"}}
+                }
+            },
+            "/api/v1/feedback/cost-of-pass": {
+                "get": {
+                    "summary": "Read cost-of-pass aggregates",
+                    "description": "Requires cost:read scope. Derived from persisted dispatch bundles; read-only analysis.",
+                    "parameters": [
+                        {"name": "task_class", "in": "query", "schema": {"type": "string"}},
+                        {"name": "tier", "in": "query", "schema": {"type": "string"}}
+                    ],
+                    "responses": {"200": {"description": "Cost-of-pass aggregates"}}
+                }
+            },
+            "/api/v1/simulation/report": {
+                "get": {
+                    "summary": "Read shadow simulation report",
+                    "description": "Requires dispatch:read scope. Shadow routes are diagnostic only and cannot override active routing.",
+                    "parameters": [
+                        {"name": "limit", "in": "query", "schema": {"type": "integer", "default": 100, "minimum": 0, "maximum": 500}}
+                    ],
+                    "responses": {"200": {"description": "Shadow simulation report"}}
+                }
+            },
+            "/api/v1/proposals": {
+                "get": {
+                    "summary": "List controlled-loop policy proposals",
+                    "description": "Requires dispatch:read scope. Proposals are inactive until explicit human approval.",
+                    "parameters": [
+                        {"name": "limit", "in": "query", "schema": {"type": "integer", "default": 100, "minimum": 0, "maximum": 500}},
+                        {"name": "offset", "in": "query", "schema": {"type": "integer", "default": 0, "minimum": 0}},
+                        {"name": "status", "in": "query", "schema": {"type": "string"}}
+                    ],
+                    "responses": {"200": {"description": "Controlled-loop policy proposals"}}
+                },
+                "post": {
+                    "summary": "Create controlled-loop policy proposal",
+                    "description": "Creates a pending safe tier-map override proposal only; activation requires team:admin and confirm_policy_override.",
+                    "requestBody": json_request_body(&[], json!({
+                        "title": {"type": "string"},
+                        "summary": {"type": "string"},
+                        "task_domain": {"type": "string"},
+                        "task_intent": {"type": "string"},
+                        "target_tier": {"type": "string"},
+                        "payload": {"type": "object"},
+                        "evidence": {"type": "object"}
+                    })),
+                    "responses": {"200": {"description": "Created pending proposal"}}
+                }
+            },
+            "/api/v1/proposals/{proposal_id}": {
+                "get": {
+                    "summary": "Get controlled-loop policy proposal",
+                    "parameters": [path_parameter("proposal_id")],
+                    "responses": {"200": {"description": "Proposal detail"}, "404": {"description": "Proposal not found"}}
+                }
+            },
+            "/api/v1/proposals/{proposal_id}/approve": {
+                "post": {
+                    "summary": "Approve controlled-loop policy proposal",
+                    "description": "Requires configured auth, team:admin scope, and confirm_policy_override=true.",
+                    "parameters": [path_parameter("proposal_id")],
+                    "requestBody": json_request_body(&["confirm_policy_override"], json!({
+                        "actor": {"type": "string"},
+                        "reason": {"type": "string"},
+                        "confirm_policy_override": {"type": "boolean"}
+                    })),
+                    "responses": {"200": {"description": "Proposal activated"}, "400": {"description": "Missing confirmation or invalid proposal"}}
+                }
+            },
+            "/api/v1/proposals/{proposal_id}/reject": {
+                "post": {
+                    "summary": "Reject controlled-loop policy proposal",
+                    "description": "Requires configured auth and team:admin scope.",
+                    "parameters": [path_parameter("proposal_id")],
+                    "requestBody": json_request_body(&[], json!({
+                        "actor": {"type": "string"},
+                        "reason": {"type": "string"}
+                    })),
+                    "responses": {"200": {"description": "Proposal rejected"}}
+                }
+            },
+            "/api/v1/proposals/{proposal_id}/deactivate": {
+                "post": {
+                    "summary": "Deactivate controlled-loop policy proposal",
+                    "description": "Requires configured auth, team:admin scope, and confirm_policy_override=true.",
+                    "parameters": [path_parameter("proposal_id")],
+                    "requestBody": json_request_body(&["confirm_policy_override"], json!({
+                        "actor": {"type": "string"},
+                        "reason": {"type": "string"},
+                        "confirm_policy_override": {"type": "boolean"}
+                    })),
+                    "responses": {"200": {"description": "Proposal deactivated"}}
+                }
+            },
+            "/api/v1/proposals/{proposal_id}/rollback": {
+                "post": {
+                    "summary": "Rollback controlled-loop policy proposal",
+                    "description": "Requires configured auth, team:admin scope, and confirm_policy_override=true.",
+                    "parameters": [path_parameter("proposal_id")],
+                    "requestBody": json_request_body(&["confirm_policy_override"], json!({
+                        "actor": {"type": "string"},
+                        "reason": {"type": "string"},
+                        "confirm_policy_override": {"type": "boolean"}
+                    })),
+                    "responses": {"200": {"description": "Proposal rolled back"}}
                 }
             },
             "/api/v1/plans": {

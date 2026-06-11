@@ -63,6 +63,48 @@ fn axum_routes() -> Router<AxumApiState> {
             get(dispatch::api_dispatch_detail).options(cors_preflight),
         )
         .route(
+            "/api/v1/dispatch-metrics",
+            get(dispatch::api_dispatch_metrics).options(cors_preflight),
+        )
+        .route(
+            "/api/v1/feedback/traces",
+            get(dispatch::api_feedback_traces).options(cors_preflight),
+        )
+        .route(
+            "/api/v1/feedback/cost-of-pass",
+            get(dispatch::api_feedback_cost_of_pass).options(cors_preflight),
+        )
+        .route(
+            "/api/v1/simulation/report",
+            get(dispatch::api_simulation_report).options(cors_preflight),
+        )
+        .route(
+            "/api/v1/proposals",
+            get(dispatch::api_policy_proposals)
+                .post(dispatch::api_create_policy_proposal)
+                .options(cors_preflight),
+        )
+        .route(
+            "/api/v1/proposals/:proposal_id",
+            get(dispatch::api_policy_proposal_detail).options(cors_preflight),
+        )
+        .route(
+            "/api/v1/proposals/:proposal_id/approve",
+            post(dispatch::api_approve_policy_proposal).options(cors_preflight),
+        )
+        .route(
+            "/api/v1/proposals/:proposal_id/reject",
+            post(dispatch::api_reject_policy_proposal).options(cors_preflight),
+        )
+        .route(
+            "/api/v1/proposals/:proposal_id/deactivate",
+            post(dispatch::api_deactivate_policy_proposal).options(cors_preflight),
+        )
+        .route(
+            "/api/v1/proposals/:proposal_id/rollback",
+            post(dispatch::api_rollback_policy_proposal).options(cors_preflight),
+        )
+        .route(
             "/api/v1/plans",
             get(plans::api_plans)
                 .post(plans::api_create_plan)

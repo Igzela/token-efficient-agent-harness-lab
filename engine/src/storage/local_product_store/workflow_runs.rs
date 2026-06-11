@@ -2,6 +2,9 @@ use rusqlite::{params, Row};
 use serde_json::{json, Value};
 
 use super::{append_audit_locked, collect_values, DatabaseConnection, LocalProductStore};
+use crate::workflow::context_pack::{
+    assemble_context_injection, ContextAssemblyConfig, ContextSource,
+};
 use crate::workflow::dag_manager::{types::DAGMutationProposal, DAGManager};
 
 pub const WORKFLOW_RUN_SCHEMA_VERSION: &str = "workflow_run.v1";
@@ -959,6 +962,15 @@ impl LocalProductStore {
                         }
                     }
                 }
+                if let Some(context_injection) =
+                    self.context_injection_for_node(run_id, &node_id)?
+                {
+                    if let Some(obj) = node_metadata.as_object_mut() {
+                        obj.insert("context_injection".to_string(), context_injection);
+                    } else {
+                        node_metadata = json!({"context_injection": context_injection});
+                    }
+                }
                 // Inject command override if provided
                 if let Some(cmd) = command_override {
                     if let Some(obj) = node_metadata.as_object_mut() {
@@ -1257,6 +1269,88 @@ impl LocalProductStore {
                 Ok(tick_result)
             }
         }
+    }
+
+    fn context_injection_for_node(
+        &self,
+        run_id: &str,
+        node_id: &str,
+    ) -> Result<Option<Value>, String> {
+        let config = ContextAssemblyConfig::from_env();
+        if !config.enabled {
+            return Ok(None);
+        }
+
+        let sources = match &self.db {
+            DatabaseConnection::Sqlite(_) => self.with_conn(|conn| {
+                let mut stmt = conn
+                    .prepare(
+                        "SELECT e.edge_id, e.from_node_id, n.node_json
+                         FROM workflow_run_edges e
+                         JOIN workflow_run_nodes n
+                           ON n.run_id = e.run_id AND n.node_id = e.from_node_id
+                         WHERE e.run_id = ?1
+                           AND e.to_node_id = ?2
+                           AND n.status = 'completed'
+                         ORDER BY e.edge_id ASC",
+                    )
+                    .map_err(|e| e.to_string())?;
+                let rows = stmt
+                    .query_map(params![run_id, node_id], |row| {
+                        let edge_id: String = row.get(0)?;
+                        let from_node_id: String = row.get(1)?;
+                        let node_json_text: String = row.get(2)?;
+                        let node_json: Value =
+                            serde_json::from_str(&node_json_text).unwrap_or(Value::Null);
+                        Ok((edge_id, from_node_id, node_json))
+                    })
+                    .map_err(|e| e.to_string())?;
+                let mut sources = Vec::new();
+                for row in rows {
+                    let (edge_id, from_node_id, node_json) = row.map_err(|e| e.to_string())?;
+                    if let Some(output) = completed_node_output(&node_json) {
+                        sources.push(ContextSource {
+                            edge_id,
+                            from_node_id,
+                            output,
+                        });
+                    }
+                }
+                Ok(sources)
+            })?,
+            #[cfg(feature = "pg")]
+            DatabaseConnection::Pg(_) => self.with_pg_conn(|client| {
+                let rows = client
+                    .query(
+                        "SELECT e.edge_id, e.from_node_id, n.node_json
+                         FROM workflow_run_edges e
+                         JOIN workflow_run_nodes n
+                           ON n.run_id = e.run_id AND n.node_id = e.from_node_id
+                         WHERE e.run_id = $1
+                           AND e.to_node_id = $2
+                           AND n.status = 'completed'
+                         ORDER BY e.edge_id ASC",
+                        &[&run_id, &node_id],
+                    )
+                    .map_err(|e| e.to_string())?;
+                let mut sources = Vec::new();
+                for row in rows {
+                    let node_json_text: String = row.get(2);
+                    let node_json: Value =
+                        serde_json::from_str(&node_json_text).unwrap_or(Value::Null);
+                    if let Some(output) = completed_node_output(&node_json) {
+                        sources.push(ContextSource {
+                            edge_id: row.get(0),
+                            from_node_id: row.get(1),
+                            output,
+                        });
+                    }
+                }
+                Ok(sources)
+            })?,
+        };
+
+        Ok(assemble_context_injection(node_id, &sources, &config))
     }
 
     pub fn validate_approval_binding(
@@ -3729,6 +3823,23 @@ fn workflow_run_event_row(row: &Row<'_>) -> rusqlite::Result<Value> {
         "details": details,
         "metadata_only": true,
     }))
+}
+
+fn completed_node_output(node_json: &Value) -> Option<Value> {
+    if let Some(output) = node_json.pointer("/result/output") {
+        if !output.is_null() {
+            return Some(output.clone());
+        }
+    }
+    if let Some(result) = node_json.get("result") {
+        if !result.is_null() {
+            return Some(result.clone());
+        }
+    }
+    node_json
+        .get("output_ref")
+        .filter(|value| !value.is_null())
+        .cloned()
 }
 
 fn workflow_run_approvals_locked(

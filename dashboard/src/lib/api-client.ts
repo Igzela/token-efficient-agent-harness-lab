@@ -2,18 +2,24 @@ import type {
   ApiStatus,
   AuditListResponse,
   BackupVerification,
+  DispatchMetricsResponse,
   DecisionDetailResponse,
   DecisionListResponse,
   DecisionStatsResponse,
   DispatchListResponse,
   ExecutorPoolStatusResponse,
+  FeedbackCostOfPassResponse,
+  FeedbackTraceListResponse,
   LocalDashboardState,
   OperationsMetrics,
+  ProposalListResponse,
+  ProposalResponse,
   QueueRunListResponse,
   QueueRunResponse,
   QueueStatusResponse,
   QueueTenantListResponse,
   SchedulerStatusResponse,
+  SimulationReportResponse,
   SupervisedPatchArtifactCaptureResponse,
   SupervisedPatchArtifactListResponse,
   SupervisedPatchArtifactResponse,
@@ -227,6 +233,105 @@ export async function fetchAudit(params: {
 
 export async function fetchMetrics(): Promise<OperationsMetrics> {
   return fetchJson<OperationsMetrics>(`${BASE}/api/v1/metrics`);
+}
+
+export async function fetchDispatchMetrics(params: { limit?: number } = {}): Promise<DispatchMetricsResponse> {
+  return fetchJson<DispatchMetricsResponse>(withQuery("/api/v1/dispatch-metrics", params));
+}
+
+export async function fetchFeedbackTraces(params: {
+  limit?: number;
+  offset?: number;
+  task_class?: string;
+  tier?: string;
+  status?: string;
+} = {}): Promise<FeedbackTraceListResponse> {
+  return fetchJson<FeedbackTraceListResponse>(withQuery("/api/v1/feedback/traces", params));
+}
+
+export async function fetchFeedbackCostOfPass(params: {
+  task_class?: string;
+  tier?: string;
+} = {}): Promise<FeedbackCostOfPassResponse> {
+  return fetchJson<FeedbackCostOfPassResponse>(withQuery("/api/v1/feedback/cost-of-pass", params));
+}
+
+export async function fetchSimulationReport(params: { limit?: number } = {}): Promise<SimulationReportResponse> {
+  return fetchJson<SimulationReportResponse>(withQuery("/api/v1/simulation/report", params));
+}
+
+export async function fetchProposals(params: {
+  limit?: number;
+  offset?: number;
+  status?: string;
+} = {}): Promise<ProposalListResponse> {
+  return fetchJson<ProposalListResponse>(withQuery("/api/v1/proposals", params));
+}
+
+export async function fetchProposalDetail(proposalId: string): Promise<ProposalResponse> {
+  return fetchJson<ProposalResponse>(`${BASE}/api/v1/proposals/${encodeURIComponent(proposalId)}`);
+}
+
+export async function createProposal(request: {
+  title?: string;
+  summary?: string;
+  task_class?: string;
+  task_domain?: string;
+  task_intent?: string;
+  tier?: string;
+  target_tier?: string;
+  payload: Record<string, unknown>;
+  evidence?: Record<string, unknown>;
+}): Promise<ProposalResponse> {
+  return fetchJson<ProposalResponse>(`${BASE}/api/v1/proposals`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(request),
+  });
+}
+
+export async function approveProposal(proposalId: string, reason?: string): Promise<ProposalResponse> {
+  return fetchJson<ProposalResponse>(
+    `${BASE}/api/v1/proposals/${encodeURIComponent(proposalId)}/approve`,
+    {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ reason, confirm_policy_override: true }),
+    },
+  );
+}
+
+export async function rejectProposal(proposalId: string, reason?: string): Promise<ProposalResponse> {
+  return fetchJson<ProposalResponse>(
+    `${BASE}/api/v1/proposals/${encodeURIComponent(proposalId)}/reject`,
+    {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ reason, confirm_policy_override: true }),
+    },
+  );
+}
+
+export async function rollbackProposal(proposalId: string, reason?: string): Promise<ProposalResponse> {
+  return fetchJson<ProposalResponse>(
+    `${BASE}/api/v1/proposals/${encodeURIComponent(proposalId)}/rollback`,
+    {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ reason, confirm_policy_override: true }),
+    },
+  );
+}
+
+export async function deactivateProposal(proposalId: string, reason?: string): Promise<ProposalResponse> {
+  return fetchJson<ProposalResponse>(
+    `${BASE}/api/v1/proposals/${encodeURIComponent(proposalId)}/deactivate`,
+    {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ reason }),
+    },
+  );
 }
 
 export async function fetchProviderHealth(): Promise<Record<string, unknown>> {

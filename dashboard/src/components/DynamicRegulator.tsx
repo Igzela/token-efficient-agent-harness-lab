@@ -1,0 +1,294 @@
+import { useEffect, useMemo, useState } from "react";
+import {
+  ApiError,
+  fetchDispatchMetrics,
+  fetchFeedbackCostOfPass,
+  fetchFeedbackTraces,
+  fetchProposals,
+  fetchSimulationReport,
+} from "@/lib/api-client";
+import type {
+  ControlledLoopProposal,
+  DispatchMetricsResponse,
+  FeedbackCostOfPassResponse,
+  FeedbackTraceListResponse,
+  SimulationReportResponse,
+} from "@/lib/types";
+import { EmptyState } from "./EmptyState";
+import { Metric } from "./Metric";
+import { StateBanner } from "./StateBanner";
+
+type RegulatorData = {
+  metrics: DispatchMetricsResponse | null;
+  traces: FeedbackTraceListResponse | null;
+  costs: FeedbackCostOfPassResponse | null;
+  simulation: SimulationReportResponse | null;
+  proposals: ControlledLoopProposal[];
+};
+
+type RegulatorError = {
+  message: string;
+  type: "permission" | "error";
+};
+
+const emptyData: RegulatorData = {
+  metrics: null,
+  traces: null,
+  costs: null,
+  simulation: null,
+  proposals: [],
+};
+
+function regulatorError(error: unknown): RegulatorError {
+  if (error instanceof ApiError && (error.status === 401 || error.status === 403)) {
+    return {
+      message: error.status === 403
+        ? "Current API key lacks dispatch:read or cost:read scope."
+        : "Dynamic regulator views require protected local API access.",
+      type: "permission",
+    };
+  }
+  return {
+    message: error instanceof Error ? error.message : "Failed to load dynamic regulator data",
+    type: "error",
+  };
+}
+
+function formatRate(value: unknown): string {
+  return typeof value === "number" ? `${Math.round(value * 100)}%` : "0%";
+}
+
+function formatCost(value: unknown): string {
+  return typeof value === "number" ? `$${value.toFixed(4)}` : "n/a";
+}
+
+export function DynamicRegulator() {
+  const [data, setData] = useState<RegulatorData>(emptyData);
+  const [error, setError] = useState<RegulatorError | null>(null);
+  const [loading, setLoading] = useState(true);
+
+  function load() {
+    setLoading(true);
+    Promise.all([
+      fetchDispatchMetrics({ limit: 200 }),
+      fetchFeedbackTraces({ limit: 20 }),
+      fetchFeedbackCostOfPass(),
+      fetchSimulationReport({ limit: 50 }),
+      fetchProposals({ limit: 20 }),
+    ])
+      .then(([metrics, traces, costs, simulation, proposals]) => {
+        setData({
+          metrics,
+          traces,
+          costs,
+          simulation,
+          proposals: proposals.proposals,
+        });
+        setError(null);
+      })
+      .catch((e) => {
+        setData(emptyData);
+        setError(regulatorError(e));
+      })
+      .finally(() => setLoading(false));
+  }
+
+  useEffect(() => {
+    load();
+  }, []);
+
+  const totals = data.metrics?.metrics.totals;
+  const topTiers = useMemo(
+    () => data.metrics?.metrics.by_tier.slice(0, 5) ?? [],
+    [data.metrics],
+  );
+  const traces = data.traces?.traces ?? [];
+  const costRows = data.costs?.rows ?? [];
+  const simulationRows = data.simulation?.report ?? [];
+
+  return (
+    <section className="card stack">
+      <div className="flex-between">
+        <h2>Dynamic Regulator</h2>
+        <button onClick={load} type="button">Refresh</button>
+      </div>
+
+      {error?.type === "permission" && (
+        <StateBanner title="Dynamic regulator data requires scopes" tone="warn">
+          <p>{error.message}</p>
+        </StateBanner>
+      )}
+      {error?.type === "error" && (
+        <StateBanner title="Dynamic regulator data unavailable" tone="risk">
+          <p>{error.message}</p>
+        </StateBanner>
+      )}
+
+      {loading && !data.metrics ? (
+        <div className="loading-row"><span className="spinner" /> Loading dynamic regulator data...</div>
+      ) : !data.metrics && !error ? (
+        <EmptyState
+          title="No regulator data yet"
+          description="Persist dispatch records to populate feedback, cost, and shadow routing views."
+          tone="info"
+        />
+      ) : data.metrics ? (
+        <>
+          <div className="status-strip" aria-label="Dynamic regulator metrics">
+            <Metric label="Dispatches" value={String(totals?.dispatch_count ?? 0)} detail="sampled" />
+            <Metric label="Pass Rate" value={formatRate(totals?.success_rate)} detail="feedback" />
+            <Metric label="Cost" value={formatCost(totals?.total_estimated_cost_usd)} detail="estimated" />
+            <Metric label="Shadow Routes" value={String(data.simulation?.summary?.shadow_route_count ?? 0)} detail="diagnostic" />
+            <Metric label="Active Proposals" value={String(data.proposals.filter((p) => p.status === "active").length)} detail="controlled" />
+          </div>
+
+          <div className="grid two">
+            <div className="subcard stack">
+              <h3>Tier Metrics</h3>
+              {topTiers.length === 0 ? (
+                <EmptyState title="No tier metrics" description="No dispatch records in current sample." />
+              ) : (
+                <table>
+                  <thead>
+                    <tr>
+                      <th>Tier</th>
+                      <th>Dispatches</th>
+                      <th>Pass</th>
+                      <th>Cost</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {topTiers.map((row) => (
+                      <tr key={String(row.selected_tier ?? row.tier ?? "unknown")}>
+                        <td>{String(row.selected_tier ?? row.tier ?? "unknown")}</td>
+                        <td>{row.dispatch_count}</td>
+                        <td>{formatRate(row.success_rate)}</td>
+                        <td>{formatCost(row.total_estimated_cost_usd)}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              )}
+            </div>
+
+            <div className="subcard stack">
+              <h3>Cost Of Pass</h3>
+              {costRows.length === 0 ? (
+                <EmptyState title="No cost rows" description="No pass/fail cost aggregates available." />
+              ) : (
+                <table>
+                  <thead>
+                    <tr>
+                      <th>Class</th>
+                      <th>Tier</th>
+                      <th>Pass</th>
+                      <th>Avg Cost</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {costRows.slice(0, 8).map((row) => (
+                      <tr key={`${row.task_class}-${row.tier}`}>
+                        <td>{row.task_class}</td>
+                        <td>{row.tier}</td>
+                        <td>{formatRate(row.pass_rate)}</td>
+                        <td>{formatCost(row.average_cost_usd)}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              )}
+            </div>
+          </div>
+
+          <div className="grid two">
+            <div className="subcard stack">
+              <h3>Feedback Traces</h3>
+              {traces.length === 0 ? (
+                <EmptyState title="No traces" description="Feedback traces are derived from persisted dispatch history." />
+              ) : (
+                <table>
+                  <thead>
+                    <tr>
+                      <th>Trace</th>
+                      <th>Class</th>
+                      <th>Tier</th>
+                      <th>Status</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {traces.slice(0, 8).map((trace) => (
+                      <tr key={trace.trace_id}>
+                        <td>{trace.trace_id}</td>
+                        <td>{trace.task_class}</td>
+                        <td>{trace.tier}</td>
+                        <td>{trace.status}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              )}
+            </div>
+
+            <div className="subcard stack">
+              <h3>Controlled Loop</h3>
+              {data.proposals.length === 0 ? (
+                <EmptyState title="No proposals" description="No controlled-loop policy proposals found." />
+              ) : (
+                <table>
+                  <thead>
+                    <tr>
+                      <th>Proposal</th>
+                      <th>Status</th>
+                      <th>Key</th>
+                      <th>Tier</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {data.proposals.slice(0, 8).map((proposal) => (
+                      <tr key={proposal.proposal_id}>
+                        <td>{proposal.title ?? proposal.proposal_id}</td>
+                        <td>{proposal.status}</td>
+                        <td>{proposal.policy_key ?? proposal.task_class ?? "unknown"}</td>
+                        <td>{proposal.target_tier ?? proposal.tier ?? "unknown"}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              )}
+            </div>
+          </div>
+
+          <div className="subcard stack">
+            <h3>Shadow Simulation</h3>
+            {simulationRows.length === 0 ? (
+              <EmptyState title="No simulation rows" description="Shadow routes appear after dispatch decisions include diagnostic alternatives." />
+            ) : (
+              <table>
+                <thead>
+                  <tr>
+                    <th>Scenario</th>
+                    <th>Class</th>
+                    <th>Tier</th>
+                    <th>Status</th>
+                    <th>Recommendation</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {simulationRows.slice(0, 10).map((row) => (
+                    <tr key={row.scenario_id}>
+                      <td>{row.scenario_id}</td>
+                      <td>{row.task_class ?? "unknown"}</td>
+                      <td>{row.tier ?? "unknown"}</td>
+                      <td>{row.status}</td>
+                      <td>{row.recommendation ?? "diagnostic"}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            )}
+          </div>
+        </>
+      ) : null}
+    </section>
+  );
+}

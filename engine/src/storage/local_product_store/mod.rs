@@ -15,6 +15,7 @@ mod migrations;
 #[cfg(feature = "pg")]
 pub mod pg_backend;
 mod plans;
+mod policy_proposals;
 mod provider_audit;
 mod supervised_patch;
 mod team;
@@ -334,6 +335,24 @@ CREATE TABLE IF NOT EXISTS orchestration_decisions (
 CREATE INDEX IF NOT EXISTS idx_orchestration_decisions_run ON orchestration_decisions(run_id);
 CREATE INDEX IF NOT EXISTS idx_orchestration_decisions_action ON orchestration_decisions(action);
 CREATE INDEX IF NOT EXISTS idx_orchestration_decisions_created ON orchestration_decisions(created_at);
+
+CREATE TABLE IF NOT EXISTS controlled_loop_policy_proposals (
+    proposal_sequence INTEGER PRIMARY KEY,
+    proposal_id TEXT NOT NULL UNIQUE,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    status TEXT NOT NULL,
+    title TEXT NOT NULL,
+    summary TEXT,
+    task_domain TEXT NOT NULL,
+    task_intent TEXT NOT NULL,
+    target_tier TEXT NOT NULL,
+    evidence_json TEXT NOT NULL,
+    approval_json TEXT,
+    proposal_json TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_policy_proposals_status ON controlled_loop_policy_proposals(status);
+CREATE INDEX IF NOT EXISTS idx_policy_proposals_key ON controlled_loop_policy_proposals(task_domain, task_intent, status);
 ";
 
 pub enum DatabaseConnection {
