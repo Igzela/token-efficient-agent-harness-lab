@@ -2,13 +2,13 @@
 
 Date: 2026-06-11
 
-Status: **PARTIAL / ACTIVE_CORE_HARDENED / TRIAL_PLAYBOOK_READY - active apply + rollback are implemented under strict gates; final Phase 5 seal requires real-world trial evidence from `docs/PHASE5_ACTIVE_TRIAL_PLAYBOOK.md`.**
+Status: **DONE - active apply + rollback are implemented under strict gates, and the controlled active trial and rollback drill are signed off in `docs/PHASE5_ACTIVE_TRIAL_PLAYBOOK.md`.**
 
 ## Audit Summary
 
-Phase 5 implements a minimal active auto-adjustment core for safe tier-map changes only. Default mode remains disabled. Dry-run mode remains read-only. Active apply requires two explicit environment gates, configured auth, `team:admin`, and request confirmation. The core is not final-sealed until the real-world active trial and rollback drill are completed.
+Phase 5 implements a minimal active auto-adjustment core for safe tier-map changes only. Default mode remains disabled. Dry-run mode remains read-only. Active apply requires two explicit environment gates, configured auth, `team:admin`, and request confirmation. The controlled active trial and rollback drill were completed on 2026-06-11 using an isolated SQLite trial database; PostgreSQL active trial execution was unavailable because `ACP_TEST_DATABASE_URL` was not set.
 
-PR #37 implemented the active apply + rollback core. PR #38 hardened that core before any real-world trial: re-entry protection, stable generated candidate identity, stale rollback checks, SQLite/PostgreSQL index parity, HTTP-level safety tests, audit details, and boundary invariant coverage. Phase 5 final DONE still requires the real-world trial playbook run, operator signoff, and a final seal PR.
+PR #36 introduced the dry-run auto-adjustment guard. PR #37 implemented the active apply + rollback core. PR #38 hardened that core before trial execution: re-entry protection, stable generated candidate identity, stale rollback checks, SQLite/PostgreSQL index parity, HTTP-level safety tests, audit details, and boundary invariant coverage. PR #39 added the active trial playbook and rollback drill. PR #40 seals Phase 5 as DONE based on the signed playbook evidence.
 
 Implemented surfaces:
 
@@ -42,16 +42,17 @@ Not included:
 - Hard constraint mutation.
 - Multi-adjustment batch apply.
 - Dashboard/TypeScript SDK changes.
-- Automatic background scheduling.
 - Auto-merge.
 - Release/tag/deploy behavior.
-- Final Phase 5 seal.
+- Background scheduling.
+- Batch auto-apply.
+- Daemonized auto-adjustment loop.
 
 ## Runtime Gates
 
 - Default mode: disabled when `ACP_ENABLE_AUTO_ADJUSTMENT` is unset.
 - Dry-run mode: `ACP_ENABLE_AUTO_ADJUSTMENT=1` and `ACP_AUTO_ADJUSTMENT_DRY_RUN=1`.
-- Active mode: `ACP_ENABLE_AUTO_ADJUSTMENT=1` and `ACP_AUTO_ADJUSTMENT_ACTIVE=1`.
+- Active mode: `ACP_ENABLE_AUTO_ADJUSTMENT=1`, `ACP_AUTO_ADJUSTMENT_ACTIVE=1`, and `ACP_AUTO_ADJUSTMENT_DRY_RUN` unset or not `1`.
 - Dry-run wins over active: `ACP_AUTO_ADJUSTMENT_DRY_RUN=1` blocks active apply even if active is set.
 
 ## Apply Path
@@ -127,4 +128,4 @@ Covered by Rust tests:
 - PostgreSQL DDL supports fresh PG stores; PostgreSQL integration test execution still depends on `ACP_TEST_DATABASE_URL` and `pg-tests`.
 - This remains a high-risk policy mutation feature and requires human PR review before merge.
 - Candidate staleness is evidence-based because generated candidates do not carry timestamps: apply reselects from the current generated candidate set and reruns `ProposalValidator` plus `AutoAdjustmentPolicy`.
-- Final Phase 5 seal requires `docs/PHASE5_ACTIVE_TRIAL_PLAYBOOK.md` completion and operator signoff.
+- Runtime active operation remains opt-in and disabled by default.

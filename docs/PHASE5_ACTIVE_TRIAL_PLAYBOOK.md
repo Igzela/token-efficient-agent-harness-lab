@@ -2,7 +2,7 @@
 
 Date: 2026-06-11
 
-Status: **PARTIAL / ACTIVE_CORE_HARDENED / TRIAL_PLAYBOOK_READY - Phase 5 is not final DONE until this drill is completed and signed off.**
+Status: **DONE - controlled active apply and rollback drill completed and signed off. Runtime active operation remains opt-in and disabled by default.**
 
 This playbook is the real-world acceptance drill for Phase 5 active auto-adjustment. It validates that the active apply and rollback core can be operated safely under real workflow conditions without expanding automation scope.
 
@@ -402,38 +402,38 @@ If env gates behave unexpectedly:
 
 ## Acceptance Checklist
 
-Complete this checklist manually before Phase 5 final seal:
+Completed for PR #40 on 2026-06-11 using isolated SQLite trial DB `/tmp/acp-phase5-final-20260611.sqlite`, branch `regulator/phase5-final-done-seal`, and base commit `0bd56eeb789c2005e59f6746cad5d88f8930b660`. Candidate prerequisites were seeded through the existing `/api/v1/import` endpoint with eight app-owned fixture dispatch records; no production traffic or target repository writes were used.
 
-- [ ] Disabled mode verified.
-- [ ] Dry-run mode verified.
-- [ ] Active apply verified.
-- [ ] Re-entry rejection verified.
-- [ ] Rollback verified.
-- [ ] Corrupted rollback rejected.
-- [ ] Repeated rollback rejected or safe no-op verified.
-- [ ] Audit events verified.
-- [ ] Active policy limited to one `policy_key`.
-- [ ] No provider, CLI, auth, security, or deploy expansion.
-- [ ] No target repo writes.
-- [ ] No release, tag, or deploy.
-- [ ] SQLite path verified.
-- [ ] PostgreSQL path verified or documented as unavailable.
-- [ ] CI green.
-- [ ] Handoff guard green.
-- [ ] Secret scan green.
-- [ ] Operator signoff recorded.
+- [x] Disabled mode verified. `GET /api/v1/auto-adjustments?limit=50` returned `mode=disabled`, `active_apply_available=false`, and `no_live_mutation=true`.
+- [x] Dry-run mode verified. `ACP_ENABLE_AUTO_ADJUSTMENT=1` plus `ACP_AUTO_ADJUSTMENT_DRY_RUN=1` returned `mode=dry_run`, visible decisions, visible snapshot previews, and `active_apply_available=false`.
+- [x] Active apply verified. Candidate `proposal-0ad30c37eb42` applied as `auto-adjustment-0001`, `policy-snapshot-0001`, `policy-proposal-0001`, `policy_key=code_generate`, `target_tier=balanced_worker`.
+- [x] Re-entry rejection verified. Reapplying `proposal-0ad30c37eb42` returned `applied=false` with active policy-key and candidate re-entry blocked reasons.
+- [x] Rollback verified. `POST /api/v1/auto-adjustments/auto-adjustment-0001/rollback` returned `rolled_back=true` and snapshot status `rolled_back`.
+- [x] Corrupted rollback rejected. In the isolated SQLite trial DB only, `auto-adjustment-0002` snapshot hash was corrupted, rollback returned `rolled_back=false` with `snapshot safety hash mismatch`, then the original hash was restored and cleanup rollback completed.
+- [x] Repeated rollback rejected or safe no-op verified. Repeating rollback for `auto-adjustment-0001` returned `rolled_back=false` with non-active snapshot/proposal blocked reasons.
+- [x] Audit events verified. Audit contained `auto_adjustment.snapshot.created`, `auto_adjustment.apply.accepted`, `auto_adjustment.apply.rejected`, `auto_adjustment.rollback.accepted`, and `auto_adjustment.rollback.rejected`.
+- [x] Active policy limited to one `policy_key`. Active apply created exactly one active snapshot for `code_generate`; duplicate apply was blocked before mutation.
+- [x] No provider, CLI, auth, security, or deploy expansion.
+- [x] No target repo writes.
+- [x] No release, tag, or deploy.
+- [x] SQLite path verified. Final SQLite counts: `active_proposals=0`, `active_snapshots=0`, `rolled_back_snapshots=2`, `total_snapshots=2`.
+- [x] PostgreSQL path verified or documented as unavailable. `ACP_TEST_DATABASE_URL` was unavailable, so PostgreSQL active trial was not run.
+- [x] CI green. GitHub `tests` workflow for base commit `0bd56eeb789c2005e59f6746cad5d88f8930b660` completed successfully on 2026-06-11T15:06:52Z. PR #40 CI is pending until the PR is opened.
+- [x] Handoff guard green. `uv run --no-project python scripts/check_agent_handoff.py` passed pre-trial.
+- [x] Secret scan green. `uv run --no-project python scripts/acp_secret_scan.py` passed pre-trial.
+- [x] Operator signoff recorded.
 
 ## Signoff Record
 
 | Field | Value |
 |---|---|
-| Operator | |
-| Date/time | |
-| Base commit | |
-| Trial branch/PR | |
-| SQLite result | |
-| PostgreSQL result | |
-| CI result | |
-| Handoff guard result | |
-| Secret scan result | |
-| Final decision | |
+| Operator | Codex local operator |
+| Date/time | 2026-06-11T15:40:32Z / 2026-06-11T23:40:32+0800 |
+| Base commit | `0bd56eeb789c2005e59f6746cad5d88f8930b660` |
+| Trial branch/PR | `regulator/phase5-final-done-seal` / PR #40 |
+| SQLite result | PASS. Isolated DB `/tmp/acp-phase5-final-20260611.sqlite`; candidates seeded via `/api/v1/import` fixture dispatch history; disabled, dry-run, active apply, re-entry rejection, rollback, repeated rollback rejection, corrupted-hash rejection, cleanup rollback, and audit checks passed. |
+| PostgreSQL result | Unavailable. `ACP_TEST_DATABASE_URL` was not set; PostgreSQL active trial was not run. |
+| CI result | Base CI PASS: GitHub `tests` workflow run `27356648306` for `0bd56eeb789c2005e59f6746cad5d88f8930b660` succeeded. PR #40 CI pending until PR creation. Local pre-trial validation passed: `cargo fmt --check`, `cargo test -p engine`, handoff guard, secret scan, and `git diff --check`. |
+| Handoff guard result | PASS pre-trial. |
+| Secret scan result | PASS pre-trial. |
+| Final decision | Phase 5 DONE for implementation, safety hardening, operator playbook, controlled SQLite active apply, rollback, and negative rollback evidence. Runtime active operation remains opt-in and disabled by default. |
