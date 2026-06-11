@@ -11,7 +11,7 @@ Generated: 2026-06-11 | PR: #31 | Commit: 713af59
 | 2 | Feedback Ledger and Replayable Run Traces | DONE | RunTraceRecorder module; OutcomeAttributor module; PatternDetector module; `/api/v1/feedback/traces`, `/api/v1/feedback/cost-of-pass`, `/api/v1/feedback/patterns` endpoints; dashboard Feedback subsection; `feedback_traces` uses stable RunTrace schema; `cost_of_pass` computed from stable trace model; tests cover recorder, attribution, pattern detection, filtering, empty state | None — Phase 2 is complete |
 | 3 | Shadow Adaptive Policy Simulation | DONE | Shadow routes generated at dispatch time via `build_shadow_routes()`; `/api/v1/simulation/report` endpoint; all influence flags disabled; dashboard Simulation subsection; ShadowRouter; PolicySimulator; delta metrics; `/api/v1/simulation/policy-delta` endpoint; dashboard delta display; SDK methods | None — Phase 3 is complete |
 | 4 | Human-Approved Policy Proposals | DONE | Full CRUD lifecycle (create/list/approve/reject/deactivate/rollback); `confirm_policy_override` guard; `team:admin` auth; safe-tier restriction; `active_routing_policy()` integration; v12 migration; audit trail; dashboard Proposals subsection; TS+Python SDK coverage; PolicyProposer; ProposalValidator; ProposalSerializer; GET /api/v1/proposals/generated; generated candidates with evidence/confidence/safety flags; dashboard generated suggestions; SDK generatedProposals()/generated_proposals() | None — Phase 4 is complete |
-| 5 | Limited Automatic Adjustment Under Strict Guards | PARTIAL / ACTIVE_CORE_HARDENED / TRIAL_PLAYBOOK_READY | PR #37 active core plus PR #38 hardening plus PR #39 playbook: AutoAdjustmentPolicy, AutoAdjustmentGuard, PolicySnapshotPreview/Record, `GET /api/v1/auto-adjustments`, active apply/rollback endpoints, default-off/dry-run/active gates, persistent snapshots, stable candidate IDs, per-policy active guard, stale rollback checks, audit events, apply/rollback tests, active trial playbook | Final seal requires real-world active trial + rollback drill evidence/signoff and a seal PR; no dashboard/SDK changes; no background scheduling; high-risk PR requires human review |
+| 5 | Limited Automatic Adjustment Under Strict Guards | DONE | PR #36 dry-run guard, PR #37 active core, PR #38 hardening, PR #39 playbook, and PR #40 signoff: AutoAdjustmentPolicy, AutoAdjustmentGuard, PolicySnapshotPreview/Record, `GET /api/v1/auto-adjustments`, `POST /api/v1/auto-adjustments/apply`, `POST /api/v1/auto-adjustments/{id}/rollback`, default-off/dry-run/active gates, persistent snapshots, stable candidate IDs, per-policy active guard, stale rollback checks, audit events, apply/rollback tests, controlled SQLite active trial and rollback drill signed off in `docs/PHASE5_ACTIVE_TRIAL_PLAYBOOK.md` | Runtime active operation remains opt-in and disabled by default; PostgreSQL active trial was unavailable because `ACP_TEST_DATABASE_URL` was not set; no dashboard/SDK changes, background scheduling, batch auto-apply, or daemon loop |
 
 ## Phase Details
 
@@ -239,7 +239,7 @@ Generated: 2026-06-11 | PR: #31 | Commit: 713af59
 
 **Plan Goal:** Allow a narrow class of policy adjustments to apply automatically, with strict guardrails.
 
-**Status:** PARTIAL / ACTIVE_CORE_HARDENED / TRIAL_PLAYBOOK_READY
+**Status:** DONE
 
 **Implemented in Phase 5 PRs:**
 - PR #37: active apply + rollback core under strict gates.
@@ -263,12 +263,23 @@ Generated: 2026-06-11 | PR: #31 | Commit: 713af59
 - Audit doc: `docs/PHASE5_AUTO_ADJUSTMENT_AUDIT.md`
 - Active trial playbook: `docs/PHASE5_ACTIVE_TRIAL_PLAYBOOK.md`
 
-**Missing from plan:**
-- Real-world trial playbook execution and final seal PR
-- Dashboard Auto-Adjustments tab with timeline and rollback controls
-- Auto-rollback trigger on success-rate degradation
-- TS/Python SDK methods and dashboard surface, deferred because dashboard/TS changes were out of approved scope
-- Real-world active trial and rollback drill signoff before final Phase 5 seal
+**Completed seal evidence:**
+- PR #40 executed the controlled active trial against isolated SQLite DB `/tmp/acp-phase5-final-20260611.sqlite`.
+- Disabled mode returned `active_apply_available=false` and `no_live_mutation=true`.
+- Dry-run mode returned decisions and snapshot previews without creating proposals or active snapshots.
+- Active apply of candidate `proposal-0ad30c37eb42` created `auto-adjustment-0001`, `policy-snapshot-0001`, and `policy-proposal-0001`.
+- Re-entry apply was rejected with duplicate/active policy-key blocked reasons.
+- Rollback returned `rolled_back=true` and restored the active policy state for the affected key.
+- Repeated rollback returned `rolled_back=false` with non-active snapshot/proposal blocked reasons.
+- Isolated corrupted-hash rollback returned `rolled_back=false` with `snapshot safety hash mismatch`, then the original hash was restored and cleanup rollback completed.
+- Audit contained snapshot/apply/rollback accepted and rejected events.
+- Final SQLite counts were `active_proposals=0`, `active_snapshots=0`, `rolled_back_snapshots=2`, and `total_snapshots=2`.
+- PostgreSQL active trial execution was unavailable because `ACP_TEST_DATABASE_URL` was not set.
+
+**Future work outside Phase 5 core:**
+- Dashboard Auto-Adjustments tab with timeline and rollback controls.
+- Auto-rollback trigger on success-rate degradation, requiring explicit approval because it implies background monitoring behavior.
+- TS/Python SDK methods and dashboard surface, deferred because dashboard/TS changes were out of approved PR #40 scope.
 
 **Tests Present:**
 - AutoAdjustmentPolicy unit tests: accepts only high-confidence safe generated candidates; rejects unsafe CLI tiers, missing evidence, weak confidence, missing simulation, simulation regression, and failed safety flags
@@ -291,7 +302,7 @@ Generated: 2026-06-11 | PR: #31 | Commit: 713af59
 - No provider/CLI/auth/security/deploy boundary expansion, target repo write, release/tag/deploy, background scheduling, batch apply, or dashboard one-click enable was added.
 
 **Recommended Next PR:**
-- Run the real-world active trial and rollback drill in `docs/PHASE5_ACTIVE_TRIAL_PLAYBOOK.md`, then prepare the final Phase 5 seal PR only after evidence and signoff. Do not auto-merge.
+- Decide whether to begin Phase 6 design or prioritize post-Phase-5 production monitoring/observability. Keep runtime active operation opt-in and disabled by default. Do not auto-merge high-risk policy mutation changes.
 
 ---
 
@@ -312,7 +323,7 @@ Generated: 2026-06-11 | PR: #31 | Commit: 713af59
 | `ACP_ENABLE_AUTO_ADJUSTMENT=0` default gate | Yes | Guard is disabled unless `ACP_ENABLE_AUTO_ADJUSTMENT=1` |
 | Boundary mutation tests (no safety/auth/provider/CLI/hard-constraint mutation) | Yes | Dry-run no-mutation tests plus active apply/rollback tests for gates, admin auth, confirmation, hash validation, exact restore, unsafe tier rejection, safety flags, and stale-state blocks |
 | Real-world active trial playbook | Yes | `docs/PHASE5_ACTIVE_TRIAL_PLAYBOOK.md` |
-| Real-world active trial signoff | No | Required before final Phase 5 seal |
+| Real-world active trial signoff | Yes | PR #40 signoff in `docs/PHASE5_ACTIVE_TRIAL_PLAYBOOK.md`; SQLite PASS, PostgreSQL unavailable |
 
 ## Overclaims Fixed
 
@@ -400,9 +411,9 @@ Generated: 2026-06-11 | PR: #31 | Commit: 713af59
 
 **Scope:** PolicyProposer auto-generates proposals from feedback patterns and simulation results. ProposalValidator checks safety constraints. ProposalSerializer produces generated proposal responses with evidence and safety flags. Generated proposals remain read-only until human-approved through the existing proposal lifecycle.
 
-### 7. Phase 5 Auto-Adjustment Guard (PARTIAL / ACTIVE_CORE_HARDENED / TRIAL_PLAYBOOK_READY)
+### 7. Phase 5 Auto-Adjustment Guard (DONE)
 
-**Scope:** Implement AutoAdjustmentPolicy, AutoAdjustmentGuard, PolicySnapshotPreview/Record, persistent snapshots, `GET /api/v1/auto-adjustments`, `POST /api/v1/auto-adjustments/apply`, rollback endpoint, default-off/dry-run/active gates, audit events, safety tests, PR #38 active-core hardening, and the real-world active trial playbook. Active apply remains high-risk and requires real-world drill signoff plus human review; do not auto-merge.
+**Scope:** Implement AutoAdjustmentPolicy, AutoAdjustmentGuard, PolicySnapshotPreview/Record, persistent snapshots, `GET /api/v1/auto-adjustments`, `POST /api/v1/auto-adjustments/apply`, rollback endpoint, default-off/dry-run/active gates, audit events, safety tests, PR #38 active-core hardening, PR #39 active trial playbook, and PR #40 controlled active apply/rollback signoff. Active operation remains high-risk, opt-in, disabled by default, and not auto-merge eligible.
 
 ## Merge Decision
 
