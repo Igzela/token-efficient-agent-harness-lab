@@ -2,8 +2,6 @@
 
 > **Note:** This file is a concise human/new-session summary. Claude Code should use `CLAUDE.md` as default entrypoint. Other agents should use `AGENTS.md` as default entrypoint. Read this file only when a human or new assistant needs a broad project summary.
 
-Read this file first in any new AI session on this repository.
-
 ## Project Identity
 
 Token-Efficient Agent Harness Lab is a local deterministic harness and self-hosted macro-orchestrator control plane for studying event-sourced agent workflow infrastructure.
