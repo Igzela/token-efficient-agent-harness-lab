@@ -425,7 +425,9 @@ The storage layer is `LocalProductStore` in `engine/src/storage/local_product_st
 ### Migration posture
 
 - Schema versioned via numbered migrations in `engine/src/storage/local_product_store/migrations.rs`
-- Current version: v12 (includes `controlled_loop_policy_proposals` and `controlled_loop_policy_snapshots`)
+- Current version: v13
+- v12 adds `controlled_loop_policy_proposals`
+- v13 adds `controlled_loop_policy_snapshots`
 - PostgreSQL DDL supports fresh stores; parity with SQLite maintained
 - Migrations require explicit human approval
 
@@ -676,7 +678,7 @@ When advancing workflow runs via `POST /workflow-runs/:id/tick`, the `executor` 
 
 | Layer | Command | What it protects |
 |---|---|---|
-| **Rust tests** | `cargo test -p engine` | All 1506 Rust unit and integration tests |
+| **Rust tests** | `cargo test -p engine` | Current engine Rust unit and integration test suite |
 | **Rust formatting** | `cargo fmt --check` | Consistent code style |
 | **Rust lints** | `cargo clippy -p engine --all-targets -- -D warnings` | Correctness and style warnings |
 | **TypeScript tests** | `bun test` in `sdk/typescript/` | TypeScript SDK correctness |
