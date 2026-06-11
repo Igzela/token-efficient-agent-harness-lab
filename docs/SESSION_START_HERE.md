@@ -26,12 +26,14 @@ Token-Efficient Agent Harness Lab is a local deterministic harness and self-host
 | Trial 4 real-use pilot | Closed — `TRIAL_4_REAL_USE_PILOT_PASS_AFTER_FIXES` |
 | Trial 5 CLI execution beta | Closed — `TRIAL_5_CLI_EXECUTION_BETA_PASS_AFTER_FIXES` |
 
-Tests: 1378 Rust pass. Primary cutover verification is `bash scripts/verify_rust_typescript_stack.sh`.
+Tests: 1390 Rust pass. Primary cutover verification is `bash scripts/verify_rust_typescript_stack.sh`.
 
 Macro-Orchestrator Phase 1-5 repair batch is complete. Self-Hosted GA Readiness Track SG-1 through SG-5 is complete. HA Hardening Track is COMPLETE (HA-1 through HA-6): scheduler resilience with persistent heartbeat, automated backup with retention, deep health with resource monitoring, circuit breaker, TLS inbound, and SQLite encryption at rest. Docs simplified from 136 to 16 files.
 
 | Active Track | Status |
 |---|---|
+| Real-World Testing Mode | **ACTIVE** — PR #27 merged (`7fdd5f2`), Dynamic Global Regulator plan is strategic background |
+| HybridExecutor | Complete — ACP_EXECUTION_MODE (off/provider/cli/auto), 1390 tests |
 | HA Hardening Track | **COMPLETE** — All 6 phases done (HA-1 through HA-6), 1378 tests |
 
 ## Toolchain
@@ -92,31 +94,29 @@ Planning-only modules may generate non-executable plans, app-owned planning meta
 
 1. **[README.md](../README.md)** — Project identity, test command, safety boundaries, repo structure.
 2. **[docs/CURRENT_STATUS.md](CURRENT_STATUS.md)** — Latest known state, completed tracks, current capabilities.
-3. **[docs/NEXT_DECISION.md](NEXT_DECISION.md)** — What to do next and what is disallowed by default.
-4. **[docs/MODULE_MAP.md](MODULE_MAP.md)** — Module-to-stage reference table.
-5. **[docs/trials/TRIAL_1_REPORT.md](trials/TRIAL_1_REPORT.md)** — Latest trial results and hardening closeout.
-6. **[docs/trials/TRIAL_2_FINAL_STATE_INDEX.md](trials/TRIAL_2_FINAL_STATE_INDEX.md)** — Trial 2 complete evidence chain and final state.
-7. **[docs/demo/README.md](demo/README.md)** — Local demo walkthrough (optional).
+3. **[docs/NEXT_DECISION.md](NEXT_DECISION.md)** — Active track, safety gates, auto-merge policy.
+4. **[docs/REAL_WORLD_TESTING_PLAYBOOK.md](REAL_WORLD_TESTING_PLAYBOOK.md)** — Operational execution guide: pilot matrix, permission matrix, auto-merge classifier, feedback trace fields, stop conditions.
+5. **[docs/DYNAMIC_GLOBAL_REGULATOR_PLAN.md](DYNAMIC_GLOBAL_REGULATOR_PLAN.md)** — Strategic background (read when strategic context needed, not every session).
 
 ## Default Behavior
 
-The responsible coding agent may autonomously advance repository-safe work that keeps the project moving:
+**Agent Autonomous Maintenance Mode is active.** Agents autonomously maintain repo health, docs hygiene, CI correctness, and low-risk PR flow. The full loop and rules are in `docs/REAL_WORLD_TESTING_PLAYBOOK.md` (section "Agent Autonomous Maintenance Mode").
+
+The responsible coding agent may autonomously:
 
 - repair stale docs, handoff drift, and wire-codegen guard drift
 - fix failing tests, CI, security baseline, or deterministic regressions
 - add focused tests for existing behavior
-- harden completed phases when backed by concrete review findings
-- implement documented dispatch-kernel phase work when the architecture book already defines the contract and the implementation does not broaden real provider behavior beyond explicit env-gated beta paths, add sandbox isolation, expand subprocess execution beyond the existing CLI executor path, add target repo writes, deployment, or real worker processes
+- prune, replace, or archive stale docs (not accumulate)
+- open and merge low-risk PRs when CI is green and handoff guard passes
 
-Do **not** start any of the following without explicit human approval:
+Do **not** do any of the following without explicit human approval:
 
-- MVP9
-- Stage 5
-- Broader provider/model integration beyond the explicit env-gated local beta path
-- Sandbox isolation or subprocess expansion beyond the existing CLI executor path
-- Autonomous workers
-- Target repo writes
-- Approval/run/execute/deploy/merge controls
+- release/tag/deploy
+- auth/security/provider/CLI execution boundary changes
+- database migrations
+- active YAML/rubric/policy mutation
+- destructive or irreversible operations
 
 Before proposing any new track, read `docs/CURRENT_STATUS.md` and `docs/NEXT_DECISION.md` first.
 
