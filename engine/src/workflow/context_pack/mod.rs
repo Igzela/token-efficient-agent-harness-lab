@@ -4,8 +4,11 @@ mod rules;
 mod types;
 mod validation;
 
-pub use assembly::{assemble_context_injection, ContextAssemblyConfig, ContextSource};
-pub use budget::{apply_prune_policy, check_budget_compliance};
+pub use assembly::{
+    assemble_context_injection, assemble_context_injection_with_bridge, bridge_context_fields,
+    ContextAssemblyConfig, ContextSource,
+};
+pub use budget::{allocate_context_budget, apply_prune_policy, check_budget_compliance};
 pub use rules::*;
 pub use types::{ContextBudget, ContextLayers, MemoryDigest, RetrievalPolicy};
 pub use validation::{

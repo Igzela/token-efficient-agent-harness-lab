@@ -6677,7 +6677,7 @@ async fn test_simulation_report_with_shadow_routes() {
     assert!(body["totals"]["shadow_route_count"].as_i64().unwrap() >= 2);
 
     let report = body["report"].as_array().unwrap();
-    assert!(report.len() >= 1);
+    assert!(!report.is_empty());
     assert_eq!(report[0]["dispatch_id"], "disp-shadow");
     assert_eq!(report[0]["status"], "shadow_only");
     let shadow_routes = report[0]["shadow_routes"].as_array().unwrap();
