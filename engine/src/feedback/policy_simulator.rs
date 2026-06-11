@@ -386,9 +386,15 @@ mod tests {
     #[test]
     fn determinism() {
         let trace = minimal_trace();
-        let r1 = PolicySimulator::simulate(std::slice::from_ref(&trace), &PolicyCandidate::ComplexityAware);
+        let r1 = PolicySimulator::simulate(
+            std::slice::from_ref(&trace),
+            &PolicyCandidate::ComplexityAware,
+        );
         let trace2 = minimal_trace();
-        let r2 = PolicySimulator::simulate(std::slice::from_ref(&trace2), &PolicyCandidate::ComplexityAware);
+        let r2 = PolicySimulator::simulate(
+            std::slice::from_ref(&trace2),
+            &PolicyCandidate::ComplexityAware,
+        );
         let j1 = serde_json::to_string(&r1).unwrap();
         let j2 = serde_json::to_string(&r2).unwrap();
         assert_eq!(j1, j2);
