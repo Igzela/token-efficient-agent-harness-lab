@@ -33,6 +33,7 @@ Macro-Orchestrator Phase 1-5 repair batch is complete. Self-Hosted GA Readiness 
 | Active Track | Status |
 |---|---|
 | Real-World Testing Mode | **ACTIVE** — PR #27 merged (`7fdd5f2`), Dynamic Global Regulator plan is strategic background |
+| Agent Autonomous Maintenance Mode | **ACTIVE** — agents may maintain docs, CI, tests, low-risk PR flow, and branch+PR repo-safe work under playbook gates |
 | HybridExecutor | Complete — ACP_EXECUTION_MODE (off/provider/cli/auto), 1390 tests |
 | HA Hardening Track | **COMPLETE** — All 6 phases done (HA-1 through HA-6), 1378 tests |
 
@@ -72,7 +73,7 @@ Additional active architecture track:
 | Rust + TypeScript Cutover | Complete; Rust `engine/` is the primary runtime/API/storage/provider-gated control plane, `dashboard/` and `sdk/typescript/` are the primary TypeScript surfaces; Python retained as REST SDK and utility scripts only |
 | Architecture Refactor R-series | Sealed at R7; R8 is not approved. No further R-series file splitting is approved |
 | Post-R7 Wire/Type Governance Hardening | Implemented; `app_layer` remains dormant/unwired reference code and `scripts/check_wire_codegen_drift.sh` protects generated wire files |
-| Supervised Autonomous Beta Planning | Batch 0-6 governance/module/model/read-only-planner/durable-state/advisory/design-gate work recorded. `WorkflowGraph` is canonical planning model. Batch 7 Slice A-F implemented: app-owned workspace/artifact metadata, read-only HTTP/SDK/dashboard visibility, approval-binding contract, and supervised execution runtime primitives (NodeExecutor trait, CommandNodeExecutor with shell-metachar rejection, workflow tick, workspace lifecycle, capture_patch with source manifest diff, integrity validation, export gate, E2E closed-loop test). 1339 Rust tests pass. No target repo writes, sandbox/process/container/VM execution, real workers, provider calls, push/merge/deploy/apply controls, or default-on execution. |
+| Supervised Autonomous Beta Planning | Batch 0-6 governance/module/model/read-only-planner/durable-state/advisory/design-gate work recorded. `WorkflowGraph` is canonical planning model. Batch 7 Slice A-F implemented: app-owned workspace/artifact metadata, read-only HTTP/SDK/dashboard visibility, approval-binding contract, and supervised execution runtime primitives (NodeExecutor trait, CommandNodeExecutor with shell-metachar rejection, workflow tick, workspace lifecycle, capture_patch with source manifest diff, integrity validation, export gate, E2E closed-loop test). 1339 Rust tests pass. No target repo writes by the app runtime, no sandbox/process/container/VM execution, no real workers, no default provider calls, no push/deploy/apply controls. Agent maintenance may perform branch+PR work under `docs/REAL_WORLD_TESTING_PLAYBOOK.md` gates. |
 | Dynamic Workflow Direction | Complete; Batches 1-7 plus scheduler dynamic-mode recovery are implemented. Opt-in dynamic mode can observe a failed node, mutate the persisted graph with fix/test nodes, mark the failed node recovered, resume the run, and complete follow-up execution. 1339 Rust tests pass. |
 | Macro-Orchestrator Direction | Current product direction. Phase 1-5 repair batch and Self-Hosted GA Readiness Track SG-1 through SG-5 COMPLETE. Track done. |
 
@@ -83,75 +84,7 @@ Additional active architecture track:
 - **Not a cloud production SaaS or coding-agent runtime.** No default-on real model providers, sandbox isolation runtime, workers, hosted service, or production deployment targets.
 - **No real provider/model calls by default.** Provider adapters are explicit env-gated beta paths; CI uses stub/mock paths and does not call real provider APIs.
 - **No sandbox/process/container/VM isolation runtime.** Sandbox claims are logical file-claim tracking only. Existing local CLI executor subprocess invocation is a separate, explicit opt-in exception via `ACP_ENABLE_CLI_EXECUTION=1`.
-- **No autonomous workers.** No real concurrent workers are spawned.
-- **No target repo writes by default.** Target repositories are read-only. The app never writes to them.
+- **No autonomous app-runtime workers.** The app does not spawn unrestricted workers. Agent autonomous maintenance is a repository workflow mode governed by `docs/REAL_WORLD_TESTING_PLAYBOOK.md`, not an app-runtime worker feature.
+- **No target repo writes by the app runtime by default.** Target repositories remain protected from direct app writes. Agent maintenance may create branches, commits, PRs, and low-risk merges only through branch+PR workflow under playbook gates.
 
 Production-grade hosted/self-hosted productization track was explicitly approved by user on 2026-06-06. This track extends existing supervised autonomous beta infrastructure with real CLI executor integration, persistent scheduling, dashboard controls, SDK productization, and security hardening. It does NOT create parallel runtime kernels. See `docs/NEXT_DECISION.md` for phase details and done-when criteria.
-
-Planning-only modules may generate non-executable plans, app-owned planning metadata, and design-gate documents. They do not grant runtime worker, execution, target-write, sandbox, deploy, apply, run, or merge authority.
-
-## Must-Read Order
-
-1. **[README.md](../README.md)** — Project identity, test command, safety boundaries, repo structure.
-2. **[docs/CURRENT_STATUS.md](CURRENT_STATUS.md)** — Latest known state, completed tracks, current capabilities.
-3. **[docs/NEXT_DECISION.md](NEXT_DECISION.md)** — Active track, safety gates, auto-merge policy.
-4. **[docs/REAL_WORLD_TESTING_PLAYBOOK.md](REAL_WORLD_TESTING_PLAYBOOK.md)** — Operational execution guide: pilot matrix, permission matrix, auto-merge classifier, feedback trace fields, stop conditions.
-5. **[docs/DYNAMIC_GLOBAL_REGULATOR_PLAN.md](DYNAMIC_GLOBAL_REGULATOR_PLAN.md)** — Strategic background (read when strategic context needed, not every session).
-
-## Default Behavior
-
-**Agent Autonomous Maintenance Mode is active.** Agents autonomously maintain repo health, docs hygiene, CI correctness, and low-risk PR flow. The full loop and rules are in `docs/REAL_WORLD_TESTING_PLAYBOOK.md` (section "Agent Autonomous Maintenance Mode").
-
-The responsible coding agent may autonomously:
-
-- repair stale docs, handoff drift, and wire-codegen guard drift
-- fix failing tests, CI, security baseline, or deterministic regressions
-- add focused tests for existing behavior
-- prune, replace, or archive stale docs (not accumulate)
-- open and merge low-risk PRs when CI is green and handoff guard passes
-
-Do **not** do any of the following without explicit human approval:
-
-- release/tag/deploy
-- auth/security/provider/CLI execution boundary changes
-- database migrations
-- active YAML/rubric/policy mutation
-- destructive or irreversible operations
-
-Before proposing any new track, read `docs/CURRENT_STATUS.md` and `docs/NEXT_DECISION.md` first.
-
-## Implementation Strategy
-
-**All sessions must use Workflow tool for implementation.** This is the default, not optional.
-
-1. Write a workflow script to `.claude/workflows/<task-name>.md` with `export const meta = { name, description, phases }`.
-2. Use `parallel()` for independent subtasks (e.g., Rust module + API endpoint in parallel, then SDK + Dashboard in parallel).
-3. Use `pipeline()` when tasks have sequential dependencies (e.g., Wave 1 code → Wave 2 integration → Wave 3 verify).
-4. Use `model: 'opus'` for implementation agents, `model: 'sonnet'` for verification/checks.
-5. Launch via `Workflow({scriptPath: ".claude/workflows/<task-name>.md"})`.
-6. After workflow completes, fix any issues found by verification agent, then commit/push.
-7. Wait for CI green before starting the next batch.
-
-**The only exception is trivial single-line edits** (typo fixes, doc wording, env var changes). Anything touching 2+ files goes through Workflow.
-
-## Autonomous Session Closeout
-
-A session is not complete until it leaves a durable handoff:
-
-1. Relevant tests or verification commands were run and recorded.
-2. `uv run --no-project python scripts/check_agent_handoff.py` passes (includes toolchain and `scripts/check_wire_codegen_drift.sh` guards).
-3. Handoff docs reflect the current branch, status, test count, stable commits, limitations, and next action.
-4. The commit message is in English and the active branch is pushed when the tree contains only this session's intended changes.
-5. After push, **wait for CI to pass** before starting the next batch. Use `gh run list --limit 3` to check status; if CI fails, fix and re-push before continuing. A green CI is required before the next session's work is considered safe to build on.
-6. The final report states latest commit, CI status, verification, remaining risks, and the next safe action.
-
-## Documentation Maintenance
-
-After any commit-sized change, update only the handoff docs whose facts changed:
-
-- `docs/CURRENT_STATUS.md` for current state, test count, stable commit, limitations, and verification
-- `docs/NEXT_DECISION.md` for allowed/disallowed next paths
-- `docs/MODULE_MAP.md` for module ownership changes
-- `README.md`, `CLAUDE.md`, and `AGENTS.md` for agent-facing workflow or boundary changes
-
-Do not add parallel roadmap, next-steps, closeout, status, or productization documents unless the user explicitly asks for a new artifact. Prefer shortening or deleting stale documents. If no docs changed, state the reason in the completion report.
