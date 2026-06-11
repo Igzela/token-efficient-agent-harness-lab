@@ -56,8 +56,8 @@ Autonomously maintain repo health and fix CI/docs/test drift. The following path
 
 ## Before Starting Autonomous Work
 
-1. Read `docs/CURRENT_STATUS.md` to confirm latest state.
-2. Read `docs/REAL_WORLD_TESTING_PLAYBOOK.md` for task classification and auto-merge rules.
+1. Read `docs/CURRENT_STATUS.md` only when status facts are unclear or the task updates status.
+2. Read `docs/REAL_WORLD_TESTING_PLAYBOOK.md` for PR/merge/CI work, docs cleanup, and real-world pilot tasks.
 3. Confirm the proposed task is allowed under the safety gates above.
 4. Keep the change commit-sized and run the relevant verification.
 5. Run `uv run --no-project python scripts/check_agent_handoff.py`.
