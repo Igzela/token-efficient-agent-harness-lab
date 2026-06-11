@@ -4,8 +4,9 @@ use std::collections::BTreeMap;
 
 use super::{append_audit_locked, collect_values, str_at, DatabaseConnection, LocalProductStore};
 use crate::feedback::{
-    serialize_candidate_to_api_response, OutcomeAttributor, PatternDetector, PolicyCandidate,
-    PolicyProposer, PolicySimulator, RunTraceRecorder,
+    serialize_candidate_to_api_response, AutoAdjustmentGuard, AutoAdjustmentPolicy,
+    GeneratedProposalCandidate, OutcomeAttributor, PatternDetector, PolicyCandidate,
+    PolicyProposer, PolicySimulator, PolicySnapshotPreview, RunTraceRecorder,
 };
 
 impl LocalProductStore {
@@ -610,6 +611,72 @@ impl LocalProductStore {
     }
 
     pub fn generated_proposals(&self, limit: i64) -> Result<Value, String> {
+        let candidates = self.generated_proposal_candidates(limit)?;
+        let api_candidates: Vec<Value> = candidates
+            .iter()
+            .map(serialize_candidate_to_api_response)
+            .collect();
+
+        Ok(json!({
+            "schema_version": "generated_proposals.v1",
+            "total": api_candidates.len(),
+            "candidates": api_candidates,
+        }))
+    }
+
+    pub fn auto_adjustments_report(&self, limit: i64) -> Result<Value, String> {
+        let candidates = self.generated_proposal_candidates(limit)?;
+        let guard = AutoAdjustmentGuard::from_env();
+        let policy = AutoAdjustmentPolicy::default();
+        let active_policy_before = self
+            .active_routing_policy()?
+            .map(|policy| serde_json::to_value(policy).map_err(|e| e.to_string()))
+            .transpose()?
+            .unwrap_or(Value::Null);
+        let created_at = Some(self.now());
+
+        let decisions: Vec<Value> = candidates
+            .iter()
+            .map(|candidate| {
+                serde_json::to_value(policy.evaluate(candidate)).map_err(|e| e.to_string())
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        let snapshot_previews: Vec<Value> = candidates
+            .iter()
+            .map(|candidate| {
+                serde_json::to_value(PolicySnapshotPreview::preview(
+                    active_policy_before.clone(),
+                    candidate,
+                    created_at.clone(),
+                ))
+                .map_err(|e| e.to_string())
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+
+        Ok(json!({
+            "schema_version": "auto_adjustments_report.v1",
+            "mode": guard.mode,
+            "env_gate": guard.env_gate,
+            "dry_run": guard.dry_run,
+            "no_live_mutation": true,
+            "active_apply_available": false,
+            "rollback_endpoint_available": false,
+            "guard": guard,
+            "decisions": decisions,
+            "snapshot_previews": snapshot_previews,
+            "active_auto_adjustments": [],
+            "blocked_reasons": [
+                "active automatic adjustment is not approved",
+                "POST apply endpoint is not implemented",
+                "rollback endpoint is not implemented"
+            ],
+        }))
+    }
+
+    fn generated_proposal_candidates(
+        &self,
+        limit: i64,
+    ) -> Result<Vec<GeneratedProposalCandidate>, String> {
         let dispatches = self.dispatches_for_read_models(limit, 0)?;
         let traces: Vec<_> = dispatches
             .iter()
@@ -622,25 +689,14 @@ impl LocalProductStore {
         let sim_result = PolicySimulator::simulate(&traces, &PolicyCandidate::Balanced);
 
         let proposer = PolicyProposer::default();
-        let candidates = proposer.propose(
+        Ok(proposer.propose(
             &patterns,
             if sim_result.input_trace_count > 0 {
                 Some(&sim_result)
             } else {
                 None
             },
-        );
-
-        let api_candidates: Vec<Value> = candidates
-            .iter()
-            .map(serialize_candidate_to_api_response)
-            .collect();
-
-        Ok(json!({
-            "schema_version": "generated_proposals.v1",
-            "total": api_candidates.len(),
-            "candidates": api_candidates,
-        }))
+        ))
     }
 
     fn dispatches_for_read_models(&self, limit: i64, offset: i64) -> Result<Vec<Value>, String> {

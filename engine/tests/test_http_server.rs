@@ -7413,3 +7413,139 @@ async fn test_generated_candidates_have_safety_flags_and_approval_requirement() 
         );
     }
 }
+
+struct AutoAdjustmentEnvCleanup;
+
+impl Drop for AutoAdjustmentEnvCleanup {
+    fn drop(&mut self) {
+        std::env::remove_var("ACP_ENABLE_AUTO_ADJUSTMENT");
+        std::env::remove_var("ACP_AUTO_ADJUSTMENT_DRY_RUN");
+    }
+}
+
+#[tokio::test]
+async fn test_auto_adjustments_endpoint_disabled_and_dry_run_read_only() {
+    let _cleanup = AutoAdjustmentEnvCleanup;
+    std::env::remove_var("ACP_ENABLE_AUTO_ADJUSTMENT");
+    std::env::remove_var("ACP_AUTO_ADJUSTMENT_DRY_RUN");
+
+    let (app, key) = make_generated_app();
+
+    let disabled_resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(Method::GET)
+                .uri("/api/v1/auto-adjustments?limit=50")
+                .header(header::AUTHORIZATION, format!("Bearer {key}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(disabled_resp.status(), StatusCode::OK);
+    let disabled = response_json(disabled_resp).await;
+    assert_eq!(disabled["schema_version"], "auto_adjustments_report.v1");
+    assert_eq!(disabled["mode"], "disabled");
+    assert_eq!(disabled["env_gate"], false);
+    assert_eq!(disabled["dry_run"], false);
+    assert_eq!(disabled["no_live_mutation"], true);
+    assert_eq!(disabled["active_apply_available"], false);
+
+    let proposals_before_resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(Method::GET)
+                .uri("/api/v1/proposals?limit=500")
+                .header(header::AUTHORIZATION, format!("Bearer {key}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let proposals_before = response_json(proposals_before_resp).await;
+    let proposal_count_before = proposals_before["proposals"].as_array().unwrap().len();
+
+    let active_before_resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(Method::GET)
+                .uri("/api/v1/proposals?status=active&limit=500")
+                .header(header::AUTHORIZATION, format!("Bearer {key}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let active_before = response_json(active_before_resp).await;
+    assert!(active_before["proposals"].as_array().unwrap().is_empty());
+
+    std::env::set_var("ACP_ENABLE_AUTO_ADJUSTMENT", "1");
+    std::env::set_var("ACP_AUTO_ADJUSTMENT_DRY_RUN", "1");
+
+    let dry_run_resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(Method::GET)
+                .uri("/api/v1/auto-adjustments?limit=50")
+                .header(header::AUTHORIZATION, format!("Bearer {key}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(dry_run_resp.status(), StatusCode::OK);
+    let dry_run = response_json(dry_run_resp).await;
+    assert_eq!(dry_run["mode"], "dry_run");
+    assert_eq!(dry_run["env_gate"], true);
+    assert_eq!(dry_run["dry_run"], true);
+    assert_eq!(dry_run["no_live_mutation"], true);
+    assert_eq!(dry_run["guard"]["max_adjustments_remaining"], 0);
+    assert!(
+        !dry_run["decisions"].as_array().unwrap().is_empty(),
+        "dry-run should emit policy decisions for generated candidates"
+    );
+    assert!(
+        !dry_run["snapshot_previews"].as_array().unwrap().is_empty(),
+        "dry-run should emit snapshot previews"
+    );
+
+    let proposals_after_resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(Method::GET)
+                .uri("/api/v1/proposals?limit=500")
+                .header(header::AUTHORIZATION, format!("Bearer {key}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let proposals_after = response_json(proposals_after_resp).await;
+    assert_eq!(
+        proposal_count_before,
+        proposals_after["proposals"].as_array().unwrap().len(),
+        "dry-run must not create controlled_loop_policy_proposals rows"
+    );
+
+    let active_after_resp = app
+        .oneshot(
+            Request::builder()
+                .method(Method::GET)
+                .uri("/api/v1/proposals?status=active&limit=500")
+                .header(header::AUTHORIZATION, format!("Bearer {key}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let active_after = response_json(active_after_resp).await;
+    assert!(
+        active_after["proposals"].as_array().unwrap().is_empty(),
+        "dry-run must not activate active_routing_policy"
+    );
+}
