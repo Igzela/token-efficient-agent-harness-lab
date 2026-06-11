@@ -9,6 +9,7 @@ import type {
   DispatchListResponse,
   ExecutorPoolStatusResponse,
   FeedbackCostOfPassResponse,
+  FeedbackPatternListResponse,
   FeedbackTraceListResponse,
   LocalDashboardState,
   OperationsMetrics,
@@ -247,6 +248,15 @@ export async function fetchFeedbackTraces(params: {
   status?: string;
 } = {}): Promise<FeedbackTraceListResponse> {
   return fetchJson<FeedbackTraceListResponse>(withQuery("/api/v1/feedback/traces", params));
+}
+
+export async function fetchFeedbackPatterns(params: {
+  limit?: number;
+  offset?: number;
+  pattern_type?: string;
+  severity?: string;
+} = {}): Promise<FeedbackPatternListResponse> {
+  return fetchJson<FeedbackPatternListResponse>(withQuery("/api/v1/feedback/patterns", params));
 }
 
 export async function fetchFeedbackCostOfPass(params: {

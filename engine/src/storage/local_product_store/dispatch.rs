@@ -3,6 +3,7 @@ use serde_json::{json, Value};
 use std::collections::BTreeMap;
 
 use super::{append_audit_locked, collect_values, str_at, DatabaseConnection, LocalProductStore};
+use crate::feedback::{OutcomeAttributor, PatternDetector, RunTraceRecorder};
 
 impl LocalProductStore {
     pub fn record_dispatch(
@@ -359,7 +360,27 @@ impl LocalProductStore {
         let traces: Vec<Value> = self
             .dispatches_for_read_models(500, offset)?
             .into_iter()
-            .map(|dispatch| feedback_trace(&dispatch))
+            .map(|dispatch| {
+                let trace = RunTraceRecorder::record_from_dispatch(&dispatch);
+                let attribution = OutcomeAttributor::attribute(&trace);
+                let attribution_value = serde_json::to_value(&attribution).unwrap_or(Value::Null);
+                let mut json = RunTraceRecorder::to_feedback_trace_json(&trace, attribution_value);
+                // Preserve dispatch-level fields not captured by RunTrace
+                if let Value::Object(ref mut map) = json {
+                    map.insert(
+                        "raw_request".to_string(),
+                        dispatch.get("raw_request").cloned().unwrap_or(Value::Null),
+                    );
+                    map.insert(
+                        "request_source".to_string(),
+                        dispatch
+                            .get("request_source")
+                            .cloned()
+                            .unwrap_or(Value::Null),
+                    );
+                }
+                json
+            })
             .filter(|trace| trace_matches(trace, "task_class", task_class_filter))
             .filter(|trace| trace_matches(trace, "tier", tier_filter))
             .filter(|trace| trace_matches(trace, "status", status_filter))
@@ -372,6 +393,60 @@ impl LocalProductStore {
             "limit": limit,
             "offset": offset,
             "traces": traces,
+        }))
+    }
+
+    pub fn feedback_patterns(
+        &self,
+        task_class_filter: Option<&str>,
+        tier_filter: Option<&str>,
+    ) -> Result<Value, String> {
+        let dispatches = self.dispatches_for_read_models(500, 0)?;
+        let traces: Vec<crate::feedback::run_trace_recorder::RunTrace> = dispatches
+            .iter()
+            .map(RunTraceRecorder::record_from_dispatch)
+            .filter(|trace| {
+                task_class_filter
+                    .map(|tc| trace.task_class.eq_ignore_ascii_case(tc.trim()))
+                    .unwrap_or(true)
+            })
+            .filter(|trace| {
+                tier_filter
+                    .map(|tier| trace.selected_tier.eq_ignore_ascii_case(tier.trim()))
+                    .unwrap_or(true)
+            })
+            .collect();
+
+        let detector = PatternDetector::default();
+        let mut patterns = detector.detect(&traces);
+
+        if let Some(tc) = task_class_filter {
+            let tc = tc.trim();
+            if !tc.is_empty() {
+                patterns.retain(|p| {
+                    p.affected_task_class
+                        .as_deref()
+                        .map(|v| v.eq_ignore_ascii_case(tc))
+                        .unwrap_or(true)
+                });
+            }
+        }
+        if let Some(tier) = tier_filter {
+            let tier = tier.trim();
+            if !tier.is_empty() {
+                patterns.retain(|p| {
+                    p.affected_tier
+                        .as_deref()
+                        .map(|v| v.eq_ignore_ascii_case(tier))
+                        .unwrap_or(true)
+                });
+            }
+        }
+
+        Ok(json!({
+            "schema_version": "feedback_patterns.v1",
+            "total": patterns.len(),
+            "patterns": patterns,
         }))
     }
 
@@ -624,67 +699,6 @@ fn metric_bucket_json(bucket: &MetricBucket) -> Value {
     })
 }
 
-fn feedback_trace(dispatch: &Value) -> Value {
-    let bundle = dispatch.get("bundle").unwrap_or(&Value::Null);
-    let analysis = bundle
-        .get("analysis")
-        .or_else(|| bundle.pointer("/decision/analysis_snapshot"))
-        .cloned()
-        .unwrap_or(Value::Null);
-    let decision = bundle.get("decision").cloned().unwrap_or(Value::Null);
-    let execution = bundle
-        .get("execution_result")
-        .cloned()
-        .unwrap_or(Value::Null);
-    let evaluation = bundle
-        .get("evaluation_result")
-        .cloned()
-        .unwrap_or(Value::Null);
-    let final_status = final_status(dispatch, bundle);
-    let evaluation_status = evaluation_status(bundle);
-    let success = dispatch_success(bundle, &final_status, &evaluation_status);
-    let dispatch_id = dispatch
-        .get("dispatch_id")
-        .and_then(Value::as_str)
-        .unwrap_or("unknown");
-    let trace_task_class = task_class(bundle);
-    let tier = selected_tier(dispatch, bundle);
-    let status = if success { "pass" } else { "fail" };
-
-    json!({
-        "schema_version": "feedback_trace.v1",
-        "trace_id": format!("trace-{dispatch_id}"),
-        "history_id": dispatch.get("history_id").cloned().unwrap_or(Value::Null),
-        "dispatch_id": dispatch.get("dispatch_id").cloned().unwrap_or(Value::Null),
-        "created_at": dispatch.get("created_at").cloned().unwrap_or(Value::Null),
-        "raw_request": dispatch.get("raw_request").cloned().unwrap_or(Value::Null),
-        "request_source": dispatch.get("request_source").cloned().unwrap_or(Value::Null),
-        "task_class": trace_task_class,
-        "tier": tier,
-        "status": status,
-        "executor_type": executor_type(dispatch, bundle),
-        "success": success,
-        "latency_ms": dispatch.get("latency_ms").cloned().unwrap_or(Value::Null),
-        "cost_usd": estimated_cost(dispatch, bundle)
-            .map(|cost| json!(cost))
-            .unwrap_or_else(|| json!(reserved_cost(dispatch, bundle))),
-        "error_domain": failure_domain(bundle, success),
-        "analysis": analysis,
-        "decision": decision,
-        "execution": execution,
-        "evaluation": evaluation,
-        "attribution": {
-            "selected_tier": selected_tier(dispatch, bundle),
-            "task_class": trace_task_class,
-            "complexity_score": complexity_score(bundle),
-            "context_size": context_size(bundle),
-            "executor_type": executor_type(dispatch, bundle),
-            "success": success,
-            "failure_domain": failure_domain(bundle, success),
-        },
-    })
-}
-
 fn shadow_influence_disabled() -> Value {
     json!({
         "selected_tier": false,
@@ -833,48 +847,6 @@ fn dispatch_success(bundle: &Value, final_status: &str, evaluation_status: &str)
     )
 }
 
-fn failure_domain(bundle: &Value, success: bool) -> Value {
-    if success {
-        return Value::Null;
-    }
-    first_str(
-        bundle,
-        &[
-            &["execution_result", "error_domain"],
-            &["evaluation_result", "failure_domain"],
-            &["evaluation_result", "error_domain"],
-        ],
-    )
-    .map(|domain| json!(domain))
-    .unwrap_or_else(|| json!("unknown"))
-}
-
-fn complexity_score(bundle: &Value) -> Value {
-    first_f64(
-        bundle,
-        &[
-            &["analysis", "complexity_score"],
-            &["decision", "analysis_snapshot", "complexity_score"],
-        ],
-    )
-    .map(|value| json!(value))
-    .unwrap_or(Value::Null)
-}
-
-fn context_size(bundle: &Value) -> Value {
-    first_i64(
-        bundle,
-        &[
-            &["analysis", "context_size"],
-            &["analysis", "context_budget_estimate"],
-            &["decision", "max_input_tokens"],
-            &["execution_result", "input_tokens"],
-        ],
-    )
-    .map(|value| json!(value))
-    .unwrap_or(Value::Null)
-}
-
 fn reserved_cost(dispatch: &Value, bundle: &Value) -> f64 {
     dispatch
         .get("reserved_cost")
@@ -936,12 +908,6 @@ fn first_f64(value: &Value, paths: &[&[&str]]) -> Option<f64> {
     paths
         .iter()
         .find_map(|path| value_at(value, path).and_then(Value::as_f64))
-}
-
-fn first_i64(value: &Value, paths: &[&[&str]]) -> Option<i64> {
-    paths
-        .iter()
-        .find_map(|path| value_at(value, path).and_then(Value::as_i64))
 }
 
 fn value_at<'a>(value: &'a Value, path: &[&str]) -> Option<&'a Value> {

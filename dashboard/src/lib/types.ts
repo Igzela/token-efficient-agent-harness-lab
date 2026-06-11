@@ -270,6 +270,25 @@ export interface FeedbackCostOfPassResponse {
   rows: FeedbackCostOfPass[];
 }
 
+export interface FeedbackPattern {
+  schema_version: string;
+  pattern_id: string;
+  pattern_type: string;
+  affected_tier: string | null;
+  affected_task_class: string | null;
+  count: number;
+  denominator: number;
+  rate: number;
+  evidence_trace_ids: string[];
+  severity: 'low' | 'medium' | 'high';
+  recommendation_hint: string;
+}
+
+export interface FeedbackPatternListResponse {
+  schema_version: string;
+  patterns: FeedbackPattern[];
+}
+
 export interface SimulationReportItem {
   scenario_id: string;
   created_at?: string | null;
