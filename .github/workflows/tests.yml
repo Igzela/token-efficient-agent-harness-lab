@@ -137,8 +137,16 @@ jobs:
         uses: actions/checkout@v6
       - name: Build local Docker services
         run: |
+          success=0
           for i in 1 2 3; do
-            docker compose build && break
+            if docker compose build; then
+              success=1
+              break
+            fi
             echo "Attempt $i failed, retrying..."
             sleep 10
           done
+          if [ "$success" -ne 1 ]; then
+            echo "All 3 docker compose build attempts failed"
+            exit 1
+          fi
