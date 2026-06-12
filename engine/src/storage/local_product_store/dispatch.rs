@@ -863,11 +863,11 @@ fn pg_dispatch_history_row(row: &postgres::Row) -> Value {
         "risk_level": row.get::<_, String>(7),
         "reserved_cost": row.get::<_, f64>(8),
         "bundle": bundle,
-        "input_tokens": row.get::<_, Option<i64>>(10),
-        "output_tokens": row.get::<_, Option<i64>>(11),
+        "input_tokens": row.get::<_, Option<i32>>(10).map(|v| v as i64),
+        "output_tokens": row.get::<_, Option<i32>>(11).map(|v| v as i64),
         "estimated_cost_usd": row.get::<_, Option<f64>>(12),
         "executor_type": row.get::<_, String>(13),
-        "latency_ms": row.get::<_, Option<i64>>(14),
+        "latency_ms": row.get::<_, Option<i32>>(14).map(|v| v as i64),
     })
 }
 
