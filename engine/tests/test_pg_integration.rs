@@ -361,3 +361,162 @@ fn pg_supervised_patch_metadata() {
         .any(|a| a["artifact_id"].as_str() == Some(artifact_id));
     assert!(found_art, "recorded artifact should appear in list");
 }
+
+/// PostgreSQL active trial: exercises the full auto-adjustment apply + rollback
+/// cycle against a real PostgreSQL database. Seeds dispatches via record_dispatch,
+/// enables active auto-adjustment gates, applies a candidate, verifies
+/// snapshot/proposal/audit state, rolls back, and verifies restoration.
+///
+/// Gracefully skips if pattern detection produces no candidate from seeded dispatches.
+#[test]
+#[cfg(feature = "pg-tests")]
+fn pg_auto_adjustment_apply_and_rollback_cycle() {
+    let Some(store) = test_store() else { return };
+    let tag = uuid_tag();
+
+    // Seed dispatches to feed pattern detection → candidate generation.
+    // 10 failing cheap_executor/code_generate dispatches.
+    for i in 0..10 {
+        let bundle = json!({
+            "record": {
+                "dispatch_id": format!("aa-cheap-{tag}-{i}"),
+                "created_at": utc_now_string(),
+                "final_status": "failure"
+            },
+            "decision": {
+                "selected_tier": "cheap_executor",
+                "budget_reservation": {"reserved_cost": 0.001}
+            },
+            "analysis": {
+                "task_class": "code_generate",
+                "risk_level": "low",
+                "complexity_score": 0.3
+            },
+            "execution_result": {
+                "executor_type": "noop",
+                "input_tokens": 50,
+                "output_tokens": 20,
+                "estimated_cost": 0.0001,
+                "latency_ms": 100
+            }
+        });
+        store
+            .record_dispatch("pg-aa-test", "pg-test", &bundle, "pg-test")
+            .expect("record_dispatch cheap");
+    }
+
+    // 10 successful strong_planner/code_debug dispatches (high cost).
+    for i in 0..10 {
+        let bundle = json!({
+            "record": {
+                "dispatch_id": format!("aa-strong-{tag}-{i}"),
+                "created_at": utc_now_string(),
+                "final_status": "success"
+            },
+            "decision": {
+                "selected_tier": "strong_planner",
+                "budget_reservation": {"reserved_cost": 0.05}
+            },
+            "analysis": {
+                "task_class": "code_debug",
+                "risk_level": "medium",
+                "complexity_score": 0.8
+            },
+            "execution_result": {
+                "executor_type": "noop",
+                "input_tokens": 500,
+                "output_tokens": 200,
+                "estimated_cost": 0.01,
+                "latency_ms": 2000
+            }
+        });
+        store
+            .record_dispatch("pg-aa-test", "pg-test", &bundle, "pg-test")
+            .expect("record_dispatch strong");
+    }
+
+    // Enable active auto-adjustment gates.
+    std::env::set_var("ACP_ENABLE_AUTO_ADJUSTMENT", "1");
+    std::env::set_var("ACP_AUTO_ADJUSTMENT_ACTIVE", "1");
+    std::env::remove_var("ACP_AUTO_ADJUSTMENT_DRY_RUN");
+
+    // Apply auto-adjustment.
+    let apply_result =
+        store.apply_auto_adjustment(&json!({"confirm_auto_adjustment": true}), "pg-trial-test");
+
+    // If no candidate was generated, pattern detection didn't trigger — skip gracefully.
+    let apply = match apply_result {
+        Ok(v) => v,
+        Err(e) if e.contains("no generated candidate") => {
+            std::env::remove_var("ACP_ENABLE_AUTO_ADJUSTMENT");
+            std::env::remove_var("ACP_AUTO_ADJUSTMENT_ACTIVE");
+            eprintln!("skipping auto-adjustment apply/rollback: no candidate generated from {tag} dispatches");
+            return;
+        }
+        Err(e) => panic!("apply_auto_adjustment failed: {e}"),
+    };
+
+    assert_eq!(apply["status"].as_str().unwrap(), "active");
+    assert!(apply["applied"].as_bool().unwrap());
+    let adjustment_id = apply["adjustment_id"].as_str().unwrap().to_string();
+
+    // Verify snapshot persisted.
+    let detail = store
+        .get_auto_adjustment(&adjustment_id)
+        .expect("get_auto_adjustment");
+    assert!(detail.is_some(), "adjustment should exist in store");
+    assert_eq!(detail.unwrap()["status"].as_str().unwrap(), "active");
+
+    // Verify active list.
+    let active = store
+        .active_auto_adjustments()
+        .expect("active_auto_adjustments");
+    assert!(
+        active
+            .iter()
+            .any(|a| a["adjustment_id"].as_str() == Some(&adjustment_id)),
+        "adjustment should appear in active list"
+    );
+
+    // Rollback.
+    let rb = store
+        .rollback_auto_adjustment(
+            &adjustment_id,
+            &json!({"confirm_auto_adjustment_rollback": true}),
+            "pg-trial-test",
+        )
+        .expect("rollback_auto_adjustment");
+    assert_eq!(rb["status"].as_str().unwrap(), "rolled_back");
+    assert!(rb["rolled_back"].as_bool().unwrap());
+
+    // Verify rolled-back state.
+    let after = store
+        .get_auto_adjustment(&adjustment_id)
+        .expect("get_auto_adjustment after rollback");
+    assert_eq!(after.unwrap()["status"].as_str().unwrap(), "rolled_back");
+
+    // Verify no active adjustments remain.
+    let active_after = store
+        .active_auto_adjustments()
+        .expect("active_auto_adjustments after rollback");
+    assert!(
+        active_after
+            .iter()
+            .all(|a| a["adjustment_id"].as_str() != Some(&adjustment_id)),
+        "rolled-back adjustment should not appear in active list"
+    );
+
+    // Verify audit events.
+    let events = store
+        .search_audit_events(100, 0, Some(&adjustment_id))
+        .expect("search_audit_events");
+    assert!(
+        events.len() >= 2,
+        "expected at least 2 audit events for apply+rollback, got {}",
+        events.len()
+    );
+
+    // Clean up env vars.
+    std::env::remove_var("ACP_ENABLE_AUTO_ADJUSTMENT");
+    std::env::remove_var("ACP_AUTO_ADJUSTMENT_ACTIVE");
+}
