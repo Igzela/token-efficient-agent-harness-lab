@@ -71,18 +71,8 @@ export function OperatorSurface() {
   }, [load]);
 
   return (
-    <section
-      style={{
-        background: "var(--panel)",
-        border: "1px solid var(--border)",
-        borderRadius: "var(--radius)",
-        padding: "1.5rem",
-        display: "flex",
-        flexDirection: "column",
-        gap: "1.25rem",
-      }}
-    >
-      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+    <section className="operator-surface">
+      <div className="operator-surface-header">
         <h2 style={{ margin: 0, fontSize: "1.125rem", color: "var(--ink)" }}>
           Operator Surface
         </h2>
@@ -170,38 +160,25 @@ export function OperatorSurface() {
       )}
 
       {!loading && !error && data && (
-        <>
-          {/* Mode indicator */}
-          <div
-            style={{
-              display: "flex",
-              alignItems: "center",
-              gap: "0.75rem",
-              padding: "1rem",
-              background: "var(--bg-subtle)",
-              borderRadius: "var(--radius-sm)",
-              border: "1px solid var(--border)",
-            }}
-          >
+        <div aria-live="polite">
+          {/* Mode badge — primary visual element */}
+          <div className="operator-mode-badge">
             <span
               style={{
                 display: "inline-block",
-                width: "0.75rem",
-                height: "0.75rem",
+                width: "0.875rem",
+                height: "0.875rem",
                 borderRadius: "50%",
                 background: modeColor(data.regulator.mode),
+                boxShadow: `0 0 0 3px ${modeColor(data.regulator.mode)}33`,
               }}
             />
-            <span style={{ color: "var(--ink)", fontWeight: 600 }}>
+            <span className="operator-mode-badge-label">
               Mode: {modeLabel(data.regulator.mode)}
             </span>
             <span
+              className="operator-mode-badge-pill"
               style={{
-                marginLeft: "auto",
-                padding: "0.25rem 0.625rem",
-                borderRadius: "var(--radius-sm)",
-                fontSize: "0.75rem",
-                fontWeight: 600,
                 background: modeColor(data.regulator.mode),
                 color: "var(--panel)",
               }}
@@ -210,52 +187,28 @@ export function OperatorSurface() {
             </span>
           </div>
 
-          {/* Gate indicators */}
-          <div
-            style={{
-              display: "flex",
-              gap: "1rem",
-              flexWrap: "wrap",
-            }}
-          >
+          {/* Gate indicators — secondary */}
+          <div className="operator-gate-grid">
             {[
               { label: "Auto-adjustment gate", enabled: data.regulator.env_gate_enabled },
               { label: "Dry-run mode", enabled: data.regulator.dry_run_enabled },
               { label: "Active mode", enabled: data.regulator.active_gate_enabled },
             ].map((gate) => (
-              <div
-                key={gate.label}
-                style={{
-                  flex: "1 1 0",
-                  minWidth: "140px",
-                  display: "flex",
-                  alignItems: "center",
-                  gap: "0.5rem",
-                  padding: "0.75rem 1rem",
-                  background: "var(--bg-subtle)",
-                  borderRadius: "var(--radius-sm)",
-                  border: "1px solid var(--border)",
-                }}
-              >
+              <div key={gate.label} className="operator-gate-item">
                 <span
-                  style={{
-                    color: gate.enabled ? "var(--ok)" : "var(--risk)",
-                    fontWeight: 700,
-                    fontSize: "1rem",
-                  }}
+                  className="operator-gate-icon"
+                  style={{ color: gate.enabled ? "var(--ok)" : "var(--risk)" }}
                   aria-label={gate.enabled ? "Enabled" : "Disabled"}
                 >
                   {gate.enabled ? "✓" : "✗"}
                 </span>
-                <span style={{ color: "var(--ink-subtle)", fontSize: "0.8125rem" }}>
-                  {gate.label}
-                </span>
+                <span>{gate.label}</span>
               </div>
             ))}
           </div>
 
-          {/* Proposal counts */}
-          <div style={{ display: "flex", gap: "1rem", flexWrap: "wrap" }}>
+          {/* Proposal counts — tertiary */}
+          <div className="operator-metrics-row">
             <Metric
               label="Pending Proposals"
               value={String(data.proposals.pending_count)}
@@ -271,28 +224,15 @@ export function OperatorSurface() {
           </div>
 
           {/* Auto-adjustment status */}
-          <div
-            style={{
-              padding: "1rem",
-              background: "var(--bg-subtle)",
-              borderRadius: "var(--radius-sm)",
-              border: "1px solid var(--border)",
-              display: "flex",
-              flexDirection: "column",
-              gap: "0.5rem",
-            }}
-          >
-            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-              <span style={{ color: "var(--ink)", fontWeight: 600, fontSize: "0.875rem" }}>
+          <div className="operator-subsection">
+            <div className="operator-subsection-header">
+              <h3 style={{ margin: 0, fontSize: "0.875rem", color: "var(--ink)" }}>
                 Auto-Adjustments
-              </span>
+              </h3>
               <span
+                className="pill"
                 style={{
-                  padding: "0.25rem 0.625rem",
-                  borderRadius: "var(--radius-sm)",
-                  fontSize: "0.75rem",
-                  fontWeight: 600,
-                  background: data.auto_adjustments.active_count > 0 ? "var(--ok-soft)" : "var(--bg)",
+                  background: data.auto_adjustments.active_count > 0 ? "var(--ok-soft)" : "var(--bg-subtle)",
                   color: data.auto_adjustments.active_count > 0 ? "var(--ok)" : "var(--muted)",
                 }}
               >
@@ -300,19 +240,7 @@ export function OperatorSurface() {
               </span>
             </div>
             {data.auto_adjustments.report && Object.keys(data.auto_adjustments.report).length > 0 ? (
-              <pre
-                style={{
-                  margin: 0,
-                  padding: "0.5rem",
-                  background: "var(--panel)",
-                  borderRadius: "var(--radius-sm)",
-                  fontSize: "0.75rem",
-                  color: "var(--ink-subtle)",
-                  overflow: "auto",
-                  maxHeight: "120px",
-                  border: "1px solid var(--border)",
-                }}
-              >
+              <pre className="operator-json-block">
                 {JSON.stringify(data.auto_adjustments.report, null, 2)}
               </pre>
             ) : (
@@ -324,21 +252,10 @@ export function OperatorSurface() {
 
           {/* Warnings */}
           {data.warnings.length > 0 && (
-            <div
-              role="alert"
-              style={{
-                padding: "1rem",
-                background: "var(--warn-soft)",
-                borderRadius: "var(--radius-sm)",
-                border: "1px solid var(--warn)",
-                display: "flex",
-                flexDirection: "column",
-                gap: "0.5rem",
-              }}
-            >
-              <span style={{ fontWeight: 600, color: "var(--warn)", fontSize: "0.875rem" }}>
+            <div className="operator-warning-list" role="alert">
+              <h3 style={{ margin: 0, fontWeight: 600, color: "var(--warn)", fontSize: "0.875rem" }}>
                 Warnings ({data.warnings.length})
-              </span>
+              </h3>
               <ul style={{ margin: 0, padding: "0 0 0 1.25rem", listStyle: "disc" }}>
                 {data.warnings.map((warning, idx) => (
                   <li
@@ -357,39 +274,12 @@ export function OperatorSurface() {
           )}
 
           {/* Active routing policy */}
-          <div
-            style={{
-              padding: "1rem",
-              background: "var(--bg-subtle)",
-              borderRadius: "var(--radius-sm)",
-              border: "1px solid var(--border)",
-            }}
-          >
-            <span
-              style={{
-                fontWeight: 600,
-                color: "var(--ink)",
-                fontSize: "0.875rem",
-                display: "block",
-                marginBottom: "0.5rem",
-              }}
-            >
+          <div className="operator-subsection">
+            <h3 style={{ margin: 0, fontSize: "0.875rem", color: "var(--ink)" }}>
               Active Routing Policy
-            </span>
+            </h3>
             {data.active_routing_policy ? (
-              <pre
-                style={{
-                  margin: 0,
-                  padding: "0.5rem",
-                  background: "var(--panel)",
-                  borderRadius: "var(--radius-sm)",
-                  fontSize: "0.75rem",
-                  color: "var(--ink-subtle)",
-                  overflow: "auto",
-                  maxHeight: "120px",
-                  border: "1px solid var(--border)",
-                }}
-              >
+              <pre className="operator-json-block">
                 {JSON.stringify(data.active_routing_policy, null, 2)}
               </pre>
             ) : (
@@ -400,17 +290,7 @@ export function OperatorSurface() {
           </div>
 
           {/* PostgreSQL indicator */}
-          <div
-            style={{
-              padding: "0.75rem 1rem",
-              background: "var(--bg-subtle)",
-              borderRadius: "var(--radius-sm)",
-              border: "1px solid var(--border)",
-              display: "flex",
-              alignItems: "center",
-              gap: "0.5rem",
-            }}
-          >
+          <div className="operator-pg-indicator">
             <span
               style={{
                 display: "inline-block",
@@ -421,10 +301,10 @@ export function OperatorSurface() {
               }}
             />
             <span style={{ color: "var(--ink-subtle)", fontSize: "0.8125rem" }}>
-              PG: {data.regulator.pg_database_url_configured ? "configured" : "not configured"}
+              PG: {data.regulator.pg_database_url_configured ? "connected" : "not configured"}
             </span>
           </div>
-        </>
+        </div>
       )}
     </section>
   );
