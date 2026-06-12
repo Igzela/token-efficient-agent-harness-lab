@@ -43,13 +43,13 @@ Full classifier: `docs/REAL_WORLD_TESTING_PLAYBOOK.md`
 
 ## Allowed Next Paths
 
-Autonomously maintain repo health and fix CI/docs/test drift. The following paths are allowed:
+Autonomously maintain repo health and fix CI/docs/test drift. No future core-completion phase remains. The following paths are allowed:
 
-- **Phase 8 completion:** PostgreSQL active trial, release hardening, safety boundary closure, docs consolidation, final seal
 - Autonomous maintenance: repair stale docs, CI breakage, test drift, wire-codegen drift
 - Regression hardening: add/repair tests for existing behavior
-- Architecture/doc closeout: update records after accepted changes
-- After Phase 8 DONE: maintenance, bugfix, pilot, v2 proposals only
+- Docs/CI/test drift repair
+- Pilots: real-world task validation
+- v2 proposals: new features, boundary expansions, or architectural changes
 
 ## Before Starting Autonomous Work
 
