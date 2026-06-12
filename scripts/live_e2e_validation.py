@@ -310,7 +310,7 @@ def main() -> int:
             results.fail("Protected endpoint rejects missing auth", str(no_auth))
 
         # Bad token should fail
-        bad_auth = get(f"{base_url}/api/v1/backups", token="bad_token_123", timeout=5.0)
+        bad_auth = get(f"{base_url}/api/v1/backups", token="placeholder_invalid_token", timeout=5.0)
         if bad_auth.get("_http_error") in (401, 403):
             results.ok("Protected endpoint rejects invalid token", f"HTTP {bad_auth['_http_error']}")
         else:
