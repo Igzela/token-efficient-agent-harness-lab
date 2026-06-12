@@ -642,3 +642,99 @@ fn query_i64(
         .and_then(|value| value.parse::<i64>().ok())
         .unwrap_or(default_value)
 }
+
+/// GET /api/v1/regulator/state — read-only snapshot of regulator operational state.
+/// No mutation. No secrets. Requires dispatch:read scope.
+pub(crate) async fn api_regulator_state(
+    State(state): State<AxumApiState>,
+    headers: HeaderMap,
+    uri: Uri,
+    Extension(request_id): Extension<RequestId>,
+) -> Result<impl IntoResponse, ApiError> {
+    authorize(&state, &headers, "dispatch:read", uri.path(), &request_id.0)?;
+    let store = require_store(&state)?;
+
+    // Active routing policy (merged tier_map from active proposals)
+    let active_policy = store.active_routing_policy().map_err(internal_error)?;
+
+    // Pending proposals
+    let pending = store
+        .list_policy_proposals(50, 0, Some("pending"))
+        .map_err(internal_error)?;
+    let pending_count = pending.get("total").and_then(|v| v.as_i64()).unwrap_or(0);
+
+    // Active proposals
+    let active = store
+        .list_policy_proposals(50, 0, Some("active"))
+        .map_err(internal_error)?;
+    let active_count = active.get("total").and_then(|v| v.as_i64()).unwrap_or(0);
+
+    // Active auto-adjustments
+    let active_adjustments = store.active_auto_adjustments().map_err(internal_error)?;
+
+    // Auto-adjustment report (includes guard mode, blocked reasons)
+    let adjustments_report = store.auto_adjustments_report(50).map_err(internal_error)?;
+
+    // Env gate status (read-only, no secrets)
+    let env_gate = std::env::var("ACP_ENABLE_AUTO_ADJUSTMENT").ok().as_deref() == Some("1");
+    let dry_run = std::env::var("ACP_AUTO_ADJUSTMENT_DRY_RUN").ok().as_deref() == Some("1");
+    let active_gate = std::env::var("ACP_AUTO_ADJUSTMENT_ACTIVE").ok().as_deref() == Some("1");
+
+    let mode = if !env_gate {
+        "disabled"
+    } else if dry_run {
+        "dry_run"
+    } else if active_gate {
+        "active"
+    } else {
+        "disabled"
+    };
+
+    // PostgreSQL config detection (env var presence, not proof of PG backend)
+    let pg_url_configured = std::env::var("ACP_DATABASE_URL").ok().is_some();
+
+    // Build response
+    Ok((
+        cors_headers(),
+        Json(serde_json::json!({
+            "schema_version": "regulator_state.v1",
+            "regulator": {
+                "mode": mode,
+                "env_gate_enabled": env_gate,
+                "dry_run_enabled": dry_run,
+                "active_gate_enabled": active_gate,
+                "pg_database_url_configured": pg_url_configured,
+            },
+            "active_routing_policy": active_policy,
+            "proposals": {
+                "pending_count": pending_count,
+                "active_count": active_count,
+            },
+            "auto_adjustments": {
+                "active_count": active_adjustments.len(),
+                "report": adjustments_report,
+            },
+            "warnings": build_regulator_warnings(env_gate, dry_run, active_gate, pg_url_configured),
+        })),
+    ))
+}
+
+fn build_regulator_warnings(
+    env_gate: bool,
+    dry_run: bool,
+    active_gate: bool,
+    pg_url_configured: bool,
+) -> Vec<String> {
+    let mut warnings = Vec::new();
+    if !env_gate {
+        warnings
+            .push("ACP_ENABLE_AUTO_ADJUSTMENT is not set; auto-adjustment is disabled".to_string());
+    }
+    if env_gate && !dry_run && !active_gate {
+        warnings.push("ACP_AUTO_ADJUSTMENT_ACTIVE is not set; auto-adjustment is in disabled mode despite env gate".to_string());
+    }
+    if pg_url_configured && std::env::var("ACP_TEST_DATABASE_URL").ok().is_none() {
+        warnings.push("ACP_DATABASE_URL is configured but ACP_TEST_DATABASE_URL not set; PG active trial is BLOCKED".to_string());
+    }
+    warnings
+}
