@@ -1,6 +1,14 @@
 // Structured operational log events for dispatch/regulator/policy paths.
 // Uses tracing crate (already in Cargo.toml, previously unused).
 // No secrets in log payloads — only IDs, decisions, and safe metadata.
+//
+// Correlation model:
+// - `request_id` (UUID) is available only at the HTTP handler/API boundary.
+//   Engine-level calls pass "" since request_id is not propagated into the
+//   dispatch engine. Use `dispatch_id` as the primary correlation key for
+//   engine-level structured logs.
+// - `dispatch_id` (disp-NNNN) is the engine-internal correlation key.
+// - Other IDs (candidate_id, proposal_id, etc.) link to store records.
 
 /// Dispatch decision event — emitted once per dispatch request
 pub fn log_dispatch_start(
