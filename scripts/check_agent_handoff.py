@@ -168,7 +168,12 @@ def main() -> int:
         arch_text = arch_book.read_text(encoding="utf-8")
         m_code = re.search(r'CURRENT_SCHEMA_VERSION\s*:\s*i64\s*=\s*(\d+)', migrations_text)
         m_doc = re.search(r'Current version:\s*v(\d+)', arch_text)
-        if m_code and m_doc:
+        if m_code and not m_doc:
+            failures.append(
+                "ARCHITECTURE_BOOK.md is missing 'Current version: vN' "
+                "(required for schema version drift check)"
+            )
+        elif m_code and m_doc:
             code_version = int(m_code.group(1))
             doc_version = int(m_doc.group(1))
             if code_version != doc_version:
