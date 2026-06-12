@@ -4,6 +4,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 
 use crate::dispatch_decision::{TASK_DOMAINS, TASK_INTENTS};
+use crate::infrastructure::structured_events;
 
 use super::pattern_detector::{DetectedPattern, PatternSeverity, PatternType};
 use super::policy_simulator::SimulationResult;
@@ -167,6 +168,14 @@ impl PolicyProposer {
                         requires_human_approval: true,
                         safety_flags: SafetyFlags::all_safe(),
                     });
+                    let c = candidates.last().unwrap();
+                    structured_events::log_proposal_generated(
+                        &c.candidate_id,
+                        "TierFailureConcentration",
+                        &c.target_tier,
+                        c.confidence,
+                        &c.policy_key,
+                    );
                 }
                 PatternType::TaskClassFailureConcentration => {
                     let Some(ref tc) = pattern.affected_task_class else {
@@ -206,6 +215,14 @@ impl PolicyProposer {
                         requires_human_approval: true,
                         safety_flags: SafetyFlags::all_safe(),
                     });
+                    let c = candidates.last().unwrap();
+                    structured_events::log_proposal_generated(
+                        &c.candidate_id,
+                        "TaskClassFailureConcentration",
+                        &c.target_tier,
+                        c.confidence,
+                        &c.policy_key,
+                    );
                 }
                 PatternType::HighCostPerPass => {
                     let Some(ref tier) = pattern.affected_tier else {
@@ -263,6 +280,14 @@ impl PolicyProposer {
                         requires_human_approval: true,
                         safety_flags: SafetyFlags::all_safe(),
                     });
+                    let c = candidates.last().unwrap();
+                    structured_events::log_proposal_generated(
+                        &c.candidate_id,
+                        "HighCostPerPass",
+                        &c.target_tier,
+                        c.confidence,
+                        &c.policy_key,
+                    );
                 }
                 _ => {}
             }

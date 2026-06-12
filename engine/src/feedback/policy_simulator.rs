@@ -2,6 +2,7 @@ use serde::{Deserialize, Serialize};
 
 use super::run_trace_recorder::RunTrace;
 use super::shadow_router::tier_cost_multiplier;
+use crate::infrastructure::structured_events;
 
 pub const POLICY_SIMULATION_SCHEMA_VERSION: &str = "policy_simulation_report.v1";
 
@@ -193,7 +194,7 @@ impl PolicySimulator {
         let actual_review_rate = actual_review as f64 / nf;
         let simulated_review_rate = sim_review / nf;
 
-        SimulationResult {
+        let result = SimulationResult {
             schema_version: POLICY_SIMULATION_SCHEMA_VERSION.to_string(),
             scenario_id: format!("sim-{policy}"),
             candidate_policy_id: format!("policy-{policy}"),
@@ -213,7 +214,17 @@ impl PolicySimulator {
             assumptions: assumptions(),
             evidence_trace_ids,
             safety: "shadow_only / no_live_influence".to_string(),
-        }
+        };
+
+        structured_events::log_simulation_result(
+            &result.scenario_id,
+            &policy.to_string(),
+            result.input_trace_count,
+            result.success_rate_delta,
+            result.cost_delta,
+        );
+
+        result
     }
 }
 

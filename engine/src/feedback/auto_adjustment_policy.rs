@@ -2,6 +2,7 @@ use serde::{Deserialize, Serialize};
 
 use super::policy_proposer::{ProposalCandidate, SafetyFlags, PROPOSAL_CANDIDATE_SCHEMA_VERSION};
 use super::proposal_validator::ProposalValidator;
+use crate::infrastructure::structured_events;
 use crate::model_selector::is_safe_policy_override_tier;
 
 pub const AUTO_ADJUSTMENT_POLICY_DECISION_SCHEMA_VERSION: &str =
@@ -185,10 +186,20 @@ impl AutoAdjustmentPolicy {
             blocked_reasons.push("policy_key references forbidden boundary scope".to_string());
         }
 
+        let eligible = blocked_reasons.is_empty();
+        structured_events::log_policy_eligible(
+            &candidate.candidate_id,
+            eligible,
+            &candidate.policy_key,
+            &candidate.target_tier,
+            candidate.confidence,
+            blocked_reasons.len(),
+        );
+
         AutoAdjustmentPolicyDecision {
             schema_version: AUTO_ADJUSTMENT_POLICY_DECISION_SCHEMA_VERSION.to_string(),
             candidate_id: candidate.candidate_id.clone(),
-            eligible: blocked_reasons.is_empty(),
+            eligible,
             reasons,
             blocked_reasons,
             confidence: candidate.confidence,

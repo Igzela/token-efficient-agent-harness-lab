@@ -4,6 +4,8 @@ use sha2::{Digest, Sha256};
 
 use super::policy_proposer::ProposalCandidate;
 
+use crate::infrastructure::structured_events;
+
 pub const POLICY_SNAPSHOT_SCHEMA_VERSION: &str = "policy_snapshot.v1";
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -123,7 +125,7 @@ impl PolicySnapshotRecord {
                 .as_slice(),
             &evidence_ids,
         );
-        Self {
+        let record = Self {
             schema_version: POLICY_SNAPSHOT_SCHEMA_VERSION.to_string(),
             adjustment_id,
             snapshot_id,
@@ -141,7 +143,14 @@ impl PolicySnapshotRecord {
             evidence_ids,
             safety_hash,
             status: "active".to_string(),
-        }
+        };
+        structured_events::log_snapshot_created(
+            &record.snapshot_id,
+            &record.candidate_id,
+            &record.policy_key,
+            &record.target_tier,
+        );
+        record
     }
 
     pub fn expected_safety_hash(&self) -> String {
@@ -170,7 +179,9 @@ impl PolicySnapshotRecord {
     }
 
     pub fn hash_is_valid(&self) -> bool {
-        self.safety_hash == self.expected_safety_hash()
+        let valid = self.safety_hash == self.expected_safety_hash();
+        structured_events::log_snapshot_hash_valid(&self.snapshot_id, &self.adjustment_id, valid);
+        valid
     }
 }
 
