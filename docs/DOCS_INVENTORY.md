@@ -1,6 +1,6 @@
 # Docs Inventory
 
-Last updated: 2026-06-12 (Phase 6 DONE)
+Last updated: 2026-06-12 (Phase 8 IN PROGRESS)
 
 ## Classification Key
 
@@ -31,10 +31,11 @@ Last updated: 2026-06-12 (Phase 6 DONE)
 | `docs/PHASE6_OPERATIONAL_READINESS_PLAN.md` | ~260 | operational | CURRENT_STATUS, NEXT_DECISION | keep |
 | `docs/PHASE6_POSTGRES_ACTIVE_TRIAL_STATUS.md` | ~100 | operational | CURRENT_STATUS, NEXT_DECISION | keep |
 | `docs/PHASE7_OPERATOR_SURFACE_PLAN.md` | ~330 | operational | CURRENT_STATUS, NEXT_DECISION | keep |
+| `docs/PHASE8_FINAL_COMPLETION_PLAN.md` | ~120 | authoritative | CURRENT_STATUS, NEXT_DECISION | keep |
 
 ## Summary
 
-- **Keep:** 18 files (authoritative + operational + strategic-reference)
+- **Keep:** 19 files (authoritative + operational + strategic-reference)
 - **Archive:** 0 files
 - **Delete:** 0 (conservative; archive first, delete later if unused)
 
