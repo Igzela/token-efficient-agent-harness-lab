@@ -142,6 +142,11 @@ ALLOWED_TEST_IMPORTS: dict[str, set[str]] = {
         "urllib.request",
         "urllib.error",
     },
+    "scripts/live_e2e_validation.py": {
+        "socket",
+        "urllib.error",
+        "urllib.request",
+    },
 }
 
 # Paths to exclude from active routing guard (test fixtures contain
