@@ -1,10 +1,12 @@
 # Next Decision
 
-## Active Track: Real-World Testing Mode
+## Active Track: Phase 8 — Final Completion / GA Seal
 
-The project is in **Real-World Testing Mode**. The Dynamic Global Regulator is validated through real tasks, real branches, real commits, real PRs, real CI, and gated auto-merge.
+Phase 8 is the final planned phase. After Phase 8, no "core completion" phase remains. Future work is maintenance, bugfixes, pilots, or v2 proposals only.
 
-**Next decision:** Phase 7 (Operator Surface / UI & UX) is DONE (PRs #49-#52). Operator dashboard provides read-only visibility into regulator state, proposals, and operational status. Phase 6 is DONE. PostgreSQL active trial remains BLOCKED. Next global stage: **Phase 8** (scope TBD — GA hardening, production deployment, or extended operator capabilities).
+**Current status:** Phase 8 IN PROGRESS. See `docs/PHASE8_FINAL_COMPLETION_PLAN.md` for gap inventory and seal criteria.
+
+**Completed phases:** Phase 1-7 (including 6A, 6B-1/2/3, Gates 1-3), Operator Surface (PRs #49-#52), Dynamic Workflow Batches 1-7, Macro-Orchestrator Phases 1-5, Self-Hosted GA Readiness SG-1 through SG-5, HA Hardening HA-1 through HA-6, Dynamic Regulator MVP Phases 1-5.
 
 **Agent Autonomous Maintenance Mode is active.** Agents autonomously maintain repo health, docs hygiene, CI correctness, and low-risk PR flow. CI green is the merge/success standard. Documentation maintenance means update/prune/archive, not accumulate. See playbook section "Agent Autonomous Maintenance Mode" for the full loop and rules.
 
@@ -45,12 +47,11 @@ Full classifier: `docs/REAL_WORLD_TESTING_PLAYBOOK.md`
 
 Autonomously maintain repo health and fix CI/docs/test drift. The following paths are allowed:
 
+- **Phase 8 completion:** PostgreSQL active trial, release hardening, safety boundary closure, docs consolidation, final seal
 - Autonomous maintenance: repair stale docs, CI breakage, test drift, wire-codegen drift
 - Regression hardening: add/repair tests for existing behavior
-- Real-world pilot matrix: execute first 10 tasks from playbook
-- Dynamic regulator hardening: safety gate HTTP tests complete (PR #32); Phase 1 DONE (PR #33); Phase 2 DONE (PR #34); Phase 3 DONE; Phase 4 DONE (PR #35 - PolicyProposer, ProposalValidator, ProposalSerializer, generated proposals endpoint); Phase 5 DONE after PR #36 dry-run guard, PR #37 active core, PR #38 safety hardening, PR #39 playbook, and PR #40 controlled SQLite active apply/rollback signoff; remaining work belongs to Phase 6 or post-Phase-5 observability/monitoring, not Phase 5 core implementation
-- Proposal CRUD lifecycle validation: safety gate tests pass; remaining: verify end-to-end proposal→dispatch integration with real tier override
 - Architecture/doc closeout: update records after accepted changes
+- After Phase 8 DONE: maintenance, bugfix, pilot, v2 proposals only
 
 ## Before Starting Autonomous Work
 
