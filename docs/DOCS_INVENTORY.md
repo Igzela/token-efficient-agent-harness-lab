@@ -30,10 +30,11 @@ Last updated: 2026-06-12 (Phase 6 DONE)
 | `docs/ARCHITECTURE_BOOK.md` | ~550 | authoritative | SESSION_START, CURRENT_STATUS, NEXT_DECISION | keep |
 | `docs/PHASE6_OPERATIONAL_READINESS_PLAN.md` | ~260 | operational | CURRENT_STATUS, NEXT_DECISION | keep |
 | `docs/PHASE6_POSTGRES_ACTIVE_TRIAL_STATUS.md` | ~100 | operational | CURRENT_STATUS, NEXT_DECISION | keep |
+| `docs/PHASE7_OPERATOR_SURFACE_PLAN.md` | ~330 | operational | CURRENT_STATUS, NEXT_DECISION | keep |
 
 ## Summary
 
-- **Keep:** 17 files (authoritative + operational + strategic-reference)
+- **Keep:** 18 files (authoritative + operational + strategic-reference)
 - **Archive:** 0 files
 - **Delete:** 0 (conservative; archive first, delete later if unused)
 
