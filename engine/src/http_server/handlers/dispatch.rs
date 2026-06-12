@@ -690,8 +690,8 @@ pub(crate) async fn api_regulator_state(
         "disabled"
     };
 
-    // PostgreSQL backend detection
-    let pg_backend = std::env::var("ACP_DATABASE_URL").ok().is_some();
+    // PostgreSQL config detection (env var presence, not proof of PG backend)
+    let pg_url_configured = std::env::var("ACP_DATABASE_URL").ok().is_some();
 
     // Build response
     Ok((
@@ -703,7 +703,7 @@ pub(crate) async fn api_regulator_state(
                 "env_gate_enabled": env_gate,
                 "dry_run_enabled": dry_run,
                 "active_gate_enabled": active_gate,
-                "pg_backend_detected": pg_backend,
+                "pg_database_url_configured": pg_url_configured,
             },
             "active_routing_policy": active_policy,
             "proposals": {
@@ -714,7 +714,7 @@ pub(crate) async fn api_regulator_state(
                 "active_count": active_adjustments.len(),
                 "report": adjustments_report,
             },
-            "warnings": build_regulator_warnings(env_gate, dry_run, active_gate, pg_backend),
+            "warnings": build_regulator_warnings(env_gate, dry_run, active_gate, pg_url_configured),
         })),
     ))
 }
@@ -723,7 +723,7 @@ fn build_regulator_warnings(
     env_gate: bool,
     dry_run: bool,
     active_gate: bool,
-    pg_backend: bool,
+    pg_url_configured: bool,
 ) -> Vec<String> {
     let mut warnings = Vec::new();
     if !env_gate {
@@ -733,8 +733,8 @@ fn build_regulator_warnings(
     if env_gate && !dry_run && !active_gate {
         warnings.push("ACP_AUTO_ADJUSTMENT_ACTIVE is not set; auto-adjustment is in disabled mode despite env gate".to_string());
     }
-    if pg_backend && std::env::var("ACP_TEST_DATABASE_URL").ok().is_none() {
-        warnings.push("PostgreSQL backend detected but ACP_TEST_DATABASE_URL not set; PG active trial status is BLOCKED".to_string());
+    if pg_url_configured && std::env::var("ACP_TEST_DATABASE_URL").ok().is_none() {
+        warnings.push("ACP_DATABASE_URL is configured but ACP_TEST_DATABASE_URL not set; PG active trial is BLOCKED".to_string());
     }
     warnings
 }
