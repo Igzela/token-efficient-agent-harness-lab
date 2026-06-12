@@ -4,7 +4,7 @@
 
 The project is in **Real-World Testing Mode**. The Dynamic Global Regulator is validated through real tasks, real branches, real commits, real PRs, real CI, and gated auto-merge.
 
-**Next decision:** Phase 7 (Operator Surface / UI & UX) is scope locked — see docs/PHASE7_OPERATOR_SURFACE_PLAN.md. Implementation begins with PR #50 (regulator state visualization). Phase 6 is DONE. PostgreSQL active trial remains BLOCKED.
+**Next decision:** Phase 7 (Operator Surface / UI & UX) is DONE (PRs #49-#52). Operator dashboard provides read-only visibility into regulator state, proposals, and operational status. Phase 6 is DONE. PostgreSQL active trial remains BLOCKED. Next global stage: **Phase 8** (scope TBD — GA hardening, production deployment, or extended operator capabilities).
 
 **Agent Autonomous Maintenance Mode is active.** Agents autonomously maintain repo health, docs hygiene, CI correctness, and low-risk PR flow. CI green is the merge/success standard. Documentation maintenance means update/prune/archive, not accumulate. See playbook section "Agent Autonomous Maintenance Mode" for the full loop and rules.
 
