@@ -763,20 +763,24 @@ When advancing workflow runs via `POST /workflow-runs/:id/tick`, the `executor` 
 
 ---
 
-## 16. Phase 6 Candidate Directions
+## 16. Phase 6: Operational Readiness and Observability — DONE
 
-These are **directions only**, not implementation commitments. No Phase 6 code should be started without explicit approval.
+Phase 6 is COMPLETE (PRs #42–#47, completed 2026-06-12).
 
-| Direction | Description |
-|---|---|
-| **Operator observability** | Structured logging, per-decision log calls, dispatch observability dashboard |
-| **Dashboard regulator visibility** | Auto-Adjustments tab, policy lifecycle visualization, snapshot diff viewer |
-| **Production trial automation** | Automated active trial scripts, CI-integrated policy validation |
-| **PostgreSQL active trial** | Run full Phase 5 playbook against PostgreSQL, verify parity |
-| **Policy lifecycle reporting** | Proposal approval/rejection rates, adjustment frequency, rollback statistics |
-| **Architecture lint/checks** | Automated checks that architecture book matches code state |
-| **Docs drift detection** | CI job to detect when docs diverge from code |
-| **Phase 0 completion** | Structured logging infrastructure, per-decision log calls, aggregation tests |
+**Implemented:**
+- Structured operational logs for dispatch/regulator decisions (tracing crate, correlation model)
+- Per-decision observability for routing/policy/auto-adjustment paths
+- Read-only operator visibility for regulator state (`GET /api/v1/regulator/state`)
+- PostgreSQL active-trial status documented as BLOCKED (`ACP_TEST_DATABASE_URL` not available)
+- Docs/architecture drift checks (schema version cross-check between `migrations.rs` and `ARCHITECTURE_BOOK.md`)
+- Documentation consistency verified across Architecture Book, CURRENT_STATUS, NEXT_DECISION, DOCS_INVENTORY
+
+**Not implemented (deferred to future phases):**
+- Dashboard regulator visibility (Auto-Adjustments tab, policy lifecycle visualization)
+- Production trial automation (automated active trial scripts)
+- PostgreSQL active trial execution (blocked on `ACP_TEST_DATABASE_URL`)
+- Policy lifecycle reporting (proposal approval/rejection rates)
+- Phase 0 completion (structured logging infrastructure)
 
 ---
 

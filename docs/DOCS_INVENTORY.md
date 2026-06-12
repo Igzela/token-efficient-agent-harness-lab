@@ -1,6 +1,6 @@
 # Docs Inventory
 
-Last updated: 2026-06-12 (Phase 6 PG trial status added)
+Last updated: 2026-06-12 (Phase 6 DONE)
 
 ## Classification Key
 
