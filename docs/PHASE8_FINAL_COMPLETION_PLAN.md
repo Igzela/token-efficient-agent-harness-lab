@@ -1,7 +1,36 @@
 # Phase 8 — Final Completion / GA Seal
 
 Date: 2026-06-12
-Status: IN PROGRESS
+Status: **DONE — Core plan COMPLETE**
+
+## Phase 8 PRs
+
+| PR | Title | Branch | Status |
+|---|---|---|---|
+| #54 | Phase 8 Scope Lock | docs/phase8-final-completion-scope-lock | MERGED |
+| #55 | PostgreSQL Active Trial Closure | phase8/postgres-active-trial-closure | MERGED |
+| #56 | Release Hardening | phase8/release-ops-hardening | MERGED |
+| #57 | Safety Boundary Closure | phase8/safety-boundary-closure | MERGED |
+| #58 | Docs Consolidation | phase8/docs-runbook-release-gate | MERGED |
+| #59 | Final Seal | docs/phase8-final-seal | THIS PR |
+
+## PostgreSQL Active Trial — PASSED
+
+CI `pg-integration-tests` job passes with `pg_auto_adjustment_apply_and_rollback_cycle` test.
+Test seeds 20 dispatches, enables active auto-adjustment, exercises apply + blocked/active paths
+against real PostgreSQL 16 service container. Storage bug fixed: INT4/INT8 type alignment
+in `record_dispatch` write path and `pg_dispatch_history_row` read path.
+
+## Validation Results (2026-06-12)
+
+- `cargo fmt --check` ✓
+- `cargo clippy -p engine -- -D warnings` ✓
+- `cargo test -p engine` — 1534 tests pass ✓
+- `uv run --no-project python scripts/check_agent_handoff.py` ✓
+- `uv run --no-project python scripts/acp_secret_scan.py` ✓
+- `bash scripts/check_wire_codegen_drift.sh` ✓
+- `git diff --check` ✓
+- All 7 CI jobs green on main ✓
 
 ## Definition
 
@@ -12,7 +41,7 @@ Future work is maintenance, bugfixes, pilots, or v2 proposals only.
 
 | Gap | Category | Status | Notes |
 |---|---|---|---|
-| PostgreSQL active apply+rollback trial | MUST_COMPLETE | PENDING | CI has PG service; need integration tests for apply/rollback paths |
+| PostgreSQL active apply+rollback trial | MUST_COMPLETE | **PASSED** | PR #55: pg_auto_adjustment_apply_and_rollback_cycle, INT4/INT8 fix, CI green |
 | Local install | VERIFY_ONLY | EXISTS | scripts/install.sh present |
 | Upgrade | VERIFY_ONLY | EXISTS | scripts/upgrade.sh present |
 | Backup creation | VERIFY_ONLY | EXISTS | GET /api/v1/backups + POST /api/v1/backups with confirm |
