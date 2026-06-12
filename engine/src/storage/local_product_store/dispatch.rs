@@ -101,6 +101,10 @@ impl LocalProductStore {
             }),
             #[cfg(feature = "pg")]
             DatabaseConnection::Pg(_) => self.with_pg_conn(|client| {
+                // PostgreSQL INTEGER columns are INT4 (i32); Rust i64 maps to INT8.
+                let pg_input_tokens: Option<i32> = input_tokens.and_then(|v| v.try_into().ok());
+                let pg_output_tokens: Option<i32> = output_tokens.and_then(|v| v.try_into().ok());
+                let pg_latency_ms: Option<i32> = latency_ms.and_then(|v| v.try_into().ok());
                 let row = client
                     .query_one(
                         "INSERT INTO dispatch_history
@@ -119,11 +123,11 @@ impl LocalProductStore {
                             &risk_level,
                             &reserved_cost,
                             &bundle_json,
-                            &input_tokens,
-                            &output_tokens,
+                            &pg_input_tokens,
+                            &pg_output_tokens,
                             &estimated_cost_usd,
                             &executor_type,
-                            &latency_ms,
+                            &pg_latency_ms,
                         ],
                     )
                     .map_err(|e| e.to_string())?;
