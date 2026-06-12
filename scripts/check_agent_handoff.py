@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
+import re
 import subprocess
 import sys
 
@@ -127,6 +128,55 @@ def main() -> int:
     if result.returncode != 0:
         print("Agent handoff check FAILED — wire codegen drift guard:")
         print(result.stdout.strip())
+        return 1
+
+    # --- Drift checks ---
+
+    # Check 1: Schema version constant exists and is readable
+    migrations_path = ROOT / "engine" / "src" / "storage" / "local_product_store" / "migrations.rs"
+    if migrations_path.exists():
+        migrations_text = migrations_path.read_text(encoding="utf-8")
+        if "CURRENT_SCHEMA_VERSION" not in migrations_text:
+            failures.append("migrations.rs is missing CURRENT_SCHEMA_VERSION constant")
+        else:
+            match = re.search(r'CURRENT_SCHEMA_VERSION\s*:\s*i64\s*=\s*(\d+)', migrations_text)
+            if not match:
+                failures.append("Cannot parse CURRENT_SCHEMA_VERSION from migrations.rs")
+    else:
+        failures.append("migrations.rs not found at expected path")
+
+    # Check 2: Docs inventory — all referenced files exist
+    inventory_path = ROOT / "docs" / "DOCS_INVENTORY.md"
+    if inventory_path.exists():
+        inv_text = inventory_path.read_text(encoding="utf-8")
+        for match in re.finditer(r'\|\s*`?(docs/[^`\s|]+)`?\s*\|', inv_text):
+            doc_path = match.group(1).strip()
+            full_path = ROOT / doc_path
+            if not full_path.exists():
+                failures.append(f"DOCS_INVENTORY references missing file: {doc_path}")
+    else:
+        failures.append("docs/DOCS_INVENTORY.md not found")
+
+    # Check 3: Architecture Book exists and is non-empty
+    arch_book = ROOT / "docs" / "ARCHITECTURE_BOOK.md"
+    if not arch_book.exists():
+        failures.append("docs/ARCHITECTURE_BOOK.md not found")
+    elif arch_book.stat().st_size == 0:
+        failures.append("docs/ARCHITECTURE_BOOK.md is empty")
+
+    # Check 4: Phase 6 plan exists (only required when Phase 6 is declared active)
+    current_status_path = ROOT / "docs" / "CURRENT_STATUS.md"
+    if current_status_path.exists():
+        status_text = current_status_path.read_text(encoding="utf-8")
+        if "Phase 6" in status_text and ("active track" in status_text or "IN PROGRESS" in status_text):
+            phase6_plan = ROOT / "docs" / "PHASE6_OPERATIONAL_READINESS_PLAN.md"
+            if not phase6_plan.exists():
+                failures.append("docs/PHASE6_OPERATIONAL_READINESS_PLAN.md not found (Phase 6 is active in CURRENT_STATUS)")
+
+    if failures:
+        print("Agent handoff check FAILED:")
+        for failure in failures:
+            print(f"- {failure}")
         return 1
 
     print("Agent handoff check passed.")
