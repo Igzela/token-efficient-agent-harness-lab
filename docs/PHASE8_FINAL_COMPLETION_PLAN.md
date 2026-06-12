@@ -12,7 +12,8 @@ Status: **DONE — Core plan COMPLETE**
 | #56 | Release Hardening | phase8/release-ops-hardening | MERGED |
 | #57 | Safety Boundary Closure | phase8/safety-boundary-closure | MERGED |
 | #58 | Docs Consolidation | phase8/docs-runbook-release-gate | MERGED |
-| #59 | Final Seal | docs/phase8-final-seal | THIS PR |
+| #59 | Final Seal | docs/phase8-final-seal | MERGED |
+| #60 | Final Consistency Cleanup | docs/phase8-final-consistency-cleanup | THIS PR |
 
 ## PostgreSQL Active Trial — PASSED
 
@@ -57,7 +58,7 @@ Future work is maintenance, bugfixes, pilots, or v2 proposals only.
 | Target repo write boundary | VERIFY_ONLY | EXISTS | App never writes target repos |
 | Release/tag/deploy boundary | VERIFY_ONLY | EXISTS | No auto release/tag/deploy behavior |
 | Mutation controls decision | REJECT_FOR_V1 | DOCUMENTED | v1 GA is read-only operator UI + API/CLI/admin backend |
-| Documentation consistency | MUST_COMPLETE | PENDING | Update all stale docs after Phase 8 work |
+| Documentation consistency | MUST_COMPLETE | **DONE** | PR #60: final consistency cleanup, stale terms resolved |
 | CI completeness | VERIFY_ONLY | EXISTS | 7 CI jobs covering Rust/Python/TS/Docker/PG/native |
 
 ## PostgreSQL Active Trial Plan
