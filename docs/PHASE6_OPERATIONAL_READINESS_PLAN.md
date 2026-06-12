@@ -1,9 +1,10 @@
 # Phase 6: Operational Readiness and Observability
 
-Status: **IN PROGRESS**
+Status: **DONE**
 Plan created: 2026-06-11
+Completed: 2026-06-12
 Schema version: 13
-Test count baseline: 1506 Rust tests, 0 failures
+Test count baseline: 1534 Rust tests, 0 failures
 
 ## Purpose
 
@@ -145,10 +146,11 @@ The following are explicitly NOT Phase 6 work:
 **Goal:** Seal Phase 6 as DONE.
 
 **Scope:**
-- Update `docs/CURRENT_STATUS.md` with Phase 6 completion status
+- Update `docs/CURRENT_STATUS.md` with Phase 6 completion status and test count
 - Update `docs/NEXT_DECISION.md` to point at Phase 7 (Operator Surface / UI & UX)
-- Update `docs/DOCS_INVENTORY.md` to include Phase 6 artifacts
-- Update `CLAUDE.md` test count if changed
+- Update `docs/ARCHITECTURE_BOOK.md` with Phase 6 completion status
+- Update `docs/DOCS_INVENTORY.md` to reflect Phase 6 completion
+- Update `docs/PHASE6_OPERATIONAL_READINESS_PLAN.md` to reflect DONE status
 - Run full verification suite
 - No code changes
 
