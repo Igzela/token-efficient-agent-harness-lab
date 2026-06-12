@@ -175,7 +175,7 @@ Phase 7 is accepted when ALL of the following hold:
 
 | # | Criterion | Verification |
 |---|---|---|
-| 1 | All Phase 7 PRs merged to main | `git log --oneline` shows PRs #49-#54 |
+| 1 | All Phase 7 PRs merged to main | `git log --oneline` shows PRs #49-#52 |
 | 2 | CI green | `gh run list --limit 3` shows all passing |
 | 3 | Rust tests pass | `cargo test -p engine` -- 1534+ tests, 0 failures |
 | 4 | Dashboard readonly lint | `cd dashboard && bun run lint` passes |
@@ -195,7 +195,7 @@ Phase 7 is accepted when ALL of the following hold:
 
 Phase 7 is sealed when:
 
-1. All 6 PRs (#49-#54) merged to main with green CI
+1. All 4 PRs (#49-#52) merged to main with green CI
 2. `docs/CURRENT_STATUS.md` updated with Phase 7 DONE
 3. `docs/NEXT_DECISION.md` updated with next phase direction
 4. `docs/MODULE_MAP.md` updated if any new modules added
@@ -205,6 +205,8 @@ Phase 7 is sealed when:
 8. `bash scripts/verify_rust_typescript_stack.sh` passes
 
 ## PR Sequence
+
+**Actual execution**: Phase 7 was completed in 4 PRs (#49–#52). The original plan below proposed 6 PRs (#49–#54), but implementation was compressed: PRs #50–#52 were combined into #50 (operator dashboard + data client + component), #51 (visual/accessibility polish), and #52 (final seal). PRs #53 and #54 from the original plan were superseded by #50–#52.
 
 ### PR #49 — Phase 7 Scope Lock
 
@@ -241,7 +243,7 @@ Phase 7 is sealed when:
 - **Files**: `dashboard/src/components/DynamicRegulator.tsx`, `dashboard/src/components/EmptyState.tsx`, `dashboard/src/components/StateBanner.tsx`, `dashboard/src/app/globals.css`
 - **Verification**: `cd dashboard && bun run lint && bun run typecheck && bun run build && bun run build:static`
 
-### PR #53 — Responsive Layout + Accessibility
+### PR #53 — Responsive Layout + Accessibility *(superseded by PR #51)*
 
 - **Branch**: `phase7/responsive-a11y`
 - **Purpose**: Ensure regulator/proposal tables reflow at 1024px+; add `:focus-visible` rings; add ARIA roles (`role="tablist"`, `role="tab"`, `role="tabpanel"`, `role="dialog"`, `aria-modal`, `role="status"`); add `aria-label` on icon buttons; verify heading hierarchy; add `aria-live="polite"` on data regions
@@ -250,7 +252,7 @@ Phase 7 is sealed when:
 - **Files**: `dashboard/src/app/globals.css`, `dashboard/src/components/DynamicRegulator.tsx`, `dashboard/src/components/TabGroup.tsx`, `dashboard/src/components/ConfirmDialog.tsx`
 - **Verification**: `cd dashboard && bun run lint && bun run typecheck && bun run build && bun run build:static`
 
-### PR #54 — Phase 7 Final Seal
+### PR #54 — Phase 7 Final Seal *(superseded by PR #52)*
 
 - **Branch**: `phase7/final-seal`
 - **Purpose**: Seal Phase 7 as DONE; update `docs/CURRENT_STATUS.md`, `docs/NEXT_DECISION.md`, `docs/MODULE_MAP.md`; confirm test counts; run full verification suite

@@ -14,7 +14,7 @@ function mapError(error: unknown): OperatorError {
   if (error instanceof ApiError && (error.status === 401 || error.status === 403)) {
     return {
       message: error.status === 403
-        ? "Current API key lacks regulator:read scope."
+        ? "Current API key lacks dispatch:read scope."
         : "Operator surface requires protected local API access.",
       type: "permission",
     };
@@ -301,7 +301,7 @@ export function OperatorSurface() {
               }}
             />
             <span style={{ color: "var(--ink-subtle)", fontSize: "0.8125rem" }}>
-              PG: {data.regulator.pg_database_url_configured ? "connected" : "not configured"}
+              PG URL: {data.regulator.pg_database_url_configured ? "configured" : "not configured"}
             </span>
           </div>
         </div>
