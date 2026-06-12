@@ -1,10 +1,8 @@
 # Next Decision
 
-## Active Track: Phase 8 — Final Completion / GA Seal
+## Core Plan COMPLETE
 
-Phase 8 is the final planned phase. After Phase 8, no "core completion" phase remains. Future work is maintenance, bugfixes, pilots, or v2 proposals only.
-
-**Current status:** Phase 8 IN PROGRESS. See `docs/PHASE8_FINAL_COMPLETION_PLAN.md` for gap inventory and seal criteria.
+**Phase 8 DONE. Core plan COMPLETE.** No future core-completion phase remains. Future work is maintenance, bugfixes, pilots, or v2 proposals only. See `docs/PHASE8_FINAL_COMPLETION_PLAN.md` for gap inventory and seal evidence.
 
 **Completed phases:** Phase 1-7 (including 6A, 6B-1/2/3, Gates 1-3), Operator Surface (PRs #49-#52), Dynamic Workflow Batches 1-7, Macro-Orchestrator Phases 1-5, Self-Hosted GA Readiness SG-1 through SG-5, HA Hardening HA-1 through HA-6, Dynamic Regulator MVP Phases 1-5.
 
