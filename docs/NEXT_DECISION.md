@@ -4,7 +4,7 @@
 
 The project is in **Real-World Testing Mode**. The Dynamic Global Regulator is validated through real tasks, real branches, real commits, real PRs, real CI, and gated auto-merge.
 
-**Next decision:** Phase 6 (Operational Readiness and Observability) is the active track. PR #42 defines the Phase 6 plan and acceptance checklist. See docs/PHASE6_OPERATIONAL_READINESS_PLAN.md for full scope, PR sequence, and acceptance criteria.
+**Next decision:** Phase 6 (Operational Readiness and Observability) is the active track. PR #42 defines the Phase 6 plan and acceptance checklist. See `docs/PHASE6_OPERATIONAL_READINESS_PLAN.md` for full scope, PR sequence, and acceptance criteria. PostgreSQL active trial is BLOCKED — `ACP_TEST_DATABASE_URL` not available. See `docs/PHASE6_POSTGRES_ACTIVE_TRIAL_STATUS.md`. Phase 5 is DONE (PRs #36–#40). Runtime active operation remains opt-in and disabled by default. This is high-risk policy mutation behavior and is not auto-merge eligible.
 
 **Agent Autonomous Maintenance Mode is active.** Agents autonomously maintain repo health, docs hygiene, CI correctness, and low-risk PR flow. CI green is the merge/success standard. Documentation maintenance means update/prune/archive, not accumulate. See playbook section "Agent Autonomous Maintenance Mode" for the full loop and rules.
 
@@ -49,7 +49,6 @@ Autonomously maintain repo health and fix CI/docs/test drift. The following path
 - Regression hardening: add/repair tests for existing behavior
 - Real-world pilot matrix: execute first 10 tasks from playbook
 - Dynamic regulator hardening: safety gate HTTP tests complete (PR #32); Phase 1 DONE (PR #33); Phase 2 DONE (PR #34); Phase 3 DONE; Phase 4 DONE (PR #35 - PolicyProposer, ProposalValidator, ProposalSerializer, generated proposals endpoint); Phase 5 DONE after PR #36 dry-run guard, PR #37 active core, PR #38 safety hardening, PR #39 playbook, and PR #40 controlled SQLite active apply/rollback signoff; remaining work belongs to Phase 6 or post-Phase-5 observability/monitoring, not Phase 5 core implementation
-- Phase 6 operational readiness: structured observability (PR #43), read-only operator surface (PR #44), PostgreSQL active trial resolution (PR #45), docs/architecture drift checks (PR #46), final seal (PR #47). See docs/PHASE6_OPERATIONAL_READINESS_PLAN.md
 - Proposal CRUD lifecycle validation: safety gate tests pass; remaining: verify end-to-end proposal→dispatch integration with real tier override
 - Architecture/doc closeout: update records after accepted changes
 
