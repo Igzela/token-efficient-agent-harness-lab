@@ -157,12 +157,25 @@ def main() -> int:
     else:
         failures.append("docs/DOCS_INVENTORY.md not found")
 
-    # Check 3: Architecture Book exists and is non-empty
+    # Check 3: Architecture Book exists, is non-empty, and schema version matches migrations.rs
     arch_book = ROOT / "docs" / "ARCHITECTURE_BOOK.md"
     if not arch_book.exists():
         failures.append("docs/ARCHITECTURE_BOOK.md not found")
     elif arch_book.stat().st_size == 0:
         failures.append("docs/ARCHITECTURE_BOOK.md is empty")
+    elif migrations_path.exists():
+        # Cross-check schema version between migrations.rs and ARCHITECTURE_BOOK.md
+        arch_text = arch_book.read_text(encoding="utf-8")
+        m_code = re.search(r'CURRENT_SCHEMA_VERSION\s*:\s*i64\s*=\s*(\d+)', migrations_text)
+        m_doc = re.search(r'Current version:\s*v(\d+)', arch_text)
+        if m_code and m_doc:
+            code_version = int(m_code.group(1))
+            doc_version = int(m_doc.group(1))
+            if code_version != doc_version:
+                failures.append(
+                    f"Schema version mismatch: migrations.rs has v{code_version}, "
+                    f"ARCHITECTURE_BOOK.md has v{doc_version}"
+                )
 
     # Check 4: Phase 6 plan exists (only required when Phase 6 is declared active)
     current_status_path = ROOT / "docs" / "CURRENT_STATUS.md"
