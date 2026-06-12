@@ -95,7 +95,10 @@ The following are explicitly NOT Phase 6 work:
   - Auto-adjustment status (enabled/disabled, active/dry-run mode)
   - Current tier overrides (if any active)
 - Read-only: no POST, no mutation, no state change
-- Requires no auth (read-only diagnostic endpoint, consistent with `/api/v1/health`)
+- `GET /api/v1/regulator/state` is read-only
+- It requires `dispatch:read` scope
+- It performs no mutation
+- It exposes no secrets
 
 **New tests:**
 - Empty-state test (no proposals/snapshots returns empty arrays)
