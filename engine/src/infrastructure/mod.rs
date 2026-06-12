@@ -5,6 +5,7 @@ pub mod plugin_registry;
 pub mod plugin_system;
 pub mod rate_limiter;
 pub mod resource_monitor;
+pub mod structured_events;
 
 pub use auth::*;
 pub use circuit_breaker::*;

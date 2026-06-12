@@ -13,6 +13,7 @@ use crate::http_server::{
     AutoAdjustmentApplyRequest, AutoAdjustmentRollbackRequest, DispatchApiRequest,
     PolicyProposalActionRequest, PolicyProposalCreateRequest, AXUM_API_SCHEMA_VERSION,
 };
+use crate::infrastructure::structured_events;
 use crate::provider::cost_gate::{check_cost_gates, CostGateConfig};
 
 pub(crate) async fn api_dispatch(
@@ -30,6 +31,8 @@ pub(crate) async fn api_dispatch(
             "raw_request is required",
         ));
     }
+
+    structured_events::log_dispatch_start(&request_id.0, "", "http", request.raw_request.len());
 
     let is_provider = state.executor_type() == "provider";
     if is_provider {
@@ -61,7 +64,17 @@ pub(crate) async fn api_dispatch(
             } else {
                 0.0
             };
-            if check_cost_gates(&cost_config, reserved, daily_cost).is_err() {
+            let cost_gate_passed = check_cost_gates(&cost_config, reserved, daily_cost).is_ok();
+            structured_events::log_cost_gate(
+                &request_id.0,
+                "",
+                reserved,
+                daily_cost,
+                cost_config.per_dispatch_cap_usd.unwrap_or(0.0),
+                cost_config.daily_cap_usd.unwrap_or(0.0),
+                cost_gate_passed,
+            );
+            if !cost_gate_passed {
                 let raw = request.raw_request.clone();
                 let src = request_source.to_string();
                 let eng = Arc::clone(&state.engine);
@@ -82,6 +95,17 @@ pub(crate) async fn api_dispatch(
                         )
                         .map_err(internal_error)?;
                 }
+                let did = bundle
+                    .get("record")
+                    .and_then(|r| r.get("dispatch_id"))
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("");
+                let fs = bundle
+                    .get("record")
+                    .and_then(|r| r.get("final_status"))
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("");
+                structured_events::log_dispatch_complete(&request_id.0, did, fs);
                 return Ok((cors_headers(), Json(bundle)));
             }
         }
@@ -106,6 +130,17 @@ pub(crate) async fn api_dispatch(
             )
             .map_err(internal_error)?;
     }
+    let did = bundle
+        .get("record")
+        .and_then(|r| r.get("dispatch_id"))
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
+    let fs = bundle
+        .get("record")
+        .and_then(|r| r.get("final_status"))
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
+    structured_events::log_dispatch_complete(&request_id.0, did, fs);
     Ok((cors_headers(), Json(bundle)))
 }
 
@@ -373,6 +408,7 @@ pub(crate) async fn api_approve_policy_proposal(
             request.confirm_policy_override.unwrap_or(false),
         )
         .map_err(bad_policy_request)?;
+    structured_events::log_proposal_action(&proposal_id, "approve", actor);
     Ok((
         cors_headers(),
         Json(json!({
@@ -397,6 +433,7 @@ pub(crate) async fn api_reject_policy_proposal(
     let proposal = store
         .reject_policy_proposal(&proposal_id, actor, request.reason.as_deref())
         .map_err(bad_policy_request)?;
+    structured_events::log_proposal_action(&proposal_id, "reject", actor);
     Ok((
         cors_headers(),
         Json(json!({
@@ -426,6 +463,7 @@ pub(crate) async fn api_deactivate_policy_proposal(
             request.confirm_policy_override.unwrap_or(false),
         )
         .map_err(bad_policy_request)?;
+    structured_events::log_proposal_action(&proposal_id, "deactivate", actor);
     Ok((
         cors_headers(),
         Json(json!({
@@ -455,6 +493,7 @@ pub(crate) async fn api_rollback_policy_proposal(
             request.confirm_policy_override.unwrap_or(false),
         )
         .map_err(bad_policy_request)?;
+    structured_events::log_proposal_action(&proposal_id, "rollback", actor);
     Ok((
         cors_headers(),
         Json(json!({
@@ -518,6 +557,27 @@ pub(crate) async fn api_apply_auto_adjustment(
     let result = store
         .apply_auto_adjustment(&request_value, &actor)
         .map_err(bad_policy_request)?;
+    let adj_id = result
+        .get("adjustment_id")
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
+    let prop_id = result
+        .get("proposal_id")
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
+    let pk = result
+        .get("policy_key")
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
+    let tt = result
+        .get("target_tier")
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
+    let accepted = result
+        .get("applied")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+    structured_events::log_active_apply(adj_id, prop_id, pk, tt, accepted);
     Ok((cors_headers(), Json(result)))
 }
 
@@ -540,6 +600,16 @@ pub(crate) async fn api_rollback_auto_adjustment(
     let result = store
         .rollback_auto_adjustment(&adjustment_id, &request_value, &actor)
         .map_err(bad_policy_request)?;
+    let prop_id = result
+        .get("proposal_id")
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
+    let rolled_back = result
+        .get("rolled_back")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+    let status = result.get("status").and_then(|v| v.as_str()).unwrap_or("");
+    structured_events::log_rollback(&adjustment_id, prop_id, rolled_back, status);
     Ok((cors_headers(), Json(result)))
 }
 

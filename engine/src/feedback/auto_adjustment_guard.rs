@@ -1,5 +1,7 @@
 use serde::{Deserialize, Serialize};
 
+use crate::infrastructure::structured_events;
+
 pub const AUTO_ADJUSTMENT_GUARD_DECISION_SCHEMA_VERSION: &str = "auto_adjustment_guard_decision.v1";
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -51,7 +53,7 @@ impl AutoAdjustmentGuard {
             (false, "disabled")
         };
 
-        AutoAdjustmentGuardDecision {
+        let decision = AutoAdjustmentGuardDecision {
             schema_version: AUTO_ADJUSTMENT_GUARD_DECISION_SCHEMA_VERSION.to_string(),
             allowed,
             mode: mode.to_string(),
@@ -70,7 +72,16 @@ impl AutoAdjustmentGuard {
                 "no_provider_cli_auth_security_deploy_boundary_expansion".to_string(),
                 "no_target_repository_write".to_string(),
             ],
-        }
+        };
+
+        structured_events::log_auto_adjustment_guard(
+            decision.allowed,
+            &decision.mode,
+            decision.env_gate,
+            decision.dry_run,
+        );
+
+        decision
     }
 }
 

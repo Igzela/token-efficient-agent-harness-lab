@@ -11,6 +11,7 @@ use crate::dispatch_ledger::{DispatchBundle, DispatchLedger};
 use crate::evaluation_stub::{EvaluationResult, EvaluationStub, Evaluator};
 use crate::executor_adapter::{ExecutionResult, Executor, NoopExecutor};
 use crate::harness::advisor::{AdvisorBroker, AdvisorContextPack};
+use crate::infrastructure::structured_events;
 use crate::model_selector::{DispatchRoutingPolicy, ModelSelector};
 use crate::provider::executor::make_not_executed_result;
 use crate::runtime::FixtureRuntime;
@@ -193,10 +194,29 @@ impl DispatchEngine {
         );
         let decision_id = runtime.id("dec-");
 
+        structured_events::log_dispatch_start("", &dispatch_id, request_source, raw_request.len());
+
         let analysis =
             self.analyzer
                 .analyze_with_runtime(raw_request, request_source, &mut runtime);
         let selection = selector.select(&analysis);
+
+        structured_events::log_dispatch_analysis(
+            "",
+            &dispatch_id,
+            &analysis.analysis_id,
+            &analysis.task_domain,
+            &analysis.task_intent,
+            &analysis.risk_level,
+            analysis.confidence,
+        );
+        structured_events::log_dispatch_selection(
+            "",
+            &dispatch_id,
+            &selection.selected_tier,
+            &self.effective_executor_type(&selection.selected_tier),
+        );
+
         let budget_reservation = self.budget_manager.create_reservation(
             &decision_id,
             &analysis,
@@ -234,6 +254,13 @@ impl DispatchEngine {
         );
         let hard_constraints = derive_hard_constraints(&analysis, &execution_policy);
         let decision_status = determine_decision_status(&execution_gates);
+
+        structured_events::log_dispatch_decision(
+            "",
+            &dispatch_id,
+            &decision_status,
+            execution_gates.len(),
+        );
 
         let mut decision = DispatchDecision {
             schema_version: DISPATCH_DECISION_SCHEMA_VERSION.to_string(),
@@ -294,6 +321,14 @@ impl DispatchEngine {
                 .execute(&decision, raw_request, &dispatch_id, &mut runtime)
         };
 
+        structured_events::log_dispatch_execution(
+            "",
+            &dispatch_id,
+            &effective_type,
+            &decision.selected_tier,
+            &execution_result.status,
+        );
+
         let mut evaluation_result =
             self.evaluator
                 .evaluate(&execution_result, &decision, &mut runtime);
@@ -330,6 +365,16 @@ impl DispatchEngine {
                     let retry_eval =
                         self.evaluator
                             .evaluate(&retry_execution, &decision, &mut runtime);
+                    structured_events::log_dispatch_retry(
+                        "",
+                        &dispatch_id,
+                        &decision.selected_tier,
+                        &upgraded_tier,
+                        evaluation_result
+                            .retry_reason
+                            .as_deref()
+                            .unwrap_or("quality_fail"),
+                    );
                     if retry_eval.status != "fail" {
                         execution_result = retry_execution;
                         evaluation_result = retry_eval;
@@ -342,6 +387,9 @@ impl DispatchEngine {
         }
 
         let final_status = derive_final_status(&execution_result, &evaluation_result);
+
+        structured_events::log_dispatch_complete("", &dispatch_id, final_status);
+
         let record = self.ledger.update_record(
             record,
             final_status,
