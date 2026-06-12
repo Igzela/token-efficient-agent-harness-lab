@@ -19,6 +19,7 @@ import type {
   QueueRunResponse,
   QueueStatusResponse,
   QueueTenantListResponse,
+  RegulatorStateResponse,
   SchedulerStatusResponse,
   PolicySimulationResult,
   SimulationReportResponse,
@@ -591,4 +592,8 @@ export async function fetchDecisionDetail(decisionId: string): Promise<DecisionD
 
 export async function fetchDecisionStats(): Promise<DecisionStatsResponse> {
   return fetchJson<DecisionStatsResponse>(`${BASE}/api/v1/decisions/stats`);
+}
+
+export async function fetchRegulatorState(): Promise<RegulatorStateResponse> {
+  return fetchJson<RegulatorStateResponse>(`${BASE}/api/v1/regulator/state`);
 }

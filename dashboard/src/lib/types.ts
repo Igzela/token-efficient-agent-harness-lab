@@ -988,3 +988,24 @@ export interface EvaluationCheck {
   status: CheckStatus;
   reason: string;
 }
+
+export interface RegulatorStateResponse {
+  schema_version: string;
+  regulator: {
+    mode: "disabled" | "dry_run" | "active";
+    env_gate_enabled: boolean;
+    dry_run_enabled: boolean;
+    active_gate_enabled: boolean;
+    pg_database_url_configured: boolean;
+  };
+  active_routing_policy: Record<string, unknown> | null;
+  proposals: {
+    pending_count: number;
+    active_count: number;
+  };
+  auto_adjustments: {
+    active_count: number;
+    report: Record<string, unknown>;
+  };
+  warnings: string[];
+}
