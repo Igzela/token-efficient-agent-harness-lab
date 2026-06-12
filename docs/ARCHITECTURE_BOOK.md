@@ -750,7 +750,7 @@ When advancing workflow runs via `POST /workflow-runs/:id/tick`, the `executor` 
 | Policy mutation safety | Medium | Auto-adjustment changes routing policy; hash-validated rollback mitigates |
 | Human approval burden | Medium | Every policy change requires admin review; could bottleneck high-volume scenarios |
 | Migration parity risk | Low | SQLite and PostgreSQL schemas must stay in sync |
-| Phase 0 observability gaps | Low | Phase 0 is PARTIAL: missing structured logging, per-decision log calls |
+| Phase 0 observability gaps | Low | Phase 0 is PARTIAL: Phase 6 partially closed structured logging and per-decision observability gaps. Remaining gaps: aggregation, dashboard/reporting visibility, production operational dashboards |
 | Candidate staleness | Low | Generated candidates have no timestamp; staleness is evidence-based |
 
 ### Open questions
@@ -759,7 +759,7 @@ When advancing workflow runs via `POST /workflow-runs/:id/tick`, the `executor` 
 2. Is PostgreSQL active trial required before Phase 6 work begins?
 3. Should auto-rollback on degradation be implemented (currently requires future approval)?
 4. What is the right cadence for human approval of policy proposals in production-like usage?
-5. Should structured logging (Phase 0 gap) be prioritized before Phase 6?
+5. Should remaining Phase 0 gaps (aggregation, dashboard visibility, production dashboards) be prioritized for Phase 7?
 
 ---
 
