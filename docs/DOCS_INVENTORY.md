@@ -1,6 +1,6 @@
 # Docs Inventory
 
-Last updated: 2026-06-11 (Architecture Book added)
+Last updated: 2026-06-12 (Phase 6 plan added)
 
 ## Classification Key
 
@@ -28,10 +28,11 @@ Last updated: 2026-06-11 (Architecture Book added)
 | `docs/security/SCOPE_TEMPLATES.md` | 46 | operational | CURRENT_STATUS | keep |
 | `docs/dispatch/DISPATCHER_KERNEL_V0_ARCHITECTURE.md` | 1975 | strategic-reference | CURRENT_STATUS | keep |
 | `docs/ARCHITECTURE_BOOK.md` | ~550 | authoritative | SESSION_START, CURRENT_STATUS, NEXT_DECISION | keep |
+| docs/PHASE6_OPERATIONAL_READINESS_PLAN.md | ~200 | operational | CURRENT_STATUS, NEXT_DECISION, SESSION_START | keep |
 
 ## Summary
 
-- **Keep:** 15 files (authoritative + operational + strategic-reference)
+- **Keep:** 16 files (authoritative + operational + strategic-reference)
 - **Archive:** 0 files
 - **Delete:** 0 (conservative; archive first, delete later if unused)
 
@@ -49,3 +50,4 @@ Last updated: 2026-06-11 (Architecture Book added)
 - `docs/DOCS_INVENTORY.md` — adding, moving, archiving, or deleting docs
 - `docs/ARCHITECTURE_BOOK.md` — understanding system architecture, data flows, API surface, safety boundaries
 - `docs/DYNAMIC_GLOBAL_REGULATOR_PLAN.md` — strategic architecture planning only
+- `docs/PHASE6_OPERATIONAL_READINESS_PLAN.md` — Phase 6 implementation decisions, PR sequence, acceptance criteria
