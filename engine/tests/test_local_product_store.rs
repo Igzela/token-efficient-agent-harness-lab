@@ -2519,6 +2519,7 @@ fn context_assembly_persisted_in_node_metadata() {
 
 #[test]
 fn context_assembly_persisted_in_node_json_directly() {
+    let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let dir = tempdir().unwrap();
     let store = LocalProductStore::new(dir.path().join("test.db")).unwrap();
     let plan = store

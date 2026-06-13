@@ -12,7 +12,7 @@ export function Metric({
   value: string;
 }) {
   return (
-    <article className="metric">
+    <article className={`metric metric-${tone}`}>
       <span className="label">{label}</span>
       <strong>{value}</strong>
       <span className={tone}>{detail ?? tone}</span>

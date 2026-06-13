@@ -2,7 +2,7 @@ use axum::extract::{Extension, Path as AxumPath, Query, State};
 use axum::http::{HeaderMap, Uri};
 use axum::response::IntoResponse;
 use axum::Json;
-use serde_json::json;
+use serde_json::{json, Value};
 use std::sync::Arc;
 
 use crate::http_server::middleware::{
@@ -15,6 +15,7 @@ use crate::http_server::{
 };
 use crate::infrastructure::structured_events;
 use crate::provider::cost_gate::{check_cost_gates, CostGateConfig};
+use crate::storage::local_product_store::LocalProductStore;
 
 pub(crate) async fn api_dispatch(
     State(state): State<AxumApiState>,
@@ -86,14 +87,14 @@ pub(crate) async fn api_dispatch(
                 .await
                 .map_err(|e| internal_error(e.to_string()))?;
                 if let Some(store) = &state.local_store {
-                    store
-                        .record_dispatch(
-                            &request.raw_request,
-                            request_source,
-                            &bundle,
-                            &context.api_key_id,
-                        )
-                        .map_err(internal_error)?;
+                    record_dispatch_and_decision(
+                        store,
+                        &request.raw_request,
+                        request_source,
+                        &bundle,
+                        &context.api_key_id,
+                    )
+                    .map_err(internal_error)?;
                 }
                 let did = bundle
                     .get("record")
@@ -121,14 +122,14 @@ pub(crate) async fn api_dispatch(
     .await
     .map_err(|e| internal_error(e.to_string()))?;
     if let Some(store) = &state.local_store {
-        store
-            .record_dispatch(
-                &request.raw_request,
-                request_source,
-                &bundle,
-                &context.api_key_id,
-            )
-            .map_err(internal_error)?;
+        record_dispatch_and_decision(
+            store,
+            &request.raw_request,
+            request_source,
+            &bundle,
+            &context.api_key_id,
+        )
+        .map_err(internal_error)?;
     }
     let did = bundle
         .get("record")
@@ -142,6 +143,104 @@ pub(crate) async fn api_dispatch(
         .unwrap_or("");
     structured_events::log_dispatch_complete(&request_id.0, did, fs);
     Ok((cors_headers(), Json(bundle)))
+}
+
+fn record_dispatch_and_decision(
+    store: &LocalProductStore,
+    raw_request: &str,
+    request_source: &str,
+    bundle: &Value,
+    actor: &str,
+) -> Result<(), String> {
+    store.record_dispatch(raw_request, request_source, bundle, actor)?;
+    record_dispatch_routing_decision(store, raw_request, request_source, bundle)
+}
+
+fn record_dispatch_routing_decision(
+    store: &LocalProductStore,
+    raw_request: &str,
+    request_source: &str,
+    bundle: &Value,
+) -> Result<(), String> {
+    let dispatch_id = bundle
+        .pointer("/record/dispatch_id")
+        .and_then(Value::as_str)
+        .unwrap_or("unknown");
+    let selected_tier = bundle
+        .pointer("/decision/selected_tier")
+        .and_then(Value::as_str)
+        .unwrap_or("unknown");
+    let executor_type = bundle
+        .pointer("/execution_result/executor_type")
+        .and_then(Value::as_str)
+        .or_else(|| {
+            bundle
+                .pointer("/decision/execution_policy/executor_type")
+                .and_then(Value::as_str)
+        })
+        .unwrap_or(selected_tier);
+    let decision_status = bundle
+        .pointer("/decision/decision_status")
+        .and_then(Value::as_str)
+        .unwrap_or("decided");
+    let action = match decision_status {
+        "rejected" | "blocked" | "blocked_by_policy" => "block",
+        "requires_human_review" => "escalate",
+        _ => "dispatch",
+    };
+    let confidence_label = bundle
+        .pointer("/decision/confidence_label")
+        .and_then(Value::as_str)
+        .unwrap_or("unknown");
+    let confidence_score = bundle
+        .pointer("/decision/confidence")
+        .and_then(Value::as_f64)
+        .or_else(|| {
+            bundle
+                .pointer("/analysis/confidence")
+                .and_then(Value::as_f64)
+        })
+        .unwrap_or(0.0);
+    let routing_reason = bundle
+        .pointer("/decision/routing_reason")
+        .and_then(Value::as_str)
+        .unwrap_or(decision_status);
+    let blocked_reason = (action == "block").then_some(routing_reason);
+    let input_signals = json!({
+        "dispatch_id": dispatch_id,
+        "request_source": request_source,
+        "raw_request": raw_request,
+        "task_domain": bundle.pointer("/analysis/task_domain").cloned().unwrap_or(Value::Null),
+        "task_intent": bundle.pointer("/analysis/task_intent").cloned().unwrap_or(Value::Null),
+        "risk_level": bundle.pointer("/analysis/risk_level").cloned().unwrap_or(Value::Null),
+        "selected_tier": selected_tier,
+        "decision_status": decision_status,
+        "final_status": bundle.pointer("/record/final_status").cloned().unwrap_or(Value::Null),
+    });
+    let routing_signal = bundle.get("decision");
+    let cost_signal = bundle.pointer("/decision/budget_reservation");
+    let quality_signal = bundle.get("evaluation_result");
+
+    store.record_orchestration_decision_enriched(
+        dispatch_id,
+        None,
+        action,
+        routing_reason,
+        executor_type,
+        blocked_reason,
+        confidence_label,
+        confidence_score,
+        &input_signals,
+        quality_signal,
+        routing_signal,
+        cost_signal,
+        None,
+        None,
+        None,
+        None,
+        None,
+    )?;
+    Ok(())
 }
 
 pub(crate) async fn api_dispatches(

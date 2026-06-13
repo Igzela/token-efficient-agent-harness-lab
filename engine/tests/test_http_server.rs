@@ -307,6 +307,7 @@ async fn axum_local_store_persists_dispatch_history_and_dashboard_summary() {
     );
 
     let dashboard = app
+        .clone()
         .oneshot(
             Request::builder()
                 .method(Method::GET)
@@ -324,6 +325,28 @@ async fn axum_local_store_persists_dispatch_history_and_dashboard_summary() {
         "Summarize local team status without provider calls"
     );
     assert_eq!(dashboard_body["boundaries"]["provider_transport"], "noop");
+
+    let decisions = app
+        .oneshot(
+            Request::builder()
+                .method(Method::GET)
+                .uri("/api/v1/decisions")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(decisions.status(), StatusCode::OK);
+    let decisions_body = response_json(decisions).await;
+    let decisions = decisions_body["decisions"].as_array().unwrap();
+    assert_eq!(decisions.len(), 1);
+    assert_eq!(decisions[0]["run_id"], "disp-0001");
+    assert_eq!(decisions[0]["action"], "dispatch");
+    assert_eq!(decisions[0]["executor"], "noop");
+    assert_eq!(
+        decisions[0]["input_signals"]["raw_request"],
+        "Summarize local team status without provider calls"
+    );
 }
 
 #[tokio::test]
