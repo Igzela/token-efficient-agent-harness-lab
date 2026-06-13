@@ -30,7 +30,6 @@ import { Settings } from "@/components/Settings";
 import { Team } from "@/components/Team";
 import { WelcomePanel } from "@/components/WelcomePanel";
 import { TabGroup, type TabGroupDef } from "@/components/TabGroup";
-import { TermTooltip } from "@/components/TermTooltip";
 import { OperatorSurface } from "@/components/OperatorSurface";
 import { WorkflowRuns } from "@/components/WorkflowRuns";
 
@@ -312,95 +311,103 @@ export default function DashboardPage() {
 
   return (
     <main>
-      <div className="shell">
-        <header className="topbar">
-          <div className="topbar-main">
-            <p className="eyebrow">Agent Control Plane</p>
-            <h1>Local Operations Console</h1>
-            <p className="hero-copy">
-              A local control plane for studying agent workflows. Monitor dispatches, track
-              costs, manage your team, and review audit history — all on your machine.
-            </p>
-            <BoundaryBadges
-              authStatus={authStatus}
-              boundaries={dashboard.boundaries}
-              hasToken={hasLocalToken}
-            />
+      <div className="shell ops-shell">
+        <aside className="ops-sidebar" aria-label="Dashboard navigation">
+          <div className="ops-brand">
+            <span className="ops-brand-mark" aria-hidden="true" />
+            <div>
+              <p className="eyebrow">ACP</p>
+              <strong>Local Ops</strong>
+            </div>
           </div>
-          <div className="topbar-meta">
-            {lastUpdated && authStatus === "ok" && (
-              <span className="muted timestamp">
-                {lastUpdated.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}
-              </span>
-            )}
-            {authStatus === "ok" && (
-              <button onClick={() => refreshAll()} type="button" className="topbar-btn" aria-label="Refresh dashboard data">
-                Refresh
+
+          <TabGroup groups={tabGroups} activeTab={tab} onTabChange={(id) => setTab(id as Tab)} />
+        </aside>
+
+        <section className="ops-main">
+          <header className="topbar">
+            <div className="topbar-main">
+              <p className="eyebrow">Agent Control Plane / Local Runtime</p>
+              <h1>Operations Console</h1>
+              <BoundaryBadges
+                authStatus={authStatus}
+                boundaries={dashboard.boundaries}
+                hasToken={hasLocalToken}
+              />
+            </div>
+            <div className="topbar-meta">
+              {lastUpdated && authStatus === "ok" && (
+                <span className="muted timestamp">
+                  {lastUpdated.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}
+                </span>
+              )}
+              {authStatus === "ok" && (
+                <button onClick={() => refreshAll()} type="button" className="topbar-btn" aria-label="Refresh dashboard data">
+                  Refresh
+                </button>
+              )}
+              <button onClick={toggleTheme} type="button" className="topbar-btn" aria-label={theme === "dark" ? "Switch to light mode" : "Switch to dark mode"}>
+                {theme === "dark" ? "Light" : "Dark"}
               </button>
-            )}
-            <button onClick={toggleTheme} type="button" className="topbar-btn" aria-label={theme === "dark" ? "Switch to light mode" : "Switch to dark mode"}>
-              {theme === "dark" ? "Light" : "Dark"}
-            </button>
-            <a
-              className="topbar-btn"
-              href="https://github.com/anthropics/agent-control-plane"
-              target="_blank"
-              rel="noopener noreferrer"
-            >
-              Docs
-            </a>
-          </div>
-        </header>
+              <a
+                className="topbar-btn"
+                href="https://github.com/anthropics/agent-control-plane"
+                target="_blank"
+                rel="noopener noreferrer"
+              >
+                Docs
+              </a>
+            </div>
+          </header>
 
-        {authStatus !== "ok" && (
-          <AuthPanel
-            status={authStatus}
-            message={authMessage}
-            onSaved={() => setReloadKey((k) => k + 1)}
-          />
-        )}
-
-        <section className="status-strip" aria-label="Status summary">
-          <Metric label="API" value={health} detail={health === "healthy" ? "healthy" : "check engine"} tone={health === "healthy" ? "ok" : "warn"} />
-          <Metric label="Ready" value={ready} detail={ready === "ready" ? "ready" : "not ready"} tone={ready === "ready" ? "ok" : "warn"} />
-          <Metric label="Dispatches" value={dashboard.counts.dispatches.toString()} detail="persisted" />
-          <Metric label="Cost" value={`$${dashboard.costs.total_reserved_cost.toFixed(3)}`} detail="reserved" />
-          <Metric label="Team" value={dashboard.counts.team_members.toString()} detail={`${dashboard.counts.api_keys} keys`} />
-        </section>
-
-        <WelcomePanel dispatchCount={dashboard.counts.dispatches} />
-
-        <SetupChecklist steps={setupSteps} />
-
-        <TabGroup groups={tabGroups} activeTab={tab} onTabChange={(id) => setTab(id as Tab)} />
-
-        <div role="tabpanel">
-          {tab === "mission" && <MissionControl />}
-          {tab === "dispatches" && (
-            <Dispatches
-              dispatches={dashboard.dispatches}
-              totalDispatches={dashboard.counts.dispatches}
+          {authStatus !== "ok" && (
+            <AuthPanel
+              status={authStatus}
+              message={authMessage}
+              onSaved={() => setReloadKey((k) => k + 1)}
             />
           )}
-          {tab === "routing" && <Routing rows={routingRows} />}
-          {tab === "regulator" && <DynamicRegulator />}
-          {tab === "operator" && <OperatorSurface />}
-          {tab === "decisions" && <DecisionLog />}
-          {tab === "team" && (
-            <Team dashboard={dashboard} refreshDashboard={(d) => setDashboard(d)} />
-          )}
-          {tab === "costs" && <Costs dashboard={dashboard} />}
-          {tab === "operations" && <Operations />}
-          {tab === "runs" && <WorkflowRuns />}
-          {tab === "patches" && <SupervisedPatch />}
-          {tab === "scheduler" && <SchedulerStatus />}
-          {tab === "pool" && <ExecutorPool />}
-          {tab === "queue" && <QueueStatusComponent />}
-          {tab === "settings" && <Settings dashboard={dashboard} />}
-          {tab === "health" && <Health dashboard={dashboard} health={health} ready={ready} />}
-          {tab === "backups" && <Backups />}
-          {tab === "audit" && <AuditLog />}
-        </div>
+
+          <section className="status-strip" aria-label="Status summary">
+            <Metric label="API" value={health} detail={health === "healthy" ? "healthy" : "check engine"} tone={health === "healthy" ? "ok" : "warn"} />
+            <Metric label="Ready" value={ready} detail={ready === "ready" ? "ready" : "not ready"} tone={ready === "ready" ? "ok" : "warn"} />
+            <Metric label="Dispatches" value={dashboard.counts.dispatches.toString()} detail="persisted" />
+            <Metric label="Cost" value={`$${dashboard.costs.total_reserved_cost.toFixed(3)}`} detail="reserved" />
+            <Metric label="Team" value={dashboard.counts.team_members.toString()} detail={`${dashboard.counts.api_keys} keys`} />
+          </section>
+
+          <WelcomePanel dispatchCount={dashboard.counts.dispatches} />
+
+          <SetupChecklist steps={setupSteps} />
+
+          <div className="content-panel" role="tabpanel">
+            {tab === "mission" && <MissionControl />}
+            {tab === "dispatches" && (
+              <Dispatches
+                dispatches={dashboard.dispatches}
+                totalDispatches={dashboard.counts.dispatches}
+              />
+            )}
+            {tab === "routing" && <Routing rows={routingRows} />}
+            {tab === "regulator" && <DynamicRegulator />}
+            {tab === "operator" && <OperatorSurface />}
+            {tab === "decisions" && <DecisionLog />}
+            {tab === "team" && (
+              <Team dashboard={dashboard} refreshDashboard={(d) => setDashboard(d)} />
+            )}
+            {tab === "costs" && <Costs dashboard={dashboard} />}
+            {tab === "operations" && <Operations />}
+            {tab === "runs" && <WorkflowRuns />}
+            {tab === "patches" && <SupervisedPatch />}
+            {tab === "scheduler" && <SchedulerStatus />}
+            {tab === "pool" && <ExecutorPool />}
+            {tab === "queue" && <QueueStatusComponent />}
+            {tab === "settings" && <Settings dashboard={dashboard} />}
+            {tab === "health" && <Health dashboard={dashboard} health={health} ready={ready} />}
+            {tab === "backups" && <Backups />}
+            {tab === "audit" && <AuditLog />}
+          </div>
+        </section>
       </div>
     </main>
   );
