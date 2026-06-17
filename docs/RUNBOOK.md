@@ -27,6 +27,43 @@ This checks Rust, Bun, Node, uv, ports, disk space, and SQLite availability. All
 
 ## 2. First-Time Setup
 
+### Shortest Local Operator Path
+
+Use this path when you need the smallest safe local loop: start the engine, authenticate if required, run a noop dispatch, then decide whether to opt into the guarded CLI flow.
+
+1. Build the dashboard:
+
+```bash
+cd dashboard && bun install --frozen-lockfile && bun run build:static && cd ..
+```
+
+2. Start default local noop mode:
+
+```bash
+ACP_DASHBOARD_DIR=dashboard/out cargo run -p engine
+```
+
+3. If protected mode is required, generate an admin key and restart with auth:
+
+```bash
+uv run --no-project python scripts/bootstrap_local_auth.py --json
+ACP_REQUIRE_AUTH=1 ACP_ADMIN_API_KEY=<harness_...> ACP_DASHBOARD_DIR=dashboard/out cargo run -p engine
+```
+
+Paste the generated `harness_...` key into the dashboard auth panel. A missing key blocks protected tabs; a key with insufficient scopes returns 403 and the dashboard reports which scope is missing.
+
+4. Prove the safe noop path:
+
+```bash
+curl -s -X POST http://127.0.0.1:8080/api/v1/dispatch \
+  -H "Content-Type: application/json" \
+  -d '{"raw_request":"Summarize docs without provider calls","request_source":"api"}'
+```
+
+5. Optional guarded CLI flow: set `ACP_ENABLE_CLI_EXECUTION=1` and select a CLI executor only for local trials where the operator accepts subprocess execution. If the gate is off, CLI-backed actions remain unavailable and the dashboard shows the CLI gate as off/default-safe.
+
+Provider execution remains off unless `ACP_ENABLE_PROVIDER_EXECUTION=1`. Workspace controls remain app-owned; export remains approval-bound and never applies changes to target repositories.
+
 ### 2.1 Clone and Enter Repository
 
 ```bash
