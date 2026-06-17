@@ -64,7 +64,7 @@ echo ""
 echo "=== Docs ==="
 check docs/CURRENT_STATUS.md
 check docs/NEXT_DECISION.md
-check docs/PHASE8_FINAL_COMPLETION_PLAN.md
+check docs/archive/phase-closeouts/PHASE8_FINAL_COMPLETION_PLAN.md
 check docs/RUNBOOK.md
 
 echo ""

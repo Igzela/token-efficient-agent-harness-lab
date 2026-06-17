@@ -48,8 +48,7 @@
 - `docs/REAL_WORLD_TESTING_PLAYBOOK.md` — when opening PRs, auto-merging, fixing CI, cleaning docs, or running real-world pilot tasks
 - `docs/MODULE_MAP.md` — when changing code or deciding module ownership
 - `docs/CURRENT_STATUS.md` — when status facts are unclear or when updating status
-- `docs/DOCS_INVENTORY.md` — when adding, moving, archiving, or deleting docs
-- `docs/DYNAMIC_GLOBAL_REGULATOR_PLAN.md` — only for strategic architecture planning
+- `docs/ARCHITECTURE_BOOK.md` — when current architecture or boundary facts are needed
 
 ## Architecture Summary
 
@@ -64,7 +63,9 @@ Key principles:
 - Phase boundaries enforce safety
 - Event-sourced ledger for auditability
 
-Master document: `docs/dispatch/DISPATCHER_KERNEL_V0_ARCHITECTURE.md`
+Current architecture baseline: `docs/ARCHITECTURE_BOOK.md`
+
+Historical dispatch architecture: `docs/archive/dispatch/DISPATCHER_KERNEL_V0_ARCHITECTURE.md`
 
 ## Autonomous Advancement Protocol
 
@@ -98,9 +99,11 @@ Before committing, update smallest necessary handoff surface if change affects:
 - Status, scope, tests, commands, boundaries, modules, or next steps
 
 Authoritative surfaces:
+- `docs/ARCHITECTURE_BOOK.md` — current architecture and boundaries
 - `docs/CURRENT_STATUS.md` — current state, verification, test counts
 - `docs/NEXT_DECISION.md` — single forward plan
 - `docs/MODULE_MAP.md` — source/test ownership
+- `docs/REAL_WORLD_TESTING_PLAYBOOK.md`, `docs/RUNBOOK.md` — maintenance workflow and operator procedures
 - `README.md`, `CLAUDE.md`, `AGENTS.md` — quickstart, agent workflow, boundaries
 
 Prefer prune/archive/link over adding more prose.

@@ -274,7 +274,7 @@ bundle = client.dispatch("Summarize docs without provider calls")
 ## Repository Structure
 
 ```text
-engine/                  Rust deterministic kernel, dispatch engine, storage, provider gates, and local axum API
+engine/                  Rust engine, dispatch runtime, storage, provider gates, and local axum API
 codegen/                 Wire-contract type generation helpers
 dashboard/               Next.js local agent-control-plane dashboard with static export support
 deploy/                  Optional local Dockerfiles for API and dashboard
@@ -283,43 +283,20 @@ sdk/python/              Python REST SDK package
 wire_contract/v1/        Frozen dispatch JSON schemas for cross-language parity
 tools/                   Security baseline checker, relocated utility tests
 scripts/                 Verification, packaging, and smoke-test scripts
-docs/stage0/             Stage 0 architecture fixtures and task book data
-docs/stage1/             Event store, validator, kernel, CLI, task-record docs
-docs/stage2/             Quality runtime specs and acceptance
-docs/stage3/             Controlled intelligence stub specs and acceptance
-docs/stage4/             Runtime abstraction specs and acceptance
-web/dashboard/           Local non-executable Harness app dashboard
-docs/MODULE_MAP.md       Module-to-stage reference
-docs/AGENT_CONTROL_PLANE_MIGRATION_CLOSEOUT.md Agent-control-plane migration closeout
 ```
 
-## Stage Summary
+## Active Documentation
 
-- Stage 0: architecture, fixtures, task packs, and known validator issue.
-- Stage 1: Event Store, JSONL Validator, projections, kernel, CLI, task records.
-- Stage 2: scoring, gates, evaluation, baselines, trajectory, quality digest.
-- Stage 3: advisor/model gateway stubs, routing, controlled eval, sampling, skills.
-- Stage 4: DAG mutation, sandbox claims, scheduling, checkpoint/recovery planning, artifact lifecycle, health, dashboard data model.
+Daily agent work uses a small active set:
 
-## Harness App MVPs
+- [`docs/ARCHITECTURE_BOOK.md`](docs/ARCHITECTURE_BOOK.md) — architecture and safety boundaries
+- [`docs/CURRENT_STATUS.md`](docs/CURRENT_STATUS.md) — current status, limits, and verification snapshot
+- [`docs/NEXT_DECISION.md`](docs/NEXT_DECISION.md) — single forward plan
+- [`docs/MODULE_MAP.md`](docs/MODULE_MAP.md) — source ownership and verification routing
+- [`docs/REAL_WORLD_TESTING_PLAYBOOK.md`](docs/REAL_WORLD_TESTING_PLAYBOOK.md) — PR/CI/maintenance workflow
+- [`docs/RUNBOOK.md`](docs/RUNBOOK.md) — operator procedures
 
-- MVP0: read-only harness instance auditor.
-- MVP1: static audit dashboard.
-- MVP2: local read-only control plane.
-- MVP3: deterministic non-executable planning kernel.
-- MVP4: read-only plan review workbench for plan history, summary, comparison, and advisory review actions.
-- MVP5: non-persistent review guidance preview for stored plans, evidence requirements, and token-efficiency guidance.
-- MVP6: read-only planning portfolio triage for review priority, bottlenecks, and token hotspots.
-- MVP7: read-only operations and debug dashboard for component status, data flow, storage health, recent errors, and debug actions.
-- MVP8: operations console simplification that keeps the first screen focused on status, health, errors, and two primary actions while moving tools into collapsed sections.
-
-Demo packaging: [`docs/demo/README.md`](docs/demo/README.md)
-
-## CA-7 Sealed Baseline Status
-
-Controlled Adaptive Orchestrator Kernel minimum threshold reached (CA-0 through CA-7 all passed). The current harness policy baseline is sealed. Future policy changes require the policy candidate lifecycle and governance approval path.
-
-Full closeout report: [`docs/CA7_CONTROLLED_ADAPTIVE_CLOSEOUT_REPORT.md`](docs/CA7_CONTROLLED_ADAPTIVE_CLOSEOUT_REPORT.md)
+Historical phase plans, closeouts, validation reports, and low-frequency reference docs are under `docs/archive/`.
 
 ## Agent Maintenance
 

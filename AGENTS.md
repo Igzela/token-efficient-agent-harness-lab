@@ -39,8 +39,7 @@ This repository is the Token-Efficient Agent Harness Lab: a local deterministic 
 - `docs/REAL_WORLD_TESTING_PLAYBOOK.md` — when opening PRs, auto-merging, fixing CI, cleaning docs, or running real-world pilot tasks
 - `docs/MODULE_MAP.md` — when changing code or deciding module ownership
 - `docs/CURRENT_STATUS.md` — when status facts are unclear or when updating status
-- `docs/DOCS_INVENTORY.md` — when adding, moving, archiving, or deleting docs
-- `docs/DYNAMIC_GLOBAL_REGULATOR_PLAN.md` — only for strategic architecture planning
+- `docs/ARCHITECTURE_BOOK.md` — when current architecture or boundary facts are needed
 
 ## New Session Bootstrap
 
@@ -159,9 +158,11 @@ Keep the documentation set small. Do not create new roadmap, next-steps, closeou
 
 Authoritative maintenance surfaces:
 
+- `docs/ARCHITECTURE_BOOK.md` — current architecture, execution modes, data ownership, and safety boundaries
 - `docs/CURRENT_STATUS.md` — current state, verification, test counts, stable tracks, and limitations
 - `docs/NEXT_DECISION.md` — the single forward plan, including local productization phases and disallowed paths
 - `docs/MODULE_MAP.md` — source/test ownership
+- `docs/REAL_WORLD_TESTING_PLAYBOOK.md` and `docs/RUNBOOK.md` — PR/CI/maintenance workflow and operator procedures
 - `README.md`, `CLAUDE.md`, and this file — quickstart, agent workflow, and hard boundaries
 
 Prefer editing, shortening, or deleting stale documents over adding another file. When facts change, update only the smallest necessary set of authoritative surfaces. If no document update is needed, say why in the completion report.

@@ -3,7 +3,7 @@
 
 Starts a local engine with CLI execution enabled, exercises the full capability
 matrix (auth, dispatch, workflow, supervised patch, audit, backup), and produces
-a validation report at docs/LIVE_E2E_VALIDATION_REPORT.md.
+a validation report at docs/archive/validation/LIVE_E2E_VALIDATION_REPORT.md.
 
 Usage:
     uv run --no-project python scripts/live_e2e_validation.py [--engine-bin PATH] [--timeout SECS]
@@ -182,7 +182,7 @@ def main() -> int:
     backup_dir = tmp_root / "backups"
     disposable_ws = tmp_root / "disposable-target"
     disposable_ws.mkdir()
-    report_path = repo_root / "docs" / "LIVE_E2E_VALIDATION_REPORT.md"
+    report_path = repo_root / "docs" / "archive" / "validation" / "LIVE_E2E_VALIDATION_REPORT.md"
 
     print("=" * 60)
     print("  LIVE E2E CAPABILITY VALIDATION")

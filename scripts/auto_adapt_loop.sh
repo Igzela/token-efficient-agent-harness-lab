@@ -87,12 +87,12 @@ launch_phase_session() {
 You are continuing the Dormant Module Adaptation track for this repository (branch: feat/dashboard-ux-polish).
 
 IMPORTANT: Read and follow these files IN ORDER before doing anything:
-1. docs/SESSION_START_HERE.md
-2. docs/CURRENT_STATUS.md
+1. AGENTS.md (hard boundaries, documentation maintenance rule, autonomous advancement protocol)
+2. CLAUDE.md (code style, session log format, test commands)
 3. docs/NEXT_DECISION.md
 4. docs/MODULE_MAP.md
-5. AGENTS.md (hard boundaries, documentation maintenance rule, autonomous advancement protocol)
-6. CLAUDE.md (code style, session log format, test commands)
+5. docs/CURRENT_STATUS.md
+6. docs/ARCHITECTURE_BOOK.md
 
 Your task: implement Dormant Adaptation Phase ${phase_num}.
 
