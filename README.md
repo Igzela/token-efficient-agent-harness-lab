@@ -80,11 +80,9 @@ agent-control-plane
 
 ## What This Project Is Not
 
-## What This Project Is Not
+This repository is not a cloud production SaaS, hosted multi-tenant service, direct-deploy tool, or unattended autonomous-agent runtime. The approved V2 Real Production Output Track may add auditable real-repository patch/PR production, but only through the phase plan in `docs/NEXT_DECISION.md`.
 
-This repository is not a cloud production SaaS or autonomous-agent runtime. These are current product boundaries, not current bugs: cloud SaaS, multi-tenant hosting, hard sandbox isolation, target-repository writes/apply/merge/deploy authority, default-on provider execution, unattended workers, provider failover, and production worker concurrency are v2/out-of-scope. OpenAI-compatible and Anthropic provider adapters exist behind explicit environment configuration for local beta use; CI uses stub/mock paths and does not call real provider APIs. The local dashboard is a local operations console with guarded app-owned controls; dangerous local admin API actions require explicit confirmation and audit logging.
-
-Moving any v2/out-of-scope capability into scope requires a new plan, updated threat model, focused tests, and explicit human approval before implementation.
+V2 does not make real execution default-on. OpenAI-compatible and Anthropic provider adapters remain behind explicit environment configuration; CI uses stub/mock paths and does not call real provider APIs. The local dashboard remains a guarded operations console; dangerous local admin API actions require explicit confirmation and audit logging.
 
 ## Toolchain
 
@@ -263,17 +261,17 @@ bundle = client.dispatch("Summarize docs without provider calls")
 
 - No real model calls by default; the local beta provider path remains explicit and env-gated.
 - No unattended real agents; explicit supervised local workflow execution exists behind opt-in gates.
-- No real sandbox/process/container/VM isolation runtime.
+- No real sandbox/process/container/VM isolation runtime; V2-1 is limited to app-owned workspace confinement unless separately approved.
 - Supervised patch execution is limited to app-owned detached workspaces, explicit workflow tick/executor selection, artifact capture, approval binding, and export gating. It is not target-repo mutation or production autonomy.
 - Existing local CLI executor subprocess invocation is a separate, explicit opt-in exception via `ACP_ENABLE_CLI_EXECUTION=1`.
 - `ACP_EXECUTION_MODE` controls how dispatch requests are routed: `off` (default, noop), `provider` (API only), `cli` (CLI executor only), or `auto` (hybrid mode that scores task complexity and routes low-complexity tasks to the Provider API and high-complexity tasks to the CLI executor; the threshold is configurable via `ACP_HYBRID_COMPLEXITY_THRESHOLD`, default 0.5).
-- Production worker concurrency is v2/out-of-scope.
-- Provider failover is v2/out-of-scope.
-- Cloud SaaS, multi-tenant hosting, cloud production Web UI, hosted deployment, and remote SaaS service are v2/out-of-scope.
-- Hard sandbox isolation, target-repository writes/apply/merge/deploy authority, default-on provider execution, and unattended workers are v2/out-of-scope.
+- Bounded supervised worker concurrency is planned only for V2-4; unattended autonomous-agent loops remain out of scope.
+- Provider failover remains out of scope.
+- Cloud SaaS, multi-tenant hosting, cloud production Web UI, hosted deployment, and remote SaaS service remain out of scope.
+- Target-repository output is planned only for V2-3, only through controlled branch/worktree/PR flow or patch export; direct `main` writes, apply/merge/deploy authority, and default-on provider execution remain out of scope.
 - The dashboard is a local operations console with guarded app-owned controls. Dashboard/SDK controls operate on app-owned workflow/workspace/artifact state and must not write target repositories.
 - No destructive runtime filesystem behavior.
-- v2/out-of-scope capabilities require a new plan, updated threat model, focused tests, and explicit human approval.
+- V2 real capabilities require the phase plan in `docs/NEXT_DECISION.md`, explicit gates, audit events, tests, and rollback/kill paths.
 
 ## Repository Structure
 

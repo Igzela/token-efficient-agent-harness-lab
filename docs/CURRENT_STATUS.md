@@ -1,12 +1,12 @@
 # Current Status
 
-Last recorded full verification: 2026-06-17. Documentation surface pruned and Product Boundary Repair Track completed: 2026-06-17.
+Last recorded full verification: 2026-06-17. Documentation surface pruned and Product Boundary Repair Track completed: 2026-06-17. V2 Real Production Output Track authorized: 2026-06-17.
 
 ## Summary
 
-The core plan is complete. The repository is in maintenance mode for a local/small-team self-hosted macro-orchestrator control plane. Future work is maintenance, bugfixes, pilots, or explicitly approved v2 proposals only.
+The core plan is complete. The repository is starting the approved V2 Real Production Output Track while keeping the v1 default-safe posture. V2 aims to produce auditable patches or PR branches for real repositories through explicit gates, not by removing safety limits.
 
-The system is useful as an operations/control-plane lab for deterministic dispatch, workflow state, app-owned execution metadata, guarded local controls, SDKs, and audit evidence. It is not a polished SaaS product, cloud service, coding-agent runtime, or unattended autonomous-worker runtime. These limits are current product boundaries, not current bugs.
+The system is useful as an operations/control-plane lab for deterministic dispatch, workflow state, app-owned execution metadata, guarded local controls, SDKs, and audit evidence. It is not a cloud SaaS, hosted multi-tenant service, direct-deploy tool, or unattended autonomous-agent runtime.
 
 ## Current Product Boundary
 
@@ -15,11 +15,12 @@ The system is useful as an operations/control-plane lab for deterministic dispat
 - TypeScript and Python SDKs cover REST access to dispatch, workflow, config, team, cost, audit, backup/export, and supervised patch metadata.
 - Provider execution is off unless `ACP_ENABLE_PROVIDER_EXECUTION=1`.
 - CLI execution is off unless `ACP_ENABLE_CLI_EXECUTION=1`.
-- App runtime does not write registered target repositories.
-- No hard process/container/VM sandbox is implemented.
+- App runtime does not write registered target repositories until a V2 target-repo branch/worktree/PR flow lands and passes gates.
+- No hard process/container/VM sandbox is implemented; V2-1 is scoped to app-owned workspace confinement unless separately approved.
 - No hosted/cloud/multi-tenant deployment is implemented.
-- No unattended autonomous worker loop is approved.
-- Cloud SaaS, multi-tenant hosting, hard sandbox isolation, target writes/apply/merge/deploy authority, default-on provider execution, unattended workers, provider failover, and production worker concurrency remain v2/out-of-scope.
+- No unattended autonomous-agent loop is approved.
+- Target-repo output, provider/CLI execution, supervised workers, and product UX are approved only through the V2 phase plan in `docs/NEXT_DECISION.md`; until each phase lands, the old limitation remains active.
+- Cloud SaaS, multi-tenant hosting, direct release/tag/deploy/apply authority, provider failover, default-on real execution, and unattended autonomous-agent loops remain out of scope.
 
 ## Last Recorded Verification
 
@@ -57,6 +58,12 @@ uv run --no-project python scripts/check_agent_handoff.py
 | Phase 8 final GA seal | Complete; archived at `docs/archive/phase-closeouts/PHASE8_FINAL_COMPLETION_PLAN.md` |
 | Product Boundary Repair Track P0-P3 | Complete — PRs #64-#67 |
 
+## Active Track
+
+| Track | Status |
+|---|---|
+| V2 Real Production Output Track | Authorized; V2-0 documentation/phase plan first, V2-1 through V2-5 pending separate PRs |
+
 Historical phase plans, closeouts, and long-form validation reports are retained under `docs/archive/`.
 
 ## Active Capability
@@ -71,11 +78,13 @@ Historical phase plans, closeouts, and long-form validation reports are retained
 
 ## Current Gaps
 
+- Real output is not yet end to end: target repo connection, execution, verification evidence, approval-bound PR push, and export are not yet one production path.
 - Product fit is stronger for local operations/research than for public-facing production UX.
-- UI is functional and operator-oriented, but it is not yet a polished commercial product interface.
+- UI is functional and operator-oriented; V2-5 must turn existing Mission Control, supervised patch, runtime gate, run, and audit components into one clear output workflow.
 - Security posture is suitable for local/small-team self-hosting only; hosted/multi-tenant use would require a new threat model and approved implementation plan.
-- Cloud SaaS, multi-tenant hosting, hard sandbox isolation, target-repo writes/apply/merge/deploy authority, default-on provider execution, unattended workers, provider failover, and production worker concurrency remain v2/out-of-scope.
-- Moving any of those boundaries into scope requires a new plan, updated threat model, focused tests, and explicit human approval.
+- V2-1 must harden execution safety before any broader real output phase: workspace confinement, allowlists, timeout/resource ceilings, secret redaction, audit, and kill/quarantine.
+- V2-2 through V2-4 must add provider/CLI output, target PR flow, and bounded supervised workers behind explicit gates.
+- Cloud SaaS, multi-tenant hosting, direct release/tag/deploy/apply authority, provider failover, default-on real execution, and unattended autonomous-agent loops remain out of scope.
 
 ## Documentation Discipline
 

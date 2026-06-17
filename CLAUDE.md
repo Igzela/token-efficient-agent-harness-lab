@@ -4,15 +4,16 @@
 
 **What**: Local deterministic harness and self-hosted macro-orchestrator control plane for studying token-efficient agent workflows. Provides deterministic dispatch planning, local API/dashboard access, app-owned SQLite state, dynamic workflow state, executor coordination primitives, and cost-of-pass metrics.
 
-**What NOT**: Not a cloud production SaaS, coding-agent runtime, or autonomous-agent runtime. No real model-provider calls by default, no sandbox/process/container/VM isolation, no autonomous workers, no target-repo writes by app runtime. CLI executor is explicit opt-in via `ACP_ENABLE_CLI_EXECUTION=1`.
+**What NOT**: Not a cloud production SaaS, hosted multi-tenant service, direct-deploy tool, or unattended autonomous-agent runtime. No real model-provider calls by default, no sandbox/process/container/VM isolation, no direct target-repo `main` writes by app runtime. CLI executor is explicit opt-in via `ACP_ENABLE_CLI_EXECUTION=1`. The approved V2 Real Production Output Track may add auditable patch/PR production only through the phase plan in `docs/NEXT_DECISION.md`.
 
 **Target user**: Solo developer or small local team studying deterministic agent infrastructure on one machine or LAN.
 
-## Current State (2026-06-11)
+## Current State (2026-06-17)
 
 **Active tracks:**
 - Real-World Testing Mode — validated through real tasks, branches, commits, PRs, CI, gated auto-merge
 - Agent Autonomous Maintenance Mode — agents maintain docs/CI/tests/low-risk PR flow under playbook gates
+- V2 Real Production Output Track — authorized, phase-gated path to auditable real-repository patch/PR production
 
 **Complete tracks:**
 - Dispatch Kernel Phases 1–7 (including 6A, 6B-1/2/3, Gates 1–3): STABLE
@@ -25,7 +26,7 @@
 - Dashboard Onboarding UX ON-1 through ON-5: COMPLETE
 
 **Key facts:**
-- 1396 Rust tests pass, 0 failures
+- 1534 Rust tests pass, 0 failures (last recorded full verification)
 - TypeScript strict + boundary lint + build + static export pass
 - `cargo fmt`, `cargo clippy`, handoff guard all pass
 - **Architecture Refactor R-series**: **SEALED AT R7**. R8 is not approved.
@@ -33,11 +34,11 @@
 
 ## App Runtime vs Agent Maintenance Boundary
 
-**App/runtime** does not write target repos by default. Target repositories remain protected from direct app writes.
+**App/runtime** does not write target repos by default. Target repositories remain protected from direct app writes until an approved V2 branch/worktree/PR flow lands and passes gates.
 
 **Agent maintenance** may create branches, commits, PRs, and low-risk merges only through branch+PR workflow under `docs/REAL_WORLD_TESTING_PLAYBOOK.md` gates. This is a repository workflow mode, not an app-runtime feature.
 
-**Requires explicit human approval:** Provider/CLI execution boundary expansion, auth/security boundary changes, DB migrations, release/tag/deploy, active YAML/rubric/policy mutation, destructive operations.
+**Requires explicit human approval:** Provider/CLI execution boundary expansion outside the V2 phase plan, auth/security boundary changes, DB migrations, release/tag/deploy, active YAML/rubric/policy mutation, destructive operations.
 
 ## Minimal Agent Reading Model
 

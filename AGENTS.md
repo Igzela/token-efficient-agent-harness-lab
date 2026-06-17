@@ -2,11 +2,12 @@
 
 This repository is the Token-Efficient Agent Harness Lab: a local deterministic harness and self-hosted macro-orchestrator control plane for studying token-efficient agent workflows.
 
-## Current State (2026-06-11)
+## Current State (2026-06-17)
 
 **Active tracks:**
 - **Real-World Testing Mode** — validated through real tasks, branches, commits, PRs, CI, gated auto-merge
 - **Agent Autonomous Maintenance Mode** — agents maintain docs/CI/tests/low-risk PR flow under playbook gates
+- **V2 Real Production Output Track** — authorized, phase-gated path to auditable real-repository patch/PR production
 
 **Complete tracks:**
 - Dispatch Kernel Phases 1–7 (including 6A, 6B-1/2/3, Gates 1–3): STABLE
@@ -18,17 +19,17 @@ This repository is the Token-Efficient Agent Harness Lab: a local deterministic 
 - HybridExecutor with `ACP_EXECUTION_MODE`: COMPLETE
 
 **Key facts:**
-- 1396 Rust tests pass, 0 failures
+- 1534 Rust tests pass, 0 failures (last recorded full verification)
 - Architecture Refactor R-series sealed at R7. R8 is not approved.
 - Post-R7 wire/type governance hardening implemented: `scripts/check_wire_codegen_drift.sh`
 
 ## App Runtime vs Agent Maintenance Boundary
 
-**App/runtime** does not write target repos by default. Target repositories remain protected from direct app writes.
+**App/runtime** does not write target repos by default. Target repositories remain protected from direct app writes until an approved V2 branch/worktree/PR flow lands and passes gates.
 
 **Agent maintenance** may create branches, commits, PRs, and low-risk merges only through branch+PR workflow under `docs/REAL_WORLD_TESTING_PLAYBOOK.md` gates. This is a repository workflow mode, not an app-runtime feature.
 
-**Requires explicit human approval:** Provider/CLI execution boundary expansion, auth/security boundary changes, DB migrations, release/tag/deploy, active YAML/rubric/policy mutation, destructive operations.
+**Requires explicit human approval:** Provider/CLI execution boundary expansion outside the V2 phase plan, auth/security boundary changes, DB migrations, release/tag/deploy, active YAML/rubric/policy mutation, destructive operations.
 
 ## Minimal Agent Reading Model
 
@@ -66,6 +67,8 @@ Planning-only supervised beta work may classify modules, design schemas, and cre
 
 Batch 6 supervised-execution contracts and Batch 7 Slice A-E metadata/read-only/design/dashboard visibility did not by themselves authorize runtime execution. Slice F and the production-grade track authorize supervised execution primitives in app-owned detached workspaces. Implementing sandbox/process/container/VM behavior, target repository writes, provider default-on execution, hosted deployment, push/merge/deploy/apply controls, or unattended autonomous workers still requires a separate explicit human-approved batch.
 
+The V2 Real Production Output Track approved on 2026-06-17 is that explicit batch for selected real-output capabilities. It must follow `docs/NEXT_DECISION.md`: V2-1 safety base, V2-2 provider/CLI output, V2-3 branch/worktree/PR flow, V2-4 bounded supervised workers, V2-5 product UX.
+
 Allowed autonomous advancement:
 
 - repair stale handoff docs, status drift, and wire-codegen guard drift
@@ -73,13 +76,14 @@ Allowed autonomous advancement:
 - add focused tests for uncovered behavior in existing modules
 - harden completed dispatch-kernel phases when evidence or review findings identify concrete defects
 - advance the next documented dispatch-kernel phase when it is already described in the architecture book and can be implemented without broadening real provider behavior beyond the existing explicit env-gated local beta path, sandbox isolation, subprocess execution beyond the existing CLI executor path, target repo writes, deployment, or concurrent worker processes
+- advance the next V2 phase documented in `docs/NEXT_DECISION.md` when the change stays inside that phase's gates and includes audit, tests, and rollback/kill path
 - update architecture, module maps, and closeout reports required to make the new state durable
 - create branches, commits, PRs, and low-risk merges through branch+PR workflow under `docs/REAL_WORLD_TESTING_PLAYBOOK.md` gates
 
 Not allowed under autonomous authority:
 
 - create a new cloud product surface, hosted service, or production runtime
-- broaden real model-provider calls beyond the existing explicit env-gated local beta path, add secrets, add default-on provider execution, expand subprocess execution beyond the existing CLI executor path, add containers, VMs, target-repo mutation, approval/run/deploy controls, or real autonomous workers
+- broaden real model-provider calls beyond approved V2/provider gates, add secrets, add default-on provider execution, expand subprocess execution beyond approved V2/CLI gates, add containers, VMs, direct target-repo `main` mutation, release/deploy controls, or real autonomous workers
 - bypass the architecture book, phase gates, tests, or documentation maintenance rule
 - provider/CLI execution boundary expansion, auth/security boundary changes, DB migrations, release/tag/deploy, active YAML/rubric/policy mutation, destructive operations (all require explicit human approval)
 
@@ -102,6 +106,8 @@ If another agent has in-progress changes, do not overwrite them. Either build on
 ## Hard Boundaries
 
 The production-grade hosted/self-hosted productization track (user-approved 2026-06-06) is authorized. It extends existing modules (node_executor, workflow_runs, supervised_patch, http_server) without creating parallel runtime kernels. See `docs/NEXT_DECISION.md` for phase details and constraints.
+
+The V2 Real Production Output Track (user-approved 2026-06-17) is authorized only through the phase plan in `docs/NEXT_DECISION.md`. It upgrades selected old limits into guarded capabilities; it does not authorize default-on execution, direct `main` writes, deploy/release controls, cloud SaaS, or unattended autonomous-agent loops.
 
 Do not modify:
 
@@ -133,6 +139,7 @@ Allowed by default:
 - packaging planning
 - architecture audit updates
 - approved dispatch-kernel phase work that respects all hard boundaries
+- approved V2 phase work that follows `docs/NEXT_DECISION.md`
 - supervised autonomous beta planning batches that remain non-executable and respect ADR-0002
 - branch+PR workflow for docs/tests/CI/small code fixes under `docs/REAL_WORLD_TESTING_PLAYBOOK.md` gates
 

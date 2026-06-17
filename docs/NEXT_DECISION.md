@@ -14,19 +14,40 @@
 
 **Architecture Refactor R-series**: **SEALED AT R7.** R8 is not approved. No further R-series file splitting is approved.
 
+## V2 Real Production Output Track — AUTHORIZED
+
+Human approval on 2026-06-17 authorizes a new V2 productization track: turn the local control plane into a system that can produce auditable patches or PR branches for real repositories.
+
+This approval does **not** remove safety limits. It turns selected old limits into production guardrails that must land phase by phase, behind explicit gates, with audit evidence, tests, and rollback/kill paths. Until a V2 phase merges, current v1 behavior remains authoritative.
+
+Target V2 user flow:
+
+```text
+connect real repo -> create task -> isolated app-owned workspace execution
+-> code changes -> verification -> evidence/diff -> human approval
+-> push PR branch or export patch
+```
+
+Current hard constraints for the V2 track:
+
+- Provider and CLI execution remain default-off and require explicit local env gates.
+- Target-repository writes are only allowed after V2-3, only through a controlled branch/worktree/PR flow, never direct `main` writes.
+- V2-1 may harden app-owned workspace isolation; process/container/VM sandboxing remains a separate approval item unless explicitly added to a future plan.
+- V2-4 may add bounded supervised workers with lease/heartbeat/kill controls; unattended autonomous-agent loops remain disallowed.
+- Hosted/cloud/multi-tenant SaaS, release/tag/deploy controls, provider failover, and default-on real execution remain out of scope for this track.
+- Secrets must not appear in logs, diffs, artifacts, dashboard output, or PR bodies.
+
 ## Disallowed by Default
 
-The following require explicit human approval and a new implementation plan:
+Outside explicitly merged V2 phases, the following remain disabled:
 
 - Cloud SaaS, hosted/cloud deployment, and multi-tenant service.
-- Hard process/container/VM sandbox isolation.
-- Target-repository writes/apply/merge/deploy authority.
+- Process/container/VM sandbox isolation.
+- Direct target-repository writes, direct `main` writes, apply/merge/deploy authority, and release/tag controls.
 - Default-on provider execution or default-on CLI execution.
-- Unattended workers or unattended autonomous-agent loops.
+- Unattended autonomous-agent loops.
 - Provider failover.
-- Production worker concurrency.
-
-These are v2/out-of-scope product boundaries, not current bugs. Moving any item into scope requires a new plan, threat-model update, focused tests, and explicit human approval.
+- Production worker concurrency outside the V2-4 supervised lease/heartbeat model.
 
 ## Safety Gates
 
@@ -38,6 +59,8 @@ These are v2/out-of-scope product boundaries, not current bugs. Moving any item 
 | Rollback path required | `git revert` sufficient for low-risk |
 | Provider execution | env-gated (`ACP_ENABLE_PROVIDER_EXECUTION=1`) |
 | CLI execution | env-gated (`ACP_ENABLE_CLI_EXECUTION=1`) |
+| Target repo output | V2 branch/worktree/PR flow only; no direct `main` writes |
+| V2 real output | explicit phase gate, audit event, tests, rollback/kill path |
 | No auto release/tag/deploy | explicit approval required |
 | High-risk changes | auth, security, provider, deploy, DB — explicit approval |
 | YAML/rubric/policy mutation | explicit approval |
@@ -59,7 +82,7 @@ Autonomously maintain repo health and fix CI/docs/test drift. No future core-com
 - Regression hardening: add/repair tests for existing behavior
 - Docs/CI/test drift repair
 - Pilots: real-world task validation
-- v2 proposals: new features, boundary expansions, or architectural changes
+- V2 Real Production Output PRs that follow the phase plan below
 
 ## Product Boundary Repair Track — COMPLETE
 
@@ -75,6 +98,29 @@ Completed PRs:
 | P2 | `codex/p2-primary-workflow` / PR #67 | Add a clear dashboard main workflow | Surfaced create/select run, tick, inspect failure/status, retry/fix, approve, and export readiness as a guided path using existing APIs |
 
 Latest `main` CI after P0-P3 is green. No further Product Boundary Repair slices are planned.
+
+## V2 Phase Plan
+
+Use this as the single forward plan. Do not create new roadmap/status docs for V2. If a phase grows too large, split by vertical acceptance criteria while preserving the same phase order.
+
+| Phase | Branch | Goal | Required acceptance |
+|---|---|---|---|
+| V2-0 | `codex/v2-real-production-output` | Authorize and document the track | Update this file, `CURRENT_STATUS`, `ARCHITECTURE_BOOK`, and `MODULE_MAP`; no runtime authority changes |
+| V2-1 | `codex/v2-1-execution-safety-base` | Real execution safety base | App-owned workspace confinement, command/profile allowlist, timeout/resource ceilings, secret scan/redaction, audit events, quarantine/kill path, focused Rust tests |
+| V2-2 | `codex/v2-2-provider-cli-output` | Real provider/CLI output path | Explicit env/auth/cost gates, retry/budget breaker, provider/CLI trace, redacted outputs, failure taxonomy, focused Rust/provider/CLI tests |
+| V2-3 | `codex/v2-3-target-repo-pr-flow` | Target repo branch/PR output | Controlled branch/worktree, diff/test/evidence bundle, approval-bound push PR branch or export patch, no direct `main` writes, secret-free PR body/artifacts |
+| V2-4 | `codex/v2-4-supervised-worker-queue` | Bounded production worker queue | Lease, heartbeat, max concurrency, stale lease recovery, pause/kill switch, audit trail, no unattended autonomous loop |
+| V2-5 | `codex/v2-5-product-output-ux` | Product-grade main workflow | Dashboard path: connect repo -> create task -> execute -> view diff/tests -> approve -> open PR/export patch; visible gates, risk, next step, approval state |
+
+V2 implementation routing:
+
+- V2-1 starts in `engine/src/storage/local_product_store/supervised_patch.rs`, `engine/src/http_server/handlers/supervised_patch.rs`, `engine/src/node_executor.rs`, and focused storage/API tests.
+- V2-2 starts in `engine/src/provider/`, `engine/src/cli/`, `engine/src/executor/`, `engine/src/dispatch_engine.rs`, and provider/CLI tests.
+- V2-3 starts in supervised patch storage/API plus a small git/PR helper owned by the engine; dashboard and SDK changes must follow any API shape change.
+- V2-4 starts in `engine/src/scheduler.rs`, `engine/src/workflow/run_queue.rs`, `engine/src/executor_pool.rs`, and `engine/src/storage/local_product_store/heartbeat.rs`.
+- V2-5 starts in `dashboard/src/components/MissionControl.tsx`, `SupervisedPatch.tsx`, `RuntimeGates.tsx`, and `dashboard/src/lib/api-client.ts`.
+
+Every V2 PR must list: completed phase, intentionally unfinished phases, verification, residual risk, rollback path, and next PR.
 
 ## Before Starting Autonomous Work
 
