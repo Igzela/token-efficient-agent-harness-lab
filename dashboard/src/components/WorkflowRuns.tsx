@@ -70,6 +70,31 @@ function formatDuration(start: string, end?: string | null): string {
   return `${(ms / 60_000).toFixed(1)}m`;
 }
 
+function summarizeRunPath(run: WorkflowRun): { failure: string; next: string; readiness: string } {
+  const nodes = getRunNodes(run);
+  const failed = nodes.find((node) => node.status === "failed" || node.error_domain || node.error_message);
+  const active = !["completed", "failed", "cancelled"].includes(run.status);
+  if (active) {
+    return {
+      failure: failed?.error_message ?? failed?.error_domain ?? "No blocking failure recorded.",
+      next: "Tick this run to advance the next ready node.",
+      readiness: "Approval/export readiness appears after artifacts and approvals are recorded.",
+    };
+  }
+  if (failed) {
+    return {
+      failure: failed.error_message ?? failed.error_domain ?? `${failed.task_type} failed`,
+      next: "Inspect the failed node, then use the existing tick/resume path after the fix node is available.",
+      readiness: "Export remains blocked until a redacted artifact is bound to an approval.",
+    };
+  }
+  return {
+    failure: "No failed node recorded.",
+    next: "Review approvals and supervised patch artifacts before export.",
+    readiness: "Export requires approval binding and redacted artifact state.",
+  };
+}
+
 function NodeRow({ node, onClick }: { node: WorkflowRunNode; onClick: () => void }) {
   return (
     <tr
@@ -242,6 +267,7 @@ function RunDetail({
   const failedNodes = getRunNodes(run).filter((n) => n.status === "failed").length;
   const totalCost = getRunNodes(run).reduce((sum, n) => sum + n.cost_incurred, 0);
   const totalLatency = getRunNodes(run).reduce((sum, n) => sum + (n.latency_ms ?? 0), 0);
+  const pathSummary = summarizeRunPath(run);
 
   return (
     <div className="card stack">
@@ -276,6 +302,13 @@ function RunDetail({
           <span className="metric-label">Latency</span>
           <strong>{totalLatency > 0 ? `${totalLatency}ms` : "—"}</strong>
         </div>
+      </div>
+
+      <div className="subcard stack">
+        <h4>Primary Workflow Step</h4>
+        <div className="kv-row"><span className="muted">Next step</span><span>{pathSummary.next}</span></div>
+        <div className="kv-row"><span className="muted">Failure reason</span><span>{pathSummary.failure}</span></div>
+        <div className="kv-row"><span className="muted">Approval/export readiness</span><span>{pathSummary.readiness}</span></div>
       </div>
 
       <div className="subcard stack">
