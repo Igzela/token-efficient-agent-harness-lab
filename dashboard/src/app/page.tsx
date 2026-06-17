@@ -24,6 +24,7 @@ import { Routing } from "@/components/Routing";
 import { DecisionLog } from "@/components/DecisionLog";
 import { ExecutorPool } from "@/components/ExecutorPool";
 import { QueueStatusComponent } from "@/components/QueueStatus";
+import { RuntimeGates } from "@/components/RuntimeGates";
 import { SchedulerStatus } from "@/components/SchedulerStatus";
 import { SupervisedPatch } from "@/components/SupervisedPatch";
 import { Settings } from "@/components/Settings";
@@ -379,6 +380,12 @@ export default function DashboardPage() {
           <WelcomePanel dispatchCount={dashboard.counts.dispatches} />
 
           <SetupChecklist steps={setupSteps} />
+
+          <RuntimeGates
+            authStatus={authStatus}
+            boundaries={dashboard.boundaries}
+            hasToken={hasLocalToken}
+          />
 
           <div className="content-panel" role="tabpanel">
             {tab === "mission" && <MissionControl />}
