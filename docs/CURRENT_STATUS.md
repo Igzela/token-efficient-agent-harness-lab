@@ -1,6 +1,6 @@
 # Current Status
 
-Last recorded full verification: 2026-06-12. Documentation surface pruned: 2026-06-17.
+Last recorded full verification: 2026-06-17. Documentation surface pruned and Product Boundary Repair Track completed: 2026-06-17.
 
 ## Summary
 
@@ -25,7 +25,7 @@ The system is useful as an operations/control-plane lab for deterministic dispat
 
 - Branch: `main`.
 - Tests: **1534 Rust tests pass**, 0 failures, recorded 2026-06-12.
-- CI: latest `tests` workflow on `main` was green as of 2026-06-12.
+- CI: latest `tests` workflow on `main` is green as of 2026-06-17 after P0-P3.
 - PostgreSQL integration tests are gated behind `cargo test -p engine --features pg-tests` with `ACP_TEST_DATABASE_URL`.
 - Live E2E validation evidence is archived at `docs/archive/validation/LIVE_E2E_VALIDATION_REPORT.md` with 48 PASS, 0 FAIL, 1 SKIP on 2026-06-12.
 
@@ -55,6 +55,7 @@ uv run --no-project python scripts/check_agent_handoff.py
 | HybridExecutor with `ACP_EXECUTION_MODE` | Complete |
 | Dynamic Regulator MVP Phases 1-5 | Complete |
 | Phase 8 final GA seal | Complete; archived at `docs/archive/phase-closeouts/PHASE8_FINAL_COMPLETION_PLAN.md` |
+| Product Boundary Repair Track P0-P3 | Complete — PRs #64-#67 |
 
 Historical phase plans, closeouts, and long-form validation reports are retained under `docs/archive/`.
 
@@ -66,6 +67,7 @@ Historical phase plans, closeouts, and long-form validation reports are retained
 - Local storage: SQLite default with PostgreSQL optional via `ACP_DATABASE_URL`; schema version is documented in `docs/ARCHITECTURE_BOOK.md`.
 - Operations: health, metrics, backups, restore smoke, circuit breaker state, audit log, and release-readiness checks.
 - Dashboard: local operations console with guarded app-owned controls for workflow runs, scheduler state, proposals, patches, config/team/costs, and app-owned actions.
+- Dashboard product-polish closeout: boundary lint checks dashboard app/components/lib for forbidden boundary controls; runtime gates are visible; Mission Control exposes a primary workflow path from run selection through tick, failure/status inspection, retry/fix path, approval, and export readiness.
 
 ## Current Gaps
 
