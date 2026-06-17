@@ -17,8 +17,8 @@ The Rust `engine/` is the sole runtime implementation. Python is retained as RES
 | `engine/src/model_selector.rs` | active dispatch | Tier selection, constraints, fallback, shadow route metadata | `cargo test -p engine --test dispatch_parity` |
 | `engine/src/budget_manager.rs` | active dispatch | Token/cost reservation and cost gate checks | `cargo test -p engine --test dispatch_parity` |
 | `engine/src/executor/`, `engine/src/executor_adapter.rs` | active execution | Noop/provider/CLI/hybrid executor integration | `cargo test -p engine` |
-| `engine/src/provider/` | env-gated execution | Provider adapters, retry/cost gates, audit/redaction, circuit breaker wrapper | `cargo test -p engine` |
-| `engine/src/cli/` | env-gated execution | Claude Code / Codex CLI executor path | `cargo test -p engine` |
+| `engine/src/provider/` | env-gated execution | Provider adapters, workflow-node executor, retry/cost gates, audit/redaction, circuit breaker wrapper | `cargo test -p engine` |
+| `engine/src/cli/` | env-gated execution | Claude Code / Codex CLI executor path with restricted env and redacted/capped output | `cargo test -p engine` |
 | `engine/src/node_executor.rs` | supervised execution | Workflow node executors, command allowlist, timeout, structured output | `cargo test -p engine --lib node_executor` |
 | `engine/src/scheduler.rs` | active workflow | Persistent scheduler, lease recovery, dynamic mode, executor-pool binding | `cargo test -p engine --lib scheduler` |
 | `engine/src/workflow/` | active workflow | DAG mutation, dynamic controller, context pack, run queue, backpressure, decisions | `cargo test -p engine --lib workflow` |
@@ -51,7 +51,7 @@ The Rust `engine/` is the sole runtime implementation. Python is retained as RES
 - Storage or schema: start with `storage/local_product_store/`, update schema version docs in `docs/ARCHITECTURE_BOOK.md`, and run relevant SQLite/PostgreSQL tests.
 - Dashboard or SDK: update API types/clients and dashboard components together when response shapes change.
 - V2-1 execution safety: start with `storage/local_product_store/supervised_patch.rs`, `http_server/handlers/supervised_patch.rs`, `node_executor.rs`, and focused path/secret/timeout/quarantine tests.
-- V2-2 provider/CLI output: start with `provider/`, `cli/`, `executor/`, `dispatch_engine.rs`, and provider/CLI audit/cost/redaction tests.
+- V2-2 provider/CLI output: start with `provider/`, `cli/`, `http_server/handlers/workflow_runs.rs`, `executor/`, `dispatch_engine.rs`, and provider/CLI audit/cost/redaction tests.
 - V2-3 target repo PR flow: start with supervised patch storage/API plus a small engine-owned git/PR helper; update SDK/dashboard only when API shapes change.
 - V2-4 worker queue: start with `scheduler.rs`, `workflow/run_queue.rs`, `executor_pool.rs`, and `storage/local_product_store/heartbeat.rs`.
 - V2-5 product UX: start with `dashboard/src/components/MissionControl.tsx`, `SupervisedPatch.tsx`, `RuntimeGates.tsx`, and `dashboard/src/lib/api-client.ts`.

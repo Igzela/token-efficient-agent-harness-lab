@@ -4,6 +4,7 @@ use serde_json::Value;
 
 use crate::cli::spawn_with_timeout;
 use crate::node_executor::{NodeExecutionInput, NodeExecutionOutput, NodeExecutor};
+use crate::provider::redaction::redact_sensitive_patterns;
 
 /// CLI-backed NodeExecutor that spawns real Claude Code or Codex CLI processes.
 ///
@@ -166,9 +167,19 @@ impl NodeExecutor for CliNodeExecutor {
             _ => unreachable!(),
         }
         cmd.current_dir(&cwd)
+            .env_clear()
+            .env(
+                "PATH",
+                std::env::var("PATH").unwrap_or_else(|_| "/usr/bin:/bin".to_string()),
+            )
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
+        for key in cli_env_allowlist() {
+            if let Ok(value) = std::env::var(&key) {
+                cmd.env(key, value);
+            }
+        }
 
         let output = spawn_with_timeout(&mut cmd, self.timeout_ms);
         let elapsed_ms = start.elapsed().as_millis() as i64;
@@ -176,8 +187,10 @@ impl NodeExecutor for CliNodeExecutor {
         match output {
             Ok(output) => {
                 if !output.status.success() {
-                    let stderr = String::from_utf8_lossy(&output.stderr).to_string();
-                    let stdout = String::from_utf8_lossy(&output.stdout).to_string();
+                    let stderr =
+                        redact_sensitive_patterns(&String::from_utf8_lossy(&output.stderr));
+                    let stdout =
+                        redact_sensitive_patterns(&String::from_utf8_lossy(&output.stdout));
                     let msg = if !stderr.is_empty() {
                         stderr
                     } else {
@@ -200,7 +213,7 @@ impl NodeExecutor for CliNodeExecutor {
                     };
                 }
 
-                let stdout = String::from_utf8_lossy(&output.stdout).to_string();
+                let stdout = redact_sensitive_patterns(&String::from_utf8_lossy(&output.stdout));
                 parse_cli_output(&stdout, effective_type, elapsed_ms)
             }
             Err(timeout_elapsed) => {
@@ -231,18 +244,25 @@ impl NodeExecutor for CliNodeExecutor {
     }
 }
 
+fn cli_env_allowlist() -> Vec<String> {
+    std::env::var("ACP_CLI_ENV_ALLOWLIST")
+        .unwrap_or_default()
+        .split(',')
+        .map(str::trim)
+        .filter(|key| !key.is_empty())
+        .map(ToString::to_string)
+        .collect()
+}
+
 fn parse_cli_output(raw: &str, executor_type: &str, latency_ms: i64) -> NodeExecutionOutput {
-    let parsed: Value = match serde_json::from_str(raw) {
+    let raw = redact_sensitive_patterns(raw);
+    let parsed: Value = match serde_json::from_str(&raw) {
         Ok(v) => v,
         Err(err) => {
             return NodeExecutionOutput {
                 status: "failed".to_string(),
                 executor_type: executor_type.to_string(),
-                output: if raw.is_empty() {
-                    None
-                } else {
-                    Some(raw.to_string())
-                },
+                output: if raw.is_empty() { None } else { Some(raw) },
                 error_domain: Some("cli_output_parse_error".to_string()),
                 error_message: Some(format!("failed to parse CLI JSON output: {err}")),
                 input_tokens: None,
@@ -258,8 +278,9 @@ fn parse_cli_output(raw: &str, executor_type: &str, latency_ms: i64) -> NodeExec
         .or_else(|| parsed.get("output"))
         .or_else(|| parsed.get("content"))
         .and_then(|v| v.as_str())
-        .unwrap_or(raw)
+        .unwrap_or(&raw)
         .to_string();
+    let output_text = redact_sensitive_patterns(&output_text);
 
     let input_tokens = parsed
         .get("usage")
@@ -381,6 +402,24 @@ mod tests {
         let output = parse_cli_output(raw, "claude_code_cli", 50);
         assert_eq!(output.status, "completed");
         assert_eq!(output.output.as_deref(), Some(raw));
+    }
+
+    #[test]
+    fn test_parse_cli_output_redacts_secret_like_output() {
+        let raw = r#"{"result":"api_key=sk-abcdefghijklmnopqrstuvwxyz","usage":{}}"#;
+        let output = parse_cli_output(raw, "claude_code_cli", 50);
+        assert_eq!(output.status, "completed");
+        assert!(!output
+            .output
+            .as_deref()
+            .unwrap_or("")
+            .contains("sk-abcdefghijklmnopqrstuvwxyz"));
+    }
+
+    #[test]
+    fn test_cli_env_allowlist_defaults_empty() {
+        std::env::remove_var("ACP_CLI_ENV_ALLOWLIST");
+        assert!(cli_env_allowlist().is_empty());
     }
 
     #[test]

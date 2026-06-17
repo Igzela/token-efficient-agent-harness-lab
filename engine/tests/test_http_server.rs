@@ -30,6 +30,11 @@ fn auto_adjustment_env_lock() -> &'static Mutex<()> {
     LOCK.get_or_init(|| Mutex::new(()))
 }
 
+fn provider_cli_env_lock() -> &'static Mutex<()> {
+    static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+    LOCK.get_or_init(|| Mutex::new(()))
+}
+
 fn provider_audit_event(event_id: &str, created_at: &str) -> ProviderAuditEvent {
     ProviderAuditEvent {
         schema_version: PROVIDER_AUDIT_EVENT_SCHEMA_VERSION.to_string(),
@@ -4561,6 +4566,161 @@ async fn axum_tick_with_codex_cli_unavailable_returns_400() {
     assert_eq!(tick_resp.status(), StatusCode::BAD_REQUEST);
     let tick_body = response_json(tick_resp).await;
     assert_eq!(tick_body["code"], "cli_not_available");
+}
+
+#[tokio::test]
+async fn axum_tick_with_provider_env_gate_disabled_returns_400() {
+    let _guard = provider_cli_env_lock().lock().await;
+    std::env::remove_var("ACP_ENABLE_PROVIDER_EXECUTION");
+    std::env::remove_var("ACP_COST_PER_DISPATCH_USD");
+    std::env::remove_var("ACP_COST_DAILY_USD");
+
+    let dir = tempdir().unwrap();
+    let store = LocalProductStore::new(dir.path().join("tick-provider-400.db")).unwrap();
+    let provider: std::sync::Arc<dyn engine::provider::Provider> =
+        std::sync::Arc::new(engine::provider::stub::StubProvider::new("stub-provider"));
+    let app = build_axum_router(
+        AxumApiState::new()
+            .with_local_store(store)
+            .with_provider(provider),
+    );
+
+    let plan_resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(Method::POST)
+                .uri("/api/v1/plans")
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(
+                    json!({"raw_request": "provider task", "request_source": "test"}).to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let plan_body = response_json(plan_resp).await;
+    let plan_id = plan_body["plan"]["plan_id"].as_str().unwrap();
+    let run_resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(Method::POST)
+                .uri("/api/v1/workflow-runs")
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(json!({"plan_id": plan_id}).to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let run_body = response_json(run_resp).await;
+    let run_id = run_body["run"]["run_id"].as_str().unwrap();
+
+    let tick_resp = app
+        .oneshot(
+            Request::builder()
+                .method(Method::POST)
+                .uri(format!("/api/v1/workflow-runs/{run_id}/tick"))
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(
+                    json!({"actor": "test", "executor": "provider"}).to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(tick_resp.status(), StatusCode::BAD_REQUEST);
+    let tick_body = response_json(tick_resp).await;
+    assert_eq!(tick_body["code"], "provider_not_available");
+}
+
+#[tokio::test]
+async fn axum_tick_with_provider_stub_records_audit_and_trace() {
+    let _guard = provider_cli_env_lock().lock().await;
+    std::env::set_var("ACP_ENABLE_PROVIDER_EXECUTION", "1");
+    std::env::remove_var("ACP_COST_PER_DISPATCH_USD");
+    std::env::remove_var("ACP_COST_DAILY_USD");
+
+    let dir = tempdir().unwrap();
+    let store = std::sync::Arc::new(
+        LocalProductStore::new(dir.path().join("tick-provider-ok.db")).unwrap(),
+    );
+    let provider: std::sync::Arc<dyn engine::provider::Provider> =
+        std::sync::Arc::new(engine::provider::stub::StubProvider::new("stub-provider"));
+    let app = build_axum_router(
+        AxumApiState::new()
+            .with_local_store_arc(store.clone())
+            .with_provider(provider),
+    );
+
+    let plan_resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(Method::POST)
+                .uri("/api/v1/plans")
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(
+                    json!({"raw_request": "provider task", "request_source": "test"}).to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(plan_resp.status(), StatusCode::OK);
+    let plan_body = response_json(plan_resp).await;
+    let plan_id = plan_body["plan"]["plan_id"].as_str().unwrap();
+    let run_resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(Method::POST)
+                .uri("/api/v1/workflow-runs")
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(json!({"plan_id": plan_id}).to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let run_body = response_json(run_resp).await;
+    let run_id = run_body["run"]["run_id"].as_str().unwrap();
+
+    let tick_resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(Method::POST)
+                .uri(format!("/api/v1/workflow-runs/{run_id}/tick"))
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(
+                    json!({"actor": "test", "executor": "provider"}).to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(tick_resp.status(), StatusCode::OK);
+    let tick_body = response_json(tick_resp).await;
+    assert_eq!(tick_body["tick"]["executor_type"], "provider");
+    assert_eq!(
+        tick_body["tick"]["result"]["trace"]["schema_version"],
+        "execution_trace.v2"
+    );
+    assert_eq!(
+        tick_body["tick"]["result"]["trace"]["output_policy"],
+        "redacted_and_capped"
+    );
+    let events = store.provider_audit_events(10).unwrap();
+    let event_types: Vec<_> = events
+        .iter()
+        .filter_map(|event| event["event_type"].as_str())
+        .collect();
+    assert!(event_types.contains(&"request_sent"));
+    assert!(event_types.contains(&"response_received"));
+
+    std::env::remove_var("ACP_ENABLE_PROVIDER_EXECUTION");
 }
 
 // ── GA-3: Scheduler status endpoint tests ────────────────────────────
