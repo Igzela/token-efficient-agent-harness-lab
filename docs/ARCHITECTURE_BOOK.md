@@ -80,7 +80,7 @@ The V2 design upgrades old limitations into explicit production guardrails:
 
 | Capability | Current state | V2 target | Guardrail |
 |---|---|---|---|
-| Workspace execution | App-owned workspace metadata and capture exist | Confined app-owned execution workspace | Canonical path checks, allowlist profiles, timeout/resource ceilings, quarantine/kill |
+| Workspace execution | App-owned workspace lifecycle and V2-1 safety base exist | Confined app-owned execution workspace | Path-safe IDs, canonical app-store root checks, symlink skip, file/byte ceilings, quarantine/cleanup |
 | Provider/CLI output | Env-gated paths exist but are not productized as real-output flow | Real output path under explicit gates | Auth scope, env gate, cost cap, retry/budget breaker, trace, redaction |
 | Target repository output | No target repo writes | Branch/worktree/PR branch or patch export | No direct `main` writes, approval binding, evidence bundle, secret-free PR body |
 | Workers | Queue/pool primitives exist | Bounded supervised workers | Lease, heartbeat, concurrency cap, stale recovery, pause/kill |
@@ -108,7 +108,7 @@ Do not create a second runtime kernel for V2. Extend the existing `node_executor
 | `cli` | CLI executor only; requires CLI gate |
 | `auto` | Hybrid provider/CLI routing by complexity threshold |
 
-Workflow node execution is explicit through scheduler/tick paths. `CommandNodeExecutor` rejects shell metacharacters, avoids `sh -c`, uses allowlisted binaries, enforces timeout kill, and emits structured results. Claude/Codex CLI execution remains a separate explicit opt-in path.
+Workflow node execution is explicit through scheduler/tick paths. `CommandNodeExecutor` rejects shell metacharacters, avoids `sh -c`, uses allowlisted binaries, validates supplied workspace cwd, clears inherited environment except `PATH`, caps captured output, enforces timeout kill, and emits structured results. Claude/Codex CLI execution remains a separate explicit opt-in path.
 
 ## Workflow Model
 
@@ -136,6 +136,7 @@ The dashboard is a local operations console with guarded app-owned controls. It 
 These are accepted current limitations, not hidden TODOs:
 
 - V2 real output is authorized but not yet complete; each phase must land behind explicit gates.
+- V2-1 app-owned workspace hardening is implemented, but it is not hard process/container/VM sandboxing and does not authorize target-repository writes.
 - Hard process/container/VM sandbox isolation is not implemented and is not part of V2-1 unless separately approved.
 - Target-repository writes remain unavailable until V2-3 implements controlled branch/worktree/PR output.
 - Provider/CLI execution remains default-off even after V2-2.

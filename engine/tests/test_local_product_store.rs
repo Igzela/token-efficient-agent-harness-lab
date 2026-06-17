@@ -1146,6 +1146,41 @@ fn supervised_patch_workspace_rejects_registered_target_paths() {
 }
 
 #[test]
+fn supervised_patch_workspace_rejects_path_like_workspace_ids() {
+    let target_dir = tempdir().unwrap();
+    let dir = tempdir().unwrap();
+    let store = LocalProductStore::new(dir.path().join("test.db")).unwrap();
+
+    let result = store.create_workspace_directory("../escape", target_dir.path().to_str().unwrap());
+
+    assert!(result.is_err());
+    assert!(result.unwrap_err().contains("workspace_id"));
+}
+
+#[cfg(unix)]
+#[test]
+fn supervised_patch_workspace_copy_skips_symlink_escape() {
+    let dir = tempdir().unwrap();
+    let store = LocalProductStore::new(dir.path().join("test.db")).unwrap();
+    let target_dir = dir.path().join("target");
+    let outside_dir = dir.path().join("outside");
+    std::fs::create_dir_all(&target_dir).unwrap();
+    std::fs::create_dir_all(&outside_dir).unwrap();
+    std::fs::write(target_dir.join("safe.txt"), "safe").unwrap();
+    std::fs::write(outside_dir.join("secret.txt"), "api_key = should_not_copy").unwrap();
+    std::os::unix::fs::symlink(&outside_dir, target_dir.join("escape_link")).unwrap();
+
+    let workspace_path = store
+        .create_workspace_directory("ws-symlink", target_dir.to_str().unwrap())
+        .unwrap();
+
+    let workspace = std::path::Path::new(&workspace_path);
+    assert!(workspace.join("safe.txt").exists());
+    assert!(!workspace.join("escape_link").exists());
+    assert!(!workspace.join("escape_link/secret.txt").exists());
+}
+
+#[test]
 fn supervised_patch_artifact_records_metadata_without_apply_authority() {
     let target_dir = tempdir().unwrap();
     let workspace_root = tempdir().unwrap();
@@ -1248,6 +1283,42 @@ fn supervised_patch_artifact_rejects_unsafe_changed_files() {
     assert!(backslash_result
         .unwrap_err()
         .contains("changed file must use forward slashes"));
+    assert_eq!(store.supervised_patch_artifacts(10).unwrap().len(), 0);
+}
+
+#[test]
+fn supervised_patch_artifact_rejects_secret_review_diff() {
+    let target_dir = tempdir().unwrap();
+    let workspace_root = tempdir().unwrap();
+    let dir = tempdir().unwrap();
+    let store = LocalProductStore::new(dir.path().join("test.db")).unwrap();
+    let workspace_path = workspace_root.path().join("workspaces").join("ws-001");
+    store
+        .record_supervised_patch_workspace(
+            &json!({
+                "run_id": "run-0001",
+                "target_id": "target-001",
+                "target_repo_path": target_dir.path().to_string_lossy(),
+                "workspace_path": workspace_path.to_string_lossy(),
+                "source_revision": "abc123",
+            }),
+            "operator",
+        )
+        .unwrap();
+
+    let result = store.record_supervised_patch_artifact(
+        &json!({
+            "workspace_id": "patch-workspace-0001",
+            "patch_hash": "sha256-patch",
+            "changed_files": ["leak.txt"],
+            "redaction_status": "failed",
+            "review_diff": "+api_key = sk-should-not-store",
+        }),
+        "operator",
+    );
+
+    assert!(result.is_err());
+    assert!(result.unwrap_err().contains("review_diff"));
     assert_eq!(store.supervised_patch_artifacts(10).unwrap().len(), 0);
 }
 
@@ -2124,6 +2195,42 @@ fn ga1_review_diff_survives_artifact_read() {
         stored_diff.contains("--- a/README.md"),
         "persisted artifact should contain review_diff"
     );
+}
+
+#[test]
+fn ga1_capture_blocks_secret_content_from_artifact_and_response() {
+    let dir = tempdir().unwrap();
+    let store = LocalProductStore::new(dir.path().join("test.db")).unwrap();
+
+    let (ws_path, ws_id) = setup_workspace_with_target(
+        &store,
+        &dir,
+        "run-ga1-secret",
+        vec![("README.md", "# Test\n")],
+    );
+
+    std::fs::write(
+        std::path::PathBuf::from(&ws_path).join("leak.txt"),
+        "api_key = sk-should-not-appear\n",
+    )
+    .unwrap();
+
+    let artifact = store.capture_patch(&ws_id, "operator").unwrap();
+    let rendered = artifact.to_string();
+
+    assert_eq!(artifact["redaction_status"], "failed");
+    assert!(artifact["review_diff"]
+        .as_str()
+        .unwrap()
+        .contains("suppressed"));
+    assert!(!rendered.contains("sk-should-not-appear"));
+
+    let stored = store
+        .get_supervised_patch_artifact(artifact["artifact_id"].as_str().unwrap())
+        .unwrap()
+        .unwrap();
+    let stored_rendered = stored.to_string();
+    assert!(!stored_rendered.contains("sk-should-not-appear"));
 }
 
 #[test]
