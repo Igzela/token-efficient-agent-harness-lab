@@ -26,7 +26,7 @@
 
 **Key facts:**
 - 1396 Rust tests pass, 0 failures
-- TypeScript strict + readonly lint + build + static export pass
+- TypeScript strict + boundary lint + build + static export pass
 - `cargo fmt`, `cargo clippy`, handoff guard all pass
 - **Architecture Refactor R-series**: **SEALED AT R7**. R8 is not approved.
 - **Post-R7 Wire/Type Governance Hardening**: IMPLEMENTED

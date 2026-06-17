@@ -28,7 +28,7 @@ The Rust `engine/` is the sole runtime implementation. Python is retained as RES
 | `engine/src/storage/local_product_store/` | active storage | SQLite/PostgreSQL app-owned state, migrations, audit, costs, plans, runs, artifacts | `cargo test -p engine --test test_local_product_store` |
 | `engine/src/storage/backup_manager.rs` | active ops | SQLite backup, verify, restore support | `cargo test -p engine` |
 | `engine/src/infrastructure/` | active ops/security | Auth, rate limiting, circuit breaker, plugin registry helpers | `cargo test -p engine` |
-| `dashboard/` | active UI | Local operations console and guarded app-owned controls | `cd dashboard && bun run typecheck && bun run build:static` |
+| `dashboard/` | active UI | Local operations console with guarded app-owned controls | `cd dashboard && bun run typecheck && bun run build:static` |
 | `sdk/typescript/` | active SDK | TypeScript REST SDK and generated wire re-exports | `cd sdk/typescript && bun run build && bun run test` |
 | `sdk/python/` | active SDK | Python REST SDK | `cd sdk/python && PYTHONPATH=src uv run --no-project python -m unittest discover -s tests` |
 | `wire_contract/v1/`, `codegen/` | active governance | JSON schemas and deterministic generated Rust/TS/Python wire types | `bash scripts/check_wire_codegen_drift.sh` |

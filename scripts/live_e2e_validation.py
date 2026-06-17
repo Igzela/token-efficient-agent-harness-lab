@@ -13,6 +13,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import secrets
 import shutil
 import signal
@@ -714,18 +715,40 @@ def main() -> int:
         results.ok("Target repo writes disabled",
                    "App runtime never writes to target repos")
 
-        # Dashboard mutation controls absent
+        # Dashboard boundary controls stay within app-owned local state
         try:
             dashboard_html = fetch_text(f"{base_url}/", timeout=5.0)
-            forbidden = ["approve", "deploy", "merge"]
-            found_forbidden = [w for w in forbidden if w.lower() in dashboard_html.lower()]
+            forbidden = [
+                "Deploy",
+                "Release",
+                "Merge",
+                "Apply patch",
+                "Apply to target",
+                "Push to target",
+                "Enable provider",
+                "Enable CLI",
+                "Start worker",
+                "Run unattended",
+                "Provider failover",
+            ]
+            found_forbidden = []
+            for label in forbidden:
+                escaped = re.escape(label)
+                if re.search(
+                    rf"<button[^>]*>[\s\S]{{0,240}}\b{escaped}\b[\s\S]{{0,120}}</button>"
+                    rf"|aria-label=[\"'][^\"']*\b{escaped}\b[^\"']*[\"']",
+                    dashboard_html,
+                    flags=re.IGNORECASE,
+                ):
+                    found_forbidden.append(label)
             if not found_forbidden:
-                results.ok("Dashboard has no mutation controls", "no forbidden action words found")
+                results.ok("Dashboard has no forbidden boundary controls",
+                           "target/deploy/apply/default-on/unattended controls absent")
             else:
-                results.ok("Dashboard mutation check",
-                           f"found: {found_forbidden} (may be in text descriptions, not controls)")
+                results.fail("Dashboard forbidden boundary controls",
+                             f"found forbidden controls: {found_forbidden}")
         except Exception:
-            results.skip("Dashboard mutation check", "could not fetch dashboard")
+            results.skip("Dashboard boundary control check", "could not fetch dashboard")
 
         # Release/tag/deploy disabled
         results.ok("Release/tag/deploy disabled",

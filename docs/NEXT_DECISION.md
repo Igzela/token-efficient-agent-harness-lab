@@ -61,7 +61,7 @@ Use separate branches and PRs:
 
 | Slice | Branch | Goal | Scope |
 |---|---|---|---|
-| P0 | `codex/p0-boundary-lint` | Align dashboard boundary wording and checks | Replace read-only dashboard claims with "local operations console with guarded app-owned controls"; replace `lint-readonly` with boundary lint; update live E2E dashboard assertion |
+| P0 | `codex/p0-boundary-lint` | Align dashboard boundary wording and checks | Use "local operations console with guarded app-owned controls"; enforce boundary lint across dashboard app/components/lib; update live E2E dashboard assertion |
 | P1 | `codex/p1-runtime-gates` | Make local gates understandable | Add runtime-gate visibility and shortest local operator path; focus on provider/CLI/auth/workspace/export gates |
 | P2 | `codex/p2-primary-workflow` | Add a clear dashboard main workflow | Surface create/select run, tick, inspect failure, retry/fix, approve, export as one guided path using existing APIs |
 | P3 | `codex/p3-out-of-scope-docs` | Make non-goals explicit | Document cloud/SaaS, multi-tenant, hard sandbox, target writes, deploy/apply, unattended workers, provider failover as v2/out-of-scope |
