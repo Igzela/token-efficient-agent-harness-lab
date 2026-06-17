@@ -38,6 +38,12 @@ type TimelineItem =
   | { kind: "event"; at: string; label: string; tone: string; detail: string }
   | { kind: "node"; at: string; label: string; tone: string; detail: string };
 
+type WorkflowStep = {
+  detail: string;
+  label: string;
+  state: "done" | "now" | "blocked" | "todo";
+};
+
 function missionError(error: unknown): MissionError {
   if (error instanceof ApiError && (error.status === 401 || error.status === 403)) {
     return {
@@ -102,6 +108,131 @@ function nodeById(run: WorkflowRun | null): Map<string, WorkflowRunNode> {
   return new Map((run?.nodes ?? []).map((node) => [node.node_id, node]));
 }
 
+function approvalCounts(approvals: WorkflowRunApproval[]) {
+  return {
+    approved: approvals.filter((approval) => approval.decision === "approved").length,
+    requested: approvals.filter((approval) => approval.decision === "requested").length,
+  };
+}
+
+function exportReadyCount(artifacts: SupervisedPatchArtifact[], approvals: WorkflowRunApproval[]): number {
+  return artifacts.filter((artifact) =>
+    artifact.redaction_status === "redacted"
+    && approvals.some((approval) =>
+      approval.decision === "approved"
+      && approval.bound_patch_hash === artifact.patch_hash,
+    ),
+  ).length;
+}
+
+function failureReason(nodes: WorkflowRunNode[]): string {
+  const failed = nodes.find((node) => node.status === "failed" || node.error_domain || node.error_message);
+  if (!failed) return "No failing node recorded.";
+  return failed.error_message ?? failed.error_domain ?? `${failed.task_type} failed`;
+}
+
+function nextWorkflowStep({
+  approvals,
+  artifacts,
+  mutationEvents,
+  run,
+}: {
+  approvals: WorkflowRunApproval[];
+  artifacts: SupervisedPatchArtifact[];
+  mutationEvents: WorkflowRunEvent[];
+  run: WorkflowRun | null;
+}): string {
+  if (!run) return "Create or select a workflow run.";
+  const failedNodes = run.nodes.filter((node) => node.status === "failed");
+  const pendingApproval = approvalCounts(approvals).requested;
+  const readyExports = exportReadyCount(artifacts, approvals);
+  if (!["completed", "failed", "cancelled"].includes(run.status)) return "Tick the selected run.";
+  if (failedNodes.length > 0 && mutationEvents.length === 0) return "Inspect the failure reason and run a retry/fix path.";
+  if (pendingApproval > 0) return "Review and approve or reject the pending artifact.";
+  if (readyExports > 0) return "Export the approved redacted artifact.";
+  return "Inspect status, approvals, and export readiness.";
+}
+
+function PrimaryWorkflowPath({
+  approvals,
+  artifacts,
+  mutationEvents,
+  onRefresh,
+  run,
+}: {
+  approvals: WorkflowRunApproval[];
+  artifacts: SupervisedPatchArtifact[];
+  mutationEvents: WorkflowRunEvent[];
+  onRefresh: () => void;
+  run: WorkflowRun | null;
+}) {
+  const failedNodes = run?.nodes.filter((node) => node.status === "failed") ?? [];
+  const terminal = run ? ["completed", "failed", "cancelled"].includes(run.status) : false;
+  const counts = approvalCounts(approvals);
+  const readyExports = exportReadyCount(artifacts, approvals);
+  const nextStep = nextWorkflowStep({ approvals, artifacts, mutationEvents, run });
+  const steps: WorkflowStep[] = [
+    {
+      detail: run ? `Selected ${short(run.run_id)} (${run.status}).` : "Create a plan through the API or select an existing run below.",
+      label: "Create/select run",
+      state: run ? "done" : "now",
+    },
+    {
+      detail: run && !terminal ? "Use the Runs tab tick control to advance the next ready node." : "Tick is available only while the selected run is active.",
+      label: "Tick",
+      state: run && !terminal ? "now" : run ? "done" : "todo",
+    },
+    {
+      detail: run ? `${run.status}; ${failureReason(run.nodes)}` : "Run status appears after a run is selected.",
+      label: "Inspect failure/status",
+      state: failedNodes.length > 0 ? "blocked" : run ? "done" : "todo",
+    },
+    {
+      detail: mutationEvents.length > 0 ? `${mutationEvents.length} retry/fix or mutation event${mutationEvents.length === 1 ? "" : "s"} recorded.` : "If a node fails, inspect failure details then tick/resume to follow the existing recovery path.",
+      label: "Retry/fix path",
+      state: failedNodes.length > 0 && mutationEvents.length === 0 ? "now" : mutationEvents.length > 0 ? "done" : "todo",
+    },
+    {
+      detail: counts.requested > 0 ? `${counts.requested} approval request${counts.requested === 1 ? "" : "s"} pending.` : `${counts.approved} approval${counts.approved === 1 ? "" : "s"} recorded.`,
+      label: "Approve",
+      state: counts.requested > 0 ? "now" : counts.approved > 0 ? "done" : "todo",
+    },
+    {
+      detail: readyExports > 0 ? `${readyExports} artifact${readyExports === 1 ? "" : "s"} ready for approval-bound export.` : "Export requires a redacted artifact bound to an approval.",
+      label: "Export",
+      state: readyExports > 0 ? "now" : "todo",
+    },
+  ];
+
+  return (
+    <div className="subcard stack">
+      <div className="flex-between">
+        <div>
+          <h3>Primary Workflow</h3>
+          <p className="muted" style={{ fontSize: "13px", marginTop: 4 }}>
+            Create/select run -&gt; tick -&gt; inspect failure/status -&gt; retry/fix path -&gt; approve -&gt; export.
+          </p>
+        </div>
+        <button onClick={onRefresh} type="button">Refresh path</button>
+      </div>
+      <StateBanner title="Next step" tone={nextStep.includes("Export") ? "ok" : nextStep.includes("Inspect") ? "warn" : "info"}>
+        <p>{nextStep}</p>
+      </StateBanner>
+      <ol className="setup-list">
+        {steps.map((step) => (
+          <li className={`setup-step setup-step-${step.state === "done" ? "done" : step.state === "blocked" ? "warn" : step.state === "now" ? "warn" : "todo"}`} key={step.label}>
+            <span aria-hidden="true" className="setup-dot" />
+            <div>
+              <strong>{step.label}</strong>
+              <p>{step.detail}</p>
+            </div>
+          </li>
+        ))}
+      </ol>
+    </div>
+  );
+}
+
 function GraphView({ run }: { run: WorkflowRun }) {
   const incoming = new Map<string, string[]>();
   const outgoing = new Map<string, string[]>();
@@ -155,14 +286,8 @@ function OperatorSummary({
   scheduler: SchedulerStatus | null;
 }) {
   const failedNodes = run?.nodes.filter((node) => node.status === "failed").length ?? 0;
-  const pendingApprovals = approvals.filter((approval) => approval.decision === "requested").length;
-  const exportReady = artifacts.filter((artifact) =>
-    artifact.redaction_status === "redacted"
-    && approvals.some((approval) =>
-      approval.decision === "approved"
-      && approval.bound_patch_hash === artifact.patch_hash,
-    ),
-  ).length;
+  const pendingApprovals = approvalCounts(approvals).requested;
+  const exportReady = exportReadyCount(artifacts, approvals);
   const utilization = pool && pool.total_capacity > 0 ? pool.total_active / pool.total_capacity : 0;
 
   return (
@@ -376,6 +501,14 @@ export function MissionControl() {
           {run && (
             <div className="mission-layout">
               <div className="stack">
+                <PrimaryWorkflowPath
+                  approvals={approvals}
+                  artifacts={runArtifacts}
+                  mutationEvents={mutationEvents}
+                  onRefresh={loadOverview}
+                  run={run}
+                />
+
                 <div className="subcard stack">
                   <div className="flex-between">
                     <h3>Workflow Graph</h3>
