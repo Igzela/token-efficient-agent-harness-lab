@@ -49,7 +49,7 @@ Future work is maintenance, bugfixes, pilots, or v2 proposals only.
 | Backup restore | VERIFY_ONLY | EXISTS | POST /api/v1/backups/:id/restore with confirm |
 | Native runtime smoke | VERIFY_ONLY | EXISTS | scripts/smoke_native_runtime.py in CI |
 | Docker build/compose | VERIFY_ONLY | EXISTS | docker-compose.yml + 3 Dockerfiles, CI docker-build job |
-| Dashboard/operator surface | VERIFY_ONLY | EXISTS | Phase 7 DONE, read-only, lint-readonly enforced |
+| Dashboard/operator surface | VERIFY_ONLY | EXISTS | Phase 7 read-only observability is DONE; later GA-5/admin/regulator tabs add guarded app-owned controls protected by backend gates |
 | Auth and API scopes | VERIFY_ONLY | EXISTS | ACP_REQUIRE_AUTH, team:admin, scoped keys |
 | Audit log | VERIFY_ONLY | EXISTS | append_audit + search_audit_events + dashboard Audit tab |
 | Health/readiness/metrics | VERIFY_ONLY | EXISTS | GET /health, /ready, /metrics, /metrics/observability |
@@ -57,7 +57,7 @@ Future work is maintenance, bugfixes, pilots, or v2 proposals only.
 | CLI default-off boundary | VERIFY_ONLY | EXISTS | ACP_ENABLE_CLI_EXECUTION=1 required |
 | Target repo write boundary | VERIFY_ONLY | EXISTS | App never writes target repos |
 | Release/tag/deploy boundary | VERIFY_ONLY | EXISTS | No auto release/tag/deploy behavior |
-| Mutation controls decision | REJECT_FOR_V1 | DOCUMENTED | v1 GA is read-only operator UI + API/CLI/admin backend |
+| Mutation controls decision | GUARDED_FOR_V1 | DOCUMENTED | v1 allows guarded controls for app-owned local state only; no target repo writes, deploy/release/apply controls, or default-on external execution |
 | Documentation consistency | MUST_COMPLETE | **DONE** | PR #60: final consistency cleanup, stale terms resolved |
 | CI completeness | VERIFY_ONLY | EXISTS | 7 CI jobs covering Rust/Python/TS/Docker/PG/native |
 
@@ -78,7 +78,7 @@ Plan: add pg integration test that:
 
 ## Safety Boundary Checklist
 
-- Dashboard: read-only operator UI, no mutation controls (enforced by lint-readonly.mjs)
+- Dashboard: local operator UI with read-only observability plus guarded app-owned controls; no target repo writes, deploy/release/apply controls, or provider/CLI boundary expansion
 - Provider execution: default-off, env-gated (`ACP_ENABLE_PROVIDER_EXECUTION=1`)
 - CLI execution: default-off, env-gated (`ACP_ENABLE_CLI_EXECUTION=1`)
 - Target repo writes: disabled by default, never by app runtime

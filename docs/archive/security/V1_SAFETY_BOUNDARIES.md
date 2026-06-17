@@ -1,6 +1,7 @@
 # V1 Safety Boundaries — Final GA Stance
 
 Date: 2026-06-12
+Last updated: 2026-06-17
 Status: AUTHORITATIVE
 
 ## Summary
@@ -9,13 +10,19 @@ This document records the final v1 GA safety boundary decisions. These boundarie
 
 ## Operator Dashboard
 
-v1 GA dashboard is a **read-only operator console**. No mutation controls.
+v1 GA dashboard is a **local operator console**. It is not purely read-only.
 
-Forbidden words enforced by `dashboard/lint-readonly.mjs`: approve, deploy, execute, merge, run.
+Dashboard surfaces fall into three groups:
 
-Dashboard displays: dispatches, routing, proposals, snapshots, teams, costs, backups, audit, health, settings, workflow runs, scheduler, patches, regulator.
+- Read-only observability: dispatches, routing, costs, health, audit, scheduler, queue, executor pool, workflow graph, patch/artifact metadata, regulator state, and decision traces.
+- Guarded app-owned controls: team/API-key administration, backup create/verify/restore/delete, policy proposal approve/reject/deactivate/rollback, workflow tick/cancel, and supervised patch approval/export. These must remain protected by backend auth/scopes, explicit confirmation where required, and audit logging.
+- Boundary status: local-only deployment, provider/CLI gates, target-repository write boundary, and release/deploy boundary.
 
-**Rationale:** Mutation controls require admin auth, confirmation dialogs, audit trails, and rollback safety. These are not implemented in v1. v2 may add them with proper gates.
+The legacy `dashboard/scripts/lint-readonly.mjs` guard was created for the Phase 7 read-only operator-surface slice and only scans `dashboard/src/app`. It must not be treated as proof that the current dashboard is globally read-only.
+
+Dashboard controls must not mutate target repositories, perform release/tag/deploy actions, broaden provider/CLI execution gates, bypass backend auth/scopes, or introduce unattended autonomous workers.
+
+**Rationale:** v1 permits guarded mutation only for app-owned local state. Target-repository writes, hosted/cloud controls, deploy/apply controls, and default-on external execution remain outside v1.
 
 ## Provider Execution
 
@@ -51,7 +58,7 @@ Default: **OFF**. One adjustment per request. Snapshot before mutation. Rollback
 
 ## Destructive Operations
 
-Backup delete, key revoke, team member delete all require `team:admin` scope and confirmation.
+Backup restore/delete, key revoke/delete/rotate, team member delete, workflow cancellation, and policy rollback/deactivation require appropriate admin scope, confirmation where implemented, and audit evidence. Destructive behavior remains limited to app-owned local state.
 
 ## Hosted / Cloud / Multi-Tenant
 

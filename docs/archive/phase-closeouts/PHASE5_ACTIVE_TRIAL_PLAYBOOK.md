@@ -4,6 +4,8 @@ Date: 2026-06-11
 
 Status: **DONE - controlled active apply and rollback drill completed and signed off. Runtime active operation remains opt-in and disabled by default.**
 
+Post-trial note (2026-06-17): This playbook records the PR #40 SQLite trial as executed on 2026-06-11. The PostgreSQL path was unavailable during that trial, then Phase 8 PR #55 closed the gap with CI PostgreSQL coverage for active apply/rollback.
+
 This playbook is the real-world acceptance drill for Phase 5 active auto-adjustment. It validates that the active apply and rollback core can be operated safely under real workflow conditions without expanding automation scope.
 
 ## Scope
@@ -417,7 +419,7 @@ Completed for PR #40 on 2026-06-11 using isolated SQLite trial DB `/tmp/acp-phas
 - [x] No target repo writes.
 - [x] No release, tag, or deploy.
 - [x] SQLite path verified. Final SQLite counts: `active_proposals=0`, `active_snapshots=0`, `rolled_back_snapshots=2`, `total_snapshots=2`.
-- [x] PostgreSQL path verified or documented as unavailable. `ACP_TEST_DATABASE_URL` was unavailable, so PostgreSQL active trial was not run.
+- [x] PostgreSQL path documented as unavailable for this PR #40 drill. Phase 8 PR #55 later added CI PostgreSQL coverage for active apply/rollback.
 - [x] CI green. GitHub `tests` workflow for base commit `0bd56eeb789c2005e59f6746cad5d88f8930b660` completed successfully on 2026-06-11T15:06:52Z. PR #40 CI is pending until the PR is opened.
 - [x] Handoff guard green. `uv run --no-project python scripts/check_agent_handoff.py` passed pre-trial.
 - [x] Secret scan green. `uv run --no-project python scripts/acp_secret_scan.py` passed pre-trial.
@@ -432,7 +434,7 @@ Completed for PR #40 on 2026-06-11 using isolated SQLite trial DB `/tmp/acp-phas
 | Base commit | `0bd56eeb789c2005e59f6746cad5d88f8930b660` |
 | Trial branch/PR | `regulator/phase5-final-done-seal` / PR #40 |
 | SQLite result | PASS. Isolated DB `/tmp/acp-phase5-final-20260611.sqlite`; candidates seeded via `/api/v1/import` fixture dispatch history; disabled, dry-run, active apply, re-entry rejection, rollback, repeated rollback rejection, corrupted-hash rejection, cleanup rollback, and audit checks passed. |
-| PostgreSQL result | Unavailable. `ACP_TEST_DATABASE_URL` was not set; PostgreSQL active trial was not run. |
+| PostgreSQL result | Unavailable for this PR #40 drill because `ACP_TEST_DATABASE_URL` was not set. Phase 8 PR #55 later added CI PostgreSQL active apply/rollback coverage. |
 | CI result | Base CI PASS: GitHub `tests` workflow run `27356648306` for `0bd56eeb789c2005e59f6746cad5d88f8930b660` succeeded. PR #40 CI pending until PR creation. Local pre-trial validation passed: `cargo fmt --check`, `cargo test -p engine`, handoff guard, secret scan, and `git diff --check`. |
 | Handoff guard result | PASS pre-trial. |
 | Secret scan result | PASS pre-trial. |

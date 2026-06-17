@@ -40,12 +40,11 @@ REQUIRED_FILES = {
         "R-series is sealed at R7. R8 is not approved.",
         "scripts/check_wire_codegen_drift.sh",
     ],
-    "docs/SESSION_START_HERE.md": [
-        "Autonomous Session Closeout",
-        "Dispatch Kernel Phase 4",
-        "Architecture Refactor R-series | Sealed at R7; R8 is not approved.",
-        "Post-R7 Wire/Type Governance Hardening",
-        "scripts/check_wire_codegen_drift.sh",
+    "docs/ARCHITECTURE_BOOK.md": [
+        "# Architecture Book",
+        "Current version: v",
+        "Product Boundary",
+        "Dashboard Boundary",
     ],
     "docs/CURRENT_STATUS.md": [
         "Branch:",
@@ -70,6 +69,15 @@ REQUIRED_FILES = {
         "# Module Map",
         "| Module | Stage | Purpose |",
         "`scripts/check_wire_codegen_drift.sh`",
+    ],
+    "docs/REAL_WORLD_TESTING_PLAYBOOK.md": [
+        "# Real-World Testing Playbook",
+        "Agent Autonomous Maintenance Mode",
+        "docs/archive/",
+    ],
+    "docs/RUNBOOK.md": [
+        "# Agent Control Plane",
+        "Operator procedures",
     ],
     "scripts/verify_rust_typescript_stack.sh": [
         "bash scripts/check_wire_codegen_drift.sh",
@@ -145,19 +153,7 @@ def main() -> int:
     else:
         failures.append("migrations.rs not found at expected path")
 
-    # Check 2: Docs inventory — all referenced files exist
-    inventory_path = ROOT / "docs" / "DOCS_INVENTORY.md"
-    if inventory_path.exists():
-        inv_text = inventory_path.read_text(encoding="utf-8")
-        for match in re.finditer(r'\|\s*`?(docs/[^`\s|]+)`?\s*\|', inv_text):
-            doc_path = match.group(1).strip()
-            full_path = ROOT / doc_path
-            if not full_path.exists():
-                failures.append(f"DOCS_INVENTORY references missing file: {doc_path}")
-    else:
-        failures.append("docs/DOCS_INVENTORY.md not found")
-
-    # Check 3: Architecture Book exists, is non-empty, and schema version matches migrations.rs
+    # Check 2: Architecture Book exists, is non-empty, and schema version matches migrations.rs
     arch_book = ROOT / "docs" / "ARCHITECTURE_BOOK.md"
     if not arch_book.exists():
         failures.append("docs/ARCHITECTURE_BOOK.md not found")
@@ -187,9 +183,18 @@ def main() -> int:
     if current_status_path.exists():
         status_text = current_status_path.read_text(encoding="utf-8")
         if "Phase 6" in status_text and ("active track" in status_text or "IN PROGRESS" in status_text):
-            phase6_plan = ROOT / "docs" / "PHASE6_OPERATIONAL_READINESS_PLAN.md"
+            phase6_plan = (
+                ROOT
+                / "docs"
+                / "archive"
+                / "phase-closeouts"
+                / "PHASE6_OPERATIONAL_READINESS_PLAN.md"
+            )
             if not phase6_plan.exists():
-                failures.append("docs/PHASE6_OPERATIONAL_READINESS_PLAN.md not found (Phase 6 is active in CURRENT_STATUS)")
+                failures.append(
+                    "docs/archive/phase-closeouts/PHASE6_OPERATIONAL_READINESS_PLAN.md "
+                    "not found (Phase 6 is active in CURRENT_STATUS)"
+                )
 
     if failures:
         print("Agent handoff check FAILED:")

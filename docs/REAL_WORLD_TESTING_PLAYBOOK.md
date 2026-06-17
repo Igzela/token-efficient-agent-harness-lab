@@ -116,9 +116,9 @@ The system MUST stop and request human approval when ANY of these are detected:
 
 These are the concrete tasks to execute in order:
 
-### Task 1: Docs Inventory Cleanup
+### Task 1: Active Docs Cleanup
 - **Class:** `docs`
-- **Goal:** Archive unreferenced docs, create inventory
+- **Goal:** Archive unreferenced docs and keep the active docs set small
 - **Auto-merge:** yes
 - **Risk:** low
 
@@ -128,9 +128,9 @@ These are the concrete tasks to execute in order:
 - **Auto-merge:** yes
 - **Risk:** low
 
-### Task 3: SESSION_START_HERE.md Update
+### Task 3: Agent Entrypoint Update
 - **Class:** `docs`
-- **Goal:** Add playbook to required reading list
+- **Goal:** Keep `AGENTS.md`, `CLAUDE.md`, and the six active docs aligned
 - **Auto-merge:** yes
 - **Risk:** low
 
@@ -212,7 +212,7 @@ Docs maintenance is mandatory but not additive-by-default.
 - Do not create a new doc unless the topic is operationally distinct and will be referenced by an authoritative doc.
 - Prefer pruning, replacing, archiving, or linking over adding more prose.
 - If a doc becomes stale or duplicated, mark it archive-candidate or move it to `docs/archive/`.
-- Update `docs/DOCS_INVENTORY.md` whenever docs are added, moved, archived, or deleted.
+- Keep active docs limited to the six-file set in `docs/CURRENT_STATUS.md`; archive low-frequency or historical docs under `docs/archive/`.
 
 ### B. PR Creation Policy
 

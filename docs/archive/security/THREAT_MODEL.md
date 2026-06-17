@@ -1,7 +1,7 @@
 # Threat Model — Local Agent Control Plane
 
-Last updated: 2026-06-05
-Scope: Rust engine, TypeScript dashboard/SDK, local SQLite state, env-gated provider adapters, Batch 6 supervised-execution design-gate risks, Batch 7 Slice A storage-only supervised patch metadata, Slice B read-only HTTP metadata views, Slice C read-only SDK metadata wrappers, and Slice D approval-binding design. Batch 6/7 risks are not implemented runtime features.
+Last updated: 2026-06-17
+Scope: Rust engine, TypeScript dashboard/SDK, local SQLite/PostgreSQL state, env-gated provider adapters, env-gated CLI executors, guarded dashboard controls for app-owned state, supervised execution runtime primitives in app-owned detached workspaces, artifact capture/integrity/approval/export gates, and remaining no-sandbox/no-target-write safety boundaries.
 
 ---
 
@@ -16,9 +16,9 @@ Scope: Rust engine, TypeScript dashboard/SDK, local SQLite state, env-gated prov
 | Dispatch bundles | Task analysis, routing decisions, execution results | Medium — operational intelligence |
 | Audit log | Immutable record of all state mutations | High — tampering breaks accountability |
 | Source code (Rust `engine/`, TypeScript `dashboard/`, `sdk/`) | All runtime logic | High — controls all system behavior |
-| Static dashboard export | Pre-built Next.js UI served by the engine | Low — read-only interface |
-| Future target workspace | Planned app-owned detached patch workspace/snapshot area for any later supervised patch artifact beta | Critical — Slice A stores metadata only, Slice B exposes read-only metadata views, and Slice C adds read-only SDK wrappers; runtime workspace creation not implemented |
-| Future execution artifacts | Planned patch artifacts, diffs, evidence manifests, rollback/quarantine evidence, and captured files | High — Slice A stores metadata only, Slice B exposes read-only metadata views, and Slice C adds read-only SDK wrappers; patch file capture/redaction/export not implemented |
+| Static dashboard export | Pre-built Next.js UI served by the engine | Medium — can initiate guarded app-owned actions when authenticated |
+| App-owned detached workspaces | Temporary supervised patch workspaces outside registered target repos | Critical — command output, copied source, and generated files can contain sensitive data |
+| Supervised execution artifacts | Patch artifacts, diffs, evidence manifests, quarantine evidence, and captured files | High — must remain hash-bound, secret-scanned, and export-gated |
 
 ---
 
@@ -33,7 +33,7 @@ Scope: Rust engine, TypeScript dashboard/SDK, local SQLite state, env-gated prov
 | Plugin boundary | Registered plugins with valid manifests | Unregistered or malformed plugins | `PluginSystem` validation, thread-safe `RLock` execution |
 | SQLite boundary | App-owned local state | External data sources | WAL mode, foreign keys, `PRAGMA integrity_check` |
 | CLI executor boundary | Engine process | External CLI tools (`claude`, `codex`) | `spawn_blocking` for async safety, timeout via `ACP_CLI_TIMEOUT_MS` |
-| Future supervised-execution boundary | Planned sandbox/workspace/approval/rollback/artifact contracts and Batch 7 patch-workspace plan | Host filesystem, network, target repos, external tools | Slice A metadata only; runtime controls not implemented |
+| Supervised execution boundary | App-owned workspaces, NodeExecutor, artifact capture, approval binding, export gate | Host filesystem, network, target repos, external tools | App-owned detached workspace, command allowlist, no `sh -c`, timeout kill, secret scan, integrity validation, approval/export gate |
 
 ---
 
@@ -157,58 +157,62 @@ Scope: Rust engine, TypeScript dashboard/SDK, local SQLite state, env-gated prov
 
 ---
 
-### T-009: Sandbox Escape In A Future Execution Beta
+### T-009: Sandbox Escape In Supervised Execution
 
-**Description:** Code or tools run during a future supervised execution beta escape the intended isolation boundary and access host files, network, processes, credentials, or other workflow state.
+**Description:** Code or tools run during supervised execution access host files, network, processes, credentials, or other workflow state beyond the intended app-owned workspace boundary.
 
 **Impact:** Critical — host compromise or credential exposure.
 
 **Controls:**
-- Not implemented today.
-- ADR-0002 Batch 6 requires a selected isolation primitive, resource limits, default-deny network policy, read-only target mount, writable scratch-only policy, audit events, and failure handling before Batch 7 can start.
-- ADR-0002 Batch 7 Slice A stores only app-owned workspace/artifact metadata. Slice B exposes only read-only GET metadata views. Slice C exposes the same views through SDK GET wrappers. This is not a process/container/VM sandbox and is acceptable only while target commands, shell execution, package managers, external CLIs, providers, and workers remain forbidden. Any later command execution requires a separate isolation primitive decision.
+- No process/container/VM sandbox is implemented; this is a documented residual risk for local-only use.
+- Execution remains default-off or explicit: provider calls require `ACP_ENABLE_PROVIDER_EXECUTION=1`, CLI paths require `ACP_ENABLE_CLI_EXECUTION=1`, and workflow ticks require an explicit API/UI action.
+- `CommandNodeExecutor` executes allowlisted binaries with direct argv parsing, rejects shell metacharacters, avoids `sh -c`, enforces timeout kill, and records structured stdout/stderr/exit status.
+- Supervised work happens in app-owned detached workspaces rather than registered target repositories.
+- Artifact capture, integrity validation, approval binding, and export gate prevent unreviewed captured output from being exported.
 
 ---
 
 ### T-010: Target Workspace Boundary Failure
 
-**Description:** A future execution workspace reads or writes outside its intended scope, mutates a registered target repository directly, or leaks target data through artifacts.
+**Description:** An execution workspace reads or writes outside its intended scope, mutates a registered target repository directly, or leaks target data through artifacts.
 
 **Impact:** High — unauthorized target mutation or data exfiltration.
 
 **Controls:**
-- Not implemented today.
-- Current app behavior remains read-only for target repositories.
-- ADR-0002 Batch 6 requires an isolated harness-owned workspace, source revision evidence, writable path inventory, final diff/artifact inventory, and no direct target-repo mutation before Batch 7 can start.
-- ADR-0002 Batch 7 Slice A rejects registered-target `git worktree add` for metadata records and validates that planned workspace canonical paths are outside registered target repositories. Slice B only exposes this metadata through `dispatch:read` GET routes, and Slice C only wraps those routes in SDK GET methods. It does not create workspace directories or copy target files.
+- App runtime still does not write registered target repositories.
+- Workspace lifecycle creates app-owned detached directories outside registered target paths and records source manifest evidence.
+- `capture_patch` diffs the workspace against `.source_manifest.json` and records changed files plus a patch hash.
+- Cleanup and quarantine paths keep workspace terminal state explicit.
+- Export remains gated by artifact integrity and approval binding checks.
 
 ---
 
-### T-011: Approval Bypass In Future Execution
+### T-011: Approval Bypass In Supervised Execution
 
-**Description:** A future execution path proceeds without a required human approval, uses stale approval, accepts approval from the wrong identity/scope, or ignores revocation.
+**Description:** An execution/export path proceeds without required human approval, uses stale approval, accepts approval for the wrong artifact, or ignores binding expiry.
 
 **Impact:** Critical — human-gated actions execute without valid authorization.
 
 **Controls:**
-- Not implemented today.
-- Batch 4 approval records are inert metadata and do not grant execution authority.
-- ADR-0002 Batch 6 requires authenticated approver identity, scoped approval authority, decision expiry, revocation behavior, and immutable audit events before Batch 7 can start.
-- ADR-0002 Batch 7 Slice A stores patch workspace/artifact metadata that future approval evidence can bind to, and Slice B/C expose read-only metadata views, but the patch-review approval gate is not wired.
-- ADR-0002 Batch 7 Slice D defines the docs-only `supervised_patch_approval_binding.v1` contract. Future implementation must validate artifact/workspace ids, patch hash, changed-files hash, approver identity, `workflow:patch_review` scope, expiry, revocation, and stale reasons before any artifact export can become eligible. Wrong-hash, wrong-scope, wrong-identity, expired, revoked, rejected, or stale bindings must block export and emit app-owned events/audit records.
+- Approval binding includes `bound_patch_hash`, `bound_source_revision`, `bound_changed_files`, and `expires_at`.
+- Export requires both valid artifact integrity and valid approval binding.
+- Wrong patch hash, wrong source revision, wrong changed-file set, expired binding, rejected approval, or stale artifact state blocks export.
+- Approval/export actions operate on app-owned artifact records and emit app-owned events/audit evidence.
 
 ---
 
 ### T-012: Rollback Or Artifact-Capture Failure
 
-**Description:** A future execution failure leaves app state or workspace state partially rolled back, loses evidence, captures secrets without redaction, or stores artifacts in a target repository.
+**Description:** An execution failure leaves app state or workspace state partially rolled back, loses evidence, captures secrets without redaction, or stores artifacts in a target repository.
 
 **Impact:** High — inconsistent state, unrecoverable workspace, or sensitive data exposure.
 
 **Controls:**
-- Not implemented today.
-- ADR-0002 Batch 6 requires all-or-nothing transitions, rollback verification, app-owned artifact storage, redaction before display/export, read-only artifact access, and explicit cleanup rules before Batch 7 can start.
-- ADR-0002 Batch 7 Slice A implements minimum app-owned SQLite metadata storage for `supervised_patch_workspace.v1` and `supervised_patch_artifact.v1`, plus normalized changed-file validation and export/import/integrity coverage. Slice B exposes metadata through read-only `dispatch:read` GET routes, and Slice C adds SDK GET wrappers. Rollback runtime, patch file capture, redaction runtime, access/export gate, and cleanup runtime are not implemented.
+- Workspace cleanup and quarantine are explicit lifecycle operations.
+- `capture_patch` stores app-owned artifact metadata, patch hash, changed files, and secret-scan status.
+- `validate_artifact_integrity` checks hash/files/workspace/redaction state before export.
+- Export gate requires valid approval binding plus artifact integrity.
+- No automatic target-repository apply, merge, deploy, or release path exists.
 
 ---
 
@@ -235,15 +239,19 @@ Scope: Rust engine, TypeScript dashboard/SDK, local SQLite state, env-gated prov
 | C-017 | Production-like local ops check (`acp_ops_check.py`) | T-003, T-004, T-006 |
 | C-018 | Backup verify and restore dry-run | T-007 |
 | C-019 | Local env secret scan (`acp_secret_scan.py`) | T-001 |
+| C-020 | CommandNodeExecutor allowlist, metachar rejection, no `sh -c`, timeout kill | T-005, T-009 |
+| C-021 | App-owned detached workspace lifecycle | T-009, T-010, T-012 |
+| C-022 | Artifact capture secret scan and integrity validation | T-010, T-012 |
+| C-023 | Approval binding and export gate | T-011, T-012 |
 
-## 4.1 Design Gates Not Yet Implemented
+## 4.1 Remaining Design Gates
 
 | ID | Planning control | Addresses |
 |----|------------------|-----------|
-| DG-001 | ADR-0002 Batch 6 sandbox/workspace/approval/rollback/artifact contracts | T-009, T-010, T-011, T-012 |
-| DG-002 | Batch 7 must receive separate human approval before any supervised execution implementation | T-009, T-010, T-011, T-012 |
-| DG-003 | ADR-0002 Batch 7 Slice A/B/C stores only app-owned patch workspace/artifact metadata, rejects registered-target worktree mutation/path placement, and exposes only read-only metadata views through HTTP and SDK GET surfaces | T-009, T-010, T-011, T-012 |
-| DG-004 | ADR-0002 Batch 7 Slice D specifies the approval-binding contract for future patch-review/export gate: evidence binding, scope, identity, expiry, revocation, stale reasons, and export blocking rules | T-011, T-012 |
+| DG-001 | Any process/container/VM sandbox implementation requires separate approval, tests, docs, and rollout plan | T-009 |
+| DG-002 | Any target-repository write/apply/merge/deploy control requires separate approval and a new threat-model update | T-010, T-012 |
+| DG-003 | Any hosted/cloud/multi-tenant deployment requires tenant isolation, network policy, resource quotas, secrets management, and operational runbooks | T-001, T-002, T-003, T-009 |
+| DG-004 | Any unattended autonomous worker loop requires separate approval, scheduler safety gates, audit, rollback, and kill-switch controls | T-009, T-011, T-012 |
 
 ---
 
@@ -269,6 +277,6 @@ Provider API keys live in environment variables, which may be visible in process
 
 Rate limiter state is in-memory. Restart resets rate limits. **Acceptable** for local use; would need persistent storage for production deployment.
 
-### RR-006: No Execution-Phase Controls
+### RR-006: No Hard Sandbox Isolation
 
-Sandbox isolation, target workspace writes, approval broker wiring, rollback engine, and artifact-capture runtime are not implemented. **Acceptable** for the current Slice A-D state because no execution authority or export runtime exists. Any approved runtime slice must test controls for T-009 through T-012 before supervised execution beta can be considered.
+Supervised execution has app-owned workspace, command, artifact, approval, and export controls, but it does not provide process/container/VM sandbox isolation. **Acceptable** only for local, explicit, supervised use with target repositories protected from direct app writes. Hosted/cloud, multi-tenant, unattended-worker, or target-write expansion requires a new approved track.

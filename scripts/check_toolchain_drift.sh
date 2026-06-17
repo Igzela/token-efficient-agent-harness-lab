@@ -12,13 +12,12 @@ AUTHORITATIVE=(
   "AGENTS.md"
   "CLAUDE.md"
   "README.md"
-  "docs/SESSION_START_HERE.md"
+  "docs/ARCHITECTURE_BOOK.md"
   "docs/CURRENT_STATUS.md"
   "docs/NEXT_DECISION.md"
   "docs/MODULE_MAP.md"
-  "docs/CI_VERIFICATION.md"
-  "docs/PACKAGING.md"
-  "docs/TEST_MATRIX.md"
+  "docs/REAL_WORLD_TESTING_PLAYBOOK.md"
+  "docs/RUNBOOK.md"
 )
 
 # Authoritative scripts

@@ -6,6 +6,10 @@ Schema version: 14
 Test count baseline: 1534 Rust tests, 0 failures
 Dashboard baseline: 35 components, plain CSS with oklch design tokens, light/dark mode, Next.js 15 App Router, React 19, TypeScript 5.7, Bun
 
+## Historical Scope Note
+
+This document describes the Phase 7 Operator Surface slice only: PRs #49-#52 intentionally added read-only observability surfaces and no new runtime or mutation controls. It is not the current global dashboard boundary. Later GA-5/admin/regulator work added guarded controls for app-owned local state, including workflow tick/cancel, proposal approve/reject/deactivate/rollback, backup operations, team/key administration, and supervised patch approval/export. The current v1 boundary is recorded in `docs/V1_SAFETY_BOUNDARIES.md`.
+
 ## Purpose
 
 Phase 7 hardens the read-only operator dashboard so a human operator can understand the full regulator, proposal, snapshot, and dispatch state at a glance. It adds no mutation controls, no new runtime behavior, and no boundary expansion. The goal is calm, honest, accessible visibility into the system that already exists.
