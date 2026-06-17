@@ -82,7 +82,7 @@ agent-control-plane
 
 ## What This Project Is Not
 
-This repository is not a cloud production SaaS or autonomous-agent runtime. It does not call real model providers by default, run real agents, isolate work in real sandboxes, spawn production concurrent workers, provide provider failover, write target repositories, or provide hosted deployment. OpenAI-compatible and Anthropic provider adapters exist behind explicit environment configuration for local beta use; CI uses stub/mock paths and does not call real provider APIs. The local dashboard reads app-owned state from the local engine; dangerous local admin API actions require explicit confirmation and audit logging.
+This repository is not a cloud production SaaS or autonomous-agent runtime. It does not call real model providers by default, run real agents, isolate work in real sandboxes, spawn production concurrent workers, provide provider failover, write target repositories, or provide hosted deployment. OpenAI-compatible and Anthropic provider adapters exist behind explicit environment configuration for local beta use; CI uses stub/mock paths and does not call real provider APIs. The local dashboard is a local operations console with guarded app-owned controls; dangerous local admin API actions require explicit confirmation and audit logging.
 
 ## Toolchain
 
@@ -268,7 +268,7 @@ bundle = client.dispatch("Summarize docs without provider calls")
 - No production concurrency or real concurrent workers.
 - No provider failover.
 - No cloud production Web UI, hosted deployment, or remote SaaS service.
-- Dashboard/SDK controls operate on app-owned workflow/workspace/artifact state; target repositories remain read-only.
+- The dashboard is a local operations console with guarded app-owned controls. Dashboard/SDK controls operate on app-owned workflow/workspace/artifact state and must not write target repositories.
 - No destructive runtime filesystem behavior.
 
 ## Repository Structure

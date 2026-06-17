@@ -3,7 +3,7 @@
   "version": "0.1.0",
   "private": true,
   "scripts": {
-    "lint": "node scripts/lint-readonly.mjs",
+    "lint": "node scripts/lint-boundary.mjs",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "dev": "bun run next dev",
     "build": "bun run next build",

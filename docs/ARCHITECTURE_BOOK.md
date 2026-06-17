@@ -47,7 +47,7 @@ LocalProductStore
 | Workflow runtime | `engine/src/scheduler.rs`, `workflow/`, `orchestration/` | Persistent workflow runs, DAG state, dynamic recovery, queue/backpressure |
 | Storage | `engine/src/storage/local_product_store/` | App-owned SQLite/PostgreSQL state, audit, costs, backups, artifacts |
 | Ops hardening | `backup_manager.rs`, `infrastructure/`, `provider/circuit_breaker_provider.rs` | backup/restore, health, metrics, circuit breaker, TLS/env-gated hardening |
-| Dashboard | `dashboard/` | Local operations console with read-only observability plus guarded app-owned controls |
+| Dashboard | `dashboard/` | Local operations console with guarded app-owned controls and observability views |
 | SDKs | `sdk/typescript/`, `sdk/python/` | REST clients for dashboard/API operations |
 | Wire contracts | `wire_contract/v1/`, `codegen/` | Cross-language dispatch schemas and generated types |
 
@@ -97,7 +97,7 @@ The runtime path is intentionally built on existing `workflow_runs`, `scheduler`
 
 ## Dashboard Boundary
 
-The dashboard is a local operator console. It is not globally read-only:
+The dashboard is a local operations console with guarded app-owned controls. It is not globally read-only:
 
 - Observability views read dispatches, workflow graph state, queue/pool state, health, costs, audit, artifacts, and decisions.
 - Guarded controls can mutate app-owned state: team/API keys, backups, workflow tick/cancel, policy proposal lifecycle, and supervised patch approval/export.

@@ -11,7 +11,7 @@ The system is useful as an operations/control-plane lab for deterministic dispat
 ## Current Product Boundary
 
 - Rust `engine/` is the sole runtime/API/storage implementation.
-- `dashboard/` is the local operator console. It has observability views and guarded app-owned controls; it must not write target repositories or perform release/deploy/apply actions.
+- `dashboard/` is the local operations console with guarded app-owned controls. It has observability views; it must not write target repositories or perform release/deploy/apply actions.
 - TypeScript and Python SDKs cover REST access to dispatch, workflow, config, team, cost, audit, backup/export, and supervised patch metadata.
 - Provider execution is off unless `ACP_ENABLE_PROVIDER_EXECUTION=1`.
 - CLI execution is off unless `ACP_ENABLE_CLI_EXECUTION=1`.
@@ -64,7 +64,7 @@ Historical phase plans, closeouts, and long-form validation reports are retained
 - Supervised execution primitives: app-owned workspace lifecycle, `NodeExecutor` trait, allowlisted `CommandNodeExecutor`, workflow tick endpoint, artifact capture, secret scan, integrity validation, approval binding, and export gate.
 - Local storage: SQLite default with PostgreSQL optional via `ACP_DATABASE_URL`; schema version is documented in `docs/ARCHITECTURE_BOOK.md`.
 - Operations: health, metrics, backups, restore smoke, circuit breaker state, audit log, and release-readiness checks.
-- Dashboard: mission-control style local UI for workflow runs, scheduler state, proposals, patches, config/team/costs, and guarded app-owned actions.
+- Dashboard: local operations console with guarded app-owned controls for workflow runs, scheduler state, proposals, patches, config/team/costs, and app-owned actions.
 
 ## Current Gaps
 
