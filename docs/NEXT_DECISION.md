@@ -61,46 +61,20 @@ Autonomously maintain repo health and fix CI/docs/test drift. No future core-com
 - Pilots: real-world task validation
 - v2 proposals: new features, boundary expansions, or architectural changes
 
-## Product Boundary Repair Track
+## Product Boundary Repair Track — COMPLETE
 
-The next recommended maintenance track is to close the gap between product wording, dashboard behavior, and practical usability. This is a maintenance/product-polish track, not a new runtime authority track.
+The product-boundary repair track closed the gap between product wording, dashboard behavior, and practical usability. This was a maintenance/product-polish track, not a new runtime authority track.
 
-Baseline requirement: land the documentation-pruning cleanup first so all follow-up branches start from the six-file active docs model.
-
-Use separate branches and PRs:
+Completed PRs:
 
 | Slice | Branch | Goal | Scope |
 |---|---|---|---|
-| P0 | `codex/p0-boundary-lint` | Align dashboard boundary wording and checks | Use "local operations console with guarded app-owned controls"; enforce boundary lint across dashboard app/components/lib; update live E2E dashboard assertion |
-| P1 | `codex/p1-runtime-gates` | Make local gates understandable | Add runtime-gate visibility and shortest local operator path; focus on provider/CLI/auth/workspace/export gates |
-| P2 | `codex/p2-primary-workflow` | Add a clear dashboard main workflow | Surface create/select run, tick, inspect failure, retry/fix, approve, export as one guided path using existing APIs |
-| P3 | `codex/p3-out-of-scope-docs` | Make non-goals explicit | Document cloud/SaaS, multi-tenant, hard sandbox, target writes/apply/merge/deploy, default-on provider, unattended workers, provider failover, and production worker concurrency as v2/out-of-scope |
+| P0 | `codex/p0-boundary-lint` / PR #64 | Align dashboard boundary wording and checks | Replaced read-only dashboard lint with boundary lint across dashboard app/components/lib; updated live E2E dashboard assertion |
+| P3 | `codex/p3-out-of-scope-docs` / PR #65 | Make non-goals explicit | Documented cloud/SaaS, multi-tenant, hard sandbox, target writes/apply/merge/deploy, default-on provider, unattended workers, provider failover, and production worker concurrency as v2/out-of-scope |
+| P1 | `codex/p1-runtime-gates` / PR #66 | Make local gates understandable | Added runtime-gate visibility and shortest local operator path for provider/CLI/auth/workspace/export gates |
+| P2 | `codex/p2-primary-workflow` / PR #67 | Add a clear dashboard main workflow | Surfaced create/select run, tick, inspect failure/status, retry/fix, approve, and export readiness as a guided path using existing APIs |
 
-Recommended merge order:
-
-1. Baseline docs cleanup
-2. P0 boundary lint
-3. P3 out-of-scope docs
-4. P1 runtime gates
-5. P2 primary workflow
-
-Hard constraints for all slices:
-
-- Start from latest `main` on a new `codex/` branch; do not commit on `main`.
-- Stop and report if the working tree is dirty before starting.
-- Do not add sandbox/container/VM isolation, target-repository writes, deploy/apply/release controls, default-on provider/CLI execution, provider failover, hosted/cloud/multi-tenant behavior, or unattended autonomous workers.
-- Do not add new docs; update only the six active docs when documentation changes.
-- Keep each PR inside its slice. Do not opportunistically refactor adjacent code.
-- Open PRs only; do not auto-merge.
-
-Required verification for each slice:
-
-```bash
-uv run --no-project python scripts/check_agent_handoff.py
-git diff --check
-```
-
-Dashboard slices must also run the relevant dashboard lint/typecheck/build command from `dashboard/package.json`. Script changes must run Python syntax checks for touched Python files.
+Latest `main` CI after P0-P3 is green. No further Product Boundary Repair slices are planned.
 
 ## Before Starting Autonomous Work
 
