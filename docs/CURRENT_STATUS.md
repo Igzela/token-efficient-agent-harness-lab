@@ -6,7 +6,7 @@ Last recorded full verification: 2026-06-12. Documentation surface pruned: 2026-
 
 The core plan is complete. The repository is in maintenance mode for a local/small-team self-hosted macro-orchestrator control plane. Future work is maintenance, bugfixes, pilots, or explicitly approved v2 proposals only.
 
-The system is useful as an operations/control-plane lab for deterministic dispatch, workflow state, app-owned execution metadata, guarded local controls, SDKs, and audit evidence. It is not a polished SaaS product, cloud service, coding-agent runtime, or unattended autonomous-worker runtime.
+The system is useful as an operations/control-plane lab for deterministic dispatch, workflow state, app-owned execution metadata, guarded local controls, SDKs, and audit evidence. It is not a polished SaaS product, cloud service, coding-agent runtime, or unattended autonomous-worker runtime. These limits are current product boundaries, not current bugs.
 
 ## Current Product Boundary
 
@@ -19,6 +19,7 @@ The system is useful as an operations/control-plane lab for deterministic dispat
 - No hard process/container/VM sandbox is implemented.
 - No hosted/cloud/multi-tenant deployment is implemented.
 - No unattended autonomous worker loop is approved.
+- Cloud SaaS, multi-tenant hosting, hard sandbox isolation, target writes/apply/merge/deploy authority, default-on provider execution, unattended workers, provider failover, and production worker concurrency remain v2/out-of-scope.
 
 ## Last Recorded Verification
 
@@ -71,7 +72,8 @@ Historical phase plans, closeouts, and long-form validation reports are retained
 - Product fit is stronger for local operations/research than for public-facing production UX.
 - UI is functional and operator-oriented, but it is not yet a polished commercial product interface.
 - Security posture is suitable for local/small-team self-hosting only; hosted/multi-tenant use would require a new threat model and approved implementation plan.
-- Sandbox isolation, provider failover, default-on provider execution, target-repo write/apply controls, release/deploy controls, and unattended worker behavior remain out of scope.
+- Cloud SaaS, multi-tenant hosting, hard sandbox isolation, target-repo writes/apply/merge/deploy authority, default-on provider execution, unattended workers, provider failover, and production worker concurrency remain v2/out-of-scope.
+- Moving any of those boundaries into scope requires a new plan, updated threat model, focused tests, and explicit human approval.
 
 ## Documentation Discipline
 

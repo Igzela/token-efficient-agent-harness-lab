@@ -18,6 +18,16 @@
 
 The following require explicit human approval and a new implementation plan:
 
+- Cloud SaaS, hosted/cloud deployment, and multi-tenant service.
+- Hard process/container/VM sandbox isolation.
+- Target-repository writes/apply/merge/deploy authority.
+- Default-on provider execution or default-on CLI execution.
+- Unattended workers or unattended autonomous-agent loops.
+- Provider failover.
+- Production worker concurrency.
+
+These are v2/out-of-scope product boundaries, not current bugs. Moving any item into scope requires a new plan, threat-model update, focused tests, and explicit human approval.
+
 ## Safety Gates
 
 | Gate | Rule |
@@ -64,7 +74,7 @@ Use separate branches and PRs:
 | P0 | `codex/p0-boundary-lint` | Align dashboard boundary wording and checks | Use "local operations console with guarded app-owned controls"; enforce boundary lint across dashboard app/components/lib; update live E2E dashboard assertion |
 | P1 | `codex/p1-runtime-gates` | Make local gates understandable | Add runtime-gate visibility and shortest local operator path; focus on provider/CLI/auth/workspace/export gates |
 | P2 | `codex/p2-primary-workflow` | Add a clear dashboard main workflow | Surface create/select run, tick, inspect failure, retry/fix, approve, export as one guided path using existing APIs |
-| P3 | `codex/p3-out-of-scope-docs` | Make non-goals explicit | Document cloud/SaaS, multi-tenant, hard sandbox, target writes, deploy/apply, unattended workers, provider failover as v2/out-of-scope |
+| P3 | `codex/p3-out-of-scope-docs` | Make non-goals explicit | Document cloud/SaaS, multi-tenant, hard sandbox, target writes/apply/merge/deploy, default-on provider, unattended workers, provider failover, and production worker concurrency as v2/out-of-scope |
 
 Recommended merge order:
 
