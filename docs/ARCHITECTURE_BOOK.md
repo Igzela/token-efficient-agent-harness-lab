@@ -6,7 +6,7 @@ This is the current architecture baseline for the Token-Efficient Agent Harness 
 
 ## Product Boundary
 
-The system is a local/small-team self-hosted macro-orchestrator control plane for studying token-efficient agent workflows. It is not a cloud SaaS, hosted multi-tenant service, coding-agent runtime, or unattended autonomous-agent runtime.
+The system is a local/small-team self-hosted macro-orchestrator control plane for studying token-efficient agent workflows. It is not a cloud SaaS, hosted multi-tenant service, coding-agent runtime, or unattended autonomous-agent runtime. Those limits are current product boundaries, not hidden bugs.
 
 Default posture:
 
@@ -108,14 +108,16 @@ The dashboard is a local operations console with guarded app-owned controls. It 
 
 These are accepted v1 limitations, not hidden TODOs:
 
-- No hard process/container/VM sandbox.
-- No hosted/cloud/multi-tenant deployment.
-- No unattended autonomous worker loop.
-- No provider failover.
-- No target-repository write/apply/merge/deploy authority.
+- Cloud SaaS, hosted/cloud deployment, and multi-tenant service are v2/out-of-scope.
+- Hard process/container/VM sandbox isolation is v2/out-of-scope.
+- Target-repository write/apply/merge/deploy authority is v2/out-of-scope.
+- Default-on provider execution is v2/out-of-scope.
+- Unattended workers and unattended autonomous-agent loops are v2/out-of-scope.
+- Provider failover is v2/out-of-scope.
+- Production worker concurrency is v2/out-of-scope.
 - Some routing, quality, and orchestration modules remain partially active rather than unified under one policy layer.
 
-Boundary expansion requires a new plan, threat-model update, tests, and explicit human approval.
+Boundary expansion requires a new plan, threat-model update, focused tests, and explicit human approval.
 
 ## Active Verification
 
