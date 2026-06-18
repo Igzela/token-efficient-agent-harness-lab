@@ -33,7 +33,7 @@ The Rust `engine/` is the sole runtime implementation. Python is retained as RES
 | `sdk/typescript/` | active SDK | TypeScript REST SDK and generated wire re-exports | `cd sdk/typescript && bun run build && bun run test` |
 | `sdk/python/` | active SDK | Python REST SDK | `cd sdk/python && PYTHONPATH=src uv run --no-project python -m unittest discover -s tests` |
 | `wire_contract/v1/`, `codegen/` | active governance | JSON schemas and deterministic generated Rust/TS/Python wire types | `bash scripts/check_wire_codegen_drift.sh` |
-| `scripts/` | active ops | Local doctor, smoke, release checklist, drift guards, pilot/soak scripts | script-specific `--help` or smoke commands |
+| `scripts/` | active ops | Local doctor, smoke, release checklist, drift guards, Real Pilot 1, pilot/soak scripts | script-specific `--help` or smoke commands, including `uv run --no-project python scripts/real_pilot_1.py` |
 | `deploy/`, `docker-compose.yml` | optional local packaging | Dockerfiles and compose profiles for local engine/dashboard packaging | `docker compose build` |
 
 ## Module Classes

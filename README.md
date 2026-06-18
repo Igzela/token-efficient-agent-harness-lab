@@ -13,6 +13,18 @@ For the full system architecture, data flows, API surface, and safety boundaries
 
 ## Quick Start
 
+### Real Pilot 1: produce a real local patch and branch
+
+For the shortest end-to-end proof, run one command from a clean checkout:
+
+```bash
+uv run --no-project python scripts/real_pilot_1.py
+```
+
+The script starts a localhost engine with safe pilot gates, creates a temporary real git target repo plus local bare remote, creates a plan/run, creates an app-owned git worktree, executes a small command-backed change, captures verification evidence, records approval, exports a patch file, and pushes an `acp/*` branch to the local test remote. It does not call paid providers, enable Claude/Codex CLI execution, write target `main`, or require secrets.
+
+The final output prints the dashboard/API URL used during the run, evidence directory, exported `.patch`, pushed branch, commit SHA, and rollback command.
+
 ```bash
 # Clone and build
 git clone https://github.com/Igzela/token-efficient-agent-harness-lab.git
