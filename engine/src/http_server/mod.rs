@@ -1023,9 +1023,37 @@ pub fn openapi_document() -> serde_json::Value {
             "/api/v1/scheduler/status": {
                 "get": {
                     "summary": "Workflow scheduler status",
-                    "description": "Reports scheduler health, tick count, error count, and configuration. Returns enabled=false when ACP_ENABLE_SCHEDULER is not set.",
+                    "description": "Reports bounded supervised-worker health, per-worker heartbeat, queue state, tick count, error count, gates, and configuration. Returns enabled=false when ACP_ENABLE_SCHEDULER is not set.",
                     "responses": {
                         "200": {"description": "Scheduler status"}
+                    }
+                }
+            },
+            "/api/v1/scheduler/control": {
+                "post": {
+                    "summary": "Pause, resume, or kill supervised workers",
+                    "description": "Requires dispatch:execute scope and confirm_control=true. Every attempt is audited. Kill stops new claims immediately while any in-flight timeout-bounded execution drains; restart requires process/operator action and both scheduler gates.",
+                    "requestBody": {
+                        "required": true,
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "type": "object",
+                                    "required": ["action", "confirm_control"],
+                                    "properties": {
+                                        "action": {"type": "string", "enum": ["pause", "resume", "kill"]},
+                                        "actor": {"type": "string"},
+                                        "confirm_control": {"type": "boolean"}
+                                    }
+                                }
+                            }
+                        }
+                    },
+                    "responses": {
+                        "200": {"description": "Updated scheduler state"},
+                        "400": {"description": "Invalid action or missing confirmation"},
+                        "403": {"description": "Missing dispatch:execute scope"},
+                        "409": {"description": "Scheduler unavailable or action rejected"}
                     }
                 }
             },

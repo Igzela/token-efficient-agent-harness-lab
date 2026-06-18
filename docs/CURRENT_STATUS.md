@@ -1,6 +1,6 @@
 # Current Status
 
-Last recorded full verification: 2026-06-17. Documentation surface pruned and Product Boundary Repair Track completed: 2026-06-17. V2 Real Production Output Track authorized: 2026-06-17.
+Last recorded full verification: 2026-06-18. V2-0 through V2-3 merged with green CI: 2026-06-18. V2-4 implemented on its phase branch: 2026-06-18.
 
 ## Summary
 
@@ -18,15 +18,15 @@ The system is useful as an operations/control-plane lab for deterministic dispat
 - V2-3 target output is default-off. On the V2-3 branch it can create an app-owned git worktree and, only after scoped confirmation plus artifact approval/integrity checks, export a patch or push an `acp/*` branch. It never writes the registered target working tree or `main`.
 - No hard process/container/VM sandbox is implemented; V2-1 is scoped to app-owned workspace confinement unless separately approved.
 - No hosted/cloud/multi-tenant deployment is implemented.
-- No unattended autonomous-agent loop is approved.
+- Bounded supervised workers are implemented on the V2-4 branch behind `ACP_ENABLE_SCHEDULER=1` plus `ACP_ENABLE_SUPERVISED_WORKERS=1`; unattended autonomous-agent loops remain disallowed.
 - Target-repo output, provider/CLI execution, supervised workers, and product UX are approved only through the V2 phase plan in `docs/NEXT_DECISION.md`; until each phase lands, the old limitation remains active.
 - Cloud SaaS, multi-tenant hosting, direct release/tag/deploy/apply authority, provider failover, default-on real execution, and unattended autonomous-agent loops remain out of scope.
 
 ## Last Recorded Verification
 
 - Branch: `main`.
-- Tests: **1534 Rust tests pass**, 0 failures, recorded 2026-06-12.
-- CI: latest `tests` workflow on `main` is green as of 2026-06-17 after P0-P3.
+- Tests: **1571 Rust tests pass**, 0 failures, recorded 2026-06-18 on `codex/v2-4-supervised-worker-queue`.
+- CI: latest `tests` workflow on `main` is green as of 2026-06-18 after V2-3.
 - PostgreSQL integration tests are gated behind `cargo test -p engine --features pg-tests` with `ACP_TEST_DATABASE_URL`.
 - Live E2E validation evidence is archived at `docs/archive/validation/LIVE_E2E_VALIDATION_REPORT.md` with 48 PASS, 0 FAIL, 1 SKIP on 2026-06-12.
 
@@ -62,7 +62,7 @@ uv run --no-project python scripts/check_agent_handoff.py
 
 | Track | Status |
 |---|---|
-| V2 Real Production Output Track | Authorized; V2-0 documentation PR opened; V2-1 execution safety base implemented on `codex/v2-1-execution-safety-base`; V2-2 provider/CLI output path implemented on `codex/v2-2-provider-cli-output`; V2-3 target repo output implemented on `codex/v2-3-target-repo-pr-flow`; V2-4 and V2-5 pending |
+| V2 Real Production Output Track | V2-0 through V2-3 merged in PRs #69-#72; V2-4 bounded supervised workers implemented on `codex/v2-4-supervised-worker-queue`, pending PR/merge; V2-5 pending |
 
 Historical phase plans, closeouts, and long-form validation reports are retained under `docs/archive/`.
 
@@ -74,6 +74,7 @@ Historical phase plans, closeouts, and long-form validation reports are retained
 - V2-1 safety base: workspace IDs are path-safe, workspace copies stay under the app-owned workspace root, symlinks are skipped, copy file/byte ceilings are enforced, secret findings are redacted, secret-hit diffs are suppressed, command cwd is validated, command env is cleared except `PATH`, and command output is capped.
 - V2-2 provider/CLI output path: workflow ticks can run provider nodes only when `ACP_ENABLE_PROVIDER_EXECUTION=1` and a provider is configured; Claude/Codex CLI ticks remain `ACP_ENABLE_CLI_EXECUTION=1` gated; provider/CLI outputs are redacted/capped, provider ticks record provider audit events, provider cost gates block before execution, and CLI subprocess env is restricted to `PATH` plus `ACP_CLI_ENV_ALLOWLIST`.
 - V2-3 target repo output: `git_worktree` workspace creation and real output require `dispatch:execute` plus `ACP_ENABLE_TARGET_REPO_OUTPUT=1`; artifact hashes bind actual patch content; output requires completed workflow verification evidence, same-run approval binding, integrity, redaction, explicit confirmation, bounded text-only changed files, remote/host allowlists, and an HTTPS token referenced by env; branch names are restricted to `acp/*`; `ACP_TARGET_REPO_OUTPUT_KILL_SWITCH=1` stops new output.
+- V2-4 bounded workers: scheduler startup requires both scheduler and supervised-worker env gates; worker count is bounded by global concurrency and 32; each worker claims at most one node per cycle through the existing atomic DB lease; heartbeat metadata exposes worker state; stale recovery is audited; `dispatch:execute` plus confirmation controls pause/resume/kill; env pause and kill switches remain available.
 - Local storage: SQLite default with PostgreSQL optional via `ACP_DATABASE_URL`; schema version is documented in `docs/ARCHITECTURE_BOOK.md`.
 - Operations: health, metrics, backups, restore smoke, circuit breaker state, audit log, and release-readiness checks.
 - Dashboard: local operations console with guarded app-owned controls for workflow runs, scheduler state, proposals, patches, config/team/costs, and app-owned actions.
@@ -86,7 +87,7 @@ Historical phase plans, closeouts, and long-form validation reports are retained
 - UI is functional and operator-oriented; V2-5 must turn existing Mission Control, supervised patch, runtime gate, run, and audit components into one clear output workflow.
 - Security posture is suitable for local/small-team self-hosting only; hosted/multi-tenant use would require a new threat model and approved implementation plan.
 - V2-1 alone does not authorize target output; V2-3 adds only controlled worktree/branch output and still does not add provider/CLI default-on execution or sandbox/process/container/VM isolation.
-- V2-4 must add bounded supervised workers behind explicit gates.
+- V2-4 is implemented but not merged; V2-5 remains the only planned product phase after it lands.
 - Cloud SaaS, multi-tenant hosting, direct release/tag/deploy/apply authority, provider failover, default-on real execution, and unattended autonomous-agent loops remain out of scope.
 
 ## Documentation Discipline

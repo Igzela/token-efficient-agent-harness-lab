@@ -22,6 +22,7 @@ import type {
   WorkflowRunResponse,
   WorkflowRunTickRequest,
   WorkflowRunTickResponse,
+  SchedulerControlAction,
   SchedulerStatus,
   SupervisedPatchArtifactListResponse,
   SupervisedPatchArtifactResponse,
@@ -548,6 +549,14 @@ export class AgentControlPlaneClient {
 
   schedulerStatus(): Promise<SchedulerStatus> {
     return this.getJson<SchedulerStatus>("/api/v1/scheduler/status");
+  }
+
+  controlScheduler(action: SchedulerControlAction, actor?: string): Promise<SchedulerStatus> {
+    return this.postJson<SchedulerStatus>("/api/v1/scheduler/control", {
+      action,
+      actor,
+      confirm_control: true,
+    });
   }
 
   fetchExecutorPool(): Promise<ExecutorPoolStatus> {

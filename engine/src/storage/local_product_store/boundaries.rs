@@ -12,7 +12,7 @@ pub fn local_boundaries(executor_type: &str, provider_enabled: bool) -> Value {
         "provider_transport": provider_transport,
         "target_repository_writes": "disabled",
         "sandbox_process_execution": "disabled",
-        "runtime_workers": "disabled",
+        "runtime_workers": "env_gated_supervised",
         "deployment": "local-only",
         "docker_required": false,
     })

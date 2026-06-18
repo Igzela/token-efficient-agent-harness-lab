@@ -674,22 +674,6 @@ fn target_output_error(error: String) -> ApiError {
     ApiError::with_code(status, code, &error)
 }
 
-#[cfg(test)]
-mod tests {
-    use super::verification_evidence_ready;
-    use serde_json::json;
-
-    #[test]
-    fn target_output_requires_recorded_verification_evidence() {
-        assert!(!verification_evidence_ready(&json!({
-            "evidence_bundle": {"verification": {"status": "not_run"}}
-        })));
-        assert!(verification_evidence_ready(&json!({
-            "evidence_bundle": {"verification": {"status": "evidence_recorded"}}
-        })));
-    }
-}
-
 pub(crate) async fn api_cleanup_supervised_patch_workspace(
     State(state): State<AxumApiState>,
     headers: HeaderMap,
@@ -823,5 +807,21 @@ pub(crate) async fn api_capture_supervised_patch(
             &e,
         )),
         Err(e) => Err(internal_error(e)),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::verification_evidence_ready;
+    use serde_json::json;
+
+    #[test]
+    fn target_output_requires_recorded_verification_evidence() {
+        assert!(!verification_evidence_ready(&json!({
+            "evidence_bundle": {"verification": {"status": "not_run"}}
+        })));
+        assert!(verification_evidence_ready(&json!({
+            "evidence_bundle": {"verification": {"status": "evidence_recorded"}}
+        })));
     }
 }

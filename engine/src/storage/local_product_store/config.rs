@@ -10,7 +10,7 @@ impl LocalProductStore {
             ("provider_transport", json!("stub/off")),
             ("target_repository_writes", json!("disabled")),
             ("sandbox_process_execution", json!("disabled")),
-            ("runtime_workers", json!("disabled")),
+            ("runtime_workers", json!("env_gated_supervised")),
             ("docker_required", json!(false)),
         ];
         match &self.db {

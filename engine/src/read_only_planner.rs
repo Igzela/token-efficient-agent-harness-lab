@@ -306,7 +306,7 @@ fn build_plan_advisory(
             "executor_type": "noop",
             "provider_calls": "not_invoked",
             "target_repository_writes": "disabled",
-            "runtime_workers": "disabled",
+            "runtime_workers": "env_gated_supervised",
             "approval_execution_authority": "disabled",
             "workflow_order_width": execution_order.len(),
             "budget_reservation": serde_json::to_value(&budget).unwrap_or(Value::Null),
@@ -410,7 +410,7 @@ pub fn read_only_boundaries() -> Value {
     json!({
         "execution": "disabled",
         "target_repository_writes": "disabled",
-        "runtime_workers": "disabled",
+        "runtime_workers": "env_gated_supervised",
         "sandbox_process_execution": "not_implemented",
         "provider_calls": "not_invoked",
         "approval_controls": "not_available",

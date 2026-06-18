@@ -486,7 +486,10 @@ async fn axum_create_read_only_plan_persists_workflow_graph_without_execution() 
         body["plan"]["boundaries"]["target_repository_writes"],
         "disabled"
     );
-    assert_eq!(body["plan"]["boundaries"]["runtime_workers"], "disabled");
+    assert_eq!(
+        body["plan"]["boundaries"]["runtime_workers"],
+        "env_gated_supervised"
+    );
     assert_eq!(
         body["plan"]["advisory"]["schema_version"],
         "plan_advisory.v1"
@@ -619,7 +622,10 @@ async fn axum_workflow_runs_persist_inert_state_from_plan() {
         run_body["run"]["boundaries"]["execution_authority"],
         "disabled"
     );
-    assert_eq!(run_body["run"]["boundaries"]["runtime_workers"], "disabled");
+    assert_eq!(
+        run_body["run"]["boundaries"]["runtime_workers"],
+        "env_gated_supervised"
+    );
     assert!(run_body["run"].get("execution_result").is_none());
     assert!(!run_body["run"]["nodes"].as_array().unwrap().is_empty());
 
@@ -4778,6 +4784,7 @@ async fn axum_scheduler_status_returns_enabled_when_scheduler_present() {
         max_concurrent: 4,
         lease_timeout_ms: 300_000,
         executor_type: "noop".to_string(),
+        supervised_workers_enabled: true,
         ..Default::default()
     };
     let mut scheduler = WorkflowScheduler::new(Arc::new(store), config);
@@ -4917,6 +4924,164 @@ async fn axum_scheduler_status_reflects_active_runs() {
     let body = response_json(response).await;
     let sched = &body["scheduler"];
     assert_eq!(sched["active_runs"], 1, "should reflect the created run");
+}
+
+#[tokio::test]
+async fn axum_scheduler_control_requires_execute_scope_confirmation_and_audits() {
+    use engine::scheduler::{SchedulerConfig, WorkflowScheduler};
+    use std::sync::{Arc, Mutex};
+
+    let dir = tempdir().unwrap();
+    let store = Arc::new(LocalProductStore::new(dir.path().join("sched-control.db")).unwrap());
+    let mut scheduler = WorkflowScheduler::new(
+        store.clone(),
+        SchedulerConfig {
+            interval_ms: 50,
+            max_concurrent: 1,
+            worker_count: 1,
+            supervised_workers_enabled: true,
+            ..Default::default()
+        },
+    );
+    scheduler.start().unwrap();
+    let scheduler = Arc::new(Mutex::new(scheduler));
+
+    let mut resolver = TenantResolver::new();
+    let scopes = HashSet::from(["dispatch:execute".to_string(), "health:read".to_string()]);
+    resolver.add_tenant(Tenant {
+        tenant_id: "local".to_string(),
+        name: "Local".to_string(),
+        scopes: scopes.clone(),
+        rate_limit: Some(100),
+    });
+    let (_key, raw_key) = resolver
+        .create_api_key("local", Some(scopes), None, 1.0)
+        .unwrap();
+    let app = build_axum_router(
+        AxumApiState::new()
+            .with_local_store_arc(store.clone())
+            .with_scheduler(scheduler)
+            .with_auth(resolver, RateLimiter::new(60.0, 100), Some(100), 1.0),
+    );
+
+    let missing_confirmation = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(Method::POST)
+                .uri("/api/v1/scheduler/control")
+                .header(header::AUTHORIZATION, format!("Bearer {raw_key}"))
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(
+                    json!({"action": "pause", "actor": "operator"}).to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(missing_confirmation.status(), StatusCode::BAD_REQUEST);
+
+    let paused = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(Method::POST)
+                .uri("/api/v1/scheduler/control")
+                .header(header::AUTHORIZATION, format!("Bearer {raw_key}"))
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(
+                    json!({
+                        "action": "pause",
+                        "actor": "operator",
+                        "confirm_control": true
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(paused.status(), StatusCode::OK);
+    let body = response_json(paused).await;
+    assert_eq!(body["scheduler"]["paused"], true);
+
+    let killed = app
+        .oneshot(
+            Request::builder()
+                .method(Method::POST)
+                .uri("/api/v1/scheduler/control")
+                .header(header::AUTHORIZATION, format!("Bearer {raw_key}"))
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(
+                    json!({
+                        "action": "kill",
+                        "actor": "operator",
+                        "confirm_control": true
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(killed.status(), StatusCode::OK);
+    let body = response_json(killed).await;
+    assert_eq!(body["scheduler"]["running"], false);
+    assert_eq!(body["scheduler"]["kill_requested"], true);
+
+    let audits = store.audit_events(20).unwrap();
+    assert!(audits
+        .iter()
+        .any(|event| event["action"] == "scheduler.control.pause"));
+    assert!(audits
+        .iter()
+        .any(|event| event["action"] == "scheduler.control.kill"));
+}
+
+#[tokio::test]
+async fn axum_scheduler_control_rejects_missing_execute_scope() {
+    use engine::scheduler::{SchedulerConfig, WorkflowScheduler};
+    use std::sync::{Arc, Mutex};
+
+    let dir = tempdir().unwrap();
+    let store = Arc::new(LocalProductStore::new(dir.path().join("sched-scope.db")).unwrap());
+    let scheduler = Arc::new(Mutex::new(WorkflowScheduler::new(
+        store.clone(),
+        SchedulerConfig::default(),
+    )));
+    let mut resolver = TenantResolver::new();
+    let scopes = HashSet::from(["health:read".to_string()]);
+    resolver.add_tenant(Tenant {
+        tenant_id: "local".to_string(),
+        name: "Local".to_string(),
+        scopes: scopes.clone(),
+        rate_limit: Some(100),
+    });
+    let (_key, raw_key) = resolver
+        .create_api_key("local", Some(scopes), None, 1.0)
+        .unwrap();
+    let app = build_axum_router(
+        AxumApiState::new()
+            .with_local_store_arc(store)
+            .with_scheduler(scheduler)
+            .with_auth(resolver, RateLimiter::new(60.0, 100), Some(100), 1.0),
+    );
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method(Method::POST)
+                .uri("/api/v1/scheduler/control")
+                .header(header::AUTHORIZATION, format!("Bearer {raw_key}"))
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(
+                    json!({"action": "pause", "confirm_control": true}).to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::FORBIDDEN);
 }
 
 // ── GA-4: Observability / Audit tests ─────────────────────────────────
@@ -6167,6 +6332,7 @@ async fn ga6_scheduler_status_reports_config_and_metrics() {
         max_concurrent: 2,
         lease_timeout_ms: 60_000,
         executor_type: "command".to_string(),
+        supervised_workers_enabled: true,
         ..Default::default()
     };
     let mut scheduler = WorkflowScheduler::new(Arc::new(store), config);

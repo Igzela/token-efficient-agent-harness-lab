@@ -8,12 +8,13 @@
 
 **Target user**: Solo developer or small local team studying deterministic agent infrastructure on one machine or LAN.
 
-## Current State (2026-06-17)
+## Current State (2026-06-18)
 
 **Active tracks:**
 - Real-World Testing Mode — validated through real tasks, branches, commits, PRs, CI, gated auto-merge
 - Agent Autonomous Maintenance Mode — agents maintain docs/CI/tests/low-risk PR flow under playbook gates
 - V2 Real Production Output Track — authorized, phase-gated path to auditable real-repository patch/PR production
+- V2-0 through V2-3 merged; V2-4 bounded supervised workers implemented on its phase branch; V2-5 pending
 
 **Complete tracks:**
 - Dispatch Kernel Phases 1–7 (including 6A, 6B-1/2/3, Gates 1–3): STABLE
@@ -26,7 +27,7 @@
 - Dashboard Onboarding UX ON-1 through ON-5: COMPLETE
 
 **Key facts:**
-- 1534 Rust tests pass, 0 failures (last recorded full verification)
+- 1571 Rust tests pass, 0 failures (last recorded full verification)
 - TypeScript strict + boundary lint + build + static export pass
 - `cargo fmt`, `cargo clippy`, handoff guard all pass
 - **Architecture Refactor R-series**: **SEALED AT R7**. R8 is not approved.
@@ -121,7 +122,7 @@ Prefer prune/archive/link over adding more prose.
 
 - **Framework**: Rust `cargo test` for engine; Python `unittest` for SDK
 - **Run commands**: `cargo test -p engine` (primary); SDK tests in `sdk/python/`; PostgreSQL integration: `cargo test -p engine --features pg-tests` (requires `ACP_TEST_DATABASE_URL`)
-- **Current count**: 1396 Rust tests, 0 failures
+- **Current count**: 1571 Rust tests, 0 failures
 - **CI**: GitHub Actions on push/PR to main
 - **Test-first**: Write tests alongside implementation
 

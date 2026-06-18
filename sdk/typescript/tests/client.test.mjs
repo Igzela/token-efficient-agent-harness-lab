@@ -778,6 +778,23 @@ test("schedulerStatus gets scheduler health", async () => {
   assert.ok(calls[0].url.includes("/api/v1/scheduler/status"));
 });
 
+test("controlScheduler posts confirmed worker action", async () => {
+  const { calls, fetchImpl } = captureFetch({
+    schema_version: "axum_api.v1",
+    scheduler: { running: true, paused: true, kill_requested: false },
+  });
+  const client = new AgentControlPlaneClient({ baseUrl: "http://localhost:8080", fetchImpl });
+  const result = await client.controlScheduler("pause", "operator");
+  assert.equal(result.scheduler.paused, true);
+  assert.ok(calls[0].url.includes("/api/v1/scheduler/control"));
+  assert.equal(calls[0].init.method, "POST");
+  assert.deepEqual(JSON.parse(calls[0].init.body), {
+    action: "pause",
+    actor: "operator",
+    confirm_control: true,
+  });
+});
+
 test("fetchExecutorPool sends GET to executor-pool endpoint", async () => {
   const { calls, fetchImpl } = captureFetch({
     schema_version: "executor_pool.v1",
