@@ -144,6 +144,7 @@ function readTabFromHash(): Tab {
 
 export default function DashboardPage() {
   const [tab, setTab] = useState<Tab>(readTabFromHash);
+  const [mobileNavOpen, setMobileNavOpen] = useState(false);
   const [health, setHealth] = useState("unknown");
   const [ready, setReady] = useState("unknown");
   const [dashboard, setDashboard] = useState<LocalDashboardState>(emptyDashboard);
@@ -151,14 +152,20 @@ export default function DashboardPage() {
   const [authMessage, setAuthMessage] = useState("");
   const [reloadKey, setReloadKey] = useState(0);
   const [lastUpdated, setLastUpdated] = useState<Date | null>(null);
-  const [theme, setTheme] = useState<"light" | "dark">(() => {
-    if (typeof window === "undefined") return "light";
-    const saved = localStorage.getItem("acp-theme");
-    if (saved === "dark" || saved === "light") return saved;
-    return window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
-  });
+  const [theme, setTheme] = useState<"light" | "dark">("light");
+  const themeInitialized = useRef(false);
 
   useEffect(() => {
+    if (!themeInitialized.current) {
+      themeInitialized.current = true;
+      const saved = localStorage.getItem("acp-theme");
+      const initialTheme = saved === "dark" || saved === "light"
+        ? saved
+        : window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
+      document.documentElement.setAttribute("data-theme", initialTheme);
+      if (initialTheme !== theme) setTheme(initialTheme);
+      return;
+    }
     document.documentElement.setAttribute("data-theme", theme);
     localStorage.setItem("acp-theme", theme);
   }, [theme]);
@@ -176,6 +183,7 @@ export default function DashboardPage() {
     function onHashChange() {
       if (syncingHash.current) return;
       setTab(readTabFromHash());
+      setMobileNavOpen(false);
     }
     window.addEventListener("hashchange", onHashChange);
     return () => window.removeEventListener("hashchange", onHashChange);
@@ -313,16 +321,40 @@ export default function DashboardPage() {
   return (
     <main>
       <div className="shell ops-shell">
-        <aside className="ops-sidebar" aria-label="Dashboard navigation">
+        <aside className={`ops-sidebar${mobileNavOpen ? " nav-open" : ""}`} aria-label="Dashboard navigation">
           <div className="ops-brand">
             <span className="ops-brand-mark" aria-hidden="true" />
             <div>
               <p className="eyebrow">ACP</p>
               <strong>Local Ops</strong>
             </div>
+            <button
+              aria-controls="dashboard-navigation"
+              aria-expanded={mobileNavOpen}
+              aria-label={mobileNavOpen ? "Close dashboard navigation" : "Open dashboard navigation"}
+              className="mobile-nav-toggle"
+              onClick={() => setMobileNavOpen((open) => !open)}
+              type="button"
+            >
+              <span aria-hidden="true" className="mobile-nav-toggle-mark">
+                <span />
+                <span />
+                <span />
+              </span>
+              {mobileNavOpen ? "Close" : "Menu"}
+            </button>
           </div>
 
-          <TabGroup groups={tabGroups} activeTab={tab} onTabChange={(id) => setTab(id as Tab)} />
+          <div id="dashboard-navigation">
+            <TabGroup
+              groups={tabGroups}
+              activeTab={tab}
+              onTabChange={(id) => {
+                setTab(id as Tab);
+                setMobileNavOpen(false);
+              }}
+            />
+          </div>
         </aside>
 
         <section className="ops-main">
