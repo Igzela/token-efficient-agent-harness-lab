@@ -1,6 +1,6 @@
 # Current Status
 
-Last recorded full verification: 2026-06-18. V2-0 through V2-4 merged with green CI: 2026-06-18. V2-5 is implemented in PR #74 and pending CI/merge: 2026-06-18.
+Last recorded full verification: 2026-06-18. V2-0 through V2-5 merged with green CI in PRs #69-#75: 2026-06-18.
 
 ## Summary
 
@@ -62,7 +62,7 @@ uv run --no-project python scripts/check_agent_handoff.py
 
 | Track | Status |
 |---|---|
-| V2 Real Production Output Track | V2-0 through V2-4 merged in PRs #69-#73; V2-5 product output UX implemented in PR #74, pending CI/merge |
+| V2 Real Production Output Track | V2-0 through V2-5 merged in PRs #69-#75 |
 
 Historical phase plans, closeouts, and long-form validation reports are retained under `docs/archive/`.
 
@@ -88,7 +88,7 @@ Historical phase plans, closeouts, and long-form validation reports are retained
 - UI remains operator-oriented, but the primary output workflow is now surfaced before secondary setup/status panels.
 - Security posture is suitable for local/small-team self-hosting only; hosted/multi-tenant use would require a new threat model and approved implementation plan.
 - V2-1 alone does not authorize target output; V2-3 adds only controlled worktree/branch output and still does not add provider/CLI default-on execution or sandbox/process/container/VM isolation.
-- V2-5 is implemented in PR #74 and pending CI/merge.
+- No V2 phase is currently pending; remaining gaps are explicit product boundaries or future tracks.
 - Cloud SaaS, multi-tenant hosting, direct release/tag/deploy/apply authority, provider failover, default-on real execution, and unattended autonomous-agent loops remain out of scope.
 
 ## Documentation Discipline
