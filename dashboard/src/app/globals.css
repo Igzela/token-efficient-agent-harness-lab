@@ -1581,6 +1581,29 @@ h3 {
   margin-top: 4px;
 }
 
+.mobile-nav-toggle {
+  align-items: center;
+  display: none;
+  gap: 8px;
+  margin-left: auto;
+  min-height: 36px;
+  padding: 0 12px;
+  width: auto;
+}
+
+.mobile-nav-toggle-mark {
+  display: grid;
+  gap: 3px;
+  width: 14px;
+}
+
+.mobile-nav-toggle-mark span {
+  background: currentColor;
+  display: block;
+  height: 1px;
+  width: 14px;
+}
+
 .ops-main {
   display: flex;
   flex-direction: column;
@@ -1989,13 +2012,31 @@ tr[role="button"]:focus-visible,
   .ops-sidebar {
     border-bottom: 1px solid var(--border-strong);
     border-right: 0;
-    max-height: 320px;
+    max-height: none;
     min-height: 0;
-    overflow-y: auto;
+    overflow: visible;
   }
 
   .ops-brand {
+    background: var(--bg-subtle);
+    justify-content: space-between;
     min-height: 72px;
+    position: relative;
+    z-index: 1;
+  }
+
+  .mobile-nav-toggle {
+    display: inline-flex;
+  }
+
+  #dashboard-navigation {
+    display: none;
+  }
+
+  .ops-sidebar.nav-open #dashboard-navigation {
+    display: block;
+    max-height: calc(100dvh - 72px);
+    overflow-y: auto;
   }
 
   .ops-main {
@@ -2054,11 +2095,15 @@ tr[role="button"]:focus-visible,
     grid-template-columns: 1fr;
   }
 
-  .topbar-btn,
-  button,
-  input,
-  select,
-  textarea {
+  .topbar-meta .topbar-btn,
+  .workflow-actions > button,
+  .workflow-actions > select,
+  .target-output-row > button,
+  .target-output-row > input,
+  .target-output-row > select,
+  .runtime-control-row > button,
+  .runtime-control-row > select,
+  .auth-panel .flex-end > button {
     width: 100%;
   }
 }
