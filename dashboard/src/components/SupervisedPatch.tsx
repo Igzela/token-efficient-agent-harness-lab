@@ -279,8 +279,13 @@ function ArtifactDetail({
 
     if (action.type === "approveArtifact" || action.type === "rejectArtifact") {
       recordWorkflowRunApproval(action.runId, {
-        node_id: action.artifactId,
+        node_id: "dashboard-output-approval",
         decision: action.type === "approveArtifact" ? "approved" : "rejected",
+        reason: action.type === "approveArtifact" ? "dashboard approval" : "dashboard rejection",
+        bound_patch_hash: artifact.patch_hash,
+        bound_source_revision: artifact.source_revision,
+        bound_changed_files: artifact.changed_files,
+        expires_at: "2099-12-31T23:59:59Z",
       })
         .then(() => onMutated())
         .catch((err) => setMutationError(err instanceof Error ? err.message : "Approval failed"))

@@ -369,24 +369,6 @@ export default function DashboardPage() {
             />
           )}
 
-          <section className="status-strip" aria-label="Status summary">
-            <Metric label="API" value={health} detail={health === "healthy" ? "healthy" : "check engine"} tone={health === "healthy" ? "ok" : "warn"} />
-            <Metric label="Ready" value={ready} detail={ready === "ready" ? "ready" : "not ready"} tone={ready === "ready" ? "ok" : "warn"} />
-            <Metric label="Dispatches" value={dashboard.counts.dispatches.toString()} detail="persisted" />
-            <Metric label="Cost" value={`$${dashboard.costs.total_reserved_cost.toFixed(3)}`} detail="reserved" />
-            <Metric label="Team" value={dashboard.counts.team_members.toString()} detail={`${dashboard.counts.api_keys} keys`} />
-          </section>
-
-          <WelcomePanel dispatchCount={dashboard.counts.dispatches} />
-
-          <SetupChecklist steps={setupSteps} />
-
-          <RuntimeGates
-            authStatus={authStatus}
-            boundaries={dashboard.boundaries}
-            hasToken={hasLocalToken}
-          />
-
           <div className="content-panel" role="tabpanel">
             {tab === "mission" && <MissionControl />}
             {tab === "dispatches" && (
@@ -414,6 +396,24 @@ export default function DashboardPage() {
             {tab === "backups" && <Backups />}
             {tab === "audit" && <AuditLog />}
           </div>
+
+          <section className="status-strip" aria-label="Status summary">
+            <Metric label="API" value={health} detail={health === "healthy" ? "healthy" : "check engine"} tone={health === "healthy" ? "ok" : "warn"} />
+            <Metric label="Ready" value={ready} detail={ready === "ready" ? "ready" : "not ready"} tone={ready === "ready" ? "ok" : "warn"} />
+            <Metric label="Dispatches" value={dashboard.counts.dispatches.toString()} detail="persisted" />
+            <Metric label="Cost" value={`$${dashboard.costs.total_reserved_cost.toFixed(3)}`} detail="reserved" />
+            <Metric label="Team" value={dashboard.counts.team_members.toString()} detail={`${dashboard.counts.api_keys} keys`} />
+          </section>
+
+          <WelcomePanel dispatchCount={dashboard.counts.dispatches} />
+
+          <SetupChecklist steps={setupSteps} />
+
+          <RuntimeGates
+            authStatus={authStatus}
+            boundaries={dashboard.boundaries}
+            hasToken={hasLocalToken}
+          />
         </section>
       </div>
     </main>

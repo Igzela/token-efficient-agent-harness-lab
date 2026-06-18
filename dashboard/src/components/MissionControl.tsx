@@ -1,6 +1,12 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   ApiError,
+  captureSupervisedPatch,
+  controlScheduler,
+  createSupervisedPatchWorkspace,
+  createWorkflowPlan,
+  createWorkflowRun,
+  exportSupervisedPatchArtifact,
   fetchDecisions,
   fetchExecutorPool,
   fetchQueueRuns,
@@ -12,6 +18,9 @@ import {
   fetchWorkflowRunDetail,
   fetchWorkflowRunEvents,
   fetchWorkflowRuns,
+  recordWorkflowRunApproval,
+  targetRepoOutput,
+  tickWorkflowRun,
 } from "@/lib/api-client";
 import type {
   DecisionRecord,
@@ -26,6 +35,7 @@ import type {
   WorkflowRunEvent,
   WorkflowRunNode,
 } from "@/lib/types";
+import { ConfirmDialog, type ConfirmAction } from "./ConfirmDialog";
 import { EmptyState } from "./EmptyState";
 import { StateBanner } from "./StateBanner";
 
@@ -51,6 +61,12 @@ function missionError(error: unknown): MissionError {
         ? "The current API key lacks the scope required for mission-control state."
         : "Mission-control state requires protected local API access.",
       type: "permission",
+    };
+  }
+  if (error instanceof ApiError && error.status >= 500) {
+    return {
+      message: "Engine API is unavailable. Start the local runtime or check the dashboard proxy.",
+      type: "error",
     };
   }
   return {
@@ -125,6 +141,18 @@ function exportReadyCount(artifacts: SupervisedPatchArtifact[], approvals: Workf
   ).length;
 }
 
+function approvedForArtifact(
+  artifact: SupervisedPatchArtifact | null,
+  approvals: WorkflowRunApproval[],
+): boolean {
+  if (!artifact) return false;
+  return approvals.some((approval) =>
+    approval.decision === "approved"
+    && approval.bound_patch_hash === artifact.patch_hash
+    && JSON.stringify(approval.bound_changed_files ?? []) === JSON.stringify(artifact.changed_files),
+  );
+}
+
 function failureReason(nodes: WorkflowRunNode[]): string {
   const failed = nodes.find((node) => node.status === "failed" || node.error_domain || node.error_message);
   if (!failed) return "No failing node recorded.";
@@ -151,6 +179,293 @@ function nextWorkflowStep({
   if (pendingApproval > 0) return "Review and approve or reject the pending artifact.";
   if (readyExports > 0) return "Export the approved redacted artifact.";
   return "Inspect status, approvals, and export readiness.";
+}
+
+function OutputActionRail({
+  approvals,
+  artifacts,
+  onCreatedRun,
+  onRefresh,
+  run,
+  scheduler,
+  workspaces,
+}: {
+  approvals: WorkflowRunApproval[];
+  artifacts: SupervisedPatchArtifact[];
+  onCreatedRun: (runId: string) => void;
+  onRefresh: () => void;
+  run: WorkflowRun | null;
+  scheduler: SchedulerStatus | null;
+  workspaces: SupervisedPatchWorkspace[];
+}) {
+  const [rawRequest, setRawRequest] = useState("Implement a small verified change");
+  const [targetRepoPath, setTargetRepoPath] = useState("");
+  const [targetId, setTargetId] = useState("local-target");
+  const [sourceRevision, setSourceRevision] = useState("HEAD");
+  const [executor, setExecutor] = useState("noop");
+  const [outputMode, setOutputMode] = useState<"export_patch" | "push_branch">("export_patch");
+  const [branchName, setBranchName] = useState("acp/generated-output");
+  const [remote, setRemote] = useState("origin");
+  const [commitMessage, setCommitMessage] = useState("Apply supervised patch");
+  const [prTitle, setPrTitle] = useState("Supervised patch output");
+  const [mutating, setMutating] = useState(false);
+  const [message, setMessage] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [confirmAction, setConfirmAction] = useState<ConfirmAction>(null);
+
+  const workspace = workspaces[0] ?? null;
+  const artifact = artifacts[0] ?? null;
+  const terminal = run ? ["completed", "failed", "cancelled"].includes(run.status) : false;
+  const approved = approvedForArtifact(artifact, approvals);
+  const canCreateWorkspace = Boolean(run && targetRepoPath.trim() && sourceRevision.trim());
+  const canCapture = Boolean(workspace);
+  const canApprove = Boolean(artifact && artifact.redaction_status === "redacted" && !approved);
+  const canExport = Boolean(artifact && approved);
+  const canTargetOutput = Boolean(artifact && approved);
+
+  function runMutation<T>(operation: () => Promise<T>, success: (result: T) => string, after?: (result: T) => void) {
+    setMutating(true);
+    setError(null);
+    setMessage(null);
+    operation()
+      .then((result) => {
+        after?.(result);
+        setMessage(success(result));
+        onRefresh();
+      })
+      .catch((err) => setError(err instanceof Error ? err.message : "Operation failed"))
+      .finally(() => setMutating(false));
+  }
+
+  function createPlanAndRun() {
+    if (!rawRequest.trim()) {
+      setError("Task prompt is required.");
+      return;
+    }
+    runMutation(
+      async () => {
+        const planResult = await createWorkflowPlan({
+          raw_request: rawRequest.trim(),
+          request_source: "dashboard",
+        });
+        return createWorkflowRun(planResult.plan.plan_id);
+      },
+      (result) => `Created run ${short(result.run.run_id)} from a new plan.`,
+      (result) => onCreatedRun(result.run.run_id),
+    );
+  }
+
+  function handleConfirm() {
+    if (!confirmAction) return;
+    const action = confirmAction;
+    setConfirmAction(null);
+
+    if (action.type === "tickRun") {
+      runMutation(
+        () => tickWorkflowRun(action.runId, { executor }),
+        (result) => `Tick completed with status ${String(result.tick.status ?? "unknown")}.`,
+      );
+    } else if (action.type === "capturePatch") {
+      runMutation(
+        () => captureSupervisedPatch(action.workspaceId),
+        (result) => `Captured artifact ${short(result.artifact.artifact_id)}.`,
+      );
+    } else if (action.type === "approveArtifact" || action.type === "rejectArtifact") {
+      const current = artifacts.find((item) => item.artifact_id === action.artifactId);
+      if (!current) {
+        setError("Artifact is no longer available.");
+        return;
+      }
+      runMutation(
+        () => recordWorkflowRunApproval(action.runId, {
+          node_id: "dashboard-output-approval",
+          decision: action.type === "approveArtifact" ? "approved" : "rejected",
+          reason: action.type === "approveArtifact" ? "dashboard approval" : "dashboard rejection",
+          bound_patch_hash: current.patch_hash,
+          bound_source_revision: current.source_revision,
+          bound_changed_files: current.changed_files,
+          expires_at: "2099-12-31T23:59:59Z",
+        }),
+        (result) => `Recorded ${result.approval.decision} approval.`,
+      );
+    } else if (action.type === "exportArtifact") {
+      runMutation(
+        () => exportSupervisedPatchArtifact(action.artifactId, action.runId),
+        () => "Exported approved patch artifact.",
+      );
+    } else if (action.type === "targetOutput") {
+      if (!run || !artifact) return;
+      runMutation(
+        () => targetRepoOutput(artifact.artifact_id, {
+          run_id: run.run_id,
+          mode: outputMode,
+          confirm_target_output: true,
+          branch_name: outputMode === "push_branch" ? branchName : undefined,
+          remote: outputMode === "push_branch" ? remote : undefined,
+          commit_message: outputMode === "push_branch" ? commitMessage : undefined,
+          pr_title: outputMode === "push_branch" ? prTitle : undefined,
+        }),
+        (result) => outputMode === "push_branch"
+          ? `Pushed ${String(result.output.branch_name ?? "branch")} at ${short(result.output.commit_sha, 10)}.`
+          : `Generated patch output for ${short(result.output.patch_hash, 16)}.`,
+      );
+    } else if (action.type === "schedulerControl") {
+      runMutation(
+        () => controlScheduler(action.action),
+        (result) => `Scheduler ${action.action} accepted; running=${String(result.scheduler.running)}.`,
+      );
+    }
+  }
+
+  return (
+    <div className="subcard stack action-rail">
+      <div className="flex-between">
+        <div>
+          <h3>Output Workflow</h3>
+          <p className="muted" style={{ fontSize: "13px", marginTop: 4 }}>
+            Task, run, workspace, patch, approval, and output controls in one path.
+          </p>
+        </div>
+        <span className={`pill ${run ? statusPill(run.status) : "info"}`}>{run?.status ?? "no run"}</span>
+      </div>
+
+      {error && <StateBanner title="Action failed" tone="risk"><p>{error}</p></StateBanner>}
+      {message && <StateBanner title="Action completed" tone="ok"><p>{message}</p></StateBanner>}
+
+      <div className="action-grid">
+        <label className="stack" style={{ gap: 4 }}>
+          <span className="muted">Task prompt</span>
+          <textarea
+            rows={3}
+            value={rawRequest}
+            onChange={(event) => setRawRequest(event.target.value)}
+            placeholder="Describe the output task"
+          />
+        </label>
+        <div className="action-column">
+          <label className="stack" style={{ gap: 4 }}>
+            <span className="muted">Target repo path</span>
+            <input value={targetRepoPath} onChange={(event) => setTargetRepoPath(event.target.value)} placeholder="/path/to/repo" />
+          </label>
+          <div className="split-row">
+            <label className="stack" style={{ gap: 4 }}>
+              <span className="muted">Target ID</span>
+              <input value={targetId} onChange={(event) => setTargetId(event.target.value)} />
+            </label>
+            <label className="stack" style={{ gap: 4 }}>
+              <span className="muted">Source ref</span>
+              <input value={sourceRevision} onChange={(event) => setSourceRevision(event.target.value)} />
+            </label>
+          </div>
+        </div>
+      </div>
+
+      <div className="workflow-actions">
+        <button type="button" onClick={createPlanAndRun} disabled={mutating || !rawRequest.trim()}>
+          {mutating ? "Working..." : "Create plan + run"}
+        </button>
+        <label className="inline-control">
+          <span className="muted">Executor</span>
+          <select value={executor} onChange={(event) => setExecutor(event.target.value)}>
+            <option value="noop">noop</option>
+            <option value="command">command</option>
+            <option value="claude_code_cli">claude_code_cli</option>
+            <option value="codex_cli">codex_cli</option>
+          </select>
+        </label>
+        <button
+          type="button"
+          onClick={() => run && setConfirmAction({ type: "tickRun", runId: run.run_id })}
+          disabled={mutating || !run || terminal}
+        >
+          Tick run
+        </button>
+        <button
+          type="button"
+          onClick={() => {
+            if (!run) return;
+            runMutation(
+              () => createSupervisedPatchWorkspace({
+                run_id: run.run_id,
+                plan_id: run.plan_id ?? undefined,
+                target_id: targetId.trim(),
+                target_repo_path: targetRepoPath.trim(),
+                source_revision: sourceRevision.trim(),
+                workspace_mode: "git_worktree",
+              }),
+              (result) => `Created workspace ${short(result.workspace.workspace_id)}.`,
+            );
+          }}
+          disabled={mutating || !canCreateWorkspace}
+        >
+          Create workspace
+        </button>
+        <button
+          type="button"
+          onClick={() => workspace && setConfirmAction({ type: "capturePatch", workspaceId: workspace.workspace_id })}
+          disabled={mutating || !canCapture}
+        >
+          Capture patch
+        </button>
+        <button
+          type="button"
+          onClick={() => artifact && run && setConfirmAction({ type: "approveArtifact", artifactId: artifact.artifact_id, runId: run.run_id })}
+          disabled={mutating || !canApprove}
+        >
+          Approve artifact
+        </button>
+        <button
+          type="button"
+          onClick={() => artifact && run && setConfirmAction({ type: "exportArtifact", artifactId: artifact.artifact_id, runId: run.run_id })}
+          disabled={mutating || !canExport}
+        >
+          Export patch
+        </button>
+      </div>
+
+      <div className="target-output-row">
+        <label className="inline-control">
+          <span className="muted">Output</span>
+          <select value={outputMode} onChange={(event) => setOutputMode(event.target.value as "export_patch" | "push_branch")}>
+            <option value="export_patch">patch</option>
+            <option value="push_branch">acp branch</option>
+          </select>
+        </label>
+        {outputMode === "push_branch" && (
+          <>
+            <input aria-label="Branch name" value={branchName} onChange={(event) => setBranchName(event.target.value)} />
+            <input aria-label="Remote" value={remote} onChange={(event) => setRemote(event.target.value)} />
+            <input aria-label="Commit message" value={commitMessage} onChange={(event) => setCommitMessage(event.target.value)} />
+            <input aria-label="PR title" value={prTitle} onChange={(event) => setPrTitle(event.target.value)} />
+          </>
+        )}
+        <button
+          type="button"
+          onClick={() => artifact && setConfirmAction({ type: "targetOutput", artifactId: artifact.artifact_id, mode: outputMode })}
+          disabled={mutating || !canTargetOutput}
+        >
+          {outputMode === "push_branch" ? "Push branch" : "Output patch"}
+        </button>
+      </div>
+
+      <div className="runtime-control-row">
+        <span className="muted">
+          Scheduler: {scheduler?.enabled ? `${scheduler.running ? "running" : "stopped"} / ${scheduler.worker_count ?? 0} workers` : "disabled"}
+        </span>
+        <button type="button" onClick={() => setConfirmAction({ type: "schedulerControl", action: "pause" })} disabled={mutating || !scheduler?.enabled}>
+          Pause
+        </button>
+        <button type="button" onClick={() => setConfirmAction({ type: "schedulerControl", action: "resume" })} disabled={mutating || !scheduler?.enabled}>
+          Resume
+        </button>
+        <button type="button" className="risk-action" onClick={() => setConfirmAction({ type: "schedulerControl", action: "kill" })} disabled={mutating || !scheduler?.enabled}>
+          Kill
+        </button>
+      </div>
+
+      <ConfirmDialog action={confirmAction} onConfirm={handleConfirm} onCancel={() => setConfirmAction(null)} />
+    </div>
+  );
 }
 
 function PrimaryWorkflowPath({
@@ -340,6 +655,7 @@ export function MissionControl() {
   const [error, setError] = useState<MissionError | null>(null);
   const [loading, setLoading] = useState(true);
   const [detailLoading, setDetailLoading] = useState(false);
+  const [detailReloadKey, setDetailReloadKey] = useState(0);
 
   const loadOverview = useCallback(() => {
     setLoading(true);
@@ -404,7 +720,12 @@ export function MissionControl() {
       const firstError = [runResult, eventsResult, approvalsResult, decisionsResult].find((result) => result.status === "rejected");
       if (firstError?.status === "rejected") setError(missionError(firstError.reason));
     }).finally(() => setDetailLoading(false));
-  }, [selectedRunId]);
+  }, [selectedRunId, detailReloadKey]);
+
+  const refreshMissionState = useCallback(() => {
+    loadOverview();
+    setDetailReloadKey((key) => key + 1);
+  }, [loadOverview]);
 
   const selectedQueueRun = queueRuns.find((item) => item.run_id === selectedRunId) ?? null;
   const runArtifacts = artifacts.filter((artifact) => artifact.run_id === selectedRunId);
@@ -462,16 +783,25 @@ export function MissionControl() {
       {loading ? (
         <div className="loading-row"><span className="spinner" /> Loading mission-control state...</div>
       ) : runs.length === 0 ? (
-        <EmptyState
-          title="No workflow runs"
-          description="Create a plan to populate mission control state."
-          tone="info"
-        >
-          <div className="command-block">
-            <span className="label">Create a plan</span>
-            <code>{`curl -X POST http://127.0.0.1:9999/api/v1/plans -H "content-type: application/json" -d '{"raw_request":"Implement feature","request_source":"manual"}'`}</code>
-          </div>
-        </EmptyState>
+        <>
+          <EmptyState
+            title="No workflow runs"
+            description="Create a plan and run from the output workflow below."
+            tone="info"
+          />
+          <OutputActionRail
+            approvals={[]}
+            artifacts={[]}
+            onCreatedRun={(runId) => {
+              setSelectedRunId(runId);
+              setDetailReloadKey((key) => key + 1);
+            }}
+            onRefresh={refreshMissionState}
+            run={null}
+            scheduler={scheduler}
+            workspaces={[]}
+          />
+        </>
       ) : (
         <>
           <label className="mission-picker">
@@ -505,8 +835,21 @@ export function MissionControl() {
                   approvals={approvals}
                   artifacts={runArtifacts}
                   mutationEvents={mutationEvents}
-                  onRefresh={loadOverview}
+                  onRefresh={refreshMissionState}
                   run={run}
+                />
+
+                <OutputActionRail
+                  approvals={approvals}
+                  artifacts={runArtifacts}
+                  onCreatedRun={(runId) => {
+                    setSelectedRunId(runId);
+                    setDetailReloadKey((key) => key + 1);
+                  }}
+                  onRefresh={refreshMissionState}
+                  run={run}
+                  scheduler={scheduler}
+                  workspaces={runWorkspaces}
                 />
 
                 <div className="subcard stack">

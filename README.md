@@ -265,11 +265,11 @@ bundle = client.dispatch("Summarize docs without provider calls")
 - Supervised patch execution remains app-owned and gated. V2-3 adds an optional controlled git worktree plus approval-bound patch export or `acp/*` branch push; it does not modify the registered target working tree or `main`.
 - Existing local CLI executor subprocess invocation is a separate, explicit opt-in exception via `ACP_ENABLE_CLI_EXECUTION=1`.
 - `ACP_EXECUTION_MODE` controls how dispatch requests are routed: `off` (default, noop), `provider` (API only), `cli` (CLI executor only), or `auto` (hybrid mode that scores task complexity and routes low-complexity tasks to the Provider API and high-complexity tasks to the CLI executor; the threshold is configurable via `ACP_HYBRID_COMPLEXITY_THRESHOLD`, default 0.5).
-- Bounded supervised worker concurrency is implemented on the V2-4 phase branch behind dual scheduler/worker gates, bounded worker count, authenticated pause/resume/kill controls, heartbeat, leases, and audit. Unattended autonomous-agent loops remain out of scope.
+- Bounded supervised worker concurrency is implemented behind dual scheduler/worker gates, bounded worker count, authenticated pause/resume/kill controls, heartbeat, leases, and audit. Unattended autonomous-agent loops remain out of scope.
 - Provider failover remains out of scope.
 - Cloud SaaS, multi-tenant hosting, cloud production Web UI, hosted deployment, and remote SaaS service remain out of scope.
-- Target-repository output is implemented on the V2-3 phase branch behind `ACP_ENABLE_TARGET_REPO_OUTPUT=1`, `dispatch:execute`, explicit confirmation, approval/integrity/secret gates, remote allowlists, and `ACP_TARGET_REPO_OUTPUT_KILL_SWITCH=1`; direct target working-tree or `main` writes, apply/merge/deploy authority, and default-on provider execution remain out of scope.
-- The dashboard is a local operations console with guarded app-owned controls. V2-3 API/SDK output exists; the product-level dashboard flow remains V2-5 work and may only use the guarded backend contract.
+- Target-repository output is implemented behind `ACP_ENABLE_TARGET_REPO_OUTPUT=1`, `dispatch:execute`, explicit confirmation, approval/integrity/secret gates, remote allowlists, and `ACP_TARGET_REPO_OUTPUT_KILL_SWITCH=1`; direct target working-tree or `main` writes, apply/merge/deploy authority, and default-on provider execution remain out of scope.
+- The dashboard is a local operations console with guarded app-owned controls. V2-5 adds the product-level Mission Control output path over the guarded backend contract: create plan/run, tick, create workspace, capture patch, approve, export patch, or push an `acp/*` branch.
 - No destructive runtime filesystem behavior.
 - V2 real capabilities require the phase plan in `docs/NEXT_DECISION.md`, explicit gates, audit events, tests, and rollback/kill paths.
 
