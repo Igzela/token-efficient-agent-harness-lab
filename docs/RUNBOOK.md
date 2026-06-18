@@ -27,6 +27,26 @@ This checks Rust, Bun, Node, uv, ports, disk space, and SQLite availability. All
 
 ## 2. First-Time Setup
 
+### Real Pilot 1: one-command local output
+
+Use this path first when you want proof that a local checkout can produce a real patch and `acp/*` branch without understanding the internal gates:
+
+```bash
+uv run --no-project python scripts/real_pilot_1.py
+```
+
+What it does:
+
+- starts the engine on `127.0.0.1` with a temporary SQLite DB
+- enables only guarded target output for a local filesystem remote
+- creates a real temporary git target repo and local bare remote
+- creates plan/run/workspace records through the API
+- executes a small command in the app-owned git worktree
+- captures artifact evidence, records approval, exports a patch file, and pushes an `acp/*` branch
+- prints dashboard/API URL, evidence dir, patch file, branch commit, and rollback command
+
+Boundary: no provider calls, no Claude/Codex CLI execution, no secrets, no target `main` write, no deploy/release/apply authority.
+
 ### Shortest Local Operator Path
 
 Use this path when you need the smallest safe local loop: start the engine, authenticate if required, run a noop dispatch, then decide whether to opt into the guarded CLI flow.

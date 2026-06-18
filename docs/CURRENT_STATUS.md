@@ -76,6 +76,7 @@ Historical phase plans, closeouts, and long-form validation reports are retained
 - V2-3 target repo output: `git_worktree` workspace creation and real output require `dispatch:execute` plus `ACP_ENABLE_TARGET_REPO_OUTPUT=1`; artifact hashes bind actual patch content; output requires completed workflow verification evidence, same-run approval binding, integrity, redaction, explicit confirmation, bounded text-only changed files, remote/host allowlists, and an HTTPS token referenced by env; branch names are restricted to `acp/*`; `ACP_TARGET_REPO_OUTPUT_KILL_SWITCH=1` stops new output.
 - V2-4 bounded workers: scheduler startup requires both scheduler and supervised-worker env gates; worker count is bounded by global concurrency and 32; each worker claims at most one node per cycle through the existing atomic DB lease; heartbeat metadata exposes worker state; stale recovery is audited; `dispatch:execute` plus confirmation controls pause/resume/kill; env pause and kill switches remain available.
 - V2-5 product output UX: Mission Control is the first active work surface and can create plan/run records, tick selected runs, create git-worktree patch workspaces, capture artifacts, record bound approvals, export approved patches, request target output, and control supervised workers from one flow.
+- Real Pilot 1 local output: `scripts/real_pilot_1.py` starts a localhost engine, creates a temporary real git target repo with local bare remote, drives plan/run/worktree/execution/artifact/approval/export, writes an exported patch file, and pushes an `acp/*` branch without provider calls, CLI execution, target `main` writes, or secrets.
 - Local storage: SQLite default with PostgreSQL optional via `ACP_DATABASE_URL`; schema version is documented in `docs/ARCHITECTURE_BOOK.md`.
 - Operations: health, metrics, backups, restore smoke, circuit breaker state, audit log, and release-readiness checks.
 - Dashboard: local operations console with guarded app-owned controls for workflow runs, scheduler state, proposals, patches, config/team/costs, and app-owned actions.
@@ -83,7 +84,7 @@ Historical phase plans, closeouts, and long-form validation reports are retained
 
 ## Current Gaps
 
-- Engine/API/SDK/dashboard V2 output is end to end for a supplied local git repo path: controlled worktree, execution artifact, verification evidence, approval, patch export, branch push, and one Mission Control workflow over those steps.
+- Engine/API/SDK/dashboard V2 output is end to end for a supplied local git repo path: controlled worktree, execution artifact, verification evidence, approval, patch export, branch push, and one Mission Control workflow over those steps. Real Pilot 1 now wraps the local happy path in one script against a temporary real git target repo.
 - Product fit is stronger for local operations/research than for public-facing production UX.
 - UI remains operator-oriented, but the primary output workflow is now surfaced before secondary setup/status panels.
 - Security posture is suitable for local/small-team self-hosting only; hosted/multi-tenant use would require a new threat model and approved implementation plan.
