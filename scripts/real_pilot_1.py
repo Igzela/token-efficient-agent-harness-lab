@@ -15,7 +15,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
-import random
+import shlex
 import signal
 import subprocess
 import sys
@@ -42,6 +42,7 @@ Path("pilot_evidence.txt").write_text(
 )
 print("real-pilot-worker wrote README.md and pilot_evidence.txt")
 """
+WORKER_FILENAME = ".acp-real-pilot-worker.py"
 
 
 class PilotError(RuntimeError):
@@ -99,8 +100,19 @@ def run(cmd: list[str], cwd: Path | None = None) -> str:
     return result.stdout.strip()
 
 
+def shell_command(*args: str | Path) -> str:
+    return shlex.join(str(arg) for arg in args)
+
+
 def pick_port() -> int:
-    return random.randint(20000, 50000)
+    code = (
+        "import socket\n"
+        "listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)\n"
+        "listener.bind(('127.0.0.1', 0))\n"
+        "print(listener.getsockname()[1])\n"
+        "listener.close()\n"
+    )
+    return int(run([sys.executable, "-c", code]))
 
 
 def repo_root() -> Path:
@@ -182,28 +194,32 @@ def require_key(payload: dict[str, Any], *path: str) -> Any:
     return current
 
 
-def tick_until_completed(api: ApiClient, run_id: str, worker_path: Path) -> dict[str, Any]:
-    command = f"python3 {worker_path}"
-    for _ in range(12):
-        tick = api.call(
-            "POST",
-            f"/api/v1/workflow-runs/{run_id}/tick",
-            {
-                "actor": ADMIN_ACTOR,
-                "executor": "command",
-                "command": command,
-                "timeout_ms": 30000,
-            },
-        )
-        status = require_key(tick, "tick", "result", "status")
-        action = require_key(tick, "tick", "action")
-        run_detail = api.call("GET", f"/api/v1/workflow-runs/{run_id}")
-        run = require_key(run_detail, "run")
-        if run.get("status") == "completed":
-            return {"tick": tick, "run": run}
-        if status == "failed" or action == "failed":
-            raise PilotError(f"workflow tick failed: {tick}")
-    raise PilotError("workflow did not complete after 12 ticks")
+def tick_until_completed(api: ApiClient, run_id: str, workspace_path: Path) -> dict[str, Any]:
+    worker_path = workspace_path / WORKER_FILENAME
+    worker_path.write_text(WORKER_SOURCE, encoding="utf-8")
+    try:
+        for _ in range(12):
+            tick = api.call(
+                "POST",
+                f"/api/v1/workflow-runs/{run_id}/tick",
+                {
+                    "actor": ADMIN_ACTOR,
+                    "executor": "command",
+                    "command": f"python3 {WORKER_FILENAME}",
+                    "timeout_ms": 30000,
+                },
+            )
+            status = require_key(tick, "tick", "result", "status")
+            action = require_key(tick, "tick", "action")
+            run_detail = api.call("GET", f"/api/v1/workflow-runs/{run_id}")
+            run = require_key(run_detail, "run")
+            if run.get("status") == "completed":
+                return {"tick": tick, "run": run}
+            if status == "failed" or action == "failed":
+                raise PilotError(f"workflow tick failed: {tick}")
+        raise PilotError("workflow did not complete after 12 ticks")
+    finally:
+        worker_path.unlink(missing_ok=True)
 
 
 def write_summary(path: Path, summary: dict[str, Any]) -> None:
@@ -230,9 +246,6 @@ def main() -> int:
     args.port = args.port or pick_port()
     base_url = args.base_url or f"http://127.0.0.1:{args.port}"
     api = ApiClient(base_url)
-    worker_path = run_root / "real_pilot_worker.py"
-    worker_path.write_text(WORKER_SOURCE, encoding="utf-8")
-
     process: subprocess.Popen[str] | None = None
     try:
         print("=== Real Pilot 1 ===")
@@ -287,7 +300,7 @@ def main() -> int:
         print(f"workspace_id={workspace_id}")
         print(f"workspace_path={workspace_path}")
 
-        tick_result = tick_until_completed(api, run_id, worker_path)
+        tick_result = tick_until_completed(api, run_id, workspace_path)
         if "## Real Pilot 1" not in (workspace_path / "README.md").read_text(encoding="utf-8"):
             raise PilotError("executor did not update README.md in workspace")
         if not (workspace_path / "pilot_evidence.txt").exists():
@@ -380,7 +393,14 @@ def main() -> int:
             "branch_name": branch_name,
             "branch_commit": output["commit_sha"],
             "engine_log": str(run_root / "engine.log"),
-            "rollback": f"git -C {remote} update-ref -d refs/heads/{branch_name}",
+            "rollback": shell_command(
+                "git",
+                "-C",
+                remote,
+                "update-ref",
+                "-d",
+                f"refs/heads/{branch_name}",
+            ),
         }
         summary_path = run_root / "real-pilot-1-summary.json"
         write_summary(summary_path, summary)
@@ -391,9 +411,11 @@ def main() -> int:
         print(f"target_main_unchanged={main_after == main_before}")
         print(f"summary={summary_path}")
         print("next_commands:")
-        print(f"  git -C {remote} show --stat {branch_name}")
-        print(f"  git -C {target} status --short --branch")
-        print(f"  git -C {remote} update-ref -d refs/heads/{branch_name}")
+        print(f"  {shell_command('git', '-C', remote, 'show', '--stat', branch_name)}")
+        print(f"  {shell_command('git', '-C', target, 'status', '--short', '--branch')}")
+        print(
+            f"  {shell_command('git', '-C', remote, 'update-ref', '-d', f'refs/heads/{branch_name}')}"
+        )
         if args.keep_engine and process is not None:
             print(f"engine_pid={process.pid}")
             print(f"engine_log={run_root / 'engine.log'}")
