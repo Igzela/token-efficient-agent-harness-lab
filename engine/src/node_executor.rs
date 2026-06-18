@@ -1,5 +1,7 @@
 use serde_json::{json, Value};
+use std::io::Read;
 use std::path::{Component, Path, PathBuf};
+use std::thread;
 
 const MAX_COMMAND_OUTPUT_BYTES: usize = 64 * 1024;
 
@@ -272,12 +274,12 @@ fn ensure_clean_workspace_path(path: &Path, field: &str) -> Result<(), String> {
     Ok(())
 }
 
-fn truncate_command_output(mut output: String) -> String {
-    if output.len() <= MAX_COMMAND_OUTPUT_BYTES {
+fn truncate_command_output(mut output: String, original_len: usize) -> String {
+    if original_len <= MAX_COMMAND_OUTPUT_BYTES {
         return output;
     }
-    let original_len = output.len();
     let mut split = MAX_COMMAND_OUTPUT_BYTES;
+    split = split.min(output.len());
     while split > 0 && !output.is_char_boundary(split) {
         split -= 1;
     }
@@ -287,6 +289,22 @@ fn truncate_command_output(mut output: String) -> String {
         original_len.saturating_sub(split)
     ));
     output
+}
+
+fn read_command_output(mut reader: impl Read) -> std::io::Result<(Vec<u8>, usize)> {
+    let mut kept = Vec::new();
+    let mut total = 0_usize;
+    let mut buffer = [0_u8; 8192];
+    loop {
+        let read = reader.read(&mut buffer)?;
+        if read == 0 {
+            break;
+        }
+        total = total.saturating_add(read);
+        let remaining = MAX_COMMAND_OUTPUT_BYTES.saturating_sub(kept.len());
+        kept.extend_from_slice(&buffer[..remaining.min(read)]);
+    }
+    Ok((kept, total))
 }
 
 impl NodeExecutor for CommandNodeExecutor {
@@ -381,7 +399,7 @@ impl NodeExecutor for CommandNodeExecutor {
             cmd.env(k, v);
         }
 
-        let child = match cmd
+        let mut child = match cmd
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::piped())
             .spawn()
@@ -401,17 +419,22 @@ impl NodeExecutor for CommandNodeExecutor {
                 };
             }
         };
+        let stdout = child.stdout.take().expect("piped stdout");
+        let stderr = child.stderr.take().expect("piped stderr");
+        let stdout_reader = thread::spawn(move || read_command_output(stdout));
+        let stderr_reader = thread::spawn(move || read_command_output(stderr));
 
         let deadline = std::time::Duration::from_millis(self.timeout_ms);
         let wait_start = std::time::Instant::now();
-        let mut child = child;
-        loop {
+        let status = loop {
             match child.try_wait() {
-                Ok(Some(_)) => break,
+                Ok(Some(status)) => break status,
                 Ok(None) => {
                     if wait_start.elapsed() >= deadline {
                         let _ = child.kill();
                         let _ = child.wait();
+                        let _ = stdout_reader.join();
+                        let _ = stderr_reader.join();
                         return NodeExecutionOutput {
                             status: "failed".to_string(),
                             executor_type: "command".to_string(),
@@ -440,37 +463,44 @@ impl NodeExecutor for CommandNodeExecutor {
                     };
                 }
             }
-        }
-
-        let output = match child.wait_with_output() {
-            Ok(o) => o,
-            Err(e) => {
-                return NodeExecutionOutput {
-                    status: "failed".to_string(),
-                    executor_type: "command".to_string(),
-                    output: None,
-                    error_domain: Some("command_output_error".to_string()),
-                    error_message: Some(e.to_string()),
-                    input_tokens: None,
-                    output_tokens: None,
-                    estimated_cost: None,
-                    latency_ms: Some(start.elapsed().as_millis() as i64),
-                };
+        };
+        let (stdout_bytes, stdout_len) = match stdout_reader.join() {
+            Ok(Ok(output)) => output,
+            Ok(Err(error)) => {
+                return command_output_error(start, error.to_string());
             }
+            Err(_) => return command_output_error(start, "stdout reader failed".to_string()),
+        };
+        let (stderr_bytes, stderr_len) = match stderr_reader.join() {
+            Ok(Ok(output)) => output,
+            Ok(Err(error)) => {
+                return command_output_error(start, error.to_string());
+            }
+            Err(_) => return command_output_error(start, "stderr reader failed".to_string()),
         };
 
         let elapsed_ms = start.elapsed().as_millis() as i64;
-        let stdout = String::from_utf8_lossy(&output.stdout).to_string();
-        let stderr = String::from_utf8_lossy(&output.stderr).to_string();
-        let exit_code = output.status.code().unwrap_or(-1);
+        let stdout = String::from_utf8_lossy(&stdout_bytes).to_string();
+        let stderr = String::from_utf8_lossy(&stderr_bytes).to_string();
+        let exit_code = status.code().unwrap_or(-1);
         let combined = if stderr.is_empty() {
             stdout.clone()
         } else {
             format!("{stdout}\n[stderr]\n{stderr}")
         };
-        let combined = truncate_command_output(combined);
+        let delimiter_len = if stderr_len > 0 {
+            "\n[stderr]\n".len()
+        } else {
+            0
+        };
+        let combined = truncate_command_output(
+            combined,
+            stdout_len
+                .saturating_add(stderr_len)
+                .saturating_add(delimiter_len),
+        );
 
-        if output.status.success() {
+        if status.success() {
             NodeExecutionOutput {
                 status: "completed".to_string(),
                 executor_type: "command".to_string(),
@@ -495,6 +525,20 @@ impl NodeExecutor for CommandNodeExecutor {
                 latency_ms: Some(elapsed_ms),
             }
         }
+    }
+}
+
+fn command_output_error(start: std::time::Instant, message: String) -> NodeExecutionOutput {
+    NodeExecutionOutput {
+        status: "failed".to_string(),
+        executor_type: "command".to_string(),
+        output: None,
+        error_domain: Some("command_output_error".to_string()),
+        error_message: Some(message),
+        input_tokens: None,
+        output_tokens: None,
+        estimated_cost: None,
+        latency_ms: Some(start.elapsed().as_millis() as i64),
     }
 }
 
