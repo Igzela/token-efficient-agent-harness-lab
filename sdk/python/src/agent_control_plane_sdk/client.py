@@ -380,6 +380,7 @@ class AgentControlPlaneClient:
         source_revision: str,
         plan_id: str | None = None,
         source_tree_hash: str | None = None,
+        workspace_mode: str | None = None,
     ) -> dict[str, Any]:
         body: dict[str, Any] = {
             "run_id": run_id,
@@ -391,6 +392,8 @@ class AgentControlPlaneClient:
             body["plan_id"] = plan_id
         if source_tree_hash is not None:
             body["source_tree_hash"] = source_tree_hash
+        if workspace_mode is not None:
+            body["workspace_mode"] = workspace_mode
         return self._post("/api/v1/supervised-patch/workspaces", body)
 
     def cleanup_supervised_patch_workspace(self, workspace_id: str) -> dict[str, Any]:
@@ -417,6 +420,35 @@ class AgentControlPlaneClient:
         return self._post(
             f"/api/v1/supervised-patch/artifacts/{_quote_path_segment(artifact_id)}/export",
             {"run_id": run_id},
+        )
+
+    def target_repo_output(
+        self,
+        artifact_id: str,
+        run_id: str,
+        mode: str,
+        confirm_target_output: bool,
+        branch_name: str | None = None,
+        remote: str | None = None,
+        commit_message: str | None = None,
+        pr_title: str | None = None,
+    ) -> dict[str, Any]:
+        body: dict[str, Any] = {
+            "run_id": run_id,
+            "mode": mode,
+            "confirm_target_output": confirm_target_output,
+        }
+        if branch_name is not None:
+            body["branch_name"] = branch_name
+        if remote is not None:
+            body["remote"] = remote
+        if commit_message is not None:
+            body["commit_message"] = commit_message
+        if pr_title is not None:
+            body["pr_title"] = pr_title
+        return self._post(
+            f"/api/v1/supervised-patch/artifacts/{_quote_path_segment(artifact_id)}/output",
+            body,
         )
 
     def tick_workflow_run(

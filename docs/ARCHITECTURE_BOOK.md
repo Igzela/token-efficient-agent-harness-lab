@@ -12,7 +12,7 @@ Default posture:
 
 - Provider execution is off unless `ACP_ENABLE_PROVIDER_EXECUTION=1`.
 - CLI execution is off unless `ACP_ENABLE_CLI_EXECUTION=1`.
-- App runtime does not write registered target repositories until the V2 target-repo branch/worktree/PR flow lands.
+- Target output remains off unless `ACP_ENABLE_TARGET_REPO_OUTPUT=1`. V2-3 permits only an app-owned git worktree plus approval-bound patch export or `acp/*` branch push; the registered target working tree and `main` remain protected.
 - No release/tag/deploy/apply controls exist in the app runtime.
 - No process/container/VM sandbox isolation is implemented; V2-1 is scoped to app-owned workspace confinement unless separately approved.
 - Supervised execution operates only in app-owned detached workspaces and remains explicitly gated.
@@ -55,10 +55,10 @@ LocalProductStore
 
 | State | Owner | Writable by app? | Notes |
 |---|---|---:|---|
-| Registered target repositories | User | No | App runtime must not write targets. Agent maintenance may use branch+PR workflow under playbook gates. |
+| Registered target repositories | User | Controlled refs only | V2-3 may add app-owned worktree metadata and an approved `acp/*` branch; it must not modify the registered working tree or `main`. Agent maintenance separately follows playbook gates. |
 | Local product store | App | Yes | Dispatches, plans, workflow runs, events, approvals, config, team, costs, audit. |
-| App-owned workspaces | App | Yes | Detached supervised execution workspaces; not target repo mutation. |
-| Artifacts/exports | App | Yes | Capture requires secret scan/integrity; export requires valid approval binding. |
+| App-owned workspaces | App | Yes | Copy workspace or controlled detached git worktree outside the target path. |
+| Artifacts/exports | App | Yes | Capture binds patch content and verification evidence; real export/push requires secret scan, integrity, confirmation, scope, gate, and approval binding. |
 | Backups | App/operator | Yes | SQLite app-owned backups; PostgreSQL operators use external backup tooling. |
 
 ## V2 Real Production Output Architecture
@@ -82,7 +82,7 @@ The V2 design upgrades old limitations into explicit production guardrails:
 |---|---|---|---|
 | Workspace execution | App-owned workspace lifecycle and V2-1 safety base exist | Confined app-owned execution workspace | Path-safe IDs, canonical app-store root checks, symlink skip, file/byte ceilings, quarantine/cleanup |
 | Provider/CLI output | V2-2 gated workflow-node output path exists | Real output path under explicit gates | Auth scope, env gate, cost cap, retry/budget breaker, trace, redaction |
-| Target repository output | No target repo writes | Branch/worktree/PR branch or patch export | No direct `main` writes, approval binding, evidence bundle, secret-free PR body |
+| Target repository output | V2-3 implemented on its phase branch | Controlled git worktree, `acp/*` branch push, or patch export | `dispatch:execute`, env gate/kill, explicit confirmation, same-run approval binding, completed verification evidence, content hash, text-only bounded changed files, HTTPS remote/host/token controls, no direct `main` writes, secret-free artifacts/PR body |
 | Workers | Queue/pool primitives exist | Bounded supervised workers | Lease, heartbeat, concurrency cap, stale recovery, pause/kill |
 | Dashboard UX | Operator tabs and Mission Control | Single output workflow | Gate/risk/next-step/approval visibility |
 
@@ -129,7 +129,7 @@ The dashboard is a local operations console with guarded app-owned controls. It 
 - Observability views read dispatches, workflow graph state, queue/pool state, health, costs, audit, artifacts, and decisions.
 - Guarded controls can mutate app-owned state: team/API keys, backups, workflow tick/cancel, policy proposal lifecycle, and supervised patch approval/export.
 - Backend auth/scopes, confirmation flags where implemented, and audit logging are the actual safety boundary.
-- Dashboard controls must not write target repositories, deploy/release/apply code, broaden provider/CLI gates, or bypass backend authorization.
+- Dashboard controls may invoke V2-3 output only through the guarded backend contract; they must not write target working trees or `main`, deploy/release/apply code, broaden gates, or bypass backend authorization.
 
 ## Current Gaps
 
@@ -137,9 +137,9 @@ These are accepted current limitations, not hidden TODOs:
 
 - V2 real output is authorized but not yet complete; each phase must land behind explicit gates.
 - V2-1 app-owned workspace hardening is implemented, but it is not hard process/container/VM sandboxing and does not authorize target-repository writes.
-- V2-2 provider/CLI output is implemented as a gated workflow-node capability, but it does not create PR branches, write target repositories, or make provider/CLI execution default-on.
+- V2-2 provider/CLI output is implemented as a gated workflow-node capability; V2-3 separately owns controlled worktree/branch output. Neither makes provider/CLI execution default-on.
 - Hard process/container/VM sandbox isolation is not implemented and is not part of V2-1 unless separately approved.
-- Target-repository writes remain unavailable until V2-3 implements controlled branch/worktree/PR output.
+- V2-3 controlled target output is implemented on `codex/v2-3-target-repo-pr-flow`, pending PR/merge. It creates no merge/deploy/apply authority and preserves the registered target working tree and `main`.
 - Provider/CLI execution remains default-off even after V2-2.
 - Bounded supervised workers are planned for V2-4; unattended autonomous-agent loops remain out of scope.
 - Cloud SaaS, hosted/cloud deployment, multi-tenant service, direct release/tag/deploy/apply controls, and provider failover remain out of scope.

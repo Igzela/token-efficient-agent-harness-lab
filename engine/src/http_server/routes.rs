@@ -212,6 +212,10 @@ fn axum_routes() -> Router<AxumApiState> {
             post(supervised_patch::api_export_supervised_patch).options(cors_preflight),
         )
         .route(
+            "/api/v1/supervised-patch/artifacts/:artifact_id/output",
+            post(supervised_patch::api_target_repo_output).options(cors_preflight),
+        )
+        .route(
             "/api/v1/dashboard",
             get(dashboard::api_dashboard).options(cors_preflight),
         )

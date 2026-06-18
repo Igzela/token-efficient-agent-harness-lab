@@ -163,7 +163,6 @@ impl LocalProductStore {
                 let status_str = "created";
                 let plan_ref: &str = plan_id;
                 let wf_ref: &str = workflow_id;
-                let run_ref: &str = &run_id;
                 let cat_ref: &str = &created_at;
                 let params: Vec<&(dyn postgres::types::ToSql + Sync)> = vec![
                     &sequence,
@@ -1424,10 +1423,23 @@ impl LocalProductStore {
         run_id: &str,
         artifact_id: &str,
     ) -> Result<Value, String> {
-        let approvals = self.workflow_run_approvals(run_id, 1000)?;
         let artifact = self
             .get_supervised_patch_artifact(artifact_id)?
             .ok_or_else(|| format!("artifact not found: {artifact_id}"))?;
+        let artifact_run_id = artifact.get("run_id").and_then(Value::as_str).unwrap_or("");
+        if artifact_run_id != run_id {
+            return Ok(json!({
+                "run_id": run_id,
+                "artifact_id": artifact_id,
+                "export_eligible": false,
+                "binding_checks": [{
+                    "run_match": false,
+                    "artifact_run_id": artifact_run_id,
+                }],
+                "approving_approval": Value::Null,
+            }));
+        }
+        let approvals = self.workflow_run_approvals(run_id, 1000)?;
 
         let artifact_hash = artifact
             .get("patch_hash")

@@ -606,11 +606,51 @@ test("createSupervisedPatchWorkspace includes optional fields", async () => {
     source_revision: "abc123",
     plan_id: "plan-0001",
     source_tree_hash: "sha256:deadbeef",
+    workspace_mode: "git_worktree",
   });
 
   const body = JSON.parse(calls[0].init.body);
   assert.equal(body.plan_id, "plan-0001");
   assert.equal(body.source_tree_hash, "sha256:deadbeef");
+  assert.equal(body.workspace_mode, "git_worktree");
+});
+
+test("targetRepoOutput posts approval-bound target output request", async () => {
+  const { calls, fetchImpl } = captureFetch({
+    schema_version: "axum_api.v1",
+    output: {
+      schema_version: "target_repo_output.v1",
+      branch_name: "acp/art-0001",
+      patch_hash: "sha256:abc",
+    },
+  });
+  const client = new AgentControlPlaneClient({ baseUrl: "http://127.0.0.1:8080", fetchImpl });
+
+  const result = await client.targetRepoOutput("art/0001", {
+    run_id: "run-0001",
+    mode: "push_branch",
+    confirm_target_output: true,
+    branch_name: "acp/art-0001",
+    remote: "origin",
+    commit_message: "feat: apply artifact",
+    pr_title: "Apply artifact",
+  });
+
+  assert.equal(result.output.patch_hash, "sha256:abc");
+  assert.equal(
+    calls[0].url,
+    "http://127.0.0.1:8080/api/v1/supervised-patch/artifacts/art%2F0001/output",
+  );
+  assert.equal(calls[0].init.method, "POST");
+  assert.deepEqual(JSON.parse(calls[0].init.body), {
+    run_id: "run-0001",
+    mode: "push_branch",
+    confirm_target_output: true,
+    branch_name: "acp/art-0001",
+    remote: "origin",
+    commit_message: "feat: apply artifact",
+    pr_title: "Apply artifact",
+  });
 });
 
 test("cleanupSupervisedPatchWorkspace posts cleanup action", async () => {

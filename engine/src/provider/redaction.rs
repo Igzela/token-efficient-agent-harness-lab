@@ -14,17 +14,28 @@ pub fn redact_secrets(text: &str, secrets: &[&str]) -> String {
 
 pub fn redact_sensitive_patterns(text: &str) -> String {
     let mut result = text.to_string();
-    let patterns = [
-        r"(?i)\bsk-[A-Za-z0-9_\-]{12,}\b",
-        r#"(?i)\b(api[_-]?key|secret|token|password|credential)\s*[:=]\s*['\"]?[^'\"\s,}]+"#,
-        r"-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z ]*PRIVATE KEY-----",
-        r"(?i)\bBearer\s+[A-Za-z0-9._\-]{12,}",
-    ];
-    for pattern in patterns {
+    for pattern in sensitive_patterns() {
         let regex = regex::Regex::new(pattern).expect("valid redaction regex");
         result = regex.replace_all(&result, "***").to_string();
     }
     truncate_redacted_text(result)
+}
+
+pub fn contains_sensitive_patterns(text: &str) -> bool {
+    sensitive_patterns().iter().any(|pattern| {
+        regex::Regex::new(pattern)
+            .expect("valid redaction regex")
+            .is_match(text)
+    })
+}
+
+fn sensitive_patterns() -> [&'static str; 4] {
+    [
+        r"(?i)\bsk-[A-Za-z0-9_\-]{12,}\b",
+        r#"(?i)\b(api[_-]?key|secret|token|password|credential)\s*[:=]\s*['\"]?[^'\"\s,}]+"#,
+        r"-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z ]*PRIVATE KEY-----",
+        r"(?i)\bBearer\s+[A-Za-z0-9._\-]{12,}",
+    ]
 }
 
 pub fn truncate_redacted_text(mut text: String) -> String {
@@ -223,6 +234,16 @@ mod tests {
         assert!(!result.contains("bearer-secret"));
         assert!(!result.contains("abcdefghijklmnopqrstuvwxyz"));
         assert!(result.contains("***"));
+    }
+
+    #[test]
+    fn contains_sensitive_patterns_does_not_treat_large_safe_text_as_secret() {
+        assert!(!contains_sensitive_patterns(
+            &"x".repeat(MAX_REDACTED_TEXT_BYTES + 10)
+        ));
+        assert!(contains_sensitive_patterns(
+            "api_key=sk-abcdefghijklmnopqrstuvwxyz"
+        ));
     }
 
     #[test]

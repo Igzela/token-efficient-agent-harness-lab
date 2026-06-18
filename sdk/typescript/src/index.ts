@@ -33,6 +33,8 @@ import type {
   SupervisedPatchWorkspaceCreateResponse,
   SupervisedPatchWorkspaceListResponse,
   SupervisedPatchWorkspaceResponse,
+  TargetRepoOutputRequest,
+  TargetRepoOutputResponse,
   LocalCostSummary,
   LocalDispatchCostDetail,
   LocalDashboardState,
@@ -477,6 +479,7 @@ export class AgentControlPlaneClient {
         source_revision: request.source_revision,
         plan_id: request.plan_id,
         source_tree_hash: request.source_tree_hash,
+        workspace_mode: request.workspace_mode,
       },
     );
   }
@@ -509,6 +512,24 @@ export class AgentControlPlaneClient {
     return this.postJson<SupervisedPatchExportResponse>(
       `/api/v1/supervised-patch/artifacts/${encodeURIComponent(artifactId)}/export`,
       { run_id: request.run_id },
+    );
+  }
+
+  targetRepoOutput(
+    artifactId: string,
+    request: TargetRepoOutputRequest,
+  ): Promise<TargetRepoOutputResponse> {
+    return this.postJson<TargetRepoOutputResponse>(
+      `/api/v1/supervised-patch/artifacts/${encodeURIComponent(artifactId)}/output`,
+      {
+        run_id: request.run_id,
+        mode: request.mode,
+        confirm_target_output: request.confirm_target_output,
+        branch_name: request.branch_name,
+        remote: request.remote,
+        commit_message: request.commit_message,
+        pr_title: request.pr_title,
+      },
     );
   }
 

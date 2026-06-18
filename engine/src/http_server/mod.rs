@@ -72,6 +72,18 @@ pub struct SupervisedPatchWorkspaceCreateRequest {
     pub source_revision: String,
     pub plan_id: Option<String>,
     pub source_tree_hash: Option<String>,
+    pub workspace_mode: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+pub struct TargetRepoOutputRequest {
+    pub run_id: String,
+    pub mode: String,
+    pub confirm_target_output: Option<bool>,
+    pub branch_name: Option<String>,
+    pub remote: Option<String>,
+    pub commit_message: Option<String>,
+    pub pr_title: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Deserialize)]
@@ -583,14 +595,15 @@ pub fn openapi_document() -> serde_json::Value {
                 },
                 "post": {
                     "summary": "Create a supervised patch workspace",
-                    "description": "Creates a detached workspace directory outside the target repository and records workspace metadata. Requires dispatch:read scope.",
+                    "description": "Creates an app-owned copy workspace with dispatch:read, or a controlled git_worktree with dispatch:execute plus ACP_ENABLE_TARGET_REPO_OUTPUT=1.",
                     "requestBody": json_request_body(&["run_id", "target_id", "target_repo_path", "source_revision"], json!({
                         "run_id": {"type": "string"},
                         "target_id": {"type": "string"},
                         "target_repo_path": {"type": "string"},
                         "source_revision": {"type": "string"},
                         "plan_id": {"type": "string"},
-                        "source_tree_hash": {"type": "string"}
+                        "source_tree_hash": {"type": "string"},
+                        "workspace_mode": {"type": "string", "enum": ["copy", "git_worktree"], "default": "copy"}
                     })),
                     "responses": {
                         "200": {"description": "Created workspace metadata"},
@@ -614,7 +627,7 @@ pub fn openapi_document() -> serde_json::Value {
             "/api/v1/supervised-patch/workspaces/{workspace_id}/cleanup": {
                 "post": {
                     "summary": "Clean up a supervised patch workspace",
-                    "description": "Removes the workspace directory and transitions status to cleaned. Requires dispatch:read scope.",
+                    "description": "Removes the workspace directory and transitions status to cleaned. Copy cleanup requires dispatch:read; controlled git worktree cleanup requires dispatch:execute.",
                     "parameters": [path_parameter("workspace_id")],
                     "responses": {
                         "200": {"description": "Workspace cleaned up"},
@@ -632,6 +645,18 @@ pub fn openapi_document() -> serde_json::Value {
                         "200": {"description": "Workspace quarantined"},
                         "404": {"description": "Workspace not found"},
                         "409": {"description": "Invalid status transition"}
+                    }
+                }
+            },
+            "/api/v1/supervised-patch/workspaces/{workspace_id}/capture": {
+                "post": {
+                    "summary": "Capture patch and evidence from a supervised workspace",
+                    "description": "Computes changed files, content-bound patch hash, review diff, workflow verification evidence, and secret scan state. Copy capture requires dispatch:read; controlled git worktree capture requires dispatch:execute.",
+                    "parameters": [path_parameter("workspace_id")],
+                    "responses": {
+                        "200": {"description": "Captured supervised patch artifact"},
+                        "404": {"description": "Workspace not found"},
+                        "409": {"description": "Workspace has no capturable changes"}
                     }
                 }
             },
@@ -668,6 +693,44 @@ pub fn openapi_document() -> serde_json::Value {
                     "responses": {
                         "200": {"description": "Supervised patch artifact metadata"},
                         "404": {"description": "Supervised patch artifact not found"}
+                    }
+                }
+            },
+            "/api/v1/supervised-patch/artifacts/{artifact_id}/export": {
+                "post": {
+                    "summary": "Export approval-bound artifact metadata",
+                    "description": "Legacy app-owned metadata export. Requires valid approval binding and artifact integrity; does not push a target branch.",
+                    "parameters": [path_parameter("artifact_id")],
+                    "requestBody": json_request_body(&["run_id"], json!({
+                        "run_id": {"type": "string"}
+                    })),
+                    "responses": {
+                        "200": {"description": "Approval-bound artifact metadata export"},
+                        "403": {"description": "Approval binding missing"},
+                        "409": {"description": "Artifact integrity failed"}
+                    }
+                }
+            },
+            "/api/v1/supervised-patch/artifacts/{artifact_id}/output": {
+                "post": {
+                    "summary": "Export a real patch or push an approved PR branch",
+                    "description": "Requires dispatch:execute scope, confirm_target_output=true, ACP_ENABLE_TARGET_REPO_OUTPUT=1, a controlled git_worktree, same-run approval binding, completed workflow verification evidence, artifact integrity, and passed secret scan. Branch pushes are restricted to acp/* and never write main. ACP_TARGET_REPO_OUTPUT_KILL_SWITCH=1 disables output immediately.",
+                    "parameters": [path_parameter("artifact_id")],
+                    "requestBody": json_request_body(&["run_id", "mode", "confirm_target_output"], json!({
+                        "run_id": {"type": "string"},
+                        "mode": {"type": "string", "enum": ["export_patch", "push_branch"]},
+                        "confirm_target_output": {"type": "boolean"},
+                        "branch_name": {"type": "string", "description": "Optional acp/* branch name"},
+                        "remote": {"type": "string", "default": "origin"},
+                        "commit_message": {"type": "string"},
+                        "pr_title": {"type": "string"}
+                    })),
+                    "responses": {
+                        "200": {"description": "Real target output result"},
+                        "400": {"description": "Confirmation or request validation failed"},
+                        "403": {"description": "Scope or approval binding missing"},
+                        "409": {"description": "Artifact/workspace changed or invalid"},
+                        "503": {"description": "Target repo output gate disabled or kill switch active"}
                     }
                 }
             },

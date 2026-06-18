@@ -2198,6 +2198,34 @@ fn ga1_review_diff_survives_artifact_read() {
 }
 
 #[test]
+fn supervised_patch_integrity_hash_binds_file_content() {
+    let dir = tempdir().unwrap();
+    let store = LocalProductStore::new(dir.path().join("test.db")).unwrap();
+    let (workspace_path, workspace_id) = setup_workspace_with_target(
+        &store,
+        &dir,
+        "run-content-integrity",
+        vec![("README.md", "base\n")],
+    );
+    let readme = std::path::PathBuf::from(&workspace_path).join("README.md");
+    std::fs::write(&readme, "approved content\n").unwrap();
+    let artifact = store.capture_patch(&workspace_id, "operator").unwrap();
+    let artifact_id = artifact["artifact_id"].as_str().unwrap();
+
+    let before = store.validate_artifact_integrity(artifact_id).unwrap();
+    assert_eq!(before["integrity_ok"], true);
+
+    std::fs::write(&readme, "tampered content\n").unwrap();
+    let after = store.validate_artifact_integrity(artifact_id).unwrap();
+    assert_eq!(after["integrity_ok"], false);
+    assert!(after["checks"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|check| { check["check"] == "patch_hash_unchanged" && check["passed"] == false }));
+}
+
+#[test]
 fn ga1_capture_blocks_secret_content_from_artifact_and_response() {
     let dir = tempdir().unwrap();
     let store = LocalProductStore::new(dir.path().join("test.db")).unwrap();

@@ -62,16 +62,44 @@ curl -s -X POST http://127.0.0.1:8080/api/v1/dispatch \
 
 5. Optional guarded CLI flow: set `ACP_ENABLE_CLI_EXECUTION=1` and select a CLI executor only for local trials where the operator accepts subprocess execution. If the gate is off, CLI-backed actions remain unavailable and the dashboard shows the CLI gate as off/default-safe.
 
-Provider execution remains off unless `ACP_ENABLE_PROVIDER_EXECUTION=1`. Workspace controls remain app-owned; export remains approval-bound and never applies changes to target repositories.
+Provider execution remains off unless `ACP_ENABLE_PROVIDER_EXECUTION=1`. Target output remains off unless `ACP_ENABLE_TARGET_REPO_OUTPUT=1`; when enabled, it is limited to a controlled app-owned git worktree, patch export, or approval-bound `acp/*` branch push. It never writes the registered target working tree or `main`.
 
-### 2.1 Clone and Enter Repository
+### 2.1 V2-3 Target Repo Output
+
+Required production-like settings:
+
+```bash
+export ACP_ENABLE_TARGET_REPO_OUTPUT=1
+export ACP_TARGET_REPO_REMOTE_ALLOWLIST=origin
+export ACP_TARGET_REPO_REMOTE_HOST_ALLOWLIST=github.com
+export ACP_TARGET_REPO_GIT_TOKEN_ENV=GITHUB_TOKEN
+export GITHUB_TOKEN=<token-with-repository-branch-push-access>
+```
+
+Optional username: `ACP_TARGET_REPO_GIT_USERNAME` (default `x-access-token`). Local filesystem remotes are test-only and require `ACP_TARGET_REPO_ALLOW_LOCAL_REMOTE=1`.
+
+1. Create the supervised workspace with `"workspace_mode":"git_worktree"` using a key with `dispatch:execute`.
+2. Execute only inside the returned app-owned workspace.
+3. Complete workflow verification, then capture the artifact; review `review_diff`, `evidence_bundle`, secret status, and content-bound `patch_hash`. Target output accepts bounded text files only.
+4. Record an approval on the same run, bound to source revision, patch hash, and changed files.
+5. POST `/api/v1/supervised-patch/artifacts/{artifact_id}/output` with `confirm_target_output:true` and mode `export_patch` or `push_branch`.
+
+Emergency stop:
+
+```bash
+export ACP_TARGET_REPO_OUTPUT_KILL_SWITCH=1
+```
+
+This blocks new worktree/output actions. Existing pushed branches remain auditable; cleanup removes app-owned worktrees but does not delete remote branches.
+
+### 2.2 Clone and Enter Repository
 
 ```bash
 git clone https://github.com/<org>/token-efficient-agent-harness-lab.git
 cd token-efficient-agent-harness-lab
 ```
 
-### 2.2 Generate Admin API Key
+### 2.3 Generate Admin API Key
 
 ```bash
 uv run --no-project python scripts/bootstrap_local_auth.py --json
@@ -79,7 +107,7 @@ uv run --no-project python scripts/bootstrap_local_auth.py --json
 
 This prints a `harness_<64 hex chars>` key and the env vars to set. Save the key; you will need it for the env file and all authenticated API calls.
 
-### 2.3 Create Environment File
+### 2.4 Create Environment File
 
 ```bash
 cp .env.production-like.local.example .env.production-like.local
@@ -90,19 +118,19 @@ Edit `.env.production-like.local` and fill in:
 - `ACP_ADMIN_API_KEY` — the key from step 2.2
 - `ACP_CN_ANTHROPIC_API_KEY` — your provider secret (if using a real provider)
 
-### 2.4 Export Provider Key (if using provider)
+### 2.5 Export Provider Key (if using provider)
 
 ```bash
 export ACP_CN_ANTHROPIC_API_KEY="<your-provider-secret>"
 ```
 
-### 2.5 Build Dashboard
+### 2.6 Build Dashboard
 
 ```bash
 cd dashboard && bun install --frozen-lockfile && bun run build:static && cd ..
 ```
 
-### 2.6 Start the Engine
+### 2.7 Start the Engine
 
 ```bash
 bash scripts/start_production_like_local.sh
@@ -110,7 +138,7 @@ bash scripts/start_production_like_local.sh
 
 The script validates auth, provider config, and dashboard presence before starting `cargo run -p engine`.
 
-### 2.7 Verify
+### 2.8 Verify
 
 ```bash
 curl http://127.0.0.1:8080/api/v1/health

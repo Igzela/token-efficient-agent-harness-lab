@@ -664,12 +664,14 @@ class ClientCreateSupervisedPatchWorkspaceTest(unittest.TestCase):
             source_revision="abc123",
             plan_id="plan-0001",
             source_tree_hash="sha256:deadbeef",
+            workspace_mode="git_worktree",
         )
         args, _ = mock_urlopen.call_args
         req = args[0]
         body = json.loads(req.data)
         self.assertEqual(body["plan_id"], "plan-0001")
         self.assertEqual(body["source_tree_hash"], "sha256:deadbeef")
+        self.assertEqual(body["workspace_mode"], "git_worktree")
 
 
 class ClientCleanupSupervisedPatchWorkspaceTest(unittest.TestCase):
@@ -735,6 +737,47 @@ class ClientExportSupervisedPatchArtifactTest(unittest.TestCase):
         self.assertEqual(req.method, "POST")
         self.assertIn("/api/v1/supervised-patch/artifacts/art%2F0001/export", req.full_url)
         self.assertEqual(json.loads(req.data), {"run_id": "run-0001"})
+
+
+class ClientTargetRepoOutputTest(unittest.TestCase):
+    @patch("agent_control_plane_sdk.client.urlopen")
+    def test_target_repo_output_posts_guarded_request(self, mock_urlopen):
+        mock_urlopen.return_value = mock_response({
+            "schema_version": "axum_api.v1",
+            "output": {
+                "schema_version": "target_repo_output.v1",
+                "branch_name": "acp/art-0001",
+                "patch_hash": "sha256:abc",
+            },
+        })
+        client = AgentControlPlaneClient("http://localhost:8080")
+        result = client.target_repo_output(
+            "art/0001",
+            run_id="run-0001",
+            mode="push_branch",
+            confirm_target_output=True,
+            branch_name="acp/art-0001",
+            remote="origin",
+            commit_message="feat: apply artifact",
+            pr_title="Apply artifact",
+        )
+        self.assertEqual(result["output"]["patch_hash"], "sha256:abc")
+        args, _ = mock_urlopen.call_args
+        req = args[0]
+        self.assertEqual(req.method, "POST")
+        self.assertIn(
+            "/api/v1/supervised-patch/artifacts/art%2F0001/output",
+            req.full_url,
+        )
+        self.assertEqual(json.loads(req.data), {
+            "run_id": "run-0001",
+            "mode": "push_branch",
+            "confirm_target_output": True,
+            "branch_name": "acp/art-0001",
+            "remote": "origin",
+            "commit_message": "feat: apply artifact",
+            "pr_title": "Apply artifact",
+        })
 
 
 class ClientTickWorkflowRunTest(unittest.TestCase):

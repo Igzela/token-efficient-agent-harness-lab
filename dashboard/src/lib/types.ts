@@ -402,6 +402,9 @@ export interface SupervisedPatchWorkspace {
   workspace_canonical_path: string;
   source_revision: string;
   source_tree_hash: string | null;
+  workspace_mode?: "copy" | "git_worktree";
+  git?: Record<string, unknown> | null;
+  target_output_authority?: "disabled" | "approval_bound";
   status: string;
   created_at: string;
   updated_at: string;
@@ -423,6 +426,9 @@ export interface SupervisedPatchArtifact {
   patch_hash: string;
   changed_files: string[];
   redaction_status: "pending" | "redacted" | "failed";
+  secret_scan_status?: "pending" | "passed" | "blocked";
+  review_diff?: string;
+  evidence_bundle?: Record<string, unknown>;
   storage_refs?: Record<string, unknown>;
   retention_expires_at?: string | null;
   created_at: string;
@@ -480,6 +486,33 @@ export interface SupervisedPatchExportResponse {
     exported_by: string;
     exported_at: string;
   };
+}
+
+export interface TargetRepoOutputRequest {
+  run_id: string;
+  mode: "export_patch" | "push_branch";
+  confirm_target_output: true;
+  branch_name?: string;
+  remote?: string;
+  commit_message?: string;
+  pr_title?: string;
+}
+
+export interface TargetRepoOutputResponse {
+  schema_version: "axum_api.v1";
+  output: {
+    schema_version: "target_repo_output.v1";
+    source_revision: string;
+    patch_hash: string;
+    patch?: string;
+    branch_name?: string;
+    remote?: string;
+    commit_sha?: string;
+    pr_title?: string;
+    pr_body?: string;
+  };
+  approval_binding: Record<string, unknown>;
+  integrity: Record<string, unknown>;
 }
 
 // Workflow run types

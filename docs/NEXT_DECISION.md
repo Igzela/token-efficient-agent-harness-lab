@@ -31,7 +31,7 @@ connect real repo -> create task -> isolated app-owned workspace execution
 Current hard constraints for the V2 track:
 
 - Provider and CLI execution remain default-off and require explicit local env gates.
-- Target-repository writes are only allowed after V2-3, only through a controlled branch/worktree/PR flow, never direct `main` writes.
+- V2-3 target output is implemented on `codex/v2-3-target-repo-pr-flow`; after merge, target writes are allowed only through its controlled worktree plus `acp/*` branch push or patch export, never direct target working-tree or `main` writes.
 - V2-1 may harden app-owned workspace isolation; process/container/VM sandboxing remains a separate approval item unless explicitly added to a future plan.
 - V2-4 may add bounded supervised workers with lease/heartbeat/kill controls; unattended autonomous-agent loops remain disallowed.
 - Hosted/cloud/multi-tenant SaaS, release/tag/deploy controls, provider failover, and default-on real execution remain out of scope for this track.
@@ -43,7 +43,7 @@ Outside explicitly merged V2 phases, the following remain disabled:
 
 - Cloud SaaS, hosted/cloud deployment, and multi-tenant service.
 - Process/container/VM sandbox isolation.
-- Direct target-repository writes, direct `main` writes, apply/merge/deploy authority, and release/tag controls.
+- Uncontrolled target working-tree writes, direct `main` writes, apply/merge/deploy authority, and release/tag controls.
 - Default-on provider execution or default-on CLI execution.
 - Unattended autonomous-agent loops.
 - Provider failover.
@@ -108,7 +108,7 @@ Use this as the single forward plan. Do not create new roadmap/status docs for V
 | V2-0 | `codex/v2-real-production-output` | Authorize and document the track | Update this file, `CURRENT_STATUS`, `ARCHITECTURE_BOOK`, and `MODULE_MAP`; no runtime authority changes |
 | V2-1 | `codex/v2-1-execution-safety-base` | Real execution safety base | App-owned workspace confinement, command/profile allowlist, timeout/resource ceilings, secret scan/redaction, audit events, quarantine/kill path, focused Rust tests; implemented in this branch, pending PR/merge |
 | V2-2 | `codex/v2-2-provider-cli-output` | Real provider/CLI output path | Explicit env/auth/cost gates, retry/budget breaker, provider/CLI trace, redacted outputs, failure taxonomy, focused Rust/provider/CLI tests; implemented in this branch, pending PR/merge |
-| V2-3 | `codex/v2-3-target-repo-pr-flow` | Target repo branch/PR output | Controlled branch/worktree, diff/test/evidence bundle, approval-bound push PR branch or export patch, no direct `main` writes, secret-free PR body/artifacts |
+| V2-3 | `codex/v2-3-target-repo-pr-flow` | Target repo branch/PR output | Controlled git worktree, content-bound diff/evidence, approval-bound `acp/*` branch push or patch export, HTTPS host/token env controls, no direct `main` writes, secret-free PR body/artifacts; implemented in this branch, pending PR/merge |
 | V2-4 | `codex/v2-4-supervised-worker-queue` | Bounded production worker queue | Lease, heartbeat, max concurrency, stale lease recovery, pause/kill switch, audit trail, no unattended autonomous loop |
 | V2-5 | `codex/v2-5-product-output-ux` | Product-grade main workflow | Dashboard path: connect repo -> create task -> execute -> view diff/tests -> approve -> open PR/export patch; visible gates, risk, next step, approval state |
 
@@ -116,7 +116,7 @@ V2 implementation routing:
 
 - V2-1 starts in `engine/src/storage/local_product_store/supervised_patch.rs`, `engine/src/http_server/handlers/supervised_patch.rs`, `engine/src/node_executor.rs`, and focused storage/API tests.
 - V2-2 starts in `engine/src/provider/`, `engine/src/cli/`, `engine/src/executor/`, `engine/src/dispatch_engine.rs`, and provider/CLI tests.
-- V2-3 starts in supervised patch storage/API plus a small git/PR helper owned by the engine; dashboard and SDK changes must follow any API shape change.
+- V2-3 is owned by `engine/src/target_repo_output.rs`, supervised patch storage/API, and matching SDK/dashboard API contracts. Runtime gate: `ACP_ENABLE_TARGET_REPO_OUTPUT=1`; emergency kill: `ACP_TARGET_REPO_OUTPUT_KILL_SWITCH=1`.
 - V2-4 starts in `engine/src/scheduler.rs`, `engine/src/workflow/run_queue.rs`, `engine/src/executor_pool.rs`, and `engine/src/storage/local_product_store/heartbeat.rs`.
 - V2-5 starts in `dashboard/src/components/MissionControl.tsx`, `SupervisedPatch.tsx`, `RuntimeGates.tsx`, and `dashboard/src/lib/api-client.ts`.
 
