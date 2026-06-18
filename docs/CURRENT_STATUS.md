@@ -11,11 +11,11 @@ The system is useful as an operations/control-plane lab for deterministic dispat
 ## Current Product Boundary
 
 - Rust `engine/` is the sole runtime/API/storage implementation.
-- `dashboard/` is the local operations console with guarded app-owned controls. It has observability views; it must not write target repositories or perform release/deploy/apply actions.
-- TypeScript and Python SDKs cover REST access to dispatch, workflow, config, team, cost, audit, backup/export, and supervised patch metadata.
+- `dashboard/` is the local operations console with guarded app-owned controls. Its API client understands V2-3 output, but the product workflow/control is deferred to V2-5; release/deploy/apply actions remain unavailable.
+- TypeScript and Python SDKs cover REST access to dispatch, workflow, config, team, cost, audit, backup/export, supervised patches, and V2-3 target output.
 - Provider execution is off unless `ACP_ENABLE_PROVIDER_EXECUTION=1`.
 - CLI execution is off unless `ACP_ENABLE_CLI_EXECUTION=1`.
-- App runtime does not write registered target repositories until a V2 target-repo branch/worktree/PR flow lands and passes gates.
+- V2-3 target output is default-off. On the V2-3 branch it can create an app-owned git worktree and, only after scoped confirmation plus artifact approval/integrity checks, export a patch or push an `acp/*` branch. It never writes the registered target working tree or `main`.
 - No hard process/container/VM sandbox is implemented; V2-1 is scoped to app-owned workspace confinement unless separately approved.
 - No hosted/cloud/multi-tenant deployment is implemented.
 - No unattended autonomous-agent loop is approved.
@@ -62,7 +62,7 @@ uv run --no-project python scripts/check_agent_handoff.py
 
 | Track | Status |
 |---|---|
-| V2 Real Production Output Track | Authorized; V2-0 documentation PR opened; V2-1 execution safety base implemented on `codex/v2-1-execution-safety-base`; V2-2 provider/CLI output path implemented on `codex/v2-2-provider-cli-output`; V2-3 through V2-5 pending |
+| V2 Real Production Output Track | Authorized; V2-0 documentation PR opened; V2-1 execution safety base implemented on `codex/v2-1-execution-safety-base`; V2-2 provider/CLI output path implemented on `codex/v2-2-provider-cli-output`; V2-3 target repo output implemented on `codex/v2-3-target-repo-pr-flow`; V2-4 and V2-5 pending |
 
 Historical phase plans, closeouts, and long-form validation reports are retained under `docs/archive/`.
 
@@ -73,6 +73,7 @@ Historical phase plans, closeouts, and long-form validation reports are retained
 - Supervised execution primitives: app-owned workspace lifecycle, `NodeExecutor` trait, allowlisted `CommandNodeExecutor`, workflow tick endpoint, artifact capture, secret scan, integrity validation, approval binding, and export gate.
 - V2-1 safety base: workspace IDs are path-safe, workspace copies stay under the app-owned workspace root, symlinks are skipped, copy file/byte ceilings are enforced, secret findings are redacted, secret-hit diffs are suppressed, command cwd is validated, command env is cleared except `PATH`, and command output is capped.
 - V2-2 provider/CLI output path: workflow ticks can run provider nodes only when `ACP_ENABLE_PROVIDER_EXECUTION=1` and a provider is configured; Claude/Codex CLI ticks remain `ACP_ENABLE_CLI_EXECUTION=1` gated; provider/CLI outputs are redacted/capped, provider ticks record provider audit events, provider cost gates block before execution, and CLI subprocess env is restricted to `PATH` plus `ACP_CLI_ENV_ALLOWLIST`.
+- V2-3 target repo output: `git_worktree` workspace creation and real output require `dispatch:execute` plus `ACP_ENABLE_TARGET_REPO_OUTPUT=1`; artifact hashes bind actual patch content; output requires completed workflow verification evidence, same-run approval binding, integrity, redaction, explicit confirmation, bounded text-only changed files, remote/host allowlists, and an HTTPS token referenced by env; branch names are restricted to `acp/*`; `ACP_TARGET_REPO_OUTPUT_KILL_SWITCH=1` stops new output.
 - Local storage: SQLite default with PostgreSQL optional via `ACP_DATABASE_URL`; schema version is documented in `docs/ARCHITECTURE_BOOK.md`.
 - Operations: health, metrics, backups, restore smoke, circuit breaker state, audit log, and release-readiness checks.
 - Dashboard: local operations console with guarded app-owned controls for workflow runs, scheduler state, proposals, patches, config/team/costs, and app-owned actions.
@@ -80,12 +81,12 @@ Historical phase plans, closeouts, and long-form validation reports are retained
 
 ## Current Gaps
 
-- Real output is not yet end to end: target repo connection, execution, verification evidence, approval-bound PR push, and export are not yet one production path.
+- Engine/API/SDK V2-3 output is end to end for a supplied local git repo path: controlled worktree, execution artifact, verification evidence, approval, patch export, and branch push. V2-5 must expose this as one product workflow instead of low-level calls.
 - Product fit is stronger for local operations/research than for public-facing production UX.
 - UI is functional and operator-oriented; V2-5 must turn existing Mission Control, supervised patch, runtime gate, run, and audit components into one clear output workflow.
 - Security posture is suitable for local/small-team self-hosting only; hosted/multi-tenant use would require a new threat model and approved implementation plan.
-- V2-1 hardens app-owned execution safety but does not add target-repository writes, provider/CLI default-on execution, or sandbox/process/container/VM isolation.
-- V2-3 and V2-4 must add target PR flow and bounded supervised workers behind explicit gates.
+- V2-1 alone does not authorize target output; V2-3 adds only controlled worktree/branch output and still does not add provider/CLI default-on execution or sandbox/process/container/VM isolation.
+- V2-4 must add bounded supervised workers behind explicit gates.
 - Cloud SaaS, multi-tenant hosting, direct release/tag/deploy/apply authority, provider failover, default-on real execution, and unattended autonomous-agent loops remain out of scope.
 
 ## Documentation Discipline

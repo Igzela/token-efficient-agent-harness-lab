@@ -3,6 +3,11 @@ use serde_json::{json, Value};
 use std::ffi::OsString;
 use std::path::{Component, Path, PathBuf};
 
+use crate::target_repo_output::{
+    inspect_git_patch, patch_hash as target_patch_hash, remove_git_worktree, stage_and_build_patch,
+    staged_changed_files, TargetRepoOutputConfig,
+};
+
 use super::{append_audit_locked, collect_values, DatabaseConnection, LocalProductStore};
 
 pub const SUPERVISED_PATCH_WORKSPACE_SCHEMA_VERSION: &str = "supervised_patch_workspace.v1";
@@ -156,7 +161,20 @@ impl LocalProductStore {
         if !workspace_path.is_empty() {
             let path = Path::new(workspace_path);
             if path.exists() {
-                std::fs::remove_dir_all(path).map_err(|e| e.to_string())?;
+                let workspace_mode = workspace
+                    .get("workspace_mode")
+                    .and_then(Value::as_str)
+                    .unwrap_or("copy");
+                if workspace_mode == "git_worktree" {
+                    let target_repo_path = required_str(&workspace, "target_repo_path")?;
+                    remove_git_worktree(
+                        &TargetRepoOutputConfig::from_env(),
+                        Path::new(target_repo_path),
+                        path,
+                    )?;
+                } else {
+                    std::fs::remove_dir_all(path).map_err(|e| e.to_string())?;
+                }
             }
         }
         self.update_workspace_status(workspace_id, "cleaned", actor)
@@ -181,38 +199,54 @@ impl LocalProductStore {
             ));
         }
 
-        let manifest_path = path.join(".source_manifest.json");
-        let manifest: Value = if manifest_path.exists() {
-            let content = std::fs::read_to_string(&manifest_path).map_err(|e| e.to_string())?;
-            serde_json::from_str(&content).unwrap_or(Value::Null)
+        let workspace_mode = workspace
+            .get("workspace_mode")
+            .and_then(Value::as_str)
+            .unwrap_or("copy");
+        let config = TargetRepoOutputConfig::from_env();
+        let (added, modified, deleted, changed_files, review_diff, patch_hash) = if workspace_mode
+            == "git_worktree"
+        {
+            let changes = staged_changed_files(&config, path)?;
+            if changes.changed_files.is_empty() {
+                return Err("no changes detected against source revision".to_string());
+            }
+            let patch = stage_and_build_patch(&config, path)?;
+            let hash = target_patch_hash(&patch);
+            (
+                changes.added,
+                changes.modified,
+                changes.deleted,
+                changes.changed_files,
+                truncate_text(patch, MAX_REVIEW_DIFF_BYTES),
+                hash,
+            )
         } else {
-            Value::Null
+            let manifest_path = path.join(".source_manifest.json");
+            let manifest: Value = if manifest_path.exists() {
+                let content = std::fs::read_to_string(&manifest_path).map_err(|e| e.to_string())?;
+                serde_json::from_str(&content).unwrap_or(Value::Null)
+            } else {
+                Value::Null
+            };
+            let (added, modified, deleted) = if manifest.is_object() {
+                diff_against_manifest(path, &manifest)?
+            } else {
+                let (files, _) = collect_workspace_files(path)?;
+                (files, Vec::new(), Vec::new())
+            };
+            let mut changed_files = Vec::new();
+            changed_files.extend(added.iter().map(|file| format!("+{file}")));
+            changed_files.extend(modified.iter().map(|file| format!("~{file}")));
+            changed_files.extend(deleted.iter().map(|file| format!("-{file}")));
+            let review_diff = generate_review_diff(path, &added, &modified, &deleted);
+            let hash = target_patch_hash(&review_diff);
+            (added, modified, deleted, changed_files, review_diff, hash)
         };
-
-        let (added, modified, deleted) = if manifest.is_object() {
-            diff_against_manifest(path, &manifest)?
-        } else {
-            let (files, _) = collect_workspace_files(path)?;
-            (files, Vec::new(), Vec::new())
-        };
-
-        let mut changed_files = Vec::new();
-        changed_files.extend(added.iter().map(|f| format!("+{f}")));
-        changed_files.extend(modified.iter().map(|f| format!("~{f}")));
-        changed_files.extend(deleted.iter().map(|f| format!("-{f}")));
 
         if changed_files.is_empty() {
             return Err("no changes detected against source snapshot".to_string());
         }
-
-        let diff_content = format!(
-            "added:{}\nmodified:{}\ndeleted:{}",
-            added.join(","),
-            modified.join(","),
-            deleted.join(",")
-        );
-        let hash_bytes = sha256_bytes(diff_content.as_bytes());
-        let patch_hash = format!("sha256:{}", hex_encode(&hash_bytes));
 
         let secret_findings = scan_for_secrets(path)?;
         let redaction_status = if secret_findings.is_empty() {
@@ -227,10 +261,12 @@ impl LocalProductStore {
         };
 
         let review_diff = if secret_findings.is_empty() {
-            generate_review_diff(path, &added, &modified, &deleted)
+            review_diff
         } else {
             "review diff suppressed: secret scan failed".to_string()
         };
+        let run_id = required_str(&workspace, "run_id")?;
+        let verification = self.workflow_verification_evidence(run_id);
 
         let artifact_request = json!({
             "workspace_id": workspace_id,
@@ -239,11 +275,21 @@ impl LocalProductStore {
             "redaction_status": redaction_status,
             "secret_scan_status": secret_scan_status,
             "review_diff": review_diff,
+            "evidence_bundle": {
+                "schema_version": "target_repo_evidence.v1",
+                "run_id": run_id,
+                "source_revision": workspace.get("source_revision"),
+                "patch_hash": patch_hash,
+                "changed_files": changed_files,
+                "verification": verification,
+                "secret_scan_status": secret_scan_status,
+                "redaction_status": redaction_status,
+            },
             "safety": {
                 "workspace_confinement": "app_owned_directory",
                 "secret_scan": secret_scan_status,
                 "review_diff": if secret_findings.is_empty() { "generated" } else { "suppressed" },
-                "target_repository_writes": "disabled",
+                "target_repository_writes": if workspace_mode == "git_worktree" { "approval_bound_branch_only" } else { "disabled" },
             },
         });
         let artifact = self.record_supervised_patch_artifact(&artifact_request, actor)?;
@@ -258,6 +304,62 @@ impl LocalProductStore {
             obj.insert("deleted".to_string(), json!(deleted));
         }
         Ok(result)
+    }
+
+    fn workflow_verification_evidence(&self, run_id: &str) -> Value {
+        let run = self.get_workflow_run(run_id).ok().flatten();
+        let nodes = run
+            .as_ref()
+            .and_then(|value| value.get("nodes"))
+            .and_then(Value::as_array)
+            .cloned()
+            .unwrap_or_default();
+        let node_results: Vec<Value> = nodes
+            .iter()
+            .map(|node| {
+                json!({
+                    "node_id": node.get("node_id"),
+                    "task_type": node.get("task_type"),
+                    "status": node.get("status"),
+                    "executor_type": node.get("execution_result").and_then(|result| result.get("executor_type")),
+                    "result_status": node.get("execution_result").and_then(|result| result.get("status")),
+                    "latency_ms": node.get("execution_result").and_then(|result| result.get("latency_ms")),
+                })
+            })
+            .collect();
+        let passed = node_results.iter().filter(|node| {
+            matches!(
+                node.get("status").and_then(Value::as_str),
+                Some("completed" | "succeeded")
+            ) || matches!(
+                node.get("result_status").and_then(Value::as_str),
+                Some("completed" | "succeeded" | "success")
+            )
+        });
+        let passed_count = passed.count();
+        let run_status = run
+            .as_ref()
+            .and_then(|value| value.get("status"))
+            .and_then(Value::as_str);
+        let verification_status = if run_status == Some("completed")
+            && !node_results.is_empty()
+            && passed_count == node_results.len()
+        {
+            "evidence_recorded"
+        } else if run.is_some() && !node_results.is_empty() {
+            "verification_failed"
+        } else {
+            "not_run"
+        };
+        json!({
+            "schema_version": "workflow_verification_evidence.v1",
+            "run_id": run_id,
+            "run_status": run_status,
+            "node_count": node_results.len(),
+            "passed_count": passed_count,
+            "status": verification_status,
+            "nodes": node_results,
+        })
     }
 
     pub fn validate_artifact_integrity(&self, artifact_id: &str) -> Result<Value, String> {
@@ -314,31 +416,57 @@ impl LocalProductStore {
         }));
 
         let mut current_hash = String::new();
+        let mut hash_message = "workspace content could not be hashed".to_string();
         if workspace_exists {
-            let manifest_path = Path::new(workspace_path).join(".source_manifest.json");
-            if manifest_path.exists() {
-                let manifest_content = std::fs::read_to_string(&manifest_path).unwrap_or_default();
-                let manifest: Value =
-                    serde_json::from_str(&manifest_content).unwrap_or(Value::Null);
-                if manifest.is_object() {
-                    let (added, modified, deleted) =
-                        diff_against_manifest(Path::new(workspace_path), &manifest)?;
-                    let diff_content = format!(
-                        "added:{}\nmodified:{}\ndeleted:{}",
-                        added.join(","),
-                        modified.join(","),
-                        deleted.join(",")
-                    );
-                    let hash_bytes = sha256_bytes(diff_content.as_bytes());
-                    current_hash = format!("sha256:{}", hex_encode(&hash_bytes));
+            let workspace_mode = workspace
+                .as_ref()
+                .and_then(|value| value.get("workspace_mode"))
+                .and_then(Value::as_str)
+                .unwrap_or("copy");
+            if workspace_mode == "git_worktree" {
+                match inspect_git_patch(
+                    &TargetRepoOutputConfig::from_env(),
+                    Path::new(workspace_path),
+                ) {
+                    Ok(patch) => {
+                        current_hash = target_patch_hash(&patch);
+                        hash_message = "ok".to_string();
+                    }
+                    Err(error) => hash_message = error,
+                }
+            } else {
+                let manifest_path = Path::new(workspace_path).join(".source_manifest.json");
+                if manifest_path.exists() {
+                    let manifest_content =
+                        std::fs::read_to_string(&manifest_path).unwrap_or_default();
+                    let manifest: Value =
+                        serde_json::from_str(&manifest_content).unwrap_or(Value::Null);
+                    if manifest.is_object() {
+                        let (added, modified, deleted) =
+                            diff_against_manifest(Path::new(workspace_path), &manifest)?;
+                        let review_diff = generate_review_diff(
+                            Path::new(workspace_path),
+                            &added,
+                            &modified,
+                            &deleted,
+                        );
+                        current_hash = target_patch_hash(&review_diff);
+                        hash_message = "ok".to_string();
+                    }
                 }
             }
         }
-        let hash_unchanged = current_hash.is_empty() || current_hash == patch_hash;
+        let hash_unchanged = !current_hash.is_empty() && current_hash == patch_hash;
         checks.push(json!({
             "check": "patch_hash_unchanged",
             "passed": hash_unchanged,
-            "message": if hash_unchanged { "ok".to_string() } else { format!("hash changed: recorded={} current={}", patch_hash, current_hash) }
+            "message": if hash_unchanged {
+                "ok".to_string()
+            } else if current_hash.is_empty() {
+                hash_message
+            } else {
+                format!("hash changed: recorded={} current={}", patch_hash, current_hash)
+            }
         }));
 
         let all_passed = checks
@@ -363,6 +491,13 @@ impl LocalProductStore {
         let workspace_path = required_str(request, "workspace_path")?;
         let source_revision = required_str(request, "source_revision")?;
         let source_tree_hash = optional_str(request, "source_tree_hash");
+        let workspace_mode = optional_str(request, "workspace_mode").unwrap_or("copy");
+        if !matches!(workspace_mode, "copy" | "git_worktree") {
+            return Err(format!(
+                "invalid supervised patch workspace mode: {workspace_mode}"
+            ));
+        }
+        let git = request.get("git").cloned().unwrap_or(Value::Null);
         let status = optional_str(request, "status").unwrap_or("requested");
         if !is_valid_workspace_status(status) {
             return Err(format!(
@@ -370,7 +505,7 @@ impl LocalProductStore {
             ));
         }
 
-        let boundary = supervised_patch_boundary(target_repo_path, workspace_path)?;
+        let boundary = supervised_patch_boundary(target_repo_path, workspace_path, workspace_mode)?;
         let target_repo_canonical_path = required_str(&boundary, "target_repo_canonical_path")?;
         let workspace_canonical_path = required_str(&boundary, "workspace_canonical_path")?;
 
@@ -393,13 +528,16 @@ impl LocalProductStore {
                     "workspace_canonical_path": workspace_canonical_path,
                     "source_revision": source_revision,
                     "source_tree_hash": source_tree_hash,
+                    "workspace_mode": workspace_mode,
+                    "git": git,
                     "status": status,
                     "created_at": created_at,
                     "updated_at": created_at,
                     "boundary": boundary.clone(),
                     "metadata_only": true,
                     "execution_authority": "disabled",
-                    "safety": workspace_safety_profile(),
+                    "target_output_authority": if workspace_mode == "git_worktree" { "approval_bound" } else { "disabled" },
+                    "safety": workspace_safety_profile(workspace_mode),
                 });
                 conn.execute(
                     "INSERT INTO supervised_patch_workspaces
@@ -440,8 +578,9 @@ impl LocalProductStore {
                         "target_id": target_id,
                         "source_revision": source_revision,
                         "metadata_only": true,
-                    "target_repository_writes": "disabled",
-                    "registered_git_worktree": "forbidden",
+                    "workspace_mode": workspace_mode,
+                    "target_repository_writes": if workspace_mode == "git_worktree" { "approval_bound_branch_only" } else { "disabled" },
+                    "registered_git_worktree": if workspace_mode == "git_worktree" { "controlled" } else { "forbidden" },
                     "workspace_directory_creation": boundary
                         .get("workspace_directory_creation")
                         .and_then(Value::as_str)
@@ -472,13 +611,16 @@ impl LocalProductStore {
                     "workspace_canonical_path": workspace_canonical_path,
                     "source_revision": source_revision,
                     "source_tree_hash": source_tree_hash,
+                    "workspace_mode": workspace_mode,
+                    "git": git,
                     "status": status,
                     "created_at": created_at,
                     "updated_at": created_at,
                     "boundary": boundary.clone(),
                     "metadata_only": true,
                     "execution_authority": "disabled",
-                    "safety": workspace_safety_profile(),
+                    "target_output_authority": if workspace_mode == "git_worktree" { "approval_bound" } else { "disabled" },
+                    "safety": workspace_safety_profile(workspace_mode),
                 });
                 client.execute(
                     "INSERT INTO supervised_patch_workspaces
@@ -513,8 +655,9 @@ impl LocalProductStore {
                     "target_id": target_id,
                     "source_revision": source_revision,
                     "metadata_only": true,
-                    "target_repository_writes": "disabled",
-                    "registered_git_worktree": "forbidden",
+                    "workspace_mode": workspace_mode,
+                    "target_repository_writes": if workspace_mode == "git_worktree" { "approval_bound_branch_only" } else { "disabled" },
+                    "registered_git_worktree": if workspace_mode == "git_worktree" { "controlled" } else { "forbidden" },
                     "workspace_directory_creation": boundary
                         .get("workspace_directory_creation")
                         .and_then(Value::as_str)
@@ -690,6 +833,12 @@ impl LocalProductStore {
         let workspace_canonical_path = required_str(workspace, "workspace_canonical_path")?;
         let source_revision = required_str(workspace, "source_revision")?;
         let source_tree_hash = optional_str(workspace, "source_tree_hash");
+        let workspace_mode = optional_str(workspace, "workspace_mode").unwrap_or("copy");
+        if !matches!(workspace_mode, "copy" | "git_worktree") {
+            return Err(format!(
+                "invalid supervised patch workspace mode: {workspace_mode}"
+            ));
+        }
         let status = optional_str(workspace, "status").unwrap_or("requested");
         if !is_valid_workspace_status(status) {
             return Err(format!(
@@ -700,13 +849,13 @@ impl LocalProductStore {
             json!({
                 "metadata_only": true,
                 "execution_authority": "disabled",
-                "workspace_directory_creation": "not_performed",
-                "target_repository_writes": "disabled",
-                "registered_git_worktree": "forbidden",
-                "git_worktree_add": "forbidden",
+                "workspace_directory_creation": if workspace_mode == "git_worktree" { "git_worktree" } else { "not_performed" },
+                "target_repository_writes": if workspace_mode == "git_worktree" { "approval_bound_branch_only" } else { "disabled" },
+                "registered_git_worktree": if workspace_mode == "git_worktree" { "controlled" } else { "forbidden" },
+                "git_worktree_add": if workspace_mode == "git_worktree" { "performed" } else { "forbidden" },
                 "process_execution": "disabled",
                 "provider_calls": "disabled",
-                "push_merge_deploy_apply": "disabled",
+                "push_merge_deploy_apply": if workspace_mode == "git_worktree" { "approval_bound_push_only" } else { "disabled" },
                 "target_repo_canonical_path": target_repo_canonical_path,
                 "workspace_canonical_path": workspace_canonical_path,
             })
@@ -716,6 +865,7 @@ impl LocalProductStore {
             target_repo_canonical_path,
             workspace_path,
             workspace_canonical_path,
+            workspace_mode,
             &boundary,
         )?;
 
@@ -866,6 +1016,10 @@ impl LocalProductStore {
             .get("safety")
             .cloned()
             .unwrap_or_else(artifact_safety_profile);
+        let evidence_bundle = request
+            .get("evidence_bundle")
+            .cloned()
+            .unwrap_or(Value::Null);
         let run_id = required_str(&workspace, "run_id")?;
         let plan_id = optional_str(&workspace, "plan_id");
         let target_id = required_str(&workspace, "target_id")?;
@@ -893,6 +1047,7 @@ impl LocalProductStore {
                     "secret_scan_status": secret_scan_status,
                     "review_diff": review_diff,
                     "storage_refs": storage_refs.clone(),
+                    "evidence_bundle": evidence_bundle.clone(),
                     "safety": safety.clone(),
                     "retention_expires_at": retention_expires_at,
                     "created_at": created_at,
@@ -965,6 +1120,7 @@ impl LocalProductStore {
                     "secret_scan_status": secret_scan_status,
                     "review_diff": review_diff,
                     "storage_refs": storage_refs.clone(),
+                    "evidence_bundle": evidence_bundle.clone(),
                     "safety": safety.clone(),
                     "retention_expires_at": retention_expires_at,
                     "created_at": created_at,
@@ -1348,6 +1504,7 @@ fn supervised_patch_artifact_row(row: &Row<'_>) -> rusqlite::Result<Value> {
 fn supervised_patch_boundary(
     target_repo_path: &str,
     workspace_path: &str,
+    workspace_mode: &str,
 ) -> Result<Value, String> {
     let target_repo_canonical = canonicalize_existing_path(target_repo_path, "target_repo_path")?;
     let workspace_canonical = canonicalize_planned_path(workspace_path, "workspace_path")?;
@@ -1360,7 +1517,13 @@ fn supervised_patch_boundary(
     Ok(json!({
         "metadata_only": true,
         "execution_authority": "disabled",
-        "workspace_directory_creation": if Path::new(workspace_path).exists() { "app_owned_copy" } else { "not_performed" },
+        "workspace_directory_creation": if workspace_mode == "git_worktree" {
+            "git_worktree"
+        } else if Path::new(workspace_path).exists() {
+            "app_owned_copy"
+        } else {
+            "not_performed"
+        },
         "workspace_confinement": "app_owned_directory",
         "workspace_root_policy": "canonical_app_store_root",
         "symlink_policy": "skip",
@@ -1371,18 +1534,18 @@ fn supervised_patch_boundary(
         },
         "secret_scan": "required_before_artifact",
         "kill_switch": "quarantine_or_cleanup",
-        "target_repository_writes": "disabled",
-        "registered_git_worktree": "forbidden",
-        "git_worktree_add": "forbidden",
+        "target_repository_writes": if workspace_mode == "git_worktree" { "approval_bound_branch_only" } else { "disabled" },
+        "registered_git_worktree": if workspace_mode == "git_worktree" { "controlled" } else { "forbidden" },
+        "git_worktree_add": if workspace_mode == "git_worktree" { "performed" } else { "forbidden" },
         "process_execution": "disabled",
         "provider_calls": "disabled",
-        "push_merge_deploy_apply": "disabled",
+        "push_merge_deploy_apply": if workspace_mode == "git_worktree" { "approval_bound_push_only" } else { "disabled" },
         "target_repo_canonical_path": path_string(&target_repo_canonical),
         "workspace_canonical_path": path_string(&workspace_canonical),
     }))
 }
 
-fn workspace_safety_profile() -> Value {
+fn workspace_safety_profile(workspace_mode: &str) -> Value {
     json!({
         "workspace_confinement": "app_owned_directory",
         "workspace_root_policy": "canonical_app_store_root",
@@ -1394,7 +1557,8 @@ fn workspace_safety_profile() -> Value {
         },
         "secret_scan": "required_before_artifact",
         "kill_switch": "quarantine_or_cleanup",
-        "target_repository_writes": "disabled",
+        "target_repository_writes": if workspace_mode == "git_worktree" { "approval_bound_branch_only" } else { "disabled" },
+        "branch_policy": if workspace_mode == "git_worktree" { "acp_prefix_only_no_main" } else { "not_applicable" },
     })
 }
 
@@ -1561,6 +1725,7 @@ fn validate_imported_workspace_boundary(
     target_repo_canonical_path: &str,
     workspace_path: &str,
     workspace_canonical_path: &str,
+    workspace_mode: &str,
     boundary: &Value,
 ) -> Result<(), String> {
     ensure_absolute_clean_path(Path::new(target_repo_path), "target_repo_path")?;
@@ -1582,18 +1747,30 @@ fn validate_imported_workspace_boundary(
     ensure_optional_string_field(boundary, "execution_authority", "disabled")?;
     if let Some(actual) = boundary.get("workspace_directory_creation") {
         let value = actual.as_str().unwrap_or("");
-        if !matches!(value, "not_performed" | "app_owned_copy") {
+        if !matches!(value, "not_performed" | "app_owned_copy" | "git_worktree") {
             return Err(
-                "workspace_directory_creation must be not_performed or app_owned_copy".to_string(),
+                "workspace_directory_creation must be not_performed, app_owned_copy, or git_worktree"
+                    .to_string(),
             );
         }
     }
-    ensure_optional_string_field(boundary, "target_repository_writes", "disabled")?;
-    ensure_optional_string_field(boundary, "registered_git_worktree", "forbidden")?;
-    ensure_optional_string_field(boundary, "git_worktree_add", "forbidden")?;
+    let (target_writes, registered_worktree, worktree_add, push_policy) =
+        if workspace_mode == "git_worktree" {
+            (
+                "approval_bound_branch_only",
+                "controlled",
+                "performed",
+                "approval_bound_push_only",
+            )
+        } else {
+            ("disabled", "forbidden", "forbidden", "disabled")
+        };
+    ensure_optional_string_field(boundary, "target_repository_writes", target_writes)?;
+    ensure_optional_string_field(boundary, "registered_git_worktree", registered_worktree)?;
+    ensure_optional_string_field(boundary, "git_worktree_add", worktree_add)?;
     ensure_optional_string_field(boundary, "process_execution", "disabled")?;
     ensure_optional_string_field(boundary, "provider_calls", "disabled")?;
-    ensure_optional_string_field(boundary, "push_merge_deploy_apply", "disabled")
+    ensure_optional_string_field(boundary, "push_merge_deploy_apply", push_policy)
 }
 
 fn ensure_schema_version(value: &Value, label: &str, expected: &str) -> Result<(), String> {
@@ -1705,7 +1882,12 @@ fn build_import_workspace_record(
     object.insert("boundary".to_string(), boundary.clone());
     object.insert("metadata_only".to_string(), json!(true));
     object.insert("execution_authority".to_string(), json!("disabled"));
-    object.insert("safety".to_string(), workspace_safety_profile());
+    let workspace_mode = optional_str(workspace, "workspace_mode").unwrap_or("copy");
+    object.insert("workspace_mode".to_string(), json!(workspace_mode));
+    object.insert(
+        "safety".to_string(),
+        workspace_safety_profile(workspace_mode),
+    );
     Ok(workspace_record)
 }
 

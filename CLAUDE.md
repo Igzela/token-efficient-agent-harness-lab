@@ -34,7 +34,7 @@
 
 ## App Runtime vs Agent Maintenance Boundary
 
-**App/runtime** does not write target repos by default. Target repositories remain protected from direct app writes until an approved V2 branch/worktree/PR flow lands and passes gates.
+**App/runtime** does not write target repos by default. V2-3 adds only env-gated, approval-bound output through an app-owned git worktree and `acp/*` branch or patch export; registered target working trees and `main` remain protected.
 
 **Agent maintenance** may create branches, commits, PRs, and low-risk merges only through branch+PR workflow under `docs/REAL_WORLD_TESTING_PLAYBOOK.md` gates. This is a repository workflow mode, not an app-runtime feature.
 

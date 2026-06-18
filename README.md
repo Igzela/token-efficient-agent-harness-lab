@@ -262,14 +262,14 @@ bundle = client.dispatch("Summarize docs without provider calls")
 - No real model calls by default; the local beta provider path remains explicit and env-gated.
 - No unattended real agents; explicit supervised local workflow execution exists behind opt-in gates.
 - No real sandbox/process/container/VM isolation runtime; V2-1 is limited to app-owned workspace confinement unless separately approved.
-- Supervised patch execution is limited to app-owned detached workspaces, explicit workflow tick/executor selection, artifact capture, approval binding, and export gating. It is not target-repo mutation or production autonomy.
+- Supervised patch execution remains app-owned and gated. V2-3 adds an optional controlled git worktree plus approval-bound patch export or `acp/*` branch push; it does not modify the registered target working tree or `main`.
 - Existing local CLI executor subprocess invocation is a separate, explicit opt-in exception via `ACP_ENABLE_CLI_EXECUTION=1`.
 - `ACP_EXECUTION_MODE` controls how dispatch requests are routed: `off` (default, noop), `provider` (API only), `cli` (CLI executor only), or `auto` (hybrid mode that scores task complexity and routes low-complexity tasks to the Provider API and high-complexity tasks to the CLI executor; the threshold is configurable via `ACP_HYBRID_COMPLEXITY_THRESHOLD`, default 0.5).
 - Bounded supervised worker concurrency is planned only for V2-4; unattended autonomous-agent loops remain out of scope.
 - Provider failover remains out of scope.
 - Cloud SaaS, multi-tenant hosting, cloud production Web UI, hosted deployment, and remote SaaS service remain out of scope.
-- Target-repository output is planned only for V2-3, only through controlled branch/worktree/PR flow or patch export; direct `main` writes, apply/merge/deploy authority, and default-on provider execution remain out of scope.
-- The dashboard is a local operations console with guarded app-owned controls. Dashboard/SDK controls operate on app-owned workflow/workspace/artifact state and must not write target repositories.
+- Target-repository output is implemented on the V2-3 phase branch behind `ACP_ENABLE_TARGET_REPO_OUTPUT=1`, `dispatch:execute`, explicit confirmation, approval/integrity/secret gates, remote allowlists, and `ACP_TARGET_REPO_OUTPUT_KILL_SWITCH=1`; direct target working-tree or `main` writes, apply/merge/deploy authority, and default-on provider execution remain out of scope.
+- The dashboard is a local operations console with guarded app-owned controls. V2-3 API/SDK output exists; the product-level dashboard flow remains V2-5 work and may only use the guarded backend contract.
 - No destructive runtime filesystem behavior.
 - V2 real capabilities require the phase plan in `docs/NEXT_DECISION.md`, explicit gates, audit events, tests, and rollback/kill paths.
 

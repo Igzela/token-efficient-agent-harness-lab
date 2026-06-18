@@ -224,6 +224,12 @@ export interface SupervisedPatchWorkspace {
   workspace_canonical_path: string;
   source_revision: string;
   source_tree_hash: string | null;
+  workspace_mode?: "copy" | "git_worktree";
+  git?: {
+    default_branch?: string;
+    source_revision?: string;
+  } | null;
+  target_output_authority?: "disabled" | "approval_bound";
   status: string;
   created_at: string;
   updated_at: string;
@@ -245,6 +251,9 @@ export interface SupervisedPatchArtifact {
   patch_hash: string;
   changed_files: string[];
   redaction_status: "pending" | "redacted" | "failed";
+  secret_scan_status?: "pending" | "passed" | "blocked";
+  review_diff?: string;
+  evidence_bundle?: Record<string, unknown>;
   storage_refs?: Record<string, unknown>;
   retention_expires_at?: string | null;
   created_at: string;
@@ -799,6 +808,7 @@ export interface SupervisedPatchWorkspaceCreateRequest {
   source_revision: string;
   plan_id?: string;
   source_tree_hash?: string;
+  workspace_mode?: "copy" | "git_worktree";
 }
 
 export interface SupervisedPatchWorkspaceCreateResponse {
@@ -832,6 +842,41 @@ export interface SupervisedPatchExportDetail {
 export interface SupervisedPatchExportResponse {
   schema_version: "axum_api.v1";
   export: SupervisedPatchExportDetail;
+}
+
+export interface TargetRepoOutputRequest {
+  run_id: string;
+  mode: "export_patch" | "push_branch";
+  confirm_target_output: true;
+  branch_name?: string;
+  remote?: string;
+  commit_message?: string;
+  pr_title?: string;
+}
+
+export interface TargetRepoPatchOutput {
+  schema_version: "target_repo_output.v1";
+  source_revision: string;
+  patch_hash: string;
+  patch: string;
+}
+
+export interface TargetRepoBranchOutput {
+  schema_version: "target_repo_output.v1";
+  source_revision: string;
+  branch_name: string;
+  remote: string;
+  commit_sha: string;
+  patch_hash: string;
+  pr_title: string;
+  pr_body: string;
+}
+
+export interface TargetRepoOutputResponse {
+  schema_version: "axum_api.v1";
+  output: TargetRepoPatchOutput | TargetRepoBranchOutput;
+  approval_binding: Record<string, unknown>;
+  integrity: Record<string, unknown>;
 }
 
 export interface WorkflowRunTickRequest {

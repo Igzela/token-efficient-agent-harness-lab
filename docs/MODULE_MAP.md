@@ -20,6 +20,7 @@ The Rust `engine/` is the sole runtime implementation. Python is retained as RES
 | `engine/src/provider/` | env-gated execution | Provider adapters, workflow-node executor, retry/cost gates, audit/redaction, circuit breaker wrapper | `cargo test -p engine` |
 | `engine/src/cli/` | env-gated execution | Claude Code / Codex CLI executor path with restricted env and redacted/capped output | `cargo test -p engine` |
 | `engine/src/node_executor.rs` | supervised execution | Workflow node executors, command allowlist, timeout, structured output | `cargo test -p engine --lib node_executor` |
+| `engine/src/target_repo_output.rs` | env-gated target output | Controlled git worktree, patch export, `acp/*` branch push, remote/auth validation, timeout/redaction/kill controls | `cargo test -p engine --test test_target_repo_output` |
 | `engine/src/scheduler.rs` | active workflow | Persistent scheduler, lease recovery, dynamic mode, executor-pool binding | `cargo test -p engine --lib scheduler` |
 | `engine/src/workflow/` | active workflow | DAG mutation, dynamic controller, context pack, run queue, backpressure, decisions | `cargo test -p engine --lib workflow` |
 | `engine/src/orchestration/` | partial workflow | Decomposition, conflict resolution, approval gate, aggregation helpers | `cargo test -p engine` |
@@ -52,7 +53,7 @@ The Rust `engine/` is the sole runtime implementation. Python is retained as RES
 - Dashboard or SDK: update API types/clients and dashboard components together when response shapes change.
 - V2-1 execution safety: start with `storage/local_product_store/supervised_patch.rs`, `http_server/handlers/supervised_patch.rs`, `node_executor.rs`, and focused path/secret/timeout/quarantine tests.
 - V2-2 provider/CLI output: start with `provider/`, `cli/`, `http_server/handlers/workflow_runs.rs`, `executor/`, `dispatch_engine.rs`, and provider/CLI audit/cost/redaction tests.
-- V2-3 target repo PR flow: start with supervised patch storage/API plus a small engine-owned git/PR helper; update SDK/dashboard only when API shapes change.
+- V2-3 target repo PR flow: `target_repo_output.rs` owns git/process safety; supervised patch storage owns workspace/artifact/evidence/approval binding; HTTP owns scope/gate/confirmation/audit; SDK/dashboard API contracts mirror the endpoint.
 - V2-4 worker queue: start with `scheduler.rs`, `workflow/run_queue.rs`, `executor_pool.rs`, and `storage/local_product_store/heartbeat.rs`.
 - V2-5 product UX: start with `dashboard/src/components/MissionControl.tsx`, `SupervisedPatch.tsx`, `RuntimeGates.tsx`, and `dashboard/src/lib/api-client.ts`.
 - Safety boundary changes: update `docs/ARCHITECTURE_BOOK.md` before implementation; use archived security docs only as historical reference.

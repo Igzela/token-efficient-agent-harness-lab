@@ -256,6 +256,12 @@ fn test_approval_expiry_blocks_export() {
     let checks = binding["binding_checks"].as_array().unwrap();
     let first_check = &checks[0];
     assert_eq!(first_check["not_expired"], false);
+
+    let wrong_run_binding = store
+        .validate_approval_binding("run-other", artifact["artifact_id"].as_str().unwrap())
+        .unwrap();
+    assert_eq!(wrong_run_binding["export_eligible"], false);
+    assert_eq!(wrong_run_binding["binding_checks"][0]["run_match"], false);
 }
 
 // 5. test_artifact_integrity_tamper: capture patch, modify file -> integrity detects change

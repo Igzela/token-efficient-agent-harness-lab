@@ -30,6 +30,8 @@ import type {
   SupervisedPatchWorkspaceCreateResponse,
   SupervisedPatchWorkspaceListResponse,
   SupervisedPatchWorkspaceResponse,
+  TargetRepoOutputRequest,
+  TargetRepoOutputResponse,
   WorkflowPlanDetailResponse,
   WorkflowPlanListResponse,
   WorkflowRunActionResponse,
@@ -387,6 +389,7 @@ export async function createSupervisedPatchWorkspace(request: {
   source_revision: string;
   plan_id?: string;
   source_tree_hash?: string;
+  workspace_mode?: "copy" | "git_worktree";
 }): Promise<SupervisedPatchWorkspaceCreateResponse> {
   return fetchJson<SupervisedPatchWorkspaceCreateResponse>(
     `${BASE}/api/v1/supervised-patch/workspaces`,
@@ -426,6 +429,20 @@ export async function exportSupervisedPatchArtifact(artifactId: string, runId: s
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ run_id: runId }),
+    },
+  );
+}
+
+export async function targetRepoOutput(
+  artifactId: string,
+  request: TargetRepoOutputRequest,
+): Promise<TargetRepoOutputResponse> {
+  return fetchJson<TargetRepoOutputResponse>(
+    `${BASE}/api/v1/supervised-patch/artifacts/${encodeURIComponent(artifactId)}/output`,
+    {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(request),
     },
   );
 }

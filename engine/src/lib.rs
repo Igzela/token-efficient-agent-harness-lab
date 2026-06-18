@@ -32,6 +32,7 @@ pub mod routing;
 pub mod runtime;
 pub mod scheduler;
 pub mod storage;
+pub mod target_repo_output;
 pub mod task_analyzer;
 pub mod wire_types;
 pub mod workflow;
