@@ -1252,6 +1252,7 @@ tr[role="button"]:focus-visible {
 }
 
 input,
+textarea,
 select {
   background: var(--panel);
   border: 1px solid var(--border);
@@ -1264,14 +1265,68 @@ select {
 }
 
 input:focus,
+textarea:focus,
 select:focus {
   border-color: var(--accent);
   outline: none;
   box-shadow: 0 0 0 2px var(--accent-soft);
 }
 
-input::placeholder {
+input::placeholder,
+textarea::placeholder {
   color: var(--muted);
+}
+
+textarea {
+  min-height: 84px;
+  resize: vertical;
+}
+
+.action-rail {
+  border-color: var(--accent);
+}
+
+.action-grid {
+  display: grid;
+  gap: 12px;
+  grid-template-columns: minmax(260px, 0.9fr) minmax(320px, 1.1fr);
+}
+
+.action-column {
+  display: grid;
+  gap: 10px;
+}
+
+.split-row,
+.workflow-actions,
+.target-output-row,
+.runtime-control-row,
+.inline-control {
+  align-items: center;
+  display: flex;
+  gap: 8px;
+}
+
+.split-row {
+  align-items: stretch;
+}
+
+.split-row > * {
+  flex: 1 1 0;
+}
+
+.workflow-actions,
+.target-output-row,
+.runtime-control-row {
+  flex-wrap: wrap;
+}
+
+.inline-control {
+  font-size: 13px;
+}
+
+.target-output-row input {
+  min-width: 148px;
 }
 
 details summary {
@@ -1302,8 +1357,13 @@ details pre {
   .mission-layout,
   .mission-timeline-item,
   .mission-signal,
+  .action-grid,
   .setup-list {
     grid-template-columns: 1fr;
+  }
+
+  .split-row {
+    display: grid;
   }
 
   .tab-group-tabs {
@@ -1868,6 +1928,7 @@ button:active {
 }
 
 input:focus,
+textarea:focus,
 select:focus,
 button:focus-visible,
 tr[role="button"]:focus-visible,
@@ -1910,5 +1971,94 @@ tr[role="button"]:focus-visible,
   .status-strip,
   .setup-list {
     grid-template-columns: repeat(5, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 980px) {
+  .shell {
+    padding: 0;
+  }
+
+  .ops-shell {
+    border-left: 0;
+    border-right: 0;
+    display: block;
+    min-width: 0;
+  }
+
+  .ops-sidebar {
+    border-bottom: 1px solid var(--border-strong);
+    border-right: 0;
+    max-height: 320px;
+    min-height: 0;
+    overflow-y: auto;
+  }
+
+  .ops-brand {
+    min-height: 72px;
+  }
+
+  .ops-main {
+    padding: 18px 16px 32px;
+  }
+
+  .topbar {
+    display: grid;
+  }
+
+  .topbar-meta,
+  .workflow-actions,
+  .target-output-row,
+  .runtime-control-row {
+    flex-wrap: wrap;
+  }
+
+  .tab-group-tabs {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .tab {
+    font-size: 14px;
+    min-height: 36px;
+    padding: 0 12px;
+  }
+
+  .status-strip,
+  .setup-list,
+  .detail-summary,
+  .mission-layout,
+  .action-grid,
+  .mission-timeline-item,
+  .mission-signal {
+    grid-template-columns: 1fr;
+  }
+
+  .metric {
+    min-height: 98px;
+  }
+
+  .split-row {
+    display: grid;
+  }
+
+  table {
+    min-width: 680px;
+  }
+}
+
+@media (max-width: 520px) {
+  .target-output-row,
+  .workflow-actions,
+  .runtime-control-row {
+    display: grid;
+    grid-template-columns: 1fr;
+  }
+
+  .topbar-btn,
+  button,
+  input,
+  select,
+  textarea {
+    width: 100%;
   }
 }

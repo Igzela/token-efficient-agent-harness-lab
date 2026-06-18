@@ -109,8 +109,8 @@ Use this as the single forward plan. Do not create new roadmap/status docs for V
 | V2-1 | `codex/v2-1-execution-safety-base` | Real execution safety base | Merged in PR #70 |
 | V2-2 | `codex/v2-2-provider-cli-output` | Real provider/CLI output path | Merged in PR #71 |
 | V2-3 | `codex/v2-3-target-repo-pr-flow` | Target repo branch/PR output | Merged in PR #72 |
-| V2-4 | `codex/v2-4-supervised-worker-queue` | Bounded production worker queue | Implemented on phase branch: dual env gate, bounded worker count, atomic lease claim, worker heartbeat, stale recovery audit, pause/resume/kill API, auth scope, kill switch, SDK/tests; pending PR/merge |
-| V2-5 | `codex/v2-5-product-output-ux` | Product-grade main workflow | Dashboard path: connect repo -> create task -> execute -> view diff/tests -> approve -> open PR/export patch; visible gates, risk, next step, approval state |
+| V2-4 | `codex/v2-4-supervised-worker-queue` | Bounded production worker queue | Implemented and opened as PR #73: dual env gate, bounded worker count, atomic lease claim, worker heartbeat, stale recovery audit, pause/resume/kill API, auth scope, kill switch, SDK/tests |
+| V2-5 | `codex/v2-5-product-output-ux` | Product-grade main workflow | Implemented on stacked phase branch: Mission Control path for task/run creation, tick, workspace, capture, approval binding, export/target output, scheduler control, visible gates, responsive layout |
 
 V2 implementation routing:
 

@@ -1,6 +1,6 @@
 # Current Status
 
-Last recorded full verification: 2026-06-18. V2-0 through V2-3 merged with green CI: 2026-06-18. V2-4 implemented on its phase branch: 2026-06-18.
+Last recorded full verification: 2026-06-18. V2-0 through V2-3 merged with green CI: 2026-06-18. V2-4 PR #73 opened and V2-5 implemented on its stacked phase branch: 2026-06-18.
 
 ## Summary
 
@@ -11,7 +11,7 @@ The system is useful as an operations/control-plane lab for deterministic dispat
 ## Current Product Boundary
 
 - Rust `engine/` is the sole runtime/API/storage implementation.
-- `dashboard/` is the local operations console with guarded app-owned controls. Its API client understands V2-3 output, but the product workflow/control is deferred to V2-5; release/deploy/apply actions remain unavailable.
+- `dashboard/` is the local operations console with guarded app-owned controls. Mission Control now exposes the V2-5 product output path over existing guarded APIs; release/deploy/apply actions remain unavailable.
 - TypeScript and Python SDKs cover REST access to dispatch, workflow, config, team, cost, audit, backup/export, supervised patches, and V2-3 target output.
 - Provider execution is off unless `ACP_ENABLE_PROVIDER_EXECUTION=1`.
 - CLI execution is off unless `ACP_ENABLE_CLI_EXECUTION=1`.
@@ -62,7 +62,7 @@ uv run --no-project python scripts/check_agent_handoff.py
 
 | Track | Status |
 |---|---|
-| V2 Real Production Output Track | V2-0 through V2-3 merged in PRs #69-#72; V2-4 bounded supervised workers implemented on `codex/v2-4-supervised-worker-queue`, pending PR/merge; V2-5 pending |
+| V2 Real Production Output Track | V2-0 through V2-3 merged in PRs #69-#72; V2-4 opened as PR #73; V2-5 product output UX implemented on `codex/v2-5-product-output-ux`, pending PR/merge |
 
 Historical phase plans, closeouts, and long-form validation reports are retained under `docs/archive/`.
 
@@ -75,6 +75,7 @@ Historical phase plans, closeouts, and long-form validation reports are retained
 - V2-2 provider/CLI output path: workflow ticks can run provider nodes only when `ACP_ENABLE_PROVIDER_EXECUTION=1` and a provider is configured; Claude/Codex CLI ticks remain `ACP_ENABLE_CLI_EXECUTION=1` gated; provider/CLI outputs are redacted/capped, provider ticks record provider audit events, provider cost gates block before execution, and CLI subprocess env is restricted to `PATH` plus `ACP_CLI_ENV_ALLOWLIST`.
 - V2-3 target repo output: `git_worktree` workspace creation and real output require `dispatch:execute` plus `ACP_ENABLE_TARGET_REPO_OUTPUT=1`; artifact hashes bind actual patch content; output requires completed workflow verification evidence, same-run approval binding, integrity, redaction, explicit confirmation, bounded text-only changed files, remote/host allowlists, and an HTTPS token referenced by env; branch names are restricted to `acp/*`; `ACP_TARGET_REPO_OUTPUT_KILL_SWITCH=1` stops new output.
 - V2-4 bounded workers: scheduler startup requires both scheduler and supervised-worker env gates; worker count is bounded by global concurrency and 32; each worker claims at most one node per cycle through the existing atomic DB lease; heartbeat metadata exposes worker state; stale recovery is audited; `dispatch:execute` plus confirmation controls pause/resume/kill; env pause and kill switches remain available.
+- V2-5 product output UX: Mission Control is the first active work surface and can create plan/run records, tick selected runs, create git-worktree patch workspaces, capture artifacts, record bound approvals, export approved patches, request target output, and control supervised workers from one flow.
 - Local storage: SQLite default with PostgreSQL optional via `ACP_DATABASE_URL`; schema version is documented in `docs/ARCHITECTURE_BOOK.md`.
 - Operations: health, metrics, backups, restore smoke, circuit breaker state, audit log, and release-readiness checks.
 - Dashboard: local operations console with guarded app-owned controls for workflow runs, scheduler state, proposals, patches, config/team/costs, and app-owned actions.
@@ -82,12 +83,12 @@ Historical phase plans, closeouts, and long-form validation reports are retained
 
 ## Current Gaps
 
-- Engine/API/SDK V2-3 output is end to end for a supplied local git repo path: controlled worktree, execution artifact, verification evidence, approval, patch export, and branch push. V2-5 must expose this as one product workflow instead of low-level calls.
+- Engine/API/SDK/dashboard V2 output is end to end for a supplied local git repo path: controlled worktree, execution artifact, verification evidence, approval, patch export, branch push, and one Mission Control workflow over those steps.
 - Product fit is stronger for local operations/research than for public-facing production UX.
-- UI is functional and operator-oriented; V2-5 must turn existing Mission Control, supervised patch, runtime gate, run, and audit components into one clear output workflow.
+- UI remains operator-oriented, but the primary output workflow is now surfaced before secondary setup/status panels.
 - Security posture is suitable for local/small-team self-hosting only; hosted/multi-tenant use would require a new threat model and approved implementation plan.
 - V2-1 alone does not authorize target output; V2-3 adds only controlled worktree/branch output and still does not add provider/CLI default-on execution or sandbox/process/container/VM isolation.
-- V2-4 is implemented but not merged; V2-5 remains the only planned product phase after it lands.
+- V2-4 and V2-5 are implemented on phase branches and pending PR/merge.
 - Cloud SaaS, multi-tenant hosting, direct release/tag/deploy/apply authority, provider failover, default-on real execution, and unattended autonomous-agent loops remain out of scope.
 
 ## Documentation Discipline

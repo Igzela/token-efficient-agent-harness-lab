@@ -269,7 +269,7 @@ bundle = client.dispatch("Summarize docs without provider calls")
 - Provider failover remains out of scope.
 - Cloud SaaS, multi-tenant hosting, cloud production Web UI, hosted deployment, and remote SaaS service remain out of scope.
 - Target-repository output is implemented on the V2-3 phase branch behind `ACP_ENABLE_TARGET_REPO_OUTPUT=1`, `dispatch:execute`, explicit confirmation, approval/integrity/secret gates, remote allowlists, and `ACP_TARGET_REPO_OUTPUT_KILL_SWITCH=1`; direct target working-tree or `main` writes, apply/merge/deploy authority, and default-on provider execution remain out of scope.
-- The dashboard is a local operations console with guarded app-owned controls. V2-3 API/SDK output exists; the product-level dashboard flow remains V2-5 work and may only use the guarded backend contract.
+- The dashboard is a local operations console with guarded app-owned controls. V2-5 adds the product-level Mission Control output path over the guarded backend contract: create plan/run, tick, create workspace, capture patch, approve, export patch, or push an `acp/*` branch.
 - No destructive runtime filesystem behavior.
 - V2 real capabilities require the phase plan in `docs/NEXT_DECISION.md`, explicit gates, audit events, tests, and rollback/kill paths.
 

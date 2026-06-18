@@ -33,6 +33,7 @@ import type {
   TargetRepoOutputRequest,
   TargetRepoOutputResponse,
   WorkflowPlanDetailResponse,
+  WorkflowPlanCreateResponse,
   WorkflowPlanListResponse,
   WorkflowRunActionResponse,
   WorkflowRunApprovalListResponse,
@@ -533,6 +534,17 @@ export async function resumeWorkflowRun(runId: string, reason?: string): Promise
   );
 }
 
+export async function createWorkflowPlan(request: {
+  raw_request: string;
+  request_source?: string;
+}): Promise<WorkflowPlanCreateResponse> {
+  return fetchJson<WorkflowPlanCreateResponse>(`${BASE}/api/v1/plans`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(request),
+  });
+}
+
 export async function fetchPlans(params: {
   limit?: number;
   offset?: number;
@@ -547,8 +559,24 @@ export async function fetchPlanDetail(planId: string): Promise<WorkflowPlanDetai
   );
 }
 
+export async function createWorkflowRun(planId: string): Promise<WorkflowRunActionResponse> {
+  return fetchJson<WorkflowRunActionResponse>(`${BASE}/api/v1/workflow-runs`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ plan_id: planId }),
+  });
+}
+
 export async function fetchSchedulerStatus(): Promise<SchedulerStatusResponse> {
   return fetchJson<SchedulerStatusResponse>(`${BASE}/api/v1/scheduler/status`);
+}
+
+export async function controlScheduler(action: "pause" | "resume" | "kill"): Promise<SchedulerStatusResponse> {
+  return fetchJson<SchedulerStatusResponse>(`${BASE}/api/v1/scheduler/control`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ action, confirm_control: true }),
+  });
 }
 
 export async function fetchExecutorPool(): Promise<ExecutorPoolStatusResponse> {
