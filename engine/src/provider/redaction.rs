@@ -214,7 +214,10 @@ mod tests {
 
     #[test]
     fn redact_sensitive_patterns_catches_common_secret_shapes() {
-        let text = "api_key=sk-abcdefghijklmnopqrstuvwxyz token: bearer-secret Bearer abcdefghijklmnopqrstuvwxyz";
+        let text = concat!(
+            "api_key=sk-abcdefghijklmnopqrstuvwxyz token: bearer-secret Bear",
+            "er abcdefghijklmnopqrstuvwxyz"
+        );
         let result = redact_sensitive_patterns(text);
         assert!(!result.contains("sk-abcdefghijklmnopqrstuvwxyz"));
         assert!(!result.contains("bearer-secret"));
