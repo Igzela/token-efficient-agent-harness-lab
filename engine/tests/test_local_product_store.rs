@@ -930,7 +930,7 @@ fn workflow_runs_create_from_plan_persists_nodes_edges_events_and_approvals() {
     assert_eq!(run["workflow_id"], "wf-plan-0001");
     assert_eq!(run["status"], "created");
     assert_eq!(run["boundaries"]["execution_authority"], "disabled");
-    assert_eq!(run["boundaries"]["runtime_workers"], "disabled");
+    assert_eq!(run["boundaries"]["runtime_workers"], "env_gated_supervised");
     assert!(run.get("execution_result").is_none());
     assert_eq!(run["nodes"].as_array().unwrap().len(), 2);
     assert_eq!(run["edges"].as_array().unwrap().len(), 1);

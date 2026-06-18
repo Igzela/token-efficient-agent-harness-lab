@@ -478,6 +478,22 @@ class AgentControlPlaneClient:
     def scheduler_status(self) -> dict[str, Any]:
         return self._get("/api/v1/scheduler/status")
 
+    def control_scheduler(
+        self,
+        action: str,
+        actor: str | None = None,
+        confirm_control: bool = True,
+    ) -> dict[str, Any]:
+        if action not in {"pause", "resume", "kill"}:
+            raise ValueError("action must be pause, resume, or kill")
+        body: dict[str, Any] = {
+            "action": action,
+            "confirm_control": confirm_control,
+        }
+        if actor is not None:
+            body["actor"] = actor
+        return self._post("/api/v1/scheduler/control", body)
+
     def fetch_executor_pool(self) -> dict[str, Any]:
         return self._get("/api/v1/executor-pool")
 

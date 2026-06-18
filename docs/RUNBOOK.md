@@ -178,10 +178,30 @@ The dashboard provides run status, decision traces, queue state, executor pool h
 
 ### 3.4 Scheduler Status
 
+Start bounded workers with both gates:
+
+```bash
+ACP_ENABLE_SCHEDULER=1 \
+ACP_ENABLE_SUPERVISED_WORKERS=1 \
+ACP_SUPERVISED_WORKER_COUNT=2 \
+cargo run -p engine
+```
+
 ```bash
 curl -s -H "Authorization: Bearer $ACP_ADMIN_API_KEY" \
   http://127.0.0.1:8080/api/v1/scheduler/status
 ```
+
+Pause, resume, or kill new worker claims:
+
+```bash
+curl -s -X POST http://127.0.0.1:8080/api/v1/scheduler/control \
+  -H "Authorization: Bearer $ACP_ADMIN_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"action":"pause","confirm_control":true}'
+```
+
+Use `resume` to continue. Use `kill` or set `ACP_SUPERVISED_WORKERS_KILL_SWITCH=1` for emergency stop. Kill blocks new claims immediately; an already-running command/provider/CLI call drains under its configured timeout. These actions require `dispatch:execute` and are audited.
 
 ### 3.5 Executor Pool
 
@@ -323,7 +343,7 @@ curl -s -H "Authorization: Bearer $ACP_ADMIN_API_KEY" \
   http://127.0.0.1:8080/api/v1/scheduler/status
 ```
 
-Check: is the scheduler running? Are ticks succeeding?
+Check: are both gates enabled, expected workers present, heartbeats fresh, ticks succeeding, and pause/kill state correct?
 
 ### 7.5 Executor Pool
 

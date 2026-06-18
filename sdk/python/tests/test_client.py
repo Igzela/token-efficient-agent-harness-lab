@@ -852,6 +852,28 @@ class ClientTickWorkflowRunTest(unittest.TestCase):
         self.assertEqual(req.method, "GET")
         self.assertIn("/api/v1/scheduler/status", req.full_url)
 
+    @patch("agent_control_plane_sdk.client.urlopen")
+    def test_scheduler_control_posts_confirmed_action(self, mock_urlopen):
+        mock_urlopen.return_value = mock_response({
+            "schema_version": "axum_api.v1",
+            "scheduler": {"running": True, "paused": True},
+        })
+        client = AgentControlPlaneClient("http://localhost:8080")
+        result = client.control_scheduler("pause", actor="operator")
+        self.assertTrue(result["scheduler"]["paused"])
+        args, _ = mock_urlopen.call_args
+        req = args[0]
+        self.assertEqual(req.method, "POST")
+        self.assertIn("/api/v1/scheduler/control", req.full_url)
+        self.assertEqual(
+            json.loads(req.data),
+            {
+                "action": "pause",
+                "actor": "operator",
+                "confirm_control": True,
+            },
+        )
+
 
 class ClientFetchExecutorPoolTest(unittest.TestCase):
     @patch("agent_control_plane_sdk.client.urlopen")

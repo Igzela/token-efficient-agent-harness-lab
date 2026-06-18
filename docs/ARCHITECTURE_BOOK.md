@@ -82,8 +82,8 @@ The V2 design upgrades old limitations into explicit production guardrails:
 |---|---|---|---|
 | Workspace execution | App-owned workspace lifecycle and V2-1 safety base exist | Confined app-owned execution workspace | Path-safe IDs, canonical app-store root checks, symlink skip, file/byte ceilings, quarantine/cleanup |
 | Provider/CLI output | V2-2 gated workflow-node output path exists | Real output path under explicit gates | Auth scope, env gate, cost cap, retry/budget breaker, trace, redaction |
-| Target repository output | V2-3 implemented on its phase branch | Controlled git worktree, `acp/*` branch push, or patch export | `dispatch:execute`, env gate/kill, explicit confirmation, same-run approval binding, completed verification evidence, content hash, text-only bounded changed files, HTTPS remote/host/token controls, no direct `main` writes, secret-free artifacts/PR body |
-| Workers | Queue/pool primitives exist | Bounded supervised workers | Lease, heartbeat, concurrency cap, stale recovery, pause/kill |
+| Target repository output | V2-3 merged | Controlled git worktree, `acp/*` branch push, or patch export | `dispatch:execute`, env gate/kill, explicit confirmation, same-run approval binding, completed verification evidence, content hash, text-only bounded changed files, HTTPS remote/host/token controls, no direct `main` writes, secret-free artifacts/PR body |
+| Workers | V2-4 implemented on phase branch | Bounded supervised workers | Dual env gate, atomic DB lease, per-worker heartbeat, concurrency cap, stale recovery audit, authenticated pause/resume/kill |
 | Dashboard UX | Operator tabs and Mission Control | Single output workflow | Gate/risk/next-step/approval visibility |
 
 Do not create a second runtime kernel for V2. Extend the existing `node_executor`, `workflow_runs`, `scheduler`, `executor_pool`, `provider`, `cli`, `supervised_patch`, `LocalProductStore`, SDK, and dashboard surfaces.
@@ -109,6 +109,8 @@ Do not create a second runtime kernel for V2. Extend the existing `node_executor
 | `auto` | Hybrid provider/CLI routing by complexity threshold |
 
 Workflow node execution is explicit through scheduler/tick paths. `CommandNodeExecutor` rejects shell metacharacters, avoids `sh -c`, uses allowlisted binaries, validates supplied workspace cwd, clears inherited environment except `PATH`, caps captured output, enforces timeout kill, and emits structured results. Claude/Codex CLI execution remains a separate explicit opt-in path behind `ACP_ENABLE_CLI_EXECUTION=1`; CLI subprocess env is restricted to `PATH` plus `ACP_CLI_ENV_ALLOWLIST`, and CLI output is redacted/capped before persistence. Provider workflow ticks require `ACP_ENABLE_PROVIDER_EXECUTION=1`, a configured provider, dispatch execute scope, cost-gate preflight, provider audit events, retry/budget-breaker handling, and redacted/capped output trace.
+
+V2-4 supervised workers reuse the same scheduler and workflow lease path. Process startup requires `ACP_ENABLE_SCHEDULER=1` and `ACP_ENABLE_SUPERVISED_WORKERS=1`. `ACP_SUPERVISED_WORKER_COUNT` is constrained by `ACP_SCHEDULER_MAX_CONCURRENT` and a hard cap of 32. Each worker claims at most one node per cycle; global capacity remains separate from per-worker tick limits. Worker heartbeat state is persisted in existing scheduler heartbeat metadata. `POST /api/v1/scheduler/control` requires `dispatch:execute` and confirmation for pause/resume/kill. `ACP_SUPERVISED_WORKERS_PAUSED=1` pauses new claims; `ACP_SUPERVISED_WORKERS_KILL_SWITCH=1` stops new claims and lets any timeout-bounded in-flight execution drain. Workers only consume already-created workflow runs and do not create autonomous goals or loops.
 
 ## Workflow Model
 
@@ -139,9 +141,9 @@ These are accepted current limitations, not hidden TODOs:
 - V2-1 app-owned workspace hardening is implemented, but it is not hard process/container/VM sandboxing and does not authorize target-repository writes.
 - V2-2 provider/CLI output is implemented as a gated workflow-node capability; V2-3 separately owns controlled worktree/branch output. Neither makes provider/CLI execution default-on.
 - Hard process/container/VM sandbox isolation is not implemented and is not part of V2-1 unless separately approved.
-- V2-3 controlled target output is implemented on `codex/v2-3-target-repo-pr-flow`, pending PR/merge. It creates no merge/deploy/apply authority and preserves the registered target working tree and `main`.
+- V2-3 controlled target output is merged. It creates no merge/deploy/apply authority and preserves the registered target working tree and `main`.
 - Provider/CLI execution remains default-off even after V2-2.
-- Bounded supervised workers are planned for V2-4; unattended autonomous-agent loops remain out of scope.
+- Bounded supervised workers are implemented on the V2-4 branch, pending PR/merge; unattended autonomous-agent loops remain out of scope.
 - Cloud SaaS, hosted/cloud deployment, multi-tenant service, direct release/tag/deploy/apply controls, and provider failover remain out of scope.
 - Some routing, quality, and orchestration modules remain partially active rather than unified under one policy layer.
 

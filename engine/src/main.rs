@@ -219,8 +219,12 @@ async fn main() {
         .unwrap_or(5);
     let state = if enable_scheduler {
         let scheduler_config = SchedulerConfig::from_env();
+        scheduler_config
+            .validate_for_start()
+            .expect("invalid supervised worker configuration");
         let executor_type = scheduler_config.executor_type.clone();
         let interval = scheduler_config.interval_ms;
+        let worker_count = scheduler_config.worker_count;
         let mut scheduler = WorkflowScheduler::new(store_for_scheduler, scheduler_config);
         if backup_interval_sec > 0 {
             if std::env::var("ACP_DATABASE_URL").is_ok() {
@@ -245,8 +249,8 @@ async fn main() {
         scheduler.start().expect("failed to start scheduler");
         let scheduler_arc = Arc::new(Mutex::new(scheduler));
         println!(
-            "[acp-startup] scheduler=enabled interval={}ms executor={}",
-            interval, executor_type
+            "[acp-startup] scheduler=enabled supervised_workers=enabled workers={} interval={}ms executor={}",
+            worker_count, interval, executor_type
         );
         state.with_scheduler(scheduler_arc)
     } else {

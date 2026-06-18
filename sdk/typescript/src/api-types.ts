@@ -895,14 +895,35 @@ export interface WorkflowRunTickResponse {
 export interface SchedulerStatus {
   schema_version: "axum_api.v1";
   scheduler: {
-    enabled: boolean;
+    enabled?: boolean;
     running: boolean;
-    interval_ms: number;
-    max_concurrent: number;
-    lease_timeout_ms: number;
-    active_runs: number;
+    supervised_workers_enabled?: boolean;
+    worker_count?: number;
+    paused?: boolean;
+    kill_requested?: boolean;
+    workers?: Array<{
+      worker_id: string;
+      state: string;
+      last_heartbeat_at: string;
+      tick_count: number;
+      error_count: number;
+    }>;
+    config?: {
+      interval_ms: number;
+      max_concurrent: number;
+      max_queued: number;
+      lease_timeout_ms: number;
+      executor_type: string;
+      heartbeat_interval_sec: number;
+    };
+    interval_ms?: number;
+    max_concurrent?: number;
+    lease_timeout_ms?: number;
+    active_runs?: number;
   };
 }
+
+export type SchedulerControlAction = "pause" | "resume" | "kill";
 
 export interface ExecutorPoolCapabilities {
   supported_task_types: string[];

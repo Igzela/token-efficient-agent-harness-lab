@@ -753,11 +753,16 @@ impl LocalProductStore {
                 };
 
                 let now = self.now();
-                conn.execute(
+                let updated = conn.execute(
                     "UPDATE workflow_run_nodes SET status = 'running', started_at = ?1, leased_at = ?1, attempt_count = attempt_count + 1
                      WHERE run_id = ?2 AND node_id = ?3 AND status = 'pending'",
                     params![now, run_id, node_id],
                 ).map_err(|e| e.to_string())?;
+                if updated == 0 {
+                    return Ok(LeaseResult::NoReadyNode {
+                        run: get_run_row(conn, run_id)?,
+                    });
+                }
 
                 let attempt: i64 = conn
                     .query_row(
@@ -877,11 +882,16 @@ impl LocalProductStore {
                 };
 
                 let now = self.now();
-                tx.execute(
+                let updated = tx.execute(
                     "UPDATE workflow_run_nodes SET status = 'running', started_at = $1, leased_at = $1, attempt_count = attempt_count + 1
                      WHERE run_id = $2 AND node_id = $3 AND status = 'pending'",
                     &[&now, &run_id, &node_id],
                 ).map_err(|e| e.to_string())?;
+                if updated == 0 {
+                    let run = pg_get_run_row(&mut tx, run_id)?;
+                    tx.commit().map_err(|e| e.to_string())?;
+                    return Ok(LeaseResult::NoReadyNode { run });
+                }
 
                 let attempt: i64 = tx
                     .query_one(
@@ -2401,11 +2411,25 @@ impl LocalProductStore {
                     })
                     .collect();
                 let count = stale_nodes.len() as i64;
-                for (run_id, node_id, _) in &stale_nodes {
-                    conn.execute(
+                for (run_id, node_id, leased_at) in &stale_nodes {
+                    let updated = conn.execute(
                         "UPDATE workflow_run_nodes SET status = 'pending', leased_at = NULL WHERE run_id = ?1 AND node_id = ?2 AND status = 'running'",
                         params![run_id, node_id],
                     ).map_err(|e| e.to_string())?;
+                    if updated > 0 {
+                        append_audit_locked(
+                            conn,
+                            &now,
+                            "scheduler",
+                            "workflow_node.stale_lease_recovered",
+                            node_id,
+                            &json!({
+                                "run_id": run_id,
+                                "leased_at": leased_at,
+                                "lease_timeout_ms": lease_timeout_ms,
+                            }),
+                        )?;
+                    }
                 }
                 Ok(count)
             }),
@@ -2433,11 +2457,25 @@ impl LocalProductStore {
                     })
                     .collect();
                 let count = stale_nodes.len() as i64;
-                for (run_id, node_id, _) in &stale_nodes {
-                    client.execute(
+                for (run_id, node_id, leased_at) in &stale_nodes {
+                    let updated = client.execute(
                         "UPDATE workflow_run_nodes SET status = 'pending', leased_at = NULL WHERE run_id = $1 AND node_id = $2 AND status = 'running'",
                         &[run_id, node_id],
                     ).map_err(|e| e.to_string())?;
+                    if updated > 0 {
+                        pg_append_audit(
+                            client,
+                            &now,
+                            "scheduler",
+                            "workflow_node.stale_lease_recovered",
+                            node_id,
+                            &json!({
+                                "run_id": run_id,
+                                "leased_at": leased_at,
+                                "lease_timeout_ms": lease_timeout_ms,
+                            }),
+                        )?;
+                    }
                 }
                 Ok(count)
             }),
@@ -4099,7 +4137,7 @@ pub fn workflow_run_boundaries() -> Value {
     json!({
         "execution_authority": "disabled",
         "target_repository_writes": "disabled",
-        "runtime_workers": "disabled",
+        "runtime_workers": "env_gated_supervised",
         "sandbox_process_execution": "not_implemented",
         "provider_calls": "not_invoked",
         "approval_execution_authority": "disabled",

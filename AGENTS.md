@@ -2,12 +2,13 @@
 
 This repository is the Token-Efficient Agent Harness Lab: a local deterministic harness and self-hosted macro-orchestrator control plane for studying token-efficient agent workflows.
 
-## Current State (2026-06-17)
+## Current State (2026-06-18)
 
 **Active tracks:**
 - **Real-World Testing Mode** — validated through real tasks, branches, commits, PRs, CI, gated auto-merge
 - **Agent Autonomous Maintenance Mode** — agents maintain docs/CI/tests/low-risk PR flow under playbook gates
 - **V2 Real Production Output Track** — authorized, phase-gated path to auditable real-repository patch/PR production
+- **V2 progress** — V2-0 through V2-3 merged; V2-4 bounded supervised workers implemented on its phase branch; V2-5 pending
 
 **Complete tracks:**
 - Dispatch Kernel Phases 1–7 (including 6A, 6B-1/2/3, Gates 1–3): STABLE
@@ -19,7 +20,7 @@ This repository is the Token-Efficient Agent Harness Lab: a local deterministic 
 - HybridExecutor with `ACP_EXECUTION_MODE`: COMPLETE
 
 **Key facts:**
-- 1534 Rust tests pass, 0 failures (last recorded full verification)
+- 1571 Rust tests pass, 0 failures (last recorded full verification)
 - Architecture Refactor R-series sealed at R7. R8 is not approved.
 - Post-R7 wire/type governance hardening implemented: `scripts/check_wire_codegen_drift.sh`
 
@@ -75,7 +76,7 @@ Allowed autonomous advancement:
 - fix failing tests, CI breakage, lint/security baseline failures, and deterministic regressions
 - add focused tests for uncovered behavior in existing modules
 - harden completed dispatch-kernel phases when evidence or review findings identify concrete defects
-- advance the next documented dispatch-kernel phase when it is already described in the architecture book and can be implemented without broadening real provider behavior beyond the existing explicit env-gated local beta path, sandbox isolation, subprocess execution beyond the existing CLI executor path, target repo writes, deployment, or concurrent worker processes
+- advance the next documented dispatch-kernel phase when it is already described in the architecture book and can be implemented without broadening real provider behavior beyond approved env-gated paths, sandbox isolation, subprocess execution beyond the existing CLI executor path, target repo writes, deployment, or worker concurrency outside V2-4
 - advance the next V2 phase documented in `docs/NEXT_DECISION.md` when the change stays inside that phase's gates and includes audit, tests, and rollback/kill path
 - update architecture, module maps, and closeout reports required to make the new state durable
 - create branches, commits, PRs, and low-risk merges through branch+PR workflow under `docs/REAL_WORLD_TESTING_PLAYBOOK.md` gates
@@ -119,7 +120,7 @@ Do not add without explicit human approval:
 - API keys or provider credentials
 - real autonomous agents
 - new or broadened sandbox/process/container/VM execution beyond the existing local CLI executor path
-- real concurrent workers
+- concurrent workers outside the bounded, env-gated V2-4 scheduler model
 - new cloud/hosted Web UI implementation
 - provider failover
 - cloud or hosted production deployment
