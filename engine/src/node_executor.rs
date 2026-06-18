@@ -31,7 +31,7 @@ pub struct NodeExecutionOutput {
 
 impl NodeExecutionOutput {
     pub fn to_value(&self) -> Value {
-        json!({
+        let mut value = json!({
             "status": self.status,
             "executor_type": self.executor_type,
             "output": self.output,
@@ -41,7 +41,27 @@ impl NodeExecutionOutput {
             "output_tokens": self.output_tokens,
             "estimated_cost": self.estimated_cost,
             "latency_ms": self.latency_ms,
-        })
+        });
+        if matches!(
+            self.executor_type.as_str(),
+            "provider" | "claude_code_cli" | "codex_cli"
+        ) {
+            if let Some(obj) = value.as_object_mut() {
+                obj.insert(
+                    "trace".to_string(),
+                    json!({
+                        "schema_version": "execution_trace.v2",
+                        "executor_type": self.executor_type,
+                        "env_gate": "passed",
+                        "auth_scope": "explicit_local_runtime",
+                        "output_policy": "redacted_and_capped",
+                        "cost_gate": if self.estimated_cost.is_some() { "evaluated" } else { "not_applicable" },
+                        "kill_path": "workflow_cancel_or_process_timeout",
+                    }),
+                );
+            }
+        }
+        value
     }
 }
 

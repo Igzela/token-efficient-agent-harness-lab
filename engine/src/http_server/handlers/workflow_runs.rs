@@ -315,6 +315,13 @@ pub(crate) async fn api_tick_workflow_run(
             }
         }
         "claude_code_cli" | "codex_cli" => {
+            authorize(
+                &state,
+                &headers,
+                "dispatch:execute",
+                uri.path(),
+                &request_id.0,
+            )?;
             let cli_config = crate::cli::CliConfig::from_env();
             match crate::cli::CliNodeExecutor::from_config(&cli_config) {
                 Some(executor) => {
@@ -352,6 +359,65 @@ pub(crate) async fn api_tick_workflow_run(
                 }
             }
         }
+        "provider" | "provider_model" => {
+            authorize(
+                &state,
+                &headers,
+                "dispatch:execute",
+                uri.path(),
+                &request_id.0,
+            )?;
+            if !provider_execution_enabled() {
+                return Err(ApiError::with_code(
+                    StatusCode::BAD_REQUEST,
+                    "provider_not_available",
+                    "provider execution not enabled (ACP_ENABLE_PROVIDER_EXECUTION=1 required)",
+                ));
+            }
+            let Some(provider) = state.provider.clone() else {
+                return Err(ApiError::with_code(
+                    StatusCode::BAD_REQUEST,
+                    "provider_not_available",
+                    "provider is not configured",
+                ));
+            };
+            if !provider.is_enabled() {
+                return Err(ApiError::with_code(
+                    StatusCode::BAD_REQUEST,
+                    "provider_not_available",
+                    "provider is disabled",
+                ));
+            }
+            let cost_config = crate::provider::CostGateConfig::from_env();
+            let today_prefix = &crate::http_server::middleware::chrono_free_today()[..10];
+            let daily_cost = store.daily_estimated_cost_usd(today_prefix).unwrap_or(0.0);
+            let recorder = std::sync::Arc::new(crate::provider::ProviderAuditRecorder::with_store(
+                store.clone(),
+            ));
+            let executor = crate::provider::executor::ProviderNodeExecutor::new(provider)
+                .with_audit_recorder(recorder)
+                .with_cost_gate(cost_config, daily_cost)
+                .with_max_retries(max_retries);
+            match store.tick_with_executor_and_command(
+                &run_id,
+                actor,
+                max_retries,
+                &executor,
+                request.command.as_deref(),
+            ) {
+                Ok(result) => {
+                    record_tick_decision(&store, &run_id, &result, "provider");
+                    Ok((cors_headers(), Json(json_response("tick", result))))
+                }
+                Err(e) if e.starts_with("workflow run not found:") => Err(not_found()),
+                Err(e) if e.contains("terminal") => Err(ApiError::with_code(
+                    StatusCode::CONFLICT,
+                    "run_terminal",
+                    &e,
+                )),
+                Err(e) => Err(internal_error(e)),
+            }
+        }
         _ => match store.tick_with_retry(&run_id, actor, max_retries) {
             Ok(result) => {
                 record_tick_decision(&store, &run_id, &result, "noop");
@@ -366,6 +432,12 @@ pub(crate) async fn api_tick_workflow_run(
             Err(e) => Err(internal_error(e)),
         },
     }
+}
+
+fn provider_execution_enabled() -> bool {
+    std::env::var("ACP_ENABLE_PROVIDER_EXECUTION")
+        .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+        .unwrap_or(false)
 }
 
 fn query_i64(params: &std::collections::HashMap<String, String>, key: &str, default: i64) -> i64 {

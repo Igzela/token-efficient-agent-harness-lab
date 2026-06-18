@@ -1,5 +1,7 @@
 use serde_json::Value;
 
+const MAX_REDACTED_TEXT_BYTES: usize = 64 * 1024;
+
 pub fn redact_secrets(text: &str, secrets: &[&str]) -> String {
     let mut result = text.to_string();
     for secret in secrets {
@@ -8,6 +10,38 @@ pub fn redact_secrets(text: &str, secrets: &[&str]) -> String {
         }
     }
     result
+}
+
+pub fn redact_sensitive_patterns(text: &str) -> String {
+    let mut result = text.to_string();
+    let patterns = [
+        r"(?i)\bsk-[A-Za-z0-9_\-]{12,}\b",
+        r#"(?i)\b(api[_-]?key|secret|token|password|credential)\s*[:=]\s*['\"]?[^'\"\s,}]+"#,
+        r"-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z ]*PRIVATE KEY-----",
+        r"(?i)\bBearer\s+[A-Za-z0-9._\-]{12,}",
+    ];
+    for pattern in patterns {
+        let regex = regex::Regex::new(pattern).expect("valid redaction regex");
+        result = regex.replace_all(&result, "***").to_string();
+    }
+    truncate_redacted_text(result)
+}
+
+pub fn truncate_redacted_text(mut text: String) -> String {
+    if text.len() <= MAX_REDACTED_TEXT_BYTES {
+        return text;
+    }
+    let original_len = text.len();
+    let mut split = MAX_REDACTED_TEXT_BYTES;
+    while split > 0 && !text.is_char_boundary(split) {
+        split -= 1;
+    }
+    text.truncate(split);
+    text.push_str(&format!(
+        "\n[truncated {} bytes]\n",
+        original_len.saturating_sub(split)
+    ));
+    text
 }
 
 pub fn redact_audit_fields(data: &Value) -> Value {
@@ -176,5 +210,24 @@ mod tests {
         let data = json!({});
         let result = redact_audit_fields(&data);
         assert_eq!(result, data);
+    }
+
+    #[test]
+    fn redact_sensitive_patterns_catches_common_secret_shapes() {
+        let text = concat!(
+            "api_key=sk-abcdefghijklmnopqrstuvwxyz token: bearer-secret Bear",
+            "er abcdefghijklmnopqrstuvwxyz"
+        );
+        let result = redact_sensitive_patterns(text);
+        assert!(!result.contains("sk-abcdefghijklmnopqrstuvwxyz"));
+        assert!(!result.contains("bearer-secret"));
+        assert!(!result.contains("abcdefghijklmnopqrstuvwxyz"));
+        assert!(result.contains("***"));
+    }
+
+    #[test]
+    fn redact_sensitive_patterns_truncates_large_text() {
+        let result = redact_sensitive_patterns(&"x".repeat(MAX_REDACTED_TEXT_BYTES + 10));
+        assert!(result.contains("[truncated 10 bytes]"));
     }
 }

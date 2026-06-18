@@ -81,7 +81,7 @@ The V2 design upgrades old limitations into explicit production guardrails:
 | Capability | Current state | V2 target | Guardrail |
 |---|---|---|---|
 | Workspace execution | App-owned workspace lifecycle and V2-1 safety base exist | Confined app-owned execution workspace | Path-safe IDs, canonical app-store root checks, symlink skip, file/byte ceilings, quarantine/cleanup |
-| Provider/CLI output | Env-gated paths exist but are not productized as real-output flow | Real output path under explicit gates | Auth scope, env gate, cost cap, retry/budget breaker, trace, redaction |
+| Provider/CLI output | V2-2 gated workflow-node output path exists | Real output path under explicit gates | Auth scope, env gate, cost cap, retry/budget breaker, trace, redaction |
 | Target repository output | No target repo writes | Branch/worktree/PR branch or patch export | No direct `main` writes, approval binding, evidence bundle, secret-free PR body |
 | Workers | Queue/pool primitives exist | Bounded supervised workers | Lease, heartbeat, concurrency cap, stale recovery, pause/kill |
 | Dashboard UX | Operator tabs and Mission Control | Single output workflow | Gate/risk/next-step/approval visibility |
@@ -108,7 +108,7 @@ Do not create a second runtime kernel for V2. Extend the existing `node_executor
 | `cli` | CLI executor only; requires CLI gate |
 | `auto` | Hybrid provider/CLI routing by complexity threshold |
 
-Workflow node execution is explicit through scheduler/tick paths. `CommandNodeExecutor` rejects shell metacharacters, avoids `sh -c`, uses allowlisted binaries, validates supplied workspace cwd, clears inherited environment except `PATH`, caps captured output, enforces timeout kill, and emits structured results. Claude/Codex CLI execution remains a separate explicit opt-in path.
+Workflow node execution is explicit through scheduler/tick paths. `CommandNodeExecutor` rejects shell metacharacters, avoids `sh -c`, uses allowlisted binaries, validates supplied workspace cwd, clears inherited environment except `PATH`, caps captured output, enforces timeout kill, and emits structured results. Claude/Codex CLI execution remains a separate explicit opt-in path behind `ACP_ENABLE_CLI_EXECUTION=1`; CLI subprocess env is restricted to `PATH` plus `ACP_CLI_ENV_ALLOWLIST`, and CLI output is redacted/capped before persistence. Provider workflow ticks require `ACP_ENABLE_PROVIDER_EXECUTION=1`, a configured provider, dispatch execute scope, cost-gate preflight, provider audit events, retry/budget-breaker handling, and redacted/capped output trace.
 
 ## Workflow Model
 
@@ -137,6 +137,7 @@ These are accepted current limitations, not hidden TODOs:
 
 - V2 real output is authorized but not yet complete; each phase must land behind explicit gates.
 - V2-1 app-owned workspace hardening is implemented, but it is not hard process/container/VM sandboxing and does not authorize target-repository writes.
+- V2-2 provider/CLI output is implemented as a gated workflow-node capability, but it does not create PR branches, write target repositories, or make provider/CLI execution default-on.
 - Hard process/container/VM sandbox isolation is not implemented and is not part of V2-1 unless separately approved.
 - Target-repository writes remain unavailable until V2-3 implements controlled branch/worktree/PR output.
 - Provider/CLI execution remains default-off even after V2-2.
