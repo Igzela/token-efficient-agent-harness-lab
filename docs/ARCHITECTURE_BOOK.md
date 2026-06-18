@@ -143,7 +143,7 @@ These are accepted current limitations, not hidden TODOs:
 - Hard process/container/VM sandbox isolation is not implemented and is not part of V2-1 unless separately approved.
 - V2-3 controlled target output is merged. It creates no merge/deploy/apply authority and preserves the registered target working tree and `main`.
 - Provider/CLI execution remains default-off even after V2-2.
-- Bounded supervised workers are merged in V2-4 and Mission Control product output UX is implemented in V2-5 PR #74, pending CI/merge; unattended autonomous-agent loops remain out of scope.
+- Bounded supervised workers are merged in V2-4 and Mission Control product output UX is merged in V2-5; unattended autonomous-agent loops remain out of scope.
 - Cloud SaaS, hosted/cloud deployment, multi-tenant service, direct release/tag/deploy/apply controls, and provider failover remain out of scope.
 - Some routing, quality, and orchestration modules remain partially active rather than unified under one policy layer.
 
