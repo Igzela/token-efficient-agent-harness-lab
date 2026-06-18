@@ -106,7 +106,7 @@ Use this as the single forward plan. Do not create new roadmap/status docs for V
 | Phase | Branch | Goal | Required acceptance |
 |---|---|---|---|
 | V2-0 | `codex/v2-real-production-output` | Authorize and document the track | Update this file, `CURRENT_STATUS`, `ARCHITECTURE_BOOK`, and `MODULE_MAP`; no runtime authority changes |
-| V2-1 | `codex/v2-1-execution-safety-base` | Real execution safety base | App-owned workspace confinement, command/profile allowlist, timeout/resource ceilings, secret scan/redaction, audit events, quarantine/kill path, focused Rust tests |
+| V2-1 | `codex/v2-1-execution-safety-base` | Real execution safety base | App-owned workspace confinement, command/profile allowlist, timeout/resource ceilings, secret scan/redaction, audit events, quarantine/kill path, focused Rust tests; implemented in this branch, pending PR/merge |
 | V2-2 | `codex/v2-2-provider-cli-output` | Real provider/CLI output path | Explicit env/auth/cost gates, retry/budget breaker, provider/CLI trace, redacted outputs, failure taxonomy, focused Rust/provider/CLI tests |
 | V2-3 | `codex/v2-3-target-repo-pr-flow` | Target repo branch/PR output | Controlled branch/worktree, diff/test/evidence bundle, approval-bound push PR branch or export patch, no direct `main` writes, secret-free PR body/artifacts |
 | V2-4 | `codex/v2-4-supervised-worker-queue` | Bounded production worker queue | Lease, heartbeat, max concurrency, stale lease recovery, pause/kill switch, audit trail, no unattended autonomous loop |

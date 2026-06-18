@@ -1,4 +1,9 @@
 use serde_json::{json, Value};
+use std::io::Read;
+use std::path::{Component, Path, PathBuf};
+use std::thread;
+
+const MAX_COMMAND_OUTPUT_BYTES: usize = 64 * 1024;
 
 /// Input for node-level execution within a workflow run.
 #[derive(Debug, Clone)]
@@ -222,6 +227,84 @@ impl CommandNodeExecutor {
     fn parse_argv(command: &str) -> Vec<String> {
         command.split_whitespace().map(|s| s.to_string()).collect()
     }
+
+    fn workspace_cwd(input: &NodeExecutionInput) -> Result<PathBuf, String> {
+        let cwd = input
+            .node_metadata
+            .get("workspace_path")
+            .and_then(|v| v.as_str())
+            .unwrap_or(".");
+
+        if cwd == "." {
+            return Ok(PathBuf::from("."));
+        }
+
+        let cwd_path = Path::new(cwd);
+        ensure_clean_workspace_path(cwd_path, "workspace_path")?;
+        let cwd_canonical =
+            std::fs::canonicalize(cwd_path).map_err(|e| format!("workspace_path invalid: {e}"))?;
+
+        if let Some(root) = input
+            .node_metadata
+            .get("workspace_root")
+            .and_then(|v| v.as_str())
+        {
+            let root_path = Path::new(root);
+            ensure_clean_workspace_path(root_path, "workspace_root")?;
+            let root_canonical = std::fs::canonicalize(root_path)
+                .map_err(|e| format!("workspace_root invalid: {e}"))?;
+            if !cwd_canonical.starts_with(&root_canonical) {
+                return Err("workspace_path escaped workspace_root".to_string());
+            }
+        }
+
+        Ok(cwd_canonical)
+    }
+}
+
+fn ensure_clean_workspace_path(path: &Path, field: &str) -> Result<(), String> {
+    if !path.is_absolute() {
+        return Err(format!("{field} must be absolute"));
+    }
+    for component in path.components() {
+        if matches!(component, Component::ParentDir | Component::CurDir) {
+            return Err(format!("{field} must not contain . or .. components"));
+        }
+    }
+    Ok(())
+}
+
+fn truncate_command_output(mut output: String, original_len: usize) -> String {
+    if original_len <= MAX_COMMAND_OUTPUT_BYTES {
+        return output;
+    }
+    let mut split = MAX_COMMAND_OUTPUT_BYTES;
+    split = split.min(output.len());
+    while split > 0 && !output.is_char_boundary(split) {
+        split -= 1;
+    }
+    output.truncate(split);
+    output.push_str(&format!(
+        "\n[truncated {} bytes]\n",
+        original_len.saturating_sub(split)
+    ));
+    output
+}
+
+fn read_command_output(mut reader: impl Read) -> std::io::Result<(Vec<u8>, usize)> {
+    let mut kept = Vec::new();
+    let mut total = 0_usize;
+    let mut buffer = [0_u8; 8192];
+    loop {
+        let read = reader.read(&mut buffer)?;
+        if read == 0 {
+            break;
+        }
+        total = total.saturating_add(read);
+        let remaining = MAX_COMMAND_OUTPUT_BYTES.saturating_sub(kept.len());
+        kept.extend_from_slice(&buffer[..remaining.min(read)]);
+    }
+    Ok((kept, total))
 }
 
 impl NodeExecutor for CommandNodeExecutor {
@@ -285,22 +368,38 @@ impl NodeExecutor for CommandNodeExecutor {
             };
         }
 
-        let cwd = input
-            .node_metadata
-            .get("workspace_path")
-            .and_then(|v| v.as_str())
-            .unwrap_or(".");
+        let cwd = match Self::workspace_cwd(input) {
+            Ok(path) => path,
+            Err(e) => {
+                return NodeExecutionOutput {
+                    status: "failed".to_string(),
+                    executor_type: "command".to_string(),
+                    output: None,
+                    error_domain: Some("workspace_escape".to_string()),
+                    error_message: Some(e),
+                    input_tokens: None,
+                    output_tokens: None,
+                    estimated_cost: None,
+                    latency_ms: Some(start.elapsed().as_millis() as i64),
+                };
+            }
+        };
 
         let mut cmd = std::process::Command::new(&argv[0]);
         if argv.len() > 1 {
             cmd.args(&argv[1..]);
         }
         cmd.current_dir(cwd);
+        cmd.env_clear();
+        cmd.env(
+            "PATH",
+            std::env::var("PATH").unwrap_or_else(|_| "/usr/bin:/bin".to_string()),
+        );
         for (k, v) in &self.env_vars {
             cmd.env(k, v);
         }
 
-        let child = match cmd
+        let mut child = match cmd
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::piped())
             .spawn()
@@ -320,17 +419,22 @@ impl NodeExecutor for CommandNodeExecutor {
                 };
             }
         };
+        let stdout = child.stdout.take().expect("piped stdout");
+        let stderr = child.stderr.take().expect("piped stderr");
+        let stdout_reader = thread::spawn(move || read_command_output(stdout));
+        let stderr_reader = thread::spawn(move || read_command_output(stderr));
 
         let deadline = std::time::Duration::from_millis(self.timeout_ms);
         let wait_start = std::time::Instant::now();
-        let mut child = child;
-        loop {
+        let status = loop {
             match child.try_wait() {
-                Ok(Some(_)) => break,
+                Ok(Some(status)) => break status,
                 Ok(None) => {
                     if wait_start.elapsed() >= deadline {
                         let _ = child.kill();
                         let _ = child.wait();
+                        let _ = stdout_reader.join();
+                        let _ = stderr_reader.join();
                         return NodeExecutionOutput {
                             status: "failed".to_string(),
                             executor_type: "command".to_string(),
@@ -359,36 +463,44 @@ impl NodeExecutor for CommandNodeExecutor {
                     };
                 }
             }
-        }
-
-        let output = match child.wait_with_output() {
-            Ok(o) => o,
-            Err(e) => {
-                return NodeExecutionOutput {
-                    status: "failed".to_string(),
-                    executor_type: "command".to_string(),
-                    output: None,
-                    error_domain: Some("command_output_error".to_string()),
-                    error_message: Some(e.to_string()),
-                    input_tokens: None,
-                    output_tokens: None,
-                    estimated_cost: None,
-                    latency_ms: Some(start.elapsed().as_millis() as i64),
-                };
+        };
+        let (stdout_bytes, stdout_len) = match stdout_reader.join() {
+            Ok(Ok(output)) => output,
+            Ok(Err(error)) => {
+                return command_output_error(start, error.to_string());
             }
+            Err(_) => return command_output_error(start, "stdout reader failed".to_string()),
+        };
+        let (stderr_bytes, stderr_len) = match stderr_reader.join() {
+            Ok(Ok(output)) => output,
+            Ok(Err(error)) => {
+                return command_output_error(start, error.to_string());
+            }
+            Err(_) => return command_output_error(start, "stderr reader failed".to_string()),
         };
 
         let elapsed_ms = start.elapsed().as_millis() as i64;
-        let stdout = String::from_utf8_lossy(&output.stdout).to_string();
-        let stderr = String::from_utf8_lossy(&output.stderr).to_string();
-        let exit_code = output.status.code().unwrap_or(-1);
+        let stdout = String::from_utf8_lossy(&stdout_bytes).to_string();
+        let stderr = String::from_utf8_lossy(&stderr_bytes).to_string();
+        let exit_code = status.code().unwrap_or(-1);
         let combined = if stderr.is_empty() {
             stdout.clone()
         } else {
             format!("{stdout}\n[stderr]\n{stderr}")
         };
+        let delimiter_len = if stderr_len > 0 {
+            "\n[stderr]\n".len()
+        } else {
+            0
+        };
+        let combined = truncate_command_output(
+            combined,
+            stdout_len
+                .saturating_add(stderr_len)
+                .saturating_add(delimiter_len),
+        );
 
-        if output.status.success() {
+        if status.success() {
             NodeExecutionOutput {
                 status: "completed".to_string(),
                 executor_type: "command".to_string(),
@@ -413,6 +525,20 @@ impl NodeExecutor for CommandNodeExecutor {
                 latency_ms: Some(elapsed_ms),
             }
         }
+    }
+}
+
+fn command_output_error(start: std::time::Instant, message: String) -> NodeExecutionOutput {
+    NodeExecutionOutput {
+        status: "failed".to_string(),
+        executor_type: "command".to_string(),
+        output: None,
+        error_domain: Some("command_output_error".to_string()),
+        error_message: Some(message),
+        input_tokens: None,
+        output_tokens: None,
+        estimated_cost: None,
+        latency_ms: Some(start.elapsed().as_millis() as i64),
     }
 }
 
@@ -548,5 +674,40 @@ mod tests {
         let output = executor.execute_node(&input);
         assert_eq!(output.status, "failed");
         assert_eq!(output.error_domain.unwrap(), "command_exit_nonzero");
+    }
+
+    #[test]
+    fn test_command_rejects_unclean_workspace_path() {
+        let executor = CommandNodeExecutor::default();
+        let input = NodeExecutionInput {
+            node_id: "node-cmd-005".to_string(),
+            task_type: "command".to_string(),
+            run_id: "run-005".to_string(),
+            workflow_id: "wf-005".to_string(),
+            node_metadata: json!({"command": "echo ok", "workspace_path": "/tmp/workspace/../escape"}),
+        };
+        let output = executor.execute_node(&input);
+        assert_eq!(output.status, "failed");
+        assert_eq!(output.error_domain.unwrap(), "workspace_escape");
+    }
+
+    #[test]
+    fn test_command_output_is_truncated() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("large.txt");
+        std::fs::write(&file, "x".repeat(80_000)).unwrap();
+        let executor = CommandNodeExecutor::default();
+        let input = NodeExecutionInput {
+            node_id: "node-cmd-006".to_string(),
+            task_type: "command".to_string(),
+            run_id: "run-006".to_string(),
+            workflow_id: "wf-006".to_string(),
+            node_metadata: json!({"command": format!("cat {}", file.to_string_lossy())}),
+        };
+        let output = executor.execute_node(&input);
+        assert_eq!(output.status, "completed");
+        let rendered = output.output.unwrap();
+        assert!(rendered.len() < 70_000);
+        assert!(rendered.contains("[truncated"));
     }
 }

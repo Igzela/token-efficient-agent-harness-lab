@@ -20,6 +20,10 @@ const DEFAULT_IGNORE_DIRS: &[&str] = &[
 ];
 
 const MAX_FILE_BYTES: u64 = 1_048_576; // 1 MB
+const MAX_WORKSPACE_COPY_FILES: usize = 20_000;
+const MAX_WORKSPACE_COPY_BYTES: u64 = 200 * 1_048_576; // 200 MB
+const MAX_WORKSPACE_COPY_FILE_BYTES: u64 = 10 * 1_048_576; // 10 MB
+const MAX_REVIEW_DIFF_BYTES: usize = 256 * 1024;
 
 fn is_ignored_dir(name: &str) -> bool {
     DEFAULT_IGNORE_DIRS.contains(&name)
@@ -36,24 +40,43 @@ impl LocalProductStore {
         workspace_id: &str,
         target_repo_path: &str,
     ) -> Result<String, String> {
+        validate_workspace_id(workspace_id)?;
         let db_dir = self
             .db_path()
             .parent()
             .ok_or_else(|| "store has no parent directory".to_string())?;
         let workspaces_dir = db_dir.join("workspaces");
         std::fs::create_dir_all(&workspaces_dir).map_err(|e| e.to_string())?;
-        let workspace_dir = workspaces_dir.join(workspace_id);
+        let workspaces_canonical =
+            std::fs::canonicalize(&workspaces_dir).map_err(|e| e.to_string())?;
+        let workspace_dir = workspaces_canonical.join(workspace_id);
         if workspace_dir.exists() {
-            return Ok(workspace_dir.to_string_lossy().into_owned());
+            let existing = std::fs::canonicalize(&workspace_dir).map_err(|e| e.to_string())?;
+            if !existing.starts_with(&workspaces_canonical) {
+                return Err("workspace directory escaped app-owned workspace root".to_string());
+            }
+            return Ok(existing.to_string_lossy().into_owned());
         }
 
         let target_canonical =
             std::fs::canonicalize(target_repo_path).map_err(|e| e.to_string())?;
-        if workspaces_dir.starts_with(&target_canonical) {
+        let planned_workspace =
+            canonicalize_planned_path(&workspace_dir.to_string_lossy(), "workspace_path")?;
+        if !planned_workspace.starts_with(&workspaces_canonical) {
+            return Err(
+                "workspace directory must stay inside app-owned workspace root".to_string(),
+            );
+        }
+        if workspaces_canonical.starts_with(&target_canonical)
+            || planned_workspace.starts_with(&target_canonical)
+        {
             return Err("workspace directory must be outside target repository".to_string());
         }
 
-        copy_dir_contents(&target_canonical, &workspace_dir)?;
+        if let Err(e) = copy_dir_contents(&target_canonical, &workspace_dir) {
+            let _ = std::fs::remove_dir_all(&workspace_dir);
+            return Err(e);
+        }
 
         let source_manifest = compute_manifest(&target_canonical)?;
         let manifest_path = workspace_dir.join(".source_manifest.json");
@@ -197,15 +220,31 @@ impl LocalProductStore {
         } else {
             "failed"
         };
+        let secret_scan_status = if secret_findings.is_empty() {
+            "passed"
+        } else {
+            "blocked"
+        };
 
-        let review_diff = generate_review_diff(path, &added, &modified, &deleted);
+        let review_diff = if secret_findings.is_empty() {
+            generate_review_diff(path, &added, &modified, &deleted)
+        } else {
+            "review diff suppressed: secret scan failed".to_string()
+        };
 
         let artifact_request = json!({
             "workspace_id": workspace_id,
             "patch_hash": patch_hash,
             "changed_files": changed_files,
             "redaction_status": redaction_status,
+            "secret_scan_status": secret_scan_status,
             "review_diff": review_diff,
+            "safety": {
+                "workspace_confinement": "app_owned_directory",
+                "secret_scan": secret_scan_status,
+                "review_diff": if secret_findings.is_empty() { "generated" } else { "suppressed" },
+                "target_repository_writes": "disabled",
+            },
         });
         let artifact = self.record_supervised_patch_artifact(&artifact_request, actor)?;
 
@@ -360,6 +399,7 @@ impl LocalProductStore {
                     "boundary": boundary.clone(),
                     "metadata_only": true,
                     "execution_authority": "disabled",
+                    "safety": workspace_safety_profile(),
                 });
                 conn.execute(
                     "INSERT INTO supervised_patch_workspaces
@@ -400,11 +440,16 @@ impl LocalProductStore {
                         "target_id": target_id,
                         "source_revision": source_revision,
                         "metadata_only": true,
-                        "target_repository_writes": "disabled",
-                        "registered_git_worktree": "forbidden",
-                        "workspace_directory_creation": "not_performed",
-                        "execution_authority": "disabled",
-                    }),
+                    "target_repository_writes": "disabled",
+                    "registered_git_worktree": "forbidden",
+                    "workspace_directory_creation": boundary
+                        .get("workspace_directory_creation")
+                        .and_then(Value::as_str)
+                        .unwrap_or("not_performed"),
+                    "execution_authority": "disabled",
+                    "workspace_confinement": boundary.get("workspace_confinement"),
+                    "kill_switch": "quarantine_or_cleanup",
+                }),
                 )?;
                 Ok(workspace)
             }),
@@ -433,6 +478,7 @@ impl LocalProductStore {
                     "boundary": boundary.clone(),
                     "metadata_only": true,
                     "execution_authority": "disabled",
+                    "safety": workspace_safety_profile(),
                 });
                 client.execute(
                     "INSERT INTO supervised_patch_workspaces
@@ -469,8 +515,13 @@ impl LocalProductStore {
                     "metadata_only": true,
                     "target_repository_writes": "disabled",
                     "registered_git_worktree": "forbidden",
-                    "workspace_directory_creation": "not_performed",
+                    "workspace_directory_creation": boundary
+                        .get("workspace_directory_creation")
+                        .and_then(Value::as_str)
+                        .unwrap_or("not_performed"),
                     "execution_authority": "disabled",
+                    "workspace_confinement": boundary.get("workspace_confinement"),
+                    "kill_switch": "quarantine_or_cleanup",
                 }).to_string();
                 pg_append_audit(client, &created_at, actor, "supervised_patch.workspace_record", &workspace_id, &audit_details)?;
                 Ok(workspace)
@@ -794,16 +845,27 @@ impl LocalProductStore {
                 "invalid supervised patch artifact redaction_status: {redaction_status}"
             ));
         }
+        let secret_scan_status = optional_str(request, "secret_scan_status").unwrap_or("pending");
+        if !matches!(secret_scan_status, "pending" | "passed" | "blocked") {
+            return Err(format!(
+                "invalid supervised patch artifact secret_scan_status: {secret_scan_status}"
+            ));
+        }
         let review_diff = request
             .get("review_diff")
             .and_then(|v| v.as_str())
             .unwrap_or("")
             .to_string();
+        validate_review_diff_redaction(redaction_status, &review_diff)?;
         let storage_refs = request
             .get("storage_refs")
             .cloned()
             .unwrap_or_else(|| json!({}));
         let retention_expires_at = optional_str(request, "retention_expires_at");
+        let safety = request
+            .get("safety")
+            .cloned()
+            .unwrap_or_else(artifact_safety_profile);
         let run_id = required_str(&workspace, "run_id")?;
         let plan_id = optional_str(&workspace, "plan_id");
         let target_id = required_str(&workspace, "target_id")?;
@@ -828,8 +890,10 @@ impl LocalProductStore {
                     "patch_hash": patch_hash,
                     "changed_files": changed_files.clone(),
                     "redaction_status": redaction_status,
+                    "secret_scan_status": secret_scan_status,
                     "review_diff": review_diff,
                     "storage_refs": storage_refs.clone(),
+                    "safety": safety.clone(),
                     "retention_expires_at": retention_expires_at,
                     "created_at": created_at,
                     "metadata_only": true,
@@ -874,6 +938,7 @@ impl LocalProductStore {
                         "metadata_only": true,
                         "execution_authority": "disabled",
                         "patch_apply_authority": "disabled",
+                        "secret_scan_status": secret_scan_status,
                     }),
                 )?;
                 Ok(artifact)
@@ -897,8 +962,10 @@ impl LocalProductStore {
                     "patch_hash": patch_hash,
                     "changed_files": changed_files.clone(),
                     "redaction_status": redaction_status,
+                    "secret_scan_status": secret_scan_status,
                     "review_diff": review_diff,
                     "storage_refs": storage_refs.clone(),
+                    "safety": safety.clone(),
                     "retention_expires_at": retention_expires_at,
                     "created_at": created_at,
                     "metadata_only": true,
@@ -938,6 +1005,7 @@ impl LocalProductStore {
                     "metadata_only": true,
                     "execution_authority": "disabled",
                     "patch_apply_authority": "disabled",
+                    "secret_scan_status": secret_scan_status,
                 })
                 .to_string();
                 pg_append_audit(
@@ -1292,7 +1360,17 @@ fn supervised_patch_boundary(
     Ok(json!({
         "metadata_only": true,
         "execution_authority": "disabled",
-        "workspace_directory_creation": "not_performed",
+        "workspace_directory_creation": if Path::new(workspace_path).exists() { "app_owned_copy" } else { "not_performed" },
+        "workspace_confinement": "app_owned_directory",
+        "workspace_root_policy": "canonical_app_store_root",
+        "symlink_policy": "skip",
+        "copy_resource_limits": {
+            "max_files": MAX_WORKSPACE_COPY_FILES,
+            "max_total_bytes": MAX_WORKSPACE_COPY_BYTES,
+            "max_file_bytes": MAX_WORKSPACE_COPY_FILE_BYTES,
+        },
+        "secret_scan": "required_before_artifact",
+        "kill_switch": "quarantine_or_cleanup",
         "target_repository_writes": "disabled",
         "registered_git_worktree": "forbidden",
         "git_worktree_add": "forbidden",
@@ -1302,6 +1380,56 @@ fn supervised_patch_boundary(
         "target_repo_canonical_path": path_string(&target_repo_canonical),
         "workspace_canonical_path": path_string(&workspace_canonical),
     }))
+}
+
+fn workspace_safety_profile() -> Value {
+    json!({
+        "workspace_confinement": "app_owned_directory",
+        "workspace_root_policy": "canonical_app_store_root",
+        "symlink_policy": "skip",
+        "copy_resource_limits": {
+            "max_files": MAX_WORKSPACE_COPY_FILES,
+            "max_total_bytes": MAX_WORKSPACE_COPY_BYTES,
+            "max_file_bytes": MAX_WORKSPACE_COPY_FILE_BYTES,
+        },
+        "secret_scan": "required_before_artifact",
+        "kill_switch": "quarantine_or_cleanup",
+        "target_repository_writes": "disabled",
+    })
+}
+
+fn artifact_safety_profile() -> Value {
+    json!({
+        "secret_scan": "pending",
+        "review_diff": "pending",
+        "target_repository_writes": "disabled",
+        "patch_apply_authority": "disabled",
+    })
+}
+
+fn validate_workspace_id(workspace_id: &str) -> Result<(), String> {
+    let valid = !workspace_id.trim().is_empty()
+        && workspace_id.len() <= 128
+        && workspace_id
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_');
+    if valid {
+        Ok(())
+    } else {
+        Err("workspace_id must contain only ASCII letters, digits, '-' or '_'".to_string())
+    }
+}
+
+fn validate_review_diff_redaction(redaction_status: &str, review_diff: &str) -> Result<(), String> {
+    if let Some(pattern) = secret_pattern(&review_diff.to_lowercase()) {
+        return Err(format!(
+            "review_diff contains sensitive pattern and must be suppressed: {pattern}"
+        ));
+    }
+    if redaction_status == "failed" && !review_diff.contains("suppressed") {
+        return Err("review_diff must be suppressed when redaction_status is failed".to_string());
+    }
+    Ok(())
 }
 
 fn canonicalize_existing_path(value: &str, field: &str) -> Result<PathBuf, String> {
@@ -1452,7 +1580,14 @@ fn validate_imported_workspace_boundary(
     }
     ensure_optional_bool_field(boundary, "metadata_only", true)?;
     ensure_optional_string_field(boundary, "execution_authority", "disabled")?;
-    ensure_optional_string_field(boundary, "workspace_directory_creation", "not_performed")?;
+    if let Some(actual) = boundary.get("workspace_directory_creation") {
+        let value = actual.as_str().unwrap_or("");
+        if !matches!(value, "not_performed" | "app_owned_copy") {
+            return Err(
+                "workspace_directory_creation must be not_performed or app_owned_copy".to_string(),
+            );
+        }
+    }
     ensure_optional_string_field(boundary, "target_repository_writes", "disabled")?;
     ensure_optional_string_field(boundary, "registered_git_worktree", "forbidden")?;
     ensure_optional_string_field(boundary, "git_worktree_add", "forbidden")?;
@@ -1570,6 +1705,7 @@ fn build_import_workspace_record(
     object.insert("boundary".to_string(), boundary.clone());
     object.insert("metadata_only".to_string(), json!(true));
     object.insert("execution_authority".to_string(), json!("disabled"));
+    object.insert("safety".to_string(), workspace_safety_profile());
     Ok(workspace_record)
 }
 
@@ -1615,6 +1751,12 @@ fn build_import_artifact_record(
     object.insert("execution_authority".to_string(), json!("disabled"));
     object.insert("patch_apply_authority".to_string(), json!("disabled"));
     object.insert("artifact_file_created".to_string(), json!(false));
+    if !object.contains_key("secret_scan_status") {
+        object.insert("secret_scan_status".to_string(), json!("pending"));
+    }
+    if !object.contains_key("safety") {
+        object.insert("safety".to_string(), artifact_safety_profile());
+    }
     Ok(artifact_record)
 }
 
@@ -1807,21 +1949,62 @@ fn diff_against_manifest(
     Ok((added, modified, deleted))
 }
 
+#[derive(Default)]
+struct WorkspaceCopyStats {
+    files: usize,
+    bytes: u64,
+}
+
 fn copy_dir_contents(src: &Path, dst: &Path) -> Result<(), String> {
+    let mut stats = WorkspaceCopyStats::default();
+    copy_dir_contents_inner(src, dst, &mut stats)
+}
+
+fn copy_dir_contents_inner(
+    src: &Path,
+    dst: &Path,
+    stats: &mut WorkspaceCopyStats,
+) -> Result<(), String> {
     std::fs::create_dir_all(dst).map_err(|e| e.to_string())?;
     let entries = std::fs::read_dir(src).map_err(|e| e.to_string())?;
     for entry in entries {
         let entry = entry.map_err(|e| e.to_string())?;
         let path = entry.path();
+        let file_type = entry.file_type().map_err(|e| e.to_string())?;
         let name = entry.file_name();
         let name_str = name.to_string_lossy();
-        if name_str.starts_with('.') {
+        if name_str.starts_with('.') || file_type.is_symlink() {
+            continue;
+        }
+        if file_type.is_dir() && is_ignored_dir(&name_str) {
             continue;
         }
         let target = dst.join(&name);
-        if path.is_dir() {
-            copy_dir_contents(&path, &target)?;
-        } else if path.is_file() {
+        if file_type.is_dir() {
+            copy_dir_contents_inner(&path, &target, stats)?;
+        } else if file_type.is_file() {
+            let meta = entry.metadata().map_err(|e| e.to_string())?;
+            if meta.len() > MAX_WORKSPACE_COPY_FILE_BYTES {
+                return Err(format!(
+                    "workspace copy file exceeds limit: {} ({} bytes)",
+                    path.display(),
+                    meta.len()
+                ));
+            }
+            stats.files += 1;
+            stats.bytes += meta.len();
+            if stats.files > MAX_WORKSPACE_COPY_FILES {
+                return Err(format!(
+                    "workspace copy file limit exceeded: {} > {}",
+                    stats.files, MAX_WORKSPACE_COPY_FILES
+                ));
+            }
+            if stats.bytes > MAX_WORKSPACE_COPY_BYTES {
+                return Err(format!(
+                    "workspace copy byte limit exceeded: {} > {}",
+                    stats.bytes, MAX_WORKSPACE_COPY_BYTES
+                ));
+            }
             std::fs::copy(&path, &target).map_err(|e| e.to_string())?;
         }
     }
@@ -1846,13 +2029,17 @@ fn collect_files_recursive(
     for entry in entries {
         let entry = entry.map_err(|e| e.to_string())?;
         let path = entry.path();
-        if path.is_dir() {
+        let file_type = entry.file_type().map_err(|e| e.to_string())?;
+        if file_type.is_symlink() {
+            continue;
+        }
+        if file_type.is_dir() {
             let name = path.file_name().unwrap_or_default().to_string_lossy();
             if name.starts_with('.') || is_ignored_dir(&name) {
                 continue;
             }
             collect_files_recursive(base, &path, pairs)?;
-        } else if path.is_file() {
+        } else if file_type.is_file() {
             let name = path.file_name().unwrap_or_default().to_string_lossy();
             if name.starts_with('.') {
                 continue;
@@ -1928,7 +2115,7 @@ fn generate_review_diff(
         diff.push_str(&format!("(deleted: {path})\n"));
     }
 
-    diff
+    truncate_text(diff, MAX_REVIEW_DIFF_BYTES)
 }
 
 fn sha256_bytes(data: &[u8]) -> [u8; 32] {
@@ -2043,39 +2230,70 @@ impl Sha256Writer {
 
 fn scan_for_secrets(dir: &Path) -> Result<Vec<String>, String> {
     let mut findings = Vec::new();
-    scan_recursive(dir, &mut findings)?;
+    scan_recursive(dir, dir, &mut findings)?;
     Ok(findings)
 }
 
-fn scan_recursive(dir: &Path, findings: &mut Vec<String>) -> Result<(), String> {
+fn scan_recursive(base: &Path, dir: &Path, findings: &mut Vec<String>) -> Result<(), String> {
     let entries = std::fs::read_dir(dir).map_err(|e| e.to_string())?;
     for entry in entries {
         let entry = entry.map_err(|e| e.to_string())?;
         let path = entry.path();
-        if path.is_dir() {
+        let file_type = entry.file_type().map_err(|e| e.to_string())?;
+        if file_type.is_symlink() {
+            continue;
+        }
+        if file_type.is_dir() {
             let name = path.file_name().unwrap_or_default().to_string_lossy();
-            if !name.starts_with('.') {
-                scan_recursive(&path, findings)?;
+            if !name.starts_with('.') && !is_ignored_dir(&name) {
+                scan_recursive(base, &path, findings)?;
             }
-        } else if path.is_file() {
+        } else if file_type.is_file() {
             if let Ok(content) = std::fs::read_to_string(&path) {
                 for line in content.lines() {
                     let lower = line.to_lowercase();
-                    if lower.contains("api_key")
-                        || lower.contains("api-key")
-                        || lower.contains("secret_key")
-                        || lower.contains("password")
-                        || lower.contains("bearer ")
-                        || lower.contains("private_key")
-                    {
-                        let relative = path.file_name().unwrap_or_default().to_string_lossy();
-                        findings.push(format!("{}: {}", relative, line.trim()));
+                    if let Some(pattern) = secret_pattern(&lower) {
+                        let relative = path.strip_prefix(base).unwrap_or(&path).to_string_lossy();
+                        findings.push(format!(
+                            "{relative}: sensitive pattern detected ({pattern})"
+                        ));
                     }
                 }
             }
         }
     }
     Ok(())
+}
+
+fn secret_pattern(lowercase_line: &str) -> Option<&'static str> {
+    if lowercase_line.contains("api_key") {
+        Some("api_key")
+    } else if lowercase_line.contains("api-key") {
+        Some("api-key")
+    } else if lowercase_line.contains("secret_key") {
+        Some("secret_key")
+    } else if lowercase_line.contains("password") {
+        Some("password")
+    } else if lowercase_line.contains("bearer ") {
+        Some("bearer")
+    } else if lowercase_line.contains("private_key") {
+        Some("private_key")
+    } else {
+        None
+    }
+}
+
+fn truncate_text(mut text: String, max_bytes: usize) -> String {
+    if text.len() <= max_bytes {
+        return text;
+    }
+    let mut split = max_bytes;
+    while split > 0 && !text.is_char_boundary(split) {
+        split -= 1;
+    }
+    text.truncate(split);
+    text.push_str("\n[truncated]\n");
+    text
 }
 
 #[cfg(test)]

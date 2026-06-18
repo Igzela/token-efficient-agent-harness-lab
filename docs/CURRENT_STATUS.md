@@ -62,7 +62,7 @@ uv run --no-project python scripts/check_agent_handoff.py
 
 | Track | Status |
 |---|---|
-| V2 Real Production Output Track | Authorized; V2-0 documentation/phase plan first, V2-1 through V2-5 pending separate PRs |
+| V2 Real Production Output Track | Authorized; V2-0 documentation PR opened; V2-1 execution safety base implemented on `codex/v2-1-execution-safety-base`; V2-2 through V2-5 pending |
 
 Historical phase plans, closeouts, and long-form validation reports are retained under `docs/archive/`.
 
@@ -71,6 +71,7 @@ Historical phase plans, closeouts, and long-form validation reports are retained
 - Deterministic dispatch pipeline: task analysis, model tier selection, budget reservation, executor selection, evaluation, and ledger persistence.
 - Workflow runtime: persisted workflow runs, nodes, edges, events, approvals, queue/backpressure state, executor-pool binding, and opt-in dynamic graph mutation.
 - Supervised execution primitives: app-owned workspace lifecycle, `NodeExecutor` trait, allowlisted `CommandNodeExecutor`, workflow tick endpoint, artifact capture, secret scan, integrity validation, approval binding, and export gate.
+- V2-1 safety base: workspace IDs are path-safe, workspace copies stay under the app-owned workspace root, symlinks are skipped, copy file/byte ceilings are enforced, secret findings are redacted, secret-hit diffs are suppressed, command cwd is validated, command env is cleared except `PATH`, and command output is capped.
 - Local storage: SQLite default with PostgreSQL optional via `ACP_DATABASE_URL`; schema version is documented in `docs/ARCHITECTURE_BOOK.md`.
 - Operations: health, metrics, backups, restore smoke, circuit breaker state, audit log, and release-readiness checks.
 - Dashboard: local operations console with guarded app-owned controls for workflow runs, scheduler state, proposals, patches, config/team/costs, and app-owned actions.
@@ -82,7 +83,7 @@ Historical phase plans, closeouts, and long-form validation reports are retained
 - Product fit is stronger for local operations/research than for public-facing production UX.
 - UI is functional and operator-oriented; V2-5 must turn existing Mission Control, supervised patch, runtime gate, run, and audit components into one clear output workflow.
 - Security posture is suitable for local/small-team self-hosting only; hosted/multi-tenant use would require a new threat model and approved implementation plan.
-- V2-1 must harden execution safety before any broader real output phase: workspace confinement, allowlists, timeout/resource ceilings, secret redaction, audit, and kill/quarantine.
+- V2-1 hardens app-owned execution safety but does not add target-repository writes, provider/CLI default-on execution, or sandbox/process/container/VM isolation.
 - V2-2 through V2-4 must add provider/CLI output, target PR flow, and bounded supervised workers behind explicit gates.
 - Cloud SaaS, multi-tenant hosting, direct release/tag/deploy/apply authority, provider failover, default-on real execution, and unattended autonomous-agent loops remain out of scope.
 
