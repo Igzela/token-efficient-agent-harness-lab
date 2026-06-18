@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
-import { ApiError, fetchSchedulerStatus } from "@/lib/api-client";
+import { ApiError, controlScheduler, fetchSchedulerStatus } from "@/lib/api-client";
 import type { SchedulerStatus as SchedulerStatusType } from "@/lib/types";
+import { ConfirmDialog, type ConfirmAction } from "./ConfirmDialog";
 import { EmptyState } from "./EmptyState";
 import { StateBanner } from "./StateBanner";
 
@@ -34,6 +35,8 @@ export function SchedulerStatus() {
   const [status, setStatus] = useState<SchedulerStatusType | null>(null);
   const [error, setError] = useState<SchedError | null>(null);
   const [loading, setLoading] = useState(true);
+  const [confirmAction, setConfirmAction] = useState<ConfirmAction>(null);
+  const [mutating, setMutating] = useState(false);
 
   const load = useCallback(() => {
     setLoading(true);
@@ -47,6 +50,18 @@ export function SchedulerStatus() {
   useEffect(() => {
     load();
   }, [load]);
+
+  function handleConfirm() {
+    if (!confirmAction || confirmAction.type !== "schedulerControl") return;
+    const action = confirmAction.action;
+    setConfirmAction(null);
+    setMutating(true);
+    setError(null);
+    controlScheduler(action)
+      .then((res) => setStatus(res.scheduler))
+      .catch((e) => setError(schedError(e)))
+      .finally(() => setMutating(false));
+  }
 
   return (
     <section className="card stack">
@@ -84,6 +99,18 @@ export function SchedulerStatus() {
               <strong><span className={`pill ${status.running ? "ok" : "risk"}`}>{status.running ? "yes" : "no"}</span></strong>
             </div>
             <div className="summary-tile">
+              <span className="metric-label">Workers</span>
+              <strong>{status.worker_count ?? status.workers?.length ?? 0}</strong>
+            </div>
+            <div className="summary-tile">
+              <span className="metric-label">Paused</span>
+              <strong><span className={`pill ${status.paused ? "warn" : "ok"}`}>{status.paused ? "yes" : "no"}</span></strong>
+            </div>
+            <div className="summary-tile">
+              <span className="metric-label">Kill</span>
+              <strong><span className={`pill ${status.kill_requested ? "risk" : "ok"}`}>{status.kill_requested ? "requested" : "clear"}</span></strong>
+            </div>
+            <div className="summary-tile">
               <span className="metric-label">Active runs</span>
               <strong>{status.active_runs ?? 0}</strong>
             </div>
@@ -105,7 +132,49 @@ export function SchedulerStatus() {
                 <div className="kv-row"><span className="muted">Interval</span><span>{status.config.interval_ms}ms</span></div>
                 <div className="kv-row"><span className="muted">Max concurrent</span><span>{status.config.max_concurrent}</span></div>
                 <div className="kv-row"><span className="muted">Lease timeout</span><span>{status.config.lease_timeout_ms}ms</span></div>
+                {status.config.heartbeat_interval_sec != null && (
+                  <div className="kv-row"><span className="muted">Heartbeat interval</span><span>{status.config.heartbeat_interval_sec}s</span></div>
+                )}
               </>
+            )}
+          </div>
+
+          <div className="subcard stack">
+            <div className="flex-between">
+              <h4>Worker Control</h4>
+              <span className={`pill ${status.supervised_workers_enabled ? "ok" : "warn"}`}>
+                supervised: {status.supervised_workers_enabled ? "enabled" : "off"}
+              </span>
+            </div>
+            <div className="workflow-actions">
+              <button type="button" onClick={() => setConfirmAction({ type: "schedulerControl", action: "pause" })} disabled={mutating}>
+                {mutating ? "Working..." : "Pause"}
+              </button>
+              <button type="button" onClick={() => setConfirmAction({ type: "schedulerControl", action: "resume" })} disabled={mutating}>
+                {mutating ? "Working..." : "Resume"}
+              </button>
+              <button type="button" className="risk-action" onClick={() => setConfirmAction({ type: "schedulerControl", action: "kill" })} disabled={mutating}>
+                {mutating ? "Working..." : "Kill"}
+              </button>
+            </div>
+            {status.workers && status.workers.length > 0 ? (
+              <div className="mission-decision-list">
+                {status.workers.map((worker) => (
+                  <div className="mission-decision" key={worker.worker_id}>
+                    <div className="flex-between">
+                      <strong>{worker.worker_id}</strong>
+                      <span className={`pill ${worker.state === "running" || worker.state === "idle" ? "ok" : worker.state === "killed" ? "risk" : "warn"}`}>{worker.state}</span>
+                    </div>
+                    <div className="mission-node-meta">
+                      <span>{worker.tick_count} ticks</span>
+                      <span>{worker.error_count} errors</span>
+                      <span>{worker.last_heartbeat_at}</span>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <p className="muted">No worker heartbeats recorded yet.</p>
             )}
           </div>
 
@@ -123,6 +192,11 @@ export function SchedulerStatus() {
           </div>
         </>
       )}
+      <ConfirmDialog
+        action={confirmAction}
+        onConfirm={handleConfirm}
+        onCancel={() => setConfirmAction(null)}
+      />
     </section>
   );
 }

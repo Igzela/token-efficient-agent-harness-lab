@@ -14,7 +14,7 @@
 - Real-World Testing Mode — validated through real tasks, branches, commits, PRs, CI, gated auto-merge
 - Agent Autonomous Maintenance Mode — agents maintain docs/CI/tests/low-risk PR flow under playbook gates
 - V2 Real Production Output Track — authorized, phase-gated path to auditable real-repository patch/PR production
-- V2-0 through V2-3 merged; V2-4 bounded supervised workers implemented on its phase branch; V2-5 pending
+- V2-0 through V2-4 merged; V2-5 product output UX implemented in PR #74, pending CI/merge
 
 **Complete tracks:**
 - Dispatch Kernel Phases 1–7 (including 6A, 6B-1/2/3, Gates 1–3): STABLE

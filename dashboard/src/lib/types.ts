@@ -641,6 +641,11 @@ export interface WorkflowPlanDetailResponse {
   plan: WorkflowPlan;
 }
 
+export interface WorkflowPlanCreateResponse {
+  schema_version: "axum_api.v1";
+  plan: WorkflowPlan;
+}
+
 // Executor pool types
 
 export interface ExecutorPoolCapabilities {
@@ -679,8 +684,18 @@ export interface ExecutorPoolStatus {
 export interface SchedulerConfig {
   interval_ms: number;
   max_concurrent: number;
+  max_queued?: number;
   lease_timeout_ms: number;
   executor_type: string;
+  heartbeat_interval_sec?: number;
+}
+
+export interface SchedulerWorkerStatus {
+  worker_id: string;
+  state: string;
+  last_heartbeat_at: string;
+  tick_count: number;
+  error_count: number;
 }
 
 export interface SchedulerStatus {
@@ -689,6 +704,11 @@ export interface SchedulerStatus {
   enabled?: boolean;
   message?: string;
   started_at?: string | null;
+  supervised_workers_enabled?: boolean;
+  worker_count?: number;
+  paused?: boolean;
+  kill_requested?: boolean;
+  workers?: SchedulerWorkerStatus[];
   config?: SchedulerConfig;
   tick_count?: number;
   error_count?: number;

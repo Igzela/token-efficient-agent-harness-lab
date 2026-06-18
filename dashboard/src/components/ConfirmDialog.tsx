@@ -5,8 +5,10 @@ export type ConfirmAction =
   | { type: "deleteMember" | "revokeKey" | "deleteKey" | "rotateKey"; id: string }
   | { type: "cleanupWorkspace" | "quarantineWorkspace" | "capturePatch"; workspaceId: string }
   | { type: "approveArtifact" | "rejectArtifact" | "exportArtifact"; artifactId: string; runId: string }
+  | { type: "targetOutput"; artifactId: string; mode: "export_patch" | "push_branch" }
   | { type: "approveProposal" | "rejectProposal" | "rollbackProposal" | "deactivateProposal"; proposalId: string }
   | { type: "tickRun" | "cancelRun"; runId: string }
+  | { type: "schedulerControl"; action: "pause" | "resume" | "kill" }
   | null;
 
 const messages: Record<string, string> = {};
@@ -80,6 +82,8 @@ export function ConfirmDialog({
                           ? `Reject artifact ${(action as { artifactId: string }).artifactId.slice(0, 12)}?`
                           : action.type === "exportArtifact"
                             ? `Export artifact ${(action as { artifactId: string }).artifactId.slice(0, 12)}? Requires valid approval binding.`
+                            : action.type === "targetOutput"
+                              ? `${(action as { mode: string }).mode === "push_branch" ? "Push branch output" : "Export patch output"} for artifact ${(action as { artifactId: string }).artifactId.slice(0, 12)}? This requires approval binding and explicit target-output gates.`
                             : action.type === "approveProposal"
                               ? `Approve proposal ${(action as { proposalId: string }).proposalId.slice(0, 12)}? This records explicit human approval.`
                               : action.type === "rejectProposal"
@@ -92,6 +96,8 @@ export function ConfirmDialog({
                                     ? `Execute one tick on run ${(action as { runId: string }).runId.slice(0, 12)}? This will advance the next ready node.`
                                     : action.type === "cancelRun"
                                       ? `Cancel run ${(action as { runId: string }).runId.slice(0, 12)}? This will stop execution.`
+                                      : action.type === "schedulerControl"
+                                        ? `${(action as { action: string }).action} supervised workers? This action is audited and requires scheduler control authority.`
                                       : "Are you sure?");
   return (
     <div className="confirm-overlay" onClick={onCancel} role="dialog" aria-modal="true" aria-label={msg}>
