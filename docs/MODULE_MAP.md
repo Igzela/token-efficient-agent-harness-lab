@@ -4,7 +4,7 @@ Last updated: 2026-06-17
 
 This map is for code ownership and verification routing. It is intentionally not a phase history. Historical module/phase narratives live in `docs/archive/`.
 
-The Rust `engine/` is the sole runtime implementation. Python is retained as REST SDK and utility scripts only. The current product is a local/small-team self-hosted macro-orchestrator control plane, not a coding-agent runtime.
+The Rust `engine/` is the sole runtime implementation. Python is retained as REST SDK and utility scripts only. The current product is a local/small-team self-hosted macro-orchestrator control plane. The approved V2 Real Production Output Track must extend existing modules rather than creating a parallel coding-agent runtime.
 
 ## Ownership
 
@@ -50,6 +50,11 @@ The Rust `engine/` is the sole runtime implementation. Python is retained as RES
 - Workflow execution: start with `scheduler.rs`, `workflow/`, `node_executor.rs`, and `executor_pool.rs`.
 - Storage or schema: start with `storage/local_product_store/`, update schema version docs in `docs/ARCHITECTURE_BOOK.md`, and run relevant SQLite/PostgreSQL tests.
 - Dashboard or SDK: update API types/clients and dashboard components together when response shapes change.
+- V2-1 execution safety: start with `storage/local_product_store/supervised_patch.rs`, `http_server/handlers/supervised_patch.rs`, `node_executor.rs`, and focused path/secret/timeout/quarantine tests.
+- V2-2 provider/CLI output: start with `provider/`, `cli/`, `executor/`, `dispatch_engine.rs`, and provider/CLI audit/cost/redaction tests.
+- V2-3 target repo PR flow: start with supervised patch storage/API plus a small engine-owned git/PR helper; update SDK/dashboard only when API shapes change.
+- V2-4 worker queue: start with `scheduler.rs`, `workflow/run_queue.rs`, `executor_pool.rs`, and `storage/local_product_store/heartbeat.rs`.
+- V2-5 product UX: start with `dashboard/src/components/MissionControl.tsx`, `SupervisedPatch.tsx`, `RuntimeGates.tsx`, and `dashboard/src/lib/api-client.ts`.
 - Safety boundary changes: update `docs/ARCHITECTURE_BOOK.md` before implementation; use archived security docs only as historical reference.
 - Documentation set changes: keep the active docs set limited to the six files listed in `docs/CURRENT_STATUS.md`.
 
@@ -57,6 +62,8 @@ The Rust `engine/` is the sole runtime implementation. Python is retained as RES
 
 - R-series is sealed at R7. R8 is not approved.
 - Do not create a parallel scheduler, DAG kernel, policy engine, storage layer, or dashboard data model.
-- Do not add provider/CLI default-on execution, target-repository writes, sandbox/process/container/VM behavior, hosted/cloud deployment, release/tag/deploy controls, or unattended workers without explicit approval.
+- V2 Real Production Output is approved only through the phase plan in `docs/NEXT_DECISION.md`; do not skip phases or merge half-built runtime authority.
+- Do not add provider/CLI default-on execution, direct target-repository `main` writes, process/container/VM sandbox behavior, hosted/cloud deployment, release/tag/deploy controls, provider failover, or unattended autonomous-agent loops without separate explicit approval.
+- Any V2 real capability must include an env/auth gate, audit event, tests, and rollback/kill path before it is usable.
 - Wire-codegen drift guard: `scripts/check_wire_codegen_drift.sh`.
 - Run `uv run --no-project python scripts/check_agent_handoff.py` before committing handoff changes.

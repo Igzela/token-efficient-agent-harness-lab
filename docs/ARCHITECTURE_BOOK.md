@@ -6,15 +6,15 @@ This is the current architecture baseline for the Token-Efficient Agent Harness 
 
 ## Product Boundary
 
-The system is a local/small-team self-hosted macro-orchestrator control plane for studying token-efficient agent workflows. It is not a cloud SaaS, hosted multi-tenant service, coding-agent runtime, or unattended autonomous-agent runtime. Those limits are current product boundaries, not hidden bugs.
+The system is a local/small-team self-hosted macro-orchestrator control plane for studying token-efficient agent workflows. The approved V2 Real Production Output Track extends it toward auditable real-repository patch/PR production while preserving explicit gates, audit, and rollback controls. It is not a cloud SaaS, hosted multi-tenant service, direct-deploy tool, or unattended autonomous-agent runtime.
 
 Default posture:
 
 - Provider execution is off unless `ACP_ENABLE_PROVIDER_EXECUTION=1`.
 - CLI execution is off unless `ACP_ENABLE_CLI_EXECUTION=1`.
-- App runtime does not write registered target repositories.
+- App runtime does not write registered target repositories until the V2 target-repo branch/worktree/PR flow lands.
 - No release/tag/deploy/apply controls exist in the app runtime.
-- No process/container/VM sandbox isolation is implemented.
+- No process/container/VM sandbox isolation is implemented; V2-1 is scoped to app-owned workspace confinement unless separately approved.
 - Supervised execution operates only in app-owned detached workspaces and remains explicitly gated.
 
 This file is authoritative for current architecture and safety boundaries. Operational procedures are in `docs/RUNBOOK.md`. Archived security and safety notes under `docs/archive/security/` are historical reference; revive or replace them only for an approved boundary-expansion track.
@@ -61,6 +61,33 @@ LocalProductStore
 | Artifacts/exports | App | Yes | Capture requires secret scan/integrity; export requires valid approval binding. |
 | Backups | App/operator | Yes | SQLite app-owned backups; PostgreSQL operators use external backup tooling. |
 
+## V2 Real Production Output Architecture
+
+V2 target flow:
+
+```text
+connect real repo
+  -> create task
+  -> prepare isolated app-owned workspace
+  -> run gated provider/CLI/command execution
+  -> collect code changes and verification evidence
+  -> scan/redact secrets and validate integrity
+  -> require human approval
+  -> push PR branch or export patch
+```
+
+The V2 design upgrades old limitations into explicit production guardrails:
+
+| Capability | Current state | V2 target | Guardrail |
+|---|---|---|---|
+| Workspace execution | App-owned workspace metadata and capture exist | Confined app-owned execution workspace | Canonical path checks, allowlist profiles, timeout/resource ceilings, quarantine/kill |
+| Provider/CLI output | Env-gated paths exist but are not productized as real-output flow | Real output path under explicit gates | Auth scope, env gate, cost cap, retry/budget breaker, trace, redaction |
+| Target repository output | No target repo writes | Branch/worktree/PR branch or patch export | No direct `main` writes, approval binding, evidence bundle, secret-free PR body |
+| Workers | Queue/pool primitives exist | Bounded supervised workers | Lease, heartbeat, concurrency cap, stale recovery, pause/kill |
+| Dashboard UX | Operator tabs and Mission Control | Single output workflow | Gate/risk/next-step/approval visibility |
+
+Do not create a second runtime kernel for V2. Extend the existing `node_executor`, `workflow_runs`, `scheduler`, `executor_pool`, `provider`, `cli`, `supervised_patch`, `LocalProductStore`, SDK, and dashboard surfaces.
+
 ## Storage
 
 `LocalProductStore` supports SQLite by default and PostgreSQL through the `pg` feature and `ACP_DATABASE_URL`.
@@ -106,18 +133,17 @@ The dashboard is a local operations console with guarded app-owned controls. It 
 
 ## Current Gaps
 
-These are accepted v1 limitations, not hidden TODOs:
+These are accepted current limitations, not hidden TODOs:
 
-- Cloud SaaS, hosted/cloud deployment, and multi-tenant service are v2/out-of-scope.
-- Hard process/container/VM sandbox isolation is v2/out-of-scope.
-- Target-repository write/apply/merge/deploy authority is v2/out-of-scope.
-- Default-on provider execution is v2/out-of-scope.
-- Unattended workers and unattended autonomous-agent loops are v2/out-of-scope.
-- Provider failover is v2/out-of-scope.
-- Production worker concurrency is v2/out-of-scope.
+- V2 real output is authorized but not yet complete; each phase must land behind explicit gates.
+- Hard process/container/VM sandbox isolation is not implemented and is not part of V2-1 unless separately approved.
+- Target-repository writes remain unavailable until V2-3 implements controlled branch/worktree/PR output.
+- Provider/CLI execution remains default-off even after V2-2.
+- Bounded supervised workers are planned for V2-4; unattended autonomous-agent loops remain out of scope.
+- Cloud SaaS, hosted/cloud deployment, multi-tenant service, direct release/tag/deploy/apply controls, and provider failover remain out of scope.
 - Some routing, quality, and orchestration modules remain partially active rather than unified under one policy layer.
 
-Boundary expansion requires a new plan, threat-model update, focused tests, and explicit human approval.
+Boundary expansion outside the approved V2 track requires a new plan, threat-model update, focused tests, and explicit human approval.
 
 ## Active Verification
 
