@@ -13,6 +13,7 @@ export interface TabGroupDef {
   label: string;
   tabs: TabDef[];
   collapsible?: boolean;
+  defaultCollapsed?: boolean;
 }
 
 export function TabGroup({
@@ -33,7 +34,7 @@ export function TabGroup({
   return (
     <nav className="nav" aria-label="Dashboard sections" role="tablist">
       {groups.map((group) => {
-        const isCollapsed = collapsed[group.label] ?? false;
+        const isCollapsed = collapsed[group.label] ?? group.defaultCollapsed ?? false;
         const visibleTabs = group.collapsible && isCollapsed
           ? group.tabs.filter((t) => t.id === activeTab)
           : group.tabs;

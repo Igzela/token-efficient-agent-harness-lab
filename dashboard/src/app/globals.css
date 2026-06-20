@@ -323,6 +323,7 @@ h3 {
   display: flex;
   gap: 16px;
   justify-content: space-between;
+  min-width: 0;
 }
 
 .setup-list {
@@ -740,6 +741,15 @@ tbody tr:hover {
   display: grid;
   gap: 10px;
   grid-template-columns: repeat(4, minmax(0, 1fr));
+  min-width: 0;
+}
+
+.metric {
+  min-width: 0;
+}
+
+.metric strong {
+  overflow-wrap: anywhere;
 }
 
 .readable-list {

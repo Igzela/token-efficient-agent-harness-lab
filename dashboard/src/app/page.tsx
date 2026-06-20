@@ -29,7 +29,6 @@ import { SchedulerStatus } from "@/components/SchedulerStatus";
 import { SupervisedPatch } from "@/components/SupervisedPatch";
 import { Settings } from "@/components/Settings";
 import { Team } from "@/components/Team";
-import { WelcomePanel } from "@/components/WelcomePanel";
 import { TabGroup, type TabGroupDef } from "@/components/TabGroup";
 import { OperatorSurface } from "@/components/OperatorSurface";
 import { WorkflowRuns } from "@/components/WorkflowRuns";
@@ -59,28 +58,36 @@ const allTabs: { id: Tab; label: string }[] = [
 
 const tabGroups: TabGroupDef[] = [
   {
-    label: "Monitor",
+    label: "Work",
     tabs: [
-      { id: "mission", label: "Mission Control" },
-      { id: "dispatches", label: "Dispatches" },
-      { id: "routing", label: "Routing" },
-      { id: "regulator", label: "Regulator" },
-      { id: "operator", label: "Operator" },
-      { id: "decisions", label: "Decisions" },
-      { id: "costs", label: "Costs" },
+      { id: "mission", label: "Tasks" },
+      { id: "runs", label: "Runs" },
+      { id: "patches", label: "Outputs" },
     ],
   },
   {
-    label: "System",
+    label: "Activity",
     tabs: [
+      { id: "dispatches", label: "Dispatches" },
+      { id: "decisions", label: "Decisions" },
+      { id: "costs", label: "Costs" },
+    ],
+    collapsible: true,
+    defaultCollapsed: true,
+  },
+  {
+    label: "Operations",
+    tabs: [
+      { id: "operations", label: "Overview" },
       { id: "scheduler", label: "Scheduler" },
       { id: "pool", label: "Pool" },
       { id: "queue", label: "Queue" },
-      { id: "runs", label: "Runs" },
-      { id: "patches", label: "Patches" },
-      { id: "operations", label: "Operations" },
+      { id: "routing", label: "Routing" },
+      { id: "regulator", label: "Regulator" },
+      { id: "operator", label: "Operator" },
     ],
     collapsible: true,
+    defaultCollapsed: true,
   },
   {
     label: "Admin",
@@ -92,6 +99,7 @@ const tabGroups: TabGroupDef[] = [
       { id: "audit", label: "Audit" },
     ],
     collapsible: true,
+    defaultCollapsed: true,
   },
 ];
 
@@ -326,7 +334,7 @@ export default function DashboardPage() {
             <span className="ops-brand-mark" aria-hidden="true" />
             <div>
               <p className="eyebrow">ACP</p>
-              <strong>Local Ops</strong>
+              <strong>Agent Control</strong>
             </div>
             <button
               aria-controls="dashboard-navigation"
@@ -361,7 +369,7 @@ export default function DashboardPage() {
           <header className="topbar">
             <div className="topbar-main">
               <p className="eyebrow">Agent Control Plane / Local Runtime</p>
-              <h1>Operations Console</h1>
+              <h1>Agent Workspace</h1>
               <BoundaryBadges
                 authStatus={authStatus}
                 boundaries={dashboard.boundaries}
@@ -384,7 +392,7 @@ export default function DashboardPage() {
               </button>
               <a
                 className="topbar-btn"
-                href="https://github.com/anthropics/agent-control-plane"
+                href="https://github.com/Igzela/token-efficient-agent-harness-lab"
                 target="_blank"
                 rel="noopener noreferrer"
               >
@@ -436,8 +444,6 @@ export default function DashboardPage() {
             <Metric label="Cost" value={`$${dashboard.costs.total_reserved_cost.toFixed(3)}`} detail="reserved" />
             <Metric label="Team" value={dashboard.counts.team_members.toString()} detail={`${dashboard.counts.api_keys} keys`} />
           </section>
-
-          <WelcomePanel dispatchCount={dashboard.counts.dispatches} />
 
           <SetupChecklist steps={setupSteps} />
 

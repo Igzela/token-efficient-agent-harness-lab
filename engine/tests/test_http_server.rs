@@ -4607,6 +4607,8 @@ async fn axum_dynamic_tick_recovers_failed_run_with_graph_mutation() {
 
 #[tokio::test]
 async fn axum_tick_with_claude_code_cli_unavailable_returns_400() {
+    let _guard = provider_cli_env_lock().lock().await;
+    std::env::set_var("ACP_ENABLE_CLI_EXECUTION", "0");
     let dir = tempdir().unwrap();
     let store = LocalProductStore::new(dir.path().join("tick-cli-400.db")).unwrap();
     let app = build_axum_router(AxumApiState::new().with_local_store(store));
@@ -4644,7 +4646,6 @@ async fn axum_tick_with_claude_code_cli_unavailable_returns_400() {
     let run_body = response_json(run_resp).await;
     let run_id = run_body["run"]["run_id"].as_str().unwrap();
 
-    // CLI execution is not enabled in test env (ACP_ENABLE_CLI_EXECUTION not set)
     let tick_resp = app
         .clone()
         .oneshot(
@@ -4659,6 +4660,7 @@ async fn axum_tick_with_claude_code_cli_unavailable_returns_400() {
         )
         .await
         .unwrap();
+    std::env::remove_var("ACP_ENABLE_CLI_EXECUTION");
     assert_eq!(tick_resp.status(), StatusCode::BAD_REQUEST);
     let tick_body = response_json(tick_resp).await;
     assert_eq!(tick_body["code"], "cli_not_available");
@@ -4718,6 +4720,8 @@ fn cli_node_executor_resolve_prompt_and_executor() {
 
 #[tokio::test]
 async fn axum_tick_with_codex_cli_unavailable_returns_400() {
+    let _guard = provider_cli_env_lock().lock().await;
+    std::env::set_var("ACP_ENABLE_CLI_EXECUTION", "0");
     let dir = tempdir().unwrap();
     let store = LocalProductStore::new(dir.path().join("tick-codex-400.db")).unwrap();
     let app = build_axum_router(AxumApiState::new().with_local_store(store));
@@ -4769,6 +4773,7 @@ async fn axum_tick_with_codex_cli_unavailable_returns_400() {
         )
         .await
         .unwrap();
+    std::env::remove_var("ACP_ENABLE_CLI_EXECUTION");
     assert_eq!(tick_resp.status(), StatusCode::BAD_REQUEST);
     let tick_body = response_json(tick_resp).await;
     assert_eq!(tick_body["code"], "cli_not_available");

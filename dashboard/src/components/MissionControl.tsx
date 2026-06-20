@@ -202,7 +202,7 @@ function OutputActionRail({
   const [targetRepoPath, setTargetRepoPath] = useState("");
   const [targetId, setTargetId] = useState("local-target");
   const [sourceRevision, setSourceRevision] = useState("HEAD");
-  const [executor, setExecutor] = useState("noop");
+  const [executor, setExecutor] = useState("codex_cli");
   const [outputMode, setOutputMode] = useState<"export_patch" | "push_branch">("export_patch");
   const [branchName, setBranchName] = useState("acp/generated-output");
   const [remote, setRemote] = useState("origin");
@@ -325,7 +325,7 @@ function OutputActionRail({
     <div className="subcard stack action-rail">
       <div className="flex-between">
         <div>
-          <h3>Output Workflow</h3>
+          <h3>Task Workflow</h3>
           <p className="muted" style={{ fontSize: "13px", marginTop: 4 }}>
             Task, run, workspace, patch, approval, and output controls in one path.
           </p>
@@ -505,7 +505,7 @@ function PrimaryWorkflowPath({
       state: run ? "done" : "now",
     },
     {
-      detail: run && !terminal ? "Use the Runs tab tick control to advance the next ready node." : "Tick is available only while the selected run is active.",
+      detail: run && !terminal ? "Use the task workflow controls below to advance the next ready node." : "Tick is available only while the selected run is active.",
       label: "Tick",
       state: run && !terminal ? "now" : run ? "done" : "todo",
     },
@@ -777,9 +777,9 @@ export function MissionControl() {
     <section className="card stack">
       <div className="flex-between">
         <div>
-          <h2>Mission Control</h2>
+          <h2>Tasks</h2>
           <p className="muted" style={{ fontSize: "13px", marginTop: 4 }}>
-            Workflow, queue, executor, decision, approval, and export state for the selected run.
+            Create a task, run it, inspect failures, approve the result, and publish the output.
           </p>
         </div>
         <button onClick={loadOverview} type="button">Refresh</button>
@@ -793,7 +793,7 @@ export function MissionControl() {
       )}
 
       {loading ? (
-        <div className="loading-row"><span className="spinner" /> Loading mission-control state...</div>
+        <div className="loading-row"><span className="spinner" /> Loading task state...</div>
       ) : runs.length === 0 ? (
         <>
           <EmptyState
