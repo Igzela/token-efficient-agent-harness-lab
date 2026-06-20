@@ -196,6 +196,10 @@ fn axum_routes() -> Router<AxumApiState> {
                 .options(cors_preflight),
         )
         .route(
+            "/api/v1/supervised-patch/workspaces/:workspace_id/verify",
+            post(supervised_patch::api_verify_supervised_patch_workspace).options(cors_preflight),
+        )
+        .route(
             "/api/v1/supervised-patch/artifacts",
             get(supervised_patch::api_supervised_patch_artifacts).options(cors_preflight),
         )

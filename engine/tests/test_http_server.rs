@@ -1045,6 +1045,165 @@ async fn axum_supervised_patch_metadata_returns_storage_records_read_only() {
 }
 
 #[tokio::test]
+async fn axum_supervised_patch_verification_runs_allowlisted_command_and_records_evidence() {
+    let target_dir = tempdir().unwrap();
+    let workspace_root = tempdir().unwrap();
+    let workspace_path = workspace_root.path().join("workspace");
+    fs::create_dir_all(&workspace_path).unwrap();
+    let dir = tempdir().unwrap();
+    let db_path = dir.path().join("patch.db");
+    let store = LocalProductStore::new(&db_path).unwrap();
+    store
+        .record_supervised_patch_workspace(
+            &json!({
+                "run_id": "run-verify",
+                "target_id": "target-verify",
+                "target_repo_path": target_dir.path().to_string_lossy(),
+                "workspace_path": workspace_path.to_string_lossy(),
+                "source_revision": "abc123",
+                "status": "workspace_created",
+            }),
+            "operator",
+        )
+        .unwrap();
+    let app = build_axum_router(AxumApiState::new().with_local_store(store));
+
+    let missing_confirmation = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(Method::POST)
+                .uri("/api/v1/supervised-patch/workspaces/patch-workspace-0001/verify")
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(
+                    json!({"command": "python3 --version"}).to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(missing_confirmation.status(), StatusCode::BAD_REQUEST);
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method(Method::POST)
+                .uri("/api/v1/supervised-patch/workspaces/patch-workspace-0001/verify")
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(
+                    json!({
+                        "command": "python3 --version",
+                        "confirm_verification": true,
+                        "attempt": 1,
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = response_json(response).await;
+    assert_eq!(body["verification"]["status"], "evidence_recorded");
+    assert_eq!(
+        body["verification"]["command"],
+        json!(["python3", "--version"])
+    );
+
+    let persisted_store = LocalProductStore::new(&db_path).unwrap();
+    let workspace = persisted_store
+        .get_supervised_patch_workspace("patch-workspace-0001")
+        .unwrap()
+        .unwrap();
+    assert_eq!(workspace["verification"]["status"], "evidence_recorded");
+}
+
+#[tokio::test]
+async fn axum_supervised_patch_verification_can_repair_and_retry_with_cli() {
+    let _env_guard = provider_cli_env_lock().lock().await;
+    let target_dir = tempdir().unwrap();
+    let workspace_root = tempdir().unwrap();
+    let workspace_path = workspace_root.path().join("workspace");
+    fs::create_dir_all(&workspace_path).unwrap();
+    fs::write(
+        workspace_path.join("verify.py"),
+        "from pathlib import Path\nraise SystemExit(0 if Path('fixed.txt').exists() else 1)\n",
+    )
+    .unwrap();
+    let fake_codex = workspace_root.path().join("fake-codex");
+    fs::write(
+        &fake_codex,
+        "#!/bin/sh\nprintf 'fixed\\n' > fixed.txt\nprintf '{\"result\":\"repair complete\"}\\n'\n",
+    )
+    .unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(&fake_codex, fs::Permissions::from_mode(0o755)).unwrap();
+    }
+    std::env::set_var("ACP_ENABLE_CLI_EXECUTION", "1");
+    std::env::set_var("ACP_CODEX_BIN", &fake_codex);
+    std::env::remove_var("ACP_CLAUDE_CODE_BIN");
+
+    let dir = tempdir().unwrap();
+    let store = LocalProductStore::new(dir.path().join("patch.db")).unwrap();
+    store
+        .record_supervised_patch_workspace(
+            &json!({
+                "run_id": "run-repair",
+                "target_id": "target-repair",
+                "target_repo_path": target_dir.path().to_string_lossy(),
+                "workspace_path": workspace_path.to_string_lossy(),
+                "source_revision": "abc123",
+                "status": "workspace_created",
+            }),
+            "operator",
+        )
+        .unwrap();
+    let app = build_axum_router(AxumApiState::new().with_local_store(store));
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method(Method::POST)
+                .uri("/api/v1/supervised-patch/workspaces/patch-workspace-0001/verify")
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(
+                    json!({
+                        "command": "python3 verify.py",
+                        "confirm_verification": true,
+                        "repair_executor": "codex_cli",
+                        "max_repair_attempts": 2,
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    std::env::remove_var("ACP_ENABLE_CLI_EXECUTION");
+    std::env::remove_var("ACP_CODEX_BIN");
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = response_json(response).await;
+    assert_eq!(body["verification"]["status"], "evidence_recorded");
+    assert_eq!(
+        body["verification"]["verification_attempts"]
+            .as_array()
+            .unwrap()
+            .len(),
+        2
+    );
+    assert_eq!(
+        body["verification"]["repair_attempts"]
+            .as_array()
+            .unwrap()
+            .len(),
+        1
+    );
+    assert!(workspace_path.join("fixed.txt").exists());
+}
+
+#[tokio::test]
 async fn axum_supervised_patch_metadata_returns_404_for_missing_records() {
     let dir = tempdir().unwrap();
     let store = LocalProductStore::new(dir.path().join("patch.db")).unwrap();

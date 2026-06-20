@@ -2299,6 +2299,49 @@ fn supervised_patch_integrity_hash_binds_file_content() {
 }
 
 #[test]
+fn supervised_patch_capture_binds_recorded_command_verification() {
+    let dir = tempdir().unwrap();
+    let store = LocalProductStore::new(dir.path().join("test.db")).unwrap();
+    let (workspace_path, workspace_id) = setup_workspace_with_target(
+        &store,
+        &dir,
+        "run-command-verification",
+        vec![("README.md", "base\n")],
+    );
+    let evidence = json!({
+        "schema_version": "workspace_verification.v1",
+        "status": "evidence_recorded",
+        "command": ["cargo", "test"],
+        "result_status": "completed",
+        "attempt": 1,
+    });
+
+    let workspace = store
+        .record_workspace_verification(&workspace_id, &evidence, "operator")
+        .unwrap();
+    assert_eq!(workspace["verification"], evidence);
+    assert_eq!(
+        workspace["verification_execution_authority"],
+        "allowlisted_commands"
+    );
+
+    std::fs::write(
+        std::path::PathBuf::from(&workspace_path).join("README.md"),
+        "verified change\n",
+    )
+    .unwrap();
+    let artifact = store.capture_patch(&workspace_id, "operator").unwrap();
+    assert_eq!(
+        artifact["evidence_bundle"]["verification"]["command"],
+        json!(["cargo", "test"])
+    );
+    assert_eq!(
+        artifact["evidence_bundle"]["verification"]["status"],
+        "evidence_recorded"
+    );
+}
+
+#[test]
 fn ga1_capture_blocks_secret_content_from_artifact_and_response() {
     let dir = tempdir().unwrap();
     let store = LocalProductStore::new(dir.path().join("test.db")).unwrap();

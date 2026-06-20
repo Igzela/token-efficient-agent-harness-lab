@@ -76,6 +76,16 @@ pub struct SupervisedPatchWorkspaceCreateRequest {
 }
 
 #[derive(Debug, Clone, PartialEq, Deserialize)]
+pub struct SupervisedPatchWorkspaceVerifyRequest {
+    pub command: String,
+    pub confirm_verification: Option<bool>,
+    pub timeout_ms: Option<u64>,
+    pub attempt: Option<u64>,
+    pub repair_executor: Option<String>,
+    pub max_repair_attempts: Option<u64>,
+}
+
+#[derive(Debug, Clone, PartialEq, Deserialize)]
 pub struct TargetRepoOutputRequest {
     pub run_id: String,
     pub mode: String,
@@ -645,6 +655,26 @@ pub fn openapi_document() -> serde_json::Value {
                         "200": {"description": "Workspace quarantined"},
                         "404": {"description": "Workspace not found"},
                         "409": {"description": "Invalid status transition"}
+                    }
+                }
+            },
+            "/api/v1/supervised-patch/workspaces/{workspace_id}/verify": {
+                "post": {
+                    "summary": "Run an allowlisted verification command",
+                    "description": "Requires dispatch:execute and confirm_verification=true. Runs a fixed verification-tool allowlist inside the app-owned workspace with timeout, capped output, redaction, and persisted evidence.",
+                    "parameters": [path_parameter("workspace_id")],
+                    "requestBody": json_request_body(&["command", "confirm_verification"], json!({
+                        "command": {"type": "string"},
+                        "confirm_verification": {"type": "boolean"},
+                        "timeout_ms": {"type": "integer", "minimum": 1000, "maximum": 600000},
+                        "attempt": {"type": "integer", "minimum": 1, "maximum": 3},
+                        "repair_executor": {"type": "string", "enum": ["codex_cli", "claude_code_cli"]},
+                        "max_repair_attempts": {"type": "integer", "minimum": 1, "maximum": 2}
+                    })),
+                    "responses": {
+                        "200": {"description": "Verification evidence recorded"},
+                        "400": {"description": "Confirmation or command missing"},
+                        "404": {"description": "Workspace not found"}
                     }
                 }
             },
