@@ -496,6 +496,7 @@ export interface TargetRepoOutputRequest {
   remote?: string;
   commit_message?: string;
   pr_title?: string;
+  create_pull_request?: boolean;
 }
 
 export interface TargetRepoOutputResponse {
@@ -510,6 +511,12 @@ export interface TargetRepoOutputResponse {
     commit_sha?: string;
     pr_title?: string;
     pr_body?: string;
+    pull_request?: {
+      number: number;
+      url: string;
+      state: string;
+      reused: boolean;
+    };
   };
   approval_binding: Record<string, unknown>;
   integrity: Record<string, unknown>;

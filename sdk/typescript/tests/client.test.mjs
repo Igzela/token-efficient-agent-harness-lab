@@ -634,6 +634,7 @@ test("targetRepoOutput posts approval-bound target output request", async () => 
     remote: "origin",
     commit_message: "feat: apply artifact",
     pr_title: "Apply artifact",
+    create_pull_request: true,
   });
 
   assert.equal(result.output.patch_hash, "sha256:abc");
@@ -650,6 +651,7 @@ test("targetRepoOutput posts approval-bound target output request", async () => 
     remote: "origin",
     commit_message: "feat: apply artifact",
     pr_title: "Apply artifact",
+    create_pull_request: true,
   });
 });
 

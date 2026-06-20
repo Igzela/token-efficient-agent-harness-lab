@@ -530,6 +530,7 @@ export class AgentControlPlaneClient {
         remote: request.remote,
         commit_message: request.commit_message,
         pr_title: request.pr_title,
+        create_pull_request: request.create_pull_request,
       },
     );
   }

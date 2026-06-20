@@ -432,6 +432,7 @@ class AgentControlPlaneClient:
         remote: str | None = None,
         commit_message: str | None = None,
         pr_title: str | None = None,
+        create_pull_request: bool | None = None,
     ) -> dict[str, Any]:
         body: dict[str, Any] = {
             "run_id": run_id,
@@ -446,6 +447,8 @@ class AgentControlPlaneClient:
             body["commit_message"] = commit_message
         if pr_title is not None:
             body["pr_title"] = pr_title
+        if create_pull_request is not None:
+            body["create_pull_request"] = create_pull_request
         return self._post(
             f"/api/v1/supervised-patch/artifacts/{_quote_path_segment(artifact_id)}/output",
             body,

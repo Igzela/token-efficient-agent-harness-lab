@@ -94,6 +94,7 @@ pub struct TargetRepoOutputRequest {
     pub remote: Option<String>,
     pub commit_message: Option<String>,
     pub pr_title: Option<String>,
+    pub create_pull_request: Option<bool>,
 }
 
 #[derive(Debug, Clone, PartialEq, Deserialize)]
@@ -753,7 +754,8 @@ pub fn openapi_document() -> serde_json::Value {
                         "branch_name": {"type": "string", "description": "Optional acp/* branch name"},
                         "remote": {"type": "string", "default": "origin"},
                         "commit_message": {"type": "string"},
-                        "pr_title": {"type": "string"}
+                        "pr_title": {"type": "string"},
+                        "create_pull_request": {"type": "boolean", "default": false}
                     })),
                     "responses": {
                         "200": {"description": "Real target output result"},

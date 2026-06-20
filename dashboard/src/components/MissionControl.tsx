@@ -208,6 +208,7 @@ function OutputActionRail({
   const [remote, setRemote] = useState("origin");
   const [commitMessage, setCommitMessage] = useState("Apply supervised patch");
   const [prTitle, setPrTitle] = useState("Supervised patch output");
+  const [createPullRequest, setCreatePullRequest] = useState(true);
   const [mutating, setMutating] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -304,9 +305,12 @@ function OutputActionRail({
           remote: outputMode === "push_branch" ? remote : undefined,
           commit_message: outputMode === "push_branch" ? commitMessage : undefined,
           pr_title: outputMode === "push_branch" ? prTitle : undefined,
+          create_pull_request: outputMode === "push_branch" ? createPullRequest : undefined,
         }),
         (result) => outputMode === "push_branch"
-          ? `Pushed ${String(result.output.branch_name ?? "branch")} at ${short(result.output.commit_sha, 10)}.`
+          ? result.output.pull_request
+            ? `Opened PR #${result.output.pull_request.number}: ${result.output.pull_request.url}`
+            : `Pushed ${String(result.output.branch_name ?? "branch")} at ${short(result.output.commit_sha, 10)}.`
           : `Generated patch output for ${short(result.output.patch_hash, 16)}.`,
       );
     } else if (action.type === "schedulerControl") {
@@ -437,6 +441,14 @@ function OutputActionRail({
             <input aria-label="Remote" value={remote} onChange={(event) => setRemote(event.target.value)} />
             <input aria-label="Commit message" value={commitMessage} onChange={(event) => setCommitMessage(event.target.value)} />
             <input aria-label="PR title" value={prTitle} onChange={(event) => setPrTitle(event.target.value)} />
+            <label className="inline-control">
+              <input
+                type="checkbox"
+                checked={createPullRequest}
+                onChange={(event) => setCreatePullRequest(event.target.checked)}
+              />
+              <span>Create PR</span>
+            </label>
           </>
         )}
         <button

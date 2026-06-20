@@ -760,6 +760,7 @@ class ClientTargetRepoOutputTest(unittest.TestCase):
             remote="origin",
             commit_message="feat: apply artifact",
             pr_title="Apply artifact",
+            create_pull_request=True,
         )
         self.assertEqual(result["output"]["patch_hash"], "sha256:abc")
         args, _ = mock_urlopen.call_args
@@ -777,6 +778,7 @@ class ClientTargetRepoOutputTest(unittest.TestCase):
             "remote": "origin",
             "commit_message": "feat: apply artifact",
             "pr_title": "Apply artifact",
+            "create_pull_request": True,
         })
 
 

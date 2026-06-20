@@ -2,8 +2,8 @@ use std::path::Path;
 use std::process::Command;
 
 use engine::target_repo_output::{
-    export_patch, prepare_git_worktree, push_approved_branch, remove_git_worktree,
-    stage_and_build_patch, BranchPublishRequest, TargetRepoOutputConfig,
+    export_patch, parse_github_repository_url, prepare_git_worktree, push_approved_branch,
+    remove_git_worktree, stage_and_build_patch, BranchPublishRequest, TargetRepoOutputConfig,
 };
 use tempfile::tempdir;
 
@@ -21,6 +21,19 @@ fn git(cwd: &Path, args: &[&str]) -> String {
         String::from_utf8_lossy(&output.stderr)
     );
     String::from_utf8_lossy(&output.stdout).trim().to_string()
+}
+
+#[test]
+fn github_repository_url_parser_accepts_https_and_rejects_unsafe_shapes() {
+    let repo =
+        parse_github_repository_url("https://github.com/acme/widgets.git").expect("valid repo");
+    assert_eq!(repo.host, "github.com");
+    assert_eq!(repo.owner, "acme");
+    assert_eq!(repo.repository, "widgets");
+
+    assert!(parse_github_repository_url("git@github.com:acme/widgets.git").is_err());
+    assert!(parse_github_repository_url("https://user@github.com/acme/widgets.git").is_err());
+    assert!(parse_github_repository_url("https://github.com/acme/widgets/extra").is_err());
 }
 
 fn fixture() -> (tempfile::TempDir, tempfile::TempDir, tempfile::TempDir) {

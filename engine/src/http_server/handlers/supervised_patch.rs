@@ -16,8 +16,9 @@ use crate::http_server::{
 use crate::node_executor::{CommandNodeExecutor, NodeExecutionInput, NodeExecutor};
 use crate::provider::redaction::redact_sensitive_patterns;
 use crate::target_repo_output::{
-    export_patch, prepare_git_worktree, push_approved_branch, remove_git_worktree,
-    BranchPublishRequest, TargetRepoOutputConfig,
+    create_or_reuse_github_pull_request, export_patch, github_repository_for_remote,
+    prepare_git_worktree, push_approved_branch, remove_git_worktree, BranchPublishRequest,
+    GitHubPullRequestConfig, GitHubPullRequestRequest, TargetRepoOutputConfig,
 };
 
 pub(crate) async fn api_supervised_patch_workspaces(
@@ -521,6 +522,10 @@ pub(crate) async fn api_target_repo_output(
                 .pr_title
                 .unwrap_or_else(|| format!("Apply approved artifact {artifact_id}"));
             let pr_body = build_pr_body(&artifact);
+            let publish_branch = branch_name.clone();
+            let publish_remote = remote.clone();
+            let publish_title = pr_title.clone();
+            let publish_body = pr_body.clone();
             let output = match push_approved_branch(
                 &config,
                 BranchPublishRequest {
@@ -553,7 +558,44 @@ pub(crate) async fn api_target_repo_output(
                     return Err(target_output_error(error));
                 }
             };
-            serde_json::to_value(output).map_err(|error| internal_error(error.to_string()))?
+            let mut output =
+                serde_json::to_value(output).map_err(|error| internal_error(error.to_string()))?;
+            if request.create_pull_request == Some(true) {
+                let repository =
+                    github_repository_for_remote(&config, workspace_path, &publish_remote)
+                        .map_err(target_output_error)?;
+                let base_branch = workspace
+                    .get("git")
+                    .and_then(|value| value.get("default_branch"))
+                    .and_then(|value| value.as_str())
+                    .ok_or_else(|| {
+                        ApiError::with_code(
+                            StatusCode::CONFLICT,
+                            "default_branch_missing",
+                            "workspace is missing the target default branch",
+                        )
+                    })?;
+                let pull_request = create_or_reuse_github_pull_request(
+                    &GitHubPullRequestConfig::from_env(),
+                    &GitHubPullRequestRequest {
+                        repository,
+                        head_branch: publish_branch,
+                        base_branch: base_branch.to_string(),
+                        title: publish_title,
+                        body: publish_body,
+                    },
+                )
+                .await
+                .map_err(target_output_error)?;
+                if let Some(object) = output.as_object_mut() {
+                    object.insert(
+                        "pull_request".to_string(),
+                        serde_json::to_value(pull_request)
+                            .map_err(|error| internal_error(error.to_string()))?,
+                    );
+                }
+            }
+            output
         }
         _ => {
             audit_target_output_failure(

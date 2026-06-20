@@ -1,4 +1,5 @@
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 use sha2::{Digest, Sha256};
 use std::collections::HashSet;
 use std::io::Read;
@@ -126,6 +127,210 @@ pub struct BranchPublishOutput {
     pub patch_hash: String,
     pub pr_title: String,
     pub pr_body: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct GitHubRepository {
+    pub host: String,
+    pub owner: String,
+    pub repository: String,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct GitHubPullRequestConfig {
+    enabled: bool,
+    api_base: String,
+    token: Option<String>,
+}
+
+impl GitHubPullRequestConfig {
+    pub fn from_env() -> Self {
+        let api_base = std::env::var("ACP_GITHUB_API_BASE")
+            .ok()
+            .filter(|value| value.starts_with("https://"))
+            .unwrap_or_else(|| "https://api.github.com".to_string());
+        Self {
+            enabled: env_enabled("ACP_ENABLE_GITHUB_PR_OUTPUT"),
+            api_base: api_base.trim_end_matches('/').to_string(),
+            token: secret_from_named_env("ACP_GITHUB_TOKEN_ENV"),
+        }
+    }
+
+    pub fn require_enabled(&self) -> Result<(), String> {
+        if !self.enabled {
+            return Err("GitHub PR output requires ACP_ENABLE_GITHUB_PR_OUTPUT=1".to_string());
+        }
+        if self.token.is_none() {
+            return Err(
+                "GitHub PR output requires ACP_GITHUB_TOKEN_ENV to reference a populated token"
+                    .to_string(),
+            );
+        }
+        Ok(())
+    }
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct GitHubPullRequestRequest {
+    pub repository: GitHubRepository,
+    pub head_branch: String,
+    pub base_branch: String,
+    pub title: String,
+    pub body: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct GitHubPullRequestOutput {
+    pub number: u64,
+    pub url: String,
+    pub state: String,
+    pub reused: bool,
+}
+
+pub fn parse_github_repository_url(url: &str) -> Result<GitHubRepository, String> {
+    let rest = url
+        .strip_prefix("https://")
+        .ok_or_else(|| "GitHub remote must use HTTPS".to_string())?;
+    let (authority, path) = rest
+        .split_once('/')
+        .ok_or_else(|| "GitHub remote path is missing".to_string())?;
+    if authority.is_empty() || authority.contains('@') || authority.contains(':') {
+        return Err("GitHub remote authority is invalid".to_string());
+    }
+    let segments: Vec<&str> = path.trim_end_matches('/').split('/').collect();
+    if segments.len() != 2 {
+        return Err("GitHub remote must identify exactly owner/repository".to_string());
+    }
+    let owner = segments[0];
+    let repository = segments[1].strip_suffix(".git").unwrap_or(segments[1]);
+    if !valid_github_slug(owner) || !valid_github_slug(repository) {
+        return Err("GitHub owner or repository is invalid".to_string());
+    }
+    Ok(GitHubRepository {
+        host: authority.to_ascii_lowercase(),
+        owner: owner.to_string(),
+        repository: repository.to_string(),
+    })
+}
+
+pub fn github_repository_for_remote(
+    config: &TargetRepoOutputConfig,
+    workspace: &Path,
+    remote: &str,
+) -> Result<GitHubRepository, String> {
+    validate_remote(config, workspace, remote)?;
+    let url = run_git(config, workspace, &["remote", "get-url", remote])?
+        .stdout
+        .trim()
+        .to_string();
+    parse_github_repository_url(&url)
+}
+
+pub async fn create_or_reuse_github_pull_request(
+    config: &GitHubPullRequestConfig,
+    request: &GitHubPullRequestRequest,
+) -> Result<GitHubPullRequestOutput, String> {
+    config.require_enabled()?;
+    if request.repository.host != "github.com" {
+        return Err("GitHub PR output currently supports github.com remotes only".to_string());
+    }
+    for (field, value, max_len) in [
+        ("head_branch", request.head_branch.as_str(), 200_usize),
+        ("base_branch", request.base_branch.as_str(), 200_usize),
+        ("title", request.title.as_str(), 200_usize),
+        ("body", request.body.as_str(), 64 * 1024_usize),
+    ] {
+        if value.trim().is_empty() || value.len() > max_len || contains_sensitive_patterns(value) {
+            return Err(format!("{field} exceeds safety limits"));
+        }
+    }
+
+    let token = config.token.as_deref().unwrap_or_default();
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(30))
+        .user_agent("agent-control-plane")
+        .build()
+        .map_err(|error| error.to_string())?;
+    let endpoint = format!(
+        "{}/repos/{}/{}/pulls",
+        config.api_base, request.repository.owner, request.repository.repository
+    );
+    let head = format!("{}:{}", request.repository.owner, request.head_branch);
+    let existing = client
+        .get(&endpoint)
+        .bearer_auth(token)
+        .query(&[("state", "open"), ("head", head.as_str())])
+        .send()
+        .await
+        .map_err(|error| format!("GitHub PR lookup failed: {error}"))?;
+    if !existing.status().is_success() {
+        return Err(format!(
+            "GitHub PR lookup failed with status {}",
+            existing.status()
+        ));
+    }
+    let existing_body: Value = existing
+        .json()
+        .await
+        .map_err(|error| format!("GitHub PR lookup response invalid: {error}"))?;
+    if let Some(pull_request) = existing_body.as_array().and_then(|items| items.first()) {
+        return github_pull_request_output(pull_request, true);
+    }
+
+    let created = client
+        .post(&endpoint)
+        .bearer_auth(token)
+        .json(&serde_json::json!({
+            "title": request.title,
+            "head": request.head_branch,
+            "base": request.base_branch,
+            "body": request.body,
+        }))
+        .send()
+        .await
+        .map_err(|error| format!("GitHub PR creation failed: {error}"))?;
+    if !created.status().is_success() {
+        return Err(format!(
+            "GitHub PR creation failed with status {}",
+            created.status()
+        ));
+    }
+    let created_body: Value = created
+        .json()
+        .await
+        .map_err(|error| format!("GitHub PR creation response invalid: {error}"))?;
+    github_pull_request_output(&created_body, false)
+}
+
+fn github_pull_request_output(
+    value: &Value,
+    reused: bool,
+) -> Result<GitHubPullRequestOutput, String> {
+    let number = value
+        .get("number")
+        .and_then(Value::as_u64)
+        .ok_or_else(|| "GitHub PR response missing number".to_string())?;
+    let url = value
+        .get("html_url")
+        .and_then(Value::as_str)
+        .ok_or_else(|| "GitHub PR response missing html_url".to_string())?;
+    let state = value.get("state").and_then(Value::as_str).unwrap_or("open");
+    Ok(GitHubPullRequestOutput {
+        number,
+        url: redact_sensitive_patterns(url),
+        state: state.to_string(),
+        reused,
+    })
+}
+
+fn valid_github_slug(value: &str) -> bool {
+    !value.is_empty()
+        && value.len() <= 100
+        && !value.starts_with('-')
+        && !value.ends_with('-')
+        && value.chars().all(|character| {
+            character.is_ascii_alphanumeric() || matches!(character, '-' | '_' | '.')
+        })
 }
 
 pub fn prepare_git_worktree(
@@ -702,7 +907,11 @@ fn env_list(name: &str, defaults: &[&str]) -> HashSet<String> {
 }
 
 fn target_repo_git_token() -> Option<String> {
-    let variable = std::env::var("ACP_TARGET_REPO_GIT_TOKEN_ENV").ok()?;
+    secret_from_named_env("ACP_TARGET_REPO_GIT_TOKEN_ENV")
+}
+
+fn secret_from_named_env(name: &str) -> Option<String> {
+    let variable = std::env::var(name).ok()?;
     if variable.is_empty()
         || variable.len() > 128
         || !variable
