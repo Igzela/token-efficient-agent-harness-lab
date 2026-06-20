@@ -49,8 +49,9 @@ Download the latest release for your platform from [GitHub Releases](https://git
 
 ```bash
 # Linux x86_64
-curl -fsSL https://github.com/Igzela/token-efficient-agent-harness-lab/releases/latest/download/agent-control-plane-0.1.0-linux-x86_64.tar.gz | tar xz
-sudo ./agent-control-plane-0.1.0-linux-x86_64/install.sh
+curl -fLO https://github.com/Igzela/token-efficient-agent-harness-lab/releases/download/v0.1.0/agent-control-plane-v0.1.0-x86_64-unknown-linux-gnu.tar.gz
+tar -xzf agent-control-plane-v0.1.0-x86_64-unknown-linux-gnu.tar.gz
+sudo ./agent-control-plane-v0.1.0-x86_64-unknown-linux-gnu/install.sh
 ```
 
 Or use the one-line installer:
@@ -59,7 +60,7 @@ Or use the one-line installer:
 curl -fsSL https://raw.githubusercontent.com/Igzela/token-efficient-agent-harness-lab/main/scripts/install-from-release.sh | bash
 ```
 
-Available platforms: `linux-x86_64`, `linux-aarch64`, `darwin-x86_64`, `darwin-aarch64`.
+Available targets: `x86_64-unknown-linux-gnu`, `aarch64-unknown-linux-gnu`, `x86_64-apple-darwin`, `aarch64-apple-darwin`.
 
 ### Option 2: Docker
 

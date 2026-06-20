@@ -13,8 +13,8 @@ detect_os() {
     local os
     os="$(uname -s)"
     case "${os}" in
-        Linux*)  echo "linux" ;;
-        Darwin*) echo "darwin" ;;
+        Linux*)  echo "unknown-linux-gnu" ;;
+        Darwin*) echo "apple-darwin" ;;
         *)       echo "unsupported" ;;
     esac
 }
@@ -48,7 +48,7 @@ main() {
         exit 1
     fi
 
-    target="${os}-${arch}"
+    target="${arch}-${os}"
     echo "  OS:   ${os}"
     echo "  Arch: ${arch}"
     echo "  Target: ${target}"
@@ -65,7 +65,7 @@ main() {
     fi
     echo "  Version: ${version}"
 
-    tarball_url="https://github.com/${REPO}/releases/download/${version}/agent-control-plane-${version#v}-${target}.tar.gz"
+    tarball_url="https://github.com/${REPO}/releases/download/${version}/agent-control-plane-${version}-${target}.tar.gz"
     echo "  URL: ${tarball_url}"
     echo ""
 
@@ -79,7 +79,7 @@ main() {
     echo "Extracting..."
     tar -xzf "${tmp_dir}/release.tar.gz" -C "${tmp_dir}"
 
-    local extracted_dir="${tmp_dir}/agent-control-plane-${version#v}-${target}"
+    local extracted_dir="${tmp_dir}/agent-control-plane-${version}-${target}"
     if [[ ! -d "${extracted_dir}" ]]; then
         # Try alternate naming
         extracted_dir="$(find "${tmp_dir}" -maxdepth 1 -type d -name 'agent-control-plane-*' | head -1)"
@@ -92,7 +92,7 @@ main() {
     # Install binary
     echo "Installing binary to ${INSTALL_DIR}/..."
     sudo mkdir -p "${INSTALL_DIR}"
-    sudo cp "${extracted_dir}/agent-control-plane" "${INSTALL_DIR}/agent-control-plane"
+    sudo cp "${extracted_dir}/engine" "${INSTALL_DIR}/agent-control-plane"
     sudo chmod +x "${INSTALL_DIR}/agent-control-plane"
     echo "  -> ${INSTALL_DIR}/agent-control-plane"
 
@@ -114,7 +114,7 @@ main() {
     fi
 
     echo ""
-    echo "Installation complete! 🎉"
+    echo "Installation complete."
     echo ""
     echo "Quick start:"
     echo "  agent-control-plane"

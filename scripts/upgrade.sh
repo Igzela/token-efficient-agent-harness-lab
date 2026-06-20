@@ -24,10 +24,12 @@ if [[ ! -f "${TARGET}" ]]; then
     exit 1
 fi
 
-BINARY="${REPO_ROOT}/target/release/agent-control-plane"
+BINARY="${SCRIPT_DIR}/engine"
 if [[ ! -f "${BINARY}" ]]; then
-    echo "Error: release binary not found at ${BINARY}"
-    echo "Run 'cargo build --release -p engine' first."
+    BINARY="${REPO_ROOT}/target/release/agent-control-plane"
+fi
+if [[ ! -f "${BINARY}" ]]; then
+    echo "Error: agent-control-plane binary not found"
     exit 1
 fi
 
@@ -58,7 +60,10 @@ NEW_SIZE=$(stat -c%s "${TARGET}" 2>/dev/null || echo "0")
 echo "  Upgraded: ${OLD_SIZE} bytes -> ${NEW_SIZE} bytes"
 
 # Update dashboard assets if available
-DASHBOARD_SRC="${REPO_ROOT}/dashboard/out"
+DASHBOARD_SRC="${SCRIPT_DIR}/dashboard"
+if [[ ! -d "${DASHBOARD_SRC}" ]]; then
+    DASHBOARD_SRC="${REPO_ROOT}/dashboard/out"
+fi
 DATA_DIR="${HOME}/.agent-control-plane"
 if [[ -d "${DASHBOARD_SRC}" ]]; then
     DASHBOARD_DST="${DATA_DIR}/dashboard"

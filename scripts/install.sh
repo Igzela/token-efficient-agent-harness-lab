@@ -23,11 +23,13 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
-# Find the binary
-BINARY="${REPO_ROOT}/target/release/agent-control-plane"
+# Prefer packaged release layout, then source checkout layout.
+BINARY="${SCRIPT_DIR}/engine"
 if [[ ! -f "${BINARY}" ]]; then
-    echo "Error: release binary not found at ${BINARY}"
-    echo "Run 'cargo build --release -p engine' first."
+    BINARY="${REPO_ROOT}/target/release/agent-control-plane"
+fi
+if [[ ! -f "${BINARY}" ]]; then
+    echo "Error: agent-control-plane binary not found"
     exit 1
 fi
 
@@ -45,14 +47,21 @@ echo "  -> ${DATA_DIR}/"
 
 # Install .env.example if not present
 if [[ ! -f "${DATA_DIR}/.env.example" ]]; then
-    if [[ -f "${REPO_ROOT}/.env.example" ]]; then
-        cp "${REPO_ROOT}/.env.example" "${DATA_DIR}/.env.example"
+    ENV_EXAMPLE="${SCRIPT_DIR}/.env.example"
+    if [[ ! -f "${ENV_EXAMPLE}" ]]; then
+        ENV_EXAMPLE="${REPO_ROOT}/.env.example"
+    fi
+    if [[ -f "${ENV_EXAMPLE}" ]]; then
+        cp "${ENV_EXAMPLE}" "${DATA_DIR}/.env.example"
         echo "  -> ${DATA_DIR}/.env.example"
     fi
 fi
 
 # Install dashboard assets if available
-DASHBOARD_SRC="${REPO_ROOT}/dashboard/out"
+DASHBOARD_SRC="${SCRIPT_DIR}/dashboard"
+if [[ ! -d "${DASHBOARD_SRC}" ]]; then
+    DASHBOARD_SRC="${REPO_ROOT}/dashboard/out"
+fi
 if [[ -d "${DASHBOARD_SRC}" ]]; then
     DASHBOARD_DST="${DATA_DIR}/dashboard"
     mkdir -p "${DASHBOARD_DST}"

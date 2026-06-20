@@ -6,12 +6,15 @@ set -euo pipefail
 # Usage: ./smoke_release.sh [version]
 
 VERSION="${1:-0.1.0}"
+TAG="${VERSION#v}"
+TAG="v${TAG}"
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
-ARTIFACT_NAME="agent-control-plane-v${VERSION}-linux-x86_64"
+TARGET="${TARGET:-x86_64-unknown-linux-gnu}"
+ARTIFACT_NAME="agent-control-plane-${TAG}-${TARGET}"
 TARBALL="${REPO_ROOT}/dist/${ARTIFACT_NAME}.tar.gz"
 
-echo "Agent Control Plane — Release Smoke Test v${VERSION}"
+echo "Agent Control Plane — Release Smoke Test ${TAG}"
 echo ""
 
 # Check tarball exists
