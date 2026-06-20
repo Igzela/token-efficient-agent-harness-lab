@@ -9330,6 +9330,8 @@ async fn axum_target_repo_worktree_gate_and_kill_switch_are_audited() {
 async fn axum_target_repo_output_exports_and_pushes_only_after_approval() {
     let _env_lock = target_repo_output_env_lock().lock().await;
     let _env = TargetRepoOutputEnvGuard::enable_local_remote();
+    std::env::remove_var("ACP_ENABLE_GITHUB_PR_OUTPUT");
+    std::env::remove_var("ACP_GITHUB_TOKEN_ENV");
     let target = tempdir().unwrap();
     let remote = tempdir().unwrap();
     git(target.path(), &["init", "-b", "main"]);
@@ -9640,6 +9642,45 @@ async fn axum_target_repo_output_exports_and_pushes_only_after_approval() {
         .as_str()
         .unwrap()
         .contains("approved production output"));
+
+    let pr_preflight_branch = format!("acp/pr-preflight-{artifact_id}");
+    let pr_preflight = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(Method::POST)
+                .uri(format!(
+                    "/api/v1/supervised-patch/artifacts/{artifact_id}/output"
+                ))
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(
+                    json!({
+                        "run_id": run_id,
+                        "mode": "push_branch",
+                        "confirm_target_output": true,
+                        "branch_name": pr_preflight_branch,
+                        "remote": "origin",
+                        "commit_message": "feat: should not push without github gate",
+                        "pr_title": "Should not push without github gate",
+                        "create_pull_request": true
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(pr_preflight.status(), StatusCode::BAD_REQUEST);
+    let missing_branch = Command::new("git")
+        .arg("-C")
+        .arg(remote.path())
+        .args(["rev-parse", &format!("refs/heads/{pr_preflight_branch}")])
+        .output()
+        .unwrap();
+    assert!(
+        !missing_branch.status.success(),
+        "GitHub PR preflight failure must not push the target branch"
+    );
 
     let push = app
         .clone()

@@ -526,6 +526,66 @@ pub(crate) async fn api_target_repo_output(
             let publish_remote = remote.clone();
             let publish_title = pr_title.clone();
             let publish_body = pr_body.clone();
+            let pending_pull_request = if request.create_pull_request == Some(true) {
+                let github_config = GitHubPullRequestConfig::from_env();
+                if let Err(error) = github_config.require_enabled() {
+                    audit_target_output_failure(
+                        &store,
+                        &context.api_key_id,
+                        &artifact_id,
+                        &request.mode,
+                        "pull_request_preflight_failed",
+                    );
+                    return Err(target_output_error(error));
+                }
+                let repository =
+                    match github_repository_for_remote(&config, workspace_path, &publish_remote) {
+                        Ok(repository) => repository,
+                        Err(error) => {
+                            audit_target_output_failure(
+                                &store,
+                                &context.api_key_id,
+                                &artifact_id,
+                                &request.mode,
+                                "pull_request_preflight_failed",
+                            );
+                            return Err(target_output_error(error));
+                        }
+                    };
+                let base_branch = match workspace
+                    .get("git")
+                    .and_then(|value| value.get("default_branch"))
+                    .and_then(|value| value.as_str())
+                {
+                    Some(base_branch) => base_branch.to_string(),
+                    None => {
+                        audit_target_output_failure(
+                            &store,
+                            &context.api_key_id,
+                            &artifact_id,
+                            &request.mode,
+                            "pull_request_preflight_failed",
+                        );
+                        return Err(ApiError::with_code(
+                            StatusCode::CONFLICT,
+                            "default_branch_missing",
+                            "workspace is missing the target default branch",
+                        ));
+                    }
+                };
+                Some((
+                    github_config,
+                    GitHubPullRequestRequest {
+                        repository,
+                        head_branch: publish_branch,
+                        base_branch,
+                        title: publish_title,
+                        body: publish_body,
+                    },
+                ))
+            } else {
+                None
+            };
             let output = match push_approved_branch(
                 &config,
                 BranchPublishRequest {
@@ -560,33 +620,25 @@ pub(crate) async fn api_target_repo_output(
             };
             let mut output =
                 serde_json::to_value(output).map_err(|error| internal_error(error.to_string()))?;
-            if request.create_pull_request == Some(true) {
-                let repository =
-                    github_repository_for_remote(&config, workspace_path, &publish_remote)
-                        .map_err(target_output_error)?;
-                let base_branch = workspace
-                    .get("git")
-                    .and_then(|value| value.get("default_branch"))
-                    .and_then(|value| value.as_str())
-                    .ok_or_else(|| {
-                        ApiError::with_code(
-                            StatusCode::CONFLICT,
-                            "default_branch_missing",
-                            "workspace is missing the target default branch",
-                        )
-                    })?;
-                let pull_request = create_or_reuse_github_pull_request(
-                    &GitHubPullRequestConfig::from_env(),
-                    &GitHubPullRequestRequest {
-                        repository,
-                        head_branch: publish_branch,
-                        base_branch: base_branch.to_string(),
-                        title: publish_title,
-                        body: publish_body,
-                    },
+            if let Some((github_config, pull_request_request)) = pending_pull_request {
+                let pull_request = match create_or_reuse_github_pull_request(
+                    &github_config,
+                    &pull_request_request,
                 )
                 .await
-                .map_err(target_output_error)?;
+                {
+                    Ok(pull_request) => pull_request,
+                    Err(error) => {
+                        audit_target_output_failure(
+                            &store,
+                            &context.api_key_id,
+                            &artifact_id,
+                            &request.mode,
+                            "pull_request_failed",
+                        );
+                        return Err(target_output_error(error));
+                    }
+                };
                 if let Some(object) = output.as_object_mut() {
                     object.insert(
                         "pull_request".to_string(),
