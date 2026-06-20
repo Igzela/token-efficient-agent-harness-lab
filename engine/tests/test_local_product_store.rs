@@ -90,6 +90,32 @@ impl NodeExecutor for LargeOutputExecutor {
     }
 }
 
+struct PromptEchoExecutor;
+
+impl NodeExecutor for PromptEchoExecutor {
+    fn execute_node(&self, input: &NodeExecutionInput) -> NodeExecutionOutput {
+        NodeExecutionOutput {
+            status: "completed".to_string(),
+            executor_type: "prompt_echo".to_string(),
+            output: input
+                .node_metadata
+                .get("prompt")
+                .and_then(Value::as_str)
+                .map(str::to_string),
+            error_domain: None,
+            error_message: None,
+            input_tokens: Some(0),
+            output_tokens: Some(0),
+            estimated_cost: Some(0.0),
+            latency_ms: Some(0),
+        }
+    }
+
+    fn executor_type_name(&self) -> &str {
+        "prompt_echo"
+    }
+}
+
 fn make_event(event_id: &str, dispatch_id: &str, event_type: &str) -> ProviderAuditEvent {
     ProviderAuditEvent {
         schema_version: PROVIDER_AUDIT_EVENT_SCHEMA_VERSION.to_string(),
@@ -980,6 +1006,53 @@ fn workflow_runs_create_from_plan_persists_nodes_edges_events_and_approvals() {
     let approvals = store.workflow_run_approvals("run-0001", 10).unwrap();
     assert_eq!(approvals.len(), 1);
     assert_eq!(approvals[0]["actor"], "reviewer");
+}
+
+#[test]
+fn workflow_tick_inherits_plan_raw_request_as_prompt() {
+    let dir = tempdir().unwrap();
+    let store = LocalProductStore::new(dir.path().join("test.db")).unwrap();
+    let raw_request = "请在 README 中增加中文快速开始";
+    let plan = store
+        .create_workflow_plan(raw_request, "api", "actor", |ids, _created_at| {
+            Ok(make_workflow_plan_with_nodes(ids))
+        })
+        .unwrap();
+    store
+        .create_workflow_run_from_plan(plan["plan_id"].as_str().unwrap(), "actor")
+        .unwrap();
+
+    let tick = store
+        .tick_with_executor("run-0001", "actor", 0, &PromptEchoExecutor)
+        .unwrap();
+
+    assert_eq!(tick["result"]["output"].as_str(), Some(raw_request));
+}
+
+#[test]
+fn workflow_tick_command_override_does_not_inject_plan_prompt() {
+    let dir = tempdir().unwrap();
+    let store = LocalProductStore::new(dir.path().join("test.db")).unwrap();
+    let plan = store
+        .create_workflow_plan("plan prompt", "api", "actor", |ids, _created_at| {
+            Ok(make_workflow_plan_with_nodes(ids))
+        })
+        .unwrap();
+    store
+        .create_workflow_run_from_plan(plan["plan_id"].as_str().unwrap(), "actor")
+        .unwrap();
+
+    let tick = store
+        .tick_with_executor_and_command(
+            "run-0001",
+            "actor",
+            0,
+            &PromptEchoExecutor,
+            Some("explicit command"),
+        )
+        .unwrap();
+
+    assert!(tick["result"]["output"].is_null());
 }
 
 #[test]
