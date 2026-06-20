@@ -84,6 +84,26 @@ Autonomously maintain repo health and fix CI/docs/test drift. No future core-com
 - Pilots: real-world task validation
 - V2 Real Production Output PRs that follow the phase plan below
 
+## Real Output Closeout — AUTHORIZED
+
+Human approval on 2026-06-20 authorizes the final local-product closeout. This is not a new runtime kernel or unattended-agent track. It completes the existing V2 path in this order:
+
+1. Preserve the workflow plan `raw_request` as the default CLI/provider node prompt.
+2. Add a bounded supervised task loop in the existing workspace/executor/artifact path: one app-owned git worktree, explicit CLI executor, detected or supplied verification commands, at most two repair attempts, recorded verification evidence, and existing pause/kill/time/cost gates.
+3. After an approved `acp/*` branch push, optionally create a GitHub pull request through an explicit GitHub token environment reference and repository/host allowlist. No merge authority is added.
+4. Align release workflow, installer, and README artifact naming, then publish the first verified release.
+5. Validate the flow against three independent disposable real git repositories and record compact evidence in the existing status/runbook surfaces.
+6. Make the dashboard task-first: task prompt, repository, executor, verification, diff/evidence, approval, and PR result are primary; operations/admin views remain available as secondary navigation.
+
+Acceptance:
+
+- Chinese and English prompts reach the selected CLI/provider unchanged unless an explicit command override is supplied.
+- Failed verification can trigger no more than two audited repair attempts; exhausted verification blocks approval-bound output.
+- Verification output, exit status, command, attempt, and timestamp are bound to the captured artifact.
+- GitHub PR creation is default-off, explicit, audited, and returns the real PR URL; direct `main`, merge, release, deploy, and apply authority remain unavailable.
+- The release installer is exercised against the published release asset, not only a local fixture.
+- Three pilots produce distinct verified `acp/*` branches or PRs while each target `main` remains unchanged.
+
 ## Product Boundary Repair Track — COMPLETE
 
 The product-boundary repair track closed the gap between product wording, dashboard behavior, and practical usability. This was a maintenance/product-polish track, not a new runtime authority track.
