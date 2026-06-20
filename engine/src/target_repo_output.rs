@@ -592,10 +592,7 @@ pub fn push_approved_branch(
         .trim()
         .to_string();
     if current_source != request.source_revision {
-        return Err(format!(
-            "workspace source revision changed: expected={} actual={current_source}",
-            request.source_revision
-        ));
+        return reuse_published_branch(config, &request, &workspace, current_source);
     }
     let patch = stage_and_build_patch(config, &workspace)?;
     let actual_patch_hash = patch_hash(&patch);
@@ -638,6 +635,94 @@ pub fn push_approved_branch(
         source_revision: request.source_revision,
         branch_name: request.branch_name,
         remote: request.remote,
+        commit_sha,
+        patch_hash: actual_patch_hash,
+        pr_title: redact_sensitive_patterns(&request.pr_title),
+        pr_body: redact_sensitive_patterns(&request.pr_body),
+    })
+}
+
+fn reuse_published_branch(
+    config: &TargetRepoOutputConfig,
+    request: &BranchPublishRequest,
+    workspace: &Path,
+    commit_sha: String,
+) -> Result<BranchPublishOutput, String> {
+    let branch = run_git(config, workspace, &["symbolic-ref", "--short", "HEAD"])?
+        .stdout
+        .trim()
+        .to_string();
+    if branch != request.branch_name {
+        return Err(format!(
+            "workspace source revision changed: expected={} actual={commit_sha}",
+            request.source_revision
+        ));
+    }
+    if !run_git(config, workspace, &["status", "--porcelain"])?
+        .stdout
+        .trim()
+        .is_empty()
+    {
+        return Err("published workspace has uncommitted changes".to_string());
+    }
+    let parent = run_git(config, workspace, &["rev-parse", "HEAD^"])?
+        .stdout
+        .trim()
+        .to_string();
+    if parent != request.source_revision {
+        return Err("published branch parent does not match source revision".to_string());
+    }
+    let upstream_name = run_git(
+        config,
+        workspace,
+        &[
+            "rev-parse",
+            "--abbrev-ref",
+            "--symbolic-full-name",
+            "@{upstream}",
+        ],
+    )?
+    .stdout
+    .trim()
+    .to_string();
+    let expected_upstream = format!("{}/{}", request.remote, request.branch_name);
+    if upstream_name != expected_upstream {
+        return Err(format!(
+            "published branch upstream changed: expected={expected_upstream} actual={upstream_name}"
+        ));
+    }
+    let upstream = run_git(config, workspace, &["rev-parse", "@{upstream}"])?
+        .stdout
+        .trim()
+        .to_string();
+    if upstream != commit_sha {
+        return Err("published branch does not match its upstream".to_string());
+    }
+    let range = format!("{}..HEAD", request.source_revision);
+    let patch = run_git(
+        config,
+        workspace,
+        &["diff", "--binary", "--full-index", "--no-ext-diff", &range],
+    )?;
+    if patch.stdout_truncated || patch.stdout.len() > MAX_PATCH_BYTES {
+        return Err("published patch exceeds output limit".to_string());
+    }
+    if contains_sensitive_patterns(&patch.stdout) {
+        return Err("published patch contains sensitive content".to_string());
+    }
+    let actual_patch_hash = patch_hash(&patch.stdout);
+    if actual_patch_hash != request.expected_patch_hash {
+        return Err(format!(
+            "published patch hash changed: expected={} actual={actual_patch_hash}",
+            request.expected_patch_hash
+        ));
+    }
+
+    Ok(BranchPublishOutput {
+        schema_version: TARGET_REPO_OUTPUT_SCHEMA_VERSION.to_string(),
+        source_revision: request.source_revision.clone(),
+        branch_name: request.branch_name.clone(),
+        remote: request.remote.clone(),
         commit_sha,
         patch_hash: actual_patch_hash,
         pr_title: redact_sensitive_patterns(&request.pr_title),
