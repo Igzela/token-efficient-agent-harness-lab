@@ -33,7 +33,7 @@ main() {
     echo "Agent Control Plane — Installer"
     echo ""
 
-    local os arch target version tarball_url tmp_dir
+    local os arch target version archive_name tarball_url checksum_url tmp_dir
     os="$(detect_os)"
     arch="$(detect_arch)"
 
@@ -54,9 +54,11 @@ main() {
     echo "  Target: ${target}"
     echo ""
 
-    # Get latest release version from GitHub API
-    echo "Fetching latest release..."
-    version="$(curl -fsSL "https://api.github.com/repos/${REPO}/releases/latest" | grep '"tag_name"' | head -1 | sed 's/.*"tag_name": *"//;s/".*//')"
+    version="${VERSION:-}"
+    if [[ -z "${version}" ]]; then
+        echo "Fetching latest release..."
+        version="$(curl -fsSL "https://api.github.com/repos/${REPO}/releases/latest" | grep '"tag_name"' | head -1 | sed 's/.*"tag_name": *"//;s/".*//')"
+    fi
     if [[ -z "${version}" ]]; then
         echo "Error: could not determine latest release"
         echo "Tip: you can set VERSION manually:"
@@ -65,19 +67,35 @@ main() {
     fi
     echo "  Version: ${version}"
 
-    tarball_url="https://github.com/${REPO}/releases/download/${version}/agent-control-plane-${version}-${target}.tar.gz"
+    archive_name="agent-control-plane-${version}-${target}.tar.gz"
+    tarball_url="https://github.com/${REPO}/releases/download/${version}/${archive_name}"
+    checksum_url="${tarball_url}.sha256"
     echo "  URL: ${tarball_url}"
     echo ""
 
     # Download and extract
     tmp_dir="$(mktemp -d)"
-    trap 'rm -rf "${tmp_dir}"' EXIT
+    trap "rm -rf '${tmp_dir}'" EXIT
 
     echo "Downloading..."
-    curl -fsSL "${tarball_url}" -o "${tmp_dir}/release.tar.gz"
+    curl -fsSL "${tarball_url}" -o "${tmp_dir}/${archive_name}"
+    curl -fsSL "${checksum_url}" -o "${tmp_dir}/${archive_name}.sha256"
+
+    echo "Verifying checksum..."
+    (
+        cd "${tmp_dir}"
+        if command -v sha256sum >/dev/null 2>&1; then
+            sha256sum -c "${archive_name}.sha256"
+        elif command -v shasum >/dev/null 2>&1; then
+            shasum -a 256 -c "${archive_name}.sha256"
+        else
+            echo "Error: sha256sum or shasum is required to verify the release"
+            exit 1
+        fi
+    )
 
     echo "Extracting..."
-    tar -xzf "${tmp_dir}/release.tar.gz" -C "${tmp_dir}"
+    tar -xzf "${tmp_dir}/${archive_name}" -C "${tmp_dir}"
 
     local extracted_dir="${tmp_dir}/agent-control-plane-${version}-${target}"
     if [[ ! -d "${extracted_dir}" ]]; then

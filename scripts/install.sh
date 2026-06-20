@@ -10,11 +10,6 @@ DATA_DIR="${HOME}/.agent-control-plane"
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 
-echo "Agent Control Plane — Installer"
-echo "  Binary:  ${BIN_DIR}/agent-control-plane"
-echo "  Data:    ${DATA_DIR}/"
-echo ""
-
 # Parse --prefix flag
 while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -22,6 +17,11 @@ while [[ $# -gt 0 ]]; do
         *) echo "Unknown option: $1"; exit 1 ;;
     esac
 done
+
+echo "Agent Control Plane — Installer"
+echo "  Binary:  ${BIN_DIR}/agent-control-plane"
+echo "  Data:    ${DATA_DIR}/"
+echo ""
 
 # Prefer packaged release layout, then source checkout layout.
 BINARY="${SCRIPT_DIR}/engine"
