@@ -147,6 +147,11 @@ ALLOWED_TEST_IMPORTS: dict[str, set[str]] = {
         "urllib.error",
         "urllib.request",
     },
+    "scripts/real_output_pilots.py": {
+        "socket",
+        "urllib.error",
+        "urllib.request",
+    },
 }
 
 # Paths to exclude from active routing guard (test fixtures contain
