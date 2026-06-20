@@ -1335,6 +1335,16 @@ textarea {
   font-size: 13px;
 }
 
+.workflow-actions > .inline-control {
+  flex: 1 1 280px;
+  min-width: 0;
+}
+
+.workflow-actions > .inline-control input {
+  min-width: 0;
+  width: 100%;
+}
+
 .target-output-row input {
   min-width: 148px;
 }
@@ -2103,6 +2113,10 @@ tr[role="button"]:focus-visible,
   .runtime-control-row {
     display: grid;
     grid-template-columns: 1fr;
+  }
+
+  .workflow-actions > .inline-control {
+    width: 100%;
   }
 
   .topbar-meta .topbar-btn,

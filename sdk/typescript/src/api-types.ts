@@ -211,6 +211,33 @@ export interface WorkflowRunActionRequest {
   reason?: string;
 }
 
+export interface WorkspaceVerificationAttempt {
+  executor_type: string;
+  status: string;
+  output?: string | null;
+  error_domain?: string | null;
+  error_message?: string | null;
+  latency_ms?: number | null;
+  attempt: number;
+}
+
+export interface WorkspaceVerification {
+  schema_version: "workspace_verification.v1";
+  status: "evidence_recorded" | "verification_failed";
+  command: string[];
+  result_status: string;
+  executor_type: string;
+  output?: string | null;
+  error_domain?: string | null;
+  error_message?: string | null;
+  latency_ms?: number | null;
+  timeout_ms: number;
+  attempt: number;
+  verification_attempts: WorkspaceVerificationAttempt[];
+  repair_attempts: WorkspaceVerificationAttempt[];
+  recorded_at: string;
+}
+
 export interface SupervisedPatchWorkspace {
   schema_version: "supervised_patch_workspace.v1";
   workspace_sequence: number;
@@ -230,6 +257,8 @@ export interface SupervisedPatchWorkspace {
     source_revision?: string;
   } | null;
   target_output_authority?: "disabled" | "approval_bound";
+  verification_execution_authority?: "allowlisted_commands";
+  verification?: WorkspaceVerification | null;
   status: string;
   created_at: string;
   updated_at: string;
@@ -819,6 +848,20 @@ export interface SupervisedPatchWorkspaceCreateResponse {
 export interface SupervisedPatchWorkspaceActionResponse {
   schema_version: "axum_api.v1";
   workspace: SupervisedPatchWorkspace;
+}
+
+export interface SupervisedPatchVerificationRequest {
+  command: string;
+  confirm_verification: true;
+  timeout_ms?: number;
+  attempt?: number;
+  repair_executor?: "codex_cli" | "claude_code_cli";
+  max_repair_attempts?: number;
+}
+
+export interface SupervisedPatchVerificationResponse {
+  schema_version: "axum_api.v1";
+  verification: WorkspaceVerification;
 }
 
 export interface SupervisedPatchCaptureResponse {

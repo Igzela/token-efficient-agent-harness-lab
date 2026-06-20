@@ -706,6 +706,36 @@ class ClientQuarantineSupervisedPatchWorkspaceTest(unittest.TestCase):
         self.assertIn("/api/v1/supervised-patch/workspaces/ws-0001/quarantine", req.full_url)
 
 
+class ClientVerifySupervisedPatchWorkspaceTest(unittest.TestCase):
+    @patch("agent_control_plane_sdk.client.urlopen")
+    def test_verify_workspace_posts_request(self, mock_urlopen):
+        mock_urlopen.return_value = mock_response({
+            "schema_version": "axum_api.v1",
+            "verification": {"status": "evidence_recorded", "command": ["cargo", "test"]},
+        })
+        client = AgentControlPlaneClient("http://localhost:8080")
+        result = client.verify_supervised_patch_workspace(
+            "ws/0001",
+            command="cargo test",
+            confirm_verification=True,
+            timeout_ms=600000,
+            repair_executor="codex_cli",
+            max_repair_attempts=2,
+        )
+        self.assertEqual(result["verification"]["status"], "evidence_recorded")
+        args, _ = mock_urlopen.call_args
+        req = args[0]
+        self.assertEqual(req.method, "POST")
+        self.assertIn("/api/v1/supervised-patch/workspaces/ws%2F0001/verify", req.full_url)
+        self.assertEqual(json.loads(req.data), {
+            "command": "cargo test",
+            "confirm_verification": True,
+            "timeout_ms": 600000,
+            "repair_executor": "codex_cli",
+            "max_repair_attempts": 2,
+        })
+
+
 class ClientCaptureSupervisedPatchTest(unittest.TestCase):
     @patch("agent_control_plane_sdk.client.urlopen")
     def test_capture_patch_posts_to_workspace(self, mock_urlopen):

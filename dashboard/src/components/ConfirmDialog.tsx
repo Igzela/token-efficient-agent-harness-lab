@@ -4,6 +4,12 @@ export type ConfirmAction =
   | { type: "deleteBackup" | "restoreBackup"; backupId: string }
   | { type: "deleteMember" | "revokeKey" | "deleteKey" | "rotateKey"; id: string }
   | { type: "cleanupWorkspace" | "quarantineWorkspace" | "capturePatch"; workspaceId: string }
+  | {
+      type: "verifyWorkspace";
+      workspaceId: string;
+      command: string;
+      repairExecutor?: "codex_cli" | "claude_code_cli";
+    }
   | { type: "approveArtifact" | "rejectArtifact" | "exportArtifact"; artifactId: string; runId: string }
   | { type: "targetOutput"; artifactId: string; mode: "export_patch" | "push_branch" }
   | { type: "approveProposal" | "rejectProposal" | "rollbackProposal" | "deactivateProposal"; proposalId: string }
@@ -74,6 +80,8 @@ export function ConfirmDialog({
                   ? `Clean up workspace ${(action as { workspaceId: string }).workspaceId.slice(0, 12)}? This transitions the workspace to cleaned status.`
                   : action.type === "quarantineWorkspace"
                     ? `Quarantine workspace ${(action as { workspaceId: string }).workspaceId.slice(0, 12)}? This isolates the workspace.`
+                    : action.type === "verifyWorkspace"
+                      ? `Run "${(action as { command: string }).command}" in workspace ${(action as { workspaceId: string }).workspaceId.slice(0, 12)}?`
                     : action.type === "capturePatch"
                       ? `Capture patch from workspace ${(action as { workspaceId: string }).workspaceId.slice(0, 12)}?`
                       : action.type === "approveArtifact"

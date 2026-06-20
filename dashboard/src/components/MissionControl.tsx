@@ -21,6 +21,7 @@ import {
   recordWorkflowRunApproval,
   targetRepoOutput,
   tickWorkflowRun,
+  verifySupervisedPatchWorkspace,
 } from "@/lib/api-client";
 import type {
   DecisionRecord,
@@ -203,6 +204,7 @@ function OutputActionRail({
   const [targetId, setTargetId] = useState("local-target");
   const [sourceRevision, setSourceRevision] = useState("HEAD");
   const [executor, setExecutor] = useState("codex_cli");
+  const [verificationCommand, setVerificationCommand] = useState("");
   const [outputMode, setOutputMode] = useState<"export_patch" | "push_branch">("export_patch");
   const [branchName, setBranchName] = useState("acp/generated-output");
   const [remote, setRemote] = useState("origin");
@@ -219,7 +221,8 @@ function OutputActionRail({
   const terminal = run ? ["completed", "failed", "cancelled"].includes(run.status) : false;
   const approved = approvedForArtifact(artifact, approvals);
   const canCreateWorkspace = Boolean(run && targetRepoPath.trim() && sourceRevision.trim());
-  const canCapture = Boolean(workspace);
+  const canVerify = Boolean(workspace && verificationCommand.trim());
+  const canCapture = workspace?.verification?.status === "evidence_recorded";
   const canApprove = Boolean(artifact && artifact.redaction_status === "redacted" && !approved);
   const canExport = Boolean(artifact && approved);
   const canTargetOutput = Boolean(artifact && approved);
@@ -265,6 +268,19 @@ function OutputActionRail({
       runMutation(
         () => tickWorkflowRun(action.runId, { executor }),
         (result) => `Tick completed with status ${String(result.tick.status ?? "unknown")}.`,
+      );
+    } else if (action.type === "verifyWorkspace") {
+      runMutation(
+        () => verifySupervisedPatchWorkspace(action.workspaceId, {
+          command: action.command,
+          confirm_verification: true,
+          timeout_ms: 600_000,
+          repair_executor: action.repairExecutor,
+          max_repair_attempts: action.repairExecutor ? 2 : undefined,
+        }),
+        (result) => result.verification.status === "evidence_recorded"
+          ? `Verification passed after ${result.verification.verification_attempts.length} attempt(s).`
+          : `Verification failed after ${result.verification.verification_attempts.length} attempt(s).`,
       );
     } else if (action.type === "capturePatch") {
       runMutation(
@@ -404,6 +420,33 @@ function OutputActionRail({
         >
           Create workspace
         </button>
+        <label className="inline-control">
+          <span className="muted">Verify</span>
+          <input
+            aria-label="Verification command"
+            value={verificationCommand}
+            onChange={(event) => setVerificationCommand(event.target.value)}
+            placeholder="cargo test / npm test"
+          />
+        </label>
+        <button
+          type="button"
+          onClick={() => {
+            if (!workspace) return;
+            const repairExecutor = executor === "codex_cli" || executor === "claude_code_cli"
+              ? executor
+              : undefined;
+            setConfirmAction({
+              type: "verifyWorkspace",
+              workspaceId: workspace.workspace_id,
+              command: verificationCommand.trim(),
+              repairExecutor,
+            });
+          }}
+          disabled={mutating || !canVerify}
+        >
+          Verify workspace
+        </button>
         <button
           type="button"
           onClick={() => workspace && setConfirmAction({ type: "capturePatch", workspaceId: workspace.workspace_id })}
@@ -411,6 +454,11 @@ function OutputActionRail({
         >
           Capture patch
         </button>
+        {workspace && (
+          <span className={`pill ${canCapture ? "ok" : workspace.verification ? "risk" : "warn"}`}>
+            {workspace.verification?.status ?? "verification required"}
+          </span>
+        )}
         <button
           type="button"
           onClick={() => artifact && run && setConfirmAction({ type: "approveArtifact", artifactId: artifact.artifact_id, runId: run.run_id })}

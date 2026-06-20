@@ -408,6 +408,33 @@ class AgentControlPlaneClient:
             {},
         )
 
+    def verify_supervised_patch_workspace(
+        self,
+        workspace_id: str,
+        command: str,
+        confirm_verification: bool,
+        timeout_ms: int | None = None,
+        attempt: int | None = None,
+        repair_executor: str | None = None,
+        max_repair_attempts: int | None = None,
+    ) -> dict[str, Any]:
+        body: dict[str, Any] = {
+            "command": command,
+            "confirm_verification": confirm_verification,
+        }
+        if timeout_ms is not None:
+            body["timeout_ms"] = timeout_ms
+        if attempt is not None:
+            body["attempt"] = attempt
+        if repair_executor is not None:
+            body["repair_executor"] = repair_executor
+        if max_repair_attempts is not None:
+            body["max_repair_attempts"] = max_repair_attempts
+        return self._post(
+            f"/api/v1/supervised-patch/workspaces/{_quote_path_segment(workspace_id)}/verify",
+            body,
+        )
+
     def capture_supervised_patch(self, workspace_id: str) -> dict[str, Any]:
         return self._post(
             f"/api/v1/supervised-patch/workspaces/{_quote_path_segment(workspace_id)}/capture",
