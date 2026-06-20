@@ -30,11 +30,11 @@ connect real repo -> create task -> isolated app-owned workspace execution
 
 Current hard constraints for the V2 track:
 
-- Provider and CLI execution remain default-off and require explicit local env gates.
+- Provider API execution remains default-off. Installed local Claude/Codex CLIs are discovered by default for explicit workflow ticks; set `ACP_ENABLE_CLI_EXECUTION=0` to disable them.
 - V2-3 target output is merged; target writes are allowed only through its controlled worktree plus `acp/*` branch push or patch export, never direct target working-tree or `main` writes.
 - V2-1 may harden app-owned workspace isolation; process/container/VM sandboxing remains a separate approval item unless explicitly added to a future plan.
 - V2-4 may add bounded supervised workers with lease/heartbeat/kill controls; unattended autonomous-agent loops remain disallowed.
-- Hosted/cloud/multi-tenant SaaS, release/tag/deploy controls, provider failover, and default-on real execution remain out of scope for this track.
+- Hosted/cloud/multi-tenant SaaS, app-runtime release/deploy controls, provider failover, and default-on provider API execution remain out of scope for this track.
 - Secrets must not appear in logs, diffs, artifacts, dashboard output, or PR bodies.
 
 ## Disallowed by Default
@@ -44,7 +44,7 @@ Outside explicitly merged V2 phases, the following remain disabled:
 - Cloud SaaS, hosted/cloud deployment, and multi-tenant service.
 - Process/container/VM sandbox isolation.
 - Uncontrolled target working-tree writes, direct `main` writes, apply/merge/deploy authority, and release/tag controls.
-- Default-on provider execution or default-on CLI execution.
+- Default-on provider API execution.
 - Unattended autonomous-agent loops.
 - Provider failover.
 - Production worker concurrency outside the V2-4 supervised lease/heartbeat model.
@@ -58,7 +58,7 @@ Outside explicitly merged V2 phases, the following remain disabled:
 | No unlogged execution | ledger records all dispatches |
 | Rollback path required | `git revert` sufficient for low-risk |
 | Provider execution | env-gated (`ACP_ENABLE_PROVIDER_EXECUTION=1`) |
-| CLI execution | env-gated (`ACP_ENABLE_CLI_EXECUTION=1`) |
+| CLI execution | local CLI discovery defaults on; `ACP_ENABLE_CLI_EXECUTION=0` disables it |
 | Target repo output | V2 branch/worktree/PR flow only; no direct `main` writes |
 | V2 real output | explicit phase gate, audit event, tests, rollback/kill path |
 | No auto release/tag/deploy | explicit approval required |
@@ -84,7 +84,7 @@ Autonomously maintain repo health and fix CI/docs/test drift. No future core-com
 - Pilots: real-world task validation
 - V2 Real Production Output PRs that follow the phase plan below
 
-## Real Output Closeout — AUTHORIZED
+## Real Output Closeout — IMPLEMENTED
 
 Human approval on 2026-06-20 authorizes the final local-product closeout. This is not a new runtime kernel or unattended-agent track. It completes the existing V2 path in this order:
 
@@ -95,13 +95,19 @@ Human approval on 2026-06-20 authorizes the final local-product closeout. This i
 5. Validate the flow against three independent disposable real git repositories and record compact evidence in the existing status/runbook surfaces.
 6. Make the dashboard task-first: task prompt, repository, executor, verification, diff/evidence, approval, and PR result are primary; operations/admin views remain available as secondary navigation.
 
+Implementation status:
+
+- Items 1-3, 5, and 6 are complete on `codex/real-output-closeout`.
+- Release naming, package layout, installer behavior, and local 16-check release smoke are complete.
+- Remaining external action: merge the closeout PR, tag `v0.1.0`, wait for the release workflow, then run the online installer against the published asset.
+
 Acceptance:
 
 - Chinese and English prompts reach the selected CLI/provider unchanged unless an explicit command override is supplied.
 - Failed verification can trigger no more than two audited repair attempts; exhausted verification blocks approval-bound output.
 - Verification output, exit status, command, attempt, and timestamp are bound to the captured artifact.
 - GitHub PR creation is default-off, explicit, audited, and returns the real PR URL; direct `main`, merge, release, deploy, and apply authority remain unavailable.
-- The release installer is exercised against the published release asset, not only a local fixture.
+- The local package/installer smoke passes; published-asset verification is the release closeout step after merge.
 - Three pilots produce distinct verified `acp/*` branches or PRs while each target `main` remains unchanged.
 
 ## Product Boundary Repair Track — COMPLETE

@@ -27,29 +27,29 @@ This checks Rust, Bun, Node, uv, ports, disk space, and SQLite availability. All
 
 ## 2. First-Time Setup
 
-### Real Pilot 1: one-command local output
+### Real output pilots
 
-Use this path first when you want proof that a local checkout can produce a real patch and `acp/*` branch without understanding the internal gates:
+Use this path to prove real agent output across three independent disposable repositories:
 
 ```bash
-uv run --no-project python scripts/real_pilot_1.py
+scripts/real_output_pilots.py
 ```
 
 What it does:
 
 - starts the engine on `127.0.0.1` with a temporary SQLite DB
-- enables only guarded target output for a local filesystem remote
-- creates a real temporary git target repo and local bare remote
+- discovers an authenticated local Claude CLI
+- creates Python, Rust, and Node git repositories plus local bare remotes
 - creates plan/run/workspace records through the API
-- executes a small command in the app-owned git worktree
-- captures artifact evidence, records approval, exports a patch file, and pushes an `acp/*` branch
-- prints dashboard/API URL, evidence dir, patch file, branch commit, and rollback command
+- executes each natural-language task inside its app-owned git worktree
+- runs real verification, records approval, and pushes one `acp/*` branch per repository
+- writes a compact summary with run/artifact/approval/verification/branch evidence
 
-Boundary: no provider calls, no Claude/Codex CLI execution, no secrets, no target `main` write, no deploy/release/apply authority.
+Boundary: no provider API calls, no secrets, no target `main` write, and no merge/deploy/apply authority.
 
 ### Shortest Local Operator Path
 
-Use this path when you need the smallest safe local loop: start the engine, authenticate if required, run a noop dispatch, then decide whether to opt into the guarded CLI flow.
+Use this path when you need the smallest local loop: start the engine, authenticate if required, then create and run a task from the dashboard.
 
 1. Build the dashboard:
 
@@ -80,7 +80,7 @@ curl -s -X POST http://127.0.0.1:8080/api/v1/dispatch \
   -d '{"raw_request":"Summarize docs without provider calls","request_source":"api"}'
 ```
 
-5. Optional guarded CLI flow: set `ACP_ENABLE_CLI_EXECUTION=1` and select a CLI executor only for local trials where the operator accepts subprocess execution. If the gate is off, CLI-backed actions remain unavailable and the dashboard shows the CLI gate as off/default-safe.
+5. Installed Claude/Codex CLIs are discovered by default. Select a CLI executor in the task workflow; set `ACP_ENABLE_CLI_EXECUTION=0` when local subprocess execution must be disabled.
 
 Provider execution remains off unless `ACP_ENABLE_PROVIDER_EXECUTION=1`. Target output remains off unless `ACP_ENABLE_TARGET_REPO_OUTPUT=1`; when enabled, it is limited to a controlled app-owned git worktree, patch export, or approval-bound `acp/*` branch push. It never writes the registered target working tree or `main`.
 
@@ -292,7 +292,7 @@ Example:
 bash scripts/package-release.sh 0.1.0
 ```
 
-Produces `dist/agent-control-plane-v<VERSION>-linux-x86_64.tar.gz` with the engine binary, dashboard, install script, and upgrade script.
+Produces `dist/agent-control-plane-v<VERSION>-x86_64-unknown-linux-gnu.tar.gz` with the engine binary, dashboard, install script, and upgrade script.
 
 ### 5.3 Install / Upgrade
 
@@ -429,7 +429,7 @@ All environment variables are documented in `.env.example`. Key variables:
 | `ACP_DASHBOARD_DIR` | `dashboard/out` | Static dashboard assets path |
 | `ACP_PROVIDER_TYPE` | `stub` | Provider: `stub`, `openai_compatible`, `anthropic` |
 | `ACP_ENABLE_PROVIDER_EXECUTION` | (off) | Set to `1` for real provider calls |
-| `ACP_ENABLE_CLI_EXECUTION` | (off) | Set to `1` for CLI executor (claude/codex) |
+| `ACP_ENABLE_CLI_EXECUTION` | `1` | Set to `0` to disable local Claude/Codex CLI discovery |
 | `ACP_SCHEDULER_EXECUTOR` | `noop` | Executor type: `noop`, `command`, `claude_code_cli`, `codex_cli` |
 | `ACP_CORS_ORIGINS` | `*` | Comma-separated allowed origins |
 | `ACP_COST_PER_DISPATCH_USD` | (unlimited) | Per-dispatch cost cap |

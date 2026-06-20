@@ -7,23 +7,21 @@
 
 A local deterministic harness and self-hosted macro-orchestrator control plane for studying event-sourced agent workflow infrastructure. Includes a Rust engine with axum API, SQLite state, TypeScript dashboard and SDK, and Python SDK.
 
-> **This is a local research tool, not a cloud SaaS.** It does not call real model providers by default, run autonomous agents, or isolate work in sandboxes.
+> **This is a local research tool, not a cloud SaaS.** Provider APIs remain off by default. Installed local Claude/Codex CLIs are available for explicit task runs; the app does not run unattended agents or provide container/VM isolation.
 
 For the full system architecture, data flows, API surface, and safety boundaries, see [`docs/ARCHITECTURE_BOOK.md`](docs/ARCHITECTURE_BOOK.md).
 
 ## Quick Start
 
-### Real Pilot 1: produce a real local patch and branch
+### Real output pilots: produce verified branches
 
-For the shortest end-to-end proof, run one command from a clean checkout:
+For an end-to-end proof across Python, Rust, and Node repositories:
 
 ```bash
-uv run --no-project python scripts/real_pilot_1.py
+scripts/real_output_pilots.py
 ```
 
-The script starts a localhost engine with safe pilot gates, creates a temporary real git target repo plus local bare remote, creates a plan/run, creates an app-owned git worktree, executes a small command-backed change, captures verification evidence, records approval, exports a patch file, and pushes an `acp/*` branch to the local test remote. It does not call paid providers, enable Claude/Codex CLI execution, write target `main`, or require secrets.
-
-The final output prints the dashboard/API URL used during the run, evidence directory, exported `.patch`, pushed branch, commit SHA, and rollback command.
+The script uses an authenticated local Claude CLI to modify three disposable real git repositories, runs each repository's tests, captures verification evidence, records approval, and pushes three distinct `acp/*` branches to local bare remotes. Every target `main` ref is checked before and after.
 
 ```bash
 # Clone and build
@@ -95,7 +93,7 @@ agent-control-plane
 
 This repository is not a cloud production SaaS, hosted multi-tenant service, direct-deploy tool, or unattended autonomous-agent runtime. The approved V2 Real Production Output Track may add auditable real-repository patch/PR production, but only through the phase plan in `docs/NEXT_DECISION.md`.
 
-V2 does not make real execution default-on. OpenAI-compatible and Anthropic provider adapters remain behind explicit environment configuration; CI uses stub/mock paths and does not call real provider APIs. The local dashboard remains a guarded operations console; dangerous local admin API actions require explicit confirmation and audit logging.
+Provider API execution remains behind explicit environment configuration; CI uses stub/mock paths and does not call real provider APIs. Installed local Claude/Codex CLIs are discovered by default, but execution still requires an explicit workflow action. The local dashboard remains guarded; dangerous actions require confirmation and audit logging.
 
 ## Toolchain
 
@@ -276,7 +274,7 @@ bundle = client.dispatch("Summarize docs without provider calls")
 - No unattended real agents; explicit supervised local workflow execution exists behind opt-in gates.
 - No real sandbox/process/container/VM isolation runtime; V2-1 is limited to app-owned workspace confinement unless separately approved.
 - Supervised patch execution remains app-owned and gated. V2-3 adds an optional controlled git worktree plus approval-bound patch export or `acp/*` branch push; it does not modify the registered target working tree or `main`.
-- Existing local CLI executor subprocess invocation is a separate, explicit opt-in exception via `ACP_ENABLE_CLI_EXECUTION=1`.
+- Installed local CLI executors are discovered by default for explicit workflow actions; set `ACP_ENABLE_CLI_EXECUTION=0` to disable them.
 - `ACP_EXECUTION_MODE` controls how dispatch requests are routed: `off` (default, noop), `provider` (API only), `cli` (CLI executor only), or `auto` (hybrid mode that scores task complexity and routes low-complexity tasks to the Provider API and high-complexity tasks to the CLI executor; the threshold is configurable via `ACP_HYBRID_COMPLEXITY_THRESHOLD`, default 0.5).
 - Bounded supervised worker concurrency is implemented behind dual scheduler/worker gates, bounded worker count, authenticated pause/resume/kill controls, heartbeat, leases, and audit. Unattended autonomous-agent loops remain out of scope.
 - Provider failover remains out of scope.

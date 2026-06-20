@@ -4,17 +4,18 @@
 
 **What**: Local deterministic harness and self-hosted macro-orchestrator control plane for studying token-efficient agent workflows. Provides deterministic dispatch planning, local API/dashboard access, app-owned SQLite state, dynamic workflow state, executor coordination primitives, and cost-of-pass metrics.
 
-**What NOT**: Not a cloud production SaaS, hosted multi-tenant service, direct-deploy tool, or unattended autonomous-agent runtime. No real model-provider calls by default, no sandbox/process/container/VM isolation, no direct target-repo `main` writes by app runtime. CLI executor is explicit opt-in via `ACP_ENABLE_CLI_EXECUTION=1`. The approved V2 Real Production Output Track may add auditable patch/PR production only through the phase plan in `docs/NEXT_DECISION.md`.
+**What NOT**: Not a cloud production SaaS, hosted multi-tenant service, direct-deploy tool, or unattended autonomous-agent runtime. Provider APIs remain off by default; no process/container/VM isolation or direct target-repo `main` writes exist. Installed local Claude/Codex CLIs are discovered by default for explicit task runs and can be disabled with `ACP_ENABLE_CLI_EXECUTION=0`.
 
 **Target user**: Solo developer or small local team studying deterministic agent infrastructure on one machine or LAN.
 
-## Current State (2026-06-18)
+## Current State (2026-06-20)
 
 **Active tracks:**
 - Real-World Testing Mode — validated through real tasks, branches, commits, PRs, CI, gated auto-merge
 - Agent Autonomous Maintenance Mode — agents maintain docs/CI/tests/low-risk PR flow under playbook gates
 - V2 Real Production Output Track — authorized, phase-gated path to auditable real-repository patch/PR production
 - V2-0 through V2-5 merged in PRs #69-#75
+- Real Output Closeout implementation complete; release publication pending
 
 **Complete tracks:**
 - Dispatch Kernel Phases 1–7 (including 6A, 6B-1/2/3, Gates 1–3): STABLE

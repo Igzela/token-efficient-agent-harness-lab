@@ -1,6 +1,6 @@
 # Architecture Book
 
-Last updated: 2026-06-17
+Last updated: 2026-06-20
 
 This is the current architecture baseline for the Token-Efficient Agent Harness Lab. Historical phase plans, closeout reports, and long-form strategy docs live under `docs/archive/`.
 
@@ -11,7 +11,7 @@ The system is a local/small-team self-hosted macro-orchestrator control plane fo
 Default posture:
 
 - Provider execution is off unless `ACP_ENABLE_PROVIDER_EXECUTION=1`.
-- CLI execution is off unless `ACP_ENABLE_CLI_EXECUTION=1`.
+- Installed local Claude/Codex CLIs are discovered by default; explicit workflow ticks invoke them. `ACP_ENABLE_CLI_EXECUTION=0` disables this path.
 - Target output remains off unless `ACP_ENABLE_TARGET_REPO_OUTPUT=1`. V2-3 permits only an app-owned git worktree plus approval-bound patch export or `acp/*` branch push; the registered target working tree and `main` remain protected.
 - No release/tag/deploy/apply controls exist in the app runtime.
 - No process/container/VM sandbox isolation is implemented; V2-1 is scoped to app-owned workspace confinement unless separately approved.
@@ -82,9 +82,9 @@ The V2 design upgrades old limitations into explicit production guardrails:
 |---|---|---|---|
 | Workspace execution | App-owned workspace lifecycle and V2-1 safety base exist | Confined app-owned execution workspace | Path-safe IDs, canonical app-store root checks, symlink skip, file/byte ceilings, quarantine/cleanup |
 | Provider/CLI output | V2-2 gated workflow-node output path exists | Real output path under explicit gates | Auth scope, env gate, cost cap, retry/budget breaker, trace, redaction |
-| Target repository output | V2-3 merged | Controlled git worktree, `acp/*` branch push, or patch export | `dispatch:execute`, env gate/kill, explicit confirmation, same-run approval binding, completed verification evidence, content hash, text-only bounded changed files, HTTPS remote/host/token controls, no direct `main` writes, secret-free artifacts/PR body |
+| Target repository output | V2-3 plus closeout merged in implementation branch | Controlled git worktree, `acp/*` branch push, patch export, optional GitHub PR | `dispatch:execute`, env gates/kill, explicit confirmation, same-run approval binding, real verification evidence, content hash, text-only bounded changed files, HTTPS remote/host/token controls, no direct `main` writes or merge authority |
 | Workers | V2-4 merged | Bounded supervised workers | Dual env gate, atomic DB lease, per-worker heartbeat, concurrency cap, stale recovery audit, authenticated pause/resume/kill |
-| Dashboard UX | Operator tabs and Mission Control | Single output workflow | Gate/risk/next-step/approval visibility |
+| Dashboard UX | Task-first workspace | Single output workflow with secondary operations/admin navigation | Task/run/workspace/verification/approval/PR visibility |
 
 Do not create a second runtime kernel for V2. Extend the existing `node_executor`, `workflow_runs`, `scheduler`, `executor_pool`, `provider`, `cli`, `supervised_patch`, `LocalProductStore`, SDK, and dashboard surfaces.
 
@@ -108,7 +108,9 @@ Do not create a second runtime kernel for V2. Extend the existing `node_executor
 | `cli` | CLI executor only; requires CLI gate |
 | `auto` | Hybrid provider/CLI routing by complexity threshold |
 
-Workflow node execution is explicit through scheduler/tick paths. `CommandNodeExecutor` rejects shell metacharacters, avoids `sh -c`, uses allowlisted binaries, validates supplied workspace cwd, clears inherited environment except `PATH`, caps captured output, enforces timeout kill, and emits structured results. Claude/Codex CLI execution remains a separate explicit opt-in path behind `ACP_ENABLE_CLI_EXECUTION=1`; CLI subprocess env is restricted to `PATH` plus `ACP_CLI_ENV_ALLOWLIST`, and CLI output is redacted/capped before persistence. Provider workflow ticks require `ACP_ENABLE_PROVIDER_EXECUTION=1`, a configured provider, dispatch execute scope, cost-gate preflight, provider audit events, retry/budget-breaker handling, and redacted/capped output trace.
+Workflow node execution is explicit through scheduler/tick paths. `CommandNodeExecutor` rejects shell metacharacters, avoids `sh -c`, uses allowlisted binaries, validates supplied workspace cwd, clears inherited environment except `PATH`, caps output, enforces timeout kill, and emits structured results. Installed Claude/Codex CLIs are discovered by default; `ACP_ENABLE_CLI_EXECUTION=0` disables them. CLI subprocess env is restricted to `PATH` plus `ACP_CLI_ENV_ALLOWLIST`, and output is redacted/capped. Codex uses JSONL with workspace-write sandbox and ephemeral sessions. Provider workflow ticks still require `ACP_ENABLE_PROVIDER_EXECUTION=1`, provider configuration, scope, cost gates, audit, and retries.
+
+Workspace verification is a separate allowlisted command path for the supported Rust, JavaScript, Python, Go, and Make toolchains. It records command, status, output/error, latency, timeout, attempt, and timestamp in workspace evidence. A failed check may request at most two CLI repairs; exhausted verification records `verification_failed` and blocks target output.
 
 V2-4 supervised workers reuse the same scheduler and workflow lease path. Process startup requires `ACP_ENABLE_SCHEDULER=1` and `ACP_ENABLE_SUPERVISED_WORKERS=1`. `ACP_SUPERVISED_WORKER_COUNT` is constrained by `ACP_SCHEDULER_MAX_CONCURRENT` and a hard cap of 32. Each worker claims at most one node per cycle; global capacity remains separate from per-worker tick limits. Worker heartbeat state is persisted in existing scheduler heartbeat metadata. `POST /api/v1/scheduler/control` requires `dispatch:execute` and confirmation for pause/resume/kill. `ACP_SUPERVISED_WORKERS_PAUSED=1` pauses new claims; `ACP_SUPERVISED_WORKERS_KILL_SWITCH=1` stops new claims and lets any timeout-bounded in-flight execution drain. Workers only consume already-created workflow runs and do not create autonomous goals or loops.
 
@@ -137,12 +139,12 @@ The dashboard is a local operations console with guarded app-owned controls. It 
 
 These are accepted current limitations, not hidden TODOs:
 
-- V2 real output is authorized but not yet complete; each phase must land behind explicit gates.
+- V2 real output and its closeout implementation are complete; published release verification remains an operator/repository release step.
 - V2-1 app-owned workspace hardening is implemented, but it is not hard process/container/VM sandboxing and does not authorize target-repository writes.
-- V2-2 provider/CLI output is implemented as a gated workflow-node capability; V2-3 separately owns controlled worktree/branch output. Neither makes provider/CLI execution default-on.
+- Provider API output remains gated. Installed local CLI discovery defaults on, while each execution still requires an explicit workflow tick.
 - Hard process/container/VM sandbox isolation is not implemented and is not part of V2-1 unless separately approved.
 - V2-3 controlled target output is merged. It creates no merge/deploy/apply authority and preserves the registered target working tree and `main`.
-- Provider/CLI execution remains default-off even after V2-2.
+- GitHub PR creation is default-off and adds no merge authority.
 - Bounded supervised workers are merged in V2-4 and Mission Control product output UX is merged in V2-5; unattended autonomous-agent loops remain out of scope.
 - Cloud SaaS, hosted/cloud deployment, multi-tenant service, direct release/tag/deploy/apply controls, and provider failover remain out of scope.
 - Some routing, quality, and orchestration modules remain partially active rather than unified under one policy layer.

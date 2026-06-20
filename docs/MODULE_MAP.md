@@ -1,6 +1,6 @@
 # Module Map
 
-Last updated: 2026-06-18
+Last updated: 2026-06-20
 
 This map is for code ownership and verification routing. It is intentionally not a phase history. Historical module/phase narratives live in `docs/archive/`.
 
@@ -18,9 +18,9 @@ The Rust `engine/` is the sole runtime implementation. Python is retained as RES
 | `engine/src/budget_manager.rs` | active dispatch | Token/cost reservation and cost gate checks | `cargo test -p engine --test dispatch_parity` |
 | `engine/src/executor/`, `engine/src/executor_adapter.rs` | active execution | Noop/provider/CLI/hybrid executor integration | `cargo test -p engine` |
 | `engine/src/provider/` | env-gated execution | Provider adapters, workflow-node executor, retry/cost gates, audit/redaction, circuit breaker wrapper | `cargo test -p engine` |
-| `engine/src/cli/` | env-gated execution | Claude Code / Codex CLI executor path with restricted env and redacted/capped output | `cargo test -p engine` |
+| `engine/src/cli/` | local CLI execution | Default local CLI discovery, explicit workflow ticks, Claude JSON/Codex JSONL adapters, restricted env, redacted/capped output | `cargo test -p engine` |
 | `engine/src/node_executor.rs` | supervised execution | Workflow node executors, command allowlist, timeout, structured output | `cargo test -p engine --lib node_executor` |
-| `engine/src/target_repo_output.rs` | env-gated target output | Controlled git worktree, patch export, `acp/*` branch push, remote/auth validation, timeout/redaction/kill controls | `cargo test -p engine --test test_target_repo_output` |
+| `engine/src/target_repo_output.rs` | env-gated target output | Controlled git worktree, patch export, `acp/*` branch push, optional idempotent GitHub PR creation, remote/auth validation | `cargo test -p engine --test test_target_repo_output` |
 | `engine/src/scheduler.rs` | env-gated workers | Bounded supervised worker threads, queue ticks, pause/kill, heartbeat, lease recovery, dynamic mode, executor-pool binding | `cargo test -p engine --lib scheduler` |
 | `engine/src/workflow/` | active workflow | DAG mutation, dynamic controller, context pack, run queue, backpressure, decisions | `cargo test -p engine --lib workflow` |
 | `engine/src/orchestration/` | partial workflow | Decomposition, conflict resolution, approval gate, aggregation helpers | `cargo test -p engine` |
@@ -33,7 +33,7 @@ The Rust `engine/` is the sole runtime implementation. Python is retained as RES
 | `sdk/typescript/` | active SDK | TypeScript REST SDK and generated wire re-exports | `cd sdk/typescript && bun run build && bun run test` |
 | `sdk/python/` | active SDK | Python REST SDK | `cd sdk/python && PYTHONPATH=src uv run --no-project python -m unittest discover -s tests` |
 | `wire_contract/v1/`, `codegen/` | active governance | JSON schemas and deterministic generated Rust/TS/Python wire types | `bash scripts/check_wire_codegen_drift.sh` |
-| `scripts/` | active ops | Local doctor, smoke, release checklist, drift guards, Real Pilot 1, pilot/soak scripts | script-specific `--help` or smoke commands, including `uv run --no-project python scripts/real_pilot_1.py` |
+| `scripts/` | active ops | Local doctor, release/smoke checks, drift guards, and real output pilots | script-specific checks, including `scripts/real_output_pilots.py` and `scripts/check_release_contract.sh` |
 | `deploy/`, `docker-compose.yml` | optional local packaging | Dockerfiles and compose profiles for local engine/dashboard packaging | `docker compose build` |
 
 ## Module Classes
@@ -64,7 +64,7 @@ The Rust `engine/` is the sole runtime implementation. Python is retained as RES
 - R-series is sealed at R7. R8 is not approved.
 - Do not create a parallel scheduler, DAG kernel, policy engine, storage layer, or dashboard data model.
 - V2 Real Production Output is approved only through the phase plan in `docs/NEXT_DECISION.md`; do not skip phases or merge half-built runtime authority.
-- Do not add provider/CLI default-on execution, direct target-repository `main` writes, process/container/VM sandbox behavior, hosted/cloud deployment, release/tag/deploy controls, provider failover, or unattended autonomous-agent loops without separate explicit approval.
+- Do not add default-on provider API execution, direct target-repository `main` writes, process/container/VM sandbox behavior, hosted/cloud deployment, app-runtime release/deploy controls, provider failover, or unattended autonomous-agent loops without separate explicit approval.
 - Any V2 real capability must include an env/auth gate, audit event, tests, and rollback/kill path before it is usable.
 - Wire-codegen drift guard: `scripts/check_wire_codegen_drift.sh`.
 - Run `uv run --no-project python scripts/check_agent_handoff.py` before committing handoff changes.
