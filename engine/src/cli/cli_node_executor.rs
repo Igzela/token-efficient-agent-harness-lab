@@ -162,7 +162,12 @@ impl NodeExecutor for CliNodeExecutor {
                 }
             }
             "codex_cli" => {
-                cmd.arg("exec").arg(&prompt);
+                cmd.arg("exec")
+                    .arg("--json")
+                    .arg("--sandbox")
+                    .arg("workspace-write")
+                    .arg("--ephemeral")
+                    .arg(&prompt);
             }
             _ => unreachable!(),
         }
@@ -256,6 +261,9 @@ fn cli_env_allowlist() -> Vec<String> {
 
 fn parse_cli_output(raw: &str, executor_type: &str, latency_ms: i64) -> NodeExecutionOutput {
     let raw = redact_sensitive_patterns(raw);
+    if executor_type == "codex_cli" {
+        return parse_codex_jsonl(&raw, latency_ms);
+    }
     let parsed: Value = match serde_json::from_str(&raw) {
         Ok(v) => v,
         Err(err) => {
@@ -305,6 +313,118 @@ fn parse_cli_output(raw: &str, executor_type: &str, latency_ms: i64) -> NodeExec
         status: "completed".to_string(),
         executor_type: executor_type.to_string(),
         output: Some(output_text),
+        error_domain: None,
+        error_message: None,
+        input_tokens,
+        output_tokens,
+        estimated_cost: Some(estimated_cost),
+        latency_ms: Some(latency_ms),
+    }
+}
+
+fn parse_codex_jsonl(raw: &str, latency_ms: i64) -> NodeExecutionOutput {
+    let mut output = None;
+    let mut input_tokens = None;
+    let mut output_tokens = None;
+    let mut completed = false;
+    let mut failure = None;
+
+    for line in raw.lines().filter(|line| !line.trim().is_empty()) {
+        let event: Value = match serde_json::from_str(line) {
+            Ok(value) => value,
+            Err(error) => {
+                return NodeExecutionOutput {
+                    status: "failed".to_string(),
+                    executor_type: "codex_cli".to_string(),
+                    output: Some(raw.to_string()),
+                    error_domain: Some("cli_output_parse_error".to_string()),
+                    error_message: Some(format!("failed to parse Codex JSONL output: {error}")),
+                    input_tokens: None,
+                    output_tokens: None,
+                    estimated_cost: None,
+                    latency_ms: Some(latency_ms),
+                };
+            }
+        };
+        match event.get("type").and_then(Value::as_str) {
+            Some("item.completed")
+                if event
+                    .get("item")
+                    .and_then(|item| item.get("type"))
+                    .and_then(Value::as_str)
+                    == Some("agent_message") =>
+            {
+                output = event
+                    .get("item")
+                    .and_then(|item| item.get("text"))
+                    .and_then(Value::as_str)
+                    .map(redact_sensitive_patterns);
+            }
+            Some("turn.completed") => {
+                completed = true;
+                let usage = event.get("usage");
+                input_tokens = usage
+                    .and_then(|value| value.get("input_tokens"))
+                    .and_then(Value::as_i64);
+                output_tokens = usage
+                    .and_then(|value| value.get("output_tokens"))
+                    .and_then(Value::as_i64);
+            }
+            Some("turn.failed") => {
+                failure = event
+                    .get("error")
+                    .and_then(|value| value.get("message"))
+                    .and_then(Value::as_str)
+                    .map(redact_sensitive_patterns)
+                    .or_else(|| Some("Codex turn failed".to_string()));
+            }
+            Some("error") => {
+                failure = event
+                    .get("message")
+                    .and_then(Value::as_str)
+                    .map(redact_sensitive_patterns)
+                    .or_else(|| Some("Codex execution error".to_string()));
+            }
+            _ => {}
+        }
+    }
+
+    if let Some(message) = failure {
+        return NodeExecutionOutput {
+            status: "failed".to_string(),
+            executor_type: "codex_cli".to_string(),
+            output,
+            error_domain: Some("cli_execution_error".to_string()),
+            error_message: Some(message),
+            input_tokens,
+            output_tokens,
+            estimated_cost: None,
+            latency_ms: Some(latency_ms),
+        };
+    }
+    if !completed {
+        return NodeExecutionOutput {
+            status: "failed".to_string(),
+            executor_type: "codex_cli".to_string(),
+            output,
+            error_domain: Some("cli_output_parse_error".to_string()),
+            error_message: Some("Codex JSONL output did not include turn.completed".to_string()),
+            input_tokens,
+            output_tokens,
+            estimated_cost: None,
+            latency_ms: Some(latency_ms),
+        };
+    }
+
+    let estimated_cost = super::claude_code::compute_cli_cost(
+        "codex_cli",
+        input_tokens.unwrap_or(0),
+        output_tokens.unwrap_or(0),
+    );
+    NodeExecutionOutput {
+        status: "completed".to_string(),
+        executor_type: "codex_cli".to_string(),
+        output,
         error_domain: None,
         error_message: None,
         input_tokens,
@@ -373,6 +493,35 @@ mod tests {
         let executor = CliNodeExecutor::new(None, Some("/bin/codex".into()), 5000);
         let input = make_input(json!({}));
         assert_eq!(executor.resolve_executor(&input), "codex_cli");
+    }
+
+    #[test]
+    fn test_parse_codex_jsonl_returns_last_agent_message() {
+        let output = parse_cli_output(
+            "{\"type\":\"thread.started\",\"thread_id\":\"thread-1\"}\n\
+             {\"type\":\"item.completed\",\"item\":{\"type\":\"agent_message\",\"text\":\"READY\"}}\n\
+             {\"type\":\"turn.completed\",\"usage\":{\"input_tokens\":10,\"output_tokens\":2}}\n",
+            "codex_cli",
+            25,
+        );
+
+        assert_eq!(output.status, "completed");
+        assert_eq!(output.output.as_deref(), Some("READY"));
+        assert_eq!(output.input_tokens, Some(10));
+        assert_eq!(output.output_tokens, Some(2));
+    }
+
+    #[test]
+    fn test_parse_codex_jsonl_surfaces_turn_failure() {
+        let output = parse_cli_output(
+            "{\"type\":\"turn.failed\",\"error\":{\"message\":\"usage limit\"}}\n",
+            "codex_cli",
+            25,
+        );
+
+        assert_eq!(output.status, "failed");
+        assert_eq!(output.error_domain.as_deref(), Some("cli_execution_error"));
+        assert_eq!(output.error_message.as_deref(), Some("usage limit"));
     }
 
     #[test]

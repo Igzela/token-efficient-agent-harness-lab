@@ -974,7 +974,7 @@ async fn run_workspace_verification(
         timeout_ms,
         allowed_commands: Vec::new(),
         allowed_binaries: [
-            "cargo", "bun", "npm", "pnpm", "yarn", "uv", "python", "python3", "go", "make",
+            "cargo", "bun", "node", "npm", "pnpm", "yarn", "uv", "python", "python3", "go", "make",
         ]
         .into_iter()
         .map(str::to_string)

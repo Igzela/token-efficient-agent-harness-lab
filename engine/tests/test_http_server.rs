@@ -1133,7 +1133,9 @@ async fn axum_supervised_patch_verification_can_repair_and_retry_with_cli() {
     let fake_codex = workspace_root.path().join("fake-codex");
     fs::write(
         &fake_codex,
-        "#!/bin/sh\nprintf 'fixed\\n' > fixed.txt\nprintf '{\"result\":\"repair complete\"}\\n'\n",
+        "#!/bin/sh\nprintf 'fixed\\n' > fixed.txt\n\
+         printf '{\"type\":\"item.completed\",\"item\":{\"type\":\"agent_message\",\"text\":\"repair complete\"}}\\n'\n\
+         printf '{\"type\":\"turn.completed\",\"usage\":{\"input_tokens\":10,\"output_tokens\":2}}\\n'\n",
     )
     .unwrap();
     #[cfg(unix)]
