@@ -1,4 +1,4 @@
-import type { LocalBoundaries } from "@/lib/types";
+import type { LocalBoundaries, LocalCliCapability } from "@/lib/types";
 
 type GateTone = "ok" | "warn" | "info";
 
@@ -48,13 +48,44 @@ function authGate(authStatus: "ok" | "missing" | "denied" | "offline", hasToken:
   };
 }
 
+function cliGate(cli: LocalCliCapability): Gate {
+  if (!cli.enabled) {
+    return {
+      detail: "Local CLI execution is disabled by configuration.",
+      label: "CLI",
+      status: "disabled",
+      tone: "ok",
+    };
+  }
+  const detected = [
+    cli.claude_code ? "Claude" : null,
+    cli.codex ? "Codex" : null,
+  ].filter((name): name is string => name !== null);
+  if (detected.length === 0) {
+    return {
+      detail: "CLI discovery is enabled, but no supported local CLI was found.",
+      label: "CLI",
+      status: "not found",
+      tone: "warn",
+    };
+  }
+  return {
+    detail: `${detected.join(" and ")} available for explicit workflow ticks.`,
+    label: "CLI",
+    status: detected.join(" + "),
+    tone: "ok",
+  };
+}
+
 export function RuntimeGates({
   authStatus,
   boundaries,
+  cli,
   hasToken,
 }: {
   authStatus: "ok" | "missing" | "denied" | "offline";
   boundaries: LocalBoundaries;
+  cli: LocalCliCapability;
   hasToken: boolean;
 }) {
   const gates: Gate[] = [
@@ -67,6 +98,7 @@ export function RuntimeGates({
       status: boundaries.provider_transport,
       tone: gateTone(boundaries.provider_transport),
     },
+    cliGate(cli),
     {
       detail: boundaries.runtime_workers === "enabled"
         ? "Runtime worker capability is enabled by explicit local configuration."
@@ -96,7 +128,7 @@ export function RuntimeGates({
       <div className="setup-heading">
         <div>
           <p className="label">Runtime gates</p>
-          <h2>Provider, auth, workers, workspace, and export status</h2>
+          <h2>Provider, CLI, auth, workers, workspace, and export status</h2>
         </div>
         <span className="pill info">guarded</span>
       </div>

@@ -6,7 +6,9 @@ use std::sync::OnceLock;
 
 use axum::body::{to_bytes, Body};
 use axum::http::{header, Method, Request, StatusCode};
-use engine::http_server::{build_axum_router, build_axum_router_with_dashboard, AxumApiState};
+use engine::http_server::{
+    build_axum_router, build_axum_router_with_dashboard, AxumApiState, CliCapability,
+};
 use engine::infrastructure::auth::{Tenant, TenantResolver};
 use engine::infrastructure::rate_limiter::RateLimiter;
 use engine::provider::audit::{ProviderAuditEvent, PROVIDER_AUDIT_EVENT_SCHEMA_VERSION};
@@ -392,6 +394,63 @@ async fn axum_local_store_persists_dispatch_history_and_dashboard_summary() {
     assert_eq!(
         decisions[0]["input_signals"]["raw_request"],
         "Summarize local team status without provider calls"
+    );
+}
+
+#[tokio::test]
+async fn axum_dashboard_exposes_read_only_cli_capability() {
+    let default_app = build_axum_router(AxumApiState::new());
+    let default_response = default_app
+        .oneshot(
+            Request::builder()
+                .method(Method::GET)
+                .uri("/api/v1/dashboard")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(default_response.status(), StatusCode::OK);
+    let default_body = response_json(default_response).await;
+    assert_eq!(
+        default_body["cli"],
+        json!({
+            "enabled": false,
+            "claude_code": false,
+            "codex": false,
+        })
+    );
+
+    let dir = tempdir().unwrap();
+    let store = LocalProductStore::new(dir.path().join("local-team.db")).unwrap();
+    let configured_app = build_axum_router(
+        AxumApiState::new()
+            .with_local_store(store)
+            .with_cli_capability(CliCapability {
+                enabled: true,
+                claude_code: true,
+                codex: false,
+            }),
+    );
+    let configured_response = configured_app
+        .oneshot(
+            Request::builder()
+                .method(Method::GET)
+                .uri("/api/v1/dashboard")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(configured_response.status(), StatusCode::OK);
+    let configured_body = response_json(configured_response).await;
+    assert_eq!(
+        configured_body["cli"],
+        json!({
+            "enabled": true,
+            "claude_code": true,
+            "codex": false,
+        })
     );
 }
 

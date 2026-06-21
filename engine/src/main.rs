@@ -2,7 +2,9 @@ use engine::cli::{ClaudeCodeCliExecutor, CliConfig, CodexCliExecutor, MultiExecu
 use engine::dispatch_engine::DispatchEngine;
 use engine::executor::HybridExecutor;
 use engine::executor_adapter::NoopExecutor;
-use engine::http_server::{build_axum_router, build_axum_router_with_dashboard, AxumApiState};
+use engine::http_server::{
+    build_axum_router, build_axum_router_with_dashboard, AxumApiState, CliCapability,
+};
 use engine::infrastructure::auth::{
     hash_api_key, validate_token_shape, APIKey, Tenant, TenantResolver,
 };
@@ -131,7 +133,8 @@ async fn main() {
         )
         .with_local_store_arc(store_arc.clone())
         .with_backup_dir(backup_dir)
-        .with_circuit_breaker_registry(cb_registry.clone()),
+        .with_circuit_breaker_registry(cb_registry.clone())
+        .with_cli_capability(CliCapability::from(&cli_config)),
     );
 
     let require_auth = std::env::var("ACP_REQUIRE_AUTH")

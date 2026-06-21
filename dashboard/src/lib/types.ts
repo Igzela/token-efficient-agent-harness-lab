@@ -43,6 +43,7 @@ export interface LocalDashboardState {
   config: Record<string, string | number | boolean | null>;
   costs: LocalCostSummary;
   boundaries: LocalBoundaries;
+  cli: LocalCliCapability;
 }
 
 export interface LocalCounts {
@@ -167,6 +168,12 @@ export interface LocalBoundaries {
   runtime_workers: string;
   deployment: string;
   docker_required: boolean;
+}
+
+export interface LocalCliCapability {
+  enabled: boolean;
+  claude_code: boolean;
+  codex: boolean;
 }
 
 export interface OperationsMetrics {

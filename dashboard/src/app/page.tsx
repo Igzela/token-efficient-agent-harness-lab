@@ -147,6 +147,11 @@ const emptyDashboard: LocalDashboardState = {
     sandbox_process_execution: "disabled",
     target_repository_writes: "disabled",
   },
+  cli: {
+    enabled: false,
+    claude_code: false,
+    codex: false,
+  },
 };
 
 function readTabFromHash(): Tab {
@@ -401,6 +406,7 @@ export default function DashboardPage() {
               <BoundaryBadges
                 authStatus={authStatus}
                 boundaries={dashboard.boundaries}
+                cli={dashboard.cli}
                 hasToken={hasLocalToken}
               />
             </div>
@@ -478,6 +484,7 @@ export default function DashboardPage() {
           <RuntimeGates
             authStatus={authStatus}
             boundaries={dashboard.boundaries}
+            cli={dashboard.cli}
             hasToken={hasLocalToken}
           />
         </section>

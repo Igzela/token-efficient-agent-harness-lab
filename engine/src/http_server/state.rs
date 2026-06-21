@@ -28,6 +28,23 @@ impl Default for ServerConfig {
     }
 }
 
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct CliCapability {
+    pub enabled: bool,
+    pub claude_code: bool,
+    pub codex: bool,
+}
+
+impl From<&crate::cli::CliConfig> for CliCapability {
+    fn from(config: &crate::cli::CliConfig) -> Self {
+        Self {
+            enabled: config.enabled,
+            claude_code: config.claude_code_enabled,
+            codex: config.codex_enabled,
+        }
+    }
+}
+
 #[derive(Clone)]
 pub struct AxumApiState {
     pub(crate) engine: Arc<DispatchEngine>,
@@ -43,6 +60,7 @@ pub struct AxumApiState {
     pub(crate) metrics: Arc<MetricsCollector>,
     pub(crate) tracer: Arc<RequestTracer>,
     pub(crate) circuit_breaker_registry: Arc<CircuitBreakerRegistry>,
+    pub(crate) cli_capability: CliCapability,
 }
 
 impl Default for AxumApiState {
@@ -67,6 +85,7 @@ impl AxumApiState {
             metrics: Arc::new(MetricsCollector::new(10_000)),
             tracer: Arc::new(RequestTracer::new()),
             circuit_breaker_registry: Arc::new(CircuitBreakerRegistry::new()),
+            cli_capability: CliCapability::default(),
         }
     }
 
@@ -146,6 +165,15 @@ impl AxumApiState {
     pub fn with_circuit_breaker_registry(mut self, registry: Arc<CircuitBreakerRegistry>) -> Self {
         self.circuit_breaker_registry = registry;
         self
+    }
+
+    pub fn with_cli_capability(mut self, capability: CliCapability) -> Self {
+        self.cli_capability = capability;
+        self
+    }
+
+    pub fn cli_capability(&self) -> &CliCapability {
+        &self.cli_capability
     }
 
     pub fn executor_type(&self) -> &str {

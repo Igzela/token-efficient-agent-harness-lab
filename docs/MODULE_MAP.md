@@ -1,6 +1,6 @@
 # Module Map
 
-Last updated: 2026-06-20
+Last updated: 2026-06-21
 
 This map is for code ownership and verification routing. It is intentionally not a phase history. Historical module/phase narratives live in `docs/archive/`.
 
@@ -11,14 +11,14 @@ The Rust `engine/` is the sole runtime implementation. Python is retained as RES
 | Module | Stage | Purpose | Verification |
 |---|---|---|---|
 | `engine/src/main.rs` | active runtime | Engine entrypoint and local server startup | `cargo test -p engine` |
-| `engine/src/http_server/` | active runtime/API | Axum routes, middleware, auth/rate-limit, static dashboard serving | `cargo test -p engine --test test_http_server` |
+| `engine/src/http_server/` | active runtime/API | Axum routes, middleware, auth/rate-limit, static dashboard serving, read-only runtime capability snapshots | `cargo test -p engine --test test_http_server` |
 | `engine/src/dispatch_engine.rs` | active dispatch | Wires analysis, model selection, budget, executor, evaluation, ledger | `cargo test -p engine --test test_dispatch_engine` |
 | `engine/src/task_analyzer/` | active dispatch | Rule-based task domain/intent/risk/complexity analysis | `cargo test -p engine --test dispatch_parity` |
 | `engine/src/model_selector.rs` | active dispatch | Tier selection, constraints, fallback, shadow route metadata | `cargo test -p engine --test dispatch_parity` |
 | `engine/src/budget_manager.rs` | active dispatch | Token/cost reservation and cost gate checks | `cargo test -p engine --test dispatch_parity` |
 | `engine/src/executor/`, `engine/src/executor_adapter.rs` | active execution | Noop/provider/CLI/hybrid executor integration | `cargo test -p engine` |
 | `engine/src/provider/` | env-gated execution | Provider adapters, workflow-node executor, retry/cost gates, audit/redaction, circuit breaker wrapper | `cargo test -p engine` |
-| `engine/src/cli/` | local CLI execution | Default local CLI discovery, explicit workflow ticks, Claude JSON/Codex JSONL adapters, restricted env, redacted/capped output | `cargo test -p engine` |
+| `engine/src/cli/` | local CLI execution | Default local CLI discovery, explicit workflow ticks, path-free dashboard capability summary, Claude JSON/Codex JSONL adapters, restricted env, redacted/capped output | `cargo test -p engine` |
 | `engine/src/node_executor.rs` | supervised execution | Workflow node executors, command allowlist, timeout, structured output | `cargo test -p engine --lib node_executor` |
 | `engine/src/target_repo_output.rs` | env-gated target output | Controlled git worktree, patch export, `acp/*` branch push, optional idempotent GitHub PR creation, remote/auth validation | `cargo test -p engine --test test_target_repo_output` |
 | `engine/src/scheduler.rs` | env-gated workers | Bounded supervised worker threads, queue ticks, pause/kill, heartbeat, lease recovery, dynamic mode, executor-pool binding | `cargo test -p engine --lib scheduler` |
