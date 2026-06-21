@@ -1,4 +1,5 @@
 pub mod adaptive_candidate;
+pub mod adaptive_experiment;
 pub mod adaptive_fusion;
 pub mod auto_adjustment_guard;
 pub mod auto_adjustment_policy;
@@ -20,6 +21,11 @@ pub use adaptive_candidate::{
     AdaptiveCandidate, AdaptiveCandidateConfig, AdaptiveCandidateGenerator, AdaptiveCandidateSet,
     CandidateEndpointBinding, CandidateGenerationRequest, EndpointRejection, FusionRole,
     ADAPTIVE_CANDIDATE_SCHEMA_VERSION, ADAPTIVE_CANDIDATE_SET_SCHEMA_VERSION,
+};
+pub use adaptive_experiment::{
+    AdaptiveExperimentController, AdaptiveExperimentDecision, AdaptiveExperimentError,
+    AdaptiveExperimentGate, AdaptiveExperimentLimits, AdaptiveExperimentPolicy,
+    AdaptiveExperimentRequest, ADAPTIVE_EXPERIMENT_SCHEMA_VERSION,
 };
 pub use adaptive_fusion::{
     AdaptiveFusionPlan, AdaptiveFusionPlanner, DeliberationMode, EndpointScorecard,

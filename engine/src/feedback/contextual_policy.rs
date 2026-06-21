@@ -181,6 +181,15 @@ impl AdaptiveExplorationGate {
         }
     }
 
+    pub fn from_assignment(assigned: bool) -> Self {
+        Self {
+            enabled: assigned,
+            active: assigned,
+            killed: false,
+            max_rate: f64::from(assigned),
+        }
+    }
+
     fn rate_for(self, risk_level: &str) -> f64 {
         if self.enabled && self.active && !self.killed && !high_risk(risk_level) {
             self.max_rate

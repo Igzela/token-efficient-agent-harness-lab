@@ -12,9 +12,10 @@ use super::redaction::{contains_sensitive_patterns, redact_sensitive_patterns};
 use super::{Provider, ProviderRequest, ProviderResponse};
 use crate::feedback::policy_snapshot::stable_hash;
 use crate::feedback::{
-    contextual_policy_key, AdaptiveExplorationGate, ContextualBanditEngine,
-    ContextualBanditObservation, ContextualPolicyRequest, PromotedAdaptivePolicy,
-    TaskClassEvaluation,
+    contextual_policy_key, AdaptiveExperimentController, AdaptiveExperimentGate,
+    AdaptiveExperimentLimits, AdaptiveExperimentPolicy, AdaptiveExperimentRequest,
+    AdaptiveExplorationGate, ContextualBanditEngine, ContextualBanditObservation,
+    ContextualPolicyRequest, PromotedAdaptivePolicy, TaskClassEvaluation,
 };
 use crate::node_executor::{NodeExecutionInput, NodeExecutionOutput, NodeExecutor};
 
@@ -480,6 +481,8 @@ pub struct AdaptiveProviderNodeExecutor {
     contextual_policies: BTreeMap<String, PromotedAdaptivePolicy>,
     persisted_observations: Vec<ContextualBanditObservation>,
     exploration_gate: AdaptiveExplorationGate,
+    experiment_policy: Option<AdaptiveExperimentPolicy>,
+    experiment_gate: Option<AdaptiveExperimentGate>,
     last_observation: Arc<Mutex<Option<AdaptiveObservationDraft>>>,
 }
 
@@ -493,6 +496,8 @@ impl AdaptiveProviderNodeExecutor {
             contextual_policies: BTreeMap::new(),
             persisted_observations: Vec::new(),
             exploration_gate: AdaptiveExplorationGate::from_env(),
+            experiment_policy: None,
+            experiment_gate: None,
             last_observation: Arc::new(Mutex::new(None)),
         }
     }
@@ -508,6 +513,16 @@ impl AdaptiveProviderNodeExecutor {
         observations: Vec<ContextualBanditObservation>,
     ) -> Self {
         self.persisted_observations = observations;
+        self
+    }
+
+    pub fn with_online_experiments(
+        mut self,
+        policy: AdaptiveExperimentPolicy,
+        gate: AdaptiveExperimentGate,
+    ) -> Self {
+        self.experiment_policy = Some(policy);
+        self.experiment_gate = Some(gate);
         self
     }
 
@@ -828,11 +843,45 @@ impl AdaptiveProviderNodeExecutor {
                 })
                 .cloned(),
         );
+        let experiment_decision =
+            self.experiment_policy
+                .zip(self.experiment_gate)
+                .map(|(policy, gate)| {
+                    AdaptiveExperimentController::decide(
+                        &AdaptiveExperimentRequest {
+                            request_id: config.request.request_id.clone(),
+                            exploration_seed: config.request.exploration_seed,
+                            risk_level: config.request.risk_level.clone(),
+                        },
+                        &policy,
+                        &gate,
+                    )
+                    .map(|decision| (policy, decision))
+                });
+        let experiment_assigned = experiment_decision
+            .as_ref()
+            .and_then(|decision| decision.as_ref().ok())
+            .is_some_and(|(_, decision)| decision.assigned);
+        if experiment_decision.as_ref().is_some_and(Result::is_err) {
+            self.executor.audit.create_and_record(
+                dispatch_ref,
+                &policy.candidate_id,
+                "adaptive_experiment_blocked",
+                Some(&serde_json::json!({
+                    "error_domain": "adaptive_experiment_validation_failed",
+                })),
+            );
+        }
+        let exploration_gate = if self.experiment_policy.is_some() {
+            AdaptiveExplorationGate::from_assignment(experiment_assigned)
+        } else {
+            self.exploration_gate
+        };
         let decision = ContextualBanditEngine::decide(
             &config.request,
             &config.evaluation,
             &observations,
-            &self.exploration_gate,
+            &exploration_gate,
         )
         .map_err(|_| {
             (
@@ -840,15 +889,51 @@ impl AdaptiveProviderNodeExecutor {
                 "adaptive contextual policy decision is invalid",
             )
         })?;
-        let candidate_id = if decision.exploration_assigned {
+        let mut candidate_id = if decision.exploration_assigned {
             decision.selected_candidate_id.as_str()
         } else {
             policy.candidate_id.as_str()
         };
-        let selected = config.candidate_plans.get(candidate_id).ok_or((
+        let mut selected = config.candidate_plans.get(candidate_id).ok_or((
             "adaptive_policy_plan_missing",
             "selected adaptive candidate has no explicit bounded execution plan",
         ))?;
+        if decision.exploration_assigned {
+            if let Some(Ok((experiment_policy, experiment_decision))) = &experiment_decision {
+                let limits = AdaptiveExperimentLimits {
+                    reserved_cost_usd: plan_reserved_cost(&selected.plan),
+                    max_cost_usd: selected.limits.max_cost_usd,
+                    max_total_tokens: selected.limits.max_total_tokens,
+                    max_calls: selected.limits.max_calls,
+                    max_elapsed_ms: selected.limits.max_elapsed_ms,
+                    max_concurrency: selected.limits.max_concurrency,
+                };
+                if let Err(error_domain) =
+                    AdaptiveExperimentController::validate_limits(&limits, experiment_policy)
+                {
+                    self.executor.audit.create_and_record(
+                        dispatch_ref,
+                        candidate_id,
+                        "adaptive_experiment_blocked",
+                        Some(&serde_json::json!({"error_domain": error_domain})),
+                    );
+                    candidate_id = policy.candidate_id.as_str();
+                    selected = config.candidate_plans.get(candidate_id).ok_or((
+                        "adaptive_policy_plan_missing",
+                        "promoted candidate has no explicit bounded execution plan",
+                    ))?;
+                } else {
+                    self.executor.audit.create_and_record(
+                        dispatch_ref,
+                        candidate_id,
+                        "adaptive_experiment_assigned",
+                        Some(&serde_json::json!({
+                            "traffic_rate": experiment_decision.traffic_rate,
+                        })),
+                    );
+                }
+            }
+        }
         self.executor.audit.create_and_record(
             dispatch_ref,
             candidate_id,

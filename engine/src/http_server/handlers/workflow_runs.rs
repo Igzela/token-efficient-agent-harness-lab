@@ -459,6 +459,7 @@ pub(crate) async fn api_tick_workflow_run(
             let persisted_observations = store
                 .adaptive_bandit_observations()
                 .map_err(internal_error)?;
+            let experiment_gate = crate::feedback::AdaptiveExperimentGate::from_env();
             let executor = crate::provider::adaptive_execution::AdaptiveProviderNodeExecutor::new(
                 adaptive_executor,
                 gate,
@@ -467,7 +468,15 @@ pub(crate) async fn api_tick_workflow_run(
                 contextual_policies,
                 crate::feedback::AdaptiveExplorationGate::from_env(),
             )
-            .with_persisted_observations(persisted_observations)
+            .with_persisted_observations(persisted_observations);
+            let executor = if experiment_gate.is_configured() {
+                executor.with_online_experiments(
+                    crate::feedback::AdaptiveExperimentPolicy::from_env(),
+                    experiment_gate,
+                )
+            } else {
+                executor
+            }
             .with_cost_gate(cost_config, daily_cost);
             match store.tick_with_executor_and_command(
                 &run_id,
