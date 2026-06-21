@@ -138,6 +138,17 @@ def main() -> int:
         print(result.stdout.strip())
         return 1
 
+    secret_scan = ROOT / "scripts" / "acp_secret_scan.py"
+    result = subprocess.run(
+        [sys.executable, str(secret_scan)],
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode != 0:
+        print("Agent handoff check FAILED — secret scan:")
+        print(result.stdout.strip())
+        return 1
+
     # --- Drift checks ---
 
     # Check 1: Schema version constant exists and is readable

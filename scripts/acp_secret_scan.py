@@ -104,10 +104,10 @@ def is_text_file(path: Path) -> bool:
 
 
 def normalize_value(raw: str) -> str:
-    value = raw.strip().strip('"').strip("'")
+    value = raw.strip()
     if " " in value:
         value = value.split()[0]
-    return value.strip()
+    return value.rstrip(",;").strip('"').strip("'").strip()
 
 
 def allowed_assignment_value(value: str) -> bool:
