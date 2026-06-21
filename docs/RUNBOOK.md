@@ -459,6 +459,11 @@ All environment variables are documented in `.env.example`. Key variables:
 | `ACP_ENABLE_ADAPTIVE_FUSION_EXECUTION` | (off) | Enables explicit bounded `adaptive_provider` workflow ticks |
 | `ACP_ADAPTIVE_PROVIDER_ENDPOINTS_JSON` | (none) | Up to eight fixed provider/model endpoint definitions with credential env references |
 | `ACP_ADAPTIVE_FUSION_KILL_SWITCH` | (off) | Blocks adaptive provider execution when set to `1` at startup |
+| `ACP_ENABLE_ADAPTIVE_POLICY_PROMOTION` | (off) | Enables AF-4 adaptive policy promotion API gate |
+| `ACP_ADAPTIVE_POLICY_PROMOTION_ACTIVE` | (off) | Second AF-4 promotion activation gate; human confirmation and `team:admin` still required |
+| `ACP_ENABLE_ADAPTIVE_EXPLORATION` | (off) | Enables AF-4 bounded exploration gate |
+| `ACP_ADAPTIVE_EXPLORATION_ACTIVE` | (off) | Second AF-4 exploration activation gate; high/critical-risk tasks remain excluded |
+| `ACP_ADAPTIVE_EXPLORATION_KILL_SWITCH` | (off) | Blocks AF-4 exploration assignment when set to `1` |
 | `ACP_ENABLE_CLI_EXECUTION` | `1` | Set to `0` to disable local Claude/Codex CLI discovery |
 | `ACP_SCHEDULER_EXECUTOR` | `noop` | Executor type: `noop`, `command`, `claude_code_cli`, `codex_cli` |
 | `ACP_CORS_ORIGINS` | `*` | Comma-separated allowed origins |

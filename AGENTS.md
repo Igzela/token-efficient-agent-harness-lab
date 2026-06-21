@@ -7,7 +7,7 @@ This repository is the Token-Efficient Agent Harness Lab: a local deterministic 
 **Active tracks:**
 - **Real-World Testing Mode** — validated through real tasks, branches, commits, PRs, CI, gated auto-merge
 - **Agent Autonomous Maintenance Mode** — agents maintain docs/CI/tests/low-risk PR flow under playbook gates
-- **Adaptive Fusion Routing Track** — authorized; AF-0 through AF-3 implemented, adaptive live execution remains explicit and default-off
+- **Adaptive Fusion Routing Track** — authorized; AF-0 through AF-4 implemented, adaptive live execution remains explicit and default-off
 
 **Complete tracks:**
 - Dispatch Kernel Phases 1–7 (including 6A, 6B-1/2/3, Gates 1–3): STABLE
@@ -21,7 +21,7 @@ This repository is the Token-Efficient Agent Harness Lab: a local deterministic 
 - Real Output Closeout: COMPLETE (`v0.1.0` published and online installer verified)
 
 **Key facts:**
-- 1640 Rust tests pass, 0 failures (last recorded full verification)
+- 1653 Rust tests pass, 0 failures (last recorded full verification)
 - Latest release: `v0.1.0`, published 2026-06-21
 - Architecture Refactor R-series sealed at R7. R8 is not approved.
 - Post-R7 wire/type governance hardening implemented: `scripts/check_wire_codegen_drift.sh`
