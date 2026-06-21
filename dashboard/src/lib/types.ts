@@ -389,6 +389,33 @@ export interface BackupVerification {
   errors: string[];
 }
 
+export interface WorkspaceVerificationAttempt {
+  executor_type: string;
+  status: string;
+  output?: string | null;
+  error_domain?: string | null;
+  error_message?: string | null;
+  latency_ms?: number | null;
+  attempt: number;
+}
+
+export interface WorkspaceVerification {
+  schema_version: "workspace_verification.v1";
+  status: "evidence_recorded" | "verification_failed";
+  command: string[];
+  result_status: string;
+  executor_type: string;
+  output?: string | null;
+  error_domain?: string | null;
+  error_message?: string | null;
+  latency_ms?: number | null;
+  timeout_ms: number;
+  attempt: number;
+  verification_attempts: WorkspaceVerificationAttempt[];
+  repair_attempts: WorkspaceVerificationAttempt[];
+  recorded_at: string;
+}
+
 export interface SupervisedPatchWorkspace {
   schema_version: "supervised_patch_workspace.v1";
   workspace_sequence: number;
@@ -405,6 +432,8 @@ export interface SupervisedPatchWorkspace {
   workspace_mode?: "copy" | "git_worktree";
   git?: Record<string, unknown> | null;
   target_output_authority?: "disabled" | "approval_bound";
+  verification_execution_authority?: "allowlisted_commands";
+  verification?: WorkspaceVerification | null;
   status: string;
   created_at: string;
   updated_at: string;
@@ -471,6 +500,20 @@ export interface SupervisedPatchWorkspaceCreateResponse {
   workspace: SupervisedPatchWorkspace;
 }
 
+export interface SupervisedPatchVerificationRequest {
+  command: string;
+  confirm_verification: true;
+  timeout_ms?: number;
+  attempt?: number;
+  repair_executor?: "codex_cli" | "claude_code_cli";
+  max_repair_attempts?: number;
+}
+
+export interface SupervisedPatchVerificationResponse {
+  schema_version: "axum_api.v1";
+  verification: WorkspaceVerification;
+}
+
 export interface SupervisedPatchArtifactCaptureResponse {
   schema_version: "axum_api.v1";
   artifact: SupervisedPatchArtifact;
@@ -496,6 +539,7 @@ export interface TargetRepoOutputRequest {
   remote?: string;
   commit_message?: string;
   pr_title?: string;
+  create_pull_request?: boolean;
 }
 
 export interface TargetRepoOutputResponse {
@@ -510,6 +554,12 @@ export interface TargetRepoOutputResponse {
     commit_sha?: string;
     pr_title?: string;
     pr_body?: string;
+    pull_request?: {
+      number: number;
+      url: string;
+      state: string;
+      reused: boolean;
+    };
   };
   approval_binding: Record<string, unknown>;
   integrity: Record<string, unknown>;

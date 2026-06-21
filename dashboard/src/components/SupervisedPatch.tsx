@@ -11,6 +11,7 @@ import {
   fetchSupervisedPatchWorkspaces,
   quarantineSupervisedPatchWorkspace,
   recordWorkflowRunApproval,
+  verifySupervisedPatchWorkspace,
 } from "@/lib/api-client";
 import type {
   SupervisedPatchArtifact,
@@ -40,10 +41,11 @@ function patchError(error: unknown): PatchError {
   };
 }
 
-function BoundaryBadges({ metadataOnly, executionAuthority, patchApplyAuthority }: {
+function BoundaryBadges({ metadataOnly, executionAuthority, patchApplyAuthority, verificationAuthority }: {
   metadataOnly?: boolean;
   executionAuthority?: string;
   patchApplyAuthority?: string;
+  verificationAuthority?: string;
 }) {
   return (
     <div className="flex-row gap-sm" style={{ marginTop: "0.25rem" }}>
@@ -52,6 +54,9 @@ function BoundaryBadges({ metadataOnly, executionAuthority, patchApplyAuthority 
         <span className={`pill ${executionAuthority === "disabled" ? "ok" : "warn"}`}>
           exec: {executionAuthority}
         </span>
+      )}
+      {verificationAuthority && (
+        <span className="pill warn">verify: {verificationAuthority}</span>
       )}
       {patchApplyAuthority && (
         <span className={`pill ${patchApplyAuthority === "disabled" ? "ok" : "warn"}`}>
@@ -161,6 +166,8 @@ function WorkspaceDetail({
   const [confirmAction, setConfirmAction] = useState<ConfirmAction>(null);
   const [mutating, setMutating] = useState(false);
   const [mutationError, setMutationError] = useState<string | null>(null);
+  const [verificationCommand, setVerificationCommand] = useState("");
+  const verificationReady = workspace.verification?.status === "evidence_recorded";
 
   function handleConfirm() {
     if (!confirmAction) return;
@@ -174,6 +181,12 @@ function WorkspaceDetail({
         ? cleanupSupervisedPatchWorkspace(action.workspaceId)
         : action.type === "quarantineWorkspace"
           ? quarantineSupervisedPatchWorkspace(action.workspaceId)
+          : action.type === "verifyWorkspace"
+            ? verifySupervisedPatchWorkspace(action.workspaceId, {
+                command: action.command,
+                confirm_verification: true,
+                timeout_ms: 600_000,
+              })
           : action.type === "capturePatch"
             ? captureSupervisedPatch(action.workspaceId)
             : Promise.resolve();
@@ -193,6 +206,7 @@ function WorkspaceDetail({
       <BoundaryBadges
         metadataOnly={workspace.metadata_only}
         executionAuthority={workspace.execution_authority}
+        verificationAuthority={workspace.verification_execution_authority}
       />
       {mutationError && (
         <StateBanner title="Operation failed" tone="risk"><p>{mutationError}</p></StateBanner>
@@ -209,6 +223,10 @@ function WorkspaceDetail({
         )}
         <div className="kv-row"><span className="muted">Created</span><span>{workspace.created_at}</span></div>
         <div className="kv-row"><span className="muted">Updated</span><span>{workspace.updated_at}</span></div>
+        <div className="kv-row">
+          <span className="muted">Verification</span>
+          <span>{workspace.verification?.status ?? "not run"}</span>
+        </div>
         {workspace.plan_id && <div className="kv-row"><span className="muted">Plan</span><span className="mono" style={{ fontSize: "0.8rem" }}>{workspace.plan_id}</span></div>}
         <div className="kv-row"><span className="muted">Run</span><span className="mono" style={{ fontSize: "0.8rem" }}>{workspace.run_id}</span></div>
       </div>
@@ -223,11 +241,36 @@ function WorkspaceDetail({
           ))}
         </div>
       )}
+      <div className="subcard stack">
+        <h4>Verification</h4>
+        <label className="stack" style={{ gap: "0.25rem" }}>
+          <span className="muted">Allowlisted command</span>
+          <input
+            type="text"
+            value={verificationCommand}
+            onChange={(event) => setVerificationCommand(event.target.value)}
+            placeholder="cargo test / npm test"
+          />
+        </label>
+        <div className="flex-end">
+          <button
+            type="button"
+            onClick={() => setConfirmAction({
+              type: "verifyWorkspace",
+              workspaceId: workspace.workspace_id,
+              command: verificationCommand.trim(),
+            })}
+            disabled={mutating || !verificationCommand.trim()}
+          >
+            {mutating ? "Working..." : "Verify Workspace"}
+          </button>
+        </div>
+      </div>
       <div className="flex-end" style={{ gap: "0.5rem" }}>
         <button
           type="button"
           onClick={() => setConfirmAction({ type: "capturePatch", workspaceId: workspace.workspace_id })}
-          disabled={mutating}
+          disabled={mutating || !verificationReady}
         >
           {mutating ? "Working..." : "Capture Patch"}
         </button>
@@ -449,7 +492,7 @@ export function SupervisedPatch() {
   return (
     <section className="card stack">
       <div className="flex-between">
-        <h2>Supervised Patch Metadata</h2>
+        <h2>Supervised Patch</h2>
         <div className="flex-end" style={{ gap: "0.5rem" }}>
           <button onClick={() => setShowCreateForm(!showCreateForm)} type="button">
             {showCreateForm ? "Hide Form" : "Create Workspace"}
@@ -463,9 +506,9 @@ export function SupervisedPatch() {
           onCancel={() => setShowCreateForm(false)}
         />
       )}
-      <StateBanner title="Read-only metadata" tone="info">
+      <StateBanner title="Guarded local operations" tone="info">
         <p>
-          Workspace and artifact metadata from Batch 7 storage. Controls are operational metadata actions only.
+          Verification is limited to allowlisted commands in app-owned workspaces. Capture and output remain approval-bound.
         </p>
       </StateBanner>
       {error?.type === "permission" && (

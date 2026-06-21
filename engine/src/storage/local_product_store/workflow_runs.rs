@@ -962,6 +962,26 @@ impl LocalProductStore {
                 attempt,
                 mut node_metadata,
             } => {
+                if command_override.is_none()
+                    && node_metadata.get("prompt").is_none()
+                    && node_metadata.get("command").is_none()
+                {
+                    if let Some(run) = self.get_workflow_run(run_id)? {
+                        if let Some(plan_id) = run.get("plan_id").and_then(Value::as_str) {
+                            if let Some(prompt) = self
+                                .get_workflow_plan(plan_id)?
+                                .and_then(|plan| plan.get("raw_request").cloned())
+                            {
+                                if !node_metadata.is_object() {
+                                    node_metadata = json!({});
+                                }
+                                if let Some(obj) = node_metadata.as_object_mut() {
+                                    obj.insert("prompt".to_string(), prompt);
+                                }
+                            }
+                        }
+                    }
+                }
                 // Inject workspace_path from supervised_patch_workspaces if available
                 if let Ok(Some(workspace)) = self.get_supervised_patch_workspace_for_run(run_id) {
                     if let Some(ws_path) = workspace.get("workspace_path").and_then(|v| v.as_str())

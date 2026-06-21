@@ -30,6 +30,8 @@ import type {
   SupervisedPatchWorkspaceCreateResponse,
   SupervisedPatchWorkspaceListResponse,
   SupervisedPatchWorkspaceResponse,
+  SupervisedPatchVerificationRequest,
+  SupervisedPatchVerificationResponse,
   TargetRepoOutputRequest,
   TargetRepoOutputResponse,
   WorkflowPlanDetailResponse,
@@ -413,6 +415,20 @@ export async function quarantineSupervisedPatchWorkspace(workspaceId: string): P
   return fetchJson<SupervisedPatchWorkspaceResponse>(
     `${BASE}/api/v1/supervised-patch/workspaces/${encodeURIComponent(workspaceId)}/quarantine`,
     { method: "POST" },
+  );
+}
+
+export async function verifySupervisedPatchWorkspace(
+  workspaceId: string,
+  request: SupervisedPatchVerificationRequest,
+): Promise<SupervisedPatchVerificationResponse> {
+  return fetchJson<SupervisedPatchVerificationResponse>(
+    `${BASE}/api/v1/supervised-patch/workspaces/${encodeURIComponent(workspaceId)}/verify`,
+    {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(request),
+    },
   );
 }
 

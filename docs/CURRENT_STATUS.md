@@ -1,10 +1,10 @@
 # Current Status
 
-Last recorded full verification: 2026-06-18. V2-0 through V2-5 merged with green CI in PRs #69-#75: 2026-06-18.
+Last updated: 2026-06-20. V2-0 through V2-5 are merged; the Real Output Closeout implementation is awaiting PR merge and `v0.1.0` publication.
 
 ## Summary
 
-The core plan is complete. The repository is starting the approved V2 Real Production Output Track while keeping the v1 default-safe posture. V2 aims to produce auditable patches or PR branches for real repositories through explicit gates, not by removing safety limits.
+The core plan and V2 implementation are complete. The current branch adds prompt-to-CLI execution, bounded verification/repair evidence, optional real GitHub PR creation, a verified release contract, three real repository pilots, and a task-first dashboard.
 
 The system is useful as an operations/control-plane lab for deterministic dispatch, workflow state, app-owned execution metadata, guarded local controls, SDKs, and audit evidence. It is not a cloud SaaS, hosted multi-tenant service, direct-deploy tool, or unattended autonomous-agent runtime.
 
@@ -14,13 +14,13 @@ The system is useful as an operations/control-plane lab for deterministic dispat
 - `dashboard/` is the local operations console with guarded app-owned controls. Mission Control now exposes the V2-5 product output path over existing guarded APIs; release/deploy/apply actions remain unavailable.
 - TypeScript and Python SDKs cover REST access to dispatch, workflow, config, team, cost, audit, backup/export, supervised patches, and V2-3 target output.
 - Provider execution is off unless `ACP_ENABLE_PROVIDER_EXECUTION=1`.
-- CLI execution is off unless `ACP_ENABLE_CLI_EXECUTION=1`.
+- Installed local Claude/Codex CLIs are discovered by default for explicit workflow ticks. `ACP_ENABLE_CLI_EXECUTION=0` disables local CLI execution.
 - V2-3 target output is default-off. It can create an app-owned git worktree and, only after scoped confirmation plus artifact approval/integrity checks, export a patch or push an `acp/*` branch. It never writes the registered target working tree or `main`.
 - No hard process/container/VM sandbox is implemented; V2-1 is scoped to app-owned workspace confinement unless separately approved.
 - No hosted/cloud/multi-tenant deployment is implemented.
 - Bounded supervised workers are implemented behind `ACP_ENABLE_SCHEDULER=1` plus `ACP_ENABLE_SUPERVISED_WORKERS=1`; unattended autonomous-agent loops remain disallowed.
 - Target-repo output, provider/CLI execution, supervised workers, and product UX are approved only through the V2 phase plan in `docs/NEXT_DECISION.md`; until each phase lands, the old limitation remains active.
-- Cloud SaaS, multi-tenant hosting, direct release/tag/deploy/apply authority, provider failover, default-on real execution, and unattended autonomous-agent loops remain out of scope.
+- Cloud SaaS, multi-tenant hosting, app-runtime release/deploy/apply authority, provider failover, default-on provider API execution, and unattended autonomous-agent loops remain out of scope.
 
 ## Last Recorded Verification
 
@@ -72,11 +72,13 @@ Historical phase plans, closeouts, and long-form validation reports are retained
 - Workflow runtime: persisted workflow runs, nodes, edges, events, approvals, queue/backpressure state, executor-pool binding, and opt-in dynamic graph mutation.
 - Supervised execution primitives: app-owned workspace lifecycle, `NodeExecutor` trait, allowlisted `CommandNodeExecutor`, workflow tick endpoint, artifact capture, secret scan, integrity validation, approval binding, and export gate.
 - V2-1 safety base: workspace IDs are path-safe, workspace copies stay under the app-owned workspace root, symlinks are skipped, copy file/byte ceilings are enforced, secret findings are redacted, secret-hit diffs are suppressed, command cwd is validated, command env is cleared except `PATH`, and command output is capped.
-- V2-2 provider/CLI output path: workflow ticks can run provider nodes only when `ACP_ENABLE_PROVIDER_EXECUTION=1` and a provider is configured; Claude/Codex CLI ticks remain `ACP_ENABLE_CLI_EXECUTION=1` gated; provider/CLI outputs are redacted/capped, provider ticks record provider audit events, provider cost gates block before execution, and CLI subprocess env is restricted to `PATH` plus `ACP_CLI_ENV_ALLOWLIST`.
-- V2-3 target repo output: `git_worktree` workspace creation and real output require `dispatch:execute` plus `ACP_ENABLE_TARGET_REPO_OUTPUT=1`; artifact hashes bind actual patch content; output requires completed workflow verification evidence, same-run approval binding, integrity, redaction, explicit confirmation, bounded text-only changed files, remote/host allowlists, and an HTTPS token referenced by env; branch names are restricted to `acp/*`; `ACP_TARGET_REPO_OUTPUT_KILL_SWITCH=1` stops new output.
+- V2-2 provider/CLI output path: provider nodes still require `ACP_ENABLE_PROVIDER_EXECUTION=1`; installed Claude/Codex CLIs are discovered by default and run only on explicit workflow ticks; plan `raw_request` becomes the node prompt unless a command override is supplied; outputs are redacted/capped and subprocess env remains restricted.
+- V2-3 target repo output: `git_worktree` creation and output require `dispatch:execute` plus `ACP_ENABLE_TARGET_REPO_OUTPUT=1`; artifact hashes bind patch content and actual allowlisted verification evidence; output requires same-run approval, integrity, redaction, explicit confirmation, bounded text files, and remote controls. Optional GitHub PR creation additionally requires `ACP_ENABLE_GITHUB_PR_OUTPUT=1` and `ACP_GITHUB_TOKEN_ENV`.
 - V2-4 bounded workers: scheduler startup requires both scheduler and supervised-worker env gates; worker count is bounded by global concurrency and 32; each worker claims at most one node per cycle through the existing atomic DB lease; heartbeat metadata exposes worker state; stale recovery is audited; `dispatch:execute` plus confirmation controls pause/resume/kill; env pause and kill switches remain available.
-- V2-5 product output UX: Mission Control is the first active work surface and can create plan/run records, tick selected runs, create git-worktree patch workspaces, capture artifacts, record bound approvals, export approved patches, request target output, and control supervised workers from one flow.
-- Real Pilot 1 local output: `scripts/real_pilot_1.py` starts a localhost engine, creates a temporary real git target repo with local bare remote, drives plan/run/worktree/execution/artifact/approval/export, writes an exported patch file, and pushes an `acp/*` branch without provider calls, CLI execution, target `main` writes, or secrets.
+- Verification/repair: `/supervised-patch/workspaces/{id}/verify` runs allowlisted test tools in the app-owned workspace, stores redacted/capped evidence, and can invoke at most two CLI repair attempts before output remains blocked.
+- V2-5 product output UX: the first navigation group is `Tasks / Runs / Outputs`; operational/admin tabs are secondary and collapsed. The task surface defaults to local Codex CLI and keeps task, workspace, approval, and branch/PR output in one path.
+- Real output pilots: `scripts/real_output_pilots.py` completed Python, Rust, and Node repositories through real Claude CLI execution, real tests, artifact capture, approval, and three distinct `acp/*` branches. All three verification runs passed on the first attempt and all target `main` refs remained unchanged. Evidence: `/tmp/acp-real-output-pilots-e2qi2dmx/summary.json`.
+- Release contract: canonical assets use `agent-control-plane-v0.1.0-<rust-target>.tar.gz` with a same-name top-level directory. Local packaging and `scripts/smoke_release.sh 0.1.0` passed 16 checks.
 - Local storage: SQLite default with PostgreSQL optional via `ACP_DATABASE_URL`; schema version is documented in `docs/ARCHITECTURE_BOOK.md`.
 - Operations: health, metrics, backups, restore smoke, circuit breaker state, audit log, and release-readiness checks.
 - Dashboard: local operations console with guarded app-owned controls for workflow runs, scheduler state, proposals, patches, config/team/costs, and app-owned actions.
@@ -84,13 +86,14 @@ Historical phase plans, closeouts, and long-form validation reports are retained
 
 ## Current Gaps
 
-- Engine/API/SDK/dashboard V2 output is end to end for a supplied local git repo path: controlled worktree, execution artifact, verification evidence, approval, patch export, branch push, and one Mission Control workflow over those steps. Real Pilot 1 now wraps the local happy path in one script against a temporary real git target repo.
+- Engine/API/SDK/dashboard output is end to end for a supplied git repo: natural-language CLI execution, controlled worktree, real verification with bounded repair, artifact evidence, approval, patch/branch output, and optional GitHub PR creation.
 - Product fit is stronger for local operations/research than for public-facing production UX.
-- UI remains operator-oriented, but the primary output workflow is now surfaced before secondary setup/status panels.
+- The UI is task-first, while detailed operations and administration remain available as secondary views.
 - Security posture is suitable for local/small-team self-hosting only; hosted/multi-tenant use would require a new threat model and approved implementation plan.
-- V2-1 alone does not authorize target output; V2-3 adds only controlled worktree/branch output and still does not add provider/CLI default-on execution or sandbox/process/container/VM isolation.
-- No V2 phase is currently pending; remaining gaps are explicit product boundaries or future tracks.
-- Cloud SaaS, multi-tenant hosting, direct release/tag/deploy/apply authority, provider failover, default-on real execution, and unattended autonomous-agent loops remain out of scope.
+- No hard process/container/VM sandbox isolation exists.
+- Provider API execution remains default-off; local CLI discovery is default-on but execution still requires an explicit task tick.
+- The only closeout action pending is publishing and online-installing `v0.1.0` after merge.
+- Cloud SaaS, multi-tenant hosting, app-runtime merge/release/deploy/apply authority, provider failover, and unattended autonomous-agent loops remain out of scope.
 
 ## Documentation Discipline
 

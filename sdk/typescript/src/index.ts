@@ -34,6 +34,8 @@ import type {
   SupervisedPatchWorkspaceCreateResponse,
   SupervisedPatchWorkspaceListResponse,
   SupervisedPatchWorkspaceResponse,
+  SupervisedPatchVerificationRequest,
+  SupervisedPatchVerificationResponse,
   TargetRepoOutputRequest,
   TargetRepoOutputResponse,
   LocalCostSummary,
@@ -499,6 +501,23 @@ export class AgentControlPlaneClient {
     );
   }
 
+  verifySupervisedPatchWorkspace(
+    workspaceId: string,
+    request: SupervisedPatchVerificationRequest,
+  ): Promise<SupervisedPatchVerificationResponse> {
+    return this.postJson<SupervisedPatchVerificationResponse>(
+      `/api/v1/supervised-patch/workspaces/${encodeURIComponent(workspaceId)}/verify`,
+      {
+        command: request.command,
+        confirm_verification: request.confirm_verification,
+        timeout_ms: request.timeout_ms,
+        attempt: request.attempt,
+        repair_executor: request.repair_executor,
+        max_repair_attempts: request.max_repair_attempts,
+      },
+    );
+  }
+
   captureSupervisedPatch(workspaceId: string): Promise<SupervisedPatchCaptureResponse> {
     return this.postJson<SupervisedPatchCaptureResponse>(
       `/api/v1/supervised-patch/workspaces/${encodeURIComponent(workspaceId)}/capture`,
@@ -530,6 +549,7 @@ export class AgentControlPlaneClient {
         remote: request.remote,
         commit_message: request.commit_message,
         pr_title: request.pr_title,
+        create_pull_request: request.create_pull_request,
       },
     );
   }

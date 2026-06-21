@@ -2,7 +2,7 @@ use std::process::Command;
 
 pub const DEFAULT_CLI_TIMEOUT_MS: u64 = 300_000;
 pub const DEFAULT_COMPLEXITY_THRESHOLD: f64 = 0.7;
-pub const DEFAULT_CLI_EXECUTION_ENABLED: bool = false;
+pub const DEFAULT_CLI_EXECUTION_ENABLED: bool = true;
 
 #[derive(Clone, Debug)]
 pub struct CliConfig {
@@ -107,10 +107,10 @@ mod tests {
     }
 
     #[test]
-    fn test_cli_execution_default_is_opt_in() {
-        const { assert!(!DEFAULT_CLI_EXECUTION_ENABLED) };
-        assert!(!env_bool(
-            "NONEXISTENT_KEY_DEFAULT_FALSE",
+    fn test_cli_execution_defaults_to_local_cli_discovery() {
+        const { assert!(DEFAULT_CLI_EXECUTION_ENABLED) };
+        assert!(env_bool(
+            "NONEXISTENT_KEY_DEFAULT_TRUE",
             DEFAULT_CLI_EXECUTION_ENABLED
         ));
     }

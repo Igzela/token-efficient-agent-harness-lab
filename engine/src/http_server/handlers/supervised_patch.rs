@@ -10,11 +10,15 @@ use crate::http_server::middleware::{
 };
 use crate::http_server::state::AxumApiState;
 use crate::http_server::{
-    SupervisedPatchWorkspaceCreateRequest, TargetRepoOutputRequest, AXUM_API_SCHEMA_VERSION,
+    SupervisedPatchWorkspaceCreateRequest, SupervisedPatchWorkspaceVerifyRequest,
+    TargetRepoOutputRequest, AXUM_API_SCHEMA_VERSION,
 };
+use crate::node_executor::{CommandNodeExecutor, NodeExecutionInput, NodeExecutor};
+use crate::provider::redaction::redact_sensitive_patterns;
 use crate::target_repo_output::{
-    export_patch, prepare_git_worktree, push_approved_branch, remove_git_worktree,
-    BranchPublishRequest, TargetRepoOutputConfig,
+    create_or_reuse_github_pull_request, export_patch, github_repository_for_remote,
+    prepare_git_worktree, push_approved_branch, remove_git_worktree, BranchPublishRequest,
+    GitHubPullRequestConfig, GitHubPullRequestRequest, TargetRepoOutputConfig,
 };
 
 pub(crate) async fn api_supervised_patch_workspaces(
@@ -33,6 +37,7 @@ pub(crate) async fn api_supervised_patch_workspaces(
             "schema_version": AXUM_API_SCHEMA_VERSION,
             "metadata_only": true,
             "execution_authority": "disabled",
+            "verification_execution_authority": "allowlisted_commands",
             "workspaces": store.supervised_patch_workspaces(limit).map_err(internal_error)?,
         })),
     ))
@@ -57,6 +62,7 @@ pub(crate) async fn api_supervised_patch_workspace_detail(
                 "schema_version": AXUM_API_SCHEMA_VERSION,
                 "metadata_only": true,
                 "execution_authority": "disabled",
+                "verification_execution_authority": "allowlisted_commands",
                 "workspace": workspace,
             })),
         )),
@@ -516,6 +522,70 @@ pub(crate) async fn api_target_repo_output(
                 .pr_title
                 .unwrap_or_else(|| format!("Apply approved artifact {artifact_id}"));
             let pr_body = build_pr_body(&artifact);
+            let publish_branch = branch_name.clone();
+            let publish_remote = remote.clone();
+            let publish_title = pr_title.clone();
+            let publish_body = pr_body.clone();
+            let pending_pull_request = if request.create_pull_request == Some(true) {
+                let github_config = GitHubPullRequestConfig::from_env();
+                if let Err(error) = github_config.require_enabled() {
+                    audit_target_output_failure(
+                        &store,
+                        &context.api_key_id,
+                        &artifact_id,
+                        &request.mode,
+                        "pull_request_preflight_failed",
+                    );
+                    return Err(target_output_error(error));
+                }
+                let repository =
+                    match github_repository_for_remote(&config, workspace_path, &publish_remote) {
+                        Ok(repository) => repository,
+                        Err(error) => {
+                            audit_target_output_failure(
+                                &store,
+                                &context.api_key_id,
+                                &artifact_id,
+                                &request.mode,
+                                "pull_request_preflight_failed",
+                            );
+                            return Err(target_output_error(error));
+                        }
+                    };
+                let base_branch = match workspace
+                    .get("git")
+                    .and_then(|value| value.get("default_branch"))
+                    .and_then(|value| value.as_str())
+                {
+                    Some(base_branch) => base_branch.to_string(),
+                    None => {
+                        audit_target_output_failure(
+                            &store,
+                            &context.api_key_id,
+                            &artifact_id,
+                            &request.mode,
+                            "pull_request_preflight_failed",
+                        );
+                        return Err(ApiError::with_code(
+                            StatusCode::CONFLICT,
+                            "default_branch_missing",
+                            "workspace is missing the target default branch",
+                        ));
+                    }
+                };
+                Some((
+                    github_config,
+                    GitHubPullRequestRequest {
+                        repository,
+                        head_branch: publish_branch,
+                        base_branch,
+                        title: publish_title,
+                        body: publish_body,
+                    },
+                ))
+            } else {
+                None
+            };
             let output = match push_approved_branch(
                 &config,
                 BranchPublishRequest {
@@ -548,7 +618,36 @@ pub(crate) async fn api_target_repo_output(
                     return Err(target_output_error(error));
                 }
             };
-            serde_json::to_value(output).map_err(|error| internal_error(error.to_string()))?
+            let mut output =
+                serde_json::to_value(output).map_err(|error| internal_error(error.to_string()))?;
+            if let Some((github_config, pull_request_request)) = pending_pull_request {
+                let pull_request = match create_or_reuse_github_pull_request(
+                    &github_config,
+                    &pull_request_request,
+                )
+                .await
+                {
+                    Ok(pull_request) => pull_request,
+                    Err(error) => {
+                        audit_target_output_failure(
+                            &store,
+                            &context.api_key_id,
+                            &artifact_id,
+                            &request.mode,
+                            "pull_request_failed",
+                        );
+                        return Err(target_output_error(error));
+                    }
+                };
+                if let Some(object) = output.as_object_mut() {
+                    object.insert(
+                        "pull_request".to_string(),
+                        serde_json::to_value(pull_request)
+                            .map_err(|error| internal_error(error.to_string()))?,
+                    );
+                }
+            }
+            output
         }
         _ => {
             audit_target_output_failure(
@@ -755,6 +854,242 @@ pub(crate) async fn api_quarantine_supervised_patch_workspace(
         )),
         Err(e) => Err(internal_error(e)),
     }
+}
+
+pub(crate) async fn api_verify_supervised_patch_workspace(
+    State(state): State<AxumApiState>,
+    headers: HeaderMap,
+    uri: Uri,
+    Extension(request_id): Extension<RequestId>,
+    AxumPath(workspace_id): AxumPath<String>,
+    Json(request): Json<SupervisedPatchWorkspaceVerifyRequest>,
+) -> Result<impl IntoResponse, ApiError> {
+    let context = authorize(
+        &state,
+        &headers,
+        "dispatch:execute",
+        uri.path(),
+        &request_id.0,
+    )?;
+    if request.confirm_verification != Some(true) {
+        return Err(ApiError::with_code(
+            StatusCode::BAD_REQUEST,
+            "verification_confirmation_required",
+            "confirm_verification=true is required",
+        ));
+    }
+    let store = require_store(&state)?;
+    let workspace = store
+        .get_supervised_patch_workspace(&workspace_id)
+        .map_err(internal_error)?
+        .ok_or_else(|| not_found("workspace_not_found"))?;
+    let command = request.command.trim().to_string();
+    if command.is_empty() {
+        return Err(ApiError::with_code(
+            StatusCode::BAD_REQUEST,
+            "verification_command_required",
+            "command is required",
+        ));
+    }
+    let command_argv: Vec<String> = command.split_whitespace().map(str::to_string).collect();
+    let timeout_ms = request.timeout_ms.unwrap_or(120_000).clamp(1_000, 600_000);
+    let attempt = request.attempt.unwrap_or(1).clamp(1, 3);
+    let workspace_path = workspace
+        .get("workspace_path")
+        .and_then(|value| value.as_str())
+        .unwrap_or("")
+        .to_string();
+    let run_id = workspace
+        .get("run_id")
+        .and_then(|value| value.as_str())
+        .unwrap_or("")
+        .to_string();
+    let workflow_id = workspace
+        .get("plan_id")
+        .and_then(|value| value.as_str())
+        .unwrap_or("workspace_verification")
+        .to_string();
+    let repair_executor = request.repair_executor.as_deref();
+    if let Some(executor) = repair_executor {
+        if !matches!(executor, "codex_cli" | "claude_code_cli") {
+            return Err(ApiError::with_code(
+                StatusCode::BAD_REQUEST,
+                "invalid_repair_executor",
+                "repair_executor must be codex_cli or claude_code_cli",
+            ));
+        }
+    }
+    let max_repair_attempts = if repair_executor.is_some() {
+        request.max_repair_attempts.unwrap_or(1).clamp(1, 2)
+    } else {
+        0
+    };
+    let mut verification_attempts = Vec::new();
+    let mut repair_attempts = Vec::new();
+    let mut output = run_workspace_verification(
+        command.clone(),
+        workspace_path.clone(),
+        run_id.clone(),
+        workflow_id.clone(),
+        timeout_ms,
+        attempt,
+    )
+    .await?;
+    verification_attempts.push(verification_attempt_value(attempt, &output));
+
+    for repair_attempt in 1..=max_repair_attempts {
+        if output.status == "completed" {
+            break;
+        }
+        let failure_summary = output
+            .error_message
+            .as_deref()
+            .or(output.output.as_deref())
+            .unwrap_or("verification command failed");
+        let repair_output = run_cli_repair(
+            repair_executor.unwrap_or_default().to_string(),
+            command.clone(),
+            redact_sensitive_patterns(failure_summary),
+            workspace_path.clone(),
+            run_id.clone(),
+            workflow_id.clone(),
+            repair_attempt,
+        )
+        .await?;
+        repair_attempts.push(verification_attempt_value(repair_attempt, &repair_output));
+        if repair_output.status != "completed" {
+            break;
+        }
+        let verification_attempt = attempt + repair_attempt;
+        output = run_workspace_verification(
+            command.clone(),
+            workspace_path.clone(),
+            run_id.clone(),
+            workflow_id.clone(),
+            timeout_ms,
+            verification_attempt,
+        )
+        .await?;
+        verification_attempts.push(verification_attempt_value(verification_attempt, &output));
+    }
+
+    let passed = output.status == "completed";
+    let verification = json!({
+        "schema_version": "workspace_verification.v1",
+        "status": if passed { "evidence_recorded" } else { "verification_failed" },
+        "command": command_argv,
+        "result_status": output.status,
+        "executor_type": output.executor_type,
+        "output": output.output.as_deref().map(redact_sensitive_patterns),
+        "error_domain": output.error_domain,
+        "error_message": output.error_message.as_deref().map(redact_sensitive_patterns),
+        "latency_ms": output.latency_ms,
+        "timeout_ms": timeout_ms,
+        "attempt": attempt,
+        "verification_attempts": verification_attempts,
+        "repair_attempts": repair_attempts,
+        "recorded_at": chrono::Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string(),
+    });
+    store
+        .record_workspace_verification(&workspace_id, &verification, &context.api_key_id)
+        .map_err(internal_error)?;
+
+    Ok((
+        cors_headers(),
+        Json(json!({
+            "schema_version": AXUM_API_SCHEMA_VERSION,
+            "verification": verification,
+        })),
+    ))
+}
+
+async fn run_workspace_verification(
+    command: String,
+    workspace_path: String,
+    run_id: String,
+    workflow_id: String,
+    timeout_ms: u64,
+    attempt: u64,
+) -> Result<crate::node_executor::NodeExecutionOutput, ApiError> {
+    let input = NodeExecutionInput {
+        node_id: format!("verify-{run_id}-{attempt}"),
+        task_type: "workspace_verification".to_string(),
+        run_id,
+        workflow_id,
+        node_metadata: json!({
+            "command": command,
+            "workspace_path": workspace_path,
+            "workspace_root": workspace_path,
+        }),
+    };
+    let executor = CommandNodeExecutor {
+        timeout_ms,
+        allowed_commands: Vec::new(),
+        allowed_binaries: [
+            "cargo", "bun", "node", "npm", "pnpm", "yarn", "uv", "python", "python3", "go", "make",
+        ]
+        .into_iter()
+        .map(str::to_string)
+        .collect(),
+        env_vars: Vec::new(),
+    };
+    tokio::task::spawn_blocking(move || executor.execute_node(&input))
+        .await
+        .map_err(|error| internal_error(error.to_string()))
+}
+
+async fn run_cli_repair(
+    executor_type: String,
+    command: String,
+    failure_summary: String,
+    workspace_path: String,
+    run_id: String,
+    workflow_id: String,
+    attempt: u64,
+) -> Result<crate::node_executor::NodeExecutionOutput, ApiError> {
+    let cli_config = crate::cli::CliConfig::from_env();
+    let executor = crate::cli::CliNodeExecutor::from_config(&cli_config).ok_or_else(|| {
+        ApiError::with_code(
+            StatusCode::BAD_REQUEST,
+            "cli_not_available",
+            "CLI repair requires ACP_ENABLE_CLI_EXECUTION=1 and an available CLI binary",
+        )
+    })?;
+    let prompt = format!(
+        "Fix the repository in the current workspace so this verification command passes.\n\
+         Command: {command}\n\
+         Failure: {failure_summary}\n\
+         Make the smallest correct change. Do not commit, push, or modify files outside the workspace."
+    );
+    let input = NodeExecutionInput {
+        node_id: format!("repair-{run_id}-{attempt}"),
+        task_type: "workspace_repair".to_string(),
+        run_id,
+        workflow_id,
+        node_metadata: json!({
+            "executor": executor_type,
+            "prompt": prompt,
+            "workspace_path": workspace_path,
+        }),
+    };
+    tokio::task::spawn_blocking(move || executor.execute_node(&input))
+        .await
+        .map_err(|error| internal_error(error.to_string()))
+}
+
+fn verification_attempt_value(
+    attempt: u64,
+    output: &crate::node_executor::NodeExecutionOutput,
+) -> serde_json::Value {
+    json!({
+        "attempt": attempt,
+        "status": output.status,
+        "executor_type": output.executor_type,
+        "output": output.output.as_deref().map(redact_sensitive_patterns),
+        "error_domain": output.error_domain,
+        "error_message": output.error_message.as_deref().map(redact_sensitive_patterns),
+        "latency_ms": output.latency_ms,
+    })
 }
 
 pub(crate) async fn api_capture_supervised_patch(

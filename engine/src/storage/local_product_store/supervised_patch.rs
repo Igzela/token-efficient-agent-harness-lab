@@ -184,6 +184,91 @@ impl LocalProductStore {
         self.update_workspace_status(workspace_id, "quarantined", actor)
     }
 
+    pub fn record_workspace_verification(
+        &self,
+        workspace_id: &str,
+        verification: &Value,
+        actor: &str,
+    ) -> Result<Value, String> {
+        if !verification.is_object() {
+            return Err("workspace verification must be an object".to_string());
+        }
+        let verification_status = required_str(verification, "status")?;
+        if !matches!(
+            verification_status,
+            "evidence_recorded" | "verification_failed"
+        ) {
+            return Err(format!(
+                "invalid workspace verification status: {verification_status}"
+            ));
+        }
+
+        let mut workspace = self
+            .get_supervised_patch_workspace(workspace_id)?
+            .ok_or_else(|| format!("workspace not found: {workspace_id}"))?;
+        let now = self.now();
+        let object = workspace
+            .as_object_mut()
+            .ok_or_else(|| "workspace record must be an object".to_string())?;
+        object.insert("verification".to_string(), verification.clone());
+        object.insert("updated_at".to_string(), json!(now.clone()));
+        let workspace_json = workspace.to_string();
+
+        match &self.db {
+            DatabaseConnection::Sqlite(_) => self.with_conn(|conn| {
+                conn.execute(
+                    "UPDATE supervised_patch_workspaces
+                     SET workspace_json = ?1, updated_at = ?2
+                     WHERE workspace_id = ?3",
+                    params![workspace_json, now, workspace_id],
+                )
+                .map_err(|e| e.to_string())?;
+                append_audit_locked(
+                    conn,
+                    &now,
+                    actor,
+                    "supervised_patch.workspace_verification",
+                    workspace_id,
+                    &json!({
+                        "status": verification_status,
+                        "command": verification.get("command"),
+                        "attempt": verification.get("attempt"),
+                    }),
+                )?;
+                Ok(())
+            })?,
+            #[cfg(feature = "pg")]
+            DatabaseConnection::Pg(_) => self.with_pg_conn(|client| {
+                client
+                    .execute(
+                        "UPDATE supervised_patch_workspaces
+                         SET workspace_json = $1, updated_at = $2
+                         WHERE workspace_id = $3",
+                        &[&workspace_json, &now, &workspace_id],
+                    )
+                    .map_err(|e| e.to_string())?;
+                let audit_details = json!({
+                    "status": verification_status,
+                    "command": verification.get("command"),
+                    "attempt": verification.get("attempt"),
+                })
+                .to_string();
+                pg_append_audit(
+                    client,
+                    &now,
+                    actor,
+                    "supervised_patch.workspace_verification",
+                    workspace_id,
+                    &audit_details,
+                )?;
+                Ok(())
+            })?,
+        }
+
+        self.get_supervised_patch_workspace(workspace_id)?
+            .ok_or_else(|| format!("workspace not found after verification: {workspace_id}"))
+    }
+
     pub fn capture_patch(&self, workspace_id: &str, actor: &str) -> Result<Value, String> {
         let workspace = self
             .get_supervised_patch_workspace(workspace_id)?
@@ -266,7 +351,10 @@ impl LocalProductStore {
             "review diff suppressed: secret scan failed".to_string()
         };
         let run_id = required_str(&workspace, "run_id")?;
-        let verification = self.workflow_verification_evidence(run_id);
+        let verification = workspace
+            .get("verification")
+            .cloned()
+            .unwrap_or_else(|| self.workflow_verification_evidence(run_id));
 
         let artifact_request = json!({
             "workspace_id": workspace_id,
@@ -536,6 +624,7 @@ impl LocalProductStore {
                     "boundary": boundary.clone(),
                     "metadata_only": true,
                     "execution_authority": "disabled",
+                    "verification_execution_authority": "allowlisted_commands",
                     "target_output_authority": if workspace_mode == "git_worktree" { "approval_bound" } else { "disabled" },
                     "safety": workspace_safety_profile(workspace_mode),
                 });
@@ -619,6 +708,7 @@ impl LocalProductStore {
                     "boundary": boundary.clone(),
                     "metadata_only": true,
                     "execution_authority": "disabled",
+                    "verification_execution_authority": "allowlisted_commands",
                     "target_output_authority": if workspace_mode == "git_worktree" { "approval_bound" } else { "disabled" },
                     "safety": workspace_safety_profile(workspace_mode),
                 });
@@ -849,11 +939,12 @@ impl LocalProductStore {
             json!({
                 "metadata_only": true,
                 "execution_authority": "disabled",
+                "verification_execution_authority": "allowlisted_commands",
                 "workspace_directory_creation": if workspace_mode == "git_worktree" { "git_worktree" } else { "not_performed" },
                 "target_repository_writes": if workspace_mode == "git_worktree" { "approval_bound_branch_only" } else { "disabled" },
                 "registered_git_worktree": if workspace_mode == "git_worktree" { "controlled" } else { "forbidden" },
                 "git_worktree_add": if workspace_mode == "git_worktree" { "performed" } else { "forbidden" },
-                "process_execution": "disabled",
+                "process_execution": "allowlisted_verification_only",
                 "provider_calls": "disabled",
                 "push_merge_deploy_apply": if workspace_mode == "git_worktree" { "approval_bound_push_only" } else { "disabled" },
                 "target_repo_canonical_path": target_repo_canonical_path,
@@ -1517,6 +1608,7 @@ fn supervised_patch_boundary(
     Ok(json!({
         "metadata_only": true,
         "execution_authority": "disabled",
+        "verification_execution_authority": "allowlisted_commands",
         "workspace_directory_creation": if workspace_mode == "git_worktree" {
             "git_worktree"
         } else if Path::new(workspace_path).exists() {
@@ -1537,7 +1629,7 @@ fn supervised_patch_boundary(
         "target_repository_writes": if workspace_mode == "git_worktree" { "approval_bound_branch_only" } else { "disabled" },
         "registered_git_worktree": if workspace_mode == "git_worktree" { "controlled" } else { "forbidden" },
         "git_worktree_add": if workspace_mode == "git_worktree" { "performed" } else { "forbidden" },
-        "process_execution": "disabled",
+        "process_execution": "allowlisted_verification_only",
         "provider_calls": "disabled",
         "push_merge_deploy_apply": if workspace_mode == "git_worktree" { "approval_bound_push_only" } else { "disabled" },
         "target_repo_canonical_path": path_string(&target_repo_canonical),
@@ -1556,6 +1648,7 @@ fn workspace_safety_profile(workspace_mode: &str) -> Value {
             "max_file_bytes": MAX_WORKSPACE_COPY_FILE_BYTES,
         },
         "secret_scan": "required_before_artifact",
+        "verification_execution": "allowlisted_commands",
         "kill_switch": "quarantine_or_cleanup",
         "target_repository_writes": if workspace_mode == "git_worktree" { "approval_bound_branch_only" } else { "disabled" },
         "branch_policy": if workspace_mode == "git_worktree" { "acp_prefix_only_no_main" } else { "not_applicable" },
@@ -1768,7 +1861,14 @@ fn validate_imported_workspace_boundary(
     ensure_optional_string_field(boundary, "target_repository_writes", target_writes)?;
     ensure_optional_string_field(boundary, "registered_git_worktree", registered_worktree)?;
     ensure_optional_string_field(boundary, "git_worktree_add", worktree_add)?;
-    ensure_optional_string_field(boundary, "process_execution", "disabled")?;
+    if let Some(actual) = boundary.get("process_execution") {
+        let value = actual.as_str().unwrap_or("");
+        if !matches!(value, "disabled" | "allowlisted_verification_only") {
+            return Err(
+                "process_execution must be disabled or allowlisted_verification_only".to_string(),
+            );
+        }
+    }
     ensure_optional_string_field(boundary, "provider_calls", "disabled")?;
     ensure_optional_string_field(boundary, "push_merge_deploy_apply", push_policy)
 }

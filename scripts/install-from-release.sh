@@ -13,8 +13,8 @@ detect_os() {
     local os
     os="$(uname -s)"
     case "${os}" in
-        Linux*)  echo "linux" ;;
-        Darwin*) echo "darwin" ;;
+        Linux*)  echo "unknown-linux-gnu" ;;
+        Darwin*) echo "apple-darwin" ;;
         *)       echo "unsupported" ;;
     esac
 }
@@ -33,7 +33,7 @@ main() {
     echo "Agent Control Plane — Installer"
     echo ""
 
-    local os arch target version tarball_url tmp_dir
+    local os arch target version archive_name tarball_url checksum_url tmp_dir
     os="$(detect_os)"
     arch="$(detect_arch)"
 
@@ -48,15 +48,17 @@ main() {
         exit 1
     fi
 
-    target="${os}-${arch}"
+    target="${arch}-${os}"
     echo "  OS:   ${os}"
     echo "  Arch: ${arch}"
     echo "  Target: ${target}"
     echo ""
 
-    # Get latest release version from GitHub API
-    echo "Fetching latest release..."
-    version="$(curl -fsSL "https://api.github.com/repos/${REPO}/releases/latest" | grep '"tag_name"' | head -1 | sed 's/.*"tag_name": *"//;s/".*//')"
+    version="${VERSION:-}"
+    if [[ -z "${version}" ]]; then
+        echo "Fetching latest release..."
+        version="$(curl -fsSL "https://api.github.com/repos/${REPO}/releases/latest" | grep '"tag_name"' | head -1 | sed 's/.*"tag_name": *"//;s/".*//')"
+    fi
     if [[ -z "${version}" ]]; then
         echo "Error: could not determine latest release"
         echo "Tip: you can set VERSION manually:"
@@ -65,21 +67,37 @@ main() {
     fi
     echo "  Version: ${version}"
 
-    tarball_url="https://github.com/${REPO}/releases/download/${version}/agent-control-plane-${version#v}-${target}.tar.gz"
+    archive_name="agent-control-plane-${version}-${target}.tar.gz"
+    tarball_url="https://github.com/${REPO}/releases/download/${version}/${archive_name}"
+    checksum_url="${tarball_url}.sha256"
     echo "  URL: ${tarball_url}"
     echo ""
 
     # Download and extract
     tmp_dir="$(mktemp -d)"
-    trap 'rm -rf "${tmp_dir}"' EXIT
+    trap "rm -rf '${tmp_dir}'" EXIT
 
     echo "Downloading..."
-    curl -fsSL "${tarball_url}" -o "${tmp_dir}/release.tar.gz"
+    curl -fsSL "${tarball_url}" -o "${tmp_dir}/${archive_name}"
+    curl -fsSL "${checksum_url}" -o "${tmp_dir}/${archive_name}.sha256"
+
+    echo "Verifying checksum..."
+    (
+        cd "${tmp_dir}"
+        if command -v sha256sum >/dev/null 2>&1; then
+            sha256sum -c "${archive_name}.sha256"
+        elif command -v shasum >/dev/null 2>&1; then
+            shasum -a 256 -c "${archive_name}.sha256"
+        else
+            echo "Error: sha256sum or shasum is required to verify the release"
+            exit 1
+        fi
+    )
 
     echo "Extracting..."
-    tar -xzf "${tmp_dir}/release.tar.gz" -C "${tmp_dir}"
+    tar -xzf "${tmp_dir}/${archive_name}" -C "${tmp_dir}"
 
-    local extracted_dir="${tmp_dir}/agent-control-plane-${version#v}-${target}"
+    local extracted_dir="${tmp_dir}/agent-control-plane-${version}-${target}"
     if [[ ! -d "${extracted_dir}" ]]; then
         # Try alternate naming
         extracted_dir="$(find "${tmp_dir}" -maxdepth 1 -type d -name 'agent-control-plane-*' | head -1)"
@@ -92,7 +110,7 @@ main() {
     # Install binary
     echo "Installing binary to ${INSTALL_DIR}/..."
     sudo mkdir -p "${INSTALL_DIR}"
-    sudo cp "${extracted_dir}/agent-control-plane" "${INSTALL_DIR}/agent-control-plane"
+    sudo cp "${extracted_dir}/engine" "${INSTALL_DIR}/agent-control-plane"
     sudo chmod +x "${INSTALL_DIR}/agent-control-plane"
     echo "  -> ${INSTALL_DIR}/agent-control-plane"
 
@@ -114,7 +132,7 @@ main() {
     fi
 
     echo ""
-    echo "Installation complete! 🎉"
+    echo "Installation complete."
     echo ""
     echo "Quick start:"
     echo "  agent-control-plane"

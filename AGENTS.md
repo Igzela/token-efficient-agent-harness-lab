@@ -2,13 +2,14 @@
 
 This repository is the Token-Efficient Agent Harness Lab: a local deterministic harness and self-hosted macro-orchestrator control plane for studying token-efficient agent workflows.
 
-## Current State (2026-06-18)
+## Current State (2026-06-20)
 
 **Active tracks:**
 - **Real-World Testing Mode** — validated through real tasks, branches, commits, PRs, CI, gated auto-merge
 - **Agent Autonomous Maintenance Mode** — agents maintain docs/CI/tests/low-risk PR flow under playbook gates
 - **V2 Real Production Output Track** — authorized, phase-gated path to auditable real-repository patch/PR production
 - **V2 progress** — V2-0 through V2-5 merged in PRs #69-#75
+- **Real Output Closeout** — implementation complete; release publication pending
 
 **Complete tracks:**
 - Dispatch Kernel Phases 1–7 (including 6A, 6B-1/2/3, Gates 1–3): STABLE
@@ -26,7 +27,7 @@ This repository is the Token-Efficient Agent Harness Lab: a local deterministic 
 
 ## App Runtime vs Agent Maintenance Boundary
 
-**App/runtime** does not write target repos by default. V2-3 adds only env-gated, approval-bound output through an app-owned git worktree and `acp/*` branch or patch export; registered target working trees and `main` remain protected.
+**App/runtime** does not write target repos by default. Target output remains env-gated and approval-bound through an app-owned git worktree and `acp/*` branch, patch export, or optional GitHub PR creation; registered target working trees and `main` remain protected. Installed local Claude/Codex CLIs are discovered by default for explicit workflow ticks; provider APIs remain default-off.
 
 **Agent maintenance** may create branches, commits, PRs, and low-risk merges only through branch+PR workflow under `docs/REAL_WORLD_TESTING_PLAYBOOK.md` gates. This is a repository workflow mode, not an app-runtime feature.
 
@@ -108,7 +109,7 @@ If another agent has in-progress changes, do not overwrite them. Either build on
 
 The production-grade hosted/self-hosted productization track (user-approved 2026-06-06) is authorized. It extends existing modules (node_executor, workflow_runs, supervised_patch, http_server) without creating parallel runtime kernels. See `docs/NEXT_DECISION.md` for phase details and constraints.
 
-The V2 Real Production Output Track (user-approved 2026-06-17) is authorized only through the phase plan in `docs/NEXT_DECISION.md`. It upgrades selected old limits into guarded capabilities; it does not authorize default-on execution, direct `main` writes, deploy/release controls, cloud SaaS, or unattended autonomous-agent loops.
+The V2 Real Production Output Track (user-approved 2026-06-17) and Real Output Closeout (user-approved 2026-06-20) authorize the guarded capabilities recorded in `docs/NEXT_DECISION.md`. They do not authorize default-on provider APIs, direct `main` writes, app-runtime merge/deploy controls, cloud SaaS, or unattended autonomous-agent loops.
 
 Do not modify:
 

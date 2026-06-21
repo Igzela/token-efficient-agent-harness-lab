@@ -634,6 +634,7 @@ test("targetRepoOutput posts approval-bound target output request", async () => 
     remote: "origin",
     commit_message: "feat: apply artifact",
     pr_title: "Apply artifact",
+    create_pull_request: true,
   });
 
   assert.equal(result.output.patch_hash, "sha256:abc");
@@ -650,6 +651,7 @@ test("targetRepoOutput posts approval-bound target output request", async () => 
     remote: "origin",
     commit_message: "feat: apply artifact",
     pr_title: "Apply artifact",
+    create_pull_request: true,
   });
 });
 
@@ -680,6 +682,33 @@ test("quarantineSupervisedPatchWorkspace posts quarantine action", async () => {
   assert.equal(result.workspace.status, "quarantined");
   assert.equal(calls[0].url, "http://127.0.0.1:8080/api/v1/supervised-patch/workspaces/ws-0001/quarantine");
   assert.equal(calls[0].init.method, "POST");
+});
+
+test("verifySupervisedPatchWorkspace posts verification request", async () => {
+  const { calls, fetchImpl } = captureFetch({
+    schema_version: "axum_api.v1",
+    verification: { status: "evidence_recorded", command: ["cargo", "test"] },
+  });
+  const client = new AgentControlPlaneClient({ baseUrl: "http://127.0.0.1:8080", fetchImpl });
+
+  const result = await client.verifySupervisedPatchWorkspace("ws/0001", {
+    command: "cargo test",
+    confirm_verification: true,
+    timeout_ms: 600000,
+    repair_executor: "codex_cli",
+    max_repair_attempts: 2,
+  });
+
+  assert.equal(result.verification.status, "evidence_recorded");
+  assert.equal(calls[0].url, "http://127.0.0.1:8080/api/v1/supervised-patch/workspaces/ws%2F0001/verify");
+  assert.equal(calls[0].init.method, "POST");
+  assert.deepEqual(JSON.parse(calls[0].init.body), {
+    command: "cargo test",
+    confirm_verification: true,
+    timeout_ms: 600000,
+    repair_executor: "codex_cli",
+    max_repair_attempts: 2,
+  });
 });
 
 test("captureSupervisedPatch posts capture to workspace", async () => {

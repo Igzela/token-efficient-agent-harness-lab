@@ -2,8 +2,8 @@ use std::path::Path;
 use std::process::Command;
 
 use engine::target_repo_output::{
-    export_patch, prepare_git_worktree, push_approved_branch, remove_git_worktree,
-    stage_and_build_patch, BranchPublishRequest, TargetRepoOutputConfig,
+    export_patch, parse_github_repository_url, prepare_git_worktree, push_approved_branch,
+    remove_git_worktree, stage_and_build_patch, BranchPublishRequest, TargetRepoOutputConfig,
 };
 use tempfile::tempdir;
 
@@ -21,6 +21,19 @@ fn git(cwd: &Path, args: &[&str]) -> String {
         String::from_utf8_lossy(&output.stderr)
     );
     String::from_utf8_lossy(&output.stdout).trim().to_string()
+}
+
+#[test]
+fn github_repository_url_parser_accepts_https_and_rejects_unsafe_shapes() {
+    let repo =
+        parse_github_repository_url("https://github.com/acme/widgets.git").expect("valid repo");
+    assert_eq!(repo.host, "github.com");
+    assert_eq!(repo.owner, "acme");
+    assert_eq!(repo.repository, "widgets");
+
+    assert!(parse_github_repository_url("git@github.com:acme/widgets.git").is_err());
+    assert!(parse_github_repository_url("https://user@github.com/acme/widgets.git").is_err());
+    assert!(parse_github_repository_url("https://github.com/acme/widgets/extra").is_err());
 }
 
 fn fixture() -> (tempfile::TempDir, tempfile::TempDir, tempfile::TempDir) {
@@ -99,24 +112,24 @@ fn approved_branch_push_preserves_main_and_exports_same_patch() {
     assert_eq!(exported.patch, patch);
     assert_eq!(exported.patch_hash, prepared_hash(&patch));
 
-    let output = push_approved_branch(
-        &config,
-        BranchPublishRequest {
-            target_repo_path: target.path().to_path_buf(),
-            workspace_path: workspace.clone(),
-            source_revision: prepared.source_revision.clone(),
-            expected_patch_hash: exported.patch_hash.clone(),
-            branch_name: "acp/patch-artifact-0001".to_string(),
-            remote: "origin".to_string(),
-            commit_message: "feat: apply approved patch".to_string(),
-            pr_title: "Apply approved patch".to_string(),
-            pr_body: "Artifact patch-artifact-0001\nTests: passed".to_string(),
-        },
-    )
-    .unwrap();
+    let request = BranchPublishRequest {
+        target_repo_path: target.path().to_path_buf(),
+        workspace_path: workspace.clone(),
+        source_revision: prepared.source_revision.clone(),
+        expected_patch_hash: exported.patch_hash.clone(),
+        branch_name: "acp/patch-artifact-0001".to_string(),
+        remote: "origin".to_string(),
+        commit_message: "feat: apply approved patch".to_string(),
+        pr_title: "Apply approved patch".to_string(),
+        pr_body: "Artifact patch-artifact-0001\nTests: passed".to_string(),
+    };
+    let output = push_approved_branch(&config, request.clone()).unwrap();
+    let retried = push_approved_branch(&config, request).unwrap();
 
     assert_eq!(output.branch_name, "acp/patch-artifact-0001");
     assert_eq!(output.patch_hash, exported.patch_hash);
+    assert_eq!(retried.commit_sha, output.commit_sha);
+    assert_eq!(retried.patch_hash, output.patch_hash);
     assert_eq!(git(target.path(), &["rev-parse", "main"]), main_before);
     assert_eq!(
         git(

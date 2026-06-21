@@ -1045,6 +1045,167 @@ async fn axum_supervised_patch_metadata_returns_storage_records_read_only() {
 }
 
 #[tokio::test]
+async fn axum_supervised_patch_verification_runs_allowlisted_command_and_records_evidence() {
+    let target_dir = tempdir().unwrap();
+    let workspace_root = tempdir().unwrap();
+    let workspace_path = workspace_root.path().join("workspace");
+    fs::create_dir_all(&workspace_path).unwrap();
+    let dir = tempdir().unwrap();
+    let db_path = dir.path().join("patch.db");
+    let store = LocalProductStore::new(&db_path).unwrap();
+    store
+        .record_supervised_patch_workspace(
+            &json!({
+                "run_id": "run-verify",
+                "target_id": "target-verify",
+                "target_repo_path": target_dir.path().to_string_lossy(),
+                "workspace_path": workspace_path.to_string_lossy(),
+                "source_revision": "abc123",
+                "status": "workspace_created",
+            }),
+            "operator",
+        )
+        .unwrap();
+    let app = build_axum_router(AxumApiState::new().with_local_store(store));
+
+    let missing_confirmation = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(Method::POST)
+                .uri("/api/v1/supervised-patch/workspaces/patch-workspace-0001/verify")
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(
+                    json!({"command": "python3 --version"}).to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(missing_confirmation.status(), StatusCode::BAD_REQUEST);
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method(Method::POST)
+                .uri("/api/v1/supervised-patch/workspaces/patch-workspace-0001/verify")
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(
+                    json!({
+                        "command": "python3 --version",
+                        "confirm_verification": true,
+                        "attempt": 1,
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = response_json(response).await;
+    assert_eq!(body["verification"]["status"], "evidence_recorded");
+    assert_eq!(
+        body["verification"]["command"],
+        json!(["python3", "--version"])
+    );
+
+    let persisted_store = LocalProductStore::new(&db_path).unwrap();
+    let workspace = persisted_store
+        .get_supervised_patch_workspace("patch-workspace-0001")
+        .unwrap()
+        .unwrap();
+    assert_eq!(workspace["verification"]["status"], "evidence_recorded");
+}
+
+#[tokio::test]
+async fn axum_supervised_patch_verification_can_repair_and_retry_with_cli() {
+    let _env_guard = provider_cli_env_lock().lock().await;
+    let target_dir = tempdir().unwrap();
+    let workspace_root = tempdir().unwrap();
+    let workspace_path = workspace_root.path().join("workspace");
+    fs::create_dir_all(&workspace_path).unwrap();
+    fs::write(
+        workspace_path.join("verify.py"),
+        "from pathlib import Path\nraise SystemExit(0 if Path('fixed.txt').exists() else 1)\n",
+    )
+    .unwrap();
+    let fake_codex = workspace_root.path().join("fake-codex");
+    fs::write(
+        &fake_codex,
+        "#!/bin/sh\nprintf 'fixed\\n' > fixed.txt\n\
+         printf '{\"type\":\"item.completed\",\"item\":{\"type\":\"agent_message\",\"text\":\"repair complete\"}}\\n'\n\
+         printf '{\"type\":\"turn.completed\",\"usage\":{\"input_tokens\":10,\"output_tokens\":2}}\\n'\n",
+    )
+    .unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(&fake_codex, fs::Permissions::from_mode(0o755)).unwrap();
+    }
+    std::env::set_var("ACP_ENABLE_CLI_EXECUTION", "1");
+    std::env::set_var("ACP_CODEX_BIN", &fake_codex);
+    std::env::remove_var("ACP_CLAUDE_CODE_BIN");
+
+    let dir = tempdir().unwrap();
+    let store = LocalProductStore::new(dir.path().join("patch.db")).unwrap();
+    store
+        .record_supervised_patch_workspace(
+            &json!({
+                "run_id": "run-repair",
+                "target_id": "target-repair",
+                "target_repo_path": target_dir.path().to_string_lossy(),
+                "workspace_path": workspace_path.to_string_lossy(),
+                "source_revision": "abc123",
+                "status": "workspace_created",
+            }),
+            "operator",
+        )
+        .unwrap();
+    let app = build_axum_router(AxumApiState::new().with_local_store(store));
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method(Method::POST)
+                .uri("/api/v1/supervised-patch/workspaces/patch-workspace-0001/verify")
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(
+                    json!({
+                        "command": "python3 verify.py",
+                        "confirm_verification": true,
+                        "repair_executor": "codex_cli",
+                        "max_repair_attempts": 2,
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    std::env::remove_var("ACP_ENABLE_CLI_EXECUTION");
+    std::env::remove_var("ACP_CODEX_BIN");
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = response_json(response).await;
+    assert_eq!(body["verification"]["status"], "evidence_recorded");
+    assert_eq!(
+        body["verification"]["verification_attempts"]
+            .as_array()
+            .unwrap()
+            .len(),
+        2
+    );
+    assert_eq!(
+        body["verification"]["repair_attempts"]
+            .as_array()
+            .unwrap()
+            .len(),
+        1
+    );
+    assert!(workspace_path.join("fixed.txt").exists());
+}
+
+#[tokio::test]
 async fn axum_supervised_patch_metadata_returns_404_for_missing_records() {
     let dir = tempdir().unwrap();
     let store = LocalProductStore::new(dir.path().join("patch.db")).unwrap();
@@ -4448,6 +4609,8 @@ async fn axum_dynamic_tick_recovers_failed_run_with_graph_mutation() {
 
 #[tokio::test]
 async fn axum_tick_with_claude_code_cli_unavailable_returns_400() {
+    let _guard = provider_cli_env_lock().lock().await;
+    std::env::set_var("ACP_ENABLE_CLI_EXECUTION", "0");
     let dir = tempdir().unwrap();
     let store = LocalProductStore::new(dir.path().join("tick-cli-400.db")).unwrap();
     let app = build_axum_router(AxumApiState::new().with_local_store(store));
@@ -4485,7 +4648,6 @@ async fn axum_tick_with_claude_code_cli_unavailable_returns_400() {
     let run_body = response_json(run_resp).await;
     let run_id = run_body["run"]["run_id"].as_str().unwrap();
 
-    // CLI execution is not enabled in test env (ACP_ENABLE_CLI_EXECUTION not set)
     let tick_resp = app
         .clone()
         .oneshot(
@@ -4500,6 +4662,7 @@ async fn axum_tick_with_claude_code_cli_unavailable_returns_400() {
         )
         .await
         .unwrap();
+    std::env::remove_var("ACP_ENABLE_CLI_EXECUTION");
     assert_eq!(tick_resp.status(), StatusCode::BAD_REQUEST);
     let tick_body = response_json(tick_resp).await;
     assert_eq!(tick_body["code"], "cli_not_available");
@@ -4559,6 +4722,8 @@ fn cli_node_executor_resolve_prompt_and_executor() {
 
 #[tokio::test]
 async fn axum_tick_with_codex_cli_unavailable_returns_400() {
+    let _guard = provider_cli_env_lock().lock().await;
+    std::env::set_var("ACP_ENABLE_CLI_EXECUTION", "0");
     let dir = tempdir().unwrap();
     let store = LocalProductStore::new(dir.path().join("tick-codex-400.db")).unwrap();
     let app = build_axum_router(AxumApiState::new().with_local_store(store));
@@ -4610,6 +4775,7 @@ async fn axum_tick_with_codex_cli_unavailable_returns_400() {
         )
         .await
         .unwrap();
+    std::env::remove_var("ACP_ENABLE_CLI_EXECUTION");
     assert_eq!(tick_resp.status(), StatusCode::BAD_REQUEST);
     let tick_body = response_json(tick_resp).await;
     assert_eq!(tick_body["code"], "cli_not_available");
@@ -9164,6 +9330,8 @@ async fn axum_target_repo_worktree_gate_and_kill_switch_are_audited() {
 async fn axum_target_repo_output_exports_and_pushes_only_after_approval() {
     let _env_lock = target_repo_output_env_lock().lock().await;
     let _env = TargetRepoOutputEnvGuard::enable_local_remote();
+    std::env::remove_var("ACP_ENABLE_GITHUB_PR_OUTPUT");
+    std::env::remove_var("ACP_GITHUB_TOKEN_ENV");
     let target = tempdir().unwrap();
     let remote = tempdir().unwrap();
     git(target.path(), &["init", "-b", "main"]);
@@ -9474,6 +9642,45 @@ async fn axum_target_repo_output_exports_and_pushes_only_after_approval() {
         .as_str()
         .unwrap()
         .contains("approved production output"));
+
+    let pr_preflight_branch = format!("acp/pr-preflight-{artifact_id}");
+    let pr_preflight = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(Method::POST)
+                .uri(format!(
+                    "/api/v1/supervised-patch/artifacts/{artifact_id}/output"
+                ))
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(
+                    json!({
+                        "run_id": run_id,
+                        "mode": "push_branch",
+                        "confirm_target_output": true,
+                        "branch_name": pr_preflight_branch,
+                        "remote": "origin",
+                        "commit_message": "feat: should not push without github gate",
+                        "pr_title": "Should not push without github gate",
+                        "create_pull_request": true
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(pr_preflight.status(), StatusCode::BAD_REQUEST);
+    let missing_branch = Command::new("git")
+        .arg("-C")
+        .arg(remote.path())
+        .args(["rev-parse", &format!("refs/heads/{pr_preflight_branch}")])
+        .output()
+        .unwrap();
+    assert!(
+        !missing_branch.status.success(),
+        "GitHub PR preflight failure must not push the target branch"
+    );
 
     let push = app
         .clone()

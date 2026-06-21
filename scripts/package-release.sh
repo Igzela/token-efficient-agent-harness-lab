@@ -6,13 +6,16 @@ set -euo pipefail
 # Usage: ./package-release.sh [version]
 
 VERSION="${1:-0.1.0}"
+TAG="${VERSION#v}"
+TAG="v${TAG}"
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
-ARTIFACT_NAME="agent-control-plane-v${VERSION}-linux-x86_64"
+TARGET="${TARGET:-x86_64-unknown-linux-gnu}"
+ARTIFACT_NAME="agent-control-plane-${TAG}-${TARGET}"
 DIST_DIR="${REPO_ROOT}/dist"
 STAGE_DIR="${DIST_DIR}/${ARTIFACT_NAME}"
 
-echo "Agent Control Plane — Release Packager v${VERSION}"
+echo "Agent Control Plane — Release Packager ${TAG}"
 echo ""
 
 # Step 1: Build release binary

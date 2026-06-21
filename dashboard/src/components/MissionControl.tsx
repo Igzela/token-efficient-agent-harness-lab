@@ -21,6 +21,7 @@ import {
   recordWorkflowRunApproval,
   targetRepoOutput,
   tickWorkflowRun,
+  verifySupervisedPatchWorkspace,
 } from "@/lib/api-client";
 import type {
   DecisionRecord,
@@ -202,12 +203,14 @@ function OutputActionRail({
   const [targetRepoPath, setTargetRepoPath] = useState("");
   const [targetId, setTargetId] = useState("local-target");
   const [sourceRevision, setSourceRevision] = useState("HEAD");
-  const [executor, setExecutor] = useState("noop");
+  const [executor, setExecutor] = useState("codex_cli");
+  const [verificationCommand, setVerificationCommand] = useState("");
   const [outputMode, setOutputMode] = useState<"export_patch" | "push_branch">("export_patch");
   const [branchName, setBranchName] = useState("acp/generated-output");
   const [remote, setRemote] = useState("origin");
   const [commitMessage, setCommitMessage] = useState("Apply supervised patch");
   const [prTitle, setPrTitle] = useState("Supervised patch output");
+  const [createPullRequest, setCreatePullRequest] = useState(true);
   const [mutating, setMutating] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -218,7 +221,8 @@ function OutputActionRail({
   const terminal = run ? ["completed", "failed", "cancelled"].includes(run.status) : false;
   const approved = approvedForArtifact(artifact, approvals);
   const canCreateWorkspace = Boolean(run && targetRepoPath.trim() && sourceRevision.trim());
-  const canCapture = Boolean(workspace);
+  const canVerify = Boolean(workspace && verificationCommand.trim());
+  const canCapture = workspace?.verification?.status === "evidence_recorded";
   const canApprove = Boolean(artifact && artifact.redaction_status === "redacted" && !approved);
   const canExport = Boolean(artifact && approved);
   const canTargetOutput = Boolean(artifact && approved);
@@ -265,6 +269,19 @@ function OutputActionRail({
         () => tickWorkflowRun(action.runId, { executor }),
         (result) => `Tick completed with status ${String(result.tick.status ?? "unknown")}.`,
       );
+    } else if (action.type === "verifyWorkspace") {
+      runMutation(
+        () => verifySupervisedPatchWorkspace(action.workspaceId, {
+          command: action.command,
+          confirm_verification: true,
+          timeout_ms: 600_000,
+          repair_executor: action.repairExecutor,
+          max_repair_attempts: action.repairExecutor ? 2 : undefined,
+        }),
+        (result) => result.verification.status === "evidence_recorded"
+          ? `Verification passed after ${result.verification.verification_attempts.length} attempt(s).`
+          : `Verification failed after ${result.verification.verification_attempts.length} attempt(s).`,
+      );
     } else if (action.type === "capturePatch") {
       runMutation(
         () => captureSupervisedPatch(action.workspaceId),
@@ -304,9 +321,12 @@ function OutputActionRail({
           remote: outputMode === "push_branch" ? remote : undefined,
           commit_message: outputMode === "push_branch" ? commitMessage : undefined,
           pr_title: outputMode === "push_branch" ? prTitle : undefined,
+          create_pull_request: outputMode === "push_branch" ? createPullRequest : undefined,
         }),
         (result) => outputMode === "push_branch"
-          ? `Pushed ${String(result.output.branch_name ?? "branch")} at ${short(result.output.commit_sha, 10)}.`
+          ? result.output.pull_request
+            ? `Opened PR #${result.output.pull_request.number}: ${result.output.pull_request.url}`
+            : `Pushed ${String(result.output.branch_name ?? "branch")} at ${short(result.output.commit_sha, 10)}.`
           : `Generated patch output for ${short(result.output.patch_hash, 16)}.`,
       );
     } else if (action.type === "schedulerControl") {
@@ -321,7 +341,7 @@ function OutputActionRail({
     <div className="subcard stack action-rail">
       <div className="flex-between">
         <div>
-          <h3>Output Workflow</h3>
+          <h3>Task Workflow</h3>
           <p className="muted" style={{ fontSize: "13px", marginTop: 4 }}>
             Task, run, workspace, patch, approval, and output controls in one path.
           </p>
@@ -400,6 +420,33 @@ function OutputActionRail({
         >
           Create workspace
         </button>
+        <label className="inline-control">
+          <span className="muted">Verify</span>
+          <input
+            aria-label="Verification command"
+            value={verificationCommand}
+            onChange={(event) => setVerificationCommand(event.target.value)}
+            placeholder="cargo test / npm test"
+          />
+        </label>
+        <button
+          type="button"
+          onClick={() => {
+            if (!workspace) return;
+            const repairExecutor = executor === "codex_cli" || executor === "claude_code_cli"
+              ? executor
+              : undefined;
+            setConfirmAction({
+              type: "verifyWorkspace",
+              workspaceId: workspace.workspace_id,
+              command: verificationCommand.trim(),
+              repairExecutor,
+            });
+          }}
+          disabled={mutating || !canVerify}
+        >
+          Verify workspace
+        </button>
         <button
           type="button"
           onClick={() => workspace && setConfirmAction({ type: "capturePatch", workspaceId: workspace.workspace_id })}
@@ -407,6 +454,11 @@ function OutputActionRail({
         >
           Capture patch
         </button>
+        {workspace && (
+          <span className={`pill ${canCapture ? "ok" : workspace.verification ? "risk" : "warn"}`}>
+            {workspace.verification?.status ?? "verification required"}
+          </span>
+        )}
         <button
           type="button"
           onClick={() => artifact && run && setConfirmAction({ type: "approveArtifact", artifactId: artifact.artifact_id, runId: run.run_id })}
@@ -437,6 +489,14 @@ function OutputActionRail({
             <input aria-label="Remote" value={remote} onChange={(event) => setRemote(event.target.value)} />
             <input aria-label="Commit message" value={commitMessage} onChange={(event) => setCommitMessage(event.target.value)} />
             <input aria-label="PR title" value={prTitle} onChange={(event) => setPrTitle(event.target.value)} />
+            <label className="inline-control">
+              <input
+                type="checkbox"
+                checked={createPullRequest}
+                onChange={(event) => setCreatePullRequest(event.target.checked)}
+              />
+              <span>Create PR</span>
+            </label>
           </>
         )}
         <button
@@ -493,7 +553,7 @@ function PrimaryWorkflowPath({
       state: run ? "done" : "now",
     },
     {
-      detail: run && !terminal ? "Use the Runs tab tick control to advance the next ready node." : "Tick is available only while the selected run is active.",
+      detail: run && !terminal ? "Use the task workflow controls below to advance the next ready node." : "Tick is available only while the selected run is active.",
       label: "Tick",
       state: run && !terminal ? "now" : run ? "done" : "todo",
     },
@@ -765,9 +825,9 @@ export function MissionControl() {
     <section className="card stack">
       <div className="flex-between">
         <div>
-          <h2>Mission Control</h2>
+          <h2>Tasks</h2>
           <p className="muted" style={{ fontSize: "13px", marginTop: 4 }}>
-            Workflow, queue, executor, decision, approval, and export state for the selected run.
+            Create a task, run it, inspect failures, approve the result, and publish the output.
           </p>
         </div>
         <button onClick={loadOverview} type="button">Refresh</button>
@@ -781,7 +841,7 @@ export function MissionControl() {
       )}
 
       {loading ? (
-        <div className="loading-row"><span className="spinner" /> Loading mission-control state...</div>
+        <div className="loading-row"><span className="spinner" /> Loading task state...</div>
       ) : runs.length === 0 ? (
         <>
           <EmptyState
