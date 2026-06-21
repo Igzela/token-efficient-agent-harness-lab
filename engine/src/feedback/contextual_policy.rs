@@ -112,6 +112,14 @@ pub struct PromotedAdaptivePolicy {
     pub failure_rate_delta: f64,
     pub evidence_run_ids: Vec<String>,
     pub policy_hash: String,
+    #[serde(default)]
+    pub mean_latency_reduction: f64,
+    #[serde(default)]
+    pub auto_promoted: bool,
+    #[serde(default = "default_rollout_percentage")]
+    pub rollout_percentage: u8,
+    #[serde(default)]
+    pub previous_policy_hash: Option<String>,
     pub shadow_first: bool,
     pub live_execution_authority: bool,
     pub requires_explicit_adaptive_plan: bool,
@@ -265,11 +273,41 @@ impl ContextualPolicyPromotionGate {
 
 impl PromotedAdaptivePolicy {
     pub fn new(promotion: &ContextualPolicyPromotion) -> Self {
+        Self::build(promotion, 0.0, false, 100, None)
+    }
+
+    pub fn new_auto(
+        promotion: &ContextualPolicyPromotion,
+        mean_latency_reduction: f64,
+        rollout_percentage: u8,
+        previous_policy_hash: Option<String>,
+    ) -> Self {
+        Self::build(
+            promotion,
+            mean_latency_reduction,
+            true,
+            rollout_percentage,
+            previous_policy_hash,
+        )
+    }
+
+    fn build(
+        promotion: &ContextualPolicyPromotion,
+        mean_latency_reduction: f64,
+        auto_promoted: bool,
+        rollout_percentage: u8,
+        previous_policy_hash: Option<String>,
+    ) -> Self {
         let policy_key = contextual_policy_key(&promotion.task_class, promotion.objective);
         let mut evidence_run_ids = promotion.evidence_run_ids.clone();
         evidence_run_ids.sort();
         evidence_run_ids.dedup();
-        let hash_input = json!({
+        let confidence = auto_metric(promotion.confidence, auto_promoted);
+        let mean_quality_delta = auto_metric(promotion.mean_quality_delta, auto_promoted);
+        let mean_cost_reduction = auto_metric(promotion.mean_cost_reduction, auto_promoted);
+        let failure_rate_delta = auto_metric(promotion.failure_rate_delta, auto_promoted);
+        let mean_latency_reduction = auto_metric(mean_latency_reduction, auto_promoted);
+        let mut hash_input = json!({
             "schema_version": CONTEXTUAL_POLICY_SCHEMA_VERSION,
             "policy_key": policy_key,
             "task_class": promotion.task_class,
@@ -277,15 +315,29 @@ impl PromotedAdaptivePolicy {
             "candidate_id": promotion.candidate_id,
             "baseline_candidate_id": promotion.baseline_candidate_id,
             "sample_count": promotion.sample_count,
-            "confidence": promotion.confidence,
-            "mean_quality_delta": promotion.mean_quality_delta,
-            "mean_cost_reduction": promotion.mean_cost_reduction,
-            "failure_rate_delta": promotion.failure_rate_delta,
+            "confidence": confidence,
+            "mean_quality_delta": mean_quality_delta,
+            "mean_cost_reduction": mean_cost_reduction,
+            "failure_rate_delta": failure_rate_delta,
             "evidence_run_ids": evidence_run_ids,
             "shadow_first": true,
             "live_execution_authority": false,
             "requires_explicit_adaptive_plan": true,
         });
+        if auto_promoted {
+            if let Some(object) = hash_input.as_object_mut() {
+                object.insert(
+                    "mean_latency_reduction".to_string(),
+                    json!(mean_latency_reduction),
+                );
+                object.insert("auto_promoted".to_string(), json!(true));
+                object.insert("rollout_percentage".to_string(), json!(rollout_percentage));
+                object.insert(
+                    "previous_policy_hash".to_string(),
+                    json!(previous_policy_hash),
+                );
+            }
+        }
         let policy_hash = stable_hash(&hash_input);
         Self {
             schema_version: CONTEXTUAL_POLICY_SCHEMA_VERSION.to_string(),
@@ -295,12 +347,16 @@ impl PromotedAdaptivePolicy {
             candidate_id: promotion.candidate_id.clone(),
             baseline_candidate_id: promotion.baseline_candidate_id.clone(),
             sample_count: promotion.sample_count,
-            confidence: promotion.confidence,
-            mean_quality_delta: promotion.mean_quality_delta,
-            mean_cost_reduction: promotion.mean_cost_reduction,
-            failure_rate_delta: promotion.failure_rate_delta,
+            confidence,
+            mean_quality_delta,
+            mean_cost_reduction,
+            failure_rate_delta,
             evidence_run_ids,
             policy_hash,
+            mean_latency_reduction,
+            auto_promoted,
+            rollout_percentage,
+            previous_policy_hash,
             shadow_first: true,
             live_execution_authority: false,
             requires_explicit_adaptive_plan: true,
@@ -308,6 +364,28 @@ impl PromotedAdaptivePolicy {
     }
 
     pub fn is_valid(&self) -> bool {
+        let promotion = ContextualPolicyPromotion {
+            schema_version: CONTEXTUAL_POLICY_PROMOTION_SCHEMA_VERSION.to_string(),
+            task_class: self.task_class.clone(),
+            objective: self.objective,
+            candidate_id: self.candidate_id.clone(),
+            baseline_candidate_id: self.baseline_candidate_id.clone(),
+            sample_count: self.sample_count,
+            confidence: self.confidence,
+            mean_quality_delta: self.mean_quality_delta,
+            mean_cost_reduction: self.mean_cost_reduction,
+            failure_rate_delta: self.failure_rate_delta,
+            evidence_run_ids: self.evidence_run_ids.clone(),
+            risk_level: "low".to_string(),
+            confirm_adaptive_policy_promotion: true,
+        };
+        let expected = Self::build(
+            &promotion,
+            self.mean_latency_reduction,
+            self.auto_promoted,
+            self.rollout_percentage,
+            self.previous_policy_hash.clone(),
+        );
         self.schema_version == CONTEXTUAL_POLICY_SCHEMA_VERSION
             && self.policy_key == contextual_policy_key(&self.task_class, self.objective)
             && self.shadow_first
@@ -315,24 +393,34 @@ impl PromotedAdaptivePolicy {
             && self.requires_explicit_adaptive_plan
             && valid_id(&self.candidate_id)
             && valid_id(&self.baseline_candidate_id)
+            && self.mean_latency_reduction.is_finite()
+            && (1..=100).contains(&self.rollout_percentage)
+            && self
+                .previous_policy_hash
+                .as_ref()
+                .is_none_or(|hash| valid_policy_hash(hash))
+            && (self.auto_promoted
+                || (self.mean_latency_reduction == 0.0
+                    && self.rollout_percentage == 100
+                    && self.previous_policy_hash.is_none()))
             && !contains_sensitive_patterns(&serde_json::to_string(self).unwrap_or_default())
-            && self.policy_hash
-                == PromotedAdaptivePolicy::new(&ContextualPolicyPromotion {
-                    schema_version: CONTEXTUAL_POLICY_PROMOTION_SCHEMA_VERSION.to_string(),
-                    task_class: self.task_class.clone(),
-                    objective: self.objective,
-                    candidate_id: self.candidate_id.clone(),
-                    baseline_candidate_id: self.baseline_candidate_id.clone(),
-                    sample_count: self.sample_count,
-                    confidence: self.confidence,
-                    mean_quality_delta: self.mean_quality_delta,
-                    mean_cost_reduction: self.mean_cost_reduction,
-                    failure_rate_delta: self.failure_rate_delta,
-                    evidence_run_ids: self.evidence_run_ids.clone(),
-                    risk_level: "low".to_string(),
-                    confirm_adaptive_policy_promotion: true,
-                })
-                .policy_hash
+            && self.policy_hash == expected.policy_hash
+    }
+}
+
+fn default_rollout_percentage() -> u8 {
+    100
+}
+
+fn valid_policy_hash(value: &str) -> bool {
+    value.len() == 64 && value.bytes().all(|byte| byte.is_ascii_hexdigit())
+}
+
+fn auto_metric(value: f64, auto_promoted: bool) -> f64 {
+    if auto_promoted {
+        (value * 1_000_000_000_000.0).round() / 1_000_000_000_000.0
+    } else {
+        value
     }
 }
 

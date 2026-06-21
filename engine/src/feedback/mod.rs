@@ -1,3 +1,4 @@
+pub mod adaptive_auto_promotion;
 pub mod adaptive_candidate;
 pub mod adaptive_experiment;
 pub mod adaptive_fusion;
@@ -16,6 +17,10 @@ pub mod proposal_validator;
 pub mod run_trace_recorder;
 pub mod shadow_router;
 
+pub use adaptive_auto_promotion::{
+    AdaptiveAutoPromotionController, AdaptiveAutoPromotionEvidence, AdaptiveAutoPromotionGate,
+    AdaptiveAutoPromotionPolicy, AdaptiveAutoPromotionRequest,
+};
 pub use adaptive_candidate::CandidateKind as AdaptiveCandidateKind;
 pub use adaptive_candidate::{
     AdaptiveCandidate, AdaptiveCandidateConfig, AdaptiveCandidateGenerator, AdaptiveCandidateSet,
