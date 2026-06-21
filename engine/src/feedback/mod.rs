@@ -1,6 +1,7 @@
 pub mod adaptive_fusion;
 pub mod auto_adjustment_guard;
 pub mod auto_adjustment_policy;
+pub mod endpoint_registry;
 pub mod outcome_attributor;
 pub mod pattern_detector;
 pub mod policy_proposer;
@@ -22,6 +23,11 @@ pub use auto_adjustment_guard::{
 pub use auto_adjustment_policy::{
     AutoAdjustmentEvidenceSummary, AutoAdjustmentPolicy, AutoAdjustmentPolicyDecision,
     AUTO_ADJUSTMENT_POLICY_DECISION_SCHEMA_VERSION, STRICT_AUTO_ADJUSTMENT_CONFIDENCE,
+};
+pub use endpoint_registry::{
+    CredentialReference, EndpointHealth, EndpointPricing, ModelEndpointRegistry,
+    ModelEndpointRegistryError, ModelEndpointRegistrySnapshot, ModelEndpointSpec, RegistryMutation,
+    ENDPOINT_REGISTRY_SCHEMA_VERSION,
 };
 pub use outcome_attributor::{OutcomeAttribution, OutcomeAttributor};
 pub use pattern_detector::{DetectedPattern, PatternDetector};

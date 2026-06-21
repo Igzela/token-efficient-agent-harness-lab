@@ -206,7 +206,14 @@ AF-0 implementation status:
 
 - Implemented on `codex/adaptive-fusion-af0`.
 - The pure planner and seven focused tests cover objective semantics, bounded fusion, full-plan budget fallback, capability/score/budget validation, duplicate endpoint rejection, audit scorecards, deterministic tie-breaking, and zero live influence.
-- AF-1 through AF-5 remain intentionally unimplemented.
+
+AF-1 implementation status:
+
+- Implemented on `codex/adaptive-fusion-af1`, stacked on AF-0.
+- The bounded in-memory registry supports idempotent upsert and disable, deterministic sorted snapshots and content hashes, capability/context/tool/pricing/health metadata, and symbolic credential references.
+- Validation rejects malformed identities, unbounded metadata, invalid pricing/health/context, raw secret patterns, non-symbolic credential references, and registry capacity overflow before mutation.
+- AF-1 adds no database migration, HTTP surface, credential resolution, provider call, or live-routing influence.
+- AF-2 through AF-5 remain intentionally unimplemented.
 
 Design references:
 
