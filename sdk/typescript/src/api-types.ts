@@ -365,6 +365,13 @@ export interface LocalDashboardState {
   config: Record<string, unknown>;
   costs: LocalCostSummary;
   boundaries: Boundaries;
+  cli: LocalCliCapability;
+}
+
+export interface LocalCliCapability {
+  enabled: boolean;
+  claude_code: boolean;
+  codex: boolean;
 }
 
 export interface DispatchListResponse {

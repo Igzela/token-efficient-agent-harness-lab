@@ -6,7 +6,7 @@ pub(crate) mod state;
 
 pub use routes::{build_axum_router, build_axum_router_with_dashboard};
 pub use server_context::{RouteHandler, RouteMatch, ServerContext};
-pub use state::{AxumApiState, ServerConfig};
+pub use state::{AxumApiState, CliCapability, ServerConfig};
 
 pub const HTTP_SERVER_SCHEMA_VERSION: &str = "http_server.v1";
 pub const AXUM_API_SCHEMA_VERSION: &str = "axum_api.v1";

@@ -1,4 +1,4 @@
-import type { LocalBoundaries } from "@/lib/types";
+import type { LocalBoundaries, LocalCliCapability } from "@/lib/types";
 import { TermTooltip } from "./TermTooltip";
 
 const boundaryLabels: Array<[keyof LocalBoundaries, string, string?]> = [
@@ -18,13 +18,24 @@ function humanize(value: unknown): string {
   return s;
 }
 
+function cliLabel(cli: LocalCliCapability): string {
+  if (!cli.enabled) return "Off";
+  const detected = [
+    cli.claude_code ? "Claude" : null,
+    cli.codex ? "Codex" : null,
+  ].filter((name): name is string => name !== null);
+  return detected.length > 0 ? detected.join(" + ") : "Not found";
+}
+
 export function BoundaryBadges({
   authStatus,
   boundaries,
+  cli,
   hasToken,
 }: {
   authStatus: "ok" | "missing" | "denied" | "offline";
   boundaries: LocalBoundaries;
+  cli: LocalCliCapability;
   hasToken: boolean;
 }) {
   const authLabel = authStatus === "offline"
@@ -40,6 +51,7 @@ export function BoundaryBadges({
       <span className={`boundary-badge ${authStatus === "ok" ? "ok" : "warn"}`}>
         Auth: {authLabel}
       </span>
+      <span className="boundary-badge">CLI: {cliLabel(cli)}</span>
       {boundaryLabels.map(([key, label, term]) => (
         <span className="boundary-badge" key={key}>
           {term ? <TermTooltip term={term}>{label}</TermTooltip> : label}: {humanize(boundaries[key])}

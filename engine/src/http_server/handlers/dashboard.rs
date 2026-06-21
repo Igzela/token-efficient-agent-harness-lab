@@ -62,5 +62,8 @@ pub(crate) async fn api_dashboard(
             json!(provider_pricing_from_env().configured()),
         );
     }
+    if let Some(object) = body.as_object_mut() {
+        object.insert("cli".to_string(), json!(state.cli_capability()));
+    }
     Ok((cors_headers(), Json(body)))
 }
