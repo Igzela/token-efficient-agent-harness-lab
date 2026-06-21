@@ -7,6 +7,7 @@ This repository is the Token-Efficient Agent Harness Lab: a local deterministic 
 **Active tracks:**
 - **Real-World Testing Mode** — validated through real tasks, branches, commits, PRs, CI, gated auto-merge
 - **Agent Autonomous Maintenance Mode** — agents maintain docs/CI/tests/low-risk PR flow under playbook gates
+- **Adaptive Fusion Routing Track** — authorized; AF-0 shadow portfolio planner implemented, live influence remains disabled
 
 **Complete tracks:**
 - Dispatch Kernel Phases 1–7 (including 6A, 6B-1/2/3, Gates 1–3): STABLE
@@ -20,7 +21,7 @@ This repository is the Token-Efficient Agent Harness Lab: a local deterministic 
 - Real Output Closeout: COMPLETE (`v0.1.0` published and online installer verified)
 
 **Key facts:**
-- 1580 Rust tests pass, 0 failures (last recorded full verification)
+- 1587 Rust tests pass, 0 failures (last recorded full verification)
 - Latest release: `v0.1.0`, published 2026-06-21
 - Architecture Refactor R-series sealed at R7. R8 is not approved.
 - Post-R7 wire/type governance hardening implemented: `scripts/check_wire_codegen_drift.sh`
@@ -31,7 +32,7 @@ This repository is the Token-Efficient Agent Harness Lab: a local deterministic 
 
 **Agent maintenance** may create branches, commits, PRs, and low-risk merges only through branch+PR workflow under `docs/REAL_WORLD_TESTING_PLAYBOOK.md` gates. This is a repository workflow mode, not an app-runtime feature.
 
-**Requires explicit human approval:** Provider/CLI execution boundary expansion outside the V2 phase plan, auth/security boundary changes, DB migrations, release/tag/deploy, active YAML/rubric/policy mutation, destructive operations.
+**Requires explicit human approval:** Provider/CLI execution boundary expansion outside the V2 and Adaptive Fusion Routing phase plans, auth/security boundary changes, DB migrations, release/tag/deploy, active YAML/rubric/policy mutation, destructive operations.
 
 ## Minimal Agent Reading Model
 
@@ -109,7 +110,7 @@ If another agent has in-progress changes, do not overwrite them. Either build on
 
 The production-grade hosted/self-hosted productization track (user-approved 2026-06-06) is authorized. It extends existing modules (node_executor, workflow_runs, supervised_patch, http_server) without creating parallel runtime kernels. See `docs/NEXT_DECISION.md` for phase details and constraints.
 
-The V2 Real Production Output Track (user-approved 2026-06-17) and Real Output Closeout (user-approved 2026-06-20) authorize the guarded capabilities recorded in `docs/NEXT_DECISION.md`. They do not authorize default-on provider APIs, direct `main` writes, app-runtime merge/deploy controls, cloud SaaS, or unattended autonomous-agent loops.
+The V2 Real Production Output Track (user-approved 2026-06-17), Real Output Closeout (user-approved 2026-06-20), and Adaptive Fusion Routing Track (user-approved 2026-06-21) authorize only the guarded phases recorded in `docs/NEXT_DECISION.md`. They do not authorize default-on provider APIs, direct `main` writes, app-runtime merge/deploy controls, cloud SaaS, or unattended autonomous-agent loops.
 
 Do not modify:
 
@@ -123,7 +124,7 @@ Do not add without explicit human approval:
 - new or broadened sandbox/process/container/VM execution beyond the existing local CLI executor path
 - concurrent workers outside the bounded, env-gated V2-4 scheduler model
 - new cloud/hosted Web UI implementation
-- provider failover
+- provider failover outside the bounded, gated AF-3 phase
 - cloud or hosted production deployment
 - destructive filesystem operations
 - Stage 5 implementation
@@ -142,6 +143,7 @@ Allowed by default:
 - architecture audit updates
 - approved dispatch-kernel phase work that respects all hard boundaries
 - approved V2 phase work that follows `docs/NEXT_DECISION.md`
+- approved Adaptive Fusion Routing phase work that follows `docs/NEXT_DECISION.md`
 - supervised autonomous beta planning batches that remain non-executable and respect ADR-0002
 - branch+PR workflow for docs/tests/CI/small code fixes under `docs/REAL_WORLD_TESTING_PLAYBOOK.md` gates
 
@@ -154,7 +156,7 @@ Requires explicit approval:
 - benchmarking framework
 - cloud or hosted deployment work
 - broad runtime refactors
-- provider/CLI execution boundary expansion
+- provider/CLI execution boundary expansion outside approved V2/Adaptive Fusion phases
 - auth/security boundary changes
 - DB migrations
 - release/tag/deploy

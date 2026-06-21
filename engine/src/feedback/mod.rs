@@ -1,3 +1,4 @@
+pub mod adaptive_fusion;
 pub mod auto_adjustment_guard;
 pub mod auto_adjustment_policy;
 pub mod outcome_attributor;
@@ -10,6 +11,11 @@ pub mod proposal_validator;
 pub mod run_trace_recorder;
 pub mod shadow_router;
 
+pub use adaptive_fusion::{
+    AdaptiveFusionPlan, AdaptiveFusionPlanner, DeliberationMode, EndpointScorecard,
+    ModelEndpointObservation, ObjectiveProfile, ObjectiveWeights, PortfolioRequest,
+    ADAPTIVE_FUSION_PLAN_SCHEMA_VERSION,
+};
 pub use auto_adjustment_guard::{
     AutoAdjustmentGuard, AutoAdjustmentGuardDecision, AUTO_ADJUSTMENT_GUARD_DECISION_SCHEMA_VERSION,
 };
