@@ -84,9 +84,9 @@ curl -s -X POST http://127.0.0.1:8080/api/v1/dispatch \
 
 Provider execution remains off unless `ACP_ENABLE_PROVIDER_EXECUTION=1`. Target output remains off unless `ACP_ENABLE_TARGET_REPO_OUTPUT=1`; when enabled, it is limited to a controlled app-owned git worktree, patch export, or approval-bound `acp/*` branch push. It never writes the registered target working tree or `main`.
 
-### Adaptive provider portfolios
+### Adaptive Fusion provider routing
 
-AF-3 adaptive execution is a separate default-off gate. It requires protected mode and explicit workflow execution:
+Adaptive provider execution is default-off. It requires protected mode, configured auth, and both provider execution gates:
 
 ```bash
 export ACP_REQUIRE_AUTH=1
@@ -101,7 +101,44 @@ export ACP_ADAPTIVE_PROVIDER_ENDPOINTS_JSON='[
 ]'
 ```
 
-Endpoint JSON stores only credential environment names. Remote HTTP is rejected; HTTPS is required except for loopback test/local adapters. A workflow node must contain an `adaptive_execution` object with a `single`, `ordered_fallback`, or `fusion` plan plus `max_calls`, `max_cost_usd`, `max_elapsed_ms`, `max_concurrency` (currently `1`), and optional `max_total_tokens` (default `32768`). Tick the run with `executor=adaptive_provider`, `max_retries=0`, and a key with `dispatch:execute`.
+Endpoint JSON stores only credential environment names. Remote HTTP is rejected; HTTPS is required except for loopback test/local adapters. Explicit workflow execution accepts bounded `single`, `ordered_fallback`, or `fusion` plans. Fusion panels may run with bounded concurrency up to 3; judge and synthesizer remain serial. Tick the run with `executor=adaptive_provider`, `max_retries=0`, and a key with `dispatch:execute`.
+
+The AF-6 completion endpoint generates and selects a bounded candidate automatically:
+
+```bash
+curl -s -X POST http://127.0.0.1:8080/api/v1/adaptive-fusion/completions \
+  -H "Authorization: Bearer $ACP_ADMIN_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"prompt":"Summarize the release checks","task_class":"docs","objective":"efficient","risk_level":"low"}'
+```
+
+The default response contains only output and usage. Set `"include_routing_metadata":true` only when candidate, policy, experiment, and observation identifiers are needed for operator diagnosis. Request prompt, output, transcript, metadata, secrets, repository content, and private paths are not persisted in adaptive observations.
+
+Controlled experiments require both:
+
+```bash
+export ACP_ENABLE_ADAPTIVE_EXPERIMENTS=1
+export ACP_ADAPTIVE_EXPERIMENTS_ACTIVE=1
+```
+
+Experiments are deterministic and assign no traffic while either gate is off. With both gates enabled, the default traffic fraction is 1% and values above 5% are rejected. Risk, cost, token, call, elapsed-time, concurrency, pause, and kill controls still apply. Pause with `ACP_ADAPTIVE_EXPERIMENTS_PAUSED=1`; stop with `ACP_ADAPTIVE_EXPERIMENTS_KILL_SWITCH=1`.
+
+Evidence-driven automatic promotion requires both:
+
+```bash
+export ACP_ENABLE_ADAPTIVE_AUTO_PROMOTION=1
+export ACP_ADAPTIVE_AUTO_PROMOTION_ACTIVE=1
+```
+
+Promotion remains blocked until configured sample, confidence, quality, cost, latency, failure-rate, and evidence-freshness guards pass. Each activation stores a hash-bound snapshot and previous policy hash for rollback. Stop it with `ACP_ADAPTIVE_AUTO_PROMOTION_KILL_SWITCH=1`.
+
+Ordinary `/api/v1/dispatch` behavior is unchanged by default. To deliberately delegate eligible dispatch requests to adaptive completion routing:
+
+```bash
+export ACP_ADAPTIVE_DEFAULT_LIVE_ROUTING=1
+```
+
+Do not enable this gate until completion routing has been validated with the intended endpoint registry, auth, cost limits, experiment state, promotion state, and kill procedure.
 
 Emergency startup stop:
 
@@ -109,7 +146,7 @@ Emergency startup stop:
 export ACP_ADAPTIVE_FUSION_KILL_SWITCH=1
 ```
 
-This blocks adaptive calls. A runtime kill handle also stops subsequent panel/fallback stages; an already-running provider call drains or cancels under its remaining timeout. AF-3 does not automatically route AF-0/AF-2 recommendations into live execution.
+This blocks adaptive calls. A runtime kill handle also stops subsequent panel/fallback/final stages; an already-running provider call drains or cancels under its remaining timeout.
 
 ### 2.1 V2-3 Target Repo Output
 
@@ -459,6 +496,18 @@ All environment variables are documented in `.env.example`. Key variables:
 | `ACP_ENABLE_ADAPTIVE_FUSION_EXECUTION` | (off) | Enables explicit bounded `adaptive_provider` workflow ticks |
 | `ACP_ADAPTIVE_PROVIDER_ENDPOINTS_JSON` | (none) | Up to eight fixed provider/model endpoint definitions with credential env references |
 | `ACP_ADAPTIVE_FUSION_KILL_SWITCH` | (off) | Blocks adaptive provider execution when set to `1` at startup |
+| `ACP_ADAPTIVE_COMPLETION_MAX_COST_USD` | `1.0` | Per adaptive completion candidate cost ceiling |
+| `ACP_ADAPTIVE_COMPLETION_MAX_TOKENS` | `32768` | Per adaptive completion aggregate token ceiling |
+| `ACP_ADAPTIVE_COMPLETION_MAX_LATENCY_MS` | `300000` | Per adaptive completion elapsed-time ceiling |
+| `ACP_ENABLE_ADAPTIVE_EXPERIMENTS` | (off) | First gate for deterministic online candidate experiments |
+| `ACP_ADAPTIVE_EXPERIMENTS_ACTIVE` | (off) | Second gate for online experiments |
+| `ACP_ADAPTIVE_EXPERIMENT_TRAFFIC_RATE` | `0.01` | Experiment traffic fraction; values above `0.05` are rejected |
+| `ACP_ADAPTIVE_EXPERIMENTS_PAUSED` | (off) | Temporarily blocks new experiment assignment |
+| `ACP_ADAPTIVE_EXPERIMENTS_KILL_SWITCH` | (off) | Emergency stop for experiment assignment |
+| `ACP_ENABLE_ADAPTIVE_AUTO_PROMOTION` | (off) | First gate for evidence-driven automatic promotion |
+| `ACP_ADAPTIVE_AUTO_PROMOTION_ACTIVE` | (off) | Second gate for automatic promotion |
+| `ACP_ADAPTIVE_AUTO_PROMOTION_KILL_SWITCH` | (off) | Emergency stop for automatic promotion |
+| `ACP_ADAPTIVE_DEFAULT_LIVE_ROUTING` | (off) | Delegates ordinary dispatch requests to adaptive completion routing |
 | `ACP_ENABLE_ADAPTIVE_POLICY_PROMOTION` | (off) | Enables AF-4 adaptive policy promotion API gate |
 | `ACP_ADAPTIVE_POLICY_PROMOTION_ACTIVE` | (off) | Second AF-4 promotion activation gate; human confirmation and `team:admin` still required |
 | `ACP_ENABLE_ADAPTIVE_EXPLORATION` | (off) | Enables AF-4 bounded exploration gate |

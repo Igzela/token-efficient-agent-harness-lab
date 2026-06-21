@@ -11,14 +11,14 @@ The Rust `engine/` is the sole runtime implementation. Python is retained as RES
 | Module | Stage | Purpose | Verification |
 |---|---|---|---|
 | `engine/src/main.rs` | active runtime | Engine entrypoint and local server startup | `cargo test -p engine` |
-| `engine/src/http_server/` | active runtime/API | Axum routes, middleware, auth/rate-limit, static dashboard serving, read-only runtime capability snapshots | `cargo test -p engine --test test_http_server` |
+| `engine/src/http_server/` | active runtime/API | Axum routes, middleware, auth/rate-limit, static dashboard serving, guarded adaptive completion routing, runtime capability snapshots | `cargo test -p engine --test test_http_server --test test_adaptive_completion_api` |
 | `engine/src/dispatch_engine.rs` | active dispatch | Wires analysis, model selection, budget, executor, evaluation, ledger | `cargo test -p engine --test test_dispatch_engine` |
 | `engine/src/task_analyzer/` | active dispatch | Rule-based task domain/intent/risk/complexity analysis | `cargo test -p engine --test dispatch_parity` |
 | `engine/src/model_selector.rs` | active dispatch | Tier selection, constraints, fallback, shadow route metadata | `cargo test -p engine --test dispatch_parity` |
 | `engine/src/budget_manager.rs` | active dispatch | Token/cost reservation and cost gate checks | `cargo test -p engine --test dispatch_parity` |
 | `engine/src/executor/`, `engine/src/executor_adapter.rs` | active execution | Noop/provider/CLI/hybrid executor integration | `cargo test -p engine` |
-| `engine/src/provider/` | env-gated execution | Provider adapters, AF-3 bounded adaptive execution, endpoint/model binding, workflow-node executors, cost/token/time/call gates, audit/redaction, circuit breakers | `cargo test -p engine --test test_adaptive_fusion_execution` |
-| `engine/src/feedback/` | active policy evidence | Run traces, shadow routes, simulation/proposals, guarded adjustment snapshots, AF-0 planning, AF-1 registry, AF-2 offline evaluation, AF-6A candidate generation | `cargo test -p engine --test test_adaptive_fusion --test test_model_endpoint_registry --test test_offline_fusion_evaluation --test test_adaptive_candidate_generation` |
+| `engine/src/provider/` | env-gated execution | Provider adapters, bounded adaptive single/fallback/parallel-panel fusion execution, endpoint/model binding, workflow-node executors, cost/token/time/call/concurrency gates, audit/redaction, circuit breakers | `cargo test -p engine --test test_adaptive_fusion_execution` |
+| `engine/src/feedback/` | active policy evidence | Run traces, shadow routes, AF-0 planning, AF-1 registry, AF-2 offline evaluation, AF-4 contextual policy, AF-6 candidate generation/experiments/auto promotion | `cargo test -p engine --test test_adaptive_candidate_generation --test test_contextual_adaptive_policy --test test_adaptive_online_experiments --test test_adaptive_auto_promotion` |
 | `engine/src/cli/` | local CLI execution | Default local CLI discovery, explicit workflow ticks, path-free dashboard capability summary, Claude JSON/Codex JSONL adapters, restricted env, redacted/capped output | `cargo test -p engine` |
 | `engine/src/node_executor.rs` | supervised execution | Workflow node executors, command allowlist, timeout, structured output | `cargo test -p engine --lib node_executor` |
 | `engine/src/target_repo_output.rs` | env-gated target output | Controlled git worktree, patch export, `acp/*` branch push, optional idempotent GitHub PR creation, remote/auth validation | `cargo test -p engine --test test_target_repo_output` |
@@ -27,11 +27,11 @@ The Rust `engine/` is the sole runtime implementation. Python is retained as RES
 | `engine/src/orchestration/` | partial workflow | Decomposition, conflict resolution, approval gate, aggregation helpers | `cargo test -p engine` |
 | `engine/src/quality/`, `engine/src/routing/` | partial policy | Quality/evaluation bridges and routing feedback/advisory logic | `cargo test -p engine` |
 | `engine/src/executor_pool.rs` | active resources | Executor capacity, cooldown, selection, metrics | `cargo test -p engine --lib executor_pool` |
-| `engine/src/storage/local_product_store/` | active storage | SQLite/PostgreSQL app-owned state, migrations, audit, costs, plans, runs, artifacts | `cargo test -p engine --test test_local_product_store` |
+| `engine/src/storage/local_product_store/` | active storage | SQLite/PostgreSQL app-owned state, audit, costs, plans, runs, artifacts, adaptive policy snapshots, and safe observation summaries | `cargo test -p engine --test test_local_product_store --test test_adaptive_observation_capture` |
 | `engine/src/storage/backup_manager.rs` | active ops | SQLite backup, verify, restore support | `cargo test -p engine` |
 | `engine/src/infrastructure/` | active ops/security | Auth, rate limiting, circuit breaker, plugin registry helpers | `cargo test -p engine` |
-| `dashboard/` | active UI | Local operations console with guarded app-owned controls, including AF-5 Adaptive Fusion policy review/rollback | `cd dashboard && bun run typecheck && bun run build:static` |
-| `sdk/typescript/` | active SDK | TypeScript REST SDK, Adaptive Fusion policy controls, and generated wire re-exports | `cd sdk/typescript && bun run build && bun run test` |
+| `dashboard/` | active UI | Local operations console with guarded app-owned controls and Adaptive Fusion policy/completion API bindings | `cd dashboard && bun run typecheck && bun run build:static` |
+| `sdk/typescript/` | active SDK | TypeScript REST SDK, Adaptive Fusion policy/completion controls, and generated wire re-exports | `cd sdk/typescript && bun run build && bun run test` |
 | `sdk/python/` | active SDK | Python REST SDK | `cd sdk/python && PYTHONPATH=src uv run --no-project python -m unittest discover -s tests` |
 | `wire_contract/v1/`, `codegen/` | active governance | JSON schemas and deterministic generated Rust/TS/Python wire types | `bash scripts/check_wire_codegen_drift.sh` |
 | `scripts/` | active ops | Local doctor, release/smoke checks, drift guards, and real output pilots | script-specific checks, including `scripts/real_output_pilots.py` and `scripts/check_release_contract.sh` |
@@ -57,7 +57,7 @@ The Rust `engine/` is the sole runtime implementation. Python is retained as RES
 - V2-3 target repo PR flow: `target_repo_output.rs` owns git/process safety; supervised patch storage owns workspace/artifact/evidence/approval binding; HTTP owns scope/gate/confirmation/audit; SDK/dashboard API contracts mirror the endpoint.
 - V2-4 worker queue: `scheduler.rs` owns worker lifecycle/control; `workflow_runs.rs` owns atomic lease/stale recovery; `run_queue.rs` and `executor_pool.rs` own admission/capacity; `heartbeat.rs` persists aggregate worker health; scheduler HTTP handler and SDKs expose controls.
 - V2-5 product UX: `dashboard/src/components/MissionControl.tsx` owns the primary output workflow; `SupervisedPatch.tsx` owns detailed workspace/artifact operations; `SchedulerStatus.tsx` owns worker control/detail; `dashboard/src/lib/api-client.ts` owns dashboard API bindings.
-- Adaptive Fusion Routing: AF-0 through AF-2 live under `feedback/`; AF-3 execution lives under `provider/adaptive_execution.rs` and the existing workflow tick/`NodeExecutor` boundary; AF-4 contextual policy lives under `feedback/contextual_policy.rs`, persists active policy/snapshot state through `storage/local_product_store/adaptive_policy.rs`, and exposes guarded operator controls through the existing HTTP dispatch handlers; AF-5 operator UX lives in `dashboard/src/components/AdaptiveFusion.tsx`, `dashboard/src/lib/api-client.ts`, and the TypeScript SDK client/types; AF-6A candidate generation lives under `feedback/adaptive_candidate.rs`.
+- Adaptive Fusion Routing: candidate generation, contextual policy, experiments, and auto promotion live under `feedback/`; bounded execution lives under `provider/adaptive_execution.rs`; observations and policy snapshots use `storage/local_product_store/`; guarded completion/default routing lives under `http_server/handlers/adaptive_completions.rs` and `dispatch.rs`; dashboard and TypeScript SDK mirror the guarded API contracts.
 - Safety boundary changes: update `docs/ARCHITECTURE_BOOK.md` before implementation; use archived security docs only as historical reference.
 - Documentation set changes: keep the active docs set limited to the six files listed in `docs/CURRENT_STATUS.md`.
 
@@ -66,8 +66,8 @@ The Rust `engine/` is the sole runtime implementation. Python is retained as RES
 - R-series is sealed at R7. R8 is not approved.
 - Do not create a parallel scheduler, DAG kernel, policy engine, storage layer, or dashboard data model.
 - V2 Real Production Output is approved only through the phase plan in `docs/NEXT_DECISION.md`; do not skip phases or merge half-built runtime authority.
-- Adaptive Fusion Routing is approved only through AF-0 to AF-5 in `docs/NEXT_DECISION.md`; AF-0 through AF-2 remain shadow/offline, while AF-3/AF-4 live influence requires an explicit authenticated adaptive workflow tick and explicit bounded candidate plans. AF-5 is operator UX over those guarded endpoints, not new runtime authority.
-- Do not add default-on provider API execution, direct target-repository `main` writes, process/container/VM sandbox behavior, hosted/cloud deployment, app-runtime release/deploy controls, provider failover outside AF-3 gates, or unattended autonomous-agent loops without separate explicit approval.
+- Adaptive Fusion Routing is complete through AF-6. Live provider calls, experiments, promotion, and default routing remain independently gated, authenticated, bounded, audited, killable, and default-off.
+- Do not add default-on provider API execution, direct target-repository `main` writes, process/container/VM sandbox behavior, hosted/cloud deployment, app-runtime release/deploy controls, broader routing authority, or unattended autonomous-agent loops without separate explicit approval.
 - Any V2 real capability must include an env/auth gate, audit event, tests, and rollback/kill path before it is usable.
 - Wire-codegen drift guard: `scripts/check_wire_codegen_drift.sh`.
 - Run `uv run --no-project python scripts/check_agent_handoff.py` before committing handoff changes.

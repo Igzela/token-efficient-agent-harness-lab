@@ -13,7 +13,7 @@
 **Active tracks:**
 - Real-World Testing Mode — validated through real tasks, branches, commits, PRs, CI, gated auto-merge
 - Agent Autonomous Maintenance Mode — agents maintain docs/CI/tests/low-risk PR flow under playbook gates
-- Adaptive Fusion Routing Track — authorized; AF-0 through AF-5 implemented, adaptive live execution remains explicit and default-off
+- Adaptive Fusion Routing Track — complete through AF-6; adaptive live execution, experiments, promotion, and default routing remain explicit and default-off
 
 **Complete tracks:**
 - Dispatch Kernel Phases 1–7 (including 6A, 6B-1/2/3, Gates 1–3): STABLE
@@ -28,7 +28,7 @@
 - Real Output Closeout: COMPLETE (`v0.1.0` published and online installer verified)
 
 **Key facts:**
-- 1654 Rust tests pass, 0 failures (last recorded full verification)
+- Full Rust + TypeScript stack verification passes with 0 failures (2026-06-21)
 - Latest release: `v0.1.0`, published 2026-06-21
 - TypeScript strict + boundary lint + build + static export pass
 - `cargo fmt`, `cargo clippy`, handoff guard all pass
