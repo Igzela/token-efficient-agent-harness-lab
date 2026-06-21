@@ -4,7 +4,7 @@ Last updated: 2026-06-21. V2-0 through V2-5 and the Real Output Closeout are com
 
 ## Summary
 
-The core plan, V2 implementation, and Real Output Closeout are complete. The system includes prompt-to-CLI execution, bounded verification/repair evidence, optional real GitHub PR creation, a verified release contract, three real repository pilots, and a task-first dashboard. The Adaptive Fusion Routing track is active with an AF-0 shadow-only portfolio planner and AF-1 in-memory model-endpoint registry; live multi-provider/fusion execution is not yet implemented.
+The core plan, V2 implementation, and Real Output Closeout are complete. The system includes prompt-to-CLI execution, bounded verification/repair evidence, optional real GitHub PR creation, a verified release contract, three real repository pilots, and a task-first dashboard. The Adaptive Fusion Routing track is active with an AF-0 shadow-only portfolio planner, AF-1 in-memory model-endpoint registry, and AF-2 offline evaluation/replay engine; live multi-provider/fusion execution is not yet implemented.
 
 The system is useful as an operations/control-plane lab for deterministic dispatch, workflow state, app-owned execution metadata, guarded local controls, SDKs, and audit evidence. It is not a cloud SaaS, hosted multi-tenant service, direct-deploy tool, or unattended autonomous-agent runtime.
 
@@ -16,6 +16,7 @@ The system is useful as an operations/control-plane lab for deterministic dispat
 - Provider execution is off unless `ACP_ENABLE_PROVIDER_EXECUTION=1`.
 - Adaptive Fusion AF-0 can produce deterministic `efficient` or `quality` single/fusion plans from normalized endpoint observations, but cannot influence live routing or call providers.
 - Adaptive Fusion AF-1 can hot-add/update/disable bounded endpoint metadata and emit deterministic secret-safe snapshots; it has no database, HTTP, credential-resolution, network, or execution path.
+- Adaptive Fusion AF-2 can adapt existing run traces into bounded offline endpoint/portfolio observations, aggregate evidence by task class, compute Pareto frontiers, calibrate judge bias, and emit `efficient`/`quality` shadow recommendations without changing routing.
 - Installed local Claude/Codex CLIs are discovered by default for explicit workflow ticks. `ACP_ENABLE_CLI_EXECUTION=0` disables local CLI execution.
 - V2-3 target output is default-off. It can create an app-owned git worktree and, only after scoped confirmation plus artifact approval/integrity checks, export a patch or push an `acp/*` branch. It never writes the registered target working tree or `main`.
 - No hard process/container/VM sandbox is implemented; V2-1 is scoped to app-owned workspace confinement unless separately approved.
@@ -26,8 +27,8 @@ The system is useful as an operations/control-plane lab for deterministic dispat
 
 ## Last Recorded Verification
 
-- Branch: `codex/adaptive-fusion-af1`, stacked on `codex/adaptive-fusion-af0`.
-- Tests: **1597 Rust tests pass**, 0 failures, recorded 2026-06-21 on `codex/adaptive-fusion-af1`.
+- Branch: `codex/adaptive-fusion-af2`, stacked on `codex/adaptive-fusion-af1`.
+- Tests: **1607 Rust tests pass**, 0 failures, recorded 2026-06-21 on `codex/adaptive-fusion-af2`.
 - CI: the `tests` workflow run `27892330465` on `main` is green as of 2026-06-21.
 - Release: the `v0.1.0` release workflow run `27891104370` is green; all eight published assets passed checksum/archive inspection.
 - Online install: the README installer fetched `v0.1.0` into an isolated home, verified the checksum, installed the runtime/dashboard, and passed health, dashboard API, and HTML smoke checks on 2026-06-21.
@@ -69,7 +70,7 @@ uv run --no-project python scripts/check_agent_handoff.py
 | Track | Status |
 |---|---|
 | Agent Autonomous Maintenance Mode | Active for docs, CI, tests, deterministic regressions, and low-risk PR flow |
-| Adaptive Fusion Routing Track | AF-0 planner and AF-1 endpoint registry implemented; AF-2 through AF-5 pending |
+| Adaptive Fusion Routing Track | AF-0 planner, AF-1 endpoint registry, and AF-2 offline evaluation implemented; AF-3 through AF-5 pending |
 
 Historical phase plans, closeouts, and long-form validation reports are retained under `docs/archive/`.
 
@@ -83,6 +84,7 @@ Historical phase plans, closeouts, and long-form validation reports are retained
 - CLI capability visibility: the dashboard API exposes only enabled/detected booleans from the startup snapshot; the dashboard distinguishes Claude/Codex availability from supervised-worker status without exposing binary paths or granting execution authority.
 - Adaptive Fusion AF-0: deterministic capability/budget filtering and auditable `efficient`/`quality` single or bounded fusion planning over model endpoints; all outputs are shadow-only with no selected-tier, executor, retry, or active-policy influence.
 - Adaptive Fusion AF-1: bounded in-memory model-endpoint registry with capability, context, tool, pricing, health, and symbolic credential-reference metadata; deterministic content hashes; idempotent upsert/disable; no secret values or live execution authority.
+- Adaptive Fusion AF-2: bounded offline replay over existing run-trace/evaluator evidence; deterministic endpoint/portfolio aggregates, multi-dimensional Pareto frontiers, judge signed-bias/error calibration, and objective-specific shadow recommendations with evidence run IDs and zero live influence.
 - V2-3 target repo output: `git_worktree` creation and output require `dispatch:execute` plus `ACP_ENABLE_TARGET_REPO_OUTPUT=1`; artifact hashes bind patch content and actual allowlisted verification evidence; output requires same-run approval, integrity, redaction, explicit confirmation, bounded text files, and remote controls. Optional GitHub PR creation additionally requires `ACP_ENABLE_GITHUB_PR_OUTPUT=1` and `ACP_GITHUB_TOKEN_ENV`.
 - V2-4 bounded workers: scheduler startup requires both scheduler and supervised-worker env gates; worker count is bounded by global concurrency and 32; each worker claims at most one node per cycle through the existing atomic DB lease; heartbeat metadata exposes worker state; stale recovery is audited; `dispatch:execute` plus confirmation controls pause/resume/kill; env pause and kill switches remain available.
 - Verification/repair: `/supervised-patch/workspaces/{id}/verify` runs allowlisted test tools in the app-owned workspace, stores redacted/capped evidence, and can invoke at most two CLI repair attempts before output remains blocked.
@@ -102,7 +104,7 @@ Historical phase plans, closeouts, and long-form validation reports are retained
 - Security posture is suitable for local/small-team self-hosting only; hosted/multi-tenant use would require a new threat model and approved implementation plan.
 - No hard process/container/VM sandbox isolation exists.
 - Provider API execution remains default-off; local CLI discovery is default-on but execution still requires an explicit task tick.
-- Offline endpoint evaluation/replay, provider portfolio execution/fallback, judge/synthesizer calls, contextual-bandit exploration, and policy promotion remain unimplemented until AF-2 through AF-4.
+- Provider portfolio execution/fallback, live judge/synthesizer calls, contextual-bandit exploration, and policy promotion remain unimplemented until AF-3 and AF-4.
 - Cloud SaaS, multi-tenant hosting, app-runtime merge/release/deploy/apply authority, and unattended autonomous-agent loops remain out of scope.
 
 ## Documentation Discipline

@@ -297,7 +297,7 @@ fn utility(objective: ObjectiveProfile, endpoint: &ModelEndpointObservation) -> 
         + endpoint.latency_efficiency_score * weights.latency_efficiency
 }
 
-fn objective_weights(objective: ObjectiveProfile) -> ObjectiveWeights {
+pub fn objective_weights(objective: ObjectiveProfile) -> ObjectiveWeights {
     match objective {
         ObjectiveProfile::Efficient => ObjectiveWeights {
             quality: 0.25,
