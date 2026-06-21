@@ -1,4 +1,4 @@
-use rusqlite::params;
+use rusqlite::{params, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
@@ -154,66 +154,128 @@ impl LocalProductStore {
             ));
         }
 
-        let mut policies = self.active_adaptive_fusion_policies()?;
-        let existing = policies
-            .iter()
-            .position(|existing| existing.policy_key == policy.policy_key);
-        let active_policy_before = existing.map(|index| policies[index].clone());
-        if let Some(index) = existing {
-            policies[index] = policy.clone();
-        } else {
-            policies.push(policy.clone());
-        }
-        policies.sort_by(|left, right| left.policy_key.cmp(&right.policy_key));
+        self.apply_accepted_adaptive_fusion_policy(policy, actor)
+    }
 
-        let mut snapshots = self.adaptive_fusion_policy_snapshots()?;
-        if snapshots.len() >= MAX_POLICY_SNAPSHOTS {
-            self.audit_adaptive_policy(
-                actor,
-                "adaptive_policy.apply.rejected",
-                &policy.policy_key,
-                &json!({
-                    "actor": actor,
-                    "blocked_reasons": ["adaptive policy snapshot limit exceeded"],
-                    "source": "adaptive_fusion",
-                }),
-            )?;
-            return Err("adaptive policy snapshot limit exceeded".to_string());
-        }
-        let sequence = snapshots.len() + 1;
-        let snapshot = AdaptivePolicySnapshot::new(
-            sequence,
-            self.now(),
-            actor,
-            active_policy_before,
-            policy.clone(),
-        );
-        let adjustment_id = snapshot.adjustment_id.clone();
-        let snapshot_id = snapshot.snapshot_id.clone();
-        snapshots.push(snapshot);
-        self.write_adaptive_policy_state(&policies, &snapshots, actor)?;
-        self.audit_adaptive_policy(
-            actor,
-            "adaptive_policy.apply.accepted",
-            &adjustment_id,
-            &json!({
-                "adjustment_id": adjustment_id,
-                "snapshot_id": snapshot_id,
-                "policy_key": policy.policy_key,
-                "candidate_id": policy.candidate_id,
-                "actor": actor,
-                "blocked_reasons": [],
-                "source": "adaptive_fusion",
+    fn apply_accepted_adaptive_fusion_policy(
+        &self,
+        policy: &PromotedAdaptivePolicy,
+        actor: &str,
+    ) -> Result<Value, String> {
+        match &self.db {
+            DatabaseConnection::Sqlite(_) => self.with_conn(|conn| {
+                let tx = conn.unchecked_transaction().map_err(|e| e.to_string())?;
+                let mut policies =
+                    active_policies_from_value(sqlite_config_value(&tx, ACTIVE_POLICIES_KEY)?);
+                let mut snapshots =
+                    snapshots_from_value(sqlite_config_value(&tx, POLICY_SNAPSHOTS_KEY)?);
+                let result = match apply_accepted_policy_to_state(
+                    &mut policies,
+                    &mut snapshots,
+                    policy,
+                    actor,
+                    &self.now(),
+                ) {
+                    Ok(result) => result,
+                    Err(error) => {
+                        append_audit_locked(
+                            &tx,
+                            &self.now(),
+                            actor,
+                            "adaptive_policy.apply.rejected",
+                            &policy.policy_key,
+                            &json!({
+                                "actor": actor,
+                                "blocked_reasons": [error.clone()],
+                                "source": "adaptive_fusion",
+                            }),
+                        )?;
+                        tx.commit().map_err(|e| e.to_string())?;
+                        return Err(error);
+                    }
+                };
+                self.write_adaptive_policy_state_sqlite_locked(&tx, &policies, &snapshots, actor)?;
+                append_audit_locked(
+                    &tx,
+                    &self.now(),
+                    actor,
+                    "adaptive_policy.apply.accepted",
+                    result["adjustment_id"].as_str().unwrap_or("unknown"),
+                    &json!({
+                        "adjustment_id": result["adjustment_id"],
+                        "snapshot_id": result["snapshot_id"],
+                        "policy_key": policy.policy_key,
+                        "candidate_id": policy.candidate_id,
+                        "actor": actor,
+                        "blocked_reasons": [],
+                        "source": "adaptive_fusion",
+                    }),
+                )?;
+                tx.commit().map_err(|e| e.to_string())?;
+                Ok(result)
             }),
-        )?;
-        Ok(apply_result(
-            Some(adjustment_id),
-            Some(snapshot_id),
-            Some(policy),
-            "active",
-            true,
-            Vec::new(),
-        ))
+            #[cfg(feature = "pg")]
+            DatabaseConnection::Pg(_) => self.with_pg_conn(|client| {
+                let mut tx = client.transaction().map_err(|e| e.to_string())?;
+                pg_ensure_policy_config_rows(&mut tx, &self.now(), actor)?;
+                let mut policies = active_policies_from_value(pg_config_value_locked(
+                    &mut tx,
+                    ACTIVE_POLICIES_KEY,
+                )?);
+                let mut snapshots =
+                    snapshots_from_value(pg_config_value_locked(&mut tx, POLICY_SNAPSHOTS_KEY)?);
+                let result = match apply_accepted_policy_to_state(
+                    &mut policies,
+                    &mut snapshots,
+                    policy,
+                    actor,
+                    &self.now(),
+                ) {
+                    Ok(result) => result,
+                    Err(error) => {
+                        pg_insert_audit(
+                            &mut tx,
+                            &self.now(),
+                            actor,
+                            "adaptive_policy.apply.rejected",
+                            &policy.policy_key,
+                            &json!({
+                                "actor": actor,
+                                "blocked_reasons": [error.clone()],
+                                "source": "adaptive_fusion",
+                            }),
+                        )?;
+                        tx.commit().map_err(|e| e.to_string())?;
+                        return Err(error);
+                    }
+                };
+                write_adaptive_policy_state_pg_locked(
+                    &mut tx,
+                    &policies,
+                    &snapshots,
+                    actor,
+                    &self.now(),
+                )?;
+                pg_insert_audit(
+                    &mut tx,
+                    &self.now(),
+                    actor,
+                    "adaptive_policy.apply.accepted",
+                    result["adjustment_id"].as_str().unwrap_or("unknown"),
+                    &json!({
+                        "adjustment_id": result["adjustment_id"],
+                        "snapshot_id": result["snapshot_id"],
+                        "policy_key": policy.policy_key,
+                        "candidate_id": policy.candidate_id,
+                        "actor": actor,
+                        "blocked_reasons": [],
+                        "source": "adaptive_fusion",
+                    }),
+                )?;
+                tx.commit().map_err(|e| e.to_string())?;
+                Ok(result)
+            }),
+        }
     }
 
     pub fn rollback_adaptive_fusion_policy(
@@ -236,85 +298,158 @@ impl LocalProductStore {
             )?;
             return Err("confirm_adaptive_policy_rollback is required".to_string());
         }
-        let mut snapshots = self.adaptive_fusion_policy_snapshots()?;
-        let Some(index) = snapshots
-            .iter()
-            .position(|snapshot| snapshot.adjustment_id == adjustment_id)
-        else {
-            self.audit_adaptive_policy(
-                actor,
-                "adaptive_policy.rollback.rejected",
-                adjustment_id,
-                &json!({
-                    "adjustment_id": adjustment_id,
-                    "blocked_reasons": [format!("adaptive policy not found: {adjustment_id}")],
-                    "source": "adaptive_fusion",
-                }),
-            )?;
-            return Err(format!("adaptive policy not found: {adjustment_id}"));
-        };
-        let mut snapshot = snapshots[index].clone();
-        let mut blocked_reasons = Vec::new();
-        if snapshot.status != "active" {
-            blocked_reasons.push(format!(
-                "adaptive policy {adjustment_id} is not active: {}",
-                snapshot.status
-            ));
-        }
-        if !snapshot.hash_is_valid() {
-            blocked_reasons.push("adaptive policy snapshot safety hash mismatch".to_string());
-        }
-        let mut policies = self.active_adaptive_fusion_policies()?;
-        let current_matches = policies.iter().any(|policy| {
-            policy.policy_key == snapshot.policy_key
-                && policy.policy_hash == snapshot.promoted_policy.policy_hash
-        });
-        if !current_matches {
-            blocked_reasons.push("active adaptive policy no longer matches snapshot".to_string());
-        }
-        if !blocked_reasons.is_empty() {
-            self.audit_adaptive_policy(
-                actor,
-                "adaptive_policy.rollback.rejected",
-                adjustment_id,
-                &json!({
-                    "adjustment_id": adjustment_id,
-                    "snapshot_id": snapshot.snapshot_id,
-                    "policy_key": snapshot.policy_key,
-                    "blocked_reasons": blocked_reasons,
-                    "source": "adaptive_fusion",
-                }),
-            )?;
-            return Ok(rollback_result(
-                &snapshot,
-                "blocked",
-                false,
-                blocked_reasons,
-            ));
-        }
+        self.rollback_confirmed_adaptive_fusion_policy(adjustment_id, actor)
+    }
 
-        policies.retain(|policy| policy.policy_key != snapshot.policy_key);
-        if let Some(previous) = snapshot.active_policy_before.clone() {
-            policies.push(previous);
-        }
-        policies.sort_by(|left, right| left.policy_key.cmp(&right.policy_key));
-        snapshot.status = "rolled_back".to_string();
-        snapshot.updated_at = self.now();
-        snapshots[index] = snapshot.clone();
-        self.write_adaptive_policy_state(&policies, &snapshots, actor)?;
-        self.audit_adaptive_policy(
-            actor,
-            "adaptive_policy.rollback.accepted",
-            adjustment_id,
-            &json!({
-                "adjustment_id": adjustment_id,
-                "snapshot_id": snapshot.snapshot_id,
-                "policy_key": snapshot.policy_key,
-                "blocked_reasons": [],
-                "source": "adaptive_fusion",
+    fn rollback_confirmed_adaptive_fusion_policy(
+        &self,
+        adjustment_id: &str,
+        actor: &str,
+    ) -> Result<Value, String> {
+        match &self.db {
+            DatabaseConnection::Sqlite(_) => self.with_conn(|conn| {
+                let tx = conn.unchecked_transaction().map_err(|e| e.to_string())?;
+                let mut policies =
+                    active_policies_from_value(sqlite_config_value(&tx, ACTIVE_POLICIES_KEY)?);
+                let mut snapshots =
+                    snapshots_from_value(sqlite_config_value(&tx, POLICY_SNAPSHOTS_KEY)?);
+                let result = match rollback_policy_in_state(
+                    &mut policies,
+                    &mut snapshots,
+                    adjustment_id,
+                    &self.now(),
+                ) {
+                    Ok(result) => result,
+                    Err(error) => {
+                        append_audit_locked(
+                            &tx,
+                            &self.now(),
+                            actor,
+                            "adaptive_policy.rollback.rejected",
+                            adjustment_id,
+                            &json!({
+                                "adjustment_id": adjustment_id,
+                                "blocked_reasons": [error.clone()],
+                                "source": "adaptive_fusion",
+                            }),
+                        )?;
+                        tx.commit().map_err(|e| e.to_string())?;
+                        return Err(error);
+                    }
+                };
+                if result["rolled_back"].as_bool().unwrap_or(false) {
+                    self.write_adaptive_policy_state_sqlite_locked(
+                        &tx, &policies, &snapshots, actor,
+                    )?;
+                    append_audit_locked(
+                        &tx,
+                        &self.now(),
+                        actor,
+                        "adaptive_policy.rollback.accepted",
+                        adjustment_id,
+                        &json!({
+                            "adjustment_id": adjustment_id,
+                            "snapshot_id": result["snapshot_id"],
+                            "policy_key": result["policy_key"],
+                            "blocked_reasons": [],
+                            "source": "adaptive_fusion",
+                        }),
+                    )?;
+                } else {
+                    append_audit_locked(
+                        &tx,
+                        &self.now(),
+                        actor,
+                        "adaptive_policy.rollback.rejected",
+                        adjustment_id,
+                        &json!({
+                            "adjustment_id": adjustment_id,
+                            "snapshot_id": result["snapshot_id"],
+                            "policy_key": result["policy_key"],
+                            "blocked_reasons": result["blocked_reasons"],
+                            "source": "adaptive_fusion",
+                        }),
+                    )?;
+                }
+                tx.commit().map_err(|e| e.to_string())?;
+                Ok(result)
             }),
-        )?;
-        Ok(rollback_result(&snapshot, "rolled_back", true, Vec::new()))
+            #[cfg(feature = "pg")]
+            DatabaseConnection::Pg(_) => self.with_pg_conn(|client| {
+                let mut tx = client.transaction().map_err(|e| e.to_string())?;
+                pg_ensure_policy_config_rows(&mut tx, &self.now(), actor)?;
+                let mut policies = active_policies_from_value(pg_config_value_locked(
+                    &mut tx,
+                    ACTIVE_POLICIES_KEY,
+                )?);
+                let mut snapshots =
+                    snapshots_from_value(pg_config_value_locked(&mut tx, POLICY_SNAPSHOTS_KEY)?);
+                let result = match rollback_policy_in_state(
+                    &mut policies,
+                    &mut snapshots,
+                    adjustment_id,
+                    &self.now(),
+                ) {
+                    Ok(result) => result,
+                    Err(error) => {
+                        pg_insert_audit(
+                            &mut tx,
+                            &self.now(),
+                            actor,
+                            "adaptive_policy.rollback.rejected",
+                            adjustment_id,
+                            &json!({
+                                "adjustment_id": adjustment_id,
+                                "blocked_reasons": [error.clone()],
+                                "source": "adaptive_fusion",
+                            }),
+                        )?;
+                        tx.commit().map_err(|e| e.to_string())?;
+                        return Err(error);
+                    }
+                };
+                if result["rolled_back"].as_bool().unwrap_or(false) {
+                    write_adaptive_policy_state_pg_locked(
+                        &mut tx,
+                        &policies,
+                        &snapshots,
+                        actor,
+                        &self.now(),
+                    )?;
+                    pg_insert_audit(
+                        &mut tx,
+                        &self.now(),
+                        actor,
+                        "adaptive_policy.rollback.accepted",
+                        adjustment_id,
+                        &json!({
+                            "adjustment_id": adjustment_id,
+                            "snapshot_id": result["snapshot_id"],
+                            "policy_key": result["policy_key"],
+                            "blocked_reasons": [],
+                            "source": "adaptive_fusion",
+                        }),
+                    )?;
+                } else {
+                    pg_insert_audit(
+                        &mut tx,
+                        &self.now(),
+                        actor,
+                        "adaptive_policy.rollback.rejected",
+                        adjustment_id,
+                        &json!({
+                            "adjustment_id": adjustment_id,
+                            "snapshot_id": result["snapshot_id"],
+                            "policy_key": result["policy_key"],
+                            "blocked_reasons": result["blocked_reasons"],
+                            "source": "adaptive_fusion",
+                        }),
+                    )?;
+                }
+                tx.commit().map_err(|e| e.to_string())?;
+                Ok(result)
+            }),
+        }
     }
 
     fn config_value(&self, key: &str) -> Result<Value, String> {
@@ -325,8 +460,9 @@ impl LocalProductStore {
             .unwrap_or_else(|| json!([])))
     }
 
-    fn write_adaptive_policy_state(
+    fn write_adaptive_policy_state_sqlite_locked(
         &self,
+        conn: &Connection,
         policies: &[PromotedAdaptivePolicy],
         snapshots: &[AdaptivePolicySnapshot],
         actor: &str,
@@ -336,92 +472,41 @@ impl LocalProductStore {
         {
             return Err("invalid adaptive policy state".to_string());
         }
-        match &self.db {
-            DatabaseConnection::Sqlite(_) => self.with_conn(|conn| {
-                let now = self.now();
-                conn.execute(
-                    "INSERT INTO local_config (key, value_json, updated_at, updated_by)
+        let now = self.now();
+        conn.execute(
+            "INSERT INTO local_config (key, value_json, updated_at, updated_by)
                      VALUES (?1, ?2, ?3, ?4)
                      ON CONFLICT(key) DO UPDATE SET
                         value_json = excluded.value_json,
                         updated_at = excluded.updated_at,
                         updated_by = excluded.updated_by",
-                    params![ACTIVE_POLICIES_KEY, json!(policies).to_string(), now, actor],
-                )
-                .map_err(|e| e.to_string())?;
-                conn.execute(
-                    "INSERT INTO local_config (key, value_json, updated_at, updated_by)
+            params![ACTIVE_POLICIES_KEY, json!(policies).to_string(), now, actor],
+        )
+        .map_err(|e| e.to_string())?;
+        conn.execute(
+            "INSERT INTO local_config (key, value_json, updated_at, updated_by)
                      VALUES (?1, ?2, ?3, ?4)
                      ON CONFLICT(key) DO UPDATE SET
                         value_json = excluded.value_json,
                         updated_at = excluded.updated_at,
                         updated_by = excluded.updated_by",
-                    params![
-                        POLICY_SNAPSHOTS_KEY,
-                        json!(snapshots).to_string(),
-                        self.now(),
-                        actor
-                    ],
-                )
-                .map_err(|e| e.to_string())?;
-                append_audit_locked(
-                    conn,
-                    &self.now(),
-                    actor,
-                    "adaptive_policy.state.updated",
-                    ACTIVE_POLICIES_KEY,
-                    &json!({"active_count": policies.len(), "snapshot_count": snapshots.len()}),
-                )?;
-                Ok(())
-            }),
-            #[cfg(feature = "pg")]
-            DatabaseConnection::Pg(_) => self.with_pg_conn(|client| {
-                let now = self.now();
-                client
-                    .execute(
-                        "INSERT INTO local_config (key, value_json, updated_at, updated_by)
-                         VALUES ($1, $2, $3, $4)
-                         ON CONFLICT(key) DO UPDATE SET
-                            value_json = excluded.value_json,
-                            updated_at = excluded.updated_at,
-                            updated_by = excluded.updated_by",
-                        &[
-                            &ACTIVE_POLICIES_KEY,
-                            &json!(policies).to_string(),
-                            &now,
-                            &actor,
-                        ],
-                    )
-                    .map_err(|e| e.to_string())?;
-                client
-                    .execute(
-                        "INSERT INTO local_config (key, value_json, updated_at, updated_by)
-                         VALUES ($1, $2, $3, $4)
-                         ON CONFLICT(key) DO UPDATE SET
-                            value_json = excluded.value_json,
-                            updated_at = excluded.updated_at,
-                            updated_by = excluded.updated_by",
-                        &[
-                            &POLICY_SNAPSHOTS_KEY,
-                            &json!(snapshots).to_string(),
-                            &self.now(),
-                            &actor,
-                        ],
-                    )
-                    .map_err(|e| e.to_string())?;
-                let details =
-                    json!({"active_count": policies.len(), "snapshot_count": snapshots.len()})
-                        .to_string();
-                client
-                    .execute(
-                        "INSERT INTO audit_log (created_at, actor, action, resource, details_json)
-                         VALUES ($1, $2, 'adaptive_policy.state.updated', $3, $4)",
-                        &[&self.now(), &actor, &ACTIVE_POLICIES_KEY, &details],
-                    )
-                    .map_err(|e| e.to_string())?;
-                Ok(())
-            }),
-        }
+            params![
+                POLICY_SNAPSHOTS_KEY,
+                json!(snapshots).to_string(),
+                self.now(),
+                actor
+            ],
+        )
+        .map_err(|e| e.to_string())?;
+        append_audit_locked(
+            conn,
+            &self.now(),
+            actor,
+            "adaptive_policy.state.updated",
+            ACTIVE_POLICIES_KEY,
+            &json!({"active_count": policies.len(), "snapshot_count": snapshots.len()}),
+        )?;
+        Ok(())
     }
 
     fn audit_adaptive_policy(
@@ -451,6 +536,233 @@ impl LocalProductStore {
             }
         }
     }
+}
+
+fn active_policies_from_value(value: Value) -> Vec<PromotedAdaptivePolicy> {
+    serde_json::from_value::<Vec<PromotedAdaptivePolicy>>(value)
+        .unwrap_or_default()
+        .into_iter()
+        .filter(PromotedAdaptivePolicy::is_valid)
+        .collect()
+}
+
+fn snapshots_from_value(value: Value) -> Vec<AdaptivePolicySnapshot> {
+    let mut snapshots: Vec<AdaptivePolicySnapshot> =
+        serde_json::from_value::<Vec<AdaptivePolicySnapshot>>(value)
+            .unwrap_or_default()
+            .into_iter()
+            .filter(AdaptivePolicySnapshot::hash_is_valid)
+            .collect();
+    snapshots.sort_by(|left, right| right.created_at.cmp(&left.created_at));
+    snapshots
+}
+
+fn sqlite_config_value(conn: &Connection, key: &str) -> Result<Value, String> {
+    let raw = conn
+        .query_row(
+            "SELECT value_json FROM local_config WHERE key = ?1",
+            params![key],
+            |row| row.get::<_, String>(0),
+        )
+        .optional()
+        .map_err(|e| e.to_string())?;
+    Ok(raw
+        .and_then(|value| serde_json::from_str(&value).ok())
+        .unwrap_or_else(|| json!([])))
+}
+
+fn apply_accepted_policy_to_state(
+    policies: &mut Vec<PromotedAdaptivePolicy>,
+    snapshots: &mut Vec<AdaptivePolicySnapshot>,
+    policy: &PromotedAdaptivePolicy,
+    actor: &str,
+    now: &str,
+) -> Result<Value, String> {
+    let existing = policies
+        .iter()
+        .position(|existing| existing.policy_key == policy.policy_key);
+    let active_policy_before = existing.map(|index| policies[index].clone());
+    if let Some(index) = existing {
+        policies[index] = policy.clone();
+    } else {
+        policies.push(policy.clone());
+    }
+    policies.sort_by(|left, right| left.policy_key.cmp(&right.policy_key));
+
+    if snapshots.len() >= MAX_POLICY_SNAPSHOTS {
+        return Err("adaptive policy snapshot limit exceeded".to_string());
+    }
+    let sequence = snapshots.len() + 1;
+    let snapshot = AdaptivePolicySnapshot::new(
+        sequence,
+        now.to_string(),
+        actor,
+        active_policy_before,
+        policy.clone(),
+    );
+    let adjustment_id = snapshot.adjustment_id.clone();
+    let snapshot_id = snapshot.snapshot_id.clone();
+    snapshots.push(snapshot);
+    Ok(apply_result(
+        Some(adjustment_id),
+        Some(snapshot_id),
+        Some(policy),
+        "active",
+        true,
+        Vec::new(),
+    ))
+}
+
+fn rollback_policy_in_state(
+    policies: &mut Vec<PromotedAdaptivePolicy>,
+    snapshots: &mut [AdaptivePolicySnapshot],
+    adjustment_id: &str,
+    now: &str,
+) -> Result<Value, String> {
+    let Some(index) = snapshots
+        .iter()
+        .position(|snapshot| snapshot.adjustment_id == adjustment_id)
+    else {
+        return Err(format!("adaptive policy not found: {adjustment_id}"));
+    };
+    let mut snapshot = snapshots[index].clone();
+    let mut blocked_reasons = Vec::new();
+    if snapshot.status != "active" {
+        blocked_reasons.push(format!(
+            "adaptive policy {adjustment_id} is not active: {}",
+            snapshot.status
+        ));
+    }
+    if !snapshot.hash_is_valid() {
+        blocked_reasons.push("adaptive policy snapshot safety hash mismatch".to_string());
+    }
+    let current_matches = policies.iter().any(|policy| {
+        policy.policy_key == snapshot.policy_key
+            && policy.policy_hash == snapshot.promoted_policy.policy_hash
+    });
+    if !current_matches {
+        blocked_reasons.push("active adaptive policy no longer matches snapshot".to_string());
+    }
+    if !blocked_reasons.is_empty() {
+        return Ok(rollback_result(
+            &snapshot,
+            "blocked",
+            false,
+            blocked_reasons,
+        ));
+    }
+
+    policies.retain(|policy| policy.policy_key != snapshot.policy_key);
+    if let Some(previous) = snapshot.active_policy_before.clone() {
+        policies.push(previous);
+    }
+    policies.sort_by(|left, right| left.policy_key.cmp(&right.policy_key));
+    snapshot.status = "rolled_back".to_string();
+    snapshot.updated_at = now.to_string();
+    snapshots[index] = snapshot.clone();
+    Ok(rollback_result(&snapshot, "rolled_back", true, Vec::new()))
+}
+
+#[cfg(feature = "pg")]
+fn pg_ensure_policy_config_rows(
+    tx: &mut postgres::Transaction<'_>,
+    now: &str,
+    actor: &str,
+) -> Result<(), String> {
+    for key in [ACTIVE_POLICIES_KEY, POLICY_SNAPSHOTS_KEY] {
+        tx.execute(
+            "INSERT INTO local_config (key, value_json, updated_at, updated_by)
+             VALUES ($1, '[]', $2, $3)
+             ON CONFLICT(key) DO NOTHING",
+            &[&key, &now, &actor],
+        )
+        .map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
+#[cfg(feature = "pg")]
+fn pg_config_value_locked(tx: &mut postgres::Transaction<'_>, key: &str) -> Result<Value, String> {
+    let row = tx
+        .query_one(
+            "SELECT value_json FROM local_config WHERE key = $1 FOR UPDATE",
+            &[&key],
+        )
+        .map_err(|e| e.to_string())?;
+    let raw: String = row.get(0);
+    Ok(serde_json::from_str(&raw).unwrap_or_else(|_| json!([])))
+}
+
+#[cfg(feature = "pg")]
+fn write_adaptive_policy_state_pg_locked(
+    tx: &mut postgres::Transaction<'_>,
+    policies: &[PromotedAdaptivePolicy],
+    snapshots: &[AdaptivePolicySnapshot],
+    actor: &str,
+    now: &str,
+) -> Result<(), String> {
+    if policies.iter().any(|policy| !policy.is_valid())
+        || snapshots.iter().any(|snapshot| !snapshot.hash_is_valid())
+    {
+        return Err("invalid adaptive policy state".to_string());
+    }
+    tx.execute(
+        "INSERT INTO local_config (key, value_json, updated_at, updated_by)
+         VALUES ($1, $2, $3, $4)
+         ON CONFLICT(key) DO UPDATE SET
+            value_json = excluded.value_json,
+            updated_at = excluded.updated_at,
+            updated_by = excluded.updated_by",
+        &[
+            &ACTIVE_POLICIES_KEY,
+            &json!(policies).to_string(),
+            &now,
+            &actor,
+        ],
+    )
+    .map_err(|e| e.to_string())?;
+    tx.execute(
+        "INSERT INTO local_config (key, value_json, updated_at, updated_by)
+         VALUES ($1, $2, $3, $4)
+         ON CONFLICT(key) DO UPDATE SET
+            value_json = excluded.value_json,
+            updated_at = excluded.updated_at,
+            updated_by = excluded.updated_by",
+        &[
+            &POLICY_SNAPSHOTS_KEY,
+            &json!(snapshots).to_string(),
+            &now,
+            &actor,
+        ],
+    )
+    .map_err(|e| e.to_string())?;
+    pg_insert_audit(
+        tx,
+        now,
+        actor,
+        "adaptive_policy.state.updated",
+        ACTIVE_POLICIES_KEY,
+        &json!({"active_count": policies.len(), "snapshot_count": snapshots.len()}),
+    )?;
+    Ok(())
+}
+
+#[cfg(feature = "pg")]
+fn pg_insert_audit(
+    tx: &mut postgres::Transaction<'_>,
+    now: &str,
+    actor: &str,
+    action: &str,
+    resource: &str,
+    details: &Value,
+) -> Result<(), String> {
+    tx.execute(
+        "INSERT INTO audit_log (created_at, actor, action, resource, details_json)
+         VALUES ($1, $2, $3, $4, $5)",
+        &[&now, &actor, &action, &resource, &details.to_string()],
+    )
+    .map_err(|e| e.to_string())?;
+    Ok(())
 }
 
 fn apply_result(

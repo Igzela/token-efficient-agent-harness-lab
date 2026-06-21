@@ -255,6 +255,50 @@ fn local_store_applies_and_rolls_back_promoted_policy() {
 }
 
 #[test]
+fn local_store_concurrent_promotions_preserve_unique_snapshots() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = std::sync::Arc::new(LocalProductStore::new(dir.path().join("team.db")).unwrap());
+    let barrier = std::sync::Arc::new(std::sync::Barrier::new(2));
+    let handles = [ObjectiveProfile::Efficient, ObjectiveProfile::Quality]
+        .into_iter()
+        .enumerate()
+        .map(|(index, objective)| {
+            let store = std::sync::Arc::clone(&store);
+            let barrier = std::sync::Arc::clone(&barrier);
+            std::thread::spawn(move || {
+                let mut request = promotion();
+                request.objective = objective;
+                request.candidate_id = format!("candidate-{index}");
+                request.baseline_candidate_id = format!("baseline-{index}");
+                request.evidence_run_ids = (0..30)
+                    .map(|evidence_index| format!("run-{index}-{evidence_index}"))
+                    .collect();
+                let verdict =
+                    ContextualPolicyPromotionGate::from_flags(true, true).evaluate(&request);
+                barrier.wait();
+                store
+                    .apply_adaptive_fusion_policy(&verdict, "operator")
+                    .unwrap()
+            })
+        })
+        .collect::<Vec<_>>();
+
+    for handle in handles {
+        assert_eq!(handle.join().unwrap()["applied"], true);
+    }
+    let policies = store.active_adaptive_fusion_policies().unwrap();
+    let snapshots = store.adaptive_fusion_policy_snapshots().unwrap();
+    let adjustment_ids = snapshots
+        .iter()
+        .map(|snapshot| snapshot.adjustment_id.as_str())
+        .collect::<std::collections::BTreeSet<_>>();
+
+    assert_eq!(policies.len(), 2);
+    assert_eq!(snapshots.len(), 2);
+    assert_eq!(adjustment_ids.len(), 2);
+}
+
+#[test]
 fn local_store_ignores_tampered_live_authority_policy() {
     let dir = tempfile::tempdir().unwrap();
     let store = LocalProductStore::new(dir.path().join("team.db")).unwrap();

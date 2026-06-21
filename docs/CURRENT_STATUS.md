@@ -30,7 +30,7 @@ The system is useful as an operations/control-plane lab for deterministic dispat
 ## Last Recorded Verification
 
 - Branch: `codex/adaptive-fusion-af4`, stacked on `codex/adaptive-fusion-af3`.
-- Tests: **1653 Rust tests pass**, 0 failures, recorded 2026-06-21 on `codex/adaptive-fusion-af4`.
+- Tests: **1654 Rust tests pass**, 0 failures, recorded 2026-06-21 on `codex/adaptive-fusion-af4`.
 - CI: the `tests` workflow run `27892330465` on `main` is green as of 2026-06-21.
 - Release: the `v0.1.0` release workflow run `27891104370` is green; all eight published assets passed checksum/archive inspection.
 - Online install: the README installer fetched `v0.1.0` into an isolated home, verified the checksum, installed the runtime/dashboard, and passed health, dashboard API, and HTML smoke checks on 2026-06-21.
