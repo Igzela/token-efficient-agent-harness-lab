@@ -3,6 +3,11 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+use engine::feedback::{
+    AdaptiveExplorationGate, CandidateAggregate, CandidateKind, ContextualPolicyPromotion,
+    ContextualPolicyPromotionGate, ObjectiveProfile, CONTEXTUAL_POLICY_PROMOTION_SCHEMA_VERSION,
+    CONTEXTUAL_POLICY_SCHEMA_VERSION,
+};
 use engine::node_executor::{NodeExecutionInput, NodeExecutor};
 use engine::provider::adaptive_execution::{
     parse_adaptive_provider_endpoints_json, AdaptiveEndpointInvocation, AdaptiveExecutionExecutor,
@@ -145,6 +150,42 @@ fn request(
 
 fn enabled_gate() -> AdaptiveExecutionGate {
     AdaptiveExecutionGate::from_flags(true, true, true)
+}
+
+fn contextual_policy() -> engine::feedback::PromotedAdaptivePolicy {
+    ContextualPolicyPromotionGate::from_flags(true, true)
+        .evaluate(&ContextualPolicyPromotion {
+            schema_version: CONTEXTUAL_POLICY_PROMOTION_SCHEMA_VERSION.to_string(),
+            task_class: "coding".to_string(),
+            objective: ObjectiveProfile::Quality,
+            candidate_id: "strong".to_string(),
+            baseline_candidate_id: "cheap".to_string(),
+            sample_count: 30,
+            confidence: 0.9,
+            mean_quality_delta: 0.1,
+            mean_cost_reduction: 0.01,
+            failure_rate_delta: 0.0,
+            evidence_run_ids: (0..30).map(|index| format!("run-{index}")).collect(),
+            risk_level: "low".to_string(),
+            confirm_adaptive_policy_promotion: true,
+        })
+        .policy
+        .unwrap()
+}
+
+fn contextual_candidate(id: &str, quality: f64, cost: f64) -> CandidateAggregate {
+    CandidateAggregate {
+        candidate_id: id.to_string(),
+        candidate_kind: CandidateKind::Endpoint,
+        member_endpoint_ids: vec![id.to_string()],
+        sample_count: 30,
+        evidence_run_ids: (0..30).map(|index| format!("run-{id}-{index}")).collect(),
+        success_rate: quality,
+        average_quality_score: quality,
+        average_tool_success_score: quality,
+        average_cost_usd: cost,
+        average_latency_ms: 1000.0,
+    }
 }
 
 fn executor(
@@ -1330,4 +1371,169 @@ fn adaptive_node_failure_uses_reserved_cost_when_provider_cost_is_unknown() {
 
     assert_eq!(output.status, "failed");
     assert_eq!(output.estimated_cost, Some(0.04));
+}
+
+#[test]
+fn adaptive_policy_node_requires_promoted_policy_before_provider_call() {
+    let order = Arc::new(Mutex::new(Vec::new()));
+    let provider = Arc::new(ScriptedProvider::new(
+        "strong",
+        vec![response("strong", "unused", 0.01)],
+        order,
+    ));
+    let execution = Arc::new(executor(
+        vec![("strong", provider.clone())],
+        Arc::new(ProviderAuditRecorder::new()),
+        AdaptiveExecutionKillSwitch::from_flags(false),
+    ));
+    let node_executor = AdaptiveProviderNodeExecutor::new(execution, enabled_gate());
+    let input = NodeExecutionInput {
+        node_id: "node-1".to_string(),
+        task_type: "generate".to_string(),
+        run_id: "run-1".to_string(),
+        workflow_id: "workflow-1".to_string(),
+        node_metadata: json!({
+            "prompt": "solve",
+            "adaptive_policy_execution": {
+                "request": {
+                    "schema_version": CONTEXTUAL_POLICY_SCHEMA_VERSION,
+                    "request_id": "request-1",
+                    "task_class": "coding",
+                    "objective": "quality",
+                    "risk_level": "low",
+                    "exploration_seed": 0
+                },
+                "evaluation": {
+                    "task_class": "coding",
+                    "candidates": [contextual_candidate("strong", 0.9, 0.08)],
+                    "pareto_candidate_ids": ["strong"],
+                    "recommendations": []
+                },
+                "observations": [],
+                "candidate_plans": {
+                    "strong": {
+                        "plan": {
+                            "mode": "single",
+                            "endpoint": {
+                                "endpoint_id": "strong",
+                                "model": "test-model",
+                                "reserved_cost_usd": 0.02
+                            }
+                        },
+                        "limits": {
+                            "max_calls": 1,
+                            "max_cost_usd": 0.1,
+                            "max_elapsed_ms": 1000,
+                            "max_concurrency": 1
+                        }
+                    }
+                }
+            }
+        }),
+    };
+
+    let output = node_executor.execute_node(&input);
+
+    assert_eq!(output.status, "failed");
+    assert_eq!(
+        output.error_domain.as_deref(),
+        Some("adaptive_policy_not_promoted")
+    );
+    assert_eq!(provider.calls(), 0);
+}
+
+#[test]
+fn adaptive_policy_node_selects_promoted_candidate_with_explicit_bounded_plan() {
+    let order = Arc::new(Mutex::new(Vec::new()));
+    let cheap = Arc::new(ScriptedProvider::new(
+        "cheap",
+        vec![response("cheap", "cheap answer", 0.001)],
+        order.clone(),
+    ));
+    let strong = Arc::new(ScriptedProvider::new(
+        "strong",
+        vec![response("strong", "strong answer", 0.01)],
+        order.clone(),
+    ));
+    let execution = Arc::new(executor(
+        vec![("cheap", cheap.clone()), ("strong", strong.clone())],
+        Arc::new(ProviderAuditRecorder::new()),
+        AdaptiveExecutionKillSwitch::from_flags(false),
+    ));
+    let node_executor = AdaptiveProviderNodeExecutor::new(execution, enabled_gate())
+        .with_contextual_policies(
+            vec![contextual_policy()],
+            AdaptiveExplorationGate::from_flags(false, false, false, 0.05),
+        );
+    let input = NodeExecutionInput {
+        node_id: "node-1".to_string(),
+        task_type: "generate".to_string(),
+        run_id: "run-1".to_string(),
+        workflow_id: "workflow-1".to_string(),
+        node_metadata: json!({
+            "prompt": "solve",
+            "adaptive_policy_execution": {
+                "request": {
+                    "schema_version": CONTEXTUAL_POLICY_SCHEMA_VERSION,
+                    "request_id": "request-1",
+                    "task_class": "coding",
+                    "objective": "quality",
+                    "risk_level": "low",
+                    "exploration_seed": 0
+                },
+                "evaluation": {
+                    "task_class": "coding",
+                    "candidates": [
+                        contextual_candidate("cheap", 0.76, 0.01),
+                        contextual_candidate("strong", 0.92, 0.08)
+                    ],
+                    "pareto_candidate_ids": ["cheap", "strong"],
+                    "recommendations": []
+                },
+                "observations": [],
+                "candidate_plans": {
+                    "cheap": {
+                        "plan": {
+                            "mode": "single",
+                            "endpoint": {
+                                "endpoint_id": "cheap",
+                                "model": "test-model",
+                                "reserved_cost_usd": 0.01
+                            }
+                        },
+                        "limits": {
+                            "max_calls": 1,
+                            "max_cost_usd": 0.1,
+                            "max_elapsed_ms": 1000,
+                            "max_concurrency": 1
+                        }
+                    },
+                    "strong": {
+                        "plan": {
+                            "mode": "single",
+                            "endpoint": {
+                                "endpoint_id": "strong",
+                                "model": "test-model",
+                                "reserved_cost_usd": 0.02
+                            }
+                        },
+                        "limits": {
+                            "max_calls": 1,
+                            "max_cost_usd": 0.1,
+                            "max_elapsed_ms": 1000,
+                            "max_concurrency": 1
+                        }
+                    }
+                }
+            }
+        }),
+    };
+
+    let output = node_executor.execute_node(&input);
+
+    assert_eq!(output.status, "completed");
+    assert_eq!(output.output.as_deref(), Some("strong answer"));
+    assert_eq!(cheap.calls(), 0);
+    assert_eq!(strong.calls(), 1);
+    assert_eq!(order.lock().unwrap().as_slice(), ["strong"]);
 }

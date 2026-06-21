@@ -129,6 +129,18 @@ fn axum_routes() -> Router<AxumApiState> {
             post(dispatch::api_rollback_auto_adjustment).options(cors_preflight),
         )
         .route(
+            "/api/v1/adaptive-fusion/policies",
+            get(dispatch::api_adaptive_fusion_policies).options(cors_preflight),
+        )
+        .route(
+            "/api/v1/adaptive-fusion/policies/promote",
+            post(dispatch::api_promote_adaptive_fusion_policy).options(cors_preflight),
+        )
+        .route(
+            "/api/v1/adaptive-fusion/policies/:adjustment_id/rollback",
+            post(dispatch::api_rollback_adaptive_fusion_policy).options(cors_preflight),
+        )
+        .route(
             "/api/v1/regulator/state",
             get(dispatch::api_regulator_state).options(cors_preflight),
         )

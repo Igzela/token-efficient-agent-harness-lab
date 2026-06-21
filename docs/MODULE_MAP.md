@@ -57,7 +57,7 @@ The Rust `engine/` is the sole runtime implementation. Python is retained as RES
 - V2-3 target repo PR flow: `target_repo_output.rs` owns git/process safety; supervised patch storage owns workspace/artifact/evidence/approval binding; HTTP owns scope/gate/confirmation/audit; SDK/dashboard API contracts mirror the endpoint.
 - V2-4 worker queue: `scheduler.rs` owns worker lifecycle/control; `workflow_runs.rs` owns atomic lease/stale recovery; `run_queue.rs` and `executor_pool.rs` own admission/capacity; `heartbeat.rs` persists aggregate worker health; scheduler HTTP handler and SDKs expose controls.
 - V2-5 product UX: `dashboard/src/components/MissionControl.tsx` owns the primary output workflow; `SupervisedPatch.tsx` owns detailed workspace/artifact operations; `SchedulerStatus.tsx` owns worker control/detail; `dashboard/src/lib/api-client.ts` owns dashboard API bindings.
-- Adaptive Fusion Routing: AF-0 through AF-2 live under `feedback/`; AF-3 execution lives under `provider/adaptive_execution.rs` and the existing workflow tick/`NodeExecutor` boundary; AF-4 must reuse the existing feedback policy/snapshot gates.
+- Adaptive Fusion Routing: AF-0 through AF-2 live under `feedback/`; AF-3 execution lives under `provider/adaptive_execution.rs` and the existing workflow tick/`NodeExecutor` boundary; AF-4 contextual policy lives under `feedback/contextual_policy.rs`, persists active policy/snapshot state through `storage/local_product_store/adaptive_policy.rs`, and exposes guarded operator controls through the existing HTTP dispatch handlers.
 - Safety boundary changes: update `docs/ARCHITECTURE_BOOK.md` before implementation; use archived security docs only as historical reference.
 - Documentation set changes: keep the active docs set limited to the six files listed in `docs/CURRENT_STATUS.md`.
 
@@ -66,7 +66,7 @@ The Rust `engine/` is the sole runtime implementation. Python is retained as RES
 - R-series is sealed at R7. R8 is not approved.
 - Do not create a parallel scheduler, DAG kernel, policy engine, storage layer, or dashboard data model.
 - V2 Real Production Output is approved only through the phase plan in `docs/NEXT_DECISION.md`; do not skip phases or merge half-built runtime authority.
-- Adaptive Fusion Routing is approved only through AF-0 to AF-5 in `docs/NEXT_DECISION.md`; AF-0 through AF-2 remain shadow/offline, while AF-3 live influence requires an explicit authenticated adaptive workflow tick.
+- Adaptive Fusion Routing is approved only through AF-0 to AF-5 in `docs/NEXT_DECISION.md`; AF-0 through AF-2 remain shadow/offline, while AF-3/AF-4 live influence requires an explicit authenticated adaptive workflow tick and explicit bounded candidate plans.
 - Do not add default-on provider API execution, direct target-repository `main` writes, process/container/VM sandbox behavior, hosted/cloud deployment, app-runtime release/deploy controls, provider failover outside AF-3 gates, or unattended autonomous-agent loops without separate explicit approval.
 - Any V2 real capability must include an env/auth gate, audit event, tests, and rollback/kill path before it is usable.
 - Wire-codegen drift guard: `scripts/check_wire_codegen_drift.sh`.

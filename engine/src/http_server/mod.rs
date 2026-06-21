@@ -12,6 +12,7 @@ pub const HTTP_SERVER_SCHEMA_VERSION: &str = "http_server.v1";
 pub const AXUM_API_SCHEMA_VERSION: &str = "axum_api.v1";
 pub const MAX_BODY_SIZE: usize = 1_048_576;
 
+use crate::feedback::ContextualPolicyPromotion;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
@@ -186,6 +187,19 @@ pub struct AutoAdjustmentRollbackRequest {
     pub confirm_auto_adjustment_rollback: Option<bool>,
 }
 
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct AdaptivePolicyPromotionApiRequest {
+    pub actor: Option<String>,
+    pub promotion: ContextualPolicyPromotion,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct AdaptivePolicyRollbackApiRequest {
+    pub actor: Option<String>,
+    pub reason: Option<String>,
+    pub confirm_adaptive_policy_rollback: Option<bool>,
+}
+
 fn path_parameter(name: &str) -> Value {
     json!({
         "name": name,
@@ -211,7 +225,7 @@ fn json_request_body(required: &[&str], properties: Value) -> Value {
 }
 
 pub fn openapi_document() -> serde_json::Value {
-    json!({
+    let mut doc = json!({
         "openapi": "3.1.0",
         "info": {
             "title": "Agent Control Plane Local API",
@@ -1154,7 +1168,55 @@ pub fn openapi_document() -> serde_json::Value {
                 }
             }
         }
-    })
+    });
+    append_adaptive_fusion_openapi_paths(&mut doc);
+    doc
+}
+
+fn append_adaptive_fusion_openapi_paths(doc: &mut Value) {
+    let Some(paths) = doc.get_mut("paths").and_then(Value::as_object_mut) else {
+        return;
+    };
+    paths.insert(
+        "/api/v1/adaptive-fusion/policies".to_string(),
+        json!({
+            "get": {
+                "summary": "List active adaptive fusion policies",
+                "description": "Requires dispatch:read scope. Policies have no live execution authority by themselves and require explicit adaptive candidate plans.",
+                "responses": {"200": {"description": "Adaptive fusion policy list"}}
+            }
+        }),
+    );
+    paths.insert(
+        "/api/v1/adaptive-fusion/policies/promote".to_string(),
+        json!({
+            "post": {
+                "summary": "Promote one adaptive fusion policy",
+                "description": "Requires configured auth, team:admin scope, confirm_adaptive_policy_promotion=true, ACP_ENABLE_ADAPTIVE_POLICY_PROMOTION=1, ACP_ADAPTIVE_POLICY_PROMOTION_ACTIVE=1, minimum evidence, local evidence IDs, and non-regressing metrics.",
+                "requestBody": json_request_body(&["promotion"], json!({
+                    "actor": {"type": "string"},
+                    "promotion": {"type": "object"}
+                })),
+                "responses": {"200": {"description": "Adaptive fusion promotion result"}}
+            }
+        }),
+    );
+    paths.insert(
+        "/api/v1/adaptive-fusion/policies/{adjustment_id}/rollback".to_string(),
+        json!({
+            "post": {
+                "summary": "Rollback one adaptive fusion policy",
+                "description": "Requires configured auth, team:admin scope, confirm_adaptive_policy_rollback=true, and a valid adaptive policy snapshot hash.",
+                "parameters": [path_parameter("adjustment_id")],
+                "requestBody": json_request_body(&["confirm_adaptive_policy_rollback"], json!({
+                    "actor": {"type": "string"},
+                    "reason": {"type": "string"},
+                    "confirm_adaptive_policy_rollback": {"type": "boolean"}
+                })),
+                "responses": {"200": {"description": "Adaptive fusion policy rollback result"}}
+            }
+        }),
+    );
 }
 
 #[cfg(test)]

@@ -10,6 +10,7 @@ use crate::http_server::middleware::{
 };
 use crate::http_server::state::AxumApiState;
 use crate::http_server::{
+    AdaptivePolicyPromotionApiRequest, AdaptivePolicyRollbackApiRequest,
     AutoAdjustmentApplyRequest, AutoAdjustmentRollbackRequest, DispatchApiRequest,
     PolicyProposalActionRequest, PolicyProposalCreateRequest, AXUM_API_SCHEMA_VERSION,
 };
@@ -709,6 +710,122 @@ pub(crate) async fn api_rollback_auto_adjustment(
         .unwrap_or(false);
     let status = result.get("status").and_then(|v| v.as_str()).unwrap_or("");
     structured_events::log_rollback(&adjustment_id, prop_id, rolled_back, status);
+    Ok((cors_headers(), Json(result)))
+}
+
+pub(crate) async fn api_adaptive_fusion_policies(
+    State(state): State<AxumApiState>,
+    headers: HeaderMap,
+    uri: Uri,
+    Extension(request_id): Extension<RequestId>,
+) -> Result<impl IntoResponse, ApiError> {
+    authorize(&state, &headers, "dispatch:read", uri.path(), &request_id.0)?;
+    let store = require_store(&state)?;
+    let policies = store
+        .active_adaptive_fusion_policies()
+        .map_err(internal_error)?;
+    let snapshots = store
+        .adaptive_fusion_policy_snapshots()
+        .map_err(internal_error)?;
+    Ok((
+        cors_headers(),
+        Json(json!({
+            "schema_version": AXUM_API_SCHEMA_VERSION,
+            "policies": policies,
+            "snapshots": snapshots,
+            "live_execution_authority": false,
+            "requires_explicit_adaptive_plan": true,
+        })),
+    ))
+}
+
+pub(crate) async fn api_promote_adaptive_fusion_policy(
+    State(state): State<AxumApiState>,
+    headers: HeaderMap,
+    uri: Uri,
+    Extension(request_id): Extension<RequestId>,
+    Json(request): Json<AdaptivePolicyPromotionApiRequest>,
+) -> Result<impl IntoResponse, ApiError> {
+    require_auth_for_policy_override(&state)?;
+    let context = authorize(&state, &headers, "team:admin", uri.path(), &request_id.0)?;
+    let store = require_store(&state)?;
+    let actor = request
+        .actor
+        .as_deref()
+        .unwrap_or(context.api_key_id.as_str());
+    let mut decision =
+        crate::feedback::ContextualPolicyPromotionGate::from_env().evaluate(&request.promotion);
+    if decision.eligible {
+        let missing_evidence_count = request
+            .promotion
+            .evidence_run_ids
+            .iter()
+            .map(|dispatch_id| store.get_dispatch(dispatch_id))
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(internal_error)?
+            .into_iter()
+            .filter(Option::is_none)
+            .count();
+        if missing_evidence_count > 0 {
+            decision.eligible = false;
+            decision.policy = None;
+            decision
+                .blocked_reasons
+                .push("local adaptive policy evidence is unavailable".to_string());
+            store
+                .apply_adaptive_fusion_policy(&decision, actor)
+                .map_err(bad_policy_request)?;
+            return Err(ApiError::with_code(
+                axum::http::StatusCode::BAD_REQUEST,
+                "adaptive_policy_evidence_missing",
+                format!(
+                    "{missing_evidence_count} adaptive policy evidence dispatches are unavailable"
+                ),
+            ));
+        }
+    }
+    let result = store
+        .apply_adaptive_fusion_policy(&decision, actor)
+        .map_err(bad_policy_request)?;
+    if !decision.eligible {
+        return Err(ApiError::with_code(
+            axum::http::StatusCode::BAD_REQUEST,
+            "adaptive_policy_promotion_blocked",
+            serde_json::to_string(&result).unwrap_or_else(|_| "adaptive policy blocked".into()),
+        ));
+    }
+    Ok((
+        cors_headers(),
+        Json(json!({
+            "schema_version": AXUM_API_SCHEMA_VERSION,
+            "decision": decision,
+            "result": result,
+        })),
+    ))
+}
+
+pub(crate) async fn api_rollback_adaptive_fusion_policy(
+    State(state): State<AxumApiState>,
+    headers: HeaderMap,
+    uri: Uri,
+    Extension(request_id): Extension<RequestId>,
+    AxumPath(adjustment_id): AxumPath<String>,
+    Json(request): Json<AdaptivePolicyRollbackApiRequest>,
+) -> Result<impl IntoResponse, ApiError> {
+    require_auth_for_policy_override(&state)?;
+    let context = authorize(&state, &headers, "team:admin", uri.path(), &request_id.0)?;
+    let store = require_store(&state)?;
+    let actor = request
+        .actor
+        .as_deref()
+        .unwrap_or(context.api_key_id.as_str());
+    let result = store
+        .rollback_adaptive_fusion_policy(
+            &adjustment_id,
+            request.confirm_adaptive_policy_rollback.unwrap_or(false),
+            actor,
+        )
+        .map_err(bad_policy_request)?;
     Ok((cors_headers(), Json(result)))
 }
 

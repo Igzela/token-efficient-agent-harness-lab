@@ -3,7 +3,7 @@
 [![CI](https://github.com/Igzela/token-efficient-agent-harness-lab/actions/workflows/tests.yml/badge.svg)](https://github.com/Igzela/token-efficient-agent-harness-lab/actions/workflows/tests.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Rust](https://img.shields.io/badge/Rust-stable-orange.svg)](https://www.rust-lang.org/)
-[![Tests](https://img.shields.io/badge/tests-1640%20passing-brightgreen.svg)](#running-tests)
+[![Tests](https://img.shields.io/badge/tests-1654%20passing-brightgreen.svg)](#running-tests)
 
 A local deterministic harness and self-hosted macro-orchestrator control plane for studying event-sourced agent workflow infrastructure. Includes a Rust engine with axum API, SQLite state, TypeScript dashboard and SDK, and Python SDK.
 
@@ -120,7 +120,7 @@ cargo test -p engine
 cd sdk/python && PYTHONPATH=src uv run --no-project python -m unittest discover -s tests
 ```
 
-Current result: 1640 Rust tests pass. Python SDK tests run separately under `sdk/python/`.
+Current result: 1654 Rust tests pass. Python SDK tests run separately under `sdk/python/`.
 
 ## How To Run Without Docker
 

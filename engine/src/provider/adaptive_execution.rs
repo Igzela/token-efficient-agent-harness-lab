@@ -9,6 +9,11 @@ use super::audit::ProviderAuditRecorder;
 use super::cost_gate::{check_cost_gates, CostGateConfig};
 use super::redaction::{contains_sensitive_patterns, redact_sensitive_patterns};
 use super::{Provider, ProviderRequest, ProviderResponse};
+use crate::feedback::{
+    contextual_policy_key, AdaptiveExplorationGate, ContextualBanditEngine,
+    ContextualBanditObservation, ContextualPolicyRequest, PromotedAdaptivePolicy,
+    TaskClassEvaluation,
+};
 use crate::node_executor::{NodeExecutionInput, NodeExecutionOutput, NodeExecutor};
 
 pub const ADAPTIVE_EXECUTION_SCHEMA_VERSION: &str = "adaptive_execution.v1";
@@ -24,6 +29,7 @@ const MAX_PROMPT_BYTES: usize = 131_072;
 const MAX_COMPOSED_PROMPT_BYTES: usize = 524_288;
 const MAX_OUTPUT_BYTES: usize = 65_536;
 const MAX_ENDPOINT_ID_BYTES: usize = 160;
+const MAX_CONTEXTUAL_CANDIDATE_PLANS: usize = 8;
 const MIN_FUSION_PANEL_SIZE: usize = 2;
 const MAX_FUSION_PANEL_SIZE: usize = 3;
 const COST_EPSILON: f64 = 1e-9;
@@ -459,6 +465,8 @@ pub struct AdaptiveProviderNodeExecutor {
     gate: AdaptiveExecutionGate,
     cost_gate_config: CostGateConfig,
     daily_cost_usd: f64,
+    contextual_policies: BTreeMap<String, PromotedAdaptivePolicy>,
+    exploration_gate: AdaptiveExplorationGate,
 }
 
 impl AdaptiveProviderNodeExecutor {
@@ -468,12 +476,28 @@ impl AdaptiveProviderNodeExecutor {
             gate,
             cost_gate_config: CostGateConfig::new(None, None),
             daily_cost_usd: 0.0,
+            contextual_policies: BTreeMap::new(),
+            exploration_gate: AdaptiveExplorationGate::from_env(),
         }
     }
 
     pub fn with_cost_gate(mut self, config: CostGateConfig, daily_cost_usd: f64) -> Self {
         self.cost_gate_config = config;
         self.daily_cost_usd = daily_cost_usd;
+        self
+    }
+
+    pub fn with_contextual_policies(
+        mut self,
+        policies: Vec<PromotedAdaptivePolicy>,
+        exploration_gate: AdaptiveExplorationGate,
+    ) -> Self {
+        self.contextual_policies = policies
+            .into_iter()
+            .filter(PromotedAdaptivePolicy::is_valid)
+            .map(|policy| (policy.policy_key.clone(), policy))
+            .collect();
+        self.exploration_gate = exploration_gate;
         self
     }
 
@@ -498,6 +522,15 @@ struct AdaptiveNodeExecutionConfig {
     limits: AdaptiveExecutionLimits,
 }
 
+#[derive(Deserialize)]
+struct AdaptivePolicyNodeExecutionConfig {
+    request: ContextualPolicyRequest,
+    evaluation: TaskClassEvaluation,
+    #[serde(default)]
+    observations: Vec<ContextualBanditObservation>,
+    candidate_plans: BTreeMap<String, AdaptiveNodeExecutionConfig>,
+}
+
 impl NodeExecutor for AdaptiveProviderNodeExecutor {
     fn executor_type_name(&self) -> &str {
         "adaptive_provider"
@@ -505,26 +538,12 @@ impl NodeExecutor for AdaptiveProviderNodeExecutor {
 
     fn execute_node(&self, input: &NodeExecutionInput) -> NodeExecutionOutput {
         let dispatch_ref = Self::dispatch_ref(input);
-        let Some(config) = input.node_metadata.get("adaptive_execution") else {
-            self.executor
-                .audit_node_block(&dispatch_ref, "adaptive_plan_missing", None);
-            return adaptive_node_error(
-                "adaptive_plan_missing",
-                "adaptive execution plan is required",
-                None,
-                None,
-            );
-        };
-        let Ok(config) = serde_json::from_value::<AdaptiveNodeExecutionConfig>(config.clone())
-        else {
-            self.executor
-                .audit_node_block(&dispatch_ref, "adaptive_plan_invalid", None);
-            return adaptive_node_error(
-                "adaptive_plan_invalid",
-                "adaptive execution plan is invalid",
-                None,
-                None,
-            );
+        let config = match self.resolve_node_config(input, &dispatch_ref) {
+            Ok(config) => config,
+            Err((code, message)) => {
+                self.executor.audit_node_block(&dispatch_ref, code, None);
+                return adaptive_node_error(code, message, None, None);
+            }
         };
         let reserved_cost = plan_reserved_cost(&config.plan);
         if let Err(error) =
@@ -596,6 +615,95 @@ impl NodeExecutor for AdaptiveProviderNodeExecutor {
                 )
             }
         }
+    }
+}
+
+impl AdaptiveProviderNodeExecutor {
+    fn resolve_node_config(
+        &self,
+        input: &NodeExecutionInput,
+        dispatch_ref: &str,
+    ) -> Result<AdaptiveNodeExecutionConfig, (&'static str, &'static str)> {
+        if let Some(value) = input.node_metadata.get("adaptive_policy_execution") {
+            return self.resolve_contextual_config(value, dispatch_ref);
+        }
+        let Some(config) = input.node_metadata.get("adaptive_execution") else {
+            return Err((
+                "adaptive_plan_missing",
+                "adaptive execution plan is required",
+            ));
+        };
+        serde_json::from_value::<AdaptiveNodeExecutionConfig>(config.clone()).map_err(|_| {
+            (
+                "adaptive_plan_invalid",
+                "adaptive execution plan is invalid",
+            )
+        })
+    }
+
+    fn resolve_contextual_config(
+        &self,
+        value: &serde_json::Value,
+        dispatch_ref: &str,
+    ) -> Result<AdaptiveNodeExecutionConfig, (&'static str, &'static str)> {
+        let config = serde_json::from_value::<AdaptivePolicyNodeExecutionConfig>(value.clone())
+            .map_err(|_| {
+                (
+                    "adaptive_policy_plan_invalid",
+                    "adaptive contextual execution config is invalid",
+                )
+            })?;
+        if config.candidate_plans.is_empty()
+            || config.candidate_plans.len() > MAX_CONTEXTUAL_CANDIDATE_PLANS
+        {
+            return Err((
+                "adaptive_policy_plan_invalid",
+                "adaptive contextual candidate plan count is invalid",
+            ));
+        }
+        let policy_key =
+            contextual_policy_key(&config.request.task_class, config.request.objective);
+        let policy = self.contextual_policies.get(&policy_key).ok_or((
+            "adaptive_policy_not_promoted",
+            "no promoted adaptive policy matches the task context",
+        ))?;
+        if !config.candidate_plans.contains_key(&policy.candidate_id) {
+            return Err((
+                "adaptive_policy_plan_missing",
+                "promoted candidate has no explicit bounded execution plan",
+            ));
+        }
+        let decision = ContextualBanditEngine::decide(
+            &config.request,
+            &config.evaluation,
+            &config.observations,
+            &self.exploration_gate,
+        )
+        .map_err(|_| {
+            (
+                "adaptive_policy_decision_invalid",
+                "adaptive contextual policy decision is invalid",
+            )
+        })?;
+        let candidate_id = if decision.exploration_assigned {
+            decision.selected_candidate_id.as_str()
+        } else {
+            policy.candidate_id.as_str()
+        };
+        let selected = config.candidate_plans.get(candidate_id).ok_or((
+            "adaptive_policy_plan_missing",
+            "selected adaptive candidate has no explicit bounded execution plan",
+        ))?;
+        self.executor.audit.create_and_record(
+            dispatch_ref,
+            candidate_id,
+            "adaptive_policy_selected",
+            None,
+        );
+        Ok(AdaptiveNodeExecutionConfig {
+            plan: selected.plan.clone(),
+            limits: selected.limits.clone(),
+        })
     }
 }
 

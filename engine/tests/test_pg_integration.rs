@@ -3,6 +3,11 @@
 // CI runs these with a PostgreSQL service container.
 
 #[cfg(feature = "pg-tests")]
+use engine::feedback::{
+    ContextualPolicyPromotion, ContextualPolicyPromotionGate, ObjectiveProfile,
+    CONTEXTUAL_POLICY_PROMOTION_SCHEMA_VERSION,
+};
+#[cfg(feature = "pg-tests")]
 use engine::storage::local_product_store::LocalProductStore;
 #[cfg(feature = "pg-tests")]
 use serde_json::json;
@@ -68,6 +73,46 @@ fn pg_config_upsert_read() {
     let snap = store.config_snapshot().expect("config_snapshot");
     let read_back = snap.get(&key).expect("key should exist in config snapshot");
     assert_eq!(*read_back, value, "round-tripped JSON must match");
+}
+
+#[test]
+#[cfg(feature = "pg-tests")]
+fn pg_adaptive_policy_apply_snapshot_and_rollback_cycle() {
+    let Some(store) = test_store() else { return };
+    let tag = uuid_tag();
+    let promotion = ContextualPolicyPromotion {
+        schema_version: CONTEXTUAL_POLICY_PROMOTION_SCHEMA_VERSION.to_string(),
+        task_class: format!("coding-{tag}"),
+        objective: ObjectiveProfile::Quality,
+        candidate_id: format!("strong-{tag}"),
+        baseline_candidate_id: format!("cheap-{tag}"),
+        sample_count: 30,
+        confidence: 0.9,
+        mean_quality_delta: 0.1,
+        mean_cost_reduction: 0.02,
+        failure_rate_delta: 0.0,
+        evidence_run_ids: (0..30)
+            .map(|index| format!("adaptive-pg-run-{tag}-{index}"))
+            .collect(),
+        risk_level: "low".to_string(),
+        confirm_adaptive_policy_promotion: true,
+    };
+    let verdict = ContextualPolicyPromotionGate::from_flags(true, true).evaluate(&promotion);
+    let applied = store
+        .apply_adaptive_fusion_policy(&verdict, "pg-test")
+        .expect("apply adaptive policy");
+    assert_eq!(applied["applied"], true);
+    let adjustment_id = applied["adjustment_id"].as_str().unwrap();
+    assert!(store
+        .active_adaptive_fusion_policies()
+        .expect("active policies")
+        .iter()
+        .any(|policy| policy.task_class == promotion.task_class));
+
+    let rollback = store
+        .rollback_adaptive_fusion_policy(adjustment_id, true, "pg-test")
+        .expect("rollback adaptive policy");
+    assert_eq!(rollback["rolled_back"], true);
 }
 
 #[test]

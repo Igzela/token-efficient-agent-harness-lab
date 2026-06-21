@@ -1,6 +1,7 @@
 pub mod adaptive_fusion;
 pub mod auto_adjustment_guard;
 pub mod auto_adjustment_policy;
+pub mod contextual_policy;
 pub mod endpoint_registry;
 pub mod offline_evaluation;
 pub mod outcome_attributor;
@@ -24,6 +25,13 @@ pub use auto_adjustment_guard::{
 pub use auto_adjustment_policy::{
     AutoAdjustmentEvidenceSummary, AutoAdjustmentPolicy, AutoAdjustmentPolicyDecision,
     AUTO_ADJUSTMENT_POLICY_DECISION_SCHEMA_VERSION, STRICT_AUTO_ADJUSTMENT_CONFIDENCE,
+};
+pub use contextual_policy::{
+    contextual_policy_key, AdaptiveExplorationGate, ContextualBanditEngine,
+    ContextualBanditObservation, ContextualPolicyDecision, ContextualPolicyError,
+    ContextualPolicyPromotion, ContextualPolicyPromotionGate, ContextualPolicyPromotionVerdict,
+    ContextualPolicyRequest, PromotedAdaptivePolicy, CONTEXTUAL_POLICY_DECISION_SCHEMA_VERSION,
+    CONTEXTUAL_POLICY_PROMOTION_SCHEMA_VERSION, CONTEXTUAL_POLICY_SCHEMA_VERSION,
 };
 pub use endpoint_registry::{
     CredentialReference, EndpointHealth, EndpointPricing, ModelEndpointRegistry,

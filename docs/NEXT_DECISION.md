@@ -231,7 +231,16 @@ AF-3 implementation status:
 - Hard limits cover at most 8 calls, $1,000 admitted cost, 300 seconds, 1,000,000 total reserved tokens, panel size 2-3, and concurrency 1. Existing per-dispatch/daily cost gates also apply; workflow-level retries are rejected because the plan owns fallback.
 - Endpoint IDs are fixed to configured provider/model bindings. Calls and terminal outcomes are audited without prompts or raw outputs; outputs are redacted/capped; provider cost/token/identity overruns stop the plan. `ACP_ADAPTIVE_FUSION_KILL_SWITCH=1` blocks startup execution and the shared runtime kill handle stops subsequent calls.
 - AF-3 does not automatically apply AF-0/AF-2 recommendations, explore traffic, promote policy, persist learned policy, or add unattended workers.
-- AF-4 and AF-5 remain intentionally unimplemented.
+
+AF-4 implementation status:
+
+- Implemented on `codex/adaptive-fusion-af4`, stacked on AF-3.
+- Contextual scoring lives in `feedback/` and uses task class plus `efficient`/`quality` objective profiles, normalized outcome metrics, human score blending, and sequence decay for non-stationary behavior.
+- Promotion requires `ACP_ENABLE_ADAPTIVE_POLICY_PROMOTION=1`, `ACP_ADAPTIVE_POLICY_PROMOTION_ACTIVE=1`, explicit human confirmation, at least 30 samples, confidence >= 0.85, no quality/cost/failure regression, low/medium risk, unique local evidence run IDs, and configured auth with `team:admin` on the HTTP API.
+- Active policies and rollback snapshots are persisted in existing `local_config` keys with hash validation; no database migration or new storage kernel is added. Rollback requires confirmation and a matching active snapshot.
+- Exploration requires `ACP_ENABLE_ADAPTIVE_EXPLORATION=1` plus `ACP_ADAPTIVE_EXPLORATION_ACTIVE=1`, is killed by `ACP_ADAPTIVE_EXPLORATION_KILL_SWITCH=1`, is capped at 5%, and excludes high/critical-risk contexts.
+- Promoted policies do not carry live execution authority. They can affect `adaptive_provider` only when a workflow node supplies `adaptive_policy_execution` with explicit candidate plans that each still pass AF-3 provider/model/call/token/cost/time/concurrency gates.
+- AF-5 remains intentionally unimplemented.
 
 Design references:
 
