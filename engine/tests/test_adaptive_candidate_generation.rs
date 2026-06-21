@@ -329,7 +329,7 @@ fn fusion_role_binding() {
 }
 
 #[test]
-fn candidate_cap_respects_max_candidates_config() {
+fn max_candidates_caps_total_emitted_set() {
     let eps: Vec<_> = (0..20)
         .map(|i| {
             spec(
@@ -357,15 +357,58 @@ fn candidate_cap_respects_max_candidates_config() {
     cfg.max_fallback_endpoints = 3;
     let result = AdaptiveCandidateGenerator::generate(&req, &eps, &cfg, "snap-1");
 
+    assert_eq!(
+        result.candidates.len(),
+        3,
+        "max_candidates caps total candidates"
+    );
     let singles: Vec<&AdaptiveCandidate> = result
         .candidates
         .iter()
         .filter(|c| c.candidate_kind == CandidateKind::Single)
         .collect();
-    assert_eq!(singles.len(), 3, "single candidates capped at 3");
+    assert_eq!(
+        singles.len(),
+        3,
+        "with cap=3 and 20 endpoints, 3 singles survive truncation"
+    );
     assert_eq!(singles[0].member_endpoint_ids[0], "ep-0");
     assert_eq!(singles[1].member_endpoint_ids[0], "ep-1");
     assert_eq!(singles[2].member_endpoint_ids[0], "ep-10");
+}
+
+#[test]
+fn max_candidates_caps_below_single_count() {
+    let eps: Vec<_> = (0..5)
+        .map(|i| {
+            spec(
+                &format!("ep-{i}"),
+                true,
+                "healthy",
+                0.8,
+                vec!["code".into()],
+                0.01,
+                0.03,
+            )
+        })
+        .collect();
+    let req = request(
+        "coding",
+        "efficient",
+        "low",
+        vec!["code".into()],
+        1.0,
+        100_000,
+        10_000,
+    );
+    let mut cfg = default_config();
+    cfg.max_candidates = 2;
+    let result = AdaptiveCandidateGenerator::generate(&req, &eps, &cfg, "snap-1");
+
+    assert_eq!(result.candidates.len(), 2, "truncated to max_candidates=2");
+    for c in &result.candidates {
+        assert_eq!(c.candidate_kind, CandidateKind::Single);
+    }
 }
 
 #[test]
@@ -468,10 +511,19 @@ fn unhealthy_endpoint_rejected() {
 }
 
 #[test]
-fn duplicate_endpoint_rejected() {
+fn duplicate_endpoint_all_occurrences_rejected() {
     let eps = vec![
         spec("dup", true, "healthy", 0.9, vec!["code".into()], 0.01, 0.03),
         spec("dup", true, "healthy", 0.9, vec!["code".into()], 0.01, 0.03),
+        spec(
+            "other",
+            true,
+            "healthy",
+            0.8,
+            vec!["code".into()],
+            0.005,
+            0.015,
+        ),
     ];
     let req = request(
         "coding",
@@ -488,8 +540,58 @@ fn duplicate_endpoint_rejected() {
         result
             .rejected_endpoints
             .iter()
-            .any(|r| r.endpoint_id == "dup" && r.reasons.contains(&"duplicate_endpoint_id".into())),
-        "duplicate endpoint should be rejected (second occurrence)"
+            .filter(|r| r.endpoint_id == "dup")
+            .count()
+            == 2,
+        "both duplicate endpoint occurrences should be rejected"
+    );
+    assert!(
+        result
+            .rejected_endpoints
+            .iter()
+            .all(|r| r.endpoint_id != "dup" || r.reasons.contains(&"duplicate_endpoint_id".into())),
+        "every 'dup' rejection must include duplicate_endpoint_id reason"
+    );
+}
+
+#[test]
+fn no_candidate_contains_duplicated_endpoint_id() {
+    let eps = vec![
+        spec("dup", true, "healthy", 0.9, vec!["code".into()], 0.01, 0.03),
+        spec("dup", true, "healthy", 0.9, vec!["code".into()], 0.01, 0.03),
+        spec(
+            "other",
+            true,
+            "healthy",
+            0.8,
+            vec!["code".into()],
+            0.005,
+            0.015,
+        ),
+    ];
+    let req = request(
+        "coding",
+        "efficient",
+        "low",
+        vec!["code".into()],
+        1.0,
+        100_000,
+        10_000,
+    );
+    let result = AdaptiveCandidateGenerator::generate(&req, &eps, &default_config(), "snap-1");
+
+    for candidate in &result.candidates {
+        assert!(
+            !candidate.member_endpoint_ids.contains(&"dup".into()),
+            "no candidate should contain a duplicated endpoint_id"
+        );
+    }
+    assert!(
+        result
+            .candidates
+            .iter()
+            .any(|c| c.member_endpoint_ids.contains(&"other".into())),
+        "unique endpoint 'other' should still be eligible"
     );
 }
 
@@ -813,5 +915,190 @@ fn fallback_not_generated_with_single_endpoint() {
         singles.len(),
         1,
         "single candidate still generated with 1 endpoint"
+    );
+}
+
+#[test]
+fn fallback_supressed_when_aggregate_exceeds_cost_cap() {
+    // Each single endpoint: (2000/1000)*0.01 + (1000/1000)*0.03 = 0.05 < 0.08
+    // Fallback aggregate (3): 0.05+0.04+0.025 = 0.115 > 0.08
+    let eps = vec![
+        spec(
+            "ep-a",
+            true,
+            "healthy",
+            0.9,
+            vec!["code".into()],
+            0.01,
+            0.03,
+        ),
+        spec(
+            "ep-b",
+            true,
+            "healthy",
+            0.8,
+            vec!["code".into()],
+            0.008,
+            0.024,
+        ),
+        spec(
+            "ep-c",
+            true,
+            "healthy",
+            0.7,
+            vec!["code".into()],
+            0.005,
+            0.015,
+        ),
+    ];
+    let req = request(
+        "coding",
+        "efficient",
+        "low",
+        vec!["code".into()],
+        0.08,
+        100_000,
+        10_000,
+    );
+    let result = AdaptiveCandidateGenerator::generate(&req, &eps, &default_config(), "snap-1");
+
+    assert!(
+        !result
+            .candidates
+            .iter()
+            .any(|c| c.candidate_kind == CandidateKind::OrderedFallback),
+        "fallback suppressed when aggregate cost exceeds max_estimated_cost_usd"
+    );
+    assert!(
+        result
+            .candidates
+            .iter()
+            .any(|c| c.candidate_kind == CandidateKind::Single),
+        "individual under-budget singles should be emitted"
+    );
+}
+
+#[test]
+fn fusion_supressed_when_aggregate_exceeds_cost_cap() {
+    // Each single endpoint: 0.05 < 0.08
+    // Fusion aggregate (5 call sites): well above 0.08
+    let eps = vec![
+        spec(
+            "ep-a",
+            true,
+            "healthy",
+            0.9,
+            vec!["code".into()],
+            0.01,
+            0.03,
+        ),
+        spec(
+            "ep-b",
+            true,
+            "healthy",
+            0.8,
+            vec!["code".into()],
+            0.008,
+            0.024,
+        ),
+        spec(
+            "ep-c",
+            true,
+            "healthy",
+            0.7,
+            vec!["code".into()],
+            0.005,
+            0.015,
+        ),
+    ];
+    let req = request(
+        "coding",
+        "quality",
+        "low",
+        vec!["code".into()],
+        0.08,
+        100_000,
+        10_000,
+    );
+    let result = AdaptiveCandidateGenerator::generate(&req, &eps, &default_config(), "snap-1");
+
+    assert!(
+        !result
+            .candidates
+            .iter()
+            .any(|c| c.candidate_kind == CandidateKind::Fusion),
+        "fusion suppressed when aggregate cost exceeds max_estimated_cost_usd"
+    );
+    assert!(
+        result
+            .candidates
+            .iter()
+            .any(|c| c.candidate_kind == CandidateKind::Single),
+        "individual under-budget singles should be emitted"
+    );
+}
+
+#[test]
+fn fallback_supressed_when_aggregate_exceeds_token_cap() {
+    // Single: 3000 tokens each < cap 6000
+    // Fallback (3): 9000 > 6000
+    let eps = vec![
+        spec(
+            "ep-a",
+            true,
+            "healthy",
+            0.9,
+            vec!["code".into()],
+            0.01,
+            0.03,
+        ),
+        spec(
+            "ep-b",
+            true,
+            "healthy",
+            0.8,
+            vec!["code".into()],
+            0.005,
+            0.015,
+        ),
+        spec(
+            "ep-c",
+            true,
+            "healthy",
+            0.7,
+            vec!["code".into()],
+            0.001,
+            0.003,
+        ),
+    ];
+    let config = AdaptiveCandidateConfig {
+        estimated_input_tokens: 2000,
+        estimated_output_tokens: 1000,
+        ..default_config()
+    };
+    let req = request(
+        "coding",
+        "efficient",
+        "low",
+        vec!["code".into()],
+        1.0,
+        6000,
+        10_000,
+    );
+    let result = AdaptiveCandidateGenerator::generate(&req, &eps, &config, "snap-1");
+
+    assert!(
+        !result
+            .candidates
+            .iter()
+            .any(|c| c.candidate_kind == CandidateKind::OrderedFallback),
+        "fallback suppressed when aggregate tokens exceed max_estimated_tokens"
+    );
+    assert!(
+        result
+            .candidates
+            .iter()
+            .any(|c| c.candidate_kind == CandidateKind::Single),
+        "individual under-token-cap singles should be emitted"
     );
 }

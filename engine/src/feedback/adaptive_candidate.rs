@@ -1,4 +1,5 @@
 use std::cmp::Ordering;
+use std::collections::{BTreeMap, BTreeSet};
 
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -199,31 +200,34 @@ impl AdaptiveCandidateGenerator {
                 .map(|b| b.estimated_input_tokens + b.estimated_output_tokens)
                 .sum();
             let total_latency: u64 = bindings.iter().map(|b| b.estimated_latency_ms).sum();
-            let hash_input = json!({
-                "schema_version": ADAPTIVE_CANDIDATE_SCHEMA_VERSION,
-                "candidate_kind": "ordered_fallback",
-                "member_endpoint_ids": member_ids,
-                "task_class": request.task_class,
-                "objective": request.objective,
-                "registry_snapshot_hash": registry_snapshot_hash,
-            });
-            let hash = stable_hash(&hash_input);
-            candidates.push(AdaptiveCandidate {
-                schema_version: ADAPTIVE_CANDIDATE_SCHEMA_VERSION.to_string(),
-                candidate_id: format!("fallback-{}", &hash[..16]),
-                candidate_hash: hash,
-                task_class: request.task_class.clone(),
-                objective: request.objective.clone(),
-                candidate_kind: CandidateKind::OrderedFallback,
-                member_endpoint_ids: member_ids,
-                endpoint_bindings: bindings,
-                estimated_cost_usd: total_cost,
-                estimated_input_tokens: total_tokens,
-                estimated_output_tokens: 0,
-                estimated_latency_ms: total_latency,
-                required_capabilities: request.required_capabilities.clone(),
-                registry_snapshot_hash: registry_snapshot_hash.to_string(),
-            });
+
+            if !exceeds_candidate_caps(total_cost, total_tokens, total_latency, request) {
+                let hash_input = json!({
+                    "schema_version": ADAPTIVE_CANDIDATE_SCHEMA_VERSION,
+                    "candidate_kind": "ordered_fallback",
+                    "member_endpoint_ids": member_ids,
+                    "task_class": request.task_class,
+                    "objective": request.objective,
+                    "registry_snapshot_hash": registry_snapshot_hash,
+                });
+                let hash = stable_hash(&hash_input);
+                candidates.push(AdaptiveCandidate {
+                    schema_version: ADAPTIVE_CANDIDATE_SCHEMA_VERSION.to_string(),
+                    candidate_id: format!("fallback-{}", &hash[..16]),
+                    candidate_hash: hash,
+                    task_class: request.task_class.clone(),
+                    objective: request.objective.clone(),
+                    candidate_kind: CandidateKind::OrderedFallback,
+                    member_endpoint_ids: member_ids,
+                    endpoint_bindings: bindings,
+                    estimated_cost_usd: total_cost,
+                    estimated_input_tokens: total_tokens,
+                    estimated_output_tokens: 0,
+                    estimated_latency_ms: total_latency,
+                    required_capabilities: request.required_capabilities.clone(),
+                    registry_snapshot_hash: registry_snapshot_hash.to_string(),
+                });
+            }
         }
 
         if eligible.len() >= MIN_FUSION_ENDPOINTS {
@@ -300,35 +304,39 @@ impl AdaptiveCandidateGenerator {
                 + endpoint_estimated_latency(judge_ep)
                 + endpoint_estimated_latency(synth_ep);
 
-            let hash_input = json!({
-                "schema_version": ADAPTIVE_CANDIDATE_SCHEMA_VERSION,
-                "candidate_kind": "fusion",
-                "member_endpoint_ids": member_ids,
-                "panel_endpoint_ids": panel_eps.iter().map(|ep| ep.endpoint_id.clone()).collect::<Vec<_>>(),
-                "judge_endpoint_id": judge_ep.endpoint_id,
-                "synthesizer_endpoint_id": synth_ep.endpoint_id,
-                "task_class": request.task_class,
-                "objective": request.objective,
-                "registry_snapshot_hash": registry_snapshot_hash,
-            });
-            let hash = stable_hash(&hash_input);
-            candidates.push(AdaptiveCandidate {
-                schema_version: ADAPTIVE_CANDIDATE_SCHEMA_VERSION.to_string(),
-                candidate_id: format!("fusion-{}", &hash[..16]),
-                candidate_hash: hash,
-                task_class: request.task_class.clone(),
-                objective: request.objective.clone(),
-                candidate_kind: CandidateKind::Fusion,
-                member_endpoint_ids: member_ids,
-                endpoint_bindings: all_bindings,
-                estimated_cost_usd: total_cost,
-                estimated_input_tokens: total_tokens,
-                estimated_output_tokens: 0,
-                estimated_latency_ms: total_latency,
-                required_capabilities: request.required_capabilities.clone(),
-                registry_snapshot_hash: registry_snapshot_hash.to_string(),
-            });
+            if !exceeds_candidate_caps(total_cost, total_tokens, total_latency, request) {
+                let hash_input = json!({
+                    "schema_version": ADAPTIVE_CANDIDATE_SCHEMA_VERSION,
+                    "candidate_kind": "fusion",
+                    "member_endpoint_ids": member_ids,
+                    "panel_endpoint_ids": panel_eps.iter().map(|ep| ep.endpoint_id.clone()).collect::<Vec<_>>(),
+                    "judge_endpoint_id": judge_ep.endpoint_id,
+                    "synthesizer_endpoint_id": synth_ep.endpoint_id,
+                    "task_class": request.task_class,
+                    "objective": request.objective,
+                    "registry_snapshot_hash": registry_snapshot_hash,
+                });
+                let hash = stable_hash(&hash_input);
+                candidates.push(AdaptiveCandidate {
+                    schema_version: ADAPTIVE_CANDIDATE_SCHEMA_VERSION.to_string(),
+                    candidate_id: format!("fusion-{}", &hash[..16]),
+                    candidate_hash: hash,
+                    task_class: request.task_class.clone(),
+                    objective: request.objective.clone(),
+                    candidate_kind: CandidateKind::Fusion,
+                    member_endpoint_ids: member_ids,
+                    endpoint_bindings: all_bindings,
+                    estimated_cost_usd: total_cost,
+                    estimated_input_tokens: total_tokens,
+                    estimated_output_tokens: 0,
+                    estimated_latency_ms: total_latency,
+                    required_capabilities: request.required_capabilities.clone(),
+                    registry_snapshot_hash: registry_snapshot_hash.to_string(),
+                });
+            }
         }
+
+        candidates.truncate(config.max_candidates);
 
         AdaptiveCandidateSet {
             schema_version: ADAPTIVE_CANDIDATE_SET_SCHEMA_VERSION.to_string(),
@@ -340,6 +348,24 @@ impl AdaptiveCandidateGenerator {
     }
 }
 
+fn exceeds_candidate_caps(
+    total_cost: f64,
+    total_tokens: u64,
+    total_latency: u64,
+    request: &CandidateGenerationRequest,
+) -> bool {
+    if total_cost > request.max_estimated_cost_usd {
+        return true;
+    }
+    if request.max_estimated_tokens > 0 && total_tokens > request.max_estimated_tokens {
+        return true;
+    }
+    if request.max_estimated_latency_ms > 0 && total_latency > request.max_estimated_latency_ms {
+        return true;
+    }
+    false
+}
+
 fn filter_endpoints(
     request: &CandidateGenerationRequest,
     endpoints: &[ModelEndpointSpec],
@@ -348,10 +374,25 @@ fn filter_endpoints(
     let mut eligible = Vec::new();
     let mut rejected = Vec::new();
 
-    let mut seen_ids = std::collections::BTreeSet::new();
+    let mut id_counts = BTreeMap::new();
+    for ep in endpoints {
+        *id_counts.entry(ep.endpoint_id.clone()).or_insert(0usize) += 1;
+    }
+    let duplicate_ids: BTreeSet<String> = id_counts
+        .into_iter()
+        .filter(|(_, count)| *count > 1)
+        .map(|(id, _)| id)
+        .collect();
 
     for ep in endpoints {
         let mut reasons = Vec::new();
+
+        if duplicate_ids.contains(&ep.endpoint_id) {
+            let reason = "duplicate_endpoint_id".to_string();
+            if !reasons.contains(&reason) {
+                reasons.push(reason);
+            }
+        }
 
         if !ep.enabled {
             reasons.push("endpoint_disabled".to_string());
@@ -376,10 +417,6 @@ fn filter_endpoints(
             if !ep.capabilities.iter().any(|c| c == capability) {
                 reasons.push(format!("missing_capability:{capability}"));
             }
-        }
-
-        if !seen_ids.insert(ep.endpoint_id.clone()) {
-            reasons.push("duplicate_endpoint_id".to_string());
         }
 
         if !request.max_estimated_cost_usd.is_finite() || request.max_estimated_cost_usd < 0.0 {
@@ -458,593 +495,4 @@ fn endpoint_utility(
     };
 
     quality_score * quality_weight + cost_score * cost_weight
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::feedback::endpoint_registry::{EndpointHealth, EndpointPricing};
-
-    fn spec(
-        endpoint_id: &str,
-        enabled: bool,
-        health_status: &str,
-        health_score: f64,
-        capabilities: Vec<String>,
-        input_cost: f64,
-        output_cost: f64,
-    ) -> ModelEndpointSpec {
-        ModelEndpointSpec {
-            schema_version: crate::feedback::endpoint_registry::ENDPOINT_REGISTRY_SCHEMA_VERSION
-                .to_string(),
-            endpoint_id: endpoint_id.to_string(),
-            provider_id: format!("provider-{endpoint_id}"),
-            model_id: format!("model-{endpoint_id}"),
-            enabled,
-            capabilities,
-            context_window_tokens: 100_000,
-            supports_tools: true,
-            supports_parallel_tools: false,
-            pricing: EndpointPricing {
-                input_cost_per_1k_usd: input_cost,
-                output_cost_per_1k_usd: output_cost,
-                cache_read_cost_per_1k_usd: None,
-                cache_write_cost_per_1k_usd: None,
-            },
-            health: EndpointHealth {
-                status: health_status.to_string(),
-                score: health_score,
-                observed_at: None,
-            },
-            credential_reference: None,
-        }
-    }
-
-    fn request(
-        task_class: &str,
-        objective: &str,
-        risk_level: &str,
-        capabilities: Vec<String>,
-        max_cost: f64,
-        max_tokens: u64,
-        max_latency: u64,
-    ) -> CandidateGenerationRequest {
-        CandidateGenerationRequest {
-            task_class: task_class.to_string(),
-            objective: objective.to_string(),
-            risk_level: risk_level.to_string(),
-            required_capabilities: capabilities,
-            max_estimated_cost_usd: max_cost,
-            max_estimated_tokens: max_tokens,
-            max_estimated_latency_ms: max_latency,
-        }
-    }
-
-    fn config() -> AdaptiveCandidateConfig {
-        AdaptiveCandidateConfig::default()
-    }
-
-    #[test]
-    fn deterministic_ids_and_hashes() {
-        let eps = vec![
-            spec(
-                "ep-a",
-                true,
-                "healthy",
-                0.9,
-                vec!["code".to_string()],
-                0.01,
-                0.03,
-            ),
-            spec(
-                "ep-b",
-                true,
-                "healthy",
-                0.8,
-                vec!["code".to_string()],
-                0.005,
-                0.015,
-            ),
-        ];
-        let req = request(
-            "coding",
-            "efficient",
-            "low",
-            vec!["code".to_string()],
-            1.0,
-            100_000,
-            10_000,
-        );
-
-        let first =
-            AdaptiveCandidateGenerator::generate(&req, &eps, &config(), "snapshot-hash-001");
-        let second =
-            AdaptiveCandidateGenerator::generate(&req, &eps, &config(), "snapshot-hash-001");
-
-        assert_eq!(first.candidates.len(), second.candidates.len());
-        for (a, b) in first.candidates.iter().zip(second.candidates.iter()) {
-            assert_eq!(a.candidate_id, b.candidate_id);
-            assert_eq!(a.candidate_hash, b.candidate_hash);
-            assert_eq!(a.estimated_cost_usd, b.estimated_cost_usd);
-        }
-    }
-
-    #[test]
-    fn generates_single_candidates() {
-        let eps = vec![
-            spec(
-                "ep-a",
-                true,
-                "healthy",
-                0.9,
-                vec!["code".to_string()],
-                0.01,
-                0.03,
-            ),
-            spec(
-                "ep-b",
-                true,
-                "healthy",
-                0.8,
-                vec!["code".to_string()],
-                0.005,
-                0.015,
-            ),
-        ];
-        let req = request(
-            "coding",
-            "efficient",
-            "low",
-            vec!["code".to_string()],
-            1.0,
-            100_000,
-            10_000,
-        );
-        let result = AdaptiveCandidateGenerator::generate(&req, &eps, &config(), "snap-1");
-
-        let singles: Vec<_> = result
-            .candidates
-            .iter()
-            .filter(|c| c.candidate_kind == CandidateKind::Single)
-            .collect();
-        assert_eq!(singles.len(), 2);
-        assert_eq!(singles[0].member_endpoint_ids.len(), 1);
-        assert_eq!(singles[1].member_endpoint_ids.len(), 1);
-        assert_eq!(singles[0].member_endpoint_ids[0], "ep-a");
-        assert_eq!(singles[1].member_endpoint_ids[0], "ep-b");
-    }
-
-    #[test]
-    fn generates_ordered_fallback_with_correct_ordering() {
-        let eps = vec![
-            spec(
-                "ep-a",
-                true,
-                "healthy",
-                0.9,
-                vec!["code".to_string()],
-                0.01,
-                0.03,
-            ),
-            spec(
-                "ep-b",
-                true,
-                "healthy",
-                0.8,
-                vec!["code".to_string()],
-                0.005,
-                0.015,
-            ),
-            spec(
-                "ep-c",
-                true,
-                "healthy",
-                0.7,
-                vec!["code".to_string()],
-                0.001,
-                0.003,
-            ),
-        ];
-        let req = request(
-            "coding",
-            "efficient",
-            "low",
-            vec!["code".to_string()],
-            1.0,
-            100_000,
-            10_000,
-        );
-        let result = AdaptiveCandidateGenerator::generate(&req, &eps, &config(), "snap-1");
-
-        let fallbacks: Vec<_> = result
-            .candidates
-            .iter()
-            .filter(|c| c.candidate_kind == CandidateKind::OrderedFallback)
-            .collect();
-        assert_eq!(fallbacks.len(), 1);
-        let fb = &fallbacks[0];
-        assert!(fb.member_endpoint_ids.len() >= 2);
-        assert_eq!(fb.member_endpoint_ids[0], "ep-a");
-        assert_eq!(fb.member_endpoint_ids[1], "ep-b");
-        assert_eq!(fb.endpoint_bindings.len(), fb.member_endpoint_ids.len());
-        for (binding, id) in fb
-            .endpoint_bindings
-            .iter()
-            .zip(fb.member_endpoint_ids.iter())
-        {
-            assert_eq!(&binding.endpoint_id, id);
-        }
-    }
-
-    #[test]
-    fn generates_fusion_with_role_bindings() {
-        let eps = vec![
-            spec(
-                "ep-a",
-                true,
-                "healthy",
-                0.9,
-                vec!["code".to_string()],
-                0.01,
-                0.03,
-            ),
-            spec(
-                "ep-b",
-                true,
-                "healthy",
-                0.8,
-                vec!["code".to_string()],
-                0.005,
-                0.015,
-            ),
-            spec(
-                "ep-c",
-                true,
-                "healthy",
-                0.7,
-                vec!["code".to_string()],
-                0.001,
-                0.003,
-            ),
-        ];
-        let req = request(
-            "coding",
-            "quality",
-            "low",
-            vec!["code".to_string()],
-            1.0,
-            100_000,
-            10_000,
-        );
-        let result = AdaptiveCandidateGenerator::generate(&req, &eps, &config(), "snap-1");
-
-        let fusions: Vec<_> = result
-            .candidates
-            .iter()
-            .filter(|c| c.candidate_kind == CandidateKind::Fusion)
-            .collect();
-        assert_eq!(fusions.len(), 1);
-        let fusion = &fusions[0];
-        assert!(fusion.member_endpoint_ids.len() >= 3);
-
-        let panel_roles: Vec<_> = fusion
-            .endpoint_bindings
-            .iter()
-            .filter(|b| b.fusion_role == Some(FusionRole::Panel))
-            .collect();
-        let judge_roles: Vec<_> = fusion
-            .endpoint_bindings
-            .iter()
-            .filter(|b| b.fusion_role == Some(FusionRole::Judge))
-            .collect();
-        let synth_roles: Vec<_> = fusion
-            .endpoint_bindings
-            .iter()
-            .filter(|b| b.fusion_role == Some(FusionRole::Synthesizer))
-            .collect();
-
-        assert!(panel_roles.len() >= 2);
-        assert_eq!(judge_roles.len(), 1);
-        assert_eq!(synth_roles.len(), 1);
-    }
-
-    #[test]
-    fn candidate_cap_respects_config() {
-        let eps: Vec<_> = (0..10)
-            .map(|i| {
-                spec(
-                    &format!("ep-{i}"),
-                    true,
-                    "healthy",
-                    0.8,
-                    vec!["code".to_string()],
-                    0.01,
-                    0.03,
-                )
-            })
-            .collect();
-        let req = request(
-            "coding",
-            "efficient",
-            "low",
-            vec!["code".to_string()],
-            1.0,
-            100_000,
-            10_000,
-        );
-        let mut limited = config();
-        limited.max_candidates = 3;
-        limited.max_fallback_endpoints = 3;
-        let result = AdaptiveCandidateGenerator::generate(&req, &eps, &limited, "snap-1");
-
-        let singles: Vec<_> = result
-            .candidates
-            .iter()
-            .filter(|c| c.candidate_kind == CandidateKind::Single)
-            .collect();
-        assert_eq!(singles.len(), 3);
-        assert!(result.candidates.len() <= 10);
-    }
-
-    #[test]
-    fn rejects_disabled_endpoints() {
-        let eps = vec![
-            spec(
-                "ep-a",
-                false,
-                "healthy",
-                0.9,
-                vec!["code".to_string()],
-                0.01,
-                0.03,
-            ),
-            spec(
-                "ep-b",
-                true,
-                "healthy",
-                0.8,
-                vec!["code".to_string()],
-                0.005,
-                0.015,
-            ),
-        ];
-        let req = request(
-            "coding",
-            "efficient",
-            "low",
-            vec!["code".to_string()],
-            1.0,
-            100_000,
-            10_000,
-        );
-        let result = AdaptiveCandidateGenerator::generate(&req, &eps, &config(), "snap-1");
-
-        assert!(result.rejected_endpoints.iter().any(
-            |r| r.endpoint_id == "ep-a" && r.reasons.contains(&"endpoint_disabled".to_string())
-        ));
-        assert!(result
-            .candidates
-            .iter()
-            .any(|c| c.member_endpoint_ids.contains(&"ep-b".to_string())));
-    }
-
-    #[test]
-    fn rejects_unhealthy_endpoints() {
-        let eps = vec![
-            spec(
-                "ep-a",
-                true,
-                "unavailable",
-                0.0,
-                vec!["code".to_string()],
-                0.01,
-                0.03,
-            ),
-            spec(
-                "ep-b",
-                true,
-                "healthy",
-                0.8,
-                vec!["code".to_string()],
-                0.005,
-                0.015,
-            ),
-        ];
-        let req = request(
-            "coding",
-            "efficient",
-            "low",
-            vec!["code".to_string()],
-            1.0,
-            100_000,
-            10_000,
-        );
-        let result = AdaptiveCandidateGenerator::generate(&req, &eps, &config(), "snap-1");
-
-        assert!(result
-            .rejected_endpoints
-            .iter()
-            .any(|r| r.endpoint_id == "ep-a"
-                && r.reasons.contains(&"endpoint_unavailable".to_string())));
-        assert!(result
-            .candidates
-            .iter()
-            .any(|c| c.member_endpoint_ids.contains(&"ep-b".to_string())));
-    }
-
-    #[test]
-    fn rejects_duplicate_endpoints() {
-        let eps = vec![
-            spec(
-                "ep-a",
-                true,
-                "healthy",
-                0.9,
-                vec!["code".to_string()],
-                0.01,
-                0.03,
-            ),
-            spec(
-                "ep-a",
-                true,
-                "healthy",
-                0.9,
-                vec!["code".to_string()],
-                0.01,
-                0.03,
-            ),
-        ];
-        let req = request(
-            "coding",
-            "efficient",
-            "low",
-            vec!["code".to_string()],
-            1.0,
-            100_000,
-            10_000,
-        );
-        let result = AdaptiveCandidateGenerator::generate(&req, &eps, &config(), "snap-1");
-
-        assert!(result
-            .rejected_endpoints
-            .iter()
-            .any(|r| r.endpoint_id == "ep-a"
-                && r.reasons.contains(&"duplicate_endpoint_id".to_string())));
-    }
-
-    #[test]
-    fn rejects_missing_capability() {
-        let eps = vec![spec(
-            "ep-a",
-            true,
-            "healthy",
-            0.9,
-            vec!["code".to_string()],
-            0.01,
-            0.03,
-        )];
-        let req = request(
-            "coding",
-            "efficient",
-            "low",
-            vec!["tools".to_string()],
-            1.0,
-            100_000,
-            10_000,
-        );
-        let result = AdaptiveCandidateGenerator::generate(&req, &eps, &config(), "snap-1");
-
-        assert!(result
-            .rejected_endpoints
-            .iter()
-            .any(|r| r.endpoint_id == "ep-a"
-                && r.reasons.contains(&"missing_capability:tools".to_string())));
-        assert!(result.candidates.is_empty());
-    }
-
-    #[test]
-    fn rejects_over_budget_endpoints() {
-        let eps = vec![spec(
-            "expensive",
-            true,
-            "healthy",
-            0.9,
-            vec!["code".to_string()],
-            1.0,
-            3.0,
-        )];
-        let req = request(
-            "coding",
-            "efficient",
-            "low",
-            vec!["code".to_string()],
-            0.001,
-            100_000,
-            10_000,
-        );
-        let result = AdaptiveCandidateGenerator::generate(&req, &eps, &config(), "snap-1");
-
-        assert!(result.rejected_endpoints.iter().any(|r| r
-            .reasons
-            .contains(&"estimated_cost_exceeds_budget".to_string())));
-        assert!(result.candidates.is_empty());
-    }
-
-    #[test]
-    fn no_provider_execution_path() {
-        let eps = vec![spec(
-            "ep-a",
-            true,
-            "healthy",
-            0.9,
-            vec!["code".to_string()],
-            0.01,
-            0.03,
-        )];
-        let req = request(
-            "coding",
-            "efficient",
-            "low",
-            vec!["code".to_string()],
-            1.0,
-            100_000,
-            10_000,
-        );
-        let result = AdaptiveCandidateGenerator::generate(&req, &eps, &config(), "snap-1");
-
-        assert!(!result.candidates.is_empty());
-        assert!(result.rejected_endpoints.is_empty());
-    }
-
-    #[test]
-    fn estimates_are_finite_and_reasonable() {
-        let eps = vec![spec(
-            "ep-a",
-            true,
-            "healthy",
-            0.9,
-            vec!["code".to_string()],
-            0.01,
-            0.03,
-        )];
-        let req = request(
-            "coding",
-            "efficient",
-            "low",
-            vec!["code".to_string()],
-            1.0,
-            100_000,
-            10_000,
-        );
-        let result = AdaptiveCandidateGenerator::generate(&req, &eps, &config(), "snap-1");
-
-        assert_eq!(result.candidates.len(), 1);
-        let c = &result.candidates[0];
-        assert!(c.estimated_cost_usd.is_finite() && c.estimated_cost_usd > 0.0);
-        assert!(c.estimated_input_tokens > 0);
-        assert!(c.estimated_output_tokens > 0);
-        assert!(c.estimated_latency_ms > 0);
-        assert!(c.member_endpoint_ids.len() == 1);
-        assert!(c.candidate_id.starts_with("single-"));
-        assert_eq!(c.required_capabilities, vec!["code"]);
-        assert_eq!(c.registry_snapshot_hash, "snap-1");
-    }
-
-    #[test]
-    fn config_defaults_are_reasonable() {
-        let cfg = AdaptiveCandidateConfig::default();
-        assert_eq!(cfg.max_candidates, DEFAULT_MAX_CANDIDATES);
-        assert_eq!(cfg.max_panel_size, DEFAULT_MAX_PANEL_SIZE);
-        assert_eq!(cfg.max_fallback_endpoints, DEFAULT_MAX_FALLBACK_ENDPOINTS);
-        assert_eq!(cfg.estimated_input_tokens, DEFAULT_ESTIMATED_INPUT_TOKENS);
-        assert_eq!(cfg.estimated_output_tokens, DEFAULT_ESTIMATED_OUTPUT_TOKENS);
-    }
-
-    #[test]
-    fn empty_endpoints_produces_empty_candidates() {
-        let req = request("coding", "efficient", "low", vec![], 1.0, 100_000, 10_000);
-        let result = AdaptiveCandidateGenerator::generate(&req, &[], &config(), "snap-1");
-        assert!(result.candidates.is_empty());
-        assert!(result.rejected_endpoints.is_empty());
-    }
 }
