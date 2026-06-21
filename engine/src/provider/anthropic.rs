@@ -115,9 +115,15 @@ impl Provider for AnthropicProvider {
         }
 
         let url = format!("{}/v1/messages", self.config.base_url.trim_end_matches('/'));
+        let max_tokens = request
+            .metadata
+            .get("max_tokens")
+            .and_then(|value| value.as_u64())
+            .filter(|value| (1..=1_000_000).contains(value))
+            .unwrap_or(1024);
         let body = json!({
             "model": request.model,
-            "max_tokens": 1024,
+            "max_tokens": max_tokens,
             "messages": [{"role": "user", "content": request.prompt}],
         });
 

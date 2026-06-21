@@ -7,6 +7,7 @@ use crate::infrastructure::auth::TenantResolver;
 use crate::infrastructure::circuit_breaker::CircuitBreakerRegistry;
 use crate::infrastructure::observability::{MetricsCollector, RequestTracer};
 use crate::infrastructure::rate_limiter::RateLimiter;
+use crate::provider::adaptive_execution::{AdaptiveExecutionExecutor, AdaptiveExecutionKillSwitch};
 use crate::provider::Provider;
 use crate::scheduler::WorkflowScheduler;
 use crate::storage::local_product_store::LocalProductStore;
@@ -56,6 +57,7 @@ pub struct AxumApiState {
     pub(crate) local_store: Option<Arc<LocalProductStore>>,
     pub(crate) backup_dir: Option<Arc<PathBuf>>,
     pub(crate) provider: Option<Arc<dyn Provider>>,
+    pub(crate) adaptive_provider_executor: Option<Arc<AdaptiveExecutionExecutor>>,
     pub(crate) scheduler: Option<Arc<Mutex<WorkflowScheduler>>>,
     pub(crate) metrics: Arc<MetricsCollector>,
     pub(crate) tracer: Arc<RequestTracer>,
@@ -81,6 +83,7 @@ impl AxumApiState {
             local_store: None,
             backup_dir: None,
             provider: None,
+            adaptive_provider_executor: None,
             scheduler: None,
             metrics: Arc::new(MetricsCollector::new(10_000)),
             tracer: Arc::new(RequestTracer::new()),
@@ -125,6 +128,14 @@ impl AxumApiState {
 
     pub fn with_provider(mut self, provider: Arc<dyn Provider>) -> Self {
         self.engine = Arc::new(DispatchEngine::with_provider_executor(provider.clone()));
+        self.adaptive_provider_executor = Some(Arc::new(AdaptiveExecutionExecutor::new(
+            std::collections::BTreeMap::from([(
+                provider.provider_id().to_string(),
+                provider.clone(),
+            )]),
+            Arc::new(crate::provider::ProviderAuditRecorder::new()),
+            AdaptiveExecutionKillSwitch::new(),
+        )));
         self.provider = Some(provider);
         self
     }
@@ -136,9 +147,25 @@ impl AxumApiState {
     ) -> Self {
         self.engine = Arc::new(DispatchEngine::with_provider_executor_and_audit(
             provider.clone(),
-            recorder,
+            recorder.clone(),
         ));
+        self.adaptive_provider_executor = Some(Arc::new(AdaptiveExecutionExecutor::new(
+            std::collections::BTreeMap::from([(
+                provider.provider_id().to_string(),
+                provider.clone(),
+            )]),
+            recorder,
+            AdaptiveExecutionKillSwitch::new(),
+        )));
         self.provider = Some(provider);
+        self
+    }
+
+    pub fn with_adaptive_provider_executor(
+        mut self,
+        executor: Arc<AdaptiveExecutionExecutor>,
+    ) -> Self {
+        self.adaptive_provider_executor = Some(executor);
         self
     }
 

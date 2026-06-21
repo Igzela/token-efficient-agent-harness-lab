@@ -1,0 +1,1661 @@
+use std::collections::{BTreeMap, BTreeSet};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
+use std::time::{Duration, Instant};
+
+use serde::{Deserialize, Serialize};
+
+use super::audit::ProviderAuditRecorder;
+use super::cost_gate::{check_cost_gates, CostGateConfig};
+use super::redaction::{contains_sensitive_patterns, redact_sensitive_patterns};
+use super::{Provider, ProviderRequest, ProviderResponse};
+use crate::node_executor::{NodeExecutionInput, NodeExecutionOutput, NodeExecutor};
+
+pub const ADAPTIVE_EXECUTION_SCHEMA_VERSION: &str = "adaptive_execution.v1";
+pub const ACP_ADAPTIVE_PROVIDER_ENDPOINTS_JSON: &str = "ACP_ADAPTIVE_PROVIDER_ENDPOINTS_JSON";
+const MAX_EXECUTION_CALLS: usize = 8;
+const MAX_ADAPTIVE_ENDPOINTS: usize = 8;
+const MAX_EXECUTION_COST_USD: f64 = 1_000.0;
+const MAX_EXECUTION_ELAPSED_MS: u64 = 300_000;
+const MAX_EXECUTION_TOKENS: u64 = 1_000_000;
+const DEFAULT_MAX_EXECUTION_TOKENS: u64 = 32_768;
+const DEFAULT_OUTPUT_TOKEN_RESERVE: u64 = 1_024;
+const MAX_PROMPT_BYTES: usize = 131_072;
+const MAX_COMPOSED_PROMPT_BYTES: usize = 524_288;
+const MAX_OUTPUT_BYTES: usize = 65_536;
+const MAX_ENDPOINT_ID_BYTES: usize = 160;
+const MIN_FUSION_PANEL_SIZE: usize = 2;
+const MAX_FUSION_PANEL_SIZE: usize = 3;
+const COST_EPSILON: f64 = 1e-9;
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct AdaptiveProviderEndpointConfig {
+    pub endpoint_id: String,
+    pub provider_type: String,
+    #[serde(default)]
+    pub base_url: Option<String>,
+    pub model: String,
+    #[serde(default)]
+    pub credential_env: Option<String>,
+    #[serde(default = "default_endpoint_timeout_ms")]
+    pub timeout_ms: i64,
+    #[serde(default)]
+    pub input_cost_per_1k_usd: Option<f64>,
+    #[serde(default)]
+    pub output_cost_per_1k_usd: Option<f64>,
+}
+
+fn default_endpoint_timeout_ms() -> i64 {
+    30_000
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AdaptiveProviderEndpointConfigError {
+    pub code: String,
+    pub message: String,
+}
+
+impl AdaptiveProviderEndpointConfigError {
+    fn new(code: &str, message: &str) -> Self {
+        Self {
+            code: code.to_string(),
+            message: message.to_string(),
+        }
+    }
+}
+
+impl std::fmt::Display for AdaptiveProviderEndpointConfigError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(formatter, "{}: {}", self.code, self.message)
+    }
+}
+
+impl std::error::Error for AdaptiveProviderEndpointConfigError {}
+
+pub fn parse_adaptive_provider_endpoints_json(
+    raw: &str,
+) -> Result<Vec<AdaptiveProviderEndpointConfig>, AdaptiveProviderEndpointConfigError> {
+    if contains_sensitive_patterns(raw) {
+        return Err(AdaptiveProviderEndpointConfigError::new(
+            "sensitive_pattern_detected",
+            "adaptive endpoint config must contain credential references, not secret values",
+        ));
+    }
+    let mut configs =
+        serde_json::from_str::<Vec<AdaptiveProviderEndpointConfig>>(raw).map_err(|_| {
+            AdaptiveProviderEndpointConfigError::new(
+                "invalid_endpoint_config_json",
+                "adaptive endpoint config must be a JSON array",
+            )
+        })?;
+    if configs.is_empty() {
+        return Err(AdaptiveProviderEndpointConfigError::new(
+            "endpoint_config_empty",
+            "at least one adaptive endpoint is required",
+        ));
+    }
+    if configs.len() > MAX_ADAPTIVE_ENDPOINTS {
+        return Err(AdaptiveProviderEndpointConfigError::new(
+            "endpoint_limit_exceeded",
+            "adaptive endpoint count exceeds the AF-3 limit",
+        ));
+    }
+    configs.sort_by(|left, right| left.endpoint_id.cmp(&right.endpoint_id));
+    let mut seen = BTreeSet::new();
+    for config in &configs {
+        if !seen.insert(config.endpoint_id.as_str()) {
+            return Err(AdaptiveProviderEndpointConfigError::new(
+                "duplicate_endpoint_id",
+                "adaptive endpoint IDs must be unique",
+            ));
+        }
+        validate_adaptive_provider_endpoint_config(config)?;
+    }
+    Ok(configs)
+}
+
+pub fn validate_adaptive_provider_endpoint_config(
+    config: &AdaptiveProviderEndpointConfig,
+) -> Result<(), AdaptiveProviderEndpointConfigError> {
+    if !valid_id(&config.endpoint_id) || !valid_id(&config.model) {
+        return Err(AdaptiveProviderEndpointConfigError::new(
+            "invalid_endpoint_identity",
+            "adaptive endpoint identity is invalid",
+        ));
+    }
+    if !(1_000..=300_000).contains(&config.timeout_ms) {
+        return Err(AdaptiveProviderEndpointConfigError::new(
+            "invalid_timeout_ms",
+            "adaptive endpoint timeout is outside the allowed range",
+        ));
+    }
+    let pricing_valid = match (config.input_cost_per_1k_usd, config.output_cost_per_1k_usd) {
+        (None, None) => true,
+        (Some(input), Some(output)) => {
+            input.is_finite() && input >= 0.0 && output.is_finite() && output >= 0.0
+        }
+        _ => false,
+    };
+    if !pricing_valid {
+        return Err(AdaptiveProviderEndpointConfigError::new(
+            "invalid_pricing",
+            "adaptive endpoint pricing must be absent or a complete non-negative pair",
+        ));
+    }
+
+    match config.provider_type.as_str() {
+        "stub" => Ok(()),
+        "openai_compatible" | "anthropic" => {
+            let credential_env = config.credential_env.as_deref().unwrap_or_default();
+            if !valid_credential_env(credential_env) {
+                return Err(AdaptiveProviderEndpointConfigError::new(
+                    "invalid_credential_env",
+                    "real adaptive endpoints require a symbolic credential environment name",
+                ));
+            }
+            let base_url = config.base_url.as_deref().unwrap_or_default();
+            if !valid_provider_base_url(base_url) {
+                return Err(AdaptiveProviderEndpointConfigError::new(
+                    "invalid_base_url",
+                    "real adaptive endpoints require HTTPS or loopback HTTP without URL credentials",
+                ));
+            }
+            Ok(())
+        }
+        _ => Err(AdaptiveProviderEndpointConfigError::new(
+            "invalid_provider_type",
+            "adaptive endpoint provider type is unsupported",
+        )),
+    }
+}
+
+fn valid_credential_env(value: &str) -> bool {
+    let mut characters = value.chars();
+    characters
+        .next()
+        .is_some_and(|character| character.is_ascii_uppercase() || character == '_')
+        && characters.all(|character| {
+            character.is_ascii_uppercase() || character.is_ascii_digit() || character == '_'
+        })
+}
+
+fn valid_provider_base_url(value: &str) -> bool {
+    let Ok(url) = reqwest::Url::parse(value) else {
+        return false;
+    };
+    if !url.username().is_empty()
+        || url.password().is_some()
+        || url.query().is_some()
+        || url.fragment().is_some()
+    {
+        return false;
+    }
+    match url.scheme() {
+        "https" => true,
+        "http" => url.host_str().is_some_and(is_loopback_host),
+        _ => false,
+    }
+}
+
+fn is_loopback_host(host: &str) -> bool {
+    host.eq_ignore_ascii_case("localhost")
+        || host
+            .parse::<std::net::IpAddr>()
+            .is_ok_and(|address| address.is_loopback())
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct AdaptiveEndpointInvocation {
+    pub endpoint_id: String,
+    pub model: String,
+    pub reserved_cost_usd: f64,
+}
+
+impl AdaptiveEndpointInvocation {
+    pub fn new(endpoint_id: &str, model: &str, reserved_cost_usd: f64) -> Self {
+        Self {
+            endpoint_id: endpoint_id.to_string(),
+            model: model.to_string(),
+            reserved_cost_usd,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "mode", rename_all = "snake_case")]
+pub enum AdaptiveExecutionPlan {
+    Single {
+        endpoint: AdaptiveEndpointInvocation,
+    },
+    OrderedFallback {
+        endpoints: Vec<AdaptiveEndpointInvocation>,
+    },
+    Fusion {
+        panel: Vec<AdaptiveEndpointInvocation>,
+        judge: AdaptiveEndpointInvocation,
+        synthesizer: AdaptiveEndpointInvocation,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct AdaptiveExecutionLimits {
+    pub max_calls: usize,
+    pub max_cost_usd: f64,
+    pub max_elapsed_ms: u64,
+    pub max_concurrency: usize,
+    #[serde(default = "default_max_execution_tokens")]
+    pub max_total_tokens: u64,
+}
+
+fn default_max_execution_tokens() -> u64 {
+    DEFAULT_MAX_EXECUTION_TOKENS
+}
+
+impl AdaptiveExecutionLimits {
+    pub fn new(
+        max_calls: usize,
+        max_cost_usd: f64,
+        max_elapsed_ms: u64,
+        max_concurrency: usize,
+    ) -> Self {
+        Self {
+            max_calls,
+            max_cost_usd,
+            max_elapsed_ms,
+            max_concurrency,
+            max_total_tokens: DEFAULT_MAX_EXECUTION_TOKENS,
+        }
+    }
+
+    pub fn with_max_total_tokens(mut self, max_total_tokens: u64) -> Self {
+        self.max_total_tokens = max_total_tokens;
+        self
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct AdaptiveExecutionRequest {
+    pub schema_version: String,
+    pub dispatch_id: String,
+    pub prompt: String,
+    pub plan: AdaptiveExecutionPlan,
+    pub limits: AdaptiveExecutionLimits,
+}
+
+impl AdaptiveExecutionRequest {
+    pub fn new(
+        dispatch_id: &str,
+        prompt: &str,
+        plan: AdaptiveExecutionPlan,
+        limits: AdaptiveExecutionLimits,
+    ) -> Self {
+        Self {
+            schema_version: ADAPTIVE_EXECUTION_SCHEMA_VERSION.to_string(),
+            dispatch_id: dispatch_id.to_string(),
+            prompt: prompt.to_string(),
+            plan,
+            limits,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct AdaptiveExecutionGate {
+    provider_execution_enabled: bool,
+    adaptive_execution_enabled: bool,
+    auth_enabled: bool,
+}
+
+impl AdaptiveExecutionGate {
+    pub fn from_env(auth_enabled: bool) -> Self {
+        Self::from_flags(
+            env_enabled("ACP_ENABLE_PROVIDER_EXECUTION"),
+            env_enabled("ACP_ENABLE_ADAPTIVE_FUSION_EXECUTION"),
+            auth_enabled,
+        )
+    }
+
+    pub fn from_flags(
+        provider_execution_enabled: bool,
+        adaptive_execution_enabled: bool,
+        auth_enabled: bool,
+    ) -> Self {
+        Self {
+            provider_execution_enabled,
+            adaptive_execution_enabled,
+            auth_enabled,
+        }
+    }
+
+    pub fn is_enabled(self) -> bool {
+        self.provider_execution_enabled && self.adaptive_execution_enabled && self.auth_enabled
+    }
+}
+
+fn env_enabled(key: &str) -> bool {
+    std::env::var(key)
+        .map(|value| value == "1" || value.eq_ignore_ascii_case("true"))
+        .unwrap_or(false)
+}
+
+#[derive(Clone)]
+pub struct AdaptiveExecutionKillSwitch {
+    killed: Arc<AtomicBool>,
+}
+
+impl Default for AdaptiveExecutionKillSwitch {
+    fn default() -> Self {
+        Self::from_flags(false)
+    }
+}
+
+impl AdaptiveExecutionKillSwitch {
+    pub fn new() -> Self {
+        Self::from_flags(env_enabled("ACP_ADAPTIVE_FUSION_KILL_SWITCH"))
+    }
+
+    pub fn from_flags(killed: bool) -> Self {
+        Self {
+            killed: Arc::new(AtomicBool::new(killed)),
+        }
+    }
+
+    pub fn kill(&self) {
+        self.killed.store(true, Ordering::SeqCst);
+    }
+
+    pub fn reset(&self) {
+        self.killed.store(false, Ordering::SeqCst);
+    }
+
+    pub fn is_killed(&self) -> bool {
+        self.killed.load(Ordering::SeqCst)
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AdaptiveCallRole {
+    Single,
+    Fallback,
+    Panel,
+    Judge,
+    Synthesizer,
+}
+
+impl AdaptiveCallRole {
+    fn event_name(self, suffix: &str) -> String {
+        let role = match self {
+            Self::Single => "single",
+            Self::Fallback => "fallback",
+            Self::Panel => "panel",
+            Self::Judge => "judge",
+            Self::Synthesizer => "synthesizer",
+        };
+        format!("adaptive_{role}_{suffix}")
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct AdaptiveCallEvidence {
+    pub endpoint_id: String,
+    pub role: AdaptiveCallRole,
+    pub status: String,
+    pub reserved_cost_usd: f64,
+    pub provider_cost_usd: Option<f64>,
+    pub reserved_token_count: u64,
+    pub input_token_count: Option<u64>,
+    pub output_token_count: Option<u64>,
+    pub latency_ms: u64,
+    pub error_domain: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct AdaptiveExecutionResult {
+    pub schema_version: String,
+    pub dispatch_id: String,
+    pub output: Option<String>,
+    pub output_truncated: bool,
+    pub selected_endpoint_id: Option<String>,
+    pub calls: Vec<AdaptiveCallEvidence>,
+    pub total_reserved_cost_usd: f64,
+    pub total_provider_cost_usd: f64,
+    pub total_reserved_token_count: u64,
+    pub total_input_token_count: u64,
+    pub total_output_token_count: u64,
+    pub elapsed_ms: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct AdaptiveExecutionError {
+    pub schema_version: Box<str>,
+    pub code: Box<str>,
+    pub message: Box<str>,
+    pub calls: Vec<AdaptiveCallEvidence>,
+    pub total_reserved_cost_usd: f64,
+    pub total_provider_cost_usd: f64,
+    pub total_reserved_token_count: u64,
+    pub total_input_token_count: u64,
+    pub total_output_token_count: u64,
+    pub elapsed_ms: u64,
+}
+
+impl std::fmt::Display for AdaptiveExecutionError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(formatter, "{}: {}", self.code, self.message)
+    }
+}
+
+impl std::error::Error for AdaptiveExecutionError {}
+
+pub struct AdaptiveExecutionExecutor {
+    providers: BTreeMap<String, Arc<dyn Provider>>,
+    audit: Arc<ProviderAuditRecorder>,
+    kill_switch: AdaptiveExecutionKillSwitch,
+}
+
+pub struct AdaptiveProviderNodeExecutor {
+    executor: Arc<AdaptiveExecutionExecutor>,
+    gate: AdaptiveExecutionGate,
+    cost_gate_config: CostGateConfig,
+    daily_cost_usd: f64,
+}
+
+impl AdaptiveProviderNodeExecutor {
+    pub fn new(executor: Arc<AdaptiveExecutionExecutor>, gate: AdaptiveExecutionGate) -> Self {
+        Self {
+            executor,
+            gate,
+            cost_gate_config: CostGateConfig::new(None, None),
+            daily_cost_usd: 0.0,
+        }
+    }
+
+    pub fn with_cost_gate(mut self, config: CostGateConfig, daily_cost_usd: f64) -> Self {
+        self.cost_gate_config = config;
+        self.daily_cost_usd = daily_cost_usd;
+        self
+    }
+
+    fn prompt(input: &NodeExecutionInput) -> String {
+        input
+            .node_metadata
+            .get("prompt")
+            .or_else(|| input.node_metadata.get("command"))
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or_default()
+            .to_string()
+    }
+
+    fn dispatch_ref(input: &NodeExecutionInput) -> String {
+        format!("workflow:{}:{}", input.run_id, input.node_id)
+    }
+}
+
+#[derive(Deserialize)]
+struct AdaptiveNodeExecutionConfig {
+    plan: AdaptiveExecutionPlan,
+    limits: AdaptiveExecutionLimits,
+}
+
+impl NodeExecutor for AdaptiveProviderNodeExecutor {
+    fn executor_type_name(&self) -> &str {
+        "adaptive_provider"
+    }
+
+    fn execute_node(&self, input: &NodeExecutionInput) -> NodeExecutionOutput {
+        let dispatch_ref = Self::dispatch_ref(input);
+        let Some(config) = input.node_metadata.get("adaptive_execution") else {
+            self.executor
+                .audit_node_block(&dispatch_ref, "adaptive_plan_missing", None);
+            return adaptive_node_error(
+                "adaptive_plan_missing",
+                "adaptive execution plan is required",
+                None,
+                None,
+            );
+        };
+        let Ok(config) = serde_json::from_value::<AdaptiveNodeExecutionConfig>(config.clone())
+        else {
+            self.executor
+                .audit_node_block(&dispatch_ref, "adaptive_plan_invalid", None);
+            return adaptive_node_error(
+                "adaptive_plan_invalid",
+                "adaptive execution plan is invalid",
+                None,
+                None,
+            );
+        };
+        let reserved_cost = plan_reserved_cost(&config.plan);
+        if let Err(error) =
+            check_cost_gates(&self.cost_gate_config, reserved_cost, self.daily_cost_usd)
+        {
+            self.executor.audit_node_block(
+                &dispatch_ref,
+                "adaptive_global_cost_gate_blocked",
+                Some(reserved_cost),
+            );
+            return adaptive_node_error(
+                "adaptive_global_cost_gate_blocked",
+                &error.to_string(),
+                Some(reserved_cost),
+                None,
+            );
+        }
+        let request = AdaptiveExecutionRequest::new(
+            &dispatch_ref,
+            &Self::prompt(input),
+            config.plan,
+            config.limits,
+        );
+        let executor = self.executor.clone();
+        let gate = self.gate;
+        let execution = std::thread::spawn(move || {
+            let runtime = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("adaptive provider runtime");
+            runtime.block_on(executor.execute(&request, &gate))
+        })
+        .join();
+
+        match execution {
+            Ok(Ok(result)) => NodeExecutionOutput {
+                status: "completed".to_string(),
+                executor_type: "adaptive_provider".to_string(),
+                output: result.output,
+                error_domain: None,
+                error_message: None,
+                input_tokens: i64::try_from(result.total_input_token_count).ok(),
+                output_tokens: i64::try_from(result.total_output_token_count).ok(),
+                estimated_cost: Some(result.total_provider_cost_usd),
+                latency_ms: Some(result.elapsed_ms as i64),
+            },
+            Ok(Err(error)) => adaptive_node_error(
+                &error.code,
+                &error.message,
+                Some(
+                    error
+                        .total_provider_cost_usd
+                        .max(error.total_reserved_cost_usd),
+                ),
+                Some(error.elapsed_ms),
+            ),
+            Err(_) => {
+                self.executor.audit_node_failure(
+                    &dispatch_ref,
+                    "adaptive_runtime_failure",
+                    None,
+                    None,
+                );
+                adaptive_node_error(
+                    "adaptive_runtime_failure",
+                    "adaptive execution runtime thread failed",
+                    None,
+                    None,
+                )
+            }
+        }
+    }
+}
+
+fn plan_reserved_cost(plan: &AdaptiveExecutionPlan) -> f64 {
+    match plan {
+        AdaptiveExecutionPlan::Single { endpoint } => endpoint.reserved_cost_usd,
+        AdaptiveExecutionPlan::OrderedFallback { endpoints } => endpoints
+            .iter()
+            .map(|endpoint| endpoint.reserved_cost_usd)
+            .sum(),
+        AdaptiveExecutionPlan::Fusion {
+            panel,
+            judge,
+            synthesizer,
+        } => {
+            panel
+                .iter()
+                .map(|endpoint| endpoint.reserved_cost_usd)
+                .sum::<f64>()
+                + judge.reserved_cost_usd
+                + synthesizer.reserved_cost_usd
+        }
+    }
+}
+
+impl AdaptiveExecutionExecutor {
+    pub fn new(
+        providers: BTreeMap<String, Arc<dyn Provider>>,
+        audit: Arc<ProviderAuditRecorder>,
+        kill_switch: AdaptiveExecutionKillSwitch,
+    ) -> Self {
+        Self {
+            providers,
+            audit,
+            kill_switch,
+        }
+    }
+
+    pub fn endpoint_ids(&self) -> Vec<String> {
+        self.providers.keys().cloned().collect()
+    }
+
+    fn audit_node_block(&self, dispatch_id: &str, error_domain: &str, cost: Option<f64>) {
+        self.audit.create_and_record(
+            dispatch_id,
+            "adaptive-fusion",
+            "adaptive_execution_blocked",
+            Some(&serde_json::json!({
+                "cost": cost,
+                "currency": cost.map(|_| "USD"),
+                "error_domain": error_domain,
+            })),
+        );
+    }
+
+    fn audit_node_failure(
+        &self,
+        dispatch_id: &str,
+        error_domain: &str,
+        cost: Option<f64>,
+        latency_ms: Option<u64>,
+    ) {
+        self.audit.create_and_record(
+            dispatch_id,
+            "adaptive-fusion",
+            "adaptive_execution_failed",
+            Some(&serde_json::json!({
+                "cost": cost,
+                "currency": cost.map(|_| "USD"),
+                "latency_ms": latency_ms.map(|value| value as i64),
+                "error_domain": error_domain,
+            })),
+        );
+    }
+
+    pub async fn execute(
+        &self,
+        request: &AdaptiveExecutionRequest,
+        gate: &AdaptiveExecutionGate,
+    ) -> Result<AdaptiveExecutionResult, AdaptiveExecutionError> {
+        let started = Instant::now();
+        if !gate.is_enabled() {
+            self.audit_block(request, "adaptive_execution_disabled");
+            return Err(execution_error(
+                "adaptive_execution_disabled",
+                "provider, adaptive execution, and authentication gates are required",
+                started,
+                Vec::new(),
+                0.0,
+                0.0,
+            ));
+        }
+        if self.kill_switch.is_killed() {
+            self.audit_block(request, "adaptive_execution_killed");
+            return Err(execution_error(
+                "adaptive_execution_killed",
+                "adaptive execution kill switch is active",
+                started,
+                Vec::new(),
+                0.0,
+                0.0,
+            ));
+        }
+        if let Err(error) = self.validate(request, started) {
+            self.audit_block(request, &error.code);
+            return Err(error);
+        }
+
+        let mut state = ExecutionState::new(started);
+        match &request.plan {
+            AdaptiveExecutionPlan::Single { endpoint } => {
+                let call = self
+                    .invoke(
+                        request,
+                        endpoint,
+                        AdaptiveCallRole::Single,
+                        &request.prompt,
+                        &mut state,
+                    )
+                    .await
+                    .map_err(|error| self.audit_failure(request, error))?;
+                let result = success_result(
+                    request,
+                    call.output,
+                    call.output_truncated,
+                    Some(endpoint.endpoint_id.clone()),
+                    state,
+                );
+                self.audit_success(&result);
+                Ok(result)
+            }
+            AdaptiveExecutionPlan::OrderedFallback { endpoints } => {
+                for endpoint in endpoints {
+                    match self
+                        .invoke(
+                            request,
+                            endpoint,
+                            AdaptiveCallRole::Fallback,
+                            &request.prompt,
+                            &mut state,
+                        )
+                        .await
+                    {
+                        Ok(call) => {
+                            let result = success_result(
+                                request,
+                                call.output,
+                                call.output_truncated,
+                                Some(endpoint.endpoint_id.clone()),
+                                state,
+                            );
+                            self.audit_success(&result);
+                            return Ok(result);
+                        }
+                        Err(error)
+                            if matches!(
+                                error.code.as_ref(),
+                                "adaptive_provider_error" | "adaptive_provider_disabled"
+                            ) => {}
+                        Err(error) => return Err(self.audit_failure(request, error)),
+                    }
+                }
+                let error = state.error(
+                    "adaptive_fallback_exhausted",
+                    "ordered fallback exhausted without a successful response",
+                );
+                Err(self.audit_failure(request, error))
+            }
+            AdaptiveExecutionPlan::Fusion {
+                panel,
+                judge,
+                synthesizer,
+            } => {
+                let mut panel_outputs = Vec::with_capacity(panel.len());
+                for endpoint in panel {
+                    let call = self
+                        .invoke(
+                            request,
+                            endpoint,
+                            AdaptiveCallRole::Panel,
+                            &request.prompt,
+                            &mut state,
+                        )
+                        .await
+                        .map_err(|error| self.audit_failure(request, error))?;
+                    panel_outputs.push((endpoint.endpoint_id.clone(), call.output));
+                }
+                let judge_prompt = fusion_judge_prompt(&request.prompt, &panel_outputs);
+                let judge_call = self
+                    .invoke(
+                        request,
+                        judge,
+                        AdaptiveCallRole::Judge,
+                        &judge_prompt,
+                        &mut state,
+                    )
+                    .await
+                    .map_err(|error| self.audit_failure(request, error))?;
+                let synth_prompt =
+                    fusion_synthesizer_prompt(&request.prompt, &panel_outputs, &judge_call.output);
+                let synth_call = self
+                    .invoke(
+                        request,
+                        synthesizer,
+                        AdaptiveCallRole::Synthesizer,
+                        &synth_prompt,
+                        &mut state,
+                    )
+                    .await
+                    .map_err(|error| self.audit_failure(request, error))?;
+                let result = success_result(
+                    request,
+                    synth_call.output,
+                    synth_call.output_truncated,
+                    Some(synthesizer.endpoint_id.clone()),
+                    state,
+                );
+                self.audit_success(&result);
+                Ok(result)
+            }
+        }
+    }
+
+    fn validate(
+        &self,
+        request: &AdaptiveExecutionRequest,
+        started: Instant,
+    ) -> Result<(), AdaptiveExecutionError> {
+        if request.schema_version != ADAPTIVE_EXECUTION_SCHEMA_VERSION
+            || !valid_id(&request.dispatch_id)
+            || request.prompt.is_empty()
+            || request.prompt.len() > MAX_PROMPT_BYTES
+        {
+            return Err(execution_error(
+                "adaptive_request_invalid",
+                "adaptive execution request is invalid",
+                started,
+                Vec::new(),
+                0.0,
+                0.0,
+            ));
+        }
+        let limits = &request.limits;
+        if limits.max_calls == 0 || limits.max_calls > MAX_EXECUTION_CALLS {
+            return Err(execution_error(
+                "adaptive_call_limit_invalid",
+                "max_calls is outside the allowed range",
+                started,
+                Vec::new(),
+                0.0,
+                0.0,
+            ));
+        }
+        if !limits.max_cost_usd.is_finite()
+            || limits.max_cost_usd <= 0.0
+            || limits.max_cost_usd > MAX_EXECUTION_COST_USD
+        {
+            return Err(execution_error(
+                "adaptive_cost_limit_invalid",
+                "max_cost_usd is outside the allowed range",
+                started,
+                Vec::new(),
+                0.0,
+                0.0,
+            ));
+        }
+        if limits.max_elapsed_ms == 0 || limits.max_elapsed_ms > MAX_EXECUTION_ELAPSED_MS {
+            return Err(execution_error(
+                "adaptive_timeout_limit_invalid",
+                "max_elapsed_ms is outside the allowed range",
+                started,
+                Vec::new(),
+                0.0,
+                0.0,
+            ));
+        }
+        if limits.max_total_tokens == 0 || limits.max_total_tokens > MAX_EXECUTION_TOKENS {
+            return Err(execution_error(
+                "adaptive_token_limit_invalid",
+                "max_total_tokens is outside the allowed range",
+                started,
+                Vec::new(),
+                0.0,
+                0.0,
+            ));
+        }
+        if limits.max_concurrency != 1 {
+            return Err(execution_error(
+                "adaptive_concurrency_not_supported",
+                "AF-3 supports bounded serial execution only",
+                started,
+                Vec::new(),
+                0.0,
+                0.0,
+            ));
+        }
+
+        let invocations = plan_invocations(&request.plan, started)?;
+        if invocations.len() > limits.max_calls {
+            return Err(execution_error(
+                "adaptive_call_limit_exceeded",
+                "plan requires more calls than max_calls",
+                started,
+                Vec::new(),
+                0.0,
+                0.0,
+            ));
+        }
+        let total_reserved_cost = invocations
+            .iter()
+            .map(|invocation| invocation.reserved_cost_usd)
+            .sum::<f64>();
+        if !total_reserved_cost.is_finite()
+            || total_reserved_cost > limits.max_cost_usd + COST_EPSILON
+        {
+            return Err(execution_error(
+                "adaptive_cost_limit_exceeded",
+                "plan reservations exceed max_cost_usd",
+                started,
+                Vec::new(),
+                total_reserved_cost,
+                0.0,
+            ));
+        }
+        for invocation in invocations {
+            if !valid_id(&invocation.endpoint_id)
+                || !valid_id(&invocation.model)
+                || !invocation.reserved_cost_usd.is_finite()
+                || invocation.reserved_cost_usd < 0.0
+            {
+                return Err(execution_error(
+                    "adaptive_endpoint_invalid",
+                    "endpoint invocation is invalid",
+                    started,
+                    Vec::new(),
+                    0.0,
+                    0.0,
+                ));
+            }
+            if !self.providers.contains_key(&invocation.endpoint_id) {
+                return Err(execution_error(
+                    "adaptive_endpoint_not_found",
+                    "plan references an unavailable endpoint",
+                    started,
+                    Vec::new(),
+                    0.0,
+                    0.0,
+                ));
+            }
+            let provider = self
+                .providers
+                .get(&invocation.endpoint_id)
+                .expect("adaptive endpoint exists");
+            match provider.default_model() {
+                Some(model) if model == invocation.model => {}
+                Some(_) => {
+                    return Err(execution_error(
+                        "adaptive_endpoint_model_mismatch",
+                        "plan model does not match the configured endpoint model",
+                        started,
+                        Vec::new(),
+                        0.0,
+                        0.0,
+                    ));
+                }
+                None => {
+                    return Err(execution_error(
+                        "adaptive_endpoint_model_unbound",
+                        "configured adaptive endpoint has no fixed model binding",
+                        started,
+                        Vec::new(),
+                        0.0,
+                        0.0,
+                    ));
+                }
+            }
+        }
+        Ok(())
+    }
+
+    async fn invoke(
+        &self,
+        request: &AdaptiveExecutionRequest,
+        invocation: &AdaptiveEndpointInvocation,
+        role: AdaptiveCallRole,
+        prompt: &str,
+        state: &mut ExecutionState,
+    ) -> Result<SanitizedCall, AdaptiveExecutionError> {
+        if self.kill_switch.is_killed() {
+            return Err(state.error(
+                "adaptive_execution_killed",
+                "adaptive execution kill switch is active",
+            ));
+        }
+        if state.calls.len() >= request.limits.max_calls {
+            return Err(state.error(
+                "adaptive_call_limit_exceeded",
+                "max_calls reached before provider invocation",
+            ));
+        }
+        let next_reserved = state.total_reserved_cost_usd + invocation.reserved_cost_usd;
+        if next_reserved > request.limits.max_cost_usd + COST_EPSILON {
+            return Err(state.error(
+                "adaptive_cost_limit_exceeded",
+                "next provider reservation exceeds max_cost_usd",
+            ));
+        }
+        let Some(remaining) = remaining_duration(state.started, request.limits.max_elapsed_ms)
+        else {
+            return Err(state.error(
+                "adaptive_execution_timeout",
+                "adaptive execution elapsed-time limit reached",
+            ));
+        };
+        let provider = self
+            .providers
+            .get(&invocation.endpoint_id)
+            .expect("validated adaptive endpoint");
+        if !provider.is_enabled() {
+            state.calls.push(AdaptiveCallEvidence {
+                endpoint_id: invocation.endpoint_id.clone(),
+                role,
+                status: "disabled".to_string(),
+                reserved_cost_usd: invocation.reserved_cost_usd,
+                provider_cost_usd: None,
+                reserved_token_count: 0,
+                input_token_count: None,
+                output_token_count: None,
+                latency_ms: 0,
+                error_domain: Some("provider_disabled".to_string()),
+            });
+            self.audit.create_and_record(
+                &request.dispatch_id,
+                &invocation.endpoint_id,
+                &role.event_name("error"),
+                Some(&serde_json::json!({"error_domain": "provider_disabled"})),
+            );
+            return Err(state.error(
+                "adaptive_provider_disabled",
+                "adaptive endpoint provider is disabled",
+            ));
+        }
+
+        let bounded_prompt = bounded_text(prompt, MAX_COMPOSED_PROMPT_BYTES).0;
+        let token_reservation = reserve_tokens(
+            &bounded_prompt,
+            state.total_reserved_token_count,
+            request.limits.max_total_tokens,
+        )
+        .ok_or_else(|| {
+            state.error(
+                "adaptive_token_limit_exceeded",
+                "remaining token budget cannot admit the next provider call",
+            )
+        })?;
+        state.total_reserved_cost_usd = next_reserved;
+        state.total_reserved_token_count += token_reservation.total();
+        let call_started = Instant::now();
+        self.audit.create_and_record(
+            &request.dispatch_id,
+            &invocation.endpoint_id,
+            &role.event_name("request"),
+            Some(&serde_json::json!({
+                "cost": invocation.reserved_cost_usd,
+                "currency": "USD",
+            })),
+        );
+        let provider_request = ProviderRequest {
+            schema_version: "provider_request.v1".to_string(),
+            provider_id: provider.provider_id().to_string(),
+            model: invocation.model.clone(),
+            prompt: bounded_prompt,
+            metadata: serde_json::json!({
+                "dispatch_id": request.dispatch_id,
+                "adaptive_endpoint_id": invocation.endpoint_id,
+                "adaptive_role": role,
+                "reserved_cost_usd": invocation.reserved_cost_usd,
+                "max_tokens": token_reservation.output,
+            }),
+        };
+
+        let response = tokio::time::timeout(remaining, provider.invoke(&provider_request)).await;
+        let latency_ms = call_started.elapsed().as_millis() as u64;
+        match response {
+            Err(_) => {
+                let evidence = AdaptiveCallEvidence {
+                    endpoint_id: invocation.endpoint_id.clone(),
+                    role,
+                    status: "timeout".to_string(),
+                    reserved_cost_usd: invocation.reserved_cost_usd,
+                    provider_cost_usd: None,
+                    reserved_token_count: token_reservation.total(),
+                    input_token_count: None,
+                    output_token_count: None,
+                    latency_ms,
+                    error_domain: Some("adaptive_execution_timeout".to_string()),
+                };
+                state.calls.push(evidence);
+                self.audit.create_and_record(
+                    &request.dispatch_id,
+                    &invocation.endpoint_id,
+                    &role.event_name("timeout"),
+                    Some(&serde_json::json!({
+                        "latency_ms": latency_ms as i64,
+                        "error_domain": "adaptive_execution_timeout",
+                    })),
+                );
+                Err(state.error(
+                    "adaptive_execution_timeout",
+                    "provider call exceeded the remaining execution time",
+                ))
+            }
+            Ok(Err(error)) => {
+                let error_domain = error.error_domain.clone();
+                state.calls.push(AdaptiveCallEvidence {
+                    endpoint_id: invocation.endpoint_id.clone(),
+                    role,
+                    status: "failed".to_string(),
+                    reserved_cost_usd: invocation.reserved_cost_usd,
+                    provider_cost_usd: None,
+                    reserved_token_count: token_reservation.total(),
+                    input_token_count: None,
+                    output_token_count: None,
+                    latency_ms,
+                    error_domain: Some(error_domain.clone()),
+                });
+                self.audit.create_and_record(
+                    &request.dispatch_id,
+                    &invocation.endpoint_id,
+                    &role.event_name("error"),
+                    Some(&serde_json::json!({
+                        "latency_ms": latency_ms as i64,
+                        "error_domain": error_domain,
+                    })),
+                );
+                Err(state.error(
+                    "adaptive_provider_error",
+                    "adaptive endpoint provider call failed",
+                ))
+            }
+            Ok(Ok(response)) => self.complete_success(
+                request,
+                invocation,
+                role,
+                response,
+                &provider_request.provider_id,
+                token_reservation,
+                latency_ms,
+                state,
+            ),
+        }
+    }
+
+    fn complete_success(
+        &self,
+        request: &AdaptiveExecutionRequest,
+        invocation: &AdaptiveEndpointInvocation,
+        role: AdaptiveCallRole,
+        response: ProviderResponse,
+        expected_provider_id: &str,
+        token_reservation: TokenReservation,
+        latency_ms: u64,
+        state: &mut ExecutionState,
+    ) -> Result<SanitizedCall, AdaptiveExecutionError> {
+        let provider_cost = response
+            .estimated_cost
+            .unwrap_or(invocation.reserved_cost_usd);
+        if provider_cost.is_finite() && provider_cost >= 0.0 {
+            state.total_provider_cost_usd += provider_cost;
+        }
+        let (input_tokens, output_tokens) = match (
+            resolved_token_count(response.input_tokens, token_reservation.input),
+            resolved_token_count(response.output_tokens, token_reservation.output),
+        ) {
+            (Ok(input), Ok(output)) => (input, output),
+            _ => {
+                state.calls.push(AdaptiveCallEvidence {
+                    endpoint_id: invocation.endpoint_id.clone(),
+                    role,
+                    status: "invalid_token_usage".to_string(),
+                    reserved_cost_usd: invocation.reserved_cost_usd,
+                    provider_cost_usd: response.estimated_cost,
+                    reserved_token_count: token_reservation.total(),
+                    input_token_count: None,
+                    output_token_count: None,
+                    latency_ms,
+                    error_domain: Some("adaptive_provider_token_invalid".to_string()),
+                });
+                self.audit.create_and_record(
+                    &request.dispatch_id,
+                    &invocation.endpoint_id,
+                    &role.event_name("error"),
+                    Some(&serde_json::json!({
+                        "cost": response.estimated_cost,
+                        "currency": "USD",
+                        "latency_ms": latency_ms as i64,
+                        "error_domain": "adaptive_provider_token_invalid",
+                    })),
+                );
+                return Err(state.error(
+                    "adaptive_provider_token_invalid",
+                    "provider-reported token usage is invalid",
+                ));
+            }
+        };
+        state.total_input_token_count = state.total_input_token_count.saturating_add(input_tokens);
+        state.total_output_token_count =
+            state.total_output_token_count.saturating_add(output_tokens);
+        if response.schema_version != "provider_response.v1"
+            || response.provider_id != expected_provider_id
+            || response.model != invocation.model
+        {
+            state.calls.push(AdaptiveCallEvidence {
+                endpoint_id: invocation.endpoint_id.clone(),
+                role,
+                status: "identity_mismatch".to_string(),
+                reserved_cost_usd: invocation.reserved_cost_usd,
+                provider_cost_usd: response.estimated_cost,
+                reserved_token_count: token_reservation.total(),
+                input_token_count: Some(input_tokens),
+                output_token_count: Some(output_tokens),
+                latency_ms,
+                error_domain: Some("adaptive_provider_identity_mismatch".to_string()),
+            });
+            self.audit.create_and_record(
+                &request.dispatch_id,
+                &invocation.endpoint_id,
+                &role.event_name("error"),
+                Some(&serde_json::json!({
+                    "input_token_count": i64::try_from(input_tokens).ok(),
+                    "output_token_count": i64::try_from(output_tokens).ok(),
+                    "cost": response.estimated_cost,
+                    "currency": "USD",
+                    "latency_ms": latency_ms as i64,
+                    "error_domain": "adaptive_provider_identity_mismatch",
+                })),
+            );
+            return Err(state.error(
+                "adaptive_provider_identity_mismatch",
+                "provider response identity does not match the configured endpoint",
+            ));
+        }
+        let actual_tokens = input_tokens.saturating_add(output_tokens);
+        if actual_tokens > token_reservation.total() {
+            state.calls.push(AdaptiveCallEvidence {
+                endpoint_id: invocation.endpoint_id.clone(),
+                role,
+                status: "token_overrun".to_string(),
+                reserved_cost_usd: invocation.reserved_cost_usd,
+                provider_cost_usd: response.estimated_cost,
+                reserved_token_count: token_reservation.total(),
+                input_token_count: Some(input_tokens),
+                output_token_count: Some(output_tokens),
+                latency_ms,
+                error_domain: Some("adaptive_provider_token_over_reservation".to_string()),
+            });
+            self.audit.create_and_record(
+                &request.dispatch_id,
+                &invocation.endpoint_id,
+                &role.event_name("error"),
+                Some(&serde_json::json!({
+                    "input_token_count": i64::try_from(input_tokens).ok(),
+                    "output_token_count": i64::try_from(output_tokens).ok(),
+                    "cost": response.estimated_cost,
+                    "currency": "USD",
+                    "latency_ms": latency_ms as i64,
+                    "error_domain": "adaptive_provider_token_over_reservation",
+                })),
+            );
+            return Err(state.error(
+                "adaptive_provider_token_over_reservation",
+                "provider-reported tokens exceeded the admitted reservation",
+            ));
+        }
+        if !provider_cost.is_finite()
+            || provider_cost < 0.0
+            || provider_cost > invocation.reserved_cost_usd + COST_EPSILON
+        {
+            state.calls.push(AdaptiveCallEvidence {
+                endpoint_id: invocation.endpoint_id.clone(),
+                role,
+                status: "cost_overrun".to_string(),
+                reserved_cost_usd: invocation.reserved_cost_usd,
+                provider_cost_usd: response.estimated_cost,
+                reserved_token_count: token_reservation.total(),
+                input_token_count: Some(input_tokens),
+                output_token_count: Some(output_tokens),
+                latency_ms,
+                error_domain: Some("adaptive_provider_cost_over_reservation".to_string()),
+            });
+            self.audit.create_and_record(
+                &request.dispatch_id,
+                &invocation.endpoint_id,
+                &role.event_name("error"),
+                Some(&serde_json::json!({
+                    "cost": response.estimated_cost,
+                    "currency": "USD",
+                    "latency_ms": latency_ms as i64,
+                    "error_domain": "adaptive_provider_cost_over_reservation",
+                })),
+            );
+            return Err(state.error(
+                "adaptive_provider_cost_over_reservation",
+                "provider-reported cost exceeded the admitted reservation",
+            ));
+        }
+        if state.total_provider_cost_usd > request.limits.max_cost_usd + COST_EPSILON {
+            return Err(state.error(
+                "adaptive_cost_limit_exceeded",
+                "provider-reported total cost exceeded max_cost_usd",
+            ));
+        }
+        let (output, output_truncated) = sanitize_output(&response.output);
+        state.calls.push(AdaptiveCallEvidence {
+            endpoint_id: invocation.endpoint_id.clone(),
+            role,
+            status: "completed".to_string(),
+            reserved_cost_usd: invocation.reserved_cost_usd,
+            provider_cost_usd: Some(provider_cost),
+            reserved_token_count: token_reservation.total(),
+            input_token_count: Some(input_tokens),
+            output_token_count: Some(output_tokens),
+            latency_ms,
+            error_domain: None,
+        });
+        self.audit.create_and_record(
+            &request.dispatch_id,
+            &invocation.endpoint_id,
+            &role.event_name("response"),
+            Some(&serde_json::json!({
+                "input_token_count": response.input_tokens,
+                "output_token_count": response.output_tokens,
+                "cost": provider_cost,
+                "currency": "USD",
+                "latency_ms": latency_ms as i64,
+            })),
+        );
+        Ok(SanitizedCall {
+            output,
+            output_truncated,
+        })
+    }
+
+    fn audit_block(&self, request: &AdaptiveExecutionRequest, error_domain: &str) {
+        self.audit.create_and_record(
+            &request.dispatch_id,
+            "adaptive-fusion",
+            "adaptive_execution_blocked",
+            Some(&serde_json::json!({"error_domain": error_domain})),
+        );
+    }
+
+    fn audit_success(&self, result: &AdaptiveExecutionResult) {
+        self.audit.create_and_record(
+            &result.dispatch_id,
+            "adaptive-fusion",
+            "adaptive_execution_completed",
+            Some(&serde_json::json!({
+                "cost": result.total_provider_cost_usd,
+                "currency": "USD",
+                "latency_ms": result.elapsed_ms as i64,
+            })),
+        );
+    }
+
+    fn audit_failure(
+        &self,
+        request: &AdaptiveExecutionRequest,
+        error: AdaptiveExecutionError,
+    ) -> AdaptiveExecutionError {
+        self.audit.create_and_record(
+            &request.dispatch_id,
+            "adaptive-fusion",
+            "adaptive_execution_failed",
+            Some(&serde_json::json!({
+                "cost": error.total_provider_cost_usd,
+                "currency": "USD",
+                "latency_ms": error.elapsed_ms as i64,
+                "error_domain": error.code,
+            })),
+        );
+        error
+    }
+}
+
+fn adaptive_node_error(
+    error_domain: &str,
+    error_message: &str,
+    estimated_cost: Option<f64>,
+    elapsed_ms: Option<u64>,
+) -> NodeExecutionOutput {
+    NodeExecutionOutput {
+        status: "failed".to_string(),
+        executor_type: "adaptive_provider".to_string(),
+        output: None,
+        error_domain: Some(error_domain.to_string()),
+        error_message: Some(error_message.to_string()),
+        input_tokens: None,
+        output_tokens: None,
+        estimated_cost,
+        latency_ms: elapsed_ms.map(|value| value as i64),
+    }
+}
+
+struct ExecutionState {
+    started: Instant,
+    calls: Vec<AdaptiveCallEvidence>,
+    total_reserved_cost_usd: f64,
+    total_provider_cost_usd: f64,
+    total_reserved_token_count: u64,
+    total_input_token_count: u64,
+    total_output_token_count: u64,
+}
+
+impl ExecutionState {
+    fn new(started: Instant) -> Self {
+        Self {
+            started,
+            calls: Vec::new(),
+            total_reserved_cost_usd: 0.0,
+            total_provider_cost_usd: 0.0,
+            total_reserved_token_count: 0,
+            total_input_token_count: 0,
+            total_output_token_count: 0,
+        }
+    }
+
+    fn error(&self, code: &str, message: &str) -> AdaptiveExecutionError {
+        execution_error(
+            code,
+            message,
+            self.started,
+            self.calls.clone(),
+            self.total_reserved_cost_usd,
+            self.total_provider_cost_usd,
+        )
+    }
+}
+
+struct SanitizedCall {
+    output: String,
+    output_truncated: bool,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct TokenReservation {
+    input: u64,
+    output: u64,
+}
+
+impl TokenReservation {
+    fn total(self) -> u64 {
+        self.input + self.output
+    }
+}
+
+fn plan_invocations(
+    plan: &AdaptiveExecutionPlan,
+    started: Instant,
+) -> Result<Vec<&AdaptiveEndpointInvocation>, AdaptiveExecutionError> {
+    let invocations = match plan {
+        AdaptiveExecutionPlan::Single { endpoint } => vec![endpoint],
+        AdaptiveExecutionPlan::OrderedFallback { endpoints } => {
+            if endpoints.is_empty() {
+                return Err(execution_error(
+                    "adaptive_plan_invalid",
+                    "ordered fallback requires at least one endpoint",
+                    started,
+                    Vec::new(),
+                    0.0,
+                    0.0,
+                ));
+            }
+            let unique = endpoints
+                .iter()
+                .map(|endpoint| endpoint.endpoint_id.as_str())
+                .collect::<BTreeSet<_>>();
+            if unique.len() != endpoints.len() {
+                return Err(execution_error(
+                    "adaptive_plan_invalid",
+                    "ordered fallback endpoint IDs must be unique",
+                    started,
+                    Vec::new(),
+                    0.0,
+                    0.0,
+                ));
+            }
+            endpoints.iter().collect()
+        }
+        AdaptiveExecutionPlan::Fusion {
+            panel,
+            judge,
+            synthesizer,
+        } => {
+            if !(MIN_FUSION_PANEL_SIZE..=MAX_FUSION_PANEL_SIZE).contains(&panel.len()) {
+                return Err(execution_error(
+                    "adaptive_plan_invalid",
+                    "fusion panel size is outside the allowed range",
+                    started,
+                    Vec::new(),
+                    0.0,
+                    0.0,
+                ));
+            }
+            let unique = panel
+                .iter()
+                .map(|endpoint| endpoint.endpoint_id.as_str())
+                .collect::<BTreeSet<_>>();
+            if unique.len() != panel.len() {
+                return Err(execution_error(
+                    "adaptive_plan_invalid",
+                    "fusion panel endpoint IDs must be unique",
+                    started,
+                    Vec::new(),
+                    0.0,
+                    0.0,
+                ));
+            }
+            let mut values = panel.iter().collect::<Vec<_>>();
+            values.push(judge);
+            values.push(synthesizer);
+            values
+        }
+    };
+    Ok(invocations)
+}
+
+fn success_result(
+    request: &AdaptiveExecutionRequest,
+    output: String,
+    output_truncated: bool,
+    selected_endpoint_id: Option<String>,
+    state: ExecutionState,
+) -> AdaptiveExecutionResult {
+    AdaptiveExecutionResult {
+        schema_version: ADAPTIVE_EXECUTION_SCHEMA_VERSION.to_string(),
+        dispatch_id: request.dispatch_id.clone(),
+        output: Some(output),
+        output_truncated,
+        selected_endpoint_id,
+        calls: state.calls,
+        total_reserved_cost_usd: state.total_reserved_cost_usd,
+        total_provider_cost_usd: state.total_provider_cost_usd,
+        total_reserved_token_count: state.total_reserved_token_count,
+        total_input_token_count: state.total_input_token_count,
+        total_output_token_count: state.total_output_token_count,
+        elapsed_ms: elapsed_ms(state.started),
+    }
+}
+
+fn execution_error(
+    code: &str,
+    message: &str,
+    started: Instant,
+    calls: Vec<AdaptiveCallEvidence>,
+    total_reserved_cost_usd: f64,
+    total_provider_cost_usd: f64,
+) -> AdaptiveExecutionError {
+    let total_reserved_token_count = calls.iter().map(|call| call.reserved_token_count).sum();
+    let total_input_token_count = calls.iter().filter_map(|call| call.input_token_count).sum();
+    let total_output_token_count = calls
+        .iter()
+        .filter_map(|call| call.output_token_count)
+        .sum();
+    AdaptiveExecutionError {
+        schema_version: ADAPTIVE_EXECUTION_SCHEMA_VERSION.into(),
+        code: code.into(),
+        message: message.into(),
+        calls,
+        total_reserved_cost_usd,
+        total_provider_cost_usd,
+        total_reserved_token_count,
+        total_input_token_count,
+        total_output_token_count,
+        elapsed_ms: elapsed_ms(started),
+    }
+}
+
+fn elapsed_ms(started: Instant) -> u64 {
+    started.elapsed().as_millis() as u64
+}
+
+fn remaining_duration(started: Instant, max_elapsed_ms: u64) -> Option<Duration> {
+    Duration::from_millis(max_elapsed_ms).checked_sub(started.elapsed())
+}
+
+fn reserve_tokens(
+    prompt: &str,
+    already_reserved: u64,
+    max_total_tokens: u64,
+) -> Option<TokenReservation> {
+    let remaining = max_total_tokens.checked_sub(already_reserved)?;
+    let input = ((prompt.len() as u64).saturating_add(3) / 4).max(1);
+    let output = remaining
+        .checked_sub(input)?
+        .min(DEFAULT_OUTPUT_TOKEN_RESERVE);
+    (output > 0).then_some(TokenReservation { input, output })
+}
+
+fn resolved_token_count(reported: Option<i64>, reserved: u64) -> Result<u64, ()> {
+    match reported {
+        Some(value) => u64::try_from(value).map_err(|_| ()),
+        None => Ok(reserved),
+    }
+}
+
+fn sanitize_output(output: &str) -> (String, bool) {
+    bounded_text(&redact_sensitive_patterns(output), MAX_OUTPUT_BYTES)
+}
+
+fn bounded_text(value: &str, max_bytes: usize) -> (String, bool) {
+    if value.len() <= max_bytes {
+        return (value.to_string(), false);
+    }
+    let mut boundary = max_bytes;
+    while !value.is_char_boundary(boundary) {
+        boundary -= 1;
+    }
+    (value[..boundary].to_string(), true)
+}
+
+fn fusion_judge_prompt(prompt: &str, panel_outputs: &[(String, String)]) -> String {
+    let candidates = panel_outputs
+        .iter()
+        .map(|(endpoint_id, output)| format!("ENDPOINT {endpoint_id}:\n{output}"))
+        .collect::<Vec<_>>()
+        .join("\n\n");
+    bounded_text(
+        &format!(
+            "Evaluate the candidate answers for the task. Return a concise judgment.\n\nTASK:\n{prompt}\n\nCANDIDATES:\n{candidates}"
+        ),
+        MAX_COMPOSED_PROMPT_BYTES,
+    )
+    .0
+}
+
+fn fusion_synthesizer_prompt(
+    prompt: &str,
+    panel_outputs: &[(String, String)],
+    judge_output: &str,
+) -> String {
+    let candidates = panel_outputs
+        .iter()
+        .map(|(endpoint_id, output)| format!("ENDPOINT {endpoint_id}:\n{output}"))
+        .collect::<Vec<_>>()
+        .join("\n\n");
+    bounded_text(
+        &format!(
+            "Produce the final answer using the candidate answers and judgment.\n\nTASK:\n{prompt}\n\nCANDIDATES:\n{candidates}\n\nJUDGMENT:\n{judge_output}"
+        ),
+        MAX_COMPOSED_PROMPT_BYTES,
+    )
+    .0
+}
+
+fn valid_id(value: &str) -> bool {
+    !value.is_empty()
+        && value.len() <= MAX_ENDPOINT_ID_BYTES
+        && !contains_sensitive_patterns(value)
+        && value
+            .chars()
+            .all(|character| character.is_ascii_alphanumeric() || "-_.:/@".contains(character))
+}
