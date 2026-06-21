@@ -10,9 +10,10 @@ use crate::http_server::middleware::{
 };
 use crate::http_server::state::AxumApiState;
 use crate::http_server::{
-    AdaptivePolicyPromotionApiRequest, AdaptivePolicyRollbackApiRequest,
-    AutoAdjustmentApplyRequest, AutoAdjustmentRollbackRequest, DispatchApiRequest,
-    PolicyProposalActionRequest, PolicyProposalCreateRequest, AXUM_API_SCHEMA_VERSION,
+    AdaptiveFusionCompletionApiRequest, AdaptivePolicyPromotionApiRequest,
+    AdaptivePolicyRollbackApiRequest, AutoAdjustmentApplyRequest, AutoAdjustmentRollbackRequest,
+    DispatchApiRequest, PolicyProposalActionRequest, PolicyProposalCreateRequest,
+    AXUM_API_SCHEMA_VERSION,
 };
 use crate::infrastructure::structured_events;
 use crate::provider::cost_gate::{check_cost_gates, CostGateConfig};
@@ -32,6 +33,31 @@ pub(crate) async fn api_dispatch(
             "raw_request_required",
             "raw_request is required",
         ));
+    }
+
+    if adaptive_default_live_routing_enabled() {
+        authorize(
+            &state,
+            &headers,
+            "dispatch:execute",
+            uri.path(),
+            &request_id.0,
+        )?;
+        let response = super::adaptive_completions::execute_adaptive_completion(
+            &state,
+            AdaptiveFusionCompletionApiRequest {
+                prompt: request.raw_request,
+                task_class: None,
+                objective: None,
+                risk_level: None,
+                metadata: None,
+                include_routing_metadata: Some(false),
+            },
+            &request_id.0,
+            &context.api_key_id,
+        )
+        .await?;
+        return Ok((cors_headers(), Json(response)));
     }
 
     structured_events::log_dispatch_start(&request_id.0, "", "http", request.raw_request.len());
@@ -144,6 +170,12 @@ pub(crate) async fn api_dispatch(
         .unwrap_or("");
     structured_events::log_dispatch_complete(&request_id.0, did, fs);
     Ok((cors_headers(), Json(bundle)))
+}
+
+fn adaptive_default_live_routing_enabled() -> bool {
+    std::env::var("ACP_ADAPTIVE_DEFAULT_LIVE_ROUTING")
+        .map(|value| value == "1" || value.eq_ignore_ascii_case("true"))
+        .unwrap_or(false)
 }
 
 fn record_dispatch_and_decision(

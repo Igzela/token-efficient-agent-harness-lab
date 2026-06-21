@@ -67,6 +67,12 @@ fn persists_only_safe_summary_and_feeds_contextual_scoring() {
     assert_eq!(observations[0].observation_id, recorded.observation_id);
     assert_eq!(observations[0].cost_efficiency_score, 1.0 / 1.08);
     assert_eq!(observations[0].latency_efficiency_score, 1.0 / 1.24);
+    assert_eq!(
+        store
+            .daily_adaptive_observation_cost_usd(&recorded.created_at[..10])
+            .unwrap(),
+        0.08
+    );
 }
 
 #[test]

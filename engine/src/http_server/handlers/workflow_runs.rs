@@ -390,7 +390,10 @@ pub(crate) async fn api_tick_workflow_run(
             }
             let cost_config = crate::provider::CostGateConfig::from_env();
             let today_prefix = &crate::http_server::middleware::chrono_free_today()[..10];
-            let daily_cost = store.daily_estimated_cost_usd(today_prefix).unwrap_or(0.0);
+            let daily_cost = store.daily_estimated_cost_usd(today_prefix).unwrap_or(0.0)
+                + store
+                    .daily_adaptive_observation_cost_usd(today_prefix)
+                    .unwrap_or(0.0);
             let recorder = std::sync::Arc::new(crate::provider::ProviderAuditRecorder::with_store(
                 store.clone(),
             ));
@@ -452,7 +455,10 @@ pub(crate) async fn api_tick_workflow_run(
             };
             let cost_config = crate::provider::CostGateConfig::from_env();
             let today_prefix = &crate::http_server::middleware::chrono_free_today()[..10];
-            let daily_cost = store.daily_estimated_cost_usd(today_prefix).unwrap_or(0.0);
+            let daily_cost = store.daily_estimated_cost_usd(today_prefix).unwrap_or(0.0)
+                + store
+                    .daily_adaptive_observation_cost_usd(today_prefix)
+                    .unwrap_or(0.0);
             let contextual_policies = store
                 .active_adaptive_fusion_policies()
                 .map_err(internal_error)?;
@@ -563,7 +569,7 @@ fn persist_adaptive_observation(
     }
 }
 
-fn maybe_auto_promote_from_observation(
+pub(crate) fn maybe_auto_promote_from_observation(
     store: &crate::storage::local_product_store::LocalProductStore,
     observation: &crate::storage::local_product_store::AdaptiveObservationSummary,
     actor: &str,

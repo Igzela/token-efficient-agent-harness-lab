@@ -156,10 +156,13 @@ async fn main() {
         &cb_registry,
     );
     if adaptive_execution_enabled {
-        if let Some(executor) = build_adaptive_provider_executor_from_env(&store_arc, &cb_registry)
-            .unwrap_or_else(|error| panic!("adaptive provider configuration failed: {error}"))
+        if let Some((executor, registry_snapshot)) =
+            build_adaptive_provider_executor_from_env(&store_arc, &cb_registry)
+                .unwrap_or_else(|error| panic!("adaptive provider configuration failed: {error}"))
         {
-            state = state.with_adaptive_provider_executor(executor);
+            state = state
+                .with_adaptive_provider_executor(executor)
+                .with_adaptive_registry_snapshot(registry_snapshot);
         }
     }
     let state = configure_auth(
@@ -639,20 +642,32 @@ fn build_state_with_provider(
 fn build_adaptive_provider_executor_from_env(
     store: &Arc<LocalProductStore>,
     cb_registry: &Arc<CircuitBreakerRegistry>,
-) -> Result<Option<Arc<AdaptiveExecutionExecutor>>, String> {
+) -> Result<
+    Option<(
+        Arc<AdaptiveExecutionExecutor>,
+        engine::feedback::ModelEndpointRegistrySnapshot,
+    )>,
+    String,
+> {
     let raw = match std::env::var(ACP_ADAPTIVE_PROVIDER_ENDPOINTS_JSON) {
         Ok(raw) if !raw.trim().is_empty() => raw,
         _ => return Ok(None),
     };
     let configs =
         parse_adaptive_provider_endpoints_json(&raw).map_err(|error| error.to_string())?;
+    let registry_snapshot =
+        engine::provider::adaptive_execution::adaptive_registry_snapshot_from_configs(&configs)
+            .map_err(|error| error.to_string())?;
     let providers = build_adaptive_providers(&configs, cb_registry)?;
     let recorder = Arc::new(ProviderAuditRecorder::with_store(store.clone()));
-    Ok(Some(Arc::new(AdaptiveExecutionExecutor::new(
-        providers,
-        recorder,
-        AdaptiveExecutionKillSwitch::new(),
-    ))))
+    Ok(Some((
+        Arc::new(AdaptiveExecutionExecutor::new(
+            providers,
+            recorder,
+            AdaptiveExecutionKillSwitch::new(),
+        )),
+        registry_snapshot,
+    )))
 }
 
 fn build_adaptive_providers(

@@ -15,7 +15,9 @@ use crate::feedback::{
     contextual_policy_key, AdaptiveExperimentController, AdaptiveExperimentGate,
     AdaptiveExperimentLimits, AdaptiveExperimentPolicy, AdaptiveExperimentRequest,
     AdaptiveExplorationGate, ContextualBanditEngine, ContextualBanditObservation,
-    ContextualPolicyRequest, PromotedAdaptivePolicy, TaskClassEvaluation,
+    ContextualPolicyRequest, CredentialReference, EndpointHealth, EndpointPricing,
+    ModelEndpointRegistry, ModelEndpointRegistrySnapshot, ModelEndpointSpec,
+    PromotedAdaptivePolicy, TaskClassEvaluation, ENDPOINT_REGISTRY_SCHEMA_VERSION,
 };
 use crate::node_executor::{NodeExecutionInput, NodeExecutionOutput, NodeExecutor};
 
@@ -122,6 +124,51 @@ pub fn parse_adaptive_provider_endpoints_json(
         validate_adaptive_provider_endpoint_config(config)?;
     }
     Ok(configs)
+}
+
+pub fn adaptive_registry_snapshot_from_configs(
+    configs: &[AdaptiveProviderEndpointConfig],
+) -> Result<ModelEndpointRegistrySnapshot, AdaptiveProviderEndpointConfigError> {
+    let mut registry = ModelEndpointRegistry::new();
+    for config in configs {
+        validate_adaptive_provider_endpoint_config(config)?;
+        registry
+            .upsert(ModelEndpointSpec {
+                schema_version: ENDPOINT_REGISTRY_SCHEMA_VERSION.to_string(),
+                endpoint_id: config.endpoint_id.clone(),
+                provider_id: config.provider_type.clone(),
+                model_id: config.model.clone(),
+                enabled: true,
+                capabilities: vec!["completion".to_string()],
+                context_window_tokens: MAX_EXECUTION_TOKENS,
+                supports_tools: false,
+                supports_parallel_tools: false,
+                pricing: EndpointPricing {
+                    input_cost_per_1k_usd: config.input_cost_per_1k_usd.unwrap_or(0.0),
+                    output_cost_per_1k_usd: config.output_cost_per_1k_usd.unwrap_or(0.0),
+                    cache_read_cost_per_1k_usd: None,
+                    cache_write_cost_per_1k_usd: None,
+                },
+                health: EndpointHealth {
+                    status: "healthy".to_string(),
+                    score: 1.0,
+                    observed_at: None,
+                },
+                credential_reference: config.credential_env.as_ref().map(|reference_id| {
+                    CredentialReference {
+                        backend: "env".to_string(),
+                        reference_id: reference_id.clone(),
+                    }
+                }),
+            })
+            .map_err(|_| {
+                AdaptiveProviderEndpointConfigError::new(
+                    "adaptive_registry_invalid",
+                    "adaptive endpoint config could not populate the model registry",
+                )
+            })?;
+    }
+    Ok(registry.snapshot())
 }
 
 pub fn validate_adaptive_provider_endpoint_config(

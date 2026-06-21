@@ -12,7 +12,7 @@ pub const HTTP_SERVER_SCHEMA_VERSION: &str = "http_server.v1";
 pub const AXUM_API_SCHEMA_VERSION: &str = "axum_api.v1";
 pub const MAX_BODY_SIZE: usize = 1_048_576;
 
-use crate::feedback::ContextualPolicyPromotion;
+use crate::feedback::{ContextualPolicyPromotion, ObjectiveProfile};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
@@ -20,6 +20,16 @@ use serde_json::{json, Value};
 pub struct DispatchApiRequest {
     pub raw_request: String,
     pub request_source: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+pub struct AdaptiveFusionCompletionApiRequest {
+    pub prompt: String,
+    pub task_class: Option<String>,
+    pub objective: Option<ObjectiveProfile>,
+    pub risk_level: Option<String>,
+    pub metadata: Option<Value>,
+    pub include_routing_metadata: Option<bool>,
 }
 
 #[derive(Debug, Clone, PartialEq, Deserialize)]
@@ -286,6 +296,38 @@ pub fn openapi_document() -> serde_json::Value {
                 }
             }
             ,
+            "/api/v1/adaptive-fusion/completions": {
+                "post": {
+                    "summary": "Run a guarded adaptive completion",
+                    "description": "Requires configured auth plus provider and adaptive execution gates. Routing metadata is hidden unless explicitly requested.",
+                    "requestBody": {
+                        "required": true,
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "type": "object",
+                                    "required": ["prompt"],
+                                    "properties": {
+                                        "prompt": {"type": "string"},
+                                        "task_class": {"type": "string"},
+                                        "objective": {"type": "string", "enum": ["efficient", "quality"]},
+                                        "risk_level": {"type": "string", "enum": ["low", "medium", "high", "critical"]},
+                                        "metadata": {"type": "object"},
+                                        "include_routing_metadata": {"type": "boolean", "default": false}
+                                    }
+                                }
+                            }
+                        }
+                    },
+                    "responses": {
+                        "200": {"description": "Compact adaptive completion"},
+                        "400": {"description": "Gate, validation, budget, kill, or execution block"},
+                        "401": {"description": "Unauthorized"},
+                        "403": {"description": "Forbidden"},
+                        "429": {"description": "Rate limited"}
+                    }
+                }
+            },
             "/api/v1/dispatches": {
                 "get": {
                     "summary": "List persisted local dispatch history",
@@ -1235,6 +1277,10 @@ mod tests {
     fn test_openapi_integrity_route_matches_router() {
         let doc = openapi_document();
         let paths = doc["paths"].as_object().expect("paths should be an object");
+        assert!(
+            paths.contains_key("/api/v1/adaptive-fusion/completions"),
+            "OpenAPI document must include the guarded adaptive completion route"
+        );
         assert!(
             paths.contains_key("/api/v1/storage/integrity"),
             "OpenAPI document must include /api/v1/storage/integrity to match the axum router registration"

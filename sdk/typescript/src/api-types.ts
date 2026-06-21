@@ -15,6 +15,39 @@ export interface ApiStatus {
   tenant_id?: string;
 }
 
+export interface AdaptiveCompletionRequest {
+  prompt: string;
+  task_class?: string;
+  objective?: "efficient" | "quality";
+  risk_level?: "low" | "medium" | "high" | "critical";
+  metadata?: Record<string, unknown>;
+  include_routing_metadata?: boolean;
+}
+
+export interface AdaptiveCompletionUsage {
+  input_tokens: number;
+  output_tokens: number;
+  estimated_cost_usd: number;
+  latency_ms: number;
+}
+
+export interface AdaptiveCompletionRoutingMetadata {
+  candidate_id: string;
+  candidate_hash: string;
+  candidate_kind: "single" | "ordered_fallback" | "fusion";
+  policy_hash: string | null;
+  policy_rollout_percentage: number | null;
+  observation_id: string | null;
+  experiment_assigned: boolean;
+}
+
+export interface AdaptiveCompletionResponse {
+  schema_version: "adaptive_completion.v1";
+  output: string | null;
+  usage: AdaptiveCompletionUsage;
+  routing_metadata?: AdaptiveCompletionRoutingMetadata;
+}
+
 export interface LocalCostSummary {
   schema_version: "local_cost_summary.v2";
   currency: string;

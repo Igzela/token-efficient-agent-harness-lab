@@ -1,3 +1,4 @@
+pub(crate) mod adaptive_completions;
 pub(crate) mod audit;
 pub(crate) mod backups;
 pub(crate) mod costs;

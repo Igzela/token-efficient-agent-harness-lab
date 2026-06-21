@@ -319,6 +319,15 @@ impl LocalProductStore {
             .map(AdaptiveObservationSummary::to_contextual)
             .collect())
     }
+
+    pub fn daily_adaptive_observation_cost_usd(&self, date_prefix: &str) -> Result<f64, String> {
+        Ok(self
+            .adaptive_observations()?
+            .into_iter()
+            .filter(|observation| observation.created_at.starts_with(date_prefix))
+            .map(|observation| observation.cost_usd)
+            .sum())
+    }
 }
 
 fn record_in_state(
