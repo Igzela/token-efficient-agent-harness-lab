@@ -1,10 +1,10 @@
 # Current Status
 
-Last updated: 2026-06-20. V2-0 through V2-5 are merged; the Real Output Closeout implementation is awaiting PR merge and `v0.1.0` publication.
+Last updated: 2026-06-21. V2-0 through V2-5 and the Real Output Closeout are complete; `v0.1.0` is published and its online installer path is verified.
 
 ## Summary
 
-The core plan and V2 implementation are complete. The current branch adds prompt-to-CLI execution, bounded verification/repair evidence, optional real GitHub PR creation, a verified release contract, three real repository pilots, and a task-first dashboard.
+The core plan, V2 implementation, and Real Output Closeout are complete. The system includes prompt-to-CLI execution, bounded verification/repair evidence, optional real GitHub PR creation, a verified release contract, three real repository pilots, and a task-first dashboard.
 
 The system is useful as an operations/control-plane lab for deterministic dispatch, workflow state, app-owned execution metadata, guarded local controls, SDKs, and audit evidence. It is not a cloud SaaS, hosted multi-tenant service, direct-deploy tool, or unattended autonomous-agent runtime.
 
@@ -26,7 +26,9 @@ The system is useful as an operations/control-plane lab for deterministic dispat
 
 - Branch: `main`.
 - Tests: **1571 Rust tests pass**, 0 failures, recorded 2026-06-18 on `codex/v2-4-supervised-worker-queue`.
-- CI: latest `tests` workflow on `main` is green as of 2026-06-18 after V2-4.
+- CI: the `tests` workflow run `27891091676` on `main` is green as of 2026-06-21.
+- Release: the `v0.1.0` release workflow run `27891104370` is green; all eight published assets passed checksum/archive inspection.
+- Online install: the README installer fetched `v0.1.0` into an isolated home, verified the checksum, installed the runtime/dashboard, and passed health, dashboard API, and HTML smoke checks on 2026-06-21.
 - PostgreSQL integration tests are gated behind `cargo test -p engine --features pg-tests` with `ACP_TEST_DATABASE_URL`.
 - Live E2E validation evidence is archived at `docs/archive/validation/LIVE_E2E_VALIDATION_REPORT.md` with 48 PASS, 0 FAIL, 1 SKIP on 2026-06-12.
 
@@ -57,12 +59,14 @@ uv run --no-project python scripts/check_agent_handoff.py
 | Dynamic Regulator MVP Phases 1-5 | Complete |
 | Phase 8 final GA seal | Complete; archived at `docs/archive/phase-closeouts/PHASE8_FINAL_COMPLETION_PLAN.md` |
 | Product Boundary Repair Track P0-P3 | Complete — PRs #64-#67 |
+| V2 Real Production Output Track | Complete — V2-0 through V2-5 merged in PRs #69-#75 |
+| Real Output Closeout | Complete — PRs #79-#81; `v0.1.0` published and online installer verified |
 
 ## Active Track
 
 | Track | Status |
 |---|---|
-| V2 Real Production Output Track | V2-0 through V2-5 merged in PRs #69-#75 |
+| Agent Autonomous Maintenance Mode | Active for docs, CI, tests, deterministic regressions, and low-risk PR flow |
 
 Historical phase plans, closeouts, and long-form validation reports are retained under `docs/archive/`.
 
@@ -92,7 +96,6 @@ Historical phase plans, closeouts, and long-form validation reports are retained
 - Security posture is suitable for local/small-team self-hosting only; hosted/multi-tenant use would require a new threat model and approved implementation plan.
 - No hard process/container/VM sandbox isolation exists.
 - Provider API execution remains default-off; local CLI discovery is default-on but execution still requires an explicit task tick.
-- The only closeout action pending is publishing and online-installing `v0.1.0` after merge.
 - Cloud SaaS, multi-tenant hosting, app-runtime merge/release/deploy/apply authority, provider failover, and unattended autonomous-agent loops remain out of scope.
 
 ## Documentation Discipline

@@ -70,8 +70,8 @@ export function RuntimeGates({
     {
       detail: boundaries.runtime_workers === "enabled"
         ? "Runtime worker capability is enabled by explicit local configuration."
-        : "CLI-backed execution remains off/default-safe unless locally enabled.",
-      label: "CLI",
+        : "Supervised workers remain bounded and require explicit local configuration.",
+      label: "Workers",
       status: boundaries.runtime_workers,
       tone: gateTone(boundaries.runtime_workers),
     },
@@ -96,7 +96,7 @@ export function RuntimeGates({
       <div className="setup-heading">
         <div>
           <p className="label">Runtime gates</p>
-          <h2>Provider, CLI, auth, workspace, and export status</h2>
+          <h2>Provider, auth, workers, workspace, and export status</h2>
         </div>
         <span className="pill info">guarded</span>
       </div>

@@ -34,6 +34,12 @@ import { OperatorSurface } from "@/components/OperatorSurface";
 import { WorkflowRuns } from "@/components/WorkflowRuns";
 
 type Tab = "mission" | "dispatches" | "routing" | "regulator" | "operator" | "decisions" | "team" | "costs" | "operations" | "runs" | "patches" | "scheduler" | "pool" | "queue" | "settings" | "health" | "backups" | "audit";
+type AuthStatus = "ok" | "missing" | "denied" | "offline";
+type SetupStep = {
+  detail: string;
+  label: string;
+  state: "done" | "todo" | "warn";
+};
 
 const allTabs: { id: Tab; label: string }[] = [
   { id: "mission", label: "Mission Control" },
@@ -150,13 +156,39 @@ function readTabFromHash(): Tab {
   return "mission";
 }
 
+function localAccessStep(authStatus: AuthStatus, hasLocalToken: boolean): SetupStep {
+  if (authStatus === "ok") {
+    return {
+      detail: hasLocalToken
+        ? "A local API key is stored for protected tabs."
+        : "Open local mode; no API key is required.",
+      label: "Local access ready",
+      state: "done",
+    };
+  }
+  if (authStatus === "missing") {
+    return {
+      detail: "Protected mode requires ACP_ADMIN_API_KEY and a matching key stored in this browser.",
+      label: "Local access ready",
+      state: "todo",
+    };
+  }
+  return {
+    detail: authStatus === "denied"
+      ? "The stored API key was rejected or lacks the required scope."
+      : "Start the local runtime before checking authentication.",
+    label: "Local access ready",
+    state: "warn",
+  };
+}
+
 export default function DashboardPage() {
   const [tab, setTab] = useState<Tab>(readTabFromHash);
   const [mobileNavOpen, setMobileNavOpen] = useState(false);
   const [health, setHealth] = useState("unknown");
   const [ready, setReady] = useState("unknown");
   const [dashboard, setDashboard] = useState<LocalDashboardState>(emptyDashboard);
-  const [authStatus, setAuthStatus] = useState<"ok" | "missing" | "denied" | "offline">("ok");
+  const [authStatus, setAuthStatus] = useState<AuthStatus>("ok");
   const [authMessage, setAuthMessage] = useState("");
   const [reloadKey, setReloadKey] = useState(0);
   const [lastUpdated, setLastUpdated] = useState<Date | null>(null);
@@ -285,45 +317,41 @@ export default function DashboardPage() {
     [dashboard.dispatches],
   );
   const hasLocalToken = Boolean(getStoredToken());
-  const setupSteps = useMemo(
+  const setupSteps = useMemo<SetupStep[]>(
     () => [
       {
         detail: health === "healthy"
           ? "Engine API is reachable."
-          : "Start the engine: ACP_ADMIN_TOKEN=test123 PORT=9999 ./target/debug/engine",
+          : "Start the installed runtime with: agent-control-plane",
         label: "Engine reachable",
         state: health === "healthy" ? "done" : "warn",
       },
       {
         detail: ready === "ready"
           ? "Runtime readiness checks pass."
-          : "Check scheduler status in the Scheduler tab.",
+          : "Review scheduler and executor status under Operations.",
         label: "Runtime ready",
         state: ready === "ready" ? "done" : "warn",
       },
-      {
-        detail: hasLocalToken
-          ? "A local API key is stored for protected tabs."
-          : "Set ACP_ADMIN_TOKEN env var to enable protected endpoints.",
-        label: "Admin key available",
-        state: hasLocalToken ? "done" : "todo",
-      },
+      localAccessStep(authStatus, hasLocalToken),
       {
         detail: dashboard.counts.dispatches > 0
           ? `${dashboard.counts.dispatches} dispatch record${dashboard.counts.dispatches === 1 ? "" : "s"} persisted.`
-          : "Use the curl command in the Dispatches tab to create your first dispatch.",
-        label: "First dispatch recorded",
+          : "Create your first task in Tasks.",
+        label: "First task recorded",
         state: dashboard.counts.dispatches > 0 ? "done" : "todo",
       },
       {
         detail: dashboard.counts.team_members > 0 || dashboard.counts.api_keys > 0
           ? `${dashboard.counts.team_members} member${dashboard.counts.team_members === 1 ? "" : "s"}, ${dashboard.counts.api_keys} key${dashboard.counts.api_keys === 1 ? "" : "s"}.`
-          : "Configure members and API keys in the Team tab.",
-        label: "Team boundary configured",
-        state: dashboard.counts.team_members > 0 || dashboard.counts.api_keys > 0 ? "done" : "todo",
+          : authStatus === "ok" && !hasLocalToken
+            ? "Optional for solo local use; configure members and keys in Team before sharing access."
+            : "Configure members and API keys in Team.",
+        label: "Team boundary",
+        state: dashboard.counts.team_members > 0 || dashboard.counts.api_keys > 0 || (authStatus === "ok" && !hasLocalToken) ? "done" : "todo",
       },
     ],
-    [dashboard.counts.api_keys, dashboard.counts.dispatches, dashboard.counts.team_members, hasLocalToken, health, ready],
+    [authStatus, dashboard.counts.api_keys, dashboard.counts.dispatches, dashboard.counts.team_members, hasLocalToken, health, ready],
   );
 
   return (
@@ -461,7 +489,7 @@ export default function DashboardPage() {
 function SetupChecklist({
   steps,
 }: {
-  steps: Array<{ detail: string; label: string; state: string }>;
+  steps: SetupStep[];
 }) {
   const completed = steps.filter((step) => step.state === "done").length;
   return (

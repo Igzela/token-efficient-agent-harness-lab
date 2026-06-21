@@ -42,6 +42,18 @@ const forbiddenPatterns = [
     name: "provider failover control",
     pattern: /\bprovider\s+failover\b/i,
   },
+  {
+    name: "legacy admin token environment variable",
+    pattern: /\bACP_ADMIN_TOKEN\b/,
+  },
+  {
+    name: "source-tree engine startup command",
+    pattern: /\.\/target\/debug\/engine\b/,
+  },
+  {
+    name: "runtime worker state mislabeled as CLI",
+    pattern: /\bruntime_workers\b[\s\S]{0,320}\blabel:\s*["']CLI["']/,
+  },
 ];
 
 const forbiddenControls = [

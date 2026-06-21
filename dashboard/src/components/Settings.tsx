@@ -5,7 +5,7 @@ import { EmptyState } from "./EmptyState";
 import { StateBanner } from "./StateBanner";
 
 const envVars = [
-  { name: "ACP_ADMIN_TOKEN", desc: "Admin API key for protected endpoints" },
+  { name: "ACP_ADMIN_API_KEY", desc: "Admin API key for protected endpoints" },
   { name: "ACP_REQUIRE_AUTH", desc: "Enable authentication (1 = required)" },
   { name: "ACP_PROVIDER_TYPE", desc: "Provider adapter (openai, anthropic, stub)" },
   { name: "ACP_ENABLE_PROVIDER_EXECUTION", desc: "Enable real provider calls (1 = on)" },

@@ -84,7 +84,7 @@ Autonomously maintain repo health and fix CI/docs/test drift. No future core-com
 - Pilots: real-world task validation
 - V2 Real Production Output PRs that follow the phase plan below
 
-## Real Output Closeout — IMPLEMENTED
+## Real Output Closeout — COMPLETE
 
 Human approval on 2026-06-20 authorizes the final local-product closeout. This is not a new runtime kernel or unattended-agent track. It completes the existing V2 path in this order:
 
@@ -97,9 +97,10 @@ Human approval on 2026-06-20 authorizes the final local-product closeout. This i
 
 Implementation status:
 
-- Items 1-3, 5, and 6 are complete on `codex/real-output-closeout`.
-- Release naming, package layout, installer behavior, and local 16-check release smoke are complete.
-- Remaining external action: merge the closeout PR, tag `v0.1.0`, wait for the release workflow, then run the online installer against the published asset.
+- Items 1-6 are merged through PRs #79-#81.
+- Release naming, package layout, installer behavior, and the local 16-check release smoke are complete.
+- `v0.1.0` was published on 2026-06-21 with verified checksums for all release archives.
+- The README online installer downloaded the published x86_64 Linux asset, verified its checksum, installed it into an isolated home, started the runtime, and passed health, dashboard API, and dashboard HTML smoke checks.
 
 Acceptance:
 
@@ -107,7 +108,7 @@ Acceptance:
 - Failed verification can trigger no more than two audited repair attempts; exhausted verification blocks approval-bound output.
 - Verification output, exit status, command, attempt, and timestamp are bound to the captured artifact.
 - GitHub PR creation is default-off, explicit, audited, and returns the real PR URL; direct `main`, merge, release, deploy, and apply authority remain unavailable.
-- The local package/installer smoke passes; published-asset verification is the release closeout step after merge.
+- The local package/installer smoke and published-asset online installation both pass.
 - Three pilots produce distinct verified `acp/*` branches or PRs while each target `main` remains unchanged.
 
 ## Product Boundary Repair Track — COMPLETE
