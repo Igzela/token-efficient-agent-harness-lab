@@ -149,7 +149,7 @@ These are accepted current limitations, not hidden TODOs:
 - Cloud SaaS, hosted/cloud deployment, multi-tenant service, and direct release/tag/deploy/apply controls remain out of scope. Provider portfolio fallback/fusion remains unavailable until the bounded AF-3 phase lands.
 - Some routing, quality, and orchestration modules remain partially active rather than unified under one policy layer.
 
-The Adaptive Fusion Routing track approved on 2026-06-21 must extend `model_selector`, `feedback`, `provider`, and the existing scheduler/executor boundaries. It must not create a parallel routing, policy, workflow, or storage kernel. AF-0 through AF-2 are shadow/offline only; later provider portfolio execution remains unavailable until its phase gates merge.
+The Adaptive Fusion Routing track approved on 2026-06-21 must extend `model_selector`, `feedback`, `provider`, and the existing scheduler/executor boundaries. It must not create a parallel routing, policy, workflow, or storage kernel. AF-0 provides pure portfolio planning and AF-1 provides a bounded in-memory endpoint registry with deterministic secret-safe snapshots. AF-0 through AF-2 are shadow/offline only; the registry has no database, HTTP, credential-resolution, network, or live-routing authority. Later provider portfolio execution remains unavailable until its phase gates merge.
 
 Boundary expansion outside the approved V2 and Adaptive Fusion Routing tracks requires a new plan, threat-model update, focused tests, and explicit human approval.
 
