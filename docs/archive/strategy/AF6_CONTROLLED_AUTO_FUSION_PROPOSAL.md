@@ -1,170 +1,213 @@
-# AF-6 Controlled Auto Fusion Proposal
+# AF-6 Auto Fusion Boundary Reset
 
-Status: proposal only. This document does not authorize implementation or runtime authority.
+Status: authorized planning baseline after user direction on 2026-06-21.
+
+This document replaces the earlier conservative AF-6 proposal. The older repository boundary treated default live routing, provider failover, unattended experiments, and automatic promotion as disallowed by default. For AF-6, those items are no longer categorically disallowed. They are now target capabilities, provided they are implemented through staged gates, hard budgets, audit, kill switches, rollback, and CI-backed verification.
 
 ## User-requested capability
 
-The requested direction is to make Adaptive Fusion feel closer to a transparent fusion router:
+AF-6 should make Adaptive Fusion feel closer to a transparent fusion router:
 
 - automatically generate candidate provider/portfolio combinations
 - call multiple panel providers in parallel
 - run continuous experiments
 - convert live execution outcomes into observations
 - promote better combinations automatically
-- route live traffic by default
-- allow adaptive strategy changes without human confirmation
+- route live traffic by default after explicit AF-6 enablement
+- allow adaptive strategy changes without per-promotion human confirmation
 - expose the behavior behind a normal completion-style API
 
-## Boundary judgment
+## Boundary reset
 
-The current repository does not allow the request exactly as written. The following items conflict with the existing product boundary and should remain disallowed unless a new explicit approval changes the threat model:
+AF-6 changes the old boundary from "do not implement these capabilities" to "implement these capabilities with explicit operational controls".
 
-- default-on provider API execution
-- automatic live routing for ordinary dispatches
-- unattended autonomous experimentation without hard traffic and budget limits
-- automatic promotion to live behavior without approval or rollback evidence
-- provider failover outside bounded AF-3 execution plans
-- opaque completion behavior that hides provider/cost/audit evidence
+The following are now in scope for AF-6:
 
-The safe version is not "full-auto live routing". The safe version is a controlled online learning loop where automation is allowed to propose, test, score, and shadow-promote candidates, while live influence remains explicit, reversible, audited, and gated.
+- live adaptive routing for ordinary completion-style requests
+- provider fallback and fusion selection across configured endpoints
+- automatic candidate generation
+- automatic online experiments
+- automatic observation capture
+- automatic policy promotion after evidence thresholds
+- a completion-style API wrapper that can hide orchestration complexity from callers
 
-## AF-6 goal
+The following remain non-negotiable engineering controls, not product-boundary exclusions:
 
-Add an opt-in controlled online Adaptive Fusion loop that can learn from real adaptive_provider ticks and recommend better candidate plans by task class/objective, without granting default live routing or unmanaged provider spend.
+- auth for every live provider call
+- per-request and daily cost gates
+- token, call, timeout, and concurrency ceilings
+- provider/model identity validation
+- secret redaction and output caps
+- circuit breakers and global kill switches
+- persistent audit events and policy snapshots
+- rollback path for every promoted policy
+- tests and CI before merge
 
-## Approved AF-6 scope
+## AF-6 target behavior
 
-AF-6 may implement:
+AF-6 should support this flow:
 
-1. Candidate generation
-   - Deterministically generate bounded candidate portfolios from configured endpoints.
-   - Candidate types: single, ordered fallback, and fusion panel/judge/synthesizer.
-   - Hard caps: max 8 endpoints, max 32 generated candidates per task class/objective, max panel size 3.
-   - Reject candidates that exceed cost, token, time, model-binding, capability, health, or credential-reference constraints.
+```text
+completion request
+-> classify task context/objective/risk
+-> load configured provider endpoints
+-> generate eligible single/fallback/fusion candidates
+-> select candidate from active adaptive policy or exploration policy
+-> execute candidate, including parallel panel calls when selected
+-> judge/synthesize when using fusion
+-> return final output plus optional routing metadata
+-> persist observation summary
+-> update evidence aggregates
+-> promote better policy automatically when thresholds are met
+-> rollback or kill if gates trip
+```
 
-2. Parallel panel execution
-   - Add a new opt-in AF-6 execution mode for parallel panel calls.
-   - Keep judge and synthesizer serial after panel completion.
-   - Hard caps: max panel concurrency 3, max total calls 8, max total tokens/cost/time per request.
-   - Preserve kill switch, circuit breakers, redaction, capped outputs, audit events, and provider identity validation.
-
-3. Online observation ingestion
-   - Convert successful or failed adaptive_provider executions into bounded observations.
-   - Store observation summaries only: task_class, objective, candidate_id, success, quality score source, tool score, cost, latency, provider evidence IDs.
-   - Do not store raw prompts, raw provider output, secrets, target repo content, or full panel responses.
-
-4. Continuous shadow experimentation
-   - Allow low/medium-risk traffic to assign a small percentage of explicit adaptive_provider ticks to generated candidate plans.
-   - Default: disabled.
-   - Required gates: ACP_ENABLE_ADAPTIVE_ONLINE_EXPERIMENTS=1 and ACP_ADAPTIVE_ONLINE_EXPERIMENTS_ACTIVE=1.
-   - Hard cap: 5% traffic, no high/critical risk, no target-output/write nodes, kill switch required.
-
-5. Auto-proposal, not auto-promotion
-   - Automatically create promotion candidates when minimum sample/confidence/regression criteria are met.
-   - The default output is a pending policy proposal or shadow policy snapshot.
-   - Live promotion still requires explicit operator confirmation unless a later approved phase changes this.
-
-6. Completion-style wrapper
-   - Add an explicit endpoint such as POST /api/v1/adaptive-fusion/completions.
-   - It may feel like a normal completion endpoint but must expose audit/cost/candidate metadata in the response.
-   - It must be default-off and require auth plus dispatch:execute.
-   - It must not silently bypass workflow ticks, cost gates, or audit.
-
-## Explicitly not approved in AF-6
-
-AF-6 must not implement:
-
-- default-on live routing
-- unbounded provider failover
-- automatic live promotion without confirmation
-- unattended production traffic optimization
-- hidden router behavior behind /api/v1/dispatch
-- any provider call without auth, budget, token, timeout, audit, redaction, and kill-switch gates
-- recursive self-modifying routing code
-
-## Implementation slices
+## Required implementation slices
 
 ### AF-6A Candidate generator
 
-Files likely touched:
+Goal: deterministically generate candidate portfolios from configured endpoints.
 
-- engine/src/feedback/
-- engine/src/provider/adaptive_execution.rs
-- engine/tests/test_adaptive_fusion_*.rs
+Scope:
+
+- single endpoint candidates
+- ordered fallback candidates
+- fusion candidates with panel, judge, and synthesizer roles
+- objective profiles such as efficient, quality, balanced, and low-latency if useful
+- health, context, tool, capability, price, model-binding, and credential-reference filters
 
 Acceptance:
 
-- deterministic candidate IDs and hashes
-- rejects invalid/over-budget candidates
-- no network/provider calls
-- tests cover duplicate, malformed, over-budget, capability-missing, and secret-shaped cases
+- generated candidate IDs and hashes are deterministic
+- no provider call occurs during generation
+- max endpoints and max candidates are bounded by config
+- invalid, duplicate, over-budget, secret-shaped, unavailable, or capability-missing candidates are rejected
+- tests cover deterministic ordering and rejection cases
 
 ### AF-6B Parallel panel execution
 
-Files likely touched:
+Goal: allow Fusion panel calls to run concurrently.
 
-- engine/src/provider/adaptive_execution.rs
-- engine/tests/test_adaptive_fusion_execution.rs
+Scope:
+
+- parallelize only panel calls
+- keep judge and synthesizer after panel completion
+- support partial panel failure policy, e.g. require at least one or at least two successful panel outputs depending on risk/objective
+- preserve timeout, cost, token, identity, redaction, audit, and kill switch behavior
 
 Acceptance:
 
-- panel calls may run concurrently only under explicit AF-6 gate
-- max concurrency <= 3
-- judge/synthesizer remain serial
-- kill switch cancels subsequent stages and blocks new calls
-- failure behavior is deterministic and audited
+- max panel concurrency is bounded and configurable
+- max total calls, total tokens, total cost, and total elapsed time still apply
+- kill switch stops new calls and prevents judge/synthesizer after cancellation
+- partial failure behavior is deterministic and audited
+- tests cover all-success, partial-failure, timeout, kill, identity mismatch, and cost/token overrun
 
 ### AF-6C Online observation capture
 
-Files likely touched:
+Goal: convert real adaptive executions into bounded learning data.
 
-- engine/src/storage/local_product_store/
-- engine/src/feedback/contextual_policy.rs
-- engine/src/http_server/handlers/workflow_runs.rs
+Scope:
+
+- capture candidate_id, task_class, objective, risk level, success, tool success, quality score source, cost, latency, token usage, provider evidence IDs, and policy hash
+- support observations from single, fallback, and fusion executions
+- avoid raw prompt, raw output, secret, target repo content, and full provider transcript persistence
 
 Acceptance:
 
-- adaptive tick results generate bounded observation summaries
-- raw prompts/outputs are not persisted
+- observation summaries are persisted in the existing local store or an approved migration
+- raw sensitive material is not stored
 - observations can feed existing offline/contextual scoring
-- redaction and size caps are tested
+- malformed or oversized observations are rejected
+- tests cover redaction, caps, duplicate evidence, and unknown candidate handling
 
-### AF-6D Shadow auto-proposals
+### AF-6D Continuous experiments
 
-Files likely touched:
+Goal: let the system try candidate combinations continuously under controlled traffic allocation.
 
-- engine/src/storage/local_product_store/adaptive_policy.rs
-- engine/src/http_server/handlers/dispatch.rs
-- dashboard/src/components/AdaptiveFusion*.tsx
-- sdk/typescript/src/*
+Scope:
 
-Acceptance:
-
-- eligible evidence can generate pending promotion proposals
-- live promotion remains confirmation-gated
-- rollback remains available
-- dashboard distinguishes shadow proposal from active policy
-
-### AF-6E Explicit completion-style endpoint
-
-Files likely touched:
-
-- engine/src/http_server/routes.rs
-- engine/src/http_server/handlers/
-- sdk/typescript/src/*
-- dashboard/src/lib/api-client.ts
+- exploration percentage configurable by environment and policy
+- default experiment traffic can be enabled by AF-6 config
+- risk-aware exploration limits remain available
+- experiments should include cheap/fast candidates and quality/fusion candidates
 
 Acceptance:
 
-- explicit endpoint, not default /dispatch behavior
-- requires auth + dispatch:execute
-- provider execution and adaptive gates required
-- response includes candidate/audit/cost metadata
-- no hidden provider spend
+- traffic allocation is deterministic for a request_id/seed
+- experiments cannot exceed configured request, token, cost, and concurrency caps
+- experiments can be paused or killed globally
+- active experiment policy and recent outcomes are visible through API/dashboard
+
+### AF-6E Automatic promotion
+
+Goal: promote better provider combinations automatically after evidence thresholds are met.
+
+Scope:
+
+- remove per-promotion human confirmation as a hard requirement for AF-6 auto mode
+- require minimum samples, confidence, quality delta, cost delta, failure-rate guard, and fresh evidence
+- support staged rollout percentages before full live routing
+- persist every promotion as a policy snapshot with rollback metadata
+
+Acceptance:
+
+- automatic promotion requires explicit AF-6 auto-promotion enablement
+- promoted policies carry policy hashes and evidence IDs
+- rollback can restore the previous active policy
+- promotion is blocked by regression, insufficient evidence, missing local evidence, or kill switch
+- tests cover eligible promotion, blocked promotion, rollback, and staged rollout
+
+### AF-6F Default adaptive live routing
+
+Goal: make adaptive routing the default path for completion-style requests after AF-6 is enabled.
+
+Scope:
+
+- add a completion-style endpoint such as `POST /api/v1/adaptive-fusion/completions`
+- optionally allow `/api/v1/dispatch` to delegate to adaptive routing only when an explicit AF-6 default-live gate is enabled
+- return normal completion output while exposing optional routing metadata for operators
+
+Acceptance:
+
+- live routing is not active unless AF-6 default-live config is set
+- provider execution, auth, cost, token, timeout, audit, redaction, and kill switch controls remain enforced
+- callers can request compact output, while operators can inspect routing/cost/audit details
+- tests cover default-off, enabled, unauthorized, over-budget, killed, and successful paths
+
+## Environment gates
+
+AF-6 may introduce gates like:
+
+```text
+ACP_ENABLE_ADAPTIVE_FUSION_EXECUTION=1
+ACP_ENABLE_ADAPTIVE_AUTO_ROUTING=1
+ACP_ADAPTIVE_AUTO_ROUTING_ACTIVE=1
+ACP_ENABLE_ADAPTIVE_ONLINE_EXPERIMENTS=1
+ACP_ADAPTIVE_ONLINE_EXPERIMENTS_ACTIVE=1
+ACP_ENABLE_ADAPTIVE_AUTO_PROMOTION=1
+ACP_ADAPTIVE_AUTO_PROMOTION_ACTIVE=1
+ACP_ADAPTIVE_DEFAULT_LIVE_ROUTING=1
+ACP_ADAPTIVE_FUSION_KILL_SWITCH=1
+ACP_ADAPTIVE_AUTO_PROMOTION_KILL_SWITCH=1
+```
+
+Exact names may change during implementation, but equivalent controls must exist.
+
+## Explicitly still out of scope
+
+AF-6 still must not implement:
+
+- provider calls without auth in configured-auth mode
+- unbounded spend or unbounded concurrency
+- storage of raw secrets, raw provider transcripts, or target repository content as learning data
+- recursive self-modifying code
+- release/deploy/merge authority from the adaptive router
+- bypassing CI, tests, or audit
 
 ## Merge policy
 
-Do not auto-merge AF-6 implementation PRs. Each slice touches provider routing authority and requires explicit review after CI.
+AF-6 implementation PRs are not auto-merge eligible. They touch provider routing authority and require explicit review after CI.
 
 Required verification per slice:
 
@@ -178,15 +221,14 @@ uv run --no-project python scripts/check_agent_handoff.py
 git diff --check
 ```
 
-## Final acceptance for AF-6
+## Final AF-6 acceptance
 
 AF-6 is complete only when the system can:
 
 - generate bounded candidates from configured endpoints
-- run opt-in parallel panel fusion with audited calls
-- convert adaptive_provider outcomes into safe observations
-- continuously experiment only under explicit gates and hard caps
-- create shadow promotion proposals automatically
-- keep live promotion explicit, reversible, and audited
-- expose an explicit completion-style API without hiding cost/audit/routing metadata
-
+- run parallel panel fusion with audited calls
+- convert live outcomes into safe observations
+- continuously experiment under explicit AF-6 controls
+- automatically promote better policies after evidence thresholds
+- route completion-style requests through adaptive live routing when enabled
+- preserve cost, token, auth, audit, redaction, rollback, and kill-switch controls
