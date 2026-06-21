@@ -2,6 +2,7 @@ pub mod adaptive_fusion;
 pub mod auto_adjustment_guard;
 pub mod auto_adjustment_policy;
 pub mod endpoint_registry;
+pub mod offline_evaluation;
 pub mod outcome_attributor;
 pub mod pattern_detector;
 pub mod policy_proposer;
@@ -28,6 +29,11 @@ pub use endpoint_registry::{
     CredentialReference, EndpointHealth, EndpointPricing, ModelEndpointRegistry,
     ModelEndpointRegistryError, ModelEndpointRegistrySnapshot, ModelEndpointSpec, RegistryMutation,
     ENDPOINT_REGISTRY_SCHEMA_VERSION,
+};
+pub use offline_evaluation::{
+    CandidateAggregate, CandidateKind, JudgeCalibration, JudgeEvidence, OfflineEvaluationEngine,
+    OfflineEvaluationError, OfflineEvaluationReport, OfflineReplayObservation,
+    ShadowCandidateRecommendation, TaskClassEvaluation, OFFLINE_EVALUATION_SCHEMA_VERSION,
 };
 pub use outcome_attributor::{OutcomeAttribution, OutcomeAttributor};
 pub use pattern_detector::{DetectedPattern, PatternDetector};

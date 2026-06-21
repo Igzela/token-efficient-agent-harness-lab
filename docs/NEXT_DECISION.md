@@ -213,7 +213,15 @@ AF-1 implementation status:
 - The bounded in-memory registry supports idempotent upsert and disable, deterministic sorted snapshots and content hashes, capability/context/tool/pricing/health metadata, and symbolic credential references.
 - Validation rejects malformed identities, unbounded metadata, invalid pricing/health/context, raw secret patterns, non-symbolic credential references, and registry capacity overflow before mutation.
 - AF-1 adds no database migration, HTTP surface, credential resolution, provider call, or live-routing influence.
-- AF-2 through AF-5 remain intentionally unimplemented.
+
+AF-2 implementation status:
+
+- Implemented on `codex/adaptive-fusion-af2`, stacked on AF-1.
+- Existing `RunTrace` quality, success, cost, latency, task-class, and evidence IDs can be adapted into endpoint or portfolio replay observations; tool success and explicit judge/reference evidence remain typed inputs.
+- The bounded offline engine aggregates candidate metrics by task class, computes deterministic multi-dimensional Pareto frontiers, emits `efficient` and `quality` shadow recommendations using AF-0 objective weights, and calibrates judge signed bias/absolute error after at least three samples.
+- Inputs are capped at 10,000 observations, 512 candidates per task class, and $1,000,000 cost per observation; malformed, duplicate, inconsistent, overflow-prone, or secret-shaped evidence is rejected without identifier disclosure.
+- AF-2 adds no database query, persistence, HTTP surface, provider call, or live-routing influence.
+- AF-3 through AF-5 remain intentionally unimplemented.
 
 Design references:
 
