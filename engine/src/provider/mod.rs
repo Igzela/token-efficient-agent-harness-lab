@@ -1,3 +1,4 @@
+pub mod adaptive_execution;
 pub mod anthropic;
 pub mod audit;
 pub mod circuit_breaker_provider;

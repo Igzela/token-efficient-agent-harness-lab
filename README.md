@@ -3,7 +3,7 @@
 [![CI](https://github.com/Igzela/token-efficient-agent-harness-lab/actions/workflows/tests.yml/badge.svg)](https://github.com/Igzela/token-efficient-agent-harness-lab/actions/workflows/tests.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Rust](https://img.shields.io/badge/Rust-stable-orange.svg)](https://www.rust-lang.org/)
-[![Tests](https://img.shields.io/badge/tests-1607%20passing-brightgreen.svg)](#running-tests)
+[![Tests](https://img.shields.io/badge/tests-1640%20passing-brightgreen.svg)](#running-tests)
 
 A local deterministic harness and self-hosted macro-orchestrator control plane for studying event-sourced agent workflow infrastructure. Includes a Rust engine with axum API, SQLite state, TypeScript dashboard and SDK, and Python SDK.
 
@@ -120,7 +120,7 @@ cargo test -p engine
 cd sdk/python && PYTHONPATH=src uv run --no-project python -m unittest discover -s tests
 ```
 
-Current result: 1607 Rust tests pass. Python SDK tests run separately under `sdk/python/`.
+Current result: 1640 Rust tests pass. Python SDK tests run separately under `sdk/python/`.
 
 ## How To Run Without Docker
 
@@ -181,6 +181,8 @@ cargo run -p engine
 ```
 
 `ACP_PROVIDER_TYPE=openai_compatible` and `ACP_PROVIDER_TYPE=anthropic` are present for local beta validation only. They require `ACP_ENABLE_PROVIDER_EXECUTION=1`, explicit provider environment configuration, `ACP_REQUIRE_AUTH=1`, a local admin API key, and narrow network exposure. Do not commit provider credentials. Real provider execution remains default-off and is not used in CI.
+
+Adaptive single/fallback/fusion execution is additionally gated by `ACP_ENABLE_ADAPTIVE_FUSION_EXECUTION=1`. Configure up to eight fixed provider/model endpoints through `ACP_ADAPTIVE_PROVIDER_ENDPOINTS_JSON`; entries contain credential environment variable names, never credential values. Execution only occurs when a workflow node carries an explicit bounded `adaptive_execution` plan and the tick uses `executor=adaptive_provider` with `dispatch:execute`. See [`docs/RUNBOOK.md`](docs/RUNBOOK.md) for the configuration and plan shape.
 
 Production-like local beta profile:
 

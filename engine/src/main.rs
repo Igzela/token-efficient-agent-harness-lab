@@ -10,6 +10,11 @@ use engine::infrastructure::auth::{
 };
 use engine::infrastructure::circuit_breaker::{CircuitBreaker, CircuitBreakerRegistry};
 use engine::infrastructure::rate_limiter::RateLimiter;
+use engine::provider::adaptive_execution::{
+    parse_adaptive_provider_endpoints_json, validate_adaptive_provider_endpoint_config,
+    AdaptiveExecutionExecutor, AdaptiveExecutionKillSwitch, AdaptiveProviderEndpointConfig,
+    ACP_ADAPTIVE_PROVIDER_ENDPOINTS_JSON,
+};
 use engine::provider::anthropic::AnthropicProvider;
 use engine::provider::audit::ProviderAuditRecorder;
 use engine::provider::circuit_breaker_provider::CircuitBreakerProvider;
@@ -22,7 +27,7 @@ use engine::provider::transport::ReqwestTransport;
 use engine::provider::Provider;
 use engine::scheduler::{SchedulerConfig, WorkflowScheduler};
 use engine::storage::local_product_store::LocalProductStore;
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
@@ -125,24 +130,50 @@ async fn main() {
         }
     };
 
+    let adaptive_execution_enabled = env_enabled("ACP_ENABLE_ADAPTIVE_FUSION_EXECUTION");
+    let require_auth = env_enabled("ACP_REQUIRE_AUTH");
+    let has_single_provider =
+        std::env::var("ACP_PROVIDER_TYPE").is_ok_and(|value| !value.trim().is_empty());
+    let has_endpoint_config = std::env::var(ACP_ADAPTIVE_PROVIDER_ENDPOINTS_JSON)
+        .is_ok_and(|value| !value.trim().is_empty());
+    validate_adaptive_startup(
+        adaptive_execution_enabled,
+        env_enabled("ACP_ENABLE_PROVIDER_EXECUTION"),
+        require_auth,
+        has_single_provider,
+        has_endpoint_config,
+    )
+    .unwrap_or_else(|error| panic!("{error}"));
+    if adaptive_execution_enabled && !has_endpoint_config {
+        validate_adaptive_single_provider_from_env().unwrap_or_else(|error| {
+            panic!("adaptive single-provider configuration failed: {error}")
+        });
+    }
+
+    let mut state = build_state_with_provider(
+        AxumApiState::new().with_engine(base_engine),
+        &store_arc,
+        &cb_registry,
+    );
+    if adaptive_execution_enabled {
+        if let Some(executor) = build_adaptive_provider_executor_from_env(&store_arc, &cb_registry)
+            .unwrap_or_else(|error| panic!("adaptive provider configuration failed: {error}"))
+        {
+            state = state.with_adaptive_provider_executor(executor);
+        }
+    }
     let state = configure_auth(
-        build_state_with_provider(
-            AxumApiState::new().with_engine(base_engine),
-            &store_arc,
-            &cb_registry,
-        )
-        .with_local_store_arc(store_arc.clone())
-        .with_backup_dir(backup_dir)
-        .with_circuit_breaker_registry(cb_registry.clone())
-        .with_cli_capability(CliCapability::from(&cli_config)),
+        state
+            .with_local_store_arc(store_arc.clone())
+            .with_backup_dir(backup_dir)
+            .with_circuit_breaker_registry(cb_registry.clone())
+            .with_cli_capability(CliCapability::from(&cli_config)),
     );
 
-    let require_auth = std::env::var("ACP_REQUIRE_AUTH")
-        .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
-        .unwrap_or(false);
     let may_use_provider = state.executor_type() == "provider"
         || (execution_mode == "auto"
-            && build_provider_for_engine(&store_arc, &cb_registry).is_ok());
+            && build_provider_for_engine(&store_arc, &cb_registry).is_ok())
+        || adaptive_execution_enabled;
     if may_use_provider && !require_auth {
         panic!(
             "ACP_REQUIRE_AUTH=1 is required when ACP_ENABLE_PROVIDER_EXECUTION=1 and a real provider is configured"
@@ -330,6 +361,87 @@ async fn main() {
         _ => unreachable!("validate_tls_config already rejected single-sided TLS env vars"),
     }
     println!("[acp-shutdown] engine stopped gracefully");
+}
+
+fn env_enabled(key: &str) -> bool {
+    std::env::var(key)
+        .map(|value| value == "1" || value.eq_ignore_ascii_case("true"))
+        .unwrap_or(false)
+}
+
+fn validate_adaptive_startup(
+    adaptive_enabled: bool,
+    provider_enabled: bool,
+    require_auth: bool,
+    has_single_provider: bool,
+    has_endpoint_config: bool,
+) -> Result<(), &'static str> {
+    if !adaptive_enabled {
+        return Ok(());
+    }
+    if !provider_enabled {
+        return Err(
+            "ACP_ENABLE_PROVIDER_EXECUTION=1 is required when ACP_ENABLE_ADAPTIVE_FUSION_EXECUTION=1",
+        );
+    }
+    if !require_auth {
+        return Err("ACP_REQUIRE_AUTH=1 is required when adaptive execution is enabled");
+    }
+    if !has_single_provider && !has_endpoint_config {
+        return Err(
+            "ACP_ADAPTIVE_PROVIDER_ENDPOINTS_JSON or ACP_PROVIDER_TYPE is required when adaptive execution is enabled",
+        );
+    }
+    Ok(())
+}
+
+fn validate_adaptive_single_provider_from_env() -> Result<(), String> {
+    let provider_type = std::env::var("ACP_PROVIDER_TYPE")
+        .map_err(|_| "ACP_PROVIDER_TYPE is required".to_string())?;
+    let model = std::env::var("ACP_MODEL").unwrap_or_else(|_| "default".to_string());
+    let base_url = std::env::var("ACP_BASE_URL").ok();
+    let credential_env = std::env::var("ACP_API_KEY").ok();
+    let endpoint_id = match provider_type.as_str() {
+        "stub" => "stub-env",
+        "openai_compatible" => "openai-env",
+        "anthropic" => "anthropic-env",
+        other => return Err(format!("unknown ACP_PROVIDER_TYPE: {other}")),
+    };
+    validate_adaptive_single_provider_config(
+        endpoint_id,
+        &provider_type,
+        base_url.as_deref(),
+        &model,
+        credential_env.as_deref(),
+        credential_env.as_deref().is_some_and(|name| {
+            CredentialBoundary::new("env").is_ok_and(|boundary| boundary.validate(name))
+        }),
+    )
+}
+
+fn validate_adaptive_single_provider_config(
+    endpoint_id: &str,
+    provider_type: &str,
+    base_url: Option<&str>,
+    model: &str,
+    credential_env: Option<&str>,
+    credential_available: bool,
+) -> Result<(), String> {
+    let config = AdaptiveProviderEndpointConfig {
+        endpoint_id: endpoint_id.to_string(),
+        provider_type: provider_type.to_string(),
+        base_url: base_url.map(str::to_string),
+        model: model.to_string(),
+        credential_env: credential_env.map(str::to_string),
+        timeout_ms: 30_000,
+        input_cost_per_1k_usd: None,
+        output_cost_per_1k_usd: None,
+    };
+    validate_adaptive_provider_endpoint_config(&config).map_err(|error| error.to_string())?;
+    if provider_type != "stub" && !credential_available {
+        return Err("referenced adaptive provider credential is not set".to_string());
+    }
+    Ok(())
 }
 
 async fn shutdown_signal() {
@@ -522,6 +634,105 @@ fn build_state_with_provider(
 
     let recorder = Arc::new(ProviderAuditRecorder::with_store(store.clone()));
     state.with_provider_and_audit(provider, recorder)
+}
+
+fn build_adaptive_provider_executor_from_env(
+    store: &Arc<LocalProductStore>,
+    cb_registry: &Arc<CircuitBreakerRegistry>,
+) -> Result<Option<Arc<AdaptiveExecutionExecutor>>, String> {
+    let raw = match std::env::var(ACP_ADAPTIVE_PROVIDER_ENDPOINTS_JSON) {
+        Ok(raw) if !raw.trim().is_empty() => raw,
+        _ => return Ok(None),
+    };
+    let configs =
+        parse_adaptive_provider_endpoints_json(&raw).map_err(|error| error.to_string())?;
+    let providers = build_adaptive_providers(&configs, cb_registry)?;
+    let recorder = Arc::new(ProviderAuditRecorder::with_store(store.clone()));
+    Ok(Some(Arc::new(AdaptiveExecutionExecutor::new(
+        providers,
+        recorder,
+        AdaptiveExecutionKillSwitch::new(),
+    ))))
+}
+
+fn build_adaptive_providers(
+    configs: &[AdaptiveProviderEndpointConfig],
+    cb_registry: &Arc<CircuitBreakerRegistry>,
+) -> Result<BTreeMap<String, Arc<dyn Provider>>, String> {
+    let mut providers: BTreeMap<String, Arc<dyn Provider>> = BTreeMap::new();
+    for endpoint in configs {
+        let base_provider: Arc<dyn Provider> = match endpoint.provider_type.as_str() {
+            "stub" => Arc::new(
+                StubProvider::new(&endpoint.endpoint_id).with_default_model(&endpoint.model),
+            ),
+            "openai_compatible" | "anthropic" => {
+                let credential_env = endpoint
+                    .credential_env
+                    .as_deref()
+                    .ok_or_else(|| "validated adaptive credential reference missing".to_string())?;
+                let boundary = CredentialBoundary::new("env")?;
+                if !boundary.validate(credential_env) {
+                    return Err(format!(
+                        "credential environment variable {credential_env} is not set"
+                    ));
+                }
+                let credential_ref = CredentialRef::new(
+                    credential_env,
+                    "env",
+                    "***",
+                    &format!("provider:{}", endpoint.endpoint_id),
+                    "2026-01-01T00:00:00Z",
+                );
+                let mut config = ProviderConfig::new(
+                    &endpoint.endpoint_id,
+                    &endpoint.provider_type,
+                    endpoint.base_url.as_deref().unwrap_or_default(),
+                    &endpoint.model,
+                    credential_env,
+                    "2026-01-01T00:00:00Z",
+                );
+                config.timeout_ms = endpoint.timeout_ms;
+                config.input_cost_per_1k = endpoint.input_cost_per_1k_usd;
+                config.output_cost_per_1k = endpoint.output_cost_per_1k_usd;
+                let transport = Arc::new(ReqwestTransport::new());
+                if endpoint.provider_type == "openai_compatible" {
+                    Arc::new(OpenAiProvider::new(
+                        config,
+                        boundary,
+                        credential_ref,
+                        transport,
+                        None,
+                    ))
+                } else {
+                    Arc::new(AnthropicProvider::new(
+                        config,
+                        boundary,
+                        credential_ref,
+                        transport,
+                        None,
+                    ))
+                }
+            }
+            _ => return Err("validated adaptive provider type is unsupported".to_string()),
+        };
+        let circuit_breaker = Arc::new(CircuitBreaker::new(
+            format!("provider:{}", endpoint.endpoint_id),
+            std::env::var("ACP_CIRCUIT_BREAKER_THRESHOLD")
+                .ok()
+                .and_then(|value| value.parse::<u64>().ok())
+                .unwrap_or(5),
+            std::env::var("ACP_CIRCUIT_BREAKER_RECOVERY_MS")
+                .ok()
+                .and_then(|value| value.parse::<u64>().ok())
+                .unwrap_or(30_000),
+        ));
+        cb_registry.register(circuit_breaker.clone());
+        providers.insert(
+            endpoint.endpoint_id.clone(),
+            Arc::new(CircuitBreakerProvider::new(base_provider, circuit_breaker)),
+        );
+    }
+    Ok(providers)
 }
 
 fn local_admin_scopes() -> HashSet<String> {
@@ -762,6 +973,108 @@ mod tests {
         assert!(scopes.iter().any(|scope| scope == "backup:admin"));
         assert!(scopes.iter().any(|scope| scope == "dispatch:write"));
         assert!(scopes.iter().any(|scope| scope == "health:read"));
+    }
+
+    #[test]
+    fn adaptive_startup_requires_provider_auth_and_endpoint_configuration() {
+        assert!(validate_adaptive_startup(false, false, false, false, false).is_ok());
+        assert!(validate_adaptive_startup(true, false, true, false, true).is_err());
+        assert!(validate_adaptive_startup(true, true, false, false, true).is_err());
+        assert!(validate_adaptive_startup(true, true, true, false, false).is_err());
+        assert!(validate_adaptive_startup(true, true, true, true, false).is_ok());
+        assert!(validate_adaptive_startup(true, true, true, false, true).is_ok());
+    }
+
+    #[test]
+    fn adaptive_single_provider_startup_rejects_invalid_or_unavailable_configuration() {
+        assert!(validate_adaptive_single_provider_config(
+            "stub-env",
+            "stub",
+            None,
+            "stub-model",
+            None,
+            false,
+        )
+        .is_ok());
+        assert!(validate_adaptive_single_provider_config(
+            "openai-env",
+            "openai_compatible",
+            Some("https://api.example.com/v1"),
+            "quality-model",
+            Some("OPENAI_KEY"),
+            true,
+        )
+        .is_ok());
+        assert!(validate_adaptive_single_provider_config(
+            "openai-env",
+            "openai_compatible",
+            Some("http://api.example.com/v1"),
+            "quality-model",
+            Some("OPENAI_KEY"),
+            true,
+        )
+        .is_err());
+        assert!(validate_adaptive_single_provider_config(
+            "anthropic-env",
+            "anthropic",
+            Some("https://api.example.com"),
+            "quality-model",
+            Some("ANTHROPIC_KEY"),
+            false,
+        )
+        .is_err());
+        assert!(validate_adaptive_single_provider_config(
+            "unknown-env",
+            "unknown",
+            None,
+            "model",
+            None,
+            false,
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn adaptive_provider_builder_creates_multiple_stub_endpoints() {
+        let configs = parse_adaptive_provider_endpoints_json(
+            r#"[
+                {"endpoint_id":"fast","provider_type":"stub","model":"stub-fast"},
+                {"endpoint_id":"quality","provider_type":"stub","model":"stub-quality"}
+            ]"#,
+        )
+        .unwrap();
+        let registry = Arc::new(CircuitBreakerRegistry::new());
+
+        let providers = build_adaptive_providers(&configs, &registry).unwrap();
+
+        assert_eq!(
+            providers.keys().cloned().collect::<Vec<_>>(),
+            vec!["fast", "quality"]
+        );
+        assert!(providers.values().all(|provider| provider.is_enabled()));
+    }
+
+    #[test]
+    fn adaptive_provider_builder_requires_referenced_credentials() {
+        std::env::remove_var("_ACP_MISSING_ADAPTIVE_TEST_KEY_");
+        let configs = parse_adaptive_provider_endpoints_json(
+            r#"[{
+                "endpoint_id":"quality",
+                "provider_type":"openai_compatible",
+                "base_url":"https://api.example.com/v1",
+                "model":"quality-model",
+                "credential_env":"_ACP_MISSING_ADAPTIVE_TEST_KEY_"
+            }]"#,
+        )
+        .unwrap();
+        let registry = Arc::new(CircuitBreakerRegistry::new());
+
+        let error = match build_adaptive_providers(&configs, &registry) {
+            Ok(_) => panic!("missing adaptive credential should fail"),
+            Err(error) => error,
+        };
+
+        assert!(error.contains("_ACP_MISSING_ADAPTIVE_TEST_KEY_"));
     }
 
     #[test]

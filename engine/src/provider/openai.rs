@@ -118,10 +118,16 @@ impl Provider for OpenAiProvider {
             "{}/chat/completions",
             self.config.base_url.trim_end_matches('/')
         );
+        let max_tokens = request
+            .metadata
+            .get("max_tokens")
+            .and_then(|value| value.as_u64())
+            .filter(|value| (1..=1_000_000).contains(value))
+            .unwrap_or(1024);
         let body = json!({
             "model": request.model,
             "messages": [{"role": "user", "content": request.prompt}],
-            "max_tokens": 1024,
+            "max_tokens": max_tokens,
         });
 
         let http_request = HttpRequest {

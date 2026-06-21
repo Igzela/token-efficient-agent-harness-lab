@@ -44,19 +44,39 @@ impl NodeExecutionOutput {
         });
         if matches!(
             self.executor_type.as_str(),
-            "provider" | "claude_code_cli" | "codex_cli"
+            "provider" | "adaptive_provider" | "claude_code_cli" | "codex_cli"
         ) {
             if let Some(obj) = value.as_object_mut() {
+                let (env_gate, auth_scope, cost_gate, kill_path) =
+                    if self.executor_type == "adaptive_provider" {
+                        (
+                            "provider_plus_adaptive",
+                            "dispatch_execute_with_configured_auth",
+                            "global_plus_plan_plus_per_call",
+                            "adaptive_kill_switch_or_provider_timeout",
+                        )
+                    } else {
+                        (
+                            "passed",
+                            "explicit_local_runtime",
+                            if self.estimated_cost.is_some() {
+                                "evaluated"
+                            } else {
+                                "not_applicable"
+                            },
+                            "workflow_cancel_or_process_timeout",
+                        )
+                    };
                 obj.insert(
                     "trace".to_string(),
                     json!({
                         "schema_version": "execution_trace.v2",
                         "executor_type": self.executor_type,
-                        "env_gate": "passed",
-                        "auth_scope": "explicit_local_runtime",
+                        "env_gate": env_gate,
+                        "auth_scope": auth_scope,
                         "output_policy": "redacted_and_capped",
-                        "cost_gate": if self.estimated_cost.is_some() { "evaluated" } else { "not_applicable" },
-                        "kill_path": "workflow_cancel_or_process_timeout",
+                        "cost_gate": cost_gate,
+                        "kill_path": kill_path,
                     }),
                 );
             }

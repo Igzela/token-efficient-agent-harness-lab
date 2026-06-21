@@ -221,7 +221,17 @@ AF-2 implementation status:
 - The bounded offline engine aggregates candidate metrics by task class, computes deterministic multi-dimensional Pareto frontiers, emits `efficient` and `quality` shadow recommendations using AF-0 objective weights, and calibrates judge signed bias/absolute error after at least three samples.
 - Inputs are capped at 10,000 observations, 512 candidates per task class, and $1,000,000 cost per observation; malformed, duplicate, inconsistent, overflow-prone, or secret-shaped evidence is rejected without identifier disclosure.
 - AF-2 adds no database query, persistence, HTTP surface, provider call, or live-routing influence.
-- AF-3 through AF-5 remain intentionally unimplemented.
+
+AF-3 implementation status:
+
+- Implemented on `codex/adaptive-fusion-af3`, stacked on AF-2.
+- Startup accepts up to eight fixed provider/model endpoints from `ACP_ADAPTIVE_PROVIDER_ENDPOINTS_JSON`; real endpoint credentials remain symbolic environment references and remote base URLs require HTTPS, with loopback HTTP allowed for local adapters.
+- Live execution requires `ACP_ENABLE_PROVIDER_EXECUTION=1`, `ACP_ENABLE_ADAPTIVE_FUSION_EXECUTION=1`, `ACP_REQUIRE_AUTH=1`, an authenticated `dispatch:execute` request, an explicit node `adaptive_execution` plan, and `executor=adaptive_provider`.
+- Single, ordered fallback, and serial two/three-member panel plus judge and synthesizer execution reuse the existing `Provider`, circuit-breaker, provider-audit, workflow tick, and `NodeExecutor` boundaries.
+- Hard limits cover at most 8 calls, $1,000 admitted cost, 300 seconds, 1,000,000 total reserved tokens, panel size 2-3, and concurrency 1. Existing per-dispatch/daily cost gates also apply; workflow-level retries are rejected because the plan owns fallback.
+- Endpoint IDs are fixed to configured provider/model bindings. Calls and terminal outcomes are audited without prompts or raw outputs; outputs are redacted/capped; provider cost/token/identity overruns stop the plan. `ACP_ADAPTIVE_FUSION_KILL_SWITCH=1` blocks startup execution and the shared runtime kill handle stops subsequent calls.
+- AF-3 does not automatically apply AF-0/AF-2 recommendations, explore traffic, promote policy, persist learned policy, or add unattended workers.
+- AF-4 and AF-5 remain intentionally unimplemented.
 
 Design references:
 

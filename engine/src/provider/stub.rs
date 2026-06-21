@@ -4,13 +4,20 @@ use super::{Provider, ProviderRequest, ProviderResponse, ProviderResult};
 
 pub struct StubProvider {
     provider_id: String,
+    default_model: String,
 }
 
 impl StubProvider {
     pub fn new(provider_id: impl Into<String>) -> Self {
         Self {
             provider_id: provider_id.into(),
+            default_model: "stub-model".to_string(),
         }
+    }
+
+    pub fn with_default_model(mut self, model: impl Into<String>) -> Self {
+        self.default_model = model.into();
+        self
     }
 }
 
@@ -22,6 +29,10 @@ impl Provider for StubProvider {
 
     fn is_enabled(&self) -> bool {
         true
+    }
+
+    fn default_model(&self) -> Option<&str> {
+        Some(&self.default_model)
     }
 
     async fn invoke(&self, request: &ProviderRequest) -> ProviderResult {

@@ -84,6 +84,33 @@ curl -s -X POST http://127.0.0.1:8080/api/v1/dispatch \
 
 Provider execution remains off unless `ACP_ENABLE_PROVIDER_EXECUTION=1`. Target output remains off unless `ACP_ENABLE_TARGET_REPO_OUTPUT=1`; when enabled, it is limited to a controlled app-owned git worktree, patch export, or approval-bound `acp/*` branch push. It never writes the registered target working tree or `main`.
 
+### Adaptive provider portfolios
+
+AF-3 adaptive execution is a separate default-off gate. It requires protected mode and explicit workflow execution:
+
+```bash
+export ACP_REQUIRE_AUTH=1
+export ACP_ADMIN_API_KEY=<harness_...>
+export ACP_ENABLE_PROVIDER_EXECUTION=1
+export ACP_ENABLE_ADAPTIVE_FUSION_EXECUTION=1
+export FAST_PROVIDER_KEY=<secret>
+export QUALITY_PROVIDER_KEY=<secret>
+export ACP_ADAPTIVE_PROVIDER_ENDPOINTS_JSON='[
+  {"endpoint_id":"fast","provider_type":"openai_compatible","base_url":"https://api.example.com/v1","model":"fast-model","credential_env":"FAST_PROVIDER_KEY","timeout_ms":30000,"input_cost_per_1k_usd":0.001,"output_cost_per_1k_usd":0.002},
+  {"endpoint_id":"quality","provider_type":"anthropic","base_url":"https://api.anthropic.com","model":"quality-model","credential_env":"QUALITY_PROVIDER_KEY","timeout_ms":60000,"input_cost_per_1k_usd":0.003,"output_cost_per_1k_usd":0.015}
+]'
+```
+
+Endpoint JSON stores only credential environment names. Remote HTTP is rejected; HTTPS is required except for loopback test/local adapters. A workflow node must contain an `adaptive_execution` object with a `single`, `ordered_fallback`, or `fusion` plan plus `max_calls`, `max_cost_usd`, `max_elapsed_ms`, `max_concurrency` (currently `1`), and optional `max_total_tokens` (default `32768`). Tick the run with `executor=adaptive_provider`, `max_retries=0`, and a key with `dispatch:execute`.
+
+Emergency startup stop:
+
+```bash
+export ACP_ADAPTIVE_FUSION_KILL_SWITCH=1
+```
+
+This blocks adaptive calls. A runtime kill handle also stops subsequent panel/fallback stages; an already-running provider call drains or cancels under its remaining timeout. AF-3 does not automatically route AF-0/AF-2 recommendations into live execution.
+
 ### 2.1 V2-3 Target Repo Output
 
 Required production-like settings:
@@ -429,6 +456,9 @@ All environment variables are documented in `.env.example`. Key variables:
 | `ACP_DASHBOARD_DIR` | `dashboard/out` | Static dashboard assets path |
 | `ACP_PROVIDER_TYPE` | `stub` | Provider: `stub`, `openai_compatible`, `anthropic` |
 | `ACP_ENABLE_PROVIDER_EXECUTION` | (off) | Set to `1` for real provider calls |
+| `ACP_ENABLE_ADAPTIVE_FUSION_EXECUTION` | (off) | Enables explicit bounded `adaptive_provider` workflow ticks |
+| `ACP_ADAPTIVE_PROVIDER_ENDPOINTS_JSON` | (none) | Up to eight fixed provider/model endpoint definitions with credential env references |
+| `ACP_ADAPTIVE_FUSION_KILL_SWITCH` | (off) | Blocks adaptive provider execution when set to `1` at startup |
 | `ACP_ENABLE_CLI_EXECUTION` | `1` | Set to `0` to disable local Claude/Codex CLI discovery |
 | `ACP_SCHEDULER_EXECUTOR` | `noop` | Executor type: `noop`, `command`, `claude_code_cli`, `codex_cli` |
 | `ACP_CORS_ORIGINS` | `*` | Comma-separated allowed origins |

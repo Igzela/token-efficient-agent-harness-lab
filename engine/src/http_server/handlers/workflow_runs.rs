@@ -418,6 +418,66 @@ pub(crate) async fn api_tick_workflow_run(
                 Err(e) => Err(internal_error(e)),
             }
         }
+        "adaptive_provider" => {
+            authorize(
+                &state,
+                &headers,
+                "dispatch:execute",
+                uri.path(),
+                &request_id.0,
+            )?;
+            let gate = crate::provider::adaptive_execution::AdaptiveExecutionGate::from_env(
+                state.tenant_resolver.is_some(),
+            );
+            if !gate.is_enabled() {
+                return Err(ApiError::with_code(
+                    StatusCode::BAD_REQUEST,
+                    "adaptive_provider_not_available",
+                    "adaptive provider execution requires provider, adaptive, and auth gates",
+                ));
+            }
+            if max_retries != 0 {
+                return Err(ApiError::with_code(
+                    StatusCode::BAD_REQUEST,
+                    "adaptive_retries_not_supported",
+                    "adaptive provider execution owns its bounded fallback path",
+                ));
+            }
+            let Some(adaptive_executor) = state.adaptive_provider_executor.clone() else {
+                return Err(ApiError::with_code(
+                    StatusCode::BAD_REQUEST,
+                    "adaptive_provider_not_available",
+                    "adaptive provider executor is not configured",
+                ));
+            };
+            let cost_config = crate::provider::CostGateConfig::from_env();
+            let today_prefix = &crate::http_server::middleware::chrono_free_today()[..10];
+            let daily_cost = store.daily_estimated_cost_usd(today_prefix).unwrap_or(0.0);
+            let executor = crate::provider::adaptive_execution::AdaptiveProviderNodeExecutor::new(
+                adaptive_executor,
+                gate,
+            )
+            .with_cost_gate(cost_config, daily_cost);
+            match store.tick_with_executor_and_command(
+                &run_id,
+                actor,
+                0,
+                &executor,
+                request.command.as_deref(),
+            ) {
+                Ok(result) => {
+                    record_tick_decision(&store, &run_id, &result, "adaptive_provider");
+                    Ok((cors_headers(), Json(json_response("tick", result))))
+                }
+                Err(e) if e.starts_with("workflow run not found:") => Err(not_found()),
+                Err(e) if e.contains("terminal") => Err(ApiError::with_code(
+                    StatusCode::CONFLICT,
+                    "run_terminal",
+                    &e,
+                )),
+                Err(e) => Err(internal_error(e)),
+            }
+        }
         _ => match store.tick_with_retry(&run_id, actor, max_retries) {
             Ok(result) => {
                 record_tick_decision(&store, &run_id, &result, "noop");
