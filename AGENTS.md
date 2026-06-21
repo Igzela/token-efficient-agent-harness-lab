@@ -2,14 +2,11 @@
 
 This repository is the Token-Efficient Agent Harness Lab: a local deterministic harness and self-hosted macro-orchestrator control plane for studying token-efficient agent workflows.
 
-## Current State (2026-06-20)
+## Current State (2026-06-21)
 
 **Active tracks:**
 - **Real-World Testing Mode** — validated through real tasks, branches, commits, PRs, CI, gated auto-merge
 - **Agent Autonomous Maintenance Mode** — agents maintain docs/CI/tests/low-risk PR flow under playbook gates
-- **V2 Real Production Output Track** — authorized, phase-gated path to auditable real-repository patch/PR production
-- **V2 progress** — V2-0 through V2-5 merged in PRs #69-#75
-- **Real Output Closeout** — implementation complete; release publication pending
 
 **Complete tracks:**
 - Dispatch Kernel Phases 1–7 (including 6A, 6B-1/2/3, Gates 1–3): STABLE
@@ -19,9 +16,12 @@ This repository is the Token-Efficient Agent Harness Lab: a local deterministic 
 - Self-Hosted GA Readiness Track SG-1 through SG-5: COMPLETE
 - HA Hardening Track HA-1 through HA-6: COMPLETE
 - HybridExecutor with `ACP_EXECUTION_MODE`: COMPLETE
+- V2 Real Production Output Track: COMPLETE (V2-0 through V2-5 merged in PRs #69-#75)
+- Real Output Closeout: COMPLETE (`v0.1.0` published and online installer verified)
 
 **Key facts:**
 - 1571 Rust tests pass, 0 failures (last recorded full verification)
+- Latest release: `v0.1.0`, published 2026-06-21
 - Architecture Refactor R-series sealed at R7. R8 is not approved.
 - Post-R7 wire/type governance hardening implemented: `scripts/check_wire_codegen_drift.sh`
 

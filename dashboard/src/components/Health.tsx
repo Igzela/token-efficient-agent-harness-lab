@@ -27,7 +27,7 @@ export function Health({
           ? "All systems operational. The engine API is reachable and runtime readiness checks pass."
           : health === "healthy"
             ? "Engine API is reachable but runtime readiness is not confirmed. Check scheduler and executor status."
-            : "Engine API is not reachable. Start the engine with: ACP_ADMIN_TOKEN=test123 PORT=9999 ./target/debug/engine"}
+            : "Engine API is not reachable. Start the installed runtime with: agent-control-plane"}
       </p>
       <div className="metrics">
         <div className="metric">
