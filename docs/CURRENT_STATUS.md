@@ -4,21 +4,22 @@ Last updated: 2026-06-21. V2-0 through V2-5 and the Real Output Closeout are com
 
 ## Summary
 
-The core plan, V2 implementation, and Real Output Closeout are complete. The system includes prompt-to-CLI execution, bounded verification/repair evidence, optional real GitHub PR creation, a verified release contract, three real repository pilots, and a task-first dashboard. The Adaptive Fusion Routing track now includes AF-0 planning, AF-1 endpoint metadata, AF-2 offline evaluation, AF-3 explicit bounded multi-provider execution, and AF-4 contextual policy improvement.
+The core plan, V2 implementation, and Real Output Closeout are complete. The system includes prompt-to-CLI execution, bounded verification/repair evidence, optional real GitHub PR creation, a verified release contract, three real repository pilots, and a task-first dashboard. The Adaptive Fusion Routing track now includes AF-0 planning, AF-1 endpoint metadata, AF-2 offline evaluation, AF-3 explicit bounded multi-provider execution, AF-4 contextual policy improvement, and AF-5 operator UX.
 
 The system is useful as an operations/control-plane lab for deterministic dispatch, workflow state, app-owned execution metadata, guarded local controls, SDKs, and audit evidence. It is not a cloud SaaS, hosted multi-tenant service, direct-deploy tool, or unattended autonomous-agent runtime.
 
 ## Current Product Boundary
 
 - Rust `engine/` is the sole runtime/API/storage implementation.
-- `dashboard/` is the local operations console with guarded app-owned controls. Mission Control now exposes the V2-5 product output path over existing guarded APIs; release/deploy/apply actions remain unavailable.
-- TypeScript and Python SDKs cover REST access to dispatch, workflow, config, team, cost, audit, backup/export, supervised patches, and V2-3 target output.
+- `dashboard/` is the local operations console with guarded app-owned controls. Mission Control exposes the V2-5 product output path and Adaptive Fusion exposes AF-4 policy evidence, promotion, and rollback controls over existing guarded APIs; release/deploy/apply actions remain unavailable.
+- TypeScript and Python SDKs cover REST access to dispatch, workflow, config, team, cost, audit, backup/export, supervised patches, and V2-3 target output. The TypeScript SDK also covers Adaptive Fusion policy list/promote/rollback endpoints.
 - Provider execution is off unless `ACP_ENABLE_PROVIDER_EXECUTION=1`.
 - Adaptive Fusion AF-0 can produce deterministic `efficient` or `quality` single/fusion plans from normalized endpoint observations, but cannot influence live routing or call providers.
 - Adaptive Fusion AF-1 can hot-add/update/disable bounded endpoint metadata and emit deterministic secret-safe snapshots; it has no database, HTTP, credential-resolution, network, or execution path.
 - Adaptive Fusion AF-2 can adapt existing run traces into bounded offline endpoint/portfolio observations, aggregate evidence by task class, compute Pareto frontiers, calibrate judge bias, and emit `efficient`/`quality` shadow recommendations without changing routing.
 - Adaptive Fusion AF-3 can execute explicit single, ordered fallback, or serial panel/judge/synthesizer plans through fixed provider/model endpoints. It requires provider+adaptive env gates, configured auth, `dispatch:execute`, an explicit workflow plan/tick, call/token/cost/time/concurrency limits, audit, redaction, circuit breakers, and a kill switch. It does not automatically apply AF-0/AF-2 recommendations.
 - Adaptive Fusion AF-4 can promote contextual policies from local evidence behind dual env gates and human confirmation, persist hash-bound snapshots in `local_config`, roll back promoted policies, and optionally assign at most 5% bounded exploration for low/medium-risk contexts. Promoted policies still have no live execution authority without an explicit bounded candidate plan.
+- Adaptive Fusion AF-5 exposes active policies, snapshots, safety flags, explicit promotion JSON submission, and snapshot rollback in the dashboard and TypeScript SDK. It adds no provider execution authority, default-on routing, provider failover, or unattended workers.
 - Installed local Claude/Codex CLIs are discovered by default for explicit workflow ticks. `ACP_ENABLE_CLI_EXECUTION=0` disables local CLI execution.
 - V2-3 target output is default-off. It can create an app-owned git worktree and, only after scoped confirmation plus artifact approval/integrity checks, export a patch or push an `acp/*` branch. It never writes the registered target working tree or `main`.
 - No hard process/container/VM sandbox is implemented; V2-1 is scoped to app-owned workspace confinement unless separately approved.
@@ -29,8 +30,8 @@ The system is useful as an operations/control-plane lab for deterministic dispat
 
 ## Last Recorded Verification
 
-- Branch: `codex/adaptive-fusion-af4`, stacked on `codex/adaptive-fusion-af3`.
-- Tests: **1654 Rust tests pass**, 0 failures, recorded 2026-06-21 on `codex/adaptive-fusion-af4`.
+- Branch: `codex/adaptive-fusion-af5`, stacked on `codex/adaptive-fusion-af4`.
+- Tests: **1654 Rust tests pass**, 0 failures, recorded 2026-06-21 on `codex/adaptive-fusion-af5`.
 - CI: the `tests` workflow run `27892330465` on `main` is green as of 2026-06-21.
 - Release: the `v0.1.0` release workflow run `27891104370` is green; all eight published assets passed checksum/archive inspection.
 - Online install: the README installer fetched `v0.1.0` into an isolated home, verified the checksum, installed the runtime/dashboard, and passed health, dashboard API, and HTML smoke checks on 2026-06-21.
@@ -72,7 +73,7 @@ uv run --no-project python scripts/check_agent_handoff.py
 | Track | Status |
 |---|---|
 | Agent Autonomous Maintenance Mode | Active for docs, CI, tests, deterministic regressions, and low-risk PR flow |
-| Adaptive Fusion Routing Track | AF-0 through AF-4 implemented; AF-5 operator UX pending |
+| Adaptive Fusion Routing Track | AF-0 through AF-5 implemented; adaptive live execution remains explicit and default-off |
 
 Historical phase plans, closeouts, and long-form validation reports are retained under `docs/archive/`.
 
@@ -89,6 +90,7 @@ Historical phase plans, closeouts, and long-form validation reports are retained
 - Adaptive Fusion AF-2: bounded offline replay over existing run-trace/evaluator evidence; deterministic endpoint/portfolio aggregates, multi-dimensional Pareto frontiers, judge signed-bias/error calibration, and objective-specific shadow recommendations with evidence run IDs and zero live influence.
 - Adaptive Fusion AF-3: up to eight startup-configured provider/model endpoints; explicit authenticated `adaptive_provider` ticks; single/fallback/fusion execution; fixed model binding; max calls, total tokens, dollars, elapsed time, panel size, and serial concurrency; existing daily/per-dispatch cost gates; provider audit, circuit breakers, redaction/capping, and kill path.
 - Adaptive Fusion AF-4: contextual bandit scoring over task class and objective; non-stationary sequence decay; dual-gated promotion with minimum sample/confidence/regression checks; local evidence ID verification; hash-bound active-policy snapshots in `local_config`; rollback; high/critical-risk exploration exclusion; and optional low/medium-risk exploration capped at 5%.
+- Adaptive Fusion AF-5: dashboard and TypeScript SDK operator surface for active policies, snapshots, safety flags, explicit promotion request submission, and snapshot rollback. It consumes the AF-4 guarded endpoints and does not add execution, provider, failover, merge, or deploy authority.
 - V2-3 target repo output: `git_worktree` creation and output require `dispatch:execute` plus `ACP_ENABLE_TARGET_REPO_OUTPUT=1`; artifact hashes bind patch content and actual allowlisted verification evidence; output requires same-run approval, integrity, redaction, explicit confirmation, bounded text files, and remote controls. Optional GitHub PR creation additionally requires `ACP_ENABLE_GITHUB_PR_OUTPUT=1` and `ACP_GITHUB_TOKEN_ENV`.
 - V2-4 bounded workers: scheduler startup requires both scheduler and supervised-worker env gates; worker count is bounded by global concurrency and 32; each worker claims at most one node per cycle through the existing atomic DB lease; heartbeat metadata exposes worker state; stale recovery is audited; `dispatch:execute` plus confirmation controls pause/resume/kill; env pause and kill switches remain available.
 - Verification/repair: `/supervised-patch/workspaces/{id}/verify` runs allowlisted test tools in the app-owned workspace, stores redacted/capped evidence, and can invoke at most two CLI repair attempts before output remains blocked.
@@ -108,7 +110,7 @@ Historical phase plans, closeouts, and long-form validation reports are retained
 - Security posture is suitable for local/small-team self-hosting only; hosted/multi-tenant use would require a new threat model and approved implementation plan.
 - No hard process/container/VM sandbox isolation exists.
 - Provider API execution remains default-off; local CLI discovery is default-on but execution still requires an explicit task tick.
-- Adaptive operator UX remains unimplemented until AF-5. Contextual policies can influence `adaptive_provider` only when a promoted policy exists and the workflow node supplies explicit bounded candidate plans; provider execution remains default-off and gated.
+- Contextual policies can influence `adaptive_provider` only when a promoted policy exists and the workflow node supplies explicit bounded candidate plans; provider execution remains default-off and gated. AF-5 exposes operator controls for policy evidence and rollback, not automatic live routing.
 - Cloud SaaS, multi-tenant hosting, app-runtime merge/release/deploy/apply authority, and unattended autonomous-agent loops remain out of scope.
 
 ## Documentation Discipline

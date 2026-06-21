@@ -283,6 +283,7 @@ bundle = client.dispatch("Summarize docs without provider calls")
 - Cloud SaaS, multi-tenant hosting, cloud production Web UI, hosted deployment, and remote SaaS service remain out of scope.
 - Target-repository output is implemented behind `ACP_ENABLE_TARGET_REPO_OUTPUT=1`, `dispatch:execute`, explicit confirmation, approval/integrity/secret gates, remote allowlists, and `ACP_TARGET_REPO_OUTPUT_KILL_SWITCH=1`; direct target working-tree or `main` writes, apply/merge/deploy authority, and default-on provider execution remain out of scope.
 - The dashboard is a local operations console with guarded app-owned controls. V2-5 adds the product-level Mission Control output path over the guarded backend contract: create plan/run, tick, create workspace, capture patch, approve, export patch, or push an `acp/*` branch.
+- Adaptive Fusion operator UX exposes policy evidence, explicit promotion requests, and rollback over guarded local endpoints; it does not add default-on provider execution, provider failover, unattended workers, or live routing without explicit bounded adaptive plans.
 - No destructive runtime filesystem behavior.
 - V2 real capabilities require the phase plan in `docs/NEXT_DECISION.md`, explicit gates, audit events, tests, and rollback/kill paths.
 

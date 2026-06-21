@@ -1,4 +1,9 @@
 import type {
+  AdaptiveFusionPoliciesResponse,
+  AdaptivePolicyPromotionRequest,
+  AdaptivePolicyPromotionResponse,
+  AdaptivePolicyRollbackRequest,
+  AdaptivePolicyRollbackResponse,
   ApiStatus,
   AuditListResponse,
   BackupVerification,
@@ -357,6 +362,39 @@ export async function deactivateProposal(proposalId: string, reason?: string): P
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ reason }),
+    },
+  );
+}
+
+export async function fetchAdaptiveFusionPolicies(): Promise<AdaptiveFusionPoliciesResponse> {
+  return fetchJson<AdaptiveFusionPoliciesResponse>(`${BASE}/api/v1/adaptive-fusion/policies`);
+}
+
+export async function promoteAdaptiveFusionPolicy(
+  request: AdaptivePolicyPromotionRequest,
+): Promise<AdaptivePolicyPromotionResponse> {
+  return fetchJson<AdaptivePolicyPromotionResponse>(`${BASE}/api/v1/adaptive-fusion/policies/promote`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(request),
+  });
+}
+
+export async function rollbackAdaptiveFusionPolicy(
+  adjustmentId: string,
+  request: AdaptivePolicyRollbackRequest = {},
+): Promise<AdaptivePolicyRollbackResponse> {
+  return fetchJson<AdaptivePolicyRollbackResponse>(
+    `${BASE}/api/v1/adaptive-fusion/policies/${encodeURIComponent(adjustmentId)}/rollback`,
+    {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        actor: request.actor,
+        reason: request.reason,
+        confirm_adaptive_policy_rollback:
+          request.confirm_adaptive_policy_rollback ?? true,
+      }),
     },
   );
 }

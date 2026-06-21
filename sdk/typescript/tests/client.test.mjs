@@ -345,6 +345,72 @@ test("proposal methods call controlled-loop endpoints", async () => {
   assert.deepEqual(JSON.parse(calls[6].init.body), { reason: "superseded", confirm_policy_override: true });
 });
 
+test("adaptive fusion policy methods call guarded policy endpoints", async () => {
+  const { calls, fetchImpl } = captureFetch({
+    schema_version: "axum_api.v1",
+    policies: [],
+    snapshots: [],
+    live_execution_authority: false,
+    requires_explicit_adaptive_plan: true,
+  });
+  const client = new AgentControlPlaneClient({ baseUrl: "http://127.0.0.1:8080", fetchImpl });
+
+  await client.adaptiveFusionPolicies();
+  await client.promoteAdaptiveFusionPolicy({
+    actor: "operator",
+    promotion: {
+      task_class: "docs cleanup",
+      objective: "efficient",
+      candidate_id: "candidate-fast",
+      baseline_candidate_id: "candidate-safe",
+      sample_count: 25,
+      confidence: 0.91,
+      mean_quality_delta: 0.01,
+      mean_cost_reduction: 0.22,
+      failure_rate_delta: -0.02,
+      evidence_run_ids: ["dispatch-0001"],
+      risk_level: "low",
+      confirm_adaptive_policy_promotion: true,
+    },
+  });
+  await client.rollbackAdaptiveFusionPolicy("adaptive-policy/0001", {
+    actor: "operator",
+    reason: "regression",
+  });
+
+  assert.equal(calls[0].url, "http://127.0.0.1:8080/api/v1/adaptive-fusion/policies");
+  assert.equal(calls[0].init.method, "GET");
+  assert.equal(calls[1].url, "http://127.0.0.1:8080/api/v1/adaptive-fusion/policies/promote");
+  assert.equal(calls[1].init.method, "POST");
+  assert.deepEqual(JSON.parse(calls[1].init.body), {
+    actor: "operator",
+    promotion: {
+      task_class: "docs cleanup",
+      objective: "efficient",
+      candidate_id: "candidate-fast",
+      baseline_candidate_id: "candidate-safe",
+      sample_count: 25,
+      confidence: 0.91,
+      mean_quality_delta: 0.01,
+      mean_cost_reduction: 0.22,
+      failure_rate_delta: -0.02,
+      evidence_run_ids: ["dispatch-0001"],
+      risk_level: "low",
+      confirm_adaptive_policy_promotion: true,
+    },
+  });
+  assert.equal(
+    calls[2].url,
+    "http://127.0.0.1:8080/api/v1/adaptive-fusion/policies/adaptive-policy%2F0001/rollback",
+  );
+  assert.equal(calls[2].init.method, "POST");
+  assert.deepEqual(JSON.parse(calls[2].init.body), {
+    actor: "operator",
+    reason: "regression",
+    confirm_adaptive_policy_rollback: true,
+  });
+});
+
 test("providerAudit sends pagination query params", async () => {
   const { calls, fetchImpl } = captureFetch({ schema_version: "axum_api.v1", events: [] });
   const client = new AgentControlPlaneClient({ baseUrl: "http://127.0.0.1:8080", fetchImpl });

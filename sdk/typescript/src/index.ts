@@ -50,6 +50,11 @@ import type {
   ProviderHealthStatus,
   ProviderAuditResponse,
   DispatchMetricsResponse,
+  AdaptiveFusionPoliciesResponse,
+  AdaptivePolicyPromotionRequest,
+  AdaptivePolicyPromotionResponse,
+  AdaptivePolicyRollbackRequest,
+  AdaptivePolicyRollbackResponse,
   FeedbackCostOfPassResponse,
   FeedbackPatternListResponse,
   FeedbackTraceListResponse,
@@ -328,6 +333,37 @@ export class AgentControlPlaneClient {
         actor: request.actor,
         reason: request.reason,
         confirm_policy_override: request.confirm_policy_override ?? true,
+      },
+    );
+  }
+
+  adaptiveFusionPolicies(): Promise<AdaptiveFusionPoliciesResponse> {
+    return this.getJson<AdaptiveFusionPoliciesResponse>("/api/v1/adaptive-fusion/policies");
+  }
+
+  promoteAdaptiveFusionPolicy(
+    request: AdaptivePolicyPromotionRequest,
+  ): Promise<AdaptivePolicyPromotionResponse> {
+    return this.postJson<AdaptivePolicyPromotionResponse>(
+      "/api/v1/adaptive-fusion/policies/promote",
+      {
+        actor: request.actor,
+        promotion: request.promotion,
+      },
+    );
+  }
+
+  rollbackAdaptiveFusionPolicy(
+    adjustmentId: string,
+    request: AdaptivePolicyRollbackRequest = {},
+  ): Promise<AdaptivePolicyRollbackResponse> {
+    return this.postJson<AdaptivePolicyRollbackResponse>(
+      `/api/v1/adaptive-fusion/policies/${encodeURIComponent(adjustmentId)}/rollback`,
+      {
+        actor: request.actor,
+        reason: request.reason,
+        confirm_adaptive_policy_rollback:
+          request.confirm_adaptive_policy_rollback ?? true,
       },
     );
   }
