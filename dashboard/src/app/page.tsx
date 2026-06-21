@@ -9,6 +9,7 @@ import {
   isAuthError,
 } from "@/lib/api-client";
 import type { LocalDashboardState } from "@/lib/types";
+import { AdaptiveFusion } from "@/components/AdaptiveFusion";
 import { AuthPanel } from "@/components/AuthPanel";
 import { AuditLog } from "@/components/AuditLog";
 import { Backups } from "@/components/Backups";
@@ -33,7 +34,7 @@ import { TabGroup, type TabGroupDef } from "@/components/TabGroup";
 import { OperatorSurface } from "@/components/OperatorSurface";
 import { WorkflowRuns } from "@/components/WorkflowRuns";
 
-type Tab = "mission" | "dispatches" | "routing" | "regulator" | "operator" | "decisions" | "team" | "costs" | "operations" | "runs" | "patches" | "scheduler" | "pool" | "queue" | "settings" | "health" | "backups" | "audit";
+type Tab = "mission" | "dispatches" | "routing" | "regulator" | "fusion" | "operator" | "decisions" | "team" | "costs" | "operations" | "runs" | "patches" | "scheduler" | "pool" | "queue" | "settings" | "health" | "backups" | "audit";
 type AuthStatus = "ok" | "missing" | "denied" | "offline";
 type SetupStep = {
   detail: string;
@@ -46,6 +47,7 @@ const allTabs: { id: Tab; label: string }[] = [
   { id: "dispatches", label: "Dispatches" },
   { id: "routing", label: "Routing" },
   { id: "regulator", label: "Regulator" },
+  { id: "fusion", label: "Adaptive Fusion" },
   { id: "operator", label: "Operator" },
   { id: "decisions", label: "Decisions" },
   { id: "team", label: "Team" },
@@ -90,6 +92,7 @@ const tabGroups: TabGroupDef[] = [
       { id: "queue", label: "Queue" },
       { id: "routing", label: "Routing" },
       { id: "regulator", label: "Regulator" },
+      { id: "fusion", label: "Fusion" },
       { id: "operator", label: "Operator" },
     ],
     collapsible: true,
@@ -453,6 +456,7 @@ export default function DashboardPage() {
             )}
             {tab === "routing" && <Routing rows={routingRows} />}
             {tab === "regulator" && <DynamicRegulator />}
+            {tab === "fusion" && <AdaptiveFusion />}
             {tab === "operator" && <OperatorSurface />}
             {tab === "decisions" && <DecisionLog />}
             {tab === "team" && (

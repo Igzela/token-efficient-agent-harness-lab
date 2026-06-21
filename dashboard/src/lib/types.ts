@@ -382,6 +382,95 @@ export interface ProposalResponse {
   proposal: ControlledLoopProposal;
 }
 
+export type AdaptiveFusionObjective = "efficient" | "quality" | string;
+
+export interface AdaptivePolicyPromotion {
+  task_class: string;
+  objective: AdaptiveFusionObjective;
+  candidate_id: string;
+  baseline_candidate_id: string;
+  sample_count: number;
+  confidence: number;
+  mean_quality_delta: number;
+  mean_cost_reduction: number;
+  failure_rate_delta: number;
+  evidence_run_ids: string[];
+  risk_level: string;
+  confirm_adaptive_policy_promotion: boolean;
+}
+
+export interface PromotedAdaptivePolicy {
+  schema_version: string;
+  policy_key: string;
+  task_class: string;
+  objective: AdaptiveFusionObjective;
+  candidate_id: string;
+  baseline_candidate_id: string;
+  sample_count: number;
+  confidence: number;
+  mean_quality_delta: number;
+  mean_cost_reduction: number;
+  failure_rate_delta: number;
+  evidence_run_ids: string[];
+  policy_hash: string;
+  shadow_first: boolean;
+  live_execution_authority: boolean;
+  requires_explicit_adaptive_plan: boolean;
+}
+
+export interface AdaptivePolicySnapshot {
+  schema_version: string;
+  adjustment_id: string;
+  snapshot_id: string;
+  created_at: string;
+  updated_at: string;
+  status: string;
+  actor: string;
+  policy_key: string;
+  candidate_id: string;
+  active_policy_before: PromotedAdaptivePolicy | null;
+  promoted_policy: PromotedAdaptivePolicy;
+  evidence_run_ids: string[];
+  safety_hash: string;
+}
+
+export interface AdaptiveFusionPoliciesResponse {
+  schema_version: "axum_api.v1";
+  policies: PromotedAdaptivePolicy[];
+  snapshots: AdaptivePolicySnapshot[];
+  live_execution_authority: false;
+  requires_explicit_adaptive_plan: true;
+}
+
+export interface AdaptivePolicyPromotionVerdict {
+  schema_version: string;
+  eligible: boolean;
+  blocked_reasons: string[];
+  policy: PromotedAdaptivePolicy | null;
+}
+
+export interface AdaptivePolicyPromotionRequest {
+  actor?: string;
+  promotion: AdaptivePolicyPromotion;
+}
+
+export interface AdaptivePolicyPromotionResponse {
+  schema_version: "axum_api.v1";
+  decision: AdaptivePolicyPromotionVerdict;
+  result: Record<string, unknown>;
+}
+
+export interface AdaptivePolicyRollbackRequest {
+  actor?: string;
+  reason?: string;
+  confirm_adaptive_policy_rollback?: boolean;
+}
+
+export interface AdaptivePolicyRollbackResponse {
+  schema_version: string;
+  [key: string]: unknown;
+}
+
 export interface BackupVerification {
   backup_id: string;
   success: boolean;

@@ -240,7 +240,12 @@ AF-4 implementation status:
 - Active policies and rollback snapshots are persisted in existing `local_config` keys with hash validation; no database migration or new storage kernel is added. Rollback requires confirmation and a matching active snapshot.
 - Exploration requires `ACP_ENABLE_ADAPTIVE_EXPLORATION=1` plus `ACP_ADAPTIVE_EXPLORATION_ACTIVE=1`, is killed by `ACP_ADAPTIVE_EXPLORATION_KILL_SWITCH=1`, is capped at 5%, and excludes high/critical-risk contexts.
 - Promoted policies do not carry live execution authority. They can affect `adaptive_provider` only when a workflow node supplies `adaptive_policy_execution` with explicit candidate plans that each still pass AF-3 provider/model/call/token/cost/time/concurrency gates.
-- AF-5 remains intentionally unimplemented.
+AF-5 implementation status:
+
+- Implemented on `codex/adaptive-fusion-af5`, stacked on AF-4.
+- The dashboard adds an Adaptive Fusion operator tab for active policy review, snapshot visibility, safety flags, explicit promotion request submission, and snapshot rollback.
+- The TypeScript SDK exposes the AF-4 policy list, promotion, and rollback endpoints with explicit confirmation fields.
+- AF-5 adds no execution authority, provider calls, default-on routing, provider failover, unattended workers, merge, release, deploy, or apply controls.
 
 Design references:
 

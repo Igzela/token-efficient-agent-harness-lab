@@ -30,8 +30,8 @@ The Rust `engine/` is the sole runtime implementation. Python is retained as RES
 | `engine/src/storage/local_product_store/` | active storage | SQLite/PostgreSQL app-owned state, migrations, audit, costs, plans, runs, artifacts | `cargo test -p engine --test test_local_product_store` |
 | `engine/src/storage/backup_manager.rs` | active ops | SQLite backup, verify, restore support | `cargo test -p engine` |
 | `engine/src/infrastructure/` | active ops/security | Auth, rate limiting, circuit breaker, plugin registry helpers | `cargo test -p engine` |
-| `dashboard/` | active UI | Local operations console with guarded app-owned controls | `cd dashboard && bun run typecheck && bun run build:static` |
-| `sdk/typescript/` | active SDK | TypeScript REST SDK and generated wire re-exports | `cd sdk/typescript && bun run build && bun run test` |
+| `dashboard/` | active UI | Local operations console with guarded app-owned controls, including AF-5 Adaptive Fusion policy review/rollback | `cd dashboard && bun run typecheck && bun run build:static` |
+| `sdk/typescript/` | active SDK | TypeScript REST SDK, Adaptive Fusion policy controls, and generated wire re-exports | `cd sdk/typescript && bun run build && bun run test` |
 | `sdk/python/` | active SDK | Python REST SDK | `cd sdk/python && PYTHONPATH=src uv run --no-project python -m unittest discover -s tests` |
 | `wire_contract/v1/`, `codegen/` | active governance | JSON schemas and deterministic generated Rust/TS/Python wire types | `bash scripts/check_wire_codegen_drift.sh` |
 | `scripts/` | active ops | Local doctor, release/smoke checks, drift guards, and real output pilots | script-specific checks, including `scripts/real_output_pilots.py` and `scripts/check_release_contract.sh` |
@@ -57,7 +57,7 @@ The Rust `engine/` is the sole runtime implementation. Python is retained as RES
 - V2-3 target repo PR flow: `target_repo_output.rs` owns git/process safety; supervised patch storage owns workspace/artifact/evidence/approval binding; HTTP owns scope/gate/confirmation/audit; SDK/dashboard API contracts mirror the endpoint.
 - V2-4 worker queue: `scheduler.rs` owns worker lifecycle/control; `workflow_runs.rs` owns atomic lease/stale recovery; `run_queue.rs` and `executor_pool.rs` own admission/capacity; `heartbeat.rs` persists aggregate worker health; scheduler HTTP handler and SDKs expose controls.
 - V2-5 product UX: `dashboard/src/components/MissionControl.tsx` owns the primary output workflow; `SupervisedPatch.tsx` owns detailed workspace/artifact operations; `SchedulerStatus.tsx` owns worker control/detail; `dashboard/src/lib/api-client.ts` owns dashboard API bindings.
-- Adaptive Fusion Routing: AF-0 through AF-2 live under `feedback/`; AF-3 execution lives under `provider/adaptive_execution.rs` and the existing workflow tick/`NodeExecutor` boundary; AF-4 contextual policy lives under `feedback/contextual_policy.rs`, persists active policy/snapshot state through `storage/local_product_store/adaptive_policy.rs`, and exposes guarded operator controls through the existing HTTP dispatch handlers.
+- Adaptive Fusion Routing: AF-0 through AF-2 live under `feedback/`; AF-3 execution lives under `provider/adaptive_execution.rs` and the existing workflow tick/`NodeExecutor` boundary; AF-4 contextual policy lives under `feedback/contextual_policy.rs`, persists active policy/snapshot state through `storage/local_product_store/adaptive_policy.rs`, and exposes guarded operator controls through the existing HTTP dispatch handlers; AF-5 operator UX lives in `dashboard/src/components/AdaptiveFusion.tsx`, `dashboard/src/lib/api-client.ts`, and the TypeScript SDK client/types.
 - Safety boundary changes: update `docs/ARCHITECTURE_BOOK.md` before implementation; use archived security docs only as historical reference.
 - Documentation set changes: keep the active docs set limited to the six files listed in `docs/CURRENT_STATUS.md`.
 
@@ -66,7 +66,7 @@ The Rust `engine/` is the sole runtime implementation. Python is retained as RES
 - R-series is sealed at R7. R8 is not approved.
 - Do not create a parallel scheduler, DAG kernel, policy engine, storage layer, or dashboard data model.
 - V2 Real Production Output is approved only through the phase plan in `docs/NEXT_DECISION.md`; do not skip phases or merge half-built runtime authority.
-- Adaptive Fusion Routing is approved only through AF-0 to AF-5 in `docs/NEXT_DECISION.md`; AF-0 through AF-2 remain shadow/offline, while AF-3/AF-4 live influence requires an explicit authenticated adaptive workflow tick and explicit bounded candidate plans.
+- Adaptive Fusion Routing is approved only through AF-0 to AF-5 in `docs/NEXT_DECISION.md`; AF-0 through AF-2 remain shadow/offline, while AF-3/AF-4 live influence requires an explicit authenticated adaptive workflow tick and explicit bounded candidate plans. AF-5 is operator UX over those guarded endpoints, not new runtime authority.
 - Do not add default-on provider API execution, direct target-repository `main` writes, process/container/VM sandbox behavior, hosted/cloud deployment, app-runtime release/deploy controls, provider failover outside AF-3 gates, or unattended autonomous-agent loops without separate explicit approval.
 - Any V2 real capability must include an env/auth gate, audit event, tests, and rollback/kill path before it is usable.
 - Wire-codegen drift guard: `scripts/check_wire_codegen_drift.sh`.
