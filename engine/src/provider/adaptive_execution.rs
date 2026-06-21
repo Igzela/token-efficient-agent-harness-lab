@@ -1,6 +1,6 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
@@ -10,6 +10,7 @@ use super::audit::ProviderAuditRecorder;
 use super::cost_gate::{check_cost_gates, CostGateConfig};
 use super::redaction::{contains_sensitive_patterns, redact_sensitive_patterns};
 use super::{Provider, ProviderRequest, ProviderResponse};
+use crate::feedback::policy_snapshot::stable_hash;
 use crate::feedback::{
     contextual_policy_key, AdaptiveExplorationGate, ContextualBanditEngine,
     ContextualBanditObservation, ContextualPolicyRequest, PromotedAdaptivePolicy,
@@ -477,7 +478,9 @@ pub struct AdaptiveProviderNodeExecutor {
     cost_gate_config: CostGateConfig,
     daily_cost_usd: f64,
     contextual_policies: BTreeMap<String, PromotedAdaptivePolicy>,
+    persisted_observations: Vec<ContextualBanditObservation>,
     exploration_gate: AdaptiveExplorationGate,
+    last_observation: Arc<Mutex<Option<AdaptiveObservationDraft>>>,
 }
 
 impl AdaptiveProviderNodeExecutor {
@@ -488,13 +491,23 @@ impl AdaptiveProviderNodeExecutor {
             cost_gate_config: CostGateConfig::new(None, None),
             daily_cost_usd: 0.0,
             contextual_policies: BTreeMap::new(),
+            persisted_observations: Vec::new(),
             exploration_gate: AdaptiveExplorationGate::from_env(),
+            last_observation: Arc::new(Mutex::new(None)),
         }
     }
 
     pub fn with_cost_gate(mut self, config: CostGateConfig, daily_cost_usd: f64) -> Self {
         self.cost_gate_config = config;
         self.daily_cost_usd = daily_cost_usd;
+        self
+    }
+
+    pub fn with_persisted_observations(
+        mut self,
+        observations: Vec<ContextualBanditObservation>,
+    ) -> Self {
+        self.persisted_observations = observations;
         self
     }
 
@@ -512,6 +525,13 @@ impl AdaptiveProviderNodeExecutor {
         self
     }
 
+    pub fn take_observation(&self) -> Option<AdaptiveObservationDraft> {
+        self.last_observation
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .take()
+    }
+
     fn prompt(input: &NodeExecutionInput) -> String {
         input
             .node_metadata
@@ -527,10 +547,44 @@ impl AdaptiveProviderNodeExecutor {
     }
 }
 
-#[derive(Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct AdaptiveObservationDraft {
+    pub run_id: String,
+    pub request_id: String,
+    pub task_class: String,
+    pub objective: crate::feedback::ObjectiveProfile,
+    pub risk_level: String,
+    pub candidate_id: String,
+    pub candidate_hash: String,
+    pub policy_hash: Option<String>,
+    pub candidate_kind: String,
+    pub success: bool,
+    pub quality_score: f64,
+    pub quality_score_source: String,
+    pub tool_success_score: f64,
+    pub cost_usd: f64,
+    pub latency_ms: u64,
+    pub input_tokens: u64,
+    pub output_tokens: u64,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct AdaptiveObservationContext {
+    request_id: String,
+    task_class: String,
+    objective: crate::feedback::ObjectiveProfile,
+    risk_level: String,
+    candidate_id: String,
+    #[serde(default)]
+    policy_hash: Option<String>,
+}
+
+#[derive(Clone, Deserialize)]
 struct AdaptiveNodeExecutionConfig {
     plan: AdaptiveExecutionPlan,
     limits: AdaptiveExecutionLimits,
+    #[serde(default)]
+    observation_context: Option<AdaptiveObservationContext>,
 }
 
 #[derive(Deserialize)]
@@ -575,8 +629,8 @@ impl NodeExecutor for AdaptiveProviderNodeExecutor {
         let request = AdaptiveExecutionRequest::new(
             &dispatch_ref,
             &Self::prompt(input),
-            config.plan,
-            config.limits,
+            config.plan.clone(),
+            config.limits.clone(),
         );
         let executor = self.executor.clone();
         let gate = self.gate;
@@ -590,27 +644,48 @@ impl NodeExecutor for AdaptiveProviderNodeExecutor {
         .join();
 
         match execution {
-            Ok(Ok(result)) => NodeExecutionOutput {
-                status: "completed".to_string(),
-                executor_type: "adaptive_provider".to_string(),
-                output: result.output,
-                error_domain: None,
-                error_message: None,
-                input_tokens: i64::try_from(result.total_input_token_count).ok(),
-                output_tokens: i64::try_from(result.total_output_token_count).ok(),
-                estimated_cost: Some(result.total_provider_cost_usd),
-                latency_ms: Some(result.elapsed_ms as i64),
-            },
-            Ok(Err(error)) => adaptive_node_error(
-                &error.code,
-                &error.message,
-                Some(
-                    error
-                        .total_provider_cost_usd
-                        .max(error.total_reserved_cost_usd),
-                ),
-                Some(error.elapsed_ms),
-            ),
+            Ok(Ok(result)) => {
+                self.capture_observation(
+                    input,
+                    &config,
+                    true,
+                    result.total_provider_cost_usd,
+                    result.elapsed_ms,
+                    result.total_input_token_count,
+                    result.total_output_token_count,
+                );
+                NodeExecutionOutput {
+                    status: "completed".to_string(),
+                    executor_type: "adaptive_provider".to_string(),
+                    output: result.output,
+                    error_domain: None,
+                    error_message: None,
+                    input_tokens: i64::try_from(result.total_input_token_count).ok(),
+                    output_tokens: i64::try_from(result.total_output_token_count).ok(),
+                    estimated_cost: Some(result.total_provider_cost_usd),
+                    latency_ms: Some(result.elapsed_ms as i64),
+                }
+            }
+            Ok(Err(error)) => {
+                let cost = error
+                    .total_provider_cost_usd
+                    .max(error.total_reserved_cost_usd);
+                self.capture_observation(
+                    input,
+                    &config,
+                    false,
+                    cost,
+                    error.elapsed_ms,
+                    error.total_input_token_count,
+                    error.total_output_token_count,
+                );
+                adaptive_node_error(
+                    &error.code,
+                    &error.message,
+                    Some(cost),
+                    Some(error.elapsed_ms),
+                )
+            }
             Err(_) => {
                 self.executor.audit_node_failure(
                     &dispatch_ref,
@@ -630,6 +705,49 @@ impl NodeExecutor for AdaptiveProviderNodeExecutor {
 }
 
 impl AdaptiveProviderNodeExecutor {
+    #[allow(clippy::too_many_arguments)]
+    fn capture_observation(
+        &self,
+        input: &NodeExecutionInput,
+        config: &AdaptiveNodeExecutionConfig,
+        success: bool,
+        cost_usd: f64,
+        latency_ms: u64,
+        input_tokens: u64,
+        output_tokens: u64,
+    ) {
+        let Some(context) = &config.observation_context else {
+            return;
+        };
+        let proxy_score = f64::from(success);
+        let draft = AdaptiveObservationDraft {
+            run_id: input.run_id.clone(),
+            request_id: context.request_id.clone(),
+            task_class: context.task_class.clone(),
+            objective: context.objective,
+            risk_level: context.risk_level.clone(),
+            candidate_id: context.candidate_id.clone(),
+            candidate_hash: stable_hash(&serde_json::json!({
+                "plan": config.plan,
+                "limits": config.limits,
+            })),
+            policy_hash: context.policy_hash.clone(),
+            candidate_kind: plan_kind(&config.plan).to_string(),
+            success,
+            quality_score: proxy_score,
+            quality_score_source: "execution_success_proxy".to_string(),
+            tool_success_score: proxy_score,
+            cost_usd,
+            latency_ms,
+            input_tokens,
+            output_tokens,
+        };
+        *self
+            .last_observation
+            .lock()
+            .unwrap_or_else(|error| error.into_inner()) = Some(draft);
+    }
+
     fn resolve_node_config(
         &self,
         input: &NodeExecutionInput,
@@ -684,10 +802,36 @@ impl AdaptiveProviderNodeExecutor {
                 "promoted candidate has no explicit bounded execution plan",
             ));
         }
+        let mut observations = config.observations.clone();
+        let explicit_ids = observations
+            .iter()
+            .map(|observation| observation.observation_id.clone())
+            .collect::<BTreeSet<_>>();
+        let explicit_run_candidates = observations
+            .iter()
+            .map(|observation| (observation.run_id.clone(), observation.candidate_id.clone()))
+            .collect::<BTreeSet<_>>();
+        observations.extend(
+            self.persisted_observations
+                .iter()
+                .filter(|observation| {
+                    observation.task_class == config.request.task_class
+                        && observation.objective == config.request.objective
+                        && config
+                            .candidate_plans
+                            .contains_key(&observation.candidate_id)
+                        && !explicit_ids.contains(&observation.observation_id)
+                        && !explicit_run_candidates.contains(&(
+                            observation.run_id.clone(),
+                            observation.candidate_id.clone(),
+                        ))
+                })
+                .cloned(),
+        );
         let decision = ContextualBanditEngine::decide(
             &config.request,
             &config.evaluation,
-            &config.observations,
+            &observations,
             &self.exploration_gate,
         )
         .map_err(|_| {
@@ -714,7 +858,23 @@ impl AdaptiveProviderNodeExecutor {
         Ok(AdaptiveNodeExecutionConfig {
             plan: selected.plan.clone(),
             limits: selected.limits.clone(),
+            observation_context: Some(AdaptiveObservationContext {
+                request_id: config.request.request_id,
+                task_class: config.request.task_class,
+                objective: config.request.objective,
+                risk_level: config.request.risk_level,
+                candidate_id: candidate_id.to_string(),
+                policy_hash: Some(policy.policy_hash.clone()),
+            }),
         })
+    }
+}
+
+fn plan_kind(plan: &AdaptiveExecutionPlan) -> &'static str {
+    match plan {
+        AdaptiveExecutionPlan::Single { .. } => "single",
+        AdaptiveExecutionPlan::OrderedFallback { .. } => "ordered_fallback",
+        AdaptiveExecutionPlan::Fusion { .. } => "fusion",
     }
 }
 

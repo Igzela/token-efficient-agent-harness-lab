@@ -456,6 +456,9 @@ pub(crate) async fn api_tick_workflow_run(
             let contextual_policies = store
                 .active_adaptive_fusion_policies()
                 .map_err(internal_error)?;
+            let persisted_observations = store
+                .adaptive_bandit_observations()
+                .map_err(internal_error)?;
             let executor = crate::provider::adaptive_execution::AdaptiveProviderNodeExecutor::new(
                 adaptive_executor,
                 gate,
@@ -464,6 +467,7 @@ pub(crate) async fn api_tick_workflow_run(
                 contextual_policies,
                 crate::feedback::AdaptiveExplorationGate::from_env(),
             )
+            .with_persisted_observations(persisted_observations)
             .with_cost_gate(cost_config, daily_cost);
             match store.tick_with_executor_and_command(
                 &run_id,
@@ -473,6 +477,7 @@ pub(crate) async fn api_tick_workflow_run(
                 request.command.as_deref(),
             ) {
                 Ok(result) => {
+                    persist_adaptive_observation(&store, &executor, actor);
                     record_tick_decision(&store, &run_id, &result, "adaptive_provider");
                     Ok((cors_headers(), Json(json_response("tick", result))))
                 }
@@ -505,6 +510,45 @@ fn provider_execution_enabled() -> bool {
     std::env::var("ACP_ENABLE_PROVIDER_EXECUTION")
         .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
         .unwrap_or(false)
+}
+
+fn persist_adaptive_observation(
+    store: &crate::storage::local_product_store::LocalProductStore,
+    executor: &crate::provider::adaptive_execution::AdaptiveProviderNodeExecutor,
+    actor: &str,
+) {
+    let Some(draft) = executor.take_observation() else {
+        return;
+    };
+    let input = crate::storage::local_product_store::AdaptiveObservationInput {
+        schema_version: crate::storage::local_product_store::ADAPTIVE_OBSERVATION_SCHEMA_VERSION
+            .to_string(),
+        run_id: draft.run_id,
+        request_id: draft.request_id,
+        task_class: draft.task_class,
+        objective: draft.objective,
+        risk_level: draft.risk_level,
+        candidate_id: draft.candidate_id,
+        candidate_hash: draft.candidate_hash,
+        policy_hash: draft.policy_hash,
+        candidate_kind: draft.candidate_kind,
+        success: draft.success,
+        quality_score: draft.quality_score,
+        quality_score_source: draft.quality_score_source,
+        tool_success_score: draft.tool_success_score,
+        cost_usd: draft.cost_usd,
+        latency_ms: draft.latency_ms,
+        input_tokens: draft.input_tokens,
+        output_tokens: draft.output_tokens,
+    };
+    if store.record_adaptive_observation(&input, actor).is_err() {
+        let _ = store.append_audit(
+            actor,
+            "adaptive_observation.rejected",
+            "adaptive_fusion_observation",
+            &json!({"error_domain": "adaptive_observation_rejected"}),
+        );
+    }
 }
 
 fn query_i64(params: &std::collections::HashMap<String, String>, key: &str, default: i64) -> i64 {

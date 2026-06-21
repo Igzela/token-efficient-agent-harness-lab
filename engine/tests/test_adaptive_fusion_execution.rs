@@ -1687,6 +1687,14 @@ fn adaptive_node_executor_reads_explicit_plan_and_returns_workflow_output() {
         node_metadata: json!({
             "prompt": "solve from node metadata",
             "adaptive_execution": {
+                "observation_context": {
+                    "request_id": "request-1",
+                    "task_class": "coding",
+                    "objective": "quality",
+                    "risk_level": "low",
+                    "candidate_id": "candidate-primary",
+                    "policy_hash": null
+                },
                 "plan": {
                     "mode": "single",
                     "endpoint": {
@@ -1713,6 +1721,14 @@ fn adaptive_node_executor_reads_explicit_plan_and_returns_workflow_output() {
     assert_eq!(output.output.as_deref(), Some("node answer"));
     assert_eq!(output.estimated_cost, Some(0.01));
     assert_eq!(provider.calls(), 1);
+    let observation = node_executor.take_observation().unwrap();
+    assert_eq!(observation.run_id, "run-1");
+    assert_eq!(observation.candidate_id, "candidate-primary");
+    assert_eq!(observation.candidate_kind, "single");
+    assert!(observation.success);
+    let serialized = serde_json::to_string(&observation).unwrap();
+    assert!(!serialized.contains("solve from node metadata"));
+    assert!(!serialized.contains("node answer"));
 }
 
 #[test]

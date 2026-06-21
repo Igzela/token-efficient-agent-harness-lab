@@ -5149,6 +5149,14 @@ async fn axum_tick_with_adaptive_provider_executes_explicit_node_plan() {
                         "task_type": "implementation",
                         "status": "pending",
                         "adaptive_execution": {
+                            "observation_context": {
+                                "request_id": "request-http-adaptive",
+                                "task_class": "coding",
+                                "objective": "quality",
+                                "risk_level": "low",
+                                "candidate_id": "fusion-http-candidate",
+                                "policy_hash": null
+                            },
                             "plan": {
                                 "mode": "fusion",
                                 "panel": [
@@ -5270,6 +5278,14 @@ async fn axum_tick_with_adaptive_provider_executes_explicit_node_plan() {
         body["tick"]["result"]["trace"]["kill_path"],
         "adaptive_kill_switch_or_provider_timeout"
     );
+    let body_text = body.to_string();
+    assert!(!body_text.contains("adaptive_observation"));
+    let observations = store.adaptive_observations().unwrap();
+    assert_eq!(observations.len(), 1);
+    assert_eq!(observations[0].run_id, run_id);
+    assert_eq!(observations[0].candidate_id, "fusion-http-candidate");
+    assert_eq!(observations[0].candidate_kind, "fusion");
+    assert!(observations[0].success);
     let event_types = store
         .provider_audit_events(20)
         .unwrap()
