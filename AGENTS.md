@@ -7,7 +7,7 @@ This repository is the Token-Efficient Agent Harness Lab: a local deterministic 
 **Active tracks:**
 - **Real-World Testing Mode** — validated through real tasks, branches, commits, PRs, CI, gated auto-merge
 - **Agent Autonomous Maintenance Mode** — agents maintain docs/CI/tests/low-risk PR flow under playbook gates
-- **Adaptive Fusion Routing Track** — authorized; AF-0 through AF-5 implemented, adaptive live execution remains explicit and default-off
+- **Adaptive Fusion Routing Track** — authorized; AF-0 through AF-6A implemented, adaptive live execution remains explicit and default-off
 
 **Complete tracks:**
 - Dispatch Kernel Phases 1–7 (including 6A, 6B-1/2/3, Gates 1–3): STABLE

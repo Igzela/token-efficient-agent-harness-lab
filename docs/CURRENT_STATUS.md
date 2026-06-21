@@ -1,6 +1,6 @@
 # Current Status
 
-Last updated: 2026-06-21. V2-0 through V2-5 and the Real Output Closeout are complete; `v0.1.0` is published and its online installer path is verified.
+Last updated: 2026-06-21. V2-0 through V2-5 and the Real Output Closeout are complete; `v0.1.0` is published and its online installer path is verified. AF-6A is complete.
 
 ## Summary
 
@@ -30,7 +30,7 @@ The system is useful as an operations/control-plane lab for deterministic dispat
 
 ## Last Recorded Verification
 
-- Branch: `codex/adaptive-fusion-af5`, stacked on `codex/adaptive-fusion-af4`.
+- Branch: `main` (AF-6A merged via PR #91 on 2026-06-21).
 - Tests: **1654 Rust tests pass**, 0 failures, recorded 2026-06-21 on `codex/adaptive-fusion-af5`.
 - CI: the `tests` workflow run `27892330465` on `main` is green as of 2026-06-21.
 - Release: the `v0.1.0` release workflow run `27891104370` is green; all eight published assets passed checksum/archive inspection.
@@ -73,7 +73,7 @@ uv run --no-project python scripts/check_agent_handoff.py
 | Track | Status |
 |---|---|
 | Agent Autonomous Maintenance Mode | Active for docs, CI, tests, deterministic regressions, and low-risk PR flow |
-| Adaptive Fusion Routing Track | AF-0 through AF-5 implemented; adaptive live execution remains explicit and default-off |
+| Adaptive Fusion Routing Track | AF-0 through AF-6A implemented; candidate generation complete; adaptive live execution remains explicit and default-off |
 
 Historical phase plans, closeouts, and long-form validation reports are retained under `docs/archive/`.
 
@@ -91,6 +91,7 @@ Historical phase plans, closeouts, and long-form validation reports are retained
 - Adaptive Fusion AF-3: up to eight startup-configured provider/model endpoints; explicit authenticated `adaptive_provider` ticks; single/fallback/fusion execution; fixed model binding; max calls, total tokens, dollars, elapsed time, panel size, and serial concurrency; existing daily/per-dispatch cost gates; provider audit, circuit breakers, redaction/capping, and kill path.
 - Adaptive Fusion AF-4: contextual bandit scoring over task class and objective; non-stationary sequence decay; dual-gated promotion with minimum sample/confidence/regression checks; local evidence ID verification; hash-bound active-policy snapshots in `local_config`; rollback; high/critical-risk exploration exclusion; and optional low/medium-risk exploration capped at 5%.
 - Adaptive Fusion AF-5: dashboard and TypeScript SDK operator surface for active policies, snapshots, safety flags, explicit promotion request submission, and snapshot rollback. It consumes the AF-4 guarded endpoints and does not add execution, provider, failover, merge, or deploy authority.
+- Adaptive Fusion AF-6A: deterministic candidate generator that produces single, ordered fallback, and fusion candidates from configured endpoints. Generation is pure/deterministic with no provider calls. Candidates include schema-versioned IDs, content hashes, endpoint bindings, estimated costs/tokens/latency, and required capabilities. Aggregate caps (cost, tokens, latency) suppress fallback/fusion when exceeded. Duplicate endpoint IDs are fully excluded. Total emitted candidates bounded by `max_candidates`.
 - V2-3 target repo output: `git_worktree` creation and output require `dispatch:execute` plus `ACP_ENABLE_TARGET_REPO_OUTPUT=1`; artifact hashes bind patch content and actual allowlisted verification evidence; output requires same-run approval, integrity, redaction, explicit confirmation, bounded text files, and remote controls. Optional GitHub PR creation additionally requires `ACP_ENABLE_GITHUB_PR_OUTPUT=1` and `ACP_GITHUB_TOKEN_ENV`.
 - V2-4 bounded workers: scheduler startup requires both scheduler and supervised-worker env gates; worker count is bounded by global concurrency and 32; each worker claims at most one node per cycle through the existing atomic DB lease; heartbeat metadata exposes worker state; stale recovery is audited; `dispatch:execute` plus confirmation controls pause/resume/kill; env pause and kill switches remain available.
 - Verification/repair: `/supervised-patch/workspaces/{id}/verify` runs allowlisted test tools in the app-owned workspace, stores redacted/capped evidence, and can invoke at most two CLI repair attempts before output remains blocked.

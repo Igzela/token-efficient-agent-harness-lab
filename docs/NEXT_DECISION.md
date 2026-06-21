@@ -42,6 +42,18 @@ Auto-merge eligible: docs-only, tests-only, CI fix, small low-risk code fix, all
 
 Not auto-merge eligible: auth, security, provider routing authority, database schema, release, deployment, policy mutation, failing CI, unclear rollback, or any AF-6 implementation slice.
 
+## Autonomously maintain
+
+The system may autonomously advance safe repository work: repair stale handoff docs, status drift, and wire-codegen guard drift; fix failing tests, CI breakage, lint/security baseline failures, and deterministic regressions; advance the next documented dispatch-kernel phase when the change is inside approved scope and respects all hard boundaries; and create branches, commits, PRs, and low-risk merges through the real-world testing playbook.
+
+## Disallowed by Default
+
+Provider/CLI execution boundary expansion, auth/security boundary changes, DB migrations, release/tag/deploy, active YAML/rubric/policy mutation, and destructive operations all require explicit human approval.
+
+## Architecture refactor (R-series)
+
+The R-series is sealed at R7. **SEALED AT R7.** R8 is not approved. No further R-series file splitting is approved.
+
 ## Allowed Next Paths
 
 - Autonomous maintenance: repair stale docs, CI breakage, test drift, and wire-codegen drift.
@@ -65,7 +77,7 @@ V2 implementation is complete through V2-5. It remains separate from AF-6. AF-6 
 
 Human approval on 2026-06-21 authorizes an adaptive multi-provider/model routing track inspired by Auto Router, Fusion deliberation, provider performance routing, and this repository's existing feedback/regulator loop.
 
-AF-0 through AF-5 are complete:
+AF-0 through AF-5 are complete. AF-6A is complete.
 
 | Phase | Status |
 |---|---|
@@ -75,8 +87,9 @@ AF-0 through AF-5 are complete:
 | AF-3 | Explicit bounded adaptive execution implemented |
 | AF-4 | Contextual policy improvement implemented |
 | AF-5 | Operator UX implemented |
+| AF-6A | Deterministic candidate generator implemented |
 
-AF-6 is now authorized as the next Adaptive Fusion phase.
+AF-6B through AF-6F remain as the next authorized Adaptive Fusion slices.
 
 ## AF-6 Auto Fusion Plan
 
@@ -102,7 +115,7 @@ AF-6 implementation slices:
 
 | Slice | Goal | Acceptance |
 |---|---|---|
-| AF-6A | Candidate generator | Deterministic single/fallback/fusion candidates from configured endpoints; bounded IDs, hashes, costs, capabilities, and model bindings |
+| AF-6A | Candidate generator | **Complete** — deterministic single/fallback/fusion candidates from configured endpoints; bounded IDs, hashes, costs, capabilities, aggregate caps, duplicate detection, and model bindings |
 | AF-6B | Parallel panel execution | Panel calls can run concurrently under bounded limits; judge/synthesizer remain ordered; failures are deterministic and audited |
 | AF-6C | Online observation capture | Live adaptive outcomes become bounded learning observations without storing raw prompts, raw outputs, secrets, or repository content |
 | AF-6D | Continuous experiments | Controlled traffic allocation tests candidate plans with budget, risk, and kill controls |
