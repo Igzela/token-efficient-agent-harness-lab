@@ -13,6 +13,7 @@
 **Active tracks:**
 - Real-World Testing Mode — validated through real tasks, branches, commits, PRs, CI, gated auto-merge
 - Agent Autonomous Maintenance Mode — agents maintain docs/CI/tests/low-risk PR flow under playbook gates
+- Adaptive Fusion Routing Track — authorized; AF-0 shadow portfolio planner implemented, live influence remains disabled
 
 **Complete tracks:**
 - Dispatch Kernel Phases 1–7 (including 6A, 6B-1/2/3, Gates 1–3): STABLE
@@ -27,7 +28,7 @@
 - Real Output Closeout: COMPLETE (`v0.1.0` published and online installer verified)
 
 **Key facts:**
-- 1580 Rust tests pass, 0 failures (last recorded full verification)
+- 1587 Rust tests pass, 0 failures (last recorded full verification)
 - Latest release: `v0.1.0`, published 2026-06-21
 - TypeScript strict + boundary lint + build + static export pass
 - `cargo fmt`, `cargo clippy`, handoff guard all pass
@@ -40,7 +41,7 @@
 
 **Agent maintenance** may create branches, commits, PRs, and low-risk merges only through branch+PR workflow under `docs/REAL_WORLD_TESTING_PLAYBOOK.md` gates. This is a repository workflow mode, not an app-runtime feature.
 
-**Requires explicit human approval:** Provider/CLI execution boundary expansion outside the V2 phase plan, auth/security boundary changes, DB migrations, release/tag/deploy, active YAML/rubric/policy mutation, destructive operations.
+**Requires explicit human approval:** Provider/CLI execution boundary expansion outside the V2 and Adaptive Fusion Routing phase plans, auth/security boundary changes, DB migrations, release/tag/deploy, active YAML/rubric/policy mutation, destructive operations.
 
 ## Minimal Agent Reading Model
 
@@ -123,7 +124,7 @@ Prefer prune/archive/link over adding more prose.
 
 - **Framework**: Rust `cargo test` for engine; Python `unittest` for SDK
 - **Run commands**: `cargo test -p engine` (primary); SDK tests in `sdk/python/`; PostgreSQL integration: `cargo test -p engine --features pg-tests` (requires `ACP_TEST_DATABASE_URL`)
-- **Current count**: 1580 Rust tests, 0 failures
+- **Current count**: 1587 Rust tests, 0 failures
 - **CI**: GitHub Actions on push/PR to main
 - **Test-first**: Write tests alongside implementation
 

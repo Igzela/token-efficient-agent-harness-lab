@@ -139,17 +139,19 @@ The dashboard is a local operations console with guarded app-owned controls. It 
 
 These are accepted current limitations, not hidden TODOs:
 
-- V2 real output and its closeout implementation are complete; published release verification remains an operator/repository release step.
+- V2 real output and its closeout implementation are complete; `v0.1.0` published-asset installation verification passed.
 - V2-1 app-owned workspace hardening is implemented, but it is not hard process/container/VM sandboxing and does not authorize target-repository writes.
 - Provider API output remains gated. Installed local CLI discovery defaults on, while each execution still requires an explicit workflow tick.
 - Hard process/container/VM sandbox isolation is not implemented and is not part of V2-1 unless separately approved.
 - V2-3 controlled target output is merged. It creates no merge/deploy/apply authority and preserves the registered target working tree and `main`.
 - GitHub PR creation is default-off and adds no merge authority.
 - Bounded supervised workers are merged in V2-4 and Mission Control product output UX is merged in V2-5; unattended autonomous-agent loops remain out of scope.
-- Cloud SaaS, hosted/cloud deployment, multi-tenant service, direct release/tag/deploy/apply controls, and provider failover remain out of scope.
+- Cloud SaaS, hosted/cloud deployment, multi-tenant service, and direct release/tag/deploy/apply controls remain out of scope. Provider portfolio fallback/fusion remains unavailable until the bounded AF-3 phase lands.
 - Some routing, quality, and orchestration modules remain partially active rather than unified under one policy layer.
 
-Boundary expansion outside the approved V2 track requires a new plan, threat-model update, focused tests, and explicit human approval.
+The Adaptive Fusion Routing track approved on 2026-06-21 must extend `model_selector`, `feedback`, `provider`, and the existing scheduler/executor boundaries. It must not create a parallel routing, policy, workflow, or storage kernel. AF-0 through AF-2 are shadow/offline only; later provider portfolio execution remains unavailable until its phase gates merge.
+
+Boundary expansion outside the approved V2 and Adaptive Fusion Routing tracks requires a new plan, threat-model update, focused tests, and explicit human approval.
 
 ## Active Verification
 

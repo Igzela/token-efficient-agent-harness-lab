@@ -149,6 +149,74 @@ V2 implementation routing:
 
 Every V2 PR must list: completed phase, intentionally unfinished phases, verification, residual risk, rollback path, and next PR.
 
+## Adaptive Fusion Routing Track — AUTHORIZED
+
+Human approval on 2026-06-21 authorizes an adaptive multi-provider/model routing track inspired by Auto Router, Fusion deliberation, provider performance routing, and this repository's existing feedback/regulator loop.
+
+Canonical terms:
+
+- **Model endpoint** — one concrete provider plus model combination. Credentials remain environment/keyring/vault references and never enter routing records.
+- **Objective profile** — an operator-selected multi-objective policy. `efficient` prioritizes acceptable quality per dollar and latency; `quality` prioritizes correctness and reliability while retaining hard budget limits.
+- **Fusion plan** — a bounded panel of model endpoints, a judge, and a synthesizer. It is an execution plan, not an autonomous worker swarm.
+- **Recursive improvement** — evidence-driven routing-policy updates from task context, outcomes, quality, cost, latency, tool success, and human feedback. It does not mean self-modifying code.
+- **Exploration** — bounded traffic assigned to uncertain candidates to learn performance. Exploration must be explicit, budgeted, audited, reversible, and disabled by default until AF-4.
+
+Target flow:
+
+```text
+task context + objective profile + hard constraints
+-> eligible model endpoints
+-> single / fallback / fusion plan
+-> bounded execution
+-> judge + deterministic evidence
+-> quality/cost/latency/tool/human outcome
+-> shadow policy update
+-> gated promotion or rollback
+```
+
+Global gates:
+
+- Real provider execution remains default-off and requires the existing provider/auth/cost gates plus phase-specific adaptive-routing gates.
+- AF-0 through AF-2 are shadow/offline only and cannot influence live executor selection.
+- No provider credential, binary path, prompt secret, raw sensitive output, or target-repository content may enter portfolio metadata.
+- Fusion calls require per-request call, token, dollar, timeout, and concurrency ceilings.
+- A judge score alone cannot promote a policy. Promotion requires minimum samples, confidence, regression checks, audit evidence, a persistent snapshot, and rollback.
+- Exploration has a hard traffic ceiling, excludes high/critical-risk tasks by default, and has an emergency kill switch.
+- Until a phase merges, the previous routing behavior and provider-failover prohibition remain authoritative.
+
+| Phase | Goal | Required acceptance |
+|---|---|---|
+| AF-0 | Shadow portfolio planning contract | Deterministic pure planner; `efficient`/`quality`; capability and hard-budget filtering; single/fusion plan; panel/judge/synthesizer identities; normalized score evidence; always `shadow_only`; no network, storage, or live routing effect |
+| AF-1 | Model endpoint registry | Multiple provider/model endpoints with capability, pricing, context, tool, health, and credential-reference metadata; no secret persistence; hot add/disable; deterministic snapshot |
+| AF-2 | Offline evaluation and replay | Reuse run traces and evaluator evidence to compare endpoint/portfolio outcomes by task class; calibrate judge bias; produce shadow recommendations and Pareto frontiers |
+| AF-3 | Bounded adaptive execution | Explicit env/auth gate; single, ordered fallback, and bounded panel/judge/synthesizer execution; max calls/cost/time/concurrency; full audit; kill switch; no default-on provider calls |
+| AF-4 | Contextual-bandit improvement | Shadow-first contextual policy, bounded exploration, non-stationary decay, minimum samples/confidence, dual-gated promotion, snapshot/rollback, high-risk exclusion |
+| AF-5 | Product/operator UX | Objective selection, portfolio evidence, model/provider scorecards, cost/quality frontier, exploration/promotion controls, rollback visibility |
+
+AF-0 implementation routing:
+
+- Extend `engine/src/feedback/`; do not create a parallel dispatch, policy, scheduler, or storage kernel.
+- Inputs are immutable model-endpoint observations with normalized quality, success, cost-efficiency, and latency-efficiency scores plus capabilities.
+- Required capabilities, minimum quality, and per-plan cost constraints filter before scoring. Ties are deterministic by endpoint ID.
+- AF-0 uses explicit, serialized bootstrap weights: `efficient` = quality 0.25, success 0.25, cost efficiency 0.35, latency efficiency 0.15; `quality` = quality 0.65, success 0.25, cost efficiency 0.05, latency efficiency 0.05. These defaults are not learned policy and cannot change live routing.
+- `efficient` defaults to one endpoint. `quality` in auto mode may emit a three-endpoint fusion plan only for sufficiently complex or high-impact tasks and only when enough eligible endpoints exist.
+- AF-0 output is advisory evidence only. It must state that it cannot influence selected tier, executor, retry path, or active routing policy.
+
+AF-0 implementation status:
+
+- Implemented on `codex/adaptive-fusion-af0`.
+- The pure planner and seven focused tests cover objective semantics, bounded fusion, full-plan budget fallback, capability/score/budget validation, duplicate endpoint rejection, audit scorecards, deterministic tie-breaking, and zero live influence.
+- AF-1 through AF-5 remain intentionally unimplemented.
+
+Design references:
+
+- OpenRouter Auto Router: <https://openrouter.ai/docs/guides/routing/routers/auto-router>
+- OpenRouter Fusion Router: <https://openrouter.ai/docs/guides/routing/routers/fusion-router>
+- OpenRouter Auto Exacto: <https://openrouter.ai/docs/guides/routing/auto-exacto>
+- Adaptive LLM Routing under Budget Constraints: <https://aclanthology.org/2025.findings-emnlp.1301/>
+
+Every Adaptive Fusion Routing PR must list: completed AF phase, intentionally unfinished phases, live-influence status, provider/cost/concurrency gates, verification, residual risk, rollback, and next phase.
+
 ## Before Starting Autonomous Work
 
 1. Read `docs/CURRENT_STATUS.md` only when status facts are unclear or the task updates status.
