@@ -4,6 +4,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
+use tokio::task::JoinSet;
 
 use super::audit::ProviderAuditRecorder;
 use super::cost_gate::{check_cost_gates, CostGateConfig};
@@ -32,6 +33,7 @@ const MAX_ENDPOINT_ID_BYTES: usize = 160;
 const MAX_CONTEXTUAL_CANDIDATE_PLANS: usize = 8;
 const MIN_FUSION_PANEL_SIZE: usize = 2;
 const MAX_FUSION_PANEL_SIZE: usize = 3;
+const MAX_FUSION_PANEL_CONCURRENCY: usize = 3;
 const COST_EPSILON: f64 = 1e-9;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -251,6 +253,8 @@ pub struct AdaptiveExecutionLimits {
     pub max_concurrency: usize,
     #[serde(default = "default_max_execution_tokens")]
     pub max_total_tokens: u64,
+    #[serde(default)]
+    pub min_successful_panel_calls: usize,
 }
 
 fn default_max_execution_tokens() -> u64 {
@@ -270,11 +274,17 @@ impl AdaptiveExecutionLimits {
             max_elapsed_ms,
             max_concurrency,
             max_total_tokens: DEFAULT_MAX_EXECUTION_TOKENS,
+            min_successful_panel_calls: 0,
         }
     }
 
     pub fn with_max_total_tokens(mut self, max_total_tokens: u64) -> Self {
         self.max_total_tokens = max_total_tokens;
+        self
+    }
+
+    pub fn with_min_successful_panel_calls(mut self, min_successful_panel_calls: usize) -> Self {
+        self.min_successful_panel_calls = min_successful_panel_calls;
         self
     }
 }
@@ -454,6 +464,7 @@ impl std::fmt::Display for AdaptiveExecutionError {
 
 impl std::error::Error for AdaptiveExecutionError {}
 
+#[derive(Clone)]
 pub struct AdaptiveExecutionExecutor {
     providers: BTreeMap<String, Arc<dyn Provider>>,
     audit: Arc<ProviderAuditRecorder>,
@@ -877,20 +888,10 @@ impl AdaptiveExecutionExecutor {
                 judge,
                 synthesizer,
             } => {
-                let mut panel_outputs = Vec::with_capacity(panel.len());
-                for endpoint in panel {
-                    let call = self
-                        .invoke(
-                            request,
-                            endpoint,
-                            AdaptiveCallRole::Panel,
-                            &request.prompt,
-                            &mut state,
-                        )
-                        .await
-                        .map_err(|error| self.audit_failure(request, error))?;
-                    panel_outputs.push((endpoint.endpoint_id.clone(), call.output));
-                }
+                let panel_outputs = self
+                    .execute_panel(request, panel, &mut state)
+                    .await
+                    .map_err(|error| self.audit_failure(request, error))?;
                 let judge_prompt = fusion_judge_prompt(&request.prompt, &panel_outputs);
                 let judge_call = self
                     .invoke(
@@ -990,15 +991,52 @@ impl AdaptiveExecutionExecutor {
                 0.0,
             ));
         }
-        if limits.max_concurrency != 1 {
-            return Err(execution_error(
-                "adaptive_concurrency_not_supported",
-                "AF-3 supports bounded serial execution only",
-                started,
-                Vec::new(),
-                0.0,
-                0.0,
-            ));
+        match &request.plan {
+            AdaptiveExecutionPlan::Fusion { panel, .. } => {
+                if limits.max_concurrency == 0
+                    || limits.max_concurrency > MAX_FUSION_PANEL_CONCURRENCY
+                {
+                    return Err(execution_error(
+                        "adaptive_concurrency_limit_invalid",
+                        "fusion max_concurrency is outside the allowed range",
+                        started,
+                        Vec::new(),
+                        0.0,
+                        0.0,
+                    ));
+                }
+                if limits.min_successful_panel_calls > panel.len() {
+                    return Err(execution_error(
+                        "adaptive_panel_quorum_invalid",
+                        "minimum successful panel calls exceeds the panel size",
+                        started,
+                        Vec::new(),
+                        0.0,
+                        0.0,
+                    ));
+                }
+            }
+            _ if limits.max_concurrency != 1 => {
+                return Err(execution_error(
+                    "adaptive_concurrency_not_supported",
+                    "parallel execution is supported only for fusion panel calls",
+                    started,
+                    Vec::new(),
+                    0.0,
+                    0.0,
+                ));
+            }
+            _ if limits.min_successful_panel_calls != 0 => {
+                return Err(execution_error(
+                    "adaptive_panel_quorum_invalid",
+                    "panel success quorum applies only to fusion plans",
+                    started,
+                    Vec::new(),
+                    0.0,
+                    0.0,
+                ));
+            }
+            _ => {}
         }
 
         let invocations = plan_invocations(&request.plan, started)?;
@@ -1082,6 +1120,187 @@ impl AdaptiveExecutionExecutor {
             }
         }
         Ok(())
+    }
+
+    async fn execute_panel(
+        &self,
+        request: &AdaptiveExecutionRequest,
+        panel: &[AdaptiveEndpointInvocation],
+        state: &mut ExecutionState,
+    ) -> Result<Vec<(String, String)>, AdaptiveExecutionError> {
+        let prompt = bounded_text(&request.prompt, MAX_COMPOSED_PROMPT_BYTES).0;
+        let mut reserved_tokens = state.total_reserved_token_count;
+        let mut admissions = Vec::with_capacity(panel.len());
+        for (index, invocation) in panel.iter().enumerate() {
+            let reservation =
+                reserve_tokens(&prompt, reserved_tokens, request.limits.max_total_tokens)
+                    .ok_or_else(|| {
+                        state.error(
+                            "adaptive_token_limit_exceeded",
+                            "remaining token budget cannot admit the fusion panel",
+                        )
+                    })?;
+            reserved_tokens = reserved_tokens.saturating_add(reservation.total());
+            admissions.push(PanelAdmission {
+                index,
+                invocation: invocation.clone(),
+                max_total_tokens: reservation.total(),
+            });
+        }
+
+        let concurrency = request.limits.max_concurrency.min(admissions.len());
+        let required_successes = if request.limits.min_successful_panel_calls == 0 {
+            panel.len()
+        } else {
+            request.limits.min_successful_panel_calls
+        };
+        let mut outcomes = (0..admissions.len()).map(|_| None).collect::<Vec<_>>();
+        let mut processed = 0;
+        let mut successful = 0;
+        for wave in admissions.chunks(concurrency) {
+            if self.kill_switch.is_killed() {
+                break;
+            }
+            let mut tasks = JoinSet::new();
+            for admission in wave {
+                self.spawn_panel_call(
+                    &mut tasks,
+                    request,
+                    &prompt,
+                    state.started,
+                    admission.clone(),
+                );
+            }
+            let mut wave_has_fatal_failure = false;
+            while let Some(joined) = tasks.join_next().await {
+                let outcome = joined.map_err(|_| {
+                    state.error(
+                        "adaptive_runtime_failure",
+                        "parallel panel execution task failed",
+                    )
+                })?;
+                wave_has_fatal_failure |= outcome
+                    .result
+                    .as_ref()
+                    .is_err_and(|error| !recoverable_panel_error(error));
+                successful += usize::from(outcome.result.is_ok());
+                processed += 1;
+                let index = outcome.index;
+                outcomes[index] = Some(outcome);
+            }
+            let remaining = admissions.len().saturating_sub(processed);
+            if wave_has_fatal_failure
+                || self.kill_switch.is_killed()
+                || successful + remaining < required_successes
+            {
+                break;
+            }
+        }
+
+        let mut outputs = Vec::with_capacity(panel.len());
+        let mut first_fatal = None;
+        let mut recoverable_failures = 0;
+        for outcome in outcomes.into_iter().flatten() {
+            state.merge(outcome.state);
+            match outcome.result {
+                Ok(call) => outputs.push((outcome.endpoint_id, call.output)),
+                Err(error) if recoverable_panel_error(&error) => {
+                    recoverable_failures += 1;
+                }
+                Err(error) if first_fatal.is_none() => {
+                    first_fatal = Some((error.code, error.message));
+                }
+                Err(_) => {}
+            }
+        }
+
+        if self.kill_switch.is_killed() {
+            return Err(state.error(
+                "adaptive_execution_killed",
+                "adaptive execution kill switch became active during the fusion panel",
+            ));
+        }
+        if let Some((code, message)) = first_fatal {
+            return Err(state.error(&code, &message));
+        }
+        if outputs.len() < required_successes {
+            self.audit.create_and_record(
+                &request.dispatch_id,
+                "adaptive-fusion",
+                "adaptive_panel_quorum_failed",
+                Some(&serde_json::json!({
+                    "cost": state.total_provider_cost_usd,
+                    "currency": "USD",
+                    "latency_ms": elapsed_ms(state.started) as i64,
+                    "error_domain": "adaptive_panel_quorum_not_met",
+                })),
+            );
+            return Err(state.error(
+                "adaptive_panel_quorum_not_met",
+                "fusion panel did not meet the configured success quorum",
+            ));
+        }
+        if recoverable_failures > 0 {
+            self.audit.create_and_record(
+                &request.dispatch_id,
+                "adaptive-fusion",
+                "adaptive_panel_partial_failure",
+                Some(&serde_json::json!({
+                    "cost": state.total_provider_cost_usd,
+                    "currency": "USD",
+                    "latency_ms": elapsed_ms(state.started) as i64,
+                    "error_domain": "adaptive_panel_partial_failure",
+                })),
+            );
+        } else if request.limits.max_concurrency > 1 {
+            self.audit.create_and_record(
+                &request.dispatch_id,
+                "adaptive-fusion",
+                "adaptive_panel_parallel_completed",
+                Some(&serde_json::json!({
+                    "cost": state.total_provider_cost_usd,
+                    "currency": "USD",
+                    "latency_ms": elapsed_ms(state.started) as i64,
+                })),
+            );
+        }
+        Ok(outputs)
+    }
+
+    fn spawn_panel_call(
+        &self,
+        tasks: &mut JoinSet<PanelTaskOutcome>,
+        request: &AdaptiveExecutionRequest,
+        prompt: &str,
+        started: Instant,
+        admission: PanelAdmission,
+    ) {
+        let executor = self.clone();
+        let mut call_request = request.clone();
+        call_request.limits.max_calls = 1;
+        call_request.limits.max_cost_usd = admission.invocation.reserved_cost_usd;
+        call_request.limits.max_concurrency = 1;
+        call_request.limits.max_total_tokens = admission.max_total_tokens;
+        call_request.limits.min_successful_panel_calls = 0;
+        let prompt = prompt.to_string();
+        tasks.spawn(async move {
+            let mut call_state = ExecutionState::new(started);
+            let result = executor
+                .invoke(
+                    &call_request,
+                    &admission.invocation,
+                    AdaptiveCallRole::Panel,
+                    &prompt,
+                    &mut call_state,
+                )
+                .await;
+            PanelTaskOutcome {
+                index: admission.index,
+                endpoint_id: admission.invocation.endpoint_id,
+                result,
+                state: call_state,
+            }
+        });
     }
 
     async fn invoke(
@@ -1541,11 +1760,47 @@ impl ExecutionState {
             self.total_provider_cost_usd,
         )
     }
+
+    fn merge(&mut self, other: Self) {
+        self.calls.extend(other.calls);
+        self.total_reserved_cost_usd += other.total_reserved_cost_usd;
+        self.total_provider_cost_usd += other.total_provider_cost_usd;
+        self.total_reserved_token_count = self
+            .total_reserved_token_count
+            .saturating_add(other.total_reserved_token_count);
+        self.total_input_token_count = self
+            .total_input_token_count
+            .saturating_add(other.total_input_token_count);
+        self.total_output_token_count = self
+            .total_output_token_count
+            .saturating_add(other.total_output_token_count);
+    }
 }
 
 struct SanitizedCall {
     output: String,
     output_truncated: bool,
+}
+
+#[derive(Clone)]
+struct PanelAdmission {
+    index: usize,
+    invocation: AdaptiveEndpointInvocation,
+    max_total_tokens: u64,
+}
+
+struct PanelTaskOutcome {
+    index: usize,
+    endpoint_id: String,
+    result: Result<SanitizedCall, AdaptiveExecutionError>,
+    state: ExecutionState,
+}
+
+fn recoverable_panel_error(error: &AdaptiveExecutionError) -> bool {
+    matches!(
+        error.code.as_ref(),
+        "adaptive_provider_error" | "adaptive_provider_disabled"
+    )
 }
 
 #[derive(Debug, Clone, Copy)]
