@@ -185,7 +185,7 @@ def run_typescript_sdk_smoke(repo_root: Path, base_url: str) -> dict:
         if (health.status !== "healthy") throw new Error(`unexpected health ${{JSON.stringify(health)}}`);
         if (!Array.isArray(dispatches.dispatches)) throw new Error("dispatches missing array");
         if (!Array.isArray(audit.events)) throw new Error("audit missing events array");
-        if (provider.status !== "noop") throw new Error(`provider should be noop/default-off: ${{JSON.stringify(provider)}}`);
+        if (provider.status !== "noop") throw new Error(`provider should be noop when unconfigured: ${{JSON.stringify(provider)}}`);
         console.log(JSON.stringify({{
           health: health.status,
           dispatch_count: dispatches.dispatches.length,
@@ -218,7 +218,7 @@ def run_python_sdk_smoke(repo_root: Path, base_url: str) -> dict:
     assert_eq(health["status"], "healthy", "Python SDK health")
     assert_true(isinstance(dispatches["dispatches"], list), "Python SDK dispatch list")
     assert_true(isinstance(audit["events"], list), "Python SDK audit list")
-    assert_eq(provider["status"], "noop", "Python SDK provider health default-off")
+    assert_eq(provider["status"], "noop", "Python SDK provider health unconfigured")
     return {
         "status": "passed",
         "health": health["status"],
@@ -421,7 +421,7 @@ def run_api_pilot(repo_root: Path, engine_bin: Path, dashboard_dir: Path, data_d
         results["export_import"] = imported["imported"]
 
         provider = request_json("GET", base_url, "/api/v1/provider/health")
-        assert_eq(provider["status"], "noop", "provider health default-off")
+        assert_eq(provider["status"], "noop", "provider health unconfigured")
         results["provider_health"] = provider
 
         results["typescript_sdk"] = run_typescript_sdk_smoke(repo_root, base_url)

@@ -105,7 +105,7 @@ async fn main() {
     let (base_engine, _exec_type_label) = match execution_mode.as_str() {
         "provider" => {
             let provider = build_provider_for_engine(&store_arc, &cb_registry)
-                .expect("ACP_EXECUTION_MODE=provider requires ACP_PROVIDER_TYPE + ACP_ENABLE_PROVIDER_EXECUTION=1");
+                .expect("ACP_EXECUTION_MODE=provider requires ACP_PROVIDER_TYPE plus ACP_ENABLE_PROVIDER_EXECUTION=1 or a ready ACP_TRUSTED_LOCAL_PROFILE=1");
             let engine = DispatchEngine::with_provider_executor(provider);
             (engine, "provider".to_string())
         }
@@ -185,7 +185,7 @@ async fn main() {
         || adaptive_execution_enabled;
     if may_use_provider && !require_auth {
         panic!(
-            "ACP_REQUIRE_AUTH=1 is required when ACP_ENABLE_PROVIDER_EXECUTION=1 and a real provider is configured"
+            "ACP_REQUIRE_AUTH=1 is required when provider execution is enabled and a real provider is configured"
         );
     }
 
@@ -404,7 +404,7 @@ fn validate_adaptive_startup(
     }
     if !provider_enabled {
         return Err(
-            "ACP_ENABLE_PROVIDER_EXECUTION=1 is required when ACP_ENABLE_ADAPTIVE_FUSION_EXECUTION=1",
+            "ACP_ENABLE_PROVIDER_EXECUTION=1 or a ready ACP_TRUSTED_LOCAL_PROFILE=1 is required when adaptive execution is enabled",
         );
     }
     if !require_auth {
@@ -440,6 +440,22 @@ fn validate_adaptive_single_provider_from_env() -> Result<(), String> {
             CredentialBoundary::new("env").is_ok_and(|boundary| boundary.validate(name))
         }),
     )
+}
+
+fn single_provider_execution_enabled() -> bool {
+    single_provider_execution_enabled_from_parts(
+        env_enabled("ACP_ENABLE_PROVIDER_EXECUTION"),
+        EffectiveExecutionGates::from_env().provider_execution,
+        validate_adaptive_single_provider_from_env().is_ok(),
+    )
+}
+
+fn single_provider_execution_enabled_from_parts(
+    legacy_provider_gate: bool,
+    trusted_local_provider_execution: bool,
+    single_provider_config_ok: bool,
+) -> bool {
+    legacy_provider_gate || (trusted_local_provider_execution && single_provider_config_ok)
 }
 
 fn validate_adaptive_single_provider_config(
@@ -556,9 +572,7 @@ fn build_state_with_provider(
         _ => return state,
     };
 
-    let enable_execution = std::env::var("ACP_ENABLE_PROVIDER_EXECUTION")
-        .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
-        .unwrap_or(false);
+    let enable_execution = single_provider_execution_enabled();
 
     if provider_type == "stub" {
         let recorder = Arc::new(ProviderAuditRecorder::with_store(store.clone()));
@@ -568,7 +582,7 @@ fn build_state_with_provider(
 
     if !enable_execution {
         eprintln!(
-            "ACP_PROVIDER_TYPE={} requires ACP_ENABLE_PROVIDER_EXECUTION=1; falling back to noop",
+            "ACP_PROVIDER_TYPE={} requires ACP_ENABLE_PROVIDER_EXECUTION=1 or a ready ACP_TRUSTED_LOCAL_PROFILE=1; falling back to noop",
             provider_type
         );
         return state;
@@ -812,7 +826,7 @@ fn local_admin_scope_list() -> Vec<String> {
 }
 
 /// Build a provider Arc for engine injection (separate from the API state provider).
-/// Returns `Err` if ACP_PROVIDER_TYPE is unset or ACP_ENABLE_PROVIDER_EXECUTION is not "1".
+/// Returns `Err` if ACP_PROVIDER_TYPE is unset or provider execution is not enabled.
 fn build_provider_for_engine(
     _store: &Arc<LocalProductStore>,
     cb_registry: &Arc<CircuitBreakerRegistry>,
@@ -823,11 +837,11 @@ fn build_provider_for_engine(
         return Err("ACP_PROVIDER_TYPE is empty".to_string());
     }
 
-    let enable_execution = std::env::var("ACP_ENABLE_PROVIDER_EXECUTION")
-        .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
-        .unwrap_or(false);
-    if !enable_execution {
-        return Err("ACP_ENABLE_PROVIDER_EXECUTION not enabled".to_string());
+    if !single_provider_execution_enabled() {
+        return Err(
+            "provider execution not enabled by ACP_ENABLE_PROVIDER_EXECUTION or ready ACP_TRUSTED_LOCAL_PROFILE"
+                .to_string(),
+        );
     }
 
     if provider_type == "stub" {
@@ -1018,6 +1032,28 @@ fn production_profile_violations_inner(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::OnceLock;
+
+    fn main_env_lock() -> &'static Mutex<()> {
+        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+        LOCK.get_or_init(|| Mutex::new(()))
+    }
+
+    fn clear_trusted_provider_env() {
+        for key in [
+            "ACP_ENABLE_PROVIDER_EXECUTION",
+            "ACP_TRUSTED_LOCAL_PROFILE",
+            "ACP_REQUIRE_AUTH",
+            "ACP_ADMIN_API_KEY",
+            "ACP_PROVIDER_TYPE",
+            "ACP_MODEL",
+            ACP_ADAPTIVE_PROVIDER_ENDPOINTS_JSON,
+            "ACP_COST_PER_DISPATCH_USD",
+            "ACP_COST_DAILY_USD",
+        ] {
+            std::env::remove_var(key);
+        }
+    }
 
     #[test]
     fn local_admin_scope_list_covers_operator_mutations() {
@@ -1084,6 +1120,48 @@ mod tests {
             false,
         )
         .is_err());
+    }
+
+    #[test]
+    fn single_provider_execution_accepts_legacy_or_ready_trusted_local_path() {
+        assert!(single_provider_execution_enabled_from_parts(
+            true, false, false
+        ));
+        assert!(single_provider_execution_enabled_from_parts(
+            false, true, true
+        ));
+        assert!(!single_provider_execution_enabled_from_parts(
+            false, true, false
+        ));
+        assert!(!single_provider_execution_enabled_from_parts(
+            false, false, true
+        ));
+    }
+
+    #[test]
+    fn trusted_local_profile_can_build_single_provider_engine_without_legacy_gate() {
+        let _guard = main_env_lock().lock().unwrap();
+        clear_trusted_provider_env();
+        std::env::set_var("ACP_TRUSTED_LOCAL_PROFILE", "1");
+        std::env::set_var("ACP_REQUIRE_AUTH", "1");
+        std::env::set_var("ACP_ADMIN_API_KEY", format!("harness_{}", "a".repeat(64)));
+        std::env::set_var("ACP_PROVIDER_TYPE", "stub");
+        std::env::set_var("ACP_MODEL", "stub-model");
+        std::env::set_var(
+            ACP_ADAPTIVE_PROVIDER_ENDPOINTS_JSON,
+            r#"[{"endpoint_id":"local-stub","provider_type":"stub","model":"stub-model","timeout_ms":30000,"input_cost_per_1k_usd":0.001,"output_cost_per_1k_usd":0.002}]"#,
+        );
+        std::env::set_var("ACP_COST_PER_DISPATCH_USD", "1.0");
+        std::env::set_var("ACP_COST_DAILY_USD", "10.0");
+
+        let store = Arc::new(LocalProductStore::new(":memory:").unwrap());
+        let registry = Arc::new(CircuitBreakerRegistry::new());
+        let provider = build_provider_for_engine(&store, &registry)
+            .expect("ready trusted-local profile should enable single-provider engine");
+
+        assert!(provider.is_enabled());
+        assert_eq!(provider.provider_id(), "stub-env");
+        clear_trusted_provider_env();
     }
 
     #[test]
