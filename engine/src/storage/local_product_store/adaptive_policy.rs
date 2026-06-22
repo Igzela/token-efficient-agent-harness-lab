@@ -5,7 +5,9 @@ use serde_json::{json, Value};
 use super::{append_audit_locked, DatabaseConnection, LocalProductStore};
 use crate::feedback::policy_snapshot::stable_hash;
 use crate::feedback::{
-    ContextualPolicyPromotionVerdict, PromotedAdaptivePolicy, CONTEXTUAL_POLICY_SCHEMA_VERSION,
+    AdaptiveAutoPromotionController, AdaptiveAutoPromotionEvidence, AdaptiveAutoPromotionGate,
+    AdaptiveAutoPromotionPolicy, AdaptiveAutoPromotionRequest, ContextualPolicyPromotionVerdict,
+    PromotedAdaptivePolicy, CONTEXTUAL_POLICY_SCHEMA_VERSION,
 };
 
 const ACTIVE_POLICIES_KEY: &str = "adaptive_fusion_active_policies";
@@ -155,6 +157,45 @@ impl LocalProductStore {
         }
 
         self.apply_accepted_adaptive_fusion_policy(policy, actor)
+    }
+
+    pub fn auto_promote_adaptive_fusion_policy(
+        &self,
+        request: &AdaptiveAutoPromotionRequest,
+        policy: &AdaptiveAutoPromotionPolicy,
+        gate: &AdaptiveAutoPromotionGate,
+        actor: &str,
+    ) -> Result<Value, String> {
+        let active = self
+            .active_adaptive_fusion_policies()?
+            .into_iter()
+            .find(|active| {
+                active.task_class == request.task_class && active.objective == request.objective
+            });
+        let evidence = self
+            .adaptive_observations()?
+            .into_iter()
+            .map(|observation| AdaptiveAutoPromotionEvidence {
+                observation_id: observation.observation_id,
+                run_id: observation.run_id,
+                task_class: observation.task_class,
+                objective: observation.objective,
+                candidate_id: observation.candidate_id,
+                sequence: observation.sequence,
+                success: observation.success,
+                quality_score: observation.quality_score,
+                cost_usd: observation.cost_usd,
+                latency_ms: observation.latency_ms,
+            })
+            .collect::<Vec<_>>();
+        let verdict = AdaptiveAutoPromotionController::evaluate(
+            request,
+            &evidence,
+            active.as_ref(),
+            policy,
+            gate,
+        );
+        self.apply_adaptive_fusion_policy(&verdict, actor)
     }
 
     fn apply_accepted_adaptive_fusion_policy(
@@ -582,6 +623,13 @@ fn apply_accepted_policy_to_state(
         .iter()
         .position(|existing| existing.policy_key == policy.policy_key);
     let active_policy_before = existing.map(|index| policies[index].clone());
+    if policy.auto_promoted {
+        match (&active_policy_before, &policy.previous_policy_hash) {
+            (Some(active), Some(previous)) if active.policy_hash == *previous => {}
+            (None, None) => {}
+            _ => return Err("adaptive auto promotion active policy hash is stale".to_string()),
+        }
+    }
     if let Some(index) = existing {
         policies[index] = policy.clone();
     } else {

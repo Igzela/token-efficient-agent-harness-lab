@@ -384,6 +384,35 @@ export interface ProposalResponse {
 
 export type AdaptiveFusionObjective = "efficient" | "quality" | string;
 
+export interface AdaptiveCompletionRequest {
+  prompt: string;
+  task_class?: string;
+  objective?: "efficient" | "quality";
+  risk_level?: "low" | "medium" | "high" | "critical";
+  metadata?: Record<string, unknown>;
+  include_routing_metadata?: boolean;
+}
+
+export interface AdaptiveCompletionResponse {
+  schema_version: "adaptive_completion.v1";
+  output: string | null;
+  usage: {
+    input_tokens: number;
+    output_tokens: number;
+    estimated_cost_usd: number;
+    latency_ms: number;
+  };
+  routing_metadata?: {
+    candidate_id: string;
+    candidate_hash: string;
+    candidate_kind: "single" | "ordered_fallback" | "fusion";
+    policy_hash: string | null;
+    policy_rollout_percentage: number | null;
+    observation_id: string | null;
+    experiment_assigned: boolean;
+  };
+}
+
 export interface AdaptivePolicyPromotion {
   task_class: string;
   objective: AdaptiveFusionObjective;

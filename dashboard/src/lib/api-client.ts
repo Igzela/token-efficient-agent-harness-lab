@@ -1,4 +1,6 @@
 import type {
+  AdaptiveCompletionRequest,
+  AdaptiveCompletionResponse,
   AdaptiveFusionPoliciesResponse,
   AdaptivePolicyPromotionRequest,
   AdaptivePolicyPromotionResponse,
@@ -136,6 +138,19 @@ export async function fetchHealth(): Promise<ApiStatus> {
 
 export async function fetchReady(): Promise<ApiStatus> {
   return fetchJson<ApiStatus>(`${BASE}/api/v1/ready`);
+}
+
+export async function createAdaptiveCompletion(
+  request: AdaptiveCompletionRequest,
+): Promise<AdaptiveCompletionResponse> {
+  return fetchJson<AdaptiveCompletionResponse>(
+    `${BASE}/api/v1/adaptive-fusion/completions`,
+    {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(request),
+    },
+  );
 }
 
 export async function fetchDashboard(): Promise<LocalDashboardState> {

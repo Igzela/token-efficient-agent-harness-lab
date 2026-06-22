@@ -48,6 +48,39 @@ test("dispatch posts request body to dispatch endpoint", async () => {
   });
 });
 
+test("adaptiveCompletion posts compact completion request", async () => {
+  const response = {
+    schema_version: "adaptive_completion.v1",
+    output: "answer",
+    usage: {
+      input_tokens: 10,
+      output_tokens: 5,
+      estimated_cost_usd: 0.01,
+      latency_ms: 25,
+    },
+  };
+  const { calls, fetchImpl } = captureFetch(response);
+  const client = new AgentControlPlaneClient({ baseUrl: "http://127.0.0.1:8080", fetchImpl });
+
+  const result = await client.adaptiveCompletion({
+    prompt: "Solve",
+    objective: "quality",
+    include_routing_metadata: false,
+  });
+
+  assert.equal(result.output, "answer");
+  assert.equal(
+    calls[0].url,
+    "http://127.0.0.1:8080/api/v1/adaptive-fusion/completions",
+  );
+  assert.equal(calls[0].init.method, "POST");
+  assert.deepEqual(JSON.parse(calls[0].init.body), {
+    prompt: "Solve",
+    objective: "quality",
+    include_routing_metadata: false,
+  });
+});
+
 test("dashboard reads local dashboard endpoint", async () => {
   const { calls, fetchImpl } = captureFetch({ schema_version: "local_dashboard.v1", counts: { dispatches: 1 } });
   const client = new AgentControlPlaneClient({ baseUrl: "http://127.0.0.1:8080", fetchImpl });

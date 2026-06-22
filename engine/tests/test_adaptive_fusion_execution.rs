@@ -31,6 +31,28 @@ struct ScriptedProvider {
     delay_ms: u64,
     enabled: bool,
     kill_on_call: Option<AdaptiveExecutionKillSwitch>,
+    concurrency: Option<Arc<ConcurrencyTracker>>,
+}
+
+#[derive(Default)]
+struct ConcurrencyTracker {
+    active: AtomicUsize,
+    max_active: AtomicUsize,
+}
+
+impl ConcurrencyTracker {
+    fn enter(&self) {
+        let active = self.active.fetch_add(1, Ordering::SeqCst) + 1;
+        self.max_active.fetch_max(active, Ordering::SeqCst);
+    }
+
+    fn leave(&self) {
+        self.active.fetch_sub(1, Ordering::SeqCst);
+    }
+
+    fn max_active(&self) -> usize {
+        self.max_active.load(Ordering::SeqCst)
+    }
 }
 
 impl ScriptedProvider {
@@ -48,6 +70,7 @@ impl ScriptedProvider {
             delay_ms: 0,
             enabled: true,
             kill_on_call: None,
+            concurrency: None,
         }
     }
 
@@ -63,6 +86,11 @@ impl ScriptedProvider {
 
     fn with_kill_on_call(mut self, kill_switch: AdaptiveExecutionKillSwitch) -> Self {
         self.kill_on_call = Some(kill_switch);
+        self
+    }
+
+    fn with_concurrency_tracker(mut self, concurrency: Arc<ConcurrencyTracker>) -> Self {
+        self.concurrency = Some(concurrency);
         self
     }
 
@@ -99,8 +127,14 @@ impl Provider for ScriptedProvider {
         if let Some(kill_switch) = &self.kill_on_call {
             kill_switch.kill();
         }
+        if let Some(concurrency) = &self.concurrency {
+            concurrency.enter();
+        }
         if self.delay_ms > 0 {
             tokio::time::sleep(Duration::from_millis(self.delay_ms)).await;
+        }
+        if let Some(concurrency) = &self.concurrency {
+            concurrency.leave();
         }
         self.responses
             .lock()
@@ -111,13 +145,23 @@ impl Provider for ScriptedProvider {
 }
 
 fn response(provider_id: &str, output: &str, cost: f64) -> ProviderResult {
+    response_with_usage(provider_id, output, cost, 10, 5)
+}
+
+fn response_with_usage(
+    provider_id: &str,
+    output: &str,
+    cost: f64,
+    input_tokens: i64,
+    output_tokens: i64,
+) -> ProviderResult {
     Ok(ProviderResponse {
         schema_version: "provider_response.v1".to_string(),
         provider_id: provider_id.to_string(),
         model: "test-model".to_string(),
         output: output.to_string(),
-        input_tokens: Some(10),
-        output_tokens: Some(5),
+        input_tokens: Some(input_tokens),
+        output_tokens: Some(output_tokens),
         estimated_cost: Some(cost),
         provider_request_id: Some(format!("request-{provider_id}")),
     })
@@ -480,21 +524,34 @@ async fn ordered_fallback_stops_after_first_success_and_preserves_order() {
 #[tokio::test]
 async fn fusion_executes_panel_then_judge_then_synthesizer() {
     let order = Arc::new(Mutex::new(Vec::new()));
-    let panel_a = Arc::new(ScriptedProvider::new(
-        "panel-a",
-        vec![response("panel-a", "analysis a", 0.01)],
-        order.clone(),
-    ));
-    let panel_b = Arc::new(ScriptedProvider::new(
-        "panel-b",
-        vec![response("panel-b", "analysis b", 0.01)],
-        order.clone(),
-    ));
-    let panel_c = Arc::new(ScriptedProvider::new(
-        "panel-c",
-        vec![response("panel-c", "analysis c", 0.01)],
-        order.clone(),
-    ));
+    let concurrency = Arc::new(ConcurrencyTracker::default());
+    let panel_a = Arc::new(
+        ScriptedProvider::new(
+            "panel-a",
+            vec![response("panel-a", "analysis a", 0.01)],
+            order.clone(),
+        )
+        .with_delay(50)
+        .with_concurrency_tracker(concurrency.clone()),
+    );
+    let panel_b = Arc::new(
+        ScriptedProvider::new(
+            "panel-b",
+            vec![response("panel-b", "analysis b", 0.01)],
+            order.clone(),
+        )
+        .with_delay(50)
+        .with_concurrency_tracker(concurrency.clone()),
+    );
+    let panel_c = Arc::new(
+        ScriptedProvider::new(
+            "panel-c",
+            vec![response("panel-c", "analysis c", 0.01)],
+            order.clone(),
+        )
+        .with_delay(50)
+        .with_concurrency_tracker(concurrency.clone()),
+    );
     let judge = Arc::new(ScriptedProvider::new(
         "judge",
         vec![response("judge", "prefer b", 0.02)],
@@ -529,7 +586,7 @@ async fn fusion_executes_panel_then_judge_then_synthesizer() {
                     judge: endpoint("judge", 0.03),
                     synthesizer: endpoint("synth", 0.03),
                 },
-                limits(5, 0.2, 1_000),
+                AdaptiveExecutionLimits::new(5, 0.2, 1_000, 3),
             ),
             &enabled_gate(),
         )
@@ -537,8 +594,15 @@ async fn fusion_executes_panel_then_judge_then_synthesizer() {
         .unwrap();
 
     assert_eq!(result.output.as_deref(), Some("final answer"));
+    assert!(concurrency.max_active() >= 2);
+    let order = order.lock().unwrap().clone();
+    assert_eq!(&order[3..], ["judge", "synth"]);
     assert_eq!(
-        *order.lock().unwrap(),
+        result
+            .calls
+            .iter()
+            .map(|call| call.endpoint_id.as_str())
+            .collect::<Vec<_>>(),
         vec!["panel-a", "panel-b", "panel-c", "judge", "synth"]
     );
     let judge_prompt = judge.prompts().pop().unwrap();
@@ -547,6 +611,448 @@ async fn fusion_executes_panel_then_judge_then_synthesizer() {
     assert!(judge_prompt.contains("analysis c"));
     let synth_prompt = synthesizer.prompts().pop().unwrap();
     assert!(synth_prompt.contains("prefer b"));
+}
+
+#[tokio::test]
+async fn fusion_continues_after_recoverable_panel_failure_when_quorum_is_met() {
+    let order = Arc::new(Mutex::new(Vec::new()));
+    let panel_a = Arc::new(ScriptedProvider::new(
+        "panel-a",
+        vec![response("panel-a", "analysis a", 0.01)],
+        order.clone(),
+    ));
+    let panel_b = Arc::new(ScriptedProvider::new(
+        "panel-b",
+        vec![Err(provider_error("panel-b", "provider_capacity"))],
+        order.clone(),
+    ));
+    let panel_c = Arc::new(ScriptedProvider::new(
+        "panel-c",
+        vec![response("panel-c", "analysis c", 0.01)],
+        order.clone(),
+    ));
+    let judge = Arc::new(ScriptedProvider::new(
+        "judge",
+        vec![response("judge", "prefer c", 0.02)],
+        order.clone(),
+    ));
+    let synthesizer = Arc::new(ScriptedProvider::new(
+        "synth",
+        vec![response("synth", "final answer", 0.02)],
+        order,
+    ));
+    let audit = Arc::new(ProviderAuditRecorder::new());
+    let execution = executor(
+        vec![
+            ("panel-a", panel_a),
+            ("panel-b", panel_b),
+            ("panel-c", panel_c),
+            ("judge", judge.clone()),
+            ("synth", synthesizer),
+        ],
+        audit.clone(),
+        AdaptiveExecutionKillSwitch::from_flags(false),
+    );
+
+    let result = execution
+        .execute(
+            &request(
+                AdaptiveExecutionPlan::Fusion {
+                    panel: vec![
+                        endpoint("panel-a", 0.02),
+                        endpoint("panel-b", 0.02),
+                        endpoint("panel-c", 0.02),
+                    ],
+                    judge: endpoint("judge", 0.03),
+                    synthesizer: endpoint("synth", 0.03),
+                },
+                AdaptiveExecutionLimits::new(5, 0.2, 1_000, 3).with_min_successful_panel_calls(2),
+            ),
+            &enabled_gate(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(result.output.as_deref(), Some("final answer"));
+    assert_eq!(
+        result
+            .calls
+            .iter()
+            .map(|call| (call.endpoint_id.as_str(), call.status.as_str()))
+            .collect::<Vec<_>>(),
+        vec![
+            ("panel-a", "completed"),
+            ("panel-b", "failed"),
+            ("panel-c", "completed"),
+            ("judge", "completed"),
+            ("synth", "completed"),
+        ]
+    );
+    let judge_prompt = judge.prompts().pop().unwrap();
+    assert!(judge_prompt.contains("analysis a"));
+    assert!(!judge_prompt.contains("panel-b"));
+    assert!(judge_prompt.contains("analysis c"));
+    assert!(audit
+        .list_events("dispatch-af3")
+        .iter()
+        .any(|event| event.event_type == "adaptive_panel_partial_failure"));
+}
+
+#[tokio::test]
+async fn fusion_blocks_judge_when_panel_success_quorum_is_not_met() {
+    let order = Arc::new(Mutex::new(Vec::new()));
+    let successful = Arc::new(ScriptedProvider::new(
+        "successful",
+        vec![response("successful", "usable answer", 0.01)],
+        order.clone(),
+    ));
+    let failed_a = Arc::new(ScriptedProvider::new(
+        "failed-a",
+        vec![Err(provider_error("failed-a", "provider_capacity"))],
+        order.clone(),
+    ));
+    let failed_b = Arc::new(ScriptedProvider::new(
+        "failed-b",
+        vec![Err(provider_error("failed-b", "provider_capacity"))],
+        order.clone(),
+    ));
+    let judge = Arc::new(ScriptedProvider::new(
+        "judge",
+        vec![response("judge", "unused", 0.01)],
+        order.clone(),
+    ));
+    let synthesizer = Arc::new(ScriptedProvider::new(
+        "synth",
+        vec![response("synth", "unused", 0.01)],
+        order,
+    ));
+    let execution = executor(
+        vec![
+            ("successful", successful),
+            ("failed-a", failed_a),
+            ("failed-b", failed_b),
+            ("judge", judge.clone()),
+            ("synth", synthesizer.clone()),
+        ],
+        Arc::new(ProviderAuditRecorder::new()),
+        AdaptiveExecutionKillSwitch::from_flags(false),
+    );
+
+    let error = execution
+        .execute(
+            &request(
+                AdaptiveExecutionPlan::Fusion {
+                    panel: vec![
+                        endpoint("successful", 0.02),
+                        endpoint("failed-a", 0.02),
+                        endpoint("failed-b", 0.02),
+                    ],
+                    judge: endpoint("judge", 0.02),
+                    synthesizer: endpoint("synth", 0.02),
+                },
+                AdaptiveExecutionLimits::new(5, 0.2, 1_000, 2).with_min_successful_panel_calls(2),
+            ),
+            &enabled_gate(),
+        )
+        .await
+        .unwrap_err();
+
+    assert_eq!(error.code.as_ref(), "adaptive_panel_quorum_not_met");
+    assert_eq!(judge.calls(), 0);
+    assert_eq!(synthesizer.calls(), 0);
+    assert_eq!(
+        error
+            .calls
+            .iter()
+            .map(|call| call.endpoint_id.as_str())
+            .collect::<Vec<_>>(),
+        vec!["successful", "failed-a", "failed-b"]
+    );
+}
+
+#[tokio::test]
+async fn fusion_default_quorum_stops_when_remaining_panel_cannot_recover() {
+    let order = Arc::new(Mutex::new(Vec::new()));
+    let failed = Arc::new(ScriptedProvider::new(
+        "failed",
+        vec![Err(provider_error("failed", "provider_capacity"))],
+        order.clone(),
+    ));
+    let unused = Arc::new(ScriptedProvider::new(
+        "unused",
+        vec![response("unused", "unused", 0.01)],
+        order,
+    ));
+    let execution = executor(
+        vec![("failed", failed.clone()), ("unused", unused.clone())],
+        Arc::new(ProviderAuditRecorder::new()),
+        AdaptiveExecutionKillSwitch::from_flags(false),
+    );
+
+    let error = execution
+        .execute(
+            &request(
+                AdaptiveExecutionPlan::Fusion {
+                    panel: vec![endpoint("failed", 0.02), endpoint("unused", 0.02)],
+                    judge: endpoint("failed", 0.02),
+                    synthesizer: endpoint("unused", 0.02),
+                },
+                AdaptiveExecutionLimits::new(4, 0.1, 1_000, 1),
+            ),
+            &enabled_gate(),
+        )
+        .await
+        .unwrap_err();
+
+    assert_eq!(error.code.as_ref(), "adaptive_panel_quorum_not_met");
+    assert_eq!(failed.calls(), 1);
+    assert_eq!(unused.calls(), 0);
+}
+
+#[tokio::test]
+async fn fusion_kill_during_parallel_wave_prevents_next_wave_and_final_stages() {
+    let order = Arc::new(Mutex::new(Vec::new()));
+    let kill_switch = AdaptiveExecutionKillSwitch::from_flags(false);
+    let killing = Arc::new(
+        ScriptedProvider::new(
+            "killing",
+            vec![response("killing", "unused", 0.01)],
+            order.clone(),
+        )
+        .with_kill_on_call(kill_switch.clone()),
+    );
+    let in_flight = Arc::new(
+        ScriptedProvider::new(
+            "in-flight",
+            vec![response("in-flight", "unused", 0.01)],
+            order.clone(),
+        )
+        .with_delay(25),
+    );
+    let next_wave = Arc::new(ScriptedProvider::new(
+        "next-wave",
+        vec![response("next-wave", "unused", 0.01)],
+        order.clone(),
+    ));
+    let judge = Arc::new(ScriptedProvider::new(
+        "judge",
+        vec![response("judge", "unused", 0.01)],
+        order.clone(),
+    ));
+    let synthesizer = Arc::new(ScriptedProvider::new(
+        "synth",
+        vec![response("synth", "unused", 0.01)],
+        order,
+    ));
+    let execution = executor(
+        vec![
+            ("killing", killing),
+            ("in-flight", in_flight),
+            ("next-wave", next_wave.clone()),
+            ("judge", judge.clone()),
+            ("synth", synthesizer.clone()),
+        ],
+        Arc::new(ProviderAuditRecorder::new()),
+        kill_switch,
+    );
+
+    let error = execution
+        .execute(
+            &request(
+                AdaptiveExecutionPlan::Fusion {
+                    panel: vec![
+                        endpoint("killing", 0.02),
+                        endpoint("in-flight", 0.02),
+                        endpoint("next-wave", 0.02),
+                    ],
+                    judge: endpoint("judge", 0.02),
+                    synthesizer: endpoint("synth", 0.02),
+                },
+                AdaptiveExecutionLimits::new(5, 0.2, 1_000, 2),
+            ),
+            &enabled_gate(),
+        )
+        .await
+        .unwrap_err();
+
+    assert_eq!(error.code.as_ref(), "adaptive_execution_killed");
+    assert_eq!(next_wave.calls(), 0);
+    assert_eq!(judge.calls(), 0);
+    assert_eq!(synthesizer.calls(), 0);
+}
+
+#[tokio::test]
+async fn fusion_parallel_timeout_blocks_judge_and_synthesizer() {
+    let order = Arc::new(Mutex::new(Vec::new()));
+    let slow = Arc::new(
+        ScriptedProvider::new("slow", vec![response("slow", "late", 0.01)], order.clone())
+            .with_delay(500),
+    );
+    let fast = Arc::new(ScriptedProvider::new(
+        "fast",
+        vec![response("fast", "quick", 0.01)],
+        order.clone(),
+    ));
+    let judge = Arc::new(ScriptedProvider::new(
+        "judge",
+        vec![response("judge", "unused", 0.01)],
+        order.clone(),
+    ));
+    let synthesizer = Arc::new(ScriptedProvider::new(
+        "synth",
+        vec![response("synth", "unused", 0.01)],
+        order,
+    ));
+    let execution = executor(
+        vec![
+            ("slow", slow.clone()),
+            ("fast", fast.clone()),
+            ("judge", judge.clone()),
+            ("synth", synthesizer.clone()),
+        ],
+        Arc::new(ProviderAuditRecorder::new()),
+        AdaptiveExecutionKillSwitch::from_flags(false),
+    );
+
+    let error = execution
+        .execute(
+            &request(
+                AdaptiveExecutionPlan::Fusion {
+                    panel: vec![endpoint("slow", 0.02), endpoint("fast", 0.02)],
+                    judge: endpoint("judge", 0.02),
+                    synthesizer: endpoint("synth", 0.02),
+                },
+                AdaptiveExecutionLimits::new(4, 0.1, 200, 2),
+            ),
+            &enabled_gate(),
+        )
+        .await
+        .unwrap_err();
+
+    assert_eq!(error.code.as_ref(), "adaptive_execution_timeout");
+    assert_eq!(slow.calls(), 1);
+    assert_eq!(fast.calls(), 1);
+    assert_eq!(judge.calls(), 0);
+    assert_eq!(synthesizer.calls(), 0);
+}
+
+#[tokio::test]
+async fn fusion_parallel_identity_mismatch_blocks_final_stages() {
+    let order = Arc::new(Mutex::new(Vec::new()));
+    let mut mismatched = response("wrong-provider", "bad identity", 0.01).unwrap();
+    mismatched.model = "test-model".to_string();
+    let bad = Arc::new(ScriptedProvider::new(
+        "bad",
+        vec![Ok(mismatched)],
+        order.clone(),
+    ));
+    let good = Arc::new(ScriptedProvider::new(
+        "good",
+        vec![response("good", "valid", 0.01)],
+        order.clone(),
+    ));
+    let judge = Arc::new(ScriptedProvider::new(
+        "judge",
+        vec![response("judge", "unused", 0.01)],
+        order.clone(),
+    ));
+    let synthesizer = Arc::new(ScriptedProvider::new(
+        "synth",
+        vec![response("synth", "unused", 0.01)],
+        order,
+    ));
+    let execution = executor(
+        vec![
+            ("bad", bad),
+            ("good", good),
+            ("judge", judge.clone()),
+            ("synth", synthesizer.clone()),
+        ],
+        Arc::new(ProviderAuditRecorder::new()),
+        AdaptiveExecutionKillSwitch::from_flags(false),
+    );
+
+    let error = execution
+        .execute(
+            &request(
+                AdaptiveExecutionPlan::Fusion {
+                    panel: vec![endpoint("bad", 0.02), endpoint("good", 0.02)],
+                    judge: endpoint("judge", 0.02),
+                    synthesizer: endpoint("synth", 0.02),
+                },
+                AdaptiveExecutionLimits::new(4, 0.1, 1_000, 2),
+            ),
+            &enabled_gate(),
+        )
+        .await
+        .unwrap_err();
+
+    assert_eq!(error.code.as_ref(), "adaptive_provider_identity_mismatch");
+    assert_eq!(judge.calls(), 0);
+    assert_eq!(synthesizer.calls(), 0);
+}
+
+#[tokio::test]
+async fn fusion_parallel_token_overrun_blocks_final_stages() {
+    let order = Arc::new(Mutex::new(Vec::new()));
+    let overrun = Arc::new(ScriptedProvider::new(
+        "overrun",
+        vec![response_with_usage(
+            "overrun",
+            "too many tokens",
+            0.01,
+            5_000,
+            5_000,
+        )],
+        order.clone(),
+    ));
+    let good = Arc::new(ScriptedProvider::new(
+        "good",
+        vec![response("good", "valid", 0.01)],
+        order.clone(),
+    ));
+    let judge = Arc::new(ScriptedProvider::new(
+        "judge",
+        vec![response("judge", "unused", 0.01)],
+        order.clone(),
+    ));
+    let synthesizer = Arc::new(ScriptedProvider::new(
+        "synth",
+        vec![response("synth", "unused", 0.01)],
+        order,
+    ));
+    let execution = executor(
+        vec![
+            ("overrun", overrun),
+            ("good", good),
+            ("judge", judge.clone()),
+            ("synth", synthesizer.clone()),
+        ],
+        Arc::new(ProviderAuditRecorder::new()),
+        AdaptiveExecutionKillSwitch::from_flags(false),
+    );
+
+    let error = execution
+        .execute(
+            &request(
+                AdaptiveExecutionPlan::Fusion {
+                    panel: vec![endpoint("overrun", 0.02), endpoint("good", 0.02)],
+                    judge: endpoint("judge", 0.02),
+                    synthesizer: endpoint("synth", 0.02),
+                },
+                AdaptiveExecutionLimits::new(4, 0.1, 1_000, 2).with_max_total_tokens(4_096),
+            ),
+            &enabled_gate(),
+        )
+        .await
+        .unwrap_err();
+
+    assert_eq!(
+        error.code.as_ref(),
+        "adaptive_provider_token_over_reservation"
+    );
+    assert_eq!(judge.calls(), 0);
+    assert_eq!(synthesizer.calls(), 0);
 }
 
 #[tokio::test]
@@ -590,6 +1096,26 @@ async fn validation_rejects_call_cost_concurrency_and_missing_endpoint_before_ca
             },
             AdaptiveExecutionLimits::new(1, 1.0, 1_000, 2),
         ),
+        AdaptiveExecutionRequest::new(
+            "dispatch-af3",
+            "solve the task",
+            AdaptiveExecutionPlan::Fusion {
+                panel: vec![endpoint("primary", 0.01), endpoint("missing", 0.01)],
+                judge: endpoint("primary", 0.01),
+                synthesizer: endpoint("primary", 0.01),
+            },
+            AdaptiveExecutionLimits::new(4, 1.0, 1_000, 4),
+        ),
+        AdaptiveExecutionRequest::new(
+            "dispatch-af3",
+            "solve the task",
+            AdaptiveExecutionPlan::Fusion {
+                panel: vec![endpoint("primary", 0.01), endpoint("missing", 0.01)],
+                judge: endpoint("primary", 0.01),
+                synthesizer: endpoint("primary", 0.01),
+            },
+            AdaptiveExecutionLimits::new(4, 1.0, 1_000, 2).with_min_successful_panel_calls(3),
+        ),
     ];
 
     let expected = [
@@ -597,6 +1123,8 @@ async fn validation_rejects_call_cost_concurrency_and_missing_endpoint_before_ca
         "adaptive_cost_limit_exceeded",
         "adaptive_endpoint_not_found",
         "adaptive_concurrency_not_supported",
+        "adaptive_concurrency_limit_invalid",
+        "adaptive_panel_quorum_invalid",
     ];
     for (request, expected_code) in cases.iter().zip(expected) {
         let error = execution
@@ -910,6 +1438,10 @@ async fn provider_cost_over_reservation_stops_later_calls() {
     assert_eq!(error.total_provider_cost_usd, 0.08);
     assert_eq!(first.calls(), 1);
     assert_eq!(second.calls(), 0);
+    assert_eq!(
+        error.calls.iter().map(|call| call.role).collect::<Vec<_>>(),
+        vec![engine::provider::adaptive_execution::AdaptiveCallRole::Panel]
+    );
 }
 
 #[tokio::test]
@@ -1155,6 +1687,14 @@ fn adaptive_node_executor_reads_explicit_plan_and_returns_workflow_output() {
         node_metadata: json!({
             "prompt": "solve from node metadata",
             "adaptive_execution": {
+                "observation_context": {
+                    "request_id": "request-1",
+                    "task_class": "coding",
+                    "objective": "quality",
+                    "risk_level": "low",
+                    "candidate_id": "candidate-primary",
+                    "policy_hash": null
+                },
                 "plan": {
                     "mode": "single",
                     "endpoint": {
@@ -1181,6 +1721,14 @@ fn adaptive_node_executor_reads_explicit_plan_and_returns_workflow_output() {
     assert_eq!(output.output.as_deref(), Some("node answer"));
     assert_eq!(output.estimated_cost, Some(0.01));
     assert_eq!(provider.calls(), 1);
+    let observation = node_executor.take_observation().unwrap();
+    assert_eq!(observation.run_id, "run-1");
+    assert_eq!(observation.candidate_id, "candidate-primary");
+    assert_eq!(observation.candidate_kind, "single");
+    assert!(observation.success);
+    let serialized = serde_json::to_string(&observation).unwrap();
+    assert!(!serialized.contains("solve from node metadata"));
+    assert!(!serialized.contains("node answer"));
 }
 
 #[test]

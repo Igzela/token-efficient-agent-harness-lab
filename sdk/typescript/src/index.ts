@@ -2,6 +2,8 @@ export type * from "./wire-types.js";
 
 import type {
   ApiStatus,
+  AdaptiveCompletionRequest,
+  AdaptiveCompletionResponse,
   DecisionDetailResponse,
   DecisionListResponse,
   DecisionStatsResponse,
@@ -702,6 +704,15 @@ export class AgentControlPlaneClient {
       raw_request: request.raw_request,
       request_source: request.request_source,
     });
+  }
+
+  adaptiveCompletion(
+    request: AdaptiveCompletionRequest,
+  ): Promise<AdaptiveCompletionResponse> {
+    return this.postJson<AdaptiveCompletionResponse>(
+      "/api/v1/adaptive-fusion/completions",
+      request,
+    );
   }
 
   createBackup(request: { label?: string; confirmLocalBackup: boolean }): Promise<BackupCreateResponse> {

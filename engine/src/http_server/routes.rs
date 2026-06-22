@@ -55,6 +55,10 @@ fn axum_routes() -> Router<AxumApiState> {
             post(dispatch::api_dispatch).options(cors_preflight),
         )
         .route(
+            "/api/v1/adaptive-fusion/completions",
+            post(adaptive_completions::api_adaptive_completion).options(cors_preflight),
+        )
+        .route(
             "/api/v1/dispatches",
             get(dispatch::api_dispatches).options(cors_preflight),
         )

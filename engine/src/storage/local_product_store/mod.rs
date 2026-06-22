@@ -1,3 +1,4 @@
+mod adaptive_observation;
 mod adaptive_policy;
 mod agent_profiles;
 mod audit;
@@ -40,6 +41,9 @@ use r2d2::Pool;
 use r2d2_postgres::PostgresConnectionManager;
 
 pub use crate::read_only_planner::WorkflowPlanIds;
+pub use adaptive_observation::{
+    AdaptiveObservationInput, AdaptiveObservationSummary, ADAPTIVE_OBSERVATION_SCHEMA_VERSION,
+};
 pub use boundaries::local_boundaries;
 pub use export_import::{ImportCounts, ImportResult, LOCAL_IMPORT_SCHEMA_VERSION};
 pub use integrity::{IntegrityReport, TableIntegrity};

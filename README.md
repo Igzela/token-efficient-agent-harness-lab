@@ -182,7 +182,7 @@ cargo run -p engine
 
 `ACP_PROVIDER_TYPE=openai_compatible` and `ACP_PROVIDER_TYPE=anthropic` are present for local beta validation only. They require `ACP_ENABLE_PROVIDER_EXECUTION=1`, explicit provider environment configuration, `ACP_REQUIRE_AUTH=1`, a local admin API key, and narrow network exposure. Do not commit provider credentials. Real provider execution remains default-off and is not used in CI.
 
-Adaptive single/fallback/fusion execution is additionally gated by `ACP_ENABLE_ADAPTIVE_FUSION_EXECUTION=1`. Configure up to eight fixed provider/model endpoints through `ACP_ADAPTIVE_PROVIDER_ENDPOINTS_JSON`; entries contain credential environment variable names, never credential values. Execution only occurs when a workflow node carries an explicit bounded `adaptive_execution` plan and the tick uses `executor=adaptive_provider` with `dispatch:execute`. See [`docs/RUNBOOK.md`](docs/RUNBOOK.md) for the configuration and plan shape.
+Adaptive single/fallback/fusion execution is additionally gated by `ACP_ENABLE_ADAPTIVE_FUSION_EXECUTION=1`. Configure up to eight fixed provider/model endpoints through `ACP_ADAPTIVE_PROVIDER_ENDPOINTS_JSON`; entries contain credential environment variable names, never credential values. Explicit workflow ticks remain supported, and AF-6 adds authenticated `POST /api/v1/adaptive-fusion/completions` with routing metadata hidden by default. Experiments, auto promotion, and default `/dispatch` delegation each require separate opt-in gates. See [`docs/RUNBOOK.md`](docs/RUNBOOK.md).
 
 Production-like local beta profile:
 
@@ -279,11 +279,11 @@ bundle = client.dispatch("Summarize docs without provider calls")
 - Installed local CLI executors are discovered by default for explicit workflow actions; set `ACP_ENABLE_CLI_EXECUTION=0` to disable them.
 - `ACP_EXECUTION_MODE` controls how dispatch requests are routed: `off` (default, noop), `provider` (API only), `cli` (CLI executor only), or `auto` (hybrid mode that scores task complexity and routes low-complexity tasks to the Provider API and high-complexity tasks to the CLI executor; the threshold is configurable via `ACP_HYBRID_COMPLEXITY_THRESHOLD`, default 0.5).
 - Bounded supervised worker concurrency is implemented behind dual scheduler/worker gates, bounded worker count, authenticated pause/resume/kill controls, heartbeat, leases, and audit. Unattended autonomous-agent loops remain out of scope.
-- Provider failover remains out of scope.
+- Provider failover/fusion exists only inside the bounded, authenticated, default-off Adaptive Fusion path.
 - Cloud SaaS, multi-tenant hosting, cloud production Web UI, hosted deployment, and remote SaaS service remain out of scope.
 - Target-repository output is implemented behind `ACP_ENABLE_TARGET_REPO_OUTPUT=1`, `dispatch:execute`, explicit confirmation, approval/integrity/secret gates, remote allowlists, and `ACP_TARGET_REPO_OUTPUT_KILL_SWITCH=1`; direct target working-tree or `main` writes, apply/merge/deploy authority, and default-on provider execution remain out of scope.
 - The dashboard is a local operations console with guarded app-owned controls. V2-5 adds the product-level Mission Control output path over the guarded backend contract: create plan/run, tick, create workspace, capture patch, approve, export patch, or push an `acp/*` branch.
-- Adaptive Fusion operator UX exposes policy evidence, explicit promotion requests, and rollback over guarded local endpoints; it does not add default-on provider execution, provider failover, unattended workers, or live routing without explicit bounded adaptive plans.
+- Adaptive Fusion supports guarded candidate selection, bounded parallel-panel fusion, safe observations, controlled experiments, auto promotion, completion routing, policy evidence, and rollback. Provider calls and every automatic influence path remain independently gated, killable, audited, and default-off.
 - No destructive runtime filesystem behavior.
 - V2 real capabilities require the phase plan in `docs/NEXT_DECISION.md`, explicit gates, audit events, tests, and rollback/kill paths.
 

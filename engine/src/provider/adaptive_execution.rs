@@ -1,18 +1,23 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
+use tokio::task::JoinSet;
 
 use super::audit::ProviderAuditRecorder;
 use super::cost_gate::{check_cost_gates, CostGateConfig};
 use super::redaction::{contains_sensitive_patterns, redact_sensitive_patterns};
 use super::{Provider, ProviderRequest, ProviderResponse};
+use crate::feedback::policy_snapshot::stable_hash;
 use crate::feedback::{
-    contextual_policy_key, AdaptiveExplorationGate, ContextualBanditEngine,
-    ContextualBanditObservation, ContextualPolicyRequest, PromotedAdaptivePolicy,
-    TaskClassEvaluation,
+    contextual_policy_key, AdaptiveExperimentController, AdaptiveExperimentGate,
+    AdaptiveExperimentLimits, AdaptiveExperimentPolicy, AdaptiveExperimentRequest,
+    AdaptiveExplorationGate, ContextualBanditEngine, ContextualBanditObservation,
+    ContextualPolicyRequest, CredentialReference, EndpointHealth, EndpointPricing,
+    ModelEndpointRegistry, ModelEndpointRegistrySnapshot, ModelEndpointSpec,
+    PromotedAdaptivePolicy, TaskClassEvaluation, ENDPOINT_REGISTRY_SCHEMA_VERSION,
 };
 use crate::node_executor::{NodeExecutionInput, NodeExecutionOutput, NodeExecutor};
 
@@ -32,6 +37,7 @@ const MAX_ENDPOINT_ID_BYTES: usize = 160;
 const MAX_CONTEXTUAL_CANDIDATE_PLANS: usize = 8;
 const MIN_FUSION_PANEL_SIZE: usize = 2;
 const MAX_FUSION_PANEL_SIZE: usize = 3;
+const MAX_FUSION_PANEL_CONCURRENCY: usize = 3;
 const COST_EPSILON: f64 = 1e-9;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -118,6 +124,51 @@ pub fn parse_adaptive_provider_endpoints_json(
         validate_adaptive_provider_endpoint_config(config)?;
     }
     Ok(configs)
+}
+
+pub fn adaptive_registry_snapshot_from_configs(
+    configs: &[AdaptiveProviderEndpointConfig],
+) -> Result<ModelEndpointRegistrySnapshot, AdaptiveProviderEndpointConfigError> {
+    let mut registry = ModelEndpointRegistry::new();
+    for config in configs {
+        validate_adaptive_provider_endpoint_config(config)?;
+        registry
+            .upsert(ModelEndpointSpec {
+                schema_version: ENDPOINT_REGISTRY_SCHEMA_VERSION.to_string(),
+                endpoint_id: config.endpoint_id.clone(),
+                provider_id: config.provider_type.clone(),
+                model_id: config.model.clone(),
+                enabled: true,
+                capabilities: vec!["completion".to_string()],
+                context_window_tokens: MAX_EXECUTION_TOKENS,
+                supports_tools: false,
+                supports_parallel_tools: false,
+                pricing: EndpointPricing {
+                    input_cost_per_1k_usd: config.input_cost_per_1k_usd.unwrap_or(0.0),
+                    output_cost_per_1k_usd: config.output_cost_per_1k_usd.unwrap_or(0.0),
+                    cache_read_cost_per_1k_usd: None,
+                    cache_write_cost_per_1k_usd: None,
+                },
+                health: EndpointHealth {
+                    status: "healthy".to_string(),
+                    score: 1.0,
+                    observed_at: None,
+                },
+                credential_reference: config.credential_env.as_ref().map(|reference_id| {
+                    CredentialReference {
+                        backend: "env".to_string(),
+                        reference_id: reference_id.clone(),
+                    }
+                }),
+            })
+            .map_err(|_| {
+                AdaptiveProviderEndpointConfigError::new(
+                    "adaptive_registry_invalid",
+                    "adaptive endpoint config could not populate the model registry",
+                )
+            })?;
+    }
+    Ok(registry.snapshot())
 }
 
 pub fn validate_adaptive_provider_endpoint_config(
@@ -251,6 +302,8 @@ pub struct AdaptiveExecutionLimits {
     pub max_concurrency: usize,
     #[serde(default = "default_max_execution_tokens")]
     pub max_total_tokens: u64,
+    #[serde(default)]
+    pub min_successful_panel_calls: usize,
 }
 
 fn default_max_execution_tokens() -> u64 {
@@ -270,11 +323,17 @@ impl AdaptiveExecutionLimits {
             max_elapsed_ms,
             max_concurrency,
             max_total_tokens: DEFAULT_MAX_EXECUTION_TOKENS,
+            min_successful_panel_calls: 0,
         }
     }
 
     pub fn with_max_total_tokens(mut self, max_total_tokens: u64) -> Self {
         self.max_total_tokens = max_total_tokens;
+        self
+    }
+
+    pub fn with_min_successful_panel_calls(mut self, min_successful_panel_calls: usize) -> Self {
+        self.min_successful_panel_calls = min_successful_panel_calls;
         self
     }
 }
@@ -454,6 +513,7 @@ impl std::fmt::Display for AdaptiveExecutionError {
 
 impl std::error::Error for AdaptiveExecutionError {}
 
+#[derive(Clone)]
 pub struct AdaptiveExecutionExecutor {
     providers: BTreeMap<String, Arc<dyn Provider>>,
     audit: Arc<ProviderAuditRecorder>,
@@ -466,7 +526,11 @@ pub struct AdaptiveProviderNodeExecutor {
     cost_gate_config: CostGateConfig,
     daily_cost_usd: f64,
     contextual_policies: BTreeMap<String, PromotedAdaptivePolicy>,
+    persisted_observations: Vec<ContextualBanditObservation>,
     exploration_gate: AdaptiveExplorationGate,
+    experiment_policy: Option<AdaptiveExperimentPolicy>,
+    experiment_gate: Option<AdaptiveExperimentGate>,
+    last_observation: Arc<Mutex<Option<AdaptiveObservationDraft>>>,
 }
 
 impl AdaptiveProviderNodeExecutor {
@@ -477,13 +541,35 @@ impl AdaptiveProviderNodeExecutor {
             cost_gate_config: CostGateConfig::new(None, None),
             daily_cost_usd: 0.0,
             contextual_policies: BTreeMap::new(),
+            persisted_observations: Vec::new(),
             exploration_gate: AdaptiveExplorationGate::from_env(),
+            experiment_policy: None,
+            experiment_gate: None,
+            last_observation: Arc::new(Mutex::new(None)),
         }
     }
 
     pub fn with_cost_gate(mut self, config: CostGateConfig, daily_cost_usd: f64) -> Self {
         self.cost_gate_config = config;
         self.daily_cost_usd = daily_cost_usd;
+        self
+    }
+
+    pub fn with_persisted_observations(
+        mut self,
+        observations: Vec<ContextualBanditObservation>,
+    ) -> Self {
+        self.persisted_observations = observations;
+        self
+    }
+
+    pub fn with_online_experiments(
+        mut self,
+        policy: AdaptiveExperimentPolicy,
+        gate: AdaptiveExperimentGate,
+    ) -> Self {
+        self.experiment_policy = Some(policy);
+        self.experiment_gate = Some(gate);
         self
     }
 
@@ -501,6 +587,13 @@ impl AdaptiveProviderNodeExecutor {
         self
     }
 
+    pub fn take_observation(&self) -> Option<AdaptiveObservationDraft> {
+        self.last_observation
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .take()
+    }
+
     fn prompt(input: &NodeExecutionInput) -> String {
         input
             .node_metadata
@@ -516,10 +609,44 @@ impl AdaptiveProviderNodeExecutor {
     }
 }
 
-#[derive(Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct AdaptiveObservationDraft {
+    pub run_id: String,
+    pub request_id: String,
+    pub task_class: String,
+    pub objective: crate::feedback::ObjectiveProfile,
+    pub risk_level: String,
+    pub candidate_id: String,
+    pub candidate_hash: String,
+    pub policy_hash: Option<String>,
+    pub candidate_kind: String,
+    pub success: bool,
+    pub quality_score: f64,
+    pub quality_score_source: String,
+    pub tool_success_score: f64,
+    pub cost_usd: f64,
+    pub latency_ms: u64,
+    pub input_tokens: u64,
+    pub output_tokens: u64,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct AdaptiveObservationContext {
+    request_id: String,
+    task_class: String,
+    objective: crate::feedback::ObjectiveProfile,
+    risk_level: String,
+    candidate_id: String,
+    #[serde(default)]
+    policy_hash: Option<String>,
+}
+
+#[derive(Clone, Deserialize)]
 struct AdaptiveNodeExecutionConfig {
     plan: AdaptiveExecutionPlan,
     limits: AdaptiveExecutionLimits,
+    #[serde(default)]
+    observation_context: Option<AdaptiveObservationContext>,
 }
 
 #[derive(Deserialize)]
@@ -564,8 +691,8 @@ impl NodeExecutor for AdaptiveProviderNodeExecutor {
         let request = AdaptiveExecutionRequest::new(
             &dispatch_ref,
             &Self::prompt(input),
-            config.plan,
-            config.limits,
+            config.plan.clone(),
+            config.limits.clone(),
         );
         let executor = self.executor.clone();
         let gate = self.gate;
@@ -579,27 +706,48 @@ impl NodeExecutor for AdaptiveProviderNodeExecutor {
         .join();
 
         match execution {
-            Ok(Ok(result)) => NodeExecutionOutput {
-                status: "completed".to_string(),
-                executor_type: "adaptive_provider".to_string(),
-                output: result.output,
-                error_domain: None,
-                error_message: None,
-                input_tokens: i64::try_from(result.total_input_token_count).ok(),
-                output_tokens: i64::try_from(result.total_output_token_count).ok(),
-                estimated_cost: Some(result.total_provider_cost_usd),
-                latency_ms: Some(result.elapsed_ms as i64),
-            },
-            Ok(Err(error)) => adaptive_node_error(
-                &error.code,
-                &error.message,
-                Some(
-                    error
-                        .total_provider_cost_usd
-                        .max(error.total_reserved_cost_usd),
-                ),
-                Some(error.elapsed_ms),
-            ),
+            Ok(Ok(result)) => {
+                self.capture_observation(
+                    input,
+                    &config,
+                    true,
+                    result.total_provider_cost_usd,
+                    result.elapsed_ms,
+                    result.total_input_token_count,
+                    result.total_output_token_count,
+                );
+                NodeExecutionOutput {
+                    status: "completed".to_string(),
+                    executor_type: "adaptive_provider".to_string(),
+                    output: result.output,
+                    error_domain: None,
+                    error_message: None,
+                    input_tokens: i64::try_from(result.total_input_token_count).ok(),
+                    output_tokens: i64::try_from(result.total_output_token_count).ok(),
+                    estimated_cost: Some(result.total_provider_cost_usd),
+                    latency_ms: Some(result.elapsed_ms as i64),
+                }
+            }
+            Ok(Err(error)) => {
+                let cost = error
+                    .total_provider_cost_usd
+                    .max(error.total_reserved_cost_usd);
+                self.capture_observation(
+                    input,
+                    &config,
+                    false,
+                    cost,
+                    error.elapsed_ms,
+                    error.total_input_token_count,
+                    error.total_output_token_count,
+                );
+                adaptive_node_error(
+                    &error.code,
+                    &error.message,
+                    Some(cost),
+                    Some(error.elapsed_ms),
+                )
+            }
             Err(_) => {
                 self.executor.audit_node_failure(
                     &dispatch_ref,
@@ -619,6 +767,49 @@ impl NodeExecutor for AdaptiveProviderNodeExecutor {
 }
 
 impl AdaptiveProviderNodeExecutor {
+    #[allow(clippy::too_many_arguments)]
+    fn capture_observation(
+        &self,
+        input: &NodeExecutionInput,
+        config: &AdaptiveNodeExecutionConfig,
+        success: bool,
+        cost_usd: f64,
+        latency_ms: u64,
+        input_tokens: u64,
+        output_tokens: u64,
+    ) {
+        let Some(context) = &config.observation_context else {
+            return;
+        };
+        let proxy_score = f64::from(success);
+        let draft = AdaptiveObservationDraft {
+            run_id: input.run_id.clone(),
+            request_id: context.request_id.clone(),
+            task_class: context.task_class.clone(),
+            objective: context.objective,
+            risk_level: context.risk_level.clone(),
+            candidate_id: context.candidate_id.clone(),
+            candidate_hash: stable_hash(&serde_json::json!({
+                "plan": config.plan,
+                "limits": config.limits,
+            })),
+            policy_hash: context.policy_hash.clone(),
+            candidate_kind: plan_kind(&config.plan).to_string(),
+            success,
+            quality_score: proxy_score,
+            quality_score_source: "execution_success_proxy".to_string(),
+            tool_success_score: proxy_score,
+            cost_usd,
+            latency_ms,
+            input_tokens,
+            output_tokens,
+        };
+        *self
+            .last_observation
+            .lock()
+            .unwrap_or_else(|error| error.into_inner()) = Some(draft);
+    }
+
     fn resolve_node_config(
         &self,
         input: &NodeExecutionInput,
@@ -673,11 +864,71 @@ impl AdaptiveProviderNodeExecutor {
                 "promoted candidate has no explicit bounded execution plan",
             ));
         }
+        let mut observations = config.observations.clone();
+        let explicit_ids = observations
+            .iter()
+            .map(|observation| observation.observation_id.clone())
+            .collect::<BTreeSet<_>>();
+        let explicit_run_candidates = observations
+            .iter()
+            .map(|observation| (observation.run_id.clone(), observation.candidate_id.clone()))
+            .collect::<BTreeSet<_>>();
+        observations.extend(
+            self.persisted_observations
+                .iter()
+                .filter(|observation| {
+                    observation.task_class == config.request.task_class
+                        && observation.objective == config.request.objective
+                        && config
+                            .candidate_plans
+                            .contains_key(&observation.candidate_id)
+                        && !explicit_ids.contains(&observation.observation_id)
+                        && !explicit_run_candidates.contains(&(
+                            observation.run_id.clone(),
+                            observation.candidate_id.clone(),
+                        ))
+                })
+                .cloned(),
+        );
+        let experiment_decision =
+            self.experiment_policy
+                .zip(self.experiment_gate)
+                .map(|(policy, gate)| {
+                    AdaptiveExperimentController::decide(
+                        &AdaptiveExperimentRequest {
+                            request_id: config.request.request_id.clone(),
+                            exploration_seed: config.request.exploration_seed,
+                            risk_level: config.request.risk_level.clone(),
+                        },
+                        &policy,
+                        &gate,
+                    )
+                    .map(|decision| (policy, decision))
+                });
+        let experiment_assigned = experiment_decision
+            .as_ref()
+            .and_then(|decision| decision.as_ref().ok())
+            .is_some_and(|(_, decision)| decision.assigned);
+        if experiment_decision.as_ref().is_some_and(Result::is_err) {
+            self.executor.audit.create_and_record(
+                dispatch_ref,
+                &policy.candidate_id,
+                "adaptive_experiment_blocked",
+                Some(&serde_json::json!({
+                    "error_domain": "adaptive_experiment_validation_failed",
+                })),
+            );
+        }
+        let exploration_gate = if self.experiment_policy.is_some() {
+            AdaptiveExplorationGate::from_assignment(experiment_assigned)
+        } else {
+            self.exploration_gate
+        };
         let decision = ContextualBanditEngine::decide(
             &config.request,
             &config.evaluation,
-            &config.observations,
-            &self.exploration_gate,
+            &observations,
+            &exploration_gate,
         )
         .map_err(|_| {
             (
@@ -685,15 +936,51 @@ impl AdaptiveProviderNodeExecutor {
                 "adaptive contextual policy decision is invalid",
             )
         })?;
-        let candidate_id = if decision.exploration_assigned {
+        let mut candidate_id = if decision.exploration_assigned {
             decision.selected_candidate_id.as_str()
         } else {
             policy.candidate_id.as_str()
         };
-        let selected = config.candidate_plans.get(candidate_id).ok_or((
+        let mut selected = config.candidate_plans.get(candidate_id).ok_or((
             "adaptive_policy_plan_missing",
             "selected adaptive candidate has no explicit bounded execution plan",
         ))?;
+        if decision.exploration_assigned {
+            if let Some(Ok((experiment_policy, experiment_decision))) = &experiment_decision {
+                let limits = AdaptiveExperimentLimits {
+                    reserved_cost_usd: plan_reserved_cost(&selected.plan),
+                    max_cost_usd: selected.limits.max_cost_usd,
+                    max_total_tokens: selected.limits.max_total_tokens,
+                    max_calls: selected.limits.max_calls,
+                    max_elapsed_ms: selected.limits.max_elapsed_ms,
+                    max_concurrency: selected.limits.max_concurrency,
+                };
+                if let Err(error_domain) =
+                    AdaptiveExperimentController::validate_limits(&limits, experiment_policy)
+                {
+                    self.executor.audit.create_and_record(
+                        dispatch_ref,
+                        candidate_id,
+                        "adaptive_experiment_blocked",
+                        Some(&serde_json::json!({"error_domain": error_domain})),
+                    );
+                    candidate_id = policy.candidate_id.as_str();
+                    selected = config.candidate_plans.get(candidate_id).ok_or((
+                        "adaptive_policy_plan_missing",
+                        "promoted candidate has no explicit bounded execution plan",
+                    ))?;
+                } else {
+                    self.executor.audit.create_and_record(
+                        dispatch_ref,
+                        candidate_id,
+                        "adaptive_experiment_assigned",
+                        Some(&serde_json::json!({
+                            "traffic_rate": experiment_decision.traffic_rate,
+                        })),
+                    );
+                }
+            }
+        }
         self.executor.audit.create_and_record(
             dispatch_ref,
             candidate_id,
@@ -703,7 +990,23 @@ impl AdaptiveProviderNodeExecutor {
         Ok(AdaptiveNodeExecutionConfig {
             plan: selected.plan.clone(),
             limits: selected.limits.clone(),
+            observation_context: Some(AdaptiveObservationContext {
+                request_id: config.request.request_id,
+                task_class: config.request.task_class,
+                objective: config.request.objective,
+                risk_level: config.request.risk_level,
+                candidate_id: candidate_id.to_string(),
+                policy_hash: Some(policy.policy_hash.clone()),
+            }),
         })
+    }
+}
+
+fn plan_kind(plan: &AdaptiveExecutionPlan) -> &'static str {
+    match plan {
+        AdaptiveExecutionPlan::Single { .. } => "single",
+        AdaptiveExecutionPlan::OrderedFallback { .. } => "ordered_fallback",
+        AdaptiveExecutionPlan::Fusion { .. } => "fusion",
     }
 }
 
@@ -877,20 +1180,10 @@ impl AdaptiveExecutionExecutor {
                 judge,
                 synthesizer,
             } => {
-                let mut panel_outputs = Vec::with_capacity(panel.len());
-                for endpoint in panel {
-                    let call = self
-                        .invoke(
-                            request,
-                            endpoint,
-                            AdaptiveCallRole::Panel,
-                            &request.prompt,
-                            &mut state,
-                        )
-                        .await
-                        .map_err(|error| self.audit_failure(request, error))?;
-                    panel_outputs.push((endpoint.endpoint_id.clone(), call.output));
-                }
+                let panel_outputs = self
+                    .execute_panel(request, panel, &mut state)
+                    .await
+                    .map_err(|error| self.audit_failure(request, error))?;
                 let judge_prompt = fusion_judge_prompt(&request.prompt, &panel_outputs);
                 let judge_call = self
                     .invoke(
@@ -990,15 +1283,52 @@ impl AdaptiveExecutionExecutor {
                 0.0,
             ));
         }
-        if limits.max_concurrency != 1 {
-            return Err(execution_error(
-                "adaptive_concurrency_not_supported",
-                "AF-3 supports bounded serial execution only",
-                started,
-                Vec::new(),
-                0.0,
-                0.0,
-            ));
+        match &request.plan {
+            AdaptiveExecutionPlan::Fusion { panel, .. } => {
+                if limits.max_concurrency == 0
+                    || limits.max_concurrency > MAX_FUSION_PANEL_CONCURRENCY
+                {
+                    return Err(execution_error(
+                        "adaptive_concurrency_limit_invalid",
+                        "fusion max_concurrency is outside the allowed range",
+                        started,
+                        Vec::new(),
+                        0.0,
+                        0.0,
+                    ));
+                }
+                if limits.min_successful_panel_calls > panel.len() {
+                    return Err(execution_error(
+                        "adaptive_panel_quorum_invalid",
+                        "minimum successful panel calls exceeds the panel size",
+                        started,
+                        Vec::new(),
+                        0.0,
+                        0.0,
+                    ));
+                }
+            }
+            _ if limits.max_concurrency != 1 => {
+                return Err(execution_error(
+                    "adaptive_concurrency_not_supported",
+                    "parallel execution is supported only for fusion panel calls",
+                    started,
+                    Vec::new(),
+                    0.0,
+                    0.0,
+                ));
+            }
+            _ if limits.min_successful_panel_calls != 0 => {
+                return Err(execution_error(
+                    "adaptive_panel_quorum_invalid",
+                    "panel success quorum applies only to fusion plans",
+                    started,
+                    Vec::new(),
+                    0.0,
+                    0.0,
+                ));
+            }
+            _ => {}
         }
 
         let invocations = plan_invocations(&request.plan, started)?;
@@ -1082,6 +1412,187 @@ impl AdaptiveExecutionExecutor {
             }
         }
         Ok(())
+    }
+
+    async fn execute_panel(
+        &self,
+        request: &AdaptiveExecutionRequest,
+        panel: &[AdaptiveEndpointInvocation],
+        state: &mut ExecutionState,
+    ) -> Result<Vec<(String, String)>, AdaptiveExecutionError> {
+        let prompt = bounded_text(&request.prompt, MAX_COMPOSED_PROMPT_BYTES).0;
+        let mut reserved_tokens = state.total_reserved_token_count;
+        let mut admissions = Vec::with_capacity(panel.len());
+        for (index, invocation) in panel.iter().enumerate() {
+            let reservation =
+                reserve_tokens(&prompt, reserved_tokens, request.limits.max_total_tokens)
+                    .ok_or_else(|| {
+                        state.error(
+                            "adaptive_token_limit_exceeded",
+                            "remaining token budget cannot admit the fusion panel",
+                        )
+                    })?;
+            reserved_tokens = reserved_tokens.saturating_add(reservation.total());
+            admissions.push(PanelAdmission {
+                index,
+                invocation: invocation.clone(),
+                max_total_tokens: reservation.total(),
+            });
+        }
+
+        let concurrency = request.limits.max_concurrency.min(admissions.len());
+        let required_successes = if request.limits.min_successful_panel_calls == 0 {
+            panel.len()
+        } else {
+            request.limits.min_successful_panel_calls
+        };
+        let mut outcomes = (0..admissions.len()).map(|_| None).collect::<Vec<_>>();
+        let mut processed = 0;
+        let mut successful = 0;
+        for wave in admissions.chunks(concurrency) {
+            if self.kill_switch.is_killed() {
+                break;
+            }
+            let mut tasks = JoinSet::new();
+            for admission in wave {
+                self.spawn_panel_call(
+                    &mut tasks,
+                    request,
+                    &prompt,
+                    state.started,
+                    admission.clone(),
+                );
+            }
+            let mut wave_has_fatal_failure = false;
+            while let Some(joined) = tasks.join_next().await {
+                let outcome = joined.map_err(|_| {
+                    state.error(
+                        "adaptive_runtime_failure",
+                        "parallel panel execution task failed",
+                    )
+                })?;
+                wave_has_fatal_failure |= outcome
+                    .result
+                    .as_ref()
+                    .is_err_and(|error| !recoverable_panel_error(error));
+                successful += usize::from(outcome.result.is_ok());
+                processed += 1;
+                let index = outcome.index;
+                outcomes[index] = Some(outcome);
+            }
+            let remaining = admissions.len().saturating_sub(processed);
+            if wave_has_fatal_failure
+                || self.kill_switch.is_killed()
+                || successful + remaining < required_successes
+            {
+                break;
+            }
+        }
+
+        let mut outputs = Vec::with_capacity(panel.len());
+        let mut first_fatal = None;
+        let mut recoverable_failures = 0;
+        for outcome in outcomes.into_iter().flatten() {
+            state.merge(outcome.state);
+            match outcome.result {
+                Ok(call) => outputs.push((outcome.endpoint_id, call.output)),
+                Err(error) if recoverable_panel_error(&error) => {
+                    recoverable_failures += 1;
+                }
+                Err(error) if first_fatal.is_none() => {
+                    first_fatal = Some((error.code, error.message));
+                }
+                Err(_) => {}
+            }
+        }
+
+        if self.kill_switch.is_killed() {
+            return Err(state.error(
+                "adaptive_execution_killed",
+                "adaptive execution kill switch became active during the fusion panel",
+            ));
+        }
+        if let Some((code, message)) = first_fatal {
+            return Err(state.error(&code, &message));
+        }
+        if outputs.len() < required_successes {
+            self.audit.create_and_record(
+                &request.dispatch_id,
+                "adaptive-fusion",
+                "adaptive_panel_quorum_failed",
+                Some(&serde_json::json!({
+                    "cost": state.total_provider_cost_usd,
+                    "currency": "USD",
+                    "latency_ms": elapsed_ms(state.started) as i64,
+                    "error_domain": "adaptive_panel_quorum_not_met",
+                })),
+            );
+            return Err(state.error(
+                "adaptive_panel_quorum_not_met",
+                "fusion panel did not meet the configured success quorum",
+            ));
+        }
+        if recoverable_failures > 0 {
+            self.audit.create_and_record(
+                &request.dispatch_id,
+                "adaptive-fusion",
+                "adaptive_panel_partial_failure",
+                Some(&serde_json::json!({
+                    "cost": state.total_provider_cost_usd,
+                    "currency": "USD",
+                    "latency_ms": elapsed_ms(state.started) as i64,
+                    "error_domain": "adaptive_panel_partial_failure",
+                })),
+            );
+        } else if request.limits.max_concurrency > 1 {
+            self.audit.create_and_record(
+                &request.dispatch_id,
+                "adaptive-fusion",
+                "adaptive_panel_parallel_completed",
+                Some(&serde_json::json!({
+                    "cost": state.total_provider_cost_usd,
+                    "currency": "USD",
+                    "latency_ms": elapsed_ms(state.started) as i64,
+                })),
+            );
+        }
+        Ok(outputs)
+    }
+
+    fn spawn_panel_call(
+        &self,
+        tasks: &mut JoinSet<PanelTaskOutcome>,
+        request: &AdaptiveExecutionRequest,
+        prompt: &str,
+        started: Instant,
+        admission: PanelAdmission,
+    ) {
+        let executor = self.clone();
+        let mut call_request = request.clone();
+        call_request.limits.max_calls = 1;
+        call_request.limits.max_cost_usd = admission.invocation.reserved_cost_usd;
+        call_request.limits.max_concurrency = 1;
+        call_request.limits.max_total_tokens = admission.max_total_tokens;
+        call_request.limits.min_successful_panel_calls = 0;
+        let prompt = prompt.to_string();
+        tasks.spawn(async move {
+            let mut call_state = ExecutionState::new(started);
+            let result = executor
+                .invoke(
+                    &call_request,
+                    &admission.invocation,
+                    AdaptiveCallRole::Panel,
+                    &prompt,
+                    &mut call_state,
+                )
+                .await;
+            PanelTaskOutcome {
+                index: admission.index,
+                endpoint_id: admission.invocation.endpoint_id,
+                result,
+                state: call_state,
+            }
+        });
     }
 
     async fn invoke(
@@ -1541,11 +2052,47 @@ impl ExecutionState {
             self.total_provider_cost_usd,
         )
     }
+
+    fn merge(&mut self, other: Self) {
+        self.calls.extend(other.calls);
+        self.total_reserved_cost_usd += other.total_reserved_cost_usd;
+        self.total_provider_cost_usd += other.total_provider_cost_usd;
+        self.total_reserved_token_count = self
+            .total_reserved_token_count
+            .saturating_add(other.total_reserved_token_count);
+        self.total_input_token_count = self
+            .total_input_token_count
+            .saturating_add(other.total_input_token_count);
+        self.total_output_token_count = self
+            .total_output_token_count
+            .saturating_add(other.total_output_token_count);
+    }
 }
 
 struct SanitizedCall {
     output: String,
     output_truncated: bool,
+}
+
+#[derive(Clone)]
+struct PanelAdmission {
+    index: usize,
+    invocation: AdaptiveEndpointInvocation,
+    max_total_tokens: u64,
+}
+
+struct PanelTaskOutcome {
+    index: usize,
+    endpoint_id: String,
+    result: Result<SanitizedCall, AdaptiveExecutionError>,
+    state: ExecutionState,
+}
+
+fn recoverable_panel_error(error: &AdaptiveExecutionError) -> bool {
+    matches!(
+        error.code.as_ref(),
+        "adaptive_provider_error" | "adaptive_provider_disabled"
+    )
 }
 
 #[derive(Debug, Clone, Copy)]

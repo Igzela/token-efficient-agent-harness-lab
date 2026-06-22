@@ -3,6 +3,7 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
 use crate::dispatch_engine::DispatchEngine;
+use crate::feedback::ModelEndpointRegistrySnapshot;
 use crate::infrastructure::auth::TenantResolver;
 use crate::infrastructure::circuit_breaker::CircuitBreakerRegistry;
 use crate::infrastructure::observability::{MetricsCollector, RequestTracer};
@@ -58,6 +59,7 @@ pub struct AxumApiState {
     pub(crate) backup_dir: Option<Arc<PathBuf>>,
     pub(crate) provider: Option<Arc<dyn Provider>>,
     pub(crate) adaptive_provider_executor: Option<Arc<AdaptiveExecutionExecutor>>,
+    pub(crate) adaptive_registry_snapshot: Option<Arc<ModelEndpointRegistrySnapshot>>,
     pub(crate) scheduler: Option<Arc<Mutex<WorkflowScheduler>>>,
     pub(crate) metrics: Arc<MetricsCollector>,
     pub(crate) tracer: Arc<RequestTracer>,
@@ -84,6 +86,7 @@ impl AxumApiState {
             backup_dir: None,
             provider: None,
             adaptive_provider_executor: None,
+            adaptive_registry_snapshot: None,
             scheduler: None,
             metrics: Arc::new(MetricsCollector::new(10_000)),
             tracer: Arc::new(RequestTracer::new()),
@@ -166,6 +169,14 @@ impl AxumApiState {
         executor: Arc<AdaptiveExecutionExecutor>,
     ) -> Self {
         self.adaptive_provider_executor = Some(executor);
+        self
+    }
+
+    pub fn with_adaptive_registry_snapshot(
+        mut self,
+        snapshot: ModelEndpointRegistrySnapshot,
+    ) -> Self {
+        self.adaptive_registry_snapshot = Some(Arc::new(snapshot));
         self
     }
 
