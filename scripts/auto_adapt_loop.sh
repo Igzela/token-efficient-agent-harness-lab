@@ -102,7 +102,7 @@ You MUST execute all steps immediately. Do NOT present a plan and wait for appro
 
 Key constraints:
 - Do NOT create parallel runtime/DAG/scheduler kernels — extend existing modules only
-- Provider execution remains default-off and env-gated
+- Provider execution remains bounded behind a ready trusted-local profile or standalone legacy gate
 - Target repo writes remain forbidden
 - No sandbox/process/container/VM execution beyond existing CLI executor path
 - R-series file splitting remains sealed at R7

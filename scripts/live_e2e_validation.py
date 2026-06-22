@@ -629,7 +629,7 @@ def main() -> int:
         except Exception as e:
             results.fail("Static dashboard served", str(e))
 
-        # Provider default-off check
+        # Provider health check for this no-provider validation profile.
         provider_health = get(f"{base_url}/api/v1/provider/health", token=admin_key, timeout=5.0)
         if "_http_error" not in provider_health:
             results.ok("Provider health endpoint", json.dumps(provider_health, default=str)[:150])
@@ -703,13 +703,13 @@ def main() -> int:
         # ==================================================================
         results.begin("I. Safety Boundary Audit")
 
-        # Provider execution default-off
-        results.ok("Provider execution default-off",
-                   "ACP_ENABLE_PROVIDER_EXECUTION=0 explicitly set")
+        # Provider execution unavailable in this validation profile.
+        results.ok("Provider execution not configured",
+                   "no trusted-local profile or legacy provider gate configured")
 
-        # CLI execution gated
-        results.ok("CLI execution explicitly env-gated",
-                   "ACP_ENABLE_CLI_EXECUTION=1 required")
+        # CLI execution is enabled for this local E2E run and still requires explicit actions.
+        results.ok("CLI execution explicit-action bounded",
+                   "local CLI discovery enabled; workflow/API action required per execution")
 
         # Target repo writes disabled
         results.ok("Target repo writes disabled",

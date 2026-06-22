@@ -285,7 +285,7 @@ def run_python_sdk_smoke(repo_root: Path, base_url: str, dispatch_id: str) -> di
     assert_eq(result["executor_type"], "codex_cli", "Python SDK CLI executor")
     assert_eq(result["status"], "cli_completed", "Python SDK CLI status")
     assert_eq(result["input_tokens"], 11, "Python SDK CLI tokens")
-    assert_eq(provider["status"], "noop", "Python SDK provider default-off")
+    assert_eq(provider["status"], "noop", "Python SDK provider unconfigured")
     assert_true(isinstance(costs["dispatches"], list), "Python SDK cost detail rows")
     return {
         "status": "passed",
@@ -400,7 +400,7 @@ def run_stub_success_flow(repo_root: Path, engine_bin: Path, dashboard_dir: Path
         assert_eq(
             dashboard["boundaries"]["provider_transport"],
             "noop",
-            "dashboard provider transport default-off",
+            "dashboard provider transport unconfigured",
         )
 
         ts = run_typescript_sdk_smoke(repo_root, base_url, codex_id)
