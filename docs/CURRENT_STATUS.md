@@ -4,7 +4,7 @@ Last updated: 2026-06-22. V2-0 through V2-5, the Real Output Closeout, and Adapt
 
 ## Summary
 
-The core plan, V2 implementation, Real Output Closeout, Adaptive Fusion Routing track, and IAE-1/IAE-2 trusted-local execution phases are complete. IAE-3 operator control and evidence is next. The system includes prompt-to-CLI execution, bounded verification/repair evidence, optional real GitHub PR creation, guarded automatic provider/model routing with safe evidence feedback, and bounded background advancement of already-created adaptive workflow runs.
+The core plan, V2 implementation, Real Output Closeout, Adaptive Fusion Routing track, and Trusted Local Autonomous Execution IAE-0 through IAE-3 are complete. The system includes prompt-to-CLI execution, bounded verification/repair evidence, optional real GitHub PR creation, guarded automatic provider/model routing with safe evidence feedback, bounded background advancement of already-created adaptive workflow runs, and an integrated operator control/evidence surface.
 
 The system is useful as an operations/control-plane lab for deterministic dispatch, workflow state, app-owned execution metadata, guarded local controls, SDKs, and audit evidence. It is not a cloud SaaS, hosted multi-tenant service, direct-deploy tool, or unattended autonomous-agent runtime.
 
@@ -29,15 +29,16 @@ The system is useful as an operations/control-plane lab for deterministic dispat
 - Bounded supervised workers remain available through the legacy `ACP_ENABLE_SCHEDULER=1` plus `ACP_ENABLE_SUPERVISED_WORKERS=1` gates. A ready trusted-local profile may instead use `ACP_TRUSTED_LOCAL_TASK_ADVANCEMENT=1`, which enables one bounded scheduler path only after worker configuration validation.
 - IAE-1 implements `ACP_TRUSTED_LOCAL_PROFILE=1`. It fails closed without protected auth, valid endpoint metadata, available symbolic credentials, strictly positive endpoint pricing, and positive per-dispatch/daily cost caps. When ready it activates provider execution, adaptive execution, default routing, experiments, and auto promotion while retaining existing token/call/time/concurrency, identity, redaction, audit, pause, kill, snapshot, and rollback controls.
 - IAE-2 implements `ACP_TRUSTED_LOCAL_TASK_ADVANCEMENT=1`. It requires a ready IAE-1 profile, accepts only the pinned `adaptive_provider` executor, rejects invalid or excessive worker/interval/lease configuration, and advances only already-created queued workflow runs. It does not create goals or tasks, select CLI/command/noop workers, persist raw model content, or expand target-output, merge, release, or deploy authority.
+- IAE-3 extends the existing dashboard snapshot with effective provider/adaptive/default-routing/experiment/promotion/task-advancement authority; configured cost, traffic, token, call, time, concurrency, rollout, and worker bounds; safe observation aggregates; and secret-free scheduler state. The Adaptive Fusion page reuses existing authenticated scheduler pause/resume/kill and policy rollback endpoints and loads recent adaptive/scheduler actions through the existing `audit:read` API with `redact=true`. It never renders audit details.
 - Cloud SaaS, multi-tenant hosting, app-runtime release/deploy/apply authority, direct target-repository `main` writes, unbounded provider spending, and unbounded autonomous loops remain out of scope.
 
 ## Last Recorded Verification
 
-- Branch: `codex/iae2-bounded-task-advancement`, stacked on `codex/iae1-trusted-local-profile`.
-- Tests: full Rust + TypeScript stack verification, 52 Python SDK tests, IAE-2 focused resolver/scheduler/adaptive/HTTP tests, rustfmt, Clippy, handoff, wire drift, dashboard boundary lint, and `git diff --check` passed with 0 failures on 2026-06-22.
-- Browser: authenticated stub runtime showed trusted profile and task advancement ready, one worker pinned to `adaptive_provider`, global worker status enabled, provider/adaptive/experiment/promotion/default-routing gates active, no desktop/mobile horizontal overflow, and no console errors.
+- Branch: `codex/iae3-operator-control-evidence`, based on `main` at IAE-2 merge `c342848`.
+- Tests: full Rust + TypeScript stack verification, 52 Python SDK tests, 153 HTTP tests, focused trusted-local/adaptive tests, rustfmt, Clippy, handoff, wire drift, dashboard boundary lint, and `git diff --check` passed with 0 failures on 2026-06-22.
+- Browser: authenticated stub runtime showed effective authority, 3% experiment traffic, configured cost/worker ceilings, one safe observation, redacted adaptive/scheduler audit actions, functional confirmed pause/resume controls, no raw prompt leakage, no desktop/mobile horizontal overflow, and no console errors.
 - Security: repository secret scan returned 0 findings; handoff, rustfmt, Clippy, dashboard boundary lint, TypeScript typecheck/build, and `git diff --check` passed.
-- CI: `main` workflow run `27926765347` and IAE-1 PR #97 workflow run `27928051684` were green across all seven required jobs. IAE-2 CI follows its stacked PR.
+- CI: IAE-2 PR #98 workflow run `27937443506` was green across all seven jobs and merged as `c342848`; IAE-3 CI follows its PR.
 - Release: the `v0.1.0` release workflow run `27891104370` is green; all eight published assets passed checksum/archive inspection.
 - Online install: the README installer fetched `v0.1.0` into an isolated home, verified the checksum, installed the runtime/dashboard, and passed health, dashboard API, and HTML smoke checks on 2026-06-21.
 - PostgreSQL integration tests are gated behind `cargo test -p engine --features pg-tests` with `ACP_TEST_DATABASE_URL`.
@@ -79,7 +80,7 @@ uv run --no-project python scripts/check_agent_handoff.py
 |---|---|
 | Agent Autonomous Maintenance Mode | Active for implementation, docs, CI, tests, review, and bounded shipping |
 | Adaptive Fusion Routing Track | AF-0 through AF-7 implemented; existing runtime gates remain active |
-| Trusted Local Autonomous Execution Track | IAE-1 trusted-local profile and IAE-2 bounded task advancement implemented; IAE-3 is next |
+| Trusted Local Autonomous Execution Track | Complete through IAE-3 |
 
 Historical phase plans, closeouts, and long-form validation reports are retained under `docs/archive/`.
 
@@ -106,6 +107,7 @@ Historical phase plans, closeouts, and long-form validation reports are retained
 - Adaptive Fusion AF-7: the dashboard exposes a guarded completion test form, optional routing metadata, read-only AF gate status, experiment/promotion/default-routing/kill indicators, and rollback snapshot cues. The `/api/v1/dashboard` snapshot includes secret-free `adaptive_fusion` operator status; no raw prompt, raw output, transcript, repository content, secret, or private path is persisted by the operator status surface.
 - IAE-1 trusted-local profile: `engine/src/trusted_local.rs` resolves a fail-closed readiness status and effective gates from protected auth, endpoint configuration, symbolic credential availability, positive pricing, and positive cost caps. The engine, workflow provider admission, adaptive completion/default routing, experiments, auto promotion, dashboard, and TypeScript SDK consume the same effective status. Runtime kill/pause controls remain independent and recoverable.
 - IAE-2 bounded task advancement: an explicit acknowledgement composes the existing scheduler with a pinned `PersistingAdaptiveProviderNodeExecutor`. Each node refreshes active policy/evidence/cost context, applies the existing adaptive execution gates, persists only safe observation summaries, and fails closed when policy or cost context cannot be read. Dashboard and TypeScript status expose requested/ready/blocker state plus worker and concurrency bounds.
+- IAE-3 operator control and evidence: the dashboard/API expose effective authority, budget and experiment ceilings, daily remaining cost, safe observation counts, scheduler runtime state, and existing rollback availability. The Adaptive Fusion UI provides confirmed pause/resume/kill controls and redacted recent audit action/resource/timestamp evidence without returning audit details, raw prompts/outputs/transcripts, credentials, repository content, or private paths.
 - V2-3 target repo output: `git_worktree` creation and output require `dispatch:execute` plus `ACP_ENABLE_TARGET_REPO_OUTPUT=1`; artifact hashes bind patch content and actual allowlisted verification evidence; output requires same-run approval, integrity, redaction, explicit confirmation, bounded text files, and remote controls. Optional GitHub PR creation additionally requires `ACP_ENABLE_GITHUB_PR_OUTPUT=1` and `ACP_GITHUB_TOKEN_ENV`.
 - V2-4 bounded workers: scheduler startup requires both scheduler and supervised-worker env gates; worker count is bounded by global concurrency and 32; each worker claims at most one node per cycle through the existing atomic DB lease; heartbeat metadata exposes worker state; stale recovery is audited; `dispatch:execute` plus confirmation controls pause/resume/kill; env pause and kill switches remain available.
 - Verification/repair: `/supervised-patch/workspaces/{id}/verify` runs allowlisted test tools in the app-owned workspace, stores redacted/capped evidence, and can invoke at most two CLI repair attempts before output remains blocked.
@@ -124,7 +126,6 @@ Historical phase plans, closeouts, and long-form validation reports are retained
 - The UI is task-first, while detailed operations and administration remain available as secondary views.
 - Security posture is suitable for local/small-team self-hosting only; hosted/multi-tenant use would require a new threat model and approved implementation plan.
 - No hard process/container/VM sandbox isolation exists.
-- IAE-3 has not yet consolidated spend/traffic evidence, recent audit events, pause/kill controls, and rollback actions into one operator control surface.
 - Cloud SaaS, multi-tenant hosting, app-runtime release/deploy/apply authority, direct target `main` writes, and unbounded autonomous loops remain out of scope.
 
 ## Documentation Discipline

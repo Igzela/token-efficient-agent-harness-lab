@@ -522,8 +522,139 @@ async fn axum_dashboard_exposes_adaptive_fusion_operator_status() {
                 "live_execution_authority": false,
                 "requires_explicit_adaptive_plan": true,
             },
+            "authority": {
+                "provider_execution_active": false,
+                "adaptive_execution_active": false,
+                "default_routing_active": false,
+                "experiments_active": false,
+                "auto_promotion_active": false,
+                "task_advancement_active": false,
+            },
+            "bounds": {
+                "per_dispatch_cost_cap_usd": null,
+                "daily_cost_cap_usd": null,
+                "today_cost_usd": 0.0,
+                "daily_cost_remaining_usd": null,
+                "experiment_traffic_rate": 0.01,
+                "experiment_max_cost_usd": 1.0,
+                "experiment_max_total_tokens": 32768,
+                "experiment_max_calls": 8,
+                "experiment_max_elapsed_ms": 300000,
+                "experiment_max_concurrency": 3,
+                "auto_promotion_rollout_percentage": 10,
+                "worker_count": 1,
+                "worker_max_concurrent": 4,
+            },
+            "observations": {
+                "count": 0,
+                "success_count": 0,
+                "failure_count": 0,
+                "total_cost_usd": 0.0,
+                "latest_at": null,
+            },
+            "scheduler": {
+                "enabled": false,
+                "running": false,
+                "supervised_workers_enabled": false,
+                "paused": false,
+                "kill_requested": false,
+                "worker_count": 0,
+                "max_concurrent": 0,
+                "executor_type": null,
+                "active_runs": 0,
+                "tick_count": 0,
+                "error_count": 0,
+                "last_tick_at": null,
+            },
         })
     );
+}
+
+#[tokio::test]
+async fn axum_dashboard_adaptive_operator_evidence_is_aggregated_and_secret_safe() {
+    use engine::feedback::ObjectiveProfile;
+    use engine::scheduler::{SchedulerConfig, WorkflowScheduler};
+    use engine::storage::local_product_store::{
+        AdaptiveObservationInput, ADAPTIVE_OBSERVATION_SCHEMA_VERSION,
+    };
+    use std::sync::{Arc, Mutex};
+
+    let dir = tempdir().unwrap();
+    let store = Arc::new(LocalProductStore::new(dir.path().join("iae3.db")).unwrap());
+    store
+        .record_adaptive_observation(
+            &AdaptiveObservationInput {
+                schema_version: ADAPTIVE_OBSERVATION_SCHEMA_VERSION.to_string(),
+                run_id: "private-run-id".to_string(),
+                request_id: "private-request-id".to_string(),
+                task_class: "coding".to_string(),
+                objective: ObjectiveProfile::Quality,
+                risk_level: "low".to_string(),
+                candidate_id: "private-candidate-id".to_string(),
+                candidate_hash: "a".repeat(64),
+                policy_hash: Some("b".repeat(64)),
+                candidate_kind: "single".to_string(),
+                success: true,
+                quality_score: 0.9,
+                quality_score_source: "execution_success_proxy".to_string(),
+                tool_success_score: 1.0,
+                cost_usd: 0.08,
+                latency_ms: 240,
+                input_tokens: 120,
+                output_tokens: 40,
+            },
+            "operator",
+        )
+        .unwrap();
+    let mut scheduler = WorkflowScheduler::new(
+        store.clone(),
+        SchedulerConfig {
+            interval_ms: 2_000,
+            max_concurrent: 1,
+            worker_count: 1,
+            supervised_workers_enabled: true,
+            ..Default::default()
+        },
+    );
+    scheduler.start().unwrap();
+    let scheduler = Arc::new(Mutex::new(scheduler));
+    let app = build_axum_router(
+        AxumApiState::new()
+            .with_local_store_arc(store)
+            .with_scheduler(scheduler.clone()),
+    );
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method(Method::GET)
+                .uri("/api/v1/dashboard")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = response_json(response).await;
+    let status = &body["adaptive_fusion"];
+    assert_eq!(status["observations"]["count"], 1);
+    assert_eq!(status["observations"]["success_count"], 1);
+    assert_eq!(status["observations"]["failure_count"], 0);
+    assert_eq!(status["observations"]["total_cost_usd"], 0.08);
+    assert!(status["observations"]["latest_at"].is_string());
+    assert_eq!(status["scheduler"]["enabled"], true);
+    assert_eq!(status["scheduler"]["running"], true);
+    assert_eq!(status["scheduler"]["worker_count"], 1);
+    assert_eq!(status["scheduler"]["max_concurrent"], 1);
+    assert_eq!(status["scheduler"]["executor_type"], "noop");
+    assert_eq!(status["authority"]["task_advancement_active"], false);
+    let serialized = serde_json::to_string(status).unwrap();
+    assert!(!serialized.contains("private-run-id"));
+    assert!(!serialized.contains("private-request-id"));
+    assert!(!serialized.contains("private-candidate-id"));
+
+    scheduler.lock().unwrap().stop().unwrap();
 }
 
 #[tokio::test]

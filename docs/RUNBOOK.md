@@ -118,6 +118,18 @@ This path requires the trusted-local profile to be ready and pins `ACP_SCHEDULER
 
 The Adaptive Fusion panel reports task advancement as `ready`, `blocked`, or `off`, including stable blockers, worker count, executor, and maximum concurrency. Use the existing authenticated scheduler control endpoint for pause/resume/kill; the adaptive fusion, experiment, promotion, supervised-worker, and target-output kill switches remain independent.
 
+The same panel includes an IAE operator evidence section:
+
+- effective provider, adaptive, default-routing, experiment, promotion, and task-advancement authority
+- per-dispatch/daily cost caps, current daily cost and remaining budget
+- experiment traffic, cost, token, call, time, and concurrency ceilings
+- promotion rollout and worker concurrency bounds
+- safe observation counts, success/failure totals, aggregate cost, and latest timestamp
+- scheduler running/paused/killed state with confirmed pause/resume/kill controls
+- recent adaptive and scheduler control audit actions loaded with `audit:read` and `redact=true`
+
+Only audit action, resource, and timestamp are rendered. Audit details, raw prompts/outputs/transcripts, credentials, repository content, and private paths are not displayed. Policy rollback continues to use the existing snapshot confirmation dialog.
+
 Endpoint JSON stores only credential environment names. Remote HTTP is rejected; HTTPS is required except for loopback test/local adapters. Explicit workflow execution accepts bounded `single`, `ordered_fallback`, or `fusion` plans. Fusion panels may run with bounded concurrency up to 3; judge and synthesizer remain serial. Tick the run with `executor=adaptive_provider`, `max_retries=0`, and a key with `dispatch:execute`.
 
 The AF-6 completion endpoint generates and selects a bounded candidate automatically:

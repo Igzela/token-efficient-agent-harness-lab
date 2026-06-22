@@ -19,7 +19,7 @@ IAE-1 and IAE-2 are implemented. `ACP_TRUSTED_LOCAL_PROFILE=1` validates protect
 | V2 Real Production Output | Complete through V2-5 |
 | Real Output Closeout | Complete; `v0.1.0` published and installer verified |
 | Adaptive Fusion AF-0 through AF-7 | Complete; current runtime gates remain implemented |
-| Trusted Local Autonomous Execution | Active; IAE-1 and IAE-2 implemented, IAE-3 is next |
+| Trusted Local Autonomous Execution | Complete through IAE-3 |
 | Agent Autonomous Maintenance Mode | Active for implementation, docs, tests, CI, review, and bounded shipping |
 
 ## Trusted Local Boundary
@@ -60,7 +60,6 @@ The R-series is sealed at R7. **SEALED AT R7.** R8 is not approved. No further R
 
 ## Allowed Next Paths
 
-- IAE-3 operator readiness, evidence, pause/kill, and rollback UX.
 - Autonomous maintenance: repair stale docs, CI breakage, test drift, and wire-codegen drift.
 - Regression hardening: add or repair tests for existing behavior.
 - Pilots: real-world task validation.
@@ -74,7 +73,7 @@ The R-series is sealed at R7. **SEALED AT R7.** R8 is not approved. No further R
 | IAE-0 | Governance and permission baseline | **Complete** — trusted-local expansion authorized; safety invariants and fail-closed prerequisites recorded |
 | IAE-1 | Trusted-local execution profile | **Complete** — one fail-closed profile activates existing provider/adaptive/experiment/promotion/default-routing capabilities after auth, endpoint, credential, positive pricing, and cost-cap validation; legacy flags remain compatible and runtime safety controls remain authoritative |
 | IAE-2 | Bounded autonomous task advancement | **Complete** — an explicit trusted-local acknowledgement enables the existing scheduler to advance already-created queued runs through a pinned adaptive-provider executor; invalid worker configuration fails closed and existing task, time, cost, token, call, concurrency, identity, audit, redaction, pause, and kill controls remain authoritative |
-| IAE-3 | Operator control and evidence | Dashboard/API expose profile readiness, active authority, spend/traffic bounds, recent audit evidence, pause/kill state, and rollback actions without secrets or raw model content |
+| IAE-3 | Operator control and evidence | **Complete** — dashboard/API expose effective authority, spend/traffic/worker ceilings, safe observation aggregates, scheduler pause/resume/kill state and controls, redacted recent audit actions, and existing policy rollback without secrets or raw model/repository content |
 
 IAE implementation must extend existing modules. Do not create a parallel scheduler, provider kernel, policy engine, storage layer, or target-output path.
 

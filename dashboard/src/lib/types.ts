@@ -228,6 +228,50 @@ export interface AdaptiveFusionOperatorStatus {
     live_execution_authority: false;
     requires_explicit_adaptive_plan: true;
   };
+  authority: {
+    provider_execution_active: boolean;
+    adaptive_execution_active: boolean;
+    default_routing_active: boolean;
+    experiments_active: boolean;
+    auto_promotion_active: boolean;
+    task_advancement_active: boolean;
+  };
+  bounds: {
+    per_dispatch_cost_cap_usd: number | null;
+    daily_cost_cap_usd: number | null;
+    today_cost_usd: number;
+    daily_cost_remaining_usd: number | null;
+    experiment_traffic_rate: number;
+    experiment_max_cost_usd: number;
+    experiment_max_total_tokens: number;
+    experiment_max_calls: number;
+    experiment_max_elapsed_ms: number;
+    experiment_max_concurrency: number;
+    auto_promotion_rollout_percentage: number;
+    worker_count: number;
+    worker_max_concurrent: number;
+  };
+  observations: {
+    count: number;
+    success_count: number;
+    failure_count: number;
+    total_cost_usd: number;
+    latest_at: string | null;
+  };
+  scheduler: {
+    enabled: boolean;
+    running: boolean;
+    supervised_workers_enabled: boolean;
+    paused: boolean;
+    kill_requested: boolean;
+    worker_count: number;
+    max_concurrent: number;
+    executor_type: string | null;
+    active_runs: number;
+    tick_count: number;
+    error_count: number;
+    last_tick_at: string | null;
+  };
 }
 
 export interface OperationsMetrics {
