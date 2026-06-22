@@ -535,6 +535,86 @@ pub struct AdaptiveProviderNodeExecutor {
     last_observation: Arc<Mutex<Option<AdaptiveObservationDraft>>>,
 }
 
+pub struct PersistingAdaptiveProviderNodeExecutor {
+    executor: Arc<AdaptiveExecutionExecutor>,
+    gate: AdaptiveExecutionGate,
+    store: Arc<crate::storage::local_product_store::LocalProductStore>,
+    actor: String,
+}
+
+impl PersistingAdaptiveProviderNodeExecutor {
+    pub fn new(
+        executor: Arc<AdaptiveExecutionExecutor>,
+        gate: AdaptiveExecutionGate,
+        store: Arc<crate::storage::local_product_store::LocalProductStore>,
+        actor: impl Into<String>,
+    ) -> Self {
+        Self {
+            executor,
+            gate,
+            store,
+            actor: actor.into(),
+        }
+    }
+}
+
+impl NodeExecutor for PersistingAdaptiveProviderNodeExecutor {
+    fn executor_type_name(&self) -> &str {
+        "adaptive_provider"
+    }
+
+    fn execute_node(&self, input: &NodeExecutionInput) -> NodeExecutionOutput {
+        let contextual_policies = match self.store.active_adaptive_fusion_policies() {
+            Ok(policies) => policies,
+            Err(_) => return adaptive_worker_context_error("policy"),
+        };
+        let persisted_observations = match self.store.adaptive_bandit_observations() {
+            Ok(observations) => observations,
+            Err(_) => return adaptive_worker_context_error("observation"),
+        };
+        let today_prefix = chrono::Utc::now().format("%Y-%m-%d").to_string();
+        let dispatch_cost = match self.store.daily_estimated_cost_usd(&today_prefix) {
+            Ok(cost) => cost,
+            Err(_) => return adaptive_worker_context_error("dispatch cost"),
+        };
+        let observation_cost = match self
+            .store
+            .daily_adaptive_observation_cost_usd(&today_prefix)
+        {
+            Ok(cost) => cost,
+            Err(_) => return adaptive_worker_context_error("observation cost"),
+        };
+        let daily_cost = dispatch_cost + observation_cost;
+        let experiment_gate = AdaptiveExperimentGate::from_env();
+        let executor = AdaptiveProviderNodeExecutor::new(self.executor.clone(), self.gate)
+            .with_contextual_policies(contextual_policies, AdaptiveExplorationGate::from_env())
+            .with_persisted_observations(persisted_observations);
+        let executor = if experiment_gate.is_configured() {
+            executor.with_online_experiments(AdaptiveExperimentPolicy::from_env(), experiment_gate)
+        } else {
+            executor
+        }
+        .with_cost_gate(CostGateConfig::from_env(), daily_cost);
+        let output = executor.execute_node(input);
+        persist_adaptive_observation(&self.store, &executor, &self.actor);
+        output
+    }
+}
+
+fn adaptive_worker_context_error(context: &str) -> NodeExecutionOutput {
+    NodeExecutionOutput {
+        status: "failed".to_string(),
+        executor_type: "adaptive_provider".to_string(),
+        output: None,
+        error_domain: Some("adaptive_worker_context_unavailable".to_string()),
+        error_message: Some(format!("adaptive worker {context} context unavailable")),
+        input_tokens: None,
+        output_tokens: None,
+        estimated_cost: None,
+        latency_ms: Some(0),
+    }
+}
+
 impl AdaptiveProviderNodeExecutor {
     pub fn new(executor: Arc<AdaptiveExecutionExecutor>, gate: AdaptiveExecutionGate) -> Self {
         Self {
@@ -609,6 +689,84 @@ impl AdaptiveProviderNodeExecutor {
     fn dispatch_ref(input: &NodeExecutionInput) -> String {
         format!("workflow:{}:{}", input.run_id, input.node_id)
     }
+}
+
+pub fn persist_adaptive_observation(
+    store: &crate::storage::local_product_store::LocalProductStore,
+    executor: &AdaptiveProviderNodeExecutor,
+    actor: &str,
+) {
+    let Some(draft) = executor.take_observation() else {
+        return;
+    };
+    let input = crate::storage::local_product_store::AdaptiveObservationInput {
+        schema_version: crate::storage::local_product_store::ADAPTIVE_OBSERVATION_SCHEMA_VERSION
+            .to_string(),
+        run_id: draft.run_id,
+        request_id: draft.request_id,
+        task_class: draft.task_class,
+        objective: draft.objective,
+        risk_level: draft.risk_level,
+        candidate_id: draft.candidate_id,
+        candidate_hash: draft.candidate_hash,
+        policy_hash: draft.policy_hash,
+        candidate_kind: draft.candidate_kind,
+        success: draft.success,
+        quality_score: draft.quality_score,
+        quality_score_source: draft.quality_score_source,
+        tool_success_score: draft.tool_success_score,
+        cost_usd: draft.cost_usd,
+        latency_ms: draft.latency_ms,
+        input_tokens: draft.input_tokens,
+        output_tokens: draft.output_tokens,
+    };
+    match store.record_adaptive_observation(&input, actor) {
+        Ok(observation) => maybe_auto_promote_from_observation(store, &observation, actor),
+        Err(_) => {
+            let _ = store.append_audit(
+                actor,
+                "adaptive_observation.rejected",
+                "adaptive_fusion_observation",
+                &serde_json::json!({"error_domain": "adaptive_observation_rejected"}),
+            );
+        }
+    }
+}
+
+pub fn maybe_auto_promote_from_observation(
+    store: &crate::storage::local_product_store::LocalProductStore,
+    observation: &crate::storage::local_product_store::AdaptiveObservationSummary,
+    actor: &str,
+) {
+    let gate = crate::feedback::AdaptiveAutoPromotionGate::from_env();
+    if !gate.is_configured() {
+        return;
+    }
+    let Ok(active_policies) = store.active_adaptive_fusion_policies() else {
+        return;
+    };
+    let Some(active) = active_policies.into_iter().find(|policy| {
+        policy.task_class == observation.task_class && policy.objective == observation.objective
+    }) else {
+        return;
+    };
+    if active.candidate_id == observation.candidate_id {
+        return;
+    }
+    let request = crate::feedback::AdaptiveAutoPromotionRequest::from_env(
+        &observation.task_class,
+        observation.objective,
+        &observation.risk_level,
+        &observation.candidate_id,
+        &active.candidate_id,
+        Some(active.policy_hash),
+    );
+    let _ = store.auto_promote_adaptive_fusion_policy(
+        &request,
+        &crate::feedback::AdaptiveAutoPromotionPolicy::from_env(),
+        &gate,
+        actor,
+    );
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]

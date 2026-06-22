@@ -10,9 +10,11 @@ use engine::infrastructure::auth::{
 };
 use engine::infrastructure::circuit_breaker::{CircuitBreaker, CircuitBreakerRegistry};
 use engine::infrastructure::rate_limiter::RateLimiter;
+use engine::node_executor::NodeExecutor;
 use engine::provider::adaptive_execution::{
     parse_adaptive_provider_endpoints_json, validate_adaptive_provider_endpoint_config,
-    AdaptiveExecutionExecutor, AdaptiveExecutionKillSwitch, AdaptiveProviderEndpointConfig,
+    AdaptiveExecutionExecutor, AdaptiveExecutionGate, AdaptiveExecutionKillSwitch,
+    AdaptiveProviderEndpointConfig, PersistingAdaptiveProviderNodeExecutor,
     ACP_ADAPTIVE_PROVIDER_ENDPOINTS_JSON,
 };
 use engine::provider::anthropic::AnthropicProvider;
@@ -157,11 +159,13 @@ async fn main() {
         &store_arc,
         &cb_registry,
     );
+    let mut adaptive_executor_for_workers = None;
     if adaptive_execution_enabled {
         if let Some((executor, registry_snapshot)) =
             build_adaptive_provider_executor_from_env(&store_arc, &cb_registry)
                 .unwrap_or_else(|error| panic!("adaptive provider configuration failed: {error}"))
         {
+            adaptive_executor_for_workers = Some(executor.clone());
             state = state
                 .with_adaptive_provider_executor(executor)
                 .with_adaptive_registry_snapshot(registry_snapshot);
@@ -210,7 +214,7 @@ async fn main() {
         cli_config.claude_code_enabled, cli_config.codex_enabled
     );
     println!(
-        "[acp-startup] execution_mode={} executor={} cli=[{}] auth={} host={} budget_per_dispatch={} budget_daily={} trusted_local_requested={} trusted_local_ready={} lan={}",
+        "[acp-startup] execution_mode={} executor={} cli=[{}] auth={} host={} budget_per_dispatch={} budget_daily={} trusted_local_requested={} trusted_local_ready={} task_advancement_requested={} task_advancement_ready={} lan={}",
         execution_mode,
         exec_type_display,
         cli_summary,
@@ -220,6 +224,8 @@ async fn main() {
         cost_daily,
         execution_gates.profile.requested,
         execution_gates.profile.ready,
+        execution_gates.task_advancement.requested,
+        execution_gates.task_advancement.ready,
         lan,
     );
 
@@ -247,9 +253,7 @@ async fn main() {
         }
     }
 
-    let enable_scheduler = std::env::var("ACP_ENABLE_SCHEDULER")
-        .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
-        .unwrap_or(false);
+    let enable_scheduler = execution_gates.scheduler_enabled;
     let backup_interval_sec: u64 = std::env::var("ACP_BACKUP_INTERVAL_SEC")
         .ok()
         .and_then(|v| v.parse().ok())
@@ -267,6 +271,18 @@ async fn main() {
         let interval = scheduler_config.interval_ms;
         let worker_count = scheduler_config.worker_count;
         let mut scheduler = WorkflowScheduler::new(store_for_scheduler, scheduler_config);
+        if execution_gates.task_advancement.ready {
+            let adaptive_executor = adaptive_executor_for_workers
+                .clone()
+                .expect("trusted task advancement requires adaptive provider executor");
+            let worker_executor = build_trusted_adaptive_worker_executor(
+                adaptive_executor,
+                store_arc.clone(),
+                require_auth,
+            )
+            .expect("failed to build trusted adaptive worker executor");
+            scheduler = scheduler.with_worker_executor(worker_executor);
+        }
         if backup_interval_sec > 0 {
             if std::env::var("ACP_DATABASE_URL").is_ok() {
                 eprintln!("[acp-warning] ACP_BACKUP_INTERVAL_SEC={} is ignored in PostgreSQL mode — use pg_dump or your managed backup service. App auto-backup disabled.", backup_interval_sec);
@@ -671,6 +687,23 @@ fn build_adaptive_provider_executor_from_env(
             AdaptiveExecutionKillSwitch::new(),
         )),
         registry_snapshot,
+    )))
+}
+
+fn build_trusted_adaptive_worker_executor(
+    executor: Arc<AdaptiveExecutionExecutor>,
+    store: Arc<LocalProductStore>,
+    auth_enabled: bool,
+) -> Result<Arc<dyn NodeExecutor>, String> {
+    let gate = AdaptiveExecutionGate::from_env(auth_enabled);
+    if !gate.is_enabled() {
+        return Err("adaptive provider worker gate is not enabled".to_string());
+    }
+    Ok(Arc::new(PersistingAdaptiveProviderNodeExecutor::new(
+        executor,
+        gate,
+        store,
+        "scheduler",
     )))
 }
 

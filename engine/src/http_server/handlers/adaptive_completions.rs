@@ -6,7 +6,6 @@ use axum::response::IntoResponse;
 use axum::Json;
 use serde_json::{json, Value};
 
-use super::workflow_runs::maybe_auto_promote_from_observation;
 use crate::feedback::policy_snapshot::stable_hash;
 use crate::feedback::{
     AdaptiveCandidate, AdaptiveCandidateConfig, AdaptiveCandidateGenerator, AdaptiveCandidateKind,
@@ -19,6 +18,7 @@ use crate::http_server::middleware::{
 };
 use crate::http_server::state::AxumApiState;
 use crate::http_server::AdaptiveFusionCompletionApiRequest;
+use crate::provider::adaptive_execution::maybe_auto_promote_from_observation;
 use crate::provider::adaptive_execution::{
     AdaptiveEndpointInvocation, AdaptiveExecutionGate, AdaptiveExecutionLimits,
     AdaptiveExecutionPlan, AdaptiveExecutionRequest,
