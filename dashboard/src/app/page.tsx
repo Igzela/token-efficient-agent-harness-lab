@@ -191,7 +191,8 @@ function localAccessStep(authStatus: AuthStatus, hasLocalToken: boolean): SetupS
 }
 
 export default function DashboardPage() {
-  const [tab, setTab] = useState<Tab>(readTabFromHash);
+  const [tab, setTab] = useState<Tab>("mission");
+  const [hashInitialized, setHashInitialized] = useState(false);
   const [mobileNavOpen, setMobileNavOpen] = useState(false);
   const [health, setHealth] = useState("unknown");
   const [ready, setReady] = useState("unknown");
@@ -199,6 +200,7 @@ export default function DashboardPage() {
   const [authStatus, setAuthStatus] = useState<AuthStatus>("ok");
   const [authMessage, setAuthMessage] = useState("");
   const [reloadKey, setReloadKey] = useState(0);
+  const [hasLocalToken, setHasLocalToken] = useState(false);
   const [lastUpdated, setLastUpdated] = useState<Date | null>(null);
   const [theme, setTheme] = useState<"light" | "dark">("light");
   const themeInitialized = useRef(false);
@@ -222,12 +224,16 @@ export default function DashboardPage() {
 
   const syncingHash = useRef(false);
   useEffect(() => {
+    if (!hashInitialized) return;
     syncingHash.current = true;
     window.location.hash = tab;
     syncingHash.current = false;
-  }, [tab]);
+  }, [hashInitialized, tab]);
 
   useEffect(() => {
+    setTab(readTabFromHash());
+    setHashInitialized(true);
+
     function onHashChange() {
       if (syncingHash.current) return;
       setTab(readTabFromHash());
@@ -271,6 +277,10 @@ export default function DashboardPage() {
       },
     );
   }, []);
+
+  useEffect(() => {
+    setHasLocalToken(Boolean(getStoredToken()));
+  }, [reloadKey]);
 
   useEffect(() => {
     refreshAll();
@@ -324,7 +334,6 @@ export default function DashboardPage() {
       })),
     [dashboard.dispatches],
   );
-  const hasLocalToken = Boolean(getStoredToken());
   const setupSteps = useMemo<SetupStep[]>(
     () => [
       {

@@ -85,6 +85,8 @@ function AdaptiveFusionGatePanel({
   }
 
   const ready = status.completion_api.ready_for_live_completion;
+  const profile = status.trusted_local_profile;
+  const profileState = profile.ready ? "ready" : profile.requested ? "blocked" : "off";
   return (
     <div className="subcard stack">
       <div className="flex-between">
@@ -98,6 +100,19 @@ function AdaptiveFusionGatePanel({
           completion {ready ? "ready" : "gated"}
         </span>
       </div>
+
+      <StateBanner
+        title={`Trusted local profile ${profileState}`}
+        tone={profile.ready ? "ok" : profile.requested ? "warn" : "info"}
+      >
+        <p>
+          {profile.ready
+            ? "Bounded provider, adaptive routing, experiments, and promotion gates are active through the trusted-local profile."
+            : profile.requested
+              ? `Fail closed: ${profile.blockers.join(", ")}`
+              : "Set ACP_TRUSTED_LOCAL_PROFILE=1 after auth, endpoint pricing, credentials, and cost caps are configured."}
+        </p>
+      </StateBanner>
 
       <div className="boundary-badges" aria-label="Adaptive fusion gate states">
         <GatePill label="provider" value={status.gates.provider_execution} />
