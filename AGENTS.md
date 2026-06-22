@@ -2,12 +2,12 @@
 
 This repository is the Token-Efficient Agent Harness Lab: a local deterministic harness and self-hosted macro-orchestrator control plane for studying token-efficient agent workflows.
 
-## Current State (2026-06-21)
+## Current State (2026-06-22)
 
 **Active tracks:**
 - **Real-World Testing Mode** — validated through real tasks, branches, commits, PRs, CI, gated auto-merge
 - **Agent Autonomous Maintenance Mode** — agents maintain docs/CI/tests/low-risk PR flow under playbook gates
-- **Adaptive Fusion Routing Track** — complete through AF-6; adaptive live execution, experiments, promotion, and default routing remain explicit and default-off
+- **Adaptive Fusion Routing Track** — complete through AF-7; adaptive live execution, experiments, promotion, and default routing remain explicit and default-off
 
 **Complete tracks:**
 - Dispatch Kernel Phases 1–7 (including 6A, 6B-1/2/3, Gates 1–3): STABLE
@@ -21,14 +21,14 @@ This repository is the Token-Efficient Agent Harness Lab: a local deterministic 
 - Real Output Closeout: COMPLETE (`v0.1.0` published and online installer verified)
 
 **Key facts:**
-- Full Rust + TypeScript stack verification passes with 0 failures (2026-06-21)
+- Full Rust + TypeScript stack verification passes with 0 failures (2026-06-22)
 - Latest release: `v0.1.0`, published 2026-06-21
 - Architecture Refactor R-series sealed at R7. R8 is not approved.
 - Post-R7 wire/type governance hardening implemented: `scripts/check_wire_codegen_drift.sh`
 
 ## App Runtime vs Agent Maintenance Boundary
 
-**App/runtime** does not write target repos by default. Target output remains env-gated and approval-bound through an app-owned git worktree and `acp/*` branch, patch export, or optional GitHub PR creation; registered target working trees and `main` remain protected. Installed local Claude/Codex CLIs are discovered by default for explicit workflow ticks; provider APIs and AF-6 adaptive routing remain default-off.
+**App/runtime** does not write target repos by default. Target output remains env-gated and approval-bound through an app-owned git worktree and `acp/*` branch, patch export, or optional GitHub PR creation; registered target working trees and `main` remain protected. Installed local Claude/Codex CLIs are discovered by default for explicit workflow ticks; provider APIs and AF-6 adaptive routing remain default-off. AF-7 adds operator visibility and completion testing without expanding routing authority.
 
 **Agent maintenance** may create branches, commits, PRs, and low-risk merges only through branch+PR workflow under `docs/REAL_WORLD_TESTING_PLAYBOOK.md` gates. This is a repository workflow mode, not an app-runtime feature.
 
