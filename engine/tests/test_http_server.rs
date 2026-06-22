@@ -1457,7 +1457,16 @@ async fn axum_supervised_patch_verification_can_repair_and_retry_with_cli() {
         "from pathlib import Path\nraise SystemExit(0 if Path('fixed.txt').exists() else 1)\n",
     )
     .unwrap();
-    let fake_codex = workspace_root.path().join("fake-codex");
+    let fake_cli_root = std::env::current_dir()
+        .unwrap()
+        .join("target")
+        .join("test-fake-cli");
+    fs::create_dir_all(&fake_cli_root).unwrap();
+    let fake_cli_dir = tempfile::Builder::new()
+        .prefix("supervised-repair-")
+        .tempdir_in(fake_cli_root)
+        .unwrap();
+    let fake_codex = fake_cli_dir.path().join("fake-codex");
     fs::write(
         &fake_codex,
         "#!/bin/sh\nprintf 'fixed\\n' > fixed.txt\n\
