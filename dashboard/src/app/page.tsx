@@ -456,7 +456,7 @@ export default function DashboardPage() {
             )}
             {tab === "routing" && <Routing rows={routingRows} />}
             {tab === "regulator" && <DynamicRegulator />}
-            {tab === "fusion" && <AdaptiveFusion />}
+            {tab === "fusion" && <AdaptiveFusion operatorStatus={dashboard.adaptive_fusion} />}
             {tab === "operator" && <OperatorSurface />}
             {tab === "decisions" && <DecisionLog />}
             {tab === "team" && (

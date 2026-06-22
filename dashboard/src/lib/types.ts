@@ -44,6 +44,7 @@ export interface LocalDashboardState {
   costs: LocalCostSummary;
   boundaries: LocalBoundaries;
   cli: LocalCliCapability;
+  adaptive_fusion?: AdaptiveFusionOperatorStatus;
 }
 
 export interface LocalCounts {
@@ -174,6 +175,37 @@ export interface LocalCliCapability {
   enabled: boolean;
   claude_code: boolean;
   codex: boolean;
+}
+
+export interface AdaptiveFusionOperatorStatus {
+  schema_version: "adaptive_fusion_operator_status.v1";
+  completion_api: {
+    available: boolean;
+    ready_for_live_completion: boolean;
+    executor_configured: boolean;
+    registry_configured: boolean;
+    default_routing_enabled: boolean;
+  };
+  gates: {
+    provider_execution: boolean;
+    adaptive_execution: boolean;
+    auth: boolean;
+    fusion_kill_switch: boolean;
+    experiments_enabled: boolean;
+    experiments_active: boolean;
+    experiments_paused: boolean;
+    experiments_kill_switch: boolean;
+    auto_promotion_enabled: boolean;
+    auto_promotion_active: boolean;
+    auto_promotion_kill_switch: boolean;
+  };
+  policy: {
+    active_policy_count: number;
+    snapshot_count: number;
+    active_snapshot_count: number;
+    live_execution_authority: false;
+    requires_explicit_adaptive_plan: true;
+  };
 }
 
 export interface OperationsMetrics {

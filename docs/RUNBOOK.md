@@ -114,6 +114,8 @@ curl -s -X POST http://127.0.0.1:8080/api/v1/adaptive-fusion/completions \
 
 The default response contains only output and usage. Set `"include_routing_metadata":true` only when candidate, policy, experiment, and observation identifiers are needed for operator diagnosis. Request prompt, output, transcript, metadata, secrets, repository content, and private paths are not persisted in adaptive observations.
 
+The dashboard Adaptive Fusion tab exposes the same guarded completion endpoint for operator testing. Use the completion test panel only after the provider registry, auth, cost ceilings, and kill procedure are configured. Routing metadata stays hidden unless the operator enables it for that request. The gate panel is read-only and shows provider/adaptive/auth/default-routing gates, experiment and promotion state, pause/kill switches, active policy count, and rollback snapshot count.
+
 Controlled experiments require both:
 
 ```bash

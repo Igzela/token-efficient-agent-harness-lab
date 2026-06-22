@@ -2,11 +2,13 @@
 
 ## Current Direction
 
-Phase 8, V2 Real Production Output, Real Output Closeout, and Adaptive Fusion AF-0 through AF-6 are complete.
+Phase 8, V2 Real Production Output, Real Output Closeout, and Adaptive Fusion AF-0 through AF-7 are complete.
 
-No AF-7 or other new product track is authorized. The next work is repository maintenance, regression hardening, real-world validation, and evidence-based review of whether another explicitly approved track is needed.
+AF-7 / AF-6 Operator Surface was approved on 2026-06-22 to expose already-implemented AF-6 capabilities in the existing dashboard. It does not change routing core behavior, provider execution defaults, target-output behavior, auth, budget, token, call, timeout, concurrency, audit, redaction, rollback, or kill controls.
 
-AF-6 remains provider/model routing and completion execution only. Target-repository output, release controls, deployment controls, and repository merge authority remain separate systems with their own approval paths.
+No further Adaptive Fusion routing-core expansion is authorized. The next work after AF-7 is repository maintenance, regression hardening, real-world validation, and evidence-based review of whether another explicitly approved track is needed.
+
+AF-6 remains provider/model routing and completion execution only. AF-7 is an operator visibility and test surface for those existing controls. Target-repository output, release controls, deployment controls, and repository merge authority remain separate systems with their own approval paths.
 
 ## Stable Tracks
 
@@ -16,7 +18,7 @@ AF-6 remains provider/model routing and completion execution only. Target-reposi
 | Architecture refactor R-series | Sealed at R7; no R8 approved |
 | V2 Real Production Output | Complete through V2-5 |
 | Real Output Closeout | Complete; `v0.1.0` published and installer verified |
-| Adaptive Fusion AF-0 through AF-6 | Complete; live use remains explicit and default-off |
+| Adaptive Fusion AF-0 through AF-7 | Complete; live use remains explicit and default-off |
 | Agent Autonomous Maintenance Mode | Active for docs, tests, CI, deterministic regressions, and low-risk PR flow |
 
 ## Default Boundary
@@ -76,7 +78,7 @@ V2 implementation is complete through V2-5. It remains separate from AF-6. AF-6 
 
 Human approval on 2026-06-21 authorizes an adaptive multi-provider/model routing track inspired by Auto Router, Fusion deliberation, provider performance routing, and this repository's existing feedback/regulator loop.
 
-AF-0 through AF-6 are complete.
+AF-0 through AF-7 are complete.
 
 | Phase | Status |
 |---|---|
@@ -92,6 +94,7 @@ AF-0 through AF-6 are complete.
 | AF-6D | Controlled online experiments implemented |
 | AF-6E | Evidence-driven auto promotion implemented |
 | AF-6F | Guarded adaptive completion API implemented |
+| AF-7 | Operator surface for AF-6 implemented |
 
 ## AF-6 Auto Fusion Plan
 
@@ -123,6 +126,18 @@ AF-6 implementation slices:
 | AF-6D | Continuous experiments | **Complete** — default-off deterministic traffic allocation with risk, budget, token, call, time, concurrency, pause, and kill controls |
 | AF-6E | Automatic promotion | **Complete** — default-off evidence thresholds, confidence/regression guards, hash-bound snapshots, rollout, stale-evidence rejection, and rollback |
 | AF-6F | Adaptive completion API | **Complete** — authenticated `POST /api/v1/adaptive-fusion/completions`; compact metadata-hidden responses; optional default `/dispatch` routing only behind an explicit gate |
+
+## AF-7 Operator Surface
+
+AF-7 exposes AF-6 to operators through the existing local dashboard only:
+
+- completion test panel for `POST /api/v1/adaptive-fusion/completions`
+- optional routing metadata display for candidate, policy, experiment, and observation IDs
+- read-only gate status for provider execution, adaptive execution, auth, default routing, experiments, auto promotion, pause, and kill switches
+- experiment/promotion status summary and rollback snapshot counts
+- kill switch and rollback cues without adding new mutation authority
+
+AF-7 does not add provider execution authority, default-on routing, new target-output behavior, DB migrations, release/deploy controls, unattended workers, or policy mutation outside existing guarded endpoints.
 
 Implemented AF-6 gates:
 
