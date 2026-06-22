@@ -167,20 +167,20 @@ ACP_ADAPTIVE_EXPERIMENTS_KILL_SWITCH=1
 ACP_ADAPTIVE_AUTO_PROMOTION_KILL_SWITCH=1
 ```
 
-## AF-6 PR Requirements
+## Adaptive Fusion Maintenance Requirements
 
-Every AF-6 implementation PR must list:
+AF-6 and AF-7 are complete. Any future Adaptive Fusion maintenance PR must list:
 
-- completed AF-6 slice
-- intentionally unfinished slices
+- affected AF capability or maintenance area
+- intentionally unfinished follow-up, if any
 - live-influence status
 - provider/cost/concurrency gates
 - verification
 - residual risk
 - rollback path
-- next slice
+- next recommended action
 
-Required verification per implementation slice:
+Minimum verification for code maintenance:
 
 ```bash
 cargo fmt --all -- --check
@@ -192,7 +192,7 @@ uv run --no-project python scripts/check_agent_handoff.py
 git diff --check
 ```
 
-Docs-only AF-6 planning PRs may use docs-only verification plus `uv run --no-project python scripts/check_agent_handoff.py`.
+Docs-only Adaptive Fusion corrections may use docs-only verification plus `uv run --no-project python scripts/check_agent_handoff.py`.
 
 ## Before Starting Autonomous Work
 
