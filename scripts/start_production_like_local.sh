@@ -34,8 +34,23 @@ require_true() {
   fi
 }
 
+env_true() {
+  local value="${1:-}"
+  [[ "$value" == "1" || "${value,,}" == "true" ]]
+}
+
 require_true ACP_REQUIRE_AUTH
-require_true ACP_ENABLE_PROVIDER_EXECUTION
+
+profile_enabled=false
+if env_true "${ACP_TRUSTED_LOCAL_PROFILE:-}"; then
+  profile_enabled=true
+elif env_true "${ACP_ENABLE_PROVIDER_EXECUTION:-}"; then
+  profile_enabled=true
+fi
+if [[ "$profile_enabled" != "true" ]]; then
+  echo "ACP_TRUSTED_LOCAL_PROFILE=1 or ACP_ENABLE_PROVIDER_EXECUTION=1 is required for production-like local profile" >&2
+  exit 1
+fi
 
 if [[ ! "${ACP_ADMIN_API_KEY:-}" =~ ^harness_[0-9a-fA-F]{64}$ ]]; then
   echo "ACP_ADMIN_API_KEY must match harness_<64 hex chars>" >&2
@@ -58,6 +73,13 @@ if [[ -z "$provider_secret" ]]; then
   exit 1
 fi
 
+if env_true "${ACP_TRUSTED_LOCAL_PROFILE:-}"; then
+  if [[ -z "${ACP_ADAPTIVE_PROVIDER_ENDPOINTS_JSON:-}" ]]; then
+    echo "ACP_ADAPTIVE_PROVIDER_ENDPOINTS_JSON is required when ACP_TRUSTED_LOCAL_PROFILE=1" >&2
+    exit 1
+  fi
+fi
+
 if [[ ! -f "$ROOT/$ACP_DASHBOARD_DIR/index.html" && ! -f "$ACP_DASHBOARD_DIR/index.html" ]]; then
   echo "Dashboard export not found at $ACP_DASHBOARD_DIR/index.html" >&2
   echo "Build it first with: cd dashboard && node scripts/build-static.mjs" >&2
@@ -68,6 +90,7 @@ mkdir -p "$(dirname "$ACP_DB_PATH")" "$ACP_BACKUP_DIR"
 
 echo "[acp-production-like] host=$HOST port=$PORT provider=$ACP_PROVIDER_TYPE model=$ACP_MODEL base_url=$ACP_BASE_URL"
 echo "[acp-production-like] auth=on cost_per_dispatch=${ACP_COST_PER_DISPATCH_USD:-unset} cost_daily=${ACP_COST_DAILY_USD:-unset}"
+echo "[acp-production-like] trusted_local=${ACP_TRUSTED_LOCAL_PROFILE:-0} legacy_provider_gate=${ACP_ENABLE_PROVIDER_EXECUTION:-0}"
 echo "[acp-production-like] db=$ACP_DB_PATH backups=$ACP_BACKUP_DIR dashboard=$ACP_DASHBOARD_DIR"
 echo "[acp-production-like] provider_secret_env=$ACP_API_KEY value=***"
 

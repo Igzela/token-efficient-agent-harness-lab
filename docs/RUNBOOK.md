@@ -251,7 +251,7 @@ cd dashboard && bun install --frozen-lockfile && bun run build:static && cd ..
 bash scripts/start_production_like_local.sh
 ```
 
-The script validates auth, provider config, and dashboard presence before starting `cargo run -p engine`.
+The script validates auth, provider config, trusted-local or legacy provider-gate activation, endpoint registry presence when trusted-local is requested, and dashboard presence before starting `cargo run -p engine`.
 
 ### 2.8 Verify
 
