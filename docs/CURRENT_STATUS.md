@@ -1,6 +1,6 @@
 # Current Status
 
-Last updated: 2026-06-21. V2-0 through V2-5, the Real Output Closeout, and Adaptive Fusion AF-0 through AF-6 are complete; `v0.1.0` is published and its online installer path is verified.
+Last updated: 2026-06-22. V2-0 through V2-5, the Real Output Closeout, and Adaptive Fusion AF-0 through AF-6 are complete; `v0.1.0` is published and its online installer path is verified.
 
 ## Summary
 
@@ -31,9 +31,9 @@ The system is useful as an operations/control-plane lab for deterministic dispat
 
 ## Last Recorded Verification
 
-- Branch: `codex/af6-full-completion` (AF-6B through AF-6G).
-- Tests: full Rust + TypeScript stack verification passed with 0 failures on 2026-06-21, including AF-6 candidate, execution, observation, experiment, promotion, and completion API coverage.
-- CI: the `tests` workflow run `27892330465` on `main` is green as of 2026-06-21.
+- Branch: `main` after AF-6 completion PR #92 and secret-scan guard PR #93.
+- Tests: full Rust + TypeScript stack verification passed with 0 failures on 2026-06-22, including AF-6 candidate, execution, observation, experiment, promotion, completion API, and secret-scan handoff guard coverage.
+- CI: the `tests` workflow run `27924313572` on `main` is green as of 2026-06-22.
 - Release: the `v0.1.0` release workflow run `27891104370` is green; all eight published assets passed checksum/archive inspection.
 - Online install: the README installer fetched `v0.1.0` into an isolated home, verified the checksum, installed the runtime/dashboard, and passed health, dashboard API, and HTML smoke checks on 2026-06-21.
 - PostgreSQL integration tests are gated behind `cargo test -p engine --features pg-tests` with `ACP_TEST_DATABASE_URL`.
