@@ -97,6 +97,7 @@ fn adaptive_fusion_operator_status(state: &AxumApiState) -> Result<serde_json::V
     let fusion_kill_switch = env_enabled("ACP_ADAPTIVE_FUSION_KILL_SWITCH");
     let executor_configured = state.adaptive_provider_executor.is_some();
     let registry_configured = state.adaptive_registry_snapshot.is_some();
+    let storage_configured = state.local_store.is_some();
     let default_routing_enabled = effective_gates.default_routing;
     let experiment_policy = AdaptiveExperimentPolicy::from_env();
     let experiment_policy_blockers = experiment_policy.validation_errors();
@@ -165,12 +166,19 @@ fn adaptive_fusion_operator_status(state: &AxumApiState) -> Result<serde_json::V
     };
     let provider_execution_active = provider_execution && auth && !fusion_kill_switch;
     let adaptive_execution_active = provider_execution_active && adaptive_execution;
-    let experiments_active = adaptive_execution_active
+    let completion_ready = provider_execution
+        && adaptive_execution
+        && auth
+        && executor_configured
+        && registry_configured
+        && storage_configured
+        && !fusion_kill_switch;
+    let experiments_active = completion_ready
         && effective_gates.experiments_active
         && !env_enabled("ACP_ADAPTIVE_EXPERIMENTS_PAUSED")
         && !env_enabled("ACP_ADAPTIVE_EXPERIMENTS_KILL_SWITCH")
         && experiment_policy_blockers.is_empty();
-    let auto_promotion_active = adaptive_execution_active
+    let auto_promotion_active = completion_ready
         && effective_gates.auto_promotion_active
         && !env_enabled("ACP_ADAPTIVE_AUTO_PROMOTION_KILL_SWITCH")
         && auto_promotion_policy_blockers.is_empty();
@@ -188,14 +196,10 @@ fn adaptive_fusion_operator_status(state: &AxumApiState) -> Result<serde_json::V
         "trusted_local_task_advancement": effective_gates.task_advancement,
         "completion_api": {
             "available": true,
-            "ready_for_live_completion": provider_execution
-                && adaptive_execution
-                && auth
-                && executor_configured
-                && registry_configured
-                && !fusion_kill_switch,
+            "ready_for_live_completion": completion_ready,
             "executor_configured": executor_configured,
             "registry_configured": registry_configured,
+            "storage_configured": storage_configured,
             "default_routing_enabled": default_routing_enabled,
         },
         "gates": {
@@ -221,11 +225,7 @@ fn adaptive_fusion_operator_status(state: &AxumApiState) -> Result<serde_json::V
         "authority": {
             "provider_execution_active": provider_execution_active,
             "adaptive_execution_active": adaptive_execution_active,
-            "default_routing_active": default_routing_enabled
-                && provider_execution
-                && adaptive_execution
-                && auth
-                && !fusion_kill_switch,
+            "default_routing_active": default_routing_enabled && completion_ready,
             "experiments_active": experiments_active,
             "auto_promotion_active": auto_promotion_active,
             "task_advancement_active": task_advancement_active,

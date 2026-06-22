@@ -525,6 +525,7 @@ async fn axum_dashboard_exposes_adaptive_fusion_operator_status() {
                 "ready_for_live_completion": false,
                 "executor_configured": false,
                 "registry_configured": false,
+                "storage_configured": false,
                 "default_routing_enabled": false,
             },
             "gates": {
@@ -706,6 +707,7 @@ async fn axum_dashboard_adaptive_operator_evidence_is_aggregated_and_secret_safe
     assert_eq!(status["observations"]["failure_count"], 0);
     assert_eq!(status["observations"]["total_cost_usd"], 0.08);
     assert!(status["observations"]["latest_at"].is_string());
+    assert_eq!(status["completion_api"]["storage_configured"], true);
     assert_eq!(status["scheduler"]["enabled"], true);
     assert_eq!(status["scheduler"]["running"], true);
     assert_eq!(status["scheduler"]["worker_count"], 1);

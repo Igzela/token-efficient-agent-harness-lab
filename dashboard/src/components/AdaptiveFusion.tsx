@@ -169,6 +169,12 @@ function AdaptiveFusionGatePanel({
           tone={status.completion_api.registry_configured ? "ok" : "info"}
         />
         <Metric
+          label="Storage"
+          value={status.completion_api.storage_configured ? "configured" : "missing"}
+          detail="policy and observations"
+          tone={status.completion_api.storage_configured ? "ok" : "info"}
+        />
+        <Metric
           label="Experiments"
           value={status.gates.experiments_active ? "active" : "inactive"}
           detail={status.gates.experiments_kill_switch ? "kill switch on" : "dual gated"}
