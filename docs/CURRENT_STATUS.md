@@ -32,9 +32,9 @@ The system is useful as an operations/control-plane lab for deterministic dispat
 
 ## Last Recorded Verification
 
-- Branch: `codex/af7-operator-surface`.
+- Branch: main after AF-7 Operator Surface PR #95 merged as eef6aef7cfa8b1ddf72e398910d713f9010546d7.
 - Tests: full Rust + TypeScript stack verification passed with 0 failures on 2026-06-22, including AF-6 candidate, execution, observation, experiment, promotion, completion API, dashboard operator status, dashboard build, and TypeScript SDK coverage.
-- CI: pending for the AF-7 Operator Surface PR.
+- CI: PR #95 tests workflow run 27925304377 was green across rust, typescript, python, pg, native, docker, and rust-typescript-cutover before merge.
 - Release: the `v0.1.0` release workflow run `27891104370` is green; all eight published assets passed checksum/archive inspection.
 - Online install: the README installer fetched `v0.1.0` into an isolated home, verified the checksum, installed the runtime/dashboard, and passed health, dashboard API, and HTML smoke checks on 2026-06-21.
 - PostgreSQL integration tests are gated behind `cargo test -p engine --features pg-tests` with `ACP_TEST_DATABASE_URL`.
