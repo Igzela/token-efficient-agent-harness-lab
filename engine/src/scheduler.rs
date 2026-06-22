@@ -62,6 +62,7 @@ impl Default for SchedulerConfig {
 
 impl SchedulerConfig {
     pub fn from_env() -> Self {
+        let execution_gates = crate::trusted_local::EffectiveExecutionGates::from_env();
         let interval_ms = std::env::var("ACP_SCHEDULER_INTERVAL_MS")
             .ok()
             .and_then(|v| v.parse().ok())
@@ -74,8 +75,11 @@ impl SchedulerConfig {
             .ok()
             .and_then(|v| v.parse().ok())
             .unwrap_or(300_000);
-        let executor_type =
-            std::env::var("ACP_SCHEDULER_EXECUTOR").unwrap_or_else(|_| "noop".to_string());
+        let executor_type = if execution_gates.task_advancement.ready {
+            execution_gates.task_advancement.executor_type.clone()
+        } else {
+            std::env::var("ACP_SCHEDULER_EXECUTOR").unwrap_or_else(|_| "noop".to_string())
+        };
         let queue_enabled = std::env::var("ACP_QUEUE_ENABLED")
             .map(|v| {
                 !matches!(
@@ -104,7 +108,7 @@ impl SchedulerConfig {
             .ok()
             .and_then(|v| v.parse().ok())
             .unwrap_or(10);
-        let supervised_workers_enabled = env_flag_enabled("ACP_ENABLE_SUPERVISED_WORKERS");
+        let supervised_workers_enabled = execution_gates.supervised_workers_enabled;
         let worker_count = std::env::var("ACP_SUPERVISED_WORKER_COUNT")
             .ok()
             .and_then(|v| v.parse().ok())
@@ -201,6 +205,7 @@ pub struct WorkflowScheduler {
     backup_interval_sec: u64,
     backup_retain_count: usize,
     backup_db_path: Option<String>,
+    worker_executor: Option<Arc<dyn NodeExecutor>>,
 }
 
 impl WorkflowScheduler {
@@ -230,6 +235,7 @@ impl WorkflowScheduler {
             backup_interval_sec: 0,
             backup_retain_count: 5,
             backup_db_path: None,
+            worker_executor: None,
         }
     }
 
@@ -255,6 +261,11 @@ impl WorkflowScheduler {
         self
     }
 
+    pub fn with_worker_executor(mut self, executor: Arc<dyn NodeExecutor>) -> Self {
+        self.worker_executor = Some(executor);
+        self
+    }
+
     pub fn start(&mut self) -> Result<(), String> {
         if self.running.load(Ordering::SeqCst) {
             return Err("scheduler already running".to_string());
@@ -269,6 +280,11 @@ impl WorkflowScheduler {
             return Err(
                 "supervised worker kill switch is active (ACP_SUPERVISED_WORKERS_KILL_SWITCH=1)"
                     .to_string(),
+            );
+        }
+        if self.config.executor_type == "adaptive_provider" && self.worker_executor.is_none() {
+            return Err(
+                "adaptive provider scheduler requires an injected worker executor".to_string(),
             );
         }
 
@@ -286,6 +302,7 @@ impl WorkflowScheduler {
             states.clear();
         }
         self.handles.clear();
+        let configured_executor = self.worker_executor.clone();
         for worker_index in 0..worker_count {
             let context = SchedulerWorkerContext {
                 worker_id: format!("worker-{worker_index}"),
@@ -312,6 +329,7 @@ impl WorkflowScheduler {
                 backpressure_active_live: self.backpressure_active_live.clone(),
                 worker_states: self.worker_states.clone(),
                 metrics: self.metrics.clone(),
+                executor: configured_executor.clone(),
                 backup: (worker_index == 0).then(|| SchedulerBackupContext {
                     manager: self.backup_manager.clone(),
                     interval_sec: self.backup_interval_sec,
@@ -461,6 +479,7 @@ struct SchedulerWorkerContext {
     backpressure_active_live: Arc<AtomicBool>,
     worker_states: Arc<std::sync::Mutex<BTreeMap<String, WorkerRuntimeState>>>,
     metrics: Option<Arc<crate::infrastructure::observability::MetricsCollector>>,
+    executor: Option<Arc<dyn NodeExecutor>>,
     backup: Option<SchedulerBackupContext>,
 }
 
@@ -471,7 +490,10 @@ fn run_scheduler_worker(context: SchedulerWorkerContext) {
     let mut consecutive_panics = 0u64;
     let mut worker_ticks = 0u64;
     let mut worker_errors = 0u64;
-    let executor = create_scheduler_executor(&context.config.executor_type);
+    let executor = context
+        .executor
+        .clone()
+        .unwrap_or_else(|| create_scheduler_executor(&context.config.executor_type));
     update_worker_state(&context, "starting", worker_ticks, worker_errors);
 
     while context.running.load(Ordering::SeqCst) {
@@ -926,15 +948,8 @@ fn scheduler_tick_with_limit(
             }
         }
 
-        // Pool: acquire best executor for task and use it for actual execution
-        let best_executor = pool.best_for_task("scheduler", "auto");
-        let (acquired_type, pool_executor_arc) = match best_executor {
-            Some(ref et) if pool.acquire(et) => {
-                let exec = pool.get(et).unwrap_or_else(|| Arc::new(NoopNodeExecutor));
-                (Some(et.clone()), exec)
-            }
-            _ => (None, Arc::clone(&executor_arc)),
-        };
+        let (acquired_type, pool_executor_arc) =
+            select_scheduler_executor(config, pool, &executor_arc);
 
         match store.tick_with_executor(run_id, "scheduler", 0, &*pool_executor_arc) {
             Ok(result) => {
@@ -1189,15 +1204,8 @@ fn dynamic_scheduler_tick(
     let mut aggregations = 0u64;
 
     for run_id in active_runs.iter().take(tick_limit) {
-        // Pool: acquire best executor for task and use it for actual execution
-        let best_executor = pool.best_for_task("scheduler", "auto");
-        let (acquired_type, pool_executor_arc) = match best_executor {
-            Some(ref et) if pool.acquire(et) => {
-                let exec = pool.get(et).unwrap_or_else(|| Arc::new(NoopNodeExecutor));
-                (Some(et.clone()), exec)
-            }
-            _ => (None, executor_arc.clone()),
-        };
+        let (acquired_type, pool_executor_arc) =
+            select_scheduler_executor(config, pool, &executor_arc);
 
         let mut controller = DynamicWorkflowController::new(DynamicControllerConfig {
             executor_pool_accounting_enabled: false,
@@ -1261,6 +1269,26 @@ fn dynamic_workflow_enabled(config: &SchedulerConfig) -> bool {
             config.executor_type.as_str(),
             "dynamic" | "dynamic_noop" | "dynamic_workflow"
         )
+}
+
+fn select_scheduler_executor(
+    config: &SchedulerConfig,
+    pool: &Arc<ExecutorPool>,
+    configured: &Arc<dyn NodeExecutor>,
+) -> (Option<String>, Arc<dyn NodeExecutor>) {
+    if config.executor_type == "adaptive_provider" {
+        return (None, Arc::clone(configured));
+    }
+    let best_executor = pool.best_for_task("scheduler", "auto");
+    match best_executor {
+        Some(ref executor_type) if pool.acquire(executor_type) => {
+            let executor = pool
+                .get(executor_type)
+                .unwrap_or_else(|| Arc::new(NoopNodeExecutor));
+            (Some(executor_type.clone()), executor)
+        }
+        _ => (None, Arc::clone(configured)),
+    }
 }
 
 fn env_flag_enabled(key: &str) -> bool {
@@ -1337,8 +1365,35 @@ fn build_graph_from_run(run_data: &Value, run_id: &str) -> crate::orchestration:
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::node_executor::{NodeExecutionInput, NodeExecutionOutput, NodeExecutor};
     use crate::storage::local_product_store::LocalProductStore;
     use serde_json::json;
+    use std::sync::atomic::{AtomicUsize, Ordering as AtomicOrdering};
+
+    struct TrackingExecutor {
+        calls: Arc<AtomicUsize>,
+    }
+
+    impl NodeExecutor for TrackingExecutor {
+        fn executor_type_name(&self) -> &str {
+            "adaptive_provider"
+        }
+
+        fn execute_node(&self, _input: &NodeExecutionInput) -> NodeExecutionOutput {
+            self.calls.fetch_add(1, AtomicOrdering::SeqCst);
+            NodeExecutionOutput {
+                status: "completed".to_string(),
+                executor_type: "adaptive_provider".to_string(),
+                output: Some("bounded result".to_string()),
+                error_domain: None,
+                error_message: None,
+                input_tokens: Some(10),
+                output_tokens: Some(5),
+                estimated_cost: Some(0.01),
+                latency_ms: Some(1),
+            }
+        }
+    }
 
     fn test_store() -> Arc<LocalProductStore> {
         Arc::new(LocalProductStore::new(":memory:").unwrap())
@@ -1457,6 +1512,53 @@ mod tests {
             ..Default::default()
         };
         assert!(zero_workers.validate_for_start().is_err());
+    }
+
+    #[test]
+    fn adaptive_provider_scheduler_requires_injected_executor() {
+        let config = SchedulerConfig {
+            supervised_workers_enabled: true,
+            executor_type: "adaptive_provider".to_string(),
+            ..Default::default()
+        };
+        let mut scheduler = WorkflowScheduler::new(test_store(), config);
+
+        assert_eq!(
+            scheduler.start().unwrap_err(),
+            "adaptive provider scheduler requires an injected worker executor"
+        );
+    }
+
+    #[test]
+    fn adaptive_provider_scheduler_pins_injected_executor() {
+        let store = test_store();
+        let run_id = create_plan_and_run(&store);
+        let calls = Arc::new(AtomicUsize::new(0));
+        let config = SchedulerConfig {
+            interval_ms: 20,
+            max_concurrent: 1,
+            worker_count: 1,
+            supervised_workers_enabled: true,
+            executor_type: "adaptive_provider".to_string(),
+            ..Default::default()
+        };
+        let executor = Arc::new(TrackingExecutor {
+            calls: calls.clone(),
+        });
+        let mut scheduler =
+            WorkflowScheduler::new(store.clone(), config).with_worker_executor(executor);
+
+        scheduler.start().unwrap();
+        std::thread::sleep(Duration::from_millis(100));
+        scheduler.stop().unwrap();
+
+        assert_eq!(calls.load(AtomicOrdering::SeqCst), 1);
+        let run = store.get_workflow_run(&run_id).unwrap().unwrap();
+        assert_eq!(run["status"], "completed");
+        assert_eq!(
+            run["nodes"][0]["result"]["executor_type"],
+            "adaptive_provider"
+        );
     }
 
     #[test]

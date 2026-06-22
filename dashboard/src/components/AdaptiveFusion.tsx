@@ -87,6 +87,12 @@ function AdaptiveFusionGatePanel({
   const ready = status.completion_api.ready_for_live_completion;
   const profile = status.trusted_local_profile;
   const profileState = profile.ready ? "ready" : profile.requested ? "blocked" : "off";
+  const taskAdvancement = status.trusted_local_task_advancement;
+  const taskAdvancementState = taskAdvancement.ready
+    ? "ready"
+    : taskAdvancement.requested
+      ? "blocked"
+      : "off";
   return (
     <div className="subcard stack">
       <div className="flex-between">
@@ -111,6 +117,19 @@ function AdaptiveFusionGatePanel({
             : profile.requested
               ? `Fail closed: ${profile.blockers.join(", ")}`
               : "Set ACP_TRUSTED_LOCAL_PROFILE=1 after auth, endpoint pricing, credentials, and cost caps are configured."}
+        </p>
+      </StateBanner>
+
+      <StateBanner
+        title={`Trusted task advancement ${taskAdvancementState}`}
+        tone={taskAdvancement.ready ? "ok" : taskAdvancement.requested ? "warn" : "info"}
+      >
+        <p>
+          {taskAdvancement.ready
+            ? `${taskAdvancement.worker_count} bounded worker(s) pinned to ${taskAdvancement.executor_type}; max concurrency ${taskAdvancement.max_concurrent}.`
+            : taskAdvancement.requested
+              ? `Fail closed: ${taskAdvancement.blockers.join(", ")}`
+              : "Set ACP_TRUSTED_LOCAL_TASK_ADVANCEMENT=1 to authorize bounded workers for explicit adaptive plans."}
         </p>
       </StateBanner>
 

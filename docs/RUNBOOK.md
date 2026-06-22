@@ -104,6 +104,20 @@ export ACP_ADAPTIVE_PROVIDER_ENDPOINTS_JSON='[
 
 At startup, the profile fails closed unless auth, endpoint parsing, credential availability, strictly positive pricing, and both cost caps pass. The dashboard Adaptive Fusion gate panel reports `ready`, `blocked` with stable blocker codes, or `off`. Legacy `ACP_ENABLE_PROVIDER_EXECUTION`, `ACP_ENABLE_ADAPTIVE_FUSION_EXECUTION`, experiment, promotion, and default-routing flags remain supported for independent operation.
 
+To let the local scheduler advance already-created queued adaptive workflow runs, add the separate acknowledgement:
+
+```bash
+export ACP_TRUSTED_LOCAL_TASK_ADVANCEMENT=1
+export ACP_SUPERVISED_WORKER_COUNT=1
+export ACP_SCHEDULER_MAX_CONCURRENT=4
+export ACP_SCHEDULER_INTERVAL_MS=2000
+export ACP_SCHEDULER_LEASE_TIMEOUT_MS=300000
+```
+
+This path requires the trusted-local profile to be ready and pins `ACP_SCHEDULER_EXECUTOR` to `adaptive_provider` (or uses that default). It fails closed for another executor, malformed/non-positive numeric values, more workers than concurrency, more than 32 workers/concurrent claims, polling outside 250–60000 ms, or leases outside 1000–3600000 ms. It consumes only existing queued runs with explicit bounded adaptive execution plans. It does not create tasks/goals, invoke CLI/command/noop workers, write target repositories, merge, release, or deploy.
+
+The Adaptive Fusion panel reports task advancement as `ready`, `blocked`, or `off`, including stable blockers, worker count, executor, and maximum concurrency. Use the existing authenticated scheduler control endpoint for pause/resume/kill; the adaptive fusion, experiment, promotion, supervised-worker, and target-output kill switches remain independent.
+
 Endpoint JSON stores only credential environment names. Remote HTTP is rejected; HTTPS is required except for loopback test/local adapters. Explicit workflow execution accepts bounded `single`, `ordered_fallback`, or `fusion` plans. Fusion panels may run with bounded concurrency up to 3; judge and synthesizer remain serial. Tick the run with `executor=adaptive_provider`, `max_retries=0`, and a key with `dispatch:execute`.
 
 The AF-6 completion endpoint generates and selects a bounded candidate automatically:

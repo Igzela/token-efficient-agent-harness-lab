@@ -486,6 +486,15 @@ async fn axum_dashboard_exposes_adaptive_fusion_operator_status() {
                     "auto_promotion": false,
                 },
             },
+            "trusted_local_task_advancement": {
+                "schema_version": "trusted_local_task_advancement.v1",
+                "requested": false,
+                "ready": false,
+                "blockers": [],
+                "executor_type": "adaptive_provider",
+                "worker_count": 1,
+                "max_concurrent": 4,
+            },
             "completion_api": {
                 "available": true,
                 "ready_for_live_completion": false,
@@ -5389,6 +5398,21 @@ async fn axum_scheduler_status_returns_enabled_when_scheduler_present() {
     let scheduler_arc = Arc::new(Mutex::new(scheduler));
 
     let app = build_axum_router(AxumApiState::new().with_scheduler(scheduler_arc));
+    let dashboard_response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(Method::GET)
+                .uri("/api/v1/dashboard")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(dashboard_response.status(), StatusCode::OK);
+    let dashboard = response_json(dashboard_response).await;
+    assert_eq!(dashboard["boundaries"]["runtime_workers"], "enabled");
+
     let response = app
         .oneshot(
             Request::builder()
