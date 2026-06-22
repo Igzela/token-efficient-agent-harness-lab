@@ -284,6 +284,7 @@ bundle = client.dispatch("Summarize docs without provider calls")
 - Target-repository output is implemented behind `ACP_ENABLE_TARGET_REPO_OUTPUT=1`, `dispatch:execute`, explicit confirmation, approval/integrity/secret gates, remote allowlists, and `ACP_TARGET_REPO_OUTPUT_KILL_SWITCH=1`; direct target working-tree or `main` writes and apply/merge/deploy authority remain out of scope. IAE may change trusted-local provider defaults without changing target-output authority.
 - The dashboard is a local operations console with guarded app-owned controls. V2-5 adds the product-level Mission Control output path over the guarded backend contract: create plan/run, tick, create workspace, capture patch, approve, export patch, or push an `acp/*` branch.
 - Adaptive Fusion supports guarded candidate selection, bounded parallel-panel fusion, safe observations, controlled experiments, auto promotion, completion routing, policy evidence, and rollback. The IAE-1 profile can compose these gates after readiness validation; every path remains bounded, killable, audited, and redacted.
+- IAE-3 exposes effective authority, spend/traffic/worker bounds, safe observation aggregates, redacted recent audit actions, confirmed scheduler pause/resume/kill, and existing policy rollback in the Adaptive Fusion operator surface without exposing model content or credentials.
 - No destructive runtime filesystem behavior.
 - V2 real capabilities require the phase plan in `docs/NEXT_DECISION.md`, explicit gates, audit events, tests, and rollback/kill paths.
 
