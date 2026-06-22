@@ -109,13 +109,17 @@ pub(crate) async fn api_metrics(
         }
     }
 
+    let execution_gates = crate::trusted_local::EffectiveExecutionGates::from_env();
+    let provider_enabled = state.provider_enabled()
+        || (execution_gates.provider_execution && state.adaptive_provider_executor.is_some());
+
     Ok((
         cors_headers(),
         Json(json!({
             "schema_version": AXUM_API_SCHEMA_VERSION,
             "executor_type": state.executor_type(),
             "auth_required": state.tenant_resolver.is_some(),
-            "provider_enabled": state.provider_enabled(),
+            "provider_enabled": provider_enabled,
             "local_store": state.local_store.is_some(),
             "dispatch_count": dispatch_count,
             "plan_count": plan_count,
@@ -143,7 +147,7 @@ pub(crate) async fn api_metrics(
             "estimated_cost_available": estimated_cost_available,
             "boundaries": crate::storage::local_product_store::local_boundaries(
                 state.executor_type(),
-                state.provider_enabled(),
+                provider_enabled,
             ),
         })),
     ))

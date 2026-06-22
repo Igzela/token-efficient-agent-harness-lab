@@ -18,6 +18,7 @@ use crate::http_server::{
 use crate::infrastructure::structured_events;
 use crate::provider::cost_gate::{check_cost_gates, CostGateConfig};
 use crate::storage::local_product_store::LocalProductStore;
+use crate::trusted_local::EffectiveExecutionGates;
 
 pub(crate) async fn api_dispatch(
     State(state): State<AxumApiState>,
@@ -173,9 +174,7 @@ pub(crate) async fn api_dispatch(
 }
 
 fn adaptive_default_live_routing_enabled() -> bool {
-    std::env::var("ACP_ADAPTIVE_DEFAULT_LIVE_ROUTING")
-        .map(|value| value == "1" || value.eq_ignore_ascii_case("true"))
-        .unwrap_or(false)
+    EffectiveExecutionGates::from_env().default_routing
 }
 
 fn record_dispatch_and_decision(

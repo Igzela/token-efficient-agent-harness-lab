@@ -473,6 +473,19 @@ async fn axum_dashboard_exposes_adaptive_fusion_operator_status() {
         default_body["adaptive_fusion"],
         json!({
             "schema_version": "adaptive_fusion_operator_status.v1",
+            "trusted_local_profile": {
+                "schema_version": "trusted_local_profile.v1",
+                "requested": false,
+                "ready": false,
+                "blockers": [],
+                "capabilities": {
+                    "provider_execution": false,
+                    "adaptive_execution": false,
+                    "default_routing": false,
+                    "experiments": false,
+                    "auto_promotion": false,
+                },
+            },
             "completion_api": {
                 "available": true,
                 "ready_for_live_completion": false,

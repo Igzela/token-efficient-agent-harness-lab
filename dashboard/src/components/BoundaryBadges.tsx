@@ -13,8 +13,8 @@ function humanize(value: unknown): string {
   const s = String(value);
   if (s === "local-only") return "Local";
   if (s === "noop" || s === "stub/off") return "Stub (testing)";
-  if (s === "disabled") return "Off";
-  if (s === "enabled") return "On";
+  if (s === "disabled" || s === "provider/disabled") return "Off";
+  if (s === "enabled" || s === "provider/enabled") return "On";
   return s;
 }
 

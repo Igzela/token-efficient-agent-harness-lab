@@ -20,6 +20,7 @@ use crate::feedback::{
     PromotedAdaptivePolicy, TaskClassEvaluation, ENDPOINT_REGISTRY_SCHEMA_VERSION,
 };
 use crate::node_executor::{NodeExecutionInput, NodeExecutionOutput, NodeExecutor};
+use crate::trusted_local::EffectiveExecutionGates;
 
 pub const ADAPTIVE_EXECUTION_SCHEMA_VERSION: &str = "adaptive_execution.v1";
 pub const ACP_ADAPTIVE_PROVIDER_ENDPOINTS_JSON: &str = "ACP_ADAPTIVE_PROVIDER_ENDPOINTS_JSON";
@@ -373,9 +374,10 @@ pub struct AdaptiveExecutionGate {
 
 impl AdaptiveExecutionGate {
     pub fn from_env(auth_enabled: bool) -> Self {
+        let gates = EffectiveExecutionGates::from_env();
         Self::from_flags(
-            env_enabled("ACP_ENABLE_PROVIDER_EXECUTION"),
-            env_enabled("ACP_ENABLE_ADAPTIVE_FUSION_EXECUTION"),
+            gates.provider_execution,
+            gates.adaptive_execution,
             auth_enabled,
         )
     }

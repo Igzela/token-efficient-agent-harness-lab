@@ -410,6 +410,19 @@ export interface LocalCliCapability {
 
 export interface AdaptiveFusionOperatorStatus {
   schema_version: "adaptive_fusion_operator_status.v1";
+  trusted_local_profile: {
+    schema_version: "trusted_local_profile.v1";
+    requested: boolean;
+    ready: boolean;
+    blockers: string[];
+    capabilities: {
+      provider_execution: boolean;
+      adaptive_execution: boolean;
+      default_routing: boolean;
+      experiments: boolean;
+      auto_promotion: boolean;
+    };
+  };
   completion_api: {
     available: boolean;
     ready_for_live_completion: boolean;

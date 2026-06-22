@@ -86,13 +86,14 @@ Provider execution remains off unless `ACP_ENABLE_PROVIDER_EXECUTION=1`. Target 
 
 ### Adaptive Fusion provider routing
 
-Adaptive provider execution is default-off. It requires protected mode, configured auth, and both provider execution gates:
+The recommended trusted-local path requires protected mode, configured auth, positive cost caps, endpoint pricing, and symbolic provider credentials:
 
 ```bash
 export ACP_REQUIRE_AUTH=1
 export ACP_ADMIN_API_KEY=<harness_...>
-export ACP_ENABLE_PROVIDER_EXECUTION=1
-export ACP_ENABLE_ADAPTIVE_FUSION_EXECUTION=1
+export ACP_TRUSTED_LOCAL_PROFILE=1
+export ACP_COST_PER_DISPATCH_USD=1.00
+export ACP_COST_DAILY_USD=10.00
 export FAST_PROVIDER_KEY=<secret>
 export QUALITY_PROVIDER_KEY=<secret>
 export ACP_ADAPTIVE_PROVIDER_ENDPOINTS_JSON='[
@@ -100,6 +101,8 @@ export ACP_ADAPTIVE_PROVIDER_ENDPOINTS_JSON='[
   {"endpoint_id":"quality","provider_type":"anthropic","base_url":"https://api.anthropic.com","model":"quality-model","credential_env":"QUALITY_PROVIDER_KEY","timeout_ms":60000,"input_cost_per_1k_usd":0.003,"output_cost_per_1k_usd":0.015}
 ]'
 ```
+
+At startup, the profile fails closed unless auth, endpoint parsing, credential availability, strictly positive pricing, and both cost caps pass. The dashboard Adaptive Fusion gate panel reports `ready`, `blocked` with stable blocker codes, or `off`. Legacy `ACP_ENABLE_PROVIDER_EXECUTION`, `ACP_ENABLE_ADAPTIVE_FUSION_EXECUTION`, experiment, promotion, and default-routing flags remain supported for independent operation.
 
 Endpoint JSON stores only credential environment names. Remote HTTP is rejected; HTTPS is required except for loopback test/local adapters. Explicit workflow execution accepts bounded `single`, `ordered_fallback`, or `fusion` plans. Fusion panels may run with bounded concurrency up to 3; judge and synthesizer remain serial. Tick the run with `executor=adaptive_provider`, `max_retries=0`, and a key with `dispatch:execute`.
 
@@ -116,7 +119,7 @@ The default response contains only output and usage. Set `"include_routing_metad
 
 The dashboard Adaptive Fusion tab exposes the same guarded completion endpoint for operator testing. Use the completion test panel only after the provider registry, auth, cost ceilings, and kill procedure are configured. Routing metadata stays hidden unless the operator enables it for that request. The gate panel is read-only and shows provider/adaptive/auth/default-routing gates, experiment and promotion state, pause/kill switches, active policy count, and rollback snapshot count.
 
-Controlled experiments require both:
+With a ready trusted-local profile, controlled experiments and auto promotion are active through the same validated profile. To operate them independently without the profile, use both legacy experiment gates:
 
 ```bash
 export ACP_ENABLE_ADAPTIVE_EXPERIMENTS=1
@@ -125,7 +128,7 @@ export ACP_ADAPTIVE_EXPERIMENTS_ACTIVE=1
 
 Experiments are deterministic and assign no traffic while either gate is off. With both gates enabled, the default traffic fraction is 1% and values above 5% are rejected. Risk, cost, token, call, elapsed-time, concurrency, pause, and kill controls still apply. Pause with `ACP_ADAPTIVE_EXPERIMENTS_PAUSED=1`; stop with `ACP_ADAPTIVE_EXPERIMENTS_KILL_SWITCH=1`.
 
-Evidence-driven automatic promotion requires both:
+For independent automatic promotion without the profile, use both legacy promotion gates:
 
 ```bash
 export ACP_ENABLE_ADAPTIVE_AUTO_PROMOTION=1
@@ -134,13 +137,13 @@ export ACP_ADAPTIVE_AUTO_PROMOTION_ACTIVE=1
 
 Promotion remains blocked until configured sample, confidence, quality, cost, latency, failure-rate, and evidence-freshness guards pass. Each activation stores a hash-bound snapshot and previous policy hash for rollback. Stop it with `ACP_ADAPTIVE_AUTO_PROMOTION_KILL_SWITCH=1`.
 
-Ordinary `/api/v1/dispatch` behavior is unchanged by default. To deliberately delegate eligible dispatch requests to adaptive completion routing:
+The trusted-local profile delegates eligible ordinary `/api/v1/dispatch` requests to adaptive completion routing. Without the profile, enable delegation independently with:
 
 ```bash
 export ACP_ADAPTIVE_DEFAULT_LIVE_ROUTING=1
 ```
 
-Do not enable this gate until completion routing has been validated with the intended endpoint registry, auth, cost limits, experiment state, promotion state, and kill procedure.
+Do not activate the profile or independent gate until completion routing has been validated with the intended endpoint registry, auth, cost limits, experiment state, promotion state, and kill procedure.
 
 Emergency startup stop:
 
@@ -148,7 +151,7 @@ Emergency startup stop:
 export ACP_ADAPTIVE_FUSION_KILL_SWITCH=1
 ```
 
-This blocks adaptive calls. A runtime kill handle also stops subsequent panel/fallback/final stages; an already-running provider call drains or cancels under its remaining timeout.
+This blocks adaptive calls without deconfiguring trusted-local readiness. Clearing/resetting the runtime kill allows controlled recovery without rebuilding the executor. A runtime kill handle also stops subsequent panel/fallback/final stages; an already-running provider call drains or cancels under its remaining timeout.
 
 ### 2.1 V2-3 Target Repo Output
 
