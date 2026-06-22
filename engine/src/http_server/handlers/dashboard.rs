@@ -10,6 +10,7 @@ use crate::http_server::middleware::{
 use crate::http_server::state::AxumApiState;
 use crate::provider::config::provider_pricing_from_env;
 use crate::storage::local_product_store::local_boundaries;
+use crate::trusted_local::EffectiveExecutionGates;
 
 const ADAPTIVE_FUSION_OPERATOR_STATUS_SCHEMA_VERSION: &str = "adaptive_fusion_operator_status.v1";
 
@@ -21,7 +22,9 @@ pub(crate) async fn api_dashboard(
 ) -> Result<impl IntoResponse, ApiError> {
     authorize(&state, &headers, "health:read", uri.path(), &request_id.0)?;
     let exec_type = state.executor_type();
-    let prov_enabled = state.provider_enabled();
+    let execution_gates = EffectiveExecutionGates::from_env();
+    let prov_enabled = state.provider_enabled()
+        || (execution_gates.provider_execution && state.adaptive_provider_executor.is_some());
     let mut body = if let Some(store) = &state.local_store {
         store
             .dashboard_snapshot(20, exec_type, prov_enabled)
@@ -75,13 +78,14 @@ pub(crate) async fn api_dashboard(
 }
 
 fn adaptive_fusion_operator_status(state: &AxumApiState) -> Result<serde_json::Value, String> {
-    let provider_execution = env_enabled("ACP_ENABLE_PROVIDER_EXECUTION");
-    let adaptive_execution = env_enabled("ACP_ENABLE_ADAPTIVE_FUSION_EXECUTION");
+    let effective_gates = EffectiveExecutionGates::from_env();
+    let provider_execution = effective_gates.provider_execution;
+    let adaptive_execution = effective_gates.adaptive_execution;
     let auth = state.tenant_resolver.is_some();
     let fusion_kill_switch = env_enabled("ACP_ADAPTIVE_FUSION_KILL_SWITCH");
     let executor_configured = state.adaptive_provider_executor.is_some();
     let registry_configured = state.adaptive_registry_snapshot.is_some();
-    let default_routing_enabled = env_enabled("ACP_ADAPTIVE_DEFAULT_LIVE_ROUTING");
+    let default_routing_enabled = effective_gates.default_routing;
 
     let (active_policy_count, snapshot_count, active_snapshot_count) =
         if let Some(store) = &state.local_store {
@@ -98,6 +102,7 @@ fn adaptive_fusion_operator_status(state: &AxumApiState) -> Result<serde_json::V
 
     Ok(json!({
         "schema_version": ADAPTIVE_FUSION_OPERATOR_STATUS_SCHEMA_VERSION,
+        "trusted_local_profile": effective_gates.profile,
         "completion_api": {
             "available": true,
             "ready_for_live_completion": provider_execution
@@ -115,12 +120,12 @@ fn adaptive_fusion_operator_status(state: &AxumApiState) -> Result<serde_json::V
             "adaptive_execution": adaptive_execution,
             "auth": auth,
             "fusion_kill_switch": fusion_kill_switch,
-            "experiments_enabled": env_enabled("ACP_ENABLE_ADAPTIVE_EXPERIMENTS"),
-            "experiments_active": env_enabled("ACP_ADAPTIVE_EXPERIMENTS_ACTIVE"),
+            "experiments_enabled": effective_gates.experiments_enabled,
+            "experiments_active": effective_gates.experiments_active,
             "experiments_paused": env_enabled("ACP_ADAPTIVE_EXPERIMENTS_PAUSED"),
             "experiments_kill_switch": env_enabled("ACP_ADAPTIVE_EXPERIMENTS_KILL_SWITCH"),
-            "auto_promotion_enabled": env_enabled("ACP_ENABLE_ADAPTIVE_AUTO_PROMOTION"),
-            "auto_promotion_active": env_enabled("ACP_ADAPTIVE_AUTO_PROMOTION_ACTIVE"),
+            "auto_promotion_enabled": effective_gates.auto_promotion_enabled,
+            "auto_promotion_active": effective_gates.auto_promotion_active,
             "auto_promotion_kill_switch": env_enabled("ACP_ADAPTIVE_AUTO_PROMOTION_KILL_SWITCH"),
         },
         "policy": {

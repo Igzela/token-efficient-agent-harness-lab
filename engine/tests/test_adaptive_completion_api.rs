@@ -52,6 +52,57 @@ impl Drop for AdaptiveEnv {
     }
 }
 
+struct TrustedLocalEnv;
+
+impl TrustedLocalEnv {
+    fn enabled() -> Self {
+        for key in [
+            "ACP_ENABLE_PROVIDER_EXECUTION",
+            "ACP_ENABLE_ADAPTIVE_FUSION_EXECUTION",
+            "ACP_ADAPTIVE_DEFAULT_LIVE_ROUTING",
+            "ACP_ENABLE_ADAPTIVE_EXPERIMENTS",
+            "ACP_ADAPTIVE_EXPERIMENTS_ACTIVE",
+            "ACP_ENABLE_ADAPTIVE_AUTO_PROMOTION",
+            "ACP_ADAPTIVE_AUTO_PROMOTION_ACTIVE",
+        ] {
+            std::env::remove_var(key);
+        }
+        std::env::set_var("ACP_TRUSTED_LOCAL_PROFILE", "1");
+        std::env::set_var("ACP_REQUIRE_AUTH", "1");
+        std::env::set_var("ACP_ADMIN_API_KEY", format!("harness_{}", "a".repeat(64)));
+        std::env::set_var("ACP_COST_PER_DISPATCH_USD", "1.0");
+        std::env::set_var("ACP_COST_DAILY_USD", "10.0");
+        std::env::set_var(
+            "ACP_ADAPTIVE_PROVIDER_ENDPOINTS_JSON",
+            r#"[
+                {"endpoint_id":"fast","provider_type":"stub","model":"test-model","timeout_ms":30000,"input_cost_per_1k_usd":0.01,"output_cost_per_1k_usd":0.02},
+                {"endpoint_id":"judge","provider_type":"stub","model":"test-model","timeout_ms":30000,"input_cost_per_1k_usd":0.03,"output_cost_per_1k_usd":0.04},
+                {"endpoint_id":"quality","provider_type":"stub","model":"test-model","timeout_ms":30000,"input_cost_per_1k_usd":0.02,"output_cost_per_1k_usd":0.03}
+            ]"#,
+        );
+        Self
+    }
+}
+
+impl Drop for TrustedLocalEnv {
+    fn drop(&mut self) {
+        for key in [
+            "ACP_TRUSTED_LOCAL_PROFILE",
+            "ACP_REQUIRE_AUTH",
+            "ACP_ADMIN_API_KEY",
+            "ACP_COST_PER_DISPATCH_USD",
+            "ACP_COST_DAILY_USD",
+            "ACP_ADAPTIVE_PROVIDER_ENDPOINTS_JSON",
+            "ACP_ADAPTIVE_FUSION_KILL_SWITCH",
+            "ACP_ADAPTIVE_EXPERIMENTS_PAUSED",
+            "ACP_ADAPTIVE_EXPERIMENTS_KILL_SWITCH",
+            "ACP_ADAPTIVE_AUTO_PROMOTION_KILL_SWITCH",
+        ] {
+            std::env::remove_var(key);
+        }
+    }
+}
+
 async fn response_json(response: axum::response::Response) -> Value {
     let bytes = to_bytes(response.into_body(), 1_048_576).await.unwrap();
     serde_json::from_slice(&bytes).unwrap()
@@ -296,4 +347,29 @@ async fn dispatch_delegation_requires_explicit_default_live_gate() {
     let delegated = response_json(delegated).await;
     assert!(delegated["output"].is_string());
     assert!(delegated.get("record").is_none());
+}
+
+#[tokio::test]
+async fn trusted_local_profile_enables_adaptive_dispatch_without_legacy_flags() {
+    let _guard = env_lock().lock().await;
+    let _env = TrustedLocalEnv::enabled();
+    let (app, _, raw_key, _dir) = app();
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method(Method::POST)
+                .uri("/api/v1/dispatch")
+                .header(header::AUTHORIZATION, format!("Bearer {raw_key}"))
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(json!({"raw_request": "solve"}).to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = response_json(response).await;
+    assert!(body["output"].is_string());
+    assert!(body.get("record").is_none());
 }

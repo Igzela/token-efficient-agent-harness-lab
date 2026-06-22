@@ -522,9 +522,7 @@ pub(crate) async fn api_tick_workflow_run(
 }
 
 fn provider_execution_enabled() -> bool {
-    std::env::var("ACP_ENABLE_PROVIDER_EXECUTION")
-        .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
-        .unwrap_or(false)
+    crate::trusted_local::EffectiveExecutionGates::from_env().provider_execution
 }
 
 fn persist_adaptive_observation(

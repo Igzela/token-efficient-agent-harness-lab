@@ -3,6 +3,7 @@ use serde_json::json;
 
 use super::policy_snapshot::stable_hash;
 use crate::provider::redaction::contains_sensitive_patterns;
+use crate::trusted_local::EffectiveExecutionGates;
 
 pub const ADAPTIVE_EXPERIMENT_SCHEMA_VERSION: &str = "adaptive_experiment.v1";
 
@@ -67,9 +68,10 @@ pub struct AdaptiveExperimentGate {
 
 impl AdaptiveExperimentGate {
     pub fn from_env() -> Self {
+        let gates = EffectiveExecutionGates::from_env();
         Self::from_flags(
-            env_enabled("ACP_ENABLE_ADAPTIVE_EXPERIMENTS"),
-            env_enabled("ACP_ADAPTIVE_EXPERIMENTS_ACTIVE"),
+            gates.experiments_enabled,
+            gates.experiments_active,
             env_enabled("ACP_ADAPTIVE_EXPERIMENTS_PAUSED"),
             env_enabled("ACP_ADAPTIVE_EXPERIMENTS_KILL_SWITCH"),
         )

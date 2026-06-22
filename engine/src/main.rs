@@ -27,6 +27,7 @@ use engine::provider::transport::ReqwestTransport;
 use engine::provider::Provider;
 use engine::scheduler::{SchedulerConfig, WorkflowScheduler};
 use engine::storage::local_product_store::LocalProductStore;
+use engine::trusted_local::EffectiveExecutionGates;
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
@@ -94,6 +95,7 @@ async fn main() {
     let store_for_scheduler = store_arc.clone();
     let cb_registry = Arc::new(CircuitBreakerRegistry::new());
     let cli_config = CliConfig::from_env();
+    let execution_gates = EffectiveExecutionGates::from_env();
     let execution_mode = std::env::var("ACP_EXECUTION_MODE")
         .unwrap_or_else(|_| "off".to_string())
         .to_lowercase();
@@ -130,7 +132,7 @@ async fn main() {
         }
     };
 
-    let adaptive_execution_enabled = env_enabled("ACP_ENABLE_ADAPTIVE_FUSION_EXECUTION");
+    let adaptive_execution_enabled = execution_gates.adaptive_execution;
     let require_auth = env_enabled("ACP_REQUIRE_AUTH");
     let has_single_provider =
         std::env::var("ACP_PROVIDER_TYPE").is_ok_and(|value| !value.trim().is_empty());
@@ -138,7 +140,7 @@ async fn main() {
         .is_ok_and(|value| !value.trim().is_empty());
     validate_adaptive_startup(
         adaptive_execution_enabled,
-        env_enabled("ACP_ENABLE_PROVIDER_EXECUTION"),
+        execution_gates.provider_execution,
         require_auth,
         has_single_provider,
         has_endpoint_config,
@@ -208,7 +210,7 @@ async fn main() {
         cli_config.claude_code_enabled, cli_config.codex_enabled
     );
     println!(
-        "[acp-startup] execution_mode={} executor={} cli=[{}] auth={} host={} budget_per_dispatch={} budget_daily={} lan={}",
+        "[acp-startup] execution_mode={} executor={} cli=[{}] auth={} host={} budget_per_dispatch={} budget_daily={} trusted_local_requested={} trusted_local_ready={} lan={}",
         execution_mode,
         exec_type_display,
         cli_summary,
@@ -216,6 +218,8 @@ async fn main() {
         addr,
         cost_per_dispatch,
         cost_daily,
+        execution_gates.profile.requested,
+        execution_gates.profile.ready,
         lan,
     );
 

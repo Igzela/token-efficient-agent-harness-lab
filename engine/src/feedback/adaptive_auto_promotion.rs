@@ -7,6 +7,7 @@ use super::{
     PromotedAdaptivePolicy, CONTEXTUAL_POLICY_PROMOTION_SCHEMA_VERSION,
 };
 use crate::provider::redaction::contains_sensitive_patterns;
+use crate::trusted_local::EffectiveExecutionGates;
 
 const MAX_EVIDENCE: usize = 10_000;
 const MAX_ID_BYTES: usize = 160;
@@ -118,9 +119,10 @@ pub struct AdaptiveAutoPromotionGate {
 
 impl AdaptiveAutoPromotionGate {
     pub fn from_env() -> Self {
+        let gates = EffectiveExecutionGates::from_env();
         Self::from_flags(
-            env_enabled("ACP_ENABLE_ADAPTIVE_AUTO_PROMOTION"),
-            env_enabled("ACP_ADAPTIVE_AUTO_PROMOTION_ACTIVE"),
+            gates.auto_promotion_enabled,
+            gates.auto_promotion_active,
             env_enabled("ACP_ADAPTIVE_AUTO_PROMOTION_KILL_SWITCH"),
         )
     }
