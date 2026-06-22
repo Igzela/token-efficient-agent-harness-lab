@@ -11,6 +11,8 @@ use crate::http_server::state::AxumApiState;
 use crate::provider::config::provider_pricing_from_env;
 use crate::storage::local_product_store::local_boundaries;
 
+const ADAPTIVE_FUSION_OPERATOR_STATUS_SCHEMA_VERSION: &str = "adaptive_fusion_operator_status.v1";
+
 pub(crate) async fn api_dashboard(
     State(state): State<AxumApiState>,
     headers: HeaderMap,
@@ -64,6 +66,75 @@ pub(crate) async fn api_dashboard(
     }
     if let Some(object) = body.as_object_mut() {
         object.insert("cli".to_string(), json!(state.cli_capability()));
+        object.insert(
+            "adaptive_fusion".to_string(),
+            adaptive_fusion_operator_status(&state).map_err(internal_error)?,
+        );
     }
     Ok((cors_headers(), Json(body)))
+}
+
+fn adaptive_fusion_operator_status(state: &AxumApiState) -> Result<serde_json::Value, String> {
+    let provider_execution = env_enabled("ACP_ENABLE_PROVIDER_EXECUTION");
+    let adaptive_execution = env_enabled("ACP_ENABLE_ADAPTIVE_FUSION_EXECUTION");
+    let auth = state.tenant_resolver.is_some();
+    let fusion_kill_switch = env_enabled("ACP_ADAPTIVE_FUSION_KILL_SWITCH");
+    let executor_configured = state.adaptive_provider_executor.is_some();
+    let registry_configured = state.adaptive_registry_snapshot.is_some();
+    let default_routing_enabled = env_enabled("ACP_ADAPTIVE_DEFAULT_LIVE_ROUTING");
+
+    let (active_policy_count, snapshot_count, active_snapshot_count) =
+        if let Some(store) = &state.local_store {
+            let policies = store.active_adaptive_fusion_policies()?;
+            let snapshots = store.adaptive_fusion_policy_snapshots()?;
+            let active_snapshots = snapshots
+                .iter()
+                .filter(|snapshot| snapshot.status == "active")
+                .count();
+            (policies.len(), snapshots.len(), active_snapshots)
+        } else {
+            (0, 0, 0)
+        };
+
+    Ok(json!({
+        "schema_version": ADAPTIVE_FUSION_OPERATOR_STATUS_SCHEMA_VERSION,
+        "completion_api": {
+            "available": true,
+            "ready_for_live_completion": provider_execution
+                && adaptive_execution
+                && auth
+                && executor_configured
+                && registry_configured
+                && !fusion_kill_switch,
+            "executor_configured": executor_configured,
+            "registry_configured": registry_configured,
+            "default_routing_enabled": default_routing_enabled,
+        },
+        "gates": {
+            "provider_execution": provider_execution,
+            "adaptive_execution": adaptive_execution,
+            "auth": auth,
+            "fusion_kill_switch": fusion_kill_switch,
+            "experiments_enabled": env_enabled("ACP_ENABLE_ADAPTIVE_EXPERIMENTS"),
+            "experiments_active": env_enabled("ACP_ADAPTIVE_EXPERIMENTS_ACTIVE"),
+            "experiments_paused": env_enabled("ACP_ADAPTIVE_EXPERIMENTS_PAUSED"),
+            "experiments_kill_switch": env_enabled("ACP_ADAPTIVE_EXPERIMENTS_KILL_SWITCH"),
+            "auto_promotion_enabled": env_enabled("ACP_ENABLE_ADAPTIVE_AUTO_PROMOTION"),
+            "auto_promotion_active": env_enabled("ACP_ADAPTIVE_AUTO_PROMOTION_ACTIVE"),
+            "auto_promotion_kill_switch": env_enabled("ACP_ADAPTIVE_AUTO_PROMOTION_KILL_SWITCH"),
+        },
+        "policy": {
+            "active_policy_count": active_policy_count,
+            "snapshot_count": snapshot_count,
+            "active_snapshot_count": active_snapshot_count,
+            "live_execution_authority": false,
+            "requires_explicit_adaptive_plan": true,
+        },
+    }))
+}
+
+fn env_enabled(key: &str) -> bool {
+    std::env::var(key)
+        .map(|value| value == "1" || value.eq_ignore_ascii_case("true"))
+        .unwrap_or(false)
 }

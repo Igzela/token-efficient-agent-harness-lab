@@ -455,6 +455,56 @@ async fn axum_dashboard_exposes_read_only_cli_capability() {
 }
 
 #[tokio::test]
+async fn axum_dashboard_exposes_adaptive_fusion_operator_status() {
+    let default_app = build_axum_router(AxumApiState::new());
+    let default_response = default_app
+        .oneshot(
+            Request::builder()
+                .method(Method::GET)
+                .uri("/api/v1/dashboard")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(default_response.status(), StatusCode::OK);
+    let default_body = response_json(default_response).await;
+    assert_eq!(
+        default_body["adaptive_fusion"],
+        json!({
+            "schema_version": "adaptive_fusion_operator_status.v1",
+            "completion_api": {
+                "available": true,
+                "ready_for_live_completion": false,
+                "executor_configured": false,
+                "registry_configured": false,
+                "default_routing_enabled": false,
+            },
+            "gates": {
+                "provider_execution": false,
+                "adaptive_execution": false,
+                "auth": false,
+                "fusion_kill_switch": false,
+                "experiments_enabled": false,
+                "experiments_active": false,
+                "experiments_paused": false,
+                "experiments_kill_switch": false,
+                "auto_promotion_enabled": false,
+                "auto_promotion_active": false,
+                "auto_promotion_kill_switch": false,
+            },
+            "policy": {
+                "active_policy_count": 0,
+                "snapshot_count": 0,
+                "active_snapshot_count": 0,
+                "live_execution_authority": false,
+                "requires_explicit_adaptive_plan": true,
+            },
+        })
+    );
+}
+
+#[tokio::test]
 async fn axum_dispatches_filters_by_search_query() {
     let dir = tempdir().unwrap();
     let store = LocalProductStore::new(dir.path().join("dispatch.db")).unwrap();
