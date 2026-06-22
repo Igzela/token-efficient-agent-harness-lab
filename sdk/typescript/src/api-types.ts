@@ -437,6 +437,7 @@ export interface AdaptiveFusionOperatorStatus {
     ready_for_live_completion: boolean;
     executor_configured: boolean;
     registry_configured: boolean;
+    storage_configured: boolean;
     default_routing_enabled: boolean;
   };
   gates: {
