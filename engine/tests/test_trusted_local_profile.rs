@@ -1,6 +1,7 @@
 use engine::trusted_local::{
     EffectiveExecutionGates, TrustedLocalProfileInput, TrustedLocalProfileStatus,
-    TRUSTED_LOCAL_PROFILE_SCHEMA_VERSION,
+    TrustedLocalTaskAdvancementStatus, TRUSTED_LOCAL_PROFILE_SCHEMA_VERSION,
+    TRUSTED_LOCAL_TASK_ADVANCEMENT_SCHEMA_VERSION,
 };
 use std::collections::BTreeMap;
 
@@ -283,4 +284,155 @@ fn effective_gates_do_not_elevate_blocked_profile() {
     assert!(!gates.default_routing);
     assert!(!gates.experiments_enabled);
     assert!(!gates.auto_promotion_enabled);
+}
+
+#[test]
+fn task_advancement_is_inert_until_explicitly_requested() {
+    let environment = ready_environment();
+
+    let status =
+        TrustedLocalTaskAdvancementStatus::from_lookup(|key| environment.get(key).cloned());
+
+    assert_eq!(
+        status.schema_version,
+        TRUSTED_LOCAL_TASK_ADVANCEMENT_SCHEMA_VERSION
+    );
+    assert!(!status.requested);
+    assert!(!status.ready);
+    assert!(status.blockers.is_empty());
+    assert_eq!(status.executor_type, "adaptive_provider");
+    assert_eq!(status.worker_count, 1);
+    assert_eq!(status.max_concurrent, 4);
+}
+
+#[test]
+fn task_advancement_requires_ready_profile_and_adaptive_executor() {
+    let mut environment = ready_environment();
+    environment.insert(
+        "ACP_TRUSTED_LOCAL_TASK_ADVANCEMENT".to_string(),
+        "1".to_string(),
+    );
+    environment.remove("ACP_COST_DAILY_USD");
+    environment.insert(
+        "ACP_SCHEDULER_EXECUTOR".to_string(),
+        "codex_cli".to_string(),
+    );
+
+    let status =
+        TrustedLocalTaskAdvancementStatus::from_lookup(|key| environment.get(key).cloned());
+
+    assert!(!status.ready);
+    assert_eq!(
+        status.blockers,
+        vec![
+            "trusted_local_profile_not_ready",
+            "scheduler_executor_not_adaptive_provider",
+        ]
+    );
+}
+
+#[test]
+fn task_advancement_accepts_bounded_default_scheduler_configuration() {
+    let mut environment = ready_environment();
+    environment.insert(
+        "ACP_TRUSTED_LOCAL_TASK_ADVANCEMENT".to_string(),
+        "1".to_string(),
+    );
+
+    let status =
+        TrustedLocalTaskAdvancementStatus::from_lookup(|key| environment.get(key).cloned());
+    let gates = EffectiveExecutionGates::from_lookup(|key| environment.get(key).cloned());
+
+    assert!(status.ready);
+    assert!(status.blockers.is_empty());
+    assert_eq!(status.executor_type, "adaptive_provider");
+    assert_eq!(status.worker_count, 1);
+    assert_eq!(status.max_concurrent, 4);
+    assert!(gates.scheduler_enabled);
+    assert!(gates.supervised_workers_enabled);
+}
+
+#[test]
+fn task_advancement_rejects_unbounded_scheduler_configuration() {
+    let mut environment = ready_environment();
+    environment.extend([
+        (
+            "ACP_TRUSTED_LOCAL_TASK_ADVANCEMENT".to_string(),
+            "1".to_string(),
+        ),
+        ("ACP_SUPERVISED_WORKER_COUNT".to_string(), "5".to_string()),
+        ("ACP_SCHEDULER_MAX_CONCURRENT".to_string(), "4".to_string()),
+        ("ACP_SCHEDULER_INTERVAL_MS".to_string(), "10".to_string()),
+        (
+            "ACP_SCHEDULER_LEASE_TIMEOUT_MS".to_string(),
+            "999".to_string(),
+        ),
+    ]);
+
+    let status =
+        TrustedLocalTaskAdvancementStatus::from_lookup(|key| environment.get(key).cloned());
+
+    assert!(!status.ready);
+    assert_eq!(
+        status.blockers,
+        vec![
+            "worker_count_exceeds_max_concurrent",
+            "scheduler_interval_out_of_bounds",
+            "scheduler_lease_timeout_out_of_bounds",
+        ]
+    );
+}
+
+#[test]
+fn task_advancement_rejects_explicitly_invalid_numeric_configuration() {
+    let mut environment = ready_environment();
+    environment.extend([
+        (
+            "ACP_TRUSTED_LOCAL_TASK_ADVANCEMENT".to_string(),
+            "1".to_string(),
+        ),
+        ("ACP_SUPERVISED_WORKER_COUNT".to_string(), "0".to_string()),
+        (
+            "ACP_SCHEDULER_MAX_CONCURRENT".to_string(),
+            "invalid".to_string(),
+        ),
+        (
+            "ACP_SCHEDULER_INTERVAL_MS".to_string(),
+            "invalid".to_string(),
+        ),
+        (
+            "ACP_SCHEDULER_LEASE_TIMEOUT_MS".to_string(),
+            "0".to_string(),
+        ),
+    ]);
+
+    let status =
+        TrustedLocalTaskAdvancementStatus::from_lookup(|key| environment.get(key).cloned());
+
+    assert!(!status.ready);
+    assert_eq!(status.worker_count, 0);
+    assert_eq!(status.max_concurrent, 0);
+    assert_eq!(
+        status.blockers,
+        vec![
+            "worker_count_out_of_bounds",
+            "scheduler_max_concurrent_out_of_bounds",
+            "scheduler_interval_out_of_bounds",
+            "scheduler_lease_timeout_out_of_bounds",
+        ]
+    );
+}
+
+#[test]
+fn effective_gates_preserve_legacy_scheduler_flags_without_task_advancement() {
+    let environment = BTreeMap::from([
+        ("ACP_ENABLE_SCHEDULER".to_string(), "1".to_string()),
+        ("ACP_ENABLE_SUPERVISED_WORKERS".to_string(), "1".to_string()),
+    ]);
+
+    let gates = EffectiveExecutionGates::from_lookup(|key| environment.get(key).cloned());
+
+    assert!(!gates.task_advancement.requested);
+    assert!(gates.scheduler_enabled);
+    assert!(gates.supervised_workers_enabled);
 }
