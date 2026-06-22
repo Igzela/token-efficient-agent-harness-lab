@@ -67,6 +67,16 @@ pub(crate) async fn api_dashboard(
             json!(provider_pricing_from_env().configured()),
         );
     }
+    let workers_running = state
+        .scheduler
+        .as_ref()
+        .and_then(|scheduler| scheduler.lock().ok())
+        .is_some_and(|scheduler| scheduler.is_running());
+    if workers_running {
+        if let Some(boundaries) = body.get_mut("boundaries").and_then(|v| v.as_object_mut()) {
+            boundaries.insert("runtime_workers".to_string(), json!("enabled"));
+        }
+    }
     if let Some(object) = body.as_object_mut() {
         object.insert("cli".to_string(), json!(state.cli_capability()));
         object.insert(
@@ -103,6 +113,7 @@ fn adaptive_fusion_operator_status(state: &AxumApiState) -> Result<serde_json::V
     Ok(json!({
         "schema_version": ADAPTIVE_FUSION_OPERATOR_STATUS_SCHEMA_VERSION,
         "trusted_local_profile": effective_gates.profile,
+        "trusted_local_task_advancement": effective_gates.task_advancement,
         "completion_api": {
             "available": true,
             "ready_for_live_completion": provider_execution

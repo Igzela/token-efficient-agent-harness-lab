@@ -192,6 +192,15 @@ export interface AdaptiveFusionOperatorStatus {
       auto_promotion: boolean;
     };
   };
+  trusted_local_task_advancement: {
+    schema_version: "trusted_local_task_advancement.v1";
+    requested: boolean;
+    ready: boolean;
+    blockers: string[];
+    executor_type: string;
+    worker_count: number;
+    max_concurrent: number;
+  };
   completion_api: {
     available: boolean;
     ready_for_live_completion: boolean;
