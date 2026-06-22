@@ -1,6 +1,6 @@
 # Architecture Book
 
-Last updated: 2026-06-20
+Last updated: 2026-06-22
 
 This is the current architecture baseline for the Token-Efficient Agent Harness Lab. Historical phase plans, closeout reports, and long-form strategy docs live under `docs/archive/`.
 
@@ -10,7 +10,7 @@ The system is a local/small-team self-hosted macro-orchestrator control plane fo
 
 Default posture:
 
-- Provider execution is off unless `ACP_ENABLE_PROVIDER_EXECUTION=1`.
+- Provider execution is enabled by a ready `ACP_TRUSTED_LOCAL_PROFILE=1` trusted-local profile or the standalone legacy `ACP_ENABLE_PROVIDER_EXECUTION=1` gate. Both paths require protected auth, configured provider metadata, symbolic credentials, positive pricing/cost caps, audit, redaction, and kill controls; missing prerequisites fail closed.
 - Installed local Claude/Codex CLIs are discovered by default; explicit workflow ticks invoke them. `ACP_ENABLE_CLI_EXECUTION=0` disables this path.
 - Target output remains off unless `ACP_ENABLE_TARGET_REPO_OUTPUT=1`. V2-3 permits only an app-owned git worktree plus approval-bound patch export or `acp/*` branch push; the registered target working tree and `main` remain protected.
 - No release/tag/deploy/apply controls exist in the app runtime.
@@ -108,7 +108,7 @@ Do not create a second runtime kernel for V2. Extend the existing `node_executor
 | `cli` | CLI executor only; requires CLI gate |
 | `auto` | Hybrid provider/CLI routing by complexity threshold |
 
-Workflow node execution is explicit through scheduler/tick paths. `CommandNodeExecutor` rejects shell metacharacters, avoids `sh -c`, uses allowlisted binaries, validates supplied workspace cwd, clears inherited environment except `PATH`, caps output, enforces timeout kill, and emits structured results. Installed Claude/Codex CLIs are discovered by default; `ACP_ENABLE_CLI_EXECUTION=0` disables them. The dashboard receives a startup capability snapshot with only enabled/detected booleans; it exposes no binary paths and grants no execution authority. CLI subprocess env is restricted to `PATH` plus `ACP_CLI_ENV_ALLOWLIST`, and output is redacted/capped. Codex uses JSONL with workspace-write sandbox and ephemeral sessions. Provider workflow ticks still require `ACP_ENABLE_PROVIDER_EXECUTION=1`, provider configuration, scope, cost gates, audit, and retries.
+Workflow node execution is explicit through scheduler/tick paths. `CommandNodeExecutor` rejects shell metacharacters, avoids `sh -c`, uses allowlisted binaries, validates supplied workspace cwd, clears inherited environment except `PATH`, caps output, enforces timeout kill, and emits structured results. Installed Claude/Codex CLIs are discovered by default; `ACP_ENABLE_CLI_EXECUTION=0` disables them. The dashboard receives a startup capability snapshot with only enabled/detected booleans; it exposes no binary paths and grants no execution authority. CLI subprocess env is restricted to `PATH` plus `ACP_CLI_ENV_ALLOWLIST`, and output is redacted/capped. Codex uses JSONL with workspace-write sandbox and ephemeral sessions. Provider workflow ticks require a ready trusted-local profile or the standalone legacy provider gate, plus provider configuration, scope, cost gates, audit, and retries.
 
 Workspace verification is a separate allowlisted command path for the supported Rust, JavaScript, Python, Go, and Make toolchains. It records command, status, output/error, latency, timeout, attempt, and timestamp in workspace evidence. A failed check may request at most two CLI repairs; exhausted verification records `verification_failed` and blocks target output.
 
@@ -141,7 +141,7 @@ These are accepted current limitations, not hidden TODOs:
 
 - V2 real output and its closeout implementation are complete; `v0.1.0` published-asset installation verification passed.
 - V2-1 app-owned workspace hardening is implemented, but it is not hard process/container/VM sandboxing and does not authorize target-repository writes.
-- Provider API output remains gated. Installed local CLI discovery defaults on, while each execution still requires an explicit workflow tick.
+- Provider API output is available through the ready trusted-local profile or standalone legacy gates. Installed local CLI discovery defaults on, while each execution still requires an explicit workflow tick.
 - Hard process/container/VM sandbox isolation is not implemented and is not part of V2-1 unless separately approved.
 - V2-3 controlled target output is merged. It creates no merge/deploy/apply authority and preserves the registered target working tree and `main`.
 - GitHub PR creation is default-off and adds no merge authority.

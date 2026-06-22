@@ -523,22 +523,23 @@ All environment variables are documented in `.env.example`. Key variables:
 | `ACP_BACKUP_DIR` | `<db_parent>/backups` | Backup directory |
 | `ACP_DASHBOARD_DIR` | `dashboard/out` | Static dashboard assets path |
 | `ACP_PROVIDER_TYPE` | `stub` | Provider: `stub`, `openai_compatible`, `anthropic` |
-| `ACP_ENABLE_PROVIDER_EXECUTION` | (off) | Set to `1` for real provider calls |
-| `ACP_ENABLE_ADAPTIVE_FUSION_EXECUTION` | (off) | Enables explicit bounded `adaptive_provider` workflow ticks |
+| `ACP_TRUSTED_LOCAL_PROFILE` | (off) | Recommended internal profile; when ready, composes provider, adaptive execution, experiments, promotion, and default routing after auth/credential/pricing/cost validation |
+| `ACP_ENABLE_PROVIDER_EXECUTION` | (off) | Standalone legacy gate for real provider calls without the trusted-local profile |
+| `ACP_ENABLE_ADAPTIVE_FUSION_EXECUTION` | (off) | Standalone legacy gate for explicit bounded `adaptive_provider` workflow ticks without the trusted-local profile |
 | `ACP_ADAPTIVE_PROVIDER_ENDPOINTS_JSON` | (none) | Up to eight fixed provider/model endpoint definitions with credential env references |
 | `ACP_ADAPTIVE_FUSION_KILL_SWITCH` | (off) | Blocks adaptive provider execution when set to `1` at startup |
 | `ACP_ADAPTIVE_COMPLETION_MAX_COST_USD` | `1.0` | Per adaptive completion candidate cost ceiling |
 | `ACP_ADAPTIVE_COMPLETION_MAX_TOKENS` | `32768` | Per adaptive completion aggregate token ceiling |
 | `ACP_ADAPTIVE_COMPLETION_MAX_LATENCY_MS` | `300000` | Per adaptive completion elapsed-time ceiling |
-| `ACP_ENABLE_ADAPTIVE_EXPERIMENTS` | (off) | First gate for deterministic online candidate experiments |
-| `ACP_ADAPTIVE_EXPERIMENTS_ACTIVE` | (off) | Second gate for online experiments |
+| `ACP_ENABLE_ADAPTIVE_EXPERIMENTS` | (off) | Standalone legacy first gate for deterministic online candidate experiments without the trusted-local profile |
+| `ACP_ADAPTIVE_EXPERIMENTS_ACTIVE` | (off) | Standalone legacy second gate for online experiments |
 | `ACP_ADAPTIVE_EXPERIMENT_TRAFFIC_RATE` | `0.01` | Experiment traffic fraction; values above `0.05` are rejected |
 | `ACP_ADAPTIVE_EXPERIMENTS_PAUSED` | (off) | Temporarily blocks new experiment assignment |
 | `ACP_ADAPTIVE_EXPERIMENTS_KILL_SWITCH` | (off) | Emergency stop for experiment assignment |
-| `ACP_ENABLE_ADAPTIVE_AUTO_PROMOTION` | (off) | First gate for evidence-driven automatic promotion |
-| `ACP_ADAPTIVE_AUTO_PROMOTION_ACTIVE` | (off) | Second gate for automatic promotion |
+| `ACP_ENABLE_ADAPTIVE_AUTO_PROMOTION` | (off) | Standalone legacy first gate for evidence-driven automatic promotion without the trusted-local profile |
+| `ACP_ADAPTIVE_AUTO_PROMOTION_ACTIVE` | (off) | Standalone legacy second gate for automatic promotion |
 | `ACP_ADAPTIVE_AUTO_PROMOTION_KILL_SWITCH` | (off) | Emergency stop for automatic promotion |
-| `ACP_ADAPTIVE_DEFAULT_LIVE_ROUTING` | (off) | Delegates ordinary dispatch requests to adaptive completion routing |
+| `ACP_ADAPTIVE_DEFAULT_LIVE_ROUTING` | (off) | Standalone legacy delegation of ordinary dispatch requests to adaptive completion routing without the trusted-local profile |
 | `ACP_ENABLE_ADAPTIVE_POLICY_PROMOTION` | (off) | Enables AF-4 adaptive policy promotion API gate |
 | `ACP_ADAPTIVE_POLICY_PROMOTION_ACTIVE` | (off) | Second AF-4 promotion activation gate; human confirmation and `team:admin` still required |
 | `ACP_ENABLE_ADAPTIVE_EXPLORATION` | (off) | Enables AF-4 bounded exploration gate |
