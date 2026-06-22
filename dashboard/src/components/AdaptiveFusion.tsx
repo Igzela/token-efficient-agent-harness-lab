@@ -16,6 +16,7 @@ import type {
   AdaptivePolicyPromotionRequest,
   AdaptivePolicySnapshot,
 } from "@/lib/types";
+import { AdaptiveFusionOperatorEvidence } from "./AdaptiveFusionOperatorEvidence";
 import { EmptyState } from "./EmptyState";
 import {
   AdaptiveFusionPolicyTable,
@@ -443,6 +444,12 @@ export function AdaptiveFusion({
         </StateBanner>
       )}
 
+      <AdaptiveFusionGatePanel status={operatorStatus} />
+
+      {operatorStatus && <AdaptiveFusionOperatorEvidence status={operatorStatus} />}
+
+      <AdaptiveCompletionTester />
+
       {loading && !data ? (
         <div className="loading-row"><span className="spinner" /> Loading adaptive fusion policies...</div>
       ) : !data && !error ? (
@@ -469,10 +476,6 @@ export function AdaptiveFusion({
               tone={data.requires_explicit_adaptive_plan ? "ok" : "warn"}
             />
           </div>
-
-          <AdaptiveFusionGatePanel status={operatorStatus} />
-
-          <AdaptiveCompletionTester />
 
           <div className="grid two">
             <div className="subcard stack">
