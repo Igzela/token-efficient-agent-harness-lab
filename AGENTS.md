@@ -8,7 +8,7 @@ This repository is the Token-Efficient Agent Harness Lab: a local deterministic 
 - **Real-World Testing Mode** — validated through real tasks, branches, commits, PRs, CI, gated auto-merge
 - **Agent Autonomous Maintenance Mode** — agents may advance implementation, docs, CI, tests, review, and low-risk merge flow under bounded safety gates
 - **Trusted Local Autonomous Execution Track (IAE)** — complete through IAE-3 trusted-local profile, bounded task advancement, and operator control/evidence
-- **Adaptive Fusion Routing Track** — complete through AF-7; legacy gates and the IAE-1 profile are supported
+- **Adaptive Fusion Routing Track** — complete through AF-7; IAE trusted-local profile is the recommended bounded local path, with legacy gates retained for compatibility
 
 **Complete tracks:**
 - Dispatch Kernel Phases 1–7 (including 6A, 6B-1/2/3, Gates 1–3): STABLE
@@ -29,9 +29,9 @@ This repository is the Token-Efficient Agent Harness Lab: a local deterministic 
 
 ## App Runtime vs Agent Maintenance Boundary
 
-**App/runtime** protects registered target working trees and `main`. Target output remains approval-bound through an app-owned git worktree and `acp/*` branch, patch export, or optional GitHub PR creation. Installed local Claude/Codex CLIs are available for workflow execution. The IAE track authorizes a trusted-local profile that may automatically enable provider APIs, adaptive routing, experiments, promotion, and bounded workers when protected auth, endpoint credentials, budgets, audit, rollback, and kill controls are configured. Missing prerequisites must fail closed.
+**App/runtime** protects registered target working trees and `main`. Target output remains approval-bound through an app-owned git worktree and `acp/*` branch, patch export, or optional GitHub PR creation. Installed local Claude/Codex CLIs are available for workflow execution. The IAE track authorizes a trusted-local profile that may automatically enable provider APIs, adaptive routing, experiments, promotion, and bounded workers when protected auth, endpoint credentials, budgets, audit, rollback, and kill controls are configured. This trusted-local path is the preferred internal execution mode; missing prerequisites must fail closed.
 
-**Agent maintenance** may autonomously audit, plan, implement, test, review, simplify, document, create branches/commits/PRs, repair CI, and merge low-risk green changes under `docs/REAL_WORLD_TESTING_PLAYBOOK.md`. Documentation-only corrections may be committed directly to `main` when the working tree is clean and validation passes.
+**Agent maintenance** may autonomously audit, plan, implement, test, review, simplify, document, create branches/commits/PRs, repair CI, and merge low-risk green changes under `docs/REAL_WORLD_TESTING_PLAYBOOK.md`. Agents may continue bounded internal execution and operator-surface improvements already authorized in `docs/NEXT_DECISION.md` without asking for a new approval each time. Documentation-only corrections may be committed directly to `main` when the working tree is clean and validation passes.
 
 **Requires explicit human approval:** credentials or paid-resource decisions, destructive or irreversible operations, DB migrations, production release/tag/deploy, cloud production, auth/security redesign, target-output authority expansion, or materially different user-visible product behavior outside `docs/NEXT_DECISION.md`.
 
@@ -69,7 +69,7 @@ The responsible coding agent is expected to move this repository forward end to 
 
 IAE authorizes bounded local runtime advancement through existing workflow, scheduler, provider, adaptive-fusion, supervised-patch, and target-output modules. It does not authorize unbounded loops, secret persistence, direct target-repository `main` writes, or bypassing approval, budget, audit, redaction, rollback, and kill controls.
 
-The trusted-local profile may make provider, adaptive routing, experiment, promotion, and supervised-worker execution automatically available after startup validation proves protected auth, configured symbolic credentials, bounded cost/token/call/time/concurrency limits, persistent audit, and live kill/rollback controls. Missing or invalid prerequisites must leave execution unavailable.
+The trusted-local profile may make provider, adaptive routing, experiment, promotion, and supervised-worker execution automatically available after startup validation proves protected auth, configured symbolic credentials, bounded cost/token/call/time/concurrency limits, persistent audit, and live kill/rollback controls. This is the normal internal execution profile for approved local work. Missing or invalid prerequisites must leave execution unavailable.
 
 The V2 Real Production Output Track approved on 2026-06-17 is that explicit batch for selected real-output capabilities. It must follow `docs/NEXT_DECISION.md`: V2-1 safety base, V2-2 provider/CLI output, V2-3 branch/worktree/PR flow, V2-4 bounded supervised workers, V2-5 product UX.
 

@@ -82,11 +82,11 @@ curl -s -X POST http://127.0.0.1:8080/api/v1/dispatch \
 
 5. Installed Claude/Codex CLIs are discovered by default. Select a CLI executor in the task workflow; set `ACP_ENABLE_CLI_EXECUTION=0` when local subprocess execution must be disabled.
 
-Provider execution remains off unless `ACP_ENABLE_PROVIDER_EXECUTION=1`. Target output remains off unless `ACP_ENABLE_TARGET_REPO_OUTPUT=1`; when enabled, it is limited to a controlled app-owned git worktree, patch export, or approval-bound `acp/*` branch push. It never writes the registered target working tree or `main`.
+Provider execution is enabled by the recommended ready trusted-local profile, or by the standalone legacy `ACP_ENABLE_PROVIDER_EXECUTION=1` gate. Target output remains off unless `ACP_ENABLE_TARGET_REPO_OUTPUT=1`; when enabled, it is limited to a controlled app-owned git worktree, patch export, or approval-bound `acp/*` branch push. It never writes the registered target working tree or `main`.
 
 ### Adaptive Fusion provider routing
 
-The recommended trusted-local path requires protected mode, configured auth, positive cost caps, endpoint pricing, and symbolic provider credentials:
+The recommended trusted-local path enables bounded internal provider execution, adaptive routing, experiments, promotion, and default routing after protected mode, configured auth, positive cost caps, endpoint pricing, and symbolic provider credentials validate:
 
 ```bash
 export ACP_REQUIRE_AUTH=1
@@ -102,7 +102,7 @@ export ACP_ADAPTIVE_PROVIDER_ENDPOINTS_JSON='[
 ]'
 ```
 
-At startup, the profile fails closed unless auth, endpoint parsing, credential availability, strictly positive pricing, and both cost caps pass. The dashboard Adaptive Fusion gate panel reports `ready`, `blocked` with stable blocker codes, or `off`. Legacy `ACP_ENABLE_PROVIDER_EXECUTION`, `ACP_ENABLE_ADAPTIVE_FUSION_EXECUTION`, experiment, promotion, and default-routing flags remain supported for independent operation.
+At startup, the profile fails closed unless auth, endpoint parsing, credential availability, strictly positive pricing, and both cost caps pass. The dashboard Adaptive Fusion gate panel reports `ready`, `blocked` with stable blocker codes, or `off`. Legacy `ACP_ENABLE_PROVIDER_EXECUTION`, `ACP_ENABLE_ADAPTIVE_FUSION_EXECUTION`, experiment, promotion, and default-routing flags remain supported for independent operation without the profile.
 
 To let the local scheduler advance already-created queued adaptive workflow runs, add the separate acknowledgement:
 

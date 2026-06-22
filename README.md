@@ -7,7 +7,7 @@
 
 A local deterministic harness and self-hosted macro-orchestrator control plane for studying event-sourced agent workflow infrastructure. Includes a Rust engine with axum API, SQLite state, TypeScript dashboard and SDK, and Python SDK.
 
-> **This is a local research tool, not a cloud SaaS.** Provider and adaptive execution can use legacy explicit gates or the fail-closed IAE trusted-local profile. No container/VM isolation is provided.
+> **This is a local research tool, not a cloud SaaS.** Provider and adaptive execution use the fail-closed IAE trusted-local profile for bounded internal operation; legacy explicit gates remain available for compatibility. No container/VM isolation is provided.
 
 For the full system architecture, data flows, API surface, and safety boundaries, see [`docs/ARCHITECTURE_BOOK.md`](docs/ARCHITECTURE_BOOK.md).
 
@@ -93,7 +93,7 @@ agent-control-plane
 
 This repository is not a cloud production SaaS, hosted multi-tenant service, or direct-deploy tool. V2 provides auditable real-repository patch/PR production. IAE authorizes bounded trusted-local provider and autonomous task execution through the phase plan in `docs/NEXT_DECISION.md`.
 
-Provider API execution requires explicit endpoint/auth/budget configuration; CI uses stub/mock paths and does not call real provider APIs. A ready trusted-local profile activates bounded adaptive routing, experiments, promotion, and default routing. Installed local Claude/Codex CLIs are discovered by default, but execution still requires an explicit workflow action. The local dashboard remains guarded; dangerous actions require confirmation and audit logging.
+Provider API execution requires explicit endpoint/auth/budget configuration; CI uses stub/mock paths and does not call real provider APIs. A ready trusted-local profile activates bounded provider execution, adaptive routing, experiments, promotion, default routing, and acknowledged task advancement for internal local operation. Installed local Claude/Codex CLIs are discovered by default, but execution still requires an explicit workflow action. The local dashboard remains guarded; dangerous actions require confirmation and audit logging.
 
 ## Toolchain
 
@@ -180,9 +180,9 @@ ACP_DASHBOARD_DIR=dashboard/out \
 cargo run -p engine
 ```
 
-`ACP_PROVIDER_TYPE=openai_compatible` and `ACP_PROVIDER_TYPE=anthropic` support guarded local execution. Use either the legacy `ACP_ENABLE_PROVIDER_EXECUTION=1` gate or a ready `ACP_TRUSTED_LOCAL_PROFILE=1`, plus explicit provider configuration, `ACP_REQUIRE_AUTH=1`, a local admin API key, positive cost caps, and narrow network exposure. Do not commit provider credentials. CI uses stub providers rather than paid endpoints.
+`ACP_PROVIDER_TYPE=openai_compatible` and `ACP_PROVIDER_TYPE=anthropic` support guarded local execution. For internal local operation, use a ready `ACP_TRUSTED_LOCAL_PROFILE=1`; the legacy `ACP_ENABLE_PROVIDER_EXECUTION=1` gate remains available for compatibility. Both paths require explicit provider configuration, `ACP_REQUIRE_AUTH=1`, a local admin API key, positive cost caps, and narrow network exposure. Do not commit provider credentials. CI uses stub providers rather than paid endpoints.
 
-Adaptive single/fallback/fusion execution is additionally gated by `ACP_ENABLE_ADAPTIVE_FUSION_EXECUTION=1`. Configure up to eight fixed provider/model endpoints through `ACP_ADAPTIVE_PROVIDER_ENDPOINTS_JSON`; entries contain credential environment variable names, never credential values. Explicit workflow ticks remain supported, and AF-6 adds authenticated `POST /api/v1/adaptive-fusion/completions` with routing metadata hidden by default. Experiments, auto promotion, and default `/dispatch` delegation each require separate opt-in gates. See [`docs/RUNBOOK.md`](docs/RUNBOOK.md).
+Adaptive single/fallback/fusion execution is activated by the trusted-local profile after readiness validation; `ACP_ENABLE_ADAPTIVE_FUSION_EXECUTION=1` remains the standalone legacy gate. Configure up to eight fixed provider/model endpoints through `ACP_ADAPTIVE_PROVIDER_ENDPOINTS_JSON`; entries contain credential environment variable names, never credential values. Explicit workflow ticks remain supported, and AF-6 adds authenticated `POST /api/v1/adaptive-fusion/completions` with routing metadata hidden by default. Experiments, auto promotion, and default `/dispatch` delegation are composed by the ready trusted-local profile, or by their standalone legacy gates when operating without the profile. See [`docs/RUNBOOK.md`](docs/RUNBOOK.md).
 
 Production-like local beta profile:
 
@@ -273,7 +273,7 @@ bundle = client.dispatch("Summarize docs without provider calls")
 ## Safety Boundaries
 
 - No real model calls without explicit endpoint, credential, auth, pricing, and budget configuration; the trusted-local profile fails closed when any prerequisite is missing.
-- No unattended real agents; explicit supervised local workflow execution exists behind opt-in gates.
+- No unbounded unattended agents; bounded trusted-local task advancement can run after readiness validation and explicit acknowledgement, while standalone legacy gates remain available.
 - No real sandbox/process/container/VM isolation runtime; V2-1 is limited to app-owned workspace confinement unless separately approved.
 - Supervised patch execution remains app-owned and gated. V2-3 adds an optional controlled git worktree plus approval-bound patch export or `acp/*` branch push; it does not modify the registered target working tree or `main`.
 - Installed local CLI executors are discovered by default for explicit workflow actions; set `ACP_ENABLE_CLI_EXECUTION=0` to disable them.

@@ -14,7 +14,7 @@
 - Real-World Testing Mode — validated through real tasks, branches, commits, PRs, CI, gated auto-merge
 - Agent Autonomous Maintenance Mode — agents autonomously audit, implement, verify, review, document, and ship bounded changes
 - Trusted Local Autonomous Execution Track (IAE) — complete through IAE-3 trusted-local profile, bounded task advancement, and operator control/evidence
-- Adaptive Fusion Routing Track — complete through AF-7; legacy gates and the IAE-1 profile are supported
+- Adaptive Fusion Routing Track — complete through AF-7; IAE trusted-local profile is the recommended bounded local path, with legacy gates retained for compatibility
 
 **Complete tracks:**
 - Dispatch Kernel Phases 1–7 (including 6A, 6B-1/2/3, Gates 1–3): STABLE
@@ -40,7 +40,7 @@
 
 **App/runtime** does not write target repos by default. V2-3 adds only env-gated, approval-bound output through an app-owned git worktree and `acp/*` branch or patch export; registered target working trees and `main` remain protected.
 
-**Agent maintenance** may autonomously create branches, commits, PRs, repair CI, and merge low-risk green work. Documentation-only corrections may go directly to `main` after validation.
+**Agent maintenance** may autonomously create branches, commits, PRs, repair CI, and merge low-risk green work. Agents may continue bounded internal execution and operator-surface improvements already authorized in `docs/NEXT_DECISION.md` without asking for a new approval each time. Documentation-only corrections may go directly to `main` after validation.
 
 **Requires explicit human approval:** credentials or paid-resource decisions, destructive operations, DB migrations, release/tag/deploy, cloud production, auth/security redesign, target-output authority expansion, or materially different product behavior outside `docs/NEXT_DECISION.md`.
 

@@ -4,7 +4,7 @@
 
 Phase 8, V2 Real Production Output, Real Output Closeout, and Adaptive Fusion AF-0 through AF-7 are complete.
 
-The Trusted Local Autonomous Execution Track (IAE) was approved on 2026-06-22. It authorizes the project and maintaining agents to move from fragmented opt-in execution toward a bounded trusted-local operating profile.
+The Trusted Local Autonomous Execution Track (IAE) was approved on 2026-06-22. It authorizes the project and maintaining agents to move from fragmented opt-in execution toward a bounded trusted-local operating profile. That profile is now the recommended internal execution path.
 
 IAE may change local defaults for provider execution, adaptive routing, experiments, automatic promotion, default routing, and supervised workers. It must not bypass protected auth, symbolic credential handling, budget/token/call/time/concurrency ceilings, provider/model identity, redaction, audit, snapshots, rollback, approval-bound target output, or kill switches. Missing prerequisites must fail closed.
 
@@ -48,7 +48,7 @@ Not auto-merge eligible: auth/security redesign, database schema, release, deplo
 
 ## Autonomously maintain
 
-Maintaining agents may autonomously audit, plan, implement, test, review, simplify, document, create PRs, repair CI, and merge low-risk green work. They may advance IAE phases without requesting approval again while preserving the trusted-local boundary above.
+Maintaining agents may autonomously audit, plan, implement, test, review, simplify, document, create PRs, repair CI, and merge low-risk green work. They may continue bounded internal execution, operator-surface, and IAE work without requesting approval again while preserving the trusted-local boundary above.
 
 ## Disallowed by Default
 
@@ -137,9 +137,9 @@ AF-6 implementation slices:
 | AF-6A | Candidate generator | **Complete** — deterministic single/fallback/fusion candidates from configured endpoints; bounded IDs, hashes, costs, capabilities, aggregate caps, duplicate detection, and model bindings |
 | AF-6B | Parallel panel execution | **Complete** — panel calls run concurrently with a bounded cap; judge and synthesizer remain serial; quorum, timeout, identity, token, cost, audit, redaction, and kill behavior remain enforced |
 | AF-6C | Online observation capture | **Complete** — safe summaries feed contextual scoring without raw prompts, outputs, transcripts, secrets, repository content, or private paths |
-| AF-6D | Continuous experiments | **Complete** — default-off deterministic traffic allocation with risk, budget, token, call, time, concurrency, pause, and kill controls |
-| AF-6E | Automatic promotion | **Complete** — default-off evidence thresholds, confidence/regression guards, hash-bound snapshots, rollout, stale-evidence rejection, and rollback |
-| AF-6F | Adaptive completion API | **Complete** — authenticated `POST /api/v1/adaptive-fusion/completions`; compact metadata-hidden responses; optional default `/dispatch` routing only behind an explicit gate |
+| AF-6D | Continuous experiments | **Complete** — deterministic traffic allocation with risk, budget, token, call, time, concurrency, pause, and kill controls; activated by a ready trusted-local profile or standalone legacy gates |
+| AF-6E | Automatic promotion | **Complete** — evidence thresholds, confidence/regression guards, hash-bound snapshots, rollout, stale-evidence rejection, and rollback; activated by a ready trusted-local profile or standalone legacy gates |
+| AF-6F | Adaptive completion API | **Complete** — authenticated `POST /api/v1/adaptive-fusion/completions`; compact metadata-hidden responses; default `/dispatch` routing enabled by a ready trusted-local profile or the standalone legacy gate |
 
 ## AF-7 Operator Surface
 
