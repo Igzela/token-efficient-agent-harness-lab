@@ -478,7 +478,11 @@ export interface AdaptiveFusionOperatorStatus {
     experiment_max_calls: number;
     experiment_max_elapsed_ms: number;
     experiment_max_concurrency: number;
+    experiment_policy_valid: boolean;
+    experiment_policy_blockers: string[];
     auto_promotion_rollout_percentage: number;
+    auto_promotion_policy_valid: boolean;
+    auto_promotion_policy_blockers: string[];
     worker_count: number;
     worker_max_concurrent: number;
   };

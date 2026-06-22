@@ -38,6 +38,30 @@ fn provider_cli_env_lock() -> &'static Mutex<()> {
     LOCK.get_or_init(|| Mutex::new(()))
 }
 
+fn adaptive_operator_env_lock() -> &'static Mutex<()> {
+    static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+    LOCK.get_or_init(|| Mutex::new(()))
+}
+
+struct AdaptiveOperatorEnvGuard;
+
+impl AdaptiveOperatorEnvGuard {
+    fn invalid_policies() -> Self {
+        std::env::set_var("ACP_ADAPTIVE_EXPERIMENT_TRAFFIC_RATE", "0.5");
+        std::env::set_var("ACP_ADAPTIVE_AUTO_PROMOTION_MIN_CONFIDENCE", "2.0");
+        std::env::set_var("ACP_ADAPTIVE_AUTO_PROMOTION_ROLLOUT_PERCENTAGE", "0");
+        Self
+    }
+}
+
+impl Drop for AdaptiveOperatorEnvGuard {
+    fn drop(&mut self) {
+        std::env::remove_var("ACP_ADAPTIVE_EXPERIMENT_TRAFFIC_RATE");
+        std::env::remove_var("ACP_ADAPTIVE_AUTO_PROMOTION_MIN_CONFIDENCE");
+        std::env::remove_var("ACP_ADAPTIVE_AUTO_PROMOTION_ROLLOUT_PERCENTAGE");
+    }
+}
+
 fn target_repo_output_env_lock() -> &'static Mutex<()> {
     static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
     LOCK.get_or_init(|| Mutex::new(()))
@@ -456,6 +480,7 @@ async fn axum_dashboard_exposes_read_only_cli_capability() {
 
 #[tokio::test]
 async fn axum_dashboard_exposes_adaptive_fusion_operator_status() {
+    let _guard = adaptive_operator_env_lock().lock().await;
     let default_app = build_axum_router(AxumApiState::new());
     let default_response = default_app
         .oneshot(
@@ -541,7 +566,11 @@ async fn axum_dashboard_exposes_adaptive_fusion_operator_status() {
                 "experiment_max_calls": 8,
                 "experiment_max_elapsed_ms": 300000,
                 "experiment_max_concurrency": 3,
+                "experiment_policy_valid": true,
+                "experiment_policy_blockers": [],
                 "auto_promotion_rollout_percentage": 10,
+                "auto_promotion_policy_valid": true,
+                "auto_promotion_policy_blockers": [],
                 "worker_count": 1,
                 "worker_max_concurrent": 4,
             },
@@ -567,6 +596,40 @@ async fn axum_dashboard_exposes_adaptive_fusion_operator_status() {
                 "last_tick_at": null,
             },
         })
+    );
+}
+
+#[tokio::test]
+async fn axum_dashboard_reports_invalid_adaptive_operator_policies() {
+    let _guard = adaptive_operator_env_lock().lock().await;
+    let _env = AdaptiveOperatorEnvGuard::invalid_policies();
+    let app = build_axum_router(AxumApiState::new());
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method(Method::GET)
+                .uri("/api/v1/dashboard")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = response_json(response).await;
+    let status = &body["adaptive_fusion"];
+    assert_eq!(status["authority"]["experiments_active"], false);
+    assert_eq!(status["authority"]["auto_promotion_active"], false);
+    assert_eq!(status["bounds"]["experiment_policy_valid"], false);
+    assert_eq!(
+        status["bounds"]["experiment_policy_blockers"],
+        json!(["invalid_traffic_rate"])
+    );
+    assert_eq!(status["bounds"]["auto_promotion_policy_valid"], false);
+    assert_eq!(
+        status["bounds"]["auto_promotion_policy_blockers"],
+        json!(["invalid_minimum_confidence", "invalid_rollout_percentage"])
     );
 }
 

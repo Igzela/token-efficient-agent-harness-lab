@@ -1893,6 +1893,12 @@ th {
   min-width: 0;
 }
 
+.content-panel > *,
+.card > * {
+  max-width: 100%;
+  min-width: 0;
+}
+
 .card,
 .table-wrap,
 .subcard,

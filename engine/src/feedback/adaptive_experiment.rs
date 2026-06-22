@@ -56,6 +56,10 @@ impl AdaptiveExperimentPolicy {
                 .unwrap_or(defaults.max_concurrency),
         }
     }
+
+    pub fn validation_errors(&self) -> Vec<String> {
+        validate_policy(self)
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -266,4 +270,36 @@ fn env_u64(key: &str) -> Option<u64> {
 
 fn env_usize(key: &str) -> Option<usize> {
     std::env::var(key).ok()?.parse().ok()
+}
+
+#[cfg(test)]
+mod policy_validation_tests {
+    use super::*;
+
+    #[test]
+    fn validation_errors_reuse_runtime_policy_rules() {
+        let policy = AdaptiveExperimentPolicy {
+            traffic_rate: 0.5,
+            max_cost_usd: -1.0,
+            max_total_tokens: 0,
+            max_calls: 0,
+            max_elapsed_ms: 0,
+            max_concurrency: 4,
+        };
+
+        assert_eq!(
+            policy.validation_errors(),
+            vec![
+                "invalid_traffic_rate",
+                "invalid_experiment_cost_cap",
+                "invalid_experiment_token_cap",
+                "invalid_experiment_call_cap",
+                "invalid_experiment_time_cap",
+                "invalid_experiment_concurrency_cap",
+            ]
+        );
+        assert!(AdaptiveExperimentPolicy::default()
+            .validation_errors()
+            .is_empty());
+    }
 }
