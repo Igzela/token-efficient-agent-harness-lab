@@ -8,12 +8,12 @@
 
 **Target user**: Solo developer or small local team studying deterministic agent infrastructure on one machine or LAN.
 
-## Current State (2026-06-21)
+## Current State (2026-06-22)
 
 **Active tracks:**
 - Real-World Testing Mode — validated through real tasks, branches, commits, PRs, CI, gated auto-merge
 - Agent Autonomous Maintenance Mode — agents maintain docs/CI/tests/low-risk PR flow under playbook gates
-- Adaptive Fusion Routing Track — complete through AF-6; adaptive live execution, experiments, promotion, and default routing remain explicit and default-off
+- Adaptive Fusion Routing Track — complete through AF-7; adaptive live execution, experiments, promotion, and default routing remain explicit and default-off
 
 **Complete tracks:**
 - Dispatch Kernel Phases 1–7 (including 6A, 6B-1/2/3, Gates 1–3): STABLE
@@ -28,7 +28,7 @@
 - Real Output Closeout: COMPLETE (`v0.1.0` published and online installer verified)
 
 **Key facts:**
-- Full Rust + TypeScript stack verification passes with 0 failures (2026-06-21)
+- Full Rust + TypeScript stack verification passes with 0 failures (2026-06-22)
 - Latest release: `v0.1.0`, published 2026-06-21
 - TypeScript strict + boundary lint + build + static export pass
 - `cargo fmt`, `cargo clippy`, handoff guard all pass
