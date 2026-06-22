@@ -180,6 +180,12 @@ def write_stub(path: Path, mode: str) -> None:
     path.chmod(0o755)
 
 
+def executable_stub_dir(repo_root: Path, name: str) -> Path:
+    root = repo_root / "target" / "script-fake-cli"
+    root.mkdir(parents=True, exist_ok=True)
+    return Path(tempfile.mkdtemp(prefix=f"{name}-", dir=root))
+
+
 def assert_cli_gate(bundle: dict, executor_type: str) -> None:
     gates = bundle["decision"].get("execution_gates", [])
     assert_true(
@@ -291,9 +297,8 @@ def run_python_sdk_smoke(repo_root: Path, base_url: str, dispatch_id: str) -> di
     }
 
 
-def run_default_off_flow(repo_root: Path, engine_bin: Path, dashboard_dir: Path, data_dir: Path) -> dict:
-    bin_dir = data_dir / "bin"
-    bin_dir.mkdir(parents=True, exist_ok=True)
+def run_default_cli_discovery_flow(repo_root: Path, engine_bin: Path, dashboard_dir: Path, data_dir: Path) -> dict:
+    bin_dir = executable_stub_dir(repo_root, "trial5-default-cli")
     write_stub(bin_dir / "codex", "codex_ok")
     write_stub(bin_dir / "claude", "claude_ok")
     process, base_url = start_engine(
@@ -306,14 +311,15 @@ def run_default_off_flow(repo_root: Path, engine_bin: Path, dashboard_dir: Path,
     try:
         html = request_text(base_url, "/")
         assert_true("Agent Control Plane" in html, "static dashboard served")
-        bundle = dispatch(base_url, "Trial 5 generate Rust function for default off")
-        assert_noop_bundle(bundle, "default-off dispatch")
+        bundle = dispatch(base_url, "Trial 5 generate Rust function for default CLI discovery")
+        assert_cli_success(bundle, "codex_cli", "codex ok", 11)
         provider = request_json("GET", base_url, "/api/v1/provider/health")
-        assert_eq(provider["status"], "noop", "default-off provider health")
+        assert_eq(provider["status"], "noop", "default provider health")
         return {
             "status": "passed",
             "dashboard_static": True,
             "executor_type": bundle["execution_result"]["executor_type"],
+            "execution_status": bundle["execution_result"]["status"],
             "provider_status": provider["status"],
         }
     finally:
@@ -341,8 +347,7 @@ def run_missing_autodetect_flow(repo_root: Path, engine_bin: Path, dashboard_dir
 
 
 def run_stub_success_flow(repo_root: Path, engine_bin: Path, dashboard_dir: Path, data_dir: Path) -> dict:
-    bin_dir = data_dir / "bin"
-    bin_dir.mkdir(parents=True, exist_ok=True)
+    bin_dir = executable_stub_dir(repo_root, "trial5-success")
     codex = bin_dir / "codex"
     claude = bin_dir / "claude"
     write_stub(codex, "codex_ok")
@@ -424,8 +429,7 @@ def run_failure_case(
     expected_domain: str,
     timeout_ms: str = "5000",
 ) -> dict:
-    bin_dir = data_dir / "bin"
-    bin_dir.mkdir(parents=True, exist_ok=True)
+    bin_dir = executable_stub_dir(repo_root, f"trial5-{expected_domain}")
     codex = bin_dir / "codex"
     if stub_mode is None:
         codex = bin_dir / "missing-codex"
@@ -523,7 +527,9 @@ def main() -> int:
                 "claude": shutil.which("claude"),
                 "note": "discovery only; deterministic beta uses stubs",
             },
-            "default_off": run_default_off_flow(repo_root, engine_bin, dashboard_dir, data_root / "default-off"),
+            "default_cli_discovery": run_default_cli_discovery_flow(
+                repo_root, engine_bin, dashboard_dir, data_root / "default-cli"
+            ),
             "missing_autodetect": run_missing_autodetect_flow(
                 repo_root, engine_bin, dashboard_dir, data_root / "missing-autodetect"
             ),

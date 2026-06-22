@@ -241,6 +241,12 @@ def write_fake_cli(path: Path, output_field: str) -> None:
     path.chmod(0o755)
 
 
+def executable_stub_dir(repo_root: Path, name: str) -> Path:
+    root = repo_root / "target" / "script-fake-cli"
+    root.mkdir(parents=True, exist_ok=True)
+    return Path(tempfile.mkdtemp(prefix=f"{name}-", dir=root))
+
+
 def run_cli_smoke(repo_root: Path, engine_bin: Path, dashboard_dir: Path, data_dir: Path) -> dict:
     codex_bin = shutil.which("codex")
     claude_bin = shutil.which("claude")
@@ -248,8 +254,9 @@ def run_cli_smoke(repo_root: Path, engine_bin: Path, dashboard_dir: Path, data_d
         return {"status": "skipped", "reason": "no local codex or claude binary found"}
 
     data_dir.mkdir(parents=True, exist_ok=True)
-    fake_codex = data_dir / "fake-codex"
-    fake_claude = data_dir / "fake-claude"
+    bin_dir = executable_stub_dir(repo_root, "trial4-cli")
+    fake_codex = bin_dir / "fake-codex"
+    fake_claude = bin_dir / "fake-claude"
     write_fake_cli(fake_codex, "output")
     write_fake_cli(fake_claude, "result")
 
