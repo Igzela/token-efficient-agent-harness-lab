@@ -27,8 +27,8 @@ export function TabGroup({
 }) {
   const [collapsed, setCollapsed] = useState<Record<string, boolean>>({});
 
-  function toggle(groupLabel: string) {
-    setCollapsed((prev) => ({ ...prev, [groupLabel]: !prev[groupLabel] }));
+  function toggle(groupLabel: string, isCollapsed: boolean) {
+    setCollapsed((prev) => ({ ...prev, [groupLabel]: !isCollapsed }));
   }
 
   return (
@@ -58,8 +58,9 @@ export function TabGroup({
               {group.collapsible && (
                 <button
                   className="tab tab-toggle"
-                  onClick={() => toggle(group.label)}
+                  onClick={() => toggle(group.label, isCollapsed)}
                   type="button"
+                  aria-expanded={!isCollapsed}
                   aria-label={isCollapsed ? `Show ${group.label} tabs` : `Hide ${group.label} tabs`}
                 >
                   {isCollapsed ? "More" : "Less"}
