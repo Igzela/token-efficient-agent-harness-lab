@@ -34,11 +34,11 @@ The system is useful as an operations/control-plane lab for deterministic dispat
 
 ## Last Recorded Verification
 
-- Branch: `main` at dashboard nav toggle merge `20dc47f`.
-- Tests: full Rust + TypeScript stack verification, 52 Python SDK tests, 154 HTTP tests, focused trusted-local/adaptive tests, rustfmt, Clippy, handoff, wire drift, dashboard boundary lint, and `git diff --check` passed with 0 failures on 2026-06-22.
+- Branch: `main` at supervised repair CLI test hardening merge `cfa087b`.
+- Tests: full Rust + TypeScript stack verification, 52 Python SDK tests, 154 HTTP tests, focused trusted-local/adaptive tests, rustfmt, Clippy, handoff, wire drift, dashboard boundary lint, and `git diff --check` passed with 0 failures on 2026-06-22. The supervised patch CLI repair test was hardened for noexec `/tmp` environments by keeping its fake CLI under `target/test-fake-cli`.
 - Browser/runtime: authenticated stub runtime showed effective authority, 3% experiment traffic, configured cost/worker ceilings, one safe observation, redacted adaptive/scheduler audit actions, and functional confirmed pause/resume controls. Separate runtime checks verified invalid policy fail-closed blockers, storage-aware completion readiness, and raw requested adaptive gates remaining visually distinct from effective fail-closed authority; desktop and 390px mobile had no horizontal overflow or console errors.
 - Security: repository secret scan returned 0 findings; handoff, rustfmt, Clippy, dashboard boundary lint, TypeScript typecheck/build, and `git diff --check` passed.
-- CI: dashboard nav toggle PR #103 run `27946173410`, adaptive operator authority UI PR #102 run `27944383788`, and post-merge main run `27944817747` were green across all seven jobs; completion-readiness PR #101 run `27941982296` and operator-validity PR #100 run `27940515194` were also green.
+- CI: supervised repair CLI test PR #104 run `27963458311`, trusted-local docs main run `27963122689`, dashboard nav toggle main run `27962946558`, dashboard nav toggle PR #103 run `27946173410`, and adaptive operator authority UI PR #102 run `27944383788` were green across all seven jobs; completion-readiness PR #101 run `27941982296` and operator-validity PR #100 run `27940515194` were also green.
 - Release: the `v0.1.0` release workflow run `27891104370` is green; all eight published assets passed checksum/archive inspection.
 - Online install: the README installer fetched `v0.1.0` into an isolated home, verified the checksum, installed the runtime/dashboard, and passed health, dashboard API, and HTML smoke checks on 2026-06-21.
 - PostgreSQL integration tests are gated behind `cargo test -p engine --features pg-tests` with `ACP_TEST_DATABASE_URL`.
