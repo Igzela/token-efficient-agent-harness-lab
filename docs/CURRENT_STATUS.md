@@ -4,7 +4,7 @@ Last updated: 2026-06-22. V2-0 through V2-5, the Real Output Closeout, and Adapt
 
 ## Summary
 
-The core plan, V2 implementation, Real Output Closeout, and Adaptive Fusion Routing track are complete. The system includes prompt-to-CLI execution, bounded verification/repair evidence, optional real GitHub PR creation, a verified release contract, three real repository pilots, a task-first dashboard, guarded automatic provider/model routing with safe evidence feedback, and an Adaptive Fusion operator surface for completion testing and gate review.
+The core plan, V2 implementation, Real Output Closeout, and Adaptive Fusion Routing track are complete. The Trusted Local Autonomous Execution Track is approved at IAE-0; IAE-1 implementation is next. The system includes prompt-to-CLI execution, bounded verification/repair evidence, optional real GitHub PR creation, guarded automatic provider/model routing with safe evidence feedback, and an Adaptive Fusion operator surface.
 
 The system is useful as an operations/control-plane lab for deterministic dispatch, workflow state, app-owned execution metadata, guarded local controls, SDKs, and audit evidence. It is not a cloud SaaS, hosted multi-tenant service, direct-deploy tool, or unattended autonomous-agent runtime.
 
@@ -27,14 +27,14 @@ The system is useful as an operations/control-plane lab for deterministic dispat
 - No hard process/container/VM sandbox is implemented; V2-1 is scoped to app-owned workspace confinement unless separately approved.
 - No hosted/cloud/multi-tenant deployment is implemented.
 - Bounded supervised workers are implemented behind `ACP_ENABLE_SCHEDULER=1` plus `ACP_ENABLE_SUPERVISED_WORKERS=1`; unattended autonomous-agent loops remain disallowed.
-- Target-repo output, provider/CLI execution, supervised workers, and product UX are approved only through the V2 phase plan in `docs/NEXT_DECISION.md`; until each phase lands, the old limitation remains active.
-- Cloud SaaS, multi-tenant hosting, app-runtime release/deploy/apply authority, provider failover outside the bounded AF-3 gates, default-on provider API execution, and unattended autonomous-agent loops remain out of scope.
+- IAE authorizes future trusted-local defaults for provider/CLI execution, adaptive routing, experiments, promotion, and supervised workers. Current binaries still require the existing flags until IAE-1 lands.
+- Cloud SaaS, multi-tenant hosting, app-runtime release/deploy/apply authority, direct target-repository `main` writes, unbounded provider spending, and unbounded autonomous loops remain out of scope.
 
 ## Last Recorded Verification
 
-- Branch: main after AF-7 Operator Surface PR #95 merged as eef6aef7cfa8b1ddf72e398910d713f9010546d7.
-- Tests: full Rust + TypeScript stack verification passed with 0 failures on 2026-06-22, including AF-6 candidate, execution, observation, experiment, promotion, completion API, dashboard operator status, dashboard build, and TypeScript SDK coverage.
-- CI: PR #95 tests workflow run 27925304377 was green across rust, typescript, python, pg, native, docker, and rust-typescript-cutover before merge.
+- Branch: `main` at `af9b10b` after AF-7 entrypoint alignment.
+- Tests: full Rust + TypeScript stack verification, 85 focused Adaptive Fusion tests, and 52 Python SDK tests passed with 0 failures on 2026-06-22.
+- CI: PR #96 tests workflow run `27926230390` was green across rust, typescript, python, pg, native, docker, and rust-typescript-cutover before merge.
 - Release: the `v0.1.0` release workflow run `27891104370` is green; all eight published assets passed checksum/archive inspection.
 - Online install: the README installer fetched `v0.1.0` into an isolated home, verified the checksum, installed the runtime/dashboard, and passed health, dashboard API, and HTML smoke checks on 2026-06-21.
 - PostgreSQL integration tests are gated behind `cargo test -p engine --features pg-tests` with `ACP_TEST_DATABASE_URL`.
@@ -74,8 +74,9 @@ uv run --no-project python scripts/check_agent_handoff.py
 
 | Track | Status |
 |---|---|
-| Agent Autonomous Maintenance Mode | Active for docs, CI, tests, deterministic regressions, and low-risk PR flow |
-| Adaptive Fusion Routing Track | AF-0 through AF-7 implemented; adaptive live execution, experiments, promotion, and default routing remain explicit and default-off |
+| Agent Autonomous Maintenance Mode | Active for implementation, docs, CI, tests, review, and bounded shipping |
+| Adaptive Fusion Routing Track | AF-0 through AF-7 implemented; existing runtime gates remain active |
+| Trusted Local Autonomous Execution Track | IAE-0 approved and documented; IAE-1 trusted-local profile is next |
 
 Historical phase plans, closeouts, and long-form validation reports are retained under `docs/archive/`.
 
@@ -118,9 +119,8 @@ Historical phase plans, closeouts, and long-form validation reports are retained
 - The UI is task-first, while detailed operations and administration remain available as secondary views.
 - Security posture is suitable for local/small-team self-hosting only; hosted/multi-tenant use would require a new threat model and approved implementation plan.
 - No hard process/container/VM sandbox isolation exists.
-- Provider API execution remains default-off; local CLI discovery is default-on but execution still requires an explicit task tick.
-- Promoted policies, experiments, auto promotion, and completion routing can influence live adaptive execution only when their independent gates are enabled. Provider execution remains authenticated, bounded, audited, killable, and default-off.
-- Cloud SaaS, multi-tenant hosting, app-runtime merge/release/deploy/apply authority, and unattended autonomous-agent loops remain out of scope.
+- Current provider/adaptive/experiment/promotion/default-routing execution still requires independent flags; IAE-1 is authorized to replace fragmented opt-in setup with a fail-closed trusted-local profile.
+- Cloud SaaS, multi-tenant hosting, app-runtime release/deploy/apply authority, direct target `main` writes, and unbounded autonomous loops remain out of scope.
 
 ## Documentation Discipline
 

@@ -6,7 +6,7 @@ This is the current architecture baseline for the Token-Efficient Agent Harness 
 
 ## Product Boundary
 
-The system is a local/small-team self-hosted macro-orchestrator control plane for studying token-efficient agent workflows. The approved V2 Real Production Output Track extends it toward auditable real-repository patch/PR production while preserving explicit gates, audit, and rollback controls. It is not a cloud SaaS, hosted multi-tenant service, direct-deploy tool, or unattended autonomous-agent runtime.
+The system is a local/small-team self-hosted macro-orchestrator control plane for studying token-efficient agent workflows. V2 adds auditable real-repository patch/PR production. The approved Trusted Local Autonomous Execution Track may activate bounded provider and agent execution as a coherent local profile while preserving auth, budgets, audit, approval, rollback, and kill controls. It is not a cloud SaaS, hosted multi-tenant service, or direct-deploy tool.
 
 Default posture:
 
@@ -146,12 +146,14 @@ These are accepted current limitations, not hidden TODOs:
 - V2-3 controlled target output is merged. It creates no merge/deploy/apply authority and preserves the registered target working tree and `main`.
 - GitHub PR creation is default-off and adds no merge authority.
 - Bounded supervised workers are merged in V2-4 and Mission Control product output UX is merged in V2-5; unattended autonomous-agent loops remain out of scope.
-- Cloud SaaS, hosted/cloud deployment, multi-tenant service, and direct release/tag/deploy/apply controls remain out of scope. Adaptive provider execution is local/small-team only, explicit, bounded, authenticated, and default-off.
+- Cloud SaaS, hosted/cloud deployment, multi-tenant service, and direct release/tag/deploy/apply controls remain out of scope. Current adaptive provider execution is local/small-team, explicit, bounded, authenticated, and gated; IAE may compose those gates behind a validated trusted-local profile.
 - Some routing, quality, and orchestration modules remain partially active rather than unified under one policy layer.
 
-The Adaptive Fusion Routing track approved on 2026-06-21 extends `model_selector`, `feedback`, `provider`, storage, and the existing HTTP/workflow/executor boundaries without creating a parallel routing, policy, workflow, or storage kernel. AF-0 through AF-2 provide pure planning, endpoint metadata, and offline evaluation. AF-3 through AF-6 add authenticated bounded execution, contextual policy, parallel panel fusion with serial judge/synthesis, safe observation summaries, deterministic default-off experiments, evidence-driven default-off promotion, and `POST /api/v1/adaptive-fusion/completions`. Live influence requires independent provider/adaptive/experiment/promotion/default-routing gates, fixed provider/model bindings, symbolic credential env references, global and per-plan cost limits, call/token/time/concurrency ceilings, redacted/capped outputs, provider and selection audit events, snapshots/rollback, circuit breakers, and kill switches. Ordinary dispatch and target-repository output behavior remain unchanged unless their separate explicit gates are enabled.
+The Adaptive Fusion Routing track approved on 2026-06-21 extends `model_selector`, `feedback`, `provider`, storage, and the existing HTTP/workflow/executor boundaries without creating a parallel routing, policy, workflow, or storage kernel. AF-0 through AF-2 provide pure planning, endpoint metadata, and offline evaluation. AF-3 through AF-6 add authenticated bounded execution, contextual policy, parallel panel fusion with serial judge/synthesis, safe observation summaries, controlled experiments, evidence-driven promotion, and `POST /api/v1/adaptive-fusion/completions`. Current binaries use independent provider/adaptive/experiment/promotion/default-routing gates.
 
-Boundary expansion outside the approved V2 and Adaptive Fusion Routing tracks requires a new plan, threat-model update, focused tests, and explicit human approval.
+The Trusted Local Autonomous Execution track approved on 2026-06-22 may compose those gates behind one validated local profile. Activation requires protected auth, fixed provider/model bindings, symbolic credential env references, global and per-plan cost limits, call/token/time/concurrency ceilings, redacted/capped outputs, provider and selection audit events, snapshots/rollback, circuit breakers, and kill switches. Missing prerequisites fail closed. Target-repository output remains separately approval-bound and never writes registered `main`.
+
+Boundary expansion outside the approved V2, Adaptive Fusion Routing, and IAE tracks requires a new plan, threat-model update, focused tests, and explicit human approval.
 
 ## Active Verification
 

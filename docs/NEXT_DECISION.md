@@ -4,11 +4,11 @@
 
 Phase 8, V2 Real Production Output, Real Output Closeout, and Adaptive Fusion AF-0 through AF-7 are complete.
 
-AF-7 / AF-6 Operator Surface was approved on 2026-06-22 to expose already-implemented AF-6 capabilities in the existing dashboard. It does not change routing core behavior, provider execution defaults, target-output behavior, auth, budget, token, call, timeout, concurrency, audit, redaction, rollback, or kill controls.
+The Trusted Local Autonomous Execution Track (IAE) was approved on 2026-06-22. It authorizes the project and maintaining agents to move from fragmented opt-in execution toward a bounded trusted-local operating profile.
 
-No further Adaptive Fusion routing-core expansion is authorized. The next work after AF-7 is repository maintenance, regression hardening, real-world validation, and evidence-based review of whether another explicitly approved track is needed.
+IAE may change local defaults for provider execution, adaptive routing, experiments, automatic promotion, default routing, and supervised workers. It must not bypass protected auth, symbolic credential handling, budget/token/call/time/concurrency ceilings, provider/model identity, redaction, audit, snapshots, rollback, approval-bound target output, or kill switches. Missing prerequisites must fail closed.
 
-AF-6 remains provider/model routing and completion execution only. AF-7 is an operator visibility and test surface for those existing controls. Target-repository output, release controls, deployment controls, and repository merge authority remain separate systems with their own approval paths.
+The next implementation phase is IAE-1: one trusted-local execution profile that validates prerequisites and activates the existing guarded capabilities as a coherent operating mode. Target-repository output, release controls, deployment controls, and repository merge authority remain separate systems.
 
 ## Stable Tracks
 
@@ -18,16 +18,16 @@ AF-6 remains provider/model routing and completion execution only. AF-7 is an op
 | Architecture refactor R-series | Sealed at R7; no R8 approved |
 | V2 Real Production Output | Complete through V2-5 |
 | Real Output Closeout | Complete; `v0.1.0` published and installer verified |
-| Adaptive Fusion AF-0 through AF-7 | Complete; live use remains explicit and default-off |
-| Agent Autonomous Maintenance Mode | Active for docs, tests, CI, deterministic regressions, and low-risk PR flow |
+| Adaptive Fusion AF-0 through AF-7 | Complete; current runtime gates remain implemented |
+| Trusted Local Autonomous Execution | Active; IAE-1 is next |
+| Agent Autonomous Maintenance Mode | Active for implementation, docs, tests, CI, review, and bounded shipping |
 
-## Default Boundary
+## Trusted Local Boundary
 
-Outside an explicitly authorized track, keep the system conservative. AF-6 permits provider fallback/fusion, online experiments, automatic policy promotion, and adaptive live routing only behind the implemented explicit gates.
+Current binaries still use the AF-6/V2 explicit gates. That is current implementation state, not a permanent governance restriction. IAE-1 may replace repeated opt-in flags with a single trusted-local profile after validating:
 
-The completed AF-6 implementation keeps:
-
-- authentication for live provider execution
+- protected authentication for live execution
+- configured endpoint metadata and symbolic credential references
 - per-request and daily budget controls
 - token, call, timeout, and concurrency ceilings
 - provider/model identity validation
@@ -36,20 +36,21 @@ The completed AF-6 implementation keeps:
 - persistent audit events
 - policy snapshots and rollback
 - tests and CI before merge
+- fail-closed startup and visible operator readiness
 
 ## Auto-Merge Policy
 
-Auto-merge eligible: docs-only, tests-only, CI fix, small low-risk code fix, all CI green, handoff guard pass, and clear rollback.
+Auto-merge eligible: docs-only, tests-only, CI fix, small low-risk code fix, all CI green, handoff guard pass, and clear rollback. Documentation-only factual or policy corrections may be committed directly to `main` after local validation.
 
-Not auto-merge eligible: auth, security, provider routing authority, database schema, release, deployment, policy mutation, failing CI, unclear rollback, or any AF-6 implementation slice.
+Not auto-merge eligible: auth/security redesign, database schema, release, deployment, target-output authority, destructive behavior, failing CI, or unclear rollback.
 
 ## Autonomously maintain
 
-The system may autonomously advance safe repository work: repair stale handoff docs, status drift, and wire-codegen guard drift; fix failing tests, CI breakage, lint/security baseline failures, and deterministic regressions; advance the next documented dispatch-kernel phase when the change is inside approved scope and respects all hard boundaries; and create branches, commits, PRs, and low-risk merges through the real-world testing playbook.
+Maintaining agents may autonomously audit, plan, implement, test, review, simplify, document, create PRs, repair CI, and merge low-risk green work. They may advance IAE phases without requesting approval again while preserving the trusted-local boundary above.
 
 ## Disallowed by Default
 
-Provider/CLI execution boundary expansion, auth/security boundary changes, DB migrations, release/tag/deploy, active YAML/rubric/policy mutation, and destructive operations all require explicit human approval.
+Credentials or paid-resource choices, destructive or irreversible operations, DB migrations, production release/tag/deploy, cloud production, auth/security redesign, container/VM or host-privilege execution, and target-output authority expansion require explicit human approval.
 
 ## Architecture refactor (R-series)
 
@@ -57,11 +58,25 @@ The R-series is sealed at R7. **SEALED AT R7.** R8 is not approved. No further R
 
 ## Allowed Next Paths
 
+- IAE-1 trusted-local execution profile.
+- IAE-2 bounded autonomous task advancement through existing workflow/scheduler modules.
+- IAE-3 operator readiness, evidence, pause/kill, and rollback UX.
 - Autonomous maintenance: repair stale docs, CI breakage, test drift, and wire-codegen drift.
 - Regression hardening: add or repair tests for existing behavior.
 - Pilots: real-world task validation.
 - V2 maintenance that preserves the existing V2 output boundary.
 - Adaptive Fusion maintenance that preserves the AF-6 gates and target-output separation.
+
+## Trusted Local Autonomous Execution Track
+
+| Phase | Goal | Acceptance |
+|---|---|---|
+| IAE-0 | Governance and permission baseline | **Complete** — trusted-local expansion authorized; safety invariants and fail-closed prerequisites recorded |
+| IAE-1 | Trusted-local execution profile | One profile activates existing provider/adaptive/experiment/promotion/default-routing/worker capabilities only after auth, endpoint, credential, budget, audit, rollback, and kill readiness checks pass |
+| IAE-2 | Bounded autonomous task advancement | Existing workflow/scheduler may advance queued local tasks within explicit task, time, cost, token, call, concurrency, workspace, approval, pause, and kill ceilings |
+| IAE-3 | Operator control and evidence | Dashboard/API expose profile readiness, active authority, spend/traffic bounds, recent audit evidence, pause/kill state, and rollback actions without secrets or raw model content |
+
+IAE implementation must extend existing modules. Do not create a parallel scheduler, provider kernel, policy engine, storage layer, or target-output path.
 
 ## V2 Status
 

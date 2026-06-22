@@ -7,7 +7,7 @@
 
 A local deterministic harness and self-hosted macro-orchestrator control plane for studying event-sourced agent workflow infrastructure. Includes a Rust engine with axum API, SQLite state, TypeScript dashboard and SDK, and Python SDK.
 
-> **This is a local research tool, not a cloud SaaS.** Provider APIs remain off by default. Installed local Claude/Codex CLIs are available for explicit task runs; the app does not run unattended agents or provide container/VM isolation.
+> **This is a local research tool, not a cloud SaaS.** Current binaries keep provider and adaptive execution behind explicit gates. The approved IAE track will add a fail-closed trusted-local profile for bounded provider and agent execution. No container/VM isolation is provided.
 
 For the full system architecture, data flows, API surface, and safety boundaries, see [`docs/ARCHITECTURE_BOOK.md`](docs/ARCHITECTURE_BOOK.md).
 
@@ -91,7 +91,7 @@ agent-control-plane
 
 ## What This Project Is Not
 
-This repository is not a cloud production SaaS, hosted multi-tenant service, direct-deploy tool, or unattended autonomous-agent runtime. The approved V2 Real Production Output Track may add auditable real-repository patch/PR production, but only through the phase plan in `docs/NEXT_DECISION.md`.
+This repository is not a cloud production SaaS, hosted multi-tenant service, or direct-deploy tool. V2 provides auditable real-repository patch/PR production. IAE authorizes bounded trusted-local provider and autonomous task execution through the phase plan in `docs/NEXT_DECISION.md`.
 
 Provider API execution remains behind explicit environment configuration; CI uses stub/mock paths and does not call real provider APIs. Installed local Claude/Codex CLIs are discovered by default, but execution still requires an explicit workflow action. The local dashboard remains guarded; dangerous actions require confirmation and audit logging.
 
@@ -281,7 +281,7 @@ bundle = client.dispatch("Summarize docs without provider calls")
 - Bounded supervised worker concurrency is implemented behind dual scheduler/worker gates, bounded worker count, authenticated pause/resume/kill controls, heartbeat, leases, and audit. Unattended autonomous-agent loops remain out of scope.
 - Provider failover/fusion exists only inside the bounded, authenticated, default-off Adaptive Fusion path.
 - Cloud SaaS, multi-tenant hosting, cloud production Web UI, hosted deployment, and remote SaaS service remain out of scope.
-- Target-repository output is implemented behind `ACP_ENABLE_TARGET_REPO_OUTPUT=1`, `dispatch:execute`, explicit confirmation, approval/integrity/secret gates, remote allowlists, and `ACP_TARGET_REPO_OUTPUT_KILL_SWITCH=1`; direct target working-tree or `main` writes, apply/merge/deploy authority, and default-on provider execution remain out of scope.
+- Target-repository output is implemented behind `ACP_ENABLE_TARGET_REPO_OUTPUT=1`, `dispatch:execute`, explicit confirmation, approval/integrity/secret gates, remote allowlists, and `ACP_TARGET_REPO_OUTPUT_KILL_SWITCH=1`; direct target working-tree or `main` writes and apply/merge/deploy authority remain out of scope. IAE may change trusted-local provider defaults without changing target-output authority.
 - The dashboard is a local operations console with guarded app-owned controls. V2-5 adds the product-level Mission Control output path over the guarded backend contract: create plan/run, tick, create workspace, capture patch, approve, export patch, or push an `acp/*` branch.
 - Adaptive Fusion supports guarded candidate selection, bounded parallel-panel fusion, safe observations, controlled experiments, auto promotion, completion routing, policy evidence, and rollback. Provider calls and every automatic influence path remain independently gated, killable, audited, and default-off.
 - No destructive runtime filesystem behavior.
@@ -316,7 +316,7 @@ Historical phase plans, closeouts, validation reports, and low-frequency referen
 
 ## Agent Maintenance
 
-Coding agents maintaining this repository are authorized to autonomously advance safe repository work: documentation repair, regression fixes, CI hardening, and wire-governance drift repair. Agents must run `scripts/check_agent_handoff.py` before committing to verify handoff surface consistency.
+Coding agents maintaining this repository are authorized to autonomously advance safe repository work: audit, plan, implement, test, review, simplify, document, repair CI, create PRs, and merge low-risk green work. They may advance documented IAE phases while preserving auth, budget, audit, approval, rollback, and kill controls. Documentation-only corrections may be committed directly to `main`. Agents must run `scripts/check_agent_handoff.py` before committing.
 
 R-series is sealed at R7. R8 is not approved. No further R-series file splitting is approved.
 

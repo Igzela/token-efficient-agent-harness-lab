@@ -4,7 +4,7 @@
 
 **What**: Local deterministic harness and self-hosted macro-orchestrator control plane for studying token-efficient agent workflows. Provides deterministic dispatch planning, local API/dashboard access, app-owned SQLite state, dynamic workflow state, executor coordination primitives, and cost-of-pass metrics.
 
-**What NOT**: Not a cloud production SaaS, hosted multi-tenant service, direct-deploy tool, or unattended autonomous-agent runtime. Provider APIs remain off by default; no process/container/VM isolation or direct target-repo `main` writes exist. Installed local Claude/Codex CLIs are discovered by default for explicit task runs and can be disabled with `ACP_ENABLE_CLI_EXECUTION=0`.
+**What NOT**: Not a cloud production SaaS, hosted multi-tenant service, or direct-deploy tool. No process/container/VM isolation or direct target-repo `main` writes exist. Installed local Claude/Codex CLIs are available for task runs. The approved IAE track may enable bounded trusted-local provider and agent execution when auth, credentials, budgets, audit, rollback, and kill controls are valid.
 
 **Target user**: Solo developer or small local team studying deterministic agent infrastructure on one machine or LAN.
 
@@ -12,8 +12,9 @@
 
 **Active tracks:**
 - Real-World Testing Mode — validated through real tasks, branches, commits, PRs, CI, gated auto-merge
-- Agent Autonomous Maintenance Mode — agents maintain docs/CI/tests/low-risk PR flow under playbook gates
-- Adaptive Fusion Routing Track — complete through AF-7; adaptive live execution, experiments, promotion, and default routing remain explicit and default-off
+- Agent Autonomous Maintenance Mode — agents autonomously audit, implement, verify, review, document, and ship bounded changes
+- Trusted Local Autonomous Execution Track (IAE) — approved; IAE-1 is next
+- Adaptive Fusion Routing Track — complete through AF-7; existing gates remain until IAE trusted-local profile lands
 
 **Complete tracks:**
 - Dispatch Kernel Phases 1–7 (including 6A, 6B-1/2/3, Gates 1–3): STABLE
@@ -39,9 +40,9 @@
 
 **App/runtime** does not write target repos by default. V2-3 adds only env-gated, approval-bound output through an app-owned git worktree and `acp/*` branch or patch export; registered target working trees and `main` remain protected.
 
-**Agent maintenance** may create branches, commits, PRs, and low-risk merges only through branch+PR workflow under `docs/REAL_WORLD_TESTING_PLAYBOOK.md` gates. This is a repository workflow mode, not an app-runtime feature.
+**Agent maintenance** may autonomously create branches, commits, PRs, repair CI, and merge low-risk green work. Documentation-only corrections may go directly to `main` after validation.
 
-**Requires explicit human approval:** Provider/CLI execution boundary expansion outside the V2 and Adaptive Fusion Routing phase plans, auth/security boundary changes, DB migrations, release/tag/deploy, active YAML/rubric/policy mutation, destructive operations.
+**Requires explicit human approval:** credentials or paid-resource decisions, destructive operations, DB migrations, release/tag/deploy, cloud production, auth/security redesign, target-output authority expansion, or materially different product behavior outside `docs/NEXT_DECISION.md`.
 
 ## Minimal Agent Reading Model
 
@@ -77,7 +78,7 @@ For each autonomous session:
 
 1. Inspect `git status --short --branch` and read this file.
 2. Conditionally read `docs/NEXT_DECISION.md` and `docs/REAL_WORLD_TESTING_PLAYBOOK.md` based on task type.
-3. Choose the highest-value safe task from failing verification, CI/docs/test drift, concrete review findings, or narrowly scoped hardening.
+3. Choose the highest-value task from failing verification, CI/docs/test drift, review findings, the next authorized IAE phase, or bounded product improvement.
 4. **All sessions must use Workflow tool for implementation.** Write a workflow script to `.claude/workflows/` with `parallel()` for independent subtasks and `pipeline()` for sequential dependencies. Use `model: 'opus'` for implementation agents and `model: 'sonnet'` for verification. The only exception is trivial single-line edits (typo, doc wording, env var). Anything touching 2+ files goes through Workflow.
 5. Update or add tests before behavior changes.
 6. Run the full verification suite: `cargo test -p engine`, `cargo fmt --check`, `cargo clippy -p engine --all-targets -- -D warnings`, TypeScript build/test, dashboard build, `uv run --no-project python scripts/check_agent_handoff.py`, `bash scripts/check_wire_codegen_drift.sh`.
