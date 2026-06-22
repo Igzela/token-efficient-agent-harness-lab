@@ -94,6 +94,17 @@ function AdaptiveFusionGatePanel({
     : taskAdvancement.requested
       ? "blocked"
       : "off";
+  const blockedAuthorities = [
+    status.gates.experiments_active && !status.authority.experiments_active
+      ? "experiments"
+      : null,
+    status.gates.auto_promotion_active && !status.authority.auto_promotion_active
+      ? "auto promotion"
+      : null,
+    status.completion_api.default_routing_enabled && !status.authority.default_routing_active
+      ? "default routing"
+      : null,
+  ].filter(Boolean);
   return (
     <div className="subcard stack">
       <div className="flex-between">
@@ -134,19 +145,25 @@ function AdaptiveFusionGatePanel({
         </p>
       </StateBanner>
 
+      {blockedAuthorities.length > 0 ? (
+        <StateBanner title="Requested authority is blocked" tone="warn">
+          <p>{blockedAuthorities.join(", ")} requested, but effective authority is fail-closed.</p>
+        </StateBanner>
+      ) : null}
+
       <div className="boundary-badges" aria-label="Adaptive fusion gate states">
         <GatePill label="provider" value={status.gates.provider_execution} />
         <GatePill label="adaptive" value={status.gates.adaptive_execution} />
         <GatePill label="auth" value={status.gates.auth} />
         <GatePill activeIsWarn label="fusion kill" value={status.gates.fusion_kill_switch} />
         <GatePill label="experiments enabled" value={status.gates.experiments_enabled} />
-        <GatePill label="experiments active" value={status.gates.experiments_active} />
+        <GatePill label="experiments requested" value={status.gates.experiments_active} />
         <GatePill activeIsWarn label="experiments paused" value={status.gates.experiments_paused} />
         <GatePill activeIsWarn label="experiments kill" value={status.gates.experiments_kill_switch} />
         <GatePill label="auto promotion enabled" value={status.gates.auto_promotion_enabled} />
-        <GatePill label="auto promotion active" value={status.gates.auto_promotion_active} />
+        <GatePill label="auto promotion requested" value={status.gates.auto_promotion_active} />
         <GatePill activeIsWarn label="promotion kill" value={status.gates.auto_promotion_kill_switch} />
-        <GatePill activeIsWarn label="default routing" value={status.completion_api.default_routing_enabled} />
+        <GatePill activeIsWarn label="default routing requested" value={status.completion_api.default_routing_enabled} />
       </div>
 
       <div className="status-strip" aria-label="Adaptive fusion operator counts">
@@ -175,16 +192,22 @@ function AdaptiveFusionGatePanel({
           tone={status.completion_api.storage_configured ? "ok" : "info"}
         />
         <Metric
+          label="Default Routing"
+          value={status.authority.default_routing_active ? "active" : "inactive"}
+          detail={status.completion_api.default_routing_enabled ? "gate requested" : "gate off"}
+          tone={status.authority.default_routing_active ? "warn" : "ok"}
+        />
+        <Metric
           label="Experiments"
-          value={status.gates.experiments_active ? "active" : "inactive"}
-          detail={status.gates.experiments_kill_switch ? "kill switch on" : "dual gated"}
-          tone={status.gates.experiments_active ? "warn" : "ok"}
+          value={status.authority.experiments_active ? "active" : "inactive"}
+          detail={status.gates.experiments_kill_switch ? "kill switch on" : "effective authority"}
+          tone={status.authority.experiments_active ? "warn" : "ok"}
         />
         <Metric
           label="Promotion"
-          value={status.gates.auto_promotion_active ? "active" : "inactive"}
+          value={status.authority.auto_promotion_active ? "active" : "inactive"}
           detail={status.gates.auto_promotion_kill_switch ? "kill switch on" : "rollbackable"}
-          tone={status.gates.auto_promotion_active ? "warn" : "ok"}
+          tone={status.authority.auto_promotion_active ? "warn" : "ok"}
         />
       </div>
     </div>
