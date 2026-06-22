@@ -108,6 +108,10 @@ impl AdaptiveAutoPromotionPolicy {
             .unwrap_or(defaults.max_evidence_age_sequences),
         }
     }
+
+    pub fn validation_errors(&self) -> Vec<String> {
+        validate_policy(self)
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -482,4 +486,35 @@ fn env_usize(key: &str) -> Option<usize> {
 
 fn env_u8(key: &str) -> Option<u8> {
     std::env::var(key).ok()?.parse().ok()
+}
+
+#[cfg(test)]
+mod policy_validation_tests {
+    use super::*;
+
+    #[test]
+    fn validation_errors_reuse_runtime_policy_rules() {
+        let policy = AdaptiveAutoPromotionPolicy {
+            min_samples_per_candidate: 0,
+            min_confidence: 2.0,
+            min_quality_delta: f64::NAN,
+            min_cost_reduction: 0.0,
+            min_latency_reduction_ms: 0.0,
+            max_failure_rate_delta: 0.0,
+            max_evidence_age_sequences: 0,
+        };
+
+        assert_eq!(
+            policy.validation_errors(),
+            vec![
+                "invalid_minimum_samples",
+                "invalid_minimum_confidence",
+                "invalid_auto_promotion_threshold",
+                "invalid_evidence_freshness_window",
+            ]
+        );
+        assert!(AdaptiveAutoPromotionPolicy::default()
+            .validation_errors()
+            .is_empty());
+    }
 }

@@ -106,6 +106,10 @@ export function AdaptiveFusionOperatorEvidence({
   const authority = status.authority;
   const bounds = status.bounds;
   const observations = status.observations;
+  const policyBlockers = [
+    ...bounds.experiment_policy_blockers.map((blocker) => `experiment: ${blocker}`),
+    ...bounds.auto_promotion_policy_blockers.map((blocker) => `promotion: ${blocker}`),
+  ];
   return (
     <>
       <div className="subcard stack">
@@ -128,6 +132,14 @@ export function AdaptiveFusionOperatorEvidence({
           <AuthorityPill label="promotion active" value={authority.auto_promotion_active} />
           <AuthorityPill label="task advancement active" value={authority.task_advancement_active} />
         </div>
+        {policyBlockers.length > 0 ? (
+          <StateBanner
+            tone="warn"
+            title="Adaptive policy configuration is invalid"
+          >
+            {policyBlockers.join(", ")}
+          </StateBanner>
+        ) : null}
         <div className="status-strip" aria-label="Adaptive authority bounds">
           <Metric
             label="Today Cost"
@@ -143,7 +155,12 @@ export function AdaptiveFusionOperatorEvidence({
           <Metric
             label="Experiment Traffic"
             value={`${(bounds.experiment_traffic_rate * 100).toFixed(1)}%`}
-            detail={`${bounds.experiment_max_calls} calls / ${bounds.experiment_max_concurrency} concurrent`}
+            detail={
+              bounds.experiment_policy_valid
+                ? `${bounds.experiment_max_calls} calls / ${bounds.experiment_max_concurrency} concurrent`
+                : "invalid policy"
+            }
+            tone={bounds.experiment_policy_valid ? "info" : "warn"}
           />
           <Metric
             label="Experiment Tokens"
@@ -153,7 +170,8 @@ export function AdaptiveFusionOperatorEvidence({
           <Metric
             label="Promotion Rollout"
             value={`${bounds.auto_promotion_rollout_percentage}%`}
-            detail="snapshot + rollback"
+            detail={bounds.auto_promotion_policy_valid ? "snapshot + rollback" : "invalid policy"}
+            tone={bounds.auto_promotion_policy_valid ? "info" : "warn"}
           />
           <Metric
             label="Worker Bound"

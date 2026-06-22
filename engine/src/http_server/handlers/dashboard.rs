@@ -4,7 +4,7 @@ use axum::response::IntoResponse;
 use axum::Json;
 use serde_json::json;
 
-use crate::feedback::AdaptiveExperimentPolicy;
+use crate::feedback::{AdaptiveAutoPromotionPolicy, AdaptiveExperimentPolicy};
 use crate::http_server::middleware::{
     authorize, cors_headers, internal_error, ApiError, RequestId,
 };
@@ -99,6 +99,14 @@ fn adaptive_fusion_operator_status(state: &AxumApiState) -> Result<serde_json::V
     let registry_configured = state.adaptive_registry_snapshot.is_some();
     let default_routing_enabled = effective_gates.default_routing;
     let experiment_policy = AdaptiveExperimentPolicy::from_env();
+    let experiment_policy_blockers = experiment_policy.validation_errors();
+    let auto_promotion_policy = AdaptiveAutoPromotionPolicy::from_env();
+    let mut auto_promotion_policy_blockers = auto_promotion_policy.validation_errors();
+    let auto_promotion_rollout_percentage =
+        env_u8("ACP_ADAPTIVE_AUTO_PROMOTION_ROLLOUT_PERCENTAGE", 10);
+    if !(1..=100).contains(&auto_promotion_rollout_percentage) {
+        auto_promotion_policy_blockers.push("invalid_rollout_percentage".to_string());
+    }
     let cost_gate = CostGateConfig::from_env();
     let scheduler = scheduler_operator_status(state)?;
     let scheduler_running = scheduler["running"].as_bool().unwrap_or(false);
@@ -160,10 +168,12 @@ fn adaptive_fusion_operator_status(state: &AxumApiState) -> Result<serde_json::V
     let experiments_active = adaptive_execution_active
         && effective_gates.experiments_active
         && !env_enabled("ACP_ADAPTIVE_EXPERIMENTS_PAUSED")
-        && !env_enabled("ACP_ADAPTIVE_EXPERIMENTS_KILL_SWITCH");
+        && !env_enabled("ACP_ADAPTIVE_EXPERIMENTS_KILL_SWITCH")
+        && experiment_policy_blockers.is_empty();
     let auto_promotion_active = adaptive_execution_active
         && effective_gates.auto_promotion_active
-        && !env_enabled("ACP_ADAPTIVE_AUTO_PROMOTION_KILL_SWITCH");
+        && !env_enabled("ACP_ADAPTIVE_AUTO_PROMOTION_KILL_SWITCH")
+        && auto_promotion_policy_blockers.is_empty();
     let task_advancement_active = effective_gates.task_advancement.ready
         && scheduler_running
         && !scheduler_paused
@@ -231,10 +241,11 @@ fn adaptive_fusion_operator_status(state: &AxumApiState) -> Result<serde_json::V
             "experiment_max_calls": experiment_policy.max_calls,
             "experiment_max_elapsed_ms": experiment_policy.max_elapsed_ms,
             "experiment_max_concurrency": experiment_policy.max_concurrency,
-            "auto_promotion_rollout_percentage": env_u8(
-                "ACP_ADAPTIVE_AUTO_PROMOTION_ROLLOUT_PERCENTAGE",
-                10,
-            ),
+            "experiment_policy_valid": experiment_policy_blockers.is_empty(),
+            "experiment_policy_blockers": experiment_policy_blockers,
+            "auto_promotion_rollout_percentage": auto_promotion_rollout_percentage,
+            "auto_promotion_policy_valid": auto_promotion_policy_blockers.is_empty(),
+            "auto_promotion_policy_blockers": auto_promotion_policy_blockers,
             "worker_count": effective_gates.task_advancement.worker_count,
             "worker_max_concurrent": effective_gates.task_advancement.max_concurrent,
         },
