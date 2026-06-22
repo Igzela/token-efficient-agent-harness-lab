@@ -11,6 +11,7 @@ The Rust `engine/` is the sole runtime implementation. Python is retained as RES
 | Module | Stage | Purpose | Verification |
 |---|---|---|---|
 | `engine/src/main.rs` | active runtime | Engine entrypoint and local server startup | `cargo test -p engine` |
+| `engine/src/trusted_local.rs` | active runtime policy | IAE-1 fail-closed trusted-local readiness and effective provider/adaptive/experiment/promotion/default-routing gates | `cargo test -p engine --test test_trusted_local_profile` |
 | `engine/src/http_server/` | active runtime/API | Axum routes, middleware, auth/rate-limit, static dashboard serving, guarded adaptive completion routing, runtime capability snapshots, adaptive operator status | `cargo test -p engine --test test_http_server --test test_adaptive_completion_api` |
 | `engine/src/dispatch_engine.rs` | active dispatch | Wires analysis, model selection, budget, executor, evaluation, ledger | `cargo test -p engine --test test_dispatch_engine` |
 | `engine/src/task_analyzer/` | active dispatch | Rule-based task domain/intent/risk/complexity analysis | `cargo test -p engine --test dispatch_parity` |
@@ -57,7 +58,7 @@ The Rust `engine/` is the sole runtime implementation. Python is retained as RES
 - V2-3 target repo PR flow: `target_repo_output.rs` owns git/process safety; supervised patch storage owns workspace/artifact/evidence/approval binding; HTTP owns scope/gate/confirmation/audit; SDK/dashboard API contracts mirror the endpoint.
 - V2-4 worker queue: `scheduler.rs` owns worker lifecycle/control; `workflow_runs.rs` owns atomic lease/stale recovery; `run_queue.rs` and `executor_pool.rs` own admission/capacity; `heartbeat.rs` persists aggregate worker health; scheduler HTTP handler and SDKs expose controls.
 - V2-5 product UX: `dashboard/src/components/MissionControl.tsx` owns the primary output workflow; `SupervisedPatch.tsx` owns detailed workspace/artifact operations; `SchedulerStatus.tsx` owns worker control/detail; `dashboard/src/lib/api-client.ts` owns dashboard API bindings.
-- Adaptive Fusion Routing: candidate generation, contextual policy, experiments, and auto promotion live under `feedback/`; bounded execution lives under `provider/adaptive_execution.rs`; observations and policy snapshots use `storage/local_product_store/`; guarded completion/default routing lives under `http_server/handlers/adaptive_completions.rs` and `dispatch.rs`; AF-7 operator status lives in the dashboard snapshot handler; dashboard and TypeScript SDK mirror the guarded API contracts.
+- Adaptive Fusion Routing: candidate generation, contextual policy, experiments, and auto promotion live under `feedback/`; bounded execution lives under `provider/adaptive_execution.rs`; observations and policy snapshots use `storage/local_product_store/`; guarded completion/default routing lives under `http_server/handlers/adaptive_completions.rs` and `dispatch.rs`; `trusted_local.rs` composes the existing gates for IAE-1; AF-7/IAE operator status lives in the dashboard snapshot handler; dashboard and TypeScript SDK mirror the guarded API contracts.
 - Safety boundary changes: update `docs/ARCHITECTURE_BOOK.md` before implementation; use archived security docs only as historical reference.
 - Documentation set changes: keep the active docs set limited to the six files listed in `docs/CURRENT_STATUS.md`.
 
@@ -66,8 +67,8 @@ The Rust `engine/` is the sole runtime implementation. Python is retained as RES
 - R-series is sealed at R7. R8 is not approved.
 - Do not create a parallel scheduler, DAG kernel, policy engine, storage layer, or dashboard data model.
 - V2 Real Production Output is approved only through the phase plan in `docs/NEXT_DECISION.md`; do not skip phases or merge half-built runtime authority.
-- Adaptive Fusion Routing is complete through AF-7. Live provider calls, experiments, promotion, and default routing remain independently gated, authenticated, bounded, audited, killable, and default-off.
-- Do not add default-on provider API execution, direct target-repository `main` writes, process/container/VM sandbox behavior, hosted/cloud deployment, app-runtime release/deploy controls, broader routing authority, or unattended autonomous-agent loops without separate explicit approval.
+- Adaptive Fusion Routing is complete through AF-7. IAE-1 may compose provider calls, experiments, promotion, and default routing behind the validated trusted-local profile; the underlying paths remain authenticated, bounded, audited, and killable.
+- Do not add direct target-repository `main` writes, process/container/VM sandbox behavior, hosted/cloud deployment, app-runtime release/deploy controls, broader target-output authority, or unbounded autonomous-agent loops without separate explicit approval.
 - Any V2 real capability must include an env/auth gate, audit event, tests, and rollback/kill path before it is usable.
 - Wire-codegen drift guard: `scripts/check_wire_codegen_drift.sh`.
 - Run `uv run --no-project python scripts/check_agent_handoff.py` before committing handoff changes.

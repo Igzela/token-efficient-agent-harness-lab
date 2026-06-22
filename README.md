@@ -7,7 +7,7 @@
 
 A local deterministic harness and self-hosted macro-orchestrator control plane for studying event-sourced agent workflow infrastructure. Includes a Rust engine with axum API, SQLite state, TypeScript dashboard and SDK, and Python SDK.
 
-> **This is a local research tool, not a cloud SaaS.** Current binaries keep provider and adaptive execution behind explicit gates. The approved IAE track will add a fail-closed trusted-local profile for bounded provider and agent execution. No container/VM isolation is provided.
+> **This is a local research tool, not a cloud SaaS.** Provider and adaptive execution can use legacy explicit gates or the fail-closed IAE trusted-local profile. No container/VM isolation is provided.
 
 For the full system architecture, data flows, API surface, and safety boundaries, see [`docs/ARCHITECTURE_BOOK.md`](docs/ARCHITECTURE_BOOK.md).
 
@@ -93,7 +93,7 @@ agent-control-plane
 
 This repository is not a cloud production SaaS, hosted multi-tenant service, or direct-deploy tool. V2 provides auditable real-repository patch/PR production. IAE authorizes bounded trusted-local provider and autonomous task execution through the phase plan in `docs/NEXT_DECISION.md`.
 
-Provider API execution remains behind explicit environment configuration; CI uses stub/mock paths and does not call real provider APIs. Installed local Claude/Codex CLIs are discovered by default, but execution still requires an explicit workflow action. The local dashboard remains guarded; dangerous actions require confirmation and audit logging.
+Provider API execution requires explicit endpoint/auth/budget configuration; CI uses stub/mock paths and does not call real provider APIs. A ready trusted-local profile activates bounded adaptive routing, experiments, promotion, and default routing. Installed local Claude/Codex CLIs are discovered by default, but execution still requires an explicit workflow action. The local dashboard remains guarded; dangerous actions require confirmation and audit logging.
 
 ## Toolchain
 
@@ -272,18 +272,18 @@ bundle = client.dispatch("Summarize docs without provider calls")
 
 ## Safety Boundaries
 
-- No real model calls by default; the local beta provider path remains explicit and env-gated.
+- No real model calls without explicit endpoint, credential, auth, pricing, and budget configuration; the trusted-local profile fails closed when any prerequisite is missing.
 - No unattended real agents; explicit supervised local workflow execution exists behind opt-in gates.
 - No real sandbox/process/container/VM isolation runtime; V2-1 is limited to app-owned workspace confinement unless separately approved.
 - Supervised patch execution remains app-owned and gated. V2-3 adds an optional controlled git worktree plus approval-bound patch export or `acp/*` branch push; it does not modify the registered target working tree or `main`.
 - Installed local CLI executors are discovered by default for explicit workflow actions; set `ACP_ENABLE_CLI_EXECUTION=0` to disable them.
 - `ACP_EXECUTION_MODE` controls how dispatch requests are routed: `off` (default, noop), `provider` (API only), `cli` (CLI executor only), or `auto` (hybrid mode that scores task complexity and routes low-complexity tasks to the Provider API and high-complexity tasks to the CLI executor; the threshold is configurable via `ACP_HYBRID_COMPLEXITY_THRESHOLD`, default 0.5).
 - Bounded supervised worker concurrency is implemented behind dual scheduler/worker gates, bounded worker count, authenticated pause/resume/kill controls, heartbeat, leases, and audit. Unattended autonomous-agent loops remain out of scope.
-- Provider failover/fusion exists only inside the bounded, authenticated, default-off Adaptive Fusion path.
+- Provider failover/fusion exists only inside the bounded, authenticated Adaptive Fusion path, enabled by legacy gates or a ready trusted-local profile.
 - Cloud SaaS, multi-tenant hosting, cloud production Web UI, hosted deployment, and remote SaaS service remain out of scope.
 - Target-repository output is implemented behind `ACP_ENABLE_TARGET_REPO_OUTPUT=1`, `dispatch:execute`, explicit confirmation, approval/integrity/secret gates, remote allowlists, and `ACP_TARGET_REPO_OUTPUT_KILL_SWITCH=1`; direct target working-tree or `main` writes and apply/merge/deploy authority remain out of scope. IAE may change trusted-local provider defaults without changing target-output authority.
 - The dashboard is a local operations console with guarded app-owned controls. V2-5 adds the product-level Mission Control output path over the guarded backend contract: create plan/run, tick, create workspace, capture patch, approve, export patch, or push an `acp/*` branch.
-- Adaptive Fusion supports guarded candidate selection, bounded parallel-panel fusion, safe observations, controlled experiments, auto promotion, completion routing, policy evidence, and rollback. Provider calls and every automatic influence path remain independently gated, killable, audited, and default-off.
+- Adaptive Fusion supports guarded candidate selection, bounded parallel-panel fusion, safe observations, controlled experiments, auto promotion, completion routing, policy evidence, and rollback. The IAE-1 profile can compose these gates after readiness validation; every path remains bounded, killable, audited, and redacted.
 - No destructive runtime filesystem behavior.
 - V2 real capabilities require the phase plan in `docs/NEXT_DECISION.md`, explicit gates, audit events, tests, and rollback/kill paths.
 

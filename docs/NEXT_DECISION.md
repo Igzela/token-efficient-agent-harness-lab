@@ -8,7 +8,7 @@ The Trusted Local Autonomous Execution Track (IAE) was approved on 2026-06-22. I
 
 IAE may change local defaults for provider execution, adaptive routing, experiments, automatic promotion, default routing, and supervised workers. It must not bypass protected auth, symbolic credential handling, budget/token/call/time/concurrency ceilings, provider/model identity, redaction, audit, snapshots, rollback, approval-bound target output, or kill switches. Missing prerequisites must fail closed.
 
-The next implementation phase is IAE-1: one trusted-local execution profile that validates prerequisites and activates the existing guarded capabilities as a coherent operating mode. Target-repository output, release controls, deployment controls, and repository merge authority remain separate systems.
+IAE-1 is implemented: `ACP_TRUSTED_LOCAL_PROFILE=1` validates protected auth, endpoint metadata, symbolic credentials, positive endpoint pricing, and per-dispatch/daily cost caps before activating the existing provider, adaptive routing, experiment, promotion, and default-routing gates as one coherent operating mode. Target-repository output, release controls, deployment controls, workers, and repository merge authority remain separate systems.
 
 ## Stable Tracks
 
@@ -19,12 +19,12 @@ The next implementation phase is IAE-1: one trusted-local execution profile that
 | V2 Real Production Output | Complete through V2-5 |
 | Real Output Closeout | Complete; `v0.1.0` published and installer verified |
 | Adaptive Fusion AF-0 through AF-7 | Complete; current runtime gates remain implemented |
-| Trusted Local Autonomous Execution | Active; IAE-1 is next |
+| Trusted Local Autonomous Execution | Active; IAE-1 implemented, IAE-2 is next |
 | Agent Autonomous Maintenance Mode | Active for implementation, docs, tests, CI, review, and bounded shipping |
 
 ## Trusted Local Boundary
 
-Current binaries still use the AF-6/V2 explicit gates. That is current implementation state, not a permanent governance restriction. IAE-1 may replace repeated opt-in flags with a single trusted-local profile after validating:
+Current binaries support both the IAE-1 trusted-local profile and the legacy AF-6/V2 explicit gates. The profile fails closed unless it validates:
 
 - protected authentication for live execution
 - configured endpoint metadata and symbolic credential references
@@ -37,6 +37,8 @@ Current binaries still use the AF-6/V2 explicit gates. That is current implement
 - policy snapshots and rollback
 - tests and CI before merge
 - fail-closed startup and visible operator readiness
+
+The token, call, timeout, concurrency, identity, redaction, audit, circuit-breaker, pause, kill, snapshot, and rollback controls remain enforced by their existing runtime modules. Runtime pause and kill state does not deconfigure the profile, so operators can recover without rebuilding the executor.
 
 ## Auto-Merge Policy
 
@@ -58,7 +60,6 @@ The R-series is sealed at R7. **SEALED AT R7.** R8 is not approved. No further R
 
 ## Allowed Next Paths
 
-- IAE-1 trusted-local execution profile.
 - IAE-2 bounded autonomous task advancement through existing workflow/scheduler modules.
 - IAE-3 operator readiness, evidence, pause/kill, and rollback UX.
 - Autonomous maintenance: repair stale docs, CI breakage, test drift, and wire-codegen drift.
@@ -72,7 +73,7 @@ The R-series is sealed at R7. **SEALED AT R7.** R8 is not approved. No further R
 | Phase | Goal | Acceptance |
 |---|---|---|
 | IAE-0 | Governance and permission baseline | **Complete** — trusted-local expansion authorized; safety invariants and fail-closed prerequisites recorded |
-| IAE-1 | Trusted-local execution profile | One profile activates existing provider/adaptive/experiment/promotion/default-routing/worker capabilities only after auth, endpoint, credential, budget, audit, rollback, and kill readiness checks pass |
+| IAE-1 | Trusted-local execution profile | **Complete** — one fail-closed profile activates existing provider/adaptive/experiment/promotion/default-routing capabilities after auth, endpoint, credential, positive pricing, and cost-cap validation; legacy flags remain compatible and runtime safety controls remain authoritative |
 | IAE-2 | Bounded autonomous task advancement | Existing workflow/scheduler may advance queued local tasks within explicit task, time, cost, token, call, concurrency, workspace, approval, pause, and kill ceilings |
 | IAE-3 | Operator control and evidence | Dashboard/API expose profile readiness, active authority, spend/traffic bounds, recent audit evidence, pause/kill state, and rollback actions without secrets or raw model content |
 

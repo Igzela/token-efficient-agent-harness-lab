@@ -7,8 +7,8 @@ This repository is the Token-Efficient Agent Harness Lab: a local deterministic 
 **Active tracks:**
 - **Real-World Testing Mode** — validated through real tasks, branches, commits, PRs, CI, gated auto-merge
 - **Agent Autonomous Maintenance Mode** — agents may advance implementation, docs, CI, tests, review, and low-risk merge flow under bounded safety gates
-- **Trusted Local Autonomous Execution Track (IAE)** — approved 2026-06-22; policy baseline active, implementation starts at IAE-1
-- **Adaptive Fusion Routing Track** — complete through AF-7; current runtime gates remain until the IAE trusted-local profile replaces fragmented opt-in setup
+- **Trusted Local Autonomous Execution Track (IAE)** — IAE-1 trusted-local profile implemented; IAE-2 bounded task advancement is next
+- **Adaptive Fusion Routing Track** — complete through AF-7; legacy gates and the IAE-1 profile are supported
 
 **Complete tracks:**
 - Dispatch Kernel Phases 1–7 (including 6A, 6B-1/2/3, Gates 1–3): STABLE
