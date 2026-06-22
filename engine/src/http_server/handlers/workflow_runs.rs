@@ -371,7 +371,7 @@ pub(crate) async fn api_tick_workflow_run(
                 return Err(ApiError::with_code(
                     StatusCode::BAD_REQUEST,
                     "provider_not_available",
-                    "provider execution not enabled (ACP_ENABLE_PROVIDER_EXECUTION=1 required)",
+                    "provider execution not enabled (ACP_ENABLE_PROVIDER_EXECUTION=1 or ready ACP_TRUSTED_LOCAL_PROFILE=1 required)",
                 ));
             }
             let Some(provider) = state.provider.clone() else {
