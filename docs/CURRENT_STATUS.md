@@ -34,11 +34,11 @@ The system is useful as an operations/control-plane lab for deterministic dispat
 
 ## Last Recorded Verification
 
-- Branch: `codex/iae3-operator-control-evidence`, based on `main` at IAE-2 merge `c342848`.
+- Branch: `main` at IAE-3 merge `8d98dc3`.
 - Tests: full Rust + TypeScript stack verification, 52 Python SDK tests, 153 HTTP tests, focused trusted-local/adaptive tests, rustfmt, Clippy, handoff, wire drift, dashboard boundary lint, and `git diff --check` passed with 0 failures on 2026-06-22.
 - Browser: authenticated stub runtime showed effective authority, 3% experiment traffic, configured cost/worker ceilings, one safe observation, redacted adaptive/scheduler audit actions, functional confirmed pause/resume controls, no raw prompt leakage, no desktop/mobile horizontal overflow, and no console errors.
 - Security: repository secret scan returned 0 findings; handoff, rustfmt, Clippy, dashboard boundary lint, TypeScript typecheck/build, and `git diff --check` passed.
-- CI: IAE-2 PR #98 workflow run `27937443506` was green across all seven jobs and merged as `c342848`; IAE-3 CI follows its PR.
+- CI: IAE-3 PR #99 workflow run `27938818428` and merge-to-main workflow run `27939265465` were green across all seven jobs; IAE-3 merged as `8d98dc3`.
 - Release: the `v0.1.0` release workflow run `27891104370` is green; all eight published assets passed checksum/archive inspection.
 - Online install: the README installer fetched `v0.1.0` into an isolated home, verified the checksum, installed the runtime/dashboard, and passed health, dashboard API, and HTML smoke checks on 2026-06-21.
 - PostgreSQL integration tests are gated behind `cargo test -p engine --features pg-tests` with `ACP_TEST_DATABASE_URL`.
