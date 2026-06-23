@@ -172,6 +172,19 @@ function ProviderEndpointConfigPanel({
   const source = config?.source ?? "loading";
   const endpoints = config?.endpoints ?? [];
   const runtime = config?.runtime;
+  const completionExecutorConfigured =
+    runtime?.completion_executor_configured ?? runtime?.executor_configured;
+  const completionRegistryConfigured =
+    runtime?.completion_registry_configured ?? runtime?.registry_configured;
+  const workflowExecutorConfigured =
+    runtime?.workflow_executor_configured ?? runtime?.executor_configured;
+  const completionDetail = runtime?.local_config_error_code
+    ? `blocked: ${runtime.local_config_error_code}`
+    : runtime?.local_config_applies_to_completion_api
+      ? "completion API live"
+      : runtime?.local_config_apply_requires_restart
+        ? "restart/reload needed"
+      : "current runtime";
 
   return (
     <div className="stack">
@@ -183,16 +196,16 @@ function ProviderEndpointConfigPanel({
       <div className="metrics">
         <Metric label="Source" value={source} detail={`${endpoints.length} endpoint(s)`} />
         <Metric
-          label="Executor"
-          value={runtime?.executor_configured ? "configured" : "missing"}
-          detail="current runtime"
-          tone={runtime?.executor_configured ? "ok" : "info"}
+          label="Completion"
+          value={completionExecutorConfigured ? "configured" : "missing"}
+          detail={completionDetail}
+          tone={completionExecutorConfigured ? "ok" : "info"}
         />
         <Metric
           label="Registry"
-          value={runtime?.registry_configured ? "configured" : "missing"}
-          detail={runtime?.local_config_apply_requires_restart ? "restart/reload needed" : "active source"}
-          tone={runtime?.registry_configured ? "ok" : "info"}
+          value={completionRegistryConfigured ? "configured" : "missing"}
+          detail={workflowExecutorConfigured ? "workflow runtime active" : "completion-only local config"}
+          tone={completionRegistryConfigured ? "ok" : "info"}
         />
       </div>
       {message ? (

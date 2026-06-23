@@ -89,7 +89,13 @@ test("provider endpoint config methods use safe config endpoint", async () => {
     runtime: {
       executor_configured: false,
       registry_configured: false,
-      local_config_apply_requires_restart: true,
+      workflow_executor_configured: false,
+      workflow_registry_configured: false,
+      completion_executor_configured: true,
+      completion_registry_configured: true,
+      local_config_apply_requires_restart: false,
+      local_config_applies_to_completion_api: true,
+      local_config_error_code: null,
     },
     safety: {
       raw_secrets_allowed: false,

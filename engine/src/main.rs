@@ -12,8 +12,8 @@ use engine::infrastructure::circuit_breaker::{CircuitBreaker, CircuitBreakerRegi
 use engine::infrastructure::rate_limiter::RateLimiter;
 use engine::node_executor::NodeExecutor;
 use engine::provider::adaptive_execution::{
-    parse_adaptive_provider_endpoints_json, validate_adaptive_provider_endpoint_config,
-    AdaptiveExecutionExecutor, AdaptiveExecutionGate, AdaptiveExecutionKillSwitch,
+    build_adaptive_provider_runtime_from_configs, parse_adaptive_provider_endpoints_json,
+    validate_adaptive_provider_endpoint_config, AdaptiveExecutionExecutor, AdaptiveExecutionGate,
     AdaptiveProviderEndpointConfig, PersistingAdaptiveProviderNodeExecutor,
     ACP_ADAPTIVE_PROVIDER_ENDPOINTS_JSON,
 };
@@ -30,7 +30,7 @@ use engine::provider::Provider;
 use engine::scheduler::{SchedulerConfig, WorkflowScheduler};
 use engine::storage::local_product_store::LocalProductStore;
 use engine::trusted_local::EffectiveExecutionGates;
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
@@ -689,19 +689,9 @@ fn build_adaptive_provider_executor_from_env(
     };
     let configs =
         parse_adaptive_provider_endpoints_json(&raw).map_err(|error| error.to_string())?;
-    let registry_snapshot =
-        engine::provider::adaptive_execution::adaptive_registry_snapshot_from_configs(&configs)
-            .map_err(|error| error.to_string())?;
-    let providers = build_adaptive_providers(&configs, cb_registry)?;
-    let recorder = Arc::new(ProviderAuditRecorder::with_store(store.clone()));
-    Ok(Some((
-        Arc::new(AdaptiveExecutionExecutor::new(
-            providers,
-            recorder,
-            AdaptiveExecutionKillSwitch::new(),
-        )),
-        registry_snapshot,
-    )))
+    build_adaptive_provider_runtime_from_configs(&configs, store, cb_registry)
+        .map(Some)
+        .map_err(|error| error.to_string())
 }
 
 fn build_trusted_adaptive_worker_executor(
@@ -719,86 +709,6 @@ fn build_trusted_adaptive_worker_executor(
         store,
         "scheduler",
     )))
-}
-
-fn build_adaptive_providers(
-    configs: &[AdaptiveProviderEndpointConfig],
-    cb_registry: &Arc<CircuitBreakerRegistry>,
-) -> Result<BTreeMap<String, Arc<dyn Provider>>, String> {
-    let mut providers: BTreeMap<String, Arc<dyn Provider>> = BTreeMap::new();
-    for endpoint in configs {
-        let base_provider: Arc<dyn Provider> = match endpoint.provider_type.as_str() {
-            "stub" => Arc::new(
-                StubProvider::new(&endpoint.endpoint_id).with_default_model(&endpoint.model),
-            ),
-            "openai_compatible" | "anthropic" => {
-                let credential_env = endpoint
-                    .credential_env
-                    .as_deref()
-                    .ok_or_else(|| "validated adaptive credential reference missing".to_string())?;
-                let boundary = CredentialBoundary::new("env")?;
-                if !boundary.validate(credential_env) {
-                    return Err(format!(
-                        "credential environment variable {credential_env} is not set"
-                    ));
-                }
-                let credential_ref = CredentialRef::new(
-                    credential_env,
-                    "env",
-                    "***",
-                    &format!("provider:{}", endpoint.endpoint_id),
-                    "2026-01-01T00:00:00Z",
-                );
-                let mut config = ProviderConfig::new(
-                    &endpoint.endpoint_id,
-                    &endpoint.provider_type,
-                    endpoint.base_url.as_deref().unwrap_or_default(),
-                    &endpoint.model,
-                    credential_env,
-                    "2026-01-01T00:00:00Z",
-                );
-                config.timeout_ms = endpoint.timeout_ms;
-                config.input_cost_per_1k = endpoint.input_cost_per_1k_usd;
-                config.output_cost_per_1k = endpoint.output_cost_per_1k_usd;
-                let transport = Arc::new(ReqwestTransport::new());
-                if endpoint.provider_type == "openai_compatible" {
-                    Arc::new(OpenAiProvider::new(
-                        config,
-                        boundary,
-                        credential_ref,
-                        transport,
-                        None,
-                    ))
-                } else {
-                    Arc::new(AnthropicProvider::new(
-                        config,
-                        boundary,
-                        credential_ref,
-                        transport,
-                        None,
-                    ))
-                }
-            }
-            _ => return Err("validated adaptive provider type is unsupported".to_string()),
-        };
-        let circuit_breaker = Arc::new(CircuitBreaker::new(
-            format!("provider:{}", endpoint.endpoint_id),
-            std::env::var("ACP_CIRCUIT_BREAKER_THRESHOLD")
-                .ok()
-                .and_then(|value| value.parse::<u64>().ok())
-                .unwrap_or(5),
-            std::env::var("ACP_CIRCUIT_BREAKER_RECOVERY_MS")
-                .ok()
-                .and_then(|value| value.parse::<u64>().ok())
-                .unwrap_or(30_000),
-        ));
-        cb_registry.register(circuit_breaker.clone());
-        providers.insert(
-            endpoint.endpoint_id.clone(),
-            Arc::new(CircuitBreakerProvider::new(base_provider, circuit_breaker)),
-        );
-    }
-    Ok(providers)
 }
 
 fn local_admin_scopes() -> HashSet<String> {
@@ -1173,15 +1083,20 @@ mod tests {
             ]"#,
         )
         .unwrap();
+        let store = Arc::new(LocalProductStore::new(":memory:").unwrap());
         let registry = Arc::new(CircuitBreakerRegistry::new());
 
-        let providers = build_adaptive_providers(&configs, &registry).unwrap();
+        let (_, snapshot) =
+            build_adaptive_provider_runtime_from_configs(&configs, &store, &registry).unwrap();
 
         assert_eq!(
-            providers.keys().cloned().collect::<Vec<_>>(),
+            snapshot
+                .endpoints
+                .iter()
+                .map(|endpoint| endpoint.endpoint_id.clone())
+                .collect::<Vec<_>>(),
             vec!["fast", "quality"]
         );
-        assert!(providers.values().all(|provider| provider.is_enabled()));
     }
 
     #[test]
@@ -1197,14 +1112,16 @@ mod tests {
             }]"#,
         )
         .unwrap();
+        let store = Arc::new(LocalProductStore::new(":memory:").unwrap());
         let registry = Arc::new(CircuitBreakerRegistry::new());
 
-        let error = match build_adaptive_providers(&configs, &registry) {
+        let error = match build_adaptive_provider_runtime_from_configs(&configs, &store, &registry)
+        {
             Ok(_) => panic!("missing adaptive credential should fail"),
             Err(error) => error,
         };
 
-        assert!(error.contains("_ACP_MISSING_ADAPTIVE_TEST_KEY_"));
+        assert_eq!(error.code, "credential_env_unavailable");
     }
 
     #[test]

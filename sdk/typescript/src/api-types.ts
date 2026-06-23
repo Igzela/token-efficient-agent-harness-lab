@@ -68,7 +68,13 @@ export interface ProviderEndpointConfigResponse {
   runtime: {
     executor_configured: boolean;
     registry_configured: boolean;
+    workflow_executor_configured?: boolean;
+    workflow_registry_configured?: boolean;
+    completion_executor_configured?: boolean;
+    completion_registry_configured?: boolean;
     local_config_apply_requires_restart: boolean;
+    local_config_applies_to_completion_api?: boolean;
+    local_config_error_code?: string | null;
   };
   safety: {
     raw_secrets_allowed: false;

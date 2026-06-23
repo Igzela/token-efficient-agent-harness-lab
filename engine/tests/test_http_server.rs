@@ -2675,6 +2675,21 @@ async fn axum_provider_health_ok_with_stub_provider() {
 
 #[tokio::test]
 async fn axum_provider_endpoints_roundtrip_safe_multi_provider_config() {
+    struct CredentialGuard;
+    impl CredentialGuard {
+        fn new() -> Self {
+            std::env::set_var("OPENAI_QUALITY_KEY", "test-openai-key");
+            std::env::set_var("ANTHROPIC_JUDGE_KEY", "test-anthropic-key");
+            Self
+        }
+    }
+    impl Drop for CredentialGuard {
+        fn drop(&mut self) {
+            std::env::remove_var("OPENAI_QUALITY_KEY");
+            std::env::remove_var("ANTHROPIC_JUDGE_KEY");
+        }
+    }
+    let _credentials = CredentialGuard::new();
     let dir = tempdir().unwrap();
     let store = LocalProductStore::new(dir.path().join("provider-endpoints.db")).unwrap();
     let app = build_axum_router(AxumApiState::new().with_local_store(store));
@@ -2753,7 +2768,16 @@ async fn axum_provider_endpoints_roundtrip_safe_multi_provider_config() {
     assert_eq!(endpoints[1]["endpoint_id"], "local-stub");
     assert_eq!(endpoints[2]["endpoint_id"], "openai-quality");
     assert_eq!(body["safety"]["raw_secrets_allowed"], false);
-    assert_eq!(body["runtime"]["local_config_apply_requires_restart"], true);
+    assert_eq!(body["runtime"]["completion_executor_configured"], true);
+    assert_eq!(body["runtime"]["completion_registry_configured"], true);
+    assert_eq!(
+        body["runtime"]["local_config_apply_requires_restart"],
+        false
+    );
+    assert_eq!(
+        body["runtime"]["local_config_applies_to_completion_api"],
+        true
+    );
 
     let stored = app
         .oneshot(
@@ -2769,6 +2793,51 @@ async fn axum_provider_endpoints_roundtrip_safe_multi_provider_config() {
     let stored_body = response_json(stored).await;
     assert_eq!(stored_body["source"], "local_config");
     assert_eq!(stored_body["endpoints"], body["endpoints"]);
+}
+
+#[tokio::test]
+async fn axum_provider_endpoints_lazily_applies_stored_local_config_to_completion_runtime() {
+    let dir = tempdir().unwrap();
+    let store = LocalProductStore::new(dir.path().join("provider-endpoints-lazy.db")).unwrap();
+    store
+        .set_config_value(
+            "adaptive_provider_endpoints",
+            json!([{
+                "endpoint_id": "local-stub",
+                "provider_type": "stub",
+                "model": "stub-model",
+                "timeout_ms": 30000,
+                "input_cost_per_1k_usd": 0.01,
+                "output_cost_per_1k_usd": 0.02
+            }]),
+            "test",
+        )
+        .unwrap();
+    let app = build_axum_router(AxumApiState::new().with_local_store(store));
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method(Method::GET)
+                .uri("/api/v1/provider/endpoints")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = response_json(response).await;
+    assert_eq!(body["source"], "local_config");
+    assert_eq!(body["runtime"]["completion_executor_configured"], true);
+    assert_eq!(
+        body["runtime"]["local_config_applies_to_completion_api"],
+        true
+    );
+    assert_eq!(
+        body["runtime"]["local_config_apply_requires_restart"],
+        false
+    );
 }
 
 #[tokio::test]
@@ -2803,6 +2872,40 @@ async fn axum_provider_endpoints_rejects_unconfirmed_or_secret_shaped_config() {
     assert_eq!(
         unconfirmed_body["code"],
         "provider_endpoint_config_not_confirmed"
+    );
+
+    let missing_credential = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(Method::PUT)
+                .uri("/api/v1/provider/endpoints")
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(
+                    json!({
+                        "confirm_provider_endpoint_config": true,
+                        "endpoints": [{
+                            "endpoint_id": "missing-credential",
+                            "provider_type": "openai_compatible",
+                            "base_url": "https://api.openai.example/v1",
+                            "model": "safe-model",
+                            "credential_env": "ACP_TEST_MISSING_PROVIDER_KEY",
+                            "timeout_ms": 30000,
+                            "input_cost_per_1k_usd": 0.01,
+                            "output_cost_per_1k_usd": 0.02
+                        }]
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(missing_credential.status(), StatusCode::BAD_REQUEST);
+    let missing_credential_body = response_json(missing_credential).await;
+    assert_eq!(
+        missing_credential_body["code"],
+        "credential_env_unavailable"
     );
 
     let secret = app

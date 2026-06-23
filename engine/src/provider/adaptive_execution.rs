@@ -6,9 +6,16 @@ use std::time::{Duration, Instant};
 use serde::{Deserialize, Serialize};
 use tokio::task::JoinSet;
 
+use super::anthropic::AnthropicProvider;
 use super::audit::ProviderAuditRecorder;
+use super::circuit_breaker_provider::CircuitBreakerProvider;
+use super::config::{CredentialRef, ProviderConfig};
 use super::cost_gate::{check_cost_gates, CostGateConfig};
+use super::credential::CredentialBoundary;
+use super::openai::OpenAiProvider;
 use super::redaction::{contains_sensitive_patterns, redact_sensitive_patterns};
+use super::stub::StubProvider;
+use super::transport::ReqwestTransport;
 use super::{Provider, ProviderRequest, ProviderResponse};
 use crate::feedback::policy_snapshot::stable_hash;
 use crate::feedback::{
@@ -19,6 +26,7 @@ use crate::feedback::{
     ModelEndpointRegistry, ModelEndpointRegistrySnapshot, ModelEndpointSpec,
     PromotedAdaptivePolicy, TaskClassEvaluation, ENDPOINT_REGISTRY_SCHEMA_VERSION,
 };
+use crate::infrastructure::circuit_breaker::{CircuitBreaker, CircuitBreakerRegistry};
 use crate::node_executor::{NodeExecutionInput, NodeExecutionOutput, NodeExecutor};
 use crate::trusted_local::EffectiveExecutionGates;
 
@@ -170,6 +178,136 @@ pub fn adaptive_registry_snapshot_from_configs(
             })?;
     }
     Ok(registry.snapshot())
+}
+
+pub fn adaptive_runtime_hash_from_configs(
+    configs: &[AdaptiveProviderEndpointConfig],
+) -> Result<String, AdaptiveProviderEndpointConfigError> {
+    serde_json::to_value(configs)
+        .map(|value| stable_hash(&value))
+        .map_err(|_| {
+            AdaptiveProviderEndpointConfigError::new(
+                "invalid_endpoint_config_json",
+                "adaptive endpoint config must be serializable",
+            )
+        })
+}
+
+pub fn build_adaptive_provider_runtime_from_configs(
+    configs: &[AdaptiveProviderEndpointConfig],
+    store: &std::sync::Arc<crate::storage::local_product_store::LocalProductStore>,
+    cb_registry: &std::sync::Arc<CircuitBreakerRegistry>,
+) -> Result<
+    (
+        std::sync::Arc<AdaptiveExecutionExecutor>,
+        ModelEndpointRegistrySnapshot,
+    ),
+    AdaptiveProviderEndpointConfigError,
+> {
+    let registry_snapshot = adaptive_registry_snapshot_from_configs(configs)?;
+    let providers = build_adaptive_providers(configs, cb_registry)?;
+    let recorder = std::sync::Arc::new(ProviderAuditRecorder::with_store(store.clone()));
+    Ok((
+        std::sync::Arc::new(AdaptiveExecutionExecutor::new(
+            providers,
+            recorder,
+            AdaptiveExecutionKillSwitch::new(),
+        )),
+        registry_snapshot,
+    ))
+}
+
+fn build_adaptive_providers(
+    configs: &[AdaptiveProviderEndpointConfig],
+    cb_registry: &std::sync::Arc<CircuitBreakerRegistry>,
+) -> Result<BTreeMap<String, Arc<dyn Provider>>, AdaptiveProviderEndpointConfigError> {
+    let mut providers: BTreeMap<String, Arc<dyn Provider>> = BTreeMap::new();
+    for endpoint in configs {
+        let base_provider: Arc<dyn Provider> = match endpoint.provider_type.as_str() {
+            "stub" => Arc::new(
+                StubProvider::new(&endpoint.endpoint_id).with_default_model(&endpoint.model),
+            ),
+            "openai_compatible" | "anthropic" => {
+                let credential_env = endpoint.credential_env.as_deref().ok_or_else(|| {
+                    AdaptiveProviderEndpointConfigError::new(
+                        "invalid_credential_env",
+                        "validated adaptive credential reference is missing",
+                    )
+                })?;
+                let boundary = CredentialBoundary::new("env").map_err(|_| {
+                    AdaptiveProviderEndpointConfigError::new(
+                        "invalid_credential_backend",
+                        "adaptive endpoint credential backend is invalid",
+                    )
+                })?;
+                if !boundary.validate(credential_env) {
+                    return Err(AdaptiveProviderEndpointConfigError::new(
+                        "credential_env_unavailable",
+                        "adaptive endpoint credential environment variable is not set",
+                    ));
+                }
+                let credential_ref = CredentialRef::new(
+                    credential_env,
+                    "env",
+                    "***",
+                    &format!("provider:{}", endpoint.endpoint_id),
+                    "2026-01-01T00:00:00Z",
+                );
+                let mut config = ProviderConfig::new(
+                    &endpoint.endpoint_id,
+                    &endpoint.provider_type,
+                    endpoint.base_url.as_deref().unwrap_or_default(),
+                    &endpoint.model,
+                    credential_env,
+                    "2026-01-01T00:00:00Z",
+                );
+                config.timeout_ms = endpoint.timeout_ms;
+                config.input_cost_per_1k = endpoint.input_cost_per_1k_usd;
+                config.output_cost_per_1k = endpoint.output_cost_per_1k_usd;
+                let transport = Arc::new(ReqwestTransport::new());
+                if endpoint.provider_type == "openai_compatible" {
+                    Arc::new(OpenAiProvider::new(
+                        config,
+                        boundary,
+                        credential_ref,
+                        transport,
+                        None,
+                    ))
+                } else {
+                    Arc::new(AnthropicProvider::new(
+                        config,
+                        boundary,
+                        credential_ref,
+                        transport,
+                        None,
+                    ))
+                }
+            }
+            _ => {
+                return Err(AdaptiveProviderEndpointConfigError::new(
+                    "invalid_provider_type",
+                    "adaptive endpoint provider type is unsupported",
+                ))
+            }
+        };
+        let circuit_breaker = Arc::new(CircuitBreaker::new(
+            format!("provider:{}", endpoint.endpoint_id),
+            std::env::var("ACP_CIRCUIT_BREAKER_THRESHOLD")
+                .ok()
+                .and_then(|value| value.parse::<u64>().ok())
+                .unwrap_or(5),
+            std::env::var("ACP_CIRCUIT_BREAKER_RECOVERY_MS")
+                .ok()
+                .and_then(|value| value.parse::<u64>().ok())
+                .unwrap_or(30_000),
+        ));
+        cb_registry.register(circuit_breaker.clone());
+        providers.insert(
+            endpoint.endpoint_id.clone(),
+            Arc::new(CircuitBreakerProvider::new(base_provider, circuit_breaker)),
+        );
+    }
+    Ok(providers)
 }
 
 pub fn validate_adaptive_provider_endpoint_config(
