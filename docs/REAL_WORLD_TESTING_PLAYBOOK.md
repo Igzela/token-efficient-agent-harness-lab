@@ -6,7 +6,7 @@ Operational execution guide for Real-World Testing Mode.
 
 ## Mode Summary
 
-The project validates the Dynamic Global Regulator through real work: real tasks, real branches, real commits, real PRs, real CI, and gated auto-merge. This is controlled autonomy — low-risk work proceeds autonomously; high-risk work requires human approval.
+The project validates the Dynamic Global Regulator through real work: real tasks, real branches, real commits, real PRs, real CI, and gated auto-merge. Full Agent Autonomy Mode permits low- and high-risk repo changes when scoped, testable, observable, reviewed, and rollbackable.
 
 ---
 
@@ -41,13 +41,13 @@ The project validates the Dynamic Global Regulator through real work: real tasks
 | Small code fix | ✅ allowed | auto-merge if low-risk |
 | Target repo edit (via PR) | ✅ allowed | CI must pass |
 | Dynamic workflow node injection | ✅ allowed | within existing bounds |
-| Low-risk auto-merge | ✅ allowed | see classifier below |
-| Provider/CLI boundary change | ❌ requires approval | explicit user approval |
-| Auth/security change | ❌ requires approval | explicit user approval |
-| DB migration | ❌ requires approval | explicit user approval |
-| Release/tag/deploy | ❌ requires approval | explicit user approval |
-| YAML/rubric/policy mutation | ❌ requires approval | explicit user approval |
-| Destructive operation | ❌ requires approval | explicit user approval |
+| Green PR merge | ✅ allowed | see classifier below |
+| Provider/CLI boundary change | ✅ allowed | tests + audit + rollback |
+| Auth/security change | ✅ allowed | threat model + tests + rollback |
+| DB migration | ✅ allowed | forward/backward test + rollback |
+| Release/tag/deploy workflow change | ✅ allowed | dry-run + rollback; external action separately gated |
+| YAML/rubric/policy mutation | ✅ allowed | validation + rollback |
+| Irreversible external operation | ❌ stop | recovery path or human decision required |
 
 ---
 
@@ -57,21 +57,21 @@ A PR is auto-merge eligible when ALL conditions are met:
 
 | Field | Required Value |
 |---|---|
-| `change_type` | `docs` OR `tests` OR `ci-fix` OR `small-code-fix` |
-| `risk_class` | `low` |
-| `touched_paths` | no paths matching `auth`, `security`, `provider`, `deploy`, `migration`, `.env` |
+| `change_type` | documented and scoped |
+| `risk_class` | low, medium, or high with matching evidence |
+| `touched_paths` | reviewed; risk paths include focused tests and rollback |
 | `ci_status` | `success` (all jobs) |
 | `handoff_guard_status` | `pass` |
 | `rollback_path` | `git revert` is sufficient |
-| `approval_required` | `no` |
+| `hard_stop` | `no` |
 
 ### Risk Classification
 
 | Risk Class | Criteria | Auto-Merge |
 |---|---|---|
 | `low` | docs, tests, CI config, small code fix (< 50 lines, no auth/provider/deploy paths) | ✅ yes |
-| `medium` | code change > 50 lines, touches multiple modules, new endpoint | ❌ no — needs review |
-| `high` | auth, security, provider boundary, DB schema, deploy config | ❌ no — needs explicit approval |
+| `medium` | code change > 50 lines, touches multiple modules, new endpoint | ✅ after review + green CI |
+| `high` | auth, security, provider boundary, DB schema, deploy config | ✅ after threat review + focused tests + green CI + rollback |
 
 ---
 
@@ -97,18 +97,13 @@ Every real-world test task must produce a feedback trace with these fields:
 
 ## Stop Conditions
 
-The system MUST stop and request human approval when ANY of these are detected:
+The system MUST stop when ANY of these are detected:
 
-1. **Secrets risk** — API keys, tokens, or passwords in changed files
-2. **Auth/security boundary change** — modifications to auth middleware, key management, or security controls
-3. **Provider/CLI execution boundary expansion** — changes to `ACP_ENABLE_PROVIDER_EXECUTION`, `ACP_ENABLE_CLI_EXECUTION`, or `ACP_EXECUTION_MODE` defaults
-4. **Database migration** — schema changes, new tables, column modifications
-5. **Deploy/release/tag** — release scripts, version tags, deployment config
-6. **Destructive or irreversible operation** — data deletion, credential rotation, schema drops
-7. **Active YAML/rubric/policy mutation** — CI workflow changes, governance rule changes, routing policy changes
-8. **CI failure after retry** — CI fails 3 times on the same change
-9. **Unclear rollback path** — cannot describe how to undo the change in one sentence
-10. **Large or hard-to-review diff** — > 200 lines changed, or diff touches > 5 files across modules
+1. **Real-secret commit** — real credentials or secrets would enter version control
+2. **Falsified evidence** — test or CI evidence would be fabricated
+3. **Hidden failure** — a known failure would be intentionally concealed
+4. **Removed rollback** — an existing rollback path would be removed
+5. **Irreversible external destruction** — no recovery path exists
 
 ---
 
@@ -232,25 +227,25 @@ Agents must not autonomously open broad PRs that combine unrelated code, docs, a
 
 ### C. Merge Policy
 
-Agents may autonomously merge low-risk PRs only when ALL are true:
+Documentation-only changes may be committed directly to `main` after local handoff and diff validation; they do not require a CI wait.
 
-- PR is docs-only, tests-only, CI fix, or small low-risk code fix
+Agents may autonomously merge PRs when ALL are true:
+
+- scope and risk evidence are documented
 - CI is green
 - handoff guard passed
-- no secrets/auth/security/provider/deploy/db/rubric/policy boundary changes
+- focused tests cover changed boundaries
 - rollback path is clear
 - diff is reviewable
 - no explicit human objection
 
 Agents must request human approval before merge when:
 
-- release/tag/deploy involved
-- auth/security/db/provider/CLI execution boundary involved
-- active YAML/rubric/policy mutation involved
-- destructive or irreversible operation involved
-- CI is failing or missing
-- diff is large or cross-cutting
-- rollback path is unclear
+- a real secret would need to be committed
+- test or CI evidence cannot be reported truthfully
+- a known failure would need to be hidden
+- the change removes its rollback path
+- an irreversible external action has no tested recovery path
 
 ### D. Success Standard
 

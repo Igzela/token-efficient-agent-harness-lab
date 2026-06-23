@@ -4,7 +4,7 @@ Last updated: 2026-06-23. V2-0 through V2-5, the Real Output Closeout, and Adapt
 
 ## Summary
 
-The core plan, V2 implementation, Real Output Closeout, Adaptive Fusion Routing track, and Trusted Local Autonomous Execution IAE-0 through IAE-3 are complete. The system includes prompt-to-CLI execution, bounded verification/repair evidence, optional real GitHub PR creation, guarded automatic provider/model routing with safe evidence feedback, bounded background advancement of already-created adaptive workflow runs, and an integrated operator control/evidence surface.
+The core plan, V2 implementation, Real Output Closeout, Adaptive Fusion Routing track, and Trusted Local Autonomous Execution IAE-0 through IAE-3 are complete. Full Agent Autonomy Mode is active for repo-scoped, testable, observable, CI-gated, rollbackable architecture and authority evolution. The system includes prompt-to-CLI execution, bounded verification/repair evidence, optional real GitHub PR creation, guarded automatic provider/model routing with safe evidence feedback, bounded background advancement of already-created adaptive workflow runs, and an integrated operator control/evidence surface.
 
 The system is useful as an operations/control-plane lab for deterministic dispatch, workflow state, app-owned execution metadata, guarded local controls, SDKs, and audit evidence. It is not a cloud SaaS, hosted multi-tenant service, direct-deploy tool, or unattended autonomous-agent runtime.
 
@@ -47,7 +47,7 @@ The system is useful as an operations/control-plane lab for deterministic dispat
 Handoff guard facts:
 
 - Phase 4 is complete and historical as part of the sealed dispatch-kernel sequence.
-- Architecture Refactor R-series Seal: **SEALED AT R7**. R8 is not approved.
+- Full Agent Autonomy Mode: R7 remains the baseline; an explicit documented, tested, observable, rollbackable decision may supersede it.
 - Post-R7 Wire/Type Governance Hardening: `scripts/check_wire_codegen_drift.sh`.
 
 For current verification commands, use:
@@ -78,7 +78,8 @@ uv run --no-project python scripts/check_agent_handoff.py
 
 | Track | Status |
 |---|---|
-| Agent Autonomous Maintenance Mode | Active for implementation, docs, CI, tests, review, and bounded shipping |
+| Agent Autonomous Maintenance Mode | Active for implementation, docs, CI, tests, review, and shipping |
+| Full Agent Autonomy Mode | Active for repo-scoped architecture, authority, auth/security, migration, release-workflow, default-profile, and target-output evolution with tests, evidence, review, and rollback |
 | Adaptive Fusion Routing Track | AF-0 through AF-7 implemented; existing runtime gates remain active |
 | Trusted Local Autonomous Execution Track | Complete through IAE-3 |
 
