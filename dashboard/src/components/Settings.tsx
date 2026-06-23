@@ -178,8 +178,10 @@ function ProviderEndpointConfigPanel({
     runtime?.completion_registry_configured ?? runtime?.registry_configured;
   const workflowExecutorConfigured =
     runtime?.workflow_executor_configured ?? runtime?.executor_configured;
-  const completionDetail = runtime?.local_config_error_code
-    ? `blocked: ${runtime.local_config_error_code}`
+  const completionDetail = runtime?.local_config_error_code === "environment_override_active"
+    ? "environment config active"
+    : runtime?.local_config_error_code
+      ? `blocked: ${runtime.local_config_error_code}`
     : runtime?.local_config_applies_to_completion_api
       ? "completion API live"
       : runtime?.local_config_apply_requires_restart

@@ -82,6 +82,12 @@ impl TrustedLocalEnv {
         );
         Self
     }
+
+    fn enabled_without_endpoint_config() -> Self {
+        let env = Self::enabled();
+        std::env::remove_var("ACP_ADAPTIVE_PROVIDER_ENDPOINTS_JSON");
+        env
+    }
 }
 
 impl Drop for TrustedLocalEnv {
@@ -198,6 +204,7 @@ fn app_without_adaptive_runtime() -> (
         "config:read".to_string(),
         "dispatch:execute".to_string(),
         "dispatch:read".to_string(),
+        "health:read".to_string(),
     ]);
     let mut resolver = TenantResolver::new();
     resolver.add_tenant(Tenant {
@@ -233,6 +240,15 @@ fn save_provider_endpoints_request(api_key: &str, body: Value) -> Request<Body> 
         .header(header::AUTHORIZATION, format!("Bearer {api_key}"))
         .header(header::CONTENT_TYPE, "application/json")
         .body(Body::from(body.to_string()))
+        .unwrap()
+}
+
+fn provider_endpoints_request(api_key: &str) -> Request<Body> {
+    Request::builder()
+        .method(Method::GET)
+        .uri("/api/v1/provider/endpoints")
+        .header(header::AUTHORIZATION, format!("Bearer {api_key}"))
+        .body(Body::empty())
         .unwrap()
 }
 
@@ -363,6 +379,202 @@ async fn completion_uses_safe_provider_endpoints_saved_in_local_config() {
     assert!(completed["output"].is_string());
     assert_eq!(completed["routing_metadata"]["candidate_kind"], "single");
     assert_eq!(store.adaptive_observations().unwrap().len(), 1);
+}
+
+#[tokio::test]
+async fn environment_provider_endpoints_remain_authoritative_over_saved_local_config() {
+    let _guard = env_lock().lock().await;
+    let _env = TrustedLocalEnv::enabled();
+    let (app, _, raw_key, _dir) = app_without_adaptive_runtime();
+
+    let saved = app
+        .clone()
+        .oneshot(save_provider_endpoints_request(
+            &raw_key,
+            json!({
+                "confirm_provider_endpoint_config": true,
+                "endpoints": [{
+                    "endpoint_id": "local-stub",
+                    "provider_type": "stub",
+                    "model": "local-model",
+                    "timeout_ms": 30000,
+                    "input_cost_per_1k_usd": 0.01,
+                    "output_cost_per_1k_usd": 0.02
+                }]
+            }),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(saved.status(), StatusCode::OK);
+    let saved = response_json(saved).await;
+    assert_eq!(
+        saved["runtime"]["local_config_applies_to_completion_api"],
+        false
+    );
+    assert_eq!(
+        saved["runtime"]["local_config_error_code"],
+        "environment_override_active"
+    );
+
+    let active = app
+        .oneshot(provider_endpoints_request(&raw_key))
+        .await
+        .unwrap();
+    assert_eq!(active.status(), StatusCode::OK);
+    let active = response_json(active).await;
+    assert_eq!(active["source"], "environment");
+    assert_eq!(active["endpoints"][0]["endpoint_id"], "fast");
+}
+
+#[tokio::test]
+async fn invalid_environment_provider_config_does_not_fall_back_to_saved_local_config() {
+    let _guard = env_lock().lock().await;
+    let _env = TrustedLocalEnv::enabled();
+    let (app, store, raw_key, _dir) = app_without_adaptive_runtime();
+    store
+        .set_config_value(
+            "adaptive_provider_endpoints",
+            json!([{
+                "endpoint_id": "local-stub",
+                "provider_type": "stub",
+                "model": "local-model",
+                "input_cost_per_1k_usd": 0.01,
+                "output_cost_per_1k_usd": 0.02
+            }]),
+            "test",
+        )
+        .unwrap();
+    std::env::set_var("ACP_ADAPTIVE_PROVIDER_ENDPOINTS_JSON", "invalid");
+
+    let response = app
+        .oneshot(provider_endpoints_request(&raw_key))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = response_json(response).await;
+    assert_eq!(body["source"], "environment");
+    assert!(body["endpoints"].as_array().unwrap().is_empty());
+    assert_eq!(
+        body["runtime"]["local_config_error_code"],
+        "invalid_endpoint_config_json"
+    );
+}
+
+#[tokio::test]
+async fn trusted_local_profile_activates_after_provider_endpoints_are_saved() {
+    let _guard = env_lock().lock().await;
+    let _env = TrustedLocalEnv::enabled_without_endpoint_config();
+    let (app, store, raw_key, _dir) = app_without_adaptive_runtime();
+
+    let saved = app
+        .clone()
+        .oneshot(save_provider_endpoints_request(
+            &raw_key,
+            json!({
+                "confirm_provider_endpoint_config": true,
+                "endpoints": [{
+                    "endpoint_id": "local-stub",
+                    "provider_type": "stub",
+                    "model": "test-model",
+                    "timeout_ms": 30000,
+                    "input_cost_per_1k_usd": 0.01,
+                    "output_cost_per_1k_usd": 0.02
+                }]
+            }),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(saved.status(), StatusCode::OK);
+
+    let completed = app
+        .clone()
+        .oneshot(completion_request(
+            Some(&raw_key),
+            json!({"prompt": "solve with persisted trusted-local config"}),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(completed.status(), StatusCode::OK);
+
+    let dashboard = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(Method::GET)
+                .uri("/api/v1/dashboard")
+                .header(header::AUTHORIZATION, format!("Bearer {raw_key}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(dashboard.status(), StatusCode::OK);
+    assert_eq!(
+        response_json(dashboard).await["adaptive_fusion"]["trusted_local_profile"]["ready"],
+        true
+    );
+
+    let dispatched = app
+        .oneshot(
+            Request::builder()
+                .method(Method::POST)
+                .uri("/api/v1/dispatch")
+                .header(header::AUTHORIZATION, format!("Bearer {raw_key}"))
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(
+                    json!({"raw_request": "dispatch with persisted trusted-local config"})
+                        .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(dispatched.status(), StatusCode::OK);
+    assert!(response_json(dispatched).await.get("record").is_none());
+    assert_eq!(store.adaptive_observations().unwrap().len(), 2);
+}
+
+#[tokio::test]
+async fn invalid_persisted_provider_config_does_not_block_deterministic_dispatch() {
+    let _guard = env_lock().lock().await;
+    let (app, store, raw_key, _dir) = app_without_adaptive_runtime();
+    store
+        .set_config_value(
+            "adaptive_provider_endpoints",
+            json!({"invalid": "shape"}),
+            "test",
+        )
+        .unwrap();
+
+    let config = app
+        .clone()
+        .oneshot(provider_endpoints_request(&raw_key))
+        .await
+        .unwrap();
+    assert_eq!(config.status(), StatusCode::OK);
+    let config = response_json(config).await;
+    assert_eq!(config["source"], "local_config");
+    assert!(config["endpoints"].as_array().unwrap().is_empty());
+    assert_eq!(
+        config["runtime"]["local_config_error_code"],
+        "invalid_endpoint_config_json"
+    );
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method(Method::POST)
+                .uri("/api/v1/dispatch")
+                .header(header::AUTHORIZATION, format!("Bearer {raw_key}"))
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(json!({"raw_request": "solve"}).to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+    assert!(response_json(response).await.get("record").is_some());
 }
 
 #[tokio::test]

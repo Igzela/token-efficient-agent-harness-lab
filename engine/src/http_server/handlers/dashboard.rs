@@ -12,7 +12,6 @@ use crate::http_server::state::AxumApiState;
 use crate::provider::config::provider_pricing_from_env;
 use crate::provider::cost_gate::CostGateConfig;
 use crate::storage::local_product_store::local_boundaries;
-use crate::trusted_local::EffectiveExecutionGates;
 
 const ADAPTIVE_FUSION_OPERATOR_STATUS_SCHEMA_VERSION: &str = "adaptive_fusion_operator_status.v1";
 
@@ -24,7 +23,7 @@ pub(crate) async fn api_dashboard(
 ) -> Result<impl IntoResponse, ApiError> {
     authorize(&state, &headers, "health:read", uri.path(), &request_id.0)?;
     let exec_type = state.executor_type();
-    let execution_gates = EffectiveExecutionGates::from_env();
+    let execution_gates = state.effective_execution_gates();
     let prov_enabled = state.provider_enabled()
         || (execution_gates.provider_execution && state.adaptive_provider_executor.is_some());
     let mut body = if let Some(store) = &state.local_store {
@@ -90,7 +89,7 @@ pub(crate) async fn api_dashboard(
 }
 
 fn adaptive_fusion_operator_status(state: &AxumApiState) -> Result<serde_json::Value, String> {
-    let effective_gates = EffectiveExecutionGates::from_env();
+    let effective_gates = state.effective_execution_gates();
     let provider_execution = effective_gates.provider_execution;
     let adaptive_execution = effective_gates.adaptive_execution;
     let auth = state.tenant_resolver.is_some();

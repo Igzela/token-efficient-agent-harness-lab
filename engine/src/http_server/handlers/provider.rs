@@ -12,10 +12,8 @@ use crate::http_server::{ProviderEndpointConfigApiRequest, AXUM_API_SCHEMA_VERSI
 use crate::provider::adaptive_execution::{
     adaptive_runtime_hash_from_configs, build_adaptive_provider_runtime_from_configs,
     parse_adaptive_provider_endpoints_json, AdaptiveProviderEndpointConfig,
-    ACP_ADAPTIVE_PROVIDER_ENDPOINTS_JSON,
+    ACP_ADAPTIVE_PROVIDER_ENDPOINTS_JSON, ADAPTIVE_PROVIDER_ENDPOINTS_CONFIG_KEY,
 };
-
-const ADAPTIVE_PROVIDER_ENDPOINTS_CONFIG_KEY: &str = "adaptive_provider_endpoints";
 
 pub(crate) async fn api_provider_health(
     State(state): State<AxumApiState>,
@@ -69,23 +67,35 @@ pub(crate) async fn api_provider_endpoints(
     authorize(&state, &headers, "config:read", uri.path(), &request_id.0)?;
     let store = require_store(&state)?;
     let config = store.config_snapshot().map_err(internal_error)?;
-    let local_endpoints = config
-        .get(ADAPTIVE_PROVIDER_ENDPOINTS_CONFIG_KEY)
-        .and_then(|value| {
-            serde_json::from_value::<Vec<AdaptiveProviderEndpointConfig>>(value.clone()).ok()
-        });
-    let env_endpoints = std::env::var(ACP_ADAPTIVE_PROVIDER_ENDPOINTS_JSON)
+    let (local_endpoints, local_config_error_code) =
+        match config.get(ADAPTIVE_PROVIDER_ENDPOINTS_CONFIG_KEY) {
+            Some(value) => {
+                let raw = serde_json::to_string(value)
+                    .map_err(|error| internal_error(error.to_string()))?;
+                match parse_adaptive_provider_endpoints_json(&raw) {
+                    Ok(endpoints) => (Some(endpoints), None),
+                    Err(error) => (None, Some(error.code)),
+                }
+            }
+            None => (None, None),
+        };
+    let env_raw = std::env::var(ACP_ADAPTIVE_PROVIDER_ENDPOINTS_JSON)
         .ok()
-        .filter(|value| !value.trim().is_empty())
-        .and_then(|value| parse_adaptive_provider_endpoints_json(&value).ok());
-    let (source, endpoints) = if let Some(endpoints) = local_endpoints {
-        ("local_config", endpoints)
-    } else if let Some(endpoints) = env_endpoints {
-        ("environment", endpoints)
-    } else {
-        ("none", Vec::new())
+        .filter(|value| !value.trim().is_empty());
+    let (source, endpoints, active_config_error_code) = match env_raw {
+        Some(raw) => match parse_adaptive_provider_endpoints_json(&raw) {
+            Ok(endpoints) => ("environment", endpoints, None),
+            Err(error) => ("environment", Vec::new(), Some(error.code)),
+        },
+        None => match local_endpoints {
+            Some(endpoints) => ("local_config", endpoints, None),
+            None if local_config_error_code.is_some() => {
+                ("local_config", Vec::new(), local_config_error_code)
+            }
+            None => ("none", Vec::new(), None),
+        },
     };
-    let (local_runtime_ready, local_config_error_code) = if source == "local_config" {
+    let (local_runtime_ready, local_runtime_error_code) = if source == "local_config" {
         local_config_runtime_status(&state, &store, &endpoints)
     } else {
         (false, None)
@@ -110,7 +120,7 @@ pub(crate) async fn api_provider_endpoints(
                 "completion_registry_configured": completion_registry_configured,
                 "local_config_apply_requires_restart": source == "local_config" && !local_runtime_ready,
                 "local_config_applies_to_completion_api": local_runtime_ready,
-                "local_config_error_code": local_config_error_code,
+                "local_config_error_code": active_config_error_code.or(local_runtime_error_code),
             },
             "safety": {
                 "raw_secrets_allowed": false,
@@ -148,6 +158,8 @@ pub(crate) async fn api_put_provider_endpoints(
     let config_hash = adaptive_runtime_hash_from_configs(&endpoints)
         .map_err(|error| ApiError::with_code(StatusCode::BAD_REQUEST, error.code, error.message))?;
     let store = require_store(&state)?;
+    let env_override = std::env::var(ACP_ADAPTIVE_PROVIDER_ENDPOINTS_JSON)
+        .is_ok_and(|value| !value.trim().is_empty());
     let (executor, registry_snapshot) = build_adaptive_provider_runtime_from_configs(
         &endpoints,
         &store,
@@ -162,6 +174,10 @@ pub(crate) async fn api_put_provider_endpoints(
         )
         .map_err(internal_error)?;
     state.install_adaptive_local_config_runtime(config_hash, executor, registry_snapshot);
+    let completion_executor_configured =
+        !env_override || state.adaptive_provider_executor.is_some();
+    let completion_registry_configured =
+        !env_override || state.adaptive_registry_snapshot.is_some();
     Ok((
         cors_headers(),
         Json(json!({
@@ -173,11 +189,15 @@ pub(crate) async fn api_put_provider_endpoints(
                 "registry_configured": state.adaptive_registry_snapshot.is_some(),
                 "workflow_executor_configured": state.adaptive_provider_executor.is_some(),
                 "workflow_registry_configured": state.adaptive_registry_snapshot.is_some(),
-                "completion_executor_configured": true,
-                "completion_registry_configured": true,
+                "completion_executor_configured": completion_executor_configured,
+                "completion_registry_configured": completion_registry_configured,
                 "local_config_apply_requires_restart": false,
-                "local_config_applies_to_completion_api": true,
-                "local_config_error_code": null,
+                "local_config_applies_to_completion_api": !env_override,
+                "local_config_error_code": if env_override {
+                    Some("environment_override_active")
+                } else {
+                    None
+                },
             },
             "safety": {
                 "raw_secrets_allowed": false,

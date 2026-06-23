@@ -18,7 +18,6 @@ use crate::http_server::{
 use crate::infrastructure::structured_events;
 use crate::provider::cost_gate::{check_cost_gates, CostGateConfig};
 use crate::storage::local_product_store::LocalProductStore;
-use crate::trusted_local::EffectiveExecutionGates;
 
 pub(crate) async fn api_dispatch(
     State(state): State<AxumApiState>,
@@ -36,7 +35,7 @@ pub(crate) async fn api_dispatch(
         ));
     }
 
-    if adaptive_default_live_routing_enabled() {
+    if state.effective_execution_gates().default_routing {
         authorize(
             &state,
             &headers,
@@ -171,10 +170,6 @@ pub(crate) async fn api_dispatch(
         .unwrap_or("");
     structured_events::log_dispatch_complete(&request_id.0, did, fs);
     Ok((cors_headers(), Json(bundle)))
-}
-
-fn adaptive_default_live_routing_enabled() -> bool {
-    EffectiveExecutionGates::from_env().default_routing
 }
 
 fn record_dispatch_and_decision(

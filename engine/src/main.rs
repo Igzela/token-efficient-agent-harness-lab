@@ -11,11 +11,13 @@ use engine::infrastructure::auth::{
 use engine::infrastructure::circuit_breaker::{CircuitBreaker, CircuitBreakerRegistry};
 use engine::infrastructure::rate_limiter::RateLimiter;
 use engine::node_executor::NodeExecutor;
+#[cfg(test)]
+use engine::provider::adaptive_execution::parse_adaptive_provider_endpoints_json;
 use engine::provider::adaptive_execution::{
-    build_adaptive_provider_runtime_from_configs, parse_adaptive_provider_endpoints_json,
-    validate_adaptive_provider_endpoint_config, AdaptiveExecutionExecutor, AdaptiveExecutionGate,
-    AdaptiveProviderEndpointConfig, PersistingAdaptiveProviderNodeExecutor,
-    ACP_ADAPTIVE_PROVIDER_ENDPOINTS_JSON,
+    adaptive_provider_endpoint_configs_from_sources, build_adaptive_provider_runtime_from_configs,
+    persisted_adaptive_provider_endpoint_configs, validate_adaptive_provider_endpoint_config,
+    AdaptiveExecutionExecutor, AdaptiveExecutionGate, AdaptiveProviderEndpointConfig,
+    PersistingAdaptiveProviderNodeExecutor, ACP_ADAPTIVE_PROVIDER_ENDPOINTS_JSON,
 };
 use engine::provider::anthropic::AnthropicProvider;
 use engine::provider::audit::ProviderAuditRecorder;
@@ -97,7 +99,21 @@ async fn main() {
     let store_for_scheduler = store_arc.clone();
     let cb_registry = Arc::new(CircuitBreakerRegistry::new());
     let cli_config = CliConfig::from_env();
-    let execution_gates = EffectiveExecutionGates::from_env();
+    let persisted_endpoint_configs = match persisted_adaptive_provider_endpoint_configs(&store_arc)
+    {
+        Ok(configs) => configs,
+        Err(error) => {
+            eprintln!(
+                "[acp-warning] persisted adaptive provider config ignored: {}",
+                error
+            );
+            None
+        }
+    };
+    let execution_gates = EffectiveExecutionGates::from_lookup_with_endpoint_configs(
+        |key| std::env::var(key).ok(),
+        persisted_endpoint_configs.as_deref(),
+    );
     let execution_mode = std::env::var("ACP_EXECUTION_MODE")
         .unwrap_or_else(|_| "off".to_string())
         .to_lowercase();
@@ -139,7 +155,10 @@ async fn main() {
     let has_single_provider =
         std::env::var("ACP_PROVIDER_TYPE").is_ok_and(|value| !value.trim().is_empty());
     let has_endpoint_config = std::env::var(ACP_ADAPTIVE_PROVIDER_ENDPOINTS_JSON)
-        .is_ok_and(|value| !value.trim().is_empty());
+        .is_ok_and(|value| !value.trim().is_empty())
+        || persisted_endpoint_configs
+            .as_ref()
+            .is_some_and(|configs| !configs.is_empty());
     validate_adaptive_startup(
         adaptive_execution_enabled,
         execution_gates.provider_execution,
@@ -163,9 +182,12 @@ async fn main() {
     );
     let mut adaptive_executor_for_workers = None;
     if adaptive_execution_enabled {
-        if let Some((executor, registry_snapshot)) =
-            build_adaptive_provider_executor_from_env(&store_arc, &cb_registry)
-                .unwrap_or_else(|error| panic!("adaptive provider configuration failed: {error}"))
+        if let Some((executor, registry_snapshot)) = build_adaptive_provider_executor_from_sources(
+            &store_arc,
+            &cb_registry,
+            persisted_endpoint_configs.as_deref(),
+        )
+        .unwrap_or_else(|error| panic!("adaptive provider configuration failed: {error}"))
         {
             adaptive_executor_for_workers = Some(executor.clone());
             state = state
@@ -281,6 +303,7 @@ async fn main() {
                 adaptive_executor,
                 store_arc.clone(),
                 require_auth,
+                &execution_gates,
             )
             .expect("failed to build trusted adaptive worker executor");
             scheduler = scheduler.with_worker_executor(worker_executor);
@@ -676,9 +699,10 @@ fn build_state_with_provider(
     state.with_provider_and_audit(provider, recorder)
 }
 
-fn build_adaptive_provider_executor_from_env(
+fn build_adaptive_provider_executor_from_sources(
     store: &Arc<LocalProductStore>,
     cb_registry: &Arc<CircuitBreakerRegistry>,
+    persisted_configs: Option<&[AdaptiveProviderEndpointConfig]>,
 ) -> Result<
     Option<(
         Arc<AdaptiveExecutionExecutor>,
@@ -686,12 +710,16 @@ fn build_adaptive_provider_executor_from_env(
     )>,
     String,
 > {
-    let raw = match std::env::var(ACP_ADAPTIVE_PROVIDER_ENDPOINTS_JSON) {
-        Ok(raw) if !raw.trim().is_empty() => raw,
-        _ => return Ok(None),
+    let env_raw = std::env::var(ACP_ADAPTIVE_PROVIDER_ENDPOINTS_JSON).ok();
+    let configs = match adaptive_provider_endpoint_configs_from_sources(
+        env_raw.as_deref(),
+        persisted_configs,
+    )
+    .map_err(|error| error.to_string())?
+    {
+        Some(configs) => configs,
+        None => return Ok(None),
     };
-    let configs =
-        parse_adaptive_provider_endpoints_json(&raw).map_err(|error| error.to_string())?;
     build_adaptive_provider_runtime_from_configs(&configs, store, cb_registry)
         .map(Some)
         .map_err(|error| error.to_string())
@@ -701,8 +729,13 @@ fn build_trusted_adaptive_worker_executor(
     executor: Arc<AdaptiveExecutionExecutor>,
     store: Arc<LocalProductStore>,
     auth_enabled: bool,
+    execution_gates: &EffectiveExecutionGates,
 ) -> Result<Arc<dyn NodeExecutor>, String> {
-    let gate = AdaptiveExecutionGate::from_env(auth_enabled);
+    let gate = AdaptiveExecutionGate::from_flags(
+        execution_gates.provider_execution,
+        execution_gates.adaptive_execution,
+        auth_enabled,
+    );
     if !gate.is_enabled() {
         return Err("adaptive provider worker gate is not enabled".to_string());
     }
@@ -1113,6 +1146,41 @@ mod tests {
                 .map(|endpoint| endpoint.endpoint_id.clone())
                 .collect::<Vec<_>>(),
             vec!["fast", "quality"]
+        );
+    }
+
+    #[test]
+    fn adaptive_provider_config_source_prefers_explicit_env_and_falls_back_to_persisted() {
+        let persisted = vec![AdaptiveProviderEndpointConfig {
+            endpoint_id: "persisted".to_string(),
+            provider_type: "stub".to_string(),
+            base_url: None,
+            model: "persisted-model".to_string(),
+            credential_env: None,
+            timeout_ms: 30_000,
+            input_cost_per_1k_usd: Some(0.01),
+            output_cost_per_1k_usd: Some(0.02),
+        }];
+        let env_raw = r#"[{
+            "endpoint_id":"env",
+            "provider_type":"stub",
+            "model":"env-model",
+            "input_cost_per_1k_usd":0.03,
+            "output_cost_per_1k_usd":0.04
+        }]"#;
+
+        let from_env =
+            adaptive_provider_endpoint_configs_from_sources(Some(env_raw), Some(&persisted))
+                .unwrap();
+        assert_eq!(from_env.unwrap()[0].endpoint_id, "env");
+
+        let from_persisted =
+            adaptive_provider_endpoint_configs_from_sources(None, Some(&persisted)).unwrap();
+        assert_eq!(from_persisted.unwrap()[0].endpoint_id, "persisted");
+
+        assert!(
+            adaptive_provider_endpoint_configs_from_sources(Some("invalid"), Some(&persisted))
+                .is_err()
         );
     }
 

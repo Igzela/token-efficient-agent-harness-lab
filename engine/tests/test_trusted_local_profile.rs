@@ -1,3 +1,4 @@
+use engine::provider::adaptive_execution::AdaptiveProviderEndpointConfig;
 use engine::trusted_local::{
     EffectiveExecutionGates, TrustedLocalProfileInput, TrustedLocalProfileStatus,
     TrustedLocalTaskAdvancementStatus, TRUSTED_LOCAL_PROFILE_SCHEMA_VERSION,
@@ -108,6 +109,32 @@ fn environment_lookup_resolves_ready_stub_profile_without_process_env_mutation()
     assert!(status.ready);
     assert!(status.capabilities.provider_execution);
     assert!(status.capabilities.default_routing);
+}
+
+#[test]
+fn persisted_endpoint_config_can_complete_requested_profile_without_env_endpoint_json() {
+    let mut environment = ready_environment();
+    environment.remove("ACP_ADAPTIVE_PROVIDER_ENDPOINTS_JSON");
+    let configs = vec![AdaptiveProviderEndpointConfig {
+        endpoint_id: "local-stub".to_string(),
+        provider_type: "stub".to_string(),
+        base_url: None,
+        model: "stub-model".to_string(),
+        credential_env: None,
+        timeout_ms: 30_000,
+        input_cost_per_1k_usd: Some(0.001),
+        output_cost_per_1k_usd: Some(0.002),
+    }];
+
+    let gates = EffectiveExecutionGates::from_lookup_with_endpoint_configs(
+        |key| environment.get(key).cloned(),
+        Some(&configs),
+    );
+
+    assert!(gates.profile.ready);
+    assert!(gates.provider_execution);
+    assert!(gates.adaptive_execution);
+    assert!(gates.default_routing);
 }
 
 #[test]
