@@ -144,11 +144,13 @@ async fn main() {
         adaptive_execution_enabled,
         execution_gates.provider_execution,
         require_auth,
-        has_single_provider,
-        has_endpoint_config,
     )
     .unwrap_or_else(|error| panic!("{error}"));
-    if adaptive_execution_enabled && !has_endpoint_config {
+    if adaptive_single_provider_validation_required(
+        adaptive_execution_enabled,
+        has_single_provider,
+        has_endpoint_config,
+    ) {
         validate_adaptive_single_provider_from_env().unwrap_or_else(|error| {
             panic!("adaptive single-provider configuration failed: {error}")
         });
@@ -396,8 +398,6 @@ fn validate_adaptive_startup(
     adaptive_enabled: bool,
     provider_enabled: bool,
     require_auth: bool,
-    has_single_provider: bool,
-    has_endpoint_config: bool,
 ) -> Result<(), &'static str> {
     if !adaptive_enabled {
         return Ok(());
@@ -410,12 +410,15 @@ fn validate_adaptive_startup(
     if !require_auth {
         return Err("ACP_REQUIRE_AUTH=1 is required when adaptive execution is enabled");
     }
-    if !has_single_provider && !has_endpoint_config {
-        return Err(
-            "ACP_ADAPTIVE_PROVIDER_ENDPOINTS_JSON or ACP_PROVIDER_TYPE is required when adaptive execution is enabled",
-        );
-    }
     Ok(())
+}
+
+fn adaptive_single_provider_validation_required(
+    adaptive_enabled: bool,
+    has_single_provider: bool,
+    has_endpoint_config: bool,
+) -> bool {
+    adaptive_enabled && has_single_provider && !has_endpoint_config
 }
 
 fn validate_adaptive_single_provider_from_env() -> Result<(), String> {
@@ -974,13 +977,27 @@ mod tests {
     }
 
     #[test]
-    fn adaptive_startup_requires_provider_auth_and_endpoint_configuration() {
-        assert!(validate_adaptive_startup(false, false, false, false, false).is_ok());
-        assert!(validate_adaptive_startup(true, false, true, false, true).is_err());
-        assert!(validate_adaptive_startup(true, true, false, false, true).is_err());
-        assert!(validate_adaptive_startup(true, true, true, false, false).is_err());
-        assert!(validate_adaptive_startup(true, true, true, true, false).is_ok());
-        assert!(validate_adaptive_startup(true, true, true, false, true).is_ok());
+    fn adaptive_startup_requires_provider_and_auth_but_allows_deferred_endpoint_configuration() {
+        assert!(validate_adaptive_startup(false, false, false).is_ok());
+        assert!(validate_adaptive_startup(true, false, true).is_err());
+        assert!(validate_adaptive_startup(true, true, false).is_err());
+        assert!(validate_adaptive_startup(true, true, true).is_ok());
+    }
+
+    #[test]
+    fn adaptive_single_provider_validation_skips_deferred_endpoint_bootstrap() {
+        assert!(!adaptive_single_provider_validation_required(
+            true, false, false
+        ));
+        assert!(adaptive_single_provider_validation_required(
+            true, true, false
+        ));
+        assert!(!adaptive_single_provider_validation_required(
+            true, true, true
+        ));
+        assert!(!adaptive_single_provider_validation_required(
+            false, true, false
+        ));
     }
 
     #[test]
