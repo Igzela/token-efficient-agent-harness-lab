@@ -1,8 +1,8 @@
 """Regression tests for the production-like local startup preflight.
 
 The tests copy the shell entrypoint into a temporary repository shape and use a
-fake cargo binary under target/ so they exercise preflight behavior without
-building or starting the engine.
+fake cargo binary under the repository-owned target/ tree so they exercise
+preflight behavior without building or starting the engine.
 """
 
 from __future__ import annotations
@@ -20,12 +20,17 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 SCRIPT_SOURCE = REPO_ROOT / "scripts" / "start_production_like_local.sh"
+TARGET_TMP_ROOT = REPO_ROOT / "target" / "test-tmp"
 ADMIN_KEY = "harness_" + "a" * 64
 
 
 class ProductionLikePreflightTests(unittest.TestCase):
     def setUp(self) -> None:
-        self._tmp = tempfile.TemporaryDirectory()
+        TARGET_TMP_ROOT.mkdir(parents=True, exist_ok=True)
+        self._tmp = tempfile.TemporaryDirectory(
+            prefix="production-like-preflight-",
+            dir=TARGET_TMP_ROOT,
+        )
         self.root = Path(self._tmp.name)
         self.script = self.root / "scripts" / "start_production_like_local.sh"
         self.env_file = self.root / ".env.production-like.local"
