@@ -13,6 +13,7 @@
 **Active tracks:**
 - Real-World Testing Mode — validated through real tasks, branches, commits, PRs, CI, gated auto-merge
 - Agent Autonomous Maintenance Mode — agents autonomously audit, implement, verify, review, document, and ship bounded changes
+- Full Agent Autonomy Mode — repo-scoped architecture, authority, security, migration, release-workflow, and target-output evolution is authorized when testable, observable, CI-gated, and rollbackable
 - Trusted Local Autonomous Execution Track (IAE) — complete through IAE-3 trusted-local profile, bounded task advancement, and operator control/evidence
 - Adaptive Fusion Routing Track — complete through AF-7; IAE trusted-local profile is the recommended bounded local path, with legacy gates retained for compatibility
 
@@ -33,16 +34,16 @@
 - Latest release: `v0.1.0`, published 2026-06-21
 - TypeScript strict + boundary lint + build + static export pass
 - `cargo fmt`, `cargo clippy`, handoff guard all pass
-- **Architecture Refactor R-series**: **SEALED AT R7**. R8 is not approved.
+- **Architecture Refactor R-series**: baselined at R7; documented, tested, rollbackable decisions may supersede it.
 - **Post-R7 Wire/Type Governance Hardening**: IMPLEMENTED
 
 ## App Runtime vs Agent Maintenance Boundary
 
 **App/runtime** does not write target repos by default. V2-3 adds only env-gated, approval-bound output through an app-owned git worktree and `acp/*` branch or patch export; registered target working trees and `main` remain protected.
 
-**Agent maintenance** may autonomously create branches, commits, PRs, repair CI, and merge low-risk green work. Agents may continue bounded internal execution and operator-surface improvements already authorized in `docs/NEXT_DECISION.md` without asking for a new approval each time. Documentation-only corrections may go directly to `main` after validation.
+**Agent maintenance** may autonomously propose, implement, test, review, merge, and iterate high-risk architecture work. Full Agent Autonomy Mode includes new architecture directions, authority-boundary changes, default execution/profile changes, auth/security redesign, database migrations, release/tag/deploy workflow changes, target-output authority changes, and superseding accepted decisions. Changes should remain repo-scoped, testable, observable, reviewable, and rollbackable. Documentation-only corrections may go directly to `main` after validation.
 
-**Requires explicit human approval:** credentials or paid-resource decisions, destructive operations, DB migrations, release/tag/deploy, cloud production, auth/security redesign, target-output authority expansion, or materially different product behavior outside `docs/NEXT_DECISION.md`.
+**Only hard stops:** committing real secrets; falsifying test/CI evidence; intentionally hiding failures; removing rollback paths; or performing irreversible external destruction without a recovery path.
 
 ## Minimal Agent Reading Model
 

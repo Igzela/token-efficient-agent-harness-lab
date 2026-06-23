@@ -64,11 +64,11 @@ The Rust `engine/` is the sole runtime implementation. Python is retained as RES
 
 ## Guardrails
 
-- R-series is sealed at R7. R8 is not approved.
-- Do not create a parallel scheduler, DAG kernel, policy engine, storage layer, or dashboard data model.
-- V2 Real Production Output is approved only through the phase plan in `docs/NEXT_DECISION.md`; do not skip phases or merge half-built runtime authority.
+- Full Agent Autonomy Mode may replace the R7 architecture baseline or existing module ownership only through an explicit documented change with focused tests, observability, review, and rollback.
+- Avoid parallel scheduler, DAG kernel, policy engine, storage layer, or dashboard data model implementations unless the replacement plan explains migration and rollback.
+- Existing V2 behavior follows the completed phase plan in `docs/NEXT_DECISION.md`; any replacement or authority expansion must be documented, tested, observable, reviewed, and rollbackable before merge.
 - Adaptive Fusion Routing is complete through AF-7. IAE-1 composes provider calls, experiments, promotion, and default routing behind the validated trusted-local profile; IAE-2 may advance existing queued adaptive runs through the same bounded path. The underlying paths remain authenticated, bounded, audited, redacted, and killable.
-- Do not add direct target-repository `main` writes, process/container/VM sandbox behavior, hosted/cloud deployment, app-runtime release/deploy controls, broader target-output authority, or unbounded autonomous-agent loops without separate explicit approval.
+- Repo-scoped target-output, sandbox, hosted/deploy workflow, and authority changes may proceed through Full Agent Autonomy Mode. Existing controls remain current implementation details until a documented, tested, observable, reviewable, and rollbackable replacement lands.
 - Any V2 real capability must include an env/auth gate, audit event, tests, and rollback/kill path before it is usable.
 - Wire-codegen drift guard: `scripts/check_wire_codegen_drift.sh`.
 - Run `uv run --no-project python scripts/check_agent_handoff.py` before committing handoff changes.

@@ -318,9 +318,9 @@ Historical phase plans, closeouts, validation reports, and low-frequency referen
 
 ## Agent Maintenance
 
-Coding agents maintaining this repository are authorized to autonomously advance safe repository work: audit, plan, implement, test, review, simplify, document, repair CI, create PRs, and merge low-risk green work. They may advance documented IAE phases while preserving auth, budget, audit, approval, rollback, and kill controls. Documentation-only corrections may be committed directly to `main`. Agents must run `scripts/check_agent_handoff.py` before committing.
+Full Agent Autonomy Mode authorizes coding agents to propose, implement, test, review, merge, and iterate high-risk architecture work. This includes new architecture directions, authority-boundary changes, default execution/profile changes, auth/security redesign, database migrations, release/tag/deploy workflow changes, target-output authority changes, and superseding accepted decisions. Changes should remain repo-scoped, testable, observable, reviewable, and rollbackable. Only five hard stops remain: committing real secrets, falsifying test/CI evidence, intentionally hiding failures, removing rollback paths, or performing irreversible external destruction without a recovery path. Documentation-only corrections may be committed directly to `main`. Agents must run `scripts/check_agent_handoff.py` before committing.
 
-R-series is sealed at R7. R8 is not approved. No further R-series file splitting is approved.
+R7 remains the architecture baseline. A later architecture direction must be explicitly documented, tested, observable, and rollbackable.
 
 ## Contributing
 

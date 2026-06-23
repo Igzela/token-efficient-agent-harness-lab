@@ -146,7 +146,7 @@ These are accepted current limitations, not hidden TODOs:
 - V2-3 controlled target output is merged. It creates no merge/deploy/apply authority and preserves the registered target working tree and `main`.
 - GitHub PR creation is default-off and adds no merge authority.
 - Bounded supervised workers are merged in V2-4 and Mission Control product output UX is merged in V2-5; unattended autonomous-agent loops remain out of scope.
-- Cloud SaaS, hosted/cloud deployment, multi-tenant service, and direct release/tag/deploy/apply controls remain out of scope. Current adaptive provider execution is local/small-team, explicit, bounded, authenticated, and gated; IAE may compose those gates behind a validated trusted-local profile.
+- Cloud SaaS, hosted/cloud deployment, multi-tenant service, and direct release/tag/deploy/apply controls are not implemented. Full Agent Autonomy Mode may evolve these repo-scoped designs through documented, testable, observable, reviewable, and rollbackable changes. The only hard stops are real-secret commits, falsified test/CI evidence, intentionally hidden failures, removed rollback paths, and irreversible external destruction without recovery.
 - Some routing, quality, and orchestration modules remain partially active rather than unified under one policy layer.
 
 The Adaptive Fusion Routing track approved on 2026-06-21 extends `model_selector`, `feedback`, `provider`, storage, and the existing HTTP/workflow/executor boundaries without creating a parallel routing, policy, workflow, or storage kernel. AF-0 through AF-2 provide pure planning, endpoint metadata, and offline evaluation. AF-3 through AF-6 add authenticated bounded execution, contextual policy, parallel panel fusion with serial judge/synthesis, safe observation summaries, controlled experiments, evidence-driven promotion, and `POST /api/v1/adaptive-fusion/completions`. Legacy independent provider/adaptive/experiment/promotion/default-routing gates remain supported.
@@ -155,7 +155,7 @@ IAE-1 composes those gates behind `ACP_TRUSTED_LOCAL_PROFILE=1`. The resolver va
 
 IAE-3 does not add another control kernel. The dashboard snapshot derives effective authority, cost/traffic/worker bounds, safe observation aggregates, and a secret-free scheduler summary from the existing trusted-local, adaptive policy, cost gate, observation store, and scheduler modules. Live completion readiness mirrors the completion handler and requires provider/adaptive/auth gates, executor, registry, local storage, and a clear fusion kill switch. Default routing, experiment, and auto-promotion effective authority reuse that readiness; experiment and promotion policy validation also fails closed and returns only stable blocker codes. Scheduler pause/resume/kill uses the existing confirmed `dispatch:execute` endpoint. Recent evidence uses the existing `audit:read` endpoint with redaction and renders only action, resource, and timestamp; audit details, raw model content, credentials, repository content, and private paths are excluded. Policy rollback continues through the existing hash-bound snapshot endpoint.
 
-Boundary expansion outside the approved V2, Adaptive Fusion Routing, and IAE tracks requires a new plan, threat-model update, focused tests, and explicit human approval.
+Full Agent Autonomy Mode permits boundary expansion beyond V2, Adaptive Fusion Routing, and IAE when the change has a documented plan, threat-model update where relevant, focused tests, observable evidence, CI review, and a rollback path.
 
 ## Active Verification
 

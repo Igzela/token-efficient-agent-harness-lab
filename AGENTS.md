@@ -6,7 +6,8 @@ This repository is the Token-Efficient Agent Harness Lab: a local deterministic 
 
 **Active tracks:**
 - **Real-World Testing Mode** — validated through real tasks, branches, commits, PRs, CI, gated auto-merge
-- **Agent Autonomous Maintenance Mode** — agents may advance implementation, docs, CI, tests, review, and low-risk merge flow under bounded safety gates
+- **Agent Autonomous Maintenance Mode** — agents may advance implementation, docs, CI, tests, review, and routine merge flow under bounded safety gates
+- **Full Agent Autonomy Mode** — agents may autonomously evolve repo-scoped architecture, authority, security, migration, release-workflow, and target-output designs when changes are testable, observable, CI-gated, and rollbackable
 - **Trusted Local Autonomous Execution Track (IAE)** — complete through IAE-3 trusted-local profile, bounded task advancement, and operator control/evidence
 - **Adaptive Fusion Routing Track** — complete through AF-7; IAE trusted-local profile is the recommended bounded local path, with legacy gates retained for compatibility
 
@@ -24,16 +25,16 @@ This repository is the Token-Efficient Agent Harness Lab: a local deterministic 
 **Key facts:**
 - Full Rust + TypeScript stack verification passes with 0 failures (latest main CI run `27968114851`)
 - Latest release: `v0.1.0`, published 2026-06-21
-- Architecture Refactor R-series sealed at R7. R8 is not approved.
+- Architecture Refactor R-series is baselined at R7; a documented, tested, rollbackable architecture decision may supersede it.
 - Post-R7 wire/type governance hardening implemented: `scripts/check_wire_codegen_drift.sh`
 
 ## App Runtime vs Agent Maintenance Boundary
 
 **App/runtime** protects registered target working trees and `main`. Target output remains approval-bound through an app-owned git worktree and `acp/*` branch, patch export, or optional GitHub PR creation. Installed local Claude/Codex CLIs are available for workflow execution. The IAE track authorizes a trusted-local profile that may automatically enable provider APIs, adaptive routing, experiments, promotion, and bounded workers when protected auth, endpoint credentials, budgets, audit, rollback, and kill controls are configured. This trusted-local path is the preferred internal execution mode; missing prerequisites must fail closed.
 
-**Agent maintenance** may autonomously audit, plan, implement, test, review, simplify, document, create branches/commits/PRs, repair CI, and merge low-risk green changes under `docs/REAL_WORLD_TESTING_PLAYBOOK.md`. Agents may continue bounded internal execution and operator-surface improvements already authorized in `docs/NEXT_DECISION.md` without asking for a new approval each time. Documentation-only corrections may be committed directly to `main` when the working tree is clean and validation passes.
+**Agent maintenance** may autonomously audit, plan, implement, test, review, simplify, document, create branches/commits/PRs, repair CI, merge, and iterate high-risk architecture work under `docs/REAL_WORLD_TESTING_PLAYBOOK.md`. Full Agent Autonomy Mode includes new architecture directions, authority-boundary changes, default execution/profile changes, auth/security redesign, database migrations, release/tag/deploy workflow changes, target-output authority changes, and superseding accepted decisions. Changes should remain repo-scoped, testable, observable, reviewable, and rollbackable. Documentation-only corrections may be committed directly to `main` when the working tree is clean and validation passes.
 
-**Requires explicit human approval:** credentials or paid-resource decisions, destructive or irreversible operations, DB migrations, production release/tag/deploy, cloud production, auth/security redesign, target-output authority expansion, or materially different user-visible product behavior outside `docs/NEXT_DECISION.md`.
+**Only hard stops:** committing real secrets; falsifying test/CI evidence; intentionally hiding failures; removing rollback paths; or performing irreversible external destruction without a recovery path.
 
 ## Minimal Agent Reading Model
 
@@ -61,11 +62,11 @@ Before doing any work:
 1. Inspect the current branch and working tree.
 2. Run the test suite unless the task is documentation-only.
 3. Confirm the requested task is inside the approved scope.
-4. Ask for confirmation only before starting a product track not already authorized in `docs/NEXT_DECISION.md`.
+4. Do not ask for confirmation for repo-scoped Full Agent Autonomy Mode work; pause only at one of the five hard stops.
 
 ## Autonomous Advancement Authority
 
-The responsible coding agent is expected to move this repository forward end to end when work is inside the authorized scope below. This includes repository maintenance and implementation of the bounded trusted-local execution track recorded in `docs/NEXT_DECISION.md`.
+The responsible coding agent is expected to move this repository forward end to end. Full Agent Autonomy Mode authorizes repo-scoped, testable, observable, and rollbackable evolution, including high-risk architecture and authority changes recorded in `docs/NEXT_DECISION.md`.
 
 IAE authorizes bounded local runtime advancement through existing workflow, scheduler, provider, adaptive-fusion, supervised-patch, and target-output modules. It does not authorize unbounded loops, secret persistence, direct target-repository `main` writes, or bypassing approval, budget, audit, redaction, rollback, and kill controls.
 
@@ -82,16 +83,18 @@ Allowed autonomous advancement:
 - advance IAE phases documented in `docs/NEXT_DECISION.md`, including trusted-local execution defaults, bounded autonomous task advancement, and operator evidence
 - advance the next documented dispatch-kernel or IAE phase when it is described in the architecture book and extends existing modules without bypassing trusted-local safety controls
 - advance the next V2 phase documented in `docs/NEXT_DECISION.md` when the change stays inside that phase's gates and includes audit, tests, and rollback/kill path
+- design and implement repo-scoped auth/security, database migration, release-workflow, target-output, authority-boundary, and architecture changes through reviewed green PRs
+- supersede accepted decisions when the replacement and rollback path are documented and verified
 - update architecture, module maps, and closeout reports required to make the new state durable
-- create branches, commits, PRs, and low-risk merges through branch+PR workflow under `docs/REAL_WORLD_TESTING_PLAYBOOK.md` gates
+- create branches, commits, PRs, and green merges through branch+PR workflow under `docs/REAL_WORLD_TESTING_PLAYBOOK.md` gates
 
-Not allowed under autonomous authority:
+Non-negotiable bottom lines:
 
-- create a new cloud product surface, hosted service, or production runtime
-- add secrets, unbounded provider spending, unbounded autonomous loops, direct target-repo `main` mutation, release/deploy controls, or unaudited execution
-- bypass auth, budget, token, call, timeout, concurrency, provider/model identity, redaction, audit, snapshot, rollback, approval, or kill controls
-- bypass the architecture book, phase gates, tests, or documentation maintenance rule
-- auth/security redesign, DB migrations, release/tag/deploy, destructive operations, and target-output authority expansion require explicit human approval
+- do not commit real secrets
+- do not falsify test or CI evidence
+- do not intentionally hide failures
+- do not remove rollback paths
+- do not perform irreversible external destruction without a recovery path
 
 ## Autonomous Advancement Loop
 
@@ -113,22 +116,9 @@ If another agent has in-progress changes, do not overwrite them. Either build on
 
 The production-grade hosted/self-hosted productization track (user-approved 2026-06-06) is authorized. It extends existing modules (node_executor, workflow_runs, supervised_patch, http_server) without creating parallel runtime kernels. See `docs/NEXT_DECISION.md` for phase details and constraints.
 
-The V2 Real Production Output Track (user-approved 2026-06-17), Real Output Closeout (user-approved 2026-06-20), Adaptive Fusion Routing Track (user-approved 2026-06-21), and Trusted Local Autonomous Execution Track (user-approved 2026-06-22) authorize the guarded phases recorded in `docs/NEXT_DECISION.md`. IAE may change local execution defaults, but it does not authorize direct target-repository `main` writes, cloud SaaS, app-runtime release/deploy controls, or unbounded autonomous loops.
+The V2 Real Production Output Track (user-approved 2026-06-17), Real Output Closeout (user-approved 2026-06-20), Adaptive Fusion Routing Track (user-approved 2026-06-21), Trusted Local Autonomous Execution Track (user-approved 2026-06-22), and Full Agent Autonomy Mode (user-approved 2026-06-23) authorize the work recorded in `docs/NEXT_DECISION.md`. Existing runtime controls remain authoritative until a replacement is explicitly implemented, tested, documented, and made rollbackable.
 
-Do not modify:
-
-- docs/stage0/events.jsonl
-
-Do not add without explicit human approval:
-
-- API keys or provider credentials
-- unbounded or unaudited real model API calls
-- autonomous loops without task, time, cost, concurrency, pause, and kill ceilings
-- container/VM execution or host-level privilege expansion
-- new cloud/hosted Web UI implementation
-- cloud or hosted production deployment
-- destructive filesystem operations
-- Stage 5 implementation
+Current runtime controls remain authoritative until Full Agent Autonomy Mode explicitly replaces them through a documented, tested, observable, and rollbackable change. Do not assume an undefined Stage 5; define it before implementation.
 
 ## Current Safe Work Categories
 
@@ -146,22 +136,17 @@ Allowed by default:
 - approved V2 phase work that follows `docs/NEXT_DECISION.md`
 - approved Adaptive Fusion Routing phase work that follows `docs/NEXT_DECISION.md`
 - approved IAE work that follows `docs/NEXT_DECISION.md`
+- repo-scoped architecture, auth/security, migration, release-workflow, authority-boundary, target-output, and default-profile evolution with tests, evidence, review, and rollback
 - supervised autonomous beta planning batches that remain non-executable and respect ADR-0002
-- branch+PR workflow for docs/tests/CI/small code fixes under `docs/REAL_WORLD_TESTING_PLAYBOOK.md` gates
+- branch+PR workflow under `docs/REAL_WORLD_TESTING_PLAYBOOK.md` gates
 
-Requires explicit approval:
+Hard stops:
 
-- cloud productionization
-- credentials or paid-resource decisions
-- container/VM or host-privilege execution
-- new cloud/hosted UI/dashboard implementation
-- benchmarking framework
-- cloud or hosted deployment work
-- auth/security boundary changes
-- DB migrations
-- release/tag/deploy
-- active YAML/rubric/policy mutation
-- destructive operations
+- committing real secrets
+- falsifying test or CI evidence
+- intentionally hiding failures
+- removing rollback paths
+- irreversible external destruction without a recovery path
 
 ## Documentation Maintenance Rule
 
@@ -197,5 +182,5 @@ cd sdk/python && PYTHONPATH=src uv run --no-project python -m unittest discover 
 - Preserve deterministic behavior.
 - Prefer small, reviewable commits.
 - Keep tests passing.
-- Do not expand architecture without documenting the new track first.
+- Document architecture changes and rollback before implementation.
 - Treat future work as optional tracks, not automatic continuation of the completed Stage 0-4 task book.
