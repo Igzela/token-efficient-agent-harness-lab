@@ -367,7 +367,7 @@ pub(crate) async fn api_tick_workflow_run(
                 uri.path(),
                 &request_id.0,
             )?;
-            if !provider_execution_enabled() {
+            if !state.effective_execution_gates().provider_execution {
                 return Err(ApiError::with_code(
                     StatusCode::BAD_REQUEST,
                     "provider_not_available",
@@ -429,7 +429,10 @@ pub(crate) async fn api_tick_workflow_run(
                 uri.path(),
                 &request_id.0,
             )?;
-            let gate = crate::provider::adaptive_execution::AdaptiveExecutionGate::from_env(
+            let effective_gates = state.effective_execution_gates();
+            let gate = crate::provider::adaptive_execution::AdaptiveExecutionGate::from_flags(
+                effective_gates.provider_execution,
+                effective_gates.adaptive_execution,
                 state.tenant_resolver.is_some(),
             );
             if !gate.is_enabled() {
@@ -521,10 +524,6 @@ pub(crate) async fn api_tick_workflow_run(
             Err(e) => Err(internal_error(e)),
         },
     }
-}
-
-fn provider_execution_enabled() -> bool {
-    crate::trusted_local::EffectiveExecutionGates::from_env().provider_execution
 }
 
 fn query_i64(params: &std::collections::HashMap<String, String>, key: &str, default: i64) -> i64 {
