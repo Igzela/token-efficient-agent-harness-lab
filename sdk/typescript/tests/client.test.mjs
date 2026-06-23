@@ -81,6 +81,59 @@ test("adaptiveCompletion posts compact completion request", async () => {
   });
 });
 
+test("provider endpoint config methods use safe config endpoint", async () => {
+  const response = {
+    schema_version: "axum_api.v1",
+    source: "local_config",
+    endpoints: [],
+    runtime: {
+      executor_configured: false,
+      registry_configured: false,
+      local_config_apply_requires_restart: true,
+    },
+    safety: {
+      raw_secrets_allowed: false,
+      credential_storage: "env_reference_only",
+      supported_provider_types: ["stub", "openai_compatible", "anthropic"],
+    },
+  };
+  const { calls, fetchImpl } = captureFetch(response);
+  const client = new AgentControlPlaneClient({ baseUrl: "http://127.0.0.1:8080", fetchImpl });
+
+  await client.providerEndpoints();
+  await client.saveProviderEndpoints({
+    confirm_provider_endpoint_config: true,
+    endpoints: [{
+      endpoint_id: "openai-quality",
+      provider_type: "openai_compatible",
+      base_url: "https://api.openai.example/v1",
+      model: "quality-model",
+      credential_env: "OPENAI_QUALITY_KEY",
+      timeout_ms: 30000,
+      input_cost_per_1k_usd: 0.01,
+      output_cost_per_1k_usd: 0.03,
+    }],
+  });
+
+  assert.equal(calls[0].url, "http://127.0.0.1:8080/api/v1/provider/endpoints");
+  assert.equal(calls[0].init.method, "GET");
+  assert.equal(calls[1].url, "http://127.0.0.1:8080/api/v1/provider/endpoints");
+  assert.equal(calls[1].init.method, "PUT");
+  assert.deepEqual(JSON.parse(calls[1].init.body), {
+    confirm_provider_endpoint_config: true,
+    endpoints: [{
+      endpoint_id: "openai-quality",
+      provider_type: "openai_compatible",
+      base_url: "https://api.openai.example/v1",
+      model: "quality-model",
+      credential_env: "OPENAI_QUALITY_KEY",
+      timeout_ms: 30000,
+      input_cost_per_1k_usd: 0.01,
+      output_cost_per_1k_usd: 0.03,
+    }],
+  });
+});
+
 test("dashboard reads local dashboard endpoint", async () => {
   const { calls, fetchImpl } = captureFetch({ schema_version: "local_dashboard.v1", counts: { dispatches: 1 } });
   const client = new AgentControlPlaneClient({ baseUrl: "http://127.0.0.1:8080", fetchImpl });

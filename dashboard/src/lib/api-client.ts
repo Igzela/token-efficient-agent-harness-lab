@@ -22,6 +22,8 @@ import type {
   OperationsMetrics,
   ProposalListResponse,
   ProposalResponse,
+  ProviderEndpointConfigRequest,
+  ProviderEndpointConfigResponse,
   QueueRunListResponse,
   QueueRunResponse,
   QueueStatusResponse,
@@ -155,6 +157,20 @@ export async function createAdaptiveCompletion(
 
 export async function fetchDashboard(): Promise<LocalDashboardState> {
   return fetchJson<LocalDashboardState>(`${BASE}/api/v1/dashboard`);
+}
+
+export async function fetchProviderEndpoints(): Promise<ProviderEndpointConfigResponse> {
+  return fetchJson<ProviderEndpointConfigResponse>(`${BASE}/api/v1/provider/endpoints`);
+}
+
+export async function saveProviderEndpoints(
+  request: ProviderEndpointConfigRequest,
+): Promise<ProviderEndpointConfigResponse> {
+  return fetchJson<ProviderEndpointConfigResponse>(`${BASE}/api/v1/provider/endpoints`, {
+    method: "PUT",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(request),
+  });
 }
 
 export async function fetchDispatches(params: {

@@ -1,5 +1,5 @@
 use axum::extract::{Extension, Query, State};
-use axum::http::{HeaderMap, Uri};
+use axum::http::{HeaderMap, StatusCode, Uri};
 use axum::response::IntoResponse;
 use axum::Json;
 use serde_json::json;
@@ -8,7 +8,13 @@ use crate::http_server::middleware::{
     authorize, cors_headers, internal_error, require_store, ApiError, RequestId,
 };
 use crate::http_server::state::AxumApiState;
-use crate::http_server::AXUM_API_SCHEMA_VERSION;
+use crate::http_server::{ProviderEndpointConfigApiRequest, AXUM_API_SCHEMA_VERSION};
+use crate::provider::adaptive_execution::{
+    parse_adaptive_provider_endpoints_json, AdaptiveProviderEndpointConfig,
+    ACP_ADAPTIVE_PROVIDER_ENDPOINTS_JSON,
+};
+
+const ADAPTIVE_PROVIDER_ENDPOINTS_CONFIG_KEY: &str = "adaptive_provider_endpoints";
 
 pub(crate) async fn api_provider_health(
     State(state): State<AxumApiState>,
@@ -51,6 +57,104 @@ pub(crate) async fn api_provider_health(
             })),
         ))
     }
+}
+
+pub(crate) async fn api_provider_endpoints(
+    State(state): State<AxumApiState>,
+    headers: HeaderMap,
+    uri: Uri,
+    Extension(request_id): Extension<RequestId>,
+) -> Result<impl IntoResponse, ApiError> {
+    authorize(&state, &headers, "config:read", uri.path(), &request_id.0)?;
+    let store = require_store(&state)?;
+    let config = store.config_snapshot().map_err(internal_error)?;
+    let local_endpoints = config
+        .get(ADAPTIVE_PROVIDER_ENDPOINTS_CONFIG_KEY)
+        .and_then(|value| {
+            serde_json::from_value::<Vec<AdaptiveProviderEndpointConfig>>(value.clone()).ok()
+        });
+    let env_endpoints = std::env::var(ACP_ADAPTIVE_PROVIDER_ENDPOINTS_JSON)
+        .ok()
+        .filter(|value| !value.trim().is_empty())
+        .and_then(|value| parse_adaptive_provider_endpoints_json(&value).ok());
+    let (source, endpoints) = if let Some(endpoints) = local_endpoints {
+        ("local_config", endpoints)
+    } else if let Some(endpoints) = env_endpoints {
+        ("environment", endpoints)
+    } else {
+        ("none", Vec::new())
+    };
+
+    Ok((
+        cors_headers(),
+        Json(json!({
+            "schema_version": AXUM_API_SCHEMA_VERSION,
+            "source": source,
+            "endpoints": endpoints,
+            "runtime": {
+                "executor_configured": state.adaptive_provider_executor.is_some(),
+                "registry_configured": state.adaptive_registry_snapshot.is_some(),
+                "local_config_apply_requires_restart": source == "local_config",
+            },
+            "safety": {
+                "raw_secrets_allowed": false,
+                "credential_storage": "env_reference_only",
+                "supported_provider_types": ["stub", "openai_compatible", "anthropic"],
+            },
+        })),
+    ))
+}
+
+pub(crate) async fn api_put_provider_endpoints(
+    State(state): State<AxumApiState>,
+    headers: HeaderMap,
+    uri: Uri,
+    Extension(request_id): Extension<RequestId>,
+    Json(request): Json<ProviderEndpointConfigApiRequest>,
+) -> Result<impl IntoResponse, ApiError> {
+    let context = authorize(&state, &headers, "config:admin", uri.path(), &request_id.0)?;
+    if request.confirm_provider_endpoint_config != Some(true) {
+        return Err(ApiError::with_code(
+            StatusCode::BAD_REQUEST,
+            "provider_endpoint_config_not_confirmed",
+            "confirm_provider_endpoint_config must be true",
+        ));
+    }
+    let raw = serde_json::to_string(&request.endpoints).map_err(|_| {
+        ApiError::with_code(
+            StatusCode::BAD_REQUEST,
+            "invalid_endpoint_config_json",
+            "adaptive endpoint config must be serializable",
+        )
+    })?;
+    let endpoints = parse_adaptive_provider_endpoints_json(&raw)
+        .map_err(|error| ApiError::with_code(StatusCode::BAD_REQUEST, error.code, error.message))?;
+    let store = require_store(&state)?;
+    let updated = store
+        .set_config_value(
+            ADAPTIVE_PROVIDER_ENDPOINTS_CONFIG_KEY,
+            json!(endpoints),
+            &context.api_key_id,
+        )
+        .map_err(internal_error)?;
+    Ok((
+        cors_headers(),
+        Json(json!({
+            "schema_version": AXUM_API_SCHEMA_VERSION,
+            "source": "local_config",
+            "endpoints": updated["value"],
+            "runtime": {
+                "executor_configured": state.adaptive_provider_executor.is_some(),
+                "registry_configured": state.adaptive_registry_snapshot.is_some(),
+                "local_config_apply_requires_restart": true,
+            },
+            "safety": {
+                "raw_secrets_allowed": false,
+                "credential_storage": "env_reference_only",
+                "supported_provider_types": ["stub", "openai_compatible", "anthropic"],
+            },
+        })),
+    ))
 }
 
 pub(crate) async fn api_provider_audit(

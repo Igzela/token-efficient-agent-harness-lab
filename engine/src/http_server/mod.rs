@@ -32,6 +32,12 @@ pub struct AdaptiveFusionCompletionApiRequest {
     pub include_routing_metadata: Option<bool>,
 }
 
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
+pub struct ProviderEndpointConfigApiRequest {
+    pub endpoints: Vec<crate::provider::adaptive_execution::AdaptiveProviderEndpointConfig>,
+    pub confirm_provider_endpoint_config: Option<bool>,
+}
+
 #[derive(Debug, Clone, PartialEq, Deserialize)]
 pub struct ReadOnlyPlanApiRequest {
     pub raw_request: String,
@@ -1211,8 +1217,38 @@ pub fn openapi_document() -> serde_json::Value {
             }
         }
     });
+    append_provider_endpoint_openapi_paths(&mut doc);
     append_adaptive_fusion_openapi_paths(&mut doc);
     doc
+}
+
+fn append_provider_endpoint_openapi_paths(doc: &mut Value) {
+    let Some(paths) = doc.get_mut("paths").and_then(Value::as_object_mut) else {
+        return;
+    };
+    paths.insert(
+        "/api/v1/provider/endpoints".to_string(),
+        json!({
+            "get": {
+                "summary": "Read adaptive provider endpoint configuration",
+                "description": "Requires config:read scope. Returns safe endpoint metadata from local config or environment. Credential values are symbolic environment variable names only; raw secrets are never returned.",
+                "responses": {"200": {"description": "Provider endpoint configuration"}}
+            },
+            "put": {
+                "summary": "Save adaptive provider endpoint configuration",
+                "description": "Requires config:admin scope and confirm_provider_endpoint_config=true. Persists endpoint metadata and credential environment names only; raw secrets are rejected.",
+                "requestBody": json_request_body(&["endpoints", "confirm_provider_endpoint_config"], json!({
+                    "endpoints": {"type": "array"},
+                    "confirm_provider_endpoint_config": {"type": "boolean", "const": true}
+                })),
+                "responses": {
+                    "200": {"description": "Saved provider endpoint configuration"},
+                    "400": {"description": "Invalid endpoint config or missing confirmation"},
+                    "403": {"description": "Missing config:admin scope"}
+                }
+            }
+        }),
+    );
 }
 
 fn append_adaptive_fusion_openapi_paths(doc: &mut Value) {

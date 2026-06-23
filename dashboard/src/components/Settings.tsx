@@ -1,7 +1,17 @@
 import { useEffect, useState } from "react";
-import { ApiError, fetchProviderHealth } from "@/lib/api-client";
-import type { LocalDashboardState } from "@/lib/types";
+import {
+  ApiError,
+  fetchProviderEndpoints,
+  fetchProviderHealth,
+  saveProviderEndpoints,
+} from "@/lib/api-client";
+import type {
+  LocalDashboardState,
+  ProviderEndpointConfig,
+  ProviderEndpointConfigResponse,
+} from "@/lib/types";
 import { EmptyState } from "./EmptyState";
+import { Metric } from "./Metric";
 import { StateBanner } from "./StateBanner";
 
 const envVars = [
@@ -20,6 +30,11 @@ const envVars = [
 export function Settings({ dashboard }: { dashboard: LocalDashboardState }) {
   const [providerHealth, setProviderHealth] = useState<Record<string, unknown> | null>(null);
   const [providerError, setProviderError] = useState<string | null>(null);
+  const [endpointConfig, setEndpointConfig] = useState<ProviderEndpointConfigResponse | null>(null);
+  const [endpointJson, setEndpointJson] = useState("");
+  const [endpointMessage, setEndpointMessage] = useState<string | null>(null);
+  const [endpointError, setEndpointError] = useState<string | null>(null);
+  const [savingEndpoints, setSavingEndpoints] = useState(false);
 
   useEffect(() => {
     fetchProviderHealth()
@@ -33,7 +48,49 @@ export function Settings({ dashboard }: { dashboard: LocalDashboardState }) {
           setProviderError(e instanceof Error ? e.message : "Failed to load provider health");
         }
       });
+    fetchProviderEndpoints()
+      .then((r) => {
+        setEndpointConfig(r);
+        setEndpointJson(JSON.stringify(r.endpoints, null, 2));
+        setEndpointError(null);
+      })
+      .catch((e) => {
+        if (e instanceof ApiError && (e.status === 401 || e.status === 403)) {
+          setEndpointError(e.status === 403
+            ? "The current API key lacks config:read scope."
+            : "Provider endpoint config requires local API access.");
+        } else {
+          setEndpointError(e instanceof Error ? e.message : "Failed to load provider endpoints");
+        }
+      });
   }, []);
+
+  async function handleSaveProviderEndpoints() {
+    setSavingEndpoints(true);
+    setEndpointMessage(null);
+    setEndpointError(null);
+    try {
+      const parsed = JSON.parse(endpointJson) as unknown;
+      if (!Array.isArray(parsed)) {
+        throw new Error("Endpoint config must be a JSON array.");
+      }
+      const response = await saveProviderEndpoints({
+        confirm_provider_endpoint_config: true,
+        endpoints: parsed as ProviderEndpointConfig[],
+      });
+      setEndpointConfig(response);
+      setEndpointJson(JSON.stringify(response.endpoints, null, 2));
+      setEndpointMessage("Provider endpoint config saved.");
+    } catch (e) {
+      if (e instanceof ApiError) {
+        setEndpointError(e.code ? `${e.code}: ${e.message}` : e.message);
+      } else {
+        setEndpointError(e instanceof Error ? e.message : "Failed to save provider endpoints");
+      }
+    } finally {
+      setSavingEndpoints(false);
+    }
+  }
 
   return (
     <section className="card stack">
@@ -64,6 +121,16 @@ export function Settings({ dashboard }: { dashboard: LocalDashboardState }) {
       ) : (
         <p className="muted"><span className="spinner" />Loading...</p>
       )}
+      <h3 className="section-subhead">Adaptive Provider Endpoints</h3>
+      <ProviderEndpointConfigPanel
+        config={endpointConfig}
+        endpointJson={endpointJson}
+        error={endpointError}
+        message={endpointMessage}
+        saving={savingEndpoints}
+        onChange={setEndpointJson}
+        onSave={handleSaveProviderEndpoints}
+      />
       <h3 className="section-subhead">Environment Variables</h3>
       <div className="stack readable-list">
         {envVars.map((v) => (
@@ -74,6 +141,95 @@ export function Settings({ dashboard }: { dashboard: LocalDashboardState }) {
         ))}
       </div>
     </section>
+  );
+}
+
+function ProviderEndpointConfigPanel({
+  config,
+  endpointJson,
+  error,
+  message,
+  saving,
+  onChange,
+  onSave,
+}: {
+  config: ProviderEndpointConfigResponse | null;
+  endpointJson: string;
+  error: string | null;
+  message: string | null;
+  saving: boolean;
+  onChange: (value: string) => void;
+  onSave: () => void;
+}) {
+  if (error && !config) {
+    return (
+      <StateBanner title="Provider endpoint config unavailable" tone="warn">
+        <p>{error}</p>
+      </StateBanner>
+    );
+  }
+
+  const source = config?.source ?? "loading";
+  const endpoints = config?.endpoints ?? [];
+  const runtime = config?.runtime;
+
+  return (
+    <div className="stack">
+      <StateBanner title="Secrets stay outside dashboard config" tone="info">
+        <p>
+          Configure provider endpoints with symbolic credential env names only. Raw API keys are rejected by the engine and must remain in the local environment.
+        </p>
+      </StateBanner>
+      <div className="metrics">
+        <Metric label="Source" value={source} detail={`${endpoints.length} endpoint(s)`} />
+        <Metric
+          label="Executor"
+          value={runtime?.executor_configured ? "configured" : "missing"}
+          detail="current runtime"
+          tone={runtime?.executor_configured ? "ok" : "info"}
+        />
+        <Metric
+          label="Registry"
+          value={runtime?.registry_configured ? "configured" : "missing"}
+          detail={runtime?.local_config_apply_requires_restart ? "restart/reload needed" : "active source"}
+          tone={runtime?.registry_configured ? "ok" : "info"}
+        />
+      </div>
+      {message ? (
+        <StateBanner title="Provider endpoints saved" tone="ok">
+          <p>{message}</p>
+        </StateBanner>
+      ) : null}
+      {error ? (
+        <StateBanner title="Provider endpoint config rejected" tone="warn">
+          <p>{error}</p>
+        </StateBanner>
+      ) : null}
+      <label className="muted" htmlFor="provider-endpoint-config">
+        Endpoint JSON
+      </label>
+      <textarea
+        id="provider-endpoint-config"
+        value={endpointJson}
+        onChange={(event) => onChange(event.target.value)}
+        rows={14}
+        placeholder={JSON.stringify([{
+          endpoint_id: "openai-quality",
+          provider_type: "openai_compatible",
+          base_url: "https://api.openai.example/v1",
+          model: "quality-model",
+          credential_env: "OPENAI_QUALITY_KEY",
+          timeout_ms: 30000,
+          input_cost_per_1k_usd: 0.01,
+          output_cost_per_1k_usd: 0.03,
+        }], null, 2)}
+      />
+      <div className="flex-end">
+        <button type="button" className="button-primary" onClick={onSave} disabled={saving}>
+          {saving ? "Saving..." : "Save provider endpoints"}
+        </button>
+      </div>
+    </div>
   );
 }
 

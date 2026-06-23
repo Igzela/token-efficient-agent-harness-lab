@@ -2523,6 +2523,8 @@ async fn axum_openapi_document_lists_dispatch_endpoint() {
         body["paths"]["/api/v1/provider/audit"]["get"]["parameters"][1]["name"],
         "offset"
     );
+    assert!(body["paths"]["/api/v1/provider/endpoints"]["get"].is_object());
+    assert!(body["paths"]["/api/v1/provider/endpoints"]["put"].is_object());
 }
 
 #[tokio::test]
@@ -2669,6 +2671,169 @@ async fn axum_provider_health_ok_with_stub_provider() {
     assert_eq!(body["status"], "ok");
     assert_eq!(body["provider_id"], "stub-health");
     assert_eq!(body["enabled"], true);
+}
+
+#[tokio::test]
+async fn axum_provider_endpoints_roundtrip_safe_multi_provider_config() {
+    let dir = tempdir().unwrap();
+    let store = LocalProductStore::new(dir.path().join("provider-endpoints.db")).unwrap();
+    let app = build_axum_router(AxumApiState::new().with_local_store(store));
+
+    let initial = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(Method::GET)
+                .uri("/api/v1/provider/endpoints")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(initial.status(), StatusCode::OK);
+    let initial_body = response_json(initial).await;
+    assert_eq!(initial_body["source"], "none");
+    assert!(initial_body["endpoints"].as_array().unwrap().is_empty());
+    assert_eq!(
+        initial_body["safety"]["credential_storage"],
+        "env_reference_only"
+    );
+
+    let response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(Method::PUT)
+                .uri("/api/v1/provider/endpoints")
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(
+                    json!({
+                        "confirm_provider_endpoint_config": true,
+                        "endpoints": [
+                            {
+                                "endpoint_id": "openai-quality",
+                                "provider_type": "openai_compatible",
+                                "base_url": "https://api.openai.example/v1",
+                                "model": "quality-model",
+                                "credential_env": "OPENAI_QUALITY_KEY",
+                                "timeout_ms": 30000,
+                                "input_cost_per_1k_usd": 0.01,
+                                "output_cost_per_1k_usd": 0.03
+                            },
+                            {
+                                "endpoint_id": "anthropic-judge",
+                                "provider_type": "anthropic",
+                                "base_url": "https://api.anthropic.example",
+                                "model": "judge-model",
+                                "credential_env": "ANTHROPIC_JUDGE_KEY",
+                                "timeout_ms": 30000,
+                                "input_cost_per_1k_usd": 0.02,
+                                "output_cost_per_1k_usd": 0.04
+                            },
+                            {
+                                "endpoint_id": "local-stub",
+                                "provider_type": "stub",
+                                "model": "stub-model",
+                                "timeout_ms": 30000
+                            }
+                        ]
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = response_json(response).await;
+    assert_eq!(body["source"], "local_config");
+    let endpoints = body["endpoints"].as_array().unwrap();
+    assert_eq!(endpoints.len(), 3);
+    assert_eq!(endpoints[0]["endpoint_id"], "anthropic-judge");
+    assert_eq!(endpoints[1]["endpoint_id"], "local-stub");
+    assert_eq!(endpoints[2]["endpoint_id"], "openai-quality");
+    assert_eq!(body["safety"]["raw_secrets_allowed"], false);
+    assert_eq!(body["runtime"]["local_config_apply_requires_restart"], true);
+
+    let stored = app
+        .oneshot(
+            Request::builder()
+                .method(Method::GET)
+                .uri("/api/v1/provider/endpoints")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(stored.status(), StatusCode::OK);
+    let stored_body = response_json(stored).await;
+    assert_eq!(stored_body["source"], "local_config");
+    assert_eq!(stored_body["endpoints"], body["endpoints"]);
+}
+
+#[tokio::test]
+async fn axum_provider_endpoints_rejects_unconfirmed_or_secret_shaped_config() {
+    let dir = tempdir().unwrap();
+    let store = LocalProductStore::new(dir.path().join("provider-endpoints-reject.db")).unwrap();
+    let app = build_axum_router(AxumApiState::new().with_local_store(store));
+
+    let unconfirmed = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(Method::PUT)
+                .uri("/api/v1/provider/endpoints")
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(
+                    json!({
+                        "endpoints": [{
+                            "endpoint_id": "local-stub",
+                            "provider_type": "stub",
+                            "model": "stub-model"
+                        }]
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(unconfirmed.status(), StatusCode::BAD_REQUEST);
+    let unconfirmed_body = response_json(unconfirmed).await;
+    assert_eq!(
+        unconfirmed_body["code"],
+        "provider_endpoint_config_not_confirmed"
+    );
+
+    let secret = app
+        .oneshot(
+            Request::builder()
+                .method(Method::PUT)
+                .uri("/api/v1/provider/endpoints")
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(
+                    json!({
+                        "confirm_provider_endpoint_config": true,
+                        "endpoints": [{
+                            "endpoint_id": "secret-endpoint",
+                            "provider_type": "openai_compatible",
+                            "base_url": "https://api.openai.example/v1",
+                            "model": "secret-model",
+                            "credential_env": "sk-abcdefghijklmnopqrstuvwxyz",
+                            "timeout_ms": 30000,
+                            "input_cost_per_1k_usd": 0.01,
+                            "output_cost_per_1k_usd": 0.02
+                        }]
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(secret.status(), StatusCode::BAD_REQUEST);
+    let secret_body = response_json(secret).await;
+    assert_eq!(secret_body["code"], "sensitive_pattern_detected");
 }
 
 #[tokio::test]
