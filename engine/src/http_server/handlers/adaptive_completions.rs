@@ -8,35 +8,35 @@ use serde_json::{json, Value};
 
 use crate::feedback::policy_snapshot::stable_hash;
 use crate::feedback::{
-    AdaptiveCandidate, AdaptiveCandidateConfig, AdaptiveCandidateGenerator, AdaptiveCandidateKind,
-    AdaptiveExperimentController, AdaptiveExperimentGate, AdaptiveExperimentLimits,
-    AdaptiveExperimentPolicy, AdaptiveExperimentRequest, CandidateGenerationRequest, FusionRole,
-    ObjectiveProfile, PromotedAdaptivePolicy,
+    AdaptiveAutoPromotionGate, AdaptiveCandidate, AdaptiveCandidateConfig,
+    AdaptiveCandidateGenerator, AdaptiveCandidateKind, AdaptiveExperimentController,
+    AdaptiveExperimentGate, AdaptiveExperimentLimits, AdaptiveExperimentPolicy,
+    AdaptiveExperimentRequest, CandidateGenerationRequest, FusionRole, ObjectiveProfile,
+    PromotedAdaptivePolicy,
 };
 use crate::http_server::middleware::{
     authorize, cors_headers, internal_error, require_store, ApiError, RequestId,
 };
 use crate::http_server::state::AxumApiState;
 use crate::http_server::AdaptiveFusionCompletionApiRequest;
-use crate::provider::adaptive_execution::maybe_auto_promote_from_observation;
 use crate::provider::adaptive_execution::{
     adaptive_runtime_hash_from_configs, build_adaptive_provider_runtime_from_configs,
-    parse_adaptive_provider_endpoints_json, AdaptiveEndpointInvocation, AdaptiveExecutionGate,
-    AdaptiveExecutionLimits, AdaptiveExecutionPlan, AdaptiveExecutionRequest,
+    maybe_auto_promote_from_observation_with_gate, parse_adaptive_provider_endpoints_json,
+    AdaptiveEndpointInvocation, AdaptiveExecutionGate, AdaptiveExecutionLimits,
+    AdaptiveExecutionPlan, AdaptiveExecutionRequest, ADAPTIVE_PROVIDER_ENDPOINTS_CONFIG_KEY,
 };
 use crate::provider::{check_cost_gates, CostGateConfig};
 use crate::storage::local_product_store::{
     AdaptiveObservationInput, AdaptiveObservationSummary, LocalProductStore,
     ADAPTIVE_OBSERVATION_SCHEMA_VERSION,
 };
+use crate::trusted_local::EffectiveExecutionGates;
 
 const MAX_METADATA_BYTES: usize = 16 * 1024;
 const DEFAULT_MAX_COST_USD: f64 = 1.0;
 const DEFAULT_MAX_TOKENS: u64 = 32_768;
 const DEFAULT_MAX_LATENCY_MS: u64 = 300_000;
 const DEFAULT_OUTPUT_TOKENS: u64 = 1_024;
-const ADAPTIVE_PROVIDER_ENDPOINTS_CONFIG_KEY: &str = "adaptive_provider_endpoints";
-
 pub(crate) async fn api_adaptive_completion(
     State(state): State<AxumApiState>,
     headers: HeaderMap,
@@ -63,7 +63,12 @@ pub(crate) async fn execute_adaptive_completion(
     actor: &str,
 ) -> Result<Value, ApiError> {
     validate_request(&request)?;
-    let gate = AdaptiveExecutionGate::from_env(state.tenant_resolver.is_some());
+    let effective_gates = state.effective_execution_gates();
+    let gate = AdaptiveExecutionGate::from_flags(
+        effective_gates.provider_execution,
+        effective_gates.adaptive_execution,
+        state.tenant_resolver.is_some(),
+    );
     if !gate.is_enabled() {
         return Err(ApiError::with_code(
             StatusCode::BAD_REQUEST,
@@ -124,6 +129,7 @@ pub(crate) async fn execute_adaptive_completion(
         &task_class,
         objective,
         &risk_level,
+        &effective_gates,
     )?;
     let plan = candidate_plan(&candidate)?;
     let total_tokens = candidate
@@ -182,6 +188,7 @@ pub(crate) async fn execute_adaptive_completion(
                 result.elapsed_ms,
                 result.total_input_token_count,
                 result.total_output_token_count,
+                &effective_gates,
             );
             Ok(completion_response(
                 result.output,
@@ -213,6 +220,7 @@ pub(crate) async fn execute_adaptive_completion(
                 error.elapsed_ms,
                 error.total_input_token_count,
                 error.total_output_token_count,
+                &effective_gates,
             );
             Err(ApiError::with_code(
                 StatusCode::BAD_REQUEST,
@@ -233,22 +241,32 @@ fn completion_runtime(
     ),
     ApiError,
 > {
-    if let Some(configs) = local_config_endpoints(store)? {
-        let config_hash = adaptive_runtime_hash_from_configs(&configs).map_err(|error| {
-            ApiError::with_code(StatusCode::BAD_REQUEST, error.code, error.message)
-        })?;
-        if let Some(runtime) = state.adaptive_local_config_runtime_for_hash(&config_hash) {
+    let env_override =
+        std::env::var(crate::provider::adaptive_execution::ACP_ADAPTIVE_PROVIDER_ENDPOINTS_JSON)
+            .is_ok_and(|value| !value.trim().is_empty());
+    if !env_override {
+        if let Some(configs) = local_config_endpoints(store)? {
+            let config_hash = adaptive_runtime_hash_from_configs(&configs).map_err(|error| {
+                ApiError::with_code(StatusCode::BAD_REQUEST, error.code, error.message)
+            })?;
+            if let Some(runtime) = state.adaptive_local_config_runtime_for_hash(&config_hash) {
+                return Ok((runtime.executor, runtime.registry_snapshot));
+            }
+            let (executor, registry_snapshot) = build_adaptive_provider_runtime_from_configs(
+                &configs,
+                store,
+                &state.circuit_breaker_registry,
+            )
+            .map_err(|error| {
+                ApiError::with_code(StatusCode::BAD_REQUEST, error.code, error.message)
+            })?;
+            let runtime = state.install_adaptive_local_config_runtime(
+                config_hash,
+                executor,
+                registry_snapshot,
+            );
             return Ok((runtime.executor, runtime.registry_snapshot));
         }
-        let (executor, registry_snapshot) = build_adaptive_provider_runtime_from_configs(
-            &configs,
-            store,
-            &state.circuit_breaker_registry,
-        )
-        .map_err(|error| ApiError::with_code(StatusCode::BAD_REQUEST, error.code, error.message))?;
-        let runtime =
-            state.install_adaptive_local_config_runtime(config_hash, executor, registry_snapshot);
-        return Ok((runtime.executor, runtime.registry_snapshot));
     }
     let executor = state
         .adaptive_provider_executor
@@ -334,6 +352,7 @@ fn select_candidate(
     task_class: &str,
     objective: ObjectiveProfile,
     risk_level: &str,
+    effective_gates: &EffectiveExecutionGates,
 ) -> Result<(AdaptiveCandidate, bool), ApiError> {
     let Some(first) = candidates.first() else {
         return Err(ApiError::with_code(
@@ -358,7 +377,12 @@ fn select_candidate(
         .unwrap_or(first)
         .clone();
 
-    let experiment_gate = AdaptiveExperimentGate::from_env();
+    let experiment_gate = AdaptiveExperimentGate::from_flags(
+        effective_gates.experiments_enabled,
+        effective_gates.experiments_active,
+        env_enabled("ACP_ADAPTIVE_EXPERIMENTS_PAUSED"),
+        env_enabled("ACP_ADAPTIVE_EXPERIMENTS_KILL_SWITCH"),
+    );
     let experiment_policy = AdaptiveExperimentPolicy::from_env();
     let experiment = if experiment_gate.is_configured() {
         AdaptiveExperimentController::decide(
@@ -493,6 +517,7 @@ fn record_observation(
     latency_ms: u64,
     input_tokens: u64,
     output_tokens: u64,
+    effective_gates: &EffectiveExecutionGates,
 ) -> Option<AdaptiveObservationSummary> {
     let input = AdaptiveObservationInput {
         schema_version: ADAPTIVE_OBSERVATION_SCHEMA_VERSION.to_string(),
@@ -516,7 +541,12 @@ fn record_observation(
     };
     match store.record_adaptive_observation(&input, actor) {
         Ok(observation) => {
-            maybe_auto_promote_from_observation(store, &observation, actor);
+            let gate = AdaptiveAutoPromotionGate::from_flags(
+                effective_gates.auto_promotion_enabled,
+                effective_gates.auto_promotion_active,
+                env_enabled("ACP_ADAPTIVE_AUTO_PROMOTION_KILL_SWITCH"),
+            );
+            maybe_auto_promote_from_observation_with_gate(store, &observation, actor, &gate);
             Some(observation)
         }
         Err(_) => {
@@ -660,4 +690,10 @@ fn env_f64(key: &str) -> Option<f64> {
 
 fn env_u64(key: &str) -> Option<u64> {
     std::env::var(key).ok()?.trim().parse().ok()
+}
+
+fn env_enabled(key: &str) -> bool {
+    std::env::var(key)
+        .map(|value| value == "1" || value.eq_ignore_ascii_case("true"))
+        .unwrap_or(false)
 }

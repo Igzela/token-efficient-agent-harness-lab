@@ -109,7 +109,7 @@ pub(crate) async fn api_metrics(
         }
     }
 
-    let execution_gates = crate::trusted_local::EffectiveExecutionGates::from_env();
+    let execution_gates = state.effective_execution_gates();
     let provider_enabled = state.provider_enabled()
         || (execution_gates.provider_execution && state.adaptive_provider_executor.is_some());
 

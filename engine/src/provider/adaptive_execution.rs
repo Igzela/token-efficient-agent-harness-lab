@@ -32,6 +32,7 @@ use crate::trusted_local::EffectiveExecutionGates;
 
 pub const ADAPTIVE_EXECUTION_SCHEMA_VERSION: &str = "adaptive_execution.v1";
 pub const ACP_ADAPTIVE_PROVIDER_ENDPOINTS_JSON: &str = "ACP_ADAPTIVE_PROVIDER_ENDPOINTS_JSON";
+pub const ADAPTIVE_PROVIDER_ENDPOINTS_CONFIG_KEY: &str = "adaptive_provider_endpoints";
 const MAX_EXECUTION_CALLS: usize = 8;
 const MAX_ADAPTIVE_ENDPOINTS: usize = 8;
 const MAX_EXECUTION_COST_USD: f64 = 1_000.0;
@@ -133,6 +134,32 @@ pub fn parse_adaptive_provider_endpoints_json(
         validate_adaptive_provider_endpoint_config(config)?;
     }
     Ok(configs)
+}
+
+pub fn adaptive_provider_endpoint_configs_from_sources(
+    env_raw: Option<&str>,
+    persisted_configs: Option<&[AdaptiveProviderEndpointConfig]>,
+) -> Result<Option<Vec<AdaptiveProviderEndpointConfig>>, AdaptiveProviderEndpointConfigError> {
+    if let Some(raw) = env_raw.filter(|raw| !raw.trim().is_empty()) {
+        return parse_adaptive_provider_endpoints_json(raw).map(Some);
+    }
+    Ok(persisted_configs
+        .filter(|configs| !configs.is_empty())
+        .map(|configs| configs.to_vec()))
+}
+
+pub fn persisted_adaptive_provider_endpoint_configs(
+    store: &crate::storage::local_product_store::LocalProductStore,
+) -> Result<Option<Vec<AdaptiveProviderEndpointConfig>>, String> {
+    let config = store.config_snapshot()?;
+    let Some(value) = config.get(ADAPTIVE_PROVIDER_ENDPOINTS_CONFIG_KEY) else {
+        return Ok(None);
+    };
+    let raw = serde_json::to_string(value)
+        .map_err(|_| "adaptive endpoint config must be serializable".to_string())?;
+    parse_adaptive_provider_endpoints_json(&raw)
+        .map(Some)
+        .map_err(|error| error.to_string())
 }
 
 pub fn adaptive_registry_snapshot_from_configs(
@@ -877,6 +904,15 @@ pub fn maybe_auto_promote_from_observation(
     actor: &str,
 ) {
     let gate = crate::feedback::AdaptiveAutoPromotionGate::from_env();
+    maybe_auto_promote_from_observation_with_gate(store, observation, actor, &gate);
+}
+
+pub fn maybe_auto_promote_from_observation_with_gate(
+    store: &crate::storage::local_product_store::LocalProductStore,
+    observation: &crate::storage::local_product_store::AdaptiveObservationSummary,
+    actor: &str,
+    gate: &crate::feedback::AdaptiveAutoPromotionGate,
+) {
     if !gate.is_configured() {
         return;
     }
@@ -902,7 +938,7 @@ pub fn maybe_auto_promote_from_observation(
     let _ = store.auto_promote_adaptive_fusion_policy(
         &request,
         &crate::feedback::AdaptiveAutoPromotionPolicy::from_env(),
-        &gate,
+        gate,
         actor,
     );
 }

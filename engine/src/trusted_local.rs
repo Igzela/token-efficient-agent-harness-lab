@@ -2,7 +2,8 @@ use serde::{Deserialize, Serialize};
 
 use crate::infrastructure::auth::validate_token_shape;
 use crate::provider::adaptive_execution::{
-    parse_adaptive_provider_endpoints_json, ACP_ADAPTIVE_PROVIDER_ENDPOINTS_JSON,
+    adaptive_provider_endpoint_configs_from_sources, AdaptiveProviderEndpointConfig,
+    ACP_ADAPTIVE_PROVIDER_ENDPOINTS_JSON,
 };
 
 pub const TRUSTED_LOCAL_PROFILE_SCHEMA_VERSION: &str = "trusted_local_profile.v1";
@@ -74,7 +75,18 @@ impl EffectiveExecutionGates {
     where
         F: Fn(&str) -> Option<String>,
     {
-        let profile = TrustedLocalProfileStatus::from_lookup(&lookup);
+        Self::from_lookup_with_endpoint_configs(lookup, None)
+    }
+
+    pub fn from_lookup_with_endpoint_configs<F>(
+        lookup: F,
+        endpoint_configs: Option<&[AdaptiveProviderEndpointConfig]>,
+    ) -> Self
+    where
+        F: Fn(&str) -> Option<String>,
+    {
+        let profile =
+            TrustedLocalProfileStatus::from_lookup_with_endpoint_configs(&lookup, endpoint_configs);
         let task_advancement =
             TrustedLocalTaskAdvancementStatus::from_profile_lookup(&profile, &lookup);
         Self {
@@ -176,6 +188,16 @@ impl TrustedLocalProfileStatus {
     where
         F: Fn(&str) -> Option<String>,
     {
+        Self::from_lookup_with_endpoint_configs(lookup, None)
+    }
+
+    pub fn from_lookup_with_endpoint_configs<F>(
+        lookup: F,
+        persisted_endpoint_configs: Option<&[AdaptiveProviderEndpointConfig]>,
+    ) -> Self
+    where
+        F: Fn(&str) -> Option<String>,
+    {
         let requested = env_flag(&lookup, ACP_TRUSTED_LOCAL_PROFILE);
         if !requested {
             return Self::resolve(TrustedLocalProfileInput {
@@ -189,9 +211,13 @@ impl TrustedLocalProfileStatus {
             });
         }
 
-        let endpoint_configs = lookup(ACP_ADAPTIVE_PROVIDER_ENDPOINTS_JSON)
-            .filter(|value| !value.trim().is_empty())
-            .and_then(|value| parse_adaptive_provider_endpoints_json(&value).ok());
+        let env_endpoint_config = lookup(ACP_ADAPTIVE_PROVIDER_ENDPOINTS_JSON);
+        let endpoint_configs = adaptive_provider_endpoint_configs_from_sources(
+            env_endpoint_config.as_deref(),
+            persisted_endpoint_configs,
+        )
+        .ok()
+        .flatten();
         let endpoint_configured = endpoint_configs
             .as_ref()
             .is_some_and(|configs| !configs.is_empty());

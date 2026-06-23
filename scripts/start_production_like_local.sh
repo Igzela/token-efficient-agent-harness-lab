@@ -39,6 +39,34 @@ env_true() {
   [[ "$value" == "1" || "${value,,}" == "true" ]]
 }
 
+has_persisted_adaptive_endpoints() {
+  if [[ -n "${ACP_DATABASE_URL:-}" ]]; then
+    return 1
+  fi
+  local db_path="$ACP_DB_PATH"
+  if [[ "$db_path" != /* ]]; then
+    db_path="$ROOT/$db_path"
+  fi
+  [[ -f "$db_path" ]] || return 1
+  python3 - "$db_path" <<'PY'
+import json
+import sqlite3
+import sys
+
+try:
+    connection = sqlite3.connect(f"file:{sys.argv[1]}?mode=ro", uri=True)
+    row = connection.execute(
+        "SELECT value_json FROM local_config WHERE key = ?",
+        ("adaptive_provider_endpoints",),
+    ).fetchone()
+    connection.close()
+    endpoints = json.loads(row[0]) if row else None
+except (json.JSONDecodeError, sqlite3.Error, TypeError):
+    raise SystemExit(1)
+raise SystemExit(0 if isinstance(endpoints, list) and endpoints else 1)
+PY
+}
+
 require_true ACP_REQUIRE_AUTH
 
 profile_enabled=false
@@ -74,8 +102,9 @@ if [[ -z "$provider_secret" ]]; then
 fi
 
 if env_true "${ACP_TRUSTED_LOCAL_PROFILE:-}"; then
-  if [[ -z "${ACP_ADAPTIVE_PROVIDER_ENDPOINTS_JSON:-}" ]]; then
-    echo "ACP_ADAPTIVE_PROVIDER_ENDPOINTS_JSON is required when ACP_TRUSTED_LOCAL_PROFILE=1" >&2
+  if [[ -z "${ACP_ADAPTIVE_PROVIDER_ENDPOINTS_JSON:-}" ]] \
+    && ! has_persisted_adaptive_endpoints; then
+    echo "ACP_TRUSTED_LOCAL_PROFILE=1 requires ACP_ADAPTIVE_PROVIDER_ENDPOINTS_JSON or persisted SQLite provider endpoints" >&2
     exit 1
   fi
 fi

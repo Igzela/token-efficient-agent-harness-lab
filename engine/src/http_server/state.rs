@@ -8,10 +8,14 @@ use crate::infrastructure::auth::TenantResolver;
 use crate::infrastructure::circuit_breaker::CircuitBreakerRegistry;
 use crate::infrastructure::observability::{MetricsCollector, RequestTracer};
 use crate::infrastructure::rate_limiter::RateLimiter;
-use crate::provider::adaptive_execution::{AdaptiveExecutionExecutor, AdaptiveExecutionKillSwitch};
+use crate::provider::adaptive_execution::{
+    persisted_adaptive_provider_endpoint_configs, AdaptiveExecutionExecutor,
+    AdaptiveExecutionKillSwitch,
+};
 use crate::provider::Provider;
 use crate::scheduler::WorkflowScheduler;
 use crate::storage::local_product_store::LocalProductStore;
+use crate::trusted_local::EffectiveExecutionGates;
 
 #[derive(Clone)]
 pub(crate) struct AdaptiveProviderRuntime {
@@ -251,6 +255,19 @@ impl AxumApiState {
 
     pub fn cli_capability(&self) -> &CliCapability {
         &self.cli_capability
+    }
+
+    pub(crate) fn effective_execution_gates(&self) -> EffectiveExecutionGates {
+        let endpoint_configs = self
+            .local_store
+            .as_deref()
+            .map(persisted_adaptive_provider_endpoint_configs)
+            .and_then(Result::ok)
+            .flatten();
+        EffectiveExecutionGates::from_lookup_with_endpoint_configs(
+            |key| std::env::var(key).ok(),
+            endpoint_configs.as_deref(),
+        )
     }
 
     pub fn executor_type(&self) -> &str {
