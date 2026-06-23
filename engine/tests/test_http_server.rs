@@ -64,6 +64,12 @@ impl TrustedLocalProviderWorkflowEnvGuard {
         );
         Self
     }
+
+    fn enabled_with_persisted_endpoints() -> Self {
+        let guard = Self::enabled();
+        std::env::remove_var("ACP_ADAPTIVE_PROVIDER_ENDPOINTS_JSON");
+        guard
+    }
 }
 
 impl Drop for TrustedLocalProviderWorkflowEnvGuard {
@@ -5582,6 +5588,93 @@ async fn axum_tick_with_trusted_local_profile_enables_provider_without_legacy_ga
         .collect();
     assert!(event_types.contains(&"request_sent"));
     assert!(event_types.contains(&"response_received"));
+}
+
+#[tokio::test]
+async fn axum_tick_with_persisted_trusted_local_profile_enables_provider() {
+    let _guard = provider_cli_env_lock().lock().await;
+    let _env = TrustedLocalProviderWorkflowEnvGuard::enabled_with_persisted_endpoints();
+
+    let dir = tempdir().unwrap();
+    let store = std::sync::Arc::new(
+        LocalProductStore::new(dir.path().join("tick-provider-persisted-profile.db")).unwrap(),
+    );
+    store
+        .set_config_value(
+            "adaptive_provider_endpoints",
+            json!([{
+                "endpoint_id": "stub-provider",
+                "provider_type": "stub",
+                "model": "test-model",
+                "timeout_ms": 30000,
+                "input_cost_per_1k_usd": 0.01,
+                "output_cost_per_1k_usd": 0.02
+            }]),
+            "test",
+        )
+        .unwrap();
+    let provider: std::sync::Arc<dyn engine::provider::Provider> =
+        std::sync::Arc::new(engine::provider::stub::StubProvider::new("stub-provider"));
+    let app = build_axum_router(
+        AxumApiState::new()
+            .with_local_store_arc(store)
+            .with_provider(provider),
+    );
+
+    let plan_resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(Method::POST)
+                .uri("/api/v1/plans")
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(
+                    json!({"raw_request": "provider task", "request_source": "test"}).to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let plan_id = response_json(plan_resp).await["plan"]["plan_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let run_resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(Method::POST)
+                .uri("/api/v1/workflow-runs")
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(json!({"plan_id": plan_id}).to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let run_id = response_json(run_resp).await["run"]["run_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    let tick_resp = app
+        .oneshot(
+            Request::builder()
+                .method(Method::POST)
+                .uri(format!("/api/v1/workflow-runs/{run_id}/tick"))
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(
+                    json!({"actor": "test", "executor": "provider"}).to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(tick_resp.status(), StatusCode::OK);
+    assert_eq!(
+        response_json(tick_resp).await["tick"]["executor_type"],
+        "provider"
+    );
 }
 
 #[tokio::test]
