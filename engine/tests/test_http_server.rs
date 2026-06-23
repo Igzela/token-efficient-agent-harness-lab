@@ -38,6 +38,50 @@ fn provider_cli_env_lock() -> &'static Mutex<()> {
     LOCK.get_or_init(|| Mutex::new(()))
 }
 
+struct TrustedLocalProviderWorkflowEnvGuard;
+
+impl TrustedLocalProviderWorkflowEnvGuard {
+    fn enabled() -> Self {
+        for key in [
+            "ACP_ENABLE_PROVIDER_EXECUTION",
+            "ACP_TRUSTED_LOCAL_PROFILE",
+            "ACP_REQUIRE_AUTH",
+            "ACP_ADMIN_API_KEY",
+            "ACP_COST_PER_DISPATCH_USD",
+            "ACP_COST_DAILY_USD",
+            "ACP_ADAPTIVE_PROVIDER_ENDPOINTS_JSON",
+        ] {
+            std::env::remove_var(key);
+        }
+        std::env::set_var("ACP_TRUSTED_LOCAL_PROFILE", "1");
+        std::env::set_var("ACP_REQUIRE_AUTH", "1");
+        std::env::set_var("ACP_ADMIN_API_KEY", format!("harness_{}", "a".repeat(64)));
+        std::env::set_var("ACP_COST_PER_DISPATCH_USD", "1.0");
+        std::env::set_var("ACP_COST_DAILY_USD", "10.0");
+        std::env::set_var(
+            "ACP_ADAPTIVE_PROVIDER_ENDPOINTS_JSON",
+            r#"[{"endpoint_id":"stub-provider","provider_type":"stub","model":"test-model","timeout_ms":30000,"input_cost_per_1k_usd":0.01,"output_cost_per_1k_usd":0.02}]"#,
+        );
+        Self
+    }
+}
+
+impl Drop for TrustedLocalProviderWorkflowEnvGuard {
+    fn drop(&mut self) {
+        for key in [
+            "ACP_ENABLE_PROVIDER_EXECUTION",
+            "ACP_TRUSTED_LOCAL_PROFILE",
+            "ACP_REQUIRE_AUTH",
+            "ACP_ADMIN_API_KEY",
+            "ACP_COST_PER_DISPATCH_USD",
+            "ACP_COST_DAILY_USD",
+            "ACP_ADAPTIVE_PROVIDER_ENDPOINTS_JSON",
+        ] {
+            std::env::remove_var(key);
+        }
+    }
+}
+
 fn adaptive_operator_env_lock() -> &'static Mutex<()> {
     static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
     LOCK.get_or_init(|| Mutex::new(()))
@@ -5121,6 +5165,7 @@ async fn axum_tick_with_codex_cli_unavailable_returns_400() {
 async fn axum_tick_with_provider_env_gate_disabled_returns_400() {
     let _guard = provider_cli_env_lock().lock().await;
     std::env::remove_var("ACP_ENABLE_PROVIDER_EXECUTION");
+    std::env::remove_var("ACP_TRUSTED_LOCAL_PROFILE");
     std::env::remove_var("ACP_COST_PER_DISPATCH_USD");
     std::env::remove_var("ACP_COST_DAILY_USD");
 
@@ -5185,9 +5230,97 @@ async fn axum_tick_with_provider_env_gate_disabled_returns_400() {
 }
 
 #[tokio::test]
+async fn axum_tick_with_trusted_local_profile_enables_provider_without_legacy_gate() {
+    let _guard = provider_cli_env_lock().lock().await;
+    let _env = TrustedLocalProviderWorkflowEnvGuard::enabled();
+
+    let dir = tempdir().unwrap();
+    let store = std::sync::Arc::new(
+        LocalProductStore::new(dir.path().join("tick-provider-trusted-local.db")).unwrap(),
+    );
+    let provider: std::sync::Arc<dyn engine::provider::Provider> =
+        std::sync::Arc::new(engine::provider::stub::StubProvider::new("stub-provider"));
+    let app = build_axum_router(
+        AxumApiState::new()
+            .with_local_store_arc(store.clone())
+            .with_provider(provider),
+    );
+
+    let plan_resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(Method::POST)
+                .uri("/api/v1/plans")
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(
+                    json!({"raw_request": "provider task", "request_source": "test"}).to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(plan_resp.status(), StatusCode::OK);
+    let plan_body = response_json(plan_resp).await;
+    let plan_id = plan_body["plan"]["plan_id"].as_str().unwrap();
+
+    let run_resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(Method::POST)
+                .uri("/api/v1/workflow-runs")
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(json!({"plan_id": plan_id}).to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(run_resp.status(), StatusCode::OK);
+    let run_body = response_json(run_resp).await;
+    let run_id = run_body["run"]["run_id"].as_str().unwrap();
+
+    let tick_resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(Method::POST)
+                .uri(format!("/api/v1/workflow-runs/{run_id}/tick"))
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(
+                    json!({"actor": "test", "executor": "provider"}).to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(tick_resp.status(), StatusCode::OK);
+    let tick_body = response_json(tick_resp).await;
+    assert_eq!(tick_body["tick"]["executor_type"], "provider");
+    assert_eq!(
+        tick_body["tick"]["result"]["trace"]["schema_version"],
+        "execution_trace.v2"
+    );
+    assert_eq!(
+        tick_body["tick"]["result"]["trace"]["output_policy"],
+        "redacted_and_capped"
+    );
+
+    let events = store.provider_audit_events(10).unwrap();
+    let event_types: Vec<_> = events
+        .iter()
+        .filter_map(|event| event["event_type"].as_str())
+        .collect();
+    assert!(event_types.contains(&"request_sent"));
+    assert!(event_types.contains(&"response_received"));
+}
+
+#[tokio::test]
 async fn axum_tick_with_provider_stub_records_audit_and_trace() {
     let _guard = provider_cli_env_lock().lock().await;
     std::env::set_var("ACP_ENABLE_PROVIDER_EXECUTION", "1");
+    std::env::remove_var("ACP_TRUSTED_LOCAL_PROFILE");
     std::env::remove_var("ACP_COST_PER_DISPATCH_USD");
     std::env::remove_var("ACP_COST_DAILY_USD");
 
