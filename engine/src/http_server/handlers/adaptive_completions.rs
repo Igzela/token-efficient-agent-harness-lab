@@ -20,8 +20,9 @@ use crate::http_server::state::AxumApiState;
 use crate::http_server::AdaptiveFusionCompletionApiRequest;
 use crate::provider::adaptive_execution::maybe_auto_promote_from_observation;
 use crate::provider::adaptive_execution::{
-    AdaptiveEndpointInvocation, AdaptiveExecutionGate, AdaptiveExecutionLimits,
-    AdaptiveExecutionPlan, AdaptiveExecutionRequest,
+    adaptive_runtime_hash_from_configs, build_adaptive_provider_runtime_from_configs,
+    parse_adaptive_provider_endpoints_json, AdaptiveEndpointInvocation, AdaptiveExecutionGate,
+    AdaptiveExecutionLimits, AdaptiveExecutionPlan, AdaptiveExecutionRequest,
 };
 use crate::provider::{check_cost_gates, CostGateConfig};
 use crate::storage::local_product_store::{
@@ -34,6 +35,7 @@ const DEFAULT_MAX_COST_USD: f64 = 1.0;
 const DEFAULT_MAX_TOKENS: u64 = 32_768;
 const DEFAULT_MAX_LATENCY_MS: u64 = 300_000;
 const DEFAULT_OUTPUT_TOKENS: u64 = 1_024;
+const ADAPTIVE_PROVIDER_ENDPOINTS_CONFIG_KEY: &str = "adaptive_provider_endpoints";
 
 pub(crate) async fn api_adaptive_completion(
     State(state): State<AxumApiState>,
@@ -69,15 +71,8 @@ pub(crate) async fn execute_adaptive_completion(
             "adaptive provider execution requires provider, adaptive, and auth gates",
         ));
     }
-    let executor = state
-        .adaptive_provider_executor
-        .clone()
-        .ok_or_else(|| unavailable("adaptive provider executor is not configured"))?;
-    let registry = state
-        .adaptive_registry_snapshot
-        .as_ref()
-        .ok_or_else(|| unavailable("adaptive model registry is not configured"))?;
     let store = require_store(state)?;
+    let (executor, registry) = completion_runtime(state, &store)?;
 
     let task_class = request
         .task_class
@@ -226,6 +221,66 @@ pub(crate) async fn execute_adaptive_completion(
             ))
         }
     }
+}
+
+fn completion_runtime(
+    state: &AxumApiState,
+    store: &std::sync::Arc<LocalProductStore>,
+) -> Result<
+    (
+        std::sync::Arc<crate::provider::adaptive_execution::AdaptiveExecutionExecutor>,
+        std::sync::Arc<crate::feedback::ModelEndpointRegistrySnapshot>,
+    ),
+    ApiError,
+> {
+    if let Some(configs) = local_config_endpoints(store)? {
+        let config_hash = adaptive_runtime_hash_from_configs(&configs).map_err(|error| {
+            ApiError::with_code(StatusCode::BAD_REQUEST, error.code, error.message)
+        })?;
+        if let Some(runtime) = state.adaptive_local_config_runtime_for_hash(&config_hash) {
+            return Ok((runtime.executor, runtime.registry_snapshot));
+        }
+        let (executor, registry_snapshot) = build_adaptive_provider_runtime_from_configs(
+            &configs,
+            store,
+            &state.circuit_breaker_registry,
+        )
+        .map_err(|error| ApiError::with_code(StatusCode::BAD_REQUEST, error.code, error.message))?;
+        let runtime =
+            state.install_adaptive_local_config_runtime(config_hash, executor, registry_snapshot);
+        return Ok((runtime.executor, runtime.registry_snapshot));
+    }
+    let executor = state
+        .adaptive_provider_executor
+        .clone()
+        .ok_or_else(|| unavailable("adaptive provider executor is not configured"))?;
+    let registry = state
+        .adaptive_registry_snapshot
+        .clone()
+        .ok_or_else(|| unavailable("adaptive model registry is not configured"))?;
+    Ok((executor, registry))
+}
+
+fn local_config_endpoints(
+    store: &LocalProductStore,
+) -> Result<
+    Option<Vec<crate::provider::adaptive_execution::AdaptiveProviderEndpointConfig>>,
+    ApiError,
+> {
+    let config = store.config_snapshot().map_err(internal_error)?;
+    let Some(value) = config.get(ADAPTIVE_PROVIDER_ENDPOINTS_CONFIG_KEY) else {
+        return Ok(None);
+    };
+    let raw = serde_json::to_string(value).map_err(|_| {
+        ApiError::with_code(
+            StatusCode::BAD_REQUEST,
+            "invalid_endpoint_config_json",
+            "adaptive endpoint config must be serializable",
+        )
+    })?;
+    parse_adaptive_provider_endpoints_json(&raw)
+        .map(Some)
+        .map_err(|error| ApiError::with_code(StatusCode::BAD_REQUEST, error.code, error.message))
 }
 
 fn validate_request(request: &AdaptiveFusionCompletionApiRequest) -> Result<(), ApiError> {

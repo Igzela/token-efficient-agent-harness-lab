@@ -185,6 +185,36 @@ fn app() -> (
     (build_axum_router(state), store, raw_key, dir)
 }
 
+fn app_without_adaptive_runtime() -> (
+    axum::Router,
+    Arc<LocalProductStore>,
+    String,
+    tempfile::TempDir,
+) {
+    let dir = tempdir().unwrap();
+    let store = Arc::new(LocalProductStore::new(dir.path().join("team.db")).unwrap());
+    let scopes = HashSet::from([
+        "config:admin".to_string(),
+        "config:read".to_string(),
+        "dispatch:execute".to_string(),
+        "dispatch:read".to_string(),
+    ]);
+    let mut resolver = TenantResolver::new();
+    resolver.add_tenant(Tenant {
+        tenant_id: "local".to_string(),
+        name: "Local".to_string(),
+        scopes: scopes.clone(),
+        rate_limit: Some(100),
+    });
+    let (_, raw_key) = resolver
+        .create_api_key("local", Some(scopes), None, 1.0)
+        .unwrap();
+    let state = AxumApiState::new()
+        .with_local_store_arc(store.clone())
+        .with_auth(resolver, RateLimiter::new(60.0, 100), Some(100), 1.0);
+    (build_axum_router(state), store, raw_key, dir)
+}
+
 fn completion_request(api_key: Option<&str>, body: Value) -> Request<Body> {
     let mut builder = Request::builder()
         .method(Method::POST)
@@ -194,6 +224,16 @@ fn completion_request(api_key: Option<&str>, body: Value) -> Request<Body> {
         builder = builder.header(header::AUTHORIZATION, format!("Bearer {api_key}"));
     }
     builder.body(Body::from(body.to_string())).unwrap()
+}
+
+fn save_provider_endpoints_request(api_key: &str, body: Value) -> Request<Body> {
+    Request::builder()
+        .method(Method::PUT)
+        .uri("/api/v1/provider/endpoints")
+        .header(header::AUTHORIZATION, format!("Bearer {api_key}"))
+        .header(header::CONTENT_TYPE, "application/json")
+        .body(Body::from(body.to_string()))
+        .unwrap()
 }
 
 #[tokio::test]
@@ -271,6 +311,58 @@ async fn completion_returns_compact_output_and_optional_routing_metadata() {
     let persisted = serde_json::to_string(&store.adaptive_observations().unwrap()).unwrap();
     assert!(!persisted.contains("ignored-private-context"));
     assert!(!persisted.contains("solve again"));
+}
+
+#[tokio::test]
+async fn completion_uses_safe_provider_endpoints_saved_in_local_config() {
+    let _guard = env_lock().lock().await;
+    let _env = AdaptiveEnv::enabled();
+    let (app, store, raw_key, _dir) = app_without_adaptive_runtime();
+
+    let saved = app
+        .clone()
+        .oneshot(save_provider_endpoints_request(
+            &raw_key,
+            json!({
+                "confirm_provider_endpoint_config": true,
+                "endpoints": [{
+                    "endpoint_id": "local-stub",
+                    "provider_type": "stub",
+                    "model": "test-model",
+                    "timeout_ms": 30000,
+                    "input_cost_per_1k_usd": 0.01,
+                    "output_cost_per_1k_usd": 0.02
+                }]
+            }),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(saved.status(), StatusCode::OK);
+    let saved_body = response_json(saved).await;
+    assert_eq!(saved_body["source"], "local_config");
+    assert_eq!(
+        saved_body["runtime"]["completion_executor_configured"],
+        true
+    );
+
+    let completed = app
+        .oneshot(completion_request(
+            Some(&raw_key),
+            json!({
+                "prompt": "solve from saved local config",
+                "task_class": "coding",
+                "objective": "efficient",
+                "risk_level": "low",
+                "include_routing_metadata": true
+            }),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(completed.status(), StatusCode::OK);
+    let completed = response_json(completed).await;
+    assert!(completed["output"].is_string());
+    assert_eq!(completed["routing_metadata"]["candidate_kind"], "single");
+    assert_eq!(store.adaptive_observations().unwrap().len(), 1);
 }
 
 #[tokio::test]

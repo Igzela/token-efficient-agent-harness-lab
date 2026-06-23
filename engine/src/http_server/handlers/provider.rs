@@ -10,6 +10,7 @@ use crate::http_server::middleware::{
 use crate::http_server::state::AxumApiState;
 use crate::http_server::{ProviderEndpointConfigApiRequest, AXUM_API_SCHEMA_VERSION};
 use crate::provider::adaptive_execution::{
+    adaptive_runtime_hash_from_configs, build_adaptive_provider_runtime_from_configs,
     parse_adaptive_provider_endpoints_json, AdaptiveProviderEndpointConfig,
     ACP_ADAPTIVE_PROVIDER_ENDPOINTS_JSON,
 };
@@ -84,6 +85,15 @@ pub(crate) async fn api_provider_endpoints(
     } else {
         ("none", Vec::new())
     };
+    let (local_runtime_ready, local_config_error_code) = if source == "local_config" {
+        local_config_runtime_status(&state, &store, &endpoints)
+    } else {
+        (false, None)
+    };
+    let completion_executor_configured =
+        state.adaptive_provider_executor.is_some() || local_runtime_ready;
+    let completion_registry_configured =
+        state.adaptive_registry_snapshot.is_some() || local_runtime_ready;
 
     Ok((
         cors_headers(),
@@ -94,7 +104,13 @@ pub(crate) async fn api_provider_endpoints(
             "runtime": {
                 "executor_configured": state.adaptive_provider_executor.is_some(),
                 "registry_configured": state.adaptive_registry_snapshot.is_some(),
-                "local_config_apply_requires_restart": source == "local_config",
+                "workflow_executor_configured": state.adaptive_provider_executor.is_some(),
+                "workflow_registry_configured": state.adaptive_registry_snapshot.is_some(),
+                "completion_executor_configured": completion_executor_configured,
+                "completion_registry_configured": completion_registry_configured,
+                "local_config_apply_requires_restart": source == "local_config" && !local_runtime_ready,
+                "local_config_applies_to_completion_api": local_runtime_ready,
+                "local_config_error_code": local_config_error_code,
             },
             "safety": {
                 "raw_secrets_allowed": false,
@@ -129,7 +145,15 @@ pub(crate) async fn api_put_provider_endpoints(
     })?;
     let endpoints = parse_adaptive_provider_endpoints_json(&raw)
         .map_err(|error| ApiError::with_code(StatusCode::BAD_REQUEST, error.code, error.message))?;
+    let config_hash = adaptive_runtime_hash_from_configs(&endpoints)
+        .map_err(|error| ApiError::with_code(StatusCode::BAD_REQUEST, error.code, error.message))?;
     let store = require_store(&state)?;
+    let (executor, registry_snapshot) = build_adaptive_provider_runtime_from_configs(
+        &endpoints,
+        &store,
+        &state.circuit_breaker_registry,
+    )
+    .map_err(|error| ApiError::with_code(StatusCode::BAD_REQUEST, error.code, error.message))?;
     let updated = store
         .set_config_value(
             ADAPTIVE_PROVIDER_ENDPOINTS_CONFIG_KEY,
@@ -137,6 +161,7 @@ pub(crate) async fn api_put_provider_endpoints(
             &context.api_key_id,
         )
         .map_err(internal_error)?;
+    state.install_adaptive_local_config_runtime(config_hash, executor, registry_snapshot);
     Ok((
         cors_headers(),
         Json(json!({
@@ -146,7 +171,13 @@ pub(crate) async fn api_put_provider_endpoints(
             "runtime": {
                 "executor_configured": state.adaptive_provider_executor.is_some(),
                 "registry_configured": state.adaptive_registry_snapshot.is_some(),
-                "local_config_apply_requires_restart": true,
+                "workflow_executor_configured": state.adaptive_provider_executor.is_some(),
+                "workflow_registry_configured": state.adaptive_registry_snapshot.is_some(),
+                "completion_executor_configured": true,
+                "completion_registry_configured": true,
+                "local_config_apply_requires_restart": false,
+                "local_config_applies_to_completion_api": true,
+                "local_config_error_code": null,
             },
             "safety": {
                 "raw_secrets_allowed": false,
@@ -155,6 +186,34 @@ pub(crate) async fn api_put_provider_endpoints(
             },
         })),
     ))
+}
+
+fn local_config_runtime_status(
+    state: &AxumApiState,
+    store: &std::sync::Arc<crate::storage::local_product_store::LocalProductStore>,
+    endpoints: &[AdaptiveProviderEndpointConfig],
+) -> (bool, Option<String>) {
+    let config_hash = match adaptive_runtime_hash_from_configs(endpoints) {
+        Ok(hash) => hash,
+        Err(error) => return (false, Some(error.code)),
+    };
+    if state
+        .adaptive_local_config_runtime_for_hash(&config_hash)
+        .is_some()
+    {
+        return (true, None);
+    }
+    match build_adaptive_provider_runtime_from_configs(
+        endpoints,
+        store,
+        &state.circuit_breaker_registry,
+    ) {
+        Ok((executor, registry_snapshot)) => {
+            state.install_adaptive_local_config_runtime(config_hash, executor, registry_snapshot);
+            (true, None)
+        }
+        Err(error) => (false, Some(error.code)),
+    }
 }
 
 pub(crate) async fn api_provider_audit(

@@ -13,6 +13,13 @@ use crate::provider::Provider;
 use crate::scheduler::WorkflowScheduler;
 use crate::storage::local_product_store::LocalProductStore;
 
+#[derive(Clone)]
+pub(crate) struct AdaptiveProviderRuntime {
+    pub(crate) config_hash: String,
+    pub(crate) executor: Arc<AdaptiveExecutionExecutor>,
+    pub(crate) registry_snapshot: Arc<ModelEndpointRegistrySnapshot>,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ServerConfig {
     pub host: String,
@@ -60,6 +67,7 @@ pub struct AxumApiState {
     pub(crate) provider: Option<Arc<dyn Provider>>,
     pub(crate) adaptive_provider_executor: Option<Arc<AdaptiveExecutionExecutor>>,
     pub(crate) adaptive_registry_snapshot: Option<Arc<ModelEndpointRegistrySnapshot>>,
+    pub(crate) adaptive_local_config_runtime: Arc<Mutex<Option<AdaptiveProviderRuntime>>>,
     pub(crate) scheduler: Option<Arc<Mutex<WorkflowScheduler>>>,
     pub(crate) metrics: Arc<MetricsCollector>,
     pub(crate) tracer: Arc<RequestTracer>,
@@ -87,6 +95,7 @@ impl AxumApiState {
             provider: None,
             adaptive_provider_executor: None,
             adaptive_registry_snapshot: None,
+            adaptive_local_config_runtime: Arc::new(Mutex::new(None)),
             scheduler: None,
             metrics: Arc::new(MetricsCollector::new(10_000)),
             tracer: Arc::new(RequestTracer::new()),
@@ -178,6 +187,36 @@ impl AxumApiState {
     ) -> Self {
         self.adaptive_registry_snapshot = Some(Arc::new(snapshot));
         self
+    }
+
+    pub(crate) fn adaptive_local_config_runtime_for_hash(
+        &self,
+        config_hash: &str,
+    ) -> Option<AdaptiveProviderRuntime> {
+        self.adaptive_local_config_runtime
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .as_ref()
+            .filter(|runtime| runtime.config_hash == config_hash)
+            .cloned()
+    }
+
+    pub(crate) fn install_adaptive_local_config_runtime(
+        &self,
+        config_hash: String,
+        executor: Arc<AdaptiveExecutionExecutor>,
+        registry_snapshot: ModelEndpointRegistrySnapshot,
+    ) -> AdaptiveProviderRuntime {
+        let runtime = AdaptiveProviderRuntime {
+            config_hash,
+            executor,
+            registry_snapshot: Arc::new(registry_snapshot),
+        };
+        *self
+            .adaptive_local_config_runtime
+            .lock()
+            .unwrap_or_else(|error| error.into_inner()) = Some(runtime.clone());
+        runtime
     }
 
     pub fn with_engine(mut self, engine: DispatchEngine) -> Self {
