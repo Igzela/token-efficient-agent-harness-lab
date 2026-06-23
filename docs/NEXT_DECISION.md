@@ -8,18 +8,21 @@ The Trusted Local Autonomous Execution Track (IAE) was approved on 2026-06-22. I
 
 IAE may change local defaults for provider execution, adaptive routing, experiments, automatic promotion, default routing, and supervised workers. It must not bypass protected auth, symbolic credential handling, budget/token/call/time/concurrency ceilings, provider/model identity, redaction, audit, snapshots, rollback, approval-bound target output, or kill switches. Missing prerequisites must fail closed.
 
-IAE-1 through IAE-3 are implemented. `ACP_TRUSTED_LOCAL_PROFILE=1` validates protected auth, endpoint metadata, symbolic credentials, positive endpoint pricing, and per-dispatch/daily cost caps before activating the existing provider, adaptive routing, experiment, promotion, and default-routing gates. `ACP_TRUSTED_LOCAL_TASK_ADVANCEMENT=1` separately acknowledges bounded background advancement of already-created queued workflow runs through a pinned `adaptive_provider` worker. The dashboard/API expose effective authority, bounded operator evidence, existing pause/resume/kill controls, and policy rollback; invalid experiment or auto-promotion policy configuration fails closed. Target-repository output, release controls, deployment controls, task creation, and repository merge authority remain separate systems.
+IAE-1 through IAE-3 are implemented. `ACP_TRUSTED_LOCAL_PROFILE=1` validates protected auth, endpoint metadata, symbolic credentials, positive endpoint pricing, and per-dispatch/daily cost caps before activating the existing provider, adaptive routing, experiment, promotion, and default-routing gates. `ACP_TRUSTED_LOCAL_TASK_ADVANCEMENT=1` separately acknowledges bounded background advancement of already-created queued workflow runs through a pinned `adaptive_provider` worker. The dashboard/API expose effective authority, bounded operator evidence, existing pause/resume/kill controls, and policy rollback; invalid experiment or auto-promotion policy configuration fails closed.
+
+On 2026-06-23 Charlie approved Full Agent Autonomy Mode for this repository. Maintaining agents may now autonomously propose, implement, test, review, merge, and iterate high-risk architecture work when the change is repo-scoped, testable, CI-gated, and rollbackable. This includes architecture direction changes, authority-boundary changes, default execution/profile changes, auth/security redesign, database migrations, release/tag/deploy workflow changes, target-output authority changes, and superseding accepted decisions.
 
 ## Stable Tracks
 
 | Track | Status |
 |---|---|
 | Core dispatch kernel | Complete |
-| Architecture refactor R-series | Sealed at R7; no R8 approved |
+| Architecture refactor R-series | Sealed at R7; Full Agent Autonomy Mode may supersede this only through an explicit documented change |
 | V2 Real Production Output | Complete through V2-5 |
 | Real Output Closeout | Complete; `v0.1.0` published and installer verified |
 | Adaptive Fusion AF-0 through AF-7 | Complete; current runtime gates remain implemented |
 | Trusted Local Autonomous Execution | Complete through IAE-3 |
+| Full Agent Autonomy Mode | Active for high-risk architecture, authority, migration, release/deploy workflow, and decision-supersession experiments |
 | Agent Autonomous Maintenance Mode | Active for implementation, docs, tests, CI, review, and bounded shipping |
 
 ## Trusted Local Boundary
@@ -42,29 +45,38 @@ The token, call, timeout, concurrency, identity, redaction, audit, circuit-break
 
 ## Auto-Merge Policy
 
-Auto-merge eligible: docs-only, tests-only, CI fix, small low-risk code fix, all CI green, handoff guard pass, and clear rollback. Documentation-only factual or policy corrections may be committed directly to `main` after local validation.
+Auto-merge eligible: docs-only, tests-only, CI fix, low-risk code fix, high-risk architecture change, auth/security redesign, database migration, release/tag/deploy workflow change, target-output authority change, accepted-decision supersession, and default-execution/profile change, when the PR is green, scoped, reviewed by the maintaining agent, and has a rollback path.
 
-Not auto-merge eligible: auth/security redesign, database schema, release, deployment, target-output authority, destructive behavior, failing CI, or unclear rollback.
+Documentation-only factual, policy, or governance corrections may be committed directly to `main` after validation. Code and workflow changes may use PRs by default; under Full Agent Autonomy Mode, maintaining agents may merge green PRs without a separate per-PR confirmation when the change is testable and rollbackable.
 
-## Autonomously maintain
+## Autonomously maintain and evolve
 
-Maintaining agents may autonomously audit, plan, implement, test, review, simplify, document, create PRs, repair CI, and merge low-risk green work. They may continue bounded internal execution, operator-surface, and IAE work without requesting approval again while preserving the trusted-local boundary above.
+Maintaining agents may autonomously audit, plan, implement, test, review, simplify, document, create PRs, repair CI, merge green work, and continue iterative architecture evolution. They may continue bounded internal execution, operator-surface, IAE work, release workflow work, database migration work, target-output work, and authority-boundary work without requesting approval again.
 
-## Disallowed by Default
+The purpose of this mode is to test how far agent-driven architecture and product engineering can progress under CI, repository history, rollback, and observable evidence.
 
-Credentials or paid-resource choices, destructive or irreversible operations, DB migrations, production release/tag/deploy, cloud production, auth/security redesign, container/VM or host-privilege execution, and target-output authority expansion require explicit human approval.
+## Hard Stops
+
+Even under Full Agent Autonomy Mode, agents must not commit real secrets, intentionally hide failures, falsify test/CI evidence, remove rollback paths, or perform irreversible external destruction without a recovery path. Everything else is eligible for autonomous proposal, implementation, merge, and iteration when it is repo-scoped, testable, observable, and rollbackable.
 
 ## Architecture refactor (R-series)
 
-The R-series is sealed at R7. **SEALED AT R7.** R8 is not approved. No further R-series file splitting is approved.
+The R-series is sealed at R7 as the current baseline. Full Agent Autonomy Mode may reopen or supersede this only by updating this file or a decision record with the new architecture direction and rollback path.
 
 ## Allowed Next Paths
 
 - Autonomous maintenance: repair stale docs, CI breakage, test drift, and wire-codegen drift.
 - Regression hardening: add or repair tests for existing behavior.
 - Pilots: real-world task validation.
-- V2 maintenance that preserves the existing V2 output boundary.
-- Adaptive Fusion maintenance that preserves the AF-6 gates and target-output separation.
+- V2 maintenance and V2 authority expansion experiments.
+- Adaptive Fusion maintenance and adaptive routing authority experiments.
+- Trusted-local execution evolution.
+- Auth/security redesign.
+- Database migration design and implementation.
+- Release/tag/deploy workflow automation.
+- Target-output authority expansion.
+- Architecture refactor or architecture replacement.
+- Accepted decision supersession when documented and rollbackable.
 
 ## Trusted Local Autonomous Execution Track
 
@@ -75,7 +87,7 @@ The R-series is sealed at R7. **SEALED AT R7.** R8 is not approved. No further R
 | IAE-2 | Bounded autonomous task advancement | **Complete** — an explicit trusted-local acknowledgement enables the existing scheduler to advance already-created queued runs through a pinned adaptive-provider executor; invalid worker configuration fails closed and existing task, time, cost, token, call, concurrency, identity, audit, redaction, pause, and kill controls remain authoritative |
 | IAE-3 | Operator control and evidence | **Complete** — dashboard/API expose effective authority, spend/traffic/worker ceilings, safe observation aggregates, scheduler pause/resume/kill state and controls, redacted recent audit actions, and existing policy rollback without secrets or raw model/repository content; invalid experiment, promotion, or rollout configuration is visible and fails closed |
 
-IAE implementation must extend existing modules. Do not create a parallel scheduler, provider kernel, policy engine, storage layer, or target-output path.
+IAE implementation should extend existing modules unless Full Agent Autonomy Mode selects and verifies a replacement architecture.
 
 ## V2 Status
 
@@ -86,7 +98,7 @@ connect repo -> create task -> app-owned workspace execution
 -> verification -> evidence -> approval -> patch or PR branch output
 ```
 
-V2 implementation is complete through V2-5. It remains separate from AF-6. AF-6 provider routing work must not expand V2 output authority.
+V2 implementation is complete through V2-5. Under Full Agent Autonomy Mode, future work may expand, replace, or merge V2 with adaptive execution if the resulting behavior is tested, documented, observable, and rollbackable.
 
 ## Adaptive Fusion Track
 
@@ -152,7 +164,7 @@ AF-7 exposes AF-6 to operators through the existing local dashboard only:
 - kill switch and rollback cues without adding new mutation authority
 - secret-safe provider endpoint configuration for `stub`, `openai_compatible`, and `anthropic` endpoint metadata; a protected legacy adaptive runtime may start fail-closed without endpoint metadata so operators can bootstrap through the dashboard/API, dashboard edits persist symbolic credential environment names only, reject missing credential environment variables for real providers, apply validated local config to the adaptive completion API without restart, and restore the startup-bound workflow/scheduler executor on the next process start; explicit endpoint JSON remains authoritative while present
 
-AF-7 does not add provider execution authority, default-on routing, new target-output behavior, DB migrations, release/deploy controls, unattended workers, or policy mutation outside existing guarded endpoints.
+AF-7 does not add provider execution authority, default-on routing, new target-output behavior, DB migrations, release/deploy controls, unattended workers, or policy mutation outside existing guarded endpoints. Full Agent Autonomy Mode may supersede these limits through a documented, tested, rollbackable change.
 
 Implemented AF-6 gates:
 
@@ -170,9 +182,9 @@ ACP_ADAPTIVE_AUTO_PROMOTION_KILL_SWITCH=1
 
 ## Adaptive Fusion Maintenance Requirements
 
-AF-6 and AF-7 are complete. Any future Adaptive Fusion maintenance PR must list:
+AF-6 and AF-7 are complete. Any future Adaptive Fusion or autonomy PR should list:
 
-- affected AF capability or maintenance area
+- affected capability or architecture area
 - intentionally unfinished follow-up, if any
 - live-influence status
 - provider/cost/concurrency gates
@@ -193,12 +205,13 @@ uv run --no-project python scripts/check_agent_handoff.py
 git diff --check
 ```
 
-Docs-only Adaptive Fusion corrections may use docs-only verification plus `uv run --no-project python scripts/check_agent_handoff.py`.
+Docs-only Adaptive Fusion and autonomy corrections may use docs-only verification plus `uv run --no-project python scripts/check_agent_handoff.py`.
 
 ## Before Starting Autonomous Work
 
 1. Read `docs/CURRENT_STATUS.md` only when status facts are unclear or the task updates status.
 2. Read `docs/REAL_WORLD_TESTING_PLAYBOOK.md` for PR/merge/CI work, docs cleanup, and real-world pilot tasks.
 3. Confirm the task is allowed under this file.
-4. Keep the change commit-sized and run relevant verification.
-5. Update handoff docs before committing and pushing.
+4. Keep the change scoped enough for review and rollback.
+5. Run relevant verification.
+6. Update handoff docs before committing and pushing when status or policy changed.
