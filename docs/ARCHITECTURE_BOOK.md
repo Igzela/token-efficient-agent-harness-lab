@@ -1,6 +1,6 @@
 # Architecture Book
 
-Last updated: 2026-06-22
+Last updated: 2026-06-23
 
 This is the current architecture baseline for the Token-Efficient Agent Harness Lab. Historical phase plans, closeout reports, and long-form strategy docs live under `docs/archive/`.
 

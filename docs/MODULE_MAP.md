@@ -1,6 +1,6 @@
 # Module Map
 
-Last updated: 2026-06-22
+Last updated: 2026-06-23
 
 This map is for code ownership and verification routing. It is intentionally not a phase history. Historical module/phase narratives live in `docs/archive/`.
 

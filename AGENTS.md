@@ -2,7 +2,7 @@
 
 This repository is the Token-Efficient Agent Harness Lab: a local deterministic harness and self-hosted macro-orchestrator control plane for studying token-efficient agent workflows.
 
-## Current State (2026-06-22)
+## Current State (2026-06-23)
 
 **Active tracks:**
 - **Real-World Testing Mode** — validated through real tasks, branches, commits, PRs, CI, gated auto-merge
@@ -22,7 +22,7 @@ This repository is the Token-Efficient Agent Harness Lab: a local deterministic 
 - Real Output Closeout: COMPLETE (`v0.1.0` published and online installer verified)
 
 **Key facts:**
-- Full Rust + TypeScript stack verification passes with 0 failures (2026-06-22)
+- Full Rust + TypeScript stack verification passes with 0 failures (latest main CI run `27968114851`)
 - Latest release: `v0.1.0`, published 2026-06-21
 - Architecture Refactor R-series sealed at R7. R8 is not approved.
 - Post-R7 wire/type governance hardening implemented: `scripts/check_wire_codegen_drift.sh`
