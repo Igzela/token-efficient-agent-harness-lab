@@ -130,7 +130,7 @@ The same panel includes an IAE operator evidence section:
 
 Only audit action, resource, and timestamp are rendered. Audit details, raw prompts/outputs/transcripts, credentials, repository content, and private paths are not displayed. Policy rollback continues to use the existing snapshot confirmation dialog.
 
-Endpoint JSON stores only credential environment names. Remote HTTP is rejected; HTTPS is required except for loopback test/local adapters. Explicit workflow execution accepts bounded `single`, `ordered_fallback`, or `fusion` plans. Fusion panels may run with bounded concurrency up to 3; judge and synthesizer remain serial. Tick the run with `executor=adaptive_provider`, `max_retries=0`, and a key with `dispatch:execute`.
+Endpoint JSON stores only credential environment names. Remote HTTP is rejected; HTTPS is required except for loopback test/local adapters. Operators can inspect and persist the same endpoint metadata from the dashboard Settings provider endpoint panel or `PUT /api/v1/provider/endpoints` with `confirm_provider_endpoint_config=true`; raw API keys are rejected. Dashboard/local-config edits report when restart/reload is still required before the saved metadata becomes runtime executor input. Explicit workflow execution accepts bounded `single`, `ordered_fallback`, or `fusion` plans. Fusion panels may run with bounded concurrency up to 3; judge and synthesizer remain serial. Tick the run with `executor=adaptive_provider`, `max_retries=0`, and a key with `dispatch:execute`.
 
 The AF-6 completion endpoint generates and selects a bounded candidate automatically:
 

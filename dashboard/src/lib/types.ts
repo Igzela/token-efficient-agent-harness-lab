@@ -516,6 +516,40 @@ export interface AdaptiveCompletionResponse {
   };
 }
 
+export type ProviderEndpointType = "stub" | "openai_compatible" | "anthropic";
+
+export interface ProviderEndpointConfig {
+  endpoint_id: string;
+  provider_type: ProviderEndpointType;
+  base_url?: string | null;
+  model: string;
+  credential_env?: string | null;
+  timeout_ms?: number;
+  input_cost_per_1k_usd?: number | null;
+  output_cost_per_1k_usd?: number | null;
+}
+
+export interface ProviderEndpointConfigResponse {
+  schema_version: "axum_api.v1";
+  source: "none" | "environment" | "local_config" | string;
+  endpoints: ProviderEndpointConfig[];
+  runtime: {
+    executor_configured: boolean;
+    registry_configured: boolean;
+    local_config_apply_requires_restart: boolean;
+  };
+  safety: {
+    raw_secrets_allowed: false;
+    credential_storage: "env_reference_only" | string;
+    supported_provider_types: ProviderEndpointType[];
+  };
+}
+
+export interface ProviderEndpointConfigRequest {
+  endpoints: ProviderEndpointConfig[];
+  confirm_provider_endpoint_config: true;
+}
+
 export interface AdaptivePolicyPromotion {
   task_class: string;
   objective: AdaptiveFusionObjective;

@@ -356,6 +356,12 @@ fn axum_routes() -> Router<AxumApiState> {
             get(provider::api_provider_health).options(cors_preflight),
         )
         .route(
+            "/api/v1/provider/endpoints",
+            get(provider::api_provider_endpoints)
+                .put(provider::api_put_provider_endpoints)
+                .options(cors_preflight),
+        )
+        .route(
             "/api/v1/provider/audit",
             get(provider::api_provider_audit).options(cors_preflight),
         )

@@ -50,6 +50,8 @@ import type {
   ExportResponse,
   AuditResponse,
   ProviderHealthStatus,
+  ProviderEndpointConfigRequest,
+  ProviderEndpointConfigResponse,
   ProviderAuditResponse,
   DispatchMetricsResponse,
   AdaptiveFusionPoliciesResponse,
@@ -690,6 +692,16 @@ export class AgentControlPlaneClient {
 
   providerHealth(): Promise<ProviderHealthStatus> {
     return this.getJson<ProviderHealthStatus>("/api/v1/provider/health");
+  }
+
+  providerEndpoints(): Promise<ProviderEndpointConfigResponse> {
+    return this.getJson<ProviderEndpointConfigResponse>("/api/v1/provider/endpoints");
+  }
+
+  saveProviderEndpoints(
+    request: ProviderEndpointConfigRequest,
+  ): Promise<ProviderEndpointConfigResponse> {
+    return this.putJson<ProviderEndpointConfigResponse>("/api/v1/provider/endpoints", request);
   }
 
   providerAudit(options: ProviderAuditOptions = {}): Promise<ProviderAuditResponse> {

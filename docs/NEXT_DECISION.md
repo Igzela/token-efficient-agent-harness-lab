@@ -150,6 +150,7 @@ AF-7 exposes AF-6 to operators through the existing local dashboard only:
 - read-only gate status for provider execution, adaptive execution, auth, default routing, experiments, auto promotion, pause, and kill switches
 - experiment/promotion status summary and rollback snapshot counts
 - kill switch and rollback cues without adding new mutation authority
+- secret-safe provider endpoint configuration for `stub`, `openai_compatible`, and `anthropic` endpoint metadata; dashboard edits persist symbolic credential environment names only and report when restart/reload is needed before local config becomes runtime executor input
 
 AF-7 does not add provider execution authority, default-on routing, new target-output behavior, DB migrations, release/deploy controls, unattended workers, or policy mutation outside existing guarded endpoints.
 
