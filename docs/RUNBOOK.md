@@ -251,7 +251,7 @@ cd dashboard && bun install --frozen-lockfile && bun run build:static && cd ..
 bash scripts/start_production_like_local.sh
 ```
 
-The script validates auth, provider config, trusted-local or legacy provider-gate activation, endpoint registry presence when trusted-local is requested, and dashboard presence before starting `cargo run -p engine`.
+The script validates auth, provider config, trusted-local or legacy provider-gate activation, endpoint registry presence when trusted-local is requested, and dashboard presence before starting `cargo run -p engine`. For SQLite, endpoint presence may come from either explicit `ACP_ADAPTIVE_PROVIDER_ENDPOINTS_JSON` or a previously persisted non-empty provider endpoint array. PostgreSQL startup still requires explicit endpoint JSON because the script does not add a `psql` dependency.
 
 ### 2.8 Verify
 
