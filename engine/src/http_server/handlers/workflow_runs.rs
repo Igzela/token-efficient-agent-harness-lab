@@ -468,7 +468,8 @@ pub(crate) async fn api_tick_workflow_run(
             let persisted_observations = store
                 .adaptive_bandit_observations()
                 .map_err(internal_error)?;
-            let experiment_gate = crate::feedback::AdaptiveExperimentGate::from_env();
+            let experiment_gate =
+                crate::feedback::AdaptiveExperimentGate::from_effective_gates(&effective_gates);
             let executor = crate::provider::adaptive_execution::AdaptiveProviderNodeExecutor::new(
                 adaptive_executor,
                 gate,
@@ -495,8 +496,15 @@ pub(crate) async fn api_tick_workflow_run(
                 request.command.as_deref(),
             ) {
                 Ok(result) => {
-                    crate::provider::adaptive_execution::persist_adaptive_observation(
-                        &store, &executor, actor,
+                    let promotion_gate =
+                        crate::feedback::AdaptiveAutoPromotionGate::from_effective_gates(
+                            &effective_gates,
+                        );
+                    crate::provider::adaptive_execution::persist_adaptive_observation_with_gate(
+                        &store,
+                        &executor,
+                        actor,
+                        &promotion_gate,
                     );
                     record_tick_decision(&store, &run_id, &result, "adaptive_provider");
                     Ok((cors_headers(), Json(json_response("tick", result))))

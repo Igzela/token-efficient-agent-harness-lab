@@ -73,6 +73,10 @@ pub struct AdaptiveExperimentGate {
 impl AdaptiveExperimentGate {
     pub fn from_env() -> Self {
         let gates = EffectiveExecutionGates::from_env();
+        Self::from_effective_gates(&gates)
+    }
+
+    pub fn from_effective_gates(gates: &EffectiveExecutionGates) -> Self {
         Self::from_flags(
             gates.experiments_enabled,
             gates.experiments_active,

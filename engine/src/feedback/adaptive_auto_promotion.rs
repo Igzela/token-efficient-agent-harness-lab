@@ -124,6 +124,10 @@ pub struct AdaptiveAutoPromotionGate {
 impl AdaptiveAutoPromotionGate {
     pub fn from_env() -> Self {
         let gates = EffectiveExecutionGates::from_env();
+        Self::from_effective_gates(&gates)
+    }
+
+    pub fn from_effective_gates(gates: &EffectiveExecutionGates) -> Self {
         Self::from_flags(
             gates.auto_promotion_enabled,
             gates.auto_promotion_active,
