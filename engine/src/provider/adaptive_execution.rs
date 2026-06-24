@@ -703,6 +703,7 @@ pub struct AdaptiveProviderNodeExecutor {
 pub struct PersistingAdaptiveProviderNodeExecutor {
     executor: Arc<AdaptiveExecutionExecutor>,
     gate: AdaptiveExecutionGate,
+    execution_gates: crate::trusted_local::EffectiveExecutionGates,
     store: Arc<crate::storage::local_product_store::LocalProductStore>,
     actor: String,
 }
@@ -714,9 +715,26 @@ impl PersistingAdaptiveProviderNodeExecutor {
         store: Arc<crate::storage::local_product_store::LocalProductStore>,
         actor: impl Into<String>,
     ) -> Self {
+        Self::new_with_effective_gates(
+            executor,
+            gate,
+            crate::trusted_local::EffectiveExecutionGates::from_env(),
+            store,
+            actor,
+        )
+    }
+
+    pub fn new_with_effective_gates(
+        executor: Arc<AdaptiveExecutionExecutor>,
+        gate: AdaptiveExecutionGate,
+        execution_gates: crate::trusted_local::EffectiveExecutionGates,
+        store: Arc<crate::storage::local_product_store::LocalProductStore>,
+        actor: impl Into<String>,
+    ) -> Self {
         Self {
             executor,
             gate,
+            execution_gates,
             store,
             actor: actor.into(),
         }
@@ -750,7 +768,7 @@ impl NodeExecutor for PersistingAdaptiveProviderNodeExecutor {
             Err(_) => return adaptive_worker_context_error("observation cost"),
         };
         let daily_cost = dispatch_cost + observation_cost;
-        let experiment_gate = AdaptiveExperimentGate::from_env();
+        let experiment_gate = AdaptiveExperimentGate::from_effective_gates(&self.execution_gates);
         let executor = AdaptiveProviderNodeExecutor::new(self.executor.clone(), self.gate)
             .with_contextual_policies(contextual_policies, AdaptiveExplorationGate::from_env())
             .with_persisted_observations(persisted_observations);
@@ -761,7 +779,14 @@ impl NodeExecutor for PersistingAdaptiveProviderNodeExecutor {
         }
         .with_cost_gate(CostGateConfig::from_env(), daily_cost);
         let output = executor.execute_node(input);
-        persist_adaptive_observation(&self.store, &executor, &self.actor);
+        let promotion_gate =
+            crate::feedback::AdaptiveAutoPromotionGate::from_effective_gates(&self.execution_gates);
+        persist_adaptive_observation_with_gate(
+            &self.store,
+            &executor,
+            &self.actor,
+            &promotion_gate,
+        );
         output
     }
 }
@@ -861,6 +886,16 @@ pub fn persist_adaptive_observation(
     executor: &AdaptiveProviderNodeExecutor,
     actor: &str,
 ) {
+    let gate = crate::feedback::AdaptiveAutoPromotionGate::from_env();
+    persist_adaptive_observation_with_gate(store, executor, actor, &gate);
+}
+
+pub fn persist_adaptive_observation_with_gate(
+    store: &crate::storage::local_product_store::LocalProductStore,
+    executor: &AdaptiveProviderNodeExecutor,
+    actor: &str,
+    gate: &crate::feedback::AdaptiveAutoPromotionGate,
+) {
     let Some(draft) = executor.take_observation() else {
         return;
     };
@@ -886,7 +921,9 @@ pub fn persist_adaptive_observation(
         output_tokens: draft.output_tokens,
     };
     match store.record_adaptive_observation(&input, actor) {
-        Ok(observation) => maybe_auto_promote_from_observation(store, &observation, actor),
+        Ok(observation) => {
+            maybe_auto_promote_from_observation_with_gate(store, &observation, actor, gate)
+        }
         Err(_) => {
             let _ = store.append_audit(
                 actor,

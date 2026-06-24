@@ -739,12 +739,15 @@ fn build_trusted_adaptive_worker_executor(
     if !gate.is_enabled() {
         return Err("adaptive provider worker gate is not enabled".to_string());
     }
-    Ok(Arc::new(PersistingAdaptiveProviderNodeExecutor::new(
-        executor,
-        gate,
-        store,
-        "scheduler",
-    )))
+    Ok(Arc::new(
+        PersistingAdaptiveProviderNodeExecutor::new_with_effective_gates(
+            executor,
+            gate,
+            execution_gates.clone(),
+            store,
+            "scheduler",
+        ),
+    ))
 }
 
 fn local_admin_scopes() -> HashSet<String> {
