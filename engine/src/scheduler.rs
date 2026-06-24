@@ -62,7 +62,12 @@ impl Default for SchedulerConfig {
 
 impl SchedulerConfig {
     pub fn from_env() -> Self {
-        let execution_gates = crate::trusted_local::EffectiveExecutionGates::from_env();
+        Self::from_env_with_gates(&crate::trusted_local::EffectiveExecutionGates::from_env())
+    }
+
+    pub fn from_env_with_gates(
+        execution_gates: &crate::trusted_local::EffectiveExecutionGates,
+    ) -> Self {
         let interval_ms = std::env::var("ACP_SCHEDULER_INTERVAL_MS")
             .ok()
             .and_then(|v| v.parse().ok())
