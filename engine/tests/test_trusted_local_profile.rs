@@ -1,4 +1,5 @@
 use engine::provider::adaptive_execution::AdaptiveProviderEndpointConfig;
+use engine::scheduler::SchedulerConfig;
 use engine::trusted_local::{
     EffectiveExecutionGates, TrustedLocalProfileInput, TrustedLocalProfileStatus,
     TrustedLocalTaskAdvancementStatus, TRUSTED_LOCAL_PROFILE_SCHEMA_VERSION,
@@ -135,6 +136,38 @@ fn persisted_endpoint_config_can_complete_requested_profile_without_env_endpoint
     assert!(gates.provider_execution);
     assert!(gates.adaptive_execution);
     assert!(gates.default_routing);
+}
+
+#[test]
+fn scheduler_config_uses_supplied_persisted_endpoint_task_advancement_gates() {
+    let mut environment = ready_environment();
+    environment.remove("ACP_ADAPTIVE_PROVIDER_ENDPOINTS_JSON");
+    environment.insert(
+        "ACP_TRUSTED_LOCAL_TASK_ADVANCEMENT".to_string(),
+        "1".to_string(),
+    );
+    let configs = vec![AdaptiveProviderEndpointConfig {
+        endpoint_id: "local-stub".to_string(),
+        provider_type: "stub".to_string(),
+        base_url: None,
+        model: "stub-model".to_string(),
+        credential_env: None,
+        timeout_ms: 30_000,
+        input_cost_per_1k_usd: Some(0.001),
+        output_cost_per_1k_usd: Some(0.002),
+    }];
+
+    let gates = EffectiveExecutionGates::from_lookup_with_endpoint_configs(
+        |key| environment.get(key).cloned(),
+        Some(&configs),
+    );
+    assert!(gates.task_advancement.ready);
+
+    let config = SchedulerConfig::from_env_with_gates(&gates);
+
+    assert!(config.supervised_workers_enabled);
+    assert_eq!(config.executor_type, "adaptive_provider");
+    assert!(config.validate_for_start().is_ok());
 }
 
 #[test]
