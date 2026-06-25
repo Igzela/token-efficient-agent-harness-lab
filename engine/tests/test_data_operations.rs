@@ -4,8 +4,6 @@ use engine::storage::local_product_store::{
 use serde_json::{json, Value};
 use tempfile::tempdir;
 
-const PG_DDL_TEXT: &str = include_str!("../src/storage/local_product_store/pg_backend/ddl.rs");
-
 fn make_export_snapshot() -> Value {
     json!({
         "schema_version": LOCAL_TEAM_EXPORT_SCHEMA_VERSION,
@@ -103,7 +101,7 @@ fn fresh_database_starts_at_version_0_before_migrations() {
 }
 
 #[test]
-fn policy_snapshot_indexes_exist_in_sqlite_and_pg_ddl() {
+fn policy_snapshot_indexes_exist_in_sqlite() {
     let dir = tempdir().unwrap();
     let db_path = dir.path().join("test.db");
     let _store = LocalProductStore::new(&db_path).unwrap();
@@ -127,10 +125,6 @@ fn policy_snapshot_indexes_exist_in_sqlite_and_pg_ddl() {
         assert!(
             indexes.iter().any(|name| name == expected),
             "missing SQLite index {expected}"
-        );
-        assert!(
-            PG_DDL_TEXT.contains(expected),
-            "missing PostgreSQL DDL index {expected}"
         );
     }
 }

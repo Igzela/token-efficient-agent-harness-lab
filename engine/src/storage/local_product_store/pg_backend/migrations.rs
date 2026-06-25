@@ -1,62 +1,6 @@
-use super::super::LocalProductStore;
+use super::super::{schema, LocalProductStore};
 
-pub(super) const CURRENT_PG_VERSION: i64 = 12;
-
-struct PgMigration {
-    version: i64,
-    description: &'static str,
-}
-
-const PG_MIGRATIONS: &[PgMigration] = &[
-    PgMigration {
-        version: 1,
-        description: "add last_used_at and expires_at to api_key_metadata",
-    },
-    PgMigration {
-        version: 2,
-        description: "add inert workflow run state tables",
-    },
-    PgMigration {
-        version: 3,
-        description: "add supervised patch metadata tables",
-    },
-    PgMigration {
-        version: 4,
-        description: "add scheduler feedback table for feedback-driven routing",
-    },
-    PgMigration {
-        version: 5,
-        description: "add agent_profiles table and profile_id column on workflow_run_nodes",
-    },
-    PgMigration {
-        version: 6,
-        description: "add tool_capabilities, tool_allowlists, and tool_hooks tables",
-    },
-    PgMigration {
-        version: 7,
-        description: "add orchestration_decisions table for policy decision trace",
-    },
-    PgMigration {
-        version: 8,
-        description: "add executor_pool table for resource/executor pool tracking",
-    },
-    PgMigration {
-        version: 9,
-        description: "add queue/priority/backpressure columns to workflow_runs",
-    },
-    PgMigration {
-        version: 10,
-        description: "add policy signal columns to orchestration_decisions",
-    },
-    PgMigration {
-        version: 11,
-        description: "add scheduler_heartbeat table for persistent heartbeat",
-    },
-    PgMigration {
-        version: 12,
-        description: "add controlled loop policy proposal table",
-    },
-];
+pub(super) const CURRENT_PG_VERSION: i64 = schema::CURRENT_POSTGRES_SCHEMA_VERSION;
 
 fn ensure_schema_migrations_table(client: &mut postgres::Client) -> Result<(), String> {
     client
@@ -119,12 +63,12 @@ impl LocalProductStore {
             ensure_schema_migrations_table(client)?;
             let current = current_pg_version(client)?;
 
-            for migration in PG_MIGRATIONS {
+            for migration in schema::POSTGRES_MIGRATIONS {
                 if migration.version <= current {
                     continue;
                 }
                 let sql = match migration.version {
-                    1..=9 | 11 | 12 => {
+                    1..=9 | 11..=13 => {
                         // PG DDL already includes all tables/columns for these versions.
                         // Record as applied with no-op.
                         ""
@@ -146,7 +90,12 @@ impl LocalProductStore {
                              ALTER TABLE orchestration_decisions ADD COLUMN degraded_reason TEXT;"
                         }
                     }
-                    _ => return Err(format!("unknown pg migration version: {}", migration.version)),
+                    _ => {
+                        return Err(format!(
+                            "unknown pg migration version: {}",
+                            migration.version
+                        ))
+                    }
                 };
 
                 if sql.is_empty() {
@@ -182,7 +131,7 @@ mod tests {
 
     #[test]
     fn pg_migration_list_is_sorted_and_contiguous() {
-        for (i, m) in PG_MIGRATIONS.iter().enumerate() {
+        for (i, m) in schema::POSTGRES_MIGRATIONS.iter().enumerate() {
             assert_eq!(
                 m.version,
                 (i + 1) as i64,
@@ -193,6 +142,9 @@ mod tests {
 
     #[test]
     fn current_pg_version_constant_matches_list() {
-        assert_eq!(CURRENT_PG_VERSION, PG_MIGRATIONS.last().unwrap().version);
+        assert_eq!(
+            CURRENT_PG_VERSION,
+            schema::POSTGRES_MIGRATIONS.last().unwrap().version
+        );
     }
 }

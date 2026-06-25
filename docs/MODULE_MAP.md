@@ -28,7 +28,7 @@ The Rust `engine/` is the sole runtime implementation. Python is retained as RES
 | `engine/src/orchestration/` | partial workflow | Decomposition, conflict resolution, approval gate, aggregation helpers | `cargo test -p engine` |
 | `engine/src/quality/`, `engine/src/routing/` | partial policy | Quality/evaluation bridges and routing feedback/advisory logic | `cargo test -p engine` |
 | `engine/src/executor_pool.rs` | active resources | Executor capacity, cooldown, selection, metrics | `cargo test -p engine --lib executor_pool` |
-| `engine/src/storage/local_product_store/` | active storage | SQLite/PostgreSQL app-owned state, audit, costs, plans, runs, artifacts, adaptive policy snapshots, and safe observation summaries | `cargo test -p engine --test test_local_product_store --test test_adaptive_observation_capture` |
+| `engine/src/storage/local_product_store/` | active storage | SQLite/PostgreSQL app-owned state plus schema catalog ownership for versions, dialect DDL, migrations, audit, costs, plans, runs, artifacts, adaptive policy snapshots, and safe observation summaries | `cargo test -p engine --test test_local_product_store --test test_data_operations --test test_adaptive_observation_capture` |
 | `engine/src/storage/backup_manager.rs` | active ops | SQLite backup, verify, restore support | `cargo test -p engine` |
 | `engine/src/infrastructure/` | active ops/security | Auth, rate limiting, circuit breaker, plugin registry helpers | `cargo test -p engine` |
 | `dashboard/` | active UI | Local operations console with guarded app-owned controls, Adaptive Fusion policy/completion bindings, IAE authority/bounds evidence, redacted audit actions, scheduler pause/resume/kill, and policy rollback | `cd dashboard && bun run typecheck && bun run build:static` |
@@ -51,7 +51,7 @@ The Rust `engine/` is the sole runtime implementation. Python is retained as RES
 
 - Dispatch/routing behavior: start with `dispatch_engine.rs`, `task_analyzer/`, `model_selector.rs`, `budget_manager.rs`, then update wire contracts if response shapes change.
 - Workflow execution: start with `scheduler.rs`, `workflow/`, `node_executor.rs`, and `executor_pool.rs`.
-- Storage or schema: start with `storage/local_product_store/`, update schema version docs in `docs/ARCHITECTURE_BOOK.md`, and run relevant SQLite/PostgreSQL tests.
+- Storage or schema: start with `storage/local_product_store/schema.rs`, update schema version docs in `docs/ARCHITECTURE_BOOK.md` when the version changes, and run relevant SQLite/PostgreSQL tests.
 - Dashboard or SDK: update API types/clients and dashboard components together when response shapes change.
 - V2-1 execution safety: start with `storage/local_product_store/supervised_patch.rs`, `http_server/handlers/supervised_patch.rs`, `node_executor.rs`, and focused path/secret/timeout/quarantine tests.
 - V2-2 provider/CLI output: start with `provider/`, `cli/`, `http_server/handlers/workflow_runs.rs`, `executor/`, `dispatch_engine.rs`, and provider/CLI audit/cost/redaction tests.
