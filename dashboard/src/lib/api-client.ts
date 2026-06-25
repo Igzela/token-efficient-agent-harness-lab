@@ -22,6 +22,7 @@ import type {
   FeedbackPatternListResponse,
   FeedbackTraceListResponse,
   LocalDashboardState,
+  LocalDispatchCostDetail,
   ObservabilityMetricsResponse,
   OperationsMetrics,
   ProposalListResponse,
@@ -36,6 +37,7 @@ import type {
   SchedulerStatusResponse,
   PolicySimulationResult,
   SimulationReportResponse,
+  StorageIntegrityResponse,
   SupervisedPatchArtifactCaptureResponse,
   SupervisedPatchArtifactListResponse,
   SupervisedPatchArtifactResponse,
@@ -277,6 +279,25 @@ export async function fetchAudit(params: {
   search?: string;
 } = {}): Promise<AuditListResponse> {
   return fetchJson<AuditListResponse>(withQuery("/api/v1/audit", params));
+}
+
+export async function fetchStorageIntegrity(): Promise<StorageIntegrityResponse> {
+  return fetchJson<StorageIntegrityResponse>(`${BASE}/api/v1/storage/integrity`);
+}
+
+export async function fetchCostDetails(params: { limit?: number } = {}): Promise<LocalDispatchCostDetail> {
+  return fetchJson<LocalDispatchCostDetail>(withQuery("/api/v1/costs/dispatches", params));
+}
+
+export async function updateKeyScopes(keyId: string, scopes: string[]): Promise<Record<string, unknown>> {
+  return fetchJson<Record<string, unknown>>(
+    `${BASE}/api/v1/keys/${encodeURIComponent(keyId)}/scopes`,
+    {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ scopes }),
+    },
+  );
 }
 
 export async function fetchCircuitBreakerStatus(): Promise<CircuitBreakerStatusResponse> {

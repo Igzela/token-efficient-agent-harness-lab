@@ -1389,6 +1389,21 @@ export interface AutoAdjustmentApplyResult {
   rollback_endpoint?: string;
 }
 
+export interface TableIntegrity {
+  name: string;
+  row_count: number;
+  status: string;
+}
+
+export interface StorageIntegrityResponse {
+  schema_version: string;
+  integrity: {
+    status: string;
+    schema_version: number;
+    tables: TableIntegrity[];
+  };
+}
+
 export interface RequestMetric {
   request_id: string;
   component: string;

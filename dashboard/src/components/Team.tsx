@@ -7,6 +7,7 @@ import {
   fetchDashboard,
   revokeApiKey,
   rotateApiKey,
+  updateKeyScopes,
   updateMemberRole,
 } from "@/lib/api-client";
 import type { LocalDashboardState } from "@/lib/types";
@@ -45,6 +46,8 @@ export function Team({
   const [teamError, setTeamError] = useState<string | null>(null);
   const [confirmAction, setConfirmAction] = useState<ConfirmAction>(null);
   const [revealedKey, setRevealedKey] = useState<{ rawKey: string; label: string } | null>(null);
+  const [editingScopes, setEditingScopes] = useState<string | null>(null);
+  const [editScopeValues, setEditScopeValues] = useState<string[]>([]);
 
   const refresh = () => fetchDashboard().then((d) => refreshDashboard(d));
 
@@ -130,10 +133,30 @@ export function Team({
     }
   }
 
-  function toggleScope(scope: string) {
-    setKeyScopes((prev) =>
-      prev.includes(scope) ? prev.filter((s) => s !== scope) : [...prev, scope],
-    );
+  async function handleSaveScopes(keyId: string) {
+    setBusy(true);
+    setTeamError(null);
+    try {
+      await updateKeyScopes(keyId, editScopeValues);
+      setEditingScopes(null);
+      refresh();
+    } catch (e) {
+      setTeamError(e instanceof Error ? e.message : "Failed to update scopes");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  function toggleScope(key: string | null, scope: string) {
+    if (key === null) {
+      setKeyScopes((prev) =>
+        prev.includes(scope) ? prev.filter((s) => s !== scope) : [...prev, scope],
+      );
+    } else {
+      setEditScopeValues((prev) =>
+        prev.includes(scope) ? prev.filter((s) => s !== scope) : [...prev, scope],
+      );
+    }
   }
 
   return (
@@ -232,7 +255,7 @@ export function Team({
                 <input
                   type="checkbox"
                   checked={keyScopes.includes(s)}
-                  onChange={() => toggleScope(s)}
+                  onChange={() => toggleScope(null, s)}
                 />
                 {s}
               </label>
@@ -267,6 +290,16 @@ export function Team({
               ) : (
                 <span className="inline-actions">
                   <button
+                    onClick={() => {
+                      setEditingScopes(editingScopes === item.key_id ? null : item.key_id);
+                      setEditScopeValues(item.scopes ?? []);
+                    }}
+                    disabled={busy}
+                    type="button"
+                  >
+                    {editingScopes === item.key_id ? "Done" : "Scopes"}
+                  </button>
+                  <button
                     onClick={() => setConfirmAction({ type: "rotateKey", id: item.key_id })}
                     disabled={busy}
                     type="button"
@@ -289,6 +322,23 @@ export function Team({
                     Delete
                   </button>
                 </span>
+              )}
+              {editingScopes === item.key_id && (
+                <div className="scope-list" style={{ width: "100%", marginTop: "8px" }}>
+                  {ALL_SCOPES.map((s) => (
+                    <label key={s} className="scope-option">
+                      <input
+                        type="checkbox"
+                        checked={editScopeValues.includes(s)}
+                        onChange={() => toggleScope(item.key_id, s)}
+                      />
+                      {s}
+                    </label>
+                  ))}
+                  <button onClick={() => handleSaveScopes(item.key_id)} disabled={busy} type="button" style={{ marginTop: "4px" }}>
+                    Save Scopes
+                  </button>
+                </div>
               )}
             </div>
           ))

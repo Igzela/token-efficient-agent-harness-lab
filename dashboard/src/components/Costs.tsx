@@ -1,8 +1,12 @@
-import type { LocalDashboardState } from "@/lib/types";
+import { useState } from "react";
+import { fetchCostDetails } from "@/lib/api-client";
+import type { LocalDashboardState, LocalDispatchCostDetail } from "@/lib/types";
 import { EmptyState } from "./EmptyState";
 import { StateBanner } from "./StateBanner";
 
 export function Costs({ dashboard }: { dashboard: LocalDashboardState }) {
+  const [costDetails, setCostDetails] = useState<LocalDispatchCostDetail | null>(null);
+  const [detailsBusy, setDetailsBusy] = useState(false);
   const c = dashboard.costs;
   const pricingMissingWithUsage = dashboard.boundaries.provider_transport === "provider/enabled"
     && c.pricing_configured === false
@@ -10,6 +14,19 @@ export function Costs({ dashboard }: { dashboard: LocalDashboardState }) {
   const maxTier = Math.max(1, ...c.by_tier.map((t) => t.reserved_cost));
   const recentDaily = c.daily.slice(0, 7).reverse();
   const maxDaily = Math.max(1, ...recentDaily.map((d) => d.reserved_cost));
+
+  async function handleShowDetails() {
+    if (costDetails) { setCostDetails(null); return; }
+    setDetailsBusy(true);
+    try {
+      setCostDetails(await fetchCostDetails({ limit: 50 }));
+    } catch {
+      setCostDetails(null);
+    } finally {
+      setDetailsBusy(false);
+    }
+  }
+
   return (
     <section className="card stack">
       <div className="heading-row">
@@ -92,6 +109,37 @@ export function Costs({ dashboard }: { dashboard: LocalDashboardState }) {
             </div>
           ))}
         </div>
+      )}
+
+      <h3 className="section-subhead">Per-Dispatch Details</h3>
+      <button onClick={handleShowDetails} disabled={detailsBusy} type="button">
+        {detailsBusy ? "Loading..." : costDetails ? "Hide Details" : "Show Details"}
+      </button>
+      {costDetails && costDetails.dispatches.length > 0 && (
+        <table>
+          <thead>
+            <tr>
+              <th>Dispatch</th>
+              <th>Tier</th>
+              <th>Tokens</th>
+              <th>Cost</th>
+              <th>Executor</th>
+              <th>Latency</th>
+            </tr>
+          </thead>
+          <tbody>
+            {costDetails.dispatches.map((d) => (
+              <tr key={d.history_id}>
+                <td className="mono">{d.dispatch_id.slice(0, 12)}</td>
+                <td>{d.selected_tier}</td>
+                <td>{d.input_tokens + d.output_tokens}</td>
+                <td>${d.estimated_cost_usd.toFixed(4)}</td>
+                <td>{d.executor_type}</td>
+                <td>{d.latency_ms != null ? `${d.latency_ms}ms` : "n/a"}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
       )}
     </section>
   );
