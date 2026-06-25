@@ -13,7 +13,6 @@ import type {
   BackupVerification,
   CircuitBreakerStatusResponse,
   DispatchMetricsResponse,
-  DecisionDetailResponse,
   DecisionListResponse,
   DecisionStatsResponse,
   DispatchListResponse,
@@ -49,9 +48,7 @@ import type {
   SupervisedPatchVerificationResponse,
   TargetRepoOutputRequest,
   TargetRepoOutputResponse,
-  WorkflowPlanDetailResponse,
   WorkflowPlanCreateResponse,
-  WorkflowPlanListResponse,
   WorkflowRunActionResponse,
   WorkflowRunApprovalListResponse,
   WorkflowRunApprovalResponse,
@@ -364,28 +361,6 @@ export async function fetchGeneratedProposals(params: { limit?: number } = {}): 
   );
 }
 
-export async function fetchProposalDetail(proposalId: string): Promise<ProposalResponse> {
-  return fetchJson<ProposalResponse>(`${BASE}/api/v1/proposals/${encodeURIComponent(proposalId)}`);
-}
-
-export async function createProposal(request: {
-  title?: string;
-  summary?: string;
-  task_class?: string;
-  task_domain?: string;
-  task_intent?: string;
-  tier?: string;
-  target_tier?: string;
-  payload: Record<string, unknown>;
-  evidence?: Record<string, unknown>;
-}): Promise<ProposalResponse> {
-  return fetchJson<ProposalResponse>(`${BASE}/api/v1/proposals`, {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify(request),
-  });
-}
-
 export async function approveProposal(proposalId: string, reason?: string): Promise<ProposalResponse> {
   return fetchJson<ProposalResponse>(
     `${BASE}/api/v1/proposals/${encodeURIComponent(proposalId)}/approve`,
@@ -641,17 +616,6 @@ export async function fetchWorkflowRunApprovals(runId: string, params: {
   return fetchJson<WorkflowRunApprovalListResponse>(withQuery(`/api/v1/workflow-runs/${encodeURIComponent(runId)}/approvals`, params));
 }
 
-export async function resumeWorkflowRun(runId: string, reason?: string): Promise<WorkflowRunActionResponse> {
-  return fetchJson<WorkflowRunActionResponse>(
-    `${BASE}/api/v1/workflow-runs/${encodeURIComponent(runId)}/resume`,
-    {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ reason }),
-    },
-  );
-}
-
 export async function createWorkflowPlan(request: {
   raw_request: string;
   request_source?: string;
@@ -661,20 +625,6 @@ export async function createWorkflowPlan(request: {
     headers: { "content-type": "application/json" },
     body: JSON.stringify(request),
   });
-}
-
-export async function fetchPlans(params: {
-  limit?: number;
-  offset?: number;
-  search?: string;
-} = {}): Promise<WorkflowPlanListResponse> {
-  return fetchJson<WorkflowPlanListResponse>(withQuery("/api/v1/plans", params));
-}
-
-export async function fetchPlanDetail(planId: string): Promise<WorkflowPlanDetailResponse> {
-  return fetchJson<WorkflowPlanDetailResponse>(
-    `${BASE}/api/v1/plans/${encodeURIComponent(planId)}`,
-  );
 }
 
 export async function createWorkflowRun(planId: string): Promise<WorkflowRunActionResponse> {
@@ -745,12 +695,6 @@ export async function fetchDecisions(params: {
   run_id?: string;
 } = {}): Promise<DecisionListResponse> {
   return fetchJson<DecisionListResponse>(withQuery("/api/v1/decisions", params));
-}
-
-export async function fetchDecisionDetail(decisionId: string): Promise<DecisionDetailResponse> {
-  return fetchJson<DecisionDetailResponse>(
-    `${BASE}/api/v1/decisions/${encodeURIComponent(decisionId)}`,
-  );
 }
 
 export async function fetchDecisionStats(): Promise<DecisionStatsResponse> {
