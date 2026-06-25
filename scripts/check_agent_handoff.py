@@ -208,22 +208,21 @@ def main() -> int:
                     f"ARCHITECTURE_BOOK.md has v{doc_version}"
                 )
 
-    # Check 4: Phase 6 plan exists (only required when Phase 6 is declared active)
+    # Check 4: active Phase 6 work has a forward plan in NEXT_DECISION.
     current_status_path = ROOT / "docs" / "CURRENT_STATUS.md"
     if current_status_path.exists():
         status_text = current_status_path.read_text(encoding="utf-8")
         if "Phase 6" in status_text and ("active track" in status_text or "IN PROGRESS" in status_text):
-            phase6_plan = (
-                ROOT
-                / "docs"
-                / "archive"
-                / "phase-closeouts"
-                / "PHASE6_OPERATIONAL_READINESS_PLAN.md"
+            next_decision_path = ROOT / "docs" / "NEXT_DECISION.md"
+            next_decision_text = (
+                next_decision_path.read_text(encoding="utf-8")
+                if next_decision_path.exists()
+                else ""
             )
-            if not phase6_plan.exists():
+            if "Phase 6" not in next_decision_text:
                 failures.append(
-                    "docs/archive/phase-closeouts/PHASE6_OPERATIONAL_READINESS_PLAN.md "
-                    "not found (Phase 6 is active in CURRENT_STATUS)"
+                    "docs/NEXT_DECISION.md must describe active Phase 6 work "
+                    "when CURRENT_STATUS declares Phase 6 active"
                 )
 
     if failures:

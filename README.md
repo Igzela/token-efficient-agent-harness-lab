@@ -180,7 +180,7 @@ ACP_DASHBOARD_DIR=dashboard/out \
 cargo run -p engine
 ```
 
-`ACP_PROVIDER_TYPE=openai_compatible` and `ACP_PROVIDER_TYPE=anthropic` support guarded local execution. For internal local operation, use a ready `ACP_TRUSTED_LOCAL_PROFILE=1`; the legacy `ACP_ENABLE_PROVIDER_EXECUTION=1` gate remains available for compatibility. Both paths require explicit provider configuration, `ACP_REQUIRE_AUTH=1`, a local admin API key, positive cost caps, and narrow network exposure. Do not commit provider credentials. CI uses stub providers rather than paid endpoints.
+`ACP_PROVIDER_TYPE=openai_compatible` and `ACP_PROVIDER_TYPE=anthropic` support guarded local execution. For internal local operation, use a ready `ACP_TRUSTED_LOCAL_PROFILE=1`; the legacy `ACP_ENABLE_PROVIDER_EXECUTION=1` gate remains available for compatibility. Both paths require explicit provider configuration, `ACP_REQUIRE_AUTH=1`, a local admin API key, positive cost caps, and narrow network exposure. Do not commit provider credentials. CI uses stub providers rather than paid endpoints. For single-provider execution, `ACP_MODEL` remains authoritative; when it is absent, the runtime reads the current project's Claude Code JSON config (`$HOME/.claude.json`, or `ACP_CLAUDE_CODE_CONFIG_PATH`) and uses its configured model or a safe recent model-usage key before falling back to `default`.
 
 Adaptive single/fallback/fusion execution is activated by the trusted-local profile after readiness validation; `ACP_ENABLE_ADAPTIVE_FUSION_EXECUTION=1` remains the standalone legacy gate. Configure up to eight fixed provider/model endpoints through `ACP_ADAPTIVE_PROVIDER_ENDPOINTS_JSON` or the guarded dashboard/API; entries contain credential environment variable names, never credential values. Dashboard/API config applies to adaptive completion immediately and is restored for startup-bound execution after restart. Explicit endpoint JSON remains authoritative while present. Explicit workflow ticks remain supported, and AF-6 adds authenticated `POST /api/v1/adaptive-fusion/completions` with routing metadata hidden by default. Experiments, auto promotion, and default `/dispatch` delegation are composed by the ready trusted-local profile, or by their standalone legacy gates when operating without the profile. See [`docs/RUNBOOK.md`](docs/RUNBOOK.md).
 
@@ -314,7 +314,7 @@ Daily agent work uses a small active set:
 - [`docs/REAL_WORLD_TESTING_PLAYBOOK.md`](docs/REAL_WORLD_TESTING_PLAYBOOK.md) — PR/CI/maintenance workflow
 - [`docs/RUNBOOK.md`](docs/RUNBOOK.md) — operator procedures
 
-Historical phase plans, closeouts, validation reports, and low-frequency reference docs are under `docs/archive/`.
+Historical phase plans, closeouts, validation reports, and low-frequency reference docs are retained in release-tagged git history; `docs/archive/README.md` is the working-tree index.
 
 ## Agent Maintenance
 

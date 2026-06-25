@@ -71,7 +71,7 @@ Key principles:
 
 Current architecture baseline: `docs/ARCHITECTURE_BOOK.md`
 
-Historical dispatch architecture: `docs/archive/dispatch/DISPATCHER_KERNEL_V0_ARCHITECTURE.md`
+Historical dispatch architecture and closeout details are retained in release-tagged git history; `docs/archive/README.md` is the working-tree index.
 
 ## Autonomous Advancement Protocol
 

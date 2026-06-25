@@ -1,8 +1,8 @@
 # Module Map
 
-Last updated: 2026-06-23
+Last updated: 2026-06-25
 
-This map is for code ownership and verification routing. It is intentionally not a phase history. Historical module/phase narratives live in `docs/archive/`.
+This map is for code ownership and verification routing. It is intentionally not a phase history. Historical module/phase narratives are retained in release-tagged git history; `docs/archive/README.md` is the working-tree index.
 
 The Rust `engine/` is the sole runtime implementation. Python is retained as REST SDK and utility scripts only. The current product is a local/small-team self-hosted macro-orchestrator control plane. The approved V2 Real Production Output Track must extend existing modules rather than creating a parallel coding-agent runtime.
 
@@ -25,7 +25,7 @@ The Rust `engine/` is the sole runtime implementation. Python is retained as RES
 | `engine/src/target_repo_output.rs`, `engine/src/target_repo_output/authority.rs` | env-gated target output | Controlled git worktree, patch export, `acp/*` branch push, optional idempotent GitHub PR creation, and centralized target-output authority policy for gates, branch/remote/text/path validation | `cargo test -p engine --test test_target_repo_output` |
 | `engine/src/scheduler.rs` | guarded workers | Bounded supervised worker threads, queue ticks, pause/kill, heartbeat, lease recovery, dynamic mode, legacy executor-pool binding, and pinned IAE-2 adaptive execution | `cargo test -p engine --lib scheduler --test test_trusted_local_task_advancement` |
 | `engine/src/workflow/` | active workflow | DAG mutation, dynamic controller, context pack, run queue, backpressure, decisions | `cargo test -p engine --lib workflow` |
-| `engine/src/orchestration/` | partial workflow | Decomposition, conflict resolution, approval gate, aggregation helpers | `cargo test -p engine` |
+| `engine/src/orchestration/` | partial workflow | Decomposition, conflict resolution, approval gate, aggregation helpers, and the current `AgentMessage` schema foundation for future Agent Runtime work | `cargo test -p engine` |
 | `engine/src/quality/`, `engine/src/routing/` | partial policy | Quality/evaluation bridges and routing feedback/advisory logic | `cargo test -p engine` |
 | `engine/src/executor_pool.rs` | active resources | Executor capacity, cooldown, selection, metrics | `cargo test -p engine --lib executor_pool` |
 | `engine/src/storage/local_product_store/` | active storage | SQLite/PostgreSQL app-owned state plus schema catalog ownership for versions, dialect DDL, migrations, audit, costs, plans, runs, workflow queue/lease helpers, artifacts, adaptive policy snapshots, and safe observation summaries | `cargo test -p engine --test test_local_product_store --test test_data_operations --test test_adaptive_observation_capture` |
@@ -45,7 +45,7 @@ The Rust `engine/` is the sole runtime implementation. Python is retained as RES
 | active | Runtime/API/storage/dashboard/SDK/codegen/script paths listed above. |
 | partial | `engine/src/orchestration/`, `engine/src/quality/`, `engine/src/routing/`, `engine/src/ecosystem/`, selected `engine/src/harness/` helpers. These are implemented and tested, but not all are first-class runtime control layers. |
 | reference-only | `engine/src/event_source/`, `engine/src/event_schema.rs`, `engine/src/errors.rs`. Kept for wire/event compatibility context; do not wire as a parallel store/runtime. |
-| archived history | Long-form phase plans, closeouts, and legacy architecture details under `docs/archive/`. |
+| archived history | Long-form phase plans, closeouts, and legacy architecture details retained in release-tagged git history. |
 
 ## Change Routing
 
@@ -59,6 +59,7 @@ The Rust `engine/` is the sole runtime implementation. Python is retained as RES
 - V2-4 worker queue: `scheduler.rs` owns worker lifecycle/control; `workflow_runs/queue_lease.rs` owns workflow-run queue/lease SQL, row projection, stale-lease classification, and queue summary helpers; `workflow_runs.rs` owns the `LocalProductStore` public methods and transactional mutations; `run_queue.rs` and `executor_pool.rs` own admission/capacity; `heartbeat.rs` persists aggregate worker health; scheduler HTTP handler and SDKs expose controls.
 - V2-5 product UX: `dashboard/src/components/MissionControl.tsx` owns the primary output workflow; `SupervisedPatch.tsx` owns detailed workspace/artifact operations; `SchedulerStatus.tsx` owns worker control/detail; `dashboard/src/lib/api-client.ts` owns dashboard API bindings.
 - Adaptive Fusion Routing: candidate generation, contextual policy, experiments, and auto promotion live under `feedback/`; bounded execution and the IAE-2 persisting worker live under `provider/adaptive_execution.rs`; observations and policy snapshots use `storage/local_product_store/`; guarded completion/default routing lives under `http_server/handlers/adaptive_completions.rs` and `dispatch.rs`; `trusted_local.rs` composes IAE-1/IAE-2 authority; `scheduler.rs` pins the trusted adaptive executor; IAE-3 operator aggregation lives in the dashboard snapshot handler, reuses the runtime experiment/promotion validators, and reuses scheduler/audit/policy endpoints; dashboard and TypeScript SDK mirror the guarded API contracts.
+- Agent Runtime: start with `orchestration/schemas.rs` for agent/message contracts, `storage/local_product_store/` for durable agent state and mailbox, `workflow_runs` and `scheduler.rs` for wakeups/leases/concurrency, `node_executor.rs` for the bounded `agent_step` executor, `provider/` and `cli/` for gated actions, and dashboard/SDK/http handlers for operator evidence. Do not create a second scheduler, mailbox side channel, DAG kernel, or storage layer.
 - Safety boundary changes: update `docs/ARCHITECTURE_BOOK.md` before implementation; use archived security docs only as historical reference.
 - Documentation set changes: keep the active docs set limited to the six files listed in `docs/CURRENT_STATUS.md`.
 

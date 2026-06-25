@@ -73,11 +73,16 @@ ACP_DASHBOARD_DIR="${ROOT}/dashboard/out" \
 ENGINE_PID="$!"
 
 for _ in {1..80}; do
-  if curl -fsS "http://127.0.0.1:${PORT}/api/v1/health" >"${TMP_DIR}/health.json"; then
+  if curl -fsS "http://127.0.0.1:${PORT}/api/v1/health" >"${TMP_DIR}/health.json" 2>/dev/null; then
     break
   fi
   sleep 0.25
 done
+if [[ ! -s "${TMP_DIR}/health.json" ]]; then
+  echo "engine did not become healthy on port ${PORT}" >&2
+  sed -n '1,160p' "${TMP_DIR}/engine.log" >&2 || true
+  exit 1
+fi
 
 curl -fsS "http://127.0.0.1:${PORT}/api/v1/dashboard" >"${TMP_DIR}/dashboard.json"
 curl -fsS "http://127.0.0.1:${PORT}/" >"${TMP_DIR}/dashboard.html"

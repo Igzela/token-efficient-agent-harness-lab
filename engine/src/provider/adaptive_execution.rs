@@ -2435,5 +2435,5 @@ fn valid_id(value: &str) -> bool {
         && !contains_sensitive_patterns(value)
         && value
             .chars()
-            .all(|character| character.is_ascii_alphanumeric() || "-_.:/@".contains(character))
+            .all(|character| character.is_ascii_alphanumeric() || "-_.:/@[]".contains(character))
 }
