@@ -1389,6 +1389,31 @@ export interface AutoAdjustmentApplyResult {
   rollback_endpoint?: string;
 }
 
+export interface RequestMetric {
+  request_id: string;
+  component: string;
+  action: string;
+  duration_ms: number;
+  status: string;
+  timestamp: number;
+}
+
+export interface MetricSnapshot {
+  name: string;
+  value: number;
+  labels: Record<string, string>;
+  timestamp: number;
+}
+
+export interface ObservabilityMetricsResponse {
+  schema_version: string;
+  total_requests: number;
+  error_count: number;
+  avg_duration_ms: number;
+  recent_metrics: RequestMetric[];
+  snapshots: MetricSnapshot[];
+}
+
 export interface CircuitBreakerSnapshot {
   name: string;
   state: "Closed" | "Open" | "HalfOpen" | string;

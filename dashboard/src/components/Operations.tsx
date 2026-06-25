@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
-import { ApiError, fetchCircuitBreakerStatus, fetchMetrics } from "@/lib/api-client";
-import type { CircuitBreakerStatusResponse, OperationsMetrics } from "@/lib/types";
+import { ApiError, fetchCircuitBreakerStatus, fetchMetrics, fetchObservabilityMetrics } from "@/lib/api-client";
+import type { CircuitBreakerStatusResponse, ObservabilityMetricsResponse, OperationsMetrics } from "@/lib/types";
 import { EmptyState } from "./EmptyState";
 import { Metric } from "./Metric";
 import { StateBanner } from "./StateBanner";
@@ -30,17 +30,19 @@ export function Operations() {
   const [error, setError] = useState<OpsError | null>(null);
   const [loading, setLoading] = useState(true);
   const [cbStatus, setCbStatus] = useState<CircuitBreakerStatusResponse | null>(null);
-  const [cbLoading, setCbLoading] = useState(false);
+  const [obsMetrics, setObsMetrics] = useState<ObservabilityMetricsResponse | null>(null);
 
   function load() {
     setLoading(true);
     Promise.all([
       fetchMetrics(),
       fetchCircuitBreakerStatus(),
+      fetchObservabilityMetrics(),
     ])
-      .then(([response, cb]) => {
+      .then(([response, cb, obs]) => {
         setMetrics(response);
         setCbStatus(cb);
+        setObsMetrics(obs);
         setError(null);
       })
       .catch((e) => {
@@ -119,6 +121,69 @@ export function Operations() {
               <div className="kv-row"><span className="muted">API keys</span><span>{metrics.api_key_count}</span></div>
             </div>
           </div>
+
+          {obsMetrics && obsMetrics.total_requests > 0 && (
+            <div className="subcard stack">
+              <h3>Request Metrics</h3>
+              <div className="status-strip" aria-label="Request metrics">
+                <Metric label="Requests" value={String(obsMetrics.total_requests)} detail="total" />
+                <Metric label="Errors" value={String(obsMetrics.error_count)} detail={obsMetrics.error_count > 0 ? "failing" : "none"} tone={obsMetrics.error_count > 0 ? "warn" : "ok"} />
+                <Metric label="Avg Duration" value={`${obsMetrics.avg_duration_ms.toFixed(1)}ms`} detail="average" />
+              </div>
+              {obsMetrics.recent_metrics.length > 0 && (
+                <table>
+                  <thead>
+                    <tr>
+                      <th>Component</th>
+                      <th>Action</th>
+                      <th>Duration</th>
+                      <th>Status</th>
+                      <th>Timestamp</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {obsMetrics.recent_metrics.slice(0, 30).map((m) => (
+                      <tr key={m.request_id}>
+                        <td>{m.component}</td>
+                        <td>{m.action}</td>
+                        <td>{m.duration_ms.toFixed(1)}ms</td>
+                        <td>
+                          <span style={{
+                            color: m.status === "error" || m.status.startsWith("5") ? "var(--color-risk, #e74c3c)" : m.status.startsWith("4") ? "var(--color-warn, #f39c12)" : "var(--color-ok, #27ae60)",
+                            fontWeight: 600,
+                          }}>
+                            {m.status}
+                          </span>
+                        </td>
+                        <td>{new Date(m.timestamp * 1000).toISOString().slice(11, 19)}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              )}
+              {obsMetrics.snapshots.length > 0 && (
+                <details>
+                  <summary style={{ cursor: "pointer", fontSize: "0.85rem" }}>
+                    Metric Snapshots ({obsMetrics.snapshots.length})
+                  </summary>
+                  <table>
+                    <thead>
+                      <tr><th>Name</th><th>Value</th><th>Labels</th></tr>
+                    </thead>
+                    <tbody>
+                      {obsMetrics.snapshots.map((s, i) => (
+                        <tr key={i}>
+                          <td>{s.name}</td>
+                          <td>{s.value.toFixed(2)}</td>
+                          <td>{Object.entries(s.labels).map(([k, v]) => `${k}=${v}`).join(", ")}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </details>
+              )}
+            </div>
+          )}
 
           {cbStatus && cbStatus.total_breakers > 0 && (
             <div className="subcard stack">

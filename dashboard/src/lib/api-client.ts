@@ -22,6 +22,7 @@ import type {
   FeedbackPatternListResponse,
   FeedbackTraceListResponse,
   LocalDashboardState,
+  ObservabilityMetricsResponse,
   OperationsMetrics,
   ProposalListResponse,
   ProposalResponse,
@@ -280,6 +281,10 @@ export async function fetchAudit(params: {
 
 export async function fetchCircuitBreakerStatus(): Promise<CircuitBreakerStatusResponse> {
   return fetchJson<CircuitBreakerStatusResponse>(`${BASE}/api/v1/circuit-breaker/status`);
+}
+
+export async function fetchObservabilityMetrics(): Promise<ObservabilityMetricsResponse> {
+  return fetchJson<ObservabilityMetricsResponse>(`${BASE}/api/v1/metrics/observability`);
 }
 
 export async function fetchMetrics(): Promise<OperationsMetrics> {
