@@ -2,7 +2,9 @@ import { useEffect, useMemo, useState } from "react";
 import {
   ApiError,
   approveProposal,
+  applyAutoAdjustment,
   deactivateProposal,
+  fetchAutoAdjustments,
   fetchDispatchMetrics,
   fetchFeedbackCostOfPass,
   fetchFeedbackPatterns,
@@ -12,9 +14,11 @@ import {
   fetchPolicySimulationReport,
   fetchSimulationReport,
   rejectProposal,
+  rollbackAutoAdjustment,
   rollbackProposal,
 } from "@/lib/api-client";
 import type {
+  AutoAdjustmentsReport,
   ControlledLoopProposal,
   DispatchMetricsResponse,
   FeedbackCostOfPassResponse,
@@ -36,6 +40,7 @@ type RegulatorData = {
   simulation: SimulationReportResponse | null;
   policySimulation: PolicySimulationResult | null;
   proposals: ControlledLoopProposal[];
+  autoAdjustments: AutoAdjustmentsReport | null;
 };
 
 type RegulatorError = {
@@ -51,6 +56,7 @@ const emptyData: RegulatorData = {
   simulation: null,
   policySimulation: null,
   proposals: [],
+  autoAdjustments: null,
 };
 
 function regulatorError(error: unknown): RegulatorError {
@@ -83,6 +89,7 @@ export function DynamicRegulator() {
   const [confirmAction, setConfirmAction] = useState<ConfirmAction>(null);
   const [busy, setBusy] = useState(false);
   const [generatedProposals, setGeneratedProposals] = useState<any[]>([]);
+  const [aaBusy, setAaBusy] = useState<string | null>(null);
 
   function load() {
     setLoading(true);
@@ -95,8 +102,9 @@ export function DynamicRegulator() {
       fetchPolicySimulationReport({ limit: 50, policy: "complexity_aware" }),
       fetchProposals({ limit: 20 }),
       fetchGeneratedProposals({ limit: 10 }),
+      fetchAutoAdjustments({ limit: 20 }),
     ])
-      .then(([metrics, traces, costs, patterns, simulation, policySimulation, proposals, generated]) => {
+      .then(([metrics, traces, costs, patterns, simulation, policySimulation, proposals, generated, autoAdjustments]) => {
         setData({
           metrics,
           traces,
@@ -105,6 +113,7 @@ export function DynamicRegulator() {
           simulation,
           policySimulation,
           proposals: proposals.proposals,
+          autoAdjustments,
         });
         setGeneratedProposals(generated.candidates || []);
         setError(null);
@@ -383,6 +392,117 @@ export function DynamicRegulator() {
                 </table>
               )}
             </div>
+          </div>
+
+          <div className="subcard stack">
+            <h3>Auto-Adjustments</h3>
+            {!data.autoAdjustments ? (
+              <EmptyState title="No auto-adjustments data" description="Auto-adjustments report requires feedback infrastructure." />
+            ) : (
+              <>
+                <div style={{ display: "flex", gap: "8px", flexWrap: "wrap", marginBottom: "8px" }}>
+                  <span className="pill info">{data.autoAdjustments.mode}</span>
+                  {data.autoAdjustments.env_gate && <span className="pill info">env gate</span>}
+                  {data.autoAdjustments.dry_run && <span className="pill warn">dry-run</span>}
+                  {data.autoAdjustments.no_live_mutation && <span className="pill warn">no-live-mutation</span>}
+                  {data.autoAdjustments.active_apply_available && <span className="pill ok">apply ready</span>}
+                </div>
+                {data.autoAdjustments.blocked_reasons.length > 0 && (
+                  <ul style={{ color: "var(--color-warn, #f39c12)", fontSize: "0.85rem", margin: "4px 0" }}>
+                    {data.autoAdjustments.blocked_reasons.map((r, i) => <li key={i}>{r}</li>)}
+                  </ul>
+                )}
+                {data.autoAdjustments.active_auto_adjustments.length > 0 && (
+                  <table>
+                    <thead>
+                      <tr>
+                        <th>Adjustment</th>
+                        <th>Policy</th>
+                        <th>Tier</th>
+                        <th>Status</th>
+                        <th>Actions</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {data.autoAdjustments.active_auto_adjustments.slice(0, 10).map((adj: any) => (
+                        <tr key={adj.adjustment_id ?? adj.snapshot_id}>
+                          <td>{adj.adjustment_id ?? adj.snapshot_id}</td>
+                          <td>{adj.policy_key ?? "n/a"}</td>
+                          <td>{adj.target_tier ?? "n/a"}</td>
+                          <td>{adj.status ?? "active"}</td>
+                          <td>
+                            <button
+                              type="button"
+                              disabled={aaBusy !== null}
+                              onClick={async () => {
+                                setAaBusy(adj.adjustment_id);
+                                try {
+                                  await rollbackAutoAdjustment(adj.adjustment_id, {
+                                    reason: "Rollback via dashboard",
+                                    confirm_auto_adjustment_rollback: true,
+                                  });
+                                  load();
+                                } catch {
+                                  setError({ message: "Auto-adjustment rollback failed", type: "error" });
+                                } finally {
+                                  setAaBusy(null);
+                                }
+                              }}
+                            >
+                              {aaBusy === adj.adjustment_id ? "Rolling back..." : "Rollback"}
+                            </button>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                )}
+                {data.autoAdjustments.decisions.length > 0 && (
+                  <details>
+                    <summary style={{ cursor: "pointer", fontSize: "0.85rem" }}>
+                      Decisions ({data.autoAdjustments.decisions.length})
+                    </summary>
+                    <table>
+                      <thead>
+                        <tr><th>ID</th><th>Key</th><th>Tier</th><th>Status</th><th>Actions</th></tr>
+                      </thead>
+                      <tbody>
+                        {data.autoAdjustments.decisions.slice(0, 10).map((d: any, i) => (
+                          <tr key={d.proposal_id ?? i}>
+                            <td>{d.proposal_id ?? i}</td>
+                            <td>{d.policy_key ?? "n/a"}</td>
+                            <td>{d.target_tier ?? "n/a"}</td>
+                            <td>{d.status ?? "pending"}</td>
+                            <td>
+                              <button
+                                type="button"
+                                disabled={aaBusy !== null}
+                                onClick={async () => {
+                                  setAaBusy("apply");
+                                  try {
+                                    await applyAutoAdjustment({
+                                      candidate_id: d.candidate_id,
+                                      confirm_auto_adjustment: true,
+                                    });
+                                    load();
+                                  } catch {
+                                    setError({ message: "Apply auto-adjustment failed", type: "error" });
+                                  } finally {
+                                    setAaBusy(null);
+                                  }
+                                }}
+                              >
+                                Apply
+                              </button>
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </details>
+                )}
+              </>
+            )}
           </div>
 
           <div className="subcard stack">
