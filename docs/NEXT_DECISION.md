@@ -125,7 +125,7 @@ queued workflow node or agent wakeup
 
 | Phase | Goal | Acceptance |
 |---|---|---|
-| AR-0 | Decision baseline and runtime contract | Record the agent runtime boundary, data model, rollback path, and threat model delta. Confirm it extends existing workflow/scheduler/storage/executor modules and preserves all hard stops. |
+| AR-0 | Decision baseline and runtime contract | Data model contract defines every durable entity and its owning module; no implementation. Module ownership records which existing modules own future AR entities. Threat model delta documents which safety boundaries AR phases must preserve. Test/CI minimum for AR code PRs is defined. Rollback path is documented (code revert + down migration + gate disable). Explicit non-goals list what is out of scope. Docs remain internally consistent — true multi-agent runtime not yet implemented. See AR-0 Decision Baseline below. |
 | AR-1 | Agent identity, state, and mailbox | Durable `AgentState` plus `AgentMessage` mailbox with send/read/ack/reply, correlation IDs, run/node links, redaction, audit events, and SQLite/PostgreSQL tests. No provider/CLI calls are added. |
 | AR-2 | Agent step executor | Add a bounded `agent_step` executor that runs `observe -> decide -> act -> persist` for one step, with token/call/cost/time/retry caps, kill/pause checks, and durable scratchpad summaries. It may use stub/provider paths only through existing gates. |
 | AR-3 | Planning, child tasks, and handoff | Let an agent propose child workflow nodes/edges and delegate work to another agent via mailbox. Proposals must be bounded, auditable, deterministic enough for tests, and reversible through workflow mutation events. |
@@ -145,6 +145,80 @@ bash scripts/verify_rust_typescript_stack.sh
 uv run --no-project python scripts/check_agent_handoff.py
 git diff --check
 ```
+
+### AR-0 Decision Baseline
+
+This section documents the AR-0 contract decisions. It is not a separate ADR — the repo uses `docs/NEXT_DECISION.md` as the single forward-plan artifact. AR-0 supersedes the former "Agent Runtime Direction" section in `docs/ARCHITECTURE_BOOK.md`.
+
+**Data model contract.** Every future AR durable entity has a designated owning module:
+
+| Durable entity | Owning module | Storage |
+|---|---|---|
+| `AgentState` | `storage/local_product_store/schema.rs` | `agent_state` table (SQLite/PostgreSQL) |
+| `AgentMessage` | `storage/local_product_store/schema.rs` | `agent_mailbox` table (SQLite/PostgreSQL) |
+| `AgentStep` node executor | `node_executor.rs` | Workflow node row + agent step-specific result columns |
+| Agent-child-task proposal | `workflow/` and `scheduler.rs` | Workflow run node/edge rows |
+| Debate/review thread | `workflow/` | Workflow run node/edge rows + artifact rows |
+| Agent claim/concurrency | `scheduler.rs` | Extended lease/claim metadata in existing scheduler tables |
+
+No second storage layer, hidden mailbox, or parallel DAG kernel is authorized.
+
+**Module ownership.** Existing modules own future AR entities as listed above. No new top-level modules are introduced for AR. The `orchestration/` module provides schema types only; storage, scheduling, and execution live in their existing owners.
+
+**Threat model delta.** AR phases add these new threat surfaces on top of the existing threat model:
+
+| Surface | Existing protection | AR delta | Required mitigation |
+|---|---|---|---|
+| Agent identity store | Workflow run/node identity | Durable agent profiles with role/authority | Auth scopes on agent identity reads/writes; no agent can modify another agent's state |
+| Mailbox | No mailbox exists | Message send/read/ack/reply with correlation | Secret-scan and redaction before persistence; bounded attachment size; audit every message transition |
+| Agent scratchpad | Node prompt/result storage | Bounded summary with redaction | No raw model output; bounded character count; redaction filter applied; audit on updates |
+| Child-task proposals | Controller logic mutates DAG | Agent-authored node/edge creation | Auth scope validation per proposal; bounded node/edge count; operator visibility before execution |
+| Concurrent agent steps | Single-node scheduler claim | Multi-agent claim policy with locks | Global and per-agent concurrency caps; lease expiry and stale recovery; deadlock detection |
+| Debate artifacts | No cross-agent artifact exists | Verdicts, dissent, evidence links | Secret-scan; bounded size; audit every verdict; no external influence on approval gates |
+
+No new authentication, authorization, or credential-storage surface is introduced. Existing `dispatch:execute` and `audit:read` scopes remain authoritative. Provider calls remain behind existing trusted-local/legacy gates.
+
+**Test/CI minimum for AR code PRs.** Every AR phase PR must pass before merge:
+
+```bash
+cargo fmt --all -- --check
+cargo clippy -p engine --all-targets -- -D warnings
+cargo test -p engine --bin agent-control-plane
+cargo test -p engine --test test_local_product_store
+cargo test -p engine --test test_trusted_local_profile
+bash scripts/verify_rust_typescript_stack.sh
+uv run --no-project python scripts/check_agent_handoff.py
+git diff --check
+```
+
+Additionally, AR code must add focused tests for:
+- New storage tables: insert/read/update/delete + schema migration up/down
+- Mailbox: send/read/ack/reply state transitions + rejection of oversized/secret-shaped content
+- Agent step executor: observe/decide/act/persist cycle with timeout, kill, cost-cap, lease-expiry edge cases
+- Concurrency: claim collision, lease expiry, stale recovery
+- Debate: thread lifecycle, verdict persistence, evidence linkage
+
+AR-0 (docs-only) uses docs-only verification: `git diff --check` + `uv run --no-project python scripts/check_agent_handoff.py`.
+
+**Rollback path.** Every AR implementation PR must include:
+1. Reversible schema migration (up + down SQL for each new or altered table)
+2. Env gate default-off (`ACP_ENABLE_AGENT_RUNTIME=0`) so the new path can be disabled without reverting code
+3. Documented revert procedure: revert merge commit, run down migration, confirm agent tables are empty
+4. Kill switch for agent step execution (required before AR-2 merge)
+
+AR-0 requires no migration or gate — it is documentation only.
+
+**Explicit non-goals.** The following are explicitly out of scope for all AR phases unless a later documented replacement supersedes this section:
+- No second scheduler, DAG kernel, storage layer, or hidden side-channel mailbox
+- No direct target-repository `main` writes; target output remains behind V2 gates
+- No raw prompt/output/transcript persistence in agent state, mailbox, or debate artifacts
+- No unbounded recursive planning, unbounded worker loops, or automatic merge/deploy/release authority
+- No provider calls outside existing trusted-local/legacy gates and cost/token/call/time/concurrency controls
+- No AR phase creates autonomous agent goals; agents act on existing workflow run nodes only
+- No automatic agent creation, agent spawning, or agent lifecycle outside workflow-run scope
+- No cloud, hosted, or multi-tenant deployment of agent runtime
+
+**Status: docs-only, not implemented.** AR-0 records the contract baseline. No AR-1/AR-2/AR-3/AR-4/AR-5/AR-6 implementation is present. True multi-agent runtime semantics are not implemented. See `docs/ARCHITECTURE_BOOK.md` § Agent Runtime (AR-0) Contract for the full contract definition.
 
 Each Agent Runtime PR must state the live-influence status, affected modules, new storage/API surface, safety gates, rollback path, intentionally unfinished follow-up, and whether any agent-authored output can reach target-output approval.
 
