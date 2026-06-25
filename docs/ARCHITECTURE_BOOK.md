@@ -126,54 +126,81 @@ V2-4 supervised workers reuse the same scheduler and workflow lease path. Legacy
 
 The runtime path is intentionally built on existing `workflow_runs`, `scheduler`, `node_executor`, `executor_pool`, `run_queue`, `backpressure`, and `DynamicWorkflowController` modules. Do not create a parallel scheduler, DAG kernel, or policy engine without explicit approval.
 
-## Agent Runtime Direction
+## Agent Runtime (AR-0) Contract
 
-The current implementation is a deterministic workflow/control-plane runtime, not yet a full autonomous multi-agent runtime. It can persist workflow runs, schedule nodes, execute provider/CLI work, mutate DAGs under guarded logic, capture evidence, and expose operator controls. Those foundations should be reused for any true agent runtime rather than replaced.
+The current system is a deterministic workflow/control-plane runtime, not yet a full autonomous multi-agent runtime. AR-0 defines the contract baseline for evolving it into a bounded multi-agent runtime. No AR-1/AR-2 implementation is present in this baseline.
 
-Current foundation:
+### Definition
 
-- `engine/src/orchestration/schemas.rs` defines `AgentMessage`, but message delivery is not wired into runtime storage, scheduler ticks, or node execution.
-- `workflow_runs`, `workflow_run_nodes`, `workflow_run_edges`, and `workflow_run_events` already provide the durable run/DAG/event substrate.
-- `WorkflowScheduler` already owns bounded worker startup, queue leasing, pause/resume/kill, and heartbeat state.
-- `NodeExecutor`, provider execution, CLI execution, adaptive execution, audit, redaction, cost gates, and target-output approval already provide bounded action paths.
-- Dashboard and SDK surfaces already expose operator evidence, guarded controls, and local runtime status.
+`AgentRuntime` is a contract — not an implementation — that specifies how workflow execution is extended with durable agent identity, mailbox delivery, persistent agent state, agent-authored planning, agent-to-agent delegation, cross-agent review, and bounded concurrent step semantics. Every AR phase must implement a subset of this contract by extending existing modules, never by creating a parallel runtime kernel.
 
-Missing true multi-agent semantics:
+### What AgentRuntime Is Not
 
-| Capability | Current state | Needed runtime semantic |
+- Not an implementation. AR-0 contains no executor, no mailbox storage, no agent state tables, no scheduler changes, and no provider/CLI call paths.
+- Not a second runtime kernel. All AR phases extend `workflow_runs`, `scheduler`, `node_executor`, `provider`, `cli`, `storage/local_product_store`, http_server, SDK, and dashboard — never a parallel scheduler, DAG engine, storage layer, or hidden side-channel mailbox.
+- Not a replacement for existing safety gates. Provider calls, CLI execution, target-output approval, cost caps, audit, redaction, kill switches, and rollback remain authoritative.
+- Not an autonomous loop authority. No AR phase creates unbounded agent goals, unbounded recursive planning, or automatic merge/deploy/release authority.
+
+### Extension Model
+
+AR phases consume the following existing modules, extending them through focused additions:
+
+| Existing module | AR ownership | AR additions (future) |
 |---|---|---|
-| Agent identity | Executor type and workflow node metadata exist | Durable `agent_id`, role, capability, objective, status, and authority profile |
-| Agent state/memory | Node receives prompt and returns result | Durable agent scratchpad/state with bounded summaries and redaction |
-| Agent messaging | `AgentMessage` schema exists | Persistent mailbox with send/read/ack/reply, correlation IDs, and audit events |
-| Agent step loop | Scheduler ticks a ready node | `observe -> decide -> act -> persist -> schedule/await` loop across ticks |
-| Self-planning | DAG can be prebuilt or mutated by controller logic | Agent-authored child task proposals that create bounded workflow nodes/edges |
-| Handoff/delegation | Scheduler owns execution order | Agent-to-agent delegation through mailbox plus workflow events and acceptance states |
-| Cross-agent review/debate | Adaptive fusion is single-node provider/model fusion | Multi-agent review/debate threads with verdict artifacts and merge/approval gates |
-| Concurrency | Scheduler claims bounded work, but a tick advances one node | Multi-node/multi-agent claim policy with resource locks, joins, and conflict handling |
+| `engine/src/orchestration/schemas.rs` | Agent/message type contracts | Extended `AgentState`, `AgentMessage` with delivery status, correlation IDs, role/capability profiles |
+| `engine/src/storage/local_product_store/` | Durable agent state, mailbox, agent events | `AgentState` table, `agent_mailbox` table, agent event log, bounded summary/redaction columns |
+| `engine/src/workflow/` and `engine/src/scheduler.rs` | Graph mutation, queue leases, wakeups, bounded concurrency | Agent step scheduling, child-task node creation, claim policy for concurrent agent steps |
+| `engine/src/node_executor.rs` | Bounded `agent_step` executor | `AgentStepExecutor` implementing `NodeExecutor` with observe/decide/act/persist loop |
+| `engine/src/provider/` and `engine/src/cli/` | Gated action execution | Agent actions only through existing provider/CLI gates, cost controls, audit, and redaction |
+| `engine/src/http_server/` | Agent-readable endpoints, operator controls | Agent state/mailbox/status endpoints using existing auth scopes |
+| `SDKs` and `dashboard/` | Operator visibility, guarded agent controls | Agent state inspection, mailbox counts, step traces, kill/pause controls |
+| Existing audit, auth, cost, redaction, kill, rollback, target-output approval | Cross-cutting safety | Every AR phase must document which safety boundaries apply and how they remain enforced |
 
-Target shape:
+### Durable Entities (future AR phases)
 
-```text
-Workflow run
-  -> AgentRuntime
-       -> AgentState store
-       -> AgentMailbox
-       -> AgentStepExecutor
-       -> Planner/delegation policy
-       -> Review/debate policy
-  -> existing Scheduler / Queue lease
-  -> existing NodeExecutor / Provider / CLI / Target-output gates
-  -> existing Audit / Cost / Kill / Dashboard evidence
-```
+| Entity | Owner (module) | Purpose |
+|---|---|---|
+| `AgentState` | `storage/local_product_store/` | Durable agent identity `(agent_id, run_id)`, role, capability profile, objective, status, bounded scratchpad summary, redaction filter reference, last activity timestamp |
+| `AgentMessage` | `storage/local_product_store/` | Mailbox row `(message_id, correlation_id, from, to, run_id, node_id, body_ref, status, created_at, read_at, ack_at)` with send/read/ack/reply transitions, audit events, and secret-shaped content rejection |
+| `AgentStep` (node-level) | `workflow/` and `scheduler.rs` | An `agent_step` `NodeExecutor` variant that runs the observe/decide/act/persist loop within existing node lease/cap/kill boundaries |
+| Agent-child-task proposals | `workflow/` | Bounded workflow node/edge creation requests with auth scope validation and operator visibility |
+| Debate/review threads | `workflow/` | Multi-agent review artifacts with verdicts, dissent, evidence links, and merge/approval gates |
+| Agent claim/concurrency state | `scheduler.rs` | Extended lease/claim policy for concurrent agent steps with resource locks, joins, and conflict handling |
 
-Safety invariants for agent runtime work:
+### Required Safety Invariants (all AR phases)
 
-- No unbounded autonomous loops. Each agent step must have call, token, cost, time, concurrency, retry, and lease bounds.
-- No direct target-repository `main` writes. Agent-authored output must still use V2 target-output approval and evidence gates.
-- No hidden raw model memory. Durable state must be summary-bounded, redacted, and auditable.
-- No secret persistence. Mailbox, memory, debate, and review artifacts must reject or redact secret-shaped content.
-- No authority bypass. Agent-created tasks, delegation, review, and child nodes must flow through the existing auth, scheduler, audit, cost, kill, and rollback boundaries.
-- No parallel runtime kernel. Agent runtime work should extend `workflow_runs`, `scheduler`, `node_executor`, `provider`, `cli`, `storage/local_product_store`, SDK, and dashboard modules.
+1. **No unbounded autonomous loops.** Every agent step must have call, token, cost, time, concurrency, retry, and lease bounds. No AR phase may create an unbounded `while` loop, recursive self-calling agent, or unattended goal-creation path.
+2. **No direct target-repository `main` writes.** Agent-authored output must still flow through V2 target-output approval gates, evidence capture, integrity checks, and explicit human confirmation.
+3. **No hidden raw model memory.** Durable agent state must be summary-bounded, redacted, and auditable. Raw prompts, raw model outputs, and transcripts must never be persisted in agent state, mailbox, or debate artifacts.
+4. **No secret persistence.** Mailbox body, agent scratchpad, debate artifacts, and review evidence must reject, truncate, or redact secret-shaped content before storage. Existing secret-scan and redaction paths must be composed into every AR storage write.
+5. **No authority bypass.** Agent-created tasks, delegation messages, review requests, and child nodes must flow through the existing auth scopes, scheduler admission, cost gates, audit events, kill switches, and rollback boundaries.
+6. **No parallel runtime kernel.** Every AR phase extends `workflow_runs`, `scheduler`, `node_executor`, `provider`, `cli`, `storage/local_product_store`, http_server, SDK, or dashboard. No second scheduler, DAG engine, storage layer, or hidden side-channel mailbox may be introduced.
+7. **No automatic merge/deploy/release authority.** Agent output reaching target-output gates still requires approval, evidence verification, and the existing V2-3 export/PR gate. No AR phase may grant merge, deploy, or release authority to an agent.
+8. **Rollback must be atomic.** Every AR phase must ship a reversible schema migration (up + down) and document the rollback procedure before the phase is merged. If the phase adds no storage, the rollback is a code revert plus documented data-consistency step.
+
+### Rollback Model
+
+- **Code revert**: A PR that introduces AR code can be reverted by reverting the merge commit. No irreversible data writes outside app-owned storage.
+- **Schema rollback**: Down migrations must be provided for any new agent state or mailbox table. The rollback procedure must delete agent data and confirm no residual agent state remains.
+- **Gate disable**: Every AR runtime addition must be behind an env gate (e.g., `ACP_ENABLE_AGENT_RUNTIME=0`) default-off, so operators can disable the new path without reverting code.
+- **Data retention**: Agent state and mailbox data in app-owned storage is safe to delete on rollback — it is not user data, target-repository data, or credentials.
+- **Kill switch**: A global kill switch for agent step execution must be present before any AR-2 merge, independent of per-agent bounds.
+
+### What AR-0 Explicitly Defers
+
+- AR-1 agent identity, state, and mailbox implementation
+- AR-2 agent step executor
+- AR-3 planning, child tasks, and handoff
+- AR-4 concurrent multi-agent scheduling
+- AR-5 review and debate primitives
+- AR-6 operator evidence and SDK/dashboard surface
+- Any provider/CLI execution path changes
+- Any DB migration
+- Any scheduler lease/claim policy change
+- Any hidden mailbox, side channel, or second runtime kernel
+- Any automatic target-output merge/deploy/release authority
+
+These phases are described in `docs/NEXT_DECISION.md`. AR-0 does not implement them, does not claim they are implemented, and does not create infrastructure that presupposes a specific implementation.
 
 ## Dashboard Boundary
 
