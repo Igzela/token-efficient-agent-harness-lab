@@ -4,8 +4,8 @@ use std::time::Duration;
 
 use engine::provider::adaptive_execution::{
     AdaptiveExecutionExecutor, AdaptiveExecutionGate, AdaptiveExecutionKillSwitch,
-    PersistingAdaptiveProviderNodeExecutor,
 };
+use engine::provider::adaptive_observation::PersistingAdaptiveProviderNodeExecutor;
 use engine::provider::{Provider, ProviderAuditRecorder};
 use engine::scheduler::{SchedulerConfig, WorkflowScheduler};
 use engine::storage::local_product_store::LocalProductStore;

@@ -17,7 +17,7 @@ Default posture:
 - No process/container/VM sandbox isolation is implemented; V2-1 is scoped to app-owned workspace confinement unless separately approved.
 - Supervised execution operates only in app-owned detached workspaces and remains explicitly gated.
 
-This file is authoritative for current architecture and safety boundaries. Operational procedures are in `docs/RUNBOOK.md`. Archived security and safety notes under `docs/archive/security/` are historical reference; revive or replace them only for an approved boundary-expansion track.
+This file is authoritative for current architecture and safety boundaries. Operational procedures are in `docs/RUNBOOK.md`. Archived security, safety, and other historical notes under `docs/archive/` are reference-only; revive or replace them only for an approved boundary-expansion track.
 
 ## Runtime Shape
 
@@ -176,13 +176,4 @@ ACP_TEST_DATABASE_URL=postgres://user:pass@localhost:5432/testdb cargo test -p e
 
 ## Historical References
 
-Archived materials are retained for audit/history, not daily reading:
-
-- `docs/archive/dispatch/DISPATCHER_KERNEL_V0_ARCHITECTURE.md`
-- `docs/archive/strategy/DYNAMIC_GLOBAL_REGULATOR_PLAN.md`
-- `docs/archive/ops/DATA_DIRECTORY.md`
-- `docs/archive/security/`
-- `docs/archive/SESSION_START_HERE.md`
-- `docs/archive/DOCS_INVENTORY.md`
-- `docs/archive/phase-closeouts/`
-- `docs/archive/validation/LIVE_E2E_VALIDATION_REPORT.md`
+Archived materials are retained for audit/history, not daily reading. See `docs/archive/` for the retained index and release-tagged artifacts.

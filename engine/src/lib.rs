@@ -1,7 +1,6 @@
 #![allow(clippy::derivable_impls)]
 #![allow(clippy::too_many_arguments)]
 #![allow(clippy::unnecessary_map_or)]
-#![allow(dead_code)]
 #![recursion_limit = "256"]
 
 pub mod budget_manager;
@@ -14,12 +13,12 @@ pub mod ecosystem;
 pub mod errors;
 pub mod evaluation_stub;
 pub mod event_schema;
-pub mod event_source;
+pub(crate) mod event_source;
 pub mod executor;
 pub mod executor_adapter;
 pub mod executor_pool;
 pub mod feedback;
-pub mod harness;
+pub(crate) mod harness;
 pub mod http_server;
 pub mod infrastructure;
 pub mod model_selector;

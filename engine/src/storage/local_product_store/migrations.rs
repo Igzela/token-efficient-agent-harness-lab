@@ -2,6 +2,7 @@ use rusqlite::Connection;
 
 use super::{schema, LocalProductStore};
 
+#[allow(dead_code)]
 pub(super) const CURRENT_SCHEMA_VERSION: i64 = schema::CURRENT_SQLITE_SCHEMA_VERSION;
 
 impl LocalProductStore {

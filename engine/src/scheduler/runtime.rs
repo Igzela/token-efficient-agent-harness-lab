@@ -84,6 +84,7 @@ impl SchedulerModules {
     }
 }
 
+#[allow(dead_code)]
 pub(super) fn scheduler_tick(
     store: &LocalProductStore,
     config: &SchedulerConfig,

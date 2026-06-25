@@ -1,7 +1,9 @@
-pub mod constants;
-pub mod shadow;
-pub mod types;
-pub mod validation;
+#![allow(dead_code, unused_imports)]
+
+pub(crate) mod constants;
+pub(crate) mod shadow;
+pub(crate) mod types;
+pub(crate) mod validation;
 
 pub use constants::{
     CACHE_STRATEGY, CREDENTIAL_KEYWORDS, ENFORCEMENT_SCOPES, FALLBACK_POLICY, JSON_TOLERANCE,

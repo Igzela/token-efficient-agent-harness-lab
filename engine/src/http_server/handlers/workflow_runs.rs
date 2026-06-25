@@ -500,7 +500,7 @@ pub(crate) async fn api_tick_workflow_run(
                         crate::feedback::AdaptiveAutoPromotionGate::from_effective_gates(
                             &effective_gates,
                         );
-                    crate::provider::adaptive_execution::persist_adaptive_observation_with_gate(
+                    crate::provider::adaptive_observation::persist_adaptive_observation_with_gate(
                         &store,
                         &executor,
                         actor,

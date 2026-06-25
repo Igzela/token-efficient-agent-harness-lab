@@ -696,6 +696,7 @@ fn panic_message(payload: &Box<dyn std::any::Any + Send>) -> String {
     }
 }
 
+#[allow(dead_code)]
 struct TickResult {
     ticks: u64,
     retries: u64,
@@ -708,6 +709,7 @@ struct TickResult {
 }
 
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 struct AdaptationRecommendation {
     pub task_group: String,
     pub should_adapt: bool,

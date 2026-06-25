@@ -168,6 +168,7 @@ fn first_f64(value: &Value, paths: &[&[&str]]) -> Option<f64> {
         .find_map(|path| value_at(value, path).and_then(Value::as_f64))
 }
 
+#[allow(dead_code)]
 fn first_i64(value: &Value, paths: &[&[&str]]) -> Option<i64> {
     paths
         .iter()

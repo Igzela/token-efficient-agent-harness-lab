@@ -16,10 +16,11 @@ use crate::http_server::state::AxumApiState;
 use crate::http_server::AdaptiveFusionCompletionApiRequest;
 use crate::provider::adaptive_execution::{
     adaptive_runtime_hash_from_configs, build_adaptive_provider_runtime_from_configs,
-    maybe_auto_promote_from_observation_with_gate, parse_adaptive_provider_endpoints_json,
-    AdaptiveEndpointInvocation, AdaptiveExecutionGate, AdaptiveExecutionLimits,
-    AdaptiveExecutionPlan, AdaptiveExecutionRequest, ADAPTIVE_PROVIDER_ENDPOINTS_CONFIG_KEY,
+    parse_adaptive_provider_endpoints_json, AdaptiveEndpointInvocation, AdaptiveExecutionGate,
+    AdaptiveExecutionLimits, AdaptiveExecutionPlan, AdaptiveExecutionRequest,
+    ADAPTIVE_PROVIDER_ENDPOINTS_CONFIG_KEY,
 };
+use crate::provider::adaptive_observation::maybe_auto_promote_from_observation_with_gate;
 use crate::provider::{check_cost_gates, CostGateConfig};
 use crate::storage::local_product_store::{
     AdaptiveObservationInput, AdaptiveObservationSummary, LocalProductStore,

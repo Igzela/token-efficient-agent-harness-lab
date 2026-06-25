@@ -106,30 +106,6 @@ ALLOWED_TEST_IMPORTS: dict[str, set[str]] = {
     "scripts/acp_ops_check.py": {"urllib.error", "urllib.request"},
     "scripts/acp_restore_smoke.py": {"urllib.error", "urllib.request"},
     "scripts/smoke_native_runtime.py": {"socket", "urllib.error", "urllib.request"},
-    "scripts/trial4_real_use_pilot.py": {
-        "socket",
-        "urllib.error",
-        "urllib.parse",
-        "urllib.request",
-    },
-    "scripts/trial5_cli_execution_beta.py": {
-        "socket",
-        "urllib.error",
-        "urllib.parse",
-        "urllib.request",
-    },
-    "scripts/pilot_production_e2e.py": {
-        "urllib.request",
-        "urllib.error",
-    },
-    "scripts/pilot_cli_e2e.py": {
-        "urllib.request",
-        "urllib.error",
-    },
-    "scripts/pilot_dynamic_cli_matrix.py": {
-        "urllib.request",
-        "urllib.error",
-    },
     "scripts/soak_ops_drill.py": {
         "urllib.request",
         "urllib.error",

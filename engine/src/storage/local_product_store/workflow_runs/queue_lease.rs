@@ -1,3 +1,5 @@
+#![allow(dead_code)]
+
 use rusqlite::Row;
 use serde_json::{json, Value};
 

@@ -3,7 +3,7 @@
 
 Starts a local engine with CLI execution enabled, exercises the full capability
 matrix (auth, dispatch, workflow, supervised patch, audit, backup), and produces
-a validation report at docs/archive/validation/LIVE_E2E_VALIDATION_REPORT.md.
+a validation report at the configured output path.
 
 Usage:
     uv run --no-project python scripts/live_e2e_validation.py [--engine-bin PATH] [--timeout SECS]

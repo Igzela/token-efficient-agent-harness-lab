@@ -1317,6 +1317,7 @@ fn extract_executor_type(
     executor.executor_type_name().to_string()
 }
 
+#[allow(dead_code)]
 fn build_auto_fix_proposals(
     run_id: &str,
     failed_node_id: &str,
@@ -1391,6 +1392,7 @@ fn build_auto_fix_proposals(
     ]
 }
 
+#[allow(dead_code)]
 fn build_quality_review_proposals(
     run_id: &str,
     source_node_id: &str,

@@ -197,6 +197,7 @@ impl TaskRecordStore {
 // Validation helpers (inline, mirrors validators.py logic)
 // ---------------------------------------------------------------------------
 
+#[allow(dead_code)]
 #[derive(Clone, Debug, Default)]
 struct ValidationResult {
     ok: bool,

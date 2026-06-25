@@ -17,8 +17,9 @@ use engine::provider::adaptive_execution::{
     adaptive_provider_endpoint_configs_from_sources, build_adaptive_provider_runtime_from_configs,
     persisted_adaptive_provider_endpoint_configs, validate_adaptive_provider_endpoint_config,
     AdaptiveExecutionExecutor, AdaptiveExecutionGate, AdaptiveProviderEndpointConfig,
-    PersistingAdaptiveProviderNodeExecutor, ACP_ADAPTIVE_PROVIDER_ENDPOINTS_JSON,
+    ACP_ADAPTIVE_PROVIDER_ENDPOINTS_JSON,
 };
+use engine::provider::adaptive_observation::PersistingAdaptiveProviderNodeExecutor;
 use engine::provider::anthropic::AnthropicProvider;
 use engine::provider::audit::ProviderAuditRecorder;
 use engine::provider::circuit_breaker_provider::CircuitBreakerProvider;

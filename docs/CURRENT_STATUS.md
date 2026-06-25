@@ -42,7 +42,7 @@ The system is useful as an operations/control-plane lab for deterministic dispat
 - Release: the `v0.1.0` release workflow run `27891104370` is green; all eight published assets passed checksum/archive inspection.
 - Online install: the README installer fetched `v0.1.0` into an isolated home, verified the checksum, installed the runtime/dashboard, and passed health, dashboard API, and HTML smoke checks on 2026-06-21.
 - PostgreSQL integration tests are gated behind `cargo test -p engine --features pg-tests` with `ACP_TEST_DATABASE_URL`.
-- Live E2E validation evidence is archived at `docs/archive/validation/LIVE_E2E_VALIDATION_REPORT.md` with 48 PASS, 0 FAIL, 1 SKIP on 2026-06-12.
+- Live E2E validation evidence recorded 48 PASS, 0 FAIL, 1 SKIP on 2026-06-12 (archived).
 
 Handoff guard facts:
 
@@ -69,7 +69,7 @@ uv run --no-project python scripts/check_agent_handoff.py
 | HA Hardening HA-1 through HA-6 | Complete |
 | HybridExecutor with `ACP_EXECUTION_MODE` | Complete |
 | Dynamic Regulator MVP Phases 1-5 | Complete |
-| Phase 8 final GA seal | Complete; archived at `docs/archive/phase-closeouts/PHASE8_FINAL_COMPLETION_PLAN.md` |
+| Phase 8 final GA seal | Complete; archived |
 | Product Boundary Repair Track P0-P3 | Complete — PRs #64-#67 |
 | V2 Real Production Output Track | Complete — V2-0 through V2-5 merged in PRs #69-#75 |
 | Real Output Closeout | Complete — PRs #79-#81; `v0.1.0` published and online installer verified |

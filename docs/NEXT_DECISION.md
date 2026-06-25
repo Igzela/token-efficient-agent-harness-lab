@@ -124,7 +124,7 @@ AF-0 through AF-7 are complete.
 
 ## AF-6 Auto Fusion Plan
 
-Planning baseline: `docs/archive/strategy/AF6_CONTROLLED_AUTO_FUSION_PROPOSAL.md`.
+Planning baseline: retained in `docs/archive/`.
 
 AF-6 target flow:
 
