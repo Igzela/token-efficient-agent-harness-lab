@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
-import { ApiError, fetchCircuitBreakerStatus, fetchMetrics, fetchObservabilityMetrics } from "@/lib/api-client";
-import type { CircuitBreakerStatusResponse, ObservabilityMetricsResponse, OperationsMetrics } from "@/lib/types";
+import { ApiError, fetchCircuitBreakerStatus, fetchMetrics, fetchObservabilityMetrics, fetchStorageIntegrity } from "@/lib/api-client";
+import type { CircuitBreakerStatusResponse, ObservabilityMetricsResponse, OperationsMetrics, StorageIntegrityResponse } from "@/lib/types";
 import { EmptyState } from "./EmptyState";
 import { Metric } from "./Metric";
 import { StateBanner } from "./StateBanner";
@@ -31,6 +31,8 @@ export function Operations() {
   const [loading, setLoading] = useState(true);
   const [cbStatus, setCbStatus] = useState<CircuitBreakerStatusResponse | null>(null);
   const [obsMetrics, setObsMetrics] = useState<ObservabilityMetricsResponse | null>(null);
+  const [integrity, setIntegrity] = useState<StorageIntegrityResponse | null>(null);
+  const [integrityBusy, setIntegrityBusy] = useState(false);
 
   function load() {
     setLoading(true);
@@ -50,6 +52,18 @@ export function Operations() {
         setError(opsError(e));
       })
       .finally(() => setLoading(false));
+  }
+
+  async function handleIntegrityCheck() {
+    setIntegrityBusy(true);
+    try {
+      const result = await fetchStorageIntegrity();
+      setIntegrity(result);
+    } catch {
+      setError({ message: "Storage integrity check failed", type: "error" });
+    } finally {
+      setIntegrityBusy(false);
+    }
   }
 
   useEffect(() => {
@@ -184,6 +198,45 @@ export function Operations() {
               )}
             </div>
           )}
+
+          <div className="subcard stack">
+            <h3>Storage Integrity</h3>
+            <button onClick={handleIntegrityCheck} disabled={integrityBusy} type="button">
+              {integrityBusy ? "Checking..." : integrity ? "Re-check" : "Run Integrity Check"}
+            </button>
+            {integrity && (
+              <div style={{ marginTop: "8px" }}>
+                <div className="kv-row"><span className="muted">Status</span><span style={{ fontWeight: 600, color: integrity.integrity.status === "ok" ? "var(--color-ok, #27ae60)" : "var(--color-risk, #e74c3c)" }}>{integrity.integrity.status}</span></div>
+                <div className="kv-row"><span className="muted">Schema</span><span>v{integrity.integrity.schema_version}</span></div>
+                <details>
+                  <summary style={{ cursor: "pointer", fontSize: "0.85rem" }}>
+                    Tables ({integrity.integrity.tables.length})
+                  </summary>
+                  <table>
+                    <thead>
+                      <tr><th>Table</th><th>Rows</th><th>Status</th></tr>
+                    </thead>
+                    <tbody>
+                      {integrity.integrity.tables.map((t) => (
+                        <tr key={t.name}>
+                          <td>{t.name}</td>
+                          <td>{t.row_count}</td>
+                          <td>
+                            <span style={{
+                              color: t.status === "ok" ? "var(--color-ok, #27ae60)" : "var(--color-risk, #e74c3c)",
+                              fontWeight: 600,
+                            }}>
+                              {t.status}
+                            </span>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </details>
+              </div>
+            )}
+          </div>
 
           {cbStatus && cbStatus.total_breakers > 0 && (
             <div className="subcard stack">
