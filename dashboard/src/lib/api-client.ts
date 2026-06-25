@@ -11,6 +11,7 @@ import type {
   AutoAdjustmentsReport,
   AutoAdjustmentApplyResult,
   BackupVerification,
+  CircuitBreakerStatusResponse,
   DispatchMetricsResponse,
   DecisionDetailResponse,
   DecisionListResponse,
@@ -275,6 +276,10 @@ export async function fetchAudit(params: {
   search?: string;
 } = {}): Promise<AuditListResponse> {
   return fetchJson<AuditListResponse>(withQuery("/api/v1/audit", params));
+}
+
+export async function fetchCircuitBreakerStatus(): Promise<CircuitBreakerStatusResponse> {
+  return fetchJson<CircuitBreakerStatusResponse>(`${BASE}/api/v1/circuit-breaker/status`);
 }
 
 export async function fetchMetrics(): Promise<OperationsMetrics> {

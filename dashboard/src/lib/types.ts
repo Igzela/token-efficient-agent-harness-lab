@@ -1389,6 +1389,27 @@ export interface AutoAdjustmentApplyResult {
   rollback_endpoint?: string;
 }
 
+export interface CircuitBreakerSnapshot {
+  name: string;
+  state: "Closed" | "Open" | "HalfOpen" | string;
+  failure_count: number;
+  success_count: number;
+  total_calls: number;
+  failure_threshold: number;
+  recovery_timeout_ms: number;
+  last_failure_at: string | null;
+  consecutive_successes_in_half_open: number;
+}
+
+export interface CircuitBreakerStatusResponse {
+  schema_version: string;
+  total_breakers: number;
+  open: number;
+  half_open: number;
+  closed: number;
+  breakers: CircuitBreakerSnapshot[];
+}
+
 export interface RegulatorStateResponse {
   schema_version: string;
   regulator: {
