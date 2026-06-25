@@ -12,6 +12,8 @@ use crate::provider::redaction::{
     contains_sensitive_patterns, redact_secrets, redact_sensitive_patterns,
 };
 
+mod authority;
+
 pub const TARGET_REPO_OUTPUT_SCHEMA_VERSION: &str = "target_repo_output.v1";
 const DEFAULT_TIMEOUT_MS: u64 = 30_000;
 const MAX_GIT_OUTPUT_BYTES: usize = 2 * 1024 * 1024;
@@ -69,13 +71,7 @@ impl TargetRepoOutputConfig {
     }
 
     pub fn require_enabled(&self) -> Result<(), String> {
-        if self.kill_switch {
-            return Err("target repo output kill switch is active".to_string());
-        }
-        if !self.enabled {
-            return Err("target repo output requires ACP_ENABLE_TARGET_REPO_OUTPUT=1".to_string());
-        }
-        Ok(())
+        authority::require_target_output_enabled(self)
     }
 }
 
@@ -203,7 +199,7 @@ pub fn parse_github_repository_url(url: &str) -> Result<GitHubRepository, String
     }
     let owner = segments[0];
     let repository = segments[1].strip_suffix(".git").unwrap_or(segments[1]);
-    if !valid_github_slug(owner) || !valid_github_slug(repository) {
+    if !authority::valid_github_slug(owner) || !authority::valid_github_slug(repository) {
         return Err("GitHub owner or repository is invalid".to_string());
     }
     Ok(GitHubRepository {
@@ -231,19 +227,7 @@ pub async fn create_or_reuse_github_pull_request(
     request: &GitHubPullRequestRequest,
 ) -> Result<GitHubPullRequestOutput, String> {
     config.require_enabled()?;
-    if request.repository.host != "github.com" {
-        return Err("GitHub PR output currently supports github.com remotes only".to_string());
-    }
-    for (field, value, max_len) in [
-        ("head_branch", request.head_branch.as_str(), 200_usize),
-        ("base_branch", request.base_branch.as_str(), 200_usize),
-        ("title", request.title.as_str(), 200_usize),
-        ("body", request.body.as_str(), 64 * 1024_usize),
-    ] {
-        if value.trim().is_empty() || value.len() > max_len || contains_sensitive_patterns(value) {
-            return Err(format!("{field} exceeds safety limits"));
-        }
-    }
+    authority::validate_github_pr_request(request)?;
 
     let token = config.token.as_deref().unwrap_or_default();
     let client = reqwest::Client::builder()
@@ -323,16 +307,6 @@ fn github_pull_request_output(
     })
 }
 
-fn valid_github_slug(value: &str) -> bool {
-    !value.is_empty()
-        && value.len() <= 100
-        && !value.starts_with('-')
-        && !value.ends_with('-')
-        && value.chars().all(|character| {
-            character.is_ascii_alphanumeric() || matches!(character, '-' | '_' | '.')
-        })
-}
-
 pub fn prepare_git_worktree(
     config: &TargetRepoOutputConfig,
     target_repo_path: &Path,
@@ -340,7 +314,7 @@ pub fn prepare_git_worktree(
     source_revision: &str,
 ) -> Result<GitWorkspaceInfo, String> {
     config.require_enabled()?;
-    validate_source_revision(source_revision)?;
+    authority::validate_source_revision(source_revision)?;
     let target_repo = canonical_existing_dir(target_repo_path, "target_repo_path")?;
     ensure_absolute_clean(workspace_path, "workspace_path")?;
     if workspace_path.exists() {
@@ -499,7 +473,7 @@ pub fn staged_changed_files(
     }
     for pair in fields.chunks_exact(2) {
         let status = pair[0];
-        let path = normalize_git_path(pair[1])?;
+        let path = authority::normalize_git_path(pair[1])?;
         if status != "D" {
             let metadata = std::fs::symlink_metadata(workspace.join(&path))
                 .map_err(|error| format!("changed path metadata unavailable: {error}"))?;
@@ -550,37 +524,7 @@ pub fn push_approved_branch(
     config.require_enabled()?;
     validate_branch_name(config, &request.workspace_path, &request.branch_name)?;
     validate_remote(config, &request.workspace_path, &request.remote)?;
-    for (field, value) in [
-        ("commit_message", request.commit_message.as_str()),
-        ("pr_title", request.pr_title.as_str()),
-        ("pr_body", request.pr_body.as_str()),
-    ] {
-        if value.trim().is_empty() {
-            return Err(format!("{field} must not be empty"));
-        }
-        if contains_sensitive_patterns(value) {
-            return Err(format!("{field} contains sensitive content"));
-        }
-    }
-    if request.commit_message.len() > 500
-        || request
-            .commit_message
-            .chars()
-            .any(|character| character == '\0')
-    {
-        return Err("commit_message exceeds safety limits".to_string());
-    }
-    if request.pr_title.len() > 200
-        || request
-            .pr_title
-            .chars()
-            .any(|character| matches!(character, '\0' | '\n' | '\r'))
-    {
-        return Err("pr_title exceeds safety limits".to_string());
-    }
-    if request.pr_body.len() > 64 * 1024 || request.pr_body.contains('\0') {
-        return Err("pr_body exceeds safety limits".to_string());
-    }
+    authority::validate_publish_text(&request.commit_message, &request.pr_title, &request.pr_body)?;
 
     let target_repo = canonical_existing_dir(&request.target_repo_path, "target_repo_path")?;
     let workspace = canonical_existing_dir(&request.workspace_path, "workspace_path")?;
@@ -739,51 +683,13 @@ fn validate_branch_name(
     workspace: &Path,
     branch_name: &str,
 ) -> Result<(), String> {
-    if !branch_name.starts_with("acp/") || branch_name.len() <= 4 {
-        return Err("output branch must use the acp/ prefix".to_string());
-    }
-    if branch_name.len() > 200
-        || branch_name.contains("..")
-        || branch_name.chars().any(char::is_whitespace)
-    {
-        return Err("invalid output branch name".to_string());
-    }
+    authority::validate_branch_policy(branch_name)?;
     run_git(
         config,
         workspace,
         &["check-ref-format", "--branch", branch_name],
     )?;
     Ok(())
-}
-
-fn validate_source_revision(source_revision: &str) -> Result<(), String> {
-    if source_revision.is_empty()
-        || source_revision.len() > 200
-        || source_revision.starts_with('-')
-        || source_revision.chars().any(char::is_whitespace)
-        || source_revision.chars().any(char::is_control)
-    {
-        return Err("invalid source revision".to_string());
-    }
-    Ok(())
-}
-
-fn normalize_git_path(path: &str) -> Result<String, String> {
-    let candidate = Path::new(path);
-    if candidate.is_absolute()
-        || candidate
-            .components()
-            .any(|component| !matches!(component, Component::Normal(_)))
-        || path.contains('\\')
-        || path.contains('\n')
-        || path.contains('\r')
-    {
-        return Err("git changed path is not normalized".to_string());
-    }
-    if contains_sensitive_patterns(path) {
-        return Err("git changed path contains sensitive content".to_string());
-    }
-    Ok(path.to_string())
 }
 
 fn validate_staged_file_content(
@@ -805,7 +711,7 @@ fn validate_staged_file_content(
         return Err("git changed-file output exceeded limit".to_string());
     }
     for path in output.stdout.split('\0').filter(|path| !path.is_empty()) {
-        let path = normalize_git_path(path)?;
+        let path = authority::normalize_git_path(path)?;
         validate_changed_file_content(workspace, &path)?;
     }
     Ok(())
@@ -908,53 +814,12 @@ fn validate_remote(
     workspace: &Path,
     remote: &str,
 ) -> Result<(), String> {
-    if remote.is_empty()
-        || remote.len() > 128
-        || remote.starts_with('-')
-        || !remote.chars().all(|character| {
-            character.is_ascii_alphanumeric() || matches!(character, '-' | '_' | '.')
-        })
-    {
-        return Err("invalid git remote name".to_string());
-    }
-    if !config.allowed_remotes.contains(remote) {
-        return Err(format!("git remote is not allowlisted: {remote}"));
-    }
+    authority::validate_remote_name(config, remote)?;
     let url = run_git(config, workspace, &["remote", "get-url", remote])?
         .stdout
         .trim()
         .to_string();
-    if url.starts_with("ext::") || url.contains('\n') || url.contains('\r') {
-        return Err("unsafe git remote URL".to_string());
-    }
-    let path = Path::new(&url);
-    if path.is_absolute() {
-        if config.allow_local_remote {
-            return Ok(());
-        }
-        return Err("local git remotes require ACP_TARGET_REPO_ALLOW_LOCAL_REMOTE=1".to_string());
-    }
-    if !url.starts_with("https://") {
-        return Err("network git remotes must use HTTPS".to_string());
-    }
-    let authority = url
-        .strip_prefix("https://")
-        .and_then(|rest| rest.split('/').next())
-        .unwrap_or("");
-    if authority.contains('@') {
-        return Err("git remote URL must not contain embedded credentials".to_string());
-    }
-    let host = remote_host(&url).ok_or_else(|| "unsupported git remote URL".to_string())?;
-    if !config.allowed_remote_hosts.contains(host) {
-        return Err(format!("git remote host is not allowlisted: {host}"));
-    }
-    if config.git_token.is_none() {
-        return Err(
-            "HTTPS git push requires ACP_TARGET_REPO_GIT_TOKEN_ENV to reference a populated token"
-                .to_string(),
-        );
-    }
-    Ok(())
+    authority::validate_remote_url_policy(config, &url)
 }
 
 fn remote_host(url: &str) -> Option<&str> {
