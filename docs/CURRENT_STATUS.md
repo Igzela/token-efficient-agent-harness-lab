@@ -1,6 +1,6 @@
 # Current Status
 
-Last updated: 2026-06-23. V2-0 through V2-5, the Real Output Closeout, and Adaptive Fusion AF-0 through AF-7 are complete; `v0.1.0` is published and its online installer path is verified.
+Last updated: 2026-06-25. V2-0 through V2-5, the Real Output Closeout, Adaptive Fusion AF-0 through AF-7, and Trusted Local Autonomous Execution IAE-0 through IAE-3 are complete; `v0.1.0` is published and its online installer path is verified.
 
 ## Summary
 
@@ -14,6 +14,7 @@ The system is useful as an operations/control-plane lab for deterministic dispat
 - `dashboard/` is the local operations console with guarded app-owned controls. Mission Control exposes the V2-5 product output path and Adaptive Fusion exposes AF-4 policy evidence, AF-6 completion testing, routing metadata, gate status, experiment/promotion status, kill cues, rollback controls, and secret-safe adaptive provider endpoint configuration over existing guarded APIs; release/deploy/apply actions remain unavailable.
 - TypeScript and Python SDKs cover REST access to dispatch, workflow, config, team, cost, audit, backup/export, supervised patches, and V2-3 target output. The TypeScript SDK also covers Adaptive Fusion policy controls, the guarded completion endpoint, provider endpoint configuration, and dashboard operator status typing.
 - Provider execution is available through the recommended ready `ACP_TRUSTED_LOCAL_PROFILE=1` profile, with legacy `ACP_ENABLE_PROVIDER_EXECUTION=1` still supported for standalone operation.
+- Single-provider execution keeps `ACP_MODEL` authoritative. When `ACP_MODEL` is absent, the runtime can derive the model from the current project's Claude Code JSON config (`$HOME/.claude.json`, or `ACP_CLAUDE_CODE_CONFIG_PATH`) using an explicit project model or safe recent `lastModelUsage` key before falling back to `default`.
 - Adaptive Fusion AF-0 can produce deterministic `efficient` or `quality` single/fusion plans from normalized endpoint observations, but cannot influence live routing or call providers.
 - Adaptive Fusion AF-1 can hot-add/update/disable bounded endpoint metadata and emit deterministic secret-safe snapshots; it has no database, HTTP, credential-resolution, network, or execution path.
 - Adaptive Fusion AF-2 can adapt existing run traces into bounded offline endpoint/portfolio observations, aggregate evidence by task class, compute Pareto frontiers, calibrate judge bias, and emit `efficient`/`quality` shadow recommendations without changing routing.
@@ -34,15 +35,15 @@ The system is useful as an operations/control-plane lab for deterministic dispat
 
 ## Last Recorded Verification
 
-- Branch: `main` includes persisted trusted-local adaptive feedback gate repair merge `d390a4a` from PR #117 and status refresh commit `19f7a4d`; this status was refreshed after green main CI run `28116952179`.
-- Tests: full Rust + TypeScript stack verification, 52 Python SDK tests, 159 HTTP server tests, 10 adaptive completion API tests, focused trusted-local/adaptive/provider-executor tests, rustfmt, Clippy, handoff, wire drift, dashboard boundary lint, production-like persisted-config preflight, and `git diff --check` passed with 0 failures; recent full main CI evidence includes run `28116952179`. The supervised patch CLI repair test and Trial 4/5 CLI pilot stubs remain hardened for noexec `/tmp` environments by keeping fake CLI executables under `target/`.
+- Branch: latest verified `main` includes direct cleanup commit `0b7d958`; the preceding cleanup run failed until Python tests were updated for deleted files.
+- Tests: full Rust + TypeScript stack verification, Python SDK tests, split HTTP server tests, adaptive completion API tests, focused trusted-local/adaptive/provider-executor tests, rustfmt, Clippy, handoff, wire drift, dashboard boundary lint, production-like persisted-config preflight, and `git diff --check` passed with 0 failures; recent full main CI evidence includes run `28158603008`.
 - Browser/runtime: authenticated stub runtime showed effective authority, 3% experiment traffic, configured cost/worker ceilings, one safe observation, redacted adaptive/scheduler audit actions, and functional confirmed pause/resume controls. Separate runtime checks verified invalid policy fail-closed blockers, storage-aware completion readiness, and raw requested adaptive gates remaining visually distinct from effective fail-closed authority; desktop and 390px mobile had no horizontal overflow or console errors.
 - Security: repository secret scan returned 0 findings; handoff, rustfmt, Clippy, dashboard boundary lint, TypeScript typecheck/build, and `git diff --check` passed.
-- CI: persisted trusted-local adaptive feedback gate repair PR #117 run `28115981080`, post-merge main run `28116439730`, and status-refresh main run `28116952179` were green across all seven jobs. The preceding scheduler gate main run `28114701272`, persisted workflow gate main run `28011294700`, autonomy-policy main run `28010547977`, and persisted provider-config main run `27999545331` were also green.
+- CI: latest main run `28158603008` is green across all seven jobs: docker-build, python-tests, native-runtime, rust-tests, typescript-tests, rust-typescript-cutover, and pg-integration-tests.
 - Release: the `v0.1.0` release workflow run `27891104370` is green; all eight published assets passed checksum/archive inspection.
 - Online install: the README installer fetched `v0.1.0` into an isolated home, verified the checksum, installed the runtime/dashboard, and passed health, dashboard API, and HTML smoke checks on 2026-06-21.
 - PostgreSQL integration tests are gated behind `cargo test -p engine --features pg-tests` with `ACP_TEST_DATABASE_URL`.
-- Live E2E validation evidence recorded 48 PASS, 0 FAIL, 1 SKIP on 2026-06-12 (archived).
+- Live E2E validation evidence recorded 48 PASS, 0 FAIL, 1 SKIP on 2026-06-12. Archived long-form reports and historical phase docs are now retained in git history rather than the working tree.
 
 Handoff guard facts:
 
@@ -83,7 +84,7 @@ uv run --no-project python scripts/check_agent_handoff.py
 | Adaptive Fusion Routing Track | AF-0 through AF-7 implemented; existing runtime gates remain active |
 | Trusted Local Autonomous Execution Track | Complete through IAE-3 |
 
-Historical phase plans, closeouts, and long-form validation reports are retained under `docs/archive/`.
+Historical phase plans, closeouts, and long-form validation reports are retained in release-tagged git history; `docs/archive/README.md` is the working-tree index.
 
 ## Active Capability
 
@@ -113,7 +114,7 @@ Historical phase plans, closeouts, and long-form validation reports are retained
 - V2-4 bounded workers: scheduler startup requires both scheduler and supervised-worker env gates; worker count is bounded by global concurrency and 32; each worker claims at most one node per cycle through the existing atomic DB lease; heartbeat metadata exposes worker state; stale recovery is audited; `dispatch:execute` plus confirmation controls pause/resume/kill; env pause and kill switches remain available.
 - Verification/repair: `/supervised-patch/workspaces/{id}/verify` runs allowlisted test tools in the app-owned workspace, stores redacted/capped evidence, and can invoke at most two CLI repair attempts before output remains blocked.
 - V2-5 product output UX: the first navigation group is `Tasks / Runs / Outputs`; operational/admin tabs are secondary and collapsed. The task surface defaults to local Codex CLI and keeps task, workspace, approval, and branch/PR output in one path.
-- Real output pilots: `scripts/real_output_pilots.py` completed Python, Rust, and Node repositories through real Claude CLI execution, real tests, artifact capture, approval, and three distinct `acp/*` branches. All three verification runs passed on the first attempt and all target `main` refs remained unchanged. Evidence: `/tmp/acp-real-output-pilots-e2qi2dmx/summary.json`.
+- Real output pilots: `scripts/real_output_pilots.py` completed Python, Rust, and Node repositories through real Claude CLI execution, real tests, artifact capture, approval, and three distinct `acp/*` branches. All three verification runs passed on the first attempt and all target `main` refs remained unchanged. Older one-off pilot scripts were removed; use `scripts/real_output_pilots.py` or `scripts/live_e2e_validation.py` for current validation.
 - Release contract: canonical assets use `agent-control-plane-v0.1.0-<rust-target>.tar.gz` with a same-name top-level directory. Local packaging and `scripts/smoke_release.sh 0.1.0` passed 16 checks.
 - Local storage: SQLite default with PostgreSQL optional via `ACP_DATABASE_URL`; schema version is documented in `docs/ARCHITECTURE_BOOK.md`.
 - Operations: health, metrics, backups, restore smoke, circuit breaker state, audit log, and release-readiness checks.
@@ -123,6 +124,7 @@ Historical phase plans, closeouts, and long-form validation reports are retained
 ## Current Gaps
 
 - Engine/API/SDK/dashboard output is end to end for a supplied git repo: natural-language CLI execution, controlled worktree, real verification with bounded repair, artifact evidence, approval, patch/branch output, and optional GitHub PR creation.
+- True multi-agent runtime semantics are not implemented yet: agent identity/state, mailbox delivery, agent step loops, self-planning, handoff/delegation, cross-agent review/debate, and concurrent multi-agent scheduling are planned in the Agent Runtime track in `docs/NEXT_DECISION.md`.
 - Product fit is stronger for local operations/research than for public-facing production UX.
 - The UI is task-first, while detailed operations and administration remain available as secondary views.
 - Security posture is suitable for local/small-team self-hosting only; hosted/multi-tenant use would require a new threat model and approved implementation plan.
@@ -140,6 +142,6 @@ Active documentation is intentionally small:
 - `docs/REAL_WORLD_TESTING_PLAYBOOK.md` — branch/PR/CI/maintenance workflow
 - `docs/RUNBOOK.md` — operator procedures
 
-All other Markdown under `docs/` is historical or low-frequency reference material in `docs/archive/`.
+Historical long-form Markdown under `docs/archive/` was removed from the working tree during cleanup and remains available through release-tagged git history. `docs/archive/README.md` is the retained index placeholder.
 
 Do not add new roadmap, next-step, closeout, status, or productization documents unless the user explicitly asks for a new artifact. Prefer editing, shortening, or archiving existing docs.

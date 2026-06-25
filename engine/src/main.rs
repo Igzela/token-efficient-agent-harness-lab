@@ -37,6 +37,9 @@ use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
+const ACP_CLAUDE_CODE_CONFIG_PATH: &str = "ACP_CLAUDE_CODE_CONFIG_PATH";
+const DEFAULT_PROVIDER_MODEL: &str = "default";
+
 #[tokio::main]
 async fn main() {
     tracing_subscriber::fmt::init();
@@ -418,6 +421,75 @@ fn env_enabled(key: &str) -> bool {
         .unwrap_or(false)
 }
 
+fn provider_model_from_env() -> String {
+    if let Ok(model) = std::env::var("ACP_MODEL") {
+        let trimmed = model.trim();
+        if !trimmed.is_empty() {
+            return trimmed.to_string();
+        }
+    }
+    claude_code_config_model_for_current_dir().unwrap_or_else(|| DEFAULT_PROVIDER_MODEL.to_string())
+}
+
+fn claude_code_config_model_for_current_dir() -> Option<String> {
+    let config_path = claude_code_config_path()?;
+    let current_dir = std::env::current_dir().ok()?;
+    let raw = std::fs::read_to_string(config_path).ok()?;
+    let config: serde_json::Value = serde_json::from_str(&raw).ok()?;
+    claude_code_config_model_for_project(&config, &current_dir)
+}
+
+fn claude_code_config_path() -> Option<PathBuf> {
+    if let Ok(path) = std::env::var(ACP_CLAUDE_CODE_CONFIG_PATH) {
+        let trimmed = path.trim();
+        if !trimmed.is_empty() {
+            return Some(PathBuf::from(trimmed));
+        }
+    }
+    let home = std::env::var("HOME").ok()?;
+    Some(PathBuf::from(home).join(".claude.json"))
+}
+
+fn claude_code_config_model_for_project(
+    config: &serde_json::Value,
+    project_dir: &Path,
+) -> Option<String> {
+    let project_key = project_dir.to_string_lossy();
+    let project = config
+        .get("projects")
+        .and_then(serde_json::Value::as_object)
+        .and_then(|projects| projects.get(project_key.as_ref()))?;
+    project
+        .get("model")
+        .and_then(serde_json::Value::as_str)
+        .and_then(valid_claude_code_model)
+        .or_else(|| {
+            project
+                .get("lastModelUsage")
+                .and_then(serde_json::Value::as_object)
+                .and_then(|usage| {
+                    usage
+                        .keys()
+                        .find_map(|model| valid_claude_code_model(model))
+                })
+        })
+}
+
+fn valid_claude_code_model(value: &str) -> Option<String> {
+    let trimmed = value.trim();
+    if trimmed.is_empty()
+        || trimmed.len() > 160
+        || engine::provider::redaction::contains_sensitive_patterns(trimmed)
+        || !trimmed
+            .chars()
+            .all(|character| character.is_ascii_alphanumeric() || "-_.:/@[]".contains(character))
+    {
+        None
+    } else {
+        Some(trimmed.to_string())
+    }
+}
+
 fn validate_adaptive_startup(
     adaptive_enabled: bool,
     provider_enabled: bool,
@@ -448,7 +520,7 @@ fn adaptive_single_provider_validation_required(
 fn validate_adaptive_single_provider_from_env() -> Result<(), String> {
     let provider_type = std::env::var("ACP_PROVIDER_TYPE")
         .map_err(|_| "ACP_PROVIDER_TYPE is required".to_string())?;
-    let model = std::env::var("ACP_MODEL").unwrap_or_else(|_| "default".to_string());
+    let model = provider_model_from_env();
     let base_url = std::env::var("ACP_BASE_URL").ok();
     let credential_env = std::env::var("ACP_API_KEY").ok();
     let endpoint_id = match provider_type.as_str() {
@@ -616,7 +688,7 @@ fn build_state_with_provider(
     }
 
     let api_key_env = std::env::var("ACP_API_KEY").unwrap_or_default();
-    let model = std::env::var("ACP_MODEL").unwrap_or_else(|_| "default".to_string());
+    let model = provider_model_from_env();
     let base_url = std::env::var("ACP_BASE_URL").unwrap_or_default();
     let pricing = provider_pricing_from_env();
     if !pricing.configured() {
@@ -800,7 +872,7 @@ fn build_provider_for_engine(
     }
 
     let api_key_env = std::env::var("ACP_API_KEY").unwrap_or_default();
-    let model = std::env::var("ACP_MODEL").unwrap_or_else(|_| "default".to_string());
+    let model = provider_model_from_env();
     let base_url = std::env::var("ACP_BASE_URL").unwrap_or_default();
     let pricing = provider_pricing_from_env();
 
@@ -997,6 +1069,7 @@ mod tests {
             "ACP_ADMIN_API_KEY",
             "ACP_PROVIDER_TYPE",
             "ACP_MODEL",
+            ACP_CLAUDE_CODE_CONFIG_PATH,
             ACP_ADAPTIVE_PROVIDER_ENDPOINTS_JSON,
             "ACP_COST_PER_DISPATCH_USD",
             "ACP_COST_DAILY_USD",
@@ -1052,7 +1125,7 @@ mod tests {
             "openai-env",
             "openai_compatible",
             Some("https://api.example.com/v1"),
-            "quality-model",
+            "mimo-v2.5-pro[1M]",
             Some("OPENAI_KEY"),
             true,
         )
@@ -1100,6 +1173,62 @@ mod tests {
         assert!(!single_provider_execution_enabled_from_parts(
             false, false, true
         ));
+    }
+
+    #[test]
+    fn provider_model_prefers_explicit_env() {
+        let _guard = main_env_lock().lock().unwrap();
+        clear_trusted_provider_env();
+        std::env::set_var("ACP_MODEL", "explicit-model");
+
+        assert_eq!(provider_model_from_env(), "explicit-model");
+        clear_trusted_provider_env();
+    }
+
+    #[test]
+    fn provider_model_reads_current_project_claude_code_config() {
+        let _guard = main_env_lock().lock().unwrap();
+        clear_trusted_provider_env();
+        let original_dir = std::env::current_dir().unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let project_dir = dir.path().join("project");
+        std::fs::create_dir(&project_dir).unwrap();
+        let config_path = dir.path().join("claude.json");
+        let config = serde_json::json!({
+            "projects": {
+                project_dir.to_string_lossy().as_ref(): {
+                    "model": "mimo-v2.5-pro[1M]"
+                }
+            }
+        });
+        std::fs::write(&config_path, config.to_string()).unwrap();
+        std::env::set_var(ACP_CLAUDE_CODE_CONFIG_PATH, &config_path);
+        std::env::set_current_dir(&project_dir).unwrap();
+
+        assert_eq!(provider_model_from_env(), "mimo-v2.5-pro[1M]");
+
+        std::env::set_current_dir(original_dir).unwrap();
+        clear_trusted_provider_env();
+    }
+
+    #[test]
+    fn claude_code_config_model_falls_back_to_valid_usage_key() {
+        let project_dir = PathBuf::from("/tmp/acp-project");
+        let config = serde_json::json!({
+            "projects": {
+                "/tmp/acp-project": {
+                    "lastModelUsage": {
+                        "mimo-v2.5": {"inputTokens": 1},
+                        "mimo-v2.5-pro[1M]": {"inputTokens": 2}
+                    }
+                }
+            }
+        });
+
+        assert_eq!(
+            claude_code_config_model_for_project(&config, &project_dir).as_deref(),
+            Some("mimo-v2.5")
+        );
     }
 
     #[test]

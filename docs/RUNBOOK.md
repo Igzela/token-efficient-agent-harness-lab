@@ -84,6 +84,8 @@ curl -s -X POST http://127.0.0.1:8080/api/v1/dispatch \
 
 Provider execution is enabled by the recommended ready trusted-local profile, or by the standalone legacy `ACP_ENABLE_PROVIDER_EXECUTION=1` gate. Target output remains off unless `ACP_ENABLE_TARGET_REPO_OUTPUT=1`; when enabled, it is limited to a controlled app-owned git worktree, patch export, or approval-bound `acp/*` branch push. It never writes the registered target working tree or `main`.
 
+For single-provider execution through `ACP_PROVIDER_TYPE=openai_compatible` or `ACP_PROVIDER_TYPE=anthropic`, `ACP_MODEL` is still the explicit override. When `ACP_MODEL` is unset, the runtime reads the current project's Claude Code JSON config from `$HOME/.claude.json`, or from `ACP_CLAUDE_CODE_CONFIG_PATH` when set, and uses the configured project model or a safe recent `lastModelUsage` key. The fallback never reads or stores provider secrets; endpoint JSON and dashboard-managed adaptive endpoints still require explicit model bindings.
+
 ### Adaptive Fusion provider routing
 
 The recommended trusted-local path enables bounded internal provider execution, adaptive routing, experiments, promotion, and default routing after protected mode, configured auth, positive cost caps, endpoint pricing, and symbolic provider credentials validate:
@@ -523,6 +525,8 @@ All environment variables are documented in `.env.example`. Key variables:
 | `ACP_BACKUP_DIR` | `<db_parent>/backups` | Backup directory |
 | `ACP_DASHBOARD_DIR` | `dashboard/out` | Static dashboard assets path |
 | `ACP_PROVIDER_TYPE` | `stub` | Provider: `stub`, `openai_compatible`, `anthropic` |
+| `ACP_MODEL` | Claude Code project model, then `default` | Single-provider model override; explicit env wins over Claude Code JSON fallback |
+| `ACP_CLAUDE_CODE_CONFIG_PATH` | `$HOME/.claude.json` | Optional Claude Code JSON path used only when `ACP_MODEL` is unset |
 | `ACP_TRUSTED_LOCAL_PROFILE` | (off) | Recommended internal profile; when ready, composes provider, adaptive execution, experiments, promotion, and default routing after auth/credential/pricing/cost validation |
 | `ACP_ENABLE_PROVIDER_EXECUTION` | (off) | Standalone legacy gate for real provider calls without the trusted-local profile |
 | `ACP_ENABLE_ADAPTIVE_FUSION_EXECUTION` | (off) | Standalone legacy gate for explicit bounded `adaptive_provider` workflow ticks without the trusted-local profile |

@@ -1,8 +1,8 @@
 # Architecture Book
 
-Last updated: 2026-06-23
+Last updated: 2026-06-25
 
-This is the current architecture baseline for the Token-Efficient Agent Harness Lab. Historical phase plans, closeout reports, and long-form strategy docs live under `docs/archive/`.
+This is the current architecture baseline for the Token-Efficient Agent Harness Lab. Historical phase plans, closeout reports, and long-form strategy docs are retained in release-tagged git history; `docs/archive/README.md` is the working-tree index.
 
 ## Product Boundary
 
@@ -17,7 +17,7 @@ Default posture:
 - No process/container/VM sandbox isolation is implemented; V2-1 is scoped to app-owned workspace confinement unless separately approved.
 - Supervised execution operates only in app-owned detached workspaces and remains explicitly gated.
 
-This file is authoritative for current architecture and safety boundaries. Operational procedures are in `docs/RUNBOOK.md`. Archived security, safety, and other historical notes under `docs/archive/` are reference-only; revive or replace them only for an approved boundary-expansion track.
+This file is authoritative for current architecture and safety boundaries. Operational procedures are in `docs/RUNBOOK.md`. Archived security, safety, and other historical notes in release-tagged git history are reference-only; revive or replace them only for an approved boundary-expansion track.
 
 ## Runtime Shape
 
@@ -126,6 +126,55 @@ V2-4 supervised workers reuse the same scheduler and workflow lease path. Legacy
 
 The runtime path is intentionally built on existing `workflow_runs`, `scheduler`, `node_executor`, `executor_pool`, `run_queue`, `backpressure`, and `DynamicWorkflowController` modules. Do not create a parallel scheduler, DAG kernel, or policy engine without explicit approval.
 
+## Agent Runtime Direction
+
+The current implementation is a deterministic workflow/control-plane runtime, not yet a full autonomous multi-agent runtime. It can persist workflow runs, schedule nodes, execute provider/CLI work, mutate DAGs under guarded logic, capture evidence, and expose operator controls. Those foundations should be reused for any true agent runtime rather than replaced.
+
+Current foundation:
+
+- `engine/src/orchestration/schemas.rs` defines `AgentMessage`, but message delivery is not wired into runtime storage, scheduler ticks, or node execution.
+- `workflow_runs`, `workflow_run_nodes`, `workflow_run_edges`, and `workflow_run_events` already provide the durable run/DAG/event substrate.
+- `WorkflowScheduler` already owns bounded worker startup, queue leasing, pause/resume/kill, and heartbeat state.
+- `NodeExecutor`, provider execution, CLI execution, adaptive execution, audit, redaction, cost gates, and target-output approval already provide bounded action paths.
+- Dashboard and SDK surfaces already expose operator evidence, guarded controls, and local runtime status.
+
+Missing true multi-agent semantics:
+
+| Capability | Current state | Needed runtime semantic |
+|---|---|---|
+| Agent identity | Executor type and workflow node metadata exist | Durable `agent_id`, role, capability, objective, status, and authority profile |
+| Agent state/memory | Node receives prompt and returns result | Durable agent scratchpad/state with bounded summaries and redaction |
+| Agent messaging | `AgentMessage` schema exists | Persistent mailbox with send/read/ack/reply, correlation IDs, and audit events |
+| Agent step loop | Scheduler ticks a ready node | `observe -> decide -> act -> persist -> schedule/await` loop across ticks |
+| Self-planning | DAG can be prebuilt or mutated by controller logic | Agent-authored child task proposals that create bounded workflow nodes/edges |
+| Handoff/delegation | Scheduler owns execution order | Agent-to-agent delegation through mailbox plus workflow events and acceptance states |
+| Cross-agent review/debate | Adaptive fusion is single-node provider/model fusion | Multi-agent review/debate threads with verdict artifacts and merge/approval gates |
+| Concurrency | Scheduler claims bounded work, but a tick advances one node | Multi-node/multi-agent claim policy with resource locks, joins, and conflict handling |
+
+Target shape:
+
+```text
+Workflow run
+  -> AgentRuntime
+       -> AgentState store
+       -> AgentMailbox
+       -> AgentStepExecutor
+       -> Planner/delegation policy
+       -> Review/debate policy
+  -> existing Scheduler / Queue lease
+  -> existing NodeExecutor / Provider / CLI / Target-output gates
+  -> existing Audit / Cost / Kill / Dashboard evidence
+```
+
+Safety invariants for agent runtime work:
+
+- No unbounded autonomous loops. Each agent step must have call, token, cost, time, concurrency, retry, and lease bounds.
+- No direct target-repository `main` writes. Agent-authored output must still use V2 target-output approval and evidence gates.
+- No hidden raw model memory. Durable state must be summary-bounded, redacted, and auditable.
+- No secret persistence. Mailbox, memory, debate, and review artifacts must reject or redact secret-shaped content.
+- No authority bypass. Agent-created tasks, delegation, review, and child nodes must flow through the existing auth, scheduler, audit, cost, kill, and rollback boundaries.
+- No parallel runtime kernel. Agent runtime work should extend `workflow_runs`, `scheduler`, `node_executor`, `provider`, `cli`, `storage/local_product_store`, SDK, and dashboard modules.
+
 ## Dashboard Boundary
 
 The dashboard is a local operations console with guarded app-owned controls. It is not globally read-only:
@@ -146,6 +195,7 @@ These are accepted current limitations, not hidden TODOs:
 - V2-3 controlled target output is merged. It creates no merge/deploy/apply authority and preserves the registered target working tree and `main`.
 - GitHub PR creation is default-off and adds no merge authority.
 - Bounded supervised workers are merged in V2-4 and Mission Control product output UX is merged in V2-5; unattended autonomous-agent loops remain out of scope.
+- True multi-agent runtime semantics are not implemented yet. The accepted direction is to add them incrementally through the Agent Runtime track in `docs/NEXT_DECISION.md`, reusing existing workflow, scheduler, storage, provider/CLI, audit, dashboard, and target-output gates.
 - Cloud SaaS, hosted/cloud deployment, multi-tenant service, and direct release/tag/deploy/apply controls are not implemented. Full Agent Autonomy Mode may evolve these repo-scoped designs through documented, testable, observable, reviewable, and rollbackable changes. The only hard stops are real-secret commits, falsified test/CI evidence, intentionally hidden failures, removed rollback paths, and irreversible external destruction without recovery.
 - Some routing, quality, and orchestration modules remain partially active rather than unified under one policy layer.
 
@@ -176,4 +226,4 @@ ACP_TEST_DATABASE_URL=postgres://user:pass@localhost:5432/testdb cargo test -p e
 
 ## Historical References
 
-Archived materials are retained for audit/history, not daily reading. See `docs/archive/` for the retained index and release-tagged artifacts.
+Archived materials are retained for audit/history, not daily reading. See `docs/archive/README.md` for the retained index and use release-tagged git history for the archived artifacts.

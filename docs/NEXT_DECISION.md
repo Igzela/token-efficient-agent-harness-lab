@@ -68,6 +68,7 @@ The R-series is sealed at R7 as the current baseline. Full Agent Autonomy Mode m
 - Autonomous maintenance: repair stale docs, CI breakage, test drift, and wire-codegen drift.
 - Regression hardening: add or repair tests for existing behavior.
 - Pilots: real-world task validation.
+- Agent Runtime track: add true multi-agent identity, mailbox, state, step loop, planning, delegation, review/debate, and bounded concurrency semantics on top of the existing workflow/scheduler/storage/executor substrate.
 - V2 maintenance and V2 authority expansion experiments.
 - Adaptive Fusion maintenance and adaptive routing authority experiments.
 - Trusted-local execution evolution.
@@ -88,6 +89,64 @@ The R-series is sealed at R7 as the current baseline. Full Agent Autonomy Mode m
 | IAE-3 | Operator control and evidence | **Complete** — dashboard/API expose effective authority, spend/traffic/worker ceilings, safe observation aggregates, scheduler pause/resume/kill state and controls, redacted recent audit actions, and existing policy rollback without secrets or raw model/repository content; invalid experiment, promotion, or rollout configuration is visible and fails closed |
 
 IAE implementation should extend existing modules unless Full Agent Autonomy Mode selects and verifies a replacement architecture.
+
+## Agent Runtime Track
+
+The next major architecture direction is to evolve the existing workflow control plane into a bounded true multi-agent runtime without creating a parallel kernel. The current system can schedule workflow nodes, call provider/CLI executors, persist run events, apply guarded DAG mutations, and expose operator evidence. It does not yet implement durable agent identity, runtime mailbox delivery, persistent agent memory, agent-authored planning, agent-to-agent handoff, cross-node debate/review, or concurrent multi-agent step semantics.
+
+Agent Runtime work must extend the existing modules:
+
+- `engine/src/orchestration/schemas.rs` for message and agent-facing schemas
+- `engine/src/storage/local_product_store/` for durable agent state, mailbox, and events
+- `engine/src/workflow/` and `engine/src/scheduler.rs` for graph mutation, leases, wakeups, and bounded concurrency
+- `engine/src/node_executor.rs`, `engine/src/provider/`, and `engine/src/cli/` for bounded actions
+- `engine/src/http_server/`, SDKs, and `dashboard/` for operator visibility and guarded controls
+- existing audit, auth, cost, redaction, kill, rollback, and target-output approval paths for safety
+
+Non-goals unless a later documented replacement supersedes this track:
+
+- no second scheduler, second DAG kernel, second storage layer, or hidden side-channel mailbox
+- no direct writes to registered target working trees or protected branches
+- no raw prompt/output/transcript memory persistence
+- no unbounded recursive planning, unbounded worker loops, or automatic merge/deploy/release authority
+- no provider calls outside the existing trusted-local/legacy gates and cost/token/call/time/concurrency controls
+
+Target flow:
+
+```text
+queued workflow node or agent wakeup
+-> load AgentState and mailbox
+-> observe run/node/context/evidence
+-> decide next action under role/capability/authority policy
+-> act through existing provider/CLI/workflow/target-output APIs
+-> persist state, messages, events, and evidence
+-> schedule child nodes, handoff, review, wait, or completion
+```
+
+| Phase | Goal | Acceptance |
+|---|---|---|
+| AR-0 | Decision baseline and runtime contract | Record the agent runtime boundary, data model, rollback path, and threat model delta. Confirm it extends existing workflow/scheduler/storage/executor modules and preserves all hard stops. |
+| AR-1 | Agent identity, state, and mailbox | Durable `AgentState` plus `AgentMessage` mailbox with send/read/ack/reply, correlation IDs, run/node links, redaction, audit events, and SQLite/PostgreSQL tests. No provider/CLI calls are added. |
+| AR-2 | Agent step executor | Add a bounded `agent_step` executor that runs `observe -> decide -> act -> persist` for one step, with token/call/cost/time/retry caps, kill/pause checks, and durable scratchpad summaries. It may use stub/provider paths only through existing gates. |
+| AR-3 | Planning, child tasks, and handoff | Let an agent propose child workflow nodes/edges and delegate work to another agent via mailbox. Proposals must be bounded, auditable, deterministic enough for tests, and reversible through workflow mutation events. |
+| AR-4 | Concurrent multi-agent scheduling | Extend scheduler claim policy so multiple ready agent steps can advance concurrently under global/per-agent concurrency, resource locks, lease expiry, stale recovery, and join/wait semantics. |
+| AR-5 | Review and debate primitive | Add cross-agent review/debate threads as first-class workflow artifacts with verdicts, dissent, evidence links, and approval/export gates. This is separate from single-node Adaptive Fusion provider/model panels. |
+| AR-6 | Operator evidence and SDK/dashboard surface | Expose agent state, mailbox counts, blocked/waiting/review status, debate verdicts, child-task lineage, budget use, and kill/pause controls without raw model content, secrets, private paths, or repository content. |
+
+Minimum verification for Agent Runtime code:
+
+```bash
+cargo fmt --all -- --check
+cargo clippy -p engine --all-targets -- -D warnings
+cargo test -p engine --bin agent-control-plane
+cargo test -p engine --test test_local_product_store
+cargo test -p engine --test test_trusted_local_profile
+bash scripts/verify_rust_typescript_stack.sh
+uv run --no-project python scripts/check_agent_handoff.py
+git diff --check
+```
+
+Each Agent Runtime PR must state the live-influence status, affected modules, new storage/API surface, safety gates, rollback path, intentionally unfinished follow-up, and whether any agent-authored output can reach target-output approval.
 
 ## V2 Status
 
