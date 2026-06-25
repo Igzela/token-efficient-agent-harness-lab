@@ -7,6 +7,8 @@ use crate::workflow::context_pack::{
 };
 use crate::workflow::dag_manager::{types::DAGMutationProposal, DAGManager};
 
+mod queue_lease;
+
 pub const WORKFLOW_RUN_SCHEMA_VERSION: &str = "workflow_run.v1";
 
 enum LeaseResult {
@@ -1708,7 +1710,7 @@ impl LocalProductStore {
         match &self.db {
             DatabaseConnection::Sqlite(_) => self.with_conn(|conn| {
                 let mut stmt = conn
-                    .prepare("SELECT run_id FROM workflow_runs WHERE status IN ('running', 'created') ORDER BY run_sequence")
+                    .prepare(queue_lease::ACTIVE_RUN_IDS_SQL)
                     .map_err(|e| e.to_string())?;
                 let ids = stmt
                     .query_map([], |row| row.get(0))
@@ -1720,10 +1722,7 @@ impl LocalProductStore {
             #[cfg(feature = "pg")]
             DatabaseConnection::Pg(_) => self.with_pg_conn(|client| {
                 let rows = client
-                    .query(
-                        "SELECT run_id FROM workflow_runs WHERE status IN ('running', 'created') ORDER BY run_sequence",
-                        &[],
-                    )
+                    .query(queue_lease::ACTIVE_RUN_IDS_SQL, &[])
                     .map_err(|e| e.to_string())?;
                 let ids: Vec<String> = rows.iter().map(|r| r.get(0)).collect();
                 Ok(ids)
@@ -1735,71 +1734,19 @@ impl LocalProductStore {
         match &self.db {
             DatabaseConnection::Sqlite(_) => self.with_conn(|conn| {
                 let mut stmt = conn
-                    .prepare(
-                        "SELECT run_id, run_sequence, workflow_id, status, priority, deadline_at,
-                                sla_ms, tenant_id, queue_position, pause_reason, degrade_mode,
-                                created_at, started_at
-                         FROM workflow_runs
-                         WHERE status IN ('running', 'created')
-                         ORDER BY CASE WHEN pause_reason IS NOT NULL THEN 1 ELSE 0 END,
-                                  priority ASC, created_at ASC",
-                    )
+                    .prepare(queue_lease::ACTIVE_RUNS_PRIORITIZED_SQL)
                     .map_err(|e| e.to_string())?;
                 let rows = stmt
-                    .query_map([], |row| {
-                        Ok(json!({
-                            "run_id": row.get::<_, String>(0)?,
-                            "run_sequence": row.get::<_, i64>(1)?,
-                            "workflow_id": row.get::<_, String>(2)?,
-                            "status": row.get::<_, String>(3)?,
-                            "priority": row.get::<_, i64>(4)?,
-                            "deadline_at": row.get::<_, Option<String>>(5)?,
-                            "sla_ms": row.get::<_, Option<i64>>(6)?,
-                            "tenant_id": row.get::<_, Option<String>>(7)?,
-                            "queue_position": row.get::<_, Option<i64>>(8)?,
-                            "pause_reason": row.get::<_, Option<String>>(9)?,
-                            "degrade_mode": row.get::<_, Option<String>>(10)?,
-                            "created_at": row.get::<_, String>(11)?,
-                            "started_at": row.get::<_, Option<String>>(12)?,
-                        }))
-                    })
+                    .query_map([], queue_lease::prioritized_sqlite_row)
                     .map_err(|e| e.to_string())?;
                 collect_values(rows)
             }),
             #[cfg(feature = "pg")]
             DatabaseConnection::Pg(_) => self.with_pg_conn(|client| {
                 let rows = client
-                    .query(
-                        "SELECT run_id, run_sequence, workflow_id, status, priority, deadline_at,
-                                sla_ms, tenant_id, queue_position, pause_reason, degrade_mode,
-                                created_at, started_at
-                         FROM workflow_runs
-                         WHERE status IN ('running', 'created')
-                         ORDER BY CASE WHEN pause_reason IS NOT NULL THEN 1 ELSE 0 END,
-                                  priority ASC, created_at ASC",
-                        &[],
-                    )
+                    .query(queue_lease::ACTIVE_RUNS_PRIORITIZED_SQL, &[])
                     .map_err(|e| e.to_string())?;
-                let values: Vec<Value> = rows
-                    .iter()
-                    .map(|row| {
-                        json!({
-                            "run_id": row.get::<_, String>(0),
-                            "run_sequence": row.get::<_, i64>(1),
-                            "workflow_id": row.get::<_, String>(2),
-                            "status": row.get::<_, String>(3),
-                            "priority": row.get::<_, i64>(4),
-                            "deadline_at": row.get::<_, Option<String>>(5),
-                            "sla_ms": row.get::<_, Option<i64>>(6),
-                            "tenant_id": row.get::<_, Option<String>>(7),
-                            "queue_position": row.get::<_, Option<i64>>(8),
-                            "pause_reason": row.get::<_, Option<String>>(9),
-                            "degrade_mode": row.get::<_, Option<String>>(10),
-                            "created_at": row.get::<_, String>(11),
-                            "started_at": row.get::<_, Option<String>>(12),
-                        })
-                    })
-                    .collect();
+                let values: Vec<Value> = rows.iter().map(queue_lease::prioritized_pg_row).collect();
                 Ok(values)
             }),
         }
@@ -1956,134 +1903,81 @@ impl LocalProductStore {
         match &self.db {
             DatabaseConnection::Sqlite(_) => self.with_conn(|conn| {
                 let total_queued: i64 = conn
-                    .query_row(
-                        "SELECT COUNT(*) FROM workflow_runs WHERE status IN ('created') AND pause_reason IS NULL",
-                        [],
-                        |row| row.get(0),
-                    )
+                    .query_row(queue_lease::QUEUED_COUNT_SQL, [], |row| row.get(0))
                     .map_err(|e| e.to_string())?;
                 let total_running: i64 = conn
-                    .query_row(
-                        "SELECT COUNT(*) FROM workflow_runs WHERE status = 'running'",
-                        [],
-                        |row| row.get(0),
-                    )
+                    .query_row(queue_lease::RUNNING_COUNT_SQL, [], |row| row.get(0))
                     .map_err(|e| e.to_string())?;
                 let total_paused: i64 = conn
-                    .query_row(
-                        "SELECT COUNT(*) FROM workflow_runs WHERE pause_reason IS NOT NULL",
-                        [],
-                        |row| row.get(0),
-                    )
+                    .query_row(queue_lease::PAUSED_COUNT_SQL, [], |row| row.get(0))
                     .map_err(|e| e.to_string())?;
                 let total_completed: i64 = conn
-                    .query_row(
-                        "SELECT COUNT(*) FROM workflow_runs WHERE status = 'completed'",
-                        [],
-                        |row| row.get(0),
-                    )
+                    .query_row(queue_lease::COMPLETED_COUNT_SQL, [], |row| row.get(0))
                     .map_err(|e| e.to_string())?;
                 let total_failed: i64 = conn
-                    .query_row(
-                        "SELECT COUNT(*) FROM workflow_runs WHERE status = 'failed'",
-                        [],
-                        |row| row.get(0),
-                    )
+                    .query_row(queue_lease::FAILED_COUNT_SQL, [], |row| row.get(0))
                     .map_err(|e| e.to_string())?;
                 let avg_priority: Value = conn
-                    .query_row(
-                        "SELECT COALESCE(AVG(priority), 5.0) FROM workflow_runs WHERE status IN ('created', 'running')",
-                        [],
-                        |row| {
-                            let avg: f64 = row.get(0)?;
-                            Ok(json!(avg))
-                        },
-                    )
+                    .query_row(queue_lease::AVG_PRIORITY_SQL, [], |row| {
+                        let avg: f64 = row.get(0)?;
+                        Ok(json!(avg))
+                    })
                     .unwrap_or(json!(5.0));
                 let overdue_count: i64 = conn
-                    .query_row(
-                        "SELECT COUNT(*) FROM workflow_runs
-                         WHERE deadline_at IS NOT NULL AND deadline_at < datetime('now')
-                           AND status IN ('created', 'running')",
-                        [],
-                        |row| row.get(0),
-                    )
+                    .query_row(queue_lease::SQLITE_OVERDUE_COUNT_SQL, [], |row| row.get(0))
                     .map_err(|e| e.to_string())?;
-                Ok(json!({
-                    "total_queued": total_queued,
-                    "total_running": total_running,
-                    "total_paused": total_paused,
-                    "total_completed": total_completed,
-                    "total_failed": total_failed,
-                    "avg_priority": avg_priority,
-                    "overdue_count": overdue_count,
-                }))
+                Ok(queue_lease::queue_status_value(
+                    total_queued,
+                    total_running,
+                    total_paused,
+                    total_completed,
+                    total_failed,
+                    avg_priority,
+                    overdue_count,
+                ))
             }),
             #[cfg(feature = "pg")]
             DatabaseConnection::Pg(_) => self.with_pg_conn(|client| {
                 let total_queued: i64 = client
-                    .query_one(
-                        "SELECT COUNT(*) FROM workflow_runs WHERE status IN ('created') AND pause_reason IS NULL",
-                        &[],
-                    )
+                    .query_one(queue_lease::QUEUED_COUNT_SQL, &[])
                     .map_err(|e| e.to_string())?
                     .get(0);
                 let total_running: i64 = client
-                    .query_one(
-                        "SELECT COUNT(*) FROM workflow_runs WHERE status = 'running'",
-                        &[],
-                    )
+                    .query_one(queue_lease::RUNNING_COUNT_SQL, &[])
                     .map_err(|e| e.to_string())?
                     .get(0);
                 let total_paused: i64 = client
-                    .query_one(
-                        "SELECT COUNT(*) FROM workflow_runs WHERE pause_reason IS NOT NULL",
-                        &[],
-                    )
+                    .query_one(queue_lease::PAUSED_COUNT_SQL, &[])
                     .map_err(|e| e.to_string())?
                     .get(0);
                 let total_completed: i64 = client
-                    .query_one(
-                        "SELECT COUNT(*) FROM workflow_runs WHERE status = 'completed'",
-                        &[],
-                    )
+                    .query_one(queue_lease::COMPLETED_COUNT_SQL, &[])
                     .map_err(|e| e.to_string())?
                     .get(0);
                 let total_failed: i64 = client
-                    .query_one(
-                        "SELECT COUNT(*) FROM workflow_runs WHERE status = 'failed'",
-                        &[],
-                    )
+                    .query_one(queue_lease::FAILED_COUNT_SQL, &[])
                     .map_err(|e| e.to_string())?
                     .get(0);
                 let avg_priority: Value = client
-                    .query_one(
-                        "SELECT COALESCE(AVG(priority), 5.0) FROM workflow_runs WHERE status IN ('created', 'running')",
-                        &[],
-                    )
+                    .query_one(queue_lease::AVG_PRIORITY_SQL, &[])
                     .map(|row| {
                         let avg: f64 = row.get(0);
                         json!(avg)
                     })
                     .unwrap_or(json!(5.0));
                 let overdue_count: i64 = client
-                    .query_one(
-                        "SELECT COUNT(*) FROM workflow_runs
-                         WHERE deadline_at IS NOT NULL AND deadline_at < now()
-                           AND status IN ('created', 'running')",
-                        &[],
-                    )
+                    .query_one(queue_lease::PG_OVERDUE_COUNT_SQL, &[])
                     .map_err(|e| e.to_string())?
                     .get(0);
-                Ok(json!({
-                    "total_queued": total_queued,
-                    "total_running": total_running,
-                    "total_paused": total_paused,
-                    "total_completed": total_completed,
-                    "total_failed": total_failed,
-                    "avg_priority": avg_priority,
-                    "overdue_count": overdue_count,
-                }))
+                Ok(queue_lease::queue_status_value(
+                    total_queued,
+                    total_running,
+                    total_paused,
+                    total_completed,
+                    total_failed,
+                    avg_priority,
+                    overdue_count,
+                ))
             }),
         }
     }
@@ -2092,45 +1986,20 @@ impl LocalProductStore {
         match &self.db {
             DatabaseConnection::Sqlite(_) => self.with_conn(|conn| {
                 let mut stmt = conn
-                    .prepare(
-                        "SELECT tenant_id, COUNT(*) as run_count, AVG(priority) as avg_priority
-                         FROM workflow_runs
-                         WHERE status IN ('created', 'running') AND tenant_id IS NOT NULL
-                         GROUP BY tenant_id",
-                    )
+                    .prepare(queue_lease::TENANTS_WITH_QUOTA_SQL)
                     .map_err(|e| e.to_string())?;
                 let rows = stmt
-                    .query_map([], |row| {
-                        Ok(json!({
-                            "tenant_id": row.get::<_, String>(0)?,
-                            "run_count": row.get::<_, i64>(1)?,
-                            "avg_priority": row.get::<_, f64>(2)?,
-                        }))
-                    })
+                    .query_map([], queue_lease::tenant_quota_sqlite_row)
                     .map_err(|e| e.to_string())?;
                 collect_values(rows)
             }),
             #[cfg(feature = "pg")]
             DatabaseConnection::Pg(_) => self.with_pg_conn(|client| {
                 let rows = client
-                    .query(
-                        "SELECT tenant_id, COUNT(*) as run_count, AVG(priority) as avg_priority
-                         FROM workflow_runs
-                         WHERE status IN ('created', 'running') AND tenant_id IS NOT NULL
-                         GROUP BY tenant_id",
-                        &[],
-                    )
+                    .query(queue_lease::TENANTS_WITH_QUOTA_SQL, &[])
                     .map_err(|e| e.to_string())?;
-                let values: Vec<Value> = rows
-                    .iter()
-                    .map(|row| {
-                        json!({
-                            "tenant_id": row.get::<_, String>(0),
-                            "run_count": row.get::<_, i64>(1),
-                            "avg_priority": row.get::<_, f64>(2),
-                        })
-                    })
-                    .collect();
+                let values: Vec<Value> =
+                    rows.iter().map(queue_lease::tenant_quota_pg_row).collect();
                 Ok(values)
             }),
         }
@@ -2368,18 +2237,14 @@ impl LocalProductStore {
         match &self.db {
             DatabaseConnection::Sqlite(_) => self.with_conn(|conn| {
                 let node_id: Option<String> = conn
-                    .query_row(
-                        "SELECT node_id FROM workflow_run_nodes WHERE status = 'pending' LIMIT 1",
-                        [],
-                        |row| row.get(0),
-                    )
+                    .query_row(queue_lease::PENDING_NODE_FOR_TEST_SQL, [], |row| row.get(0))
                     .ok();
                 let Some(node_id) = node_id else {
                     return Ok(0);
                 };
                 let count = conn
                     .execute(
-                        "UPDATE workflow_run_nodes SET status = 'running', leased_at = ?1 WHERE node_id = ?2",
+                        queue_lease::SQLITE_SET_PENDING_NODE_RUNNING_SQL,
                         rusqlite::params![leased_at, node_id],
                     )
                     .map_err(|e| e.to_string())?;
@@ -2388,10 +2253,7 @@ impl LocalProductStore {
             #[cfg(feature = "pg")]
             DatabaseConnection::Pg(_) => self.with_pg_conn(|client| {
                 let rows = client
-                    .query(
-                        "SELECT node_id FROM workflow_run_nodes WHERE status = 'pending' LIMIT 1",
-                        &[],
-                    )
+                    .query(queue_lease::PENDING_NODE_FOR_TEST_SQL, &[])
                     .map_err(|e| e.to_string())?;
                 let Some(row) = rows.into_iter().next() else {
                     return Ok(0);
@@ -2399,7 +2261,7 @@ impl LocalProductStore {
                 let node_id: String = row.get(0);
                 let count = client
                     .execute(
-                        "UPDATE workflow_run_nodes SET status = 'running', leased_at = $1 WHERE node_id = $2",
+                        queue_lease::PG_SET_PENDING_NODE_RUNNING_SQL,
                         &[&leased_at, &node_id],
                     )
                     .map_err(|e| e.to_string())?;
@@ -2413,29 +2275,30 @@ impl LocalProductStore {
             DatabaseConnection::Sqlite(_) => self.with_conn(|conn| {
                 let now = self.now();
                 let mut stmt = conn
-                    .prepare("SELECT run_id, node_id, leased_at FROM workflow_run_nodes WHERE status = 'running' AND leased_at IS NOT NULL")
+                    .prepare(queue_lease::STALE_LEASE_SELECT_SQL)
                     .map_err(|e| e.to_string())?;
                 let stale_nodes: Vec<(String, String, String)> = stmt
-                    .query_map([], |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?, row.get::<_, String>(2)?)))
+                    .query_map([], |row| {
+                        Ok((
+                            row.get::<_, String>(0)?,
+                            row.get::<_, String>(1)?,
+                            row.get::<_, String>(2)?,
+                        ))
+                    })
                     .map_err(|e| e.to_string())?
                     .filter_map(|r| r.ok())
                     .filter(|(_, _, leased_at)| {
-                        if let (Ok(lease_time), Ok(now_time)) = (
-                            chrono::NaiveDateTime::parse_from_str(leased_at, "%Y-%m-%dT%H:%M:%SZ"),
-                            chrono::NaiveDateTime::parse_from_str(&now, "%Y-%m-%dT%H:%M:%SZ"),
-                        ) {
-                            (now_time - lease_time).num_milliseconds() as u64 > lease_timeout_ms
-                        } else {
-                            false
-                        }
+                        queue_lease::stale_lease_is_expired(leased_at, &now, lease_timeout_ms)
                     })
                     .collect();
                 let count = stale_nodes.len() as i64;
                 for (run_id, node_id, leased_at) in &stale_nodes {
-                    let updated = conn.execute(
-                        "UPDATE workflow_run_nodes SET status = 'pending', leased_at = NULL WHERE run_id = ?1 AND node_id = ?2 AND status = 'running'",
-                        params![run_id, node_id],
-                    ).map_err(|e| e.to_string())?;
+                    let updated = conn
+                        .execute(
+                            queue_lease::SQLITE_RECOVER_STALE_LEASE_SQL,
+                            params![run_id, node_id],
+                        )
+                        .map_err(|e| e.to_string())?;
                     if updated > 0 {
                         append_audit_locked(
                             conn,
@@ -2443,11 +2306,11 @@ impl LocalProductStore {
                             "scheduler",
                             "workflow_node.stale_lease_recovered",
                             node_id,
-                            &json!({
-                                "run_id": run_id,
-                                "leased_at": leased_at,
-                                "lease_timeout_ms": lease_timeout_ms,
-                            }),
+                            &queue_lease::stale_lease_audit_payload(
+                                run_id,
+                                leased_at,
+                                lease_timeout_ms,
+                            ),
                         )?;
                     }
                 }
@@ -2457,31 +2320,20 @@ impl LocalProductStore {
             DatabaseConnection::Pg(_) => self.with_pg_conn(|client| {
                 let now = self.now();
                 let rows = client
-                    .query(
-                        "SELECT run_id, node_id, leased_at FROM workflow_run_nodes WHERE status = 'running' AND leased_at IS NOT NULL",
-                        &[],
-                    )
+                    .query(queue_lease::STALE_LEASE_SELECT_SQL, &[])
                     .map_err(|e| e.to_string())?;
                 let stale_nodes: Vec<(String, String, String)> = rows
                     .iter()
                     .map(|row| (row.get(0), row.get(1), row.get(2)))
                     .filter(|(_, _, leased_at): &(String, String, String)| {
-                        if let (Ok(lease_time), Ok(now_time)) = (
-                            chrono::NaiveDateTime::parse_from_str(leased_at, "%Y-%m-%dT%H:%M:%SZ"),
-                            chrono::NaiveDateTime::parse_from_str(&now, "%Y-%m-%dT%H:%M:%SZ"),
-                        ) {
-                            (now_time - lease_time).num_milliseconds() as u64 > lease_timeout_ms
-                        } else {
-                            false
-                        }
+                        queue_lease::stale_lease_is_expired(leased_at, &now, lease_timeout_ms)
                     })
                     .collect();
                 let count = stale_nodes.len() as i64;
                 for (run_id, node_id, leased_at) in &stale_nodes {
-                    let updated = client.execute(
-                        "UPDATE workflow_run_nodes SET status = 'pending', leased_at = NULL WHERE run_id = $1 AND node_id = $2 AND status = 'running'",
-                        &[run_id, node_id],
-                    ).map_err(|e| e.to_string())?;
+                    let updated = client
+                        .execute(queue_lease::PG_RECOVER_STALE_LEASE_SQL, &[run_id, node_id])
+                        .map_err(|e| e.to_string())?;
                     if updated > 0 {
                         pg_append_audit(
                             client,
@@ -2489,11 +2341,11 @@ impl LocalProductStore {
                             "scheduler",
                             "workflow_node.stale_lease_recovered",
                             node_id,
-                            &json!({
-                                "run_id": run_id,
-                                "leased_at": leased_at,
-                                "lease_timeout_ms": lease_timeout_ms,
-                            }),
+                            &queue_lease::stale_lease_audit_payload(
+                                run_id,
+                                leased_at,
+                                lease_timeout_ms,
+                            ),
                         )?;
                     }
                 }
