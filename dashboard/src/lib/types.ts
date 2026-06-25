@@ -1360,6 +1360,35 @@ export interface EvaluationCheck {
   reason: string;
 }
 
+export interface AutoAdjustmentsReport {
+  schema_version: string;
+  mode: string;
+  env_gate: boolean;
+  dry_run: boolean;
+  no_live_mutation: boolean;
+  active_apply_available: boolean;
+  rollback_endpoint_available: boolean;
+  guard: Record<string, unknown>;
+  decisions: unknown[];
+  snapshot_previews: unknown[];
+  active_auto_adjustments: unknown[];
+  blocked_reasons: string[];
+}
+
+export interface AutoAdjustmentApplyResult {
+  schema_version: string;
+  adjustment_id: string;
+  snapshot_id: string;
+  proposal_id: string;
+  candidate_id: string;
+  policy_key: string;
+  target_tier: string;
+  status: string;
+  applied: boolean;
+  blocked_reasons: string[];
+  rollback_endpoint?: string;
+}
+
 export interface RegulatorStateResponse {
   schema_version: string;
   regulator: {

@@ -8,6 +8,8 @@ import type {
   AdaptivePolicyRollbackResponse,
   ApiStatus,
   AuditListResponse,
+  AutoAdjustmentsReport,
+  AutoAdjustmentApplyResult,
   BackupVerification,
   DispatchMetricsResponse,
   DecisionDetailResponse,
@@ -722,6 +724,40 @@ export async function fetchDecisionDetail(decisionId: string): Promise<DecisionD
 
 export async function fetchDecisionStats(): Promise<DecisionStatsResponse> {
   return fetchJson<DecisionStatsResponse>(`${BASE}/api/v1/decisions/stats`);
+}
+
+export async function fetchAutoAdjustments(params: { limit?: number } = {}): Promise<AutoAdjustmentsReport> {
+  return fetchJson<AutoAdjustmentsReport>(withQuery("/api/v1/auto-adjustments", params));
+}
+
+export async function applyAutoAdjustment(request: {
+  actor?: string;
+  candidate_id?: string;
+  confirm_auto_adjustment?: boolean;
+}): Promise<AutoAdjustmentApplyResult> {
+  return fetchJson<AutoAdjustmentApplyResult>(`${BASE}/api/v1/auto-adjustments/apply`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(request),
+  });
+}
+
+export async function rollbackAutoAdjustment(
+  adjustmentId: string,
+  request: {
+    actor?: string;
+    reason?: string;
+    confirm_auto_adjustment_rollback?: boolean;
+  } = {},
+): Promise<Record<string, unknown>> {
+  return fetchJson<Record<string, unknown>>(
+    `${BASE}/api/v1/auto-adjustments/${encodeURIComponent(adjustmentId)}/rollback`,
+    {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(request),
+    },
+  );
 }
 
 export async function fetchRegulatorState(): Promise<RegulatorStateResponse> {
