@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
-import { ApiError, fetchMetrics } from "@/lib/api-client";
-import type { OperationsMetrics } from "@/lib/types";
+import { ApiError, fetchCircuitBreakerStatus, fetchMetrics } from "@/lib/api-client";
+import type { CircuitBreakerStatusResponse, OperationsMetrics } from "@/lib/types";
 import { EmptyState } from "./EmptyState";
 import { Metric } from "./Metric";
 import { StateBanner } from "./StateBanner";
@@ -29,12 +29,18 @@ export function Operations() {
   const [metrics, setMetrics] = useState<OperationsMetrics | null>(null);
   const [error, setError] = useState<OpsError | null>(null);
   const [loading, setLoading] = useState(true);
+  const [cbStatus, setCbStatus] = useState<CircuitBreakerStatusResponse | null>(null);
+  const [cbLoading, setCbLoading] = useState(false);
 
   function load() {
     setLoading(true);
-    fetchMetrics()
-      .then((response) => {
+    Promise.all([
+      fetchMetrics(),
+      fetchCircuitBreakerStatus(),
+    ])
+      .then(([response, cb]) => {
         setMetrics(response);
+        setCbStatus(cb);
         setError(null);
       })
       .catch((e) => {
@@ -113,6 +119,49 @@ export function Operations() {
               <div className="kv-row"><span className="muted">API keys</span><span>{metrics.api_key_count}</span></div>
             </div>
           </div>
+
+          {cbStatus && cbStatus.total_breakers > 0 && (
+            <div className="subcard stack">
+              <h3>Circuit Breakers</h3>
+              <div className="status-strip" aria-label="Circuit breaker summary">
+                <Metric label="Total" value={String(cbStatus.total_breakers)} detail="breakers" />
+                <Metric label="Open" value={String(cbStatus.open)} detail={cbStatus.open > 0 ? "failing" : "none"} tone={cbStatus.open > 0 ? "warn" : "ok"} />
+                <Metric label="Half-Open" value={String(cbStatus.half_open)} detail="recovering" tone={cbStatus.half_open > 0 ? "warn" : "ok"} />
+                <Metric label="Closed" value={String(cbStatus.closed)} detail="normal" tone="ok" />
+              </div>
+              {cbStatus.breakers.some((b) => b.state !== "Closed") && (
+                <table>
+                  <thead>
+                    <tr>
+                      <th>Name</th>
+                      <th>State</th>
+                      <th>Failures</th>
+                      <th>Total</th>
+                      <th>Last Failure</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {cbStatus.breakers.filter((b) => b.state !== "Closed").map((b) => (
+                      <tr key={b.name}>
+                        <td>{b.name}</td>
+                        <td>
+                          <span style={{
+                            color: b.state === "Open" ? "var(--color-risk, #e74c3c)" : b.state === "HalfOpen" ? "var(--color-warn, #f39c12)" : "var(--color-ok, #27ae60)",
+                            fontWeight: 600,
+                          }}>
+                            {b.state}
+                          </span>
+                        </td>
+                        <td>{b.failure_count}/{b.failure_threshold}</td>
+                        <td>{b.total_calls}</td>
+                        <td>{b.last_failure_at ?? "n/a"}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              )}
+            </div>
+          )}
         </>
       ) : null}
     </section>
