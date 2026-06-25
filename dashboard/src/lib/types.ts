@@ -949,16 +949,6 @@ export interface WorkflowPlan {
   updated_at: string;
 }
 
-export interface WorkflowPlanListResponse {
-  schema_version: "axum_api.v1";
-  plans: WorkflowPlan[];
-}
-
-export interface WorkflowPlanDetailResponse {
-  schema_version: "axum_api.v1";
-  plan: WorkflowPlan;
-}
-
 export interface WorkflowPlanCreateResponse {
   schema_version: "axum_api.v1";
   plan: WorkflowPlan;
@@ -1151,13 +1141,6 @@ export interface DecisionListResponse {
   total: number;
   limit: number;
   offset: number;
-}
-
-export interface DecisionDetailResponse {
-  schema_version: "axum_api.v1";
-  tenant_id?: string;
-  request_id?: string;
-  decision: DecisionRecord;
 }
 
 export interface DecisionStatsResponse {
