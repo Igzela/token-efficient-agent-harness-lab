@@ -1,68 +1,8 @@
 use rusqlite::Connection;
 
-use super::LocalProductStore;
+use super::{schema, LocalProductStore};
 
-pub(super) const CURRENT_SCHEMA_VERSION: i64 = 13;
-
-struct Migration {
-    version: i64,
-    description: &'static str,
-}
-
-const MIGRATIONS: &[Migration] = &[
-    Migration {
-        version: 1,
-        description: "add last_used_at and expires_at to api_key_metadata",
-    },
-    Migration {
-        version: 2,
-        description: "add inert workflow run state tables",
-    },
-    Migration {
-        version: 3,
-        description: "add supervised patch metadata tables",
-    },
-    Migration {
-        version: 4,
-        description: "add scheduler feedback table for feedback-driven routing",
-    },
-    Migration {
-        version: 5,
-        description: "add agent_profiles table and profile_id column on workflow_run_nodes",
-    },
-    Migration {
-        version: 6,
-        description: "add tool_capabilities, tool_allowlists, and tool_hooks tables",
-    },
-    Migration {
-        version: 7,
-        description: "add orchestration_decisions table for policy decision trace",
-    },
-    Migration {
-        version: 8,
-        description: "add executor_pool table for resource/executor pool tracking",
-    },
-    Migration {
-        version: 9,
-        description: "add queue/priority/backpressure columns to workflow_runs",
-    },
-    Migration {
-        version: 10,
-        description: "add policy signal columns to orchestration_decisions",
-    },
-    Migration {
-        version: 11,
-        description: "add scheduler_heartbeat table for persistent heartbeat",
-    },
-    Migration {
-        version: 12,
-        description: "add controlled loop policy proposal table",
-    },
-    Migration {
-        version: 13,
-        description: "add controlled loop policy snapshot table",
-    },
-];
+pub(super) const CURRENT_SCHEMA_VERSION: i64 = schema::CURRENT_SQLITE_SCHEMA_VERSION;
 
 impl LocalProductStore {
     pub(super) fn run_migrations(&self) -> Result<(), String> {
@@ -71,7 +11,7 @@ impl LocalProductStore {
                 .query_row("PRAGMA user_version", [], |row| row.get(0))
                 .map_err(|e| e.to_string())?;
 
-            for migration in MIGRATIONS {
+            for migration in schema::SQLITE_MIGRATIONS {
                 if migration.version <= current_version {
                     continue;
                 }

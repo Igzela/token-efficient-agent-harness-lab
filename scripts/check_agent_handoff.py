@@ -164,41 +164,47 @@ def main() -> int:
 
     # --- Drift checks ---
 
-    # Check 1: Schema version constant exists and is readable
+    # Check 1: Schema catalog version constant exists and is readable
+    schema_path = ROOT / "engine" / "src" / "storage" / "local_product_store" / "schema.rs"
     migrations_path = ROOT / "engine" / "src" / "storage" / "local_product_store" / "migrations.rs"
+    code_version = None
+    if schema_path.exists():
+        schema_text = schema_path.read_text(encoding="utf-8")
+        match = re.search(r'CURRENT_SQLITE_SCHEMA_VERSION\s*:\s*i64\s*=\s*(\d+)', schema_text)
+        if not match:
+            failures.append("Cannot parse CURRENT_SQLITE_SCHEMA_VERSION from schema.rs")
+        else:
+            code_version = int(match.group(1))
+    else:
+        failures.append("schema.rs not found at expected path")
+
     if migrations_path.exists():
         migrations_text = migrations_path.read_text(encoding="utf-8")
         if "CURRENT_SCHEMA_VERSION" not in migrations_text:
             failures.append("migrations.rs is missing CURRENT_SCHEMA_VERSION constant")
-        else:
-            match = re.search(r'CURRENT_SCHEMA_VERSION\s*:\s*i64\s*=\s*(\d+)', migrations_text)
-            if not match:
-                failures.append("Cannot parse CURRENT_SCHEMA_VERSION from migrations.rs")
     else:
         failures.append("migrations.rs not found at expected path")
 
-    # Check 2: Architecture Book exists, is non-empty, and schema version matches migrations.rs
+    # Check 2: Architecture Book exists, is non-empty, and schema version matches schema.rs
     arch_book = ROOT / "docs" / "ARCHITECTURE_BOOK.md"
     if not arch_book.exists():
         failures.append("docs/ARCHITECTURE_BOOK.md not found")
     elif arch_book.stat().st_size == 0:
         failures.append("docs/ARCHITECTURE_BOOK.md is empty")
-    elif migrations_path.exists():
-        # Cross-check schema version between migrations.rs and ARCHITECTURE_BOOK.md
+    elif code_version is not None:
+        # Cross-check schema version between schema.rs and ARCHITECTURE_BOOK.md
         arch_text = arch_book.read_text(encoding="utf-8")
-        m_code = re.search(r'CURRENT_SCHEMA_VERSION\s*:\s*i64\s*=\s*(\d+)', migrations_text)
         m_doc = re.search(r'Current version:\s*v(\d+)', arch_text)
-        if m_code and not m_doc:
+        if not m_doc:
             failures.append(
                 "ARCHITECTURE_BOOK.md is missing 'Current version: vN' "
                 "(required for schema version drift check)"
             )
-        elif m_code and m_doc:
-            code_version = int(m_code.group(1))
+        else:
             doc_version = int(m_doc.group(1))
             if code_version != doc_version:
                 failures.append(
-                    f"Schema version mismatch: migrations.rs has v{code_version}, "
+                    f"Schema version mismatch: schema.rs has v{code_version}, "
                     f"ARCHITECTURE_BOOK.md has v{doc_version}"
                 )
 
