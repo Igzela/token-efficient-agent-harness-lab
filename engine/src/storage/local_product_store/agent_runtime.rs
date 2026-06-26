@@ -1135,6 +1135,39 @@ impl LocalProductStore {
         }
     }
 
+    pub fn update_proposal_context_summary(
+        &self,
+        proposal_id: &str,
+        new_context_summary: &str,
+    ) -> Result<bool, String> {
+        let capped = apply_size_cap(new_context_summary, MAX_PROPOSAL_CONTEXT_BYTES);
+        let now = self.now();
+        let affected = match &self.db {
+            DatabaseConnection::Sqlite(_) => self.with_conn(|conn| {
+                let n = conn
+                    .execute(
+                        "UPDATE agent_proposals SET context_summary=?1, updated_at=?2
+                         WHERE proposal_id=?3",
+                        params![capped, now, proposal_id],
+                    )
+                    .map_err(|e| e.to_string())?;
+                Ok(n)
+            })?,
+            #[cfg(feature = "pg")]
+            DatabaseConnection::Pg(_) => self.with_pg_conn(|client| {
+                let n = client
+                    .execute(
+                        "UPDATE agent_proposals SET context_summary=$1, updated_at=$2
+                         WHERE proposal_id=$3",
+                        &[&capped, &now, &proposal_id],
+                    )
+                    .map_err(|e| e.to_string())?;
+                Ok(n as usize)
+            })?,
+        };
+        Ok(affected > 0)
+    }
+
     pub fn find_proposal_by_correlation(
         &self,
         correlation_id: &str,

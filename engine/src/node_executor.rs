@@ -4,7 +4,11 @@ use std::path::{Component, Path, PathBuf};
 use std::sync::Arc;
 use std::thread;
 
-use crate::orchestration::schemas::{AgentState, ChildTaskProposal, HandoffRequest};
+use crate::orchestration::schemas::{
+    AgentState, ChildTaskProposal, DebatePosition, DebateRequest, DebateResolution, HandoffRequest,
+    ReviewRequest, ReviewVerdict, MAX_DEBATE_PARTICIPANTS, MAX_DEBATE_ROUNDS,
+    MAX_REVIEW_DEBATE_TEXT_BYTES, REVIEW_VERDICTS,
+};
 use crate::provider::redaction::{contains_sensitive_patterns, redact_sensitive_patterns};
 use crate::storage::local_product_store::LocalProductStore;
 
@@ -62,6 +66,37 @@ fn sanitized_action_descriptor(action: &AgentAction) -> Value {
         AgentAction::CancelProposal(cid) => json!({
             "action_type": "cancel_proposal",
             "correlation_id": cid,
+        }),
+        AgentAction::RequestReview(r) => json!({
+            "action_type": "request_review",
+            "correlation_id": r.correlation_id,
+            "target_agent_id": r.target_agent_id,
+            "blocking": r.blocking,
+        }),
+        AgentAction::SubmitReviewVerdict(v) => json!({
+            "action_type": "submit_review_verdict",
+            "correlation_id": v.correlation_id,
+            "review_request_id": v.review_request_id,
+            "verdict": v.verdict,
+            "blocking": v.blocking,
+        }),
+        AgentAction::OpenDebate(d) => json!({
+            "action_type": "open_debate",
+            "correlation_id": d.correlation_id,
+            "participant_count": d.participant_agent_ids.len(),
+            "max_rounds": d.max_rounds,
+        }),
+        AgentAction::SubmitDebatePosition(p) => json!({
+            "action_type": "submit_debate_position",
+            "correlation_id": p.correlation_id,
+            "debate_id": p.debate_id,
+            "position_char_count": p.position.len(),
+        }),
+        AgentAction::ResolveDebate(r) => json!({
+            "action_type": "resolve_debate",
+            "correlation_id": r.correlation_id,
+            "debate_id": r.debate_id,
+            "has_winning_position": r.winning_position.is_some(),
         }),
         AgentAction::Unsupported(name) => json!({
             "action_type": "unsupported",
@@ -689,8 +724,10 @@ const ACP_ENABLE_AGENT_RUNTIME: &str = "ACP_ENABLE_AGENT_RUNTIME";
 /// AR-2 + AR-3 agent actions.
 /// AR-3 adds: propose_child_task, request_handoff, accept_handoff,
 /// reject_handoff, cancel_proposal.
-/// Does NOT include: concurrent multi-agent scheduling, review/debate,
-/// provider/CLI calls, target-output, merge, deploy, or release.
+/// AR-5 adds: request_review, submit_review_verdict, open_debate,
+/// submit_debate_position, resolve_debate.
+/// Does NOT include: provider/CLI calls, target-output, merge, deploy,
+/// or release.
 #[derive(Debug, Clone, PartialEq)]
 pub enum AgentAction {
     Wait,
@@ -707,6 +744,12 @@ pub enum AgentAction {
     AcceptHandoff(String),
     RejectHandoff(String),
     CancelProposal(String),
+    // AR-5: Bounded review/debate primitives
+    RequestReview(ReviewRequest),
+    SubmitReviewVerdict(ReviewVerdict),
+    OpenDebate(DebateRequest),
+    SubmitDebatePosition(DebatePosition),
+    ResolveDebate(DebateResolution),
 }
 
 /// Context assembled during the observe phase for the decision source.
@@ -1110,6 +1153,451 @@ impl AgentStepExecutor {
                 }
             }
             AgentAction::Unsupported(name) => Err(format!("unsupported action: {name}")),
+            // ── AR-5: Bounded review/debate primitives ──
+            AgentAction::RequestReview(request) => {
+                if request.target_agent_id == *agent_id {
+                    return Err(
+                        "review target agent must be different from requesting agent".to_string(),
+                    );
+                }
+                if request.subject_summary.len() > MAX_REVIEW_DEBATE_TEXT_BYTES {
+                    return Err(format!(
+                        "subject_summary exceeds {} byte cap",
+                        MAX_REVIEW_DEBATE_TEXT_BYTES
+                    ));
+                }
+                if request.rationale_summary.len() > MAX_REVIEW_DEBATE_TEXT_BYTES {
+                    return Err(format!(
+                        "rationale_summary exceeds {} byte cap",
+                        MAX_REVIEW_DEBATE_TEXT_BYTES
+                    ));
+                }
+                let proposal_id = format!(
+                    "review-{}-{}",
+                    request.correlation_id,
+                    chrono::Utc::now().timestamp_millis()
+                );
+                self.store
+                    .create_proposal(
+                        &proposal_id,
+                        &request.correlation_id,
+                        &request.run_id,
+                        &request.node_id,
+                        agent_id,
+                        "review_request",
+                        &request.subject_summary,
+                        &request.rationale_summary,
+                        Some(&request.target_agent_id),
+                        None,
+                        None,
+                    )
+                    .map_err(|e| format!("failed to create review request: {e}"))?;
+                let msg_id = format!(
+                    "review-msg-{}-{}",
+                    request.correlation_id,
+                    chrono::Utc::now().timestamp_millis()
+                );
+                self.store
+                    .send_message(
+                        &msg_id,
+                        agent_id,
+                        &request.target_agent_id,
+                        "review_request",
+                        Some(&format!("Review requested: {}", request.subject_summary)),
+                        Some(&request.correlation_id),
+                        Some(&request.run_id),
+                        Some(&request.node_id),
+                        None,
+                        &json!({"proposal_id": proposal_id, "blocking": request.blocking}),
+                    )
+                    .map_err(|e| format!("failed to send review request message: {e}"))?;
+                let _ = self.store.append_audit(
+                    "agent_step",
+                    "review.requested",
+                    &format!("agent_state/{agent_id}/{run_id}"),
+                    &json!({
+                        "run_id": run_id,
+                        "agent_id": agent_id,
+                        "target_agent_id": request.target_agent_id,
+                        "proposal_id": proposal_id,
+                        "correlation_id": request.correlation_id,
+                        "blocking": request.blocking,
+                    }),
+                );
+                Ok(json!({"action":"request_review","proposal_id": proposal_id,
+                          "correlation_id": request.correlation_id,
+                          "target_agent_id": request.target_agent_id})
+                .to_string())
+            }
+            AgentAction::SubmitReviewVerdict(verdict) => {
+                if !REVIEW_VERDICTS.contains(&verdict.verdict.as_str()) {
+                    return Err(format!(
+                        "invalid verdict '{}', expected one of {}",
+                        verdict.verdict,
+                        REVIEW_VERDICTS.join(", ")
+                    ));
+                }
+                if verdict.rationale_summary.len() > MAX_REVIEW_DEBATE_TEXT_BYTES {
+                    return Err(format!(
+                        "rationale_summary exceeds {} byte cap",
+                        MAX_REVIEW_DEBATE_TEXT_BYTES
+                    ));
+                }
+                let proposal = self
+                    .store
+                    .get_proposal(&verdict.review_request_id)
+                    .map_err(|e| format!("failed to find review request: {e}"))?;
+                match proposal {
+                    Some(p) => {
+                        let pid = p["proposal_id"].as_str().unwrap_or("");
+                        let ptype = p["proposal_type"].as_str().unwrap_or("");
+                        let pstatus = p["status"].as_str().unwrap_or("");
+                        let prun = p["run_id"].as_str().unwrap_or("");
+                        let ptarget = p["target_agent_id"].as_str().unwrap_or("");
+                        if ptype != "review_request" {
+                            return Err(format!("proposal {pid} is not a review_request"));
+                        }
+                        if prun != run_id {
+                            return Err(format!(
+                                "review request {pid} belongs to run '{prun}', not '{run_id}'"
+                            ));
+                        }
+                        if ptarget != agent_id {
+                            return Err(format!(
+                                "agent {agent_id} is not the target reviewer for proposal {pid}"
+                            ));
+                        }
+                        if pstatus != "pending" {
+                            return Err(format!(
+                                "review request {pid} is not pending (status: {pstatus})"
+                            ));
+                        }
+                        let verdict_proposal_id = format!(
+                            "rv-{}-{}",
+                            verdict.correlation_id,
+                            chrono::Utc::now().timestamp_millis()
+                        );
+                        self.store
+                            .create_proposal(
+                                &verdict_proposal_id,
+                                &verdict.correlation_id,
+                                &verdict.run_id,
+                                &verdict.node_id,
+                                agent_id,
+                                "review_verdict",
+                                &verdict.verdict,
+                                &verdict.rationale_summary,
+                                None,
+                                None,
+                                None,
+                            )
+                            .map_err(|e| format!("failed to create review verdict: {e}"))?;
+                        let new_status = if verdict.verdict == "accepted" {
+                            "accepted"
+                        } else {
+                            "rejected"
+                        };
+                        self.store
+                            .update_proposal_status(pid, new_status)
+                            .map_err(|e| format!("failed to update review status: {e}"))?;
+                        let _ = self.store.append_audit(
+                            "agent_step",
+                            "review.verdict_submitted",
+                            &format!("agent_state/{agent_id}/{run_id}"),
+                            &json!({
+                                "run_id": run_id,
+                                "agent_id": agent_id,
+                                "proposal_id": pid,
+                                "verdict_proposal_id": verdict_proposal_id,
+                                "correlation_id": verdict.correlation_id,
+                                "verdict": verdict.verdict,
+                                "blocking": verdict.blocking,
+                            }),
+                        );
+                        Ok(json!({"action":"submit_review_verdict","proposal_id": pid,
+                                  "verdict_proposal_id": verdict_proposal_id,
+                                  "verdict": verdict.verdict})
+                        .to_string())
+                    }
+                    None => Err(format!(
+                        "review request proposal {} not found",
+                        verdict.review_request_id
+                    )),
+                }
+            }
+            AgentAction::OpenDebate(debate) => {
+                if debate.participant_agent_ids.is_empty() {
+                    return Err("debate must have at least one participant".to_string());
+                }
+                if debate.participant_agent_ids.len() > MAX_DEBATE_PARTICIPANTS {
+                    return Err(format!(
+                        "debate participant count {} exceeds max {}",
+                        debate.participant_agent_ids.len(),
+                        MAX_DEBATE_PARTICIPANTS
+                    ));
+                }
+                let max_rounds = debate.max_rounds.min(MAX_DEBATE_ROUNDS);
+                if debate.subject_summary.len() > MAX_REVIEW_DEBATE_TEXT_BYTES {
+                    return Err(format!(
+                        "subject_summary exceeds {} byte cap",
+                        MAX_REVIEW_DEBATE_TEXT_BYTES
+                    ));
+                }
+                let proposal_id = format!(
+                    "debate-{}-{}",
+                    debate.correlation_id,
+                    chrono::Utc::now().timestamp_millis()
+                );
+                let debate_meta = json!({
+                    "max_rounds": max_rounds,
+                    "current_round": 0,
+                    "participant_agent_ids": debate.participant_agent_ids,
+                });
+                self.store
+                    .create_proposal(
+                        &proposal_id,
+                        &debate.correlation_id,
+                        &debate.run_id,
+                        &debate.node_id,
+                        agent_id,
+                        "debate_request",
+                        &debate.subject_summary,
+                        &debate_meta.to_string(),
+                        None,
+                        None,
+                        None,
+                    )
+                    .map_err(|e| format!("failed to create debate request: {e}"))?;
+                for pid in &debate.participant_agent_ids {
+                    let msg_id = format!(
+                        "debate-msg-{}-{}-{}",
+                        debate.correlation_id,
+                        pid,
+                        chrono::Utc::now().timestamp_millis()
+                    );
+                    let _ = self.store.send_message(
+                        &msg_id,
+                        agent_id,
+                        pid,
+                        "debate_request",
+                        Some(&format!("Debate opened: {}", debate.subject_summary)),
+                        Some(&debate.correlation_id),
+                        Some(&debate.run_id),
+                        Some(&debate.node_id),
+                        None,
+                        &json!({"proposal_id": proposal_id, "max_rounds": max_rounds}),
+                    );
+                }
+                let _ = self.store.append_audit(
+                    "agent_step",
+                    "debate.opened",
+                    &format!("agent_state/{agent_id}/{run_id}"),
+                    &json!({
+                        "run_id": run_id,
+                        "agent_id": agent_id,
+                        "proposal_id": proposal_id,
+                        "correlation_id": debate.correlation_id,
+                        "participant_count": debate.participant_agent_ids.len(),
+                        "max_rounds": max_rounds,
+                    }),
+                );
+                Ok(json!({"action":"open_debate","proposal_id": proposal_id,
+                          "correlation_id": debate.correlation_id,
+                          "max_rounds": max_rounds})
+                .to_string())
+            }
+            AgentAction::SubmitDebatePosition(position) => {
+                if position.position.len() > MAX_REVIEW_DEBATE_TEXT_BYTES {
+                    return Err(format!(
+                        "position exceeds {} byte cap",
+                        MAX_REVIEW_DEBATE_TEXT_BYTES
+                    ));
+                }
+                if position.rationale_summary.len() > MAX_REVIEW_DEBATE_TEXT_BYTES {
+                    return Err(format!(
+                        "rationale_summary exceeds {} byte cap",
+                        MAX_REVIEW_DEBATE_TEXT_BYTES
+                    ));
+                }
+                let debate_proposal = self
+                    .store
+                    .get_proposal(&position.debate_id)
+                    .map_err(|e| format!("failed to find debate: {e}"))?;
+                match debate_proposal {
+                    Some(dp) => {
+                        let dpid = dp["proposal_id"].as_str().unwrap_or("");
+                        let dptype = dp["proposal_type"].as_str().unwrap_or("");
+                        let dpstatus = dp["status"].as_str().unwrap_or("");
+                        let dprun = dp["run_id"].as_str().unwrap_or("");
+                        if dptype != "debate_request" {
+                            return Err(format!("proposal {dpid} is not a debate_request"));
+                        }
+                        if dprun != run_id {
+                            return Err(format!(
+                                "debate {dpid} belongs to run '{dprun}', not '{run_id}'"
+                            ));
+                        }
+                        if dpstatus != "pending" {
+                            return Err(format!(
+                                "debate {dpid} is not pending (status: {dpstatus})"
+                            ));
+                        }
+                        let meta_str = dp["context_summary"].as_str().unwrap_or("{}");
+                        let meta: serde_json::Value =
+                            serde_json::from_str(meta_str).unwrap_or(json!({}));
+                        let participants: Vec<String> = meta["participant_agent_ids"]
+                            .as_array()
+                            .map(|a| {
+                                a.iter()
+                                    .filter_map(|v| v.as_str().map(String::from))
+                                    .collect()
+                            })
+                            .unwrap_or_default();
+                        if !participants.contains(&agent_id.to_string()) {
+                            return Err(format!(
+                                "agent {agent_id} is not a participant in debate {dpid}"
+                            ));
+                        }
+                        let max_rounds = meta["max_rounds"].as_u64().unwrap_or(1) as usize;
+                        let current_round = meta["current_round"].as_u64().unwrap_or(0) as usize;
+                        if current_round >= max_rounds {
+                            return Err(format!(
+                                "debate {dpid} has reached max rounds ({max_rounds})"
+                            ));
+                        }
+                        let pos_proposal_id = format!(
+                            "dp-{}-{}-{}",
+                            position.correlation_id,
+                            agent_id,
+                            chrono::Utc::now().timestamp_millis()
+                        );
+                        self.store
+                            .create_proposal(
+                                &pos_proposal_id,
+                                &position.correlation_id,
+                                &position.run_id,
+                                &position.node_id,
+                                agent_id,
+                                "debate_position",
+                                &position.position,
+                                &position.rationale_summary,
+                                Some(&position.debate_id),
+                                None,
+                                None,
+                            )
+                            .map_err(|e| format!("failed to create debate position: {e}"))?;
+                        let new_meta = json!({
+                            "max_rounds": max_rounds,
+                            "current_round": current_round + 1,
+                            "participant_agent_ids": participants,
+                        });
+                        self.store
+                            .update_proposal_context_summary(dpid, &new_meta.to_string())
+                            .map_err(|e| format!("failed to update debate round: {e}"))?;
+                        let _ = self.store.append_audit(
+                            "agent_step",
+                            "debate.position_submitted",
+                            &format!("agent_state/{agent_id}/{run_id}"),
+                            &json!({
+                                "run_id": run_id,
+                                "agent_id": agent_id,
+                                "proposal_id": dpid,
+                                "position_proposal_id": pos_proposal_id,
+                                "correlation_id": position.correlation_id,
+                                "current_round": current_round + 1,
+                                "max_rounds": max_rounds,
+                            }),
+                        );
+                        Ok(json!({"action":"submit_debate_position","debate_id": dpid,
+                                  "position_proposal_id": pos_proposal_id,
+                                  "current_round": current_round + 1})
+                        .to_string())
+                    }
+                    None => Err(format!("debate proposal {} not found", position.debate_id)),
+                }
+            }
+            AgentAction::ResolveDebate(resolution) => {
+                if resolution.resolution.len() > MAX_REVIEW_DEBATE_TEXT_BYTES {
+                    return Err(format!(
+                        "resolution exceeds {} byte cap",
+                        MAX_REVIEW_DEBATE_TEXT_BYTES
+                    ));
+                }
+                let debate_proposal = self
+                    .store
+                    .get_proposal(&resolution.debate_id)
+                    .map_err(|e| format!("failed to find debate: {e}"))?;
+                match debate_proposal {
+                    Some(dp) => {
+                        let dpid = dp["proposal_id"].as_str().unwrap_or("");
+                        let dptype = dp["proposal_type"].as_str().unwrap_or("");
+                        let dpstatus = dp["status"].as_str().unwrap_or("");
+                        let dprun = dp["run_id"].as_str().unwrap_or("");
+                        let dpagent = dp["agent_id"].as_str().unwrap_or("");
+                        if dptype != "debate_request" {
+                            return Err(format!("proposal {dpid} is not a debate_request"));
+                        }
+                        if dprun != run_id {
+                            return Err(format!(
+                                "debate {dpid} belongs to run '{dprun}', not '{run_id}'"
+                            ));
+                        }
+                        if dpagent != agent_id {
+                            return Err(format!(
+                                "only the debate opener ({dpagent}) can resolve debate {dpid}"
+                            ));
+                        }
+                        if dpstatus != "pending" {
+                            return Err(format!(
+                                "debate {dpid} is not pending (status: {dpstatus})"
+                            ));
+                        }
+                        let resolution_proposal_id = format!(
+                            "dr-{}-{}",
+                            resolution.correlation_id,
+                            chrono::Utc::now().timestamp_millis()
+                        );
+                        self.store
+                            .create_proposal(
+                                &resolution_proposal_id,
+                                &resolution.correlation_id,
+                                &resolution.run_id,
+                                &resolution.node_id,
+                                agent_id,
+                                "debate_resolution",
+                                &resolution.resolution,
+                                &resolution.winning_position.clone().unwrap_or_default(),
+                                None,
+                                None,
+                                None,
+                            )
+                            .map_err(|e| format!("failed to create debate resolution: {e}"))?;
+                        self.store
+                            .update_proposal_status(dpid, "accepted")
+                            .map_err(|e| format!("failed to resolve debate: {e}"))?;
+                        let _ = self.store.append_audit(
+                            "agent_step",
+                            "debate.resolved",
+                            &format!("agent_state/{agent_id}/{run_id}"),
+                            &json!({
+                                "run_id": run_id,
+                                "agent_id": agent_id,
+                                "proposal_id": dpid,
+                                "resolution_proposal_id": resolution_proposal_id,
+                                "correlation_id": resolution.correlation_id,
+                                "has_winning_position": resolution.winning_position.is_some(),
+                            }),
+                        );
+                        Ok(json!({"action":"resolve_debate","debate_id": dpid,
+                                  "resolution_proposal_id": resolution_proposal_id})
+                        .to_string())
+                    }
+                    None => Err(format!(
+                        "debate proposal {} not found",
+                        resolution.debate_id
+                    )),
+                }
+            }
         }
     }
 }
@@ -2440,5 +2928,618 @@ mod tests {
             .ack_message_for_agent("msg-correct", "agent-b", "run-1")
             .expect("ack");
         assert!(ok.is_some());
+    }
+
+    // ── AR-5 tests ──────────────────────────────────────────────────────────
+
+    fn stub_review_request(_requester: &str, target: &str, run_id: &str) -> ReviewRequest {
+        ReviewRequest {
+            schema_version: "review_request.v1".to_string(),
+            correlation_id: "corr-review-001".to_string(),
+            subject_summary: "review my implementation".to_string(),
+            rationale_summary: "needs a second pair of eyes".to_string(),
+            target_agent_id: target.to_string(),
+            run_id: run_id.to_string(),
+            node_id: "agent-node-001".to_string(),
+            blocking: true,
+        }
+    }
+
+    fn stub_debate_request(_opener: &str, run_id: &str) -> DebateRequest {
+        DebateRequest {
+            schema_version: "debate_request.v1".to_string(),
+            correlation_id: "corr-debate-001".to_string(),
+            subject_summary: "architecture approach A vs B".to_string(),
+            participant_agent_ids: vec!["p1".to_string(), "p2".to_string()],
+            max_rounds: 3,
+            run_id: run_id.to_string(),
+            node_id: "agent-node-001".to_string(),
+        }
+    }
+
+    #[test]
+    fn test_ar5_valid_review_request_creation() {
+        let _lock = AGENT_ENV_LOCK.lock().unwrap();
+        let store = Arc::new(ar2_store());
+        create_test_agent(&store, "agent-req", "run-ar5-req");
+        create_test_agent(&store, "agent-tgt", "run-ar5-req");
+        std::env::set_var("ACP_ENABLE_AGENT_RUNTIME", "1");
+        std::env::remove_var("ACP_AGENT_RUNTIME_KILL_SWITCH");
+
+        let request = stub_review_request("agent-req", "agent-tgt", "run-ar5-req");
+        let executor = AgentStepExecutor::new(
+            store.clone(),
+            stub_decision(AgentAction::RequestReview(request)),
+        );
+        let output = executor.execute_node(&agent_step_input("agent-req", "run-ar5-req"));
+        assert_eq!(output.status, "completed");
+        let result = output.output.unwrap();
+        assert!(result.contains("request_review"));
+
+        let proposals = store
+            .list_proposals_by_run("run-ar5-req", 100, 0)
+            .expect("list");
+        assert_eq!(proposals.len(), 1);
+        assert_eq!(proposals[0]["proposal_type"], "review_request");
+        assert_eq!(proposals[0]["status"], "pending");
+        assert_eq!(proposals[0]["target_agent_id"], "agent-tgt");
+    }
+
+    #[test]
+    fn test_ar5_non_target_agent_cannot_submit_review_verdict() {
+        let _lock = AGENT_ENV_LOCK.lock().unwrap();
+        let store = Arc::new(ar2_store());
+        create_test_agent(&store, "agent-req", "run-ar5-v");
+        create_test_agent(&store, "agent-tgt", "run-ar5-v");
+        create_test_agent(&store, "agent-wrong", "run-ar5-v");
+        std::env::set_var("ACP_ENABLE_AGENT_RUNTIME", "1");
+        std::env::remove_var("ACP_AGENT_RUNTIME_KILL_SWITCH");
+
+        let request = stub_review_request("agent-req", "agent-tgt", "run-ar5-v");
+        let exec = AgentStepExecutor::new(
+            store.clone(),
+            stub_decision(AgentAction::RequestReview(request)),
+        );
+        let out = exec.execute_node(&agent_step_input("agent-req", "run-ar5-v"));
+        assert_eq!(out.status, "completed");
+
+        let proposals = store
+            .list_proposals_by_run("run-ar5-v", 100, 0)
+            .expect("list");
+        let review_pid = proposals[0]["proposal_id"].as_str().unwrap().to_string();
+
+        let verdict = ReviewVerdict {
+            schema_version: "review_verdict.v1".to_string(),
+            correlation_id: "corr-review-001".to_string(),
+            review_request_id: review_pid,
+            verdict: "accepted".to_string(),
+            rationale_summary: "looks good".to_string(),
+            run_id: "run-ar5-v".to_string(),
+            node_id: "agent-node-001".to_string(),
+            blocking: true,
+        };
+        let wrong_exec = AgentStepExecutor::new(
+            store,
+            stub_decision(AgentAction::SubmitReviewVerdict(verdict)),
+        );
+        let out2 = wrong_exec.execute_node(&agent_step_input("agent-wrong", "run-ar5-v"));
+        assert_eq!(out2.status, "failed");
+        assert!(out2
+            .error_message
+            .unwrap()
+            .contains("not the target reviewer"));
+    }
+
+    #[test]
+    fn test_ar5_wrong_run_id_cannot_submit_verdict() {
+        let _lock = AGENT_ENV_LOCK.lock().unwrap();
+        let store = Arc::new(ar2_store());
+        create_test_agent(&store, "agent-req", "run-ar5-wr");
+        create_test_agent(&store, "agent-tgt", "run-ar5-wr");
+        std::env::set_var("ACP_ENABLE_AGENT_RUNTIME", "1");
+        std::env::remove_var("ACP_AGENT_RUNTIME_KILL_SWITCH");
+
+        let request = stub_review_request("agent-req", "agent-tgt", "run-ar5-wr");
+        let exec = AgentStepExecutor::new(
+            store.clone(),
+            stub_decision(AgentAction::RequestReview(request)),
+        );
+        let out = exec.execute_node(&agent_step_input("agent-req", "run-ar5-wr"));
+        assert_eq!(out.status, "completed");
+
+        let proposals = store
+            .list_proposals_by_run("run-ar5-wr", 100, 0)
+            .expect("list");
+        let review_pid = proposals[0]["proposal_id"].as_str().unwrap().to_string();
+
+        let verdict = ReviewVerdict {
+            schema_version: "review_verdict.v1".to_string(),
+            correlation_id: "corr-review-001".to_string(),
+            review_request_id: review_pid,
+            verdict: "accepted".to_string(),
+            rationale_summary: "looks good".to_string(),
+            run_id: "run-ar5-wrong-run".to_string(),
+            node_id: "agent-node-001".to_string(),
+            blocking: true,
+        };
+        let exec2 = AgentStepExecutor::new(
+            store,
+            stub_decision(AgentAction::SubmitReviewVerdict(verdict)),
+        );
+        let out2 = exec2.execute_node(&agent_step_input("agent-tgt", "run-ar5-wrong-run"));
+        assert_eq!(out2.status, "failed");
+    }
+
+    #[test]
+    fn test_ar5_requester_can_cancel_pending_review() {
+        let _lock = AGENT_ENV_LOCK.lock().unwrap();
+        let store = Arc::new(ar2_store());
+        create_test_agent(&store, "agent-req", "run-ar5-cancel");
+        create_test_agent(&store, "agent-tgt", "run-ar5-cancel");
+        std::env::set_var("ACP_ENABLE_AGENT_RUNTIME", "1");
+        std::env::remove_var("ACP_AGENT_RUNTIME_KILL_SWITCH");
+
+        let request = stub_review_request("agent-req", "agent-tgt", "run-ar5-cancel");
+        let exec = AgentStepExecutor::new(
+            store.clone(),
+            stub_decision(AgentAction::RequestReview(request)),
+        );
+        let out = exec.execute_node(&agent_step_input("agent-req", "run-ar5-cancel"));
+        assert_eq!(out.status, "completed");
+
+        let proposals = store
+            .list_proposals_by_run("run-ar5-cancel", 100, 0)
+            .expect("list");
+        let corr = proposals[0]["correlation_id"].as_str().unwrap().to_string();
+
+        let cancel_exec = AgentStepExecutor::new(
+            store.clone(),
+            stub_decision(AgentAction::CancelProposal(corr)),
+        );
+        let cancel_out = cancel_exec.execute_node(&agent_step_input("agent-req", "run-ar5-cancel"));
+        assert_eq!(cancel_out.status, "completed");
+    }
+
+    #[test]
+    fn test_ar5_non_owner_cannot_cancel_review() {
+        let _lock = AGENT_ENV_LOCK.lock().unwrap();
+        let store = Arc::new(ar2_store());
+        create_test_agent(&store, "agent-req", "run-ar5-no-cancel");
+        create_test_agent(&store, "agent-tgt", "run-ar5-no-cancel");
+        std::env::set_var("ACP_ENABLE_AGENT_RUNTIME", "1");
+        std::env::remove_var("ACP_AGENT_RUNTIME_KILL_SWITCH");
+
+        let request = stub_review_request("agent-req", "agent-tgt", "run-ar5-no-cancel");
+        let exec = AgentStepExecutor::new(
+            store.clone(),
+            stub_decision(AgentAction::RequestReview(request)),
+        );
+        let out = exec.execute_node(&agent_step_input("agent-req", "run-ar5-no-cancel"));
+        assert_eq!(out.status, "completed");
+
+        let proposals = store
+            .list_proposals_by_run("run-ar5-no-cancel", 100, 0)
+            .expect("list");
+        let corr = proposals[0]["correlation_id"].as_str().unwrap().to_string();
+
+        let cancel_exec =
+            AgentStepExecutor::new(store, stub_decision(AgentAction::CancelProposal(corr)));
+        let cancel_out =
+            cancel_exec.execute_node(&agent_step_input("agent-tgt", "run-ar5-no-cancel"));
+        assert_eq!(cancel_out.status, "failed");
+    }
+
+    #[test]
+    fn test_ar5_terminal_review_cannot_be_modified() {
+        let _lock = AGENT_ENV_LOCK.lock().unwrap();
+        let store = Arc::new(ar2_store());
+        create_test_agent(&store, "agent-req", "run-ar5-term");
+        create_test_agent(&store, "agent-tgt", "run-ar5-term");
+        std::env::set_var("ACP_ENABLE_AGENT_RUNTIME", "1");
+        std::env::remove_var("ACP_AGENT_RUNTIME_KILL_SWITCH");
+
+        let request = stub_review_request("agent-req", "agent-tgt", "run-ar5-term");
+        let exec = AgentStepExecutor::new(
+            store.clone(),
+            stub_decision(AgentAction::RequestReview(request)),
+        );
+        let out = exec.execute_node(&agent_step_input("agent-req", "run-ar5-term"));
+        assert_eq!(out.status, "completed");
+
+        let proposals = store
+            .list_proposals_by_run("run-ar5-term", 100, 0)
+            .expect("list");
+        let review_pid = proposals[0]["proposal_id"].as_str().unwrap().to_string();
+
+        let verdict = ReviewVerdict {
+            schema_version: "review_verdict.v1".to_string(),
+            correlation_id: "corr-review-001".to_string(),
+            review_request_id: review_pid.clone(),
+            verdict: "accepted".to_string(),
+            rationale_summary: "looks good".to_string(),
+            run_id: "run-ar5-term".to_string(),
+            node_id: "agent-node-001".to_string(),
+            blocking: true,
+        };
+        let verdict_exec = AgentStepExecutor::new(
+            store.clone(),
+            stub_decision(AgentAction::SubmitReviewVerdict(verdict)),
+        );
+        let vout = verdict_exec.execute_node(&agent_step_input("agent-tgt", "run-ar5-term"));
+        assert_eq!(vout.status, "completed");
+
+        let verdict2 = ReviewVerdict {
+            schema_version: "review_verdict.v1".to_string(),
+            correlation_id: "corr-review-002".to_string(),
+            review_request_id: review_pid,
+            verdict: "rejected".to_string(),
+            rationale_summary: "changed mind".to_string(),
+            run_id: "run-ar5-term".to_string(),
+            node_id: "agent-node-001".to_string(),
+            blocking: true,
+        };
+        let dup_exec = AgentStepExecutor::new(
+            store,
+            stub_decision(AgentAction::SubmitReviewVerdict(verdict2)),
+        );
+        let dout = dup_exec.execute_node(&agent_step_input("agent-tgt", "run-ar5-term"));
+        assert_eq!(dout.status, "failed");
+        assert!(dout.error_message.unwrap().contains("not pending"));
+    }
+
+    #[test]
+    fn test_ar5_debate_opens_with_max_rounds() {
+        let _lock = AGENT_ENV_LOCK.lock().unwrap();
+        let store = Arc::new(ar2_store());
+        create_test_agent(&store, "agent-opener", "run-ar5-deb");
+        create_test_agent(&store, "p1", "run-ar5-deb");
+        create_test_agent(&store, "p2", "run-ar5-deb");
+        std::env::set_var("ACP_ENABLE_AGENT_RUNTIME", "1");
+        std::env::remove_var("ACP_AGENT_RUNTIME_KILL_SWITCH");
+
+        let debate = stub_debate_request("agent-opener", "run-ar5-deb");
+        let exec = AgentStepExecutor::new(
+            store.clone(),
+            stub_decision(AgentAction::OpenDebate(debate)),
+        );
+        let out = exec.execute_node(&agent_step_input("agent-opener", "run-ar5-deb"));
+        assert_eq!(out.status, "completed");
+        let result = out.output.unwrap();
+        assert!(result.contains("open_debate"));
+        assert!(result.contains("\"max_rounds\":3"));
+
+        let proposals = store
+            .list_proposals_by_run("run-ar5-deb", 100, 0)
+            .expect("list");
+        let debate_proposals: Vec<_> = proposals
+            .iter()
+            .filter(|p| p["proposal_type"] == "debate_request")
+            .collect();
+        assert_eq!(debate_proposals.len(), 1);
+        assert_eq!(debate_proposals[0]["status"], "pending");
+
+        let msgs_p1 = store
+            .list_mailbox(Some("p1"), Some("run-ar5-deb"), None, None, 100, 0)
+            .expect("list mailbox p1");
+        assert_eq!(msgs_p1.len(), 1);
+        assert_eq!(msgs_p1[0].message_type, "debate_request");
+
+        let msgs_p2 = store
+            .list_mailbox(Some("p2"), Some("run-ar5-deb"), None, None, 100, 0)
+            .expect("list mailbox p2");
+        assert_eq!(msgs_p2.len(), 1);
+    }
+
+    #[test]
+    fn test_ar5_non_participant_cannot_submit_debate_position() {
+        let _lock = AGENT_ENV_LOCK.lock().unwrap();
+        let store = Arc::new(ar2_store());
+        create_test_agent(&store, "agent-opener", "run-ar5-np");
+        create_test_agent(&store, "p1", "run-ar5-np");
+        create_test_agent(&store, "outsider", "run-ar5-np");
+        std::env::set_var("ACP_ENABLE_AGENT_RUNTIME", "1");
+        std::env::remove_var("ACP_AGENT_RUNTIME_KILL_SWITCH");
+
+        let debate = stub_debate_request("agent-opener", "run-ar5-np");
+        let exec = AgentStepExecutor::new(
+            store.clone(),
+            stub_decision(AgentAction::OpenDebate(debate)),
+        );
+        let out = exec.execute_node(&agent_step_input("agent-opener", "run-ar5-np"));
+        assert_eq!(out.status, "completed");
+
+        let proposals = store
+            .list_proposals_by_run("run-ar5-np", 100, 0)
+            .expect("list");
+        let debate_pid = proposals[0]["proposal_id"].as_str().unwrap().to_string();
+
+        let position = DebatePosition {
+            schema_version: "debate_position.v1".to_string(),
+            correlation_id: "corr-debate-001".to_string(),
+            debate_id: debate_pid,
+            position: "approach A is better".to_string(),
+            rationale_summary: "because reasons".to_string(),
+            run_id: "run-ar5-np".to_string(),
+            node_id: "agent-node-001".to_string(),
+        };
+        let outsider_exec = AgentStepExecutor::new(
+            store,
+            stub_decision(AgentAction::SubmitDebatePosition(position)),
+        );
+        let out2 = outsider_exec.execute_node(&agent_step_input("outsider", "run-ar5-np"));
+        assert_eq!(out2.status, "failed");
+        assert!(out2.error_message.unwrap().contains("not a participant"));
+    }
+
+    #[test]
+    fn test_ar5_max_rounds_prevents_further_positions() {
+        let _lock = AGENT_ENV_LOCK.lock().unwrap();
+        let store = Arc::new(ar2_store());
+        create_test_agent(&store, "agent-opener", "run-ar5-mr");
+        create_test_agent(&store, "p1", "run-ar5-mr");
+        std::env::set_var("ACP_ENABLE_AGENT_RUNTIME", "1");
+        std::env::remove_var("ACP_AGENT_RUNTIME_KILL_SWITCH");
+
+        let debate = DebateRequest {
+            schema_version: "debate_request.v1".to_string(),
+            correlation_id: "corr-debate-mr".to_string(),
+            subject_summary: "topic".to_string(),
+            participant_agent_ids: vec!["p1".to_string()],
+            max_rounds: 1,
+            run_id: "run-ar5-mr".to_string(),
+            node_id: "agent-node-001".to_string(),
+        };
+        let exec = AgentStepExecutor::new(
+            store.clone(),
+            stub_decision(AgentAction::OpenDebate(debate)),
+        );
+        let out = exec.execute_node(&agent_step_input("agent-opener", "run-ar5-mr"));
+        assert_eq!(out.status, "completed");
+
+        let proposals = store
+            .list_proposals_by_run("run-ar5-mr", 100, 0)
+            .expect("list");
+        let debate_pid = proposals[0]["proposal_id"].as_str().unwrap().to_string();
+
+        let position = DebatePosition {
+            schema_version: "debate_position.v1".to_string(),
+            correlation_id: "corr-debate-mr".to_string(),
+            debate_id: debate_pid.clone(),
+            position: "round 1 position".to_string(),
+            rationale_summary: "because".to_string(),
+            run_id: "run-ar5-mr".to_string(),
+            node_id: "agent-node-001".to_string(),
+        };
+        let pos_exec = AgentStepExecutor::new(
+            store.clone(),
+            stub_decision(AgentAction::SubmitDebatePosition(position)),
+        );
+        let pout = pos_exec.execute_node(&agent_step_input("p1", "run-ar5-mr"));
+        assert_eq!(pout.status, "completed");
+
+        let position2 = DebatePosition {
+            schema_version: "debate_position.v1".to_string(),
+            correlation_id: "corr-debate-mr".to_string(),
+            debate_id: debate_pid,
+            position: "round 2 position".to_string(),
+            rationale_summary: "because".to_string(),
+            run_id: "run-ar5-mr".to_string(),
+            node_id: "agent-node-001".to_string(),
+        };
+        let pos_exec2 = AgentStepExecutor::new(
+            store,
+            stub_decision(AgentAction::SubmitDebatePosition(position2)),
+        );
+        let pout2 = pos_exec2.execute_node(&agent_step_input("p1", "run-ar5-mr"));
+        assert_eq!(pout2.status, "failed");
+        assert!(pout2.error_message.unwrap().contains("reached max rounds"));
+    }
+
+    #[test]
+    fn test_ar5_debate_resolution_is_terminal() {
+        let _lock = AGENT_ENV_LOCK.lock().unwrap();
+        let store = Arc::new(ar2_store());
+        create_test_agent(&store, "agent-opener", "run-ar5-res");
+        create_test_agent(&store, "p1", "run-ar5-res");
+        std::env::set_var("ACP_ENABLE_AGENT_RUNTIME", "1");
+        std::env::remove_var("ACP_AGENT_RUNTIME_KILL_SWITCH");
+
+        let debate = stub_debate_request("agent-opener", "run-ar5-res");
+        let exec = AgentStepExecutor::new(
+            store.clone(),
+            stub_decision(AgentAction::OpenDebate(debate)),
+        );
+        let out = exec.execute_node(&agent_step_input("agent-opener", "run-ar5-res"));
+        assert_eq!(out.status, "completed");
+
+        let proposals = store
+            .list_proposals_by_run("run-ar5-res", 100, 0)
+            .expect("list");
+        let debate_pid = proposals[0]["proposal_id"].as_str().unwrap().to_string();
+
+        let resolution = DebateResolution {
+            schema_version: "debate_resolution.v1".to_string(),
+            correlation_id: "corr-debate-res".to_string(),
+            debate_id: debate_pid.clone(),
+            resolution: "approach A wins".to_string(),
+            winning_position: Some("approach A".to_string()),
+            unresolved_risks: None,
+            run_id: "run-ar5-res".to_string(),
+            node_id: "agent-node-001".to_string(),
+        };
+        let res_exec = AgentStepExecutor::new(
+            store.clone(),
+            stub_decision(AgentAction::ResolveDebate(resolution)),
+        );
+        let rout = res_exec.execute_node(&agent_step_input("agent-opener", "run-ar5-res"));
+        assert_eq!(rout.status, "completed");
+
+        let position = DebatePosition {
+            schema_version: "debate_position.v1".to_string(),
+            correlation_id: "corr-debate-res".to_string(),
+            debate_id: debate_pid,
+            position: "too late".to_string(),
+            rationale_summary: "because".to_string(),
+            run_id: "run-ar5-res".to_string(),
+            node_id: "agent-node-001".to_string(),
+        };
+        let late_exec = AgentStepExecutor::new(
+            store,
+            stub_decision(AgentAction::SubmitDebatePosition(position)),
+        );
+        let lout = late_exec.execute_node(&agent_step_input("p1", "run-ar5-res"));
+        assert_eq!(lout.status, "failed");
+        assert!(lout.error_message.unwrap().contains("not pending"));
+    }
+
+    #[test]
+    fn test_ar5_audit_events_are_metadata_only() {
+        let _lock = AGENT_ENV_LOCK.lock().unwrap();
+        let store = Arc::new(ar2_store());
+        create_test_agent(&store, "agent-req", "run-ar5-audit");
+        create_test_agent(&store, "agent-tgt", "run-ar5-audit");
+        std::env::set_var("ACP_ENABLE_AGENT_RUNTIME", "1");
+        std::env::remove_var("ACP_AGENT_RUNTIME_KILL_SWITCH");
+
+        let request = stub_review_request("agent-req", "agent-tgt", "run-ar5-audit");
+        let exec = AgentStepExecutor::new(
+            store.clone(),
+            stub_decision(AgentAction::RequestReview(request)),
+        );
+        let out = exec.execute_node(&agent_step_input("agent-req", "run-ar5-audit"));
+        assert_eq!(out.status, "completed");
+
+        let events = store.audit_events(100).expect("audit events");
+        let ar5_events: Vec<_> = events
+            .iter()
+            .filter(|e| {
+                e.get("action")
+                    .and_then(|a| a.as_str())
+                    .map(|a| a.starts_with("review.") || a.starts_with("debate."))
+                    .unwrap_or(false)
+            })
+            .collect();
+        assert!(
+            !ar5_events.is_empty(),
+            "expected at least one review/debate audit event"
+        );
+        for event in &ar5_events {
+            let details = event.get("details").unwrap();
+            let details_str = details.to_string().to_lowercase();
+            assert!(
+                !details_str.contains("password"),
+                "audit event should not contain raw secrets"
+            );
+            assert!(
+                !details_str.contains("rationale_summary"),
+                "audit event should not contain rationale text"
+            );
+        }
+    }
+
+    #[test]
+    fn test_ar5_self_review_fails_closed() {
+        let _lock = AGENT_ENV_LOCK.lock().unwrap();
+        let store = Arc::new(ar2_store());
+        create_test_agent(&store, "agent-self", "run-ar5-sr");
+        std::env::set_var("ACP_ENABLE_AGENT_RUNTIME", "1");
+        std::env::remove_var("ACP_AGENT_RUNTIME_KILL_SWITCH");
+
+        let request = ReviewRequest {
+            schema_version: "review_request.v1".to_string(),
+            correlation_id: "corr-self-review".to_string(),
+            subject_summary: "review myself".to_string(),
+            rationale_summary: "why not".to_string(),
+            target_agent_id: "agent-self".to_string(),
+            run_id: "run-ar5-sr".to_string(),
+            node_id: "agent-node-001".to_string(),
+            blocking: true,
+        };
+        let exec =
+            AgentStepExecutor::new(store, stub_decision(AgentAction::RequestReview(request)));
+        let out = exec.execute_node(&agent_step_input("agent-self", "run-ar5-sr"));
+        assert_eq!(out.status, "failed");
+        assert!(out.error_message.unwrap().contains("must be different"));
+    }
+
+    #[test]
+    fn test_ar5_debate_non_opener_cannot_resolve() {
+        let _lock = AGENT_ENV_LOCK.lock().unwrap();
+        let store = Arc::new(ar2_store());
+        create_test_agent(&store, "agent-opener", "run-ar5-nor");
+        create_test_agent(&store, "p1", "run-ar5-nor");
+        std::env::set_var("ACP_ENABLE_AGENT_RUNTIME", "1");
+        std::env::remove_var("ACP_AGENT_RUNTIME_KILL_SWITCH");
+
+        let debate = stub_debate_request("agent-opener", "run-ar5-nor");
+        let exec = AgentStepExecutor::new(
+            store.clone(),
+            stub_decision(AgentAction::OpenDebate(debate)),
+        );
+        let out = exec.execute_node(&agent_step_input("agent-opener", "run-ar5-nor"));
+        assert_eq!(out.status, "completed");
+
+        let proposals = store
+            .list_proposals_by_run("run-ar5-nor", 100, 0)
+            .expect("list");
+        let debate_pid = proposals[0]["proposal_id"].as_str().unwrap().to_string();
+
+        let resolution = DebateResolution {
+            schema_version: "debate_resolution.v1".to_string(),
+            correlation_id: "corr-debate-nor".to_string(),
+            debate_id: debate_pid,
+            resolution: "I decide".to_string(),
+            winning_position: None,
+            unresolved_risks: None,
+            run_id: "run-ar5-nor".to_string(),
+            node_id: "agent-node-001".to_string(),
+        };
+        let p1_exec =
+            AgentStepExecutor::new(store, stub_decision(AgentAction::ResolveDebate(resolution)));
+        let out2 = p1_exec.execute_node(&agent_step_input("p1", "run-ar5-nor"));
+        assert_eq!(out2.status, "failed");
+        assert!(out2
+            .error_message
+            .unwrap()
+            .contains("only the debate opener"));
+    }
+
+    #[test]
+    fn test_ar5_review_requester_cancel_by_correlation() {
+        let _lock = AGENT_ENV_LOCK.lock().unwrap();
+        let store = Arc::new(ar2_store());
+        create_test_agent(&store, "agent-req", "run-ar5-rc");
+        create_test_agent(&store, "agent-tgt", "run-ar5-rc");
+        std::env::set_var("ACP_ENABLE_AGENT_RUNTIME", "1");
+        std::env::remove_var("ACP_AGENT_RUNTIME_KILL_SWITCH");
+
+        let request = ReviewRequest {
+            schema_version: "review_request.v1".to_string(),
+            correlation_id: "corr-cancel-test".to_string(),
+            subject_summary: "review me".to_string(),
+            rationale_summary: "please".to_string(),
+            target_agent_id: "agent-tgt".to_string(),
+            run_id: "run-ar5-rc".to_string(),
+            node_id: "agent-node-001".to_string(),
+            blocking: false,
+        };
+        let exec = AgentStepExecutor::new(
+            store.clone(),
+            stub_decision(AgentAction::RequestReview(request)),
+        );
+        let out = exec.execute_node(&agent_step_input("agent-req", "run-ar5-rc"));
+        assert_eq!(out.status, "completed");
+
+        let cancel_exec = AgentStepExecutor::new(
+            store.clone(),
+            stub_decision(AgentAction::CancelProposal("corr-cancel-test".to_string())),
+        );
+        let cout = cancel_exec.execute_node(&agent_step_input("agent-req", "run-ar5-rc"));
+        assert_eq!(cout.status, "completed");
+
+        let proposals = store
+            .list_proposals_by_run("run-ar5-rc", 100, 0)
+            .expect("list");
+        assert_eq!(proposals[0]["status"], "cancelled");
     }
 }
