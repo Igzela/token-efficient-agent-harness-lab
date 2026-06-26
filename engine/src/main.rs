@@ -291,7 +291,8 @@ async fn main() {
         .and_then(|v| v.parse().ok())
         .unwrap_or(5);
     let state = if enable_scheduler {
-        let scheduler_config = SchedulerConfig::from_env_with_gates(&execution_gates);
+        let scheduler_config = SchedulerConfig::from_env_with_gates(&execution_gates)
+            .expect("invalid scheduler env configuration");
         scheduler_config
             .validate_for_start()
             .expect("invalid supervised worker configuration");
