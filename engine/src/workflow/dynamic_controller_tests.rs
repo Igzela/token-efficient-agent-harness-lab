@@ -105,6 +105,7 @@ fn setup_single_node_run() -> (LocalProductStore, String) {
     (store, run_id)
 }
 
+#[allow(dead_code)]
 fn default_config() -> DynamicControllerConfig {
     DynamicControllerConfig::default()
 }

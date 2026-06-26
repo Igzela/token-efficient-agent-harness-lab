@@ -770,104 +770,109 @@ impl LocalProductStore {
                     )?;
                 }
 
-                let Some(node_id) = find_ready_node_locked(conn, run_id)? else {
-                    let (all_done, has_failure) = check_run_completion_locked(conn, run_id)?;
-                    if all_done {
-                        let terminal_status = if has_failure { "failed" } else { "completed" };
-                        let now = self.now();
-                        update_workflow_run_status_locked(conn, run_id, terminal_status, &now)?;
-                        insert_workflow_run_event_locked(
-                            conn,
-                            run_id,
-                            None,
-                            &format!("workflow_run.{terminal_status}"),
-                            actor,
-                            &json!({"reason": if has_failure { "node_failure" } else { "all_nodes_completed" }}),
-                            &now,
-                        )?;
-                        append_audit_locked(
-                            conn,
-                            &now,
-                            actor,
-                            &format!("workflow_run.{terminal_status}"),
-                            run_id,
-                            &json!({"metadata_only": true}),
-                        )?;
+                // Find a ready node, skipping agent_step nodes that are at concurrency cap
+                let mut capped_skip: Vec<String> = Vec::new();
+                let mut found_is_agent_step = false;
+                let node_id = loop {
+                    let Some(nid) = find_ready_node_locked(conn, run_id, &capped_skip.iter().map(|s| s.as_str()).collect::<Vec<_>>())? else {
+                        let (all_done, has_failure) = check_run_completion_locked(conn, run_id)?;
+                        if all_done {
+                            let terminal_status = if has_failure { "failed" } else { "completed" };
+                            let now = self.now();
+                            update_workflow_run_status_locked(conn, run_id, terminal_status, &now)?;
+                            insert_workflow_run_event_locked(
+                                conn,
+                                run_id,
+                                None,
+                                &format!("workflow_run.{terminal_status}"),
+                                actor,
+                                &json!({"reason": if has_failure { "node_failure" } else { "all_nodes_completed" }}),
+                                &now,
+                            )?;
+                            append_audit_locked(
+                                conn,
+                                &now,
+                                actor,
+                                &format!("workflow_run.{terminal_status}"),
+                                run_id,
+                                &json!({"metadata_only": true}),
+                            )?;
+                            let run = get_run_row(conn, run_id)?;
+                            return Ok(LeaseResult::Terminal { action: terminal_status.to_string(), run });
+                        }
                         let run = get_run_row(conn, run_id)?;
-                        return Ok(LeaseResult::Terminal { action: terminal_status.to_string(), run });
-                    }
-                    let run = get_run_row(conn, run_id)?;
-                    return Ok(LeaseResult::NoReadyNode { run });
-                };
+                        return Ok(LeaseResult::NoReadyNode { run });
+                    };
 
-                // Check agent concurrency caps before leasing
-                let mut was_agent_step_with_caps = false;
-                if let Some((global_cap, per_run_cap)) = agent_concurrency_caps {
-                    let node_task_type: String = conn
-                        .query_row(
-                            "SELECT task_type FROM workflow_run_nodes WHERE run_id = ?1 AND node_id = ?2",
-                            params![run_id, node_id],
-                            |row| row.get(0),
-                        )
-                        .unwrap_or_default();
-                    if node_task_type == "agent_step" {
-                        was_agent_step_with_caps = true;
-                        let global_running = count_running_agent_steps_locked(conn)?;
-                        let per_run_running = count_running_agent_steps_for_run_locked(conn, run_id)?;
-                        if global_running >= global_cap as i64 {
+                    // Check agent concurrency caps; skip capped agent_step nodes
+                    if let Some((global_cap, per_run_cap)) = agent_concurrency_caps {
+                        let node_task_type: String = conn
+                            .query_row(
+                                "SELECT task_type FROM workflow_run_nodes WHERE run_id = ?1 AND node_id = ?2",
+                                params![run_id, nid],
+                                |row| row.get(0),
+                            )
+                            .unwrap_or_default();
+                        if node_task_type == "agent_step" {
+                            let global_running = count_running_agent_steps_locked(conn)?;
+                            let per_run_running = count_running_agent_steps_for_run_locked(conn, run_id)?;
+                            if global_running >= global_cap as i64 {
+                                append_audit_locked(
+                                    conn,
+                                    &now,
+                                    "scheduler",
+                                    "agent_step.claim_conflict",
+                                    &nid,
+                                    &json!({
+                                        "run_id": run_id,
+                                        "node_id": nid,
+                                        "reason": "global_cap_exceeded",
+                                        "running": global_running,
+                                        "cap": global_cap,
+                                        "per_run_running": per_run_running,
+                                    }),
+                                )?;
+                                capped_skip.push(nid);
+                                continue;
+                            }
+                            if per_run_running >= per_run_cap as i64 {
+                                append_audit_locked(
+                                    conn,
+                                    &now,
+                                    "scheduler",
+                                    "agent_step.claim_conflict",
+                                    &nid,
+                                    &json!({
+                                        "run_id": run_id,
+                                        "node_id": nid,
+                                        "reason": "per_run_cap_exceeded",
+                                        "running": per_run_running,
+                                        "cap": per_run_cap,
+                                        "global_running": global_running,
+                                    }),
+                                )?;
+                                capped_skip.push(nid);
+                                continue;
+                            }
+                            found_is_agent_step = true;
+                            // Claim attempt audit
                             append_audit_locked(
                                 conn,
                                 &now,
                                 "scheduler",
-                                "agent_step.claim_conflict",
-                                &node_id,
+                                "agent_step.claim_attempt",
+                                &nid,
                                 &json!({
                                     "run_id": run_id,
-                                    "node_id": node_id,
-                                    "reason": "global_cap_exceeded",
-                                    "running": global_running,
-                                    "cap": global_cap,
+                                    "node_id": nid,
+                                    "global_running": global_running,
                                     "per_run_running": per_run_running,
                                 }),
                             )?;
-                            let run = get_run_row(conn, run_id)?;
-                            return Ok(LeaseResult::NoReadyNode { run });
                         }
-                        if per_run_running >= per_run_cap as i64 {
-                            append_audit_locked(
-                                conn,
-                                &now,
-                                "scheduler",
-                                "agent_step.claim_conflict",
-                                &node_id,
-                                &json!({
-                                    "run_id": run_id,
-                                    "node_id": node_id,
-                                    "reason": "per_run_cap_exceeded",
-                                    "running": per_run_running,
-                                    "cap": per_run_cap,
-                                    "global_running": global_running,
-                                }),
-                            )?;
-                            let run = get_run_row(conn, run_id)?;
-                            return Ok(LeaseResult::NoReadyNode { run });
-                        }
-                        // Claim attempt audit
-                        append_audit_locked(
-                            conn,
-                            &now,
-                            "scheduler",
-                            "agent_step.claim_attempt",
-                            &node_id,
-                            &json!({
-                                "run_id": run_id,
-                                "node_id": node_id,
-                                "global_running": global_running,
-                                "per_run_running": per_run_running,
-                            }),
-                        )?;
                     }
-                }
+                    break nid;
+                };
 
                 let now = self.now();
                 let updated = conn.execute(
@@ -876,7 +881,7 @@ impl LocalProductStore {
                     params![now, run_id, node_id],
                 ).map_err(|e| e.to_string())?;
                 if updated == 0 {
-                    if was_agent_step_with_caps {
+                    if found_is_agent_step {
                         append_audit_locked(
                             conn,
                             &now,
@@ -996,103 +1001,106 @@ impl LocalProductStore {
                     )?;
                 }
 
-                let Some(node_id) = pg_find_ready_node(&mut tx, run_id)? else {
-                    let (all_done, has_failure) = pg_check_run_completion(&mut tx, run_id)?;
-                    if all_done {
-                        let terminal_status = if has_failure { "failed" } else { "completed" };
-                        let now = self.now();
-                        pg_update_workflow_run_status(&mut tx, run_id, terminal_status, &now)?;
-                        pg_insert_workflow_run_event(
-                            &mut tx,
-                            run_id,
-                            None,
-                            &format!("workflow_run.{terminal_status}"),
-                            actor,
-                            &json!({"reason": if has_failure { "node_failure" } else { "all_nodes_completed" }}),
-                            &now,
-                        )?;
-                        pg_append_audit(
-                            &mut tx,
-                            &now,
-                            actor,
-                            &format!("workflow_run.{terminal_status}"),
-                            run_id,
-                            &json!({"metadata_only": true}),
-                        )?;
+                // Find a ready node, skipping agent_step nodes that are at concurrency cap (PG branch)
+                let mut capped_skip: Vec<String> = Vec::new();
+                let mut found_is_agent_step = false;
+                let node_id = loop {
+                    let Some(nid) = pg_find_ready_node(&mut tx, run_id, &capped_skip.iter().map(|s| s.as_str()).collect::<Vec<_>>())? else {
+                        let (all_done, has_failure) = pg_check_run_completion(&mut tx, run_id)?;
+                        if all_done {
+                            let terminal_status = if has_failure { "failed" } else { "completed" };
+                            let now = self.now();
+                            pg_update_workflow_run_status(&mut tx, run_id, terminal_status, &now)?;
+                            pg_insert_workflow_run_event(
+                                &mut tx,
+                                run_id,
+                                None,
+                                &format!("workflow_run.{terminal_status}"),
+                                actor,
+                                &json!({"reason": if has_failure { "node_failure" } else { "all_nodes_completed" }}),
+                                &now,
+                            )?;
+                            pg_append_audit(
+                                &mut tx,
+                                &now,
+                                actor,
+                                &format!("workflow_run.{terminal_status}"),
+                                run_id,
+                                &json!({"metadata_only": true}),
+                            )?;
+                            let run = pg_get_run_row(&mut tx, run_id)?;
+                            tx.commit().map_err(|e| e.to_string())?;
+                            return Ok(LeaseResult::Terminal { action: terminal_status.to_string(), run });
+                        }
                         let run = pg_get_run_row(&mut tx, run_id)?;
                         tx.commit().map_err(|e| e.to_string())?;
-                        return Ok(LeaseResult::Terminal { action: terminal_status.to_string(), run });
-                    }
-                    let run = pg_get_run_row(&mut tx, run_id)?;
-                    tx.commit().map_err(|e| e.to_string())?;
-                    return Ok(LeaseResult::NoReadyNode { run });
-                };
+                        return Ok(LeaseResult::NoReadyNode { run });
+                    };
 
-                // Check agent concurrency caps before leasing (PG branch)
-                let mut was_agent_step_with_caps = false;
-                if let Some((global_cap, per_run_cap)) = agent_concurrency_caps {
-                    let node_task_type: String = tx
-                        .query_one(
-                            "SELECT task_type FROM workflow_run_nodes WHERE run_id = $1 AND node_id = $2",
-                            &[&run_id, &node_id],
-                        )
-                        .map(|r| r.get(0))
-                        .unwrap_or_default();
-                    if node_task_type == "agent_step" {
-                        was_agent_step_with_caps = true;
-                        let global_running = pg_count_running_agent_steps(&mut tx)?;
-                        let per_run_running = pg_count_running_agent_steps_for_run(&mut tx, run_id)?;
-                        if global_running >= global_cap as i64 {
+                    // Check agent concurrency caps; skip capped agent_step nodes
+                    if let Some((global_cap, per_run_cap)) = agent_concurrency_caps {
+                        let node_task_type: String = tx
+                            .query_one(
+                                "SELECT task_type FROM workflow_run_nodes WHERE run_id = $1 AND node_id = $2",
+                                &[&run_id, &nid],
+                            )
+                            .map(|r| r.get(0))
+                            .unwrap_or_default();
+                        if node_task_type == "agent_step" {
+                            let global_running = pg_count_running_agent_steps(&mut tx)?;
+                            let per_run_running = pg_count_running_agent_steps_for_run(&mut tx, run_id)?;
+                            if global_running >= global_cap as i64 {
+                                pg_append_audit(
+                                    &mut tx,
+                                    &now,
+                                    "scheduler",
+                                    "agent_step.claim_conflict",
+                                    &nid,
+                                    &json!({
+                                        "run_id": run_id,
+                                        "node_id": nid,
+                                        "reason": "global_cap_exceeded",
+                                        "running": global_running,
+                                        "cap": global_cap,
+                                    }),
+                                )?;
+                                capped_skip.push(nid);
+                                continue;
+                            }
+                            if per_run_running >= per_run_cap as i64 {
+                                pg_append_audit(
+                                    &mut tx,
+                                    &now,
+                                    "scheduler",
+                                    "agent_step.claim_conflict",
+                                    &nid,
+                                    &json!({
+                                        "run_id": run_id,
+                                        "node_id": nid,
+                                        "reason": "per_run_cap_exceeded",
+                                        "running": per_run_running,
+                                        "cap": per_run_cap,
+                                    }),
+                                )?;
+                                capped_skip.push(nid);
+                                continue;
+                            }
+                            found_is_agent_step = true;
                             pg_append_audit(
                                 &mut tx,
                                 &now,
                                 "scheduler",
-                                "agent_step.claim_conflict",
-                                &node_id,
+                                "agent_step.claim_attempt",
+                                &nid,
                                 &json!({
                                     "run_id": run_id,
-                                    "node_id": node_id,
-                                    "reason": "global_cap_exceeded",
-                                    "running": global_running,
-                                    "cap": global_cap,
+                                    "node_id": nid,
                                 }),
                             )?;
-                            let run = pg_get_run_row(&mut tx, run_id)?;
-                            tx.commit().map_err(|e| e.to_string())?;
-                            return Ok(LeaseResult::NoReadyNode { run });
                         }
-                        if per_run_running >= per_run_cap as i64 {
-                            pg_append_audit(
-                                &mut tx,
-                                &now,
-                                "scheduler",
-                                "agent_step.claim_conflict",
-                                &node_id,
-                                &json!({
-                                    "run_id": run_id,
-                                    "node_id": node_id,
-                                    "reason": "per_run_cap_exceeded",
-                                    "running": per_run_running,
-                                    "cap": per_run_cap,
-                                }),
-                            )?;
-                            let run = pg_get_run_row(&mut tx, run_id)?;
-                            tx.commit().map_err(|e| e.to_string())?;
-                            return Ok(LeaseResult::NoReadyNode { run });
-                        }
-                        pg_append_audit(
-                            &mut tx,
-                            &now,
-                            "scheduler",
-                            "agent_step.claim_attempt",
-                            &node_id,
-                            &json!({
-                                "run_id": run_id,
-                                "node_id": node_id,
-                            }),
-                        )?;
                     }
-                }
+                    break nid;
+                };
 
                 let now = self.now();
                 let updated = tx.execute(
@@ -1101,7 +1109,7 @@ impl LocalProductStore {
                     &[&now, &run_id, &node_id],
                 ).map_err(|e| e.to_string())?;
                 if updated == 0 {
-                    if was_agent_step_with_caps {
+                    if found_is_agent_step {
                         pg_append_audit(
                             &mut tx,
                             &now,
@@ -3330,6 +3338,7 @@ fn pg_count_running_agent_steps_for_run(
 fn find_ready_node_locked(
     conn: &rusqlite::Connection,
     run_id: &str,
+    skip: &[&str],
 ) -> Result<Option<String>, String> {
     let mut stmt = conn
         .prepare("SELECT node_id FROM workflow_run_nodes WHERE run_id = ?1 AND status = 'pending' ORDER BY node_id")
@@ -3341,6 +3350,9 @@ fn find_ready_node_locked(
         .collect();
 
     for node_id in pending_nodes {
+        if skip.contains(&node_id.as_str()) {
+            continue;
+        }
         // Check if all predecessor nodes are completed. Recovery/fix nodes are
         // allowed to depend on failed or recovered nodes; ordinary downstream
         // work still requires completed predecessors.
@@ -3673,6 +3685,7 @@ fn pg_update_workflow_run_status(
 fn pg_find_ready_node(
     client: &mut impl postgres::GenericClient,
     run_id: &str,
+    skip: &[&str],
 ) -> Result<Option<String>, String> {
     let rows = client
         .query(
@@ -3683,6 +3696,9 @@ fn pg_find_ready_node(
     let pending_nodes: Vec<String> = rows.iter().map(|r| r.get(0)).collect();
 
     for node_id in pending_nodes {
+        if skip.contains(&node_id.as_str()) {
+            continue;
+        }
         let target_task_type: String = client
             .query_one(
                 "SELECT task_type FROM workflow_run_nodes WHERE run_id = $1 AND node_id = $2",

@@ -164,7 +164,7 @@ fn scheduler_config_uses_supplied_persisted_endpoint_task_advancement_gates() {
     );
     assert!(gates.task_advancement.ready);
 
-    let config = SchedulerConfig::from_env_with_gates(&gates);
+    let config = SchedulerConfig::from_env_with_gates(&gates).unwrap();
 
     assert!(config.supervised_workers_enabled);
     assert_eq!(config.executor_type, "adaptive_provider");

@@ -56,13 +56,13 @@ impl Default for SchedulerConfig {
 }
 
 impl SchedulerConfig {
-    pub fn from_env() -> Self {
+    pub fn from_env() -> Result<Self, String> {
         Self::from_env_with_gates(&crate::trusted_local::EffectiveExecutionGates::from_env())
     }
 
     pub fn from_env_with_gates(
         execution_gates: &crate::trusted_local::EffectiveExecutionGates,
-    ) -> Self {
+    ) -> Result<Self, String> {
         let interval_ms = std::env::var("ACP_SCHEDULER_INTERVAL_MS")
             .ok()
             .and_then(|v| v.parse().ok())
@@ -113,15 +113,19 @@ impl SchedulerConfig {
             .ok()
             .and_then(|v| v.parse().ok())
             .unwrap_or(1);
-        let agent_max_concurrent_global = std::env::var("ACP_AGENT_MAX_CONCURRENT_GLOBAL")
-            .ok()
-            .and_then(|v| v.parse().ok())
-            .unwrap_or(2);
-        let agent_max_concurrent_per_run = std::env::var("ACP_AGENT_MAX_CONCURRENT_PER_RUN")
-            .ok()
-            .and_then(|v| v.parse().ok())
-            .unwrap_or(1);
-        Self {
+        let agent_max_concurrent_global = match std::env::var("ACP_AGENT_MAX_CONCURRENT_GLOBAL") {
+            Ok(v) => v
+                .parse::<usize>()
+                .map_err(|e| format!("invalid ACP_AGENT_MAX_CONCURRENT_GLOBAL '{v}': {e}"))?,
+            Err(_) => 2,
+        };
+        let agent_max_concurrent_per_run = match std::env::var("ACP_AGENT_MAX_CONCURRENT_PER_RUN") {
+            Ok(v) => v
+                .parse::<usize>()
+                .map_err(|e| format!("invalid ACP_AGENT_MAX_CONCURRENT_PER_RUN '{v}': {e}"))?,
+            Err(_) => 1,
+        };
+        Ok(Self {
             interval_ms,
             max_concurrent,
             lease_timeout_ms,
@@ -135,7 +139,7 @@ impl SchedulerConfig {
             worker_count,
             agent_max_concurrent_global,
             agent_max_concurrent_per_run,
-        }
+        })
     }
 
     pub fn validate_for_start(&self) -> Result<(), String> {
@@ -2162,6 +2166,52 @@ mod tests {
             .to_string()
     }
 
+    fn create_mixed_agent_analysis_run(
+        store: &LocalProductStore,
+        first_node_id: &str,
+        first_task_type: &str,
+        second_node_id: &str,
+        second_task_type: &str,
+    ) -> String {
+        let plan = store
+            .create_workflow_plan("test mixed", "test", "actor", |ids, _| {
+                Ok(json!({
+                    "schema_version": "read_only_plan.v1",
+                    "plan_id": ids.plan_id,
+                    "status": "planned_read_only",
+                    "workflow_id": ids.workflow_id,
+                    "dispatch_id": ids.dispatch_id,
+                    "analysis": {"analysis_id": "a-1", "task_domain": "test"},
+                    "graph": {
+                        "schema_version": "workflow_graph.v1",
+                        "workflow_id": ids.workflow_id,
+                        "dispatch_id": ids.dispatch_id,
+                        "status": "decomposed",
+                        "created_at": "2026-06-25T00:00:00Z",
+                        "updated_at": "2026-06-25T00:00:00Z",
+                        "nodes": [
+                            {"node_id": first_node_id, "task_type": first_task_type, "status": "pending"},
+                            {"node_id": second_node_id, "task_type": second_task_type, "status": "pending"},
+                        ],
+                        "edges": [],
+                    },
+                    "boundaries": {
+                        "execution_authority": "managed",
+                        "target_repository_writes": "disabled",
+                        "runtime_workers": "disabled",
+                    },
+                }))
+            })
+            .unwrap();
+        let plan_id = plan["plan_id"].as_str().unwrap();
+        store
+            .create_workflow_run_from_plan(plan_id, "actor")
+            .unwrap()["run_id"]
+            .as_str()
+            .unwrap()
+            .to_string()
+    }
+
     #[derive(Clone)]
     struct BlockingExecutor {
         barrier: Arc<Barrier>,
@@ -2389,6 +2439,75 @@ mod tests {
         assert_eq!(config.agent_max_concurrent_per_run, 1);
     }
 
+    fn dummy_gates() -> crate::trusted_local::EffectiveExecutionGates {
+        crate::trusted_local::EffectiveExecutionGates::from_lookup(|_| None)
+    }
+
+    #[test]
+    fn agent_concurrency_env_invalid_values_fail_closed() {
+        // All assertions in one test to avoid global env var races between parallel tests
+        let gates = dummy_gates();
+
+        // Invalid global (non-numeric)
+        std::env::set_var("ACP_AGENT_MAX_CONCURRENT_GLOBAL", "not_a_number");
+        std::env::set_var("ACP_AGENT_MAX_CONCURRENT_PER_RUN", "1");
+        let result = SchedulerConfig::from_env_with_gates(&gates);
+        std::env::remove_var("ACP_AGENT_MAX_CONCURRENT_GLOBAL");
+        std::env::remove_var("ACP_AGENT_MAX_CONCURRENT_PER_RUN");
+        assert!(result.is_err(), "invalid global should fail closed");
+        assert!(
+            result
+                .as_ref()
+                .unwrap_err()
+                .contains("ACP_AGENT_MAX_CONCURRENT_GLOBAL"),
+            "error should mention global: {}",
+            result.as_ref().unwrap_err()
+        );
+
+        // Invalid per_run (non-numeric)
+        std::env::set_var("ACP_AGENT_MAX_CONCURRENT_GLOBAL", "2");
+        std::env::set_var("ACP_AGENT_MAX_CONCURRENT_PER_RUN", "abc");
+        let result = SchedulerConfig::from_env_with_gates(&gates);
+        std::env::remove_var("ACP_AGENT_MAX_CONCURRENT_GLOBAL");
+        std::env::remove_var("ACP_AGENT_MAX_CONCURRENT_PER_RUN");
+        assert!(result.is_err(), "invalid per_run should fail closed");
+        assert!(
+            result
+                .as_ref()
+                .unwrap_err()
+                .contains("ACP_AGENT_MAX_CONCURRENT_PER_RUN"),
+            "error should mention per_run: {}",
+            result.as_ref().unwrap_err()
+        );
+
+        // Negative value should fail (usize cannot be negative)
+        std::env::set_var("ACP_AGENT_MAX_CONCURRENT_GLOBAL", "-1");
+        std::env::set_var("ACP_AGENT_MAX_CONCURRENT_PER_RUN", "1");
+        let result = SchedulerConfig::from_env_with_gates(&gates);
+        std::env::remove_var("ACP_AGENT_MAX_CONCURRENT_GLOBAL");
+        std::env::remove_var("ACP_AGENT_MAX_CONCURRENT_PER_RUN");
+        assert!(result.is_err(), "negative global should fail closed");
+        assert!(
+            result
+                .as_ref()
+                .unwrap_err()
+                .contains("ACP_AGENT_MAX_CONCURRENT_GLOBAL"),
+            "error should mention global: {}",
+            result.as_ref().unwrap_err()
+        );
+
+        // Valid values still work
+        std::env::set_var("ACP_AGENT_MAX_CONCURRENT_GLOBAL", "5");
+        std::env::set_var("ACP_AGENT_MAX_CONCURRENT_PER_RUN", "3");
+        let result = SchedulerConfig::from_env_with_gates(&gates);
+        std::env::remove_var("ACP_AGENT_MAX_CONCURRENT_GLOBAL");
+        std::env::remove_var("ACP_AGENT_MAX_CONCURRENT_PER_RUN");
+        assert!(result.is_ok(), "valid values should succeed");
+        let config = result.unwrap();
+        assert_eq!(config.agent_max_concurrent_global, 5);
+        assert_eq!(config.agent_max_concurrent_per_run, 3);
+    }
+
     #[test]
     fn agent_concurrency_config_rejects_invalid() {
         let config = SchedulerConfig {
@@ -2461,6 +2580,131 @@ mod tests {
         assert!(
             agent_events.is_empty(),
             "analysis node should not produce agent_step audit events"
+        );
+    }
+
+    // ── AR-4.1: Capped agent_step must not block non-agent nodes ──
+
+    #[test]
+    fn agent_concurrency_capped_agent_first_analysis_executes() {
+        let store = test_store();
+        // "agent-node-000" < "analysis-001" alphabetically, so agent comes first in ORDER BY
+        let run_id = create_mixed_agent_analysis_run(
+            &store,
+            "agent-node-000",
+            "agent_step",
+            "analysis-001",
+            "analysis",
+        );
+
+        let result = store
+            .tick_with_executor_with_agent_caps(&run_id, "test", 0, &NoopNodeExecutor, 0, 1)
+            .unwrap();
+        assert_eq!(
+            result["action"], "node_executed",
+            "analysis node should execute when agent_step is capped by global=0"
+        );
+
+        // Verify the analysis node executed, not the agent_step
+        assert_eq!(
+            result["node_id"], "analysis-001",
+            "analysis-001 should be the executed node"
+        );
+
+        // Verify claim_conflict was emitted for the capped agent_step
+        let events = store.audit_events(50).unwrap();
+        let conflicts: Vec<_> = events
+            .iter()
+            .filter(|e| {
+                e.get("action").and_then(|a| a.as_str()) == Some("agent_step.claim_conflict")
+                    && e.pointer("/details/node_id").and_then(|v| v.as_str())
+                        == Some("agent-node-000")
+            })
+            .collect();
+        assert!(
+            !conflicts.is_empty(),
+            "expected claim_conflict for agent-node-000"
+        );
+    }
+
+    #[test]
+    fn agent_concurrency_per_run_capped_agent_first_analysis_executes() {
+        let store = test_store();
+        let run_id = create_mixed_agent_analysis_run(
+            &store,
+            "agent-node-000",
+            "agent_step",
+            "analysis-001",
+            "analysis",
+        );
+
+        // First tick: execute the agent_step (per_run cap=1, global cap=2)
+        let barrier = Arc::new(Barrier::new(2));
+        let exec = BlockingExecutor {
+            barrier: barrier.clone(),
+        };
+        let store_clone = store.clone();
+        let run_clone = run_id.clone();
+        let handle = thread::spawn(move || {
+            store_clone.tick_with_executor_with_agent_caps(&run_clone, "test", 0, &exec, 2, 1)
+        });
+
+        thread::sleep(Duration::from_millis(100));
+
+        // Second tick: agent_step is per-run capped, should skip to analysis node
+        let result = store
+            .tick_with_executor_with_agent_caps(&run_id, "test", 0, &NoopNodeExecutor, 2, 1)
+            .unwrap();
+        assert_eq!(
+            result["action"], "node_executed",
+            "analysis node should execute when agent_step is at per-run cap"
+        );
+        assert_eq!(
+            result["node_id"], "analysis-001",
+            "should execute analysis-001"
+        );
+
+        barrier.wait();
+        handle.join().unwrap().unwrap();
+
+        // Verify both nodes completed
+        let run = store.get_workflow_run(&run_id).unwrap().unwrap();
+        let nodes = run["nodes"].as_array().unwrap();
+        let agent_done = nodes
+            .iter()
+            .any(|n| n["node_id"] == "agent-node-000" && n["db_status"] == "completed");
+        let analysis_done = nodes
+            .iter()
+            .any(|n| n["node_id"] == "analysis-001" && n["db_status"] == "completed");
+        assert!(agent_done, "agent_step should eventually complete");
+        assert!(analysis_done, "analysis should complete");
+    }
+
+    #[test]
+    fn agent_concurrency_all_capped_agent_steps_return_no_ready_node() {
+        let store = test_store();
+        let run_id = create_agent_step_run(&store, 2);
+
+        let result = store
+            .tick_with_executor_with_agent_caps(&run_id, "test", 0, &NoopNodeExecutor, 0, 0)
+            .unwrap();
+        assert_eq!(
+            result["action"], "no_ready_node",
+            "all agent_step nodes should be blocked by global=0"
+        );
+
+        // Verify claim_conflict was emitted for both nodes
+        let events = store.audit_events(50).unwrap();
+        let conflicts: Vec<_> = events
+            .iter()
+            .filter(|e| {
+                e.get("action").and_then(|a| a.as_str()) == Some("agent_step.claim_conflict")
+            })
+            .collect();
+        assert_eq!(
+            conflicts.len(),
+            2,
+            "expected claim_conflict for both agent_step nodes"
         );
     }
 }

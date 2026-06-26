@@ -325,6 +325,7 @@ mod tests {
         }
     }
 
+    #[allow(dead_code)]
     fn failed_artifact_result() -> ArtifactGateResult {
         ArtifactGateResult {
             ok: false,

@@ -7,10 +7,12 @@ use crate::workflow::dynamic_decomposer::*;
 // Helpers
 // ---------------------------------------------------------------------------
 
+#[allow(dead_code)]
 fn new_store() -> LocalProductStore {
     LocalProductStore::new(":memory:").expect("in-memory store")
 }
 
+#[allow(dead_code)]
 fn setup_two_node_run() -> (LocalProductStore, String) {
     let store = new_store();
     let plan = store
@@ -58,6 +60,7 @@ fn setup_two_node_run() -> (LocalProductStore, String) {
     (store, run_id)
 }
 
+#[allow(dead_code)]
 fn run_nodes(store: &LocalProductStore, run_id: &str) -> Vec<Value> {
     store
         .get_workflow_run(run_id)
@@ -69,6 +72,7 @@ fn run_nodes(store: &LocalProductStore, run_id: &str) -> Vec<Value> {
         .unwrap_or_default()
 }
 
+#[allow(dead_code)]
 fn find_node<'a>(nodes: &'a [Value], node_id: &str) -> Option<&'a Value> {
     nodes
         .iter()
