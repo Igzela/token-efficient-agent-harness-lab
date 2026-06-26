@@ -759,6 +759,28 @@ impl AgentStepExecutor {
         }
     }
 
+    /// Append a best-effort audit event for agent-step lifecycle.
+    ///
+    /// These events are diagnostic — a failed audit write must not block or
+    /// change the execution outcome. The agent already persisted its action
+    /// result (or failure) through `execute_action` before this runs.
+    /// Sanitized descriptors are used; no raw action body, note, observation,
+    /// scratchpad, or proposal text appears in the audit payload.
+    fn append_agent_step_audit_best_effort(
+        &self,
+        action: &str,
+        agent_id: &str,
+        run_id: &str,
+        details: &Value,
+    ) {
+        let _ = self.store.append_audit(
+            "agent_step",
+            action,
+            &format!("agent_state/{agent_id}/{run_id}"),
+            details,
+        );
+    }
+
     fn execute_action(
         &self,
         agent_id: &str,
@@ -801,7 +823,7 @@ impl AgentStepExecutor {
             AgentAction::AckMessage(message_id) => {
                 let acked = self
                     .store
-                    .ack_message(message_id)
+                    .ack_message_for_agent(message_id, agent_id, run_id)
                     .map_err(|e| format!("failed to ack message: {e}"))?;
                 if acked.is_some() {
                     Ok(json!({"action":"ack_message","message_id": message_id}).to_string())
@@ -1143,42 +1165,41 @@ impl NodeExecutor for AgentStepExecutor {
             node_metadata: input.node_metadata.clone(),
         };
 
-        let _ = self.store.append_audit(
-            "agent_step",
+        self.append_agent_step_audit_best_effort(
             "agent_step.start",
-            &format!("agent_state/{agent_id}/{}", input.run_id),
+            &agent_id,
+            &input.run_id,
             &json!({"agent_id": agent_id, "run_id": input.run_id}),
         );
 
         let action = match (self.decision_source)(&context) {
             Ok(a) => a,
             Err(e) => {
-                let _ = self.store.append_audit(
-                    "agent_step",
+                self.append_agent_step_audit_best_effort(
                     "agent_step.decision_failed",
-                    &format!("agent_state/{agent_id}/{}", input.run_id),
-                    &json!({"error": e}),
+                    &agent_id,
+                    &input.run_id,
+                    &json!({"error": "decision_failed"}),
                 );
                 return agent_step_fail(&format!("decision failed: {e}"), &start);
             }
         };
 
         let descriptor = sanitized_action_descriptor(&action);
-        let _ = self.store.append_audit(
-            "agent_step",
+        self.append_agent_step_audit_best_effort(
             "agent_step.decision",
-            &format!("agent_state/{agent_id}/{}", input.run_id),
+            &agent_id,
+            &input.run_id,
             &descriptor,
         );
 
         match self.execute_action(&agent_id, &input.run_id, &input.node_id, &action) {
             Ok(result) => {
-                let descriptor = sanitized_action_descriptor(&action);
-                let _ = self.store.append_audit(
-                    "agent_step",
+                self.append_agent_step_audit_best_effort(
                     "agent_step.completed",
-                    &format!("agent_state/{agent_id}/{}", input.run_id),
-                    &json!({"action_type": descriptor.get("action_type"), "result_status": "completed"}),
+                    &agent_id,
+                    &input.run_id,
+                    &json!({"action_type": "completed"}),
                 );
                 NodeExecutionOutput {
                     status: "completed".to_string(),
@@ -1193,12 +1214,11 @@ impl NodeExecutor for AgentStepExecutor {
                 }
             }
             Err(e) => {
-                let descriptor = sanitized_action_descriptor(&action);
-                let _ = self.store.append_audit(
-                    "agent_step",
+                self.append_agent_step_audit_best_effort(
                     "agent_step.failed",
-                    &format!("agent_state/{agent_id}/{}", input.run_id),
-                    &json!({"action_type": descriptor.get("action_type"), "error": e}),
+                    &agent_id,
+                    &input.run_id,
+                    &json!({"action_type": "failed", "error": "agent_step_error"}),
                 );
                 agent_step_fail(&e, &start)
             }
@@ -2348,5 +2368,77 @@ mod tests {
         let err = store.update_proposal_status("prop-badstatus", "invalid_status");
         assert!(err.is_err());
         assert!(err.unwrap_err().contains("invalid status"));
+    }
+
+    #[test]
+    fn test_ack_message_wrong_run_rejected() {
+        let store = Arc::new(ar2_store());
+        store
+            .send_message(
+                "msg-wr-run",
+                "agent-a",
+                "agent-b",
+                "task_assign",
+                Some("hello"),
+                None,
+                Some("run-42"),
+                None,
+                None,
+                &json!({}),
+            )
+            .expect("send");
+
+        // same agent, wrong run
+        let err = store.ack_message_for_agent("msg-wr-run", "agent-b", "run-99");
+        assert!(err.is_err());
+        assert!(err.unwrap_err().contains("run_id"));
+    }
+
+    #[test]
+    fn test_ack_message_missing_run_rejected() {
+        let store = Arc::new(ar2_store());
+        store
+            .send_message(
+                "msg-nr",
+                "agent-a",
+                "agent-b",
+                "task_assign",
+                Some("hello"),
+                None,
+                None, // no run_id
+                None,
+                None,
+                &json!({}),
+            )
+            .expect("send");
+
+        // correct agent but no run_id on message
+        let err = store.ack_message_for_agent("msg-nr", "agent-b", "run-1");
+        assert!(err.is_err());
+        assert!(err.unwrap_err().contains("no run_id"));
+    }
+
+    #[test]
+    fn test_ack_message_correct_agent_and_run() {
+        let store = Arc::new(ar2_store());
+        store
+            .send_message(
+                "msg-correct",
+                "agent-a",
+                "agent-b",
+                "task_assign",
+                Some("hello"),
+                None,
+                Some("run-1"),
+                None,
+                None,
+                &json!({}),
+            )
+            .expect("send");
+
+        let ok = store
+            .ack_message_for_agent("msg-correct", "agent-b", "run-1")
+            .expect("ack");
+        assert!(ok.is_some());
     }
 }

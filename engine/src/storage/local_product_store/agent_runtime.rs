@@ -532,9 +532,8 @@ impl LocalProductStore {
         &self,
         message_id: &str,
         agent_id: &str,
-        _run_id: &str,
+        run_id: &str,
     ) -> Result<Option<MailboxMessage>, String> {
-        // Verify the message belongs to this agent
         let msg = match self.read_message(message_id)? {
             Some(m) => m,
             None => return Ok(None),
@@ -543,6 +542,19 @@ impl LocalProductStore {
             return Err(format!(
                 "agent {agent_id} is not the target of message {message_id}"
             ));
+        }
+        match msg.run_id {
+            Some(ref mid) if mid == run_id => {}
+            Some(ref mid) => {
+                return Err(format!(
+                    "message {message_id} has run_id '{mid}', not '{run_id}'"
+                ));
+            }
+            None => {
+                return Err(format!(
+                    "message {message_id} has no run_id; agent-scoped ack requires run_id '{run_id}'"
+                ));
+            }
         }
         self.ack_message(message_id)
     }
