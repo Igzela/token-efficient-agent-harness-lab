@@ -176,7 +176,7 @@ AR phases consume the following existing modules, extending them through focused
 5. **No authority bypass.** Agent-created tasks, delegation messages, review requests, and child nodes must flow through the existing auth scopes, scheduler admission, cost gates, audit events, kill switches, and rollback boundaries.
 6. **No parallel runtime kernel.** Every AR phase extends `workflow_runs`, `scheduler`, `node_executor`, `provider`, `cli`, `storage/local_product_store`, http_server, SDK, or dashboard. No second scheduler, DAG engine, storage layer, or hidden side-channel mailbox may be introduced.
 7. **No automatic merge/deploy/release authority.** Agent output reaching target-output gates still requires approval, evidence verification, and the existing V2-3 export/PR gate. No AR phase may grant merge, deploy, or release authority to an agent.
-8. **Rollback must be atomic.** Every AR phase must ship a reversible schema migration (up + down) and document the rollback procedure before the phase is merged. If the phase adds no storage, the rollback is a code revert plus documented data-consistency step.
+8. **Rollback must be atomic.** Every AR phase must ship a reversible schema migration (up + down) and document the rollback procedure before the phase is merged. AR-1 uses forward-only migrations (existing repo convention); see AR-1 rollback below. If a future phase adds no storage, the rollback is a code revert plus documented data-consistency step.
 
 ### Rollback Model
 
@@ -189,6 +189,14 @@ AR phases consume the following existing modules, extending them through focused
 ### AR Phase Status
 
 **AR-1 (agent identity, state, mailbox) — implemented.** Durable `agent_state` and `agent_mailbox` tables with SQLite schema, migration v14, `LocalProductStore` CRUD methods, send/read/ack/reply, correlation IDs, run/node links, secret redaction, size caps, and audit events. 30 tests pass. No agent step executor, scheduler changes, provider/CLI calls, or dashboard UI.
+
+**AR-1 rollback.** Forward-only migrations are the existing repo convention. To roll back AR-1:
+  1. Revert the merge commit (`git revert <sha>`).
+  2. Stop the runtime (no agent step executor consumes these tables yet).
+  3. Drop the tables manually: `DROP TABLE IF EXISTS agent_mailbox; DROP TABLE IF EXISTS agent_state;`
+  4. Set `PRAGMA user_version = 13` (SQLite) or delete the `schema_migrations` row for version 14 (PostgreSQL).
+  5. Confirm no residual agent state remains.
+  6. No env gate is needed for AR-1 storage: these tables are inert without an agent step executor (AR-2). No target-repository data, credentials, provider state, scheduler state, or raw model content is stored. All data is app-owned and safe to delete.
 
 **AR-2 and later — not implemented:**
 
