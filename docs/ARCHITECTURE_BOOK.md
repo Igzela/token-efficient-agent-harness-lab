@@ -92,7 +92,7 @@ Do not create a second runtime kernel for V2. Extend the existing `node_executor
 
 `LocalProductStore` supports SQLite by default and PostgreSQL through the `pg` feature and `ACP_DATABASE_URL`.
 
-- Current version: v14
+- Current version: v15
 - SQLite uses WAL and app-managed backup/restore.
 - PostgreSQL disables app-managed backup; operators use `pg_dump` or managed backup.
 - PostgreSQL integration tests are gated behind `cargo test -p engine --features pg-tests`.
@@ -188,7 +188,7 @@ AR phases consume the following existing modules, extending them through focused
 
 ### AR Phase Status
 
-**AR-1 (agent identity, state, mailbox) — implemented.** Durable `agent_state` and `agent_mailbox` tables with SQLite schema, migration v14, `LocalProductStore` CRUD methods, send/read/ack/reply, correlation IDs, run/node links, secret redaction, size caps, and audit events. 30 tests pass. No agent step executor, scheduler changes, provider/CLI calls, or dashboard UI.
+**AR-1 (agent identity, state, mailbox) — implemented.** Durable `agent_state` and `agent_mailbox` tables with SQLite schema, migration v15, `LocalProductStore` CRUD methods, send/read/ack/reply, correlation IDs, run/node links, secret redaction, size caps, and audit events. Tests pass. No agent step executor, scheduler changes, provider/CLI calls, or dashboard UI.
 
 **AR-1 rollback.** Forward-only migrations are the existing repo convention. To roll back AR-1:
   1. Revert the merge commit (`git revert <sha>`).
@@ -209,7 +209,7 @@ AR phases consume the following existing modules, extending them through focused
 - AR-5 review and debate primitives
 - AR-6 operator evidence and SDK/dashboard surface
 - Any provider/CLI execution path changes
-- Any DB migration beyond AR-1 v14
+- Any DB migration beyond AR-3 v15
 - Any scheduler lease/claim policy change
 - Any hidden mailbox, side channel, or second runtime kernel
 - Any automatic target-output merge/deploy/release authority

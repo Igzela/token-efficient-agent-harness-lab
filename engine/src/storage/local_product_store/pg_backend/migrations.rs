@@ -68,7 +68,7 @@ impl LocalProductStore {
                     continue;
                 }
                 let sql = match migration.version {
-                    1..=9 | 11..=14 => {
+                    1..=9 | 11..=15 => {
                         // PG DDL already includes all tables/columns for these versions.
                         // Record as applied with no-op.
                         ""

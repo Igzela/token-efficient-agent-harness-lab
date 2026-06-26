@@ -31,6 +31,7 @@ impl LocalProductStore {
                     12 => Self::migrate_v12_add_policy_proposals(conn)?,
                     13 => Self::migrate_v13_add_policy_snapshots(conn)?,
                     14 => Self::migrate_v14_add_agent_state_and_mailbox(conn)?,
+                    15 => Self::migrate_v15_add_agent_proposals(conn)?,
                     _ => return Err(format!("unknown migration version: {}", migration.version)),
                 }
                 conn.execute_batch(&format!("PRAGMA user_version = {}", migration.version))
@@ -485,6 +486,35 @@ CREATE INDEX IF NOT EXISTS idx_agent_mailbox_to ON agent_mailbox(to_agent_id);
 CREATE INDEX IF NOT EXISTS idx_agent_mailbox_run ON agent_mailbox(run_id);
 CREATE INDEX IF NOT EXISTS idx_agent_mailbox_status ON agent_mailbox(status);
 CREATE INDEX IF NOT EXISTS idx_agent_mailbox_correlation ON agent_mailbox(correlation_id);
+",
+        )
+        .map_err(|e| e.to_string())
+    }
+
+    fn migrate_v15_add_agent_proposals(conn: &Connection) -> Result<(), String> {
+        conn.execute_batch(
+            "
+CREATE TABLE IF NOT EXISTS agent_proposals (
+    proposal_id TEXT NOT NULL,
+    correlation_id TEXT NOT NULL,
+    run_id TEXT NOT NULL,
+    parent_node_id TEXT NOT NULL,
+    agent_id TEXT NOT NULL,
+    target_agent_id TEXT,
+    proposed_node_id TEXT,
+    proposed_edge_id TEXT,
+    proposal_type TEXT NOT NULL DEFAULT 'child_task',
+    objective TEXT NOT NULL,
+    context_summary TEXT NOT NULL DEFAULT '',
+    status TEXT NOT NULL DEFAULT 'pending',
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    PRIMARY KEY (proposal_id)
+);
+CREATE INDEX IF NOT EXISTS idx_agent_proposals_run ON agent_proposals(run_id);
+CREATE INDEX IF NOT EXISTS idx_agent_proposals_correlation ON agent_proposals(correlation_id);
+CREATE INDEX IF NOT EXISTS idx_agent_proposals_status ON agent_proposals(status);
+CREATE INDEX IF NOT EXISTS idx_agent_proposals_agent ON agent_proposals(agent_id);
 ",
         )
         .map_err(|e| e.to_string())
