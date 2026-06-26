@@ -801,6 +801,7 @@ impl LocalProductStore {
                 };
 
                 // Check agent concurrency caps before leasing
+                let mut was_agent_step_with_caps = false;
                 if let Some((global_cap, per_run_cap)) = agent_concurrency_caps {
                     let node_task_type: String = conn
                         .query_row(
@@ -810,6 +811,7 @@ impl LocalProductStore {
                         )
                         .unwrap_or_default();
                     if node_task_type == "agent_step" {
+                        was_agent_step_with_caps = true;
                         let global_running = count_running_agent_steps_locked(conn)?;
                         let per_run_running = count_running_agent_steps_for_run_locked(conn, run_id)?;
                         if global_running >= global_cap as i64 {
@@ -874,6 +876,21 @@ impl LocalProductStore {
                     params![now, run_id, node_id],
                 ).map_err(|e| e.to_string())?;
                 if updated == 0 {
+                    if was_agent_step_with_caps {
+                        append_audit_locked(
+                            conn,
+                            &now,
+                            "scheduler",
+                            "agent_step.claim_conflict",
+                            &node_id,
+                            &json!({
+                                "run_id": run_id,
+                                "node_id": node_id,
+                                "reason": "lease_lost",
+                                "metadata_only": true,
+                            }),
+                        )?;
+                    }
                     return Ok(LeaseResult::NoReadyNode {
                         run: get_run_row(conn, run_id)?,
                     });
@@ -1012,6 +1029,7 @@ impl LocalProductStore {
                 };
 
                 // Check agent concurrency caps before leasing (PG branch)
+                let mut was_agent_step_with_caps = false;
                 if let Some((global_cap, per_run_cap)) = agent_concurrency_caps {
                     let node_task_type: String = tx
                         .query_one(
@@ -1021,6 +1039,7 @@ impl LocalProductStore {
                         .map(|r| r.get(0))
                         .unwrap_or_default();
                     if node_task_type == "agent_step" {
+                        was_agent_step_with_caps = true;
                         let global_running = pg_count_running_agent_steps(&mut tx)?;
                         let per_run_running = pg_count_running_agent_steps_for_run(&mut tx, run_id)?;
                         if global_running >= global_cap as i64 {
@@ -1082,6 +1101,21 @@ impl LocalProductStore {
                     &[&now, &run_id, &node_id],
                 ).map_err(|e| e.to_string())?;
                 if updated == 0 {
+                    if was_agent_step_with_caps {
+                        pg_append_audit(
+                            &mut tx,
+                            &now,
+                            "scheduler",
+                            "agent_step.claim_conflict",
+                            &node_id,
+                            &json!({
+                                "run_id": run_id,
+                                "node_id": node_id,
+                                "reason": "lease_lost",
+                                "metadata_only": true,
+                            }),
+                        )?;
+                    }
                     let run = pg_get_run_row(&mut tx, run_id)?;
                     tx.commit().map_err(|e| e.to_string())?;
                     return Ok(LeaseResult::NoReadyNode { run });

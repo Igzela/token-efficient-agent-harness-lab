@@ -2405,4 +2405,62 @@ mod tests {
             "should reject per_run > global: {err}"
         );
     }
+
+    #[test]
+    fn agent_concurrency_global_zero_blocks_agent_step() {
+        let store = test_store();
+        let run_id = create_agent_step_run(&store, 1);
+
+        let result = store
+            .tick_with_executor_with_agent_caps(&run_id, "test", 0, &NoopNodeExecutor, 0, 0)
+            .unwrap();
+        assert_eq!(
+            result["action"], "no_ready_node",
+            "agent_step should be blocked when global=0"
+        );
+
+        let events = store.audit_events(50).unwrap();
+        let conflicts: Vec<_> = events
+            .iter()
+            .filter(|e| {
+                e.get("action").and_then(|a| a.as_str()) == Some("agent_step.claim_conflict")
+            })
+            .collect();
+        assert!(!conflicts.is_empty(), "expected claim_conflict audit");
+        assert_eq!(
+            conflicts[0]
+                .pointer("/details/reason")
+                .and_then(|v| v.as_str()),
+            Some("global_cap_exceeded")
+        );
+    }
+
+    #[test]
+    fn agent_concurrency_analysis_node_unaffected_by_zero_cap() {
+        let store = test_store();
+        let run_id = create_analysis_node_run(&store);
+
+        let result = store
+            .tick_with_executor_with_agent_caps(&run_id, "test", 0, &NoopNodeExecutor, 0, 0)
+            .unwrap();
+        assert_eq!(
+            result["action"], "node_executed",
+            "analysis node should execute even with agent caps=0"
+        );
+
+        let events = store.audit_events(50).unwrap();
+        let agent_events: Vec<_> = events
+            .iter()
+            .filter(|e| {
+                e.get("action")
+                    .and_then(|a| a.as_str())
+                    .map(|a| a.starts_with("agent_step."))
+                    .unwrap_or(false)
+            })
+            .collect();
+        assert!(
+            agent_events.is_empty(),
+            "analysis node should not produce agent_step audit events"
+        );
+    }
 }
