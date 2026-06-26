@@ -202,10 +202,12 @@ AR phases consume the following existing modules, extending them through focused
 
 **AR-2 rollback.** AR-2 adds code only — no storage schema changes. Rollback is a clean revert of the merge commit. The `ACP_AGENT_RUNTIME_KILL_SWITCH` env gate was added per the AR-0 safety invariant requirement; after revert, both `ACP_ENABLE_AGENT_RUNTIME` and `ACP_AGENT_RUNTIME_KILL_SWITCH` become inert (no code reads them). No data cleanup is needed because AR-2 uses existing AR-1 tables. The `NodeExecutor` trait already supports `agent_step` as a `task_type`; after revert, unknown `task_type` falls through to existing error handling.
 
-**AR-3 and later — not implemented:**
+**AR-3 (bounded planning, child tasks, handoff) — implemented.** `engine/src/storage/local_product_store/schema.rs` v15 adds an `agent_proposals` table. `AgentMessageKind::ProposalUpdate`, `AgentAction::ProposeChildTask`, `AgentAction::RequestHandoff`, `AgentAction::AcceptHandoff`, `AgentAction::RejectHandoff`, and `AgentAction::CancelProposal` are implemented in the step executor with redaction, size caps, and safety gates. 12 dedicated tests pass. See `docs/NEXT_DECISION.md` § Agent Runtime Track.
 
-- AR-3 planning, child tasks, and handoff
-- AR-4 concurrent multi-agent scheduling
+**AR-4 (bounded concurrent multi-agent scheduling) — implemented.** Adds `agent_max_concurrent_global` (default 2) and `agent_max_concurrent_per_run` (default 1) to `SchedulerConfig` with env overrides. Cap enforcement is race-condition-free inside the lease transaction. Audit events cover the full lifecycle. The scheduler runtime passes caps on every tick. 8 new tests pass. See `docs/NEXT_DECISION.md` § Agent Runtime Track.
+
+**AR-5 and later — not implemented:**
+
 - AR-5 review and debate primitives
 - AR-6 operator evidence and SDK/dashboard surface
 - Any provider/CLI execution path changes

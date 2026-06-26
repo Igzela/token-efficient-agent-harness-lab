@@ -2,7 +2,7 @@
 
 ## Current Direction
 
-Phase 8, V2 Real Production Output, Real Output Closeout, Adaptive Fusion AF-0 through AF-7, AR-2 (agent step executor), and AR-3 (bounded planning, child task proposals, handoff) are complete.
+Phase 8, V2 Real Production Output, Real Output Closeout, Adaptive Fusion AF-0 through AF-7, AR-2 (agent step executor), AR-3 (bounded planning, child task proposals, handoff), and AR-4 (bounded concurrent multi-agent scheduling) are complete.
 
 The Trusted Local Autonomous Execution Track (IAE) was approved on 2026-06-22. It authorizes the project and maintaining agents to move from fragmented opt-in execution toward a bounded trusted-local operating profile. That profile is now the recommended internal execution path.
 
@@ -21,6 +21,7 @@ On 2026-06-23 Charlie approved Full Agent Autonomy Mode for this repository. Mai
 | V2 Real Production Output | Complete through V2-5 |
 | Real Output Closeout | Complete; `v0.1.0` published and installer verified |
 | Adaptive Fusion AF-0 through AF-7 | Complete; current runtime gates remain implemented |
+| Agent Runtime AR-2, AR-3, AR-4 | Complete — agent step executor, child task proposals/handoff, bounded concurrent scheduling |
 | Trusted Local Autonomous Execution | Complete through IAE-3 |
 | Full Agent Autonomy Mode | Active for high-risk architecture, authority, migration, release/deploy workflow, and decision-supersession experiments |
 | Agent Autonomous Maintenance Mode | Active for implementation, docs, tests, CI, review, and bounded shipping |
@@ -129,7 +130,7 @@ queued workflow node or agent wakeup
 | AR-1 | Agent identity, state, and mailbox | **Implemented** — `AgentState` + `AgentMessage` mailbox with send/read/ack/reply, correlation IDs, run/node links, redaction, size caps, audit events. SQLite schema v14, `local_product_store/agent_runtime.rs` with 30 passing tests. Rollback documented in `docs/ARCHITECTURE_BOOK.md` (forward-only migration, manual drop + version reset). No provider/CLI calls, scheduler changes, or agent step executor. See `docs/ARCHITECTURE_BOOK.md` § AR Phase Status. |
 | AR-2 | Agent step executor | **Implemented** — `AgentStepExecutor` in `node_executor.rs` implements `NodeExecutor` with `AgentAction` enum, `AgentDecisionFn` closure, env gate + kill switch, one-step observe/decide/act/persist lifecycle, audit events, and 11 tests. No provider/CLI calls, scheduler change, DB migration, or dashboard UI. See `docs/ARCHITECTURE_BOOK.md` § AR Phase Status. |
 | AR-3 | Planning, child tasks, and handoff | **Implemented** — ChildTaskProposal/HandoffRequest types, agent_proposals table (v15), proposal CRUD with redaction/size caps, AgentAction::ProposeChildTask/RequestHandoff/AcceptHandoff/RejectHandoff/CancelProposal, mailbox-based handoff delegation, safety gates (fail closed on invalid state, self-handoff, nonexistent proposals, kill switch, disabled runtime), 12 AR-3 tests (51 total node_executor tests) passing. No multi-agent scheduling, review/debate, or dashboard UI. See `docs/ARCHITECTURE_BOOK.md` § AR Phase Status. |
-| AR-4 | Concurrent multi-agent scheduling | Extend scheduler claim policy so multiple ready agent steps can advance concurrently under global/per-agent concurrency, resource locks, lease expiry, stale recovery, and join/wait semantics. |
+| AR-4 | Concurrent multi-agent scheduling | **Implemented** — `agent_max_concurrent_global` (default 2) and `agent_max_concurrent_per_run` (default 1) in `SchedulerConfig` with env overrides. Race-condition-free cap enforcement inside the lease transaction in `tick_with_executor_and_command_inner`. Audit events: `claim_attempt`, `claim_success`, `claim_conflict`, `execution_started`, `execution_released`, `execution_completed`, `execution_failed`, `lease_expired`. Scheduler runtime passes caps on every tick. 8 new tests covering global/per-run cap enforcement, analysis-node bypass, full audit chain, cap release, config, and validation. |
 | AR-5 | Review and debate primitive | Add cross-agent review/debate threads as first-class workflow artifacts with verdicts, dissent, evidence links, and approval/export gates. This is separate from single-node Adaptive Fusion provider/model panels. |
 | AR-6 | Operator evidence and SDK/dashboard surface | Expose agent state, mailbox counts, blocked/waiting/review status, debate verdicts, child-task lineage, budget use, and kill/pause controls without raw model content, secrets, private paths, or repository content. |
 

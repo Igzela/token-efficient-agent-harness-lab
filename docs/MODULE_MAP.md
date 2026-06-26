@@ -1,6 +1,6 @@
 # Module Map
 
-Last updated: 2026-06-25
+Last updated: 2026-06-26 (AR-4 agent concurrency caps)
 
 This map is for code ownership and verification routing. It is intentionally not a phase history. Historical module/phase narratives are retained in release-tagged git history; `docs/archive/README.md` is the working-tree index.
 
@@ -23,7 +23,7 @@ The Rust `engine/` is the sole runtime implementation. Python is retained as RES
 | `engine/src/cli/` | local CLI execution | Default local CLI discovery, explicit workflow ticks, path-free dashboard capability summary, Claude JSON/Codex JSONL adapters, restricted env, redacted/capped output | `cargo test -p engine` |
 | `engine/src/node_executor.rs` | supervised execution | Workflow node executors, command allowlist, timeout, structured output; AgentStepExecutor handles AR-3 actions (ProposeChildTask, RequestHandoff, AcceptHandoff, RejectHandoff, CancelProposal) | `cargo test -p engine --lib node_executor` |
 | `engine/src/target_repo_output.rs`, `engine/src/target_repo_output/authority.rs` | env-gated target output | Controlled git worktree, patch export, `acp/*` branch push, optional idempotent GitHub PR creation, and centralized target-output authority policy for gates, branch/remote/text/path validation | `cargo test -p engine --test test_target_repo_output` |
-| `engine/src/scheduler.rs` | guarded workers | Bounded supervised worker threads, queue ticks, pause/kill, heartbeat, lease recovery, dynamic mode, legacy executor-pool binding, and pinned IAE-2 adaptive execution | `cargo test -p engine --lib scheduler --test test_trusted_local_task_advancement` |
+| `engine/src/scheduler.rs` | guarded workers | Bounded supervised worker threads, queue ticks, pause/kill, heartbeat, lease recovery, dynamic mode, legacy executor-pool binding, pinned IAE-2 adaptive execution, and AR-4 agent concurrency caps | `cargo test -p engine --lib scheduler --test test_trusted_local_task_advancement` |
 | `engine/src/workflow/` | active workflow | DAG mutation, dynamic controller, context pack, run queue, backpressure, decisions | `cargo test -p engine --lib workflow` |
 | `engine/src/orchestration/` | partial workflow | Decomposition, conflict resolution, approval gate, aggregation helpers, and the current `AgentMessage`/`ChildTaskProposal`/`HandoffRequest` schema foundation for Agent Runtime work | `cargo test -p engine` |
 | `engine/src/quality/`, `engine/src/routing/` | partial policy | Quality/evaluation bridges and routing feedback/advisory logic | `cargo test -p engine` |

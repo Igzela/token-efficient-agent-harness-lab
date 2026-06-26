@@ -281,7 +281,14 @@ fn scheduler_tick_with_limit(
         let (acquired_type, pool_executor_arc) =
             select_scheduler_executor(config, pool, &executor_arc);
 
-        match store.tick_with_executor(run_id, "scheduler", 0, &*pool_executor_arc) {
+        match store.tick_with_executor_with_agent_caps(
+            run_id,
+            "scheduler",
+            0,
+            &*pool_executor_arc,
+            config.agent_max_concurrent_global,
+            config.agent_max_concurrent_per_run,
+        ) {
             Ok(result) => {
                 ticks += 1;
                 let action = result.get("action").and_then(|v| v.as_str());
