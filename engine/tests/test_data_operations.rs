@@ -138,7 +138,7 @@ fn check_integrity_on_clean_database() {
     let report = store.check_integrity().unwrap();
     assert_eq!(report.status, "ok");
     assert_eq!(report.schema_version, 15);
-    assert_eq!(report.tables.len(), 26);
+    assert_eq!(report.tables.len(), 27);
     for table in &report.tables {
         assert_eq!(table.status, "ok");
         assert!(table.row_count >= 0);

@@ -4,6 +4,7 @@ use serde_json::{json, Value};
 use super::{append_audit_locked, DatabaseConnection, LocalProductStore};
 use crate::orchestration::schemas::{
     AgentState, MailboxMessage, AGENT_MESSAGE_SCHEMA_VERSION, AGENT_STATE_SCHEMA_VERSION,
+    PROPOSAL_STATUSES, PROPOSAL_TYPES,
 };
 use crate::provider::redaction::{contains_sensitive_patterns, redact_sensitive_patterns};
 
@@ -527,6 +528,25 @@ impl LocalProductStore {
         }
     }
 
+    pub fn ack_message_for_agent(
+        &self,
+        message_id: &str,
+        agent_id: &str,
+        _run_id: &str,
+    ) -> Result<Option<MailboxMessage>, String> {
+        // Verify the message belongs to this agent
+        let msg = match self.read_message(message_id)? {
+            Some(m) => m,
+            None => return Ok(None),
+        };
+        if msg.to_agent_id != agent_id {
+            return Err(format!(
+                "agent {agent_id} is not the target of message {message_id}"
+            ));
+        }
+        self.ack_message(message_id)
+    }
+
     pub fn ack_message(&self, message_id: &str) -> Result<Option<MailboxMessage>, String> {
         let now = self.now();
         let affected = match &self.db {
@@ -758,6 +778,12 @@ impl LocalProductStore {
         proposed_node_id: Option<&str>,
         proposed_edge_id: Option<&str>,
     ) -> Result<String, String> {
+        if !PROPOSAL_TYPES.contains(&proposal_type) {
+            return Err(format!(
+                "invalid proposal_type '{proposal_type}', expected one of {}",
+                PROPOSAL_TYPES.join(", ")
+            ));
+        }
         if objective.len() > MAX_PROPOSAL_OBJECTIVE_BYTES {
             return Err(format!(
                 "objective exceeds max size of {} bytes",
@@ -908,6 +934,12 @@ impl LocalProductStore {
         proposal_id: &str,
         new_status: &str,
     ) -> Result<bool, String> {
+        if !PROPOSAL_STATUSES.contains(&new_status) {
+            return Err(format!(
+                "invalid status '{new_status}', expected one of {}",
+                PROPOSAL_STATUSES.join(", ")
+            ));
+        }
         let now = self.now();
         let affected = match &self.db {
             DatabaseConnection::Sqlite(_) => self.with_conn(|conn| {
@@ -1013,6 +1045,80 @@ impl LocalProductStore {
                     )
                     .map_err(|e| e.to_string())?;
                 Ok(rows.iter().map(pg_proposal_row).collect())
+            }),
+        }
+    }
+
+    pub fn find_pending_handoff_for_target(
+        &self,
+        correlation_id: &str,
+        target_agent_id: &str,
+        run_id: &str,
+    ) -> Result<Option<Value>, String> {
+        match &self.db {
+            DatabaseConnection::Sqlite(_) => self.with_conn(|conn| {
+                let mut stmt = conn
+                    .prepare(
+                        "SELECT proposal_id, correlation_id, run_id, parent_node_id, agent_id,
+                                target_agent_id, proposed_node_id, proposed_edge_id,
+                                proposal_type, objective, context_summary, status,
+                                created_at, updated_at
+                         FROM agent_proposals
+                         WHERE correlation_id=?1
+                           AND target_agent_id=?2
+                           AND run_id=?3
+                           AND proposal_type='handoff'
+                           AND status='pending'
+                         ORDER BY created_at DESC LIMIT 1",
+                    )
+                    .map_err(|e| e.to_string())?;
+                let mut rows = stmt
+                    .query_map(params![correlation_id, target_agent_id, run_id], |row| {
+                        Ok(json!({
+                            "proposal_id": row.get::<_, String>(0)?,
+                            "correlation_id": row.get::<_, String>(1)?,
+                            "run_id": row.get::<_, String>(2)?,
+                            "parent_node_id": row.get::<_, String>(3)?,
+                            "agent_id": row.get::<_, String>(4)?,
+                            "target_agent_id": row.get::<_, Option<String>>(5)?,
+                            "proposed_node_id": row.get::<_, Option<String>>(6)?,
+                            "proposed_edge_id": row.get::<_, Option<String>>(7)?,
+                            "proposal_type": row.get::<_, String>(8)?,
+                            "objective": row.get::<_, String>(9)?,
+                            "context_summary": row.get::<_, String>(10)?,
+                            "status": row.get::<_, String>(11)?,
+                            "created_at": row.get::<_, String>(12)?,
+                            "updated_at": row.get::<_, String>(13)?,
+                        }))
+                    })
+                    .map_err(|e| e.to_string())?;
+                match rows.next() {
+                    Some(r) => Ok(Some(r.map_err(|e| e.to_string())?)),
+                    None => Ok(None),
+                }
+            }),
+            #[cfg(feature = "pg")]
+            DatabaseConnection::Pg(_) => self.with_pg_conn(|client| {
+                let rows = client
+                    .query(
+                        "SELECT proposal_id, correlation_id, run_id, parent_node_id, agent_id,
+                                target_agent_id, proposed_node_id, proposed_edge_id,
+                                proposal_type, objective, context_summary, status,
+                                created_at, updated_at
+                         FROM agent_proposals
+                         WHERE correlation_id=$1
+                           AND target_agent_id=$2
+                           AND run_id=$3
+                           AND proposal_type='handoff'
+                           AND status='pending'
+                         ORDER BY created_at DESC LIMIT 1",
+                        &[&correlation_id, &target_agent_id, &run_id],
+                    )
+                    .map_err(|e| e.to_string())?;
+                match rows.into_iter().next() {
+                    Some(row) => Ok(Some(pg_proposal_row(&row))),
+                    None => Ok(None),
+                }
             }),
         }
     }
