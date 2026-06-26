@@ -1,6 +1,6 @@
 # Architecture Book
 
-Last updated: 2026-06-25
+Last updated: 2026-06-26
 
 This is the current architecture baseline for the Token-Efficient Agent Harness Lab. Historical phase plans, closeout reports, and long-form strategy docs are retained in release-tagged git history; `docs/archive/README.md` is the working-tree index.
 
@@ -128,7 +128,7 @@ The runtime path is intentionally built on existing `workflow_runs`, `scheduler`
 
 ## Agent Runtime (AR-0) Contract
 
-The current system is a deterministic workflow/control-plane runtime, not yet a full autonomous multi-agent runtime. AR-0 defines the contract baseline for evolving it into a bounded multi-agent runtime. AR-1 (agent identity, state, mailbox storage) is implemented; AR-2 (agent step executor) is not.
+The current system is a deterministic workflow/control-plane runtime, not yet a full autonomous multi-agent runtime. AR-0 defines the contract baseline for evolving it into a bounded multi-agent runtime. AR-1 (agent identity, state, mailbox storage) and AR-2 (agent step executor) are implemented; AR-3 through AR-6 are not.
 
 ### Definition
 
@@ -136,7 +136,7 @@ The current system is a deterministic workflow/control-plane runtime, not yet a 
 
 ### What AgentRuntime Is Not
 
-- Not a full multi-agent runtime implementation. AR-0 is the contract; AR-1 added agent state and mailbox storage. No scheduler changes, provider/CLI call paths, or agent step executor exist.
+- Not a full multi-agent runtime implementation. AR-0 is the contract; AR-1 added agent state and mailbox storage; AR-2 added the agent step executor. No scheduler changes, provider/CLI call paths, or concurrent agent semantics exist.
 - Not a second runtime kernel. All AR phases extend `workflow_runs`, `scheduler`, `node_executor`, `provider`, `cli`, `storage/local_product_store`, http_server, SDK, and dashboard — never a parallel scheduler, DAG engine, storage layer, or hidden side-channel mailbox.
 - Not a replacement for existing safety gates. Provider calls, CLI execution, target-output approval, cost caps, audit, redaction, kill switches, and rollback remain authoritative.
 - Not an autonomous loop authority. No AR phase creates unbounded agent goals, unbounded recursive planning, or automatic merge/deploy/release authority.
@@ -150,7 +150,7 @@ AR phases consume the following existing modules, extending them through focused
 | `engine/src/orchestration/schemas.rs` | Agent/message type contracts | AR-1: `AgentState`, `MailboxMessage` types with delivery status, correlation IDs, role/capability profiles |
 | `engine/src/storage/local_product_store/` | Durable agent state, mailbox, agent events | AR-1: `agent_state` table, `agent_mailbox` table with send/read/ack/reply, bounded summary/redaction columns, CRUD methods, audit events |
 | `engine/src/workflow/` and `engine/src/scheduler.rs` | Graph mutation, queue leases, wakeups, bounded concurrency | Agent step scheduling, child-task node creation, claim policy for concurrent agent steps |
-| `engine/src/node_executor.rs` | Bounded `agent_step` executor | `AgentStepExecutor` implementing `NodeExecutor` with observe/decide/act/persist loop |
+| `engine/src/node_executor.rs` | Bounded `agent_step` executor | **AR-2 implemented**: `AgentStepExecutor` implementing `NodeExecutor` with `AgentAction` enum, `AgentDecisionFn` closure, env gate + kill switch, observe/decide/act/persist lifecycle, audit events, 11 tests |
 | `engine/src/provider/` and `engine/src/cli/` | Gated action execution | Agent actions only through existing provider/CLI gates, cost controls, audit, and redaction |
 | `engine/src/http_server/` | Agent-readable endpoints, operator controls | Agent state/mailbox/status endpoints using existing auth scopes |
 | `SDKs` and `dashboard/` | Operator visibility, guarded agent controls | Agent state inspection, mailbox counts, step traces, kill/pause controls |
@@ -162,7 +162,7 @@ AR phases consume the following existing modules, extending them through focused
 |---|---|---|---|
 | `AgentState` | `storage/local_product_store/` | **AR-1 implemented** | Durable agent identity `(agent_id, run_id)`, role, capability profile, objective, status, bounded scratchpad summary, redaction filter reference, last activity timestamp |
 | `AgentMessage` | `storage/local_product_store/` | **AR-1 implemented** | Mailbox row `(message_id, correlation_id, from, to, run_id, node_id, body_ref, status, created_at, read_at, ack_at)` with send/read/ack/reply transitions, audit events, and secret-shaped content rejection |
-| `AgentStep` (node-level) | `workflow/` and `scheduler.rs` | An `agent_step` `NodeExecutor` variant that runs the observe/decide/act/persist loop within existing node lease/cap/kill boundaries |
+| `AgentStep` (node-level) | `node_executor.rs` | **AR-2 implemented**: `AgentStepExecutor` runs the observe/decide/act/persist loop within existing node lease/cap/kill boundaries. `AgentAction` enum covers Wait, Complete, scratchpad, mailbox, notes, observations. No scheduler change yet. |
 | Agent-child-task proposals | `workflow/` | Bounded workflow node/edge creation requests with auth scope validation and operator visibility |
 | Debate/review threads | `workflow/` | Multi-agent review artifacts with verdicts, dissent, evidence links, and merge/approval gates |
 | Agent claim/concurrency state | `scheduler.rs` | Extended lease/claim policy for concurrent agent steps with resource locks, joins, and conflict handling |
@@ -198,15 +198,18 @@ AR phases consume the following existing modules, extending them through focused
   5. Confirm no residual agent state remains.
   6. No env gate is needed for AR-1 storage: these tables are inert without an agent step executor (AR-2). No target-repository data, credentials, provider state, scheduler state, or raw model content is stored. All data is app-owned and safe to delete.
 
-**AR-2 and later — not implemented:**
+**AR-2 (agent step executor) — implemented.** An `AgentStepExecutor` in `node_executor.rs` implements `NodeExecutor` with a one-step `observe → decide → act → persist` lifecycle. `AgentAction` enum supports Wait, Complete, ReadMailbox, AckMessage, UpdateScratchpadSummary, EmitNote, RecordObservation, and Unsupported (fails closed). The executor loads `AgentState`, counts mailbox backlog, calls the injected `AgentDecisionFn`, dispatches the chosen action via existing `LocalProductStore` methods, appends audit events per transition, and returns a structured `NodeExecutionOutput`. Env gate `ACP_ENABLE_AGENT_RUNTIME=1` is required for live execution; kill switch `ACP_AGENT_RUNTIME_KILL_SWITCH=1` overrides. Fails closed on: missing agent state, missing `agent_id`, unsupported action, disabled runtime, or killed runtime. 11 tests pass. No provider/CLI calls, no scheduler change, no DB migration, no dashboard UI, no concurrent agent semantics.
 
-- AR-2 agent step executor
+**AR-2 rollback.** AR-2 adds code only — no storage schema changes. Rollback is a clean revert of the merge commit. The `ACP_AGENT_RUNTIME_KILL_SWITCH` env gate was added per the AR-0 safety invariant requirement; after revert, both `ACP_ENABLE_AGENT_RUNTIME` and `ACP_AGENT_RUNTIME_KILL_SWITCH` become inert (no code reads them). No data cleanup is needed because AR-2 uses existing AR-1 tables. The `NodeExecutor` trait already supports `agent_step` as a `task_type`; after revert, unknown `task_type` falls through to existing error handling.
+
+**AR-3 and later — not implemented:**
+
 - AR-3 planning, child tasks, and handoff
 - AR-4 concurrent multi-agent scheduling
 - AR-5 review and debate primitives
 - AR-6 operator evidence and SDK/dashboard surface
 - Any provider/CLI execution path changes
-- Any DB migration
+- Any DB migration beyond AR-1 v14
 - Any scheduler lease/claim policy change
 - Any hidden mailbox, side channel, or second runtime kernel
 - Any automatic target-output merge/deploy/release authority
