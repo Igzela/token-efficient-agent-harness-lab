@@ -1155,6 +1155,12 @@ impl AgentStepExecutor {
             AgentAction::Unsupported(name) => Err(format!("unsupported action: {name}")),
             // ── AR-5: Bounded review/debate primitives ──
             AgentAction::RequestReview(request) => {
+                if request.run_id != run_id {
+                    return Err(format!(
+                        "review request run_id '{}' does not match current run '{}'",
+                        request.run_id, run_id
+                    ));
+                }
                 if request.target_agent_id == *agent_id {
                     return Err(
                         "review target agent must be different from requesting agent".to_string(),
@@ -1230,6 +1236,12 @@ impl AgentStepExecutor {
                 .to_string())
             }
             AgentAction::SubmitReviewVerdict(verdict) => {
+                if verdict.run_id != run_id {
+                    return Err(format!(
+                        "review verdict run_id '{}' does not match current run '{}'",
+                        verdict.run_id, run_id
+                    ));
+                }
                 if !REVIEW_VERDICTS.contains(&verdict.verdict.as_str()) {
                     return Err(format!(
                         "invalid verdict '{}', expected one of {}",
@@ -1272,6 +1284,20 @@ impl AgentStepExecutor {
                                 "review request {pid} is not pending (status: {pstatus})"
                             ));
                         }
+                        let new_status = if verdict.verdict == "accepted" {
+                            "accepted"
+                        } else {
+                            "rejected"
+                        };
+                        let updated = self
+                            .store
+                            .update_proposal_status(pid, new_status)
+                            .map_err(|e| format!("failed to update review status: {e}"))?;
+                        if !updated {
+                            return Err(format!(
+                                "review request {pid} status update failed — proposal may no longer be pending"
+                            ));
+                        }
                         let verdict_proposal_id = format!(
                             "rv-{}-{}",
                             verdict.correlation_id,
@@ -1292,14 +1318,6 @@ impl AgentStepExecutor {
                                 None,
                             )
                             .map_err(|e| format!("failed to create review verdict: {e}"))?;
-                        let new_status = if verdict.verdict == "accepted" {
-                            "accepted"
-                        } else {
-                            "rejected"
-                        };
-                        self.store
-                            .update_proposal_status(pid, new_status)
-                            .map_err(|e| format!("failed to update review status: {e}"))?;
                         let _ = self.store.append_audit(
                             "agent_step",
                             "review.verdict_submitted",
@@ -1326,6 +1344,12 @@ impl AgentStepExecutor {
                 }
             }
             AgentAction::OpenDebate(debate) => {
+                if debate.run_id != run_id {
+                    return Err(format!(
+                        "debate request run_id '{}' does not match current run '{}'",
+                        debate.run_id, run_id
+                    ));
+                }
                 if debate.participant_agent_ids.is_empty() {
                     return Err("debate must have at least one participant".to_string());
                 }
@@ -1375,18 +1399,20 @@ impl AgentStepExecutor {
                         pid,
                         chrono::Utc::now().timestamp_millis()
                     );
-                    let _ = self.store.send_message(
-                        &msg_id,
-                        agent_id,
-                        pid,
-                        "debate_request",
-                        Some(&format!("Debate opened: {}", debate.subject_summary)),
-                        Some(&debate.correlation_id),
-                        Some(&debate.run_id),
-                        Some(&debate.node_id),
-                        None,
-                        &json!({"proposal_id": proposal_id, "max_rounds": max_rounds}),
-                    );
+                    self.store
+                        .send_message(
+                            &msg_id,
+                            agent_id,
+                            pid,
+                            "debate_request",
+                            Some(&format!("Debate opened: {}", debate.subject_summary)),
+                            Some(&debate.correlation_id),
+                            Some(&debate.run_id),
+                            Some(&debate.node_id),
+                            None,
+                            &json!({"proposal_id": proposal_id, "max_rounds": max_rounds}),
+                        )
+                        .map_err(|e| format!("failed to notify participant {pid}: {e}"))?;
                 }
                 let _ = self.store.append_audit(
                     "agent_step",
@@ -1407,6 +1433,12 @@ impl AgentStepExecutor {
                 .to_string())
             }
             AgentAction::SubmitDebatePosition(position) => {
+                if position.run_id != run_id {
+                    return Err(format!(
+                        "debate position run_id '{}' does not match current run '{}'",
+                        position.run_id, run_id
+                    ));
+                }
                 if position.position.len() > MAX_REVIEW_DEBATE_TEXT_BYTES {
                     return Err(format!(
                         "position exceeds {} byte cap",
@@ -1465,6 +1497,25 @@ impl AgentStepExecutor {
                                 "debate {dpid} has reached max rounds ({max_rounds})"
                             ));
                         }
+                        let new_meta = json!({
+                            "max_rounds": max_rounds,
+                            "current_round": current_round + 1,
+                            "participant_agent_ids": participants,
+                        });
+                        let round_updated = self
+                            .store
+                            .update_debate_round_if_pending(
+                                dpid,
+                                run_id,
+                                current_round,
+                                &new_meta.to_string(),
+                            )
+                            .map_err(|e| format!("failed to update debate round: {e}"))?;
+                        if !round_updated {
+                            return Err(format!(
+                                "debate {dpid} round update failed — stale, terminal, or already at max"
+                            ));
+                        }
                         let pos_proposal_id = format!(
                             "dp-{}-{}-{}",
                             position.correlation_id,
@@ -1486,14 +1537,6 @@ impl AgentStepExecutor {
                                 None,
                             )
                             .map_err(|e| format!("failed to create debate position: {e}"))?;
-                        let new_meta = json!({
-                            "max_rounds": max_rounds,
-                            "current_round": current_round + 1,
-                            "participant_agent_ids": participants,
-                        });
-                        self.store
-                            .update_proposal_context_summary(dpid, &new_meta.to_string())
-                            .map_err(|e| format!("failed to update debate round: {e}"))?;
                         let _ = self.store.append_audit(
                             "agent_step",
                             "debate.position_submitted",
@@ -1517,6 +1560,12 @@ impl AgentStepExecutor {
                 }
             }
             AgentAction::ResolveDebate(resolution) => {
+                if resolution.run_id != run_id {
+                    return Err(format!(
+                        "debate resolution run_id '{}' does not match current run '{}'",
+                        resolution.run_id, run_id
+                    ));
+                }
                 if resolution.resolution.len() > MAX_REVIEW_DEBATE_TEXT_BYTES {
                     return Err(format!(
                         "resolution exceeds {} byte cap",
@@ -1552,6 +1601,15 @@ impl AgentStepExecutor {
                                 "debate {dpid} is not pending (status: {dpstatus})"
                             ));
                         }
+                        let updated = self
+                            .store
+                            .update_proposal_status(dpid, "accepted")
+                            .map_err(|e| format!("failed to resolve debate: {e}"))?;
+                        if !updated {
+                            return Err(format!(
+                                "debate {dpid} status update failed — debate may no longer be pending"
+                            ));
+                        }
                         let resolution_proposal_id = format!(
                             "dr-{}-{}",
                             resolution.correlation_id,
@@ -1572,9 +1630,6 @@ impl AgentStepExecutor {
                                 None,
                             )
                             .map_err(|e| format!("failed to create debate resolution: {e}"))?;
-                        self.store
-                            .update_proposal_status(dpid, "accepted")
-                            .map_err(|e| format!("failed to resolve debate: {e}"))?;
                         let _ = self.store.append_audit(
                             "agent_step",
                             "debate.resolved",
@@ -3063,11 +3118,23 @@ mod tests {
             blocking: true,
         };
         let exec2 = AgentStepExecutor::new(
-            store,
+            store.clone(),
             stub_decision(AgentAction::SubmitReviewVerdict(verdict)),
         );
         let out2 = exec2.execute_node(&agent_step_input("agent-tgt", "run-ar5-wrong-run"));
         assert_eq!(out2.status, "failed");
+        // Verify no verdict proposal was created — only the original review_request
+        let proposals_after = store
+            .list_proposals_by_run("run-ar5-wr", 100, 0)
+            .expect("list");
+        let verdict_count = proposals_after
+            .iter()
+            .filter(|p| p["proposal_type"] == "review_verdict")
+            .count();
+        assert_eq!(
+            verdict_count, 0,
+            "no verdict proposal should be created on run_id mismatch"
+        );
     }
 
     #[test]
@@ -3541,5 +3608,431 @@ mod tests {
             .list_proposals_by_run("run-ar5-rc", 100, 0)
             .expect("list");
         assert_eq!(proposals[0]["status"], "cancelled");
+    }
+
+    // ── Blocker 1: run_id fail-closed tests ────────────────────────────────
+
+    #[test]
+    fn test_ar5_wrong_run_id_request_review() {
+        let _lock = AGENT_ENV_LOCK.lock().unwrap();
+        let store = Arc::new(ar2_store());
+        create_test_agent(&store, "agent-req", "run-ar5-rr-wr");
+        create_test_agent(&store, "agent-tgt", "run-ar5-rr-wr");
+        std::env::set_var("ACP_ENABLE_AGENT_RUNTIME", "1");
+        std::env::remove_var("ACP_AGENT_RUNTIME_KILL_SWITCH");
+
+        let mut request = stub_review_request("agent-req", "agent-tgt", "run-ar5-rr-wr");
+        request.run_id = "run-ar5-wrong".to_string();
+        let exec = AgentStepExecutor::new(
+            store.clone(),
+            stub_decision(AgentAction::RequestReview(request)),
+        );
+        let out = exec.execute_node(&agent_step_input("agent-req", "run-ar5-rr-wr"));
+        assert_eq!(out.status, "failed");
+        assert!(out
+            .error_message
+            .unwrap()
+            .contains("does not match current run"));
+
+        let proposals = store
+            .list_proposals_by_run("run-ar5-rr-wr", 100, 0)
+            .expect("list");
+        assert!(
+            proposals.is_empty(),
+            "no proposals should be created on run_id mismatch"
+        );
+    }
+
+    #[test]
+    fn test_ar5_wrong_run_id_open_debate() {
+        let _lock = AGENT_ENV_LOCK.lock().unwrap();
+        let store = Arc::new(ar2_store());
+        create_test_agent(&store, "agent-opener", "run-ar5-od-wr");
+        create_test_agent(&store, "p1", "run-ar5-od-wr");
+        std::env::set_var("ACP_ENABLE_AGENT_RUNTIME", "1");
+        std::env::remove_var("ACP_AGENT_RUNTIME_KILL_SWITCH");
+
+        let mut debate = stub_debate_request("agent-opener", "run-ar5-od-wr");
+        debate.run_id = "run-ar5-wrong".to_string();
+        let exec = AgentStepExecutor::new(
+            store.clone(),
+            stub_decision(AgentAction::OpenDebate(debate)),
+        );
+        let out = exec.execute_node(&agent_step_input("agent-opener", "run-ar5-od-wr"));
+        assert_eq!(out.status, "failed");
+        assert!(out
+            .error_message
+            .unwrap()
+            .contains("does not match current run"));
+
+        let proposals = store
+            .list_proposals_by_run("run-ar5-od-wr", 100, 0)
+            .expect("list");
+        assert!(
+            proposals.is_empty(),
+            "no proposals should be created on run_id mismatch"
+        );
+    }
+
+    #[test]
+    fn test_ar5_wrong_run_id_submit_debate_position() {
+        let _lock = AGENT_ENV_LOCK.lock().unwrap();
+        let store = Arc::new(ar2_store());
+        create_test_agent(&store, "agent-opener", "run-ar5-dp-wr");
+        create_test_agent(&store, "p1", "run-ar5-dp-wr");
+        std::env::set_var("ACP_ENABLE_AGENT_RUNTIME", "1");
+        std::env::remove_var("ACP_AGENT_RUNTIME_KILL_SWITCH");
+
+        let debate = stub_debate_request("agent-opener", "run-ar5-dp-wr");
+        let exec = AgentStepExecutor::new(
+            store.clone(),
+            stub_decision(AgentAction::OpenDebate(debate)),
+        );
+        let out = exec.execute_node(&agent_step_input("agent-opener", "run-ar5-dp-wr"));
+        assert_eq!(out.status, "completed");
+
+        let proposals = store
+            .list_proposals_by_run("run-ar5-dp-wr", 100, 0)
+            .expect("list");
+        let debate_pid = proposals[0]["proposal_id"].as_str().unwrap().to_string();
+
+        let position = DebatePosition {
+            schema_version: "debate_position.v1".to_string(),
+            correlation_id: "corr-debate-001".to_string(),
+            debate_id: debate_pid,
+            position: "approach A".to_string(),
+            rationale_summary: "reasons".to_string(),
+            run_id: "run-ar5-wrong".to_string(),
+            node_id: "agent-node-001".to_string(),
+        };
+        let pos_exec = AgentStepExecutor::new(
+            store.clone(),
+            stub_decision(AgentAction::SubmitDebatePosition(position)),
+        );
+        let pout = pos_exec.execute_node(&agent_step_input("p1", "run-ar5-dp-wr"));
+        assert_eq!(pout.status, "failed");
+        assert!(pout
+            .error_message
+            .unwrap()
+            .contains("does not match current run"));
+
+        // Only the debate_request should exist, no debate_position
+        let proposals_after = store
+            .list_proposals_by_run("run-ar5-dp-wr", 100, 0)
+            .expect("list");
+        let pos_count = proposals_after
+            .iter()
+            .filter(|p| p["proposal_type"] == "debate_position")
+            .count();
+        assert_eq!(
+            pos_count, 0,
+            "no debate_position should be created on run_id mismatch"
+        );
+    }
+
+    #[test]
+    fn test_ar5_wrong_run_id_resolve_debate() {
+        let _lock = AGENT_ENV_LOCK.lock().unwrap();
+        let store = Arc::new(ar2_store());
+        create_test_agent(&store, "agent-opener", "run-ar5-dr-wr");
+        create_test_agent(&store, "p1", "run-ar5-dr-wr");
+        std::env::set_var("ACP_ENABLE_AGENT_RUNTIME", "1");
+        std::env::remove_var("ACP_AGENT_RUNTIME_KILL_SWITCH");
+
+        let debate = stub_debate_request("agent-opener", "run-ar5-dr-wr");
+        let exec = AgentStepExecutor::new(
+            store.clone(),
+            stub_decision(AgentAction::OpenDebate(debate)),
+        );
+        let out = exec.execute_node(&agent_step_input("agent-opener", "run-ar5-dr-wr"));
+        assert_eq!(out.status, "completed");
+
+        let proposals = store
+            .list_proposals_by_run("run-ar5-dr-wr", 100, 0)
+            .expect("list");
+        let debate_pid = proposals[0]["proposal_id"].as_str().unwrap().to_string();
+
+        let resolution = DebateResolution {
+            schema_version: "debate_resolution.v1".to_string(),
+            correlation_id: "corr-debate-dr".to_string(),
+            debate_id: debate_pid,
+            resolution: "A wins".to_string(),
+            winning_position: Some("A".to_string()),
+            unresolved_risks: None,
+            run_id: "run-ar5-wrong".to_string(),
+            node_id: "agent-node-001".to_string(),
+        };
+        let res_exec = AgentStepExecutor::new(
+            store.clone(),
+            stub_decision(AgentAction::ResolveDebate(resolution)),
+        );
+        let rout = res_exec.execute_node(&agent_step_input("agent-opener", "run-ar5-dr-wr"));
+        assert_eq!(rout.status, "failed");
+        assert!(rout
+            .error_message
+            .unwrap()
+            .contains("does not match current run"));
+
+        let proposals_after = store
+            .list_proposals_by_run("run-ar5-dr-wr", 100, 0)
+            .expect("list");
+        let res_count = proposals_after
+            .iter()
+            .filter(|p| p["proposal_type"] == "debate_resolution")
+            .count();
+        assert_eq!(
+            res_count, 0,
+            "no debate_resolution should be created on run_id mismatch"
+        );
+    }
+
+    // ── Blocker 2: status update bool tests ────────────────────────────────
+
+    #[test]
+    fn test_ar5_terminal_review_cannot_create_second_verdict() {
+        let _lock = AGENT_ENV_LOCK.lock().unwrap();
+        let store = Arc::new(ar2_store());
+        create_test_agent(&store, "agent-req", "run-ar5-tv2");
+        create_test_agent(&store, "agent-tgt", "run-ar5-tv2");
+        std::env::set_var("ACP_ENABLE_AGENT_RUNTIME", "1");
+        std::env::remove_var("ACP_AGENT_RUNTIME_KILL_SWITCH");
+
+        let request = stub_review_request("agent-req", "agent-tgt", "run-ar5-tv2");
+        let exec = AgentStepExecutor::new(
+            store.clone(),
+            stub_decision(AgentAction::RequestReview(request)),
+        );
+        let out = exec.execute_node(&agent_step_input("agent-req", "run-ar5-tv2"));
+        assert_eq!(out.status, "completed");
+
+        let proposals = store
+            .list_proposals_by_run("run-ar5-tv2", 100, 0)
+            .expect("list");
+        let review_pid = proposals[0]["proposal_id"].as_str().unwrap().to_string();
+
+        // First verdict — succeeds
+        let verdict1 = ReviewVerdict {
+            schema_version: "review_verdict.v1".to_string(),
+            correlation_id: "corr-v1".to_string(),
+            review_request_id: review_pid.clone(),
+            verdict: "accepted".to_string(),
+            rationale_summary: "looks good".to_string(),
+            run_id: "run-ar5-tv2".to_string(),
+            node_id: "agent-node-001".to_string(),
+            blocking: true,
+        };
+        let exec1 = AgentStepExecutor::new(
+            store.clone(),
+            stub_decision(AgentAction::SubmitReviewVerdict(verdict1)),
+        );
+        let vout1 = exec1.execute_node(&agent_step_input("agent-tgt", "run-ar5-tv2"));
+        assert_eq!(vout1.status, "completed");
+
+        // Second verdict — must fail, review is no longer pending
+        let verdict2 = ReviewVerdict {
+            schema_version: "review_verdict.v1".to_string(),
+            correlation_id: "corr-v2".to_string(),
+            review_request_id: review_pid,
+            verdict: "rejected".to_string(),
+            rationale_summary: "changed mind".to_string(),
+            run_id: "run-ar5-tv2".to_string(),
+            node_id: "agent-node-001".to_string(),
+            blocking: true,
+        };
+        let exec2 = AgentStepExecutor::new(
+            store.clone(),
+            stub_decision(AgentAction::SubmitReviewVerdict(verdict2)),
+        );
+        let vout2 = exec2.execute_node(&agent_step_input("agent-tgt", "run-ar5-tv2"));
+        assert_eq!(vout2.status, "failed");
+        assert!(vout2.error_message.unwrap().contains("not pending"));
+
+        // Verify only ONE review_verdict proposal exists
+        let proposals_after = store
+            .list_proposals_by_run("run-ar5-tv2", 100, 0)
+            .expect("list");
+        let verdict_count = proposals_after
+            .iter()
+            .filter(|p| p["proposal_type"] == "review_verdict")
+            .count();
+        assert_eq!(verdict_count, 1, "only one verdict proposal should exist");
+    }
+
+    #[test]
+    fn test_ar5_resolved_debate_cannot_create_second_resolution() {
+        let _lock = AGENT_ENV_LOCK.lock().unwrap();
+        let store = Arc::new(ar2_store());
+        create_test_agent(&store, "agent-opener", "run-ar5-rd2");
+        create_test_agent(&store, "p1", "run-ar5-rd2");
+        std::env::set_var("ACP_ENABLE_AGENT_RUNTIME", "1");
+        std::env::remove_var("ACP_AGENT_RUNTIME_KILL_SWITCH");
+
+        let debate = stub_debate_request("agent-opener", "run-ar5-rd2");
+        let exec = AgentStepExecutor::new(
+            store.clone(),
+            stub_decision(AgentAction::OpenDebate(debate)),
+        );
+        let out = exec.execute_node(&agent_step_input("agent-opener", "run-ar5-rd2"));
+        assert_eq!(out.status, "completed");
+
+        let proposals = store
+            .list_proposals_by_run("run-ar5-rd2", 100, 0)
+            .expect("list");
+        let debate_pid = proposals[0]["proposal_id"].as_str().unwrap().to_string();
+
+        // First resolution — succeeds
+        let res1 = DebateResolution {
+            schema_version: "debate_resolution.v1".to_string(),
+            correlation_id: "corr-r1".to_string(),
+            debate_id: debate_pid.clone(),
+            resolution: "A wins".to_string(),
+            winning_position: Some("A".to_string()),
+            unresolved_risks: None,
+            run_id: "run-ar5-rd2".to_string(),
+            node_id: "agent-node-001".to_string(),
+        };
+        let exec1 = AgentStepExecutor::new(
+            store.clone(),
+            stub_decision(AgentAction::ResolveDebate(res1)),
+        );
+        let rout1 = exec1.execute_node(&agent_step_input("agent-opener", "run-ar5-rd2"));
+        assert_eq!(rout1.status, "completed");
+
+        // Second resolution — must fail
+        let res2 = DebateResolution {
+            schema_version: "debate_resolution.v1".to_string(),
+            correlation_id: "corr-r2".to_string(),
+            debate_id: debate_pid,
+            resolution: "B wins actually".to_string(),
+            winning_position: Some("B".to_string()),
+            unresolved_risks: None,
+            run_id: "run-ar5-rd2".to_string(),
+            node_id: "agent-node-001".to_string(),
+        };
+        let exec2 = AgentStepExecutor::new(
+            store.clone(),
+            stub_decision(AgentAction::ResolveDebate(res2)),
+        );
+        let rout2 = exec2.execute_node(&agent_step_input("agent-opener", "run-ar5-rd2"));
+        assert_eq!(rout2.status, "failed");
+        assert!(rout2.error_message.unwrap().contains("not pending"));
+
+        // Verify only ONE debate_resolution proposal exists
+        let proposals_after = store
+            .list_proposals_by_run("run-ar5-rd2", 100, 0)
+            .expect("list");
+        let res_count = proposals_after
+            .iter()
+            .filter(|p| p["proposal_type"] == "debate_resolution")
+            .count();
+        assert_eq!(res_count, 1, "only one resolution proposal should exist");
+    }
+
+    // ── Blocker 3: debate round fail-closed tests ──────────────────────────
+
+    #[test]
+    fn test_ar5_terminal_debate_cannot_accept_position() {
+        let _lock = AGENT_ENV_LOCK.lock().unwrap();
+        let store = Arc::new(ar2_store());
+        create_test_agent(&store, "agent-opener", "run-ar5-tdp");
+        create_test_agent(&store, "p1", "run-ar5-tdp");
+        std::env::set_var("ACP_ENABLE_AGENT_RUNTIME", "1");
+        std::env::remove_var("ACP_AGENT_RUNTIME_KILL_SWITCH");
+
+        let debate = stub_debate_request("agent-opener", "run-ar5-tdp");
+        let exec = AgentStepExecutor::new(
+            store.clone(),
+            stub_decision(AgentAction::OpenDebate(debate)),
+        );
+        let out = exec.execute_node(&agent_step_input("agent-opener", "run-ar5-tdp"));
+        assert_eq!(out.status, "completed");
+
+        let proposals = store
+            .list_proposals_by_run("run-ar5-tdp", 100, 0)
+            .expect("list");
+        let debate_pid = proposals[0]["proposal_id"].as_str().unwrap().to_string();
+
+        // Resolve the debate — makes it terminal
+        let resolution = DebateResolution {
+            schema_version: "debate_resolution.v1".to_string(),
+            correlation_id: "corr-tdp".to_string(),
+            debate_id: debate_pid.clone(),
+            resolution: "A wins".to_string(),
+            winning_position: Some("A".to_string()),
+            unresolved_risks: None,
+            run_id: "run-ar5-tdp".to_string(),
+            node_id: "agent-node-001".to_string(),
+        };
+        let res_exec = AgentStepExecutor::new(
+            store.clone(),
+            stub_decision(AgentAction::ResolveDebate(resolution)),
+        );
+        let rout = res_exec.execute_node(&agent_step_input("agent-opener", "run-ar5-tdp"));
+        assert_eq!(rout.status, "completed");
+
+        // Try to submit a position — must fail, debate is terminal
+        let position = DebatePosition {
+            schema_version: "debate_position.v1".to_string(),
+            correlation_id: "corr-tdp".to_string(),
+            debate_id: debate_pid,
+            position: "too late".to_string(),
+            rationale_summary: "because".to_string(),
+            run_id: "run-ar5-tdp".to_string(),
+            node_id: "agent-node-001".to_string(),
+        };
+        let pos_exec = AgentStepExecutor::new(
+            store.clone(),
+            stub_decision(AgentAction::SubmitDebatePosition(position)),
+        );
+        let pout = pos_exec.execute_node(&agent_step_input("p1", "run-ar5-tdp"));
+        assert_eq!(pout.status, "failed");
+        assert!(pout.error_message.unwrap().contains("not pending"));
+
+        // Verify no debate_position proposals exist
+        let proposals_after = store
+            .list_proposals_by_run("run-ar5-tdp", 100, 0)
+            .expect("list");
+        let pos_count = proposals_after
+            .iter()
+            .filter(|p| p["proposal_type"] == "debate_position")
+            .count();
+        assert_eq!(
+            pos_count, 0,
+            "no position should be created on terminal debate"
+        );
+    }
+
+    // ── Blocker 4: send failure propagation test ───────────────────────────
+
+    #[test]
+    fn test_ar5_open_debate_send_failure_is_propagated() {
+        let _lock = AGENT_ENV_LOCK.lock().unwrap();
+        let store = Arc::new(ar2_store());
+        create_test_agent(&store, "agent-opener", "run-ar5-sf");
+        create_test_agent(&store, "p1", "run-ar5-sf");
+        create_test_agent(&store, "p2", "run-ar5-sf");
+        std::env::set_var("ACP_ENABLE_AGENT_RUNTIME", "1");
+        std::env::remove_var("ACP_AGENT_RUNTIME_KILL_SWITCH");
+
+        let debate = stub_debate_request("agent-opener", "run-ar5-sf");
+        let exec = AgentStepExecutor::new(
+            store.clone(),
+            stub_decision(AgentAction::OpenDebate(debate)),
+        );
+        let out = exec.execute_node(&agent_step_input("agent-opener", "run-ar5-sf"));
+        assert_eq!(out.status, "completed");
+
+        // Verify messages were sent to both participants
+        let msgs_p1 = store
+            .list_mailbox(Some("p1"), Some("run-ar5-sf"), None, None, 100, 0)
+            .expect("mailbox p1");
+        assert_eq!(msgs_p1.len(), 1);
+        assert_eq!(msgs_p1[0].message_type, "debate_request");
+
+        let msgs_p2 = store
+            .list_mailbox(Some("p2"), Some("run-ar5-sf"), None, None, 100, 0)
+            .expect("mailbox p2");
+        assert_eq!(msgs_p2.len(), 1);
+        assert_eq!(msgs_p2[0].message_type, "debate_request");
     }
 }
