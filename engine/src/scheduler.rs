@@ -28,6 +28,11 @@ pub struct SchedulerConfig {
     pub heartbeat_interval_sec: u64,
     pub supervised_workers_enabled: bool,
     pub worker_count: usize,
+    /// Maximum number of agent_step nodes that may run concurrently across all runs.
+    /// Zero means no agent_step scheduling is allowed.
+    pub agent_max_concurrent_global: usize,
+    /// Maximum number of agent_step nodes that may run concurrently within a single run.
+    pub agent_max_concurrent_per_run: usize,
 }
 
 impl Default for SchedulerConfig {
@@ -44,6 +49,8 @@ impl Default for SchedulerConfig {
             heartbeat_interval_sec: 10,
             supervised_workers_enabled: false,
             worker_count: 1,
+            agent_max_concurrent_global: 2,
+            agent_max_concurrent_per_run: 1,
         }
     }
 }
@@ -106,6 +113,14 @@ impl SchedulerConfig {
             .ok()
             .and_then(|v| v.parse().ok())
             .unwrap_or(1);
+        let agent_max_concurrent_global = std::env::var("ACP_AGENT_MAX_CONCURRENT_GLOBAL")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(2);
+        let agent_max_concurrent_per_run = std::env::var("ACP_AGENT_MAX_CONCURRENT_PER_RUN")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(1);
         Self {
             interval_ms,
             max_concurrent,
@@ -118,6 +133,8 @@ impl SchedulerConfig {
             heartbeat_interval_sec,
             supervised_workers_enabled,
             worker_count,
+            agent_max_concurrent_global,
+            agent_max_concurrent_per_run,
         }
     }
 
@@ -139,6 +156,12 @@ impl SchedulerConfig {
         }
         if self.worker_count > 32 {
             return Err("ACP_SUPERVISED_WORKER_COUNT must not exceed 32".to_string());
+        }
+        if self.agent_max_concurrent_per_run > self.agent_max_concurrent_global {
+            return Err(
+                "agent_max_concurrent_per_run must not exceed agent_max_concurrent_global"
+                    .to_string(),
+            );
         }
         Ok(())
     }
@@ -403,6 +426,8 @@ impl WorkflowScheduler {
                 "backpressure_enabled": self.config.backpressure_enabled,
                 "backpressure_activation": self.config.backpressure_activation,
                 "heartbeat_interval_sec": self.config.heartbeat_interval_sec,
+                "agent_max_concurrent_global": self.config.agent_max_concurrent_global,
+                "agent_max_concurrent_per_run": self.config.agent_max_concurrent_per_run,
             },
             "tick_count": self.tick_count.load(Ordering::SeqCst),
             "error_count": self.error_count.load(Ordering::SeqCst),
@@ -735,6 +760,8 @@ mod tests {
     use crate::storage::local_product_store::LocalProductStore;
     use serde_json::json;
     use std::sync::atomic::{AtomicUsize, Ordering as AtomicOrdering};
+    use std::sync::Barrier;
+    use std::thread;
 
     struct TrackingExecutor {
         calls: Arc<AtomicUsize>,
@@ -1861,6 +1888,8 @@ mod tests {
             heartbeat_interval_sec: 10,
             supervised_workers_enabled: false,
             worker_count: 1,
+            agent_max_concurrent_global: 2,
+            agent_max_concurrent_per_run: 1,
         };
         let executor = NoopNodeExecutor;
         let pool = test_pool();
@@ -1896,6 +1925,8 @@ mod tests {
             heartbeat_interval_sec: 10,
             supervised_workers_enabled: false,
             worker_count: 1,
+            agent_max_concurrent_global: 2,
+            agent_max_concurrent_per_run: 1,
         };
         let executor = NoopNodeExecutor;
         let pool = test_pool();
@@ -1926,6 +1957,8 @@ mod tests {
             heartbeat_interval_sec: 10,
             supervised_workers_enabled: false,
             worker_count: 1,
+            agent_max_concurrent_global: 2,
+            agent_max_concurrent_per_run: 1,
         };
         let executor = NoopNodeExecutor;
         let pool = test_pool();
@@ -1956,6 +1989,8 @@ mod tests {
             heartbeat_interval_sec: 10,
             supervised_workers_enabled: false,
             worker_count: 1,
+            agent_max_concurrent_global: 2,
+            agent_max_concurrent_per_run: 1,
         };
         let executor = NoopNodeExecutor;
         let pool = test_pool();
@@ -1982,6 +2017,8 @@ mod tests {
             heartbeat_interval_sec: 10,
             supervised_workers_enabled: false,
             worker_count: 1,
+            agent_max_concurrent_global: 2,
+            agent_max_concurrent_per_run: 1,
         };
         let executor = NoopNodeExecutor;
         let pool = test_pool();
@@ -2037,5 +2074,393 @@ mod tests {
         std::thread::sleep(Duration::from_millis(200));
         assert!(scheduler.is_running(), "thread should still be alive");
         scheduler.stop().unwrap();
+    }
+
+    // ── AR-4: Bounded concurrent multi-agent scheduling ──
+
+    fn create_agent_step_run(store: &LocalProductStore, num_agent_steps: usize) -> String {
+        let plan = store
+            .create_workflow_plan("test agent caps", "test", "actor", |ids, _| {
+                let nodes: Vec<Value> = (0..num_agent_steps)
+                    .map(|i| {
+                        json!({
+                            "node_id": format!("agent-node-{:03}", i),
+                            "task_type": "agent_step",
+                            "status": "pending",
+                        })
+                    })
+                    .collect();
+
+                Ok(json!({
+                    "schema_version": "read_only_plan.v1",
+                    "plan_id": ids.plan_id,
+                    "status": "planned_read_only",
+                    "workflow_id": ids.workflow_id,
+                    "dispatch_id": ids.dispatch_id,
+                    "analysis": {"analysis_id": "a-1", "task_domain": "test"},
+                    "graph": {
+                        "schema_version": "workflow_graph.v1",
+                        "workflow_id": ids.workflow_id,
+                        "dispatch_id": ids.dispatch_id,
+                        "status": "decomposed",
+                        "created_at": "2026-06-25T00:00:00Z",
+                        "updated_at": "2026-06-25T00:00:00Z",
+                        "nodes": nodes,
+                        "edges": [],
+                    },
+                    "boundaries": {
+                        "execution_authority": "managed",
+                        "target_repository_writes": "disabled",
+                        "runtime_workers": "disabled",
+                    },
+                }))
+            })
+            .unwrap();
+        let plan_id = plan["plan_id"].as_str().unwrap();
+        let run = store
+            .create_workflow_run_from_plan(plan_id, "actor")
+            .unwrap();
+        run["run_id"].as_str().unwrap().to_string()
+    }
+
+    fn create_analysis_node_run(store: &LocalProductStore) -> String {
+        let plan = store
+            .create_workflow_plan("test analysis", "test", "actor", |ids, _| {
+                Ok(json!({
+                    "schema_version": "read_only_plan.v1",
+                    "plan_id": ids.plan_id,
+                    "status": "planned_read_only",
+                    "workflow_id": ids.workflow_id,
+                    "dispatch_id": ids.dispatch_id,
+                    "analysis": {"analysis_id": "a-1", "task_domain": "test"},
+                    "graph": {
+                        "schema_version": "workflow_graph.v1",
+                        "workflow_id": ids.workflow_id,
+                        "dispatch_id": ids.dispatch_id,
+                        "status": "decomposed",
+                        "created_at": "2026-06-25T00:00:00Z",
+                        "updated_at": "2026-06-25T00:00:00Z",
+                        "nodes": [
+                            {"node_id": "analysis-001", "task_type": "analysis", "status": "pending"}
+                        ],
+                        "edges": [],
+                    },
+                    "boundaries": {
+                        "execution_authority": "managed",
+                        "target_repository_writes": "disabled",
+                        "runtime_workers": "disabled",
+                    },
+                }))
+            })
+            .unwrap();
+        let plan_id = plan["plan_id"].as_str().unwrap();
+        store
+            .create_workflow_run_from_plan(plan_id, "actor")
+            .unwrap()["run_id"]
+            .as_str()
+            .unwrap()
+            .to_string()
+    }
+
+    #[derive(Clone)]
+    struct BlockingExecutor {
+        barrier: Arc<Barrier>,
+    }
+
+    impl NodeExecutor for BlockingExecutor {
+        fn executor_type_name(&self) -> &str {
+            "blocking"
+        }
+        fn execute_node(&self, _input: &NodeExecutionInput) -> NodeExecutionOutput {
+            self.barrier.wait();
+            NodeExecutionOutput {
+                status: "completed".to_string(),
+                executor_type: "blocking".to_string(),
+                output: None,
+                error_domain: None,
+                error_message: None,
+                input_tokens: None,
+                output_tokens: None,
+                estimated_cost: None,
+                latency_ms: None,
+            }
+        }
+    }
+
+    #[test]
+    fn agent_concurrency_global_cap_enforced() {
+        let store = test_store();
+        let run_1 = create_agent_step_run(&store, 1);
+        let run_2 = create_agent_step_run(&store, 1);
+
+        let barrier = Arc::new(Barrier::new(2));
+        let exec = BlockingExecutor {
+            barrier: barrier.clone(),
+        };
+
+        let store_clone = store.clone();
+        let handle = thread::spawn(move || {
+            store_clone.tick_with_executor_with_agent_caps(&run_1, "test", 0, &exec, 1, 1)
+        });
+
+        thread::sleep(Duration::from_millis(100));
+
+        let result_2 = store
+            .tick_with_executor_with_agent_caps(&run_2, "test", 0, &NoopNodeExecutor, 1, 1)
+            .unwrap();
+        assert_eq!(
+            result_2["action"], "no_ready_node",
+            "second run should be blocked by global cap"
+        );
+
+        let events = store.audit_events(50).unwrap();
+        let conflicts: Vec<_> = events
+            .iter()
+            .filter(|e| {
+                e.get("action").and_then(|a| a.as_str()) == Some("agent_step.claim_conflict")
+            })
+            .collect();
+        assert!(!conflicts.is_empty(), "expected claim_conflict audit");
+        assert_eq!(
+            conflicts[0]
+                .pointer("/details/reason")
+                .and_then(|v| v.as_str()),
+            Some("global_cap_exceeded")
+        );
+
+        barrier.wait();
+        let result_1 = handle.join().unwrap().unwrap();
+        assert_eq!(
+            result_1["action"], "node_executed",
+            "first run should complete"
+        );
+
+        let result_2b = store
+            .tick_with_executor_with_agent_caps(&run_2, "test", 0, &NoopNodeExecutor, 1, 1)
+            .unwrap();
+        assert_eq!(
+            result_2b["action"], "node_executed",
+            "second run should execute after first releases"
+        );
+    }
+
+    #[test]
+    fn agent_concurrency_per_run_cap_enforced() {
+        let store = test_store();
+        let run_id = create_agent_step_run(&store, 2);
+
+        let barrier = Arc::new(Barrier::new(2));
+        let exec = BlockingExecutor {
+            barrier: barrier.clone(),
+        };
+
+        let store_clone = store.clone();
+        let run_clone = run_id.clone();
+        let handle = thread::spawn(move || {
+            store_clone.tick_with_executor_with_agent_caps(&run_clone, "test", 0, &exec, 3, 1)
+        });
+
+        thread::sleep(Duration::from_millis(100));
+
+        let result_2 = store
+            .tick_with_executor_with_agent_caps(&run_id, "test", 0, &NoopNodeExecutor, 3, 1)
+            .unwrap();
+        assert_eq!(
+            result_2["action"], "no_ready_node",
+            "second agent_step in same run should be blocked by per_run cap"
+        );
+
+        let events = store.audit_events(50).unwrap();
+        let conflicts: Vec<_> = events
+            .iter()
+            .filter(|e| {
+                e.get("action").and_then(|a| a.as_str()) == Some("agent_step.claim_conflict")
+            })
+            .collect();
+        assert!(!conflicts.is_empty(), "expected claim_conflict audit");
+        assert_eq!(
+            conflicts[0]
+                .pointer("/details/reason")
+                .and_then(|v| v.as_str()),
+            Some("per_run_cap_exceeded")
+        );
+
+        barrier.wait();
+        handle.join().unwrap().unwrap();
+
+        let result_2b = store
+            .tick_with_executor_with_agent_caps(&run_id, "test", 0, &NoopNodeExecutor, 3, 1)
+            .unwrap();
+        assert_eq!(
+            result_2b["action"], "node_executed",
+            "second node should execute after first releases"
+        );
+    }
+
+    #[test]
+    fn agent_concurrency_honored_within_limits() {
+        let store = test_store();
+        let run_id = create_agent_step_run(&store, 1);
+
+        let result = store
+            .tick_with_executor_with_agent_caps(&run_id, "test", 0, &NoopNodeExecutor, 2, 1)
+            .unwrap();
+        assert_eq!(
+            result["action"], "node_executed",
+            "single agent_step within caps should execute"
+        );
+    }
+
+    #[test]
+    fn agent_concurrency_analysis_node_ignores_caps() {
+        let store = test_store();
+        let run_id = create_analysis_node_run(&store);
+
+        let result = store
+            .tick_with_executor_with_agent_caps(&run_id, "test", 0, &NoopNodeExecutor, 0, 0)
+            .unwrap();
+        assert_eq!(
+            result["action"], "node_executed",
+            "analysis node should execute even with agent caps=0"
+        );
+    }
+
+    #[test]
+    fn agent_concurrency_audit_events_chain() {
+        let store = test_store();
+        let run_id = create_agent_step_run(&store, 1);
+
+        store
+            .tick_with_executor_with_agent_caps(&run_id, "test", 0, &NoopNodeExecutor, 2, 1)
+            .unwrap();
+
+        let events = store.audit_events(50).unwrap();
+        let actions: Vec<&str> = events
+            .iter()
+            .filter_map(|e| e.get("action").and_then(|a| a.as_str()))
+            .filter(|a| a.starts_with("agent_step."))
+            .collect();
+
+        assert!(
+            actions.contains(&"agent_step.claim_attempt"),
+            "expected claim_attempt, got {:?}",
+            actions
+        );
+        assert!(
+            actions.contains(&"agent_step.claim_success"),
+            "expected claim_success, got {:?}",
+            actions
+        );
+        assert!(
+            actions.contains(&"agent_step.execution_started"),
+            "expected execution_started, got {:?}",
+            actions
+        );
+        assert!(
+            actions.contains(&"agent_step.execution_completed"),
+            "expected execution_completed, got {:?}",
+            actions
+        );
+    }
+
+    #[test]
+    fn agent_concurrency_release_after_completion() {
+        let store = test_store();
+        let run_id = create_agent_step_run(&store, 2);
+
+        let result_1 = store
+            .tick_with_executor_with_agent_caps(&run_id, "test", 0, &NoopNodeExecutor, 2, 1)
+            .unwrap();
+        assert_eq!(result_1["action"], "node_executed");
+
+        let result_2 = store
+            .tick_with_executor_with_agent_caps(&run_id, "test", 0, &NoopNodeExecutor, 2, 1)
+            .unwrap();
+        assert_eq!(
+            result_2["action"], "node_executed",
+            "second agent_step should execute after first completes"
+        );
+    }
+
+    #[test]
+    fn agent_concurrency_config_defaults() {
+        let config = SchedulerConfig::default();
+        assert_eq!(config.agent_max_concurrent_global, 2);
+        assert_eq!(config.agent_max_concurrent_per_run, 1);
+    }
+
+    #[test]
+    fn agent_concurrency_config_rejects_invalid() {
+        let config = SchedulerConfig {
+            supervised_workers_enabled: true,
+            worker_count: 1,
+            max_concurrent: 4,
+            agent_max_concurrent_global: 2,
+            agent_max_concurrent_per_run: 3,
+            ..Default::default()
+        };
+        let err = config.validate_for_start().unwrap_err();
+        assert!(
+            err.contains("agent_max_concurrent_per_run must not exceed"),
+            "should reject per_run > global: {err}"
+        );
+    }
+
+    #[test]
+    fn agent_concurrency_global_zero_blocks_agent_step() {
+        let store = test_store();
+        let run_id = create_agent_step_run(&store, 1);
+
+        let result = store
+            .tick_with_executor_with_agent_caps(&run_id, "test", 0, &NoopNodeExecutor, 0, 0)
+            .unwrap();
+        assert_eq!(
+            result["action"], "no_ready_node",
+            "agent_step should be blocked when global=0"
+        );
+
+        let events = store.audit_events(50).unwrap();
+        let conflicts: Vec<_> = events
+            .iter()
+            .filter(|e| {
+                e.get("action").and_then(|a| a.as_str()) == Some("agent_step.claim_conflict")
+            })
+            .collect();
+        assert!(!conflicts.is_empty(), "expected claim_conflict audit");
+        assert_eq!(
+            conflicts[0]
+                .pointer("/details/reason")
+                .and_then(|v| v.as_str()),
+            Some("global_cap_exceeded")
+        );
+    }
+
+    #[test]
+    fn agent_concurrency_analysis_node_unaffected_by_zero_cap() {
+        let store = test_store();
+        let run_id = create_analysis_node_run(&store);
+
+        let result = store
+            .tick_with_executor_with_agent_caps(&run_id, "test", 0, &NoopNodeExecutor, 0, 0)
+            .unwrap();
+        assert_eq!(
+            result["action"], "node_executed",
+            "analysis node should execute even with agent caps=0"
+        );
+
+        let events = store.audit_events(50).unwrap();
+        let agent_events: Vec<_> = events
+            .iter()
+            .filter(|e| {
+                e.get("action")
+                    .and_then(|a| a.as_str())
+                    .map(|a| a.starts_with("agent_step."))
+                    .unwrap_or(false)
+            })
+            .collect();
+        assert!(
+            agent_events.is_empty(),
+            "analysis node should not produce agent_step audit events"
+        );
     }
 }

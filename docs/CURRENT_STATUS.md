@@ -1,6 +1,6 @@
 # Current Status
 
-Last updated: 2026-06-26. V2-0 through V2-5, the Real Output Closeout, Adaptive Fusion AF-0 through AF-7, Trusted Local Autonomous Execution IAE-0 through IAE-3, AR-2 (agent step executor), and AR-3 (bounded planning, child task proposals, handoff) are complete; `v0.1.0` is published and its online installer path is verified.
+Last updated: 2026-06-26. AR-4 (bounded concurrent multi-agent scheduling) complete. V2-0 through V2-5, Real Output Closeout, Adaptive Fusion AF-0 through AF-7, Trusted Local Autonomous Execution IAE-0 through IAE-3, AR-2 (agent step executor), AR-3 (bounded planning, child task proposals, handoff), and AR-4 (bounded concurrent multi-agent scheduling) are complete; `v0.1.0` is published and its online installer path is verified.
 
 ## Summary
 

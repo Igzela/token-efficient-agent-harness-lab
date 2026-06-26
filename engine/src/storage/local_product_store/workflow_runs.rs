@@ -685,7 +685,27 @@ impl LocalProductStore {
         max_retries: i64,
         executor: &dyn crate::node_executor::NodeExecutor,
     ) -> Result<Value, String> {
-        self.tick_with_executor_and_command(run_id, actor, max_retries, executor, None)
+        self.tick_with_executor_and_command_inner(run_id, actor, max_retries, executor, None, None)
+    }
+
+    /// Like tick_with_executor, but enforces agent concurrency caps inside the lease lock.
+    pub fn tick_with_executor_with_agent_caps(
+        &self,
+        run_id: &str,
+        actor: &str,
+        max_retries: i64,
+        executor: &dyn crate::node_executor::NodeExecutor,
+        agent_global_cap: usize,
+        agent_per_run_cap: usize,
+    ) -> Result<Value, String> {
+        self.tick_with_executor_and_command_inner(
+            run_id,
+            actor,
+            max_retries,
+            executor,
+            None,
+            Some((agent_global_cap, agent_per_run_cap)),
+        )
     }
 
     pub fn tick_with_executor_and_command(
@@ -695,6 +715,29 @@ impl LocalProductStore {
         max_retries: i64,
         executor: &dyn crate::node_executor::NodeExecutor,
         command_override: Option<&str>,
+    ) -> Result<Value, String> {
+        self.tick_with_executor_and_command_inner(
+            run_id,
+            actor,
+            max_retries,
+            executor,
+            command_override,
+            None,
+        )
+    }
+
+    /// Internal version with optional agent concurrency caps.
+    /// When caps are Some((global_cap, per_run_cap)), agent_step nodes will not be
+    /// leased if the number of running agent_step nodes meets or exceeds either cap.
+    /// The check is race-condition-free (inside the SQLite/transaction lock).
+    pub fn tick_with_executor_and_command_inner(
+        &self,
+        run_id: &str,
+        actor: &str,
+        max_retries: i64,
+        executor: &dyn crate::node_executor::NodeExecutor,
+        command_override: Option<&str>,
+        agent_concurrency_caps: Option<(usize, usize)>,
     ) -> Result<Value, String> {
         // Phase 1: Lease a ready node (inside lock)
         let leased = match &self.db {
@@ -757,6 +800,75 @@ impl LocalProductStore {
                     return Ok(LeaseResult::NoReadyNode { run });
                 };
 
+                // Check agent concurrency caps before leasing
+                let mut was_agent_step_with_caps = false;
+                if let Some((global_cap, per_run_cap)) = agent_concurrency_caps {
+                    let node_task_type: String = conn
+                        .query_row(
+                            "SELECT task_type FROM workflow_run_nodes WHERE run_id = ?1 AND node_id = ?2",
+                            params![run_id, node_id],
+                            |row| row.get(0),
+                        )
+                        .unwrap_or_default();
+                    if node_task_type == "agent_step" {
+                        was_agent_step_with_caps = true;
+                        let global_running = count_running_agent_steps_locked(conn)?;
+                        let per_run_running = count_running_agent_steps_for_run_locked(conn, run_id)?;
+                        if global_running >= global_cap as i64 {
+                            append_audit_locked(
+                                conn,
+                                &now,
+                                "scheduler",
+                                "agent_step.claim_conflict",
+                                &node_id,
+                                &json!({
+                                    "run_id": run_id,
+                                    "node_id": node_id,
+                                    "reason": "global_cap_exceeded",
+                                    "running": global_running,
+                                    "cap": global_cap,
+                                    "per_run_running": per_run_running,
+                                }),
+                            )?;
+                            let run = get_run_row(conn, run_id)?;
+                            return Ok(LeaseResult::NoReadyNode { run });
+                        }
+                        if per_run_running >= per_run_cap as i64 {
+                            append_audit_locked(
+                                conn,
+                                &now,
+                                "scheduler",
+                                "agent_step.claim_conflict",
+                                &node_id,
+                                &json!({
+                                    "run_id": run_id,
+                                    "node_id": node_id,
+                                    "reason": "per_run_cap_exceeded",
+                                    "running": per_run_running,
+                                    "cap": per_run_cap,
+                                    "global_running": global_running,
+                                }),
+                            )?;
+                            let run = get_run_row(conn, run_id)?;
+                            return Ok(LeaseResult::NoReadyNode { run });
+                        }
+                        // Claim attempt audit
+                        append_audit_locked(
+                            conn,
+                            &now,
+                            "scheduler",
+                            "agent_step.claim_attempt",
+                            &node_id,
+                            &json!({
+                                "run_id": run_id,
+                                "node_id": node_id,
+                                "global_running": global_running,
+                                "per_run_running": per_run_running,
+                            }),
+                        )?;
+                    }
+                }
+
                 let now = self.now();
                 let updated = conn.execute(
                     "UPDATE workflow_run_nodes SET status = 'running', started_at = ?1, leased_at = ?1, attempt_count = attempt_count + 1
@@ -764,6 +876,21 @@ impl LocalProductStore {
                     params![now, run_id, node_id],
                 ).map_err(|e| e.to_string())?;
                 if updated == 0 {
+                    if was_agent_step_with_caps {
+                        append_audit_locked(
+                            conn,
+                            &now,
+                            "scheduler",
+                            "agent_step.claim_conflict",
+                            &node_id,
+                            &json!({
+                                "run_id": run_id,
+                                "node_id": node_id,
+                                "reason": "lease_lost",
+                                "metadata_only": true,
+                            }),
+                        )?;
+                    }
                     return Ok(LeaseResult::NoReadyNode {
                         run: get_run_row(conn, run_id)?,
                     });
@@ -813,6 +940,21 @@ impl LocalProductStore {
                     &json!({"node_id": node_id, "status": "running", "attempt": attempt}),
                     &now,
                 )?;
+
+                if task_type == "agent_step" {
+                    append_audit_locked(
+                        conn,
+                        &now,
+                        "scheduler",
+                        "agent_step.claim_success",
+                        &node_id,
+                        &json!({
+                            "run_id": run_id,
+                            "node_id": node_id,
+                            "attempt": attempt,
+                        }),
+                    )?;
+                }
 
                 Ok(LeaseResult::Leased {
                     node_id,
@@ -886,6 +1028,72 @@ impl LocalProductStore {
                     return Ok(LeaseResult::NoReadyNode { run });
                 };
 
+                // Check agent concurrency caps before leasing (PG branch)
+                let mut was_agent_step_with_caps = false;
+                if let Some((global_cap, per_run_cap)) = agent_concurrency_caps {
+                    let node_task_type: String = tx
+                        .query_one(
+                            "SELECT task_type FROM workflow_run_nodes WHERE run_id = $1 AND node_id = $2",
+                            &[&run_id, &node_id],
+                        )
+                        .map(|r| r.get(0))
+                        .unwrap_or_default();
+                    if node_task_type == "agent_step" {
+                        was_agent_step_with_caps = true;
+                        let global_running = pg_count_running_agent_steps(&mut tx)?;
+                        let per_run_running = pg_count_running_agent_steps_for_run(&mut tx, run_id)?;
+                        if global_running >= global_cap as i64 {
+                            pg_append_audit(
+                                &mut tx,
+                                &now,
+                                "scheduler",
+                                "agent_step.claim_conflict",
+                                &node_id,
+                                &json!({
+                                    "run_id": run_id,
+                                    "node_id": node_id,
+                                    "reason": "global_cap_exceeded",
+                                    "running": global_running,
+                                    "cap": global_cap,
+                                }),
+                            )?;
+                            let run = pg_get_run_row(&mut tx, run_id)?;
+                            tx.commit().map_err(|e| e.to_string())?;
+                            return Ok(LeaseResult::NoReadyNode { run });
+                        }
+                        if per_run_running >= per_run_cap as i64 {
+                            pg_append_audit(
+                                &mut tx,
+                                &now,
+                                "scheduler",
+                                "agent_step.claim_conflict",
+                                &node_id,
+                                &json!({
+                                    "run_id": run_id,
+                                    "node_id": node_id,
+                                    "reason": "per_run_cap_exceeded",
+                                    "running": per_run_running,
+                                    "cap": per_run_cap,
+                                }),
+                            )?;
+                            let run = pg_get_run_row(&mut tx, run_id)?;
+                            tx.commit().map_err(|e| e.to_string())?;
+                            return Ok(LeaseResult::NoReadyNode { run });
+                        }
+                        pg_append_audit(
+                            &mut tx,
+                            &now,
+                            "scheduler",
+                            "agent_step.claim_attempt",
+                            &node_id,
+                            &json!({
+                                "run_id": run_id,
+                                "node_id": node_id,
+                            }),
+                        )?;
+                    }
+                }
+
                 let now = self.now();
                 let updated = tx.execute(
                     "UPDATE workflow_run_nodes SET status = 'running', started_at = $1, leased_at = $1, attempt_count = attempt_count + 1
@@ -893,6 +1101,21 @@ impl LocalProductStore {
                     &[&now, &run_id, &node_id],
                 ).map_err(|e| e.to_string())?;
                 if updated == 0 {
+                    if was_agent_step_with_caps {
+                        pg_append_audit(
+                            &mut tx,
+                            &now,
+                            "scheduler",
+                            "agent_step.claim_conflict",
+                            &node_id,
+                            &json!({
+                                "run_id": run_id,
+                                "node_id": node_id,
+                                "reason": "lease_lost",
+                                "metadata_only": true,
+                            }),
+                        )?;
+                    }
                     let run = pg_get_run_row(&mut tx, run_id)?;
                     tx.commit().map_err(|e| e.to_string())?;
                     return Ok(LeaseResult::NoReadyNode { run });
@@ -942,6 +1165,21 @@ impl LocalProductStore {
                     &json!({"node_id": node_id, "status": "running", "attempt": attempt}),
                     &now,
                 )?;
+
+                if task_type == "agent_step" {
+                    pg_append_audit(
+                        &mut tx,
+                        &now,
+                        "scheduler",
+                        "agent_step.claim_success",
+                        &node_id,
+                        &json!({
+                            "run_id": run_id,
+                            "node_id": node_id,
+                            "attempt": attempt,
+                        }),
+                    )?;
+                }
 
                 tx.commit().map_err(|e| e.to_string())?;
                 Ok(LeaseResult::Leased {
@@ -1014,11 +1252,23 @@ impl LocalProductStore {
                 }
                 let input = crate::node_executor::NodeExecutionInput {
                     node_id: node_id.clone(),
-                    task_type,
+                    task_type: task_type.clone(),
                     run_id: run_id.to_string(),
-                    workflow_id,
+                    workflow_id: workflow_id.clone(),
                     node_metadata,
                 };
+                if task_type == "agent_step" {
+                    let _ = self.append_audit(
+                        "scheduler",
+                        "agent_step.execution_started",
+                        &node_id,
+                        &json!({
+                            "run_id": run_id,
+                            "node_id": node_id,
+                            "attempt": attempt,
+                        }),
+                    );
+                }
                 let output = executor.execute_node(&input);
 
                 // Phase 3: Record result (inside lock)
@@ -1087,6 +1337,21 @@ impl LocalProductStore {
                                     "latency_ms": output.latency_ms,
                                 }),
                             )?;
+                            if task_type == "agent_step" {
+                                append_audit_locked(
+                                    conn,
+                                    &now,
+                                    "scheduler",
+                                    "agent_step.execution_released",
+                                    &node_id,
+                                    &json!({
+                                        "run_id": run_id,
+                                        "node_id": node_id,
+                                        "status": "retry",
+                                        "attempt": attempt,
+                                    }),
+                                )?;
+                            }
                         } else {
                             let event_type = if final_status == "completed" { "node.completed" } else { "node.failed" };
                             insert_workflow_run_event_locked(
@@ -1113,6 +1378,26 @@ impl LocalProductStore {
                                     "error_domain": output.error_domain,
                                 }),
                             )?;
+                            if task_type == "agent_step" {
+                                let agent_event = if final_status == "completed" {
+                                    "agent_step.execution_completed"
+                                } else {
+                                    "agent_step.execution_failed"
+                                };
+                                append_audit_locked(
+                                    conn,
+                                    &now,
+                                    "scheduler",
+                                    agent_event,
+                                    &node_id,
+                                    &json!({
+                                        "run_id": run_id,
+                                        "node_id": node_id,
+                                        "status": final_status,
+                                        "attempt": attempt,
+                                    }),
+                                )?;
+                            }
                         }
 
                         let (all_done, has_failure) = check_run_completion_locked(conn, run_id)?;
@@ -1216,6 +1501,21 @@ impl LocalProductStore {
                                     "latency_ms": output.latency_ms,
                                 }),
                             )?;
+                            if task_type == "agent_step" {
+                                pg_append_audit(
+                                    &mut tx,
+                                    &now,
+                                    "scheduler",
+                                    "agent_step.execution_released",
+                                    &node_id,
+                                    &json!({
+                                        "run_id": run_id,
+                                        "node_id": node_id,
+                                        "status": "retry",
+                                        "attempt": attempt,
+                                    }),
+                                )?;
+                            }
                         } else {
                             let event_type = if final_status == "completed" { "node.completed" } else { "node.failed" };
                             pg_insert_workflow_run_event(
@@ -1242,6 +1542,26 @@ impl LocalProductStore {
                                     "error_domain": output.error_domain,
                                 }),
                             )?;
+                            if task_type == "agent_step" {
+                                let agent_event = if final_status == "completed" {
+                                    "agent_step.execution_completed"
+                                } else {
+                                    "agent_step.execution_failed"
+                                };
+                                pg_append_audit(
+                                    &mut tx,
+                                    &now,
+                                    "scheduler",
+                                    agent_event,
+                                    &node_id,
+                                    &json!({
+                                        "run_id": run_id,
+                                        "node_id": node_id,
+                                        "status": final_status,
+                                        "attempt": attempt,
+                                    }),
+                                )?;
+                            }
                         }
 
                         let (all_done, has_failure) = pg_check_run_completion(&mut tx, run_id)?;
@@ -2315,6 +2635,29 @@ impl LocalProductStore {
                                 lease_timeout_ms,
                             ),
                         )?;
+                        // Emit agent_step-specific lease_expired audit
+                        let task_type: Option<String> = conn
+                            .query_row(
+                                "SELECT task_type FROM workflow_run_nodes WHERE run_id = ?1 AND node_id = ?2",
+                                params![run_id, node_id],
+                                |row| row.get(0),
+                            )
+                            .ok();
+                        if task_type.as_deref() == Some("agent_step") {
+                            append_audit_locked(
+                                conn,
+                                &now,
+                                "scheduler",
+                                "agent_step.lease_expired",
+                                node_id,
+                                &json!({
+                                    "run_id": run_id,
+                                    "node_id": node_id,
+                                    "leased_at": leased_at,
+                                    "lease_timeout_ms": lease_timeout_ms,
+                                }),
+                            )?;
+                        }
                     }
                 }
                 Ok(count)
@@ -2350,10 +2693,57 @@ impl LocalProductStore {
                                 lease_timeout_ms,
                             ),
                         )?;
+                        // Emit agent_step-specific lease_expired audit
+                        let task_type_rows = client
+                            .query(
+                                "SELECT task_type FROM workflow_run_nodes WHERE run_id = $1 AND node_id = $2",
+                                &[run_id, node_id],
+                            )
+                            .map_err(|e| e.to_string())?;
+                        if let Some(task_type_row) = task_type_rows.into_iter().next() {
+                            let task_type: String = task_type_row.get(0);
+                            if task_type == "agent_step" {
+                                pg_append_audit(
+                                    client,
+                                    &now,
+                                    "scheduler",
+                                    "agent_step.lease_expired",
+                                    node_id,
+                                    &json!({
+                                        "run_id": run_id,
+                                        "node_id": node_id,
+                                        "leased_at": leased_at,
+                                        "lease_timeout_ms": lease_timeout_ms,
+                                    }),
+                                )?;
+                            }
+                        }
                     }
                 }
                 Ok(count)
             }),
+        }
+    }
+
+    pub fn count_running_agent_steps_global(&self) -> Result<i64, String> {
+        match &self.db {
+            DatabaseConnection::Sqlite(_) => self.with_conn(count_running_agent_steps_locked),
+            #[cfg(feature = "pg")]
+            DatabaseConnection::Pg(_) => {
+                self.with_pg_conn(|client| pg_count_running_agent_steps(client))
+            }
+        }
+    }
+
+    pub fn count_running_agent_steps_for_run(&self, run_id: &str) -> Result<i64, String> {
+        match &self.db {
+            DatabaseConnection::Sqlite(_) => {
+                self.with_conn(|conn| count_running_agent_steps_for_run_locked(conn, run_id))
+            }
+            #[cfg(feature = "pg")]
+            DatabaseConnection::Pg(_) => {
+                self.with_pg_conn(|client| pg_count_running_agent_steps_for_run(client, run_id))
+            }
         }
     }
 
@@ -2887,6 +3277,54 @@ fn escape_like(value: &str) -> String {
         escaped.push(ch);
     }
     escaped
+}
+
+/// Count agent_step nodes currently running across all runs (inside SQLite lock).
+fn count_running_agent_steps_locked(conn: &rusqlite::Connection) -> Result<i64, String> {
+    conn.query_row(
+        "SELECT COUNT(*) FROM workflow_run_nodes WHERE task_type = 'agent_step' AND status = 'running'",
+        [],
+        |row| row.get(0),
+    )
+    .map_err(|e| e.to_string())
+}
+
+/// Count agent_step nodes running for a specific run (inside SQLite lock).
+fn count_running_agent_steps_for_run_locked(
+    conn: &rusqlite::Connection,
+    run_id: &str,
+) -> Result<i64, String> {
+    conn.query_row(
+        "SELECT COUNT(*) FROM workflow_run_nodes WHERE run_id = ?1 AND task_type = 'agent_step' AND status = 'running'",
+        params![run_id],
+        |row| row.get(0),
+    )
+    .map_err(|e| e.to_string())
+}
+
+#[cfg(feature = "pg")]
+fn pg_count_running_agent_steps(client: &mut impl postgres::GenericClient) -> Result<i64, String> {
+    client
+        .query_one(
+            "SELECT COUNT(*) FROM workflow_run_nodes WHERE task_type = 'agent_step' AND status = 'running'",
+            &[],
+        )
+        .map_err(|e| e.to_string())
+        .map(|row| row.get(0))
+}
+
+#[cfg(feature = "pg")]
+fn pg_count_running_agent_steps_for_run(
+    client: &mut impl postgres::GenericClient,
+    run_id: &str,
+) -> Result<i64, String> {
+    client
+        .query_one(
+            "SELECT COUNT(*) FROM workflow_run_nodes WHERE run_id = $1 AND task_type = 'agent_step' AND status = 'running'",
+            &[&run_id],
+        )
+        .map_err(|e| e.to_string())
+        .map(|row| row.get(0))
 }
 
 fn find_ready_node_locked(
