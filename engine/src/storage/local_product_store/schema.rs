@@ -6,8 +6,8 @@ pub(super) enum Dialect {
     Postgres,
 }
 
-pub(super) const CURRENT_SQLITE_SCHEMA_VERSION: i64 = 13;
-pub(super) const CURRENT_POSTGRES_SCHEMA_VERSION: i64 = 13;
+pub(super) const CURRENT_SQLITE_SCHEMA_VERSION: i64 = 14;
+pub(super) const CURRENT_POSTGRES_SCHEMA_VERSION: i64 = 14;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) struct SchemaMigration {
@@ -67,6 +67,10 @@ pub(super) const SQLITE_MIGRATIONS: &[SchemaMigration] = &[
     SchemaMigration {
         version: 13,
         description: "add controlled loop policy snapshot table",
+    },
+    SchemaMigration {
+        version: 14,
+        description: "add agent_state and agent_mailbox tables",
     },
 ];
 
@@ -410,6 +414,45 @@ CREATE INDEX IF NOT EXISTS idx_policy_snapshots_policy_key ON controlled_loop_po
 CREATE UNIQUE INDEX IF NOT EXISTS idx_policy_snapshots_active_policy_key
     ON controlled_loop_policy_snapshots(policy_key)
     WHERE status = 'active';
+
+CREATE TABLE IF NOT EXISTS agent_state (
+    agent_id TEXT NOT NULL,
+    run_id TEXT NOT NULL,
+    role TEXT NOT NULL,
+    capability_profile_json TEXT NOT NULL DEFAULT '[]',
+    objective TEXT,
+    status TEXT NOT NULL DEFAULT 'idle',
+    scratchpad_summary TEXT,
+    redaction_filter TEXT,
+    metadata_json TEXT NOT NULL DEFAULT '{}',
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    PRIMARY KEY (agent_id, run_id)
+);
+
+CREATE TABLE IF NOT EXISTS agent_mailbox (
+    message_sequence INTEGER PRIMARY KEY AUTOINCREMENT,
+    message_id TEXT NOT NULL UNIQUE,
+    correlation_id TEXT,
+    from_agent_id TEXT NOT NULL,
+    to_agent_id TEXT NOT NULL,
+    run_id TEXT,
+    node_id TEXT,
+    message_type TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'pending',
+    body TEXT,
+    body_summary TEXT,
+    redaction_status TEXT NOT NULL DEFAULT 'none',
+    created_at TEXT NOT NULL,
+    read_at TEXT,
+    ack_at TEXT,
+    reply_to_message_id TEXT,
+    metadata_json TEXT NOT NULL DEFAULT '{}'
+);
+CREATE INDEX IF NOT EXISTS idx_agent_mailbox_to ON agent_mailbox(to_agent_id);
+CREATE INDEX IF NOT EXISTS idx_agent_mailbox_run ON agent_mailbox(run_id);
+CREATE INDEX IF NOT EXISTS idx_agent_mailbox_status ON agent_mailbox(status);
+CREATE INDEX IF NOT EXISTS idx_agent_mailbox_correlation ON agent_mailbox(correlation_id);
 ";
 
 pub(crate) const POSTGRES_DDL: &str = "
@@ -778,6 +821,45 @@ CREATE INDEX IF NOT EXISTS idx_policy_snapshots_policy_key ON controlled_loop_po
 CREATE UNIQUE INDEX IF NOT EXISTS idx_policy_snapshots_active_policy_key
     ON controlled_loop_policy_snapshots(policy_key)
     WHERE status = 'active';
+
+CREATE TABLE IF NOT EXISTS agent_state (
+    agent_id TEXT NOT NULL,
+    run_id TEXT NOT NULL,
+    role TEXT NOT NULL,
+    capability_profile_json TEXT NOT NULL DEFAULT '[]',
+    objective TEXT,
+    status TEXT NOT NULL DEFAULT 'idle',
+    scratchpad_summary TEXT,
+    redaction_filter TEXT,
+    metadata_json TEXT NOT NULL DEFAULT '{}',
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    PRIMARY KEY (agent_id, run_id)
+);
+
+CREATE TABLE IF NOT EXISTS agent_mailbox (
+    message_sequence BIGSERIAL PRIMARY KEY,
+    message_id TEXT NOT NULL UNIQUE,
+    correlation_id TEXT,
+    from_agent_id TEXT NOT NULL,
+    to_agent_id TEXT NOT NULL,
+    run_id TEXT,
+    node_id TEXT,
+    message_type TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'pending',
+    body TEXT,
+    body_summary TEXT,
+    redaction_status TEXT NOT NULL DEFAULT 'none',
+    created_at TEXT NOT NULL,
+    read_at TEXT,
+    ack_at TEXT,
+    reply_to_message_id TEXT,
+    metadata_json TEXT NOT NULL DEFAULT '{}'
+);
+CREATE INDEX IF NOT EXISTS idx_agent_mailbox_to ON agent_mailbox(to_agent_id);
+CREATE INDEX IF NOT EXISTS idx_agent_mailbox_run ON agent_mailbox(run_id);
+CREATE INDEX IF NOT EXISTS idx_agent_mailbox_status ON agent_mailbox(status);
+CREATE INDEX IF NOT EXISTS idx_agent_mailbox_correlation ON agent_mailbox(correlation_id);
 ";
 
 #[cfg(test)]
@@ -807,6 +889,12 @@ mod tests {
             "idx_policy_snapshots_adjustment",
             "idx_policy_snapshots_policy_key",
             "idx_policy_snapshots_active_policy_key",
+            "agent_state",
+            "agent_mailbox",
+            "idx_agent_mailbox_to",
+            "idx_agent_mailbox_run",
+            "idx_agent_mailbox_status",
+            "idx_agent_mailbox_correlation",
         ] {
             assert!(
                 SQLITE_DDL.contains(expected),

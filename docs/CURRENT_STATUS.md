@@ -124,7 +124,7 @@ Historical phase plans, closeouts, and long-form validation reports are retained
 ## Current Gaps
 
 - Engine/API/SDK/dashboard output is end to end for a supplied git repo: natural-language CLI execution, controlled worktree, real verification with bounded repair, artifact evidence, approval, patch/branch output, and optional GitHub PR creation.
-- True multi-agent runtime semantics are not implemented yet: agent identity/state, mailbox delivery, agent step loops, self-planning, handoff/delegation, cross-agent review/debate, and concurrent multi-agent scheduling are planned in the Agent Runtime track in `docs/NEXT_DECISION.md`.
+- True multi-agent runtime semantics (autonomous step loops, self-planning, handoff/delegation, cross-agent review/debate, concurrent multi-agent scheduling) are not implemented yet. AR-1 (agent identity, state, mailbox storage) is implemented as a foundation — see `docs/ARCHITECTURE_BOOK.md` § AR Phase Status.
 - Product fit is stronger for local operations/research than for public-facing production UX.
 - The UI is task-first, while detailed operations and administration remain available as secondary views.
 - Security posture is suitable for local/small-team self-hosting only; hosted/multi-tenant use would require a new threat model and approved implementation plan.

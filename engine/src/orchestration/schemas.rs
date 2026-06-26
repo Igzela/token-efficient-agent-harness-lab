@@ -7,8 +7,13 @@ pub const WORKFLOW_SCHEMA_VERSION: &str = "workflow_graph.v1";
 pub const WORKFLOW_NODE_SCHEMA_VERSION: &str = "workflow_node.v1";
 pub const WORKFLOW_EDGE_SCHEMA_VERSION: &str = "workflow_edge.v1";
 pub const AGENT_MESSAGE_SCHEMA_VERSION: &str = "agent_message.v1";
+pub const AGENT_STATE_SCHEMA_VERSION: &str = "agent_state.v1";
 pub const CONFLICT_RECORD_SCHEMA_VERSION: &str = "conflict_record.v1";
 pub const AGENT_ROLE_SCHEMA_VERSION: &str = "agent_role.v1";
+
+pub const MAILBOX_STATUSES: &[&str] = &["pending", "read", "acked", "replied", "cancelled"];
+
+pub const AGENT_STATUSES: &[&str] = &["idle", "busy", "blocked", "completed", "failed"];
 
 // Constants
 pub const WORKFLOW_STATUSES: &[&str] = &[
@@ -128,6 +133,78 @@ impl AgentMessage {
     pub fn to_dict(&self) -> Value {
         serde_json::to_value(self).unwrap_or(Value::Null)
     }
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct AgentState {
+    pub schema_version: String,
+    pub agent_id: String,
+    pub run_id: String,
+    pub role: String,
+    pub capability_profile: Vec<String>,
+    pub objective: Option<String>,
+    pub status: String,
+    pub scratchpad_summary: Option<String>,
+    pub redaction_filter: Option<String>,
+    pub metadata: HashMap<String, Value>,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+impl AgentState {
+    pub fn to_dict(&self) -> Value {
+        serde_json::to_value(self).unwrap_or(Value::Null)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct MailboxMessage {
+    pub schema_version: String,
+    pub message_id: String,
+    pub correlation_id: Option<String>,
+    pub from_agent_id: String,
+    pub to_agent_id: String,
+    pub run_id: Option<String>,
+    pub node_id: Option<String>,
+    pub message_type: String,
+    pub status: String,
+    pub body: Option<String>,
+    pub body_summary: Option<String>,
+    pub redaction_status: String,
+    pub created_at: String,
+    pub read_at: Option<String>,
+    pub ack_at: Option<String>,
+    pub reply_to_message_id: Option<String>,
+    pub metadata: HashMap<String, Value>,
+}
+
+impl MailboxMessage {
+    pub fn to_dict(&self) -> Value {
+        serde_json::to_value(self).unwrap_or(Value::Null)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SendMessageRequest {
+    pub from_agent_id: String,
+    pub to_agent_id: String,
+    pub run_id: Option<String>,
+    pub node_id: Option<String>,
+    pub message_type: String,
+    pub body: Option<String>,
+    pub correlation_id: Option<String>,
+    pub reply_to_message_id: Option<String>,
+    pub metadata: Option<HashMap<String, Value>>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ListMailboxQuery {
+    pub agent_id: Option<String>,
+    pub run_id: Option<String>,
+    pub node_id: Option<String>,
+    pub status: Option<String>,
+    pub limit: Option<i64>,
+    pub offset: Option<i64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
