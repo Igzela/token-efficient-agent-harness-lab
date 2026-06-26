@@ -517,7 +517,7 @@ impl LocalProductStore {
                         &json!({"message_id": message_id}),
                     )?;
                 }
-                Ok(n)
+                Ok(n as usize)
             })?,
         };
         if affected == 0 {
@@ -569,7 +569,7 @@ impl LocalProductStore {
                         &json!({"message_id": message_id}),
                     )?;
                 }
-                Ok(n)
+                Ok(n as usize)
             })?,
         };
         if affected == 0 {
