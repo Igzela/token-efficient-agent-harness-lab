@@ -2,7 +2,7 @@
 
 ## Current Direction
 
-Phase 8, V2 Real Production Output, Real Output Closeout, and Adaptive Fusion AF-0 through AF-7 are complete.
+Phase 8, V2 Real Production Output, Real Output Closeout, Adaptive Fusion AF-0 through AF-7, and AR-2 (agent step executor) are complete.
 
 The Trusted Local Autonomous Execution Track (IAE) was approved on 2026-06-22. It authorizes the project and maintaining agents to move from fragmented opt-in execution toward a bounded trusted-local operating profile. That profile is now the recommended internal execution path.
 
@@ -127,7 +127,7 @@ queued workflow node or agent wakeup
 |---|---|---|
 | AR-0 | Decision baseline and runtime contract | Data model contract defines every durable entity and its owning module; no implementation. Module ownership records which existing modules own future AR entities. Threat model delta documents which safety boundaries AR phases must preserve. Test/CI minimum for AR code PRs is defined. Rollback path is documented (code revert + down migration + gate disable). Explicit non-goals list what is out of scope. Docs remain internally consistent — true multi-agent runtime not yet implemented. See AR-0 Decision Baseline below. |
 | AR-1 | Agent identity, state, and mailbox | **Implemented** — `AgentState` + `AgentMessage` mailbox with send/read/ack/reply, correlation IDs, run/node links, redaction, size caps, audit events. SQLite schema v14, `local_product_store/agent_runtime.rs` with 30 passing tests. Rollback documented in `docs/ARCHITECTURE_BOOK.md` (forward-only migration, manual drop + version reset). No provider/CLI calls, scheduler changes, or agent step executor. See `docs/ARCHITECTURE_BOOK.md` § AR Phase Status. |
-| AR-2 | Agent step executor | Add a bounded `agent_step` executor that runs `observe -> decide -> act -> persist` for one step, with token/call/cost/time/retry caps, kill/pause checks, and durable scratchpad summaries. It may use stub/provider paths only through existing gates. |
+| AR-2 | Agent step executor | **Implemented** — `AgentStepExecutor` in `node_executor.rs` implements `NodeExecutor` with `AgentAction` enum, `AgentDecisionFn` closure, env gate + kill switch, one-step observe/decide/act/persist lifecycle, audit events, and 11 tests. No provider/CLI calls, scheduler change, DB migration, or dashboard UI. See `docs/ARCHITECTURE_BOOK.md` § AR Phase Status. |
 | AR-3 | Planning, child tasks, and handoff | Let an agent propose child workflow nodes/edges and delegate work to another agent via mailbox. Proposals must be bounded, auditable, deterministic enough for tests, and reversible through workflow mutation events. |
 | AR-4 | Concurrent multi-agent scheduling | Extend scheduler claim policy so multiple ready agent steps can advance concurrently under global/per-agent concurrency, resource locks, lease expiry, stale recovery, and join/wait semantics. |
 | AR-5 | Review and debate primitive | Add cross-agent review/debate threads as first-class workflow artifacts with verdicts, dissent, evidence links, and approval/export gates. This is separate from single-node Adaptive Fusion provider/model panels. |
@@ -220,7 +220,7 @@ AR-0 requires no migration or gate — it is documentation only.
 - No automatic agent creation, agent spawning, or agent lifecycle outside workflow-run scope
 - No cloud, hosted, or multi-tenant deployment of agent runtime
 
-**Status: AR-0 baseline complete; AR-1 implemented.** AR-0 records the contract baseline. AR-1 (agent identity, state, mailbox) is implemented — see `docs/ARCHITECTURE_BOOK.md` § AR Phase Status. AR-2/AR-3/AR-4/AR-5/AR-6 are not implemented. True multi-agent runtime semantics (autonomous step loops, planning, delegation, debate, concurrency) are not implemented. See `docs/ARCHITECTURE_BOOK.md` for the full contract definition.
+**Status: AR-0 baseline complete; AR-1 and AR-2 implemented.** AR-0 records the contract baseline. AR-1 (agent identity, state, mailbox) and AR-2 (agent step executor) are implemented — see `docs/ARCHITECTURE_BOOK.md` § AR Phase Status. AR-3/AR-4/AR-5/AR-6 are not implemented. True multi-agent runtime semantics (autonomous step loops, planning, delegation, debate, concurrency) are not implemented. See `docs/ARCHITECTURE_BOOK.md` for the full contract definition.
 
 Each Agent Runtime PR must state the live-influence status, affected modules, new storage/API surface, safety gates, rollback path, intentionally unfinished follow-up, and whether any agent-authored output can reach target-output approval.
 

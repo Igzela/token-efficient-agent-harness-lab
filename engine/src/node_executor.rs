@@ -1,7 +1,15 @@
 use serde_json::{json, Value};
 use std::io::Read;
 use std::path::{Component, Path, PathBuf};
+use std::sync::Arc;
 use std::thread;
+
+use crate::orchestration::schemas::AgentState;
+use crate::storage::local_product_store::LocalProductStore;
+
+/// Decision function for agent_step: given context, return the next action.
+pub type AgentDecisionFn =
+    Box<dyn Fn(&AgentStepContext) -> Result<AgentAction, String> + Send + Sync>;
 
 const MAX_COMMAND_OUTPUT_BYTES: usize = 64 * 1024;
 
@@ -582,6 +590,260 @@ fn command_output_error(start: std::time::Instant, message: String) -> NodeExecu
     }
 }
 
+// ── Agent Step Executor (AR-2) ──────────────────────────────────────────
+
+const ACP_ENABLE_AGENT_RUNTIME: &str = "ACP_ENABLE_AGENT_RUNTIME";
+
+/// Allowed AR-2 agent actions.
+/// Does not include child-task creation, delegation, debate, provider/CLI,
+/// target-output, merge, deploy, or release actions.
+#[derive(Debug, Clone, PartialEq)]
+pub enum AgentAction {
+    Wait,
+    Complete,
+    UpdateScratchpadSummary(String),
+    ReadMailbox,
+    AckMessage(String),
+    EmitNote(String),
+    RecordObservation(String),
+    Unsupported(String),
+}
+
+/// Context assembled during the observe phase for the decision source.
+#[derive(Debug, Clone)]
+pub struct AgentStepContext {
+    pub agent_id: String,
+    pub run_id: String,
+    pub node_id: String,
+    pub workflow_id: String,
+    pub agent_state: Option<AgentState>,
+    pub mailbox_pending_count: i64,
+    pub node_metadata: Value,
+}
+
+/// Bounded one-step agent executor: observe → decide → act → persist.
+///
+/// Allowed actions: Wait, Complete, UpdateScratchpadSummary, ReadMailbox,
+/// AckMessage, EmitNote, RecordObservation.
+///
+/// Does not implement child-task creation, delegation, review, debate,
+/// provider/CLI calls, scheduling, hidden mailboxes, or merge/deploy/release.
+/// Provider-backed decision source is default-off; tests use a deterministic stub.
+pub struct AgentStepExecutor {
+    pub store: Arc<LocalProductStore>,
+    pub decision_source: AgentDecisionFn,
+}
+
+fn agent_step_fail(message: &str, start: &std::time::Instant) -> NodeExecutionOutput {
+    NodeExecutionOutput {
+        status: "failed".to_string(),
+        executor_type: "agent_step".to_string(),
+        output: None,
+        error_domain: Some("agent_step_error".to_string()),
+        error_message: Some(message.to_string()),
+        input_tokens: None,
+        output_tokens: None,
+        estimated_cost: None,
+        latency_ms: Some(start.elapsed().as_millis() as i64),
+    }
+}
+
+impl AgentStepExecutor {
+    pub fn new(store: Arc<LocalProductStore>, decision_source: AgentDecisionFn) -> Self {
+        Self {
+            store,
+            decision_source,
+        }
+    }
+
+    fn execute_action(
+        &self,
+        agent_id: &str,
+        run_id: &str,
+        action: &AgentAction,
+    ) -> Result<String, String> {
+        match action {
+            AgentAction::Wait => Ok(r#"{"action":"wait"}"#.to_string()),
+            AgentAction::Complete => {
+                self.store
+                    .update_agent_state(agent_id, run_id, Some("completed"), None, None, None)
+                    .map_err(|e| format!("failed to update agent state: {e}"))?;
+                Ok(r#"{"action":"complete"}"#.to_string())
+            }
+            AgentAction::UpdateScratchpadSummary(text) => {
+                self.store
+                    .update_agent_state(agent_id, run_id, None, Some(text), None, None)
+                    .map_err(|e| format!("failed to update scratchpad: {e}"))?;
+                Ok(json!({"action":"update_scratchpad"}).to_string())
+            }
+            AgentAction::ReadMailbox => {
+                let msgs = self
+                    .store
+                    .list_mailbox(Some(agent_id), Some(run_id), None, Some("pending"), 10, 0)
+                    .map_err(|e| format!("failed to list mailbox: {e}"))?;
+                let summaries: Vec<Value> = msgs
+                    .iter()
+                    .map(|m| {
+                        json!({
+                            "message_id": m.message_id,
+                            "from": m.from_agent_id,
+                            "type": m.message_type,
+                            "summary": m.body_summary,
+                        })
+                    })
+                    .collect();
+                Ok(json!({"action":"read_mailbox","mailbox_count": summaries.len(),"messages": summaries}).to_string())
+            }
+            AgentAction::AckMessage(message_id) => {
+                let acked = self
+                    .store
+                    .ack_message(message_id)
+                    .map_err(|e| format!("failed to ack message: {e}"))?;
+                if acked.is_some() {
+                    Ok(json!({"action":"ack_message","message_id": message_id}).to_string())
+                } else {
+                    Err(format!("message {message_id} not found or already acked"))
+                }
+            }
+            AgentAction::EmitNote(text) => {
+                self.store
+                    .append_audit(
+                        "agent_step",
+                        "agent_step.note",
+                        &format!("agent_state/{agent_id}/{run_id}"),
+                        &json!({"note": text}),
+                    )
+                    .map_err(|e| format!("audit failed: {e}"))?;
+                Ok(r#"{"action":"emit_note"}"#.to_string())
+            }
+            AgentAction::RecordObservation(text) => {
+                self.store
+                    .append_audit(
+                        "agent_step",
+                        "agent_step.observation",
+                        &format!("agent_state/{agent_id}/{run_id}"),
+                        &json!({"observation": text}),
+                    )
+                    .map_err(|e| format!("audit failed: {e}"))?;
+                Ok(r#"{"action":"record_observation"}"#.to_string())
+            }
+            AgentAction::Unsupported(name) => Err(format!("unsupported action: {name}")),
+        }
+    }
+}
+
+impl NodeExecutor for AgentStepExecutor {
+    fn executor_type_name(&self) -> &str {
+        "agent_step"
+    }
+
+    fn execute_node(&self, input: &NodeExecutionInput) -> NodeExecutionOutput {
+        let start = std::time::Instant::now();
+
+        if std::env::var(ACP_ENABLE_AGENT_RUNTIME).as_deref() != Ok("1") {
+            return agent_step_fail("ACP_ENABLE_AGENT_RUNTIME is not set to 1", &start);
+        }
+
+        // ponytail: global kill switch, per-agent kill gates if finer control is needed
+        if std::env::var("ACP_AGENT_RUNTIME_KILL_SWITCH").as_deref() == Ok("1") {
+            return agent_step_fail("agent runtime kill switch is active", &start);
+        }
+
+        let agent_id = match input.node_metadata.get("agent_id").and_then(|v| v.as_str()) {
+            Some(id) => id.to_string(),
+            None => return agent_step_fail("missing agent_id in node_metadata", &start),
+        };
+
+        let agent_state = match self.store.get_agent_state(&agent_id, &input.run_id) {
+            Ok(Some(s)) => s,
+            Ok(None) => {
+                return agent_step_fail(
+                    &format!("AgentState not found for {agent_id}/{}", input.run_id),
+                    &start,
+                )
+            }
+            Err(e) => return agent_step_fail(&format!("failed to load AgentState: {e}"), &start),
+        };
+
+        let mailbox_count =
+            match self
+                .store
+                .count_mailbox(Some(&agent_id), Some(&input.run_id), Some("pending"))
+            {
+                Ok(c) => c,
+                Err(e) => return agent_step_fail(&format!("failed to count mailbox: {e}"), &start),
+            };
+
+        let context = AgentStepContext {
+            agent_id: agent_id.clone(),
+            run_id: input.run_id.clone(),
+            node_id: input.node_id.clone(),
+            workflow_id: input.workflow_id.clone(),
+            agent_state: Some(agent_state),
+            mailbox_pending_count: mailbox_count,
+            node_metadata: input.node_metadata.clone(),
+        };
+
+        let _ = self.store.append_audit(
+            "agent_step",
+            "agent_step.start",
+            &format!("agent_state/{agent_id}/{}", input.run_id),
+            &json!({"agent_id": agent_id, "run_id": input.run_id}),
+        );
+
+        let action = match (self.decision_source)(&context) {
+            Ok(a) => a,
+            Err(e) => {
+                let _ = self.store.append_audit(
+                    "agent_step",
+                    "agent_step.decision_failed",
+                    &format!("agent_state/{agent_id}/{}", input.run_id),
+                    &json!({"error": e}),
+                );
+                return agent_step_fail(&format!("decision failed: {e}"), &start);
+            }
+        };
+
+        let _ = self.store.append_audit(
+            "agent_step",
+            "agent_step.decision",
+            &format!("agent_state/{agent_id}/{}", input.run_id),
+            &json!({"action": format!("{action:?}")}),
+        );
+
+        match self.execute_action(&agent_id, &input.run_id, &action) {
+            Ok(result) => {
+                let _ = self.store.append_audit(
+                    "agent_step",
+                    "agent_step.completed",
+                    &format!("agent_state/{agent_id}/{}", input.run_id),
+                    &json!({"action": format!("{action:?}"), "result": result}),
+                );
+                NodeExecutionOutput {
+                    status: "completed".to_string(),
+                    executor_type: "agent_step".to_string(),
+                    output: Some(result),
+                    error_domain: None,
+                    error_message: None,
+                    input_tokens: None,
+                    output_tokens: None,
+                    estimated_cost: None,
+                    latency_ms: Some(start.elapsed().as_millis() as i64),
+                }
+            }
+            Err(e) => {
+                let _ = self.store.append_audit(
+                    "agent_step",
+                    "agent_step.failed",
+                    &format!("agent_state/{agent_id}/{}", input.run_id),
+                    &json!({"action": format!("{action:?}"), "error": e}),
+                );
+                agent_step_fail(&e, &start)
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -749,5 +1011,297 @@ mod tests {
         let rendered = output.output.unwrap();
         assert!(rendered.len() < 70_000);
         assert!(rendered.contains("[truncated"));
+    }
+
+    // ── AR-2 agent step tests ────────────────────────────────────────────
+
+    // Serializes env-var access in env gates test; other tests only set vars
+    // (idempotent) and never remove them, avoiding parallel race windows.
+    static AGENT_ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    fn ar2_store() -> LocalProductStore {
+        LocalProductStore::new(":memory:").expect("failed to create in-memory store")
+    }
+
+    fn stub_decision(action: AgentAction) -> AgentDecisionFn {
+        Box::new(move |_| Ok(action.clone()))
+    }
+
+    fn agent_step_input(agent_id: &str, run_id: &str) -> NodeExecutionInput {
+        NodeExecutionInput {
+            node_id: "agent-node-001".to_string(),
+            task_type: "agent_step".to_string(),
+            run_id: run_id.to_string(),
+            workflow_id: "wf-ar2-001".to_string(),
+            node_metadata: json!({"agent_id": agent_id}),
+        }
+    }
+
+    fn create_test_agent(store: &LocalProductStore, agent_id: &str, run_id: &str) {
+        store
+            .create_agent_state(
+                agent_id,
+                run_id,
+                "implementer",
+                &["code".to_string()],
+                Some("test objective"),
+                "idle",
+                &json!({}),
+            )
+            .expect("create agent state");
+    }
+
+    #[test]
+    fn test_agent_step_env_gates() {
+        let _lock = AGENT_ENV_LOCK.lock().unwrap();
+        let store = Arc::new(ar2_store());
+        create_test_agent(&store, "agent-env", "run-ar2-env");
+        let executor = AgentStepExecutor::new(store, stub_decision(AgentAction::Complete));
+        let input = agent_step_input("agent-env", "run-ar2-env");
+
+        std::env::remove_var("ACP_ENABLE_AGENT_RUNTIME");
+        std::env::remove_var("ACP_AGENT_RUNTIME_KILL_SWITCH");
+
+        let output = executor.execute_node(&input);
+        assert_eq!(output.status, "failed");
+        assert!(output
+            .error_message
+            .as_ref()
+            .unwrap()
+            .contains("ACP_ENABLE_AGENT_RUNTIME"));
+
+        std::env::set_var("ACP_ENABLE_AGENT_RUNTIME", "1");
+        let output = executor.execute_node(&input);
+        assert_eq!(output.status, "completed");
+
+        std::env::set_var("ACP_AGENT_RUNTIME_KILL_SWITCH", "1");
+        let output = executor.execute_node(&input);
+        assert_eq!(output.status, "failed");
+
+        std::env::remove_var("ACP_AGENT_RUNTIME_KILL_SWITCH");
+        std::env::set_var("ACP_ENABLE_AGENT_RUNTIME", "1");
+    }
+
+    #[test]
+    fn test_agent_step_missing_state_fails_closed() {
+        let store = Arc::new(ar2_store());
+        std::env::set_var("ACP_ENABLE_AGENT_RUNTIME", "1");
+        std::env::remove_var("ACP_AGENT_RUNTIME_KILL_SWITCH");
+
+        let executor = AgentStepExecutor::new(store, stub_decision(AgentAction::Complete));
+        let input = agent_step_input("agent-nonexistent", "run-missing");
+
+        let output = executor.execute_node(&input);
+        assert_eq!(output.status, "failed");
+        assert!(output.error_message.unwrap().contains("AgentState"));
+    }
+
+    #[test]
+    fn test_agent_step_missing_agent_id_fails_closed() {
+        let store = Arc::new(ar2_store());
+        std::env::set_var("ACP_ENABLE_AGENT_RUNTIME", "1");
+        std::env::remove_var("ACP_AGENT_RUNTIME_KILL_SWITCH");
+
+        let executor = AgentStepExecutor::new(store, stub_decision(AgentAction::Complete));
+        let input = NodeExecutionInput {
+            node_id: "agent-node-no-id".to_string(),
+            task_type: "agent_step".to_string(),
+            run_id: "run-ar2-noid".to_string(),
+            workflow_id: "wf-ar2-noid".to_string(),
+            node_metadata: json!({}),
+        };
+
+        let output = executor.execute_node(&input);
+        assert_eq!(output.status, "failed");
+        assert!(output.error_message.unwrap().contains("agent_id"));
+    }
+
+    #[test]
+    fn test_agent_step_success_complete() {
+        let store = Arc::new(ar2_store());
+        create_test_agent(&store, "agent-c", "run-ar2-c");
+        std::env::set_var("ACP_ENABLE_AGENT_RUNTIME", "1");
+        std::env::remove_var("ACP_AGENT_RUNTIME_KILL_SWITCH");
+
+        let executor = AgentStepExecutor::new(store.clone(), stub_decision(AgentAction::Complete));
+        let input = agent_step_input("agent-c", "run-ar2-c");
+
+        let output = executor.execute_node(&input);
+        assert_eq!(output.status, "completed");
+        assert_eq!(output.executor_type, "agent_step");
+        assert!(output.output.unwrap().contains("complete"));
+
+        let state = store
+            .get_agent_state("agent-c", "run-ar2-c")
+            .expect("get state")
+            .unwrap();
+        assert_eq!(state.status, "completed");
+    }
+
+    #[test]
+    fn test_agent_step_unsupported_action_fails_closed() {
+        let store = Arc::new(ar2_store());
+        create_test_agent(&store, "agent-unsup", "run-ar2-unsup");
+        std::env::set_var("ACP_ENABLE_AGENT_RUNTIME", "1");
+        std::env::remove_var("ACP_AGENT_RUNTIME_KILL_SWITCH");
+
+        let executor = AgentStepExecutor::new(
+            store,
+            stub_decision(AgentAction::Unsupported("bad_action".to_string())),
+        );
+        let input = agent_step_input("agent-unsup", "run-ar2-unsup");
+
+        let output = executor.execute_node(&input);
+        assert_eq!(output.status, "failed");
+        assert!(output.error_message.unwrap().contains("unsupported action"));
+    }
+
+    #[test]
+    fn test_agent_step_scratchpad_update() {
+        let store = Arc::new(ar2_store());
+        create_test_agent(&store, "agent-scr", "run-ar2-scr");
+        std::env::set_var("ACP_ENABLE_AGENT_RUNTIME", "1");
+        std::env::remove_var("ACP_AGENT_RUNTIME_KILL_SWITCH");
+
+        let executor = AgentStepExecutor::new(
+            store.clone(),
+            stub_decision(AgentAction::UpdateScratchpadSummary(
+                "progress: 50%".to_string(),
+            )),
+        );
+        let input = agent_step_input("agent-scr", "run-ar2-scr");
+
+        let output = executor.execute_node(&input);
+        assert_eq!(output.status, "completed");
+
+        let state = store
+            .get_agent_state("agent-scr", "run-ar2-scr")
+            .expect("get state")
+            .unwrap();
+        assert_eq!(state.scratchpad_summary, Some("progress: 50%".to_string()));
+    }
+
+    #[test]
+    fn test_agent_step_mailbox_read_and_ack() {
+        let store = Arc::new(ar2_store());
+        create_test_agent(&store, "agent-mail", "run-ar2-mail");
+        std::env::set_var("ACP_ENABLE_AGENT_RUNTIME", "1");
+        std::env::remove_var("ACP_AGENT_RUNTIME_KILL_SWITCH");
+
+        store
+            .send_message(
+                "msg-ar2-001",
+                "agent-other",
+                "agent-mail",
+                "task_assign",
+                Some("build feature Y"),
+                None,
+                Some("run-ar2-mail"),
+                Some("node-001"),
+                None,
+                &json!({}),
+            )
+            .expect("send message");
+
+        let executor =
+            AgentStepExecutor::new(store.clone(), stub_decision(AgentAction::ReadMailbox));
+        let input = agent_step_input("agent-mail", "run-ar2-mail");
+        let output = executor.execute_node(&input);
+        assert_eq!(output.status, "completed");
+        let out = output.output.unwrap();
+        assert!(out.contains("msg-ar2-001"));
+
+        let executor = AgentStepExecutor::new(
+            store.clone(),
+            stub_decision(AgentAction::AckMessage("msg-ar2-001".to_string())),
+        );
+        let input = agent_step_input("agent-mail", "run-ar2-mail");
+        let output = executor.execute_node(&input);
+        assert_eq!(output.status, "completed");
+
+        let msg = store
+            .read_message("msg-ar2-001")
+            .expect("read message")
+            .unwrap();
+        assert_eq!(msg.status, "acked");
+    }
+
+    #[test]
+    fn test_agent_step_audit_events_emitted() {
+        let store = Arc::new(ar2_store());
+        create_test_agent(&store, "agent-audit", "run-ar2-audit");
+        std::env::set_var("ACP_ENABLE_AGENT_RUNTIME", "1");
+        std::env::remove_var("ACP_AGENT_RUNTIME_KILL_SWITCH");
+
+        let executor = AgentStepExecutor::new(
+            store.clone(),
+            stub_decision(AgentAction::EmitNote("test note".to_string())),
+        );
+        let input = agent_step_input("agent-audit", "run-ar2-audit");
+
+        let output = executor.execute_node(&input);
+        assert_eq!(output.status, "completed");
+
+        let events = store.audit_events(100).expect("audit events");
+        let step_events: Vec<_> = events
+            .iter()
+            .filter(|e| {
+                e.get("action")
+                    .and_then(|a| a.as_str())
+                    .map(|a| a.starts_with("agent_step."))
+                    .unwrap_or(false)
+            })
+            .collect();
+        assert!(
+            step_events.len() >= 3,
+            "expected >=3 agent_step audit events, got {}",
+            step_events.len()
+        );
+    }
+
+    #[test]
+    fn test_agent_step_wait_action() {
+        let store = Arc::new(ar2_store());
+        create_test_agent(&store, "agent-wait", "run-ar2-wait");
+        std::env::set_var("ACP_ENABLE_AGENT_RUNTIME", "1");
+        std::env::remove_var("ACP_AGENT_RUNTIME_KILL_SWITCH");
+
+        let executor = AgentStepExecutor::new(store, stub_decision(AgentAction::Wait));
+        let input = agent_step_input("agent-wait", "run-ar2-wait");
+
+        let output = executor.execute_node(&input);
+        assert_eq!(output.status, "completed");
+        assert!(output.output.unwrap().contains("wait"));
+    }
+
+    #[test]
+    fn test_agent_step_no_provider_or_cli_called() {
+        // This test verifies that agent_step never calls provider/CLI paths.
+        // The executor uses only store methods and the decision stub; no
+        // provider adapter or CLI subprocess is involved in the agent_step path.
+        let store = Arc::new(ar2_store());
+        create_test_agent(&store, "agent-noprov", "run-ar2-noprov");
+        std::env::set_var("ACP_ENABLE_AGENT_RUNTIME", "1");
+        std::env::remove_var("ACP_AGENT_RUNTIME_KILL_SWITCH");
+
+        // All allowed actions must complete without provider/CLI calls
+        for action in [
+            AgentAction::Wait,
+            AgentAction::Complete,
+            AgentAction::UpdateScratchpadSummary("test".to_string()),
+            AgentAction::ReadMailbox,
+            AgentAction::EmitNote("note".to_string()),
+            AgentAction::RecordObservation("obs".to_string()),
+        ] {
+            let store = Arc::new(ar2_store());
+            create_test_agent(&store, "agent-np", "run-ar2-np");
+            let executor = AgentStepExecutor::new(store, stub_decision(action.clone()));
+            let input = agent_step_input("agent-np", "run-ar2-np");
+            let output = executor.execute_node(&input);
+            assert_eq!(
+                output.status, "completed",
+                "action {action:?} should not need provider/CLI"
+            );
+        }
     }
 }

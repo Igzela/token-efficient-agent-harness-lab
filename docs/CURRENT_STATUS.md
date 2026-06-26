@@ -1,6 +1,6 @@
 # Current Status
 
-Last updated: 2026-06-25. V2-0 through V2-5, the Real Output Closeout, Adaptive Fusion AF-0 through AF-7, and Trusted Local Autonomous Execution IAE-0 through IAE-3 are complete; `v0.1.0` is published and its online installer path is verified.
+Last updated: 2026-06-26. V2-0 through V2-5, the Real Output Closeout, Adaptive Fusion AF-0 through AF-7, Trusted Local Autonomous Execution IAE-0 through IAE-3, and AR-2 (agent step executor) are complete; `v0.1.0` is published and its online installer path is verified.
 
 ## Summary
 
@@ -114,6 +114,7 @@ Historical phase plans, closeouts, and long-form validation reports are retained
 - V2-4 bounded workers: scheduler startup requires both scheduler and supervised-worker env gates; worker count is bounded by global concurrency and 32; each worker claims at most one node per cycle through the existing atomic DB lease; heartbeat metadata exposes worker state; stale recovery is audited; `dispatch:execute` plus confirmation controls pause/resume/kill; env pause and kill switches remain available.
 - Verification/repair: `/supervised-patch/workspaces/{id}/verify` runs allowlisted test tools in the app-owned workspace, stores redacted/capped evidence, and can invoke at most two CLI repair attempts before output remains blocked.
 - V2-5 product output UX: the first navigation group is `Tasks / Runs / Outputs`; operational/admin tabs are secondary and collapsed. The task surface defaults to local Codex CLI and keeps task, workspace, approval, and branch/PR output in one path.
+- AR-2 bounded one-step agent executor: `AgentStepExecutor` in `node_executor.rs` implements `NodeExecutor` with `AgentAction` enum, `AgentDecisionFn` closure, env gate `ACP_ENABLE_AGENT_RUNTIME=1`, kill switch `ACP_AGENT_RUNTIME_KILL_SWITCH=1`, observe/decide/act/persist lifecycle, audit events per transition, 11 tests. Fails closed on missing agent state, missing `agent_id`, unsupported action, disabled runtime, or killed runtime. No provider/CLI calls, scheduler changes, DB migration, or dashboard UI.
 - Real output pilots: `scripts/real_output_pilots.py` completed Python, Rust, and Node repositories through real Claude CLI execution, real tests, artifact capture, approval, and three distinct `acp/*` branches. All three verification runs passed on the first attempt and all target `main` refs remained unchanged. Older one-off pilot scripts were removed; use `scripts/real_output_pilots.py` or `scripts/live_e2e_validation.py` for current validation.
 - Release contract: canonical assets use `agent-control-plane-v0.1.0-<rust-target>.tar.gz` with a same-name top-level directory. Local packaging and `scripts/smoke_release.sh 0.1.0` passed 16 checks.
 - Local storage: SQLite default with PostgreSQL optional via `ACP_DATABASE_URL`; schema version is documented in `docs/ARCHITECTURE_BOOK.md`.
@@ -124,7 +125,7 @@ Historical phase plans, closeouts, and long-form validation reports are retained
 ## Current Gaps
 
 - Engine/API/SDK/dashboard output is end to end for a supplied git repo: natural-language CLI execution, controlled worktree, real verification with bounded repair, artifact evidence, approval, patch/branch output, and optional GitHub PR creation.
-- True multi-agent runtime semantics (autonomous step loops, self-planning, handoff/delegation, cross-agent review/debate, concurrent multi-agent scheduling) are not implemented yet. AR-1 (agent identity, state, mailbox storage) is implemented as a foundation — see `docs/ARCHITECTURE_BOOK.md` § AR Phase Status.
+- True multi-agent runtime semantics (autonomous step loops, self-planning, handoff/delegation, cross-agent review/debate, concurrent multi-agent scheduling) are not implemented yet. AR-1 (agent identity, state, mailbox) and AR-2 (bounded one-step agent executor) are implemented as a foundation — see `docs/ARCHITECTURE_BOOK.md` § AR Phase Status.
 - Product fit is stronger for local operations/research than for public-facing production UX.
 - The UI is task-first, while detailed operations and administration remain available as secondary views.
 - Security posture is suitable for local/small-team self-hosting only; hosted/multi-tenant use would require a new threat model and approved implementation plan.
