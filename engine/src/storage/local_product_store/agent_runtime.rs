@@ -738,6 +738,371 @@ impl LocalProductStore {
     }
 }
 
+// ── Agent Proposal CRUD (AR-3) ──────────────────────────────────────────────
+
+const MAX_PROPOSAL_OBJECTIVE_BYTES: usize = 4096;
+const MAX_PROPOSAL_CONTEXT_BYTES: usize = 16384;
+
+impl LocalProductStore {
+    pub fn create_proposal(
+        &self,
+        proposal_id: &str,
+        correlation_id: &str,
+        run_id: &str,
+        parent_node_id: &str,
+        agent_id: &str,
+        proposal_type: &str,
+        objective: &str,
+        context_summary: &str,
+        target_agent_id: Option<&str>,
+        proposed_node_id: Option<&str>,
+        proposed_edge_id: Option<&str>,
+    ) -> Result<String, String> {
+        if objective.len() > MAX_PROPOSAL_OBJECTIVE_BYTES {
+            return Err(format!(
+                "objective exceeds max size of {} bytes",
+                MAX_PROPOSAL_OBJECTIVE_BYTES
+            ));
+        }
+        let context = apply_size_cap(context_summary, MAX_PROPOSAL_CONTEXT_BYTES);
+        let safe_objective = apply_size_cap_and_redact(objective, MAX_PROPOSAL_OBJECTIVE_BYTES);
+        let safe_context = apply_size_cap_and_redact(&context, MAX_PROPOSAL_CONTEXT_BYTES);
+        let now = self.now();
+        match &self.db {
+            DatabaseConnection::Sqlite(_) => self.with_conn(|conn| {
+                conn.execute(
+                    "INSERT INTO agent_proposals
+                     (proposal_id, correlation_id, run_id, parent_node_id, agent_id,
+                      target_agent_id, proposed_node_id, proposed_edge_id, proposal_type,
+                      objective, context_summary, status, created_at, updated_at)
+                     VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,'pending',?12,?13)",
+                    params![
+                        proposal_id,
+                        correlation_id,
+                        run_id,
+                        parent_node_id,
+                        agent_id,
+                        target_agent_id,
+                        proposed_node_id,
+                        proposed_edge_id,
+                        proposal_type,
+                        safe_objective,
+                        safe_context,
+                        now,
+                        now,
+                    ],
+                )
+                .map_err(|e| e.to_string())?;
+                append_audit_locked(
+                    conn,
+                    &now,
+                    &format!("agent:{agent_id}"),
+                    "agent_proposal.create",
+                    &format!("agent_proposal/{proposal_id}"),
+                    &json!({"proposal_id": proposal_id, "correlation_id": correlation_id,
+                            "proposal_type": proposal_type, "run_id": run_id,
+                            "agent_id": agent_id, "parent_node_id": parent_node_id}),
+                )?;
+                Ok(proposal_id.to_string())
+            }),
+            #[cfg(feature = "pg")]
+            DatabaseConnection::Pg(_) => self.with_pg_conn(|client| {
+                client
+                    .execute(
+                        "INSERT INTO agent_proposals
+                     (proposal_id, correlation_id, run_id, parent_node_id, agent_id,
+                      target_agent_id, proposed_node_id, proposed_edge_id, proposal_type,
+                      objective, context_summary, status, created_at, updated_at)
+                     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,'pending',$12,$13)",
+                        &[
+                            &proposal_id,
+                            &correlation_id,
+                            &run_id,
+                            &parent_node_id,
+                            &agent_id,
+                            &target_agent_id,
+                            &proposed_node_id,
+                            &proposed_edge_id,
+                            &proposal_type,
+                            &safe_objective,
+                            &safe_context,
+                            &now,
+                            &now,
+                        ],
+                    )
+                    .map_err(|e| e.to_string())?;
+                pg_runtime_audit(
+                    client,
+                    &now,
+                    &format!("agent:{agent_id}"),
+                    "agent_proposal.create",
+                    &format!("agent_proposal/{proposal_id}"),
+                    &json!({"proposal_id": proposal_id, "correlation_id": correlation_id,
+                            "proposal_type": proposal_type, "run_id": run_id,
+                            "agent_id": agent_id, "parent_node_id": parent_node_id}),
+                )?;
+                Ok(proposal_id.to_string())
+            }),
+        }
+    }
+
+    pub fn get_proposal(&self, proposal_id: &str) -> Result<Option<Value>, String> {
+        match &self.db {
+            DatabaseConnection::Sqlite(_) => self.with_conn(|conn| {
+                let mut stmt = conn
+                    .prepare(
+                        "SELECT proposal_id, correlation_id, run_id, parent_node_id, agent_id,
+                                target_agent_id, proposed_node_id, proposed_edge_id,
+                                proposal_type, objective, context_summary, status,
+                                created_at, updated_at
+                         FROM agent_proposals WHERE proposal_id=?1",
+                    )
+                    .map_err(|e| e.to_string())?;
+                let mut rows = stmt
+                    .query_map(params![proposal_id], |row| {
+                        Ok(json!({
+                            "proposal_id": row.get::<_, String>(0)?,
+                            "correlation_id": row.get::<_, String>(1)?,
+                            "run_id": row.get::<_, String>(2)?,
+                            "parent_node_id": row.get::<_, String>(3)?,
+                            "agent_id": row.get::<_, String>(4)?,
+                            "target_agent_id": row.get::<_, Option<String>>(5)?,
+                            "proposed_node_id": row.get::<_, Option<String>>(6)?,
+                            "proposed_edge_id": row.get::<_, Option<String>>(7)?,
+                            "proposal_type": row.get::<_, String>(8)?,
+                            "objective": row.get::<_, String>(9)?,
+                            "context_summary": row.get::<_, String>(10)?,
+                            "status": row.get::<_, String>(11)?,
+                            "created_at": row.get::<_, String>(12)?,
+                            "updated_at": row.get::<_, String>(13)?,
+                        }))
+                    })
+                    .map_err(|e| e.to_string())?;
+                match rows.next() {
+                    Some(r) => Ok(Some(r.map_err(|e| e.to_string())?)),
+                    None => Ok(None),
+                }
+            }),
+            #[cfg(feature = "pg")]
+            DatabaseConnection::Pg(_) => self.with_pg_conn(|client| {
+                let rows = client
+                    .query(
+                        "SELECT proposal_id, correlation_id, run_id, parent_node_id, agent_id,
+                                target_agent_id, proposed_node_id, proposed_edge_id,
+                                proposal_type, objective, context_summary, status,
+                                created_at, updated_at
+                         FROM agent_proposals WHERE proposal_id=$1",
+                        &[&proposal_id],
+                    )
+                    .map_err(|e| e.to_string())?;
+                match rows.into_iter().next() {
+                    Some(row) => Ok(Some(pg_proposal_row(&row))),
+                    None => Ok(None),
+                }
+            }),
+        }
+    }
+
+    pub fn update_proposal_status(
+        &self,
+        proposal_id: &str,
+        new_status: &str,
+    ) -> Result<bool, String> {
+        let now = self.now();
+        let affected = match &self.db {
+            DatabaseConnection::Sqlite(_) => self.with_conn(|conn| {
+                let n = conn
+                    .execute(
+                        "UPDATE agent_proposals SET status=?1, updated_at=?2
+                         WHERE proposal_id=?3 AND status='pending'",
+                        params![new_status, now, proposal_id],
+                    )
+                    .map_err(|e| e.to_string())?;
+                if n > 0 {
+                    append_audit_locked(
+                        conn,
+                        &now,
+                        "system",
+                        "agent_proposal.update_status",
+                        &format!("agent_proposal/{proposal_id}"),
+                        &json!({"proposal_id": proposal_id, "new_status": new_status}),
+                    )?;
+                }
+                Ok(n)
+            })?,
+            #[cfg(feature = "pg")]
+            DatabaseConnection::Pg(_) => self.with_pg_conn(|client| {
+                let n = client
+                    .execute(
+                        "UPDATE agent_proposals SET status=$1, updated_at=$2
+                         WHERE proposal_id=$3 AND status='pending'",
+                        &[&new_status, &now, &proposal_id],
+                    )
+                    .map_err(|e| e.to_string())?;
+                if n > 0 {
+                    pg_runtime_audit(
+                        client,
+                        &now,
+                        "system",
+                        "agent_proposal.update_status",
+                        &format!("agent_proposal/{proposal_id}"),
+                        &json!({"proposal_id": proposal_id, "new_status": new_status}),
+                    )?;
+                }
+                Ok(n as usize)
+            })?,
+        };
+        Ok(affected > 0)
+    }
+
+    pub fn list_proposals_by_run(
+        &self,
+        run_id: &str,
+        limit: i64,
+        offset: i64,
+    ) -> Result<Vec<Value>, String> {
+        match &self.db {
+            DatabaseConnection::Sqlite(_) => self.with_conn(|conn| {
+                let mut stmt = conn
+                    .prepare(
+                        "SELECT proposal_id, correlation_id, run_id, parent_node_id, agent_id,
+                                target_agent_id, proposed_node_id, proposed_edge_id,
+                                proposal_type, objective, context_summary, status,
+                                created_at, updated_at
+                         FROM agent_proposals WHERE run_id=?1
+                         ORDER BY created_at DESC LIMIT ?2 OFFSET ?3",
+                    )
+                    .map_err(|e| e.to_string())?;
+                let rows = stmt
+                    .query_map(params![run_id, limit, offset], |row| {
+                        Ok(json!({
+                            "proposal_id": row.get::<_, String>(0)?,
+                            "correlation_id": row.get::<_, String>(1)?,
+                            "run_id": row.get::<_, String>(2)?,
+                            "parent_node_id": row.get::<_, String>(3)?,
+                            "agent_id": row.get::<_, String>(4)?,
+                            "target_agent_id": row.get::<_, Option<String>>(5)?,
+                            "proposed_node_id": row.get::<_, Option<String>>(6)?,
+                            "proposed_edge_id": row.get::<_, Option<String>>(7)?,
+                            "proposal_type": row.get::<_, String>(8)?,
+                            "objective": row.get::<_, String>(9)?,
+                            "context_summary": row.get::<_, String>(10)?,
+                            "status": row.get::<_, String>(11)?,
+                            "created_at": row.get::<_, String>(12)?,
+                            "updated_at": row.get::<_, String>(13)?,
+                        }))
+                    })
+                    .map_err(|e| e.to_string())?;
+                let mut out = Vec::new();
+                for r in rows {
+                    out.push(r.map_err(|e| e.to_string())?);
+                }
+                Ok(out)
+            }),
+            #[cfg(feature = "pg")]
+            DatabaseConnection::Pg(_) => self.with_pg_conn(|client| {
+                let rows = client
+                    .query(
+                        "SELECT proposal_id, correlation_id, run_id, parent_node_id, agent_id,
+                                target_agent_id, proposed_node_id, proposed_edge_id,
+                                proposal_type, objective, context_summary, status,
+                                created_at, updated_at
+                         FROM agent_proposals WHERE run_id=$1
+                         ORDER BY created_at DESC LIMIT $2 OFFSET $3",
+                        &[&run_id, &limit, &offset],
+                    )
+                    .map_err(|e| e.to_string())?;
+                Ok(rows.iter().map(pg_proposal_row).collect())
+            }),
+        }
+    }
+
+    pub fn find_proposal_by_correlation(
+        &self,
+        correlation_id: &str,
+        agent_id: &str,
+    ) -> Result<Option<Value>, String> {
+        match &self.db {
+            DatabaseConnection::Sqlite(_) => self.with_conn(|conn| {
+                let mut stmt = conn
+                    .prepare(
+                        "SELECT proposal_id, correlation_id, run_id, parent_node_id, agent_id,
+                                target_agent_id, proposed_node_id, proposed_edge_id,
+                                proposal_type, objective, context_summary, status,
+                                created_at, updated_at
+                         FROM agent_proposals
+                         WHERE correlation_id=?1 AND (agent_id=?2 OR target_agent_id=?2)
+                         ORDER BY created_at DESC LIMIT 1",
+                    )
+                    .map_err(|e| e.to_string())?;
+                let mut rows = stmt
+                    .query_map(params![correlation_id, agent_id], |row| {
+                        Ok(json!({
+                            "proposal_id": row.get::<_, String>(0)?,
+                            "correlation_id": row.get::<_, String>(1)?,
+                            "run_id": row.get::<_, String>(2)?,
+                            "parent_node_id": row.get::<_, String>(3)?,
+                            "agent_id": row.get::<_, String>(4)?,
+                            "target_agent_id": row.get::<_, Option<String>>(5)?,
+                            "proposed_node_id": row.get::<_, Option<String>>(6)?,
+                            "proposed_edge_id": row.get::<_, Option<String>>(7)?,
+                            "proposal_type": row.get::<_, String>(8)?,
+                            "objective": row.get::<_, String>(9)?,
+                            "context_summary": row.get::<_, String>(10)?,
+                            "status": row.get::<_, String>(11)?,
+                            "created_at": row.get::<_, String>(12)?,
+                            "updated_at": row.get::<_, String>(13)?,
+                        }))
+                    })
+                    .map_err(|e| e.to_string())?;
+                match rows.next() {
+                    Some(r) => Ok(Some(r.map_err(|e| e.to_string())?)),
+                    None => Ok(None),
+                }
+            }),
+            #[cfg(feature = "pg")]
+            DatabaseConnection::Pg(_) => self.with_pg_conn(|client| {
+                let rows = client
+                    .query(
+                        "SELECT proposal_id, correlation_id, run_id, parent_node_id, agent_id,
+                                target_agent_id, proposed_node_id, proposed_edge_id,
+                                proposal_type, objective, context_summary, status,
+                                created_at, updated_at
+                         FROM agent_proposals
+                         WHERE correlation_id=$1 AND (agent_id=$2 OR target_agent_id=$2)
+                         ORDER BY created_at DESC LIMIT 1",
+                        &[&correlation_id, &agent_id],
+                    )
+                    .map_err(|e| e.to_string())?;
+                match rows.into_iter().next() {
+                    Some(row) => Ok(Some(pg_proposal_row(&row))),
+                    None => Ok(None),
+                }
+            }),
+        }
+    }
+}
+
+#[cfg(feature = "pg")]
+fn pg_proposal_row(row: &postgres::Row) -> Value {
+    json!({
+        "proposal_id": row.get::<_, String>(0),
+        "correlation_id": row.get::<_, String>(1),
+        "run_id": row.get::<_, String>(2),
+        "parent_node_id": row.get::<_, String>(3),
+        "agent_id": row.get::<_, String>(4),
+        "target_agent_id": row.get::<_, Option<String>>(5),
+        "proposed_node_id": row.get::<_, Option<String>>(6),
+        "proposed_edge_id": row.get::<_, Option<String>>(7),
+        "proposal_type": row.get::<_, String>(8),
+        "objective": row.get::<_, String>(9),
+        "context_summary": row.get::<_, String>(10),
+        "status": row.get::<_, String>(11),
+        "created_at": row.get::<_, String>(12),
+        "updated_at": row.get::<_, String>(13),
+    })
+}
+
 // ── Build helper ─────────────────────────────────────────────────────────────
 
 fn build_agent_state(

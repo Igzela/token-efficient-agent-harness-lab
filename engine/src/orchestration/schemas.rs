@@ -10,8 +10,12 @@ pub const AGENT_MESSAGE_SCHEMA_VERSION: &str = "agent_message.v1";
 pub const AGENT_STATE_SCHEMA_VERSION: &str = "agent_state.v1";
 pub const CONFLICT_RECORD_SCHEMA_VERSION: &str = "conflict_record.v1";
 pub const AGENT_ROLE_SCHEMA_VERSION: &str = "agent_role.v1";
+pub const CHILD_TASK_PROPOSAL_SCHEMA_VERSION: &str = "child_task_proposal.v1";
+pub const HANDOFF_REQUEST_SCHEMA_VERSION: &str = "handoff_request.v1";
 
 pub const MAILBOX_STATUSES: &[&str] = &["pending", "read", "acked", "replied", "cancelled"];
+pub const PROPOSAL_STATUSES: &[&str] = &["pending", "accepted", "rejected", "cancelled"];
+pub const PROPOSAL_TYPES: &[&str] = &["child_task", "handoff"];
 
 pub const AGENT_STATUSES: &[&str] = &["idle", "busy", "blocked", "completed", "failed"];
 
@@ -239,4 +243,29 @@ impl AgentRole {
     pub fn to_dict(&self) -> Value {
         serde_json::to_value(self).unwrap_or(Value::Null)
     }
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ChildTaskProposal {
+    pub schema_version: String,
+    pub correlation_id: String,
+    pub objective: String,
+    pub context_summary: String,
+    pub proposed_node_id: Option<String>,
+    pub proposed_edge_id: Option<String>,
+    pub parent_node_id: String,
+    pub run_id: String,
+    pub agent_id: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct HandoffRequest {
+    pub schema_version: String,
+    pub correlation_id: String,
+    pub objective: String,
+    pub context_summary: String,
+    pub target_agent_id: String,
+    pub source_agent_id: String,
+    pub run_id: String,
+    pub node_id: String,
 }

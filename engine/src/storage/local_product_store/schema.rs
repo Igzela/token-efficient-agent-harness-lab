@@ -6,8 +6,8 @@ pub(super) enum Dialect {
     Postgres,
 }
 
-pub(super) const CURRENT_SQLITE_SCHEMA_VERSION: i64 = 14;
-pub(super) const CURRENT_POSTGRES_SCHEMA_VERSION: i64 = 14;
+pub(super) const CURRENT_SQLITE_SCHEMA_VERSION: i64 = 15;
+pub(super) const CURRENT_POSTGRES_SCHEMA_VERSION: i64 = 15;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) struct SchemaMigration {
@@ -71,6 +71,10 @@ pub(super) const SQLITE_MIGRATIONS: &[SchemaMigration] = &[
     SchemaMigration {
         version: 14,
         description: "add agent_state and agent_mailbox tables",
+    },
+    SchemaMigration {
+        version: 15,
+        description: "add agent_proposals table for AR-3 child task proposals and handoff",
     },
 ];
 
@@ -453,6 +457,28 @@ CREATE INDEX IF NOT EXISTS idx_agent_mailbox_to ON agent_mailbox(to_agent_id);
 CREATE INDEX IF NOT EXISTS idx_agent_mailbox_run ON agent_mailbox(run_id);
 CREATE INDEX IF NOT EXISTS idx_agent_mailbox_status ON agent_mailbox(status);
 CREATE INDEX IF NOT EXISTS idx_agent_mailbox_correlation ON agent_mailbox(correlation_id);
+
+CREATE TABLE IF NOT EXISTS agent_proposals (
+    proposal_id TEXT NOT NULL,
+    correlation_id TEXT NOT NULL,
+    run_id TEXT NOT NULL,
+    parent_node_id TEXT NOT NULL,
+    agent_id TEXT NOT NULL,
+    target_agent_id TEXT,
+    proposed_node_id TEXT,
+    proposed_edge_id TEXT,
+    proposal_type TEXT NOT NULL DEFAULT 'child_task',
+    objective TEXT NOT NULL,
+    context_summary TEXT NOT NULL DEFAULT '',
+    status TEXT NOT NULL DEFAULT 'pending',
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    PRIMARY KEY (proposal_id)
+);
+CREATE INDEX IF NOT EXISTS idx_agent_proposals_run ON agent_proposals(run_id);
+CREATE INDEX IF NOT EXISTS idx_agent_proposals_correlation ON agent_proposals(correlation_id);
+CREATE INDEX IF NOT EXISTS idx_agent_proposals_status ON agent_proposals(status);
+CREATE INDEX IF NOT EXISTS idx_agent_proposals_agent ON agent_proposals(agent_id);
 ";
 
 pub(crate) const POSTGRES_DDL: &str = "
@@ -860,6 +886,28 @@ CREATE INDEX IF NOT EXISTS idx_agent_mailbox_to ON agent_mailbox(to_agent_id);
 CREATE INDEX IF NOT EXISTS idx_agent_mailbox_run ON agent_mailbox(run_id);
 CREATE INDEX IF NOT EXISTS idx_agent_mailbox_status ON agent_mailbox(status);
 CREATE INDEX IF NOT EXISTS idx_agent_mailbox_correlation ON agent_mailbox(correlation_id);
+
+CREATE TABLE IF NOT EXISTS agent_proposals (
+    proposal_id TEXT NOT NULL,
+    correlation_id TEXT NOT NULL,
+    run_id TEXT NOT NULL,
+    parent_node_id TEXT NOT NULL,
+    agent_id TEXT NOT NULL,
+    target_agent_id TEXT,
+    proposed_node_id TEXT,
+    proposed_edge_id TEXT,
+    proposal_type TEXT NOT NULL DEFAULT 'child_task',
+    objective TEXT NOT NULL,
+    context_summary TEXT NOT NULL DEFAULT '',
+    status TEXT NOT NULL DEFAULT 'pending',
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    PRIMARY KEY (proposal_id)
+);
+CREATE INDEX IF NOT EXISTS idx_agent_proposals_run ON agent_proposals(run_id);
+CREATE INDEX IF NOT EXISTS idx_agent_proposals_correlation ON agent_proposals(correlation_id);
+CREATE INDEX IF NOT EXISTS idx_agent_proposals_status ON agent_proposals(status);
+CREATE INDEX IF NOT EXISTS idx_agent_proposals_agent ON agent_proposals(agent_id);
 ";
 
 #[cfg(test)]
@@ -895,6 +943,11 @@ mod tests {
             "idx_agent_mailbox_run",
             "idx_agent_mailbox_status",
             "idx_agent_mailbox_correlation",
+            "agent_proposals",
+            "idx_agent_proposals_run",
+            "idx_agent_proposals_correlation",
+            "idx_agent_proposals_status",
+            "idx_agent_proposals_agent",
         ] {
             assert!(
                 SQLITE_DDL.contains(expected),

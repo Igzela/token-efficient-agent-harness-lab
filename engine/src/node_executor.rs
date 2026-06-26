@@ -4,7 +4,7 @@ use std::path::{Component, Path, PathBuf};
 use std::sync::Arc;
 use std::thread;
 
-use crate::orchestration::schemas::AgentState;
+use crate::orchestration::schemas::{AgentState, ChildTaskProposal, HandoffRequest};
 use crate::storage::local_product_store::LocalProductStore;
 
 /// Decision function for agent_step: given context, return the next action.
@@ -12,6 +12,7 @@ pub type AgentDecisionFn =
     Box<dyn Fn(&AgentStepContext) -> Result<AgentAction, String> + Send + Sync>;
 
 const MAX_COMMAND_OUTPUT_BYTES: usize = 64 * 1024;
+const MAX_PROPOSAL_OBJECTIVE_BYTES: usize = 4096;
 
 /// Input for node-level execution within a workflow run.
 #[derive(Debug, Clone)]
@@ -594,9 +595,11 @@ fn command_output_error(start: std::time::Instant, message: String) -> NodeExecu
 
 const ACP_ENABLE_AGENT_RUNTIME: &str = "ACP_ENABLE_AGENT_RUNTIME";
 
-/// Allowed AR-2 agent actions.
-/// Does not include child-task creation, delegation, debate, provider/CLI,
-/// target-output, merge, deploy, or release actions.
+/// AR-2 + AR-3 agent actions.
+/// AR-3 adds: propose_child_task, request_handoff, accept_handoff,
+/// reject_handoff, cancel_proposal.
+/// Does NOT include: concurrent multi-agent scheduling, review/debate,
+/// provider/CLI calls, target-output, merge, deploy, or release.
 #[derive(Debug, Clone, PartialEq)]
 pub enum AgentAction {
     Wait,
@@ -607,6 +610,12 @@ pub enum AgentAction {
     EmitNote(String),
     RecordObservation(String),
     Unsupported(String),
+    // AR-3: Bounded planning, child task proposals, and handoff
+    ProposeChildTask(ChildTaskProposal),
+    RequestHandoff(HandoffRequest),
+    AcceptHandoff(String),
+    RejectHandoff(String),
+    CancelProposal(String),
 }
 
 /// Context assembled during the observe phase for the decision source.
@@ -623,11 +632,14 @@ pub struct AgentStepContext {
 
 /// Bounded one-step agent executor: observe → decide → act → persist.
 ///
-/// Allowed actions: Wait, Complete, UpdateScratchpadSummary, ReadMailbox,
+/// AR-2 actions: Wait, Complete, UpdateScratchpadSummary, ReadMailbox,
 /// AckMessage, EmitNote, RecordObservation.
+/// AR-3 actions (behind the same env gate + kill switch):
+/// ProposeChildTask, RequestHandoff, AcceptHandoff, RejectHandoff, CancelProposal.
 ///
-/// Does not implement child-task creation, delegation, review, debate,
-/// provider/CLI calls, scheduling, hidden mailboxes, or merge/deploy/release.
+/// Does not implement concurrent multi-agent scheduling, review/debate,
+/// provider/CLI calls, hidden mailboxes, automatic merge/deploy/release,
+/// or direct target-repo main writes.
 /// Provider-backed decision source is default-off; tests use a deterministic stub.
 pub struct AgentStepExecutor {
     pub store: Arc<LocalProductStore>,
@@ -660,6 +672,7 @@ impl AgentStepExecutor {
         &self,
         agent_id: &str,
         run_id: &str,
+        _input_node_id: &str,
         action: &AgentAction,
     ) -> Result<String, String> {
         match action {
@@ -726,6 +739,255 @@ impl AgentStepExecutor {
                     )
                     .map_err(|e| format!("audit failed: {e}"))?;
                 Ok(r#"{"action":"record_observation"}"#.to_string())
+            }
+            // ── AR-3: Bounded planning, child task proposals, and handoff ──
+            AgentAction::ProposeChildTask(proposal) => {
+                if proposal.objective.len() > MAX_PROPOSAL_OBJECTIVE_BYTES {
+                    return Err(format!(
+                        "proposal objective exceeds {} byte cap",
+                        MAX_PROPOSAL_OBJECTIVE_BYTES
+                    ));
+                }
+                let proposal_id = format!(
+                    "prop-{}-{}",
+                    proposal.correlation_id,
+                    chrono::Utc::now().timestamp_millis()
+                );
+                self.store
+                    .create_proposal(
+                        &proposal_id,
+                        &proposal.correlation_id,
+                        &proposal.run_id,
+                        &proposal.parent_node_id,
+                        &proposal.agent_id,
+                        "child_task",
+                        &proposal.objective,
+                        &proposal.context_summary,
+                        None,
+                        proposal.proposed_node_id.as_deref(),
+                        proposal.proposed_edge_id.as_deref(),
+                    )
+                    .map_err(|e| format!("failed to create child task proposal: {e}"))?;
+                let _ = self.store.append_audit(
+                    "agent_step",
+                    "agent_step.propose_child_task",
+                    &format!("agent_state/{agent_id}/{run_id}"),
+                    &json!({"proposal_id": proposal_id, "correlation_id": proposal.correlation_id,
+                            "agent_id": agent_id, "run_id": run_id}),
+                );
+                Ok(
+                    json!({"action":"propose_child_task","proposal_id": proposal_id,
+                          "correlation_id": proposal.correlation_id})
+                    .to_string(),
+                )
+            }
+            AgentAction::RequestHandoff(request) => {
+                if request.objective.len() > MAX_PROPOSAL_OBJECTIVE_BYTES {
+                    return Err(format!(
+                        "handoff objective exceeds {} byte cap",
+                        MAX_PROPOSAL_OBJECTIVE_BYTES
+                    ));
+                }
+                if request.target_agent_id == *agent_id {
+                    return Err(
+                        "handoff target agent must be different from source agent".to_string()
+                    );
+                }
+                let proposal_id = format!(
+                    "handoff-{}-{}",
+                    request.correlation_id,
+                    chrono::Utc::now().timestamp_millis()
+                );
+                self.store
+                    .create_proposal(
+                        &proposal_id,
+                        &request.correlation_id,
+                        &request.run_id,
+                        &request.node_id,
+                        &request.source_agent_id,
+                        "handoff",
+                        &request.objective,
+                        &request.context_summary,
+                        Some(&request.target_agent_id),
+                        None,
+                        None,
+                    )
+                    .map_err(|e| format!("failed to create handoff proposal: {e}"))?;
+                let msg_id = format!(
+                    "msg-{}-{}",
+                    request.correlation_id,
+                    chrono::Utc::now().timestamp_millis()
+                );
+                self.store
+                    .send_message(
+                        &msg_id,
+                        &request.source_agent_id,
+                        &request.target_agent_id,
+                        "handoff_request",
+                        Some(&format!("Objective: {}", request.objective)),
+                        Some(&request.correlation_id),
+                        Some(&request.run_id),
+                        Some(&request.node_id),
+                        None,
+                        &json!({"proposal_id": proposal_id}),
+                    )
+                    .map_err(|e| format!("failed to send handoff message: {e}"))?;
+                let _ = self.store.append_audit(
+                    "agent_step",
+                    "agent_step.request_handoff",
+                    &format!("agent_state/{agent_id}/{run_id}"),
+                    &json!({"proposal_id": proposal_id, "correlation_id": request.correlation_id,
+                            "source_agent_id": request.source_agent_id,
+                            "target_agent_id": request.target_agent_id}),
+                );
+                Ok(
+                    json!({"action":"request_handoff","proposal_id": proposal_id,
+                          "correlation_id": request.correlation_id,
+                          "target_agent_id": request.target_agent_id})
+                    .to_string(),
+                )
+            }
+            AgentAction::AcceptHandoff(correlation_id) => {
+                let proposal = self
+                    .store
+                    .find_proposal_by_correlation(correlation_id, agent_id)
+                    .map_err(|e| format!("failed to find proposal: {e}"))?;
+                match proposal {
+                    Some(p) => {
+                        let pid = p["proposal_id"].as_str().unwrap_or("");
+                        if p["status"].as_str() != Some("pending") {
+                            return Err(format!("handoff proposal {pid} is not pending"));
+                        }
+                        let updated = self
+                            .store
+                            .update_proposal_status(pid, "accepted")
+                            .map_err(|e| format!("failed to accept handoff: {e}"))?;
+                        if !updated {
+                            return Err(format!("handoff proposal {pid} could not be accepted (not found or not pending)"));
+                        }
+                        let msg_id = format!(
+                            "ack-{}-{}",
+                            correlation_id,
+                            chrono::Utc::now().timestamp_millis()
+                        );
+                        let from = p["agent_id"].as_str().unwrap_or("");
+                        let run = p["run_id"].as_str().unwrap_or("");
+                        let node = p["parent_node_id"].as_str().unwrap_or("");
+                        // Reply to the source agent
+                        let _ = self.store.send_message(
+                            &msg_id,
+                            agent_id,
+                            from,
+                            "handoff_accepted",
+                            Some("Handoff accepted"),
+                            Some(correlation_id),
+                            Some(run),
+                            Some(node),
+                            None,
+                            &json!({"proposal_id": pid}),
+                        );
+                        let _ = self.store.append_audit(
+                            "agent_step",
+                            "agent_step.accept_handoff",
+                            &format!("agent_state/{agent_id}/{run_id}"),
+                            &json!({"proposal_id": pid, "correlation_id": correlation_id}),
+                        );
+                        Ok(json!({"action":"accept_handoff","proposal_id": pid,
+                                  "correlation_id": correlation_id})
+                        .to_string())
+                    }
+                    None => Err(format!(
+                        "no pending handoff proposal found for correlation_id {correlation_id}"
+                    )),
+                }
+            }
+            AgentAction::RejectHandoff(correlation_id) => {
+                let proposal = self
+                    .store
+                    .find_proposal_by_correlation(correlation_id, agent_id)
+                    .map_err(|e| format!("failed to find proposal: {e}"))?;
+                match proposal {
+                    Some(p) => {
+                        let pid = p["proposal_id"].as_str().unwrap_or("");
+                        if p["status"].as_str() != Some("pending") {
+                            return Err(format!("handoff proposal {pid} is not pending"));
+                        }
+                        let updated = self
+                            .store
+                            .update_proposal_status(pid, "rejected")
+                            .map_err(|e| format!("failed to reject handoff: {e}"))?;
+                        if !updated {
+                            return Err(format!("handoff proposal {pid} could not be rejected (not found or not pending)"));
+                        }
+                        let msg_id = format!(
+                            "rej-{}-{}",
+                            correlation_id,
+                            chrono::Utc::now().timestamp_millis()
+                        );
+                        let from = p["agent_id"].as_str().unwrap_or("");
+                        let run = p["run_id"].as_str().unwrap_or("");
+                        let node = p["parent_node_id"].as_str().unwrap_or("");
+                        let _ = self.store.send_message(
+                            &msg_id,
+                            agent_id,
+                            from,
+                            "handoff_rejected",
+                            Some("Handoff rejected"),
+                            Some(correlation_id),
+                            Some(run),
+                            Some(node),
+                            None,
+                            &json!({"proposal_id": pid}),
+                        );
+                        let _ = self.store.append_audit(
+                            "agent_step",
+                            "agent_step.reject_handoff",
+                            &format!("agent_state/{agent_id}/{run_id}"),
+                            &json!({"proposal_id": pid, "correlation_id": correlation_id}),
+                        );
+                        Ok(json!({"action":"reject_handoff","proposal_id": pid,
+                                  "correlation_id": correlation_id})
+                        .to_string())
+                    }
+                    None => Err(format!(
+                        "no pending handoff proposal found for correlation_id {correlation_id}"
+                    )),
+                }
+            }
+            AgentAction::CancelProposal(correlation_id) => {
+                let proposal = self
+                    .store
+                    .find_proposal_by_correlation(correlation_id, agent_id)
+                    .map_err(|e| format!("failed to find proposal: {e}"))?;
+                match proposal {
+                    Some(p) => {
+                        let pid = p["proposal_id"].as_str().unwrap_or("");
+                        if p["status"].as_str() != Some("pending") {
+                            return Err(format!("proposal {pid} is not pending"));
+                        }
+                        let updated = self
+                            .store
+                            .update_proposal_status(pid, "cancelled")
+                            .map_err(|e| format!("failed to cancel proposal: {e}"))?;
+                        if !updated {
+                            return Err(format!(
+                                "proposal {pid} could not be cancelled (not found or not pending)"
+                            ));
+                        }
+                        let _ = self.store.append_audit(
+                            "agent_step",
+                            "agent_step.cancel_proposal",
+                            &format!("agent_state/{agent_id}/{run_id}"),
+                            &json!({"proposal_id": pid, "correlation_id": correlation_id}),
+                        );
+                        Ok(json!({"action":"cancel_proposal","proposal_id": pid,
+                                  "correlation_id": correlation_id})
+                        .to_string())
+                    }
+                    None => Err(format!(
+                        "no pending proposal found for correlation_id {correlation_id}"
+                    )),
+                }
             }
             AgentAction::Unsupported(name) => Err(format!("unsupported action: {name}")),
         }
@@ -811,7 +1073,7 @@ impl NodeExecutor for AgentStepExecutor {
             &json!({"action": format!("{action:?}")}),
         );
 
-        match self.execute_action(&agent_id, &input.run_id, &action) {
+        match self.execute_action(&agent_id, &input.run_id, &input.node_id, &action) {
             Ok(result) => {
                 let _ = self.store.append_audit(
                     "agent_step",
@@ -1303,5 +1565,463 @@ mod tests {
                 "action {action:?} should not need provider/CLI"
             );
         }
+    }
+
+    // ── AR-3 tests ───────────────────────────────────────────────────────────
+
+    fn stub_child_task_proposal(agent_id: &str, run_id: &str) -> ChildTaskProposal {
+        ChildTaskProposal {
+            schema_version: "child_task_proposal.v1".to_string(),
+            correlation_id: "corr-ar3-001".to_string(),
+            objective: "implement feature X".to_string(),
+            context_summary: "context for feature X".to_string(),
+            proposed_node_id: Some("child-node-001".to_string()),
+            proposed_edge_id: Some("edge-001".to_string()),
+            parent_node_id: "agent-node-001".to_string(),
+            run_id: run_id.to_string(),
+            agent_id: agent_id.to_string(),
+        }
+    }
+
+    fn stub_handoff_request(agent_id: &str, run_id: &str) -> HandoffRequest {
+        HandoffRequest {
+            schema_version: "handoff_request.v1".to_string(),
+            correlation_id: "corr-handoff-001".to_string(),
+            objective: "review my work".to_string(),
+            context_summary: "context for review".to_string(),
+            target_agent_id: "target-agent".to_string(),
+            source_agent_id: agent_id.to_string(),
+            run_id: run_id.to_string(),
+            node_id: "agent-node-001".to_string(),
+        }
+    }
+
+    #[test]
+    fn test_agent_step_propose_child_task() {
+        let store = Arc::new(ar2_store());
+        create_test_agent(&store, "agent-ar3a", "run-ar3a");
+        std::env::set_var("ACP_ENABLE_AGENT_RUNTIME", "1");
+        std::env::remove_var("ACP_AGENT_RUNTIME_KILL_SWITCH");
+
+        let proposal = stub_child_task_proposal("agent-ar3a", "run-ar3a");
+        let executor = AgentStepExecutor::new(
+            store.clone(),
+            stub_decision(AgentAction::ProposeChildTask(proposal)),
+        );
+        let input = agent_step_input("agent-ar3a", "run-ar3a");
+
+        let output = executor.execute_node(&input);
+        assert_eq!(output.status, "completed");
+        let result = output.output.unwrap();
+        assert!(result.contains("propose_child_task"));
+        assert!(result.contains("corr-ar3-001"));
+
+        let proposals = store
+            .list_proposals_by_run("run-ar3a", 100, 0)
+            .expect("list");
+        assert_eq!(proposals.len(), 1);
+        assert_eq!(proposals[0]["status"], "pending");
+        assert_eq!(proposals[0]["correlation_id"], "corr-ar3-001");
+        assert_eq!(proposals[0]["proposal_type"], "child_task");
+        assert_eq!(proposals[0]["agent_id"], "agent-ar3a");
+    }
+
+    #[test]
+    fn test_agent_step_proposal_links_ids() {
+        let store = Arc::new(ar2_store());
+        create_test_agent(&store, "agent-ar3b", "run-ar3b");
+        std::env::set_var("ACP_ENABLE_AGENT_RUNTIME", "1");
+        std::env::remove_var("ACP_AGENT_RUNTIME_KILL_SWITCH");
+
+        let proposal = ChildTaskProposal {
+            schema_version: "child_task_proposal.v1".to_string(),
+            correlation_id: "corr-unique-999".to_string(),
+            objective: "test".to_string(),
+            context_summary: "test context".to_string(),
+            proposed_node_id: Some("child-node-999".to_string()),
+            proposed_edge_id: Some("edge-999".to_string()),
+            parent_node_id: "parent-node-999".to_string(),
+            run_id: "run-ar3b".to_string(),
+            agent_id: "agent-ar3b".to_string(),
+        };
+        let executor = AgentStepExecutor::new(
+            store.clone(),
+            stub_decision(AgentAction::ProposeChildTask(proposal)),
+        );
+        let input = agent_step_input("agent-ar3b", "run-ar3b");
+
+        let output = executor.execute_node(&input);
+        assert_eq!(output.status, "completed");
+
+        let proposals = store
+            .list_proposals_by_run("run-ar3b", 100, 0)
+            .expect("list");
+        assert_eq!(proposals.len(), 1);
+        assert_eq!(proposals[0]["correlation_id"], "corr-unique-999");
+        assert_eq!(proposals[0]["run_id"], "run-ar3b");
+        assert_eq!(proposals[0]["agent_id"], "agent-ar3b");
+        assert_eq!(proposals[0]["parent_node_id"], "parent-node-999");
+    }
+
+    #[test]
+    fn test_agent_step_invalid_proposal_fails_closed() {
+        let store = Arc::new(ar2_store());
+        create_test_agent(&store, "agent-ar3c", "run-ar3c");
+        std::env::set_var("ACP_ENABLE_AGENT_RUNTIME", "1");
+        std::env::remove_var("ACP_AGENT_RUNTIME_KILL_SWITCH");
+
+        let big_objective = "x".repeat(5000);
+        let proposal = ChildTaskProposal {
+            schema_version: "child_task_proposal.v1".to_string(),
+            correlation_id: "corr-big".to_string(),
+            objective: big_objective,
+            context_summary: "small".to_string(),
+            proposed_node_id: None,
+            proposed_edge_id: None,
+            parent_node_id: "pn-001".to_string(),
+            run_id: "run-ar3c".to_string(),
+            agent_id: "agent-ar3c".to_string(),
+        };
+        let executor = AgentStepExecutor::new(
+            store.clone(),
+            stub_decision(AgentAction::ProposeChildTask(proposal)),
+        );
+        let input = agent_step_input("agent-ar3c", "run-ar3c");
+        let output = executor.execute_node(&input);
+        assert_eq!(output.status, "failed");
+        assert!(output.error_message.unwrap().contains("byte cap"));
+
+        let executor2 = AgentStepExecutor::new(
+            store.clone(),
+            stub_decision(AgentAction::Unsupported("bad_ar3".to_string())),
+        );
+        let input2 = agent_step_input("agent-ar3c", "run-ar3c");
+        let output2 = executor2.execute_node(&input2);
+        assert_eq!(output2.status, "failed");
+    }
+
+    #[test]
+    fn test_agent_step_handoff_request() {
+        let store = Arc::new(ar2_store());
+        create_test_agent(&store, "agent-ar3d", "run-ar3d");
+        create_test_agent(&store, "target-agent", "run-ar3d");
+        std::env::set_var("ACP_ENABLE_AGENT_RUNTIME", "1");
+        std::env::remove_var("ACP_AGENT_RUNTIME_KILL_SWITCH");
+
+        let request = stub_handoff_request("agent-ar3d", "run-ar3d");
+        let executor = AgentStepExecutor::new(
+            store.clone(),
+            stub_decision(AgentAction::RequestHandoff(request)),
+        );
+        let input = agent_step_input("agent-ar3d", "run-ar3d");
+
+        let output = executor.execute_node(&input);
+        assert_eq!(output.status, "completed");
+        let result = output.output.unwrap();
+        assert!(result.contains("request_handoff"));
+
+        let proposals = store
+            .list_proposals_by_run("run-ar3d", 100, 0)
+            .expect("list");
+        assert_eq!(proposals.len(), 1);
+        assert_eq!(proposals[0]["proposal_type"], "handoff");
+        assert_eq!(proposals[0]["status"], "pending");
+
+        let msgs = store
+            .list_mailbox(Some("target-agent"), Some("run-ar3d"), None, None, 100, 0)
+            .expect("list mailbox");
+        assert_eq!(msgs.len(), 1);
+        assert_eq!(msgs[0].message_type, "handoff_request");
+    }
+
+    #[test]
+    fn test_agent_step_accept_reject_handoff() {
+        let store = Arc::new(ar2_store());
+        create_test_agent(&store, "agent-src", "run-ar3e");
+        create_test_agent(&store, "agent-dst", "run-ar3e");
+        std::env::set_var("ACP_ENABLE_AGENT_RUNTIME", "1");
+        std::env::remove_var("ACP_AGENT_RUNTIME_KILL_SWITCH");
+
+        let request = HandoffRequest {
+            schema_version: "handoff_request.v1".to_string(),
+            correlation_id: "corr-handoff-accept".to_string(),
+            objective: "please review".to_string(),
+            context_summary: "review context".to_string(),
+            target_agent_id: "agent-dst".to_string(),
+            source_agent_id: "agent-src".to_string(),
+            run_id: "run-ar3e".to_string(),
+            node_id: "agent-node-001".to_string(),
+        };
+        let req_exec = AgentStepExecutor::new(
+            store.clone(),
+            stub_decision(AgentAction::RequestHandoff(request)),
+        );
+        let req_out = req_exec.execute_node(&agent_step_input("agent-src", "run-ar3e"));
+        assert_eq!(req_out.status, "completed");
+
+        let accept_exec = AgentStepExecutor::new(
+            store.clone(),
+            stub_decision(AgentAction::AcceptHandoff(
+                "corr-handoff-accept".to_string(),
+            )),
+        );
+        let accept_out = accept_exec.execute_node(&agent_step_input("agent-dst", "run-ar3e"));
+        assert_eq!(accept_out.status, "completed");
+        assert!(accept_out.output.unwrap().contains("accept_handoff"));
+
+        let proposals = store
+            .list_proposals_by_run("run-ar3e", 100, 0)
+            .expect("list");
+        let handoff_proposals: Vec<_> = proposals
+            .iter()
+            .filter(|p| p["proposal_type"] == "handoff")
+            .collect();
+        assert_eq!(handoff_proposals.len(), 1);
+        assert_eq!(handoff_proposals[0]["status"], "accepted");
+
+        let request2 = HandoffRequest {
+            schema_version: "handoff_request.v1".to_string(),
+            correlation_id: "corr-handoff-reject".to_string(),
+            objective: "please review 2".to_string(),
+            context_summary: "review context 2".to_string(),
+            target_agent_id: "agent-dst".to_string(),
+            source_agent_id: "agent-src".to_string(),
+            run_id: "run-ar3e".to_string(),
+            node_id: "agent-node-001".to_string(),
+        };
+        let req_exec2 = AgentStepExecutor::new(
+            store.clone(),
+            stub_decision(AgentAction::RequestHandoff(request2)),
+        );
+        let _ = req_exec2.execute_node(&agent_step_input("agent-src", "run-ar3e"));
+
+        let reject_exec = AgentStepExecutor::new(
+            store.clone(),
+            stub_decision(AgentAction::RejectHandoff(
+                "corr-handoff-reject".to_string(),
+            )),
+        );
+        let reject_out = reject_exec.execute_node(&agent_step_input("agent-dst", "run-ar3e"));
+        assert_eq!(reject_out.status, "completed");
+        assert!(reject_out.output.unwrap().contains("reject_handoff"));
+
+        let proposals2 = store
+            .list_proposals_by_run("run-ar3e", 100, 0)
+            .expect("list");
+        let rejected: Vec<_> = proposals2
+            .iter()
+            .filter(|p| p["correlation_id"] == "corr-handoff-reject")
+            .collect();
+        assert_eq!(rejected.len(), 1);
+        assert_eq!(rejected[0]["status"], "rejected");
+    }
+
+    #[test]
+    fn test_agent_step_kill_switch_blocks_ar3() {
+        let _lock = AGENT_ENV_LOCK.lock().unwrap();
+        let store = Arc::new(ar2_store());
+        create_test_agent(&store, "agent-ar3k", "run-ar3k");
+        std::env::set_var("ACP_ENABLE_AGENT_RUNTIME", "1");
+        std::env::set_var("ACP_AGENT_RUNTIME_KILL_SWITCH", "1");
+
+        let proposal = stub_child_task_proposal("agent-ar3k", "run-ar3k");
+        let executor = AgentStepExecutor::new(
+            store,
+            stub_decision(AgentAction::ProposeChildTask(proposal)),
+        );
+        let input = agent_step_input("agent-ar3k", "run-ar3k");
+        let output = executor.execute_node(&input);
+        assert_eq!(output.status, "failed");
+        assert!(output.error_message.unwrap().contains("kill switch"));
+
+        std::env::remove_var("ACP_AGENT_RUNTIME_KILL_SWITCH");
+        std::env::set_var("ACP_ENABLE_AGENT_RUNTIME", "1");
+    }
+
+    #[test]
+    fn test_agent_step_disabled_runtime_blocks_ar3() {
+        let store = Arc::new(ar2_store());
+        create_test_agent(&store, "agent-ar3d", "run-ar3d");
+        std::env::remove_var("ACP_ENABLE_AGENT_RUNTIME");
+        std::env::remove_var("ACP_AGENT_RUNTIME_KILL_SWITCH");
+
+        let proposal = stub_child_task_proposal("agent-ar3d", "run-ar3d");
+        let executor = AgentStepExecutor::new(
+            store,
+            stub_decision(AgentAction::ProposeChildTask(proposal)),
+        );
+        let input = agent_step_input("agent-ar3d", "run-ar3d");
+        let output = executor.execute_node(&input);
+        assert_eq!(output.status, "failed");
+        assert!(output
+            .error_message
+            .unwrap()
+            .contains("ACP_ENABLE_AGENT_RUNTIME"));
+
+        std::env::set_var("ACP_ENABLE_AGENT_RUNTIME", "1");
+        std::env::remove_var("ACP_AGENT_RUNTIME_KILL_SWITCH");
+    }
+
+    #[test]
+    fn test_agent_step_ar3_redaction_and_size_caps() {
+        let store = Arc::new(ar2_store());
+        create_test_agent(&store, "agent-ar3r", "run-ar3r");
+        std::env::set_var("ACP_ENABLE_AGENT_RUNTIME", "1");
+        std::env::remove_var("ACP_AGENT_RUNTIME_KILL_SWITCH");
+
+        let secret_objective = "my password is AKIA1234ABCDEF".to_string();
+        let proposal = ChildTaskProposal {
+            schema_version: "child_task_proposal.v1".to_string(),
+            correlation_id: "corr-secret".to_string(),
+            objective: secret_objective,
+            context_summary: "normal context".to_string(),
+            proposed_node_id: None,
+            proposed_edge_id: None,
+            parent_node_id: "pn-001".to_string(),
+            run_id: "run-ar3r".to_string(),
+            agent_id: "agent-ar3r".to_string(),
+        };
+        let executor = AgentStepExecutor::new(
+            store.clone(),
+            stub_decision(AgentAction::ProposeChildTask(proposal)),
+        );
+        let input = agent_step_input("agent-ar3r", "run-ar3r");
+        let output = executor.execute_node(&input);
+        assert_eq!(output.status, "completed");
+
+        let proposals = store
+            .list_proposals_by_run("run-ar3r", 100, 0)
+            .expect("list");
+        assert_eq!(proposals.len(), 1);
+        assert!(!proposals[0]["objective"].as_str().unwrap().is_empty());
+    }
+
+    #[test]
+    fn test_agent_step_ar3_audit_events_emitted() {
+        let store = Arc::new(ar2_store());
+        create_test_agent(&store, "agent-ar3a", "run-ar3a");
+        std::env::set_var("ACP_ENABLE_AGENT_RUNTIME", "1");
+        std::env::remove_var("ACP_AGENT_RUNTIME_KILL_SWITCH");
+
+        let proposal = stub_child_task_proposal("agent-ar3a", "run-ar3a");
+        let executor = AgentStepExecutor::new(
+            store.clone(),
+            stub_decision(AgentAction::ProposeChildTask(proposal)),
+        );
+        let input = agent_step_input("agent-ar3a", "run-ar3a");
+        let output = executor.execute_node(&input);
+        assert_eq!(output.status, "completed");
+
+        let events = store.audit_events(100).expect("audit events");
+        let ar3_events: Vec<_> = events
+            .iter()
+            .filter(|e| {
+                e.get("action")
+                    .and_then(|a| a.as_str())
+                    .map(|a| a.starts_with("agent_step.") || a.contains("agent_proposal"))
+                    .unwrap_or(false)
+            })
+            .collect();
+        assert!(
+            ar3_events.len() >= 4,
+            "expected >=4 AR-3 audit events, got {}",
+            ar3_events.len()
+        );
+    }
+
+    #[test]
+    fn test_agent_step_ar3_no_provider_or_cli_called() {
+        let store = Arc::new(ar2_store());
+        create_test_agent(&store, "agent-ar3np", "run-ar3np");
+        std::env::set_var("ACP_ENABLE_AGENT_RUNTIME", "1");
+        std::env::remove_var("ACP_AGENT_RUNTIME_KILL_SWITCH");
+
+        let proposal = stub_child_task_proposal("agent-ar3np", "run-ar3np");
+        let actions: Vec<AgentAction> = vec![AgentAction::ProposeChildTask(proposal.clone())];
+        for action in actions {
+            let s = Arc::new(ar2_store());
+            create_test_agent(&s, "ag-ar3np", "run-ar3np");
+            let exec = AgentStepExecutor::new(s, stub_decision(action.clone()));
+            let inp = agent_step_input("ag-ar3np", "run-ar3np");
+            let out = exec.execute_node(&inp);
+            assert_eq!(
+                out.status, "completed",
+                "action {action:?} should not need provider/CLI"
+            );
+        }
+    }
+
+    #[test]
+    fn test_agent_step_cancel_proposal() {
+        let store = Arc::new(ar2_store());
+        create_test_agent(&store, "agent-ar3c", "run-ar3c");
+        std::env::set_var("ACP_ENABLE_AGENT_RUNTIME", "1");
+        std::env::remove_var("ACP_AGENT_RUNTIME_KILL_SWITCH");
+
+        let proposal = stub_child_task_proposal("agent-ar3c", "run-ar3c");
+        let exec = AgentStepExecutor::new(
+            store.clone(),
+            stub_decision(AgentAction::ProposeChildTask(proposal)),
+        );
+        let out = exec.execute_node(&agent_step_input("agent-ar3c", "run-ar3c"));
+        assert_eq!(out.status, "completed");
+
+        let cancel_exec = AgentStepExecutor::new(
+            store.clone(),
+            stub_decision(AgentAction::CancelProposal("corr-ar3-001".to_string())),
+        );
+        let cancel_out = cancel_exec.execute_node(&agent_step_input("agent-ar3c", "run-ar3c"));
+        assert_eq!(cancel_out.status, "completed");
+        assert!(cancel_out.output.unwrap().contains("cancel_proposal"));
+
+        let proposals = store
+            .list_proposals_by_run("run-ar3c", 100, 0)
+            .expect("list");
+        assert_eq!(proposals.len(), 1);
+        assert_eq!(proposals[0]["status"], "cancelled");
+    }
+
+    #[test]
+    fn test_agent_step_self_handoff_fails_closed() {
+        let store = Arc::new(ar2_store());
+        create_test_agent(&store, "agent-ar3s", "run-ar3s");
+        std::env::set_var("ACP_ENABLE_AGENT_RUNTIME", "1");
+        std::env::remove_var("ACP_AGENT_RUNTIME_KILL_SWITCH");
+
+        let request = HandoffRequest {
+            schema_version: "handoff_request.v1".to_string(),
+            correlation_id: "corr-self".to_string(),
+            objective: "self handoff".to_string(),
+            context_summary: "context".to_string(),
+            target_agent_id: "agent-ar3s".to_string(),
+            source_agent_id: "agent-ar3s".to_string(),
+            run_id: "run-ar3s".to_string(),
+            node_id: "node-001".to_string(),
+        };
+        let exec =
+            AgentStepExecutor::new(store, stub_decision(AgentAction::RequestHandoff(request)));
+        let out = exec.execute_node(&agent_step_input("agent-ar3s", "run-ar3s"));
+        assert_eq!(out.status, "failed");
+        assert!(out
+            .error_message
+            .unwrap()
+            .contains("target agent must be different"));
+    }
+
+    #[test]
+    fn test_agent_step_accept_nonexistent_handoff_fails_closed() {
+        let store = Arc::new(ar2_store());
+        create_test_agent(&store, "agent-ar3x", "run-ar3x");
+        std::env::set_var("ACP_ENABLE_AGENT_RUNTIME", "1");
+        std::env::remove_var("ACP_AGENT_RUNTIME_KILL_SWITCH");
+
+        let exec = AgentStepExecutor::new(
+            store,
+            stub_decision(AgentAction::AcceptHandoff(
+                "nonexistent-correlation".to_string(),
+            )),
+        );
+        let out = exec.execute_node(&agent_step_input("agent-ar3x", "run-ar3x"));
+        assert_eq!(out.status, "failed");
     }
 }
