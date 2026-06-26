@@ -41,6 +41,7 @@ const INTEGRITY_TABLES: &[&str] = &[
     "controlled_loop_policy_snapshots",
     "agent_state",
     "agent_mailbox",
+    "agent_proposals",
 ];
 
 impl LocalProductStore {
