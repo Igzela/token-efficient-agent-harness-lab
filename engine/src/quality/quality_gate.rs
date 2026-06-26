@@ -325,19 +325,6 @@ mod tests {
         }
     }
 
-    #[allow(dead_code)]
-    fn failed_artifact_result() -> ArtifactGateResult {
-        ArtifactGateResult {
-            ok: false,
-            checks: vec![ArtifactCheck {
-                name: "test".to_string(),
-                passed: false,
-                message: "fail".to_string(),
-            }],
-            ..Default::default()
-        }
-    }
-
     #[test]
     fn test_pass_high_score() {
         let score = TaskScore {
