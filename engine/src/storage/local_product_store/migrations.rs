@@ -30,6 +30,7 @@ impl LocalProductStore {
                     11 => Self::migrate_v11_add_scheduler_heartbeat(conn)?,
                     12 => Self::migrate_v12_add_policy_proposals(conn)?,
                     13 => Self::migrate_v13_add_policy_snapshots(conn)?,
+                    14 => Self::migrate_v14_add_agent_state_and_mailbox(conn)?,
                     _ => return Err(format!("unknown migration version: {}", migration.version)),
                 }
                 conn.execute_batch(&format!("PRAGMA user_version = {}", migration.version))
@@ -441,6 +442,52 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_policy_snapshots_active_policy_key
             conn.query_row("PRAGMA user_version", [], |row| row.get(0))
                 .map_err(|e| e.to_string())
         })
+    }
+
+    fn migrate_v14_add_agent_state_and_mailbox(conn: &Connection) -> Result<(), String> {
+        conn.execute_batch(
+            "
+CREATE TABLE IF NOT EXISTS agent_state (
+    agent_id TEXT NOT NULL,
+    run_id TEXT NOT NULL,
+    role TEXT NOT NULL,
+    capability_profile_json TEXT NOT NULL DEFAULT '[]',
+    objective TEXT,
+    status TEXT NOT NULL DEFAULT 'idle',
+    scratchpad_summary TEXT,
+    redaction_filter TEXT,
+    metadata_json TEXT NOT NULL DEFAULT '{}',
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    PRIMARY KEY (agent_id, run_id)
+);
+
+CREATE TABLE IF NOT EXISTS agent_mailbox (
+    message_sequence INTEGER PRIMARY KEY AUTOINCREMENT,
+    message_id TEXT NOT NULL UNIQUE,
+    correlation_id TEXT,
+    from_agent_id TEXT NOT NULL,
+    to_agent_id TEXT NOT NULL,
+    run_id TEXT,
+    node_id TEXT,
+    message_type TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'pending',
+    body TEXT,
+    body_summary TEXT,
+    redaction_status TEXT NOT NULL DEFAULT 'none',
+    created_at TEXT NOT NULL,
+    read_at TEXT,
+    ack_at TEXT,
+    reply_to_message_id TEXT,
+    metadata_json TEXT NOT NULL DEFAULT '{}'
+);
+CREATE INDEX IF NOT EXISTS idx_agent_mailbox_to ON agent_mailbox(to_agent_id);
+CREATE INDEX IF NOT EXISTS idx_agent_mailbox_run ON agent_mailbox(run_id);
+CREATE INDEX IF NOT EXISTS idx_agent_mailbox_status ON agent_mailbox(status);
+CREATE INDEX IF NOT EXISTS idx_agent_mailbox_correlation ON agent_mailbox(correlation_id);
+",
+        )
+        .map_err(|e| e.to_string())
     }
 }
 

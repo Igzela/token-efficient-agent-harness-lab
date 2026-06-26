@@ -126,7 +126,7 @@ queued workflow node or agent wakeup
 | Phase | Goal | Acceptance |
 |---|---|---|
 | AR-0 | Decision baseline and runtime contract | Data model contract defines every durable entity and its owning module; no implementation. Module ownership records which existing modules own future AR entities. Threat model delta documents which safety boundaries AR phases must preserve. Test/CI minimum for AR code PRs is defined. Rollback path is documented (code revert + down migration + gate disable). Explicit non-goals list what is out of scope. Docs remain internally consistent — true multi-agent runtime not yet implemented. See AR-0 Decision Baseline below. |
-| AR-1 | Agent identity, state, and mailbox | Durable `AgentState` plus `AgentMessage` mailbox with send/read/ack/reply, correlation IDs, run/node links, redaction, audit events, and SQLite/PostgreSQL tests. No provider/CLI calls are added. |
+| AR-1 | Agent identity, state, and mailbox | **Implemented** — `AgentState` + `AgentMessage` mailbox with send/read/ack/reply, correlation IDs, run/node links, redaction, size caps, audit events. SQLite schema v14, `local_product_store/agent_runtime.rs` with 30 passing tests. No provider/CLI calls, scheduler changes, or agent step executor. See `docs/ARCHITECTURE_BOOK.md` § AR Phase Status. |
 | AR-2 | Agent step executor | Add a bounded `agent_step` executor that runs `observe -> decide -> act -> persist` for one step, with token/call/cost/time/retry caps, kill/pause checks, and durable scratchpad summaries. It may use stub/provider paths only through existing gates. |
 | AR-3 | Planning, child tasks, and handoff | Let an agent propose child workflow nodes/edges and delegate work to another agent via mailbox. Proposals must be bounded, auditable, deterministic enough for tests, and reversible through workflow mutation events. |
 | AR-4 | Concurrent multi-agent scheduling | Extend scheduler claim policy so multiple ready agent steps can advance concurrently under global/per-agent concurrency, resource locks, lease expiry, stale recovery, and join/wait semantics. |
@@ -218,7 +218,7 @@ AR-0 requires no migration or gate — it is documentation only.
 - No automatic agent creation, agent spawning, or agent lifecycle outside workflow-run scope
 - No cloud, hosted, or multi-tenant deployment of agent runtime
 
-**Status: docs-only, not implemented.** AR-0 records the contract baseline. No AR-1/AR-2/AR-3/AR-4/AR-5/AR-6 implementation is present. True multi-agent runtime semantics are not implemented. See `docs/ARCHITECTURE_BOOK.md` § Agent Runtime (AR-0) Contract for the full contract definition.
+**Status: AR-0 baseline complete; AR-1 implemented.** AR-0 records the contract baseline. AR-1 (agent identity, state, mailbox) is implemented — see `docs/ARCHITECTURE_BOOK.md` § AR Phase Status. AR-2/AR-3/AR-4/AR-5/AR-6 are not implemented. True multi-agent runtime semantics (autonomous step loops, planning, delegation, debate, concurrency) are not implemented. See `docs/ARCHITECTURE_BOOK.md` for the full contract definition.
 
 Each Agent Runtime PR must state the live-influence status, affected modules, new storage/API surface, safety gates, rollback path, intentionally unfinished follow-up, and whether any agent-authored output can reach target-output approval.
 

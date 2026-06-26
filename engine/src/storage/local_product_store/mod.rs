@@ -1,6 +1,7 @@
 mod adaptive_observation;
 mod adaptive_policy;
 mod agent_profiles;
+mod agent_runtime;
 mod audit;
 mod auto_adjustments;
 mod boundaries;
