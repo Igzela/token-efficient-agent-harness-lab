@@ -866,3 +866,153 @@ async fn test_operator_summary_no_raw_text() {
         "operator_summary must not contain raw secret text"
     );
 }
+
+#[tokio::test]
+async fn test_audit_run_isolation_no_substring_collision() {
+    let (store, _dir) = make_store();
+
+    // Create agents for both runs
+    store
+        .create_agent_state("a1", "run-1", "worker", &[], None, "idle", &json!({}))
+        .unwrap();
+    store
+        .create_agent_state("a2", "run-10", "worker", &[], None, "idle", &json!({}))
+        .unwrap();
+
+    // Audit events for run-1
+    store
+        .append_audit(
+            "system",
+            "conflict.detected",
+            "node/run-1/step-1",
+            &json!({"run_id": "run-1"}),
+        )
+        .unwrap();
+    store
+        .append_audit(
+            "system",
+            "blocked.resource",
+            "agent_state/agent-1/run-1",
+            &json!({"run_id": "run-1"}),
+        )
+        .unwrap();
+
+    // Audit events for run-10 (substring collision with run-1)
+    store
+        .append_audit(
+            "system",
+            "conflict.detected",
+            "node/run-10/step-1",
+            &json!({"run_id": "run-10"}),
+        )
+        .unwrap();
+    store
+        .append_audit(
+            "system",
+            "blocked.resource",
+            "agent_state/agent-2/run-10",
+            &json!({"run_id": "run-10"}),
+        )
+        .unwrap();
+    store
+        .append_audit(
+            "system",
+            "normal.action",
+            "node/run-10/step-2",
+            &json!({"run_id": "run-10"}),
+        )
+        .unwrap();
+
+    let app = build_app(store);
+
+    // Query run-1 — must NOT include run-10 events
+    let (_status_1, body_1) = get_evidence(&app, "run-1").await;
+    assert_eq!(
+        body_1["blocked_signals_count"], 2,
+        "run-1 blocked_signals must count only run-1 events"
+    );
+    let audit_1 = body_1["recent_audit"].as_array().unwrap();
+    assert!(
+        !audit_1.is_empty(),
+        "run-1 must have audit events from agent_state create"
+    );
+    for event in audit_1 {
+        let resource = event["resource"].as_str().unwrap();
+        assert!(
+            !resource.contains("run-10"),
+            "run-1 evidence must not include run-10 audit events, got: {}",
+            resource
+        );
+    }
+
+    // Query run-10 — must NOT include run-1 events
+    let (_status_10, body_10) = get_evidence(&app, "run-10").await;
+    assert_eq!(
+        body_10["blocked_signals_count"], 2,
+        "run-10 blocked_signals must count only run-10 events"
+    );
+    let audit_10 = body_10["recent_audit"].as_array().unwrap();
+    for event in audit_10 {
+        let resource = event["resource"].as_str().unwrap();
+        assert!(
+            !resource.contains("run-1/"),
+            "run-10 evidence must not include run-1 audit events, got: {}",
+            resource
+        );
+    }
+}
+
+#[tokio::test]
+async fn test_audit_unrelated_details_text_not_matched() {
+    let (store, _dir) = make_store();
+
+    store
+        .create_agent_state("a1", "run-42", "worker", &[], None, "idle", &json!({}))
+        .unwrap();
+
+    // Audit event where details_json contains the run_id string but NOT as details.run_id
+    store
+        .append_audit(
+            "system",
+            "normal.action",
+            "node/global/1",
+            &json!({"note": "run-42 was mentioned in passing", "other": "data"}),
+        )
+        .unwrap();
+
+    // Audit event with proper details.run_id
+    store
+        .append_audit(
+            "system",
+            "conflict.detected",
+            "node/run-42/step-1",
+            &json!({"run_id": "run-42"}),
+        )
+        .unwrap();
+
+    let app = build_app(store);
+    let (_status, body) = get_evidence(&app, "run-42").await;
+
+    // The "normal.action" event should be filtered out because details.run_id is absent
+    // and resource doesn't contain "run-42" as a segment
+    let audit = body["recent_audit"].as_array().unwrap();
+    let conflict_events: Vec<_> = audit
+        .iter()
+        .filter(|e| e["action"] == "conflict.detected")
+        .collect();
+    assert_eq!(
+        conflict_events.len(),
+        1,
+        "must find the real conflict event"
+    );
+
+    // The "normal.action" with unrelated details text should not appear
+    let normal_events: Vec<_> = audit
+        .iter()
+        .filter(|e| e["action"] == "normal.action")
+        .collect();
+    assert!(
+        normal_events.is_empty(),
+        "unrelated details text containing run_id must not match"
+    );
+}
