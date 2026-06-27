@@ -9,6 +9,7 @@ use crate::http_server::middleware::{
 };
 use crate::http_server::state::AxumApiState;
 use crate::http_server::{ReadOnlyPlanApiRequest, AXUM_API_SCHEMA_VERSION};
+use crate::provider::adaptive_observation::AdaptiveNodeExecutionConfig;
 use crate::read_only_planner::ReadOnlyPlanner;
 
 pub(crate) async fn api_create_plan(
@@ -18,7 +19,12 @@ pub(crate) async fn api_create_plan(
     Extension(request_id): Extension<RequestId>,
     Json(request): Json<ReadOnlyPlanApiRequest>,
 ) -> Result<impl IntoResponse, ApiError> {
-    let context = authorize(&state, &headers, "dispatch:read", uri.path(), &request_id.0)?;
+    let required_scope = if request.adaptive_execution.is_some() {
+        "dispatch:execute"
+    } else {
+        "dispatch:read"
+    };
+    let context = authorize(&state, &headers, required_scope, uri.path(), &request_id.0)?;
     if request.raw_request.trim().is_empty() {
         return Err(ApiError::with_code(
             StatusCode::BAD_REQUEST,
@@ -26,9 +32,29 @@ pub(crate) async fn api_create_plan(
             "raw_request is required",
         ));
     }
+    if request.adaptive_execution.is_some() && request.confirm_adaptive_execution_plan != Some(true)
+    {
+        return Err(ApiError::with_code(
+            StatusCode::BAD_REQUEST,
+            "adaptive_execution_confirmation_required",
+            "confirm_adaptive_execution_plan must be true",
+        ));
+    }
 
     let store = require_store(&state)?;
     let request_source = request.request_source.as_deref().unwrap_or("api");
+    let adaptive_execution = if let Some(value) = request.adaptive_execution.clone() {
+        serde_json::from_value::<AdaptiveNodeExecutionConfig>(value.clone()).map_err(|_| {
+            ApiError::with_code(
+                StatusCode::BAD_REQUEST,
+                "invalid_adaptive_execution",
+                "adaptive_execution must contain a valid plan and limits",
+            )
+        })?;
+        Some(value)
+    } else {
+        None
+    };
     let planner = ReadOnlyPlanner::new();
     let plan = store
         .create_workflow_plan(
@@ -36,7 +62,17 @@ pub(crate) async fn api_create_plan(
             request_source,
             &context.api_key_id,
             |ids, created_at| {
-                planner.create_plan(ids, &request.raw_request, request_source, created_at)
+                if let Some(adaptive_execution) = adaptive_execution {
+                    Ok(adaptive_execution_plan(
+                        ids,
+                        &request.raw_request,
+                        request_source,
+                        created_at,
+                        adaptive_execution,
+                    ))
+                } else {
+                    planner.create_plan(ids, &request.raw_request, request_source, created_at)
+                }
             },
         )
         .map_err(internal_error)?;
@@ -48,6 +84,54 @@ pub(crate) async fn api_create_plan(
             "plan": plan,
         })),
     ))
+}
+
+fn adaptive_execution_plan(
+    ids: &crate::read_only_planner::WorkflowPlanIds,
+    raw_request: &str,
+    request_source: &str,
+    created_at: &str,
+    adaptive_execution: serde_json::Value,
+) -> serde_json::Value {
+    json!({
+        "schema_version": "read_only_plan.v1",
+        "plan_id": ids.plan_id,
+        "status": "planned_read_only",
+        "workflow_id": ids.workflow_id,
+        "dispatch_id": ids.dispatch_id,
+        "analysis": {
+            "analysis_id": format!("analysis-{}", ids.dispatch_id),
+            "task_domain": "adaptive",
+            "request_source": request_source,
+            "raw_request_snapshot": raw_request,
+        },
+        "graph": {
+            "schema_version": "workflow_graph.v1",
+            "workflow_id": ids.workflow_id,
+            "dispatch_id": ids.dispatch_id,
+            "status": "decomposed",
+            "created_at": created_at,
+            "updated_at": created_at,
+            "nodes": [{
+                "node_id": "adaptive-node-1",
+                "task_type": "implementation",
+                "status": "pending",
+                "adaptive_execution": adaptive_execution,
+            }],
+            "edges": [],
+        },
+        "boundaries": {
+            "execution": "explicit_tick_only",
+            "execution_authority": "explicit_tick_only",
+            "target_repository_writes": "disabled",
+            "runtime_workers": "env_gated_supervised",
+        },
+        "advisory": {
+            "schema_version": "plan_advisory.v1",
+            "mode": "explicit_adaptive_execution_plan",
+            "requires_executor": "adaptive_provider",
+        },
+    })
 }
 
 pub(crate) async fn api_plans(
