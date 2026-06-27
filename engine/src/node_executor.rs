@@ -4035,4 +4035,107 @@ mod tests {
         assert_eq!(msgs_p2.len(), 1);
         assert_eq!(msgs_p2[0].message_type, "debate_request");
     }
+
+    // ── CAS-style round update tests ───────────────────────────────────────
+
+    /// CAS guard at the store level: the second call to
+    /// update_debate_round_if_pending on the same proposal must fail because
+    /// the first call already changed context_summary, so the WHERE clause
+    /// (context_summary = old) no longer matches.
+    #[test]
+    fn test_ar5_cas_round_update_rejects_double_advance() {
+        let store = ar2_store();
+        let debate_pid = "debate-cas-test";
+        let initial_meta = json!({
+            "max_rounds": 5,
+            "current_round": 0,
+            "participant_agent_ids": ["p1"],
+        });
+        store
+            .create_proposal(
+                debate_pid,
+                "corr-cas",
+                "run-cas",
+                "node-1",
+                "opener",
+                "debate_request",
+                "topic",
+                &initial_meta.to_string(),
+                None,
+                None,
+                None,
+            )
+            .expect("create debate");
+
+        let next_meta = json!({
+            "max_rounds": 5,
+            "current_round": 1,
+            "participant_agent_ids": ["p1"],
+        });
+
+        // First CAS succeeds: context matches, round 0 == expected 0
+        let ok = store
+            .update_debate_round_if_pending(debate_pid, "run-cas", 0, &next_meta.to_string())
+            .expect("first CAS");
+        assert!(ok, "first CAS should succeed");
+
+        // Second CAS with same expected_round=0 must fail: context_summary
+        // already changed (now current_round=1), so WHERE clause matches 0
+        // rows — this is the true CAS guard against concurrent writers.
+        let ok2 = store
+            .update_debate_round_if_pending(debate_pid, "run-cas", 0, &next_meta.to_string())
+            .expect("second CAS");
+        assert!(
+            !ok2,
+            "second CAS must fail — context_summary changed since first read"
+        );
+    }
+
+    /// CAS guard rejects mismatched expected_current_round.
+    #[test]
+    fn test_ar5_cas_round_update_rejects_wrong_expected_round() {
+        let store = ar2_store();
+        let debate_pid = "debate-cas-wrong";
+        let initial_meta = json!({
+            "max_rounds": 5,
+            "current_round": 0,
+            "participant_agent_ids": ["p1"],
+        });
+        store
+            .create_proposal(
+                debate_pid,
+                "corr-cas-w",
+                "run-cas-w",
+                "node-1",
+                "opener",
+                "debate_request",
+                "topic",
+                &initial_meta.to_string(),
+                None,
+                None,
+                None,
+            )
+            .expect("create debate");
+
+        let next_meta = json!({
+            "max_rounds": 5,
+            "current_round": 1,
+            "participant_agent_ids": ["p1"],
+        });
+
+        // expected_current_round=5 doesn't match actual round=0
+        let ok = store
+            .update_debate_round_if_pending(debate_pid, "run-cas-w", 5, &next_meta.to_string())
+            .expect("CAS with wrong round");
+        assert!(
+            !ok,
+            "CAS must reject when expected round doesn't match actual"
+        );
+
+        // Verify the original context is unchanged
+        let p = store.get_proposal(debate_pid).expect("get").unwrap();
+        let ctx: serde_json::Value =
+            serde_json::from_str(p["context_summary"].as_str().unwrap()).unwrap();
+        assert_eq!(ctx["current_round"], 0, "context must be unchanged");
+    }
 }

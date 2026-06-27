@@ -1168,10 +1168,13 @@ impl LocalProductStore {
         Ok(affected > 0)
     }
 
-    /// Conditionally update debate context_summary only if the proposal is
-    /// pending, matches the given run_id, is a debate_request, and its
-    /// current_round equals the expected value.  Returns false if stale,
-    /// terminal, not found, or already at max.
+    /// CAS-style update of debate round.  Reads the current context_summary,
+    /// verifies the round matches `expected_current_round`, then issues an
+    /// UPDATE that includes `AND context_summary = <old>` so concurrent
+    /// workers cannot both succeed on the same stale read.
+    ///
+    /// Returns false if stale, terminal, not found, round mismatch, or
+    /// already updated by another worker.
     pub fn update_debate_round_if_pending(
         &self,
         proposal_id: &str,
@@ -1183,7 +1186,7 @@ impl LocalProductStore {
         let now = self.now();
         let affected = match &self.db {
             DatabaseConnection::Sqlite(_) => self.with_conn(|conn| {
-                let current_ctx: Option<String> = conn
+                let old_ctx: Option<String> = conn
                     .query_row(
                         "SELECT context_summary FROM agent_proposals
                          WHERE proposal_id=?1 AND status='pending' AND run_id=?2
@@ -1193,26 +1196,26 @@ impl LocalProductStore {
                     )
                     .optional()
                     .map_err(|e| e.to_string())?;
-                match current_ctx {
-                    None => Ok(0),
-                    Some(ctx_str) => {
-                        let ctx: serde_json::Value =
-                            serde_json::from_str(&ctx_str).unwrap_or(json!({}));
-                        let actual_round = ctx["current_round"].as_u64().unwrap_or(0) as usize;
-                        if actual_round != expected_current_round {
-                            return Ok(0);
-                        }
-                        let n = conn
-                            .execute(
-                                "UPDATE agent_proposals SET context_summary=?1, updated_at=?2
-                                 WHERE proposal_id=?3 AND status='pending' AND run_id=?4
-                                 AND proposal_type='debate_request'",
-                                params![capped, now, proposal_id, run_id],
-                            )
-                            .map_err(|e| e.to_string())?;
-                        Ok(n)
-                    }
+                let old_ctx = match old_ctx {
+                    Some(c) => c,
+                    None => return Ok(0),
+                };
+                let ctx: serde_json::Value = serde_json::from_str(&old_ctx).unwrap_or(json!({}));
+                let actual_round = ctx["current_round"].as_u64().unwrap_or(0) as usize;
+                if actual_round != expected_current_round {
+                    return Ok(0);
                 }
+                // CAS: include old context_summary in WHERE so a concurrent
+                // worker that already changed it causes 0 affected rows.
+                let n = conn
+                    .execute(
+                        "UPDATE agent_proposals SET context_summary=?1, updated_at=?2
+                         WHERE proposal_id=?3 AND status='pending' AND run_id=?4
+                         AND proposal_type='debate_request' AND context_summary=?5",
+                        params![capped, now, proposal_id, run_id, old_ctx],
+                    )
+                    .map_err(|e| e.to_string())?;
+                Ok(n)
             })?,
             #[cfg(feature = "pg")]
             DatabaseConnection::Pg(_) => self.with_pg_conn(|client| {
@@ -1227,18 +1230,20 @@ impl LocalProductStore {
                 if rows.is_empty() {
                     return Ok(0);
                 }
-                let ctx_str: String = rows[0].get(0);
-                let ctx: serde_json::Value = serde_json::from_str(&ctx_str).unwrap_or(json!({}));
+                let old_ctx: String = rows[0].get(0);
+                let ctx: serde_json::Value = serde_json::from_str(&old_ctx).unwrap_or(json!({}));
                 let actual_round = ctx["current_round"].as_u64().unwrap_or(0) as usize;
                 if actual_round != expected_current_round {
                     return Ok(0);
                 }
+                // CAS: include old context_summary in WHERE so a concurrent
+                // worker that already changed it causes 0 affected rows.
                 let n = client
                     .execute(
                         "UPDATE agent_proposals SET context_summary=$1, updated_at=$2
                          WHERE proposal_id=$3 AND status='pending' AND run_id=$4
-                         AND proposal_type='debate_request'",
-                        &[&capped, &now, &proposal_id, &run_id],
+                         AND proposal_type='debate_request' AND context_summary=$5",
+                        &[&capped, &now, &proposal_id, &run_id, &old_ctx],
                     )
                     .map_err(|e| e.to_string())?;
                 Ok(n as usize)
