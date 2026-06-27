@@ -1,6 +1,6 @@
 # Current Status
 
-Last updated: 2026-06-27. AR-5 (review and debate primitives) and AR-6 (operator evidence read-model) complete. V2-0 through V2-5, Real Output Closeout, Adaptive Fusion AF-0 through AF-7, Trusted Local Autonomous Execution IAE-0 through IAE-3, AR-2 (agent step executor), AR-3 (bounded planning, child task proposals, handoff), AR-4 (bounded concurrent multi-agent scheduling), AR-5 (review and debate primitives), and AR-6 (operator evidence read-model) are complete; `v0.1.0` is published and its online installer path is verified.
+Last updated: 2026-06-27. Agent Runtime AR-0 through AR-6 complete and sealed — decision baseline, agent identity/state/mailbox, step executor, planning/handoff, concurrent scheduling, review/debate primitives, and operator evidence read-model. No AR-7 planned or authorized. V2-0 through V2-5, Real Output Closeout, Adaptive Fusion AF-0 through AF-7, Trusted Local Autonomous Execution IAE-0 through IAE-3 are complete; `v0.1.0` is published and its online installer path is verified.
 
 ## Summary
 
@@ -129,7 +129,7 @@ Historical phase plans, closeouts, and long-form validation reports are retained
 ## Current Gaps
 
 - Engine/API/SDK/dashboard output is end to end for a supplied git repo: natural-language CLI execution, controlled worktree, real verification with bounded repair, artifact evidence, approval, patch/branch output, and optional GitHub PR creation.
-- True multi-agent runtime semantics (autonomous step loops, self-planning, handoff/delegation, cross-agent review/debate, concurrent multi-agent scheduling) are not implemented yet. AR-1 (agent identity, state, mailbox), AR-2 (bounded one-step agent executor), AR-3 (bounded planning, child task proposals, handoff), AR-4 (concurrent multi-agent scheduling), AR-5 (review and debate primitives), and AR-6 (operator evidence read-model) are implemented as a foundation — see `docs/ARCHITECTURE_BOOK.md` § AR Phase Status.
+- Bounded multi-agent runtime semantics are implemented through Agent Runtime AR-0 through AR-6 (identity, state, mailbox, step executor, planning/handoff, concurrency, debate/review, operator evidence). The track is sealed; extending the AR phase ladder requires a new decision baseline — see `docs/NEXT_DECISION.md` § Agent Runtime AR-0 through AR-6 Closeout.
 - Product fit is stronger for local operations/research than for public-facing production UX.
 - The UI is task-first, while detailed operations and administration remain available as secondary views.
 - Security posture is suitable for local/small-team self-hosting only; hosted/multi-tenant use would require a new threat model and approved implementation plan.
