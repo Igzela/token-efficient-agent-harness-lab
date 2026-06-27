@@ -1,6 +1,6 @@
 # Architecture Book
 
-Last updated: 2026-06-26
+Last updated: 2026-06-27 (Agent Runtime sealed at AR-6)
 
 This is the current architecture baseline for the Token-Efficient Agent Harness Lab. Historical phase plans, closeout reports, and long-form strategy docs are retained in release-tagged git history; `docs/archive/README.md` is the working-tree index.
 
@@ -128,7 +128,7 @@ The runtime path is intentionally built on existing `workflow_runs`, `scheduler`
 
 ## Agent Runtime (AR-0) Contract
 
-The current system is a deterministic workflow/control-plane runtime, not yet a full autonomous multi-agent runtime. AR-0 defines the contract baseline for evolving it into a bounded multi-agent runtime. AR-1 (agent identity, state, mailbox storage), AR-2 (agent step executor), AR-3 (bounded planning/child tasks/handoff), AR-4 (concurrent multi-agent scheduling), AR-5 (review and debate primitives), and AR-6 (operator evidence read-model) are implemented.
+The system is a deterministic workflow/control-plane runtime extended with bounded multi-agent semantics. AR-0 defines the contract baseline. AR-1 (agent identity, state, mailbox), AR-2 (agent step executor), AR-3 (bounded planning/child tasks/handoff), AR-4 (concurrent multi-agent scheduling), AR-5 (review and debate primitives), and AR-6 (operator evidence read-model) are implemented. The track is complete and sealed through AR-6.
 
 ### Definition
 
@@ -136,7 +136,7 @@ The current system is a deterministic workflow/control-plane runtime, not yet a 
 
 ### What AgentRuntime Is Not
 
-- Not a full multi-agent runtime implementation. AR-0 is the contract; AR-1 added agent state and mailbox storage; AR-2 added the agent step executor. No scheduler changes, provider/CLI call paths, or concurrent agent semantics exist.
+- Not a full multi-agent runtime implementation. AR-0 is the contract; AR-1 through AR-6 implement bounded multi-agent semantics (identity, mailbox, state, step executor, planning, handoff, concurrency, debate, operator evidence). The track is complete and sealed.
 - Not a second runtime kernel. All AR phases extend `workflow_runs`, `scheduler`, `node_executor`, `provider`, `cli`, `storage/local_product_store`, http_server, SDK, and dashboard — never a parallel scheduler, DAG engine, storage layer, or hidden side-channel mailbox.
 - Not a replacement for existing safety gates. Provider calls, CLI execution, target-output approval, cost caps, audit, redaction, kill switches, and rollback remain authoritative.
 - Not an autonomous loop authority. No AR phase creates unbounded agent goals, unbounded recursive planning, or automatic merge/deploy/release authority.
@@ -240,7 +240,7 @@ These are accepted current limitations, not hidden TODOs:
 - V2-3 controlled target output is merged. It creates no merge/deploy/apply authority and preserves the registered target working tree and `main`.
 - GitHub PR creation is default-off and adds no merge authority.
 - Bounded supervised workers are merged in V2-4 and Mission Control product output UX is merged in V2-5; unattended autonomous-agent loops remain out of scope.
-- True multi-agent runtime semantics are not implemented yet. The accepted direction is to add them incrementally through the Agent Runtime track in `docs/NEXT_DECISION.md`, reusing existing workflow, scheduler, storage, provider/CLI, audit, dashboard, and target-output gates.
+- Bounded multi-agent runtime semantics are implemented through Agent Runtime AR-0 through AR-6. The track is sealed; extending the AR phase ladder requires a new decision baseline — see `docs/NEXT_DECISION.md` § Agent Runtime AR-0 through AR-6 Closeout.
 - Cloud SaaS, hosted/cloud deployment, multi-tenant service, and direct release/tag/deploy/apply controls are not implemented. Full Agent Autonomy Mode may evolve these repo-scoped designs through documented, testable, observable, reviewable, and rollbackable changes. The only hard stops are real-secret commits, falsified test/CI evidence, intentionally hidden failures, removed rollback paths, and irreversible external destruction without recovery.
 - Some routing, quality, and orchestration modules remain partially active rather than unified under one policy layer.
 

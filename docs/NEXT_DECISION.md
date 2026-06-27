@@ -21,7 +21,7 @@ On 2026-06-23 Charlie approved Full Agent Autonomy Mode for this repository. Mai
 | V2 Real Production Output | Complete through V2-5 |
 | Real Output Closeout | Complete; `v0.1.0` published and installer verified |
 | Adaptive Fusion AF-0 through AF-7 | Complete; current runtime gates remain implemented |
-| Agent Runtime AR-2 through AR-6 | Complete — agent step executor, child task proposals/handoff, bounded concurrent scheduling, review/debate primitives, operator evidence read-model |
+| Agent Runtime AR-0 through AR-6 | **Complete and sealed** — decision baseline, agent identity/state/mailbox, step executor, planning/handoff, concurrent scheduling, review/debate primitives, operator evidence read-model. No AR-7 planned or authorized. |
 | Trusted Local Autonomous Execution | Complete through IAE-3 |
 | Full Agent Autonomy Mode | Active for high-risk architecture, authority, migration, release/deploy workflow, and decision-supersession experiments |
 | Agent Autonomous Maintenance Mode | Active for implementation, docs, tests, CI, review, and bounded shipping |
@@ -69,7 +69,7 @@ The R-series is sealed at R7 as the current baseline. Full Agent Autonomy Mode m
 - Autonomous maintenance: repair stale docs, CI breakage, test drift, and wire-codegen drift.
 - Regression hardening: add or repair tests for existing behavior.
 - Pilots: real-world task validation.
-- Agent Runtime track: add true multi-agent identity, mailbox, state, step loop, planning, delegation, review/debate, and bounded concurrency semantics on top of the existing workflow/scheduler/storage/executor substrate.
+- Agent Runtime track: **complete and sealed at AR-6.** Maintenance (tests, docs, bug fixes) is permitted under Agent Autonomous Maintenance Mode. Extending the AR phase ladder requires a new decision baseline in this file.
 - V2 maintenance and V2 authority expansion experiments.
 - Adaptive Fusion maintenance and adaptive routing authority experiments.
 - Trusted-local execution evolution.
@@ -93,7 +93,7 @@ IAE implementation should extend existing modules unless Full Agent Autonomy Mod
 
 ## Agent Runtime Track
 
-The next major architecture direction is to evolve the existing workflow control plane into a bounded true multi-agent runtime without creating a parallel kernel. The current system can schedule workflow nodes, call provider/CLI executors, persist run events, apply guarded DAG mutations, and expose operator evidence. It does not yet implement durable agent identity, runtime mailbox delivery, persistent agent memory, agent-authored planning, agent-to-agent handoff, cross-node debate/review, or concurrent multi-agent step semantics.
+The Agent Runtime track extended the existing workflow control plane with bounded multi-agent runtime semantics without creating a parallel kernel. AR-0 through AR-6 are complete: the system now supports durable agent identity, runtime mailbox delivery, persistent agent state, agent-authored planning, agent-to-agent handoff, cross-node debate/review, bounded concurrent multi-agent step semantics, and an operator evidence read-model. No AR-7 is planned or authorized.
 
 Agent Runtime work must extend the existing modules:
 
@@ -126,7 +126,7 @@ queued workflow node or agent wakeup
 
 | Phase | Goal | Acceptance |
 |---|---|---|
-| AR-0 | Decision baseline and runtime contract | Data model contract defines every durable entity and its owning module; no implementation. Module ownership records which existing modules own future AR entities. Threat model delta documents which safety boundaries AR phases must preserve. Test/CI minimum for AR code PRs is defined. Rollback path is documented (code revert + down migration + gate disable). Explicit non-goals list what is out of scope. Docs remain internally consistent — true multi-agent runtime not yet implemented. See AR-0 Decision Baseline below. |
+| AR-0 | Decision baseline and runtime contract | **Complete** — data model contract defines every durable entity and its owning module. Module ownership records which existing modules own AR entities. Threat model delta documents which safety boundaries AR phases preserve. Test/CI minimum for AR code PRs is defined. Rollback path is documented (code revert + down migration + gate disable). Explicit non-goals list what is out of scope. See AR-0 Decision Baseline below. |
 | AR-1 | Agent identity, state, and mailbox | **Implemented** — `AgentState` + `AgentMessage` mailbox with send/read/ack/reply, correlation IDs, run/node links, redaction, size caps, audit events. SQLite schema v14, `local_product_store/agent_runtime.rs` with 30 passing tests. Rollback documented in `docs/ARCHITECTURE_BOOK.md` (forward-only migration, manual drop + version reset). No provider/CLI calls, scheduler changes, or agent step executor. See `docs/ARCHITECTURE_BOOK.md` § AR Phase Status. |
 | AR-2 | Agent step executor | **Implemented** — `AgentStepExecutor` in `node_executor.rs` implements `NodeExecutor` with `AgentAction` enum, `AgentDecisionFn` closure, env gate + kill switch, one-step observe/decide/act/persist lifecycle, audit events, and 11 tests. No provider/CLI calls, scheduler change, DB migration, or dashboard UI. See `docs/ARCHITECTURE_BOOK.md` § AR Phase Status. |
 | AR-3 | Planning, child tasks, and handoff | **Implemented** — ChildTaskProposal/HandoffRequest types, agent_proposals table (v15), proposal CRUD with redaction/size caps, AgentAction::ProposeChildTask/RequestHandoff/AcceptHandoff/RejectHandoff/CancelProposal, mailbox-based handoff delegation, safety gates (fail closed on invalid state, self-handoff, nonexistent proposals, kill switch, disabled runtime), 12 AR-3 tests (51 total node_executor tests) passing. No multi-agent scheduling, review/debate, or dashboard UI. See `docs/ARCHITECTURE_BOOK.md` § AR Phase Status. |
@@ -221,9 +221,59 @@ AR-0 requires no migration or gate — it is documentation only.
 - No automatic agent creation, agent spawning, or agent lifecycle outside workflow-run scope
 - No cloud, hosted, or multi-tenant deployment of agent runtime
 
-**Status: AR-0 baseline complete; AR-1 through AR-6 implemented.** AR-0 records the contract baseline. AR-1 (agent identity, state, mailbox), AR-2 (agent step executor), AR-3 (bounded planning, child task proposals, handoff), AR-4 (concurrent multi-agent scheduling), AR-5 (review and debate primitives), and AR-6 (operator evidence read-model) are implemented — see `docs/ARCHITECTURE_BOOK.md` § AR Phase Status. True multi-agent runtime semantics (autonomous step loops, planning, delegation, debate, concurrency) are partially implemented through AR-5. See `docs/ARCHITECTURE_BOOK.md` for the full contract definition.
+**Status: AR-0 through AR-6 complete and sealed.** AR-0 records the contract baseline. AR-1 (agent identity, state, mailbox), AR-2 (agent step executor), AR-3 (bounded planning, child task proposals, handoff), AR-4 (concurrent multi-agent scheduling), AR-5 (review and debate primitives), and AR-6 (operator evidence read-model) are implemented — see `docs/ARCHITECTURE_BOOK.md` § AR Phase Status. Bounded multi-agent runtime semantics (identity, mailbox, state, step executor, planning, handoff, debate, concurrency, operator evidence) are fully implemented through AR-6. See `docs/ARCHITECTURE_BOOK.md` for the full contract definition.
 
 Each Agent Runtime PR must state the live-influence status, affected modules, new storage/API surface, safety gates, rollback path, intentionally unfinished follow-up, and whether any agent-authored output can reach target-output approval.
+
+### Agent Runtime AR-0 through AR-6 Closeout
+
+**Completed scope.**
+
+| Phase | Capability | Status |
+|---|---|---|
+| AR-0 | Decision baseline, data model contract, module ownership, threat model delta, non-goals | Complete |
+| AR-1 | `AgentState` + `AgentMessage` mailbox with send/read/ack/reply, correlation IDs, redaction, audit | Complete |
+| AR-2 | `AgentStepExecutor` with observe/decide/act/persist lifecycle, env gate, kill switch | Complete |
+| AR-3 | ChildTaskProposal/HandoffRequest, proposal CRUD, mailbox-based handoff delegation | Complete |
+| AR-4 | `agent_max_concurrent_global` and `agent_max_concurrent_per_run` caps, lease-based enforcement | Complete |
+| AR-5 | CAS-style debate rounds, bounded review/debate threads, verdicts, dissent, evidence links | Complete |
+| AR-6 | Read-only operator evidence read-model at `GET /api/v1/operator/evidence/:run_id` | Complete |
+
+Merged via PRs #132–#138. Main CI green after PR #138.
+
+**Safety boundaries preserved.**
+
+- No second scheduler, DAG kernel, storage layer, or hidden side-channel mailbox.
+- No direct writes to registered target working trees or protected branches.
+- No raw prompt/output/transcript memory persistence.
+- No unbounded recursive planning or unbounded worker loops.
+- No automatic merge/deploy/release authority.
+- No provider calls outside existing trusted-local/legacy gates.
+- No bypass of cost/token/call/time/concurrency controls.
+- No target-output approval automation.
+- Human/operator remains final authority.
+
+**Remaining non-goals (explicitly out of scope).**
+
+- Provider/CLI execution path changes beyond existing gates.
+- DB migration beyond AR-3 v15 without separate approval.
+- Scheduler lease/claim policy changes beyond AR-4 caps.
+- Hidden mailbox, side channel, or second runtime kernel.
+- Automatic target-output merge/deploy/release authority.
+- Autonomous agent goals outside workflow-run scope.
+- Agent creation/spawning outside workflow-run scope.
+- Cloud, hosted, or multi-tenant agent runtime deployment.
+
+**What future work is allowed.**
+
+- Maintenance: tests, docs, bug fixes for AR-1 through AR-6.
+- Hardening: edge-case coverage, invariant strengthening.
+- Pilots: real-world task validation using existing AR capabilities.
+- UX/operator-surface refinement: dashboard, SDK, API ergonomics.
+
+**What future work requires a new decision baseline.**
+
+Extending the AR phase ladder beyond AR-6 requires an explicit update to this file (`docs/NEXT_DECISION.md`) with a new decision baseline, threat-model delta, acceptance criteria, and rollback path. Candidate directions include operator decision/approval workflows, evidence-to-action handoff, or a new named track — none are currently authorized.
 
 ## V2 Status
 
