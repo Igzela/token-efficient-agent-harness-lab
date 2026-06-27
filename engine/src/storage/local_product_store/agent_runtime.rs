@@ -1316,6 +1316,33 @@ impl LocalProductStore {
             }),
         }
     }
+
+    pub fn count_proposals_by_run(
+        &self,
+        run_id: &str,
+        status_filter: Option<&str>,
+    ) -> Result<i64, String> {
+        let mut wheres = Vec::new();
+        wheres.push(format!("run_id='{}'", esc_sql(run_id)));
+        if let Some(s) = status_filter {
+            wheres.push(format!("status='{}'", esc_sql(s)));
+        }
+        let where_clause = format!("WHERE {}", wheres.join(" AND "));
+
+        match &self.db {
+            DatabaseConnection::Sqlite(_) => self.with_conn(|conn| {
+                let sql = format!("SELECT COUNT(*) FROM agent_proposals {where_clause}");
+                conn.query_row(&sql, [], |row| row.get::<_, i64>(0))
+                    .map_err(|e| e.to_string())
+            }),
+            #[cfg(feature = "pg")]
+            DatabaseConnection::Pg(_) => self.with_pg_conn(|client| {
+                let sql = format!("SELECT COUNT(*) FROM agent_proposals {where_clause}");
+                let row = client.query_one(&sql, &[]).map_err(|e| e.to_string())?;
+                Ok(row.get::<_, i64>(0))
+            }),
+        }
+    }
 }
 
 #[cfg(feature = "pg")]

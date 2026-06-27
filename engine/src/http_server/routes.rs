@@ -272,6 +272,10 @@ fn axum_routes() -> Router<AxumApiState> {
             get(audit::api_audit).options(cors_preflight),
         )
         .route(
+            "/api/v1/operator/evidence/:run_id",
+            get(operator_evidence::api_operator_evidence).options(cors_preflight),
+        )
+        .route(
             "/api/v1/backups",
             get(backups::api_list_backups)
                 .post(backups::api_create_backup)

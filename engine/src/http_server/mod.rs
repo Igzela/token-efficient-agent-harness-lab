@@ -1219,6 +1219,7 @@ pub fn openapi_document() -> serde_json::Value {
     });
     append_provider_endpoint_openapi_paths(&mut doc);
     append_adaptive_fusion_openapi_paths(&mut doc);
+    append_operator_evidence_openapi_paths(&mut doc);
     doc
 }
 
@@ -1292,6 +1293,26 @@ fn append_adaptive_fusion_openapi_paths(doc: &mut Value) {
                     "confirm_adaptive_policy_rollback": {"type": "boolean"}
                 })),
                 "responses": {"200": {"description": "Adaptive fusion policy rollback result"}}
+            }
+        }),
+    );
+}
+
+fn append_operator_evidence_openapi_paths(doc: &mut Value) {
+    let Some(paths) = doc.get_mut("paths").and_then(Value::as_object_mut) else {
+        return;
+    };
+    paths.insert(
+        "/api/v1/operator/evidence/{run_id}".to_string(),
+        json!({
+            "get": {
+                "summary": "Read operator evidence read-model for a workflow run",
+                "description": "Requires dispatch:read scope. Aggregated agent state, mailbox counts, proposal counts by type, blocked signals, and sanitized audit events. Metadata-only — no raw prompts, outputs, rationales, scratchpads, or secrets.",
+                "parameters": [path_parameter("run_id")],
+                "responses": {
+                    "200": {"description": "Operator evidence read-model"},
+                    "404": {"description": "Run not found (returns empty evidence)"}
+                }
             }
         }),
     );
@@ -1382,6 +1403,7 @@ mod tests {
             "post",
             "backup_id",
         );
+        assert_path_parameter(&doc, "/api/v1/operator/evidence/{run_id}", "get", "run_id");
     }
 
     #[test]

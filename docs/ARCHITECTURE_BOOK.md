@@ -128,7 +128,7 @@ The runtime path is intentionally built on existing `workflow_runs`, `scheduler`
 
 ## Agent Runtime (AR-0) Contract
 
-The current system is a deterministic workflow/control-plane runtime, not yet a full autonomous multi-agent runtime. AR-0 defines the contract baseline for evolving it into a bounded multi-agent runtime. AR-1 (agent identity, state, mailbox storage) and AR-2 (agent step executor) are implemented; AR-3 through AR-6 are not.
+The current system is a deterministic workflow/control-plane runtime, not yet a full autonomous multi-agent runtime. AR-0 defines the contract baseline for evolving it into a bounded multi-agent runtime. AR-1 (agent identity, state, mailbox storage), AR-2 (agent step executor), AR-3 (bounded planning/child tasks/handoff), AR-4 (concurrent multi-agent scheduling), AR-5 (review and debate primitives), and AR-6 (operator evidence read-model) are implemented.
 
 ### Definition
 
@@ -206,10 +206,12 @@ AR phases consume the following existing modules, extending them through focused
 
 **AR-4 (bounded concurrent multi-agent scheduling) — implemented.** Adds `agent_max_concurrent_global` (default 2) and `agent_max_concurrent_per_run` (default 1) to `SchedulerConfig` with env overrides. Cap enforcement is race-condition-free inside the lease transaction. Audit events cover the full lifecycle. The scheduler runtime passes caps on every tick. 8 new tests pass. See `docs/NEXT_DECISION.md` § Agent Runtime Track.
 
-**AR-5 and later — not implemented:**
+**AR-5 (bounded review and debate primitives) — implemented.** CAS-style debate round update, bounded review/debate primitives, and state-machine correctness fixes. Tests pass. See `docs/NEXT_DECISION.md` for details.
 
-- AR-5 review and debate primitives
-- AR-6 operator evidence and SDK/dashboard surface
+**AR-6 (operator evidence read-model) — implemented.** Adds a read-only operator evidence surface at `GET /api/v1/operator/evidence/:run_id`. It aggregates agent state, mailbox/proposal counts, blocked signals, and sanitized audit events. No new execution authority; AR-1 to AR-5 runtime semantics unchanged. Provider/CLI authority unchanged. Target-output approval unchanged. No autonomous merge/deploy/release authority added.
+
+**Later phases — not implemented:**
+
 - Any provider/CLI execution path changes
 - Any DB migration beyond AR-3 v15
 - Any scheduler lease/claim policy change
