@@ -93,7 +93,7 @@ IAE implementation should extend existing modules unless Full Agent Autonomy Mod
 
 ## Agent Runtime Track
 
-The Agent Runtime track evolved the existing workflow control plane into a bounded true multi-agent runtime without creating a parallel kernel. AR-0 through AR-6 are complete: the system now supports durable agent identity, runtime mailbox delivery, persistent agent state, agent-authored planning, agent-to-agent handoff, cross-node debate/review, bounded concurrent multi-agent step semantics, and an operator evidence read-model. No AR-7 is planned or authorized.
+The Agent Runtime track extended the existing workflow control plane with bounded multi-agent runtime semantics without creating a parallel kernel. AR-0 through AR-6 are complete: the system now supports durable agent identity, runtime mailbox delivery, persistent agent state, agent-authored planning, agent-to-agent handoff, cross-node debate/review, bounded concurrent multi-agent step semantics, and an operator evidence read-model. No AR-7 is planned or authorized.
 
 Agent Runtime work must extend the existing modules:
 
