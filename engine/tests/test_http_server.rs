@@ -903,6 +903,187 @@ async fn axum_create_read_only_plan_persists_workflow_graph_without_execution() 
 }
 
 #[tokio::test]
+async fn axum_create_explicit_adaptive_plan_can_tick_fusion_node() {
+    let _guard = provider_cli_env_lock().lock().await;
+    let _operator_guard = adaptive_operator_env_lock().lock().await;
+    std::env::set_var("ACP_ENABLE_PROVIDER_EXECUTION", "1");
+    std::env::set_var("ACP_ENABLE_ADAPTIVE_FUSION_EXECUTION", "1");
+
+    let dir = tempdir().unwrap();
+    let store =
+        std::sync::Arc::new(LocalProductStore::new(dir.path().join("adaptive-plan.db")).unwrap());
+    let providers = [
+        ("panel-a", "panel-a-model"),
+        ("panel-b", "panel-b-model"),
+        ("judge", "judge-model"),
+        ("synth", "synth-model"),
+    ]
+    .into_iter()
+    .map(|(endpoint_id, model)| {
+        (
+            endpoint_id.to_string(),
+            std::sync::Arc::new(
+                engine::provider::stub::StubProvider::new(endpoint_id).with_default_model(model),
+            ) as std::sync::Arc<dyn engine::provider::Provider>,
+        )
+    })
+    .collect::<std::collections::BTreeMap<_, _>>();
+    let adaptive = std::sync::Arc::new(
+        engine::provider::adaptive_execution::AdaptiveExecutionExecutor::new(
+            providers,
+            std::sync::Arc::new(engine::provider::ProviderAuditRecorder::with_store(
+                store.clone(),
+            )),
+            engine::provider::adaptive_execution::AdaptiveExecutionKillSwitch::new(),
+        ),
+    );
+    let mut resolver = TenantResolver::new();
+    let scopes = HashSet::from(["dispatch:read".to_string(), "dispatch:execute".to_string()]);
+    resolver.add_tenant(Tenant {
+        tenant_id: "local".to_string(),
+        name: "Local".to_string(),
+        scopes: scopes.clone(),
+        rate_limit: Some(100),
+    });
+    let (_key, raw_key) = resolver
+        .create_api_key("local", Some(scopes), None, 1.0)
+        .unwrap();
+    let app = build_axum_router(
+        AxumApiState::new()
+            .with_local_store_arc(store.clone())
+            .with_auth(resolver, RateLimiter::new(60.0, 100), Some(100), 1.0)
+            .with_adaptive_provider_executor(adaptive),
+    );
+    let adaptive_execution = json!({
+        "observation_context": {
+            "request_id": "request-http-adaptive-public",
+            "task_class": "coding",
+            "objective": "quality",
+            "risk_level": "low",
+            "candidate_id": "fusion-public-candidate",
+            "policy_hash": null
+        },
+        "plan": {
+            "mode": "fusion",
+            "panel": [
+                {"endpoint_id": "panel-a", "model": "panel-a-model", "reserved_cost_usd": 0.02},
+                {"endpoint_id": "panel-b", "model": "panel-b-model", "reserved_cost_usd": 0.02}
+            ],
+            "judge": {"endpoint_id": "judge", "model": "judge-model", "reserved_cost_usd": 0.02},
+            "synthesizer": {"endpoint_id": "synth", "model": "synth-model", "reserved_cost_usd": 0.02}
+        },
+        "limits": {
+            "max_calls": 4,
+            "max_cost_usd": 0.2,
+            "max_elapsed_ms": 1000,
+            "max_concurrency": 1
+        }
+    });
+
+    let missing_confirm = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(Method::POST)
+                .uri("/api/v1/plans")
+                .header(header::AUTHORIZATION, format!("Bearer {raw_key}"))
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(
+                    json!({
+                        "raw_request": "run explicit fusion",
+                        "adaptive_execution": adaptive_execution,
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(missing_confirm.status(), StatusCode::BAD_REQUEST);
+    let missing_body = response_json(missing_confirm).await;
+    assert_eq!(
+        missing_body["code"],
+        "adaptive_execution_confirmation_required"
+    );
+
+    let created_plan = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(Method::POST)
+                .uri("/api/v1/plans")
+                .header(header::AUTHORIZATION, format!("Bearer {raw_key}"))
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(
+                    json!({
+                        "raw_request": "run explicit fusion",
+                        "request_source": "test",
+                        "adaptive_execution": adaptive_execution,
+                        "confirm_adaptive_execution_plan": true
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(created_plan.status(), StatusCode::OK);
+    let plan_body = response_json(created_plan).await;
+    assert_eq!(
+        plan_body["plan"]["advisory"]["mode"],
+        "explicit_adaptive_execution_plan"
+    );
+    assert_eq!(
+        plan_body["plan"]["graph"]["nodes"][0]["adaptive_execution"]["plan"]["mode"],
+        "fusion"
+    );
+    let plan_id = plan_body["plan"]["plan_id"].as_str().unwrap();
+
+    let created_run = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(Method::POST)
+                .uri("/api/v1/workflow-runs")
+                .header(header::AUTHORIZATION, format!("Bearer {raw_key}"))
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(json!({"plan_id": plan_id}).to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(created_run.status(), StatusCode::OK);
+    let run_body = response_json(created_run).await;
+    let run_id = run_body["run"]["run_id"].as_str().unwrap();
+
+    let tick = app
+        .oneshot(
+            Request::builder()
+                .method(Method::POST)
+                .uri(format!("/api/v1/workflow-runs/{run_id}/tick"))
+                .header(header::AUTHORIZATION, format!("Bearer {raw_key}"))
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(
+                    json!({"actor": "test", "executor": "adaptive_provider"}).to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(tick.status(), StatusCode::OK);
+    let tick_body = response_json(tick).await;
+    assert_eq!(tick_body["tick"]["result"]["status"], "completed");
+
+    let observations = store.adaptive_observations().unwrap();
+    assert_eq!(observations.len(), 1);
+    assert_eq!(observations[0].candidate_id, "fusion-public-candidate");
+    assert_eq!(observations[0].candidate_kind, "fusion");
+
+    std::env::remove_var("ACP_ENABLE_PROVIDER_EXECUTION");
+    std::env::remove_var("ACP_ENABLE_ADAPTIVE_FUSION_EXECUTION");
+}
+
+#[tokio::test]
 async fn axum_get_read_only_plan_by_id_and_missing_id() {
     let dir = tempdir().unwrap();
     let store = LocalProductStore::new(dir.path().join("plans.db")).unwrap();

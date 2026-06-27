@@ -42,6 +42,8 @@ pub struct ProviderEndpointConfigApiRequest {
 pub struct ReadOnlyPlanApiRequest {
     pub raw_request: String,
     pub request_source: Option<String>,
+    pub adaptive_execution: Option<Value>,
+    pub confirm_adaptive_execution_plan: Option<bool>,
 }
 
 #[derive(Debug, Clone, PartialEq, Deserialize)]
@@ -532,10 +534,12 @@ pub fn openapi_document() -> serde_json::Value {
                 },
                 "post": {
                     "summary": "Create a read-only workflow plan",
-                    "description": "Generates a canonical WorkflowGraph plan with recommendation-only quality/routing/retry/observability advisory metadata. No execution, provider call, worker spawn, sandbox/process execution, target write, deploy, merge, or approval control is performed.",
+                    "description": "Generates a canonical WorkflowGraph plan with recommendation-only quality/routing/retry/observability advisory metadata. Optional adaptive_execution creates one explicit adaptive_provider node and requires dispatch:execute plus confirmation. No execution, provider call, worker spawn, sandbox/process execution, target write, deploy, merge, or approval control is performed.",
                     "requestBody": json_request_body(&["raw_request"], json!({
                         "raw_request": {"type": "string"},
-                        "request_source": {"type": "string", "default": "api"}
+                        "request_source": {"type": "string", "default": "api"},
+                        "adaptive_execution": {"type": "object", "description": "Optional explicit AdaptiveNodeExecutionConfig for one adaptive_provider node."},
+                        "confirm_adaptive_execution_plan": {"type": "boolean"}
                     })),
                     "responses": {
                         "200": {"description": "Read-only workflow plan"},
