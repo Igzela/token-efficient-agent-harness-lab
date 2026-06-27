@@ -21,7 +21,7 @@ On 2026-06-23 Charlie approved Full Agent Autonomy Mode for this repository. Mai
 | V2 Real Production Output | Complete through V2-5 |
 | Real Output Closeout | Complete; `v0.1.0` published and installer verified |
 | Adaptive Fusion AF-0 through AF-7 | Complete; current runtime gates remain implemented |
-| Agent Runtime AR-2 through AR-6 | Complete — agent step executor, child task proposals/handoff, bounded concurrent scheduling, review/debate primitives, operator evidence read-model |
+| Agent Runtime AR-0 through AR-6 | **Sealed** — decision baseline, agent identity/state/mailbox, step executor, planning/handoff, concurrent scheduling, review/debate primitives, operator evidence read-model. No AR-7 phase; future authority work routes to named tracks (ODW, ETAH, ARH) requiring separate approval. |
 | Trusted Local Autonomous Execution | Complete through IAE-3 |
 | Full Agent Autonomy Mode | Active for high-risk architecture, authority, migration, release/deploy workflow, and decision-supersession experiments |
 | Agent Autonomous Maintenance Mode | Active for implementation, docs, tests, CI, review, and bounded shipping |
@@ -69,7 +69,7 @@ The R-series is sealed at R7 as the current baseline. Full Agent Autonomy Mode m
 - Autonomous maintenance: repair stale docs, CI breakage, test drift, and wire-codegen drift.
 - Regression hardening: add or repair tests for existing behavior.
 - Pilots: real-world task validation.
-- Agent Runtime track: add true multi-agent identity, mailbox, state, step loop, planning, delegation, review/debate, and bounded concurrency semantics on top of the existing workflow/scheduler/storage/executor substrate.
+- Agent Runtime track: **sealed at AR-6.** Maintenance (tests, docs, bug fixes) is permitted under Agent Autonomous Maintenance Mode. New authority/evidence work requires a separately approved track (see Post-AR-6 Decision above).
 - V2 maintenance and V2 authority expansion experiments.
 - Adaptive Fusion maintenance and adaptive routing authority experiments.
 - Trusted-local execution evolution.
@@ -133,6 +133,45 @@ queued workflow node or agent wakeup
 | AR-4 | Concurrent multi-agent scheduling | **Implemented** — `agent_max_concurrent_global` (default 2) and `agent_max_concurrent_per_run` (default 1) in `SchedulerConfig` with env overrides. Race-condition-free cap enforcement inside the lease transaction in `tick_with_executor_and_command_inner`. Audit events: `claim_attempt`, `claim_success`, `claim_conflict`, `execution_started`, `execution_released`, `execution_completed`, `execution_failed`, `lease_expired`. Scheduler runtime passes caps on every tick. 8 new tests covering global/per-run cap enforcement, analysis-node bypass, full audit chain, cap release, config, and validation. |
 | AR-5 | Review and debate primitive | **Implemented** — CAS-style debate round update, bounded review/debate threads as first-class workflow artifacts with verdicts, dissent, evidence links, and approval/export gates. State-machine correctness fixes. Tests pass. |
 | AR-6 | Operator evidence read-model | **Implemented** — read-only aggregation of agent state, mailbox counts, proposal counts by type, blocked/conflict signals, and sanitized audit events. `GET /api/v1/operator/evidence/:run_id`. No new execution authority; AR-1 to AR-5 runtime semantics unchanged. |
+
+### Post-AR-6 Decision: Seal Agent Runtime at AR-6
+
+**AR-7 was not previously an explicit planned phase.** The Agent Runtime track was defined in AR-0 with phases AR-1 through AR-6 covering the bounded multi-agent runtime contract: identity/state/mailbox, step executor, planning/handoff, concurrency, debate/review, and operator evidence. All six phases are implemented and merged (PRs #132–#138).
+
+**Recommendation: Seal Agent Runtime at AR-6.** Route future work into named tracks that require separate approval for any new authority.
+
+Rationale:
+
+1. **Contract complete.** The AR-0 target flow — `queued node → load state/mailbox → observe → decide → act → persist → schedule child/handoff/review/wait/completion` — is fully implemented through AR-1 to AR-6.
+2. **Authority boundary preserved.** AR-6 deliberately added only read-only evidence. Any AR-7 that adds operator decision recording, approval workflows, or evidence-to-action handoff would expand execution authority. That requires a separate approved track, not a continuation of the Agent Runtime number sequence.
+3. **Hardening belongs to maintenance.** Strengthening AR-1 through AR-6 invariants (additional tests, documentation, edge-case coverage) is ordinary maintenance under Agent Autonomous Maintenance Mode. It does not need a new phase number.
+4. **Avoid scope creep.** Naming a new phase creates implicit pressure to add capability. Sealing the track at AR-6 keeps the boundary honest.
+
+**Sealed AR completion criteria:**
+
+- AR-0 decision baseline is documented and internally consistent.
+- AR-1 through AR-6 are implemented, tested, and merged to `main`.
+- All AR env gates (`ACP_ENABLE_AGENT_RUNTIME`, `ACP_AGENT_RUNTIME_KILL_SWITCH`) are present and functional.
+- All AR safety invariants from AR-0 remain enforced: no unbounded loops, no direct `main` writes, no raw model memory, no secret persistence, no authority bypass, no parallel kernel, no auto-merge/deploy/release.
+- `docs/ARCHITECTURE_BOOK.md` § AR Phase Status reflects all six phases as implemented.
+
+**Permitted maintenance work (no new phase needed):**
+
+- Additional unit/integration tests for AR-1 through AR-6 edge cases.
+- Documentation corrections and clarifications.
+- Bug fixes that preserve existing behavior and safety invariants.
+- Clippy/rustfmt/typecheck drift repair.
+- Schema-compatible storage optimizations that do not change the data model contract.
+
+**Future tracks for new authority/evidence work (require separate approval):**
+
+| Track name (proposed) | Scope | Authority expansion |
+|---|---|---|
+| **Operator Decision Workflow (ODW)** | Read AR-6 evidence → present bounded human decision requests → record explicit approval/rejection/deferral | Adds operator decision recording; no automatic execution authority |
+| **Evidence-to-Action Handoff (ETAH)** | Convert AR-6 evidence into proposed next actions → human-gated proposals | Adds proposal generation; no auto-merge/deploy/release |
+| **Agent Runtime Hardening (ARH)** | Strengthen AR-1 through AR-6 invariants, add edge-case tests, improve docs | No new capability surface |
+
+Each of these tracks would need its own decision baseline, threat-model delta, acceptance criteria, and rollback path before implementation begins. They are listed here as named placeholders, not as approved work.
 
 Minimum verification for Agent Runtime code:
 

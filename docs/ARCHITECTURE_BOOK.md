@@ -1,6 +1,6 @@
 # Architecture Book
 
-Last updated: 2026-06-26
+Last updated: 2026-06-27 (Agent Runtime sealed at AR-6)
 
 This is the current architecture baseline for the Token-Efficient Agent Harness Lab. Historical phase plans, closeout reports, and long-form strategy docs are retained in release-tagged git history; `docs/archive/README.md` is the working-tree index.
 
@@ -210,15 +210,21 @@ AR phases consume the following existing modules, extending them through focused
 
 **AR-6 (operator evidence read-model) — implemented.** Adds a read-only operator evidence surface at `GET /api/v1/operator/evidence/:run_id`. It aggregates agent state, mailbox/proposal counts, blocked signals, and sanitized audit events. No new execution authority; AR-1 to AR-5 runtime semantics unchanged. Provider/CLI authority unchanged. Target-output approval unchanged. No autonomous merge/deploy/release authority added.
 
-**Later phases — not implemented:**
+**Agent Runtime sealed at AR-6.** AR-0 through AR-6 complete the bounded multi-agent runtime contract. No AR-7 phase is planned. Future authority/evidence expansion (operator decision workflows, evidence-to-action handoff) requires a separately approved track with its own decision baseline, threat-model delta, acceptance criteria, and rollback path. See `docs/NEXT_DECISION.md` § Post-AR-6 Decision.
+
+**Out of scope for sealed Agent Runtime (require separate approved track):**
 
 - Any provider/CLI execution path changes
 - Any DB migration beyond AR-3 v15
 - Any scheduler lease/claim policy change
 - Any hidden mailbox, side channel, or second runtime kernel
 - Any automatic target-output merge/deploy/release authority
+- Operator decision/approval workflow (proposed track: ODW)
+- Evidence-to-action handoff (proposed track: ETAH)
 
-These phases are described in `docs/NEXT_DECISION.md`. AR-0 does not implement them, does not claim they are implemented, and does not create infrastructure that presupposes a specific implementation.
+These are described in `docs/NEXT_DECISION.md` § Post-AR-6 Decision. AR-0 through AR-6 do not implement them and do not create infrastructure that presupposes a specific implementation.
+
+**Permitted maintenance (no new phase):** additional tests for AR-1 through AR-6 edge cases, documentation corrections, bug fixes preserving existing behavior, and clippy/rustfmt/typecheck drift repair.
 
 ## Dashboard Boundary
 
@@ -240,7 +246,7 @@ These are accepted current limitations, not hidden TODOs:
 - V2-3 controlled target output is merged. It creates no merge/deploy/apply authority and preserves the registered target working tree and `main`.
 - GitHub PR creation is default-off and adds no merge authority.
 - Bounded supervised workers are merged in V2-4 and Mission Control product output UX is merged in V2-5; unattended autonomous-agent loops remain out of scope.
-- True multi-agent runtime semantics are not implemented yet. The accepted direction is to add them incrementally through the Agent Runtime track in `docs/NEXT_DECISION.md`, reusing existing workflow, scheduler, storage, provider/CLI, audit, dashboard, and target-output gates.
+- True multi-agent runtime semantics are implemented through the sealed Agent Runtime AR-0 through AR-6 track (identity, state, mailbox, step executor, planning/handoff, concurrency, debate/review, operator evidence). The track is sealed; further authority expansion requires a separately approved track — see `docs/NEXT_DECISION.md` § Post-AR-6 Decision.
 - Cloud SaaS, hosted/cloud deployment, multi-tenant service, and direct release/tag/deploy/apply controls are not implemented. Full Agent Autonomy Mode may evolve these repo-scoped designs through documented, testable, observable, reviewable, and rollbackable changes. The only hard stops are real-secret commits, falsified test/CI evidence, intentionally hidden failures, removed rollback paths, and irreversible external destruction without recovery.
 - Some routing, quality, and orchestration modules remain partially active rather than unified under one policy layer.
 
