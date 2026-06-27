@@ -16,9 +16,7 @@ pub(crate) fn build_operator_evidence(
     run_id: &str,
 ) -> Result<serde_json::Value, String> {
     let agents = store.list_agent_state_by_run(run_id)?;
-
     let pending_mailbox_count = store.count_mailbox(None, Some(run_id), Some("pending"))?;
-
     let raw_proposals = store.list_proposals_by_run(run_id, 500, 0)?;
 
     let mut type_counts: std::collections::HashMap<String, (i64, i64)> =
@@ -64,7 +62,8 @@ pub(crate) fn build_operator_evidence(
         })
         .collect();
 
-    let audit_events = store.search_audit_events(50, 0, None)?;
+    // Run-scoped audit only — no global audit leak
+    let audit_events = store.search_audit_events_by_run(run_id, 50, 0)?;
 
     let mut blocked_signals: i64 = 0;
     let mut recent_audit = Vec::new();
@@ -121,6 +120,34 @@ pub(crate) fn build_operator_evidence(
 
     let needs_human_decision = pending_proposals > 0 && (review_count > 0 || debate_count > 0);
 
+    // Bounded operator summary — metadata-only, no raw text
+    let what_happened = if agents.is_empty() && raw_proposals.is_empty() {
+        "No activity recorded for this run".to_string()
+    } else {
+        let terminal = type_counts.values().map(|(_, t)| t).sum::<i64>();
+        format!(
+            "{} agents, {} proposals ({} processed)",
+            agents.len(),
+            raw_proposals.len(),
+            terminal
+        )
+    };
+
+    let what_is_pending = if pending_mailbox_count == 0 && pending_proposals == 0 {
+        "Nothing pending".to_string()
+    } else {
+        format!(
+            "{} pending mailbox, {} pending proposals",
+            pending_mailbox_count, pending_proposals
+        )
+    };
+
+    let what_is_blocked = if blocked_signals == 0 {
+        "No blockers".to_string()
+    } else {
+        format!("{} blocked/conflict signals", blocked_signals)
+    };
+
     Ok(json!({
         "schema_version": AXUM_API_SCHEMA_VERSION,
         "run_id": run_id,
@@ -132,6 +159,12 @@ pub(crate) fn build_operator_evidence(
         "debate_count": debate_count,
         "blocked_signals_count": blocked_signals,
         "needs_human_decision": needs_human_decision,
+        "operator_summary": {
+            "what_happened": what_happened,
+            "what_is_pending": what_is_pending,
+            "what_is_blocked": what_is_blocked,
+            "needs_human_decision": needs_human_decision,
+        },
         "recent_audit": recent_audit,
         "last_updated": last_updated,
     }))
@@ -201,8 +234,6 @@ mod tests {
         assert_eq!(agent["status"], "busy");
         assert!(agent.get("objective").is_none());
         assert!(agent.get("updated_at").is_some());
-
-        assert!(agent.get("objective").is_none());
         assert!(agent.get("scratchpad").is_none());
         assert!(agent.get("metadata").is_none());
         assert!(agent.get("capability_profile").is_none());
@@ -269,5 +300,191 @@ mod tests {
             assert!(event.get("action").is_some());
             assert!(event.get("resource").is_some());
         }
+    }
+
+    #[test]
+    fn test_operator_evidence_audit_run_scoped() {
+        let store = make_store();
+
+        // Audit events for run-A
+        store
+            .create_agent_state("a1", "run-A", "worker", &[], None, "idle", &json!({}))
+            .unwrap();
+        store
+            .append_audit(
+                "system",
+                "conflict.detected",
+                "node/run-A/1",
+                &json!({"run_id": "run-A"}),
+            )
+            .unwrap();
+        store
+            .append_audit(
+                "system",
+                "blocked.resource",
+                "node/run-A/2",
+                &json!({"run_id": "run-A"}),
+            )
+            .unwrap();
+
+        // Audit events for run-B
+        store
+            .create_agent_state("b1", "run-B", "worker", &[], None, "idle", &json!({}))
+            .unwrap();
+        store
+            .append_audit(
+                "system",
+                "conflict.detected",
+                "node/run-B/1",
+                &json!({"run_id": "run-B"}),
+            )
+            .unwrap();
+
+        let evidence_a = build_operator_evidence(&store, "run-A").unwrap();
+        let evidence_b = build_operator_evidence(&store, "run-B").unwrap();
+
+        // run-A should see its own 2 blocked signals (plus agent_state create audit)
+        assert_eq!(evidence_a["blocked_signals_count"], 2);
+        let audit_a = evidence_a["recent_audit"].as_array().unwrap();
+        for event in audit_a {
+            let resource = event["resource"].as_str().unwrap();
+            assert!(
+                resource.contains("run-A"),
+                "run-A audit must not leak run-B events: {}",
+                resource
+            );
+        }
+
+        // run-B should see only its own 1 blocked signal
+        assert_eq!(evidence_b["blocked_signals_count"], 1);
+        let audit_b = evidence_b["recent_audit"].as_array().unwrap();
+        for event in audit_b {
+            let resource = event["resource"].as_str().unwrap();
+            assert!(
+                resource.contains("run-B"),
+                "run-B audit must not leak run-A events: {}",
+                resource
+            );
+        }
+    }
+
+    #[test]
+    fn test_operator_summary_empty_run() {
+        let store = make_store();
+        let evidence = build_operator_evidence(&store, "run-empty").unwrap();
+        let summary = &evidence["operator_summary"];
+
+        assert_eq!(
+            summary["what_happened"],
+            "No activity recorded for this run"
+        );
+        assert_eq!(summary["what_is_pending"], "Nothing pending");
+        assert_eq!(summary["what_is_blocked"], "No blockers");
+        assert_eq!(summary["needs_human_decision"], false);
+    }
+
+    #[test]
+    fn test_operator_summary_pending_reflected() {
+        let store = make_store();
+        store
+            .create_agent_state("a1", "run-p", "worker", &[], None, "busy", &json!({}))
+            .unwrap();
+        store
+            .send_message(
+                "m1",
+                "a1",
+                "a2",
+                "task_assign",
+                Some("body"),
+                None,
+                Some("run-p"),
+                None,
+                None,
+                &json!({}),
+            )
+            .unwrap();
+        store
+            .create_proposal(
+                "p1",
+                "c1",
+                "run-p",
+                "root",
+                "a1",
+                "handoff",
+                "handoff objective",
+                "context",
+                None,
+                None,
+                None,
+            )
+            .unwrap();
+
+        let evidence = build_operator_evidence(&store, "run-p").unwrap();
+        let summary = &evidence["operator_summary"];
+
+        assert!(summary["what_happened"]
+            .as_str()
+            .unwrap()
+            .contains("1 agents"));
+        assert!(summary["what_is_pending"]
+            .as_str()
+            .unwrap()
+            .contains("1 pending mailbox"));
+        assert!(summary["what_is_pending"]
+            .as_str()
+            .unwrap()
+            .contains("1 pending proposals"));
+    }
+
+    #[test]
+    fn test_operator_summary_blocked_reflected() {
+        let store = make_store();
+        store
+            .create_agent_state("a1", "run-b", "worker", &[], None, "idle", &json!({}))
+            .unwrap();
+        store
+            .append_audit(
+                "system",
+                "conflict.detected",
+                "node/run-b/1",
+                &json!({"run_id": "run-b"}),
+            )
+            .unwrap();
+
+        let evidence = build_operator_evidence(&store, "run-b").unwrap();
+        let summary = &evidence["operator_summary"];
+
+        assert!(summary["what_is_blocked"]
+            .as_str()
+            .unwrap()
+            .contains("blocked/conflict"));
+    }
+
+    #[test]
+    fn test_operator_summary_no_raw_text() {
+        let store = make_store();
+        store
+            .create_agent_state(
+                "a1",
+                "run-s",
+                "worker",
+                &[],
+                Some("secret: sk-live-abc123"),
+                "busy",
+                &json!({}),
+            )
+            .unwrap();
+
+        let evidence = build_operator_evidence(&store, "run-s").unwrap();
+        let summary_text = evidence["operator_summary"].to_string();
+
+        assert!(
+            !summary_text.contains("sk-live-"),
+            "operator_summary must not contain raw secret text"
+        );
+        assert!(
+            !summary_text.contains("secret:"),
+            "operator_summary must not contain raw objective text"
+        );
     }
 }

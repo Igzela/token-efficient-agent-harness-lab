@@ -361,23 +361,115 @@ async fn test_review_and_debate_counts() {
 async fn test_blocked_signals_from_audit() {
     let (store, _dir) = make_store();
 
+    // Create agents so audit events get run_id association
     store
-        .append_audit("system", "conflict.detected", "node-1", &json!({}))
+        .create_agent_state("agent-x", "run-x", "worker", &[], None, "idle", &json!({}))
+        .unwrap();
+
+    // These audit events have run-x in resource/details
+    store
+        .append_audit(
+            "system",
+            "conflict.detected",
+            "node/run-x/1",
+            &json!({"run_id": "run-x"}),
+        )
         .unwrap();
     store
-        .append_audit("system", "blocked.resource", "node-2", &json!({}))
+        .append_audit(
+            "system",
+            "blocked.resource",
+            "node/run-x/2",
+            &json!({"run_id": "run-x"}),
+        )
+        .unwrap();
+    // Normal action — should not count as blocked
+    store
+        .append_audit(
+            "system",
+            "normal.action",
+            "node/run-x/3",
+            &json!({"run_id": "run-x"}),
+        )
         .unwrap();
     store
-        .append_audit("system", "normal.action", "node-3", &json!({}))
-        .unwrap();
-    store
-        .append_audit("system", "conflict.resolved", "node-4", &json!({}))
+        .append_audit(
+            "system",
+            "conflict.resolved",
+            "node/run-x/4",
+            &json!({"run_id": "run-x"}),
+        )
         .unwrap();
 
     let app = build_app(store);
-    let (_status, body) = get_evidence(&app, "any-run").await;
+    let (_status, body) = get_evidence(&app, "run-x").await;
 
+    // 3 events match blocked/conflict pattern for run-x
     assert_eq!(body["blocked_signals_count"], 3);
+}
+
+#[tokio::test]
+async fn test_blocked_signals_run_scoped() {
+    let (store, _dir) = make_store();
+
+    store
+        .create_agent_state("a1", "run-A", "worker", &[], None, "idle", &json!({}))
+        .unwrap();
+    store
+        .create_agent_state("b1", "run-B", "worker", &[], None, "idle", &json!({}))
+        .unwrap();
+
+    // Blocked events for run-A
+    store
+        .append_audit(
+            "system",
+            "conflict.detected",
+            "node/run-A/1",
+            &json!({"run_id": "run-A"}),
+        )
+        .unwrap();
+    store
+        .append_audit(
+            "system",
+            "blocked.resource",
+            "node/run-A/2",
+            &json!({"run_id": "run-A"}),
+        )
+        .unwrap();
+
+    // Blocked event for run-B
+    store
+        .append_audit(
+            "system",
+            "conflict.detected",
+            "node/run-B/1",
+            &json!({"run_id": "run-B"}),
+        )
+        .unwrap();
+
+    let app = build_app(store);
+
+    let (_status_a, body_a) = get_evidence(&app, "run-A").await;
+    assert_eq!(body_a["blocked_signals_count"], 2);
+
+    let (_status_b, body_b) = get_evidence(&app, "run-B").await;
+    assert_eq!(body_b["blocked_signals_count"], 1);
+
+    // Verify no cross-run leak in recent_audit
+    for event in body_a["recent_audit"].as_array().unwrap() {
+        let resource = event["resource"].as_str().unwrap();
+        assert!(
+            !resource.contains("run-B"),
+            "run-A evidence must not contain run-B audit events"
+        );
+    }
+    for event in body_b["recent_audit"].as_array().unwrap() {
+        let resource = event["resource"].as_str().unwrap();
+        assert!(
+            !resource.contains("run-A"),
+            "run-B evidence must not contain run-A audit events"
+        );
+    }
 }
 
 #[tokio::test]
@@ -417,6 +509,10 @@ async fn test_needs_human_decision_flag() {
     let (_status, body) = get_evidence(&app, "run-human").await;
 
     assert_eq!(body["needs_human_decision"], true);
+    assert_eq!(
+        body["operator_summary"]["needs_human_decision"], true,
+        "operator_summary.needs_human_decision must match top-level"
+    );
 
     // Now test with only accepted proposals
     let (store2, _dir2) = make_store();
@@ -452,6 +548,7 @@ async fn test_needs_human_decision_flag() {
     let (_status2, body2) = get_evidence(&app2, "run-nohuman").await;
 
     assert_eq!(body2["needs_human_decision"], false);
+    assert_eq!(body2["operator_summary"]["needs_human_decision"], false);
 }
 
 #[tokio::test]
@@ -656,4 +753,116 @@ async fn test_evidence_no_raw_prompt_or_output() {
             "proposal summary must not expose body"
         );
     }
+}
+
+#[tokio::test]
+async fn test_operator_summary_present_and_bounded() {
+    let (store, _dir) = make_store();
+
+    store
+        .create_agent_state("a1", "run-sum", "worker", &[], None, "busy", &json!({}))
+        .unwrap();
+    store
+        .send_message(
+            "m1",
+            "a1",
+            "a2",
+            "task_assign",
+            Some("body"),
+            None,
+            Some("run-sum"),
+            None,
+            None,
+            &json!({}),
+        )
+        .unwrap();
+    store
+        .create_proposal(
+            "p1",
+            "c1",
+            "run-sum",
+            "root",
+            "a1",
+            "review_request",
+            "review objective",
+            "context",
+            None,
+            None,
+            None,
+        )
+        .unwrap();
+
+    let app = build_app(store);
+    let (_status, body) = get_evidence(&app, "run-sum").await;
+
+    let summary = &body["operator_summary"];
+    assert!(summary.is_object(), "operator_summary must be an object");
+    assert!(summary.get("what_happened").is_some());
+    assert!(summary.get("what_is_pending").is_some());
+    assert!(summary.get("what_is_blocked").is_some());
+    assert!(summary.get("needs_human_decision").is_some());
+
+    let happened = summary["what_happened"].as_str().unwrap();
+    assert!(
+        happened.contains("1 agents"),
+        "what_happened should mention agent count"
+    );
+    assert!(
+        happened.contains("1 proposals"),
+        "what_happened should mention proposal count"
+    );
+
+    let pending = summary["what_is_pending"].as_str().unwrap();
+    assert!(
+        pending.contains("1 pending mailbox"),
+        "what_is_pending should mention mailbox count"
+    );
+    assert!(
+        pending.contains("1 pending proposals"),
+        "what_is_pending should mention proposal count"
+    );
+
+    assert_eq!(summary["what_is_blocked"], "No blockers");
+    assert_eq!(summary["needs_human_decision"], true);
+}
+
+#[tokio::test]
+async fn test_operator_summary_empty_run() {
+    let (store, _dir) = make_store();
+    let app = build_app(store);
+    let (_status, body) = get_evidence(&app, "run-empty").await;
+
+    let summary = &body["operator_summary"];
+    assert_eq!(
+        summary["what_happened"],
+        "No activity recorded for this run"
+    );
+    assert_eq!(summary["what_is_pending"], "Nothing pending");
+    assert_eq!(summary["what_is_blocked"], "No blockers");
+    assert_eq!(summary["needs_human_decision"], false);
+}
+
+#[tokio::test]
+async fn test_operator_summary_no_raw_text() {
+    let (store, _dir) = make_store();
+    store
+        .create_agent_state(
+            "a1",
+            "run-sec",
+            "worker",
+            &[],
+            Some("api_key: sk-live-abc123secret"),
+            "busy",
+            &json!({}),
+        )
+        .unwrap();
+
+    let app = build_app(store);
+    let (_status, body) = get_evidence(&app, "run-sec").await;
+
+    let summary_text = body["operator_summary"].to_string();
+    assert!(
+        !summary_text.contains("sk-live-"),
+        "operator_summary must not contain raw secret text"
+    );
 }

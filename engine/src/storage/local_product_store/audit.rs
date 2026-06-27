@@ -93,6 +93,46 @@ impl LocalProductStore {
         }
     }
 
+    pub fn search_audit_events_by_run(
+        &self,
+        run_id: &str,
+        limit: i64,
+        offset: i64,
+    ) -> Result<Vec<Value>, String> {
+        let needle = format!("%{run_id}%");
+        match &self.db {
+            DatabaseConnection::Sqlite(_) => self.with_conn(|conn| {
+                let mut stmt = conn
+                    .prepare(
+                        "SELECT audit_id, created_at, actor, action, resource, details_json
+                         FROM audit_log
+                         WHERE resource LIKE ?1 OR details_json LIKE ?1
+                         ORDER BY audit_id DESC
+                         LIMIT ?2 OFFSET ?3",
+                    )
+                    .map_err(|e| e.to_string())?;
+                let rows = stmt
+                    .query_map(params![needle, limit, offset], audit_row_json)
+                    .map_err(|e| e.to_string())?;
+                collect_values(rows)
+            }),
+            #[cfg(feature = "pg")]
+            DatabaseConnection::Pg(_) => self.with_pg_conn(|client| {
+                let rows = client
+                    .query(
+                        "SELECT audit_id, created_at, actor, action, resource, details_json
+                         FROM audit_log
+                         WHERE resource LIKE $1 OR details_json LIKE $1
+                         ORDER BY audit_id DESC
+                         LIMIT $2 OFFSET $3",
+                        &[&needle, &limit, &offset],
+                    )
+                    .map_err(|e| e.to_string())?;
+                pg_audit_rows(rows)
+            }),
+        }
+    }
+
     pub fn append_audit(
         &self,
         actor: &str,
