@@ -1,4 +1,4 @@
-use rusqlite::{params, Row};
+use rusqlite::{params, OptionalExtension, Row};
 use serde_json::{json, Value};
 
 use super::{append_audit_locked, DatabaseConnection, LocalProductStore};
@@ -1133,6 +1133,123 @@ impl LocalProductStore {
                 }
             }),
         }
+    }
+
+    pub fn update_proposal_context_summary(
+        &self,
+        proposal_id: &str,
+        new_context_summary: &str,
+    ) -> Result<bool, String> {
+        let capped = apply_size_cap(new_context_summary, MAX_PROPOSAL_CONTEXT_BYTES);
+        let now = self.now();
+        let affected = match &self.db {
+            DatabaseConnection::Sqlite(_) => self.with_conn(|conn| {
+                let n = conn
+                    .execute(
+                        "UPDATE agent_proposals SET context_summary=?1, updated_at=?2
+                         WHERE proposal_id=?3",
+                        params![capped, now, proposal_id],
+                    )
+                    .map_err(|e| e.to_string())?;
+                Ok(n)
+            })?,
+            #[cfg(feature = "pg")]
+            DatabaseConnection::Pg(_) => self.with_pg_conn(|client| {
+                let n = client
+                    .execute(
+                        "UPDATE agent_proposals SET context_summary=$1, updated_at=$2
+                         WHERE proposal_id=$3",
+                        &[&capped, &now, &proposal_id],
+                    )
+                    .map_err(|e| e.to_string())?;
+                Ok(n as usize)
+            })?,
+        };
+        Ok(affected > 0)
+    }
+
+    /// CAS-style update of debate round.  Reads the current context_summary,
+    /// verifies the round matches `expected_current_round`, then issues an
+    /// UPDATE that includes `AND context_summary = <old>` so concurrent
+    /// workers cannot both succeed on the same stale read.
+    ///
+    /// Returns false if stale, terminal, not found, round mismatch, or
+    /// already updated by another worker.
+    pub fn update_debate_round_if_pending(
+        &self,
+        proposal_id: &str,
+        run_id: &str,
+        expected_current_round: usize,
+        new_context_summary: &str,
+    ) -> Result<bool, String> {
+        let capped = apply_size_cap(new_context_summary, MAX_PROPOSAL_CONTEXT_BYTES);
+        let now = self.now();
+        let affected = match &self.db {
+            DatabaseConnection::Sqlite(_) => self.with_conn(|conn| {
+                let old_ctx: Option<String> = conn
+                    .query_row(
+                        "SELECT context_summary FROM agent_proposals
+                         WHERE proposal_id=?1 AND status='pending' AND run_id=?2
+                         AND proposal_type='debate_request'",
+                        params![proposal_id, run_id],
+                        |row| row.get(0),
+                    )
+                    .optional()
+                    .map_err(|e| e.to_string())?;
+                let old_ctx = match old_ctx {
+                    Some(c) => c,
+                    None => return Ok(0),
+                };
+                let ctx: serde_json::Value = serde_json::from_str(&old_ctx).unwrap_or(json!({}));
+                let actual_round = ctx["current_round"].as_u64().unwrap_or(0) as usize;
+                if actual_round != expected_current_round {
+                    return Ok(0);
+                }
+                // CAS: include old context_summary in WHERE so a concurrent
+                // worker that already changed it causes 0 affected rows.
+                let n = conn
+                    .execute(
+                        "UPDATE agent_proposals SET context_summary=?1, updated_at=?2
+                         WHERE proposal_id=?3 AND status='pending' AND run_id=?4
+                         AND proposal_type='debate_request' AND context_summary=?5",
+                        params![capped, now, proposal_id, run_id, old_ctx],
+                    )
+                    .map_err(|e| e.to_string())?;
+                Ok(n)
+            })?,
+            #[cfg(feature = "pg")]
+            DatabaseConnection::Pg(_) => self.with_pg_conn(|client| {
+                let rows = client
+                    .query(
+                        "SELECT context_summary FROM agent_proposals
+                         WHERE proposal_id=$1 AND status='pending' AND run_id=$2
+                         AND proposal_type='debate_request'",
+                        &[&proposal_id, &run_id],
+                    )
+                    .map_err(|e| e.to_string())?;
+                if rows.is_empty() {
+                    return Ok(0);
+                }
+                let old_ctx: String = rows[0].get(0);
+                let ctx: serde_json::Value = serde_json::from_str(&old_ctx).unwrap_or(json!({}));
+                let actual_round = ctx["current_round"].as_u64().unwrap_or(0) as usize;
+                if actual_round != expected_current_round {
+                    return Ok(0);
+                }
+                // CAS: include old context_summary in WHERE so a concurrent
+                // worker that already changed it causes 0 affected rows.
+                let n = client
+                    .execute(
+                        "UPDATE agent_proposals SET context_summary=$1, updated_at=$2
+                         WHERE proposal_id=$3 AND status='pending' AND run_id=$4
+                         AND proposal_type='debate_request' AND context_summary=$5",
+                        &[&capped, &now, &proposal_id, &run_id, &old_ctx],
+                    )
+                    .map_err(|e| e.to_string())?;
+                Ok(n as usize)
+            })?,
+        };
+        Ok(affected > 0)
     }
 
     pub fn find_proposal_by_correlation(

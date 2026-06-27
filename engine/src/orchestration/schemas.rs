@@ -15,7 +15,15 @@ pub const HANDOFF_REQUEST_SCHEMA_VERSION: &str = "handoff_request.v1";
 
 pub const MAILBOX_STATUSES: &[&str] = &["pending", "read", "acked", "replied", "cancelled"];
 pub const PROPOSAL_STATUSES: &[&str] = &["pending", "accepted", "rejected", "cancelled"];
-pub const PROPOSAL_TYPES: &[&str] = &["child_task", "handoff"];
+pub const PROPOSAL_TYPES: &[&str] = &[
+    "child_task",
+    "handoff",
+    "review_request",
+    "review_verdict",
+    "debate_request",
+    "debate_position",
+    "debate_resolution",
+];
 
 pub const AGENT_STATUSES: &[&str] = &["idle", "busy", "blocked", "completed", "failed"];
 
@@ -266,6 +274,73 @@ pub struct HandoffRequest {
     pub context_summary: String,
     pub target_agent_id: String,
     pub source_agent_id: String,
+    pub run_id: String,
+    pub node_id: String,
+}
+
+// ── AR-5: Bounded review/debate primitives ────────────────────────────────────
+
+pub const MAX_DEBATE_PARTICIPANTS: usize = 8;
+pub const MAX_DEBATE_ROUNDS: usize = 10;
+pub const MAX_REVIEW_DEBATE_TEXT_BYTES: usize = 4096;
+
+pub const REVIEW_VERDICTS: &[&str] = &["accepted", "rejected"];
+pub const DEBATE_POSITION_STATUSES: &[&str] = &["pending", "accepted", "rejected"];
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ReviewRequest {
+    pub schema_version: String,
+    pub correlation_id: String,
+    pub subject_summary: String,
+    pub rationale_summary: String,
+    pub target_agent_id: String,
+    pub run_id: String,
+    pub node_id: String,
+    pub blocking: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ReviewVerdict {
+    pub schema_version: String,
+    pub correlation_id: String,
+    pub review_request_id: String,
+    pub verdict: String,
+    pub rationale_summary: String,
+    pub run_id: String,
+    pub node_id: String,
+    pub blocking: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct DebateRequest {
+    pub schema_version: String,
+    pub correlation_id: String,
+    pub subject_summary: String,
+    pub participant_agent_ids: Vec<String>,
+    pub max_rounds: usize,
+    pub run_id: String,
+    pub node_id: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct DebatePosition {
+    pub schema_version: String,
+    pub correlation_id: String,
+    pub debate_id: String,
+    pub position: String,
+    pub rationale_summary: String,
+    pub run_id: String,
+    pub node_id: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct DebateResolution {
+    pub schema_version: String,
+    pub correlation_id: String,
+    pub debate_id: String,
+    pub resolution: String,
+    pub winning_position: Option<String>,
+    pub unresolved_risks: Option<String>,
     pub run_id: String,
     pub node_id: String,
 }
