@@ -1,0 +1,33 @@
+name: apply branch rustfmt
+
+on:
+  push:
+    branches:
+      - agent/fix-wiring-audit-notes
+
+permissions:
+  contents: write
+
+jobs:
+  rustfmt:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out branch
+        uses: actions/checkout@v6
+        with:
+          ref: agent/fix-wiring-audit-notes
+          token: ${{ secrets.GITHUB_TOKEN }}
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+      - name: Run rustfmt
+        run: cargo fmt --all
+      - name: Remove one-shot workflow
+        run: rm .github/workflows/apply-branch-rustfmt.yml
+      - name: Commit formatting
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add engine/src/main.rs engine/src/dispatch_engine.rs .github/workflows/apply-branch-rustfmt.yml
+          git commit -m "Format wiring cleanup" || exit 0
+          git push origin HEAD:agent/fix-wiring-audit-notes
