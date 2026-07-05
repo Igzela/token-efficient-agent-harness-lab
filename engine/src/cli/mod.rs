@@ -13,6 +13,34 @@ pub use multi_executor::MultiExecutor;
 use std::process::{Child, Command, Output};
 use std::time::{Duration, Instant};
 
+/// Apply the common direct-CLI process environment boundary.
+///
+/// CLI execution may need local account context for tools like Claude Code or Codex,
+/// but it must not inherit the full engine environment by default. Keep PATH so the
+/// CLI can launch its own helper binaries, then copy only explicit allowlisted keys
+/// from `ACP_CLI_ENV_ALLOWLIST`.
+pub(crate) fn apply_restricted_cli_env(cmd: &mut Command) {
+    cmd.env_clear().env(
+        "PATH",
+        std::env::var("PATH").unwrap_or_else(|_| "/usr/bin:/bin".to_string()),
+    );
+    for key in cli_env_allowlist() {
+        if let Ok(value) = std::env::var(&key) {
+            cmd.env(key, value);
+        }
+    }
+}
+
+fn cli_env_allowlist() -> Vec<String> {
+    std::env::var("ACP_CLI_ENV_ALLOWLIST")
+        .unwrap_or_default()
+        .split(',')
+        .map(str::trim)
+        .filter(|key| !key.is_empty())
+        .map(ToString::to_string)
+        .collect()
+}
+
 /// Spawn a child process and wait for it with a timeout.
 /// Returns Ok(output) if the child exits within the deadline,
 /// or Err(elapsed_ms) if the timeout fires (child is killed).
@@ -53,6 +81,23 @@ pub fn spawn_with_timeout(cmd: &mut Command, timeout_ms: u64) -> Result<Output, 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn restricted_cli_env_drops_command_env_and_keeps_path() {
+        let mut cmd = Command::new("/bin/sh");
+        cmd.arg("-c")
+            .arg("test -z \"${ACP_TEST_SECRET:-}\" && test -n \"${PATH:-}\"")
+            .env("ACP_TEST_SECRET", "should-not-leak");
+        apply_restricted_cli_env(&mut cmd);
+
+        let output = cmd.output().expect("restricted env command should run");
+        assert!(
+            output.status.success(),
+            "restricted env leaked explicit command env or removed PATH: stdout={} stderr={}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
 
     #[test]
     fn test_spawn_with_timeout_fast_exit() {
