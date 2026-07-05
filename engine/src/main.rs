@@ -770,8 +770,8 @@ fn local_admin_scope_list() -> Vec<String> {
 fn build_single_provider_from_env(
     cb_registry: &Arc<CircuitBreakerRegistry>,
 ) -> Result<Arc<dyn Provider>, String> {
-    let provider_type = std::env::var("ACP_PROVIDER_TYPE")
-        .map_err(|_| "ACP_PROVIDER_TYPE not set".to_string())?;
+    let provider_type =
+        std::env::var("ACP_PROVIDER_TYPE").map_err(|_| "ACP_PROVIDER_TYPE not set".to_string())?;
     let provider_type = provider_type.trim();
     if provider_type.is_empty() {
         return Err("ACP_PROVIDER_TYPE is empty".to_string());
@@ -874,7 +874,6 @@ fn build_provider_for_engine(
     }
     build_single_provider_from_env(cb_registry)
 }
-
 
 /// Build a HashMap of CLI executors for HybridExecutor construction.
 fn build_cli_executor_map(
