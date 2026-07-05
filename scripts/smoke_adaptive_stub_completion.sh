@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Exercises trusted-local adaptive completion using a stub provider only.
+# Exercises the trusted-local adaptive completion path using a stub provider only.
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 PORT="${ACP_ADAPTIVE_VERIFY_PORT:-18081}"
 TMP_DIR="$(mktemp -d)"
