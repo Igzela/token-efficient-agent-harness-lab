@@ -9,6 +9,10 @@ use engine::task_analyzer::TaskAnalysis;
 use engine::{build_dispatch_bundle, DispatchEngine};
 use serde_json::Value;
 
+const LEGACY_SANDBOX_DISABLED_REASON: &str = "sandbox execution disabled in Phase 1";
+const CURRENT_SANDBOX_DISABLED_REASON: &str =
+    "process/container/VM sandbox isolation is not implemented for this local runtime boundary";
+
 fn repo_root() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
         .parent()
@@ -27,6 +31,30 @@ fn golden_paths() -> Vec<PathBuf> {
     paths
 }
 
+fn normalize_legacy_sandbox_reason(value: &mut Value) {
+    match value {
+        Value::Object(map) => {
+            if map.get("gate_type").and_then(Value::as_str) == Some("sandbox_disabled")
+                && map.get("reason").and_then(Value::as_str) == Some(LEGACY_SANDBOX_DISABLED_REASON)
+            {
+                map.insert(
+                    "reason".to_string(),
+                    Value::String(CURRENT_SANDBOX_DISABLED_REASON.to_string()),
+                );
+            }
+            for child in map.values_mut() {
+                normalize_legacy_sandbox_reason(child);
+            }
+        }
+        Value::Array(items) => {
+            for item in items {
+                normalize_legacy_sandbox_reason(item);
+            }
+        }
+        _ => {}
+    }
+}
+
 #[test]
 fn rust_dispatch_bundle_matches_python_golden_fixtures() {
     let paths = golden_paths();
@@ -42,7 +70,9 @@ fn rust_dispatch_bundle_matches_python_golden_fixtures() {
                 .as_str()
                 .expect("request_source string"),
         );
-        assert_eq!(actual, fixture["golden_bundle"], "fixture drift: {path:?}");
+        let mut expected = fixture["golden_bundle"].clone();
+        normalize_legacy_sandbox_reason(&mut expected);
+        assert_eq!(actual, expected, "fixture drift: {path:?}");
     }
 }
 
@@ -53,7 +83,8 @@ fn golden_fixtures_round_trip_through_current_rust_wire_structs() {
 
     for path in paths {
         let raw = fs::read_to_string(&path).expect("fixture is readable");
-        let fixture: Value = serde_json::from_str(&raw).expect("fixture is json");
+        let mut fixture: Value = serde_json::from_str(&raw).expect("fixture is json");
+        normalize_legacy_sandbox_reason(&mut fixture);
         let golden = &fixture["golden_bundle"];
 
         let record: DispatchRecord =

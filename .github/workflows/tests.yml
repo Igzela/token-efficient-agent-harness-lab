@@ -112,6 +112,8 @@ jobs:
         run: cargo build -p engine
       - name: Smoke native runtime
         run: uv run --no-project python scripts/smoke_native_runtime.py
+      - name: Smoke adaptive stub completion
+        run: bash scripts/smoke_adaptive_stub_completion.sh
 
   rust-typescript-cutover:
     runs-on: ubuntu-latest

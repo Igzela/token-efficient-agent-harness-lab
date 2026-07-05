@@ -480,7 +480,7 @@ fn build_execution_gates(
         gate_id: runtime.id("gate-"),
         gate_type: "sandbox_disabled".to_string(),
         severity: "info".to_string(),
-        reason: "sandbox execution disabled in Phase 1".to_string(),
+        reason: "process/container/VM sandbox isolation is not implemented for this local runtime boundary".to_string(),
         evidence_refs: Vec::new(),
         clearance_required: "policy".to_string(),
         cleared: false,

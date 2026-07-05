@@ -1,6 +1,6 @@
 use std::process::{Command, Stdio};
 
-use crate::cli::spawn_with_timeout;
+use crate::cli::{apply_restricted_cli_env, spawn_with_timeout};
 use crate::dispatch_decision::DispatchDecision;
 use crate::executor_adapter::{ExecutionResult, Executor};
 use crate::runtime::FixtureRuntime;
@@ -41,8 +41,9 @@ impl Executor for ClaudeCodeCliExecutor {
             .arg("--output-format")
             .arg("json")
             .arg("--model")
-            .arg(model)
-            .stdin(Stdio::piped())
+            .arg(model);
+        apply_restricted_cli_env(&mut cmd);
+        cmd.stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
 
