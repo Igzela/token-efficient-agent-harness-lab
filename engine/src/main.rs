@@ -668,19 +668,12 @@ fn build_state_with_provider(
     cb_registry: &Arc<CircuitBreakerRegistry>,
 ) -> AxumApiState {
     let provider_type = match std::env::var("ACP_PROVIDER_TYPE") {
-        Ok(v) if !v.trim().is_empty() => v,
+        Ok(v) if !v.trim().is_empty() => v.trim().to_string(),
         _ => return state,
     };
 
     let enable_execution = single_provider_execution_enabled();
-
-    if provider_type == "stub" {
-        let recorder = Arc::new(ProviderAuditRecorder::with_store(store.clone()));
-        let provider: Arc<dyn Provider> = Arc::new(StubProvider::new("stub-env"));
-        return state.with_provider_and_audit(provider, recorder);
-    }
-
-    if !enable_execution {
+    if provider_type != "stub" && !enable_execution {
         eprintln!(
             "ACP_PROVIDER_TYPE={} requires ACP_ENABLE_PROVIDER_EXECUTION=1 or a ready ACP_TRUSTED_LOCAL_PROFILE=1; falling back to noop",
             provider_type
@@ -688,87 +681,13 @@ fn build_state_with_provider(
         return state;
     }
 
-    let api_key_env = std::env::var("ACP_API_KEY").unwrap_or_default();
-    let model = provider_model_from_env();
-    let base_url = std::env::var("ACP_BASE_URL").unwrap_or_default();
-    let pricing = provider_pricing_from_env();
-    if !pricing.configured() {
-        eprintln!(
-            "provider token usage will be tracked, but ACP_PROVIDER_INPUT_COST_PER_1K_USD/ACP_PROVIDER_OUTPUT_COST_PER_1K_USD are not fully configured"
-        );
-    }
-
-    let boundary = CredentialBoundary::new("env").expect("env credential backend");
-    let cred_ref = CredentialRef::new(
-        &api_key_env,
-        "env",
-        "***",
-        "provider:auto",
-        "2026-01-01T00:00:00Z",
-    );
-
-    let base_provider: Arc<dyn Provider> = match provider_type.as_str() {
-        "stub" => Arc::new(StubProvider::new("stub-env")),
-        "openai_compatible" => {
-            let mut config = ProviderConfig::new(
-                "openai-env",
-                "openai_compatible",
-                &base_url,
-                &model,
-                &api_key_env,
-                "2026-01-01T00:00:00Z",
-            );
-            config.apply_pricing(&pricing);
-            Arc::new(OpenAiProvider::new(
-                config,
-                boundary,
-                cred_ref,
-                Arc::new(ReqwestTransport::new()),
-                None,
-            ))
-        }
-        "anthropic" => {
-            let mut config = ProviderConfig::new(
-                "anthropic-env",
-                "anthropic",
-                &base_url,
-                &model,
-                &api_key_env,
-                "2026-01-01T00:00:00Z",
-            );
-            config.apply_pricing(&pricing);
-            Arc::new(AnthropicProvider::new(
-                config,
-                boundary,
-                cred_ref,
-                Arc::new(ReqwestTransport::new()),
-                None,
-            ))
-        }
-        other => {
-            eprintln!("unknown ACP_PROVIDER_TYPE: {other}, falling back to noop");
+    let provider = match build_single_provider_from_env(cb_registry) {
+        Ok(provider) => provider,
+        Err(error) => {
+            eprintln!("{error}; falling back to noop");
             return state;
         }
     };
-
-    // Wrap provider with circuit breaker protection.
-    let cb_threshold = std::env::var("ACP_CIRCUIT_BREAKER_THRESHOLD")
-        .ok()
-        .and_then(|v| v.parse::<u64>().ok())
-        .unwrap_or(5);
-    let cb_recovery_ms = std::env::var("ACP_CIRCUIT_BREAKER_RECOVERY_MS")
-        .ok()
-        .and_then(|v| v.parse::<u64>().ok())
-        .unwrap_or(30_000);
-    let provider_cb = Arc::new(CircuitBreaker::new(
-        format!("provider:{}", base_provider.provider_id()),
-        cb_threshold,
-        cb_recovery_ms,
-    ));
-    cb_registry.register(provider_cb.clone());
-    let provider: Arc<dyn Provider> =
-        Arc::new(CircuitBreakerProvider::new(base_provider, provider_cb));
-
     let recorder = Arc::new(ProviderAuditRecorder::with_store(store.clone()));
     state.with_provider_and_audit(provider, recorder)
 }
@@ -848,34 +767,29 @@ fn local_admin_scope_list() -> Vec<String> {
     .collect()
 }
 
-/// Build a provider Arc for engine injection (separate from the API state provider).
-/// Returns `Err` if ACP_PROVIDER_TYPE is unset or provider execution is not enabled.
-fn build_provider_for_engine(
-    _store: &Arc<LocalProductStore>,
+fn build_single_provider_from_env(
     cb_registry: &Arc<CircuitBreakerRegistry>,
-) -> Result<Arc<dyn engine::provider::Provider>, String> {
-    let provider_type =
-        std::env::var("ACP_PROVIDER_TYPE").map_err(|_| "ACP_PROVIDER_TYPE not set".to_string())?;
-    if provider_type.trim().is_empty() {
+) -> Result<Arc<dyn Provider>, String> {
+    let provider_type = std::env::var("ACP_PROVIDER_TYPE")
+        .map_err(|_| "ACP_PROVIDER_TYPE not set".to_string())?;
+    let provider_type = provider_type.trim();
+    if provider_type.is_empty() {
         return Err("ACP_PROVIDER_TYPE is empty".to_string());
     }
 
-    if !single_provider_execution_enabled() {
-        return Err(
-            "provider execution not enabled by ACP_ENABLE_PROVIDER_EXECUTION or ready ACP_TRUSTED_LOCAL_PROFILE"
-                .to_string(),
-        );
-    }
-
     if provider_type == "stub" {
-        let provider: Arc<dyn engine::provider::Provider> = Arc::new(StubProvider::new("stub-env"));
-        return Ok(provider);
+        return Ok(Arc::new(StubProvider::new("stub-env")));
     }
 
     let api_key_env = std::env::var("ACP_API_KEY").unwrap_or_default();
     let model = provider_model_from_env();
     let base_url = std::env::var("ACP_BASE_URL").unwrap_or_default();
     let pricing = provider_pricing_from_env();
+    if !pricing.configured() {
+        eprintln!(
+            "provider token usage will be tracked, but ACP_PROVIDER_INPUT_COST_PER_1K_USD/ACP_PROVIDER_OUTPUT_COST_PER_1K_USD are not fully configured"
+        );
+    }
 
     let boundary = CredentialBoundary::new("env").expect("env credential backend");
     let cred_ref = CredentialRef::new(
@@ -886,7 +800,7 @@ fn build_provider_for_engine(
         "2026-01-01T00:00:00Z",
     );
 
-    let base_provider: Arc<dyn engine::provider::Provider> = match provider_type.as_str() {
+    let base_provider: Arc<dyn Provider> = match provider_type {
         "openai_compatible" => {
             let mut config = ProviderConfig::new(
                 "openai-env",
@@ -926,7 +840,6 @@ fn build_provider_for_engine(
         other => return Err(format!("unknown ACP_PROVIDER_TYPE: {other}")),
     };
 
-    // Wrap with circuit breaker
     let cb_threshold = std::env::var("ACP_CIRCUIT_BREAKER_THRESHOLD")
         .ok()
         .and_then(|v| v.parse::<u64>().ok())
@@ -946,6 +859,22 @@ fn build_provider_for_engine(
         provider_cb,
     )))
 }
+
+/// Build a provider Arc for engine injection (separate from the API state provider).
+/// Returns `Err` if ACP_PROVIDER_TYPE is unset or provider execution is not enabled.
+fn build_provider_for_engine(
+    _store: &Arc<LocalProductStore>,
+    cb_registry: &Arc<CircuitBreakerRegistry>,
+) -> Result<Arc<dyn Provider>, String> {
+    if !single_provider_execution_enabled() {
+        return Err(
+            "provider execution not enabled by ACP_ENABLE_PROVIDER_EXECUTION or ready ACP_TRUSTED_LOCAL_PROFILE"
+                .to_string(),
+        );
+    }
+    build_single_provider_from_env(cb_registry)
+}
+
 
 /// Build a HashMap of CLI executors for HybridExecutor construction.
 fn build_cli_executor_map(
