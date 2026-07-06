@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from "react";
 import {
   ApiError,
   cancelWorkflowRun,
+  fetchOperatorEvidence,
   fetchWorkflowRunApprovals,
   fetchWorkflowRunDetail,
   fetchWorkflowRunEvents,
@@ -14,11 +15,13 @@ import type {
   WorkflowRunEdge,
   WorkflowRunEvent,
   WorkflowRunNode,
+  ScorecardArtifact,
 } from "@/lib/types";
 import { ConfirmDialog, type ConfirmAction } from "./ConfirmDialog";
 import { EmptyState } from "./EmptyState";
 import { SearchBar } from "./SearchBar";
 import { StateBanner } from "./StateBanner";
+import { ScorecardEvidence } from "./ScorecardEvidence";
 
 function getRunNodes(run: WorkflowRun): WorkflowRunNode[] {
   const r = run as unknown as Record<string, unknown>;
@@ -218,6 +221,8 @@ function RunDetail({
 }) {
   const [events, setEvents] = useState<WorkflowRunEvent[]>([]);
   const [approvals, setApprovals] = useState<WorkflowRunApproval[]>([]);
+  const [scorecards, setScorecards] = useState<ScorecardArtifact[]>([]);
+  const [scorecardError, setScorecardError] = useState<string | null>(null);
   const [selectedNode, setSelectedNode] = useState<WorkflowRunNode | null>(null);
   const [loadingExtra, setLoadingExtra] = useState(true);
   const [confirmAction, setConfirmAction] = useState<ConfirmAction>(null);
@@ -231,9 +236,17 @@ function RunDetail({
     Promise.allSettled([
       fetchWorkflowRunEvents(run.run_id, { limit: 100 }),
       fetchWorkflowRunApprovals(run.run_id, { limit: 100 }),
-    ]).then(([evResult, apResult]) => {
+      fetchOperatorEvidence(run.run_id),
+    ]).then(([evResult, apResult, evidenceResult]) => {
       if (evResult.status === "fulfilled") setEvents(evResult.value.events);
       if (apResult.status === "fulfilled") setApprovals(apResult.value.approvals);
+      if (evidenceResult.status === "fulfilled") {
+        setScorecards(evidenceResult.value.scorecards);
+        setScorecardError(null);
+      } else {
+        setScorecards([]);
+        setScorecardError(evidenceResult.reason instanceof Error ? evidenceResult.reason.message : "Failed to load scorecard evidence");
+      }
     }).finally(() => setLoadingExtra(false));
   }, [run.run_id]);
 
@@ -309,6 +322,10 @@ function RunDetail({
         <div className="kv-row"><span className="muted">Next step</span><span>{pathSummary.next}</span></div>
         <div className="kv-row"><span className="muted">Failure reason</span><span>{pathSummary.failure}</span></div>
         <div className="kv-row"><span className="muted">Approval/export readiness</span><span>{pathSummary.readiness}</span></div>
+      </div>
+
+      <div className="subcard stack">
+        <ScorecardEvidence artifacts={scorecards} loading={loadingExtra} error={scorecardError} />
       </div>
 
       <div className="subcard stack">

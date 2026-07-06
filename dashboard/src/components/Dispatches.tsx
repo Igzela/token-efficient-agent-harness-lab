@@ -1,10 +1,11 @@
 import { useEffect, useState } from "react";
-import { ApiError, fetchDispatchDetail, fetchDispatches } from "@/lib/api-client";
-import type { LocalDispatchHistory } from "@/lib/types";
+import { ApiError, fetchDispatchDetail, fetchDispatches, fetchScorecards } from "@/lib/api-client";
+import type { LocalDispatchHistory, ScorecardArtifact } from "@/lib/types";
 import { EmptyState } from "./EmptyState";
 import { StateBanner } from "./StateBanner";
 import { SearchBar } from "./SearchBar";
 import { Pagination } from "./Pagination";
+import { ScorecardEvidence } from "./ScorecardEvidence";
 
 const PAGE_SIZE = 25;
 const noopDispatchCommand = `curl -X POST http://127.0.0.1:8080/api/v1/dispatch -H "content-type: application/json" -d '{"raw_request":"Review local docs","request_source":"manual"}'`;
@@ -20,6 +21,8 @@ export function Dispatches({
   const [detail, setDetail] = useState<Record<string, unknown> | null>(null);
   const [loading, setLoading] = useState(false);
   const [detailError, setDetailError] = useState<string | null>(null);
+  const [scorecards, setScorecards] = useState<ScorecardArtifact[]>([]);
+  const [scorecardError, setScorecardError] = useState<string | null>(null);
   const [search, setSearch] = useState("");
   const [page, setPage] = useState(0);
   const [rows, setRows] = useState<LocalDispatchHistory[]>(dispatches.slice(0, PAGE_SIZE));
@@ -55,15 +58,36 @@ export function Dispatches({
     setSelectedId(id);
     setLoading(true);
     setDetailError(null);
-    fetchDispatchDetail(id)
-      .then((r) => { setDetail(r.dispatch as Record<string, unknown>); setDetailError(null); })
-      .catch((e) => { setDetail(null); setDetailError(e instanceof Error ? e.message : "Failed to load"); })
+    setScorecards([]);
+    setScorecardError(null);
+    Promise.allSettled([
+      fetchDispatchDetail(id),
+      fetchScorecards({ dispatch_id: id, limit: 5 }),
+    ])
+      .then(([detailResult, scorecardResult]) => {
+        if (detailResult.status === "fulfilled") {
+          setDetail(detailResult.value.dispatch as Record<string, unknown>);
+          setDetailError(null);
+        } else {
+          setDetail(null);
+          setDetailError(detailResult.reason instanceof Error ? detailResult.reason.message : "Failed to load");
+        }
+        if (scorecardResult.status === "fulfilled") {
+          setScorecards(scorecardResult.value.artifacts);
+          setScorecardError(null);
+        } else {
+          setScorecards([]);
+          setScorecardError(scorecardResult.reason instanceof Error ? scorecardResult.reason.message : "Failed to load scorecard evidence");
+        }
+      })
       .finally(() => setLoading(false));
   }
 
   function closeDetail() {
     setSelectedId(null);
     setDetail(null);
+    setScorecards([]);
+    setScorecardError(null);
   }
 
   if (selectedId) {
@@ -78,7 +102,7 @@ export function Dispatches({
         ) : detailError ? (
           <p className="error-text">{detailError}</p>
         ) : detail ? (
-          <DispatchDetail detail={detail} />
+          <DispatchDetail detail={detail} scorecards={scorecards} scorecardError={scorecardError} />
         ) : (
           <p className="muted">Dispatch not found</p>
         )}
@@ -212,7 +236,15 @@ function dispatchListError(error: unknown): string {
   return error instanceof Error ? error.message : "Failed to load dispatch history";
 }
 
-function DispatchDetail({ detail }: { detail: Record<string, unknown> }) {
+function DispatchDetail({
+  detail,
+  scorecards,
+  scorecardError,
+}: {
+  detail: Record<string, unknown>;
+  scorecards: ScorecardArtifact[];
+  scorecardError: string | null;
+}) {
   const bundle = detail.bundle && typeof detail.bundle === "object"
     ? detail.bundle as Record<string, unknown>
     : detail;
@@ -246,6 +278,9 @@ function DispatchDetail({ detail }: { detail: Record<string, unknown> }) {
             <strong>{item.value}</strong>
           </div>
         ))}
+      </div>
+      <div className="subcard stack">
+        <ScorecardEvidence artifacts={scorecards} error={scorecardError} />
       </div>
       {sections.map(({ label, key }) => {
         const data = bundle[key];
@@ -287,10 +322,6 @@ function DispatchDetail({ detail }: { detail: Record<string, unknown> }) {
           </details>
         );
       })}
-      <details>
-        <summary>Raw dispatch bundle</summary>
-        <pre>{JSON.stringify(bundle, null, 2)}</pre>
-      </details>
     </div>
   );
 }
@@ -306,9 +337,9 @@ function text(value: unknown): string {
 }
 
 const knownFields: Record<string, string[]> = {
-  record: ["dispatch_id", "request_snapshot", "request_source", "final_status", "created_at", "completed_at", "history_id", "analysis_id", "decision_id", "execution_id", "evaluation_id"],
+  record: ["dispatch_id", "request_source", "final_status", "created_at", "completed_at", "history_id", "analysis_id", "decision_id", "execution_id", "evaluation_id"],
   analysis: ["task_domain", "task_intent", "complexity_score", "risk_level", "risk_flags", "confidence", "positive_evidence", "negative_evidence", "estimated_tokens"],
   decision: ["selected_tier", "fallback_tier", "routing_reason", "decision_status", "confidence", "budget_reservation", "execution_gates"],
-  execution_result: ["executor_type", "status", "output", "input_tokens", "output_tokens", "latency_ms", "error_message"],
+  execution_result: ["executor_type", "status", "input_tokens", "output_tokens", "latency_ms"],
   evaluation_result: ["status", "quality_score", "requires_retry", "checks"],
 };
