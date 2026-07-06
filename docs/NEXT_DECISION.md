@@ -74,7 +74,7 @@ The current direction is importer-first, not runner-first:
 1. keep the architecture and handoff contract in `docs/ARCHITECTURE_BOOK.md` and this file;
 2. validate bounded, redacted trace summaries;
 3. emit `token_efficiency_scorecard.v1` evidence;
-4. store raw trace material only as app-owned artifacts;
+4. export native scorecards as read-only app-owned artifact JSON, with `LocalProductStore` artifact persistence as the next storage integration point;
 5. expose read-only scorecards;
 6. add runtime-specific runners only after the importer and native scorecard export are stable.
 
@@ -96,7 +96,7 @@ Do not add new standalone benchmark planning documents unless the active docs be
 - Autonomous maintenance: repair stale docs, CI breakage, test drift, and wire-codegen drift.
 - Regression hardening: add or repair tests for existing behavior.
 - Pilots: real-world task validation.
-- Token-efficiency scorecard/importer: implement bounded trace-summary validation and read-only scorecard evidence under existing artifact, audit, storage, auth, redaction, and budget boundaries.
+- Token-efficiency scorecard/importer: maintain bounded trace-summary validation and native read-only scorecard artifact export; the next step is wiring the same validated artifact envelope through `LocalProductStore` artifacts and a read-only API without adding a runner, second schema, or second storage layer.
 - Agent Runtime track: **complete and sealed at AR-6.** Maintenance (tests, docs, bug fixes) is permitted under Agent Autonomous Maintenance Mode. Extending the AR phase ladder requires a new decision baseline in this file.
 - V2 maintenance and V2 authority expansion experiments.
 - Adaptive Fusion maintenance and adaptive routing authority experiments.

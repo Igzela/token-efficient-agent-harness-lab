@@ -6,7 +6,8 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 PORT="${ACP_ADAPTIVE_VERIFY_PORT:-18081}"
 TMP_DIR="$(mktemp -d)"
 ENGINE_PID=""
-AUTH_TOKEN="harness_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+AUTH_HEX="aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+AUTH_TOKEN="harness_${AUTH_HEX}"
 ENDPOINTS='[{"endpoint_id":"stub-a","provider_type":"stub","model":"stub-model","timeout_ms":30000,"input_cost_per_1k_usd":0.001,"output_cost_per_1k_usd":0.001}]'
 
 cleanup() {

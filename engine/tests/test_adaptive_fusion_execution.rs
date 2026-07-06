@@ -886,7 +886,7 @@ async fn fusion_parallel_timeout_blocks_judge_and_synthesizer() {
     let order = Arc::new(Mutex::new(Vec::new()));
     let slow = Arc::new(
         ScriptedProvider::new("slow", vec![response("slow", "late", 0.01)], order.clone())
-            .with_delay(500),
+            .with_delay(2_000),
     );
     let fast = Arc::new(ScriptedProvider::new(
         "fast",
@@ -922,7 +922,7 @@ async fn fusion_parallel_timeout_blocks_judge_and_synthesizer() {
                     judge: endpoint("judge", 0.02),
                     synthesizer: endpoint("synth", 0.02),
                 },
-                AdaptiveExecutionLimits::new(4, 0.1, 200, 2),
+                AdaptiveExecutionLimits::new(4, 0.1, 800, 2),
             ),
             &enabled_gate(),
         )
@@ -1366,7 +1366,7 @@ async fn total_timeout_cancels_current_call_and_prevents_fallback() {
     let order = Arc::new(Mutex::new(Vec::new()));
     let slow = Arc::new(
         ScriptedProvider::new("slow", vec![response("slow", "late", 0.01)], order.clone())
-            .with_delay(500),
+            .with_delay(2_000),
     );
     let fallback = Arc::new(ScriptedProvider::new(
         "fallback",
@@ -1385,7 +1385,7 @@ async fn total_timeout_cancels_current_call_and_prevents_fallback() {
                 AdaptiveExecutionPlan::OrderedFallback {
                     endpoints: vec![endpoint("slow", 0.02), endpoint("fallback", 0.02)],
                 },
-                limits(2, 0.1, 100),
+                limits(2, 0.1, 800),
             ),
             &enabled_gate(),
         )

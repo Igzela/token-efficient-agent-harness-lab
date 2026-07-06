@@ -47,6 +47,22 @@ What it does:
 
 Boundary: no provider API calls, no secrets, no target `main` write, and no merge/deploy/apply authority.
 
+### Token-efficiency scorecard export
+
+Use this read-only path to turn bounded native dispatch/workflow/run/evidence JSON into a validated scorecard artifact:
+
+```bash
+uv run --no-project python scripts/native_scorecard_export.py native-summary.json --output token-scorecard-artifact.json
+```
+
+To view only the reusable `token_efficiency_scorecard.v1` payload:
+
+```bash
+uv run --no-project python scripts/native_scorecard_export.py native-summary.json --scorecard-only
+```
+
+The exporter reuses `scripts/token_efficiency_scorecard.py` for validation and rejects raw prompt, raw output, transcript, credential, secret, password, and message-history fields before projection. It does not call providers, execute workflow nodes, read target repositories, or write runtime storage. The emitted `native_scorecard_artifact.v1` JSON envelope is the current app-owned artifact handoff path; the next storage integration is to persist the same envelope through `LocalProductStore` artifacts and expose read-only scorecard reads.
+
 ### Shortest Local Operator Path
 
 Use this path when you need the smallest local loop: start the engine, authenticate if required, then create and run a task from the dashboard.

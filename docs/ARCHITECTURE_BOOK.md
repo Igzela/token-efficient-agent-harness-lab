@@ -85,7 +85,7 @@ Non-goals unless a later documented replacement supersedes this boundary:
 - no provider calls in CI;
 - no target-output, merge, deploy, release, or protected-branch authority through an adapter.
 
-The intended scorecard is logical, not yet an implemented schema. A future implementation should map it onto `LocalProductStore`, audit, and app-owned artifacts rather than adding separate storage. Minimum run-level fields are:
+The scorecard contract is implemented by `scripts/token_efficiency_scorecard.py`, which validates bounded summaries and emits `token_efficiency_scorecard.v1`. Native harness exports use `scripts/native_scorecard_export.py` to read bounded dispatch/workflow/run/evidence JSON, reuse that validator, and emit a read-only `native_scorecard_artifact.v1` JSON envelope. The envelope is the app-owned artifact handoff point until the same object is persisted through `LocalProductStore` artifacts and exposed through a read-only API; no second schema or storage layer is introduced. Minimum run-level fields are:
 
 ```text
 adapter_run_id
@@ -141,13 +141,13 @@ finished_at
 
 Derived metrics should include total tokens, context share, repeated-context ratio, tool-redundancy ratio, tokens per passing run, cost per passing run, and step retry ratio. Token reduction is not success unless the task also passes under the same success criterion.
 
-Implementation order should be importer-first:
+Implementation order remains importer-first:
 
-1. validate a bounded trace summary;
-2. emit `token_efficiency_scorecard.v1` evidence;
-3. store raw source trace only as a redacted app-owned artifact;
-4. compute derived metrics;
-5. expose read-only scorecards;
+1. validate a bounded trace summary — implemented in `scripts/token_efficiency_scorecard.py`;
+2. emit `token_efficiency_scorecard.v1` evidence — implemented by the validator and native exporter;
+3. store scorecard evidence as a read-only app-owned artifact JSON export — implemented as `native_scorecard_artifact.v1`, with `LocalProductStore` artifact persistence as the next integration point;
+4. compute derived metrics — implemented by the validator;
+5. expose read-only scorecards — currently available through the CLI artifact/scorecard export path;
 6. only then add runtime-specific runners.
 
 The first external baseline should be LangGraph stateful versus stateless reread. CrewAI and Microsoft Agent Framework should wait until native scorecard export and importer validation are stable.
