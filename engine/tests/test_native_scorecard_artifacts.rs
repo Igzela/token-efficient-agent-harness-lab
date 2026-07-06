@@ -1,7 +1,7 @@
 use axum::body::{to_bytes, Body};
 use axum::http::{Method, Request, StatusCode};
 use engine::http_server::{build_axum_router, AxumApiState};
-use engine::storage::local_product_store::LocalProductStore;
+use engine::storage::local_product_store::{LocalProductStore, WorkflowPlanIds};
 use serde_json::{json, Value};
 use tempfile::tempdir;
 use tower::ServiceExt;
@@ -88,6 +88,41 @@ fn make_store() -> (LocalProductStore, tempfile::TempDir) {
     (store, dir)
 }
 
+fn single_node_plan(ids: &WorkflowPlanIds) -> Value {
+    json!({
+        "schema_version": "workflow_plan.v1",
+        "plan_id": ids.plan_id,
+        "workflow_id": ids.workflow_id,
+        "dispatch_id": ids.dispatch_id,
+        "status": "planned_read_only",
+        "analysis": {"summary": "single node scorecard regression"},
+        "boundaries": {"provider_calls": "disabled"},
+        "graph": {
+            "workflow_id": ids.workflow_id,
+            "dispatch_id": ids.dispatch_id,
+            "nodes": [{
+                "node_id": "node-1",
+                "task_type": "analysis",
+                "name": "safe scorecard node",
+                "status": "pending"
+            }],
+            "edges": []
+        }
+    })
+}
+
+fn create_single_node_run(store: &LocalProductStore, raw_request: &str) -> String {
+    let plan = store
+        .create_workflow_plan(raw_request, "test", "tester", |ids, _| {
+            Ok(single_node_plan(ids))
+        })
+        .unwrap();
+    let run = store
+        .create_workflow_run_from_plan(plan["plan_id"].as_str().unwrap(), "tester")
+        .unwrap();
+    run["run_id"].as_str().unwrap().to_string()
+}
+
 #[test]
 fn native_scorecard_artifact_persists_and_reads_by_run_and_dispatch() {
     let (store, _dir) = make_store();
@@ -139,6 +174,13 @@ fn native_scorecard_artifact_rejects_schema_drift_and_raw_trace_fields() {
     raw_trace["scorecard"]["raw_trace"] = json!({"prompt": "do not store"});
     let error = store
         .record_native_scorecard_artifact(&raw_trace, "tester")
+        .unwrap_err();
+    assert!(error.contains("raw trace field is not allowed"));
+
+    let mut secret_shaped = sample_artifact("run-secret-shaped", None);
+    secret_shaped["scorecard"]["steps"][0]["api_secret_value"] = json!("do not store");
+    let error = store
+        .record_native_scorecard_artifact(&secret_shaped, "tester")
         .unwrap_err();
     assert!(error.contains("raw trace field is not allowed"));
 }
@@ -219,4 +261,110 @@ async fn scorecard_api_reads_by_run_dispatch_and_artifact_id() {
         detail_body["artifact"]["artifact_id"],
         "scorecard-run-api-abc123"
     );
+}
+
+#[test]
+fn successful_native_run_automatically_persists_scorecard_artifact() {
+    let (store, _dir) = make_store();
+    let run_id = create_single_node_run(&store, "safe scorecard success");
+
+    let tick = store.tick_workflow_run(&run_id, "tester").unwrap();
+    assert_eq!(tick["run"]["status"], "completed");
+
+    let artifacts = store
+        .native_scorecard_artifacts_by_run(&run_id, 10)
+        .unwrap();
+    assert_eq!(artifacts.len(), 1);
+    let scorecard = &artifacts[0]["scorecard"];
+    assert_eq!(scorecard["schema_version"], "token_efficiency_scorecard.v1");
+    assert_eq!(scorecard["adapter_run_id"], run_id);
+    assert_eq!(scorecard["status"], "pass");
+    assert_eq!(
+        scorecard["derived_metrics"]["tokens_per_passing_run"],
+        scorecard["derived_metrics"]["total_tokens"]
+    );
+    assert_eq!(artifacts[0]["read_only"], true);
+    assert_eq!(artifacts[0]["target_repository_writes"], "disabled");
+}
+
+#[test]
+fn failed_native_run_automatically_persists_scorecard_without_passing_metric() {
+    let (store, _dir) = make_store();
+    let run_id = create_single_node_run(&store, "safe scorecard failure");
+    let executor = engine::node_executor::FailNodeExecutor::default();
+
+    let tick = store
+        .tick_with_executor(&run_id, "tester", 0, &executor)
+        .unwrap();
+    assert_eq!(tick["run"]["status"], "failed");
+
+    let artifacts = store
+        .native_scorecard_artifacts_by_run(&run_id, 10)
+        .unwrap();
+    assert_eq!(artifacts.len(), 1);
+    let scorecard = &artifacts[0]["scorecard"];
+    assert_eq!(scorecard["status"], "fail");
+    assert!(scorecard["derived_metrics"]["tokens_per_passing_run"].is_null());
+    assert!(scorecard["derived_metrics"]["cost_per_passing_run"].is_null());
+}
+
+#[test]
+fn automatic_scorecard_recording_is_idempotent_for_same_run() {
+    let (store, _dir) = make_store();
+    let run_id = create_single_node_run(&store, "safe scorecard idempotent");
+
+    store.tick_workflow_run(&run_id, "tester").unwrap();
+    let first = store
+        .native_scorecard_artifacts_by_run(&run_id, 10)
+        .unwrap();
+    assert_eq!(first.len(), 1);
+
+    let replayed = store
+        .record_automatic_native_scorecard_for_run(&run_id, "tester")
+        .unwrap()
+        .unwrap();
+    assert_eq!(replayed["artifact_id"], first[0]["artifact_id"]);
+    let second = store
+        .native_scorecard_artifacts_by_run(&run_id, 10)
+        .unwrap();
+    assert_eq!(second.len(), 1);
+}
+
+#[tokio::test]
+async fn automatic_scorecard_is_visible_in_api_and_operator_evidence_metadata() {
+    let (store, _dir) = make_store();
+    let run_id = create_single_node_run(&store, "safe scorecard api visibility");
+    store.tick_workflow_run(&run_id, "tester").unwrap();
+    let app = build_axum_router(AxumApiState::new().with_local_store(store));
+
+    let scorecards = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(Method::GET)
+                .uri(format!("/api/v1/scorecards?run_id={run_id}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(scorecards.status(), StatusCode::OK);
+    let scorecards_body = response_json(scorecards).await;
+    assert_eq!(scorecards_body["artifacts"].as_array().unwrap().len(), 1);
+
+    let evidence = app
+        .oneshot(
+            Request::builder()
+                .method(Method::GET)
+                .uri(format!("/api/v1/operator/evidence/{run_id}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(evidence.status(), StatusCode::OK);
+    let evidence_body = response_json(evidence).await;
+    assert_eq!(evidence_body["scorecard_artifact_count"], 1);
+    assert_eq!(evidence_body["scorecards"][0]["read_only"], true);
+    assert!(evidence_body["scorecards"][0].get("steps").is_none());
 }

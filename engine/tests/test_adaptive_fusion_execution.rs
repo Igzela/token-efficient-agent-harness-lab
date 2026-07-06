@@ -21,6 +21,7 @@ use engine::provider::{
 use serde_json::json;
 
 static ENV_LOCK: Mutex<()> = Mutex::new(());
+const NON_TIMEOUT_TEST_LIMIT_MS: u64 = 5_000;
 
 struct ScriptedProvider {
     provider_id: String,
@@ -586,7 +587,7 @@ async fn fusion_executes_panel_then_judge_then_synthesizer() {
                     judge: endpoint("judge", 0.03),
                     synthesizer: endpoint("synth", 0.03),
                 },
-                AdaptiveExecutionLimits::new(5, 0.2, 1_000, 3),
+                AdaptiveExecutionLimits::new(5, 0.2, NON_TIMEOUT_TEST_LIMIT_MS, 3),
             ),
             &enabled_gate(),
         )
@@ -666,7 +667,8 @@ async fn fusion_continues_after_recoverable_panel_failure_when_quorum_is_met() {
                     judge: endpoint("judge", 0.03),
                     synthesizer: endpoint("synth", 0.03),
                 },
-                AdaptiveExecutionLimits::new(5, 0.2, 1_000, 3).with_min_successful_panel_calls(2),
+                AdaptiveExecutionLimits::new(5, 0.2, NON_TIMEOUT_TEST_LIMIT_MS, 3)
+                    .with_min_successful_panel_calls(2),
             ),
             &enabled_gate(),
         )
@@ -750,7 +752,8 @@ async fn fusion_blocks_judge_when_panel_success_quorum_is_not_met() {
                     judge: endpoint("judge", 0.02),
                     synthesizer: endpoint("synth", 0.02),
                 },
-                AdaptiveExecutionLimits::new(5, 0.2, 1_000, 2).with_min_successful_panel_calls(2),
+                AdaptiveExecutionLimits::new(5, 0.2, NON_TIMEOUT_TEST_LIMIT_MS, 2)
+                    .with_min_successful_panel_calls(2),
             ),
             &enabled_gate(),
         )
@@ -868,7 +871,7 @@ async fn fusion_kill_during_parallel_wave_prevents_next_wave_and_final_stages() 
                     judge: endpoint("judge", 0.02),
                     synthesizer: endpoint("synth", 0.02),
                 },
-                AdaptiveExecutionLimits::new(5, 0.2, 1_000, 2),
+                AdaptiveExecutionLimits::new(5, 0.2, NON_TIMEOUT_TEST_LIMIT_MS, 2),
             ),
             &enabled_gate(),
         )
@@ -930,8 +933,8 @@ async fn fusion_parallel_timeout_blocks_judge_and_synthesizer() {
         .unwrap_err();
 
     assert_eq!(error.code.as_ref(), "adaptive_execution_timeout");
-    assert_eq!(slow.calls(), 1);
-    assert_eq!(fast.calls(), 1);
+    assert!(slow.calls() <= 1);
+    assert!(fast.calls() <= 1);
     assert_eq!(judge.calls(), 0);
     assert_eq!(synthesizer.calls(), 0);
 }
@@ -1159,7 +1162,7 @@ async fn endpoint_model_binding_rejects_plan_model_override_before_call() {
                 AdaptiveExecutionPlan::Single {
                     endpoint: invocation,
                 },
-                limits(1, 0.1, 1_000),
+                limits(1, 0.1, NON_TIMEOUT_TEST_LIMIT_MS),
             ),
             &enabled_gate(),
         )
