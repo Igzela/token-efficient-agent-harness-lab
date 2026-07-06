@@ -354,6 +354,21 @@ fn build_token_efficiency_scorecard_from_workflow_run(run: &Value) -> Result<Val
         })
         .filter(|cost| *cost >= 0.0)
         .sum::<f64>();
+    // Native scorecard projection is evidence-only: it reads metrics already
+    // persisted on workflow runs/nodes by native executors and keeps unknown
+    // fields at conservative zero defaults instead of inferring from raw text.
+    let metric_sources = json!({
+        "input_output_tokens": "workflow_run_nodes.node_json.result.input_tokens/output_tokens when reported by native provider/CLI/adaptive executors; otherwise 0",
+        "context_tokens": "workflow_run_nodes.node_json.context_tokens when bounded context assembly records it; otherwise 0",
+        "retrieved_refs": "workflow_run_nodes.node_json.retrieved_refs_count/retrieved_ref_tokens when recorded; otherwise 0",
+        "repeated_context_tokens": "workflow_run_nodes.node_json.repeated_context_tokens when recorded; otherwise 0",
+        "tool_call_count": "workflow node task_type/executor classification for native command/tool nodes",
+        "redundant_tool_call_count": "0 until native execution persists stable tool-call identity/hash evidence",
+        "retry_count": "workflow_run_nodes.attempt_count - 1",
+        "duration_ms": "workflow run started_at/completed_at, falling back to node result latency_ms or node started_at/completed_at",
+        "status_quality": "workflow run/node terminal status and terminal audit reason",
+        "source_trace_payload": "not persisted"
+    });
     let mut scorecard = json!({
         "schema_version": TOKEN_EFFICIENCY_SCORECARD_SCHEMA_VERSION,
         "adapter_run_id": run_id,
@@ -378,6 +393,7 @@ fn build_token_efficiency_scorecard_from_workflow_run(run: &Value) -> Result<Val
         "estimated_cost_usd": estimated_cost_usd,
         "raw_trace_artifact_id": format!("native-scorecard-source-{run_id}"),
         "redaction_status": "redacted",
+        "metric_sources": metric_sources,
         "steps": steps,
     });
     if status == "pass" {
@@ -449,7 +465,8 @@ fn workflow_node_to_scorecard_step(
             .unwrap_or(if status == "pass" { "none" } else { status }),
         "state_read_bytes": positive_i64(node.get("state_read_bytes")),
         "state_write_bytes": positive_i64(node.get("state_write_bytes")),
-        "duration_ms": positive_i64(result.get("latency_ms")),
+        "duration_ms": positive_i64(result.get("latency_ms"))
+            .max(node_duration_ms(node).unwrap_or(0)),
     }))
 }
 
@@ -675,6 +692,14 @@ fn terminal_reason(run: &Value) -> String {
 fn run_duration_ms(run: &Value) -> Option<i64> {
     let started = run.get("started_at").and_then(Value::as_str)?;
     let completed = run.get("completed_at").and_then(Value::as_str)?;
+    let started = chrono::DateTime::parse_from_rfc3339(started).ok()?;
+    let completed = chrono::DateTime::parse_from_rfc3339(completed).ok()?;
+    Some((completed - started).num_milliseconds().max(0))
+}
+
+fn node_duration_ms(node: &Value) -> Option<i64> {
+    let started = node.get("started_at").and_then(Value::as_str)?;
+    let completed = node.get("completed_at").and_then(Value::as_str)?;
     let started = chrono::DateTime::parse_from_rfc3339(started).ok()?;
     let completed = chrono::DateTime::parse_from_rfc3339(completed).ok()?;
     Some((completed - started).num_milliseconds().max(0))

@@ -368,3 +368,176 @@ async fn automatic_scorecard_is_visible_in_api_and_operator_evidence_metadata() 
     assert_eq!(evidence_body["scorecards"][0]["read_only"], true);
     assert!(evidence_body["scorecards"][0].get("steps").is_none());
 }
+
+struct MetricsNodeExecutor;
+
+impl engine::node_executor::NodeExecutor for MetricsNodeExecutor {
+    fn executor_type_name(&self) -> &str {
+        "provider"
+    }
+
+    fn execute_node(
+        &self,
+        input: &engine::node_executor::NodeExecutionInput,
+    ) -> engine::node_executor::NodeExecutionOutput {
+        let is_tool = input.task_type == "command" || input.task_type.contains("tool");
+        engine::node_executor::NodeExecutionOutput {
+            status: "completed".to_string(),
+            executor_type: if is_tool { "command" } else { "provider" }.to_string(),
+            output: None,
+            error_domain: None,
+            error_message: None,
+            input_tokens: Some(if is_tool { 7 } else { 120 }),
+            output_tokens: Some(if is_tool { 3 } else { 40 }),
+            estimated_cost: Some(if is_tool { 0.0 } else { 0.012 }),
+            latency_ms: Some(if is_tool { 9 } else { 33 }),
+        }
+    }
+}
+
+fn metrics_plan(ids: &WorkflowPlanIds) -> Value {
+    json!({
+        "schema_version": "workflow_plan.v1",
+        "plan_id": ids.plan_id,
+        "workflow_id": ids.workflow_id,
+        "dispatch_id": ids.dispatch_id,
+        "status": "planned_read_only",
+        "analysis": {"summary": "scorecard metrics regression"},
+        "boundaries": {"provider_calls": "disabled"},
+        "graph": {
+            "workflow_id": ids.workflow_id,
+            "dispatch_id": ids.dispatch_id,
+            "nodes": [
+                {
+                    "node_id": "model-1",
+                    "task_type": "analysis",
+                    "name": "model evidence node",
+                    "status": "pending",
+                    "context_tokens": 80,
+                    "retrieved_refs_count": 2,
+                    "retrieved_ref_tokens": 30,
+                    "repeated_context_tokens": 10,
+                    "state_read_bytes": 512,
+                    "state_write_bytes": 128
+                },
+                {
+                    "node_id": "tool-1",
+                    "task_type": "command",
+                    "name": "safe command node",
+                    "status": "pending",
+                    "context_tokens": 5,
+                    "retrieved_refs_count": 0,
+                    "retrieved_ref_tokens": 0,
+                    "repeated_context_tokens": 0
+                }
+            ],
+            "edges": []
+        }
+    })
+}
+
+fn create_metrics_run(store: &LocalProductStore) -> String {
+    let plan = store
+        .create_workflow_plan("safe metrics run", "test", "tester", |ids, _| {
+            Ok(metrics_plan(ids))
+        })
+        .unwrap();
+    let run = store
+        .create_workflow_run_from_plan(plan["plan_id"].as_str().unwrap(), "tester")
+        .unwrap();
+    run["run_id"].as_str().unwrap().to_string()
+}
+
+#[test]
+fn automatic_scorecard_uses_native_executor_metrics_when_available() {
+    let (store, _dir) = make_store();
+    let run_id = create_metrics_run(&store);
+    let executor = MetricsNodeExecutor;
+
+    assert_eq!(
+        store
+            .tick_with_executor(&run_id, "tester", 0, &executor)
+            .unwrap()["run"]["status"],
+        "running"
+    );
+    assert_eq!(
+        store
+            .tick_with_executor(&run_id, "tester", 0, &executor)
+            .unwrap()["run"]["status"],
+        "completed"
+    );
+
+    let artifacts = store
+        .native_scorecard_artifacts_by_run(&run_id, 10)
+        .unwrap();
+    assert_eq!(artifacts.len(), 1);
+    let scorecard = &artifacts[0]["scorecard"];
+    assert_eq!(scorecard["input_token_total"], 127);
+    assert_eq!(scorecard["output_token_total"], 43);
+    assert_eq!(scorecard["context_token_total"], 85);
+    assert_eq!(scorecard["retrieved_ref_token_total"], 30);
+    assert_eq!(scorecard["repeated_context_token_total"], 10);
+    assert_eq!(scorecard["tool_call_count"], 1);
+    assert_eq!(scorecard["redundant_tool_call_count"], 0);
+    assert_eq!(scorecard["retry_count"], 0);
+    assert_eq!(scorecard["step_count"], 2);
+    assert!(scorecard["duration_ms"].as_i64().unwrap() >= 0);
+    assert_eq!(scorecard["estimated_cost_usd"], 0.012);
+    assert_eq!(scorecard["steps"][0]["duration_ms"], 33);
+    assert_eq!(scorecard["steps"][1]["operation_kind"], "tool_call");
+    assert_eq!(scorecard["steps"][1]["input_tokens"], 7);
+}
+
+#[test]
+fn automatic_scorecard_retry_and_tool_counts_are_from_native_evidence() {
+    let (store, _dir) = make_store();
+    let run_id = create_single_node_run(&store, "safe scorecard retry failure");
+    let executor = engine::node_executor::FailNodeExecutor::default();
+
+    assert_eq!(
+        store
+            .tick_with_executor(&run_id, "tester", 2, &executor)
+            .unwrap()["action"],
+        "node_retry"
+    );
+    assert_eq!(
+        store
+            .tick_with_executor(&run_id, "tester", 2, &executor)
+            .unwrap()["action"],
+        "node_retry"
+    );
+    let terminal = store
+        .tick_with_executor(&run_id, "tester", 2, &executor)
+        .unwrap();
+    assert_eq!(terminal["run"]["status"], "failed");
+
+    let artifacts = store
+        .native_scorecard_artifacts_by_run(&run_id, 10)
+        .unwrap();
+    let scorecard = &artifacts[0]["scorecard"];
+    assert_eq!(scorecard["retry_count"], 2);
+    assert_eq!(scorecard["tool_call_count"], 0);
+    assert_eq!(scorecard["redundant_tool_call_count"], 0);
+    assert!(scorecard["derived_metrics"]["tokens_per_passing_run"].is_null());
+}
+
+#[test]
+fn automatic_scorecard_safely_defaults_missing_metrics_to_zero() {
+    let (store, _dir) = make_store();
+    let run_id = create_single_node_run(&store, "safe scorecard no metrics");
+
+    store.tick_workflow_run(&run_id, "tester").unwrap();
+    let artifacts = store
+        .native_scorecard_artifacts_by_run(&run_id, 10)
+        .unwrap();
+    let scorecard = &artifacts[0]["scorecard"];
+    assert_eq!(scorecard["input_token_total"], 0);
+    assert_eq!(scorecard["output_token_total"], 0);
+    assert_eq!(scorecard["context_token_total"], 0);
+    assert_eq!(scorecard["retrieved_ref_token_total"], 0);
+    assert_eq!(scorecard["repeated_context_token_total"], 0);
+    assert_eq!(scorecard["tool_call_count"], 0);
+    assert_eq!(scorecard["redundant_tool_call_count"], 0);
+    assert_eq!(scorecard["retry_count"], 0);
+    assert_eq!(scorecard["derived_metrics"]["total_tokens"], 0);
+}
