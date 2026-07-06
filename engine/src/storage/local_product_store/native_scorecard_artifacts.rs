@@ -1,5 +1,6 @@
 use rusqlite::{params, Row};
 use serde_json::{json, Value};
+use sha2::{Digest, Sha256};
 
 use super::{append_audit_locked, collect_values, DatabaseConnection, LocalProductStore};
 
@@ -7,6 +8,23 @@ pub const NATIVE_SCORECARD_ARTIFACT_SCHEMA_VERSION: &str = "native_scorecard_art
 pub const TOKEN_EFFICIENCY_SCORECARD_SCHEMA_VERSION: &str = "token_efficiency_scorecard.v1";
 
 impl LocalProductStore {
+    pub fn record_automatic_native_scorecard_for_run(
+        &self,
+        run_id: &str,
+        actor: &str,
+    ) -> Result<Option<Value>, String> {
+        let Some(run) = self.get_workflow_run(run_id)? else {
+            return Ok(None);
+        };
+        let status = run.get("status").and_then(Value::as_str).unwrap_or("");
+        if !is_scorecard_terminal_status(status) {
+            return Ok(None);
+        }
+        let artifact = build_native_scorecard_artifact_from_workflow_run(&run, &self.now())?;
+        self.record_native_scorecard_artifact(&artifact, actor)
+            .map(Some)
+    }
+
     pub fn record_native_scorecard_artifact(
         &self,
         artifact: &Value,
@@ -24,6 +42,16 @@ impl LocalProductStore {
         let redaction_status = required_str(scorecard, "redaction_status")?;
         let mut stored = artifact.clone();
         let created_at = self.now();
+
+        if let Some(existing) = self.get_native_scorecard_artifact(artifact_id)? {
+            let existing_hash = required_str(&existing, "content_sha256")?;
+            if existing_hash == content_sha256 {
+                return Ok(existing);
+            }
+            return Err(format!(
+                "native scorecard artifact id collision with different content: {artifact_id}"
+            ));
+        }
 
         if let Some(obj) = stored.as_object_mut() {
             obj.insert("created_at".to_string(), json!(created_at.clone()));
@@ -250,6 +278,253 @@ fn native_scorecard_row(row: &Row<'_>) -> rusqlite::Result<Value> {
     Ok(parse_artifact_json(&artifact_json).unwrap_or(Value::Null))
 }
 
+fn build_native_scorecard_artifact_from_workflow_run(
+    run: &Value,
+    created_at: &str,
+) -> Result<Value, String> {
+    let scorecard = build_token_efficiency_scorecard_from_workflow_run(run)?;
+    let canonical = serde_json::to_string(&scorecard).map_err(|e| e.to_string())?;
+    let content_sha256 = hex::encode(Sha256::digest(canonical.as_bytes()));
+    let run_id = required_str(&scorecard, "adapter_run_id")?;
+    Ok(json!({
+        "schema_version": NATIVE_SCORECARD_ARTIFACT_SCHEMA_VERSION,
+        "artifact_kind": "token_efficiency_scorecard",
+        "storage": "app_owned_artifact_json_export",
+        "read_only": true,
+        "created_at": created_at,
+        "artifact_id": format!("scorecard-{run_id}-{}", &content_sha256[..12]),
+        "content_sha256": content_sha256,
+        "scorecard_schema_version": TOKEN_EFFICIENCY_SCORECARD_SCHEMA_VERSION,
+        "scorecard": scorecard,
+    }))
+}
+
+fn build_token_efficiency_scorecard_from_workflow_run(run: &Value) -> Result<Value, String> {
+    let run_id = required_str(run, "run_id")?;
+    let status = run_status_to_scorecard_status(run.get("status").and_then(Value::as_str));
+    let nodes = run
+        .get("nodes")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    let steps = nodes
+        .iter()
+        .enumerate()
+        .map(|(index, node)| workflow_node_to_scorecard_step(node, run_id, index))
+        .collect::<Result<Vec<_>, _>>()?;
+    let input_token_total: i64 = steps
+        .iter()
+        .map(|step| number_i64(step, "input_tokens"))
+        .sum();
+    let output_token_total: i64 = steps
+        .iter()
+        .map(|step| number_i64(step, "output_tokens"))
+        .sum();
+    let context_token_total: i64 = steps
+        .iter()
+        .map(|step| number_i64(step, "context_tokens"))
+        .sum();
+    let repeated_context_token_total: i64 = steps
+        .iter()
+        .map(|step| number_i64(step, "repeated_context_tokens"))
+        .sum();
+    let retrieved_ref_token_total: i64 = steps
+        .iter()
+        .map(|step| number_i64(step, "retrieved_ref_tokens"))
+        .sum();
+    let tool_call_count = steps
+        .iter()
+        .filter(|step| step.get("operation_kind").and_then(Value::as_str) == Some("tool_call"))
+        .count() as i64;
+    let retry_count: i64 = nodes
+        .iter()
+        .map(|node| positive_i64(node.get("attempt_count")).saturating_sub(1))
+        .sum();
+    let duration_ms = run_duration_ms(run).unwrap_or_else(|| {
+        steps
+            .iter()
+            .map(|step| number_i64(step, "duration_ms"))
+            .sum()
+    });
+    let estimated_cost_usd = nodes
+        .iter()
+        .filter_map(|node| {
+            node.pointer("/result/estimated_cost")
+                .and_then(Value::as_f64)
+        })
+        .filter(|cost| *cost >= 0.0)
+        .sum::<f64>();
+    let mut scorecard = json!({
+        "schema_version": TOKEN_EFFICIENCY_SCORECARD_SCHEMA_VERSION,
+        "adapter_run_id": run_id,
+        "runtime_kind": "native_harness",
+        "runtime_version": "native-harness",
+        "scenario_id": run.get("workflow_id").and_then(Value::as_str).unwrap_or("native-run"),
+        "mode": "native_control_plane",
+        "state_strategy": "mixed",
+        "status": status,
+        "pass_fail_reason": terminal_reason(run),
+        "quality_method": if status == "pass" { "test" } else { "none" },
+        "input_token_total": input_token_total,
+        "output_token_total": output_token_total,
+        "context_token_total": context_token_total,
+        "repeated_context_token_total": repeated_context_token_total,
+        "retrieved_ref_token_total": retrieved_ref_token_total,
+        "tool_call_count": tool_call_count,
+        "redundant_tool_call_count": 0,
+        "retry_count": retry_count,
+        "step_count": steps.len() as i64,
+        "duration_ms": duration_ms,
+        "estimated_cost_usd": estimated_cost_usd,
+        "raw_trace_artifact_id": format!("native-scorecard-source-{run_id}"),
+        "redaction_status": "redacted",
+        "steps": steps,
+    });
+    if status == "pass" {
+        scorecard["quality_score"] = json!(1.0);
+    }
+    if let Some(dispatch_id) = run
+        .get("dispatch_id")
+        .and_then(Value::as_str)
+        .filter(|value| !value.trim().is_empty())
+    {
+        scorecard["dispatch_id"] = json!(dispatch_id);
+    }
+    let derived = derived_metrics(&scorecard);
+    scorecard["derived_metrics"] = derived;
+    validate_native_scorecard_scorecard(&scorecard)?;
+    Ok(scorecard)
+}
+
+fn workflow_node_to_scorecard_step(
+    node: &Value,
+    run_id: &str,
+    index: usize,
+) -> Result<Value, String> {
+    let node_id = node
+        .get("node_id")
+        .and_then(Value::as_str)
+        .filter(|value| !value.trim().is_empty())
+        .map(str::to_string)
+        .unwrap_or_else(|| format!("{run_id}-step-{index}"));
+    let result = node.get("result").unwrap_or(&Value::Null);
+    let status = run_status_to_scorecard_status(
+        node.get("db_status")
+            .or_else(|| node.get("status"))
+            .and_then(Value::as_str),
+    );
+    let input_tokens = positive_i64(result.get("input_tokens"));
+    let output_tokens = positive_i64(result.get("output_tokens"));
+    let context_tokens = positive_i64(node.get("context_tokens"));
+    let retrieved_ref_tokens = positive_i64(node.get("retrieved_ref_tokens"));
+    let repeated_context_tokens = positive_i64(node.get("repeated_context_tokens"));
+    if repeated_context_tokens > context_tokens {
+        return Err("step repeated_context_tokens cannot exceed context_tokens".to_string());
+    }
+    if retrieved_ref_tokens > context_tokens {
+        return Err("step retrieved_ref_tokens cannot exceed context_tokens".to_string());
+    }
+    Ok(json!({
+        "adapter_step_id": node_id,
+        "adapter_run_id": run_id,
+        "step_index": index as i64,
+        "node_name": node.get("name").and_then(Value::as_str).unwrap_or_else(|| {
+            node.get("node_id").and_then(Value::as_str).unwrap_or("workflow_node")
+        }),
+        "agent_role": "unknown",
+        "operation_kind": operation_kind_for_node(node),
+        "input_tokens": input_tokens,
+        "output_tokens": output_tokens,
+        "context_tokens": context_tokens,
+        "repeated_context_tokens": repeated_context_tokens,
+        "retrieved_refs_count": positive_i64(node.get("retrieved_refs_count")),
+        "retrieved_ref_tokens": retrieved_ref_tokens,
+        "tool_name": Value::Null,
+        "tool_call_id": Value::Null,
+        "status": status,
+        "error_kind": result
+            .get("error_domain")
+            .and_then(Value::as_str)
+            .filter(|value| !value.trim().is_empty())
+            .unwrap_or(if status == "pass" { "none" } else { status }),
+        "state_read_bytes": positive_i64(node.get("state_read_bytes")),
+        "state_write_bytes": positive_i64(node.get("state_write_bytes")),
+        "duration_ms": positive_i64(result.get("latency_ms")),
+    }))
+}
+
+fn validate_native_scorecard_scorecard(scorecard: &Value) -> Result<(), String> {
+    validate_no_raw_trace_keys(scorecard)?;
+    for key in [
+        "adapter_run_id",
+        "runtime_kind",
+        "runtime_version",
+        "scenario_id",
+        "mode",
+        "state_strategy",
+        "status",
+        "pass_fail_reason",
+        "quality_method",
+        "raw_trace_artifact_id",
+        "redaction_status",
+    ] {
+        required_str(scorecard, key)?;
+    }
+    if required_str(scorecard, "schema_version")? != TOKEN_EFFICIENCY_SCORECARD_SCHEMA_VERSION {
+        return Err("scorecard.schema_version must be token_efficiency_scorecard.v1".to_string());
+    }
+    if required_str(scorecard, "runtime_kind")? != "native_harness" {
+        return Err("scorecard.runtime_kind must be native_harness".to_string());
+    }
+    if !matches!(
+        required_str(scorecard, "status")?,
+        "pass" | "fail" | "error" | "blocked"
+    ) {
+        return Err("scorecard.status must be pass, fail, error, or blocked".to_string());
+    }
+    if required_str(scorecard, "status")? == "pass"
+        && required_str(scorecard, "quality_method")? == "none"
+    {
+        return Err("passing runs require a non-none quality_method".to_string());
+    }
+    let steps = scorecard
+        .get("steps")
+        .and_then(Value::as_array)
+        .ok_or_else(|| "scorecard.steps must be a list".to_string())?;
+    if number_i64(scorecard, "step_count") != steps.len() as i64 {
+        return Err("step_count must match scorecard steps".to_string());
+    }
+    Ok(())
+}
+
+fn derived_metrics(scorecard: &Value) -> Value {
+    let total_tokens =
+        number_i64(scorecard, "input_token_total") + number_i64(scorecard, "output_token_total");
+    let status = scorecard
+        .get("status")
+        .and_then(Value::as_str)
+        .unwrap_or("");
+    json!({
+        "total_tokens": total_tokens,
+        "context_share": ratio(number_i64(scorecard, "context_token_total"), total_tokens),
+        "repeated_context_ratio": ratio(
+            number_i64(scorecard, "repeated_context_token_total"),
+            number_i64(scorecard, "context_token_total"),
+        ),
+        "tool_redundancy_ratio": ratio(
+            number_i64(scorecard, "redundant_tool_call_count"),
+            number_i64(scorecard, "tool_call_count"),
+        ),
+        "tokens_per_passing_run": if status == "pass" { json!(total_tokens) } else { Value::Null },
+        "cost_per_passing_run": if status == "pass" {
+            scorecard.get("estimated_cost_usd").cloned().unwrap_or(Value::Null)
+        } else {
+            Value::Null
+        },
+        "step_retry_ratio": ratio(number_i64(scorecard, "retry_count"), number_i64(scorecard, "step_count")),
+    })
+}
+
 fn parse_artifact_json(artifact_json: &str) -> Result<Value, String> {
     let value: Value = serde_json::from_str(artifact_json).map_err(|e| e.to_string())?;
     validate_no_raw_trace_keys(&value)?;
@@ -316,20 +591,109 @@ fn validate_no_raw_trace_keys(value: &Value) -> Result<(), String> {
 }
 
 fn is_raw_trace_key(key: &str) -> bool {
+    let key = key.to_ascii_lowercase();
+    if key == "raw_trace_artifact_id" {
+        return false;
+    }
+    [
+        "raw_trace",
+        "raw_prompt",
+        "raw_output",
+        "transcript",
+        "conversation",
+        "message_history",
+        "repository_text",
+        "repo_full_text",
+        "repo_content",
+        "private_path",
+        "credential",
+        "secret",
+        "password",
+    ]
+    .iter()
+    .any(|fragment| key.contains(fragment))
+}
+
+fn is_scorecard_terminal_status(status: &str) -> bool {
     matches!(
-        key,
-        "raw_trace"
-            | "raw_trace_json"
-            | "raw_prompt"
-            | "raw_output"
-            | "transcript"
-            | "messages"
-            | "repository_text"
-            | "repo_full_text"
-            | "private_path"
-            | "secret"
-            | "secrets"
+        status,
+        "completed" | "failed" | "cancelled" | "blocked" | "error"
     )
+}
+
+fn run_status_to_scorecard_status(status: Option<&str>) -> &'static str {
+    match status.unwrap_or("").to_ascii_lowercase().as_str() {
+        "completed" | "success" | "succeeded" | "passed" | "pass" => "pass",
+        "failed" | "failure" | "fail" => "fail",
+        "error" | "errored" => "error",
+        "blocked" | "cancelled" | "canceled" | "timeout" | "timed_out" => "blocked",
+        _ => "blocked",
+    }
+}
+
+fn operation_kind_for_node(node: &Value) -> &'static str {
+    let task_type = node
+        .get("task_type")
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .to_ascii_lowercase();
+    let executor_type = node
+        .pointer("/result/executor_type")
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .to_ascii_lowercase();
+    if matches!(
+        executor_type.as_str(),
+        "provider" | "adaptive_provider" | "claude_code_cli" | "codex_cli"
+    ) {
+        "model_call"
+    } else if task_type.contains("tool") || task_type == "command" {
+        "tool_call"
+    } else {
+        "control"
+    }
+}
+
+fn terminal_reason(run: &Value) -> String {
+    run.get("events")
+        .and_then(Value::as_array)
+        .and_then(|events| {
+            events.iter().rev().find_map(|event| {
+                let event_type = event.get("event_type").and_then(Value::as_str)?;
+                if !event_type.starts_with("workflow_run.") {
+                    return None;
+                }
+                event
+                    .pointer("/details/reason")
+                    .and_then(Value::as_str)
+                    .map(str::to_string)
+            })
+        })
+        .unwrap_or_else(|| "bounded native summary exported".to_string())
+}
+
+fn run_duration_ms(run: &Value) -> Option<i64> {
+    let started = run.get("started_at").and_then(Value::as_str)?;
+    let completed = run.get("completed_at").and_then(Value::as_str)?;
+    let started = chrono::DateTime::parse_from_rfc3339(started).ok()?;
+    let completed = chrono::DateTime::parse_from_rfc3339(completed).ok()?;
+    Some((completed - started).num_milliseconds().max(0))
+}
+
+fn positive_i64(value: Option<&Value>) -> i64 {
+    match value {
+        Some(Value::Number(number)) => number.as_i64().unwrap_or(0).max(0),
+        _ => 0,
+    }
+}
+
+fn number_i64(value: &Value, key: &str) -> i64 {
+    positive_i64(value.get(key))
+}
+
+fn ratio(numerator: i64, denominator: i64) -> f64 {
+    let denominator = denominator.max(1) as f64;
+    ((numerator as f64 / denominator) * 1_000_000.0).round() / 1_000_000.0
 }
 
 fn required_str<'a>(value: &'a Value, key: &str) -> Result<&'a str, String> {

@@ -1202,7 +1202,10 @@ impl LocalProductStore {
 
         // Phase 2: Execute (outside SQLite lock)
         match leased {
-            LeaseResult::Terminal { action, run } => Ok(json!({ "action": action, "run": run })),
+            LeaseResult::Terminal { action, run } => {
+                let _artifact = self.record_automatic_native_scorecard_for_run(run_id, actor)?;
+                Ok(json!({ "action": action, "run": run }))
+            }
             LeaseResult::NoReadyNode { run } => {
                 Ok(json!({ "action": "no_ready_node", "run": run }))
             }
@@ -1608,6 +1611,17 @@ impl LocalProductStore {
                         }))
                     }),
                 }?;
+
+                if tick_result
+                    .get("run")
+                    .and_then(|run| run.get("status"))
+                    .and_then(Value::as_str)
+                    .map(is_run_terminal)
+                    .unwrap_or(false)
+                {
+                    let _artifact =
+                        self.record_automatic_native_scorecard_for_run(run_id, actor)?;
+                }
 
                 // Record scheduler feedback for feedback-driven routing
                 let task_group =
@@ -2812,6 +2826,9 @@ impl LocalProductStore {
                 Ok(())
             }),
         }?;
+        if is_run_terminal(status) || matches!(status, "blocked" | "error") {
+            let _artifact = self.record_automatic_native_scorecard_for_run(run_id, actor)?;
+        }
         self.get_workflow_run(run_id)?
             .ok_or_else(|| format!("workflow run not found after update: {run_id}"))
     }

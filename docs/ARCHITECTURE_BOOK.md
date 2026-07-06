@@ -85,7 +85,7 @@ Non-goals unless a later documented replacement supersedes this boundary:
 - no provider calls in CI;
 - no target-output, merge, deploy, release, or protected-branch authority through an adapter.
 
-The scorecard contract is implemented by `scripts/token_efficiency_scorecard.py`, which validates bounded summaries and emits `token_efficiency_scorecard.v1`. Native harness exports use `scripts/native_scorecard_export.py` to read bounded dispatch/workflow/run/evidence JSON, reuse that validator, and emit a read-only `native_scorecard_artifact.v1` JSON envelope. The same envelope is persisted through `LocalProductStore` in the `native_scorecard_artifacts` table and exposed through read-only scorecard APIs; no second schema or storage layer is introduced. Minimum run-level fields are:
+The scorecard contract is implemented by `scripts/token_efficiency_scorecard.py`, which validates bounded summaries and emits `token_efficiency_scorecard.v1`. Native harness exports use `scripts/native_scorecard_export.py` to read bounded dispatch/workflow/run/evidence JSON, reuse that validator, and emit a read-only `native_scorecard_artifact.v1` JSON envelope. Native workflow completion now also projects completed, failed, blocked, cancelled, and error terminal runs into the same envelope and persists it through `LocalProductStore` in the `native_scorecard_artifacts` table. The automatic projection is metadata/counter-only, idempotent by artifact id plus content hash, rejects raw trace and secret-shaped fields recursively, and is exposed through read-only scorecard APIs; no second schema or storage layer is introduced. Minimum run-level fields are:
 
 ```text
 adapter_run_id
@@ -145,7 +145,7 @@ Implementation order remains importer-first:
 
 1. validate a bounded trace summary — implemented in `scripts/token_efficiency_scorecard.py`;
 2. emit `token_efficiency_scorecard.v1` evidence — implemented by the validator and native exporter;
-3. store scorecard evidence as a read-only app-owned artifact — implemented as `native_scorecard_artifact.v1` persisted through `LocalProductStore.native_scorecard_artifacts`;
+3. store scorecard evidence as a read-only app-owned artifact — implemented as `native_scorecard_artifact.v1` persisted through `LocalProductStore.native_scorecard_artifacts`, including automatic persistence at native workflow terminal-state transitions;
 4. compute derived metrics — implemented by the validator;
 5. expose read-only scorecards — implemented through `GET /api/v1/scorecards?run_id=...`, `GET /api/v1/scorecards?dispatch_id=...`, `GET /api/v1/scorecards/:artifact_id`, and the operator evidence read-model;
 6. only then add runtime-specific runners.
