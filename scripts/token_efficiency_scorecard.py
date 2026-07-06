@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import sys
 from pathlib import Path
 from typing import Any
@@ -109,15 +110,30 @@ STEP_REQUIRED_NONNEGATIVE_NUMBERS = {
 }
 
 RAW_TRACE_KEY_FRAGMENTS = {
+    "raw_trace",
     "raw_prompt",
     "raw_output",
     "transcript",
     "conversation",
     "message_history",
     "credential",
+    "repository_text",
+    "repo_full_text",
+    "repo_content",
+    "private_path",
     "secret",
     "password",
 }
+
+SECRET_VALUE_PATTERNS = (
+    re.compile(r"\bsk-[A-Za-z0-9_-]{16,}\b"),
+    re.compile(r"\bgh[pousr]_[A-Za-z0-9_]{20,}\b"),
+    re.compile(r"\b(?:api[_-]?key|auth[_-]?token|password)\s*[:=]\s*\S+", re.IGNORECASE),
+)
+PRIVATE_PATH_PATTERNS = (
+    re.compile(r"(^|\s)/(?:home|Users)/[^\s]+"),
+    re.compile(r"\b[A-Za-z]:\\Users\\[^\s]+"),
+)
 
 
 class ScorecardError(ValueError):
@@ -150,12 +166,17 @@ def _reject_raw_trace_keys(value: Any, path: str = "$") -> None:
     if isinstance(value, dict):
         for key, child in value.items():
             lowered = str(key).lower()
-            if any(fragment in lowered for fragment in RAW_TRACE_KEY_FRAGMENTS):
+            if lowered != "raw_trace_artifact_id" and any(fragment in lowered for fragment in RAW_TRACE_KEY_FRAGMENTS):
                 raise ScorecardError(f"raw or sensitive trace field is not allowed: {path}.{key}")
             _reject_raw_trace_keys(child, f"{path}.{key}")
     elif isinstance(value, list):
         for index, child in enumerate(value):
             _reject_raw_trace_keys(child, f"{path}[{index}]")
+    elif isinstance(value, str):
+        if any(pattern.search(value) for pattern in SECRET_VALUE_PATTERNS):
+            raise ScorecardError(f"secret-shaped trace value is not allowed: {path}")
+        if any(pattern.search(value) for pattern in PRIVATE_PATH_PATTERNS):
+            raise ScorecardError(f"private path trace value is not allowed: {path}")
 
 
 def _validate_allowed(value: str, allowed: set[str], field: str) -> None:
