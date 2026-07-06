@@ -23,6 +23,7 @@ On 2026-06-23 Charlie approved Full Agent Autonomy Mode for this repository. Mai
 | Adaptive Fusion AF-0 through AF-7 | Complete; current runtime gates remain implemented |
 | Agent Runtime AR-0 through AR-6 | **Complete and sealed** — decision baseline, agent identity/state/mailbox, step executor, planning/handoff, concurrent scheduling, review/debate primitives, operator evidence read-model. No AR-7 planned or authorized. |
 | Trusted Local Autonomous Execution | Complete through IAE-3 |
+| External Runtime Benchmark Boundary | Active planning boundary — external runtimes are benchmark/trace-ingest targets only, not core dependencies or a new Agent Runtime phase |
 | Full Agent Autonomy Mode | Active for high-risk architecture, authority, migration, release/deploy workflow, and decision-supersession experiments |
 | Agent Autonomous Maintenance Mode | Active for implementation, docs, tests, CI, review, and bounded shipping |
 
@@ -64,11 +65,38 @@ Even under Full Agent Autonomy Mode, agents must not commit real secrets, intent
 
 The R-series is sealed at R7 as the current baseline. Full Agent Autonomy Mode may reopen or supersede this only by updating this file or a decision record with the new architecture direction and rollback path.
 
+## External Runtime Benchmark Direction
+
+External runtimes such as LangGraph, CrewAI, and Microsoft Agent Framework are not competitors to clone and are not new core dependencies. They may be used only as benchmark, replay, or trace-ingest targets for measuring token-efficiency behavior against the native harness.
+
+The current direction is importer-first, not runner-first:
+
+1. keep the architecture and handoff contract in `docs/ARCHITECTURE_BOOK.md` and this file;
+2. validate bounded, redacted trace summaries;
+3. emit `token_efficiency_scorecard.v1` evidence;
+4. store raw trace material only as app-owned artifacts;
+5. expose read-only scorecards;
+6. add runtime-specific runners only after the importer and native scorecard export are stable.
+
+The first external comparison target is LangGraph stateful versus stateless reread, because it directly tests whether durable state and context pruning reduce repeated context cost. CrewAI and Microsoft Agent Framework should wait until the scorecard contract is implemented and stable.
+
+This direction does not authorize:
+
+- an AR-7 phase;
+- a second scheduler, DAG kernel, policy kernel, storage layer, or mailbox;
+- replacement of `workflow_runs`, `scheduler`, `node_executor`, `provider`, `cli`, or `LocalProductStore`;
+- provider calls in CI;
+- raw prompt/output/transcript persistence;
+- target-output, merge, deploy, release, or protected-branch authority through an adapter.
+
+Do not add new standalone benchmark planning documents unless the active docs become too large to remain usable. Update `docs/ARCHITECTURE_BOOK.md` for architecture contracts, this file for direction and authority, and `docs/RUNBOOK.md` only after an operator procedure exists.
+
 ## Allowed Next Paths
 
 - Autonomous maintenance: repair stale docs, CI breakage, test drift, and wire-codegen drift.
 - Regression hardening: add or repair tests for existing behavior.
 - Pilots: real-world task validation.
+- Token-efficiency scorecard/importer: implement bounded trace-summary validation and read-only scorecard evidence under existing artifact, audit, storage, auth, redaction, and budget boundaries.
 - Agent Runtime track: **complete and sealed at AR-6.** Maintenance (tests, docs, bug fixes) is permitted under Agent Autonomous Maintenance Mode. Extending the AR phase ladder requires a new decision baseline in this file.
 - V2 maintenance and V2 authority expansion experiments.
 - Adaptive Fusion maintenance and adaptive routing authority experiments.
@@ -221,7 +249,7 @@ AR-0 requires no migration or gate — it is documentation only.
 - No automatic agent creation, agent spawning, or agent lifecycle outside workflow-run scope
 - No cloud, hosted, or multi-tenant deployment of agent runtime
 
-**Status: AR-0 through AR-6 complete and sealed.** AR-0 records the contract baseline. AR-1 (agent identity, state, mailbox), AR-2 (agent step executor), AR-3 (bounded planning, child task proposals, handoff), AR-4 (concurrent multi-agent scheduling), AR-5 (review and debate primitives), and AR-6 (operator evidence read-model) are implemented — see `docs/ARCHITECTURE_BOOK.md` § AR Phase Status. Bounded multi-agent runtime semantics (identity, mailbox, state, step executor, planning, handoff, debate, concurrency, operator evidence) are fully implemented through AR-6. See `docs/ARCHITECTURE_BOOK.md` for the full contract definition.
+**Status: AR-0 through AR-6 complete and sealed.** AR-0 records the contract baseline. AR-1 (agent identity, state, mailbox), AR-2 (agent step executor), AR-3 (bounded planning, child tasks, handoff), AR-4 (concurrent multi-agent scheduling), AR-5 (review and debate primitives), and AR-6 (operator evidence read-model) are implemented — see `docs/ARCHITECTURE_BOOK.md` § AR Phase Status. Bounded multi-agent runtime semantics (identity, mailbox, state, step executor, planning, handoff, debate, concurrency, operator evidence) are fully implemented through AR-6. See `docs/ARCHITECTURE_BOOK.md` for the full contract definition.
 
 Each Agent Runtime PR must state the live-influence status, affected modules, new storage/API surface, safety gates, rollback path, intentionally unfinished follow-up, and whether any agent-authored output can reach target-output approval.
 
