@@ -12,7 +12,7 @@
   ],
   "scripts": {
     "build": "tsc -p tsconfig.json",
-    "test": "bun run build && node --test tests/client.test.mjs"
+    "test": "bun run build && bun test tests/client.test.mjs"
   },
   "devDependencies": {
     "typescript": "^5.7.0"
