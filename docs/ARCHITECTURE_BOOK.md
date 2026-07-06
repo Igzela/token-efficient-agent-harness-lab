@@ -1,6 +1,6 @@
 # Architecture Book
 
-Last updated: 2026-06-27 (Agent Runtime sealed at AR-6)
+Last updated: 2026-07-06 (external runtime benchmark boundary)
 
 This is the current architecture baseline for the Token-Efficient Agent Harness Lab. Historical phase plans, closeout reports, and long-form strategy docs are retained in release-tagged git history; `docs/archive/README.md` is the working-tree index.
 
@@ -13,6 +13,7 @@ Default posture:
 - Provider execution is enabled by a ready `ACP_TRUSTED_LOCAL_PROFILE=1` trusted-local profile or the standalone legacy `ACP_ENABLE_PROVIDER_EXECUTION=1` gate. Both paths require protected auth, configured provider metadata, symbolic credentials, positive pricing/cost caps, audit, redaction, and kill controls; missing prerequisites fail closed.
 - Installed local Claude/Codex CLIs are discovered by default; explicit workflow ticks invoke them. `ACP_ENABLE_CLI_EXECUTION=0` disables this path.
 - Target output remains off unless `ACP_ENABLE_TARGET_REPO_OUTPUT=1`. V2-3 permits only an app-owned git worktree plus approval-bound patch export or `acp/*` branch push; the registered target working tree and `main` remain protected.
+- External runtimes such as LangGraph, CrewAI, and Microsoft Agent Framework are benchmark or trace-ingest targets only. They are not core engine dependencies, replacement runtimes, or new kernels inside this repository.
 - No release/tag/deploy/apply controls exist in the app runtime.
 - No process/container/VM sandbox isolation is implemented; V2-1 is scoped to app-owned workspace confinement unless separately approved.
 - Supervised execution operates only in app-owned detached workspaces and remains explicitly gated.
@@ -60,6 +61,96 @@ LocalProductStore
 | App-owned workspaces | App | Yes | Copy workspace or controlled detached git worktree outside the target path. |
 | Artifacts/exports | App | Yes | Capture binds patch content and verification evidence; real export/push requires secret scan, integrity, confirmation, scope, gate, and approval binding. |
 | Backups | App/operator | Yes | SQLite app-owned backups; PostgreSQL operators use external backup tooling. |
+
+## Token-Efficiency Evidence and External Runtime Benchmark Boundary
+
+This repository is the meta-harness, regulator, evaluator, and evidence layer for token-efficient agent workflows. It may compare the native harness against external runtimes, but it must not become a clone of those runtimes.
+
+External runtimes answer how agents, tools, state, memory, and workflow execution run. This repository answers whether a given run used less context, fewer repeated reads, fewer redundant tool calls, and fewer ineffective repair loops while still passing the task and preserving reviewable evidence.
+
+Allowed external-runtime work:
+
+- ingest bounded, redacted trace summaries from LangGraph, CrewAI, Microsoft Agent Framework, or similar systems;
+- normalize native and external traces into the same token-efficiency evidence shape;
+- compare `native_control_plane`, `stateless_reread`, `stateful_store`, and `pruned_context` modes;
+- preserve runtime kind, runtime version, scenario id, mode, pass/fail status, quality method, token counts, tool-call counts, retry counts, duration, and artifact references;
+- store raw trace material only as bounded app-owned artifacts after redaction.
+
+Non-goals unless a later documented replacement supersedes this boundary:
+
+- no required dependency on LangGraph, CrewAI, Microsoft Agent Framework, or any other external runtime for the core engine;
+- no replacement of `workflow_runs`, `scheduler`, `node_executor`, `provider`, `cli`, or `LocalProductStore`;
+- no second scheduler, DAG engine, policy kernel, storage layer, mailbox, or side-channel state system;
+- no persistence of raw prompts, raw model outputs, transcripts, credentials, secret-shaped values, repository content, or private paths;
+- no provider calls in CI;
+- no target-output, merge, deploy, release, or protected-branch authority through an adapter.
+
+The intended scorecard is logical, not yet an implemented schema. A future implementation should map it onto `LocalProductStore`, audit, and app-owned artifacts rather than adding separate storage. Minimum run-level fields are:
+
+```text
+adapter_run_id
+schema_version
+runtime_kind
+runtime_version
+scenario_id
+mode
+state_strategy
+status
+pass_fail_reason
+quality_score
+quality_method
+input_token_total
+output_token_total
+context_token_total
+repeated_context_token_total
+retrieved_ref_token_total
+tool_call_count
+redundant_tool_call_count
+retry_count
+step_count
+duration_ms
+estimated_cost_usd
+raw_trace_artifact_id
+redaction_status
+```
+
+Minimum step-level fields are:
+
+```text
+adapter_step_id
+adapter_run_id
+step_index
+node_name
+agent_role
+operation_kind
+input_tokens
+output_tokens
+context_tokens
+repeated_context_tokens
+retrieved_refs_count
+retrieved_ref_tokens
+tool_name
+tool_call_id
+status
+error_kind
+state_read_bytes
+state_write_bytes
+started_at
+finished_at
+```
+
+Derived metrics should include total tokens, context share, repeated-context ratio, tool-redundancy ratio, tokens per passing run, cost per passing run, and step retry ratio. Token reduction is not success unless the task also passes under the same success criterion.
+
+Implementation order should be importer-first:
+
+1. validate a bounded trace summary;
+2. emit `token_efficiency_scorecard.v1` evidence;
+3. store raw source trace only as a redacted app-owned artifact;
+4. compute derived metrics;
+5. expose read-only scorecards;
+6. only then add runtime-specific runners.
+
+The first external baseline should be LangGraph stateful versus stateless reread. CrewAI and Microsoft Agent Framework should wait until native scorecard export and importer validation are stable.
 
 ## V2 Real Production Output Architecture
 
@@ -241,6 +332,7 @@ These are accepted current limitations, not hidden TODOs:
 - GitHub PR creation is default-off and adds no merge authority.
 - Bounded supervised workers are merged in V2-4 and Mission Control product output UX is merged in V2-5; unattended autonomous-agent loops remain out of scope.
 - Bounded multi-agent runtime semantics are implemented through Agent Runtime AR-0 through AR-6. The track is sealed; extending the AR phase ladder requires a new decision baseline — see `docs/NEXT_DECISION.md` § Agent Runtime AR-0 through AR-6 Closeout.
+- External runtime adapters are not implemented. Current architecture permits only importer-first, benchmark-oriented trace normalization through existing evidence, artifact, audit, and storage boundaries.
 - Cloud SaaS, hosted/cloud deployment, multi-tenant service, and direct release/tag/deploy/apply controls are not implemented. Full Agent Autonomy Mode may evolve these repo-scoped designs through documented, testable, observable, reviewable, and rollbackable changes. The only hard stops are real-secret commits, falsified test/CI evidence, intentionally hidden failures, removed rollback paths, and irreversible external destruction without recovery.
 - Some routing, quality, and orchestration modules remain partially active rather than unified under one policy layer.
 
