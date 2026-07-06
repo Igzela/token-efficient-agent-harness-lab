@@ -34,6 +34,8 @@ import type {
   QueueTenantListResponse,
   RegulatorStateResponse,
   SchedulerStatusResponse,
+  OperatorEvidenceResponse,
+  ScorecardArtifactListResponse,
   PolicySimulationResult,
   SimulationReportResponse,
   StorageIntegrityResponse,
@@ -587,6 +589,21 @@ export async function cancelWorkflowRun(runId: string, reason?: string): Promise
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ reason }),
     },
+  );
+}
+
+
+export async function fetchScorecards(params: {
+  run_id?: string;
+  dispatch_id?: string;
+  limit?: number;
+}): Promise<ScorecardArtifactListResponse> {
+  return fetchJson<ScorecardArtifactListResponse>(withQuery("/api/v1/scorecards", params));
+}
+
+export async function fetchOperatorEvidence(runId: string): Promise<OperatorEvidenceResponse> {
+  return fetchJson<OperatorEvidenceResponse>(
+    `${BASE}/api/v1/operator/evidence/${encodeURIComponent(runId)}`,
   );
 }
 

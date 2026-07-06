@@ -1,6 +1,6 @@
 # Module Map
 
-Last updated: 2026-06-26 (AR-4 agent concurrency caps)
+Last updated: 2026-07-06 (dashboard scorecard evidence)
 
 This map is for code ownership and verification routing. It is intentionally not a phase history. Historical module/phase narratives are retained in release-tagged git history; `docs/archive/README.md` is the working-tree index.
 
@@ -32,7 +32,7 @@ The Rust `engine/` is the sole runtime implementation. Python is retained as RES
 | `engine/src/storage/local_product_store/` | active storage | SQLite/PostgreSQL app-owned state plus schema catalog ownership for versions, dialect DDL, migrations, audit, costs, plans, runs, workflow queue/lease helpers, supervised patch artifacts, automatic native scorecard artifacts, adaptive policy snapshots, safe observation summaries; `agent_runtime.rs` proposal CRUD (create_proposal, get_proposal, update_proposal_status, list_proposals_by_run, find_proposal_by_correlation, count_proposals_by_run) | `cargo test -p engine --test test_local_product_store --test test_data_operations --test test_adaptive_observation_capture --test test_native_scorecard_artifacts` |
 | `engine/src/storage/backup_manager.rs` | active ops | SQLite backup, verify, restore support | `cargo test -p engine` |
 | `engine/src/infrastructure/` | active ops/security | Auth, rate limiting, circuit breaker, plugin registry helpers | `cargo test -p engine` |
-| `dashboard/` | active UI | Local operations console with guarded app-owned controls, Adaptive Fusion policy/completion bindings, IAE authority/bounds evidence, redacted audit actions, scheduler pause/resume/kill, and policy rollback | `cd dashboard && bun run typecheck && bun run build:static` |
+| `dashboard/` | active UI | Local operations console with guarded app-owned controls, Adaptive Fusion policy/completion bindings, IAE authority/bounds evidence, read-only token-efficiency scorecard evidence, redacted audit actions, scheduler pause/resume/kill, and policy rollback | `cd dashboard && bun run typecheck && bun run build:static` |
 | `sdk/typescript/` | active SDK | TypeScript REST SDK, Adaptive Fusion policy/completion/operator-status controls, and generated wire re-exports | `cd sdk/typescript && bun run build && bun run test` |
 | `sdk/python/` | active SDK | Python REST SDK | `cd sdk/python && PYTHONPATH=src uv run --no-project python -m unittest discover -s tests` |
 | `wire_contract/v1/`, `codegen/` | active governance | JSON schemas and deterministic generated Rust/TS/Python wire types | `bash scripts/check_wire_codegen_drift.sh` |

@@ -835,6 +835,44 @@ export interface TargetRepoOutputResponse {
 
 // Workflow run types
 
+
+export type ScorecardArtifact = Record<string, unknown>;
+
+export interface ScorecardEvidenceSummary {
+  artifact_id: string;
+  created_at: string | null;
+  read_only: boolean;
+  status: string;
+  quality_method: string;
+  redaction_status: string;
+  total_tokens: number | null;
+  input_tokens: number | null;
+  output_tokens: number | null;
+  context_tokens: number | null;
+  repeated_context_ratio: number | null;
+  tool_call_count: number | null;
+  redundant_tool_call_count: number | null;
+  retry_count: number | null;
+  step_count: number | null;
+  duration_ms: number | null;
+  estimated_cost_usd: number | null;
+}
+
+export interface ScorecardArtifactListResponse {
+  metadata_only: true;
+  read_only: true;
+  target_repository_writes: string;
+  artifacts: ScorecardArtifact[];
+}
+
+export interface OperatorEvidenceResponse {
+  schema_version: "axum_api.v1";
+  run_id: string;
+  scorecard_artifact_count: number;
+  scorecards: ScorecardArtifact[];
+  operator_summary?: Record<string, unknown>;
+}
+
 export interface WorkflowRunNode {
   node_id: string;
   task_type: string;
