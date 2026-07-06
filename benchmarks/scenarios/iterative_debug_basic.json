@@ -1,0 +1,23 @@
+{
+  "schema_version": "benchmark_scenario.v1",
+  "scenario_id": "iterative_debug_basic",
+  "title": "Iterative debug with bounded repair loop",
+  "task_type": "code_debug",
+  "objective": "Diagnose a small failing test, propose the minimal fix, run verification, and stop after the first passing evidence set.",
+  "success_criteria": [
+    "root cause is identified",
+    "minimal patch is proposed or applied in an app-owned workspace",
+    "verification evidence is recorded",
+    "no target main write occurs"
+  ],
+  "expected_context_pressure": "high_repeated_history_pressure",
+  "allowed_modes": [
+    "native_control_plane",
+    "stateless_reread",
+    "stateful_store",
+    "pruned_context"
+  ],
+  "quality_method": "test_or_human_review",
+  "ci_provider_policy": "stub_only",
+  "notes": "Use this as the first stateful-versus-stateless benchmark because iterative debugging naturally exposes repeated history, retries, and redundant tool calls."
+}
