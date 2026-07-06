@@ -2694,6 +2694,8 @@ async fn axum_openapi_document_lists_dispatch_endpoint() {
     assert!(body["paths"]["/api/v1/supervised-patch/workspaces/{workspace_id}"]["get"].is_object());
     assert!(body["paths"]["/api/v1/supervised-patch/artifacts"]["get"].is_object());
     assert!(body["paths"]["/api/v1/supervised-patch/artifacts/{artifact_id}"]["get"].is_object());
+    assert!(body["paths"]["/api/v1/scorecards"]["get"].is_object());
+    assert!(body["paths"]["/api/v1/scorecards/{artifact_id}"]["get"].is_object());
     assert!(body["paths"]["/api/v1/metrics"]["get"].is_object());
     assert!(body["paths"]["/api/v1/backups/{backup_id}/verify"]["get"].is_object());
     assert!(body["paths"]["/api/v1/backups/{backup_id}/restore/dry-run"]["post"].is_object());

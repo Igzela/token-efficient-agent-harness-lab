@@ -21,6 +21,31 @@ fn build_app(store: LocalProductStore) -> axum::Router {
     build_axum_router(AxumApiState::new().with_local_store(store))
 }
 
+fn sample_scorecard_artifact(run_id: &str) -> Value {
+    json!({
+        "schema_version": "native_scorecard_artifact.v1",
+        "artifact_kind": "token_efficiency_scorecard",
+        "storage": "app_owned_artifact_json_export",
+        "read_only": true,
+        "created_at": "2026-07-06T00:00:00Z",
+        "artifact_id": format!("scorecard-{run_id}-abc123"),
+        "content_sha256": "abc123",
+        "scorecard_schema_version": "token_efficiency_scorecard.v1",
+        "scorecard": {
+            "schema_version": "token_efficiency_scorecard.v1",
+            "adapter_run_id": run_id,
+            "runtime_kind": "native_harness",
+            "status": "pass",
+            "redaction_status": "redacted",
+            "derived_metrics": {
+                "total_tokens": 180,
+                "tokens_per_passing_run": 180,
+                "cost_per_passing_run": 0.01
+            }
+        }
+    })
+}
+
 async fn get_evidence(app: &axum::Router, run_id: &str) -> (StatusCode, Value) {
     let resp = app
         .clone()
@@ -52,9 +77,32 @@ async fn test_empty_run_returns_safe_defaults() {
     assert_eq!(body["proposals"].as_array().unwrap().len(), 0);
     assert_eq!(body["review_count"], 0);
     assert_eq!(body["debate_count"], 0);
+    assert_eq!(body["scorecard_artifact_count"], 0);
     assert_eq!(body["blocked_signals_count"], 0);
     assert_eq!(body["needs_human_decision"], false);
     assert!(body.get("error").is_none());
+}
+
+#[tokio::test]
+async fn test_operator_evidence_includes_scorecard_metadata_only() {
+    let (store, _dir) = make_store();
+    store
+        .record_native_scorecard_artifact(&sample_scorecard_artifact("run-scorecard"), "tester")
+        .unwrap();
+
+    let app = build_app(store);
+    let (status, body) = get_evidence(&app, "run-scorecard").await;
+
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["scorecard_artifact_count"], 1);
+    assert_eq!(
+        body["scorecards"][0]["artifact_id"],
+        "scorecard-run-scorecard-abc123"
+    );
+    assert_eq!(body["scorecards"][0]["read_only"], true);
+    assert_eq!(body["scorecards"][0]["runtime_kind"], "native_harness");
+    assert!(body["scorecards"][0].get("steps").is_none());
+    assert!(!body.to_string().contains("raw_trace"));
 }
 
 #[tokio::test]

@@ -85,7 +85,7 @@ Non-goals unless a later documented replacement supersedes this boundary:
 - no provider calls in CI;
 - no target-output, merge, deploy, release, or protected-branch authority through an adapter.
 
-The scorecard contract is implemented by `scripts/token_efficiency_scorecard.py`, which validates bounded summaries and emits `token_efficiency_scorecard.v1`. Native harness exports use `scripts/native_scorecard_export.py` to read bounded dispatch/workflow/run/evidence JSON, reuse that validator, and emit a read-only `native_scorecard_artifact.v1` JSON envelope. The envelope is the app-owned artifact handoff point until the same object is persisted through `LocalProductStore` artifacts and exposed through a read-only API; no second schema or storage layer is introduced. Minimum run-level fields are:
+The scorecard contract is implemented by `scripts/token_efficiency_scorecard.py`, which validates bounded summaries and emits `token_efficiency_scorecard.v1`. Native harness exports use `scripts/native_scorecard_export.py` to read bounded dispatch/workflow/run/evidence JSON, reuse that validator, and emit a read-only `native_scorecard_artifact.v1` JSON envelope. The same envelope is persisted through `LocalProductStore` in the `native_scorecard_artifacts` table and exposed through read-only scorecard APIs; no second schema or storage layer is introduced. Minimum run-level fields are:
 
 ```text
 adapter_run_id
@@ -145,9 +145,9 @@ Implementation order remains importer-first:
 
 1. validate a bounded trace summary — implemented in `scripts/token_efficiency_scorecard.py`;
 2. emit `token_efficiency_scorecard.v1` evidence — implemented by the validator and native exporter;
-3. store scorecard evidence as a read-only app-owned artifact JSON export — implemented as `native_scorecard_artifact.v1`, with `LocalProductStore` artifact persistence as the next integration point;
+3. store scorecard evidence as a read-only app-owned artifact — implemented as `native_scorecard_artifact.v1` persisted through `LocalProductStore.native_scorecard_artifacts`;
 4. compute derived metrics — implemented by the validator;
-5. expose read-only scorecards — currently available through the CLI artifact/scorecard export path;
+5. expose read-only scorecards — implemented through `GET /api/v1/scorecards?run_id=...`, `GET /api/v1/scorecards?dispatch_id=...`, `GET /api/v1/scorecards/:artifact_id`, and the operator evidence read-model;
 6. only then add runtime-specific runners.
 
 The first external baseline should be LangGraph stateful versus stateless reread. CrewAI and Microsoft Agent Framework should wait until native scorecard export and importer validation are stable.
@@ -183,7 +183,7 @@ Do not create a second runtime kernel for V2. Extend the existing `node_executor
 
 `LocalProductStore` supports SQLite by default and PostgreSQL through the `pg` feature and `ACP_DATABASE_URL`.
 
-- Current version: v15
+- Current version: v16
 - SQLite uses WAL and app-managed backup/restore.
 - PostgreSQL disables app-managed backup; operators use `pg_dump` or managed backup.
 - PostgreSQL integration tests are gated behind `cargo test -p engine --features pg-tests`.
@@ -301,10 +301,10 @@ AR phases consume the following existing modules, extending them through focused
 
 **AR-6 (operator evidence read-model) — implemented.** Adds a read-only operator evidence surface at `GET /api/v1/operator/evidence/:run_id`. It aggregates agent state, mailbox/proposal counts, blocked signals, and sanitized audit events. No new execution authority; AR-1 to AR-5 runtime semantics unchanged. Provider/CLI authority unchanged. Target-output approval unchanged. No autonomous merge/deploy/release authority added.
 
-**Later phases — not implemented:**
+**Later AR phases — not implemented:**
 
 - Any provider/CLI execution path changes
-- Any DB migration beyond AR-3 v15
+- Any AR-specific DB migration beyond AR-3 v15
 - Any scheduler lease/claim policy change
 - Any hidden mailbox, side channel, or second runtime kernel
 - Any automatic target-output merge/deploy/release authority

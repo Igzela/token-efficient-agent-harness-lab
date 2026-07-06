@@ -29,6 +29,7 @@ const INTEGRITY_TABLES: &[&str] = &[
     "workflow_run_approvals",
     "supervised_patch_workspaces",
     "supervised_patch_artifacts",
+    "native_scorecard_artifacts",
     "scheduler_feedback",
     "tool_capabilities",
     "tool_allowlists",

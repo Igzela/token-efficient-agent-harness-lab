@@ -32,6 +32,7 @@ impl LocalProductStore {
                     13 => Self::migrate_v13_add_policy_snapshots(conn)?,
                     14 => Self::migrate_v14_add_agent_state_and_mailbox(conn)?,
                     15 => Self::migrate_v15_add_agent_proposals(conn)?,
+                    16 => Self::migrate_v16_add_native_scorecard_artifacts(conn)?,
                     _ => return Err(format!("unknown migration version: {}", migration.version)),
                 }
                 conn.execute_batch(&format!("PRAGMA user_version = {}", migration.version))
@@ -515,6 +516,29 @@ CREATE INDEX IF NOT EXISTS idx_agent_proposals_run ON agent_proposals(run_id);
 CREATE INDEX IF NOT EXISTS idx_agent_proposals_correlation ON agent_proposals(correlation_id);
 CREATE INDEX IF NOT EXISTS idx_agent_proposals_status ON agent_proposals(status);
 CREATE INDEX IF NOT EXISTS idx_agent_proposals_agent ON agent_proposals(agent_id);
+",
+        )
+        .map_err(|e| e.to_string())
+    }
+
+    fn migrate_v16_add_native_scorecard_artifacts(conn: &Connection) -> Result<(), String> {
+        conn.execute_batch(
+            "
+CREATE TABLE IF NOT EXISTS native_scorecard_artifacts (
+    artifact_sequence INTEGER PRIMARY KEY,
+    artifact_id TEXT NOT NULL UNIQUE,
+    run_id TEXT NOT NULL,
+    dispatch_id TEXT,
+    scorecard_schema_version TEXT NOT NULL,
+    content_sha256 TEXT NOT NULL,
+    read_only INTEGER NOT NULL DEFAULT 1,
+    redaction_status TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    artifact_json TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_native_scorecard_artifacts_run ON native_scorecard_artifacts(run_id);
+CREATE INDEX IF NOT EXISTS idx_native_scorecard_artifacts_dispatch ON native_scorecard_artifacts(dispatch_id);
+CREATE INDEX IF NOT EXISTS idx_native_scorecard_artifacts_created ON native_scorecard_artifacts(created_at);
 ",
         )
         .map_err(|e| e.to_string())
