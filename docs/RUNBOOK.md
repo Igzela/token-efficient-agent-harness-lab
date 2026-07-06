@@ -61,7 +61,7 @@ To view only the reusable `token_efficiency_scorecard.v1` payload:
 uv run --no-project python scripts/native_scorecard_export.py native-summary.json --scorecard-only
 ```
 
-The exporter reuses `scripts/token_efficiency_scorecard.py` for validation and rejects raw prompt, raw output, transcript, credential, secret, password, and message-history fields before projection. It does not call providers, execute workflow nodes, read target repositories, or write runtime storage. The emitted `native_scorecard_artifact.v1` JSON envelope is the current app-owned artifact handoff path; the next storage integration is to persist the same envelope through `LocalProductStore` artifacts and expose read-only scorecard reads.
+The exporter reuses `scripts/token_efficiency_scorecard.py` for validation and rejects raw prompt, raw output, transcript, credential, secret, password, and message-history fields before projection. It does not call providers, execute workflow nodes, read target repositories, or write runtime storage. The emitted `native_scorecard_artifact.v1` JSON envelope can be persisted by the engine through `LocalProductStore` as app-owned read-only scorecard evidence. Operators can read persisted scorecards with `GET /api/v1/scorecards?run_id=<run_id>`, `GET /api/v1/scorecards?dispatch_id=<dispatch_id>`, `GET /api/v1/scorecards/<artifact_id>`, or the scorecard summary included in `GET /api/v1/operator/evidence/<run_id>`.
 
 ### Shortest Local Operator Path
 

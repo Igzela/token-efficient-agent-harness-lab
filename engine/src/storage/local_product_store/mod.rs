@@ -16,6 +16,7 @@ mod heartbeat;
 mod integrity;
 mod keys;
 mod migrations;
+mod native_scorecard_artifacts;
 #[cfg(feature = "pg")]
 pub mod pg_backend;
 mod plans;

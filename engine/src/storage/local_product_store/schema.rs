@@ -6,8 +6,8 @@ pub(super) enum Dialect {
     Postgres,
 }
 
-pub(super) const CURRENT_SQLITE_SCHEMA_VERSION: i64 = 15;
-pub(super) const CURRENT_POSTGRES_SCHEMA_VERSION: i64 = 15;
+pub(super) const CURRENT_SQLITE_SCHEMA_VERSION: i64 = 16;
+pub(super) const CURRENT_POSTGRES_SCHEMA_VERSION: i64 = 16;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) struct SchemaMigration {
@@ -75,6 +75,10 @@ pub(super) const SQLITE_MIGRATIONS: &[SchemaMigration] = &[
     SchemaMigration {
         version: 15,
         description: "add agent_proposals table for AR-3 child task proposals and handoff",
+    },
+    SchemaMigration {
+        version: 16,
+        description: "add native scorecard artifact evidence table",
     },
 ];
 
@@ -294,6 +298,22 @@ CREATE TABLE IF NOT EXISTS supervised_patch_artifacts (
 CREATE INDEX IF NOT EXISTS idx_supervised_patch_artifacts_workspace ON supervised_patch_artifacts(workspace_id);
 CREATE INDEX IF NOT EXISTS idx_supervised_patch_artifacts_run ON supervised_patch_artifacts(run_id);
 CREATE INDEX IF NOT EXISTS idx_supervised_patch_artifacts_created ON supervised_patch_artifacts(created_at);
+
+CREATE TABLE IF NOT EXISTS native_scorecard_artifacts (
+    artifact_sequence INTEGER PRIMARY KEY,
+    artifact_id TEXT NOT NULL UNIQUE,
+    run_id TEXT NOT NULL,
+    dispatch_id TEXT,
+    scorecard_schema_version TEXT NOT NULL,
+    content_sha256 TEXT NOT NULL,
+    read_only INTEGER NOT NULL DEFAULT 1,
+    redaction_status TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    artifact_json TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_native_scorecard_artifacts_run ON native_scorecard_artifacts(run_id);
+CREATE INDEX IF NOT EXISTS idx_native_scorecard_artifacts_dispatch ON native_scorecard_artifacts(dispatch_id);
+CREATE INDEX IF NOT EXISTS idx_native_scorecard_artifacts_created ON native_scorecard_artifacts(created_at);
 
 CREATE TABLE IF NOT EXISTS scheduler_feedback (
     feedback_id TEXT PRIMARY KEY,
@@ -697,6 +717,22 @@ CREATE INDEX IF NOT EXISTS idx_supervised_patch_artifacts_workspace ON supervise
 CREATE INDEX IF NOT EXISTS idx_supervised_patch_artifacts_run ON supervised_patch_artifacts(run_id);
 CREATE INDEX IF NOT EXISTS idx_supervised_patch_artifacts_created ON supervised_patch_artifacts(created_at);
 
+CREATE TABLE IF NOT EXISTS native_scorecard_artifacts (
+    artifact_sequence BIGSERIAL PRIMARY KEY,
+    artifact_id TEXT NOT NULL UNIQUE,
+    run_id TEXT NOT NULL,
+    dispatch_id TEXT,
+    scorecard_schema_version TEXT NOT NULL,
+    content_sha256 TEXT NOT NULL,
+    read_only BOOLEAN NOT NULL DEFAULT TRUE,
+    redaction_status TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    artifact_json TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_native_scorecard_artifacts_run ON native_scorecard_artifacts(run_id);
+CREATE INDEX IF NOT EXISTS idx_native_scorecard_artifacts_dispatch ON native_scorecard_artifacts(dispatch_id);
+CREATE INDEX IF NOT EXISTS idx_native_scorecard_artifacts_created ON native_scorecard_artifacts(created_at);
+
 CREATE TABLE IF NOT EXISTS scheduler_feedback (
     feedback_id TEXT PRIMARY KEY,
     run_id TEXT NOT NULL,
@@ -948,6 +984,10 @@ mod tests {
             "idx_agent_proposals_correlation",
             "idx_agent_proposals_status",
             "idx_agent_proposals_agent",
+            "native_scorecard_artifacts",
+            "idx_native_scorecard_artifacts_run",
+            "idx_native_scorecard_artifacts_dispatch",
+            "idx_native_scorecard_artifacts_created",
         ] {
             assert!(
                 SQLITE_DDL.contains(expected),

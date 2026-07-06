@@ -276,6 +276,14 @@ fn axum_routes() -> Router<AxumApiState> {
             get(operator_evidence::api_operator_evidence).options(cors_preflight),
         )
         .route(
+            "/api/v1/scorecards",
+            get(scorecards::api_scorecard_artifacts).options(cors_preflight),
+        )
+        .route(
+            "/api/v1/scorecards/:artifact_id",
+            get(scorecards::api_scorecard_artifact_detail).options(cors_preflight),
+        )
+        .route(
             "/api/v1/backups",
             get(backups::api_list_backups)
                 .post(backups::api_create_backup)

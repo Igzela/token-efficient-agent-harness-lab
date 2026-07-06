@@ -15,6 +15,7 @@ pub(crate) mod plans;
 pub(crate) mod provider;
 pub(crate) mod queue;
 pub(crate) mod scheduler;
+pub(crate) mod scorecards;
 pub(crate) mod supervised_patch;
 pub(crate) mod team;
 pub(crate) mod workflow_runs;

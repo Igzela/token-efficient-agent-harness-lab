@@ -1224,6 +1224,7 @@ pub fn openapi_document() -> serde_json::Value {
     append_provider_endpoint_openapi_paths(&mut doc);
     append_adaptive_fusion_openapi_paths(&mut doc);
     append_operator_evidence_openapi_paths(&mut doc);
+    append_scorecard_openapi_paths(&mut doc);
     doc
 }
 
@@ -1316,6 +1317,44 @@ fn append_operator_evidence_openapi_paths(doc: &mut Value) {
                 "responses": {
                     "200": {"description": "Operator evidence read-model"},
                     "404": {"description": "Run not found (returns empty evidence)"}
+                }
+            }
+        }),
+    );
+}
+
+fn append_scorecard_openapi_paths(doc: &mut Value) {
+    let Some(paths) = doc.get_mut("paths").and_then(Value::as_object_mut) else {
+        return;
+    };
+    paths.insert(
+        "/api/v1/scorecards".to_string(),
+        json!({
+            "get": {
+                "summary": "List native scorecard artifacts by run or dispatch",
+                "description": "Requires dispatch:read scope. Returns app-owned read-only native_scorecard_artifact.v1 envelopes persisted in LocalProductStore. No raw traces or target repository writes are exposed.",
+                "parameters": [
+                    {"name": "run_id", "in": "query", "schema": {"type": "string"}},
+                    {"name": "dispatch_id", "in": "query", "schema": {"type": "string"}},
+                    {"name": "limit", "in": "query", "schema": {"type": "integer", "default": 50, "minimum": 1, "maximum": 100}}
+                ],
+                "responses": {
+                    "200": {"description": "Native scorecard artifact list"},
+                    "400": {"description": "Missing or ambiguous query scope"}
+                }
+            }
+        }),
+    );
+    paths.insert(
+        "/api/v1/scorecards/{artifact_id}".to_string(),
+        json!({
+            "get": {
+                "summary": "Get native scorecard artifact by ID",
+                "description": "Requires dispatch:read scope. Returns one app-owned read-only native_scorecard_artifact.v1 envelope.",
+                "parameters": [path_parameter("artifact_id")],
+                "responses": {
+                    "200": {"description": "Native scorecard artifact"},
+                    "404": {"description": "Native scorecard artifact not found"}
                 }
             }
         }),

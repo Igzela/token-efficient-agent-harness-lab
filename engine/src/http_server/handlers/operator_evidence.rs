@@ -18,6 +18,7 @@ pub(crate) fn build_operator_evidence(
     let agents = store.list_agent_state_by_run(run_id)?;
     let pending_mailbox_count = store.count_mailbox(None, Some(run_id), Some("pending"))?;
     let raw_proposals = store.list_proposals_by_run(run_id, 500, 0)?;
+    let scorecard_artifacts = store.native_scorecard_artifacts_by_run(run_id, 20)?;
 
     let mut type_counts: std::collections::HashMap<String, (i64, i64)> =
         std::collections::HashMap::new();
@@ -118,20 +119,42 @@ pub(crate) fn build_operator_evidence(
         })
         .collect();
 
+    let scorecard_views: Vec<serde_json::Value> = scorecard_artifacts
+        .iter()
+        .map(|artifact| {
+            let scorecard = artifact
+                .get("scorecard")
+                .unwrap_or(&serde_json::Value::Null);
+            json!({
+                "artifact_id": artifact.get("artifact_id"),
+                "created_at": artifact.get("created_at"),
+                "schema_version": artifact.get("schema_version"),
+                "scorecard_schema_version": artifact.get("scorecard_schema_version"),
+                "read_only": artifact.get("read_only"),
+                "content_sha256": artifact.get("content_sha256"),
+                "status": scorecard.get("status"),
+                "runtime_kind": scorecard.get("runtime_kind"),
+                "derived_metrics": scorecard.get("derived_metrics"),
+            })
+        })
+        .collect();
+
     let needs_human_decision = pending_proposals > 0 && (review_count > 0 || debate_count > 0);
 
     // Bounded operator summary — metadata-only, no raw text
-    let what_happened = if agents.is_empty() && raw_proposals.is_empty() {
-        "No activity recorded for this run".to_string()
-    } else {
-        let terminal = type_counts.values().map(|(_, t)| t).sum::<i64>();
-        format!(
-            "{} agents, {} proposals ({} processed)",
-            agents.len(),
-            raw_proposals.len(),
-            terminal
-        )
-    };
+    let what_happened =
+        if agents.is_empty() && raw_proposals.is_empty() && scorecard_views.is_empty() {
+            "No activity recorded for this run".to_string()
+        } else {
+            let terminal = type_counts.values().map(|(_, t)| t).sum::<i64>();
+            format!(
+                "{} agents, {} proposals ({} processed), {} scorecards",
+                agents.len(),
+                raw_proposals.len(),
+                terminal,
+                scorecard_views.len()
+            )
+        };
 
     let what_is_pending = if pending_mailbox_count == 0 && pending_proposals == 0 {
         "Nothing pending".to_string()
@@ -157,6 +180,8 @@ pub(crate) fn build_operator_evidence(
         "proposals": proposals_array,
         "review_count": review_count,
         "debate_count": debate_count,
+        "scorecard_artifact_count": scorecard_views.len(),
+        "scorecards": scorecard_views,
         "blocked_signals_count": blocked_signals,
         "needs_human_decision": needs_human_decision,
         "operator_summary": {
