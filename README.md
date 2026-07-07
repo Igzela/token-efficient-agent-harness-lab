@@ -95,10 +95,12 @@ This repository is not a cloud production SaaS, hosted multi-tenant service, or 
 
 Provider API execution requires explicit endpoint/auth/budget configuration; CI uses stub/mock paths and does not call real provider APIs. A ready trusted-local profile activates bounded provider execution, adaptive routing, experiments, promotion, default routing, and acknowledged task advancement for internal local operation. Installed local Claude/Codex CLIs are discovered by default, but execution still requires an explicit workflow action. The local dashboard remains guarded; dangerous actions require confirmation and audit logging.
 
+High-risk provider-gated real experiment runners are allowed for local research when they follow [`docs/PROVIDER_GATED_EXPERIMENT_RUNNER.md`](docs/PROVIDER_GATED_EXPERIMENT_RUNNER.md): explicit opt-in, protected auth, budget ceilings, provider/model identity, pause/kill controls, redacted app-owned evidence, no provider calls in CI, and a rollback path.
+
 ## Toolchain
 
 | Layer | Tool | Notes |
-|---|---|---|
+|---|---|
 | Node | `.node-version` = 22 | fnm-friendly, not mandatory; CI uses `oven-sh/setup-bun@v2` |
 | JS package manager | **Bun** | Required for dashboard and TypeScript SDK verification |
 | Python runtime | **uv** | `uv run --no-project python ...` for all local Python commands |
@@ -259,73 +261,3 @@ const bundle = await client.dispatch({
   request_source: "api",
 });
 ```
-
-Python SDK is retained for compatibility:
-
-```python
-from agent_control_plane_sdk import AgentControlPlaneClient
-
-client = AgentControlPlaneClient("http://127.0.0.1:8080")
-dashboard = client.dashboard()
-recent_docs_runs = client.dispatches(limit=25, search="docs")
-bundle = client.dispatch("Summarize docs without provider calls")
-```
-
-## Safety Boundaries
-
-- No real model calls without explicit endpoint, credential, auth, pricing, and budget configuration; the trusted-local profile fails closed when any prerequisite is missing.
-- No unbounded unattended agents; bounded trusted-local task advancement can run after readiness validation and explicit acknowledgement, while standalone legacy gates remain available.
-- No real sandbox/process/container/VM isolation runtime; V2-1 is limited to app-owned workspace confinement unless separately approved.
-- Supervised patch execution remains app-owned and gated. V2-3 adds an optional controlled git worktree plus approval-bound patch export or `acp/*` branch push; it does not modify the registered target working tree or `main`.
-- Installed local CLI executors are discovered by default for explicit workflow actions; set `ACP_ENABLE_CLI_EXECUTION=0` to disable them.
-- `ACP_EXECUTION_MODE` controls how dispatch requests are routed: `off` (default, noop), `provider` (API only), `cli` (CLI executor only), or `auto` (hybrid mode that scores task complexity and routes low-complexity tasks to the Provider API and high-complexity tasks to the CLI executor; the threshold is configurable via `ACP_HYBRID_COMPLEXITY_THRESHOLD`, default 0.5).
-- Bounded supervised worker concurrency is implemented behind legacy dual scheduler/worker gates or the IAE-2 trusted-local task-advancement acknowledgement, with bounded worker count, pinned adaptive execution, authenticated pause/resume/kill controls, heartbeat, leases, and audit. Workers consume existing queued runs and do not create unbounded goals or loops.
-- Provider failover/fusion exists only inside the bounded, authenticated Adaptive Fusion path, enabled by legacy gates or a ready trusted-local profile.
-- Cloud SaaS, multi-tenant hosting, cloud production Web UI, hosted deployment, and remote SaaS service remain out of scope.
-- Target-repository output is implemented behind `ACP_ENABLE_TARGET_REPO_OUTPUT=1`, `dispatch:execute`, explicit confirmation, approval/integrity/secret gates, remote allowlists, and `ACP_TARGET_REPO_OUTPUT_KILL_SWITCH=1`; direct target working-tree or `main` writes and apply/merge/deploy authority remain out of scope. IAE may change trusted-local provider defaults without changing target-output authority.
-- The dashboard is a local operations console with guarded app-owned controls. V2-5 adds the product-level Mission Control output path over the guarded backend contract: create plan/run, tick, create workspace, capture patch, approve, export patch, or push an `acp/*` branch.
-- Adaptive Fusion supports guarded candidate selection, bounded parallel-panel fusion, safe observations, controlled experiments, auto promotion, completion routing, policy evidence, and rollback. The IAE-1 profile can compose these gates after readiness validation; every path remains bounded, killable, audited, and redacted.
-- IAE-3 exposes effective authority, spend/traffic/worker bounds, safe observation aggregates, redacted recent audit actions, confirmed scheduler pause/resume/kill, and existing policy rollback in the Adaptive Fusion operator surface without exposing model content or credentials.
-- No destructive runtime filesystem behavior.
-- V2 real capabilities require the phase plan in `docs/NEXT_DECISION.md`, explicit gates, audit events, tests, and rollback/kill paths.
-
-## Repository Structure
-
-```text
-engine/                  Rust engine, dispatch runtime, storage, provider gates, and local axum API
-codegen/                 Wire-contract type generation helpers
-dashboard/               Next.js local agent-control-plane dashboard with static export support
-deploy/                  Optional local Dockerfiles for API and dashboard
-sdk/typescript/          TypeScript REST SDK package
-sdk/python/              Python REST SDK package
-wire_contract/v1/        Frozen dispatch JSON schemas for cross-language parity
-tools/                   Security baseline checker, relocated utility tests
-scripts/                 Verification, packaging, and smoke-test scripts
-```
-
-## Active Documentation
-
-Daily agent work uses a small active set:
-
-- [`docs/ARCHITECTURE_BOOK.md`](docs/ARCHITECTURE_BOOK.md) — architecture and safety boundaries
-- [`docs/CURRENT_STATUS.md`](docs/CURRENT_STATUS.md) — current status, limits, and verification snapshot
-- [`docs/NEXT_DECISION.md`](docs/NEXT_DECISION.md) — single forward plan
-- [`docs/MODULE_MAP.md`](docs/MODULE_MAP.md) — source ownership and verification routing
-- [`docs/REAL_WORLD_TESTING_PLAYBOOK.md`](docs/REAL_WORLD_TESTING_PLAYBOOK.md) — PR/CI/maintenance workflow
-- [`docs/RUNBOOK.md`](docs/RUNBOOK.md) — operator procedures
-
-Historical phase plans, closeouts, validation reports, and low-frequency reference docs are retained in release-tagged git history; `docs/archive/README.md` is the working-tree index.
-
-## Agent Maintenance
-
-Full Agent Autonomy Mode authorizes coding agents to propose, implement, test, review, merge, and iterate high-risk architecture work. This includes new architecture directions, authority-boundary changes, default execution/profile changes, auth/security redesign, database migrations, release/tag/deploy workflow changes, target-output authority changes, and superseding accepted decisions. Changes should remain repo-scoped, testable, observable, reviewable, and rollbackable. Only five hard stops remain: committing real secrets, falsifying test/CI evidence, intentionally hiding failures, removing rollback paths, or performing irreversible external destruction without a recovery path. Documentation-only corrections may be committed directly to `main`. Agents must run `scripts/check_agent_handoff.py` before committing.
-
-R7 remains the architecture baseline. A later architecture direction must be explicitly documented, tested, observable, and rollbackable.
-
-## Contributing
-
-Contributions are welcome! Please read [CONTRIBUTING.md](CONTRIBUTING.md) for setup instructions, code style, and PR guidelines.
-
-## License
-
-This project is licensed under the MIT License — see [LICENSE](LICENSE) for details.
