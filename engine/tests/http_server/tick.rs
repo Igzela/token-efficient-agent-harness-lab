@@ -940,7 +940,7 @@ async fn axum_tick_with_persisted_trusted_local_profile_enables_provider() {
 #[tokio::test]
 async fn axum_tick_with_provider_stub_records_audit_and_trace() {
     let _guard = provider_cli_env_lock().lock().await;
-    std::env::set_var("ACP_ENABLE_PROVIDER_EXECUTION", "1");
+    let _env_guard = ProviderExecutionEnvGuard::provider_execution();
     std::env::remove_var("ACP_TRUSTED_LOCAL_PROFILE");
     std::env::remove_var("ACP_COST_PER_DISPATCH_USD");
     std::env::remove_var("ACP_COST_DAILY_USD");
@@ -1022,7 +1022,5 @@ async fn axum_tick_with_provider_stub_records_audit_and_trace() {
         .collect();
     assert!(event_types.contains(&"request_sent"));
     assert!(event_types.contains(&"response_received"));
-
-    std::env::remove_var("ACP_ENABLE_PROVIDER_EXECUTION");
 }
 

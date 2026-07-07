@@ -93,6 +93,31 @@ pub(crate) fn adaptive_operator_env_lock() -> &'static Mutex<()> {
     LOCK.get_or_init(|| Mutex::new(()))
 }
 
+/// RAII guard for provider/adaptive-fusion execution env vars.
+/// Ensures cleanup on panic so leaked env vars don't cascade failures
+/// to other tests (e.g. dashboard operator status assertions).
+pub(crate) struct ProviderExecutionEnvGuard;
+
+impl ProviderExecutionEnvGuard {
+    pub(crate) fn provider_execution() -> Self {
+        std::env::set_var("ACP_ENABLE_PROVIDER_EXECUTION", "1");
+        Self
+    }
+
+    pub(crate) fn with_fusion() -> Self {
+        std::env::set_var("ACP_ENABLE_PROVIDER_EXECUTION", "1");
+        std::env::set_var("ACP_ENABLE_ADAPTIVE_FUSION_EXECUTION", "1");
+        Self
+    }
+}
+
+impl Drop for ProviderExecutionEnvGuard {
+    fn drop(&mut self) {
+        std::env::remove_var("ACP_ENABLE_PROVIDER_EXECUTION");
+        std::env::remove_var("ACP_ENABLE_ADAPTIVE_FUSION_EXECUTION");
+    }
+}
+
 pub(crate) struct AdaptiveOperatorEnvGuard;
 
 impl AdaptiveOperatorEnvGuard {

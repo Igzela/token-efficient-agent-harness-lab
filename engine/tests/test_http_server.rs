@@ -93,6 +93,31 @@ fn adaptive_operator_env_lock() -> &'static Mutex<()> {
     LOCK.get_or_init(|| Mutex::new(()))
 }
 
+/// RAII guard for provider/adaptive-fusion execution env vars.
+/// Ensures cleanup on panic so leaked env vars don't cascade failures
+/// to other tests (e.g. dashboard operator status assertions).
+struct ProviderExecutionEnvGuard;
+
+impl ProviderExecutionEnvGuard {
+    fn provider_execution() -> Self {
+        std::env::set_var("ACP_ENABLE_PROVIDER_EXECUTION", "1");
+        Self
+    }
+
+    fn with_fusion() -> Self {
+        std::env::set_var("ACP_ENABLE_PROVIDER_EXECUTION", "1");
+        std::env::set_var("ACP_ENABLE_ADAPTIVE_FUSION_EXECUTION", "1");
+        Self
+    }
+}
+
+impl Drop for ProviderExecutionEnvGuard {
+    fn drop(&mut self) {
+        std::env::remove_var("ACP_ENABLE_PROVIDER_EXECUTION");
+        std::env::remove_var("ACP_ENABLE_ADAPTIVE_FUSION_EXECUTION");
+    }
+}
+
 struct AdaptiveOperatorEnvGuard;
 
 impl AdaptiveOperatorEnvGuard {
@@ -906,8 +931,7 @@ async fn axum_create_read_only_plan_persists_workflow_graph_without_execution() 
 async fn axum_create_explicit_adaptive_plan_can_tick_fusion_node() {
     let _guard = provider_cli_env_lock().lock().await;
     let _operator_guard = adaptive_operator_env_lock().lock().await;
-    std::env::set_var("ACP_ENABLE_PROVIDER_EXECUTION", "1");
-    std::env::set_var("ACP_ENABLE_ADAPTIVE_FUSION_EXECUTION", "1");
+    let _env_guard = ProviderExecutionEnvGuard::with_fusion();
 
     let dir = tempdir().unwrap();
     let store =
@@ -1078,9 +1102,6 @@ async fn axum_create_explicit_adaptive_plan_can_tick_fusion_node() {
     assert_eq!(observations.len(), 1);
     assert_eq!(observations[0].candidate_id, "fusion-public-candidate");
     assert_eq!(observations[0].candidate_kind, "fusion");
-
-    std::env::remove_var("ACP_ENABLE_PROVIDER_EXECUTION");
-    std::env::remove_var("ACP_ENABLE_ADAPTIVE_FUSION_EXECUTION");
 }
 
 #[tokio::test]
@@ -5863,7 +5884,7 @@ async fn axum_tick_with_persisted_trusted_local_profile_enables_provider() {
 #[tokio::test]
 async fn axum_tick_with_provider_stub_records_audit_and_trace() {
     let _guard = provider_cli_env_lock().lock().await;
-    std::env::set_var("ACP_ENABLE_PROVIDER_EXECUTION", "1");
+    let _env_guard = ProviderExecutionEnvGuard::provider_execution();
     std::env::remove_var("ACP_TRUSTED_LOCAL_PROFILE");
     std::env::remove_var("ACP_COST_PER_DISPATCH_USD");
     std::env::remove_var("ACP_COST_DAILY_USD");
@@ -5945,14 +5966,12 @@ async fn axum_tick_with_provider_stub_records_audit_and_trace() {
         .collect();
     assert!(event_types.contains(&"request_sent"));
     assert!(event_types.contains(&"response_received"));
-
-    std::env::remove_var("ACP_ENABLE_PROVIDER_EXECUTION");
 }
 
 #[tokio::test]
 async fn axum_tick_with_adaptive_provider_requires_adaptive_gate_and_auth() {
     let _guard = provider_cli_env_lock().lock().await;
-    std::env::set_var("ACP_ENABLE_PROVIDER_EXECUTION", "1");
+    let _env_guard = ProviderExecutionEnvGuard::provider_execution();
     std::env::remove_var("ACP_ENABLE_ADAPTIVE_FUSION_EXECUTION");
 
     let dir = tempdir().unwrap();
@@ -6044,14 +6063,12 @@ async fn axum_tick_with_adaptive_provider_requires_adaptive_gate_and_auth() {
     assert_eq!(response.status(), StatusCode::BAD_REQUEST);
     let body = response_json(response).await;
     assert_eq!(body["code"], "adaptive_provider_not_available");
-    std::env::remove_var("ACP_ENABLE_PROVIDER_EXECUTION");
 }
 
 #[tokio::test]
 async fn axum_tick_with_adaptive_provider_executes_explicit_node_plan() {
     let _guard = provider_cli_env_lock().lock().await;
-    std::env::set_var("ACP_ENABLE_PROVIDER_EXECUTION", "1");
-    std::env::set_var("ACP_ENABLE_ADAPTIVE_FUSION_EXECUTION", "1");
+    let _env_guard = ProviderExecutionEnvGuard::with_fusion();
 
     let dir = tempdir().unwrap();
     let store = std::sync::Arc::new(
@@ -6253,9 +6270,6 @@ async fn axum_tick_with_adaptive_provider_executes_explicit_node_plan() {
     assert!(event_types.contains(&"adaptive_synthesizer_request".to_string()));
     assert!(event_types.contains(&"adaptive_synthesizer_response".to_string()));
     assert!(event_types.contains(&"adaptive_execution_completed".to_string()));
-
-    std::env::remove_var("ACP_ENABLE_PROVIDER_EXECUTION");
-    std::env::remove_var("ACP_ENABLE_ADAPTIVE_FUSION_EXECUTION");
 }
 
 // ── GA-3: Scheduler status endpoint tests ────────────────────────────
