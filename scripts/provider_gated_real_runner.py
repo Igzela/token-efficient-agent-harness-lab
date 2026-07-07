@@ -7,9 +7,6 @@ import json
 import os
 import re
 import sys
-import time
-import urllib.error
-import urllib.request
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Protocol
@@ -19,6 +16,7 @@ SOURCE_REF_KEY = "raw" + "_trace_artifact_id"
 SCENARIO_ID = "provider_gated_remember_dont_reread_runner"
 RUNTIME_VERSION = "provider-gated-real-runner.v1"
 MODES = {"stateless_reread", "stateful_store"}
+LIVE_DEFERRED_MESSAGE = "live adapter is deferred; this PR only enables local stub runner"
 
 
 def _load(name: str, path: Path):
@@ -55,8 +53,6 @@ class RunnerConfig:
     live: bool
     provider_kind: str
     model: str
-    endpoint_url: str
-    access_env: str
     limits: RunnerLimits
 
 
@@ -95,12 +91,9 @@ def _render(value: Any, compact: bool) -> str:
 
 
 def build_config(args: argparse.Namespace, env: dict[str, str] | None = None) -> RunnerConfig:
-    data = dict(os.environ if env is None else env)
-    live = bool(args.live)
-    if args.provider == "stub":
-        live = False
-    if args.provider != "stub" and not args.live:
-        raise ProviderGatedRunnerError("live providers require --live")
+    del env
+    if args.live or args.provider != "stub":
+        raise ProviderGatedRunnerError(LIVE_DEFERRED_MESSAGE)
 
     if not 2 <= args.iterations <= 50:
         raise ProviderGatedRunnerError("iterations must be between 2 and 50")
@@ -120,37 +113,10 @@ def build_config(args: argparse.Namespace, env: dict[str, str] | None = None) ->
     if run_cap > daily_cap:
         raise ProviderGatedRunnerError("run cost cap cannot exceed daily cost cap")
 
-    if live:
-        if data.get("ACP_REAL_RUNNER_LIVE") != "1":
-            raise ProviderGatedRunnerError("ACP_REAL_RUNNER_LIVE=1 is required for live execution")
-        if data.get("ACP_TRUSTED_LOCAL_PROFILE") != "1" and data.get("ACP_ENABLE_PROVIDER_EXECUTION") != "1":
-            raise ProviderGatedRunnerError("trusted-local profile or legacy provider gate is required")
-        if data.get("ACP_REQUIRE_AUTH") != "1":
-            raise ProviderGatedRunnerError("protected local auth is required")
-        if data.get("ACP_REAL_RUNNER_KILL_SWITCH") == "1":
-            raise ProviderGatedRunnerError("kill switch is active")
-        access_env = data.get("ACP_REAL_RUNNER_ACCESS_ENV", "")
-        if not re.fullmatch(r"[A-Z][A-Z0-9_]{2,80}", access_env):
-            raise ProviderGatedRunnerError("ACP_REAL_RUNNER_ACCESS_ENV must be a symbolic environment variable name")
-        if not data.get(access_env):
-            raise ProviderGatedRunnerError("configured provider access variable is not present")
-        endpoint_url = data.get("ACP_REAL_RUNNER_ENDPOINT_URL", "")
-        if not endpoint_url.startswith(("https://", "http://127.0.0.1", "http://localhost")):
-            raise ProviderGatedRunnerError("endpoint must be HTTPS or local loopback")
-        model = data.get("ACP_REAL_RUNNER_MODEL", "")
-        if not model.strip():
-            raise ProviderGatedRunnerError("model identity is required")
-    else:
-        access_env = ""
-        endpoint_url = "stub://local"
-        model = "stub-deterministic"
-
     return RunnerConfig(
-        live=live,
+        live=False,
         provider_kind=args.provider,
-        model=model,
-        endpoint_url=endpoint_url,
-        access_env=access_env,
+        model="stub-deterministic",
         limits=RunnerLimits(
             iterations=args.iterations,
             max_calls=args.max_calls,
@@ -179,65 +145,10 @@ class StubProvider:
         )
 
 
-class OpenAICompatibleProvider:
-    def __init__(self, config: RunnerConfig, env: dict[str, str] | None = None) -> None:
-        self.config = config
-        self.env = dict(os.environ if env is None else env)
-
-    def complete(self, prompt: str, *, iteration: int, mode: str, timeout_seconds: float) -> ProviderResult:
-        del iteration, mode
-        access_value = self.env.get(self.config.access_env, "")
-        if not access_value:
-            raise ProviderGatedRunnerError("configured provider access variable is not present")
-        payload = {
-            "model": self.config.model,
-            "messages": [
-                {"role": "system", "content": "Return one integer candidate in the form candidate=<number>."},
-                {"role": "user", "content": prompt},
-            ],
-            "temperature": 0,
-            "max_tokens": 64,
-        }
-        body = json.dumps(payload).encode("utf-8")
-        request = urllib.request.Request(
-            self.config.endpoint_url,
-            data=body,
-            headers={
-                "content-type": "application/json",
-                "authorization": "Bearer " + access_value,
-            },
-            method="POST",
-        )
-        started = time.monotonic()
-        try:
-            with urllib.request.urlopen(request, timeout=timeout_seconds) as response:
-                response_body = response.read().decode("utf-8")
-        except urllib.error.URLError as exc:
-            raise ProviderGatedRunnerError(f"provider request failed: {exc}") from exc
-        duration_ms = int((time.monotonic() - started) * 1000)
-        try:
-            data = json.loads(response_body)
-            text = str(data["choices"][0]["message"]["content"])
-            usage = data.get("usage", {})
-            input_tokens = int(usage.get("prompt_tokens") or _estimate_tokens(prompt))
-            output_tokens = int(usage.get("completion_tokens") or _estimate_tokens(text))
-        except (KeyError, TypeError, ValueError, json.JSONDecodeError) as exc:
-            raise ProviderGatedRunnerError("provider response shape is unsupported") from exc
-        return ProviderResult(
-            text=text,
-            input_tokens=input_tokens,
-            output_tokens=output_tokens,
-            duration_ms=duration_ms,
-            cost_usd=0.0,
-        )
-
-
 def make_provider(config: RunnerConfig) -> ProviderClient:
-    if not config.live:
-        return StubProvider()
-    if config.provider_kind != "openai_compatible":
-        raise ProviderGatedRunnerError("only openai_compatible live provider is supported in this runner")
-    return OpenAICompatibleProvider(config)
+    if config.live or config.provider_kind != "stub":
+        raise ProviderGatedRunnerError(LIVE_DEFERRED_MESSAGE)
+    return StubProvider()
 
 
 def _parse_candidate(text: str, fallback: int) -> int:
@@ -372,7 +283,7 @@ def run_mode(mode: str, config: RunnerConfig, provider: ProviderClient) -> dict[
             "live": config.live,
             "provider_kind": config.provider_kind,
             "model": config.model,
-            "external_calls": len(steps) if config.live else 0,
+            "external_calls": 0,
             "final_best_score": best_score,
             "context_protocol": "full_history_reread" if mode == "stateless_reread" else "compact_summary_plus_recent_window",
         },

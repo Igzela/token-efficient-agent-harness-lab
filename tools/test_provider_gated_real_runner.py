@@ -85,23 +85,15 @@ class ProviderGatedRealRunnerTests(unittest.TestCase):
         self.assertEqual(comparison["rows"][1]["mode"], "stateful_store")
         self.assertGreater(comparison["rows"][1]["token_reduction_ratio"], 0.0)
 
-    def test_live_provider_requires_explicit_cli_gate(self) -> None:
-        with self.assertRaisesRegex(MODULE.ProviderGatedRunnerError, "--live"):
+    def test_live_and_non_stub_provider_are_deferred(self) -> None:
+        with self.assertRaisesRegex(MODULE.ProviderGatedRunnerError, MODULE.LIVE_DEFERRED_MESSAGE):
             MODULE.build_config(args(provider="openai_compatible"), env={})
 
-    def test_live_provider_requires_required_env_gates(self) -> None:
-        with self.assertRaisesRegex(MODULE.ProviderGatedRunnerError, "ACP_REAL_RUNNER_LIVE"):
+        with self.assertRaisesRegex(MODULE.ProviderGatedRunnerError, MODULE.LIVE_DEFERRED_MESSAGE):
             MODULE.build_config(args(provider="openai_compatible", live=True), env={})
 
-    def test_kill_switch_fails_closed_for_live(self) -> None:
-        env = {
-            "ACP_REAL_RUNNER_LIVE": "1",
-            "ACP_TRUSTED_LOCAL_PROFILE": "1",
-            "ACP_REQUIRE_AUTH": "1",
-            "ACP_REAL_RUNNER_KILL_SWITCH": "1",
-        }
-        with self.assertRaisesRegex(MODULE.ProviderGatedRunnerError, "kill switch"):
-            MODULE.build_config(args(provider="openai_compatible", live=True), env=env)
+        with self.assertRaisesRegex(MODULE.ProviderGatedRunnerError, MODULE.LIVE_DEFERRED_MESSAGE):
+            MODULE.build_config(args(live=True), env={})
 
     def test_limits_fail_closed(self) -> None:
         with self.assertRaisesRegex(MODULE.ProviderGatedRunnerError, "iterations"):
