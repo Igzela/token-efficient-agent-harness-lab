@@ -1,152 +1,59 @@
 # Current Status
 
-Last updated: 2026-06-27. Agent Runtime AR-0 through AR-6 complete and sealed — decision baseline, agent identity/state/mailbox, step executor, planning/handoff, concurrent scheduling, review/debate primitives, and operator evidence read-model. No AR-7 planned or authorized. V2-0 through V2-5, Real Output Closeout, Adaptive Fusion AF-0 through AF-7, Trusted Local Autonomous Execution IAE-0 through IAE-3 are complete; `v0.1.0` is published and its online installer path is verified.
+Last updated: 2026-07-07.
 
-## Summary
+## Product Boundary
 
-The core plan, V2 implementation, Real Output Closeout, Adaptive Fusion Routing track, and Trusted Local Autonomous Execution IAE-0 through IAE-3 are complete. Full Agent Autonomy Mode is active for repo-scoped, testable, observable, CI-gated, rollbackable architecture and authority evolution. The system includes prompt-to-CLI execution, bounded verification/repair evidence, optional real GitHub PR creation, guarded automatic provider/model routing with safe evidence feedback, bounded background advancement of already-created adaptive workflow runs, and an integrated operator control/evidence surface.
+This repo is a local/small-team self-hosted agent workflow control plane. Rust `engine/` is the sole runtime/API/storage implementation. The dashboard is a guarded local operations console. SDKs expose the app-owned REST surface.
 
-The system is useful as an operations/control-plane lab for deterministic dispatch, workflow state, app-owned execution metadata, guarded local controls, SDKs, and audit evidence. It is not a cloud SaaS, hosted multi-tenant service, direct-deploy tool, or unattended autonomous-agent runtime.
+The system is not a cloud SaaS, hosted multi-tenant service, direct-deploy tool, or default-on unattended agent runtime.
 
-## Current Product Boundary
-
-- Rust `engine/` is the sole runtime/API/storage implementation.
-- `dashboard/` is the local operations console with guarded app-owned controls. Mission Control exposes the V2-5 product output path and Adaptive Fusion exposes AF-4 policy evidence, AF-6 completion testing, routing metadata, gate status, experiment/promotion status, kill cues, rollback controls, and secret-safe adaptive provider endpoint configuration over existing guarded APIs; release/deploy/apply actions remain unavailable.
-- TypeScript and Python SDKs cover REST access to dispatch, workflow, config, team, cost, audit, backup/export, supervised patches, and V2-3 target output. The TypeScript SDK also covers Adaptive Fusion policy controls, the guarded completion endpoint, provider endpoint configuration, and dashboard operator status typing.
-- Provider execution is available through the recommended ready `ACP_TRUSTED_LOCAL_PROFILE=1` profile, with legacy `ACP_ENABLE_PROVIDER_EXECUTION=1` still supported for standalone operation.
-- Single-provider execution keeps `ACP_MODEL` authoritative. When `ACP_MODEL` is absent, the runtime can derive the model from the current project's Claude Code JSON config (`$HOME/.claude.json`, or `ACP_CLAUDE_CODE_CONFIG_PATH`) using an explicit project model or safe recent `lastModelUsage` key before falling back to `default`.
-- Adaptive Fusion AF-0 can produce deterministic `efficient` or `quality` single/fusion plans from normalized endpoint observations, but cannot influence live routing or call providers.
-- Adaptive Fusion AF-1 can hot-add/update/disable bounded endpoint metadata and emit deterministic secret-safe snapshots; it has no database, HTTP, credential-resolution, network, or execution path.
-- Adaptive Fusion AF-2 can adapt existing run traces into bounded offline endpoint/portfolio observations, aggregate evidence by task class, compute Pareto frontiers, calibrate judge bias, and emit `efficient`/`quality` shadow recommendations without changing routing.
-- Adaptive Fusion AF-3/AF-6 can execute single, ordered fallback, or bounded parallel-panel fusion plans through fixed provider/model endpoints. Judge and synthesizer remain serial. Live calls require legacy provider+adaptive gates or a ready trusted-local profile, configured auth, `dispatch:execute`, call/token/cost/time/concurrency limits, audit, redaction, circuit breakers, and a kill switch.
-- Adaptive Fusion AF-4 can promote contextual policies from local evidence behind dual env gates and human confirmation, persist hash-bound snapshots in `local_config`, roll back promoted policies, and optionally assign at most 5% bounded exploration for low/medium-risk contexts. Promoted policies still have no live execution authority without an explicit bounded candidate plan.
-- Adaptive Fusion AF-5 exposes active policies, snapshots, safety flags, explicit promotion JSON submission, and snapshot rollback in the dashboard and TypeScript SDK. It adds no provider execution authority, default-on routing, provider failover, or unattended workers.
-- Adaptive Fusion AF-6 generates deterministic candidates, persists only safe observation summaries, supports deterministic experiments and evidence-driven auto promotion through the ready trusted-local profile or standalone legacy gates, and exposes `POST /api/v1/adaptive-fusion/completions`. Routing metadata is hidden by default. Ordinary `/dispatch` delegation is enabled by a ready trusted-local profile or `ACP_ADAPTIVE_DEFAULT_LIVE_ROUTING=1`.
-- Adaptive Fusion AF-7 exposes AF-6 in the dashboard through a completion test panel, optional routing metadata display, read-only gate/experiment/promotion/default-routing/kill status, rollback snapshot cues, and an endpoint config panel for `stub`, `openai_compatible`, and `anthropic` endpoint metadata. A protected legacy adaptive runtime may start fail-closed without endpoint metadata so operators can bootstrap through the dashboard/API; completion remains unavailable until config succeeds. Endpoint config stores only symbolic credential environment names, rejects raw-secret-shaped values, requires present credential environment variables for real providers, and applies validated local config to the adaptive completion API without restart. The same config restores the startup-bound adaptive executor and registry on the next process start. Explicit `ACP_ADAPTIVE_PROVIDER_ENDPOINTS_JSON` remains authoritative while present; saved local config stays persisted but inactive until the env override is removed. It adds no target-output authority, DB migration, or default-on live execution.
-- Installed local Claude/Codex CLIs are discovered by default for explicit workflow ticks. `ACP_ENABLE_CLI_EXECUTION=0` disables local CLI execution.
-- V2-3 target output is default-off. It can create an app-owned git worktree and, only after scoped confirmation plus artifact approval/integrity checks, export a patch or push an `acp/*` branch. It never writes the registered target working tree or `main`.
-- No hard process/container/VM sandbox is implemented; V2-1 is scoped to app-owned workspace confinement unless separately approved.
-- No hosted/cloud/multi-tenant deployment is implemented.
-- Bounded supervised workers remain available through the legacy `ACP_ENABLE_SCHEDULER=1` plus `ACP_ENABLE_SUPERVISED_WORKERS=1` gates. A ready trusted-local profile may instead use `ACP_TRUSTED_LOCAL_TASK_ADVANCEMENT=1`, which enables one bounded scheduler path only after worker configuration validation.
-- IAE-1 implements `ACP_TRUSTED_LOCAL_PROFILE=1`. It fails closed without protected auth, valid endpoint metadata, available symbolic credentials, strictly positive endpoint pricing, and positive per-dispatch/daily cost caps. When ready it activates provider execution, adaptive execution, default routing, experiments, and auto promotion while retaining existing token/call/time/concurrency, identity, redaction, audit, pause, kill, snapshot, and rollback controls.
-- IAE-2 implements `ACP_TRUSTED_LOCAL_TASK_ADVANCEMENT=1`. It requires a ready IAE-1 profile, accepts only the pinned `adaptive_provider` executor, rejects invalid or excessive worker/interval/lease configuration, and advances only already-created queued workflow runs. It does not create goals or tasks, select CLI/command/noop workers, persist raw model content, or expand target-output, merge, release, or deploy authority.
-- IAE-3 extends the existing dashboard snapshot with effective provider/adaptive/default-routing/experiment/promotion/task-advancement authority; configured cost, traffic, token, call, time, concurrency, rollout, and worker bounds; safe observation aggregates; and secret-free scheduler state. Live completion readiness requires provider/adaptive/auth gates, executor, registry, local storage, and a clear fusion kill switch. Experiment and auto-promotion authority fail closed when completion is not ready or their runtime policy/rollout configuration is invalid, and the dashboard exposes only safe readiness and validation evidence. The Adaptive Fusion page reuses existing authenticated scheduler pause/resume/kill and policy rollback endpoints and loads recent adaptive/scheduler actions through the existing `audit:read` API with `redact=true`. It never renders audit details.
-- Cloud SaaS, multi-tenant hosting, app-runtime release/deploy/apply authority, direct target-repository `main` writes, unbounded provider spending, and unbounded autonomous loops remain out of scope.
-
-## Last Recorded Verification
-
-- Branch: latest verified `main` includes direct cleanup commit `0b7d958`; the preceding cleanup run failed until Python tests were updated for deleted files.
-- Tests: full Rust + TypeScript stack verification, Python SDK tests, split HTTP server tests, adaptive completion API tests, focused trusted-local/adaptive/provider-executor tests, rustfmt, Clippy, handoff, wire drift, dashboard boundary lint, production-like persisted-config preflight, and `git diff --check` passed with 0 failures; recent full main CI evidence includes run `28158603008`.
-- Browser/runtime: authenticated stub runtime showed effective authority, 3% experiment traffic, configured cost/worker ceilings, one safe observation, redacted adaptive/scheduler audit actions, and functional confirmed pause/resume controls. Separate runtime checks verified invalid policy fail-closed blockers, storage-aware completion readiness, and raw requested adaptive gates remaining visually distinct from effective fail-closed authority; desktop and 390px mobile had no horizontal overflow or console errors.
-- Security: repository secret scan returned 0 findings; handoff, rustfmt, Clippy, dashboard boundary lint, TypeScript typecheck/build, and `git diff --check` passed.
-- CI: latest main run `28158603008` is green across all seven jobs: docker-build, python-tests, native-runtime, rust-tests, typescript-tests, rust-typescript-cutover, and pg-integration-tests.
-- Release: the `v0.1.0` release workflow run `27891104370` is green; all eight published assets passed checksum/archive inspection.
-- Online install: the README installer fetched `v0.1.0` into an isolated home, verified the checksum, installed the runtime/dashboard, and passed health, dashboard API, and HTML smoke checks on 2026-06-21.
-- PostgreSQL integration tests are gated behind `cargo test -p engine --features pg-tests` with `ACP_TEST_DATABASE_URL`.
-- Live E2E validation evidence recorded 48 PASS, 0 FAIL, 1 SKIP on 2026-06-12. Archived long-form reports and historical phase docs are now retained in git history rather than the working tree.
-
-Handoff guard facts:
-
-- Phase 4 is complete and historical as part of the sealed dispatch-kernel sequence.
-- Full Agent Autonomy Mode: R7 remains the baseline; an explicit documented, tested, observable, rollbackable decision may supersede it.
-- Post-R7 Wire/Type Governance Hardening: `scripts/check_wire_codegen_drift.sh`.
-
-For current verification commands, use:
-
-```bash
-bash scripts/verify_rust_typescript_stack.sh
-uv run --no-project python scripts/check_agent_handoff.py
-```
-
-## Complete Tracks
+## Current Complete Tracks
 
 | Track | Status |
 |---|---|
-| Dispatch Kernel Phases 1-7, including 6A and 6B Gates 1-3 | Stable |
-| Language migration to Rust runtime | Complete |
-| Dynamic Workflow Batches 1-7 plus scheduler dynamic mode | Complete |
-| Macro-Orchestrator Phases 1-5 repair batch | Complete |
-| Self-Hosted GA Readiness SG-1 through SG-5 | Complete |
-| HA Hardening HA-1 through HA-6 | Complete |
-| HybridExecutor with `ACP_EXECUTION_MODE` | Complete |
-| Dynamic Regulator MVP Phases 1-5 | Complete |
-| Phase 8 final GA seal | Complete; archived |
-| Product Boundary Repair Track P0-P3 | Complete — PRs #64-#67 |
-| V2 Real Production Output Track | Complete — V2-0 through V2-5 merged in PRs #69-#75 |
-| Real Output Closeout | Complete — PRs #79-#81; `v0.1.0` published and online installer verified |
+| Dispatch kernel | Complete |
+| Rust runtime migration | Complete |
+| V2 Real Production Output | Complete through V2-5 |
+| Real Output Closeout | Complete; `v0.1.0` published |
+| Adaptive Fusion | Complete through AF-7 |
+| Agent Runtime | Complete and sealed at AR-6 |
+| Trusted Local Autonomous Execution | Complete through IAE-3 |
+| Token-efficiency scorecards | Native persistence/API/dashboard/importer/pilot path implemented |
 
-## Active Track
+## Current Active Tracks
 
 | Track | Status |
 |---|---|
-| Agent Autonomous Maintenance Mode | Active for implementation, docs, CI, tests, review, and shipping |
-| Full Agent Autonomy Mode | Active for repo-scoped architecture, authority, auth/security, migration, release-workflow, default-profile, and target-output evolution with tests, evidence, review, and rollback |
-| Adaptive Fusion Routing Track | AF-0 through AF-7 implemented; existing runtime gates remain active |
-| Trusted Local Autonomous Execution Track | Complete through IAE-3 |
+| Agent Autonomous Maintenance Mode | Active for docs, CI, tests, review, and bounded shipping |
+| Full Agent Autonomy Mode | Active for repo-scoped architecture and authority evolution when testable, observable, CI-gated, and rollbackable |
+| Provider-gated real experiment runner | Approved next direction; must extend existing runtime modules and remain local, explicit, budgeted, observable, killable, testable, and rollbackable |
 
-Historical phase plans, closeouts, and long-form validation reports are retained in release-tagged git history; `docs/archive/README.md` is the working-tree index.
+## Current Capabilities
 
-## Active Capability
-
-- Deterministic dispatch pipeline: task analysis, model tier selection, budget reservation, executor selection, evaluation, and ledger persistence.
-- Workflow runtime: persisted workflow runs, nodes, edges, events, approvals, queue/backpressure state, executor-pool binding, and opt-in dynamic graph mutation.
-- Supervised execution primitives: app-owned workspace lifecycle, `NodeExecutor` trait, allowlisted `CommandNodeExecutor`, workflow tick endpoint, artifact capture, secret scan, integrity validation, approval binding, and export gate.
-- V2-1 safety base: workspace IDs are path-safe, workspace copies stay under the app-owned workspace root, symlinks are skipped, copy file/byte ceilings are enforced, secret findings are redacted, secret-hit diffs are suppressed, command cwd is validated, command env is cleared except `PATH`, and command output is capped.
-- V2-2 provider/CLI output path: provider nodes require either `ACP_ENABLE_PROVIDER_EXECUTION=1` or a ready `ACP_TRUSTED_LOCAL_PROFILE=1` with valid single-provider configuration; installed Claude/Codex CLIs are discovered by default and run only on explicit workflow ticks; plan `raw_request` becomes the node prompt unless a command override is supplied; outputs are redacted/capped and subprocess env remains restricted.
-- CLI capability visibility: the dashboard API exposes only enabled/detected booleans from the startup snapshot; the dashboard distinguishes Claude/Codex availability from supervised-worker status without exposing binary paths or granting execution authority.
-- Adaptive Fusion AF-0: deterministic capability/budget filtering and auditable `efficient`/`quality` single or bounded fusion planning over model endpoints; all outputs are shadow-only with no selected-tier, executor, retry, or active-policy influence.
-- Adaptive Fusion AF-1: bounded in-memory model-endpoint registry with capability, context, tool, pricing, health, and symbolic credential-reference metadata; deterministic content hashes; idempotent upsert/disable; no secret values or live execution authority.
-- Adaptive Fusion AF-2: bounded offline replay over existing run-trace/evaluator evidence; deterministic endpoint/portfolio aggregates, multi-dimensional Pareto frontiers, judge signed-bias/error calibration, and objective-specific shadow recommendations with evidence run IDs and zero live influence.
-- Adaptive Fusion AF-3: up to eight startup-configured provider/model endpoints; explicit authenticated `adaptive_provider` ticks; single/fallback/fusion execution; fixed model binding; max calls, total tokens, dollars, elapsed time, panel size, and serial concurrency; existing daily/per-dispatch cost gates; provider audit, circuit breakers, redaction/capping, and kill path.
-- Adaptive Fusion AF-4: contextual bandit scoring over task class and objective; non-stationary sequence decay; dual-gated promotion with minimum sample/confidence/regression checks; local evidence ID verification; hash-bound active-policy snapshots in `local_config`; rollback; high/critical-risk exploration exclusion; and optional low/medium-risk exploration capped at 5%.
-- Adaptive Fusion AF-5: dashboard and TypeScript SDK operator surface for active policies, snapshots, safety flags, explicit promotion request submission, and snapshot rollback. It consumes the AF-4 guarded endpoints and does not add execution, provider, failover, merge, or deploy authority.
-- Adaptive Fusion AF-6A: deterministic candidate generator that produces single, ordered fallback, and fusion candidates from configured endpoints. Generation is pure/deterministic with no provider calls. Candidates include schema-versioned IDs, content hashes, endpoint bindings, estimated costs/tokens/latency, and required capabilities. Aggregate caps (cost, tokens, latency) suppress fallback/fusion when exceeded. Duplicate endpoint IDs are fully excluded. Total emitted candidates bounded by `max_candidates`.
-- Adaptive Fusion AF-6B: fusion panel calls execute in bounded parallel waves with deterministic evidence ordering and quorum handling; judge and synthesizer remain serial.
-- Adaptive Fusion AF-6C: adaptive executions persist idempotent, tamper-checked observation summaries in existing local storage. Raw prompts, outputs, transcripts, secrets, repository content, and private paths are prohibited.
-- Adaptive Fusion AF-6D: deterministic online experiments are dual-gated, capped at configured traffic, excluded for high/critical risk, and constrained by budget, tokens, calls, time, concurrency, pause, and kill controls.
-- Adaptive Fusion AF-6E: automatic promotion is dual-gated and evidence-driven, with minimum samples/confidence, quality/cost/latency/failure regression guards, freshness checks, rollout percentage, snapshots, rollback, and a kill switch.
-- Adaptive Fusion AF-6F: authenticated completion API with compact responses, optional routing metadata, deterministic candidate/policy selection, global cost accounting, observation capture, and optional `/dispatch` delegation only behind `ACP_ADAPTIVE_DEFAULT_LIVE_ROUTING=1`.
-- Adaptive Fusion AF-7: the dashboard exposes a guarded completion test form, optional routing metadata, read-only AF gate status, experiment/promotion/default-routing/kill indicators, and rollback snapshot cues. The `/api/v1/dashboard` snapshot includes secret-free `adaptive_fusion` operator status; no raw prompt, raw output, transcript, repository content, secret, or private path is persisted by the operator status surface.
-- IAE-1 trusted-local profile: `engine/src/trusted_local.rs` resolves a fail-closed readiness status and effective gates from protected auth, endpoint configuration, symbolic credential availability, positive pricing, and positive cost caps. The engine, persisted-config-aware explicit provider/adaptive workflow admission, adaptive completion/default routing, experiments, auto promotion, dashboard, and TypeScript SDK consume the same effective status. Runtime kill/pause controls remain independent and recoverable.
-- IAE-2 bounded task advancement: an explicit acknowledgement composes the existing scheduler with a pinned `PersistingAdaptiveProviderNodeExecutor`. Each node refreshes active policy/evidence/cost context, applies the existing adaptive execution gates, persists only safe observation summaries, and fails closed when policy or cost context cannot be read. Dashboard and TypeScript status expose requested/ready/blocker state plus worker and concurrency bounds.
-- IAE-3 operator control and evidence: the dashboard/API expose effective authority, completion prerequisites, budget and experiment ceilings, daily remaining cost, safe observation counts, scheduler runtime state, and existing rollback availability. Default routing, experiment, and auto-promotion authority require complete live readiness, including local storage; experiment and promotion policy validation fails closed while returning only stable blocker codes. The Adaptive Fusion UI provides confirmed pause/resume/kill controls and redacted recent audit action/resource/timestamp evidence without returning audit details, raw prompts/outputs/transcripts, credentials, repository content, or private paths.
-- V2-3 target repo output: `git_worktree` creation and output require `dispatch:execute` plus `ACP_ENABLE_TARGET_REPO_OUTPUT=1`; artifact hashes bind patch content and actual allowlisted verification evidence; output requires same-run approval, integrity, redaction, explicit confirmation, bounded text files, and remote controls. Optional GitHub PR creation additionally requires `ACP_ENABLE_GITHUB_PR_OUTPUT=1` and `ACP_GITHUB_TOKEN_ENV`.
-- V2-4 bounded workers: scheduler startup requires both scheduler and supervised-worker env gates; worker count is bounded by global concurrency and 32; each worker claims at most one node per cycle through the existing atomic DB lease; heartbeat metadata exposes worker state; stale recovery is audited; `dispatch:execute` plus confirmation controls pause/resume/kill; env pause and kill switches remain available.
-- Verification/repair: `/supervised-patch/workspaces/{id}/verify` runs allowlisted test tools in the app-owned workspace, stores redacted/capped evidence, and can invoke at most two CLI repair attempts before output remains blocked.
-- V2-5 product output UX: the first navigation group is `Tasks / Runs / Outputs`; operational/admin tabs are secondary and collapsed. The task surface defaults to local Codex CLI and keeps task, workspace, approval, and branch/PR output in one path.
-- AR-2 bounded one-step agent executor: `AgentStepExecutor` in `node_executor.rs` implements `NodeExecutor` with `AgentAction` enum, `AgentDecisionFn` closure, env gate `ACP_ENABLE_AGENT_RUNTIME=1`, kill switch `ACP_AGENT_RUNTIME_KILL_SWITCH=1`, observe/decide/act/persist lifecycle, audit events per transition, 11 tests. Fails closed on missing agent state, missing `agent_id`, unsupported action, disabled runtime, or killed runtime. No provider/CLI calls, scheduler changes, DB migration, or dashboard UI.
-- AR-3 (bounded planning, child task proposals, handoff): Implemented. ChildTaskProposal/HandoffRequest types, agent_proposals table (v15), proposal CRUD with redaction/size caps, AgentAction::ProposeChildTask/RequestHandoff/AcceptHandoff/RejectHandoff/CancelProposal, mailbox-based handoff delegation, safety gates (fail closed on invalid state, self-handoff, nonexistent proposals, kill switch, disabled runtime), 12 AR-3 tests (51 total node_executor tests) passing. No multi-agent scheduling, review/debate, or dashboard UI.
-- AR-4 (bounded concurrent multi-agent scheduling): `agent_max_concurrent_global` (default 2) and `agent_max_concurrent_per_run` (default 1) in `SchedulerConfig` with env overrides. Race-condition-free cap enforcement inside the lease transaction. Audit events: claim_attempt, claim_success, claim_conflict, execution_started, execution_released, execution_completed, execution_failed, lease_expired. 8 new tests.
-- AR-5 (review and debate primitive): CAS-style debate round update, bounded review/debate threads as first-class workflow artifacts with verdicts, dissent, evidence links, and approval/export gates. State-machine correctness fixes. Tests pass.
-- AR-6 (operator evidence read-model): Read-only aggregation of agent state, mailbox counts, proposal counts by type, blocked/conflict signals, and sanitized audit events. `GET /api/v1/operator/evidence/:run_id`. No new execution authority; AR-1 to AR-5 runtime semantics unchanged. Provider/CLI authority unchanged. Target-output approval unchanged. No autonomous merge/deploy/release authority added.
-- Real output pilots: `scripts/real_output_pilots.py` completed Python, Rust, and Node repositories through real Claude CLI execution, real tests, artifact capture, approval, and three distinct `acp/*` branches. All three verification runs passed on the first attempt and all target `main` refs remained unchanged. Older one-off pilot scripts were removed; use `scripts/real_output_pilots.py` or `scripts/live_e2e_validation.py` for current validation.
-- Release contract: canonical assets use `agent-control-plane-v0.1.0-<rust-target>.tar.gz` with a same-name top-level directory. Local packaging and `scripts/smoke_release.sh 0.1.0` passed 16 checks.
-- Local storage: SQLite default with PostgreSQL optional via `ACP_DATABASE_URL`; schema version is documented in `docs/ARCHITECTURE_BOOK.md`.
-- Operations: health, metrics, backups, restore smoke, circuit breaker state, audit log, and release-readiness checks.
-- Dashboard: local operations console with guarded app-owned controls for workflow runs, scheduler state, proposals, patches, config/team/costs, and app-owned actions.
-- Dashboard product-polish closeout: boundary lint checks dashboard app/components/lib for forbidden boundary controls; runtime gates are visible; Mission Control exposes a primary workflow path from run selection through tick, failure/status inspection, retry/fix path, approval, and export readiness.
+- Deterministic dispatch, workflow state, app-owned execution metadata, guarded local controls, SDKs, and audit evidence.
+- Provider execution through the trusted-local profile or legacy explicit gate, with configured provider identity, auth, budget, token/call/time/concurrency limits, redaction, audit, pause/kill controls, and rollback.
+- Adaptive Fusion candidate generation, experiments, policy evidence, promotion, guarded completion routing, and operator evidence.
+- V2 target-output path through app-owned worktree, verification, approval, patch/branch output, and optional GitHub PR creation.
+- Bounded Agent Runtime semantics through AR-0 to AR-6: identity, state, mailbox, step executor, planning/handoff, concurrency, review/debate, and operator evidence.
+- Token-efficiency path: scorecard validator, native scorecard export/persistence/API/dashboard, LangGraph trace importer, native deterministic stateful-vs-stateless pilot, and read-only comparisons.
 
 ## Current Gaps
 
-- Engine/API/SDK/dashboard output is end to end for a supplied git repo: natural-language CLI execution, controlled worktree, real verification with bounded repair, artifact evidence, approval, patch/branch output, and optional GitHub PR creation.
-- Bounded multi-agent runtime semantics are implemented through Agent Runtime AR-0 through AR-6 (identity, state, mailbox, step executor, planning/handoff, concurrency, debate/review, operator evidence). The track is sealed; extending the AR phase ladder requires a new decision baseline — see `docs/NEXT_DECISION.md` § Agent Runtime AR-0 through AR-6 Closeout.
-- Product fit is stronger for local operations/research than for public-facing production UX.
-- The UI is task-first, while detailed operations and administration remain available as secondary views.
-- Security posture is suitable for local/small-team self-hosting only; hosted/multi-tenant use would require a new threat model and approved implementation plan.
-- No hard process/container/VM sandbox isolation exists.
-- Cloud SaaS, multi-tenant hosting, app-runtime release/deploy/apply authority, direct target `main` writes, and unbounded autonomous loops remain out of scope.
+- Real provider-backed stateful-vs-stateless experiment runner is not implemented yet. It is allowed as the next direction, but must use existing runtime modules and gates.
+- No second Agent Runtime, scheduler, DAG kernel, mailbox, storage layer, or hidden side channel is authorized.
+- No hard process/container/VM sandbox exists.
+- Cloud/multi-tenant hosting, direct target `main` writes, automatic merge/deploy/release, and unbounded loops remain out of scope.
 
-## Documentation Discipline
+## Active Documentation
 
-Active documentation is intentionally small:
+Keep the active docs small. Do not add new roadmap/status/policy documents unless the user explicitly asks for a separate artifact.
 
-- `docs/ARCHITECTURE_BOOK.md` — current architecture baseline
-- `docs/CURRENT_STATUS.md` — current status and limits
-- `docs/NEXT_DECISION.md` — single forward plan
-- `docs/MODULE_MAP.md` — source/test ownership
-- `docs/REAL_WORLD_TESTING_PLAYBOOK.md` — branch/PR/CI/maintenance workflow
-- `docs/RUNBOOK.md` — operator procedures
+- `docs/ARCHITECTURE_BOOK.md` — architecture and safety baseline.
+- `docs/CURRENT_STATUS.md` — current product state and gaps.
+- `docs/NEXT_DECISION.md` — single forward plan and authority decisions.
+- `docs/MODULE_MAP.md` — source ownership and verification routing.
+- `docs/REAL_WORLD_TESTING_PLAYBOOK.md` — branch/PR/CI/maintenance workflow.
+- `docs/RUNBOOK.md` — operator procedures.
 
-Historical long-form Markdown under `docs/archive/` was removed from the working tree during cleanup and remains available through release-tagged git history. `docs/archive/README.md` is the retained index placeholder.
-
-Do not add new roadmap, next-step, closeout, status, or productization documents unless the user explicitly asks for a new artifact. Prefer editing, shortening, or archiving existing docs.
+Historical phase plans, old closeouts, stale indexes, and low-frequency status snapshots should stay out of the working tree unless they are required for current operation.
