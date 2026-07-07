@@ -4,22 +4,24 @@ Last updated: 2026-07-07.
 
 This file maps current ownership. It is not a phase history.
 
+Full Agent Autonomy Mode remains active for repo-scoped, testable, observable, CI-gated, rollbackable work.
+
 ## Core Ownership
 
-| Area | Owning paths | Verification |
-|---|---|---|
-| Engine and API | `engine/src/main.rs`, `engine/src/http_server/` | HTTP and engine tests |
-| Local readiness policy | `engine/src/trusted_local.rs` | trusted-local tests |
-| Dispatch | `dispatch_engine.rs`, `task_analyzer/`, `model_selector.rs`, `budget_manager.rs` | dispatch tests |
-| Model adapters | `engine/src/provider/` | focused adapter tests plus full stack verification |
-| CLI adapters | `engine/src/cli/` | engine tests |
-| Workflow | `workflow/`, `scheduler.rs`, `node_executor.rs`, `executor_pool.rs` | workflow and scheduler tests |
-| Storage | `storage/local_product_store/` | local store tests |
-| Target output | `target_repo_output.rs`, `target_repo_output/authority.rs` | target-output tests |
-| Dashboard | `dashboard/` | dashboard typecheck and build |
-| SDKs | `sdk/typescript/`, `sdk/python/` | SDK tests |
-| Wire contracts | `wire_contract/v1/`, `codegen/` | wire drift guard |
-| Scripts | `scripts/`, `tools/` | script-specific tests |
+| Module | Stage | Purpose | Verification |
+|---|---|---|---|
+| `engine/src/main.rs`, `engine/src/http_server/` | active | Engine and API | HTTP and engine tests |
+| `engine/src/trusted_local.rs` | active | Local readiness policy | trusted-local tests |
+| `dispatch_engine.rs`, `task_analyzer/`, `model_selector.rs`, `budget_manager.rs` | active | Dispatch | dispatch tests |
+| `engine/src/provider/` | active | Model adapters | focused adapter tests plus full stack verification |
+| `engine/src/cli/` | active | CLI adapters | engine tests |
+| `workflow/`, `scheduler.rs`, `node_executor.rs`, `executor_pool.rs` | active | Workflow | workflow and scheduler tests |
+| `storage/local_product_store/` | active | Storage | local store tests |
+| `target_repo_output.rs`, `target_repo_output/authority.rs` | active | Target output | target-output tests |
+| `dashboard/` | active | Local UI | dashboard typecheck and build |
+| `sdk/typescript/`, `sdk/python/` | active | SDKs | SDK tests |
+| `wire_contract/v1/`, `codegen/` | active | Wire contracts | `scripts/check_wire_codegen_drift.sh` |
+| `scripts/`, `tools/` | active | Scripts and pilots | script-specific tests |
 
 ## Token-Efficiency Ownership
 
