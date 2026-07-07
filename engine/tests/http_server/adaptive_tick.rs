@@ -124,7 +124,7 @@ async fn axum_dynamic_tick_recovers_failed_run_with_graph_mutation() {
 #[tokio::test]
 async fn axum_tick_with_adaptive_provider_requires_adaptive_gate_and_auth() {
     let _guard = provider_cli_env_lock().lock().await;
-    std::env::set_var("ACP_ENABLE_PROVIDER_EXECUTION", "1");
+    let _env_guard = ProviderExecutionEnvGuard::provider_execution();
     std::env::remove_var("ACP_ENABLE_ADAPTIVE_FUSION_EXECUTION");
 
     let dir = tempdir().unwrap();
@@ -216,14 +216,12 @@ async fn axum_tick_with_adaptive_provider_requires_adaptive_gate_and_auth() {
     assert_eq!(response.status(), StatusCode::BAD_REQUEST);
     let body = response_json(response).await;
     assert_eq!(body["code"], "adaptive_provider_not_available");
-    std::env::remove_var("ACP_ENABLE_PROVIDER_EXECUTION");
 }
 
 #[tokio::test]
 async fn axum_tick_with_adaptive_provider_executes_explicit_node_plan() {
     let _guard = provider_cli_env_lock().lock().await;
-    std::env::set_var("ACP_ENABLE_PROVIDER_EXECUTION", "1");
-    std::env::set_var("ACP_ENABLE_ADAPTIVE_FUSION_EXECUTION", "1");
+    let _env_guard = ProviderExecutionEnvGuard::with_fusion();
 
     let dir = tempdir().unwrap();
     let store = std::sync::Arc::new(
@@ -425,8 +423,5 @@ async fn axum_tick_with_adaptive_provider_executes_explicit_node_plan() {
     assert!(event_types.contains(&"adaptive_synthesizer_request".to_string()));
     assert!(event_types.contains(&"adaptive_synthesizer_response".to_string()));
     assert!(event_types.contains(&"adaptive_execution_completed".to_string()));
-
-    std::env::remove_var("ACP_ENABLE_PROVIDER_EXECUTION");
-    std::env::remove_var("ACP_ENABLE_ADAPTIVE_FUSION_EXECUTION");
 }
 
