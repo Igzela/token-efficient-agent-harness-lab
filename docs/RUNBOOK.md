@@ -1,4 +1,6 @@
-# Runbook
+# Agent Control Plane — Runbook
+
+Operator procedures for the local Agent Control Plane.
 
 Last updated: 2026-07-07.
 
