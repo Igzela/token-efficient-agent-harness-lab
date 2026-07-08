@@ -1691,6 +1691,38 @@ mod tests {
     }
 
     #[test]
+    fn test_update_agent_state_persists_memory_digest_metadata() {
+        let store = test_store();
+        create_test_agent(&store, "agent-1", "run-1");
+
+        let memory_digest = json!({
+            "source_refs": ["agent_state:agent-1:scratchpad_summary"],
+            "expiry_policy": "on_prune",
+            "conflict_resolution": "latest_summary_wins",
+            "summary": "progress: 50% done"
+        });
+        let updated = store
+            .update_agent_state(
+                "agent-1",
+                "run-1",
+                None,
+                None,
+                None,
+                Some(&json!({"memory_digest": memory_digest.clone()})),
+            )
+            .expect("update failed")
+            .expect("state should exist");
+
+        assert_eq!(updated.metadata.get("memory_digest"), Some(&memory_digest));
+
+        let reloaded = store
+            .get_agent_state("agent-1", "run-1")
+            .expect("get failed")
+            .expect("state should exist");
+        assert_eq!(reloaded.metadata.get("memory_digest"), Some(&memory_digest));
+    }
+
+    #[test]
     fn test_update_agent_state_nonexistent() {
         let store = test_store();
         let updated = store

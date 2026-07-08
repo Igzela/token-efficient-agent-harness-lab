@@ -4,6 +4,10 @@ use std::path::{Component, Path, PathBuf};
 use std::sync::Arc;
 use std::thread;
 
+use crate::agent_memory::{
+    build_memory_context_for_node, consolidate_memory_digest, estimate_memory_state_bytes,
+    load_memory_digest_from_agent_state, memory_digest_to_metadata_patch,
+};
 use crate::orchestration::schemas::{
     AgentState, ChildTaskProposal, DebatePosition, DebateRequest, DebateResolution, HandoffRequest,
     ReviewRequest, ReviewVerdict, MAX_DEBATE_PARTICIPANTS, MAX_DEBATE_ROUNDS,
@@ -761,6 +765,9 @@ pub struct AgentStepContext {
     pub workflow_id: String,
     pub agent_state: Option<AgentState>,
     pub mailbox_pending_count: i64,
+    pub memory_digest: Option<Value>,
+    pub memory_context: Option<Value>,
+    pub memory_state_read_bytes: i64,
     pub node_metadata: Value,
 }
 
@@ -792,6 +799,24 @@ fn agent_step_fail(message: &str, start: &std::time::Instant) -> NodeExecutionOu
         estimated_cost: None,
         latency_ms: Some(start.elapsed().as_millis() as i64),
     }
+}
+
+fn action_result_with_state_metrics(
+    mut result: Value,
+    state_read_bytes: i64,
+    state_write_bytes: i64,
+) -> String {
+    if let Some(obj) = result.as_object_mut() {
+        obj.insert(
+            "state_read_bytes".to_string(),
+            json!(state_read_bytes.max(0)),
+        );
+        obj.insert(
+            "state_write_bytes".to_string(),
+            json!(state_write_bytes.max(0)),
+        );
+    }
+    result.to_string()
 }
 
 impl AgentStepExecutor {
@@ -829,21 +854,55 @@ impl AgentStepExecutor {
         agent_id: &str,
         run_id: &str,
         _input_node_id: &str,
+        agent_state: &AgentState,
+        mailbox_pending_count: i64,
+        memory_state_read_bytes: i64,
         action: &AgentAction,
     ) -> Result<String, String> {
         match action {
-            AgentAction::Wait => Ok(r#"{"action":"wait"}"#.to_string()),
+            AgentAction::Wait => Ok(action_result_with_state_metrics(
+                json!({"action":"wait"}),
+                memory_state_read_bytes,
+                0,
+            )),
             AgentAction::Complete => {
                 self.store
                     .update_agent_state(agent_id, run_id, Some("completed"), None, None, None)
                     .map_err(|e| format!("failed to update agent state: {e}"))?;
-                Ok(r#"{"action":"complete"}"#.to_string())
+                Ok(action_result_with_state_metrics(
+                    json!({"action":"complete"}),
+                    memory_state_read_bytes,
+                    0,
+                ))
             }
             AgentAction::UpdateScratchpadSummary(text) => {
+                let digest = consolidate_memory_digest(
+                    agent_state,
+                    Some(text.as_str()),
+                    mailbox_pending_count,
+                )
+                .ok_or_else(|| "failed to consolidate memory digest".to_string())?;
+                let safe_summary = digest
+                    .get("summary")
+                    .and_then(Value::as_str)
+                    .unwrap_or("")
+                    .to_string();
+                let metadata_patch = memory_digest_to_metadata_patch(&digest);
                 self.store
-                    .update_agent_state(agent_id, run_id, None, Some(text), None, None)
+                    .update_agent_state(
+                        agent_id,
+                        run_id,
+                        None,
+                        Some(&safe_summary),
+                        None,
+                        Some(&metadata_patch),
+                    )
                     .map_err(|e| format!("failed to update scratchpad: {e}"))?;
-                Ok(json!({"action":"update_scratchpad"}).to_string())
+                Ok(action_result_with_state_metrics(
+                    json!({"action":"update_scratchpad"}),
+                    memory_state_read_bytes,
+                    estimate_memory_state_bytes(Some(&digest), None),
+                ))
             }
             AgentAction::ReadMailbox => {
                 let msgs = self
@@ -861,7 +920,11 @@ impl AgentStepExecutor {
                         })
                     })
                     .collect();
-                Ok(json!({"action":"read_mailbox","mailbox_count": summaries.len(),"messages": summaries}).to_string())
+                Ok(action_result_with_state_metrics(
+                    json!({"action":"read_mailbox","mailbox_count": summaries.len(),"messages": summaries}),
+                    memory_state_read_bytes,
+                    0,
+                ))
             }
             AgentAction::AckMessage(message_id) => {
                 let acked = self
@@ -869,7 +932,11 @@ impl AgentStepExecutor {
                     .ack_message_for_agent(message_id, agent_id, run_id)
                     .map_err(|e| format!("failed to ack message: {e}"))?;
                 if acked.is_some() {
-                    Ok(json!({"action":"ack_message","message_id": message_id}).to_string())
+                    Ok(action_result_with_state_metrics(
+                        json!({"action":"ack_message","message_id": message_id}),
+                        memory_state_read_bytes,
+                        0,
+                    ))
                 } else {
                     Err(format!("message {message_id} not found or already acked"))
                 }
@@ -882,7 +949,11 @@ impl AgentStepExecutor {
                     &format!("agent_state/{agent_id}/{run_id}"),
                     &json!({"redaction_status": redact_status, "char_count": text.len()}),
                 );
-                Ok(json!({"action":"emit_note","redaction_status": redact_status}).to_string())
+                Ok(action_result_with_state_metrics(
+                    json!({"action":"emit_note","redaction_status": redact_status}),
+                    memory_state_read_bytes,
+                    0,
+                ))
             }
             AgentAction::RecordObservation(text) => {
                 let (_safe_obs, redact_status) = sanitize_text_field(text);
@@ -892,10 +963,11 @@ impl AgentStepExecutor {
                     &format!("agent_state/{agent_id}/{run_id}"),
                     &json!({"redaction_status": redact_status, "char_count": text.len()}),
                 );
-                Ok(
-                    json!({"action":"record_observation","redaction_status": redact_status})
-                        .to_string(),
-                )
+                Ok(action_result_with_state_metrics(
+                    json!({"action":"record_observation","redaction_status": redact_status}),
+                    memory_state_read_bytes,
+                    0,
+                ))
             }
             // ── AR-3: Bounded planning, child task proposals, and handoff ──
             AgentAction::ProposeChildTask(proposal) => {
@@ -1698,13 +1770,21 @@ impl NodeExecutor for AgentStepExecutor {
                 Err(e) => return agent_step_fail(&format!("failed to count mailbox: {e}"), &start),
             };
 
+        let memory_digest = load_memory_digest_from_agent_state(&agent_state);
+        let memory_context = build_memory_context_for_node(&agent_state, 1200);
+        let memory_state_read_bytes =
+            estimate_memory_state_bytes(memory_digest.as_ref(), memory_context.as_ref());
+
         let context = AgentStepContext {
             agent_id: agent_id.clone(),
             run_id: input.run_id.clone(),
             node_id: input.node_id.clone(),
             workflow_id: input.workflow_id.clone(),
-            agent_state: Some(agent_state),
+            agent_state: Some(agent_state.clone()),
             mailbox_pending_count: mailbox_count,
+            memory_digest,
+            memory_context,
+            memory_state_read_bytes,
             node_metadata: input.node_metadata.clone(),
         };
 
@@ -1736,7 +1816,15 @@ impl NodeExecutor for AgentStepExecutor {
             &descriptor,
         );
 
-        match self.execute_action(&agent_id, &input.run_id, &input.node_id, &action) {
+        match self.execute_action(
+            &agent_id,
+            &input.run_id,
+            &input.node_id,
+            &agent_state,
+            mailbox_count,
+            memory_state_read_bytes,
+            &action,
+        ) {
             Ok(result) => {
                 self.append_agent_step_audit_best_effort(
                     "agent_step.completed",
@@ -2109,6 +2197,96 @@ mod tests {
             .expect("get state")
             .unwrap();
         assert_eq!(state.scratchpad_summary, Some("progress: 50%".to_string()));
+    }
+
+    #[test]
+    fn test_agent_step_observe_attaches_bounded_memory_context() {
+        let _lock = AGENT_ENV_LOCK.lock().unwrap();
+        let store = Arc::new(ar2_store());
+        create_test_agent(&store, "agent-mem", "run-ar2-mem");
+        store
+            .update_agent_state(
+                "agent-mem",
+                "run-ar2-mem",
+                None,
+                None,
+                None,
+                Some(&json!({
+                    "memory_digest": {
+                        "source_refs": [
+                            "agent_state:agent-mem:scratchpad_summary",
+                            "/home/igzela/private/repo.rs"
+                        ],
+                        "expiry_policy": "forever",
+                        "conflict_resolution": "append_raw",
+                        "summary": "bounded progress with sk-proj-secret-token"
+                    }
+                })),
+            )
+            .expect("seed memory metadata");
+        std::env::set_var("ACP_ENABLE_AGENT_RUNTIME", "1");
+        std::env::remove_var("ACP_AGENT_RUNTIME_KILL_SWITCH");
+
+        let decision: AgentDecisionFn = Box::new(|context| {
+            let digest = context.memory_digest.as_ref().expect("memory digest");
+            assert_eq!(
+                digest["source_refs"],
+                json!(["agent_state:agent-mem:scratchpad_summary"])
+            );
+            assert!(!digest.to_string().contains("/home/igzela"));
+            assert!(!digest.to_string().contains("sk-proj-secret-token"));
+
+            let memory_context = context.memory_context.as_ref().expect("memory context");
+            assert_eq!(memory_context["injection_surface"], "node_metadata_only");
+            assert!(memory_context["included_tokens"].as_i64().unwrap() > 0);
+            assert!(context.memory_state_read_bytes > 0);
+            Ok(AgentAction::Wait)
+        });
+        let executor = AgentStepExecutor::new(store, decision);
+        let input = agent_step_input("agent-mem", "run-ar2-mem");
+
+        let output = executor.execute_node(&input);
+        assert_eq!(output.status, "completed");
+    }
+
+    #[test]
+    fn test_agent_step_scratchpad_update_synchronizes_memory_digest() {
+        let _lock = AGENT_ENV_LOCK.lock().unwrap();
+        let store = Arc::new(ar2_store());
+        create_test_agent(&store, "agent-sync", "run-ar2-sync");
+        std::env::set_var("ACP_ENABLE_AGENT_RUNTIME", "1");
+        std::env::remove_var("ACP_AGENT_RUNTIME_KILL_SWITCH");
+
+        let executor = AgentStepExecutor::new(
+            store.clone(),
+            stub_decision(AgentAction::UpdateScratchpadSummary(
+                "progress from /home/igzela/private.txt using sk-test-secret".to_string(),
+            )),
+        );
+        let input = agent_step_input("agent-sync", "run-ar2-sync");
+
+        let output = executor.execute_node(&input);
+        assert_eq!(output.status, "completed");
+        let result: Value = serde_json::from_str(&output.output.unwrap()).unwrap();
+        assert!(result["state_write_bytes"].as_i64().unwrap() > 0);
+
+        let state = store
+            .get_agent_state("agent-sync", "run-ar2-sync")
+            .expect("get state")
+            .unwrap();
+        assert_eq!(
+            state.scratchpad_summary,
+            Some("progress from [redacted-path] using ***".to_string())
+        );
+        let digest = state
+            .metadata
+            .get("memory_digest")
+            .expect("memory digest should persist");
+        assert_eq!(digest["summary"], "progress from [redacted-path] using ***");
+        assert_eq!(
+            digest["source_refs"],
+            json!(["agent_state:agent-sync:scratchpad_summary"])
+        );
     }
 
     #[test]

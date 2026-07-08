@@ -15,6 +15,7 @@ Full Agent Autonomy Mode remains active for repo-scoped, testable, observable, C
 | `dispatch_engine.rs`, `task_analyzer/`, `model_selector.rs`, `budget_manager.rs` | active | Dispatch | dispatch tests |
 | `engine/src/provider/` | active | Model adapters | focused adapter tests plus full stack verification |
 | `engine/src/cli/` | active | CLI adapters | engine tests |
+| `engine/src/agent_memory.rs` | active | Bounded AgentState memory policy helpers; no storage/runtime ownership | agent_memory unit tests plus agent-step/context-injection/operator-evidence tests |
 | `workflow/`, `scheduler.rs`, `node_executor.rs`, `executor_pool.rs` | active | Workflow | workflow and scheduler tests |
 | `storage/local_product_store/` | active | Storage | local store tests |
 | `target_repo_output.rs`, `target_repo_output/authority.rs` | active | Target output | target-output tests |

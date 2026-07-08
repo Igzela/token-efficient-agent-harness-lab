@@ -208,6 +208,59 @@ mod tests {
     }
 
     #[test]
+    fn test_memory_digest_layer_validates_and_prunes_under_budget() {
+        let layers = ContextLayers {
+            memory_digest: MemoryDigest {
+                source_refs: vec!["agent_state:agent-1:scratchpad_summary".to_string()],
+                expiry_policy: "on_prune".to_string(),
+                conflict_resolution: "latest_summary_wins".to_string(),
+                summary: Some("bounded memory summary".to_string()),
+            },
+            pack_prune_policy: "drop_memory_digest_first".to_string(),
+            ..ContextLayers::default()
+        };
+
+        let mut context_layers = layers.to_value().as_object().unwrap().clone();
+        let mut validation_input = HashMap::new();
+        validation_input.insert("invariants".to_string(), json!({}));
+        validation_input.insert("task_pack".to_string(), json!({}));
+        validation_input.insert("dynamic_refs".to_string(), json!([]));
+        validation_input.insert(
+            "memory_digest".to_string(),
+            context_layers.get("memory_digest").unwrap().clone(),
+        );
+        validation_input.insert("recent_evidence".to_string(), json!([]));
+        assert!(validate_context_layers(&validation_input).is_empty());
+
+        let mut pack = HashMap::new();
+        pack.insert(
+            "pack_prune_policy".to_string(),
+            json!("drop_memory_digest_first"),
+        );
+        pack.insert(
+            "context_layers".to_string(),
+            Value::Object(context_layers.clone()),
+        );
+
+        let (pruned, action) = apply_prune_policy(&pack, 2000, 1000).unwrap();
+        assert_eq!(action, "dropped_memory_digest");
+        context_layers = pruned
+            .get("context_layers")
+            .unwrap()
+            .as_object()
+            .unwrap()
+            .clone();
+        assert_eq!(
+            context_layers.get("memory_digest").unwrap(),
+            &json!({
+                "source_refs": [],
+                "expiry_policy": "on_prune",
+                "conflict_resolution": "drop"
+            })
+        );
+    }
+
+    #[test]
     fn test_context_layers_missing_memory_digest_field() {
         let mut d = HashMap::new();
         d.insert("invariants".to_string(), json!({}));

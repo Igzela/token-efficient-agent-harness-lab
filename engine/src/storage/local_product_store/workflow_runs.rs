@@ -2,6 +2,7 @@ use rusqlite::{params, Row};
 use serde_json::{json, Value};
 
 use super::{append_audit_locked, collect_values, DatabaseConnection, LocalProductStore};
+use crate::agent_memory::build_memory_context_for_node;
 use crate::workflow::context_pack::{
     assemble_context_injection_with_bridge, ContextAssemblyConfig, ContextSource,
 };
@@ -1738,8 +1739,55 @@ impl LocalProductStore {
             })?,
         };
 
-        Ok(assemble_context_injection_with_bridge(
-            node_id, &sources, &mappings, &config,
+        let memory_context =
+            self.memory_context_for_agent_step_node(run_id, node_id, config.max_context_tokens)?;
+        let assembled =
+            assemble_context_injection_with_bridge(node_id, &sources, &mappings, &config);
+        Ok(merge_memory_context_injection(
+            node_id,
+            assembled,
+            memory_context,
+            &config,
+        ))
+    }
+
+    fn memory_context_for_agent_step_node(
+        &self,
+        run_id: &str,
+        node_id: &str,
+        max_context_tokens: usize,
+    ) -> Result<Option<Value>, String> {
+        let Some(run) = self.get_workflow_run(run_id)? else {
+            return Ok(None);
+        };
+        let Some(node) = run
+            .get("nodes")
+            .and_then(Value::as_array)
+            .and_then(|nodes| {
+                nodes
+                    .iter()
+                    .find(|node| node.get("node_id") == Some(&json!(node_id)))
+            })
+        else {
+            return Ok(None);
+        };
+        if node.get("task_type").and_then(Value::as_str) != Some("agent_step") {
+            return Ok(None);
+        }
+        let Some(agent_id) = node
+            .get("agent_id")
+            .and_then(Value::as_str)
+            .or_else(|| node.get("assigned_agent_id").and_then(Value::as_str))
+        else {
+            return Ok(None);
+        };
+        let Some(agent_state) = self.get_agent_state(agent_id, run_id)? else {
+            return Ok(None);
+        };
+
+        Ok(build_memory_context_for_node(
+            &agent_state,
+            max_context_tokens,
         ))
     }
 
@@ -3224,6 +3272,50 @@ fn completed_node_output(node_json: &Value) -> Option<Value> {
         .get("output_ref")
         .filter(|value| !value.is_null())
         .cloned()
+}
+
+fn merge_memory_context_injection(
+    node_id: &str,
+    assembled: Option<Value>,
+    memory_context: Option<Value>,
+    config: &ContextAssemblyConfig,
+) -> Option<Value> {
+    let memory_context = match memory_context {
+        Some(context) => context,
+        None => return assembled,
+    };
+
+    let mut injection = assembled.unwrap_or_else(|| {
+        json!({
+            "schema_version": "context_injection.v1",
+            "target_node_id": node_id,
+            "source": "agent_state_memory_digest",
+            "injection_surface": "node_metadata_only",
+            "max_context_tokens": config.max_context_tokens,
+            "total_estimated_tokens": memory_context
+                .get("estimated_tokens")
+                .and_then(Value::as_i64)
+                .unwrap_or(0),
+            "included_source_count": 0,
+            "truncated": memory_context
+                .get("truncated")
+                .and_then(Value::as_bool)
+                .unwrap_or(false),
+            "sources": [],
+        })
+    });
+
+    if let Some(obj) = injection.as_object_mut() {
+        obj.insert("memory_context".to_string(), memory_context);
+        if obj.get("source").and_then(Value::as_str) == Some("completed_predecessor_node_results") {
+            obj.insert(
+                "source".to_string(),
+                json!("completed_predecessor_node_results_plus_agent_memory"),
+            );
+        }
+    }
+
+    Some(injection)
 }
 
 fn workflow_run_approvals_locked(

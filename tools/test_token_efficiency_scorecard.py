@@ -96,6 +96,24 @@ class TokenEfficiencyScorecardTests(unittest.TestCase):
         self.assertEqual(scorecard["derived_metrics"]["tokens_per_passing_run"], 13800)
         self.assertEqual(len(scorecard["steps"]), 2)
 
+    def test_memory_digest_state_bytes_are_preserved(self) -> None:
+        summary = valid_summary()
+        summary["state_strategy"] = "memory_digest"
+        summary["steps"][0]["operation_kind"] = "state_read"
+        summary["steps"][0]["state_read_bytes"] = 321
+        summary["steps"][0]["state_write_bytes"] = 0
+        summary["steps"][1]["operation_kind"] = "state_write"
+        summary["steps"][1]["state_read_bytes"] = 0
+        summary["steps"][1]["state_write_bytes"] = 654
+
+        scorecard = MODULE.import_scorecard(summary)
+
+        self.assertEqual(scorecard["state_strategy"], "memory_digest")
+        self.assertEqual(scorecard["steps"][0]["state_read_bytes"], 321)
+        self.assertEqual(scorecard["steps"][0]["state_write_bytes"], 0)
+        self.assertEqual(scorecard["steps"][1]["state_read_bytes"], 0)
+        self.assertEqual(scorecard["steps"][1]["state_write_bytes"], 654)
+
     def test_rejects_redundant_tool_count_above_total(self) -> None:
         summary = valid_summary()
         summary["redundant_tool_call_count"] = 19
