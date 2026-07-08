@@ -17,7 +17,12 @@ fn make_store() -> (LocalProductStore, tempfile::TempDir) {
     (store, dir)
 }
 
-fn local_runner_artifact(run_id: &str, mode: &str, state_strategy: &str, total_tokens: i64) -> Value {
+fn local_runner_artifact(
+    run_id: &str,
+    mode: &str,
+    state_strategy: &str,
+    total_tokens: i64,
+) -> Value {
     let input_tokens = total_tokens - 20;
     let output_tokens = 20;
     let repeated_context_tokens = if mode == "stateful_store" { 8 } else { 120 };
@@ -119,7 +124,10 @@ fn local_runner_artifact_persists_as_native_scorecard_artifact() {
         .native_scorecard_artifacts_by_run("real-runner-stateful_store", 10)
         .unwrap();
     assert_eq!(by_run.len(), 1);
-    assert_eq!(by_run[0]["scorecard"]["runtime_version"], "provider-gated-real-runner.v1");
+    assert_eq!(
+        by_run[0]["scorecard"]["runtime_version"],
+        "provider-gated-real-runner.v1"
+    );
 }
 
 #[tokio::test]
@@ -153,6 +161,9 @@ async fn local_runner_artifact_is_visible_in_operator_evidence_metadata() {
     assert_eq!(evidence_body["scorecard_artifact_count"], 1);
     assert_eq!(evidence_body["scorecards"][0]["read_only"], true);
     assert_eq!(evidence_body["scorecards"][0]["runtime_kind"], "native_harness");
-    assert_eq!(evidence_body["scorecards"][0]["derived_metrics"]["total_tokens"], 320);
+    assert_eq!(
+        evidence_body["scorecards"][0]["derived_metrics"]["total_tokens"],
+        320
+    );
     assert!(evidence_body["scorecards"][0].get("steps").is_none());
 }
