@@ -75,7 +75,7 @@ class ValidateLocalRunnerTests(unittest.TestCase):
                 self.assertEqual(artifact["target_repository_writes"], "disabled")
                 self.assertEqual(len(artifact["content_sha256"]), 64)
                 self.assertTrue(artifact["artifact_id"].startswith("scorecard-"))
-                self.assertEqual(artifact["scorecard"]["redaction_status"], "not_needed")
+                self.assertEqual(artifact["scorecard"]["redaction_status"], "redacted")
 
     def test_build_scorecard_artifact_is_deterministic_for_same_scorecard(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -89,6 +89,7 @@ class ValidateLocalRunnerTests(unittest.TestCase):
             self.assertEqual(first["artifact_id"], second["artifact_id"])
             self.assertEqual(first["content_sha256"], second["content_sha256"])
             self.assertEqual(first["scorecard"]["mode"], "stateful_store")
+            self.assertEqual(first["scorecard"]["redaction_status"], "redacted")
 
     def test_validate_output_rejects_tampered_comparison(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
