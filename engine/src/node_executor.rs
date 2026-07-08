@@ -321,6 +321,171 @@ impl NodeExecutor for FailNodeExecutor {
     }
 }
 
+/// Executor that runs the local runner validation deterministically.
+///
+/// Runs the stateful-vs-stateless experiment with stub provider,
+/// validates stateful < stateless tokens, and emits a bounded summary
+/// (validation_status, token_totals, run_ids). No raw prompts, outputs,
+/// transcripts, or scorecard steps are persisted in the node output.
+///
+/// After the node completes, the workflow tick path automatically records
+/// a native_scorecard_artifact via the existing tick-level automatic
+/// scorecard recording path (see workflow_runs.rs tick function).
+#[derive(Clone)]
+pub struct LocalRunnerValidationExecutor;
+
+impl LocalRunnerValidationExecutor {
+    fn run_validation(
+        input: &NodeExecutionInput,
+    ) -> (NodeExecutionOutput, Option<serde_json::Value>) {
+        let iterations = input
+            .node_metadata
+            .get("iterations")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(10)
+            .clamp(2, 50) as usize;
+        let max_calls = input
+            .node_metadata
+            .get("max_calls")
+            .and_then(|v| v.as_u64())
+            .unwrap_or((iterations * 2) as u64)
+            .clamp(iterations as u64 * 2, 200) as usize;
+
+        let config = match crate::local_runner_provider::build_config(
+            crate::local_runner_provider::ProviderKind::Stub,
+            iterations,
+            max_calls,
+            120000,
+            30.0,
+            0.25,
+            1.0,
+            0.94,
+        ) {
+            Ok(c) => c,
+            Err(e) => {
+                return (
+                    NodeExecutionOutput {
+                        status: "failed".to_string(),
+                        executor_type: "local_runner_validation".to_string(),
+                        output: None,
+                        error_domain: Some("config_error".to_string()),
+                        error_message: Some(format!("config error: {e}")),
+                        input_tokens: None,
+                        output_tokens: None,
+                        estimated_cost: None,
+                        latency_ms: None,
+                    },
+                    None,
+                );
+            }
+        };
+
+        let provider = match crate::local_runner_provider::build_provider(&config, None) {
+            Ok(p) => p,
+            Err(e) => {
+                return (
+                    NodeExecutionOutput {
+                        status: "failed".to_string(),
+                        executor_type: "local_runner_validation".to_string(),
+                        output: None,
+                        error_domain: Some("provider_error".to_string()),
+                        error_message: Some(format!("provider error: {e}")),
+                        input_tokens: None,
+                        output_tokens: None,
+                        estimated_cost: None,
+                        latency_ms: None,
+                    },
+                    None,
+                );
+            }
+        };
+
+        let (stateless, stateful) = match crate::local_runner_provider::run_pair(&config, &provider)
+        {
+            Ok(pair) => pair,
+            Err(e) => {
+                return (
+                    NodeExecutionOutput {
+                        status: "failed".to_string(),
+                        executor_type: "local_runner_validation".to_string(),
+                        output: None,
+                        error_domain: Some("run_error".to_string()),
+                        error_message: Some(format!("run error: {e}")),
+                        input_tokens: None,
+                        output_tokens: None,
+                        estimated_cost: None,
+                        latency_ms: None,
+                    },
+                    None,
+                );
+            }
+        };
+
+        let sl = crate::local_scorecard_import::validate_scorecard_for_bounded_export(&stateless)
+            .unwrap_or(false);
+        let sf = crate::local_scorecard_import::validate_scorecard_for_bounded_export(&stateful)
+            .unwrap_or(false);
+        if !sl || !sf {
+            return (
+                NodeExecutionOutput {
+                    status: "failed".to_string(),
+                    executor_type: "local_runner_validation".to_string(),
+                    output: None,
+                    error_domain: Some("validation_error".to_string()),
+                    error_message: Some("scorecard validation failed".to_string()),
+                    input_tokens: None,
+                    output_tokens: None,
+                    estimated_cost: None,
+                    latency_ms: None,
+                },
+                None,
+            );
+        }
+
+        let stateless_tokens = stateless["input_token_total"].as_i64().unwrap_or(0)
+            + stateless["output_token_total"].as_i64().unwrap_or(0);
+        let stateful_tokens = stateful["input_token_total"].as_i64().unwrap_or(0)
+            + stateful["output_token_total"].as_i64().unwrap_or(0);
+
+        let summary = serde_json::json!({
+            "validation_status": if stateful_tokens < stateless_tokens { "pass" } else { "fail" },
+            "stateless_total_tokens": stateless_tokens,
+            "stateful_total_tokens": stateful_tokens,
+            "token_reduction_ratio": if stateless_tokens > 0 {
+                ((stateless_tokens - stateful_tokens) as f64 / stateless_tokens as f64 * 10000.0).round() / 10000.0
+            } else { 0.0 },
+            "stateless_run_id": stateless["adapter_run_id"].as_str().unwrap_or(""),
+            "stateful_run_id": stateful["adapter_run_id"].as_str().unwrap_or(""),
+            "scenario_id": stateless["scenario_id"].as_str().unwrap_or(""),
+        });
+
+        let output = NodeExecutionOutput {
+            status: "completed".to_string(),
+            executor_type: "local_runner_validation".to_string(),
+            output: Some(serde_json::to_string(&summary).unwrap_or_default()),
+            error_domain: None,
+            error_message: None,
+            input_tokens: Some(stateless_tokens + stateful_tokens),
+            output_tokens: Some(0),
+            estimated_cost: Some(0.0),
+            latency_ms: Some(iterations as i64 * 5),
+        };
+
+        (output, Some(summary))
+    }
+}
+
+impl NodeExecutor for LocalRunnerValidationExecutor {
+    fn executor_type_name(&self) -> &str {
+        "local_runner_validation"
+    }
+
+    fn execute_node(&self, input: &NodeExecutionInput) -> NodeExecutionOutput {
+        let (output, _summary) = Self::run_validation(input);
+        output
+    }
+}
+
 /// Command executor with timeout, allowlist, cwd, and env policy.
 pub struct CommandNodeExecutor {
     pub timeout_ms: u64,

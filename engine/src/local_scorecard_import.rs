@@ -126,6 +126,29 @@ fn import_one(
     }
 }
 
+/// Validate that a scorecard dict has the required fields for bounded export.
+/// This is a lightweight check used by the workflow executor to verify output
+/// before recording bounded summary.
+pub fn validate_scorecard_for_bounded_export(scorecard: &Value) -> Result<bool, String> {
+    let required = [
+        "adapter_run_id",
+        "runtime_kind",
+        "scenario_id",
+        "mode",
+        "status",
+        "input_token_total",
+        "output_token_total",
+        "step_count",
+        "redaction_status",
+    ];
+    for key in &required {
+        if scorecard.get(*key).is_none() {
+            return Err(format!("missing required field: {key}"));
+        }
+    }
+    Ok(true)
+}
+
 #[cfg(test)]
 mod tests {
     use super::import_native_scorecard_artifacts;

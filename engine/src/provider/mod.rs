@@ -7,6 +7,7 @@ pub mod config;
 pub mod cost_gate;
 pub mod credential;
 pub mod executor;
+pub mod fake;
 pub mod openai;
 pub mod redaction;
 pub mod retry;
