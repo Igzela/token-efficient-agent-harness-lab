@@ -1,4 +1,4 @@
-use crate::node_executor::{NodeExecutor, NoopNodeExecutor};
+use crate::node_executor::{LocalRunnerValidationExecutor, NodeExecutor, NoopNodeExecutor};
 use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
 
@@ -289,6 +289,24 @@ pub fn register_default_executors(pool: &ExecutorPool, cli_enabled: bool) {
         },
         status: ExecutorStatus {
             concurrency_limit: 100,
+            ..Default::default()
+        },
+        cost_profile: CostProfile::default(),
+        metrics: ExecutorMetrics::default(),
+    });
+
+    pool.register(ExecutorEntry {
+        executor_type: "local_runner_validation".to_string(),
+        executor: Arc::new(LocalRunnerValidationExecutor),
+        capabilities: ExecutorCapabilities {
+            supported_task_types: vec!["local_runner_validation".to_string()],
+            supported_task_domains: vec!["scorecard".to_string()],
+            requires_auth: false,
+            requires_cli: false,
+            max_timeout_ms: 60_000,
+        },
+        status: ExecutorStatus {
+            concurrency_limit: 2,
             ..Default::default()
         },
         cost_profile: CostProfile::default(),

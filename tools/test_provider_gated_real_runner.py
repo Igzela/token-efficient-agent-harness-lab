@@ -41,6 +41,10 @@ def args(**overrides: Any) -> argparse.Namespace:
         "run_cost_cap_usd": 0.25,
         "daily_cost_cap_usd": 1.0,
         "pass_threshold": 0.94,
+        "output_dir": None,
+        "compare": False,
+        "output": None,
+        "compact": False,
     }
     values.update(overrides)
     return argparse.Namespace(**values)
@@ -85,15 +89,16 @@ class ProviderGatedRealRunnerTests(unittest.TestCase):
         self.assertEqual(comparison["rows"][1]["mode"], "stateful_store")
         self.assertGreater(comparison["rows"][1]["token_reduction_ratio"], 0.0)
 
-    def test_live_and_non_stub_provider_are_deferred(self) -> None:
-        with self.assertRaisesRegex(MODULE.ProviderGatedRunnerError, MODULE.LIVE_DEFERRED_MESSAGE):
-            MODULE.build_config(args(provider="openai_compatible"), env={})
+    def test_live_and_non_stub_provider_resolves_rust_binary(self) -> None:
+        """Non-stub/live provider delegates to the Rust local-runner-exec binary."""
+        config = MODULE.build_config(args(provider="openai_compatible"), env={})
+        self.assertTrue(config.live or config.provider_kind != "stub")
 
-        with self.assertRaisesRegex(MODULE.ProviderGatedRunnerError, MODULE.LIVE_DEFERRED_MESSAGE):
-            MODULE.build_config(args(provider="openai_compatible", live=True), env={})
+        config = MODULE.build_config(args(provider="openai_compatible", live=True), env={})
+        self.assertTrue(config.live)
 
-        with self.assertRaisesRegex(MODULE.ProviderGatedRunnerError, MODULE.LIVE_DEFERRED_MESSAGE):
-            MODULE.build_config(args(live=True), env={})
+        config = MODULE.build_config(args(live=True), env={})
+        self.assertTrue(config.live)
 
     def test_limits_fail_closed(self) -> None:
         with self.assertRaisesRegex(MODULE.ProviderGatedRunnerError, "iterations"):

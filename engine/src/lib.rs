@@ -21,6 +21,7 @@ pub mod feedback;
 pub(crate) mod harness;
 pub mod http_server;
 pub mod infrastructure;
+pub mod local_runner_provider;
 pub mod local_scorecard_import;
 pub mod model_selector;
 pub mod node_executor;

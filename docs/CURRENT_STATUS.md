@@ -28,12 +28,13 @@ This repo is a local/small-team self-hosted agent workflow control plane. Rust `
 | Agent Autonomous Maintenance Mode | Active |
 | Full Agent Autonomy Mode | Active for repo-scoped, testable, observable, CI-gated, rollbackable work |
 | Local runner operations | Active: validate, export, import, and inspect bounded scorecard artifacts locally |
-| Runner integration | Storage/API/operator evidence complete; workflow scheduling of the Python validation/import step remains deferred |
+| Runner integration | Storage/API/operator evidence complete; workflow scheduling of the Python validation/import step is implemented via `LocalRunnerValidationExecutor` in stub mode |
 
 ## Current Gaps
 
 - The local runner can export `native_scorecard_artifact.v1` files and import them into `LocalProductStore`; scorecard APIs and operator evidence expose bounded metadata and derived metrics.
-- The existing workflow tick path auto-records native scorecards for terminal workflow runs. Scheduling the Python local-runner validation/import as a workflow node remains deferred because the current command-node path has no bounded artifact-import handoff without adding new executor/scheduler semantics.
+- The `LocalRunnerValidationExecutor` (`node_executor.rs`) executes stub-mode stateful-vs-stateless runs deterministically as a workflow node, validated in 8 integration tests.
+- The live provider adapter (`local_runner_provider.rs`, `FakeProvider`) delegates to a Rust CLI binary (`local-runner-exec`) for non-stub modes, with Python runner integration via `scripts/provider_gated_real_runner.py`.
 - Remote adapter support for this runner is deferred to a later focused change.
 - Keep the existing runtime/module ownership boundaries unless a later active-doc decision changes them.
 

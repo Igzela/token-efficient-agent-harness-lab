@@ -16,7 +16,8 @@ SOURCE_REF_KEY = "raw" + "_trace_artifact_id"
 SCENARIO_ID = "provider_gated_remember_dont_reread_runner"
 RUNTIME_VERSION = "provider-gated-real-runner.v1"
 MODES = {"stateless_reread", "stateful_store"}
-LIVE_DEFERRED_MESSAGE = "live adapter is deferred; this PR only enables local stub runner"
+_LOCAL_RUNNER_EXEC = ROOT / "target" / "debug" / "local-runner-exec"
+_LOCAL_RUNNER_EXEC_RELEASE = ROOT / "target" / "release" / "local-runner-exec"
 
 
 def _load(name: str, path: Path):
@@ -90,10 +91,17 @@ def _render(value: Any, compact: bool) -> str:
     return json.dumps(value, sort_keys=True, separators=(",", ":") if compact else None, indent=None if compact else 2)
 
 
+def _find_rust_binary() -> Path:
+    for candidate in (_LOCAL_RUNNER_EXEC, _LOCAL_RUNNER_EXEC_RELEASE):
+        if candidate.is_file():
+            return candidate
+    raise ProviderGatedRunnerError("local-runner-exec binary not found; run cargo build -p engine --bin local-runner-exec first")
+
+
 def build_config(args: argparse.Namespace, env: dict[str, str] | None = None) -> RunnerConfig:
     del env
     if args.live or args.provider != "stub":
-        raise ProviderGatedRunnerError(LIVE_DEFERRED_MESSAGE)
+        _find_rust_binary()
 
     if not 2 <= args.iterations <= 50:
         raise ProviderGatedRunnerError("iterations must be between 2 and 50")
@@ -114,9 +122,9 @@ def build_config(args: argparse.Namespace, env: dict[str, str] | None = None) ->
         raise ProviderGatedRunnerError("run cost cap cannot exceed daily cost cap")
 
     return RunnerConfig(
-        live=False,
+        live=args.live,
         provider_kind=args.provider,
-        model="stub-deterministic",
+        model="stub-deterministic" if args.provider == "stub" and not args.live else args.provider,
         limits=RunnerLimits(
             iterations=args.iterations,
             max_calls=args.max_calls,
@@ -145,9 +153,46 @@ class StubProvider:
         )
 
 
+def _run_via_rust_binary(config: RunnerConfig) -> tuple[dict[str, Any], dict[str, Any]]:
+    binary = _find_rust_binary()
+    provider_kind = "live" if config.live else config.provider_kind
+    with tempfile.TemporaryDirectory(prefix="acp-rust-runner-") as tmp:
+        output_dir = Path(tmp) / "output"
+        cmd = [
+            str(binary),
+            "--provider", provider_kind,
+            "--iterations", str(config.limits.iterations),
+            "--max-calls", str(config.limits.max_calls),
+            "--max-tokens", str(config.limits.max_tokens),
+            "--timeout-seconds", str(config.limits.timeout_seconds),
+            "--run-cost-cap-usd", str(config.limits.run_cost_cap_usd),
+            "--daily-cost-cap-usd", str(config.limits.daily_cost_cap_usd),
+            "--pass-threshold", str(config.limits.pass_threshold),
+            "--output-dir", str(output_dir),
+        ]
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
+        if result.returncode != 0:
+            raise ProviderGatedRunnerError(f"Rust runner failed: {result.stderr.strip() or result.stdout.strip()}")
+        stateless_path = output_dir / "stateless_reread.scorecard.json"
+        stateful_path = output_dir / "stateful_store.scorecard.json"
+        if not stateless_path.is_file() or not stateful_path.is_file():
+            raise ProviderGatedRunnerError("Rust runner did not produce expected scorecard files")
+        stateless = json.loads(stateless_path.read_text(encoding="utf-8"))
+        stateful = json.loads(stateful_path.read_text(encoding="utf-8"))
+        return stateless, stateful
+
+
+class RustBinaryRunner:
+    """Calls the Rust local-runner-exec binary to run experiments with provider support."""
+
+    def complete(self, prompt: str, *, iteration: int, mode: str, timeout_seconds: float) -> ProviderResult:
+        raise ProviderGatedRunnerError("RustBinaryRunner runs the full experiment, not individual calls")
+
+
 def make_provider(config: RunnerConfig) -> ProviderClient:
     if config.live or config.provider_kind != "stub":
-        raise ProviderGatedRunnerError(LIVE_DEFERRED_MESSAGE)
+        # Live/fake mode uses the Rust binary
+        pass  # The binary handles everything; this is a sentinel
     return StubProvider()
 
 
@@ -293,6 +338,11 @@ def run_mode(mode: str, config: RunnerConfig, provider: ProviderClient) -> dict[
 
 
 def build_pair(config: RunnerConfig, provider: ProviderClient | None = None) -> tuple[dict[str, Any], dict[str, Any]]:
+    if config.live or config.provider_kind != "stub":
+        stateless, stateful = _run_via_rust_binary(config)
+        s = VALIDATOR.import_scorecard(stateless)
+        f = VALIDATOR.import_scorecard(stateful)
+        return s, f
     client = provider or make_provider(config)
     stateless = VALIDATOR.import_scorecard(run_mode("stateless_reread", config, client))
     stateful = VALIDATOR.import_scorecard(run_mode("stateful_store", config, client))
