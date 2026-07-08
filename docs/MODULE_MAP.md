@@ -14,7 +14,7 @@ Full Agent Autonomy Mode remains active for repo-scoped, testable, observable, C
 | `engine/src/trusted_local.rs` | active | Local readiness policy | trusted-local tests |
 | `dispatch_engine.rs`, `task_analyzer/`, `model_selector.rs`, `budget_manager.rs` | active | Dispatch | dispatch tests |
 | `engine/src/provider/`, `engine/src/provider/fake.rs` | active | Model adapters + FakeProvider for testing | focused adapter tests plus full stack verification |
-| `engine/src/local_runner_provider.rs`, `engine/src/bin/local_runner_exec.rs` | active | Provider-backed stateful-vs-stateless runner | local_runner_provider unit tests, local-runner-exec binary |
+| `engine/src/local_runner_provider.rs`, `engine/src/bin/local_runner_exec.rs` | active | Provider-backed stateful-vs-stateless runner (Stub/Fake/Live); Live is a gated ready path requiring `ACP_ENABLE_PROVIDER_EXECUTION=1` | local_runner_provider unit tests, local-runner-exec binary |
 | `engine/src/cli/` | active | CLI adapters | engine tests |
 | `workflow/`, `scheduler.rs`, `node_executor.rs`, `executor_pool.rs` | active | Workflow | workflow and scheduler tests |
 | `storage/local_product_store/` | active | Storage | local store tests |
@@ -37,7 +37,9 @@ Full Agent Autonomy Mode remains active for repo-scoped, testable, observable, C
 | LangGraph bounded import | `scripts/langgraph_trace_import.py` |
 | Native artifact persistence | `engine/src/storage/local_product_store/native_scorecard_artifacts.rs` |
 | Local scorecard artifact import | `engine/src/local_scorecard_import.rs`, `engine/src/bin/import_native_scorecard_artifacts.rs` |
-| Local runner validation executor | `engine/src/node_executor.rs` (`LocalRunnerValidationExecutor`), `engine/src/executor_pool.rs` |
+| Local runner validation executor | `engine/src/node_executor.rs` (`LocalRunnerValidationExecutor`), `engine/src/executor_pool.rs`; automatic native scorecard artifact recording via `workflow_runs.rs` tick path |
+| Local runner provider adapter | `engine/src/local_runner_provider.rs`, `engine/src/provider/fake.rs` |
+| CLI stateful-vs-stateless experiment | `engine/src/bin/local_runner_exec.rs` |
 | Scorecard API | `engine/src/http_server/handlers/scorecards.rs` |
 | Operator/dashboard evidence | `operator_evidence.rs`, `dashboard/` scorecard surfaces |
 

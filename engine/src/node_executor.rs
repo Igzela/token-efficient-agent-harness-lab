@@ -323,11 +323,14 @@ impl NodeExecutor for FailNodeExecutor {
 
 /// Executor that runs the local runner validation deterministically.
 ///
-/// It runs the stateful-vs-stateless experiment with stub provider,
-/// validates stateful < stateless tokens, and emits bounded artifact
-/// metadata into the node output. No raw prompts, outputs, or transcripts
-/// are persisted. When a `LocalProductStore` reference is available via
-/// node_metadata["store"], artifacts are imported as app-owned records.
+/// Runs the stateful-vs-stateless experiment with stub provider,
+/// validates stateful < stateless tokens, and emits a bounded summary
+/// (validation_status, token_totals, run_ids). No raw prompts, outputs,
+/// transcripts, or scorecard steps are persisted in the node output.
+///
+/// After the node completes, the workflow tick path automatically records
+/// a native_scorecard_artifact via the existing tick-level automatic
+/// scorecard recording path (see workflow_runs.rs tick function).
 #[derive(Clone)]
 pub struct LocalRunnerValidationExecutor;
 

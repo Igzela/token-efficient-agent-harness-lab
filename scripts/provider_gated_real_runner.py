@@ -6,7 +6,9 @@ import importlib.util
 import json
 import os
 import re
+import subprocess
 import sys
+import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Protocol
@@ -100,8 +102,6 @@ def _find_rust_binary() -> Path:
 
 def build_config(args: argparse.Namespace, env: dict[str, str] | None = None) -> RunnerConfig:
     del env
-    if args.live or args.provider != "stub":
-        _find_rust_binary()
 
     if not 2 <= args.iterations <= 50:
         raise ProviderGatedRunnerError("iterations must be between 2 and 50")
@@ -122,9 +122,13 @@ def build_config(args: argparse.Namespace, env: dict[str, str] | None = None) ->
         raise ProviderGatedRunnerError("run cost cap cannot exceed daily cost cap")
 
     return RunnerConfig(
-        live=args.live,
+        live=args.live or args.provider == "live",
         provider_kind=args.provider,
-        model="stub-deterministic" if args.provider == "stub" and not args.live else args.provider,
+        model={
+            "stub": "stub-deterministic",
+            "fake": "fake-deterministic",
+            "live": "live-provider",
+        }.get(args.provider, args.provider),
         limits=RunnerLimits(
             iterations=args.iterations,
             max_calls=args.max_calls,
@@ -155,7 +159,7 @@ class StubProvider:
 
 def _run_via_rust_binary(config: RunnerConfig) -> tuple[dict[str, Any], dict[str, Any]]:
     binary = _find_rust_binary()
-    provider_kind = "live" if config.live else config.provider_kind
+    provider_kind = config.provider_kind
     with tempfile.TemporaryDirectory(prefix="acp-rust-runner-") as tmp:
         output_dir = Path(tmp) / "output"
         cmd = [
@@ -182,17 +186,7 @@ def _run_via_rust_binary(config: RunnerConfig) -> tuple[dict[str, Any], dict[str
         return stateless, stateful
 
 
-class RustBinaryRunner:
-    """Calls the Rust local-runner-exec binary to run experiments with provider support."""
-
-    def complete(self, prompt: str, *, iteration: int, mode: str, timeout_seconds: float) -> ProviderResult:
-        raise ProviderGatedRunnerError("RustBinaryRunner runs the full experiment, not individual calls")
-
-
 def make_provider(config: RunnerConfig) -> ProviderClient:
-    if config.live or config.provider_kind != "stub":
-        # Live/fake mode uses the Rust binary
-        pass  # The binary handles everything; this is a sentinel
     return StubProvider()
 
 
@@ -328,7 +322,7 @@ def run_mode(mode: str, config: RunnerConfig, provider: ProviderClient) -> dict[
             "live": config.live,
             "provider_kind": config.provider_kind,
             "model": config.model,
-            "external_calls": 0,
+            "external_calls": len(steps),
             "final_best_score": best_score,
             "context_protocol": "full_history_reread" if mode == "stateless_reread" else "compact_summary_plus_recent_window",
         },
@@ -370,7 +364,7 @@ def write_output_dir(output_dir: Path, config: RunnerConfig, compact: bool, prov
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Run a local gated stateful-vs-stateless experiment runner.")
-    parser.add_argument("--provider", choices=["stub", "openai_compatible"], default="stub")
+    parser.add_argument("--provider", choices=["stub", "fake", "live"], default="stub")
     parser.add_argument("--live", action="store_true")
     parser.add_argument("--output-dir", type=Path)
     parser.add_argument("--compare", action="store_true")

@@ -28,13 +28,17 @@ This repo is a local/small-team self-hosted agent workflow control plane. Rust `
 | Agent Autonomous Maintenance Mode | Active |
 | Full Agent Autonomy Mode | Active for repo-scoped, testable, observable, CI-gated, rollbackable work |
 | Local runner operations | Active: validate, export, import, and inspect bounded scorecard artifacts locally |
-| Runner integration | Storage/API/operator evidence complete; workflow scheduling of the Python validation/import step is implemented via `LocalRunnerValidationExecutor` in stub mode |
+| Runner integration | Storage/API/operator evidence complete; workflow scheduling of local runner validation is implemented via `LocalRunnerValidationExecutor` in stub mode (12 tests) with automatic native scorecard recording on tick completion |
+| Live provider adapter | Gated ready path: `local_runner_provider.rs` supports Stub/Fake/Live with gate-aware provider construction; Live requires env gates and fails closed without them |
 
 ## Current Gaps
 
-- The local runner can export `native_scorecard_artifact.v1` files and import them into `LocalProductStore`; scorecard APIs and operator evidence expose bounded metadata and derived metrics.
-- The `LocalRunnerValidationExecutor` (`node_executor.rs`) executes stub-mode stateful-vs-stateless runs deterministically as a workflow node, validated in 8 integration tests.
-- The live provider adapter (`local_runner_provider.rs`, `FakeProvider`) delegates to a Rust CLI binary (`local-runner-exec`) for non-stub modes, with Python runner integration via `scripts/provider_gated_real_runner.py`.
+- The `LocalRunnerValidationExecutor` executes stub-mode stateful-vs-stateless runs deterministically as a workflow node (12 tests). Automatic native scorecard recording happens via the existing tick-level path when the run becomes terminal.
+- The live provider adapter (`local_runner_provider.rs`, `FakeProvider`) delegates to a Rust CLI binary (`local-runner-exec`). Live mode is a gated ready path: it requires `ACP_ENABLE_PROVIDER_EXECUTION=1` or a trusted local profile, and fails closed with a clear message. It does not auto-construct provider instances without manual injection.
+- `FakeProvider` (`provider/fake.rs`) provides deterministic test output with zero cost. `is_enabled() == true` (it is a valid test provider, not disabled).
+- `external_calls` in `runner_metadata` correctly reflects the number of provider invocations (steps count) for both Rust and Python paths.
+- Native scorecard artifacts are automatically recorded when the workflow run completes (proven by integration tests). The artifact contains bounded metadata and workflow-level step projections only (no raw local-runner steps, prompts, outputs, or transcripts).
+- Python runner (`scripts/provider_gated_real_runner.py`) accepts `--provider {stub,fake,live}` (aligned with Rust binary). Non-stub modes delegate to the Rust binary. Config validation no longer checks binary existence; binary resolution happens only at `build_pair` time.
 - Remote adapter support for this runner is deferred to a later focused change.
 - Keep the existing runtime/module ownership boundaries unless a later active-doc decision changes them.
 

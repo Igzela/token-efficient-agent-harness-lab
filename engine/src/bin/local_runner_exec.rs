@@ -73,7 +73,13 @@ fn main() {
     };
 
     let gates = if provider_kind == ProviderKind::Live {
-        Some(EffectiveExecutionGates::from_env())
+        let g = EffectiveExecutionGates::from_env();
+        if !g.provider_execution {
+            eprintln!("error: live provider requires provider execution gates (set ACP_ENABLE_PROVIDER_EXECUTION=1 or configure a trusted local profile)");
+            eprintln!("info: use --provider stub or --provider fake for deterministic local runs without gates");
+            std::process::exit(1);
+        }
+        Some(g)
     } else {
         None
     };

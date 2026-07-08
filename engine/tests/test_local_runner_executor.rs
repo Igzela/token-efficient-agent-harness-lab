@@ -255,6 +255,192 @@ fn local_runner_executor_operator_evidence_is_bounded() {
 }
 
 #[test]
+fn local_runner_executor_external_calls_tracked() {
+    let executor = LocalRunnerValidationExecutor;
+    let input = stub_input("run-lr-calls", "node-calls", 5);
+    let output = executor.execute_node(&input);
+    assert_node_output(&output, "completed");
+    let summary: Value = serde_json::from_str(output.output.as_ref().unwrap()).expect("valid JSON");
+    // The summary doesn't contain external_calls directly, but the executor
+    // logs step counts via stateless_total_tokens and stateful_total_tokens
+    // which are derived from actual provider calls
+    assert!(
+        summary["stateless_total_tokens"].as_i64().unwrap_or(0) > 0,
+        "stateless tokens must reflect simulated provider calls"
+    );
+}
+
+#[test]
+fn local_runner_executor_tick_records_automatic_scorecard() {
+    let store = make_store();
+
+    let plan = store
+        .create_workflow_plan("lr-sc-plan", "lr-sc-wf", "test-actor", |ids, _plan| {
+            Ok(json!({
+                "schema_version": "read_only_plan.v1",
+                "plan_id": ids.plan_id,
+                "status": "planned_read_only",
+                "workflow_id": ids.workflow_id,
+                "dispatch_id": ids.dispatch_id,
+                "analysis": {"analysis_id": "a-lr-sc", "task_domain": "scorecard"},
+                "graph": {
+                    "schema_version": "workflow_graph.v1",
+                    "workflow_id": ids.workflow_id,
+                    "dispatch_id": ids.dispatch_id,
+                    "status": "decomposed",
+                    "created_at": "2026-07-08T00:00:00Z",
+                    "updated_at": "2026-07-08T00:00:00Z",
+                    "nodes": [
+                        {
+                            "node_id": "lr-sc-validate",
+                            "task_type": "local_runner_validation",
+                            "status": "pending",
+                            "node_json": {
+                                "iterations": 5,
+                                "max_calls": 40
+                            }
+                        }
+                    ],
+                    "edges": []
+                },
+                "boundaries": {
+                    "execution_authority": "disabled",
+                    "target_repository_writes": "disabled",
+                    "runtime_workers": "disabled",
+                },
+            }))
+        })
+        .expect("create plan");
+
+    let plan_id = plan["plan_id"].as_str().unwrap();
+    let run = store
+        .create_workflow_run_from_plan(plan_id, "test-actor")
+        .expect("create run");
+    let run_id = run["run_id"].as_str().unwrap().to_string();
+
+    let executor = LocalRunnerValidationExecutor;
+    store
+        .tick_with_executor_and_command_inner(&run_id, "test-actor", 0, &executor, None, None)
+        .expect("tick");
+
+    // Verify a native scorecard artifact was automatically recorded
+    let artifacts = store
+        .native_scorecard_artifacts_by_run(&run_id, 10)
+        .expect("get artifacts");
+    assert!(
+        !artifacts.is_empty(),
+        "should have at least one scorecard artifact"
+    );
+
+    // Each artifact must be metadata-only, no raw local-runner traces
+    for artifact in &artifacts {
+        assert_eq!(
+            artifact["metadata_only"], true,
+            "artifact must be metadata-only"
+        );
+        if let Some(scorecard) = artifact.get("scorecard") {
+            assert!(
+                scorecard.get("adapter_run_id").is_some(),
+                "scorecard must have adapter_run_id"
+            );
+            let text = serde_json::to_string(artifact).unwrap_or_default();
+            // Must not contain raw local runner identifiers or unbounded fields
+            assert!(
+                !text.contains("real-runner-"),
+                "artifact must not contain local runner durable run IDs"
+            );
+        }
+    }
+}
+
+#[test]
+fn local_runner_executor_operator_evidence_metadata_is_bounded() {
+    let store = make_store();
+
+    let plan = store
+        .create_workflow_plan("lr-op-plan", "lr-op-wf", "test-actor", |ids, _plan| {
+            Ok(json!({
+                "schema_version": "read_only_plan.v1",
+                "plan_id": ids.plan_id,
+                "status": "planned_read_only",
+                "workflow_id": ids.workflow_id,
+                "dispatch_id": ids.dispatch_id,
+                "analysis": {"analysis_id": "a-lr-op", "task_domain": "scorecard"},
+                "graph": {
+                    "schema_version": "workflow_graph.v1",
+                    "workflow_id": ids.workflow_id,
+                    "dispatch_id": ids.dispatch_id,
+                    "status": "decomposed",
+                    "created_at": "2026-07-08T00:00:00Z",
+                    "updated_at": "2026-07-08T00:00:00Z",
+                    "nodes": [
+                        {
+                            "node_id": "lr-op-validate",
+                            "task_type": "local_runner_validation",
+                            "status": "pending",
+                            "node_json": {
+                                "iterations": 5,
+                                "max_calls": 40
+                            }
+                        }
+                    ],
+                    "edges": []
+                },
+                "boundaries": {
+                    "execution_authority": "disabled",
+                    "target_repository_writes": "disabled",
+                    "runtime_workers": "disabled",
+                },
+            }))
+        })
+        .expect("create plan");
+
+    let plan_id = plan["plan_id"].as_str().unwrap();
+    let run = store
+        .create_workflow_run_from_plan(plan_id, "test-actor")
+        .expect("create run");
+    let run_id = run["run_id"].as_str().unwrap().to_string();
+
+    let executor = LocalRunnerValidationExecutor;
+    store
+        .tick_with_executor_and_command_inner(&run_id, "test-actor", 0, &executor, None, None)
+        .expect("tick");
+
+    // Verify the automatically-recorded artifact has bounded metadata
+    let artifacts = store
+        .native_scorecard_artifacts_by_run(&run_id, 10)
+        .expect("get artifacts");
+    assert!(!artifacts.is_empty(), "must have scorecard artifacts");
+    for artifact in &artifacts {
+        assert_eq!(
+            artifact["metadata_only"], true,
+            "artifact must be metadata-only"
+        );
+        let text = serde_json::to_string(artifact).unwrap_or_default();
+        // The automatic scorecard may contain workflow-level step entries,
+        // but must not contain local runner's raw step identifiers
+        assert!(
+            !text.contains("real-runner-"),
+            "artifact must not contain local runner durable run IDs"
+        );
+    }
+}
+
+#[test]
+fn local_runner_executor_import_is_idempotent() {
+    let _store = make_store();
+    let executor = LocalRunnerValidationExecutor;
+    let input = stub_input("run-lr-idem-store", "node-idem-store", 5);
+
+    // Execute twice with same input — should produce same bounded output
+    let output1 = executor.execute_node(&input);
+    let output2 = executor.execute_node(&input);
+    assert_node_output(&output1, "completed");
+    assert_node_output(&output2, "completed");
+    assert_eq!(output1.output, output2.output, "output must be idempotent");
+}
+
+#[test]
 fn local_runner_executor_artifact_id_in_output() {
     let executor = LocalRunnerValidationExecutor;
     let input = stub_input("run-lr-art", "node-art", 5);

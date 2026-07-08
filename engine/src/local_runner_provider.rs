@@ -359,7 +359,7 @@ pub fn run_mode(
                 ProviderKind::Live => "live",
             },
             "model": config.model,
-            "external_calls": 0,
+            "external_calls": steps.len() as i64,
             "final_best_score": best_score_val,
             "context_protocol": if mode == "stateless_reread" {
                 "full_history_reread"
@@ -606,7 +606,7 @@ mod tests {
         assert_eq!(result["runtime_kind"], "native_harness");
         assert!(result["input_token_total"].as_i64().unwrap_or(0) > 0);
         assert!(result["step_count"].as_i64().unwrap_or(0) > 0);
-        assert!(result["steps"].as_array().unwrap().len() > 0);
+        assert!(!result["steps"].as_array().unwrap().is_empty());
         assert_eq!(result["redaction_status"], "not_needed");
     }
 

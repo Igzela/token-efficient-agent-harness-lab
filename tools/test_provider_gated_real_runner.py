@@ -89,16 +89,33 @@ class ProviderGatedRealRunnerTests(unittest.TestCase):
         self.assertEqual(comparison["rows"][1]["mode"], "stateful_store")
         self.assertGreater(comparison["rows"][1]["token_reduction_ratio"], 0.0)
 
-    def test_live_and_non_stub_provider_resolves_rust_binary(self) -> None:
-        """Non-stub/live provider delegates to the Rust local-runner-exec binary."""
-        config = MODULE.build_config(args(provider="openai_compatible"), env={})
-        self.assertTrue(config.live or config.provider_kind != "stub")
+    def test_non_stub_provider_skips_binary_check_at_config(self) -> None:
+        """Non-stub/live provider config does not check binary existence."""
+        config = MODULE.build_config(args(provider="fake"))
+        self.assertEqual(config.provider_kind, "fake")
+        self.assertFalse(config.live)
 
-        config = MODULE.build_config(args(provider="openai_compatible", live=True), env={})
+        config = MODULE.build_config(args(provider="live"))
+        self.assertEqual(config.provider_kind, "live")
         self.assertTrue(config.live)
 
-        config = MODULE.build_config(args(live=True), env={})
+        config = MODULE.build_config(args(live=True))
+        self.assertEqual(config.provider_kind, "stub")
         self.assertTrue(config.live)
+
+    def test_pair_fails_gracefully_when_provider_not_configured(self) -> None:
+        """build_pair with live fails with a clear error when provider not configured."""
+        config = MODULE.build_config(args(provider="live"))
+        with self.assertRaises(MODULE.ProviderGatedRunnerError) as ctx:
+            MODULE.build_pair(config)
+        self.assertIn("failed", str(ctx.exception).lower())
+
+    def test_fake_config_matches_rust_binary_choices(self) -> None:
+        """Provider choices align with Rust local-runner-exec."""
+        for kind in ("stub", "fake", "live"):
+            config = MODULE.build_config(args(provider=kind))
+            self.assertEqual(config.provider_kind, kind)
+            self.assertTrue(config.model.endswith("-deterministic") or config.model == "live-provider")
 
     def test_limits_fail_closed(self) -> None:
         with self.assertRaisesRegex(MODULE.ProviderGatedRunnerError, "iterations"):
