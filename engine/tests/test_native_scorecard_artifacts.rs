@@ -1,3 +1,5 @@
+#![recursion_limit = "256"]
+
 use axum::body::{to_bytes, Body};
 use axum::http::{Method, Request, StatusCode};
 use engine::http_server::{build_axum_router, AxumApiState};
@@ -34,8 +36,12 @@ fn sample_artifact(run_id: &str, dispatch_id: Option<&str>) -> Value {
     });
     let derived_metrics = json!({
         "total_tokens": 180,
+        "context_share": 0.166667,
+        "repeated_context_ratio": 0.166667,
+        "tool_redundancy_ratio": 0.0,
         "tokens_per_passing_run": 180,
-        "cost_per_passing_run": 0.01
+        "cost_per_passing_run": 0.01,
+        "step_retry_ratio": 0.0
     });
     let mut scorecard = json!({
         "schema_version": "token_efficiency_scorecard.v1",
@@ -75,10 +81,106 @@ fn sample_artifact(run_id: &str, dispatch_id: Option<&str>) -> Value {
         "read_only": true,
         "created_at": "2026-07-06T00:00:00Z",
         "artifact_id": format!("scorecard-{run_id}-abc123"),
-        "content_sha256": "abc123",
+        "content_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
         "scorecard_schema_version": "token_efficiency_scorecard.v1",
         "scorecard": scorecard,
         "next_storage_integration": "removed on persistence"
+    })
+}
+
+fn local_runner_artifact(run_id: &str, mode: &str) -> Value {
+    let stateful = mode == "stateful_store";
+    let total_tokens = if stateful { 130 } else { 220 };
+    let repeated_context = if stateful { 12 } else { 80 };
+    let retrieved_tokens = if stateful { 10 } else { 0 };
+    json!({
+        "schema_version": "native_scorecard_artifact.v1",
+        "artifact_kind": "token_efficiency_scorecard",
+        "storage": "app_owned_artifact_json_export",
+        "read_only": true,
+        "created_at": "1970-01-01T00:00:00Z",
+        "artifact_id": format!("scorecard-{run_id}-{mode}"),
+        "content_sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "scorecard_schema_version": "token_efficiency_scorecard.v1",
+        "metadata_only": true,
+        "target_repository_writes": "disabled",
+        "scorecard": {
+            "schema_version": "token_efficiency_scorecard.v1",
+            "adapter_run_id": run_id,
+            "runtime_kind": "native_harness",
+            "runtime_version": "provider-gated-real-runner.v1",
+            "scenario_id": "provider_gated_remember_dont_reread_runner",
+            "mode": mode,
+            "state_strategy": if stateful { "durable_state" } else { "full_history" },
+            "status": "pass",
+            "pass_fail_reason": "same score threshold met",
+            "quality_score": 1.0,
+            "quality_method": "rule",
+            "input_token_total": total_tokens - 20,
+            "output_token_total": 20,
+            "context_token_total": total_tokens - 40,
+            "repeated_context_token_total": repeated_context,
+            "retrieved_ref_token_total": retrieved_tokens,
+            "tool_call_count": 2,
+            "redundant_tool_call_count": 0,
+            "retry_count": 0,
+            "step_count": 2,
+            "duration_ms": 10,
+            "estimated_cost_usd": 0.0,
+            "raw_trace_artifact_id": format!("bounded-provider-gated-runner-{mode}"),
+            "redaction_status": "redacted",
+            "derived_metrics": {
+                "total_tokens": total_tokens,
+                "context_share": 0.5,
+                "repeated_context_ratio": if stateful { 0.1 } else { 0.44 },
+                "tool_redundancy_ratio": 0.0,
+                "tokens_per_passing_run": total_tokens,
+                "cost_per_passing_run": 0.0,
+                "step_retry_ratio": 0.0
+            },
+            "steps": [
+                {
+                    "adapter_step_id": format!("{run_id}-iter-00"),
+                    "adapter_run_id": run_id,
+                    "step_index": 0,
+                    "node_name": "real_experiment_iteration_00",
+                    "agent_role": "executor",
+                    "operation_kind": "model_call",
+                    "input_tokens": 50,
+                    "output_tokens": 10,
+                    "context_tokens": 40,
+                    "repeated_context_tokens": 0,
+                    "retrieved_refs_count": 0,
+                    "retrieved_ref_tokens": 0,
+                    "tool_name": null,
+                    "tool_call_id": null,
+                    "status": "pass",
+                    "error_kind": "none",
+                    "state_read_bytes": 0,
+                    "state_write_bytes": 0
+                },
+                {
+                    "adapter_step_id": format!("{run_id}-iter-01"),
+                    "adapter_run_id": run_id,
+                    "step_index": 1,
+                    "node_name": "real_experiment_iteration_01",
+                    "agent_role": "executor",
+                    "operation_kind": "model_call",
+                    "input_tokens": total_tokens - 70,
+                    "output_tokens": 10,
+                    "context_tokens": total_tokens - 80,
+                    "repeated_context_tokens": repeated_context,
+                    "retrieved_refs_count": if stateful { 1 } else { 0 },
+                    "retrieved_ref_tokens": retrieved_tokens,
+                    "tool_name": null,
+                    "tool_call_id": null,
+                    "status": "pass",
+                    "error_kind": "none",
+                    "state_read_bytes": if stateful { 3 } else { 0 },
+                    "state_write_bytes": if stateful { 96 } else { 0 }
+                }
+            ]
+        }
     })
 }
 
@@ -157,6 +259,39 @@ fn native_scorecard_artifact_persists_and_reads_by_run_and_dispatch() {
         .unwrap();
     assert_eq!(by_dispatch.len(), 1);
     assert_eq!(by_dispatch[0]["scorecard"]["dispatch_id"], "dispatch-score");
+}
+
+#[test]
+fn local_runner_scorecard_artifact_persists_and_reads_by_run_and_id() {
+    let (store, _dir) = make_store();
+    let artifact = local_runner_artifact("real-runner-stateful_store", "stateful_store");
+    let artifact_id = artifact["artifact_id"].as_str().unwrap().to_string();
+    let stored = store
+        .record_native_scorecard_artifact(&artifact, "local-runner-import")
+        .unwrap();
+
+    assert_eq!(stored["storage"], "local_product_store");
+    assert_eq!(stored["metadata_only"], true);
+    assert_eq!(stored["target_repository_writes"], "disabled");
+    assert_eq!(
+        stored["scorecard"]["scenario_id"],
+        "provider_gated_remember_dont_reread_runner"
+    );
+    assert_eq!(stored["scorecard"]["mode"], "stateful_store");
+    assert_eq!(stored["scorecard"]["state_strategy"], "durable_state");
+    assert_eq!(stored["scorecard"]["derived_metrics"]["total_tokens"], 130);
+
+    let by_id = store
+        .get_native_scorecard_artifact(&artifact_id)
+        .unwrap()
+        .unwrap();
+    assert_eq!(by_id["artifact_id"], artifact_id);
+
+    let by_run = store
+        .native_scorecard_artifacts_by_run("real-runner-stateful_store", 10)
+        .unwrap();
+    assert_eq!(by_run.len(), 1);
+    assert_eq!(by_run[0]["artifact_id"], artifact_id);
 }
 
 #[test]
@@ -263,6 +398,54 @@ async fn scorecard_api_reads_by_run_dispatch_and_artifact_id() {
     );
 }
 
+#[tokio::test]
+async fn scorecard_api_reads_local_runner_artifact_by_run_and_artifact_id() {
+    let (store, _dir) = make_store();
+    let artifact = local_runner_artifact("real-runner-stateful_store", "stateful_store");
+    let artifact_id = artifact["artifact_id"].as_str().unwrap().to_string();
+    store
+        .record_native_scorecard_artifact(&artifact, "local-runner-import")
+        .unwrap();
+    let app = build_axum_router(AxumApiState::new().with_local_store(store));
+
+    let by_run = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(Method::GET)
+                .uri("/api/v1/scorecards?run_id=real-runner-stateful_store")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(by_run.status(), StatusCode::OK);
+    let by_run_body = response_json(by_run).await;
+    assert_eq!(by_run_body["artifacts"].as_array().unwrap().len(), 1);
+    assert_eq!(
+        by_run_body["artifacts"][0]["scorecard"]["runtime_version"],
+        "provider-gated-real-runner.v1"
+    );
+    assert_eq!(
+        by_run_body["artifacts"][0]["scorecard"]["steps"][0]["node_name"],
+        "real_experiment_iteration_00"
+    );
+
+    let detail = app
+        .oneshot(
+            Request::builder()
+                .method(Method::GET)
+                .uri(format!("/api/v1/scorecards/{artifact_id}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(detail.status(), StatusCode::OK);
+    let detail_body = response_json(detail).await;
+    assert_eq!(detail_body["artifact"]["artifact_id"], artifact_id);
+}
+
 #[test]
 fn successful_native_run_automatically_persists_scorecard_artifact() {
     let (store, _dir) = make_store();
@@ -367,6 +550,44 @@ async fn automatic_scorecard_is_visible_in_api_and_operator_evidence_metadata() 
     assert_eq!(evidence_body["scorecard_artifact_count"], 1);
     assert_eq!(evidence_body["scorecards"][0]["read_only"], true);
     assert!(evidence_body["scorecards"][0].get("steps").is_none());
+}
+
+#[tokio::test]
+async fn local_runner_artifact_is_visible_in_operator_evidence_as_bounded_metadata() {
+    let (store, _dir) = make_store();
+    store
+        .record_native_scorecard_artifact(
+            &local_runner_artifact("real-runner-stateful_store", "stateful_store"),
+            "local-runner-import",
+        )
+        .unwrap();
+    let app = build_axum_router(AxumApiState::new().with_local_store(store));
+
+    let evidence = app
+        .oneshot(
+            Request::builder()
+                .method(Method::GET)
+                .uri("/api/v1/operator/evidence/real-runner-stateful_store")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(evidence.status(), StatusCode::OK);
+    let evidence_body = response_json(evidence).await;
+    assert_eq!(evidence_body["scorecard_artifact_count"], 1);
+    let scorecard = &evidence_body["scorecards"][0];
+    assert_eq!(scorecard["runtime_kind"], "native_harness");
+    assert_eq!(scorecard["status"], "pass");
+    assert_eq!(scorecard["derived_metrics"]["total_tokens"], 130);
+    assert!(scorecard.get("steps").is_none());
+    assert!(scorecard.get("scorecard").is_none());
+    assert!(scorecard.get("raw_trace_artifact_id").is_none());
+    let evidence_text = evidence_body.to_string();
+    assert!(!evidence_text.contains("real_experiment_iteration_00"));
+    assert!(!evidence_text.contains("raw_prompt"));
+    assert!(!evidence_text.contains("raw_output"));
+    assert!(!evidence_text.contains("transcript"));
 }
 
 struct MetricsNodeExecutor;

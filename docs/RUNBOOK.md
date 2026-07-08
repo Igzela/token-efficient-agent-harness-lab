@@ -2,7 +2,7 @@
 
 Operator procedures for the local Agent Control Plane.
 
-Last updated: 2026-07-07.
+Last updated: 2026-07-08.
 
 ## Local Token-Efficiency Runner
 
@@ -33,6 +33,49 @@ python -m py_compile scripts/provider_gated_real_runner.py tools/test_provider_g
 uv run --no-project python -m unittest tools.test_provider_gated_real_runner
 ```
 
+Validate the local runner and export app-owned scorecard artifacts:
+
+```bash
+uv run --no-project python scripts/validate_local_runner.py \
+  --output-dir /tmp/acp-local-runner \
+  --artifact-dir /tmp/acp-local-runner-artifacts \
+  --iterations 10 \
+  --keep-output
+```
+
+Expected artifact files:
+
+```text
+/tmp/acp-local-runner-artifacts/stateless_reread.artifact.json
+/tmp/acp-local-runner-artifacts/stateful_store.artifact.json
+```
+
+Import exported `native_scorecard_artifact.v1` files into the local app-owned store:
+
+```bash
+cargo run -p engine --bin import-native-scorecard-artifacts -- \
+  --db "${ACP_DB_PATH:-.agent-control-plane/local-team.db}" \
+  /tmp/acp-local-runner-artifacts
+```
+
+The import is idempotent. It records through `LocalProductStore`, keeps artifacts read-only and metadata-only, and rejects raw prompt/output/transcript-shaped fields or secret-shaped values.
+
+Check scorecard API reads after the engine is running:
+
+```bash
+curl -fsS "http://127.0.0.1:8080/api/v1/scorecards?run_id=real-runner-stateful_store"
+curl -fsS "http://127.0.0.1:8080/api/v1/operator/evidence/real-runner-stateful_store"
+```
+
+If `ACP_REQUIRE_AUTH=1`, include the local admin bearer token:
+
+```bash
+curl -fsS -H "Authorization: Bearer ${ACP_ADMIN_API_KEY}" \
+  "http://127.0.0.1:8080/api/v1/scorecards?run_id=real-runner-stateful_store"
+curl -fsS -H "Authorization: Bearer ${ACP_ADMIN_API_KEY}" \
+  "http://127.0.0.1:8080/api/v1/operator/evidence/real-runner-stateful_store"
+```
+
 Acceptance:
 
 - both scorecards validate as `token_efficiency_scorecard.v1`;
@@ -40,6 +83,9 @@ Acceptance:
 - `stateless_reread` is the baseline row;
 - `stateful_store` has a positive token-reduction ratio on the deterministic task;
 - the runner emits bounded comparison files and does not mutate runtime storage.
+- exported artifacts import into `LocalProductStore` as read-only `native_scorecard_artifact.v1` rows;
+- `GET /api/v1/scorecards?run_id=...` and `GET /api/v1/scorecards/{artifact_id}` expose app-owned artifacts;
+- `GET /api/v1/operator/evidence/:run_id` exposes bounded scorecard metadata and derived metrics, not `steps`, raw traces, prompts, outputs, transcripts, or unbounded content.
 
 ## Local Engine Reminder
 

@@ -1,3 +1,5 @@
+#![recursion_limit = "256"]
+
 use axum::body::{to_bytes, Body};
 use axum::http::{Method, Request, StatusCode};
 use engine::http_server::{build_axum_router, AxumApiState};
@@ -29,19 +31,62 @@ fn sample_scorecard_artifact(run_id: &str) -> Value {
         "read_only": true,
         "created_at": "2026-07-06T00:00:00Z",
         "artifact_id": format!("scorecard-{run_id}-abc123"),
-        "content_sha256": "abc123",
+        "content_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
         "scorecard_schema_version": "token_efficiency_scorecard.v1",
         "scorecard": {
             "schema_version": "token_efficiency_scorecard.v1",
             "adapter_run_id": run_id,
             "runtime_kind": "native_harness",
+            "runtime_version": "provider-gated-real-runner.v1",
+            "scenario_id": "provider_gated_remember_dont_reread_runner",
+            "mode": "stateful_store",
+            "state_strategy": "durable_state",
             "status": "pass",
+            "pass_fail_reason": "same score threshold met",
+            "quality_score": 1.0,
+            "quality_method": "rule",
+            "input_token_total": 100,
+            "output_token_total": 80,
+            "context_token_total": 100,
+            "repeated_context_token_total": 10,
+            "retrieved_ref_token_total": 8,
+            "tool_call_count": 1,
+            "redundant_tool_call_count": 0,
+            "retry_count": 0,
+            "step_count": 1,
+            "duration_ms": 25,
+            "estimated_cost_usd": 0.01,
+            "raw_trace_artifact_id": "bounded-provider-gated-runner-stateful_store",
             "redaction_status": "redacted",
             "derived_metrics": {
                 "total_tokens": 180,
+                "context_share": 0.555556,
+                "repeated_context_ratio": 0.1,
+                "tool_redundancy_ratio": 0.0,
                 "tokens_per_passing_run": 180,
-                "cost_per_passing_run": 0.01
-            }
+                "cost_per_passing_run": 0.01,
+                "step_retry_ratio": 0.0
+            },
+            "steps": [{
+                "adapter_step_id": format!("{run_id}-iter-00"),
+                "adapter_run_id": run_id,
+                "step_index": 0,
+                "node_name": "real_experiment_iteration_00",
+                "agent_role": "executor",
+                "operation_kind": "model_call",
+                "input_tokens": 100,
+                "output_tokens": 80,
+                "context_tokens": 100,
+                "repeated_context_tokens": 10,
+                "retrieved_refs_count": 1,
+                "retrieved_ref_tokens": 8,
+                "tool_name": null,
+                "tool_call_id": null,
+                "status": "pass",
+                "error_kind": "none",
+                "state_read_bytes": 3,
+                "state_write_bytes": 96
+            }]
         }
     })
 }
@@ -102,7 +147,13 @@ async fn test_operator_evidence_includes_scorecard_metadata_only() {
     assert_eq!(body["scorecards"][0]["read_only"], true);
     assert_eq!(body["scorecards"][0]["runtime_kind"], "native_harness");
     assert!(body["scorecards"][0].get("steps").is_none());
+    assert!(body["scorecards"][0].get("scorecard").is_none());
+    assert!(body["scorecards"][0].get("raw_trace_artifact_id").is_none());
     assert!(!body.to_string().contains("raw_trace"));
+    assert!(!body.to_string().contains("real_experiment_iteration_00"));
+    assert!(!body.to_string().contains("raw_prompt"));
+    assert!(!body.to_string().contains("raw_output"));
+    assert!(!body.to_string().contains("transcript"));
 }
 
 #[tokio::test]
