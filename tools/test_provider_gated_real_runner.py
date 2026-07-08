@@ -14,6 +14,7 @@ from unittest.mock import patch
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPT_PATH = ROOT / "scripts" / "provider_gated_real_runner.py"
 VALIDATOR_PATH = ROOT / "scripts" / "token_efficiency_scorecard.py"
+NATIVE_EXPORT_PATH = ROOT / "scripts" / "native_scorecard_export.py"
 
 
 def load_module(name: str, path: Path):
@@ -28,6 +29,25 @@ def load_module(name: str, path: Path):
 
 MODULE = load_module("provider_gated_real_runner", SCRIPT_PATH)
 VALIDATOR = load_module("token_efficiency_scorecard_for_provider_runner_tests", VALIDATOR_PATH)
+NATIVE_EXPORT = load_module("native_scorecard_export_for_provider_runner_tests", NATIVE_EXPORT_PATH)
+
+FORBIDDEN_ARTIFACT_FRAGMENTS = (
+    "raw_prompt",
+    "raw_output",
+    "transcript",
+    "conversation",
+    "message_history",
+    "credential",
+    "repository_text",
+    "repo_full_text",
+    "repo_content",
+    "private_path",
+    "secret",
+    "password",
+    "/home/",
+    "/Users/",
+    "C:\\Users\\",
+)
 
 
 def args(**overrides: Any) -> argparse.Namespace:
@@ -47,6 +67,18 @@ def args(**overrides: Any) -> argparse.Namespace:
 
 
 class ProviderGatedRealRunnerTests(unittest.TestCase):
+    def assert_artifact_is_bounded_metadata(self, artifact: dict[str, Any]) -> None:
+        rendered = json.dumps(artifact, sort_keys=True)
+        for fragment in FORBIDDEN_ARTIFACT_FRAGMENTS:
+            self.assertNotIn(fragment, rendered)
+        self.assertEqual(artifact["schema_version"], NATIVE_EXPORT.EXPORT_SCHEMA_VERSION)
+        self.assertEqual(artifact["artifact_kind"], "token_efficiency_scorecard")
+        self.assertEqual(artifact["storage"], "app_owned_artifact_json_export")
+        self.assertTrue(artifact["read_only"])
+        self.assertEqual(artifact["scorecard_schema_version"], VALIDATOR.SCHEMA_VERSION)
+        self.assertEqual(len(artifact["content_sha256"]), 64)
+        self.assertEqual(artifact["scorecard"], VALIDATOR.import_scorecard(artifact["scorecard"]))
+
     def test_stub_scorecards_validate_and_compare(self) -> None:
         config = MODULE.build_config(args())
         stateless, stateful = MODULE.build_pair(config)
@@ -134,6 +166,39 @@ class ProviderGatedRealRunnerTests(unittest.TestCase):
             )
             comparison_only = json.loads(comparison_path.read_text(encoding="utf-8"))
             self.assertEqual(comparison_only["runner_kind"], "provider_gated_real_runner")
+
+    def test_cli_output_dir_can_emit_importable_artifact_envelopes(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            output_dir = Path(tmp) / "runner"
+
+            self.assertEqual(
+                MODULE.main([
+                    "--output-dir",
+                    str(output_dir),
+                    "--iterations",
+                    "6",
+                    "--emit-artifacts",
+                ]),
+                0,
+            )
+
+            stateless_scorecard = json.loads((output_dir / "stateless_reread.scorecard.json").read_text(encoding="utf-8"))
+            stateful_scorecard = json.loads((output_dir / "stateful_store.scorecard.json").read_text(encoding="utf-8"))
+            stateless_artifact = json.loads((output_dir / "stateless_reread.artifact.json").read_text(encoding="utf-8"))
+            stateful_artifact = json.loads((output_dir / "stateful_store.artifact.json").read_text(encoding="utf-8"))
+
+            self.assertEqual(stateless_artifact["scorecard"], stateless_scorecard)
+            self.assertEqual(stateful_artifact["scorecard"], stateful_scorecard)
+            self.assert_artifact_is_bounded_metadata(stateless_artifact)
+            self.assert_artifact_is_bounded_metadata(stateful_artifact)
+            self.assertLess(
+                stateful_artifact["scorecard"]["derived_metrics"]["total_tokens"],
+                stateless_artifact["scorecard"]["derived_metrics"]["total_tokens"],
+            )
+            self.assertLess(
+                stateful_artifact["scorecard"]["derived_metrics"]["repeated_context_ratio"],
+                stateless_artifact["scorecard"]["derived_metrics"]["repeated_context_ratio"],
+            )
 
 
 if __name__ == "__main__":
