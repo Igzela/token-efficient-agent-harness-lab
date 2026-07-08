@@ -51,6 +51,20 @@ def args(**overrides: Any) -> argparse.Namespace:
 
 
 class ProviderGatedRealRunnerTests(unittest.TestCase):
+    def _rust_runner_completed_process(self, cmd: list[str], **_kwargs: Any) -> Any:
+        output_dir = Path(cmd[cmd.index("--output-dir") + 1])
+        iterations = int(cmd[cmd.index("--iterations") + 1])
+        stub_config = MODULE.build_config(args(provider="stub", iterations=iterations))
+        stateless, stateful = MODULE.build_pair(stub_config)
+        output_dir.mkdir(parents=True, exist_ok=True)
+        (output_dir / "stateless_reread.scorecard.json").write_text(
+            json.dumps(stateless), encoding="utf-8"
+        )
+        (output_dir / "stateful_store.scorecard.json").write_text(
+            json.dumps(stateful), encoding="utf-8"
+        )
+        return MODULE.subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+
     def test_stub_scorecards_validate_and_compare(self) -> None:
         config = MODULE.build_config(args())
         stateless, stateful = MODULE.build_pair(config)
@@ -103,12 +117,41 @@ class ProviderGatedRealRunnerTests(unittest.TestCase):
         self.assertEqual(config.provider_kind, "stub")
         self.assertTrue(config.live)
 
-    def test_pair_fails_gracefully_when_provider_not_configured(self) -> None:
-        """build_pair with live fails with a clear error when provider not configured."""
+    def test_pair_reports_rust_runner_failure_without_binary_requirement(self) -> None:
+        """Live delegation surfaces Rust failures without resolving a real binary."""
         config = MODULE.build_config(args(provider="live"))
-        with self.assertRaises(MODULE.ProviderGatedRunnerError) as ctx:
-            MODULE.build_pair(config)
-        self.assertIn("failed", str(ctx.exception).lower())
+        with patch.object(MODULE, "_find_rust_binary", return_value=Path("/tmp/local-runner-exec")):
+            with patch.object(
+                MODULE.subprocess,
+                "run",
+                return_value=MODULE.subprocess.CompletedProcess(
+                    ["/tmp/local-runner-exec"], 1, stdout="", stderr="gated failure"
+                ),
+            ):
+                with self.assertRaises(MODULE.ProviderGatedRunnerError) as ctx:
+                    MODULE.build_pair(config)
+        self.assertIn("Rust runner failed", str(ctx.exception))
+        self.assertIn("gated failure", str(ctx.exception))
+
+    def test_non_stub_delegation_mocks_rust_binary_and_subprocess(self) -> None:
+        """Non-stub/live tests do not require target/debug/local-runner-exec in CI."""
+        config = MODULE.build_config(args(provider="live", iterations=6))
+        with patch.object(MODULE, "_find_rust_binary", return_value=Path("/tmp/local-runner-exec")) as find_binary:
+            with patch.object(
+                MODULE.subprocess,
+                "run",
+                side_effect=self._rust_runner_completed_process,
+            ) as run:
+                stateless, stateful = MODULE.build_pair(config)
+
+        find_binary.assert_called_once_with()
+        run.assert_called_once()
+        command = run.call_args.args[0]
+        self.assertEqual(command[0], "/tmp/local-runner-exec")
+        self.assertIn("--provider", command)
+        self.assertEqual(command[command.index("--provider") + 1], "live")
+        self.assertEqual(stateless["mode"], "stateless_reread")
+        self.assertEqual(stateful["mode"], "stateful_store")
 
     def test_fake_config_matches_rust_binary_choices(self) -> None:
         """Provider choices align with Rust local-runner-exec."""

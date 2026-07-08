@@ -14,7 +14,7 @@ Full Agent Autonomy Mode remains active for repo-scoped, testable, observable, C
 | `engine/src/trusted_local.rs` | active | Local readiness policy | trusted-local tests |
 | `dispatch_engine.rs`, `task_analyzer/`, `model_selector.rs`, `budget_manager.rs` | active | Dispatch | dispatch tests |
 | `engine/src/provider/`, `engine/src/provider/fake.rs` | active | Model adapters + FakeProvider for testing | focused adapter tests plus full stack verification |
-| `engine/src/local_runner_provider.rs`, `engine/src/bin/local_runner_exec.rs` | active | Provider-backed stateful-vs-stateless runner (Stub/Fake/Live); Live is a gated ready path requiring `ACP_ENABLE_PROVIDER_EXECUTION=1` | local_runner_provider unit tests, local-runner-exec binary |
+| `engine/src/local_runner_provider.rs`, `engine/src/bin/local_runner_exec.rs` | active | Provider-backed stateful-vs-stateless runner (Stub/Fake/Live); Live is a gated OpenAI-compatible path requiring provider gates plus explicit `ACP_LOCAL_RUNNER_*` metadata | local_runner_provider unit tests, local-runner-exec binary |
 | `engine/src/cli/` | active | CLI adapters | engine tests |
 | `workflow/`, `scheduler.rs`, `node_executor.rs`, `executor_pool.rs` | active | Workflow | workflow and scheduler tests |
 | `storage/local_product_store/` | active | Storage | local store tests |

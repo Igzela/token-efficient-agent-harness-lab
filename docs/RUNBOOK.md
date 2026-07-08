@@ -26,6 +26,22 @@ Print only the comparison:
 uv run --no-project python scripts/provider_gated_real_runner.py --compare --iterations 10
 ```
 
+Run the Rust local runner with the gated OpenAI-compatible live provider:
+
+```bash
+export ACP_ENABLE_PROVIDER_EXECUTION=1
+export ACP_LOCAL_RUNNER_PROVIDER_TYPE=openai_compatible
+export ACP_LOCAL_RUNNER_BASE_URL=https://api.openai.com/v1
+export ACP_LOCAL_RUNNER_MODEL=gpt-4o-mini
+export ACP_LOCAL_RUNNER_API_KEY_ENV=OPENAI_API_KEY
+cargo run -p engine --bin local-runner-exec -- \
+  --provider live \
+  --iterations 10 \
+  --output-dir /tmp/acp-local-runner-live
+```
+
+`ACP_LOCAL_RUNNER_API_KEY_ENV` is a symbolic environment-variable reference, not the secret value; the referenced variable must already be present in the operator environment. Do not put provider credentials in command lines, docs, scorecards, logs, or artifacts. Live mode fails closed unless provider execution gates are ready and all local-runner provider metadata plus the referenced credential environment variable are present.
+
 Focused validation:
 
 ```bash

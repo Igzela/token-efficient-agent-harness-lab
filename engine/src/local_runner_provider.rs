@@ -1,8 +1,14 @@
 use serde_json::{json, Value};
 use std::sync::Arc;
 
+use crate::provider::config::{
+    provider_pricing_from_env, CredentialRef, ProviderConfig, PROVIDER_TYPES,
+};
+use crate::provider::credential::CredentialBoundary;
 use crate::provider::fake::FakeProvider;
+use crate::provider::openai::OpenAiProvider;
 use crate::provider::stub::StubProvider;
+use crate::provider::transport::ReqwestTransport;
 use crate::provider::Provider;
 use crate::provider::ProviderRequest;
 use crate::trusted_local::EffectiveExecutionGates;
@@ -10,6 +16,10 @@ use crate::trusted_local::EffectiveExecutionGates;
 pub const SCENARIO_ID: &str = "provider_gated_remember_dont_reread_runner";
 pub const RUNTIME_VERSION: &str = "provider-gated-real-runner.v1";
 pub const SOURCE_REF_KEY: &str = "raw_trace_artifact_id";
+pub const LOCAL_RUNNER_PROVIDER_TYPE_ENV: &str = "ACP_LOCAL_RUNNER_PROVIDER_TYPE";
+pub const LOCAL_RUNNER_BASE_URL_ENV: &str = "ACP_LOCAL_RUNNER_BASE_URL";
+pub const LOCAL_RUNNER_MODEL_ENV: &str = "ACP_LOCAL_RUNNER_MODEL";
+pub const LOCAL_RUNNER_API_KEY_ENV_REF: &str = "ACP_LOCAL_RUNNER_API_KEY_ENV";
 
 #[derive(Debug, Clone)]
 pub struct RunnerLimits {
@@ -134,6 +144,13 @@ fn make_prompt(mode: &str, iteration: usize, history: &[Value]) -> String {
     }
 }
 
+fn provider_request_model<'a>(
+    config: &'a RunnerConfig,
+    provider: &'a Arc<dyn Provider>,
+) -> &'a str {
+    provider.default_model().unwrap_or(&config.model)
+}
+
 fn compute_context_tokens(mode: &str, prompt: &str, history: &[Value]) -> (i64, i64) {
     let context_tokens = estimate_tokens(prompt);
     let repeated = if mode == "stateless_reread" {
@@ -224,12 +241,8 @@ pub fn run_mode(
             compute_context_tokens(mode, &prompt, &history);
 
         let provider_req = ProviderRequest::local_stub(
-            if config.provider_kind == ProviderKind::Live {
-                "live"
-            } else {
-                "stub"
-            },
-            &config.model,
+            provider.provider_id(),
+            provider_request_model(config, provider),
             &prompt,
         );
 
@@ -372,6 +385,64 @@ pub fn run_mode(
     }))
 }
 
+fn required_env(name: &str) -> Result<String, String> {
+    std::env::var(name)
+        .map(|value| value.trim().to_string())
+        .ok()
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| format!("{name} is required for live openai_compatible local runner"))
+}
+
+fn build_live_openai_compatible_provider() -> Result<Arc<dyn Provider>, String> {
+    let provider_type = required_env(LOCAL_RUNNER_PROVIDER_TYPE_ENV)?;
+    if provider_type != "openai_compatible" {
+        let supported = PROVIDER_TYPES
+            .iter()
+            .copied()
+            .filter(|value| *value == "openai_compatible")
+            .collect::<Vec<_>>()
+            .join(", ");
+        return Err(format!(
+            "{LOCAL_RUNNER_PROVIDER_TYPE_ENV} must be openai_compatible for the live local runner (supported now: {supported})"
+        ));
+    }
+
+    let base_url = required_env(LOCAL_RUNNER_BASE_URL_ENV)?;
+    let model = required_env(LOCAL_RUNNER_MODEL_ENV)?;
+    let credential_env = required_env(LOCAL_RUNNER_API_KEY_ENV_REF)?;
+    let boundary = CredentialBoundary::new("env")?;
+    if !boundary.validate(&credential_env) {
+        return Err(format!(
+            "credential environment variable referenced by {LOCAL_RUNNER_API_KEY_ENV_REF} is not set"
+        ));
+    }
+
+    let credential_ref = CredentialRef::new(
+        &credential_env,
+        "env",
+        "***",
+        "provider:local-runner-openai-compatible",
+        "2026-01-01T00:00:00Z",
+    );
+    let mut provider_config = ProviderConfig::new(
+        "local-runner-openai-compatible",
+        "openai_compatible",
+        &base_url,
+        &model,
+        &credential_env,
+        "2026-01-01T00:00:00Z",
+    );
+    provider_config.apply_pricing(&provider_pricing_from_env());
+
+    Ok(Arc::new(OpenAiProvider::new(
+        provider_config,
+        boundary,
+        credential_ref,
+        Arc::new(ReqwestTransport::new()),
+        None,
+    )))
+}
+
 pub fn build_config(
     provider_kind: ProviderKind,
     iterations: usize,
@@ -441,7 +512,7 @@ pub fn build_provider(
             if let Some(ref p) = config.provider {
                 return Ok(p.clone());
             }
-            Err("live provider requires a configured provider instance".to_string())
+            build_live_openai_compatible_provider()
         }
     }
 }
@@ -460,6 +531,9 @@ mod tests {
     use super::*;
     use crate::provider::fake::FakeProvider;
     use crate::trusted_local::TrustedLocalProfileStatus;
+    use std::sync::{Mutex, OnceLock};
+
+    static ENV_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
 
     fn default_gates() -> EffectiveExecutionGates {
         EffectiveExecutionGates {
@@ -501,6 +575,31 @@ mod tests {
         let mut g = default_gates();
         g.provider_execution = true;
         g
+    }
+
+    fn with_env_lock<T>(f: impl FnOnce() -> T) -> T {
+        let _guard = ENV_LOCK
+            .get_or_init(|| Mutex::new(()))
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        f()
+    }
+
+    fn clear_live_env() {
+        std::env::remove_var(LOCAL_RUNNER_PROVIDER_TYPE_ENV);
+        std::env::remove_var(LOCAL_RUNNER_BASE_URL_ENV);
+        std::env::remove_var(LOCAL_RUNNER_MODEL_ENV);
+        std::env::remove_var(LOCAL_RUNNER_API_KEY_ENV_REF);
+        std::env::remove_var("LOCAL_RUNNER_TEST_OPENAI_KEY");
+    }
+
+    fn live_config() -> RunnerConfig {
+        RunnerConfig {
+            provider_kind: ProviderKind::Live,
+            model: "live".to_string(),
+            limits: RunnerLimits::default(),
+            provider: None,
+        }
     }
 
     #[test]
@@ -545,23 +644,13 @@ mod tests {
 
     #[test]
     fn live_provider_fails_closed_without_gates() {
-        let config = RunnerConfig {
-            provider_kind: ProviderKind::Live,
-            model: "live".to_string(),
-            limits: RunnerLimits::default(),
-            provider: None,
-        };
+        let config = live_config();
         assert_provider_err(build_provider(&config, None), "execution gates");
     }
 
     #[test]
     fn live_provider_fails_closed_when_provider_execution_disabled() {
-        let config = RunnerConfig {
-            provider_kind: ProviderKind::Live,
-            model: "live".to_string(),
-            limits: RunnerLimits::default(),
-            provider: None,
-        };
+        let config = live_config();
         assert_provider_err(
             build_provider(&config, Some(&default_gates())),
             "not enabled",
@@ -569,17 +658,68 @@ mod tests {
     }
 
     #[test]
-    fn live_provider_fails_closed_without_configured_provider_instance() {
-        let config = RunnerConfig {
-            provider_kind: ProviderKind::Live,
-            model: "live".to_string(),
-            limits: RunnerLimits::default(),
-            provider: None,
-        };
-        assert_provider_err(
-            build_provider(&config, Some(&gates_with_provider())),
-            "requires a configured provider",
-        );
+    fn live_provider_fails_closed_without_env_config() {
+        with_env_lock(|| {
+            clear_live_env();
+            let config = live_config();
+            assert_provider_err(
+                build_provider(&config, Some(&gates_with_provider())),
+                LOCAL_RUNNER_PROVIDER_TYPE_ENV,
+            );
+        });
+    }
+
+    #[test]
+    fn live_provider_fails_closed_for_unsupported_provider_type() {
+        with_env_lock(|| {
+            clear_live_env();
+            std::env::set_var(LOCAL_RUNNER_PROVIDER_TYPE_ENV, "anthropic");
+            std::env::set_var(LOCAL_RUNNER_BASE_URL_ENV, "https://api.example.test/v1");
+            std::env::set_var(LOCAL_RUNNER_MODEL_ENV, "test-model");
+            std::env::set_var(LOCAL_RUNNER_API_KEY_ENV_REF, "LOCAL_RUNNER_TEST_OPENAI_KEY");
+            std::env::set_var("LOCAL_RUNNER_TEST_OPENAI_KEY", "sk-local-runner-test");
+            let config = live_config();
+            assert_provider_err(
+                build_provider(&config, Some(&gates_with_provider())),
+                "openai_compatible",
+            );
+            clear_live_env();
+        });
+    }
+
+    #[test]
+    fn live_provider_fails_closed_when_credential_env_is_missing() {
+        with_env_lock(|| {
+            clear_live_env();
+            std::env::set_var(LOCAL_RUNNER_PROVIDER_TYPE_ENV, "openai_compatible");
+            std::env::set_var(LOCAL_RUNNER_BASE_URL_ENV, "https://api.example.test/v1");
+            std::env::set_var(LOCAL_RUNNER_MODEL_ENV, "test-model");
+            std::env::set_var(LOCAL_RUNNER_API_KEY_ENV_REF, "LOCAL_RUNNER_TEST_OPENAI_KEY");
+            let config = live_config();
+            assert_provider_err(
+                build_provider(&config, Some(&gates_with_provider())),
+                "credential environment variable",
+            );
+            clear_live_env();
+        });
+    }
+
+    #[test]
+    fn live_provider_constructs_openai_compatible_without_invoking_network() {
+        with_env_lock(|| {
+            clear_live_env();
+            std::env::set_var(LOCAL_RUNNER_PROVIDER_TYPE_ENV, "openai_compatible");
+            std::env::set_var(LOCAL_RUNNER_BASE_URL_ENV, "https://api.example.test/v1");
+            std::env::set_var(LOCAL_RUNNER_MODEL_ENV, "test-model");
+            std::env::set_var(LOCAL_RUNNER_API_KEY_ENV_REF, "LOCAL_RUNNER_TEST_OPENAI_KEY");
+            std::env::set_var("LOCAL_RUNNER_TEST_OPENAI_KEY", "sk-local-runner-test");
+            let config = live_config();
+            let provider = build_provider(&config, Some(&gates_with_provider())).unwrap();
+            assert_eq!(provider.provider_id(), "local-runner-openai-compatible");
+            assert!(provider.is_enabled());
+            assert_eq!(provider.default_model(), Some("test-model"));
+            clear_live_env();
+        });
     }
 
     #[test]
