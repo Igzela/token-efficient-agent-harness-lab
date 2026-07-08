@@ -47,6 +47,49 @@ class ValidateLocalRunnerTests(unittest.TestCase):
             self.assertGreater(result.token_reduction_ratio, 0.0)
             self.assertFalse(output_dir.exists())
 
+    def test_run_validation_can_emit_storage_artifacts(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            output_dir = Path(tmp) / "runner"
+            artifact_dir = Path(tmp) / "artifacts"
+            result = VALIDATION.run_validation(
+                output_dir,
+                iterations=8,
+                keep_output=False,
+                artifact_dir=artifact_dir,
+            )
+
+            self.assertFalse(output_dir.exists())
+            self.assertEqual(len(result.artifact_paths), 2)
+            self.assertEqual(
+                sorted(path.name for path in result.artifact_paths),
+                ["stateful_store.artifact.json", "stateless_reread.artifact.json"],
+            )
+            for path in result.artifact_paths:
+                artifact = json.loads(path.read_text(encoding="utf-8"))
+                self.assertEqual(artifact["schema_version"], "native_scorecard_artifact.v1")
+                self.assertEqual(artifact["artifact_kind"], "token_efficiency_scorecard")
+                self.assertEqual(artifact["scorecard_schema_version"], "token_efficiency_scorecard.v1")
+                self.assertEqual(artifact["storage"], "app_owned_artifact_json_export")
+                self.assertTrue(artifact["read_only"])
+                self.assertTrue(artifact["metadata_only"])
+                self.assertEqual(artifact["target_repository_writes"], "disabled")
+                self.assertEqual(len(artifact["content_sha256"]), 64)
+                self.assertTrue(artifact["artifact_id"].startswith("scorecard-"))
+                self.assertEqual(artifact["scorecard"]["redaction_status"], "not_needed")
+
+    def test_build_scorecard_artifact_is_deterministic_for_same_scorecard(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            output_dir = Path(tmp) / "runner"
+            self.assertEqual(RUNNER.main(["--output-dir", str(output_dir), "--iterations", "8"]), 0)
+            scorecard = json.loads((output_dir / "stateful_store.scorecard.json").read_text(encoding="utf-8"))
+
+            first = VALIDATION.build_scorecard_artifact(scorecard)
+            second = VALIDATION.build_scorecard_artifact(scorecard)
+
+            self.assertEqual(first["artifact_id"], second["artifact_id"])
+            self.assertEqual(first["content_sha256"], second["content_sha256"])
+            self.assertEqual(first["scorecard"]["mode"], "stateful_store")
+
     def test_validate_output_rejects_tampered_comparison(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             output_dir = Path(tmp) / "runner"
@@ -80,7 +123,29 @@ class ValidateLocalRunnerTests(unittest.TestCase):
             summary = json.loads(printed)
             self.assertEqual(summary["status"], "pass")
             self.assertGreater(summary["token_reduction_ratio"], 0.0)
+            self.assertEqual(summary["artifact_count"], 0)
             self.assertTrue(output_dir.exists())
+
+    def test_main_can_emit_artifacts(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            output_dir = Path(tmp) / "runner"
+            artifact_dir = Path(tmp) / "artifacts"
+            with patch("builtins.print") as mocked_print:
+                self.assertEqual(
+                    VALIDATION.main([
+                        "--output-dir",
+                        str(output_dir),
+                        "--artifact-dir",
+                        str(artifact_dir),
+                        "--iterations",
+                        "8",
+                    ]),
+                    0,
+                )
+            printed = mocked_print.call_args.args[0]
+            self.assertIn("emitted 2 storage artifacts", printed)
+            self.assertTrue((artifact_dir / "stateless_reread.artifact.json").exists())
+            self.assertTrue((artifact_dir / "stateful_store.artifact.json").exists())
 
     def test_main_returns_nonzero_on_runner_failure(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
