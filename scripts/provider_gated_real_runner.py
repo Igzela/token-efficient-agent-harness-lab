@@ -34,6 +34,7 @@ def _load(name: str, path: Path):
 
 VALIDATOR = _load("token_efficiency_scorecard", ROOT / "scripts" / "token_efficiency_scorecard.py")
 COMPARISON = _load("scorecard_comparison", ROOT / "scripts" / "scorecard_comparison.py")
+NATIVE_EXPORT = _load("native_scorecard_export", ROOT / "scripts" / "native_scorecard_export.py")
 
 
 class ProviderGatedRunnerError(ValueError):
@@ -145,7 +146,7 @@ class StubProvider:
     def complete(self, prompt: str, *, iteration: int, mode: str, timeout_seconds: float) -> ProviderResult:
         del timeout_seconds
         input_tokens = _estimate_tokens(prompt)
-        candidate = min(17, 3 + iteration * 2)
+        candidate = min(17, 7 + iteration * 2)
         text = f"candidate={candidate}; rationale=bounded deterministic stub"
         output_tokens = _estimate_tokens(text)
         return ProviderResult(
@@ -203,11 +204,11 @@ def _score(candidate: int) -> float:
 
 def _summarize_state(history: list[dict[str, Any]]) -> str:
     if not history:
-        return "no prior experiments"
+        return "none"
     best = max(history, key=lambda item: item["score"])
     recent = history[-2:]
-    recent_text = "; ".join(f"i={item['iteration']} c={item['candidate']} s={item['score']}" for item in recent)
-    return f"best c={best['candidate']} s={best['score']}; recent {recent_text}"
+    recent_text = ";".join(f"{item['iteration']}:{item['candidate']}:{item['score']}" for item in recent)
+    return f"best={best['candidate']}:{best['score']};recent={recent_text}"
 
 
 def _make_prompt(mode: str, iteration: int, history: list[dict[str, Any]]) -> tuple[str, int, int]:
@@ -220,10 +221,9 @@ def _make_prompt(mode: str, iteration: int, history: list[dict[str, Any]]) -> tu
         return prompt, context_tokens, repeated_context_tokens
     if mode == "stateful_store":
         state_summary = _summarize_state(history)
-        recent = json.dumps(history[-2:], sort_keys=True)
-        prompt = f"Task: {task}\nIteration: {iteration}\nState summary: {state_summary}\nRecent window: {recent}\nReturn candidate=<number>."
+        prompt = f"Task: {task}\nI:{iteration}\nMemory:{state_summary}\nReturn candidate=<number>."
         context_tokens = _estimate_tokens(prompt)
-        repeated_context_tokens = _estimate_tokens(recent) if history else 0
+        repeated_context_tokens = _estimate_tokens(state_summary) if history else 0
         return prompt, context_tokens, repeated_context_tokens
     raise ProviderGatedRunnerError(f"unsupported mode: {mode}")
 
@@ -277,7 +277,7 @@ def run_mode(mode: str, config: RunnerConfig, provider: ProviderClient) -> dict[
             raise ProviderGatedRunnerError("token limit exceeded")
         if total_cost > config.limits.run_cost_cap_usd or total_cost > config.limits.daily_cost_cap_usd:
             raise ProviderGatedRunnerError("cost cap exceeded")
-        candidate = _parse_candidate(provider_result.text, fallback=min(17, 3 + iteration * 2))
+        candidate = _parse_candidate(provider_result.text, fallback=min(17, 7 + iteration * 2))
         score = _score(candidate)
         best_score = max(best_score, score)
         history.append({"iteration": iteration, "candidate": candidate, "score": score})
@@ -351,7 +351,7 @@ def build_comparison(config: RunnerConfig, provider: ProviderClient | None = Non
     return comparison
 
 
-def write_output_dir(output_dir: Path, config: RunnerConfig, compact: bool, provider: ProviderClient | None = None) -> None:
+def write_output_dir(output_dir: Path, config: RunnerConfig, compact: bool, emit_artifacts: bool = False, provider: ProviderClient | None = None) -> None:
     output_dir.mkdir(parents=True, exist_ok=True)
     stateless, stateful = build_pair(config, provider)
     comparison = COMPARISON.compare_scorecards([stateless, stateful])
@@ -360,6 +360,13 @@ def write_output_dir(output_dir: Path, config: RunnerConfig, compact: bool, prov
     (output_dir / "stateless_reread.scorecard.json").write_text(_render(stateless, compact) + "\n", encoding="utf-8")
     (output_dir / "stateful_store.scorecard.json").write_text(_render(stateful, compact) + "\n", encoding="utf-8")
     (output_dir / "comparison.json").write_text(_render(comparison, compact) + "\n", encoding="utf-8")
+    if emit_artifacts:
+        artifacts = {
+            "stateless_reread.artifact.json": NATIVE_EXPORT.build_artifact(stateless),
+            "stateful_store.artifact.json": NATIVE_EXPORT.build_artifact(stateful),
+        }
+        for filename, artifact in artifacts.items():
+            (output_dir / filename).write_text(_render(artifact, compact) + "\n", encoding="utf-8")
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -369,6 +376,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--output-dir", type=Path)
     parser.add_argument("--compare", action="store_true")
     parser.add_argument("--output", type=Path)
+    parser.add_argument("--emit-artifacts", action="store_true", help="Also write native_scorecard_artifact.v1 envelopes beside scorecards")
     parser.add_argument("--iterations", type=int, default=10)
     parser.add_argument("--max-calls", type=int, default=40)
     parser.add_argument("--max-tokens", type=int, default=120000)
@@ -389,9 +397,9 @@ def main(argv: list[str] | None = None) -> int:
             return 0
         if args.output_dir is None:
             raise ProviderGatedRunnerError("--output-dir is required unless --compare is used")
-        write_output_dir(args.output_dir, config, args.compact)
+        write_output_dir(args.output_dir, config, args.compact, emit_artifacts=args.emit_artifacts)
         return 0
-    except (ProviderGatedRunnerError, VALIDATOR.ScorecardError, COMPARISON.ScorecardComparisonError) as exc:
+    except (ProviderGatedRunnerError, VALIDATOR.ScorecardError, COMPARISON.ScorecardComparisonError, NATIVE_EXPORT.NativeScorecardExportError) as exc:
         print(f"provider-gated runner failed: {exc}", file=sys.stderr)
         return 1
 
