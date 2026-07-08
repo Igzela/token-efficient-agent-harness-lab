@@ -69,9 +69,11 @@ def _canonical_json(value: dict[str, Any]) -> str:
 
 def build_scorecard_artifact(scorecard: dict[str, Any], *, created_at: str = DEFAULT_ARTIFACT_CREATED_AT) -> dict[str, Any]:
     normalized = VALIDATOR.import_scorecard(scorecard)
-    canonical = _canonical_json(normalized)
+    storage_scorecard = dict(normalized)
+    storage_scorecard["redaction_status"] = "redacted"
+    canonical = _canonical_json(storage_scorecard)
     content_sha256 = hashlib.sha256(canonical.encode("utf-8")).hexdigest()
-    run_id = normalized["adapter_run_id"]
+    run_id = storage_scorecard["adapter_run_id"]
     return {
         "schema_version": NATIVE_SCORECARD_ARTIFACT_SCHEMA_VERSION,
         "artifact_kind": "token_efficiency_scorecard",
@@ -81,7 +83,7 @@ def build_scorecard_artifact(scorecard: dict[str, Any], *, created_at: str = DEF
         "artifact_id": f"scorecard-{run_id}-{content_sha256[:12]}",
         "content_sha256": content_sha256,
         "scorecard_schema_version": TOKEN_EFFICIENCY_SCORECARD_SCHEMA_VERSION,
-        "scorecard": normalized,
+        "scorecard": storage_scorecard,
         "metadata_only": True,
         "target_repository_writes": "disabled",
     }
