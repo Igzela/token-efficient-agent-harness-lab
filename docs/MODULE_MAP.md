@@ -1,6 +1,6 @@
 # Module Map
 
-Last updated: 2026-07-07.
+Last updated: 2026-07-08.
 
 This file maps current ownership. It is not a phase history.
 
@@ -35,6 +35,7 @@ Full Agent Autonomy Mode remains active for repo-scoped, testable, observable, C
 | Local runner validation | `scripts/validate_local_runner.py`, `tools/test_validate_local_runner.py` |
 | LangGraph bounded import | `scripts/langgraph_trace_import.py` |
 | Native artifact persistence | `engine/src/storage/local_product_store/native_scorecard_artifacts.rs` |
+| Local scorecard artifact import | `engine/src/local_scorecard_import.rs`, `engine/src/bin/import_native_scorecard_artifacts.rs` |
 | Scorecard API | `engine/src/http_server/handlers/scorecards.rs` |
 | Operator/dashboard evidence | `operator_evidence.rs`, `dashboard/` scorecard surfaces |
 

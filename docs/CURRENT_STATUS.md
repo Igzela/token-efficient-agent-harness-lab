@@ -1,6 +1,6 @@
 # Current Status
 
-Last updated: 2026-07-07.
+Last updated: 2026-07-08.
 
 ## Summary
 
@@ -18,6 +18,7 @@ This repo is a local/small-team self-hosted agent workflow control plane. Rust `
 | Trusted Local Autonomous Execution | Complete through IAE-3 |
 | Token-efficiency scorecards | Native and comparison paths implemented |
 | Local stateful-vs-stateless runner | Implemented as a script-level stub runner in #154 |
+| Local runner evidence chain | Storage/API/operator evidence consumption and local artifact import implemented |
 | Post-R7 Wire/Type Governance Hardening | Implemented through `scripts/check_wire_codegen_drift.sh` |
 
 ## Active Tracks
@@ -26,12 +27,13 @@ This repo is a local/small-team self-hosted agent workflow control plane. Rust `
 |---|---|
 | Agent Autonomous Maintenance Mode | Active |
 | Full Agent Autonomy Mode | Active for repo-scoped, testable, observable, CI-gated, rollbackable work |
-| Local runner operations | Active: document, validate, and use the #154 local runner before extending it |
-| Runner integration | Next: decide whether to connect the runner to workflow/storage/operator evidence or keep it script-only |
+| Local runner operations | Active: validate, export, import, and inspect bounded scorecard artifacts locally |
+| Runner integration | Storage/API/operator evidence complete; workflow scheduling of the Python validation/import step remains deferred |
 
 ## Current Gaps
 
-- The local runner is script-level only; it is not yet connected to Rust workflow scheduling or app storage.
+- The local runner can export `native_scorecard_artifact.v1` files and import them into `LocalProductStore`; scorecard APIs and operator evidence expose bounded metadata and derived metrics.
+- The existing workflow tick path auto-records native scorecards for terminal workflow runs. Scheduling the Python local-runner validation/import as a workflow node remains deferred because the current command-node path has no bounded artifact-import handoff without adding new executor/scheduler semantics.
 - Remote adapter support for this runner is deferred to a later focused change.
 - Keep the existing runtime/module ownership boundaries unless a later active-doc decision changes them.
 

@@ -338,7 +338,11 @@ fn build_token_efficiency_scorecard_from_workflow_run(run: &Value) -> Result<Val
         .count() as i64;
     let retry_count: i64 = nodes
         .iter()
-        .map(|node| positive_i64(node.get("attempt_count")).saturating_sub(1))
+        .map(|node| {
+            positive_i64(node.get("attempt_count"))
+                .saturating_sub(1)
+                .max(0)
+        })
         .sum();
     let duration_ms = run_duration_ms(run).unwrap_or_else(|| {
         steps
@@ -494,15 +498,86 @@ fn validate_native_scorecard_scorecard(scorecard: &Value) -> Result<(), String> 
         return Err("scorecard.runtime_kind must be native_harness".to_string());
     }
     if !matches!(
+        required_str(scorecard, "mode")?,
+        "native_control_plane"
+            | "stateless_reread"
+            | "stateful_store"
+            | "pruned_context"
+            | "external_runtime"
+    ) {
+        return Err("scorecard.mode is not allowed".to_string());
+    }
+    if !matches!(
+        required_str(scorecard, "state_strategy")?,
+        "none" | "full_history" | "durable_state" | "memory_digest" | "retrieval_refs" | "mixed"
+    ) {
+        return Err("scorecard.state_strategy is not allowed".to_string());
+    }
+    if !matches!(
         required_str(scorecard, "status")?,
         "pass" | "fail" | "error" | "blocked"
     ) {
         return Err("scorecard.status must be pass, fail, error, or blocked".to_string());
     }
+    if !matches!(
+        required_str(scorecard, "quality_method")?,
+        "rule" | "test" | "human_review" | "model_judge" | "mixed" | "none"
+    ) {
+        return Err("scorecard.quality_method is not allowed".to_string());
+    }
     if required_str(scorecard, "status")? == "pass"
         && required_str(scorecard, "quality_method")? == "none"
     {
         return Err("passing runs require a non-none quality_method".to_string());
+    }
+    if !matches!(
+        required_str(scorecard, "redaction_status")?,
+        "not_needed" | "redacted" | "rejected"
+    ) {
+        return Err("scorecard.redaction_status is not allowed".to_string());
+    }
+    for key in [
+        "input_token_total",
+        "output_token_total",
+        "context_token_total",
+        "repeated_context_token_total",
+        "retrieved_ref_token_total",
+        "tool_call_count",
+        "redundant_tool_call_count",
+        "retry_count",
+        "step_count",
+        "duration_ms",
+    ] {
+        require_nonnegative_number(scorecard, key)?;
+    }
+    if scorecard.get("estimated_cost_usd").is_some() && !scorecard["estimated_cost_usd"].is_null() {
+        require_nonnegative_number(scorecard, "estimated_cost_usd")?;
+    }
+    if number_i64(scorecard, "redundant_tool_call_count") > number_i64(scorecard, "tool_call_count")
+    {
+        return Err("redundant_tool_call_count cannot exceed tool_call_count".to_string());
+    }
+    if number_i64(scorecard, "repeated_context_token_total")
+        > number_i64(scorecard, "context_token_total")
+    {
+        return Err("repeated_context_token_total cannot exceed context_token_total".to_string());
+    }
+    if number_i64(scorecard, "retrieved_ref_token_total")
+        > number_i64(scorecard, "context_token_total")
+    {
+        return Err("retrieved_ref_token_total cannot exceed context_token_total".to_string());
+    }
+    let derived = scorecard
+        .get("derived_metrics")
+        .ok_or_else(|| "scorecard.derived_metrics must be present".to_string())?;
+    require_nonnegative_number(derived, "total_tokens")?;
+    for key in [
+        "context_share",
+        "repeated_context_ratio",
+        "tool_redundancy_ratio",
+        "step_retry_ratio",
+    ] {
+        require_nonnegative_number(derived, key)?;
     }
     let steps = scorecard
         .get("steps")
@@ -510,6 +585,76 @@ fn validate_native_scorecard_scorecard(scorecard: &Value) -> Result<(), String> 
         .ok_or_else(|| "scorecard.steps must be a list".to_string())?;
     if number_i64(scorecard, "step_count") != steps.len() as i64 {
         return Err("step_count must match scorecard steps".to_string());
+    }
+    let run_id = required_str(scorecard, "adapter_run_id")?;
+    for (index, step) in steps.iter().enumerate() {
+        validate_scorecard_step(step, run_id, index)?;
+    }
+    Ok(())
+}
+
+fn validate_scorecard_step(step: &Value, run_id: &str, index: usize) -> Result<(), String> {
+    for key in [
+        "adapter_step_id",
+        "adapter_run_id",
+        "node_name",
+        "agent_role",
+        "operation_kind",
+        "status",
+        "error_kind",
+    ] {
+        required_str(step, key)?;
+    }
+    if required_str(step, "adapter_run_id")? != run_id {
+        return Err(
+            "scorecard step adapter_run_id must match scorecard adapter_run_id".to_string(),
+        );
+    }
+    for key in [
+        "step_index",
+        "input_tokens",
+        "output_tokens",
+        "context_tokens",
+        "repeated_context_tokens",
+        "retrieved_refs_count",
+        "retrieved_ref_tokens",
+        "state_read_bytes",
+        "state_write_bytes",
+    ] {
+        require_nonnegative_number(step, key)?;
+    }
+    if number_i64(step, "step_index") != index as i64 {
+        return Err("scorecard step_index must equal zero-based order".to_string());
+    }
+    if !matches!(
+        required_str(step, "agent_role")?,
+        "planner" | "executor" | "reviewer" | "evaluator" | "unknown"
+    ) {
+        return Err("scorecard step agent_role is not allowed".to_string());
+    }
+    if !matches!(
+        required_str(step, "operation_kind")?,
+        "model_call"
+            | "tool_call"
+            | "state_read"
+            | "state_write"
+            | "retrieval"
+            | "evaluation"
+            | "control"
+    ) {
+        return Err("scorecard step operation_kind is not allowed".to_string());
+    }
+    if !matches!(
+        required_str(step, "status")?,
+        "pass" | "fail" | "error" | "blocked"
+    ) {
+        return Err("scorecard step status is not allowed".to_string());
+    }
+    if number_i64(step, "repeated_context_tokens") > number_i64(step, "context_tokens") {
+        return Err("step repeated_context_tokens cannot exceed context_tokens".to_string());
+    }
+    if number_i64(step, "retrieved_ref_tokens") > number_i64(step, "context_tokens") {
+        return Err("step retrieved_ref_tokens cannot exceed context_tokens".to_string());
     }
     Ok(())
 }
@@ -572,15 +717,14 @@ fn validate_native_scorecard_artifact(artifact: &Value) -> Result<(), String> {
     let scorecard = artifact
         .get("scorecard")
         .ok_or_else(|| "native scorecard artifact missing scorecard".to_string())?;
-    if required_str(scorecard, "schema_version")? != TOKEN_EFFICIENCY_SCORECARD_SCHEMA_VERSION {
-        return Err("scorecard.schema_version must be token_efficiency_scorecard.v1".to_string());
-    }
-    if required_str(scorecard, "runtime_kind")? != "native_harness" {
-        return Err("scorecard.runtime_kind must be native_harness".to_string());
-    }
+    validate_native_scorecard_scorecard(scorecard)?;
     let redaction_status = required_str(scorecard, "redaction_status")?;
-    if !matches!(redaction_status, "redacted" | "not_applicable") {
-        return Err("scorecard.redaction_status must be redacted or not_applicable".to_string());
+    if !matches!(redaction_status, "redacted" | "not_needed" | "rejected") {
+        return Err("scorecard.redaction_status is not allowed".to_string());
+    }
+    let content_sha256 = required_str(artifact, "content_sha256")?;
+    if content_sha256.len() != 64 || !content_sha256.chars().all(|ch| ch.is_ascii_hexdigit()) {
+        return Err("native scorecard artifact content_sha256 must be 64 hex chars".to_string());
     }
     Ok(())
 }
@@ -602,9 +746,31 @@ fn validate_no_raw_trace_keys(value: &Value) -> Result<(), String> {
                 validate_no_raw_trace_keys(item)?;
             }
         }
+        Value::String(text) if is_sensitive_value(text) => {
+            return Err("sensitive trace value is not allowed in scorecard artifact".to_string());
+        }
         _ => {}
     }
     Ok(())
+}
+
+fn is_sensitive_value(value: &str) -> bool {
+    let lower = value.to_ascii_lowercase();
+    lower.contains("sk-")
+        || lower.contains("ghp_")
+        || lower.contains("gho_")
+        || lower.contains("ghu_")
+        || lower.contains("ghs_")
+        || lower.contains("ghr_")
+        || lower.contains("api_key=")
+        || lower.contains("api-key=")
+        || lower.contains("auth_token=")
+        || lower.contains("auth-token=")
+        || lower.contains("password=")
+        || lower.contains("password:")
+        || value.contains("/home/")
+        || value.contains("/Users/")
+        || value.contains("\\Users\\")
 }
 
 fn is_raw_trace_key(key: &str) -> bool {
@@ -709,6 +875,15 @@ fn positive_i64(value: Option<&Value>) -> i64 {
     match value {
         Some(Value::Number(number)) => number.as_i64().unwrap_or(0).max(0),
         _ => 0,
+    }
+}
+
+fn require_nonnegative_number(value: &Value, key: &str) -> Result<(), String> {
+    match value.get(key) {
+        Some(Value::Number(number)) if number.as_f64().is_some_and(|number| number >= 0.0) => {
+            Ok(())
+        }
+        _ => Err(format!("missing required non-negative number field: {key}")),
     }
 }
 
