@@ -32,6 +32,7 @@ Full Agent Autonomy Mode remains active for repo-scoped, testable, observable, C
 | Native scorecard export | `scripts/native_scorecard_export.py` |
 | Native deterministic stateful pilot | `scripts/native_stateful_experiment_pilot.py` |
 | Provider-gated real runner | `scripts/provider_gated_real_runner.py`, `tools/test_provider_gated_real_runner.py` |
+| Local runner validation | `scripts/validate_local_runner.py`, `tools/test_validate_local_runner.py` |
 | LangGraph bounded import | `scripts/langgraph_trace_import.py` |
 | Native artifact persistence | `engine/src/storage/local_product_store/native_scorecard_artifacts.rs` |
 | Scorecard API | `engine/src/http_server/handlers/scorecards.rs` |
