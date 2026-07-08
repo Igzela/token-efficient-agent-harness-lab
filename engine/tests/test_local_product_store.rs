@@ -2602,7 +2602,7 @@ fn context_assembly_injects_agent_memory_for_agent_step_metadata_only() {
             &json!({
                 "memory_digest": {
                     "source_refs": [
-                        "agent_state:agent-memory:scratchpad_summary",
+                        "agent_state:run-memory:agent-memory:scratchpad_summary",
                         "/home/igzela/private/repo.rs"
                     ],
                     "expiry_policy": "forever",
@@ -2625,7 +2625,7 @@ fn context_assembly_injects_agent_memory_for_agent_step_metadata_only() {
     assert!(injection["sources"].as_array().unwrap().is_empty());
     assert_eq!(
         injection["memory_context"]["memory_digest"]["source_refs"],
-        json!(["agent_state:agent-memory:scratchpad_summary"])
+        json!(["agent_state:run-memory:agent-memory:scratchpad_summary"])
     );
     assert!(
         injection["memory_context"]["included_tokens"]

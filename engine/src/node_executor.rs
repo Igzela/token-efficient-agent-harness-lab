@@ -2214,7 +2214,7 @@ mod tests {
                 Some(&json!({
                     "memory_digest": {
                         "source_refs": [
-                            "agent_state:agent-mem:scratchpad_summary",
+                            "agent_state:run-mem:agent-mem:scratchpad_summary",
                             "/home/igzela/private/repo.rs"
                         ],
                         "expiry_policy": "forever",
@@ -2231,7 +2231,7 @@ mod tests {
             let digest = context.memory_digest.as_ref().expect("memory digest");
             assert_eq!(
                 digest["source_refs"],
-                json!(["agent_state:agent-mem:scratchpad_summary"])
+                json!(["agent_state:run-mem:agent-mem:scratchpad_summary"])
             );
             assert!(!digest.to_string().contains("/home/igzela"));
             assert!(!digest.to_string().contains("sk-proj-secret-token"));
@@ -2285,7 +2285,7 @@ mod tests {
         assert_eq!(digest["summary"], "progress from [redacted-path] using ***");
         assert_eq!(
             digest["source_refs"],
-            json!(["agent_state:agent-sync:scratchpad_summary"])
+            json!(["agent_state:run-ar2-sync:agent-sync:scratchpad_summary"])
         );
     }
 

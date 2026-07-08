@@ -1696,7 +1696,7 @@ mod tests {
         create_test_agent(&store, "agent-1", "run-1");
 
         let memory_digest = json!({
-            "source_refs": ["agent_state:agent-1:scratchpad_summary"],
+            "source_refs": ["agent_state:run-1:agent-1:scratchpad_summary"],
             "expiry_policy": "on_prune",
             "conflict_resolution": "latest_summary_wins",
             "summary": "progress: 50% done"

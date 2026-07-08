@@ -202,7 +202,10 @@ fn scratchpad_digest(state: &AgentState) -> Option<Value> {
 }
 
 fn scratchpad_source_ref(state: &AgentState) -> String {
-    format!("agent_state:{}:scratchpad_summary", state.agent_id)
+    format!(
+        "agent_state:{}:{}:scratchpad_summary",
+        state.run_id, state.agent_id
+    )
 }
 
 fn sanitize_memory_text(text: &str) -> String {
@@ -300,7 +303,7 @@ mod tests {
     fn normalizes_digest_with_bounds_redaction_and_safe_source_refs() {
         let digest = normalize_memory_digest(&json!({
             "source_refs": [
-                "agent_state:agent-1:scratchpad_summary",
+                "agent_state:run-1:agent-1:scratchpad_summary",
                 "/home/igzela/private/repo/src/lib.rs"
             ],
             "expiry_policy": "forever",
@@ -314,7 +317,7 @@ mod tests {
         assert_eq!(digest["conflict_resolution"], "latest_summary_wins");
         assert_eq!(
             digest["source_refs"],
-            json!(["agent_state:agent-1:scratchpad_summary"])
+            json!(["agent_state:run-1:agent-1:scratchpad_summary"])
         );
         let text = digest["summary"].as_str().unwrap();
         assert!(!text.contains("sk-proj-secret-token"));
@@ -333,7 +336,7 @@ mod tests {
         let digest = load_memory_digest_from_agent_state(&state).expect("fallback digest");
         assert_eq!(
             digest["source_refs"],
-            json!(["agent_state:agent-1:scratchpad_summary"])
+            json!(["agent_state:run-1:agent-1:scratchpad_summary"])
         );
         assert!(!digest["summary"]
             .as_str()
@@ -346,7 +349,7 @@ mod tests {
         let state = state_with(
             Some("old summary"),
             Some(json!({
-                "source_refs": ["agent_state:agent-1:scratchpad_summary"],
+                "source_refs": ["agent_state:run-1:agent-1:scratchpad_summary"],
                 "expiry_policy": "on_prune",
                 "conflict_resolution": "latest_summary_wins",
                 "summary": "old summary"
@@ -385,7 +388,7 @@ mod tests {
         let state = state_with(
             None,
             Some(json!({
-                "source_refs": ["agent_state:agent-1:scratchpad_summary"],
+                "source_refs": ["agent_state:run-1:agent-1:scratchpad_summary"],
                 "expiry_policy": "on_prune",
                 "conflict_resolution": "latest_summary_wins",
                 "summary": "0123456789abcdef0123456789abcdef"

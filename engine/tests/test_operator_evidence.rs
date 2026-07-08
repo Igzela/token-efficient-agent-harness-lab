@@ -868,7 +868,7 @@ async fn test_evidence_memory_digest_is_aggregate_only() {
             "busy",
             &json!({
                 "memory_digest": {
-                    "source_refs": ["agent_state:agent-m:scratchpad_summary"],
+                    "source_refs": ["agent_state:run-m:agent-m:scratchpad_summary"],
                     "expiry_policy": "on_prune",
                     "conflict_resolution": "latest_summary_wins",
                     "summary": "raw memory summary must not leak",
