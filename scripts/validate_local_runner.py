@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import importlib.util
 import json
 import shutil
@@ -12,6 +13,9 @@ from pathlib import Path
 from typing import Any
 
 ROOT = Path(__file__).resolve().parents[1]
+NATIVE_SCORECARD_ARTIFACT_SCHEMA_VERSION = "native_scorecard_artifact.v1"
+TOKEN_EFFICIENCY_SCORECARD_SCHEMA_VERSION = "token_efficiency_scorecard.v1"
+DEFAULT_ARTIFACT_CREATED_AT = "1970-01-01T00:00:00Z"
 
 
 def _load_module(name: str, path: Path):
@@ -41,6 +45,7 @@ class ValidationResult:
     token_reduction_ratio: float
     stateless_repeated_context_ratio: float
     stateful_repeated_context_ratio: float
+    artifact_paths: tuple[Path, ...] = ()
 
 
 def _read_json(path: Path) -> dict[str, Any]:
@@ -56,6 +61,50 @@ def _read_json(path: Path) -> dict[str, Any]:
 def _require(condition: bool, message: str) -> None:
     if not condition:
         raise LocalRunnerValidationError(message)
+
+
+def _canonical_json(value: dict[str, Any]) -> str:
+    return json.dumps(value, sort_keys=True, separators=(",", ":"))
+
+
+def build_scorecard_artifact(scorecard: dict[str, Any], *, created_at: str = DEFAULT_ARTIFACT_CREATED_AT) -> dict[str, Any]:
+    normalized = VALIDATOR.import_scorecard(scorecard)
+    storage_scorecard = dict(normalized)
+    storage_scorecard["redaction_status"] = "redacted"
+    canonical = _canonical_json(storage_scorecard)
+    content_sha256 = hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+    run_id = storage_scorecard["adapter_run_id"]
+    return {
+        "schema_version": NATIVE_SCORECARD_ARTIFACT_SCHEMA_VERSION,
+        "artifact_kind": "token_efficiency_scorecard",
+        "storage": "app_owned_artifact_json_export",
+        "read_only": True,
+        "created_at": created_at,
+        "artifact_id": f"scorecard-{run_id}-{content_sha256[:12]}",
+        "content_sha256": content_sha256,
+        "scorecard_schema_version": TOKEN_EFFICIENCY_SCORECARD_SCHEMA_VERSION,
+        "scorecard": storage_scorecard,
+        "metadata_only": True,
+        "target_repository_writes": "disabled",
+    }
+
+
+def write_scorecard_artifacts(output_dir: Path, artifact_dir: Path) -> tuple[Path, ...]:
+    stateless = VALIDATOR.import_scorecard(_read_json(output_dir / "stateless_reread.scorecard.json"))
+    stateful = VALIDATOR.import_scorecard(_read_json(output_dir / "stateful_store.scorecard.json"))
+    artifacts = [
+        ("stateless_reread.artifact.json", build_scorecard_artifact(stateless)),
+        ("stateful_store.artifact.json", build_scorecard_artifact(stateful)),
+    ]
+    if artifact_dir.exists():
+        shutil.rmtree(artifact_dir)
+    artifact_dir.mkdir(parents=True, exist_ok=True)
+    paths: list[Path] = []
+    for filename, artifact in artifacts:
+        path = artifact_dir / filename
+        path.write_text(_canonical_json(artifact) + "\n", encoding="utf-8")
+        paths.append(path)
+    return tuple(paths)
 
 
 def validate_output_dir(output_dir: Path) -> ValidationResult:
@@ -105,22 +154,34 @@ def validate_output_dir(output_dir: Path) -> ValidationResult:
     )
 
 
-def run_validation(output_dir: Path, iterations: int, keep_output: bool) -> ValidationResult:
+def run_validation(output_dir: Path, iterations: int, keep_output: bool, artifact_dir: Path | None = None) -> ValidationResult:
     if output_dir.exists():
         shutil.rmtree(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
     code = RUNNER.main(["--output-dir", str(output_dir), "--iterations", str(iterations), "--compact"])
     _require(code == 0, "local runner exited with non-zero status")
     result = validate_output_dir(output_dir)
+    artifact_paths: tuple[Path, ...] = ()
+    if artifact_dir is not None:
+        artifact_paths = write_scorecard_artifacts(output_dir, artifact_dir)
     if not keep_output:
         shutil.rmtree(output_dir)
-    return result
+    return ValidationResult(
+        output_dir=result.output_dir,
+        stateless_total_tokens=result.stateless_total_tokens,
+        stateful_total_tokens=result.stateful_total_tokens,
+        token_reduction_ratio=result.token_reduction_ratio,
+        stateless_repeated_context_ratio=result.stateless_repeated_context_ratio,
+        stateful_repeated_context_ratio=result.stateful_repeated_context_ratio,
+        artifact_paths=artifact_paths,
+    )
 
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Validate local stateful-vs-stateless runner outputs.")
     parser.add_argument("--iterations", type=int, default=10)
     parser.add_argument("--output-dir", type=Path)
+    parser.add_argument("--artifact-dir", type=Path)
     parser.add_argument("--keep-output", action="store_true")
     parser.add_argument("--json", action="store_true")
     args = parser.parse_args(argv)
@@ -128,9 +189,19 @@ def main(argv: list[str] | None = None) -> int:
     try:
         if args.output_dir is None:
             with tempfile.TemporaryDirectory(prefix="acp-local-runner-") as tmp:
-                result = run_validation(Path(tmp) / "runner", args.iterations, keep_output=False)
+                result = run_validation(
+                    Path(tmp) / "runner",
+                    args.iterations,
+                    keep_output=False,
+                    artifact_dir=args.artifact_dir,
+                )
         else:
-            result = run_validation(args.output_dir, args.iterations, keep_output=args.keep_output)
+            result = run_validation(
+                args.output_dir,
+                args.iterations,
+                keep_output=args.keep_output,
+                artifact_dir=args.artifact_dir,
+            )
 
         summary = {
             "status": "pass",
@@ -139,14 +210,17 @@ def main(argv: list[str] | None = None) -> int:
             "token_reduction_ratio": result.token_reduction_ratio,
             "stateless_repeated_context_ratio": result.stateless_repeated_context_ratio,
             "stateful_repeated_context_ratio": result.stateful_repeated_context_ratio,
+            "artifact_count": len(result.artifact_paths),
         }
         if args.json:
             print(json.dumps(summary, sort_keys=True))
         else:
+            artifact_suffix = f"; emitted {len(result.artifact_paths)} storage artifacts" if result.artifact_paths else ""
             print(
                 "local runner validation passed: "
                 f"stateful tokens {result.stateful_total_tokens} < stateless tokens {result.stateless_total_tokens}; "
                 f"token reduction {result.token_reduction_ratio:.3f}"
+                f"{artifact_suffix}"
             )
         return 0
     except (LocalRunnerValidationError, RUNNER.ProviderGatedRunnerError, VALIDATOR.ScorecardError, COMPARISON.ScorecardComparisonError) as exc:
