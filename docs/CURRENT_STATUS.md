@@ -19,6 +19,7 @@ This repo is a local/small-team self-hosted agent workflow control plane. Rust `
 | Token-efficiency scorecards | Native and comparison paths implemented |
 | Local stateful-vs-stateless runner | Implemented as a script-level stub runner in #154 |
 | Local runner evidence chain | Storage/API/operator evidence consumption and local artifact import implemented |
+| Agent memory policy layer | Implemented inside existing AgentState, AgentStepExecutor, context_pack, workflow context_injection, operator evidence, and scorecard state-byte paths without new storage/runtime |
 | Post-R7 Wire/Type Governance Hardening | Implemented through `scripts/check_wire_codegen_drift.sh` |
 
 ## Active Tracks

@@ -855,6 +855,59 @@ async fn test_evidence_no_raw_prompt_or_output() {
 }
 
 #[tokio::test]
+async fn test_evidence_memory_digest_is_aggregate_only() {
+    let (store, _dir) = make_store();
+
+    store
+        .create_agent_state(
+            "agent-m",
+            "run-memory",
+            "implementer",
+            &["code".to_string()],
+            Some("raw objective must not leak"),
+            "busy",
+            &json!({
+                "memory_digest": {
+                    "source_refs": ["agent_state:run-m:agent-m:scratchpad_summary"],
+                    "expiry_policy": "on_prune",
+                    "conflict_resolution": "latest_summary_wins",
+                    "summary": "raw memory summary must not leak",
+                    "updated_at": "2026-07-08T00:00:00Z"
+                },
+                "other_raw_metadata": "must not leak"
+            }),
+        )
+        .unwrap();
+    store
+        .update_agent_state(
+            "agent-m",
+            "run-memory",
+            None,
+            Some("scratchpad text must not leak"),
+            None,
+            None,
+        )
+        .unwrap();
+
+    let app = build_app(store);
+    let (_status, body) = get_evidence(&app, "run-memory").await;
+    let full_text = body.to_string();
+
+    assert!(!full_text.contains("raw memory summary must not leak"));
+    assert!(!full_text.contains("scratchpad text must not leak"));
+    assert!(!full_text.contains("raw objective must not leak"));
+    assert!(!full_text.contains("other_raw_metadata"));
+
+    let agent = &body["agents"].as_array().unwrap()[0];
+    assert_eq!(agent["memory_digest_present"], true);
+    assert_eq!(agent["memory_source_ref_count"], 1);
+    assert_eq!(agent["memory_updated_at"], "2026-07-08T00:00:00Z");
+    assert!(agent["memory_estimated_bytes"].as_i64().unwrap() > 0);
+    assert!(agent.get("memory_digest").is_none());
+    assert!(agent.get("metadata").is_none());
+}
+
+#[tokio::test]
 async fn test_operator_summary_present_and_bounded() {
     let (store, _dir) = make_store();
 

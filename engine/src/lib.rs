@@ -3,6 +3,7 @@
 #![allow(clippy::unnecessary_map_or)]
 #![recursion_limit = "256"]
 
+pub mod agent_memory;
 pub mod budget_manager;
 pub mod cli;
 pub mod dispatch_decision;

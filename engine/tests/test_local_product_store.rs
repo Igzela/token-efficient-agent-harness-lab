@@ -769,6 +769,55 @@ fn make_workflow_plan_no_predecessor(
     })
 }
 
+fn make_agent_step_memory_plan(
+    ids: &engine::storage::local_product_store::WorkflowPlanIds,
+) -> Value {
+    json!({
+        "schema_version": "read_only_plan.v1",
+        "plan_id": ids.plan_id,
+        "status": "planned_read_only",
+        "workflow_id": ids.workflow_id,
+        "dispatch_id": ids.dispatch_id,
+        "analysis": {"analysis_id": "analysis-0001", "task_domain": "agent"},
+        "graph": {
+            "schema_version": "workflow_graph.v1",
+            "workflow_id": ids.workflow_id,
+            "dispatch_id": ids.dispatch_id,
+            "status": "decomposed",
+            "created_at": "2026-07-08T00:00:00Z",
+            "updated_at": "2026-07-08T00:00:00Z",
+            "nodes": [
+                {
+                    "schema_version": "workflow_node.v1",
+                    "node_id": "agent-node-memory",
+                    "workflow_id": ids.workflow_id,
+                    "task_type": "agent_step",
+                    "agent_id": "agent-memory",
+                    "assigned_agent_id": "agent-memory",
+                    "status": "pending",
+                    "input_refs": [],
+                    "output_ref": null,
+                    "budget": 0.1,
+                    "cost_incurred": 0.0,
+                    "error": null,
+                    "created_at": "2026-07-08T00:00:00Z",
+                    "started_at": null,
+                    "completed_at": null
+                }
+            ],
+            "edges": [],
+            "started_at": null,
+            "completed_at": null,
+            "result": null
+        },
+        "boundaries": {
+            "execution": "disabled",
+            "target_repository_writes": "disabled",
+            "runtime_workers": "disabled",
+        },
+    })
+}
+
 fn make_workflow_plan_with_field_mapping(
     ids: &engine::storage::local_product_store::WorkflowPlanIds,
 ) -> Value {
@@ -2525,6 +2574,72 @@ fn context_assembly_no_predecessor_no_injection() {
         injection.is_null(),
         "no predecessors means no context_injection"
     );
+}
+
+#[test]
+fn context_assembly_injects_agent_memory_for_agent_step_metadata_only() {
+    let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    std::env::set_var("ACP_CONTEXT_ASSEMBLY_ENABLED", "1");
+    std::env::set_var("ACP_CONTEXT_ASSEMBLY_MAX_TOKENS", "4");
+    let dir = tempdir().unwrap();
+    let store = LocalProductStore::new(dir.path().join("ctx_agent_memory.db")).unwrap();
+    let plan = store
+        .create_workflow_plan("ctx agent memory", "api", "actor", |ids, _| {
+            Ok(make_agent_step_memory_plan(ids))
+        })
+        .unwrap();
+    store
+        .create_workflow_run_from_plan(plan["plan_id"].as_str().unwrap(), "actor")
+        .unwrap();
+    store
+        .create_agent_state(
+            "agent-memory",
+            "run-0001",
+            "implementer",
+            &["code".to_string()],
+            Some("raw objective must not leak"),
+            "idle",
+            &json!({
+                "memory_digest": {
+                    "source_refs": [
+                        "agent_state:run-memory:agent-memory:scratchpad_summary",
+                        "/home/igzela/private/repo.rs"
+                    ],
+                    "expiry_policy": "forever",
+                    "conflict_resolution": "append_raw",
+                    "summary": "remember bounded progress with sk-test-secret-token"
+                }
+            }),
+        )
+        .unwrap();
+
+    let tick = store
+        .tick_with_executor("run-0001", "actor", 0, &ContextEchoExecutor)
+        .unwrap();
+    assert_eq!(tick["node_id"], "agent-node-memory");
+    let output = tick["result"]["output"].as_str().unwrap();
+    let injection: Value = serde_json::from_str(output).unwrap();
+    assert_eq!(injection["schema_version"], "context_injection.v1");
+    assert_eq!(injection["target_node_id"], "agent-node-memory");
+    assert_eq!(injection["injection_surface"], "node_metadata_only");
+    assert!(injection["sources"].as_array().unwrap().is_empty());
+    assert_eq!(
+        injection["memory_context"]["memory_digest"]["source_refs"],
+        json!(["agent_state:run-memory:agent-memory:scratchpad_summary"])
+    );
+    assert!(
+        injection["memory_context"]["included_tokens"]
+            .as_i64()
+            .unwrap()
+            <= 4
+    );
+    let rendered = injection.to_string();
+    assert!(!rendered.contains("raw objective"));
+    assert!(!rendered.contains("/home/igzela"));
+    assert!(!rendered.contains("sk-test-secret-token"));
+
+    std::env::remove_var("ACP_CONTEXT_ASSEMBLY_ENABLED");
+    std::env::remove_var("ACP_CONTEXT_ASSEMBLY_MAX_TOKENS");
 }
 
 #[test]

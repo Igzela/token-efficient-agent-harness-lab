@@ -4,6 +4,7 @@ use axum::response::IntoResponse;
 use axum::Json;
 use serde_json::json;
 
+use crate::agent_memory::{estimate_memory_state_bytes, load_memory_digest_from_agent_state};
 use crate::http_server::middleware::{
     authorize, cors_headers, internal_error, require_store, ApiError, RequestId,
 };
@@ -110,11 +111,27 @@ pub(crate) fn build_operator_evidence(
     let agent_views: Vec<serde_json::Value> = agents
         .iter()
         .map(|a| {
+            let memory_digest = load_memory_digest_from_agent_state(a);
+            let memory_source_ref_count = memory_digest
+                .as_ref()
+                .and_then(|digest| digest.get("source_refs"))
+                .and_then(serde_json::Value::as_array)
+                .map(|refs| refs.len())
+                .unwrap_or(0);
+            let memory_updated_at = memory_digest
+                .as_ref()
+                .and_then(|digest| digest.get("updated_at"))
+                .and_then(serde_json::Value::as_str);
+            let memory_estimated_bytes = estimate_memory_state_bytes(memory_digest.as_ref(), None);
             json!({
                 "agent_id": a.agent_id,
                 "role": a.role,
                 "status": a.status,
                 "updated_at": a.updated_at,
+                "memory_digest_present": memory_digest.is_some(),
+                "memory_source_ref_count": memory_source_ref_count,
+                "memory_updated_at": memory_updated_at,
+                "memory_estimated_bytes": memory_estimated_bytes,
             })
         })
         .collect();
