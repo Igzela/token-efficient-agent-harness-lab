@@ -211,7 +211,11 @@ async fn axum_health_is_available_without_auth_by_default() {
 
     assert_eq!(response.status(), StatusCode::OK);
     let body = response_json(response).await;
-    assert_eq!(body["status"], "healthy");
+    assert!(
+        matches!(body["status"].as_str(), Some("healthy" | "degraded")),
+        "health probe should report an available host: {body}"
+    );
+    assert!(body["checks"].is_object());
     assert_eq!(body["tenant_id"], "local");
 }
 
@@ -2327,7 +2331,11 @@ async fn axum_health_bypass_allows_unauthenticated_health_probe_when_auth_config
         .unwrap();
     assert_eq!(health.status(), StatusCode::OK);
     let body = response_json(health).await;
-    assert_eq!(body["status"], "healthy");
+    assert!(
+        matches!(body["status"].as_str(), Some("healthy" | "degraded")),
+        "health bypass should preserve the host health report: {body}"
+    );
+    assert!(body["checks"].is_object());
     assert_eq!(body["tenant_id"], "local");
 
     let ready = app
