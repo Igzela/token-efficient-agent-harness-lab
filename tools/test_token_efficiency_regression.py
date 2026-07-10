@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import argparse
 import copy
 import importlib.util
 import json
@@ -11,6 +12,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPT_PATH = ROOT / "scripts" / "token_efficiency_regression.py"
 FIXTURE_PATH = ROOT / "tests" / "fixtures" / "token_efficiency_regression" / "registry.json"
+EVIDENCE_ROOT = FIXTURE_PATH.parent
 SPEC = importlib.util.spec_from_file_location("token_efficiency_regression", SCRIPT_PATH)
 assert SPEC is not None
 MODULE = importlib.util.module_from_spec(SPEC)
@@ -41,6 +43,34 @@ NATIVE_EXPORT = load_script(
     "pe1_native_scorecard_export",
     ROOT / "scripts" / "native_scorecard_export.py",
 )
+
+
+def fixed_evidence_paths(scenario_id: str) -> tuple[Path, Path]:
+    scenario_dir = (
+        ROOT / "tests" / "fixtures" / "langgraph_pilot"
+        if scenario_id == "langgraph_offline_state_retention_pilot_2026_07_10"
+        else EVIDENCE_ROOT / scenario_id
+    )
+    return (
+        scenario_dir / "stateless_reread.artifact.json",
+        scenario_dir / "stateful_store.artifact.json",
+    )
+
+
+def local_stub_config():
+    return LOCAL_RUNNER.build_config(
+        argparse.Namespace(
+            iterations=10,
+            max_calls=40,
+            max_tokens=120_000,
+            timeout_seconds=30.0,
+            run_cost_cap_usd=0.25,
+            daily_cost_cap_usd=1.0,
+            pass_threshold=0.94,
+            live=False,
+            provider="stub",
+        )
+    )
 
 
 class TokenEfficiencyRegressionRegistryTests(unittest.TestCase):
@@ -273,6 +303,73 @@ class TokenEfficiencyRegressionReportTests(unittest.TestCase):
 
         with self.assertRaisesRegex(MODULE.RegressionRegistryError, "raw or sensitive"):
             self.build_report(current=current)
+
+    def test_all_registered_scenarios_have_checked_fixed_evidence_pairs(self) -> None:
+        regenerated = {
+            NATIVE_PILOT.SCENARIO_ID: NATIVE_PILOT.build_pair(),
+            LOCAL_RUNNER.SCENARIO_ID: LOCAL_RUNNER.build_pair(local_stub_config()),
+        }
+        expected_reports = {
+            "langgraph_offline_state_retention_pilot_2026_07_10": (
+                "pass",
+                [],
+                "d2090f6cb5b9507a3d51d414d04ea2e1d81ba047b297396a57ad0cc22af1063a",
+            ),
+            NATIVE_PILOT.SCENARIO_ID: (
+                "regression",
+                ["baseline.state_bytes"],
+                "aba0481c81461eb64b68187a0a8819a2191971f26b61be5f13c38675ab1dcee9",
+            ),
+            LOCAL_RUNNER.SCENARIO_ID: (
+                "regression",
+                ["baseline.state_bytes"],
+                "c0281ba653d7f6d5f5efe40de109008378ec639503adcabeedde37ff486681ea",
+            ),
+        }
+
+        for scenario in self.registry["scenarios"]:
+            scenario_id = scenario["scenario_id"]
+            baseline_path, candidate_path = fixed_evidence_paths(scenario_id)
+            with self.subTest(scenario_id=scenario_id):
+                baseline = json.loads(baseline_path.read_text(encoding="utf-8"))
+                candidate = json.loads(candidate_path.read_text(encoding="utf-8"))
+                self.assertEqual(baseline["scorecard"]["mode"], "stateless_reread")
+                self.assertEqual(candidate["scorecard"]["mode"], "stateful_store")
+                self.assertEqual(
+                    baseline["scorecard"]["comparison_contract"]["task_digest"],
+                    scenario["task_digest"],
+                )
+                self.assertEqual(
+                    candidate["scorecard"]["comparison_contract"]["task_digest"],
+                    scenario["task_digest"],
+                )
+                report = MODULE.build_regression_report(
+                    self.registry,
+                    scenario_id,
+                    current=candidate,
+                    baseline=baseline,
+                    best_known=candidate,
+                )
+                expected_outcome, expected_reasons, expected_hash = expected_reports[scenario_id]
+                self.assertEqual(report["outcome"], expected_outcome)
+                self.assertEqual(report["reason_codes"], expected_reasons)
+                self.assertEqual(report["report_sha256"], expected_hash)
+                self.assertFalse(
+                    any(
+                        metric["regressed"]
+                        for metric in report["comparisons"]["best_known"]["metrics"].values()
+                    )
+                )
+                self.assertEqual(report, MODULE.validate_regression_report(report))
+
+                if scenario_id in regenerated:
+                    expected_baseline, expected_candidate = regenerated[scenario_id]
+                    rebuilt_baseline = NATIVE_EXPORT.build_artifact(expected_baseline)
+                    rebuilt_candidate = NATIVE_EXPORT.build_artifact(expected_candidate)
+                    rebuilt_baseline["created_at"] = baseline["created_at"]
+                    rebuilt_candidate["created_at"] = candidate["created_at"]
+                    self.assertEqual(baseline, rebuilt_baseline)
+                    self.assertEqual(candidate, rebuilt_candidate)
 
 
 if __name__ == "__main__":
