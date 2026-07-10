@@ -31,7 +31,7 @@ Full Agent Autonomy Mode remains active for repo-scoped, testable, observable, C
 |---|---|
 | Scorecard validation | `scripts/token_efficiency_scorecard.py` |
 | Scorecard comparison | `scripts/scorecard_comparison.py` |
-| PE-1 scenario registry and regression reports | `scripts/token_efficiency_regression.py`, `tools/test_token_efficiency_regression.py`, `tests/fixtures/token_efficiency_regression/registry.json` |
+| PE-1 scenario registry, fixed evidence, and regression reports | `scripts/token_efficiency_regression.py`, `tools/test_token_efficiency_regression.py`, `tests/fixtures/token_efficiency_regression/registry.json`, `tests/fixtures/token_efficiency_regression/*/*.artifact.json` |
 | Native scorecard export | `scripts/native_scorecard_export.py` |
 | Native deterministic stateful pilot | `scripts/native_stateful_experiment_pilot.py` |
 | Provider-gated real runner | `scripts/provider_gated_real_runner.py`, `tools/test_provider_gated_real_runner.py` |
