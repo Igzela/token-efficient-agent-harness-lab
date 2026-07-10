@@ -17,6 +17,7 @@ This repo is a local/small-team self-hosted agent workflow control plane. Rust `
 | Agent Runtime | Complete and sealed at AR-6 |
 | Trusted Local Autonomous Execution | Complete through IAE-3 |
 | Token-efficiency scorecards | Native and comparison paths implemented |
+| LangGraph bounded trace importer | Implemented in PR #149 with bounded stateful/stateless import, same-scenario comparison, raw-trace/secret rejection, and focused tests |
 | Local stateful-vs-stateless runner | Implemented as a script-level stub runner in #154 |
 | Local runner evidence chain | Storage/API/operator evidence consumption and local artifact import implemented |
 | Agent memory policy layer | Implemented inside existing AgentState, AgentStepExecutor, context_pack, workflow context_injection, operator evidence, and scorecard state-byte paths without new storage/runtime |
@@ -42,6 +43,8 @@ This repo is a local/small-team self-hosted agent workflow control plane. Rust `
 - `FakeProvider` (`provider/fake.rs`) provides deterministic test output with zero cost. `is_enabled() == true` (it is a valid test provider, not disabled).
 - `external_calls` in `runner_metadata` correctly reflects the number of provider invocations (steps count) for both Rust and Python paths.
 - Native scorecard artifacts are automatically recorded when the workflow run completes (proven by integration tests). The artifact contains bounded metadata and workflow-level step projections only (no raw local-runner steps, prompts, outputs, or transcripts).
+- `scripts/langgraph_trace_import.py` imports already-bounded LangGraph `stateful_store` and `stateless_reread` summaries into `token_efficiency_scorecard.v1` and compares scorecards that share one `scenario_id`. It does not import LangGraph, run a graph, call a provider, or persist artifacts.
+- The remaining external-runtime gap is a real operator-supplied LangGraph evidence pair, idempotent handoff into the existing app-owned scorecard storage/API boundary, and a dashboard same-scenario comparison view. No external runtime runner is currently authorized.
 - Python runner (`scripts/provider_gated_real_runner.py`) accepts `--provider {stub,fake,live}` (aligned with Rust binary). Non-stub modes delegate to the Rust binary. Config validation no longer checks binary existence; binary resolution happens only at `build_pair` time.
 - Remote adapter support for this runner is deferred to a later focused change.
 - Keep the existing runtime/module ownership boundaries unless a later active-doc decision changes them.

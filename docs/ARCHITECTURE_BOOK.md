@@ -148,9 +148,10 @@ Implementation order remains importer-first:
 3. store scorecard evidence as a read-only app-owned artifact — implemented as `native_scorecard_artifact.v1` persisted through `LocalProductStore.native_scorecard_artifacts`, including automatic persistence at native workflow terminal-state transitions;
 4. compute derived metrics — implemented by the validator;
 5. expose read-only scorecards — implemented through `GET /api/v1/scorecards?run_id=...`, `GET /api/v1/scorecards?dispatch_id=...`, `GET /api/v1/scorecards/:artifact_id`, and the operator evidence read-model;
-6. only then add runtime-specific runners.
+6. import bounded LangGraph summaries and compare same-scenario stateful/stateless scorecards — implemented in `scripts/langgraph_trace_import.py`;
+7. only after a real importer-first pilot is accepted, consider runtime-specific runners through a separate decision.
 
-The first external baseline should be LangGraph stateful versus stateless reread. CrewAI and Microsoft Agent Framework should wait until native scorecard export and importer validation are stable.
+The first external baseline remains LangGraph stateful versus stateless reread. The next architecture increment is app-owned persistence and a scenario comparison read-model for real, operator-supplied bounded summaries. It must reuse the existing scorecard table/API boundary, versioning the artifact envelope only if non-native runtime identity cannot be represented safely. CrewAI and Microsoft Agent Framework should wait until that LangGraph pilot is reproducible and accepted.
 
 ## V2 Real Production Output Architecture
 
@@ -336,7 +337,7 @@ These are accepted current limitations, not hidden TODOs:
 - GitHub PR creation is default-off and adds no merge authority.
 - Bounded supervised workers are merged in V2-4 and Mission Control product output UX is merged in V2-5; unattended autonomous-agent loops remain out of scope.
 - Bounded multi-agent runtime semantics are implemented through Agent Runtime AR-0 through AR-6. The track is sealed; extending the AR phase ladder requires a new decision baseline — see `docs/NEXT_DECISION.md` § Agent Runtime AR-0 through AR-6 Closeout.
-- External runtime adapters are not implemented. Current architecture permits only importer-first, benchmark-oriented trace normalization through existing evidence, artifact, audit, and storage boundaries.
+- The bounded LangGraph importer and same-scenario comparison are implemented, but no external runtime runner is embedded and no real LangGraph benchmark evidence is persisted automatically. Current architecture permits only importer-first, operator-supplied trace-summary normalization through existing evidence, artifact, audit, and storage boundaries.
 - Cloud SaaS, hosted/cloud deployment, multi-tenant service, and direct release/tag/deploy/apply controls are not implemented. Full Agent Autonomy Mode may evolve these repo-scoped designs through documented, testable, observable, reviewable, and rollbackable changes. The only hard stops are real-secret commits, falsified test/CI evidence, intentionally hidden failures, removed rollback paths, and irreversible external destruction without recovery.
 - Some routing, quality, and orchestration modules remain partially active rather than unified under one policy layer.
 
