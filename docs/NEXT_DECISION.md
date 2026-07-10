@@ -50,7 +50,7 @@ The normative order is PE-1, PE-2, PE-3, PE-4, PE-5, and PE-6. Each stage should
 
 | Stage | Priority | Goal | Status |
 |---|---|---|---|
-| PE-1 | P0 | Token Efficiency Regression Lab | Authorized; next |
+| PE-1 | P0 | Token Efficiency Regression Lab | In progress: report-only multi-scenario registry contract implemented; regression report recomputation is next |
 | PE-2 | P0/P1 | Budget Intelligence and Anomaly Auto-Pause | Authorized after PE-1 contracts stabilize |
 | PE-3 | P1 | Operator Decision Center | Authorized after PE-2 evidence shape exists |
 | PE-4 | P1/P2 | Trace-backed Policy Replay | Authorized after sufficient versioned traces exist |
@@ -64,6 +64,8 @@ Build a bounded multi-scenario registry over existing scorecard v1/v2 artifacts.
 Compare current evidence with explicit baseline and best-known results across tokens, repeated context, state bytes, cost, latency, retries, and quality. Return `incomparable` when contracts or quality differ. Persist only bounded regression reports through the existing artifact/store/API boundary. Add Dashboard history, trend, baseline, best-known configuration, regression reason, and evidence links.
 
 Initial mode is report-only: no CI blocking, routing change, policy mutation, or provider call. Acceptance requires deterministic recomputation plus tamper, threshold, quality-failure, missing-baseline, incomparable, repeat-import, cross-version, and trend tests.
+
+Implemented slice: `token_efficiency_regression_registry.v1` validates a canonical hash-bound registry of three summary-only scenarios against the existing LangGraph fixture, native deterministic pilot, and local stub runner. It fixes explicit baseline/candidate roles, quality thresholds, allowed regressions, supported v1/v2 artifact contracts, and report-only/zero-provider/zero-mutation metadata. It adds no storage, API, Dashboard, CI-blocking, routing, or policy authority. Next: deterministically recompute bounded current-vs-baseline and best-known regression reports from fixed evidence, including missing-baseline, incomparable, threshold, and quality-failure outcomes.
 
 ### PE-2 — Budget Intelligence and Anomaly Auto-Pause
 

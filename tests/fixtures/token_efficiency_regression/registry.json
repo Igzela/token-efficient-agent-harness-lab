@@ -1,0 +1,94 @@
+{
+  "schema_version": "token_efficiency_regression_registry.v1",
+  "registry_id": "pe1-fixed-summary-scenarios",
+  "registry_sha256": "25e7aae24f1a67225b9edb062e3cf94d6e05fdea54a27c9e6b11030e1ca5fb67",
+  "scenarios": [
+    {
+      "scenario_id": "langgraph_offline_state_retention_pilot_2026_07_10",
+      "scenario_digest": "a179af7756f40d68f1f0461b06ad1a149557c063b514815e5fd0b57128ff4e2f",
+      "task_digest": "705b8eb871a13bb39ea74877837e7598c2255dccc91b718d58ec257b8fb0c66c",
+      "quality": {"method": "rule", "threshold": 1.0},
+      "evidence_roles": {
+        "baseline": {"mode": "stateless_reread"},
+        "candidate": {"mode": "stateful_store"}
+      },
+      "best_known_role": "candidate",
+      "allowed_regressions": {
+        "total_tokens": 0.05,
+        "repeated_context_ratio": 0.02,
+        "state_bytes": 0.10,
+        "estimated_cost_usd": 0.05,
+        "duration_ms": 0.10,
+        "retry_count": 0.0,
+        "quality_score": 0.0
+      },
+      "comparison_metadata": {
+        "runtime_kind": "langgraph",
+        "runtime_version": "1.2.9",
+        "evidence_kind": "bounded_summary_only",
+        "supported_artifact_schema_versions": ["native_scorecard_artifact.v1", "scorecard_artifact.v2"],
+        "report_only": true,
+        "provider_calls": "disabled",
+        "mutation_authority": "none"
+      }
+    },
+    {
+      "scenario_id": "native_remember_dont_reread_pilot",
+      "scenario_digest": "1c12469859ef6fc3868e89f6317a2e5f75259467063a7e39409782a38690e2fe",
+      "task_digest": "5edb687190c0e09d1d3d1bdc190c2feb835415ca6b3168e9d4c320fc576b76d7",
+      "quality": {"method": "test", "threshold": 0.899},
+      "evidence_roles": {
+        "baseline": {"mode": "stateless_reread"},
+        "candidate": {"mode": "stateful_store"}
+      },
+      "best_known_role": "candidate",
+      "allowed_regressions": {
+        "total_tokens": 0.05,
+        "repeated_context_ratio": 0.02,
+        "state_bytes": 0.10,
+        "estimated_cost_usd": 0.05,
+        "duration_ms": 0.10,
+        "retry_count": 0.0,
+        "quality_score": 0.0
+      },
+      "comparison_metadata": {
+        "runtime_kind": "native_harness",
+        "runtime_version": "native-stateful-pilot.v1",
+        "evidence_kind": "bounded_summary_only",
+        "supported_artifact_schema_versions": ["native_scorecard_artifact.v1", "scorecard_artifact.v2"],
+        "report_only": true,
+        "provider_calls": "disabled",
+        "mutation_authority": "none"
+      }
+    },
+    {
+      "scenario_id": "provider_gated_remember_dont_reread_runner",
+      "scenario_digest": "1b041c1e4372752b85bf52127cdd4a47d520a1fc721ed696b1284c949b28a4df",
+      "task_digest": "41ca9fc52e847e5cd25c490a4523ce4a16ee17ad121bb8b9b83ecb9d160b2ac4",
+      "quality": {"method": "rule", "threshold": 0.94},
+      "evidence_roles": {
+        "baseline": {"mode": "stateless_reread"},
+        "candidate": {"mode": "stateful_store"}
+      },
+      "best_known_role": "candidate",
+      "allowed_regressions": {
+        "total_tokens": 0.05,
+        "repeated_context_ratio": 0.02,
+        "state_bytes": 0.10,
+        "estimated_cost_usd": 0.05,
+        "duration_ms": 0.10,
+        "retry_count": 0.0,
+        "quality_score": 0.0
+      },
+      "comparison_metadata": {
+        "runtime_kind": "native_harness",
+        "runtime_version": "provider-gated-real-runner.v1",
+        "evidence_kind": "bounded_summary_only",
+        "supported_artifact_schema_versions": ["native_scorecard_artifact.v1", "scorecard_artifact.v2"],
+        "report_only": true,
+        "provider_calls": "disabled",
+        "mutation_authority": "none"
+      }
+    }
+  ]
+}
