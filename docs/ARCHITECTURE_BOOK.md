@@ -1,6 +1,6 @@
 # Architecture Book
 
-Last updated: 2026-07-10 (security, scheduler, and release hardening audit)
+Last updated: 2026-07-10 (security, scheduler, release, and benchmark-evidence hardening audit)
 
 This is the current architecture baseline for the Token-Efficient Agent Harness Lab. Historical phase plans, closeout reports, and long-form strategy docs are retained in release-tagged git history; `docs/archive/README.md` is the working-tree index.
 
@@ -87,7 +87,7 @@ Non-goals unless a later documented replacement supersedes this boundary:
 
 The scorecard contract is implemented by `scripts/token_efficiency_scorecard.py`, which validates bounded summaries and emits `token_efficiency_scorecard.v1`. Native harness exports retain the read-only `native_scorecard_artifact.v1` envelope. Runtime-neutral imports use the backward-compatible `scorecard_artifact.v2` envelope and preserve the scorecard's real `runtime_kind`; LangGraph evidence is never relabeled `native_harness`. Both versions persist through `LocalProductStore` in the existing `native_scorecard_artifacts` table and existing API/operator evidence boundary. No second schema, store, importer, scheduler, or runner is introduced.
 
-Before persistence, the store recomputes derived metrics from trusted run counters, canonicalizes the scorecard JSON, recomputes SHA-256, and rejects derived or content-hash mismatches. V2 artifacts require a comparison contract binding scenario/task digests, runtime/version, provider/model, tokenizer, pricing/rates, quality method/threshold, evaluator version, redaction policy, retry policy, and seed. Scenario comparison requires exactly one explicit `stateless_reread` baseline and one `stateful_store` candidate with identical contracts. Token or cost advantage is reported only when both runs meet the shared quality threshold. Minimum run-level fields are:
+Before persistence, the store recomputes derived metrics from trusted run counters, canonicalizes the scorecard JSON, recomputes SHA-256, and rejects derived or content-hash mismatches. New imports are bounded to a 1 MiB artifact, 1 KiB JSON strings/keys, 1,000 array items, 128 object fields, and 16 nested levels; the file importer enforces the byte ceiling before parsing. These write-time limits do not alter legacy-row reads. V2 artifacts require a comparison contract binding scenario/task digests, runtime/version, provider/model, tokenizer, pricing/rates, quality method/threshold, evaluator version, redaction policy, retry policy, and seed. Scenario comparison requires exactly one explicit `stateless_reread` baseline and one `stateful_store` candidate with identical contracts. Token or cost advantage is reported only when both runs meet the shared quality threshold. Minimum run-level fields are:
 
 ```text
 adapter_run_id

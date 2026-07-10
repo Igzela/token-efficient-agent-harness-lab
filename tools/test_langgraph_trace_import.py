@@ -256,6 +256,26 @@ class LangGraphTraceImportTests(unittest.TestCase):
         with self.assertRaisesRegex(MODULE.LangGraphTraceImportError, "scenario_digest"):
             MODULE.compare_scorecards([stateless, stateful])
 
+    def test_rejects_different_scenario_ids(self) -> None:
+        stateful = MODULE.import_langgraph_scorecard(langgraph_summary("stateful_store"))
+        stateless_summary = langgraph_summary("stateless_reread")
+        stateless_summary["scenario_id"] = "different_scenario"
+        stateless = MODULE.import_langgraph_scorecard(stateless_summary)
+
+        with self.assertRaisesRegex(MODULE.LangGraphTraceImportError, "scenario_id"):
+            MODULE.compare_scorecards([stateless, stateful])
+
+    def test_fixed_fixture_provenance_binds_committed_capture_tool(self) -> None:
+        fixture = json.loads(
+            (ROOT / "tests" / "fixtures" / "langgraph_pilot" / "stateless_reread.summary.json")
+            .read_text(encoding="utf-8")
+        )
+        capture_tool = ROOT / "tools" / "capture_langgraph_pilot.py"
+
+        source_hash = hashlib.sha256(capture_tool.read_bytes()).hexdigest()
+
+        self.assertEqual(source_hash, fixture["evidence_provenance"]["source_capture_sha256"])
+
     def test_suppresses_token_and_cost_advantage_below_shared_quality_threshold(self) -> None:
         stateful_summary = langgraph_summary("stateful_store")
         stateful_summary["quality_score"] = 0.89

@@ -108,7 +108,17 @@ Acceptance:
 
 ## Bounded LangGraph Scorecard Import
 
-The LangGraph adapter accepts summary-level JSON only. It does not import LangGraph, run a graph, call a provider, or read a repository. Prepare stateless and stateful summaries outside this repository with the same comparison contract: scenario/task digests, runtime/version, provider/model, tokenizer, pricing, quality method/threshold, evaluator version, redaction/retry policy, and seed.
+The LangGraph adapter accepts summary-level JSON only. It does not import LangGraph, run a graph, call a provider, or read a repository. Prepare stateless and stateful summaries outside the product runtime with the same comparison contract: scenario/task digests, runtime/version, provider/model, tokenizer, pricing, quality method/threshold, evaluator version, redaction/retry policy, and seed.
+
+The checked pilot can be recaptured explicitly with the development-only tool below. This transient command does not add LangGraph to the engine/app dependency graph, call a model/provider, or persist graph state; it writes only the two bounded summaries. The tool's SHA-256 is bound in each fixture's `evidence_provenance.source_capture_sha256`:
+
+```bash
+uv run --no-project \
+  --with langgraph==1.2.9 \
+  --with tiktoken==0.12.0 \
+  python tools/capture_langgraph_pilot.py \
+  --output-dir /tmp/acp-langgraph-pilot-evidence
+```
 
 Generate runtime-neutral v2 artifacts without relabeling LangGraph as native:
 
@@ -163,6 +173,7 @@ cargo test -p engine --test test_native_scorecard_artifacts \
 Acceptance:
 
 - both inputs pass bounded-field, raw-trace, and secret-shaped-value rejection;
+- new imports are capped at 1 MiB, 1 KiB per JSON string/key, 1,000 items per array (including steps), 128 fields per object, and 16 nested levels;
 - modes are exactly `stateless_reread` and `stateful_store` with one shared `scenario_id`;
 - both runs have identical comparison contracts and explicit baseline/candidate roles;
 - the comparison reports tokens, repeated-context ratio, cost, latency, retries, and quality;

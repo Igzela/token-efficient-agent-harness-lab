@@ -128,6 +128,13 @@ class TokenEfficiencyScorecardTests(unittest.TestCase):
         with self.assertRaisesRegex(MODULE.ScorecardError, "raw or sensitive trace"):
             MODULE.import_scorecard(summary)
 
+    def test_rejects_unbounded_summary_strings(self) -> None:
+        summary = valid_summary()
+        summary["pass_fail_reason"] = "x" * 1025
+
+        with self.assertRaisesRegex(MODULE.ScorecardError, "bounded JSON string"):
+            MODULE.import_scorecard(summary)
+
     def test_passing_run_requires_quality_method(self) -> None:
         summary = valid_summary()
         summary["quality_method"] = "none"

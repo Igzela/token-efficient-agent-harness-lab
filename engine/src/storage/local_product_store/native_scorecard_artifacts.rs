@@ -7,6 +7,11 @@ use super::{append_audit_locked, collect_values, DatabaseConnection, LocalProduc
 pub const NATIVE_SCORECARD_ARTIFACT_SCHEMA_VERSION: &str = "native_scorecard_artifact.v1";
 pub const SCORECARD_ARTIFACT_SCHEMA_VERSION: &str = "scorecard_artifact.v2";
 pub const TOKEN_EFFICIENCY_SCORECARD_SCHEMA_VERSION: &str = "token_efficiency_scorecard.v1";
+const MAX_SCORECARD_ARTIFACT_BYTES: usize = 1_048_576;
+const MAX_SCORECARD_JSON_STRING_BYTES: usize = 1_024;
+const MAX_SCORECARD_JSON_ARRAY_ITEMS: usize = 1_000;
+const MAX_SCORECARD_JSON_OBJECT_FIELDS: usize = 128;
+const MAX_SCORECARD_JSON_DEPTH: usize = 16;
 
 impl LocalProductStore {
     pub fn record_automatic_native_scorecard_for_run(
@@ -791,6 +796,15 @@ fn parse_artifact_json(artifact_json: &str) -> Result<Value, String> {
 }
 
 fn validate_scorecard_artifact(artifact: &Value) -> Result<(), String> {
+    let serialized_size = serde_json::to_vec(artifact)
+        .map_err(|e| e.to_string())?
+        .len();
+    if serialized_size > MAX_SCORECARD_ARTIFACT_BYTES {
+        return Err(format!(
+            "bounded scorecard artifact exceeds {MAX_SCORECARD_ARTIFACT_BYTES} bytes"
+        ));
+    }
+    validate_json_bounds(artifact, "$", 0)?;
     validate_no_raw_trace_keys(artifact)?;
     let schema_version = required_str(artifact, "schema_version")?;
     if !matches!(
@@ -1105,6 +1119,40 @@ fn validate_no_raw_trace_keys(value: &Value) -> Result<(), String> {
         }
         Value::String(text) if is_sensitive_value(text) => {
             return Err("sensitive trace value is not allowed in scorecard artifact".to_string());
+        }
+        _ => {}
+    }
+    Ok(())
+}
+
+fn validate_json_bounds(value: &Value, path: &str, depth: usize) -> Result<(), String> {
+    if depth > MAX_SCORECARD_JSON_DEPTH {
+        return Err(format!("bounded JSON depth exceeded at {path}"));
+    }
+    match value {
+        Value::Object(map) => {
+            if map.len() > MAX_SCORECARD_JSON_OBJECT_FIELDS {
+                return Err(format!(
+                    "bounded JSON object field count exceeded at {path}"
+                ));
+            }
+            for (key, nested) in map {
+                if key.len() > MAX_SCORECARD_JSON_STRING_BYTES {
+                    return Err(format!("bounded JSON key length exceeded at {path}"));
+                }
+                validate_json_bounds(nested, &format!("{path}.{key}"), depth + 1)?;
+            }
+        }
+        Value::Array(items) => {
+            if items.len() > MAX_SCORECARD_JSON_ARRAY_ITEMS {
+                return Err(format!("bounded JSON array item count exceeded at {path}"));
+            }
+            for (index, nested) in items.iter().enumerate() {
+                validate_json_bounds(nested, &format!("{path}[{index}]"), depth + 1)?;
+            }
+        }
+        Value::String(text) if text.len() > MAX_SCORECARD_JSON_STRING_BYTES => {
+            return Err(format!("bounded JSON string length exceeded at {path}"));
         }
         _ => {}
     }

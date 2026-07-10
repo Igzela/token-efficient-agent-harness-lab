@@ -5,6 +5,8 @@ use std::path::{Path, PathBuf};
 
 use crate::storage::local_product_store::LocalProductStore;
 
+const MAX_SCORECARD_ARTIFACT_BYTES: u64 = 1_048_576;
+
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 pub struct LocalScorecardImportSummary {
     pub files_seen: usize,
@@ -111,7 +113,20 @@ fn import_one(
     file: &Path,
     actor: &str,
 ) -> Result<ImportOutcome, String> {
+    let size = fs::metadata(file)
+        .map_err(|error| format!("cannot inspect file: {error}"))?
+        .len();
+    if size > MAX_SCORECARD_ARTIFACT_BYTES {
+        return Err(format!(
+            "bounded artifact exceeds {MAX_SCORECARD_ARTIFACT_BYTES} bytes"
+        ));
+    }
     let text = fs::read_to_string(file).map_err(|error| format!("cannot read file: {error}"))?;
+    if text.len() as u64 > MAX_SCORECARD_ARTIFACT_BYTES {
+        return Err(format!(
+            "bounded artifact exceeds {MAX_SCORECARD_ARTIFACT_BYTES} bytes"
+        ));
+    }
     let artifact: Value =
         serde_json::from_str(&text).map_err(|error| format!("invalid JSON: {error}"))?;
     let artifact_id = artifact
@@ -159,7 +174,9 @@ pub fn validate_scorecard_for_bounded_export(scorecard: &Value) -> Result<bool, 
 
 #[cfg(test)]
 mod tests {
-    use super::{import_native_scorecard_artifacts, import_scorecard_artifacts};
+    use super::{
+        import_native_scorecard_artifacts, import_scorecard_artifacts, MAX_SCORECARD_ARTIFACT_BYTES,
+    };
     use crate::storage::local_product_store::LocalProductStore;
     use serde_json::{json, Value};
     use sha2::{Digest, Sha256};
@@ -322,5 +339,25 @@ mod tests {
         assert_eq!(summary.unchanged, 0);
         assert_eq!(summary.errors.len(), 1);
         assert!(summary.errors[0].contains("artifact_id is required"));
+    }
+
+    #[test]
+    fn local_scorecard_import_rejects_oversized_files_before_parsing() {
+        let dir = tempdir().unwrap();
+        let store = LocalProductStore::new(dir.path().join("store.db")).unwrap();
+        let path = dir.path().join("oversized.json");
+        std::fs::write(
+            path.clone(),
+            vec![b' '; (MAX_SCORECARD_ARTIFACT_BYTES + 1) as usize],
+        )
+        .unwrap();
+
+        let summary = import_scorecard_artifacts(&store, &[path], "local-import-test");
+
+        assert_eq!(summary.files_seen, 1);
+        assert_eq!(summary.imported, 0);
+        assert_eq!(summary.unchanged, 0);
+        assert_eq!(summary.errors.len(), 1);
+        assert!(summary.errors[0].contains("bounded artifact exceeds"));
     }
 }

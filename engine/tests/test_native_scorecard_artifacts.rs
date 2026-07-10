@@ -430,6 +430,20 @@ fn scorecard_persistence_rejects_hash_and_derived_metric_tampering() {
 }
 
 #[test]
+fn scorecard_persistence_rejects_unbounded_summary_strings() {
+    let (store, _dir) = make_store();
+    let mut artifact = sample_artifact("run-unbounded-string", None);
+    artifact["scorecard"]["pass_fail_reason"] = json!("x".repeat(1025));
+    artifact["content_sha256"] = json!(canonical_hash(&artifact["scorecard"]));
+
+    let error = store
+        .record_scorecard_artifact(&artifact, "tester")
+        .unwrap_err();
+
+    assert!(error.contains("bounded JSON string"));
+}
+
+#[test]
 fn generic_v2_langgraph_artifacts_reuse_existing_store_idempotently() {
     let (store, _dir) = make_store();
     let artifact = langgraph_artifact("lg-stateful", "stateful_store");
@@ -535,6 +549,7 @@ async fn scorecard_api_reads_by_run_dispatch_and_artifact_id() {
     );
 
     let detail = app
+        .clone()
         .oneshot(
             Request::builder()
                 .method(Method::GET)
@@ -549,6 +564,22 @@ async fn scorecard_api_reads_by_run_dispatch_and_artifact_id() {
     assert_eq!(
         detail_body["artifact"]["artifact_id"],
         "scorecard-run-api-abc123"
+    );
+
+    let missing = app
+        .oneshot(
+            Request::builder()
+                .method(Method::GET)
+                .uri("/api/v1/scorecards/missing-scorecard")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(missing.status(), StatusCode::NOT_FOUND);
+    assert_eq!(
+        response_json(missing).await["code"],
+        "native_scorecard_artifact_not_found"
     );
 }
 

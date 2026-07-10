@@ -21,6 +21,11 @@ from typing import Any
 
 SCHEMA_VERSION = "token_efficiency_scorecard.v1"
 ARTIFACT_SCHEMA_VERSION = "scorecard_artifact.v2"
+MAX_ARTIFACT_BYTES = 1_048_576
+MAX_JSON_STRING_BYTES = 1_024
+MAX_JSON_ARRAY_ITEMS = 1_000
+MAX_JSON_OBJECT_FIELDS = 128
+MAX_JSON_DEPTH = 16
 
 ALLOWED_RUNTIME_KINDS = {
     "native_harness",
@@ -207,6 +212,26 @@ def _reject_raw_trace_keys(value: Any, path: str = "$") -> None:
             raise ScorecardError(f"private path trace value is not allowed: {path}")
 
 
+def _validate_json_bounds(value: Any, path: str = "$", depth: int = 0) -> None:
+    if depth > MAX_JSON_DEPTH:
+        raise ScorecardError(f"bounded JSON depth exceeded at {path}")
+    if isinstance(value, dict):
+        if len(value) > MAX_JSON_OBJECT_FIELDS:
+            raise ScorecardError(f"bounded JSON object field count exceeded at {path}")
+        for key, child in value.items():
+            key_text = str(key)
+            if len(key_text.encode("utf-8")) > MAX_JSON_STRING_BYTES:
+                raise ScorecardError(f"bounded JSON key length exceeded at {path}")
+            _validate_json_bounds(child, f"{path}.{key_text}", depth + 1)
+    elif isinstance(value, list):
+        if len(value) > MAX_JSON_ARRAY_ITEMS:
+            raise ScorecardError(f"bounded JSON array item count exceeded at {path}")
+        for index, child in enumerate(value):
+            _validate_json_bounds(child, f"{path}[{index}]", depth + 1)
+    elif isinstance(value, str) and len(value.encode("utf-8")) > MAX_JSON_STRING_BYTES:
+        raise ScorecardError(f"bounded JSON string length exceeded at {path}")
+
+
 def _validate_allowed(value: str, allowed: set[str], field: str) -> None:
     if value not in allowed:
         allowed_values = ", ".join(sorted(allowed))
@@ -335,6 +360,7 @@ def import_scorecard(summary: dict[str, Any]) -> dict[str, Any]:
     """Return a normalized scorecard or raise ScorecardError."""
 
     data = _require_mapping(summary, "summary")
+    _validate_json_bounds(data)
     _reject_raw_trace_keys(data)
 
     for field in RUN_REQUIRED_STRINGS:
@@ -448,7 +474,12 @@ def build_scorecard_artifact(
 
 def load_json(path: Path) -> dict[str, Any]:
     try:
-        return _require_mapping(json.loads(path.read_text(encoding="utf-8")), str(path))
+        if path.stat().st_size > MAX_ARTIFACT_BYTES:
+            raise ScorecardError(f"bounded artifact exceeds {MAX_ARTIFACT_BYTES} bytes: {path}")
+        text = path.read_text(encoding="utf-8")
+        if len(text.encode("utf-8")) > MAX_ARTIFACT_BYTES:
+            raise ScorecardError(f"bounded artifact exceeds {MAX_ARTIFACT_BYTES} bytes: {path}")
+        return _require_mapping(json.loads(text), str(path))
     except OSError as exc:
         raise ScorecardError(f"cannot read {path}: {exc}") from exc
     except json.JSONDecodeError as exc:

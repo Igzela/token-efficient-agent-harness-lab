@@ -100,8 +100,8 @@ pub(crate) async fn api_scorecard_artifact_detail(
         .ok_or_else(|| {
             ApiError::with_code(
                 StatusCode::NOT_FOUND,
-                "scorecard_artifact_not_found",
-                "scorecard artifact not found",
+                "native_scorecard_artifact_not_found",
+                "native scorecard artifact not found",
             )
         })?;
     Ok((
