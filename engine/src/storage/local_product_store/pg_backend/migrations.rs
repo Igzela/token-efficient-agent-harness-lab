@@ -1,5 +1,6 @@
 use super::super::{schema, LocalProductStore};
 
+#[cfg(test)]
 pub(super) const CURRENT_PG_VERSION: i64 = schema::CURRENT_POSTGRES_SCHEMA_VERSION;
 
 fn ensure_schema_migrations_table(client: &mut postgres::Client) -> Result<(), String> {

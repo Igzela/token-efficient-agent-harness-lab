@@ -659,7 +659,7 @@ fn configure_auth(state: AxumApiState) -> AxumApiState {
         revoked_at: None,
         last_used_at: None,
     });
-    state.with_auth(resolver, RateLimiter::new(60.0, 10_000), Some(10_000), 0.0)
+    state.with_auth_live(resolver, RateLimiter::new(60.0, 10_000), Some(10_000))
 }
 
 fn build_state_with_provider(

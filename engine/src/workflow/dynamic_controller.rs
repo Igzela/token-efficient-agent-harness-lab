@@ -202,6 +202,12 @@ impl DynamicWorkflowController {
             .and_then(Value::as_str)
             .map(String::from);
 
+        // The controller is reconstructed by the scheduler and may also be
+        // reconstructed after a process restart. Restore per-run safety
+        // counters from the durable workflow event log before enforcing them.
+        self.ticks_executed = workflow_event_count(&run, "controller.tick_started");
+        self.mutations_applied_total = workflow_event_count(&run, "dag.mutation.applied");
+
         if self.ticks_executed >= self.config.max_ticks_per_run {
             let max_ticks_queue = json!({
                 "queue_position": run_queue_position,
@@ -258,6 +264,17 @@ impl DynamicWorkflowController {
         }
 
         self.ticks_executed += 1;
+        store.append_workflow_run_event(
+            run_id,
+            None,
+            "controller.tick_started",
+            &json!({
+                "tick_number": self.ticks_executed,
+                "max_ticks_per_run": self.config.max_ticks_per_run,
+                "mutations_applied_total": self.mutations_applied_total,
+            }),
+            actor,
+        )?;
 
         let nodes = run
             .get("nodes")
@@ -1181,6 +1198,18 @@ fn is_terminal(status: &str) -> bool {
     matches!(status, "completed" | "failed" | "cancelled")
 }
 
+fn workflow_event_count(run: &Value, event_type: &str) -> u64 {
+    run.get("events")
+        .and_then(Value::as_array)
+        .map(|events| {
+            events
+                .iter()
+                .filter(|event| event.get("event_type").and_then(Value::as_str) == Some(event_type))
+                .count() as u64
+        })
+        .unwrap_or(0)
+}
+
 fn node_status(node: &Value) -> &str {
     node.get("db_status")
         .and_then(Value::as_str)
@@ -1598,15 +1627,18 @@ mod tests {
             auto_fix_on_failure: false,
             ..Default::default()
         };
-        let mut ctrl = DynamicWorkflowController::new(config);
         let executor = NoopNodeExecutor;
 
         // First tick - executes node a
+        let mut ctrl = DynamicWorkflowController::new(config.clone());
         let r1 = ctrl.tick(&store, run_id, "test", &executor).expect("tick1");
         assert!(r1
             .actions
             .iter()
             .any(|a| matches!(a, ControllerAction::NodeExecuted { .. })));
+
+        // Reconstructing the controller must not reset the persisted per-run limit.
+        let mut ctrl = DynamicWorkflowController::new(config.clone());
 
         // Second tick - executes node b
         let r2 = ctrl.tick(&store, run_id, "test", &executor).expect("tick2");
@@ -1614,6 +1646,9 @@ mod tests {
             .actions
             .iter()
             .any(|a| matches!(a, ControllerAction::NodeExecuted { .. })));
+
+        // A second reconstruction still observes the first two persisted ticks.
+        let mut ctrl = DynamicWorkflowController::new(config);
 
         // Third tick - blocked by max_ticks
         let r3 = ctrl.tick(&store, run_id, "test", &executor).expect("tick3");

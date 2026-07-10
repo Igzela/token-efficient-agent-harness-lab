@@ -239,6 +239,16 @@ impl LocalProductStore {
         run_id: &str,
         limit: i64,
     ) -> Result<Vec<DecisionRecord>, String> {
+        self.get_decisions_for_run_with_offset(run_id, limit, 0)
+    }
+
+    pub fn get_decisions_for_run_with_offset(
+        &self,
+        run_id: &str,
+        limit: i64,
+        offset: i64,
+    ) -> Result<Vec<DecisionRecord>, String> {
+        let (limit, offset) = bounded_decision_page(limit, offset);
         match &self.db {
             DatabaseConnection::Sqlite(_) => self.with_conn(|conn| {
                 let mut stmt = conn
@@ -252,11 +262,11 @@ impl LocalProductStore {
                          FROM orchestration_decisions
                          WHERE run_id = ?1
                          ORDER BY decision_id ASC
-                         LIMIT ?2",
+                         LIMIT ?2 OFFSET ?3",
                     )
                     .map_err(|e| e.to_string())?;
                 let rows = stmt
-                    .query_map(params![run_id, limit], decision_row)
+                    .query_map(params![run_id, limit, offset], decision_row)
                     .map_err(|e| e.to_string())?;
                 collect_decisions(rows)
             }),
@@ -273,8 +283,8 @@ impl LocalProductStore {
                          FROM orchestration_decisions
                          WHERE run_id = $1
                          ORDER BY decision_id ASC
-                         LIMIT $2",
-                        &[&run_id, &limit],
+                         LIMIT $2 OFFSET $3",
+                        &[&run_id, &limit, &offset],
                     )
                     .map_err(|e| e.to_string())?;
                 pg_collect_decisions(rows)
@@ -288,6 +298,7 @@ impl LocalProductStore {
         offset: i64,
         search: Option<&str>,
     ) -> Result<Vec<DecisionRecord>, String> {
+        let (limit, offset) = bounded_decision_page(limit, offset);
         match &self.db {
             DatabaseConnection::Sqlite(_) => self.with_conn(|conn| {
                 if let Some(raw_search) = search {
@@ -379,6 +390,74 @@ impl LocalProductStore {
                     )
                     .map_err(|e| e.to_string())?;
                 pg_collect_decisions(rows)
+            }),
+        }
+    }
+
+    pub fn count_decisions(
+        &self,
+        run_id: Option<&str>,
+        search: Option<&str>,
+    ) -> Result<i64, String> {
+        match &self.db {
+            DatabaseConnection::Sqlite(_) => self.with_conn(|conn| {
+                if let Some(run_id) = run_id {
+                    return conn
+                        .query_row(
+                            "SELECT COUNT(*) FROM orchestration_decisions WHERE run_id = ?1",
+                            params![run_id],
+                            |row| row.get(0),
+                        )
+                        .map_err(|error| error.to_string());
+                }
+                let search = normalized_decision_search(search);
+                if let Some(needle) = search {
+                    return conn
+                        .query_row(
+                            "SELECT COUNT(*) FROM orchestration_decisions
+                             WHERE lower(run_id) LIKE ?1
+                                OR lower(action) LIKE ?1
+                                OR lower(selected_executor) LIKE ?1
+                                OR lower(confidence) LIKE ?1",
+                            params![needle],
+                            |row| row.get(0),
+                        )
+                        .map_err(|error| error.to_string());
+                }
+                conn.query_row("SELECT COUNT(*) FROM orchestration_decisions", [], |row| {
+                    row.get(0)
+                })
+                .map_err(|error| error.to_string())
+            }),
+            #[cfg(feature = "pg")]
+            DatabaseConnection::Pg(_) => self.with_pg_conn(|client| {
+                if let Some(run_id) = run_id {
+                    return client
+                        .query_one(
+                            "SELECT COUNT(*) FROM orchestration_decisions WHERE run_id = $1",
+                            &[&run_id],
+                        )
+                        .map(|row| row.get(0))
+                        .map_err(|error| error.to_string());
+                }
+                let search = normalized_decision_search(search);
+                if let Some(needle) = search {
+                    return client
+                        .query_one(
+                            "SELECT COUNT(*) FROM orchestration_decisions
+                             WHERE lower(run_id) LIKE $1
+                                OR lower(action) LIKE $1
+                                OR lower(selected_executor) LIKE $1
+                                OR lower(confidence) LIKE $1",
+                            &[&needle],
+                        )
+                        .map(|row| row.get(0))
+                        .map_err(|error| error.to_string());
+                }
+                client
+                    .query_one("SELECT COUNT(*) FROM orchestration_decisions", &[])
+                    .map(|row| row.get(0))
+                    .map_err(|error| error.to_string())
             }),
         }
     }
@@ -531,6 +610,17 @@ impl LocalProductStore {
             }),
         }
     }
+}
+
+fn bounded_decision_page(limit: i64, offset: i64) -> (i64, i64) {
+    (limit.clamp(0, 500), offset.max(0))
+}
+
+fn normalized_decision_search(search: Option<&str>) -> Option<String> {
+    search
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(|value| format!("%{}%", value.to_lowercase()))
 }
 
 fn decision_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<DecisionRecord> {

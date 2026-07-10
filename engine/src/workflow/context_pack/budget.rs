@@ -154,20 +154,41 @@ pub fn allocate_context_budget(
         return result;
     }
 
-    let mut allocations: Vec<(usize, usize, usize, &ContextSource)> = Vec::new();
+    let mut allocations: Vec<(usize, usize, usize, u128, &ContextSource)> = Vec::new();
     let mut allocated_sum = 0_usize;
     for &(orig_idx, est, src) in &estimates {
-        let alloc = ((est as f64 / total_estimate as f64) * max_context_tokens as f64) as usize;
-        let alloc = alloc.max(1);
+        let weighted = (est as u128) * (max_context_tokens as u128);
+        let alloc = (weighted / total_estimate as u128) as usize;
+        let fractional_remainder = weighted % total_estimate as u128;
         allocated_sum += alloc;
-        allocations.push((orig_idx, est, alloc, src));
+        allocations.push((orig_idx, est, alloc, fractional_remainder, src));
     }
 
-    let remainder = max_context_tokens.saturating_sub(allocated_sum);
-    allocations[0].2 += remainder;
+    let mut remainder = max_context_tokens.saturating_sub(allocated_sum);
+    let mut remainder_order: Vec<usize> = (0..allocations.len()).collect();
+    remainder_order.sort_by(|left, right| {
+        allocations[*right]
+            .3
+            .cmp(&allocations[*left].3)
+            .then_with(|| {
+                allocations[*left]
+                    .4
+                    .from_node_id
+                    .cmp(&allocations[*right].4.from_node_id)
+            })
+    });
+    for index in remainder_order {
+        if remainder == 0 {
+            break;
+        }
+        if allocations[index].2 < allocations[index].1 {
+            allocations[index].2 += 1;
+            remainder -= 1;
+        }
+    }
 
     let mut result = vec![(String::new(), 0, false); sources.len()];
-    for (orig_idx, est, alloc, src) in allocations {
+    for (orig_idx, est, alloc, _, src) in allocations {
         result[orig_idx] = (src.from_node_id.clone(), alloc, alloc < est);
     }
     result
@@ -228,6 +249,17 @@ mod tests {
         assert!(result[1].2);
         let total: usize = result.iter().map(|r| r.1).sum();
         assert_eq!(total, 400);
+    }
+
+    #[test]
+    fn budget_allocator_never_exceeds_budget_smaller_than_source_count() {
+        let s1 = make_source("e1", "n1", "first source");
+        let s2 = make_source("e2", "n2", "second source");
+
+        let result = allocate_context_budget(&[s1, s2], 1);
+
+        assert_eq!(result.iter().map(|entry| entry.1).sum::<usize>(), 1);
+        assert!(result.iter().all(|entry| entry.2));
     }
 
     #[test]

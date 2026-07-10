@@ -29,18 +29,21 @@ pub(crate) async fn api_decisions(
     let context = authorize(&state, &headers, "dispatch:read", uri.path(), &request_id.0)?;
     let store = require_store(&state)?;
 
-    let limit = params.limit.unwrap_or(100) as i64;
-    let offset = params.offset.unwrap_or(0) as i64;
+    let limit = params.limit.unwrap_or(100).min(500) as i64;
+    let offset = i64::try_from(params.offset.unwrap_or(0)).unwrap_or(i64::MAX);
 
     let decisions = if let Some(ref run_id) = params.run_id {
         store
-            .get_decisions_for_run(run_id, limit)
+            .get_decisions_for_run_with_offset(run_id, limit, offset)
             .map_err(internal_error)?
     } else {
         store
             .search_decisions(limit, offset, params.search.as_deref())
             .map_err(internal_error)?
     };
+    let total = store
+        .count_decisions(params.run_id.as_deref(), params.search.as_deref())
+        .map_err(internal_error)?;
 
     Ok((
         cors_headers(),
@@ -49,7 +52,7 @@ pub(crate) async fn api_decisions(
             "tenant_id": context.tenant_id,
             "request_id": context.request_id,
             "decisions": decisions.iter().map(|d| d.to_value()).collect::<Vec<_>>(),
-            "total": decisions.len(),
+            "total": total,
             "limit": limit,
             "offset": offset,
         })),

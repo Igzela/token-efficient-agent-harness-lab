@@ -438,6 +438,21 @@ fn workflow_node_to_scorecard_step(
     let context_tokens = positive_i64(node.get("context_tokens"));
     let retrieved_ref_tokens = positive_i64(node.get("retrieved_ref_tokens"));
     let repeated_context_tokens = positive_i64(node.get("repeated_context_tokens"));
+    let output_metrics = result
+        .get("output")
+        .and_then(Value::as_str)
+        .filter(|output| output.len() <= 64 * 1024)
+        .and_then(|output| serde_json::from_str::<Value>(output).ok());
+    let state_read_bytes = positive_i64(node.get("state_read_bytes")).max(positive_i64(
+        output_metrics
+            .as_ref()
+            .and_then(|metrics| metrics.get("state_read_bytes")),
+    ));
+    let state_write_bytes = positive_i64(node.get("state_write_bytes")).max(positive_i64(
+        output_metrics
+            .as_ref()
+            .and_then(|metrics| metrics.get("state_write_bytes")),
+    ));
     if repeated_context_tokens > context_tokens {
         return Err("step repeated_context_tokens cannot exceed context_tokens".to_string());
     }
@@ -467,8 +482,8 @@ fn workflow_node_to_scorecard_step(
             .and_then(Value::as_str)
             .filter(|value| !value.trim().is_empty())
             .unwrap_or(if status == "pass" { "none" } else { status }),
-        "state_read_bytes": positive_i64(node.get("state_read_bytes")),
-        "state_write_bytes": positive_i64(node.get("state_write_bytes")),
+        "state_read_bytes": state_read_bytes,
+        "state_write_bytes": state_write_bytes,
         "duration_ms": positive_i64(result.get("latency_ms"))
             .max(node_duration_ms(node).unwrap_or(0)),
     }))

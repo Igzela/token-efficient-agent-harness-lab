@@ -226,7 +226,7 @@ pub(crate) async fn api_restore_backup(
     let backup_dir = backup_dir_for_state(&state, store.db_path());
     let manager = BackupManager::new(&backup_dir).map_err(internal_error)?;
     let result = manager
-        .restore_backup_with_verify(&backup_id, store.db_path(), state.now)
+        .restore_backup_with_verify(&backup_id, store.db_path(), state.now())
         .map_err(internal_error)?;
     store
         .append_audit(

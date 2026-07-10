@@ -1,6 +1,6 @@
 # Architecture Book
 
-Last updated: 2026-07-06 (external runtime benchmark boundary)
+Last updated: 2026-07-10 (security, scheduler, and release hardening audit)
 
 This is the current architecture baseline for the Token-Efficient Agent Harness Lab. Historical phase plans, closeout reports, and long-form strategy docs are retained in release-tagged git history; `docs/archive/README.md` is the working-tree index.
 
@@ -199,7 +199,7 @@ Do not create a second runtime kernel for V2. Extend the existing `node_executor
 | `cli` | CLI executor only; requires CLI gate |
 | `auto` | Hybrid provider/CLI routing by complexity threshold |
 
-Workflow node execution is explicit through scheduler/tick paths. `CommandNodeExecutor` rejects shell metacharacters, avoids `sh -c`, uses allowlisted binaries, validates supplied workspace cwd, clears inherited environment except `PATH`, caps output, enforces timeout kill, and emits structured results. Installed Claude/Codex CLIs are discovered by default; `ACP_ENABLE_CLI_EXECUTION=0` disables them. The dashboard receives a startup capability snapshot with only enabled/detected booleans; it exposes no binary paths and grants no execution authority. CLI subprocess env is restricted to `PATH` plus `ACP_CLI_ENV_ALLOWLIST`, and output is redacted/capped. Codex uses JSONL with workspace-write sandbox and ephemeral sessions. Provider workflow ticks require a ready trusted-local profile or the standalone legacy provider gate, plus provider configuration, scope, cost gates, audit, and retries.
+Workflow node execution is explicit through scheduler/tick paths. `CommandNodeExecutor` rejects shell metacharacters, avoids `sh -c`, uses allowlisted binaries, validates supplied workspace cwd, clears inherited environment except `PATH`, caps output, enforces timeout kill, and emits structured results. Installed Claude/Codex CLIs are discovered by default; `ACP_ENABLE_CLI_EXECUTION=0` disables them. The dashboard receives a startup capability snapshot with only enabled/detected booleans; it exposes no binary paths and grants no execution authority. CLI subprocess env is restricted to `PATH` plus `ACP_CLI_ENV_ALLOWLIST`, and output is redacted/capped. Codex uses JSONL with workspace-write sandbox and ephemeral sessions. Provider workflow ticks require a ready trusted-local profile or the standalone legacy provider gate, plus provider configuration, scope, cost gates, audit, and retries. The live local comparison runner additionally requires a persistent `LocalProductStore` audit sink, positive input/output pricing, a pre-call worst-case token/cost reservation, shared run/daily caps, provider timeout, and `ACP_LOCAL_RUNNER_KILL_SWITCH`; missing evidence fails closed before a provider call.
 
 Workspace verification is a separate allowlisted command path for the supported Rust, JavaScript, Python, Go, and Make toolchains. It records command, status, output/error, latency, timeout, attempt, and timestamp in workspace evidence. A failed check may request at most two CLI repairs; exhausted verification records `verification_failed` and blocks target output.
 
@@ -216,6 +216,8 @@ V2-4 supervised workers reuse the same scheduler and workflow lease path. Legacy
 5. pause for approval/export when required.
 
 The runtime path is intentionally built on existing `workflow_runs`, `scheduler`, `node_executor`, `executor_pool`, `run_queue`, `backpressure`, and `DynamicWorkflowController` modules. Do not create a parallel scheduler, DAG kernel, or policy engine without explicit approval.
+
+Dynamic controller tick and mutation ceilings are recovered from the durable workflow event log on every tick, so scheduler reconstruction and process restart cannot reset the per-run bounds. Dynamic pool routing may use an existing feedback suggestion only when the suggested executor is registered and can be acquired; explicit executor configuration remains pinned. Per-run controller errors propagate to scheduler worker error evidence instead of being reported as a successful tick.
 
 ## Agent Runtime (AR-0) Contract
 
@@ -279,7 +281,7 @@ AR phases consume the following existing modules, extending them through focused
 
 ### AR Phase Status
 
-**AR-1 (agent identity, state, mailbox) — implemented.** Durable `agent_state` and `agent_mailbox` tables with SQLite schema, migration v15, `LocalProductStore` CRUD methods, send/read/ack/reply, correlation IDs, run/node links, secret redaction, size caps, and audit events. Tests pass. No agent step executor, scheduler changes, provider/CLI calls, or dashboard UI.
+**AR-1 (agent identity, state, mailbox) — implemented.** Durable `agent_state` and `agent_mailbox` tables with SQLite/PostgreSQL migration v14, `LocalProductStore` CRUD methods, send/read/ack/reply, correlation IDs, run/node links, secret redaction, size caps, and audit events. Tests pass. No agent step executor, scheduler changes, provider/CLI calls, or dashboard UI.
 
 **AR-1 rollback.** Forward-only migrations are the existing repo convention. To roll back AR-1:
   1. Revert the merge commit (`git revert <sha>`).

@@ -498,7 +498,7 @@ fn pg_workflow_plan_row(row: &postgres::Row) -> Value {
 
 #[cfg(feature = "pg")]
 fn pg_collect_workflow_plans(rows: Vec<postgres::Row>) -> Result<Vec<Value>, String> {
-    Ok(rows.iter().map(|row| pg_workflow_plan_row(row)).collect())
+    Ok(rows.iter().map(pg_workflow_plan_row).collect())
 }
 
 fn workflow_plan_value(

@@ -1,8 +1,13 @@
 use std::path::PathBuf;
+use std::sync::Arc;
 
 use clap::Parser;
 
-use engine::local_runner_provider::{build_config, build_provider, run_pair, ProviderKind};
+use engine::local_runner_provider::{
+    build_config, build_live_provider, build_provider, run_live_pair_with_store, run_pair,
+    ProviderKind,
+};
+use engine::storage::local_product_store::LocalProductStore;
 use engine::trusted_local::EffectiveExecutionGates;
 
 #[derive(Debug, Parser)]
@@ -37,6 +42,9 @@ struct Args {
 
     #[arg(long)]
     output_dir: Option<PathBuf>,
+
+    #[arg(long)]
+    db: Option<PathBuf>,
 
     #[arg(long)]
     compare_only: bool,
@@ -84,7 +92,28 @@ fn main() {
         None
     };
 
-    let provider = match build_provider(&config, gates.as_ref()) {
+    let live_store = if provider_kind == ProviderKind::Live {
+        let db_path = args
+            .db
+            .clone()
+            .or_else(|| std::env::var("ACP_DB_PATH").ok().map(PathBuf::from))
+            .unwrap_or_else(|| PathBuf::from(".agent-control-plane/local-team.db"));
+        match LocalProductStore::new(&db_path) {
+            Ok(store) => Some(Arc::new(store)),
+            Err(error) => {
+                eprintln!("error: cannot open provider audit store {db_path:?}: {error}");
+                std::process::exit(1);
+            }
+        }
+    } else {
+        None
+    };
+
+    let provider_result = match &live_store {
+        Some(store) => build_live_provider(&config, gates.as_ref(), store.clone()),
+        None => build_provider(&config, gates.as_ref()),
+    };
+    let provider = match provider_result {
         Ok(p) => p,
         Err(e) => {
             eprintln!("error: {e}");
@@ -92,26 +121,20 @@ fn main() {
         }
     };
 
-    if args.compare_only {
-        match run_pair(&config, &provider) {
-            Ok((stateless, stateful)) => {
+    let run_result = match &live_store {
+        Some(store) => run_live_pair_with_store(&config, &provider, store),
+        None => run_pair(&config, &provider),
+    };
+
+    match run_result {
+        Ok((stateless, stateful)) => {
+            if args.compare_only {
                 let output = serde_json::json!({
                     "stateless_reread": stateless,
                     "stateful_store": stateful,
                 });
                 println!("{}", serde_json::to_string_pretty(&output).unwrap());
-            }
-            Err(e) => {
-                eprintln!("error: {e}");
-                std::process::exit(1);
-            }
-        }
-        return;
-    }
-
-    match run_pair(&config, &provider) {
-        Ok((stateless, stateful)) => {
-            if let Some(dir) = args.output_dir {
+            } else if let Some(dir) = args.output_dir {
                 std::fs::create_dir_all(&dir).unwrap_or_else(|e| {
                     eprintln!("error: cannot create output dir: {e}");
                     std::process::exit(1);

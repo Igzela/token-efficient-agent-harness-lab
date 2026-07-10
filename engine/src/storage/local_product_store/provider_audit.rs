@@ -71,6 +71,46 @@ impl LocalProductStore {
         self.provider_audit_events_with_offset(limit, 0)
     }
 
+    pub fn daily_provider_audit_cost_usd(&self, date_prefix: &str) -> Result<f64, String> {
+        if date_prefix.len() != 10
+            || !date_prefix.chars().enumerate().all(|(index, ch)| {
+                matches!(index, 4 | 7) && ch == '-'
+                    || !matches!(index, 4 | 7) && ch.is_ascii_digit()
+            })
+        {
+            return Err("date prefix must use YYYY-MM-DD".to_string());
+        }
+        let pattern = format!("{date_prefix}%");
+        match &self.db {
+            DatabaseConnection::Sqlite(_) => self.with_conn(|conn| {
+                conn.query_row(
+                    "SELECT COALESCE(SUM(cost), 0.0)
+                     FROM provider_audit_events
+                     WHERE event_type = 'response_received'
+                       AND cost IS NOT NULL
+                       AND created_at LIKE ?1",
+                    params![pattern],
+                    |row| row.get::<_, f64>(0),
+                )
+                .map_err(|e| e.to_string())
+            }),
+            #[cfg(feature = "pg")]
+            DatabaseConnection::Pg(_) => self.with_pg_conn(|client| {
+                client
+                    .query_one(
+                        "SELECT COALESCE(SUM(cost), 0.0)::DOUBLE PRECISION
+                         FROM provider_audit_events
+                         WHERE event_type = 'response_received'
+                           AND cost IS NOT NULL
+                           AND created_at LIKE $1",
+                        &[&pattern],
+                    )
+                    .map(|row| row.get::<_, f64>(0))
+                    .map_err(|e| e.to_string())
+            }),
+        }
+    }
+
     pub fn provider_audit_events_with_offset(
         &self,
         limit: i64,

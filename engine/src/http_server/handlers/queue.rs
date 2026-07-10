@@ -137,14 +137,13 @@ pub(crate) async fn api_queue_runs(
 ) -> Result<impl IntoResponse, ApiError> {
     let context = authorize(&state, &headers, "health:read", uri.path(), &request_id.0)?;
     let store = require_store(&state)?;
-    let all_runs = store
-        .list_active_workflow_runs_prioritized()
-        .map_err(internal_error)?;
-
-    let limit = params.limit.unwrap_or(50);
+    let limit = params.limit.unwrap_or(50).min(500);
     let offset = params.offset.unwrap_or(0);
-    let total = all_runs.len();
-    let page: Vec<_> = all_runs.into_iter().skip(offset).take(limit).collect();
+    let db_offset = i64::try_from(offset).unwrap_or(i64::MAX);
+    let page = store
+        .list_active_workflow_runs_prioritized_page(limit as i64, db_offset)
+        .map_err(internal_error)?;
+    let total = store.count_active_workflow_runs().map_err(internal_error)?;
 
     Ok((
         cors_headers(),

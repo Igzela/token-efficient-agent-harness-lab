@@ -139,7 +139,7 @@ impl ExecutorPool {
     pub fn best_for_task(&self, task_type: &str, task_domain: &str) -> Option<String> {
         let entries = self.entries.read().expect("pool lock poisoned");
 
-        let mut candidates: Vec<(&str, f64)> = entries
+        let mut candidates: Vec<(&str, bool, bool, f64)> = entries
             .values()
             .filter(|e| {
                 e.status.available
@@ -148,11 +148,13 @@ impl ExecutorPool {
                     && (e.capabilities.supported_task_types.is_empty()
                         || e.capabilities
                             .supported_task_types
-                            .contains(&task_type.to_string()))
+                            .iter()
+                            .any(|supported| supported == task_type))
                     && (e.capabilities.supported_task_domains.is_empty()
                         || e.capabilities
                             .supported_task_domains
-                            .contains(&task_domain.to_string()))
+                            .iter()
+                            .any(|supported| supported == task_domain))
             })
             .map(|e| {
                 let success_rate = if e.metrics.total_executions > 0 {
@@ -161,12 +163,24 @@ impl ExecutorPool {
                     1.0
                 };
                 let health_score = 1.0 - e.status.failure_score;
-                (e.executor_type.as_str(), success_rate * health_score)
+                (
+                    e.executor_type.as_str(),
+                    !e.capabilities.supported_task_types.is_empty(),
+                    !e.capabilities.supported_task_domains.is_empty(),
+                    success_rate * health_score,
+                )
             })
             .collect();
 
-        candidates.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
-        candidates.first().map(|(t, _)| t.to_string())
+        candidates.sort_by(|a, b| {
+            b.1.cmp(&a.1)
+                .then_with(|| b.2.cmp(&a.2))
+                .then_with(|| b.3.partial_cmp(&a.3).unwrap_or(std::cmp::Ordering::Equal))
+                .then_with(|| a.0.cmp(b.0))
+        });
+        candidates
+            .first()
+            .map(|(executor_type, ..)| executor_type.to_string())
     }
 
     pub fn acquire(&self, executor_type: &str) -> bool {
@@ -223,6 +237,13 @@ impl ExecutorPool {
             }
 
             entry.metrics.last_executed_at = Some(chrono::Utc::now().to_rfc3339());
+        }
+    }
+
+    pub fn release_without_recording(&self, executor_type: &str) {
+        let mut entries = self.entries.write().expect("pool lock poisoned");
+        if let Some(entry) = entries.get_mut(executor_type) {
+            entry.status.active_count = entry.status.active_count.saturating_sub(1);
         }
     }
 
@@ -637,6 +658,72 @@ mod tests {
 
         let best = pool.best_for_task("any", "any");
         assert_eq!(best.as_deref(), Some("fast"));
+    }
+
+    #[test]
+    fn best_for_task_prefers_exact_capability_over_healthier_wildcard() {
+        let pool = test_pool();
+        pool.register(ExecutorEntry {
+            executor_type: "generic".to_string(),
+            executor: Arc::new(NoopNodeExecutor),
+            capabilities: ExecutorCapabilities::default(),
+            status: ExecutorStatus {
+                concurrency_limit: 10,
+                ..Default::default()
+            },
+            cost_profile: CostProfile::default(),
+            metrics: ExecutorMetrics {
+                total_executions: 100,
+                successful_executions: 100,
+                ..Default::default()
+            },
+        });
+        pool.register(ExecutorEntry {
+            executor_type: "scorecard_validator".to_string(),
+            executor: Arc::new(NoopNodeExecutor),
+            capabilities: ExecutorCapabilities {
+                supported_task_types: vec!["local_runner_validation".to_string()],
+                supported_task_domains: vec!["scorecard".to_string()],
+                ..Default::default()
+            },
+            status: ExecutorStatus {
+                concurrency_limit: 10,
+                ..Default::default()
+            },
+            cost_profile: CostProfile::default(),
+            metrics: ExecutorMetrics {
+                total_executions: 100,
+                successful_executions: 50,
+                failed_executions: 50,
+                ..Default::default()
+            },
+        });
+
+        let best = pool.best_for_task("local_runner_validation", "scorecard");
+
+        assert_eq!(best.as_deref(), Some("scorecard_validator"));
+    }
+
+    #[test]
+    fn best_for_task_breaks_equal_scores_by_executor_type() {
+        for _ in 0..32 {
+            let pool = test_pool();
+            for executor_type in ["zeta", "alpha"] {
+                pool.register(ExecutorEntry {
+                    executor_type: executor_type.to_string(),
+                    executor: Arc::new(NoopNodeExecutor),
+                    capabilities: ExecutorCapabilities::default(),
+                    status: ExecutorStatus {
+                        concurrency_limit: 10,
+                        ..Default::default()
+                    },
+                    cost_profile: CostProfile::default(),
+                    metrics: ExecutorMetrics::default(),
+                });
+            }
+
+            assert_eq!(pool.best_for_task("any", "any").as_deref(), Some("alpha"));
+        }
     }
 
     #[test]

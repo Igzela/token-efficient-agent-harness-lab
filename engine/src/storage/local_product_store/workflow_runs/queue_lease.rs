@@ -14,6 +14,8 @@ pub(super) const ACTIVE_RUNS_PRIORITIZED_SQL: &str =
                          WHERE status IN ('running', 'created')
                          ORDER BY CASE WHEN pause_reason IS NOT NULL THEN 1 ELSE 0 END,
                                   priority ASC, created_at ASC";
+pub(super) const ACTIVE_RUN_COUNT_SQL: &str =
+    "SELECT COUNT(*) FROM workflow_runs WHERE status IN ('running', 'created')";
 
 pub(super) const QUEUED_COUNT_SQL: &str =
     "SELECT COUNT(*) FROM workflow_runs WHERE status IN ('created') AND pause_reason IS NULL";

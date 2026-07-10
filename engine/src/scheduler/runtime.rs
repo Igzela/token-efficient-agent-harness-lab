@@ -278,8 +278,11 @@ fn scheduler_tick_with_limit(
             }
         }
 
-        let (acquired_type, pool_executor_arc) =
-            select_scheduler_executor(config, pool, &executor_arc);
+        let Some((acquired_type, pool_executor_arc)) =
+            select_scheduler_executor(config, pool, &executor_arc, None)
+        else {
+            continue;
+        };
 
         match store.tick_with_executor_with_agent_caps(
             run_id,
@@ -296,21 +299,40 @@ fn scheduler_tick_with_limit(
                     retries += 1;
                 }
 
-                if let Some(ref et) = acquired_type {
-                    pool.release(et, true, 0, None);
+                let execution = result.get("result");
+                let executed = matches!(action, Some("node_executed" | "node_retry"));
+                let execution_succeeded = execution
+                    .and_then(|value| value.get("status"))
+                    .and_then(Value::as_str)
+                    == Some("completed");
+                if let Some(ref executor_type) = acquired_type {
+                    if executed {
+                        let latency_ms = execution
+                            .and_then(|value| value.get("latency_ms"))
+                            .and_then(Value::as_i64)
+                            .unwrap_or(0)
+                            .max(0) as u64;
+                        let cost = execution
+                            .and_then(|value| value.get("estimated_cost"))
+                            .and_then(Value::as_f64)
+                            .filter(|value| value.is_finite() && *value >= 0.0);
+                        pool.release(executor_type, execution_succeeded, latency_ms, cost);
+                    } else {
+                        pool.release_without_recording(executor_type);
+                    }
                 }
 
                 let tick_node_id = result.get("node_id").and_then(|v| v.as_str());
-                let tick_action = match action {
-                    Some("node_completed") => OrchestrationAction::RunCompleted,
-                    Some("node_failed") => OrchestrationAction::RunFailed,
-                    Some("node_retry") => OrchestrationAction::RetryNode,
+                let tick_action = match (action, execution_succeeded) {
+                    (Some("node_executed"), true) => OrchestrationAction::RunCompleted,
+                    (Some("node_executed"), false) => OrchestrationAction::RunFailed,
+                    (Some("node_retry"), _) => OrchestrationAction::RetryNode,
                     _ => OrchestrationAction::ExecuteNode,
                 };
                 let (tick_confidence, tick_score) = confidence_from_inputs(
                     "running",
                     tick_node_id.or(Some("pending")),
-                    true,
+                    execution_succeeded,
                     None,
                     None,
                 );
@@ -353,16 +375,17 @@ fn scheduler_tick_with_limit(
                     &tick_enriched,
                 );
 
-                if action == Some("node_completed") || action == Some("node_failed") {
-                    let success = action == Some("node_completed");
+                if executed {
+                    let success = execution_succeeded;
                     let quality = if success { 0.8 } else { 0.2 };
+                    let executor_type = pool_executor_arc.executor_type_name();
                     modules.feedback.record_outcome(
                         &mut modules.observation_store,
                         run_id,
                         "scheduler",
                         "auto",
-                        "noop",
-                        "noop",
+                        executor_type,
+                        executor_type,
                         quality,
                         0.0,
                         0,
@@ -377,7 +400,7 @@ fn scheduler_tick_with_limit(
                         &modules.observation_store,
                         &mut modules.history_store,
                         &task_group,
-                        "noop",
+                        executor_type,
                     );
                     if should_adapt {
                         recommendations.push(super::AdaptationRecommendation {
@@ -427,7 +450,7 @@ fn scheduler_tick_with_limit(
             }
             Err(_) => {
                 if let Some(ref et) = acquired_type {
-                    pool.release(et, false, 0, None);
+                    pool.release_without_recording(et);
                 }
             }
         }
@@ -522,8 +545,12 @@ fn dynamic_scheduler_tick(
     let mut aggregations = 0u64;
 
     for run_id in active_runs.iter().take(tick_limit) {
-        let (acquired_type, pool_executor_arc) =
-            select_scheduler_executor(config, pool, &executor_arc);
+        let suggested_executor = suggested_executor_for_run(store, run_id);
+        let Some((acquired_type, pool_executor_arc)) =
+            select_scheduler_executor(config, pool, &executor_arc, suggested_executor.as_deref())
+        else {
+            continue;
+        };
 
         let mut controller = DynamicWorkflowController::new(DynamicControllerConfig {
             executor_pool_accounting_enabled: false,
@@ -552,14 +579,33 @@ fn dynamic_scheduler_tick(
                     aggregations += 1;
                 }
 
-                if let Some(ref et) = acquired_type {
-                    pool.release(et, true, 0, None);
+                if let Some(ref executor_type) = acquired_type {
+                    let execution_statuses: Vec<&str> = result
+                        .actions
+                        .iter()
+                        .filter_map(|action| match action {
+                            ControllerAction::NodeExecuted { status, .. } => Some(status.as_str()),
+                            ControllerAction::NodeRetried { .. } => Some("failed"),
+                            _ => None,
+                        })
+                        .collect();
+                    if execution_statuses.is_empty() {
+                        pool.release_without_recording(executor_type);
+                    } else {
+                        let success = execution_statuses
+                            .iter()
+                            .all(|status| *status == "completed");
+                        pool.release(executor_type, success, 0, None);
+                    }
                 }
             }
-            Err(_) => {
+            Err(error) => {
                 if let Some(ref et) = acquired_type {
-                    pool.release(et, false, 0, None);
+                    pool.release_without_recording(et);
                 }
+                return Err(format!(
+                    "dynamic scheduler tick failed for run {run_id}: {error}"
+                ));
             }
         }
     }
@@ -591,9 +637,30 @@ fn select_scheduler_executor(
     config: &SchedulerConfig,
     pool: &Arc<ExecutorPool>,
     configured: &Arc<dyn NodeExecutor>,
-) -> (Option<String>, Arc<dyn NodeExecutor>) {
+    suggested_executor: Option<&str>,
+) -> Option<(Option<String>, Arc<dyn NodeExecutor>)> {
     if config.executor_type == "adaptive_provider" {
-        return (None, Arc::clone(configured));
+        return Some((None, Arc::clone(configured)));
+    }
+    let pool_routed = matches!(
+        config.executor_type.as_str(),
+        "dynamic" | "dynamic_noop" | "dynamic_workflow" | "auto" | "pool"
+    );
+    if !pool_routed {
+        return match pool.get(&config.executor_type) {
+            Some(executor) if pool.acquire(&config.executor_type) => {
+                Some((Some(config.executor_type.clone()), executor))
+            }
+            Some(_) => None,
+            None => Some((None, Arc::clone(configured))),
+        };
+    }
+    if let Some(executor_type) = suggested_executor {
+        if let Some(executor) = pool.get(executor_type) {
+            if pool.acquire(executor_type) {
+                return Some((Some(executor_type.to_string()), executor));
+            }
+        }
     }
     let best_executor = pool.best_for_task("scheduler", "auto");
     match best_executor {
@@ -601,10 +668,33 @@ fn select_scheduler_executor(
             let executor = pool
                 .get(executor_type)
                 .unwrap_or_else(|| Arc::new(NoopNodeExecutor));
-            (Some(executor_type.clone()), executor)
+            Some((Some(executor_type.clone()), executor))
         }
-        _ => (None, Arc::clone(configured)),
+        _ if pool.snapshot().is_empty() => Some((None, Arc::clone(configured))),
+        _ => None,
     }
+}
+
+fn suggested_executor_for_run(store: &LocalProductStore, run_id: &str) -> Option<String> {
+    let run = store.get_workflow_run(run_id).ok().flatten()?;
+    let task_type = run
+        .get("nodes")
+        .and_then(Value::as_array)
+        .and_then(|nodes| {
+            nodes
+                .iter()
+                .find(|node| {
+                    matches!(
+                        node.get("db_status").and_then(Value::as_str),
+                        Some("pending" | "running" | "failed")
+                    )
+                })
+                .or_else(|| nodes.first())
+        })
+        .and_then(|node| node.get("task_type"))
+        .and_then(Value::as_str)?;
+    let task_group = crate::routing::schemas::make_task_group(task_type, "execute");
+    store.suggest_executor_type(&task_group)
 }
 
 fn build_graph_from_run(run_data: &Value, run_id: &str) -> crate::orchestration::WorkflowGraph {
@@ -664,5 +754,43 @@ fn build_graph_from_run(run_data: &Value, run_id: &str) -> crate::orchestration:
         started_at: None,
         completed_at: None,
         result: None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::executor_pool::{
+        CostProfile, ExecutorCapabilities, ExecutorEntry, ExecutorMetrics, ExecutorStatus,
+    };
+
+    #[test]
+    fn dynamic_routing_prefers_available_feedback_suggestion() {
+        let pool = Arc::new(ExecutorPool::new());
+        for executor_type in ["fallback", "preferred"] {
+            pool.register(ExecutorEntry {
+                executor_type: executor_type.to_string(),
+                executor: Arc::new(NoopNodeExecutor),
+                capabilities: ExecutorCapabilities::default(),
+                status: ExecutorStatus::default(),
+                cost_profile: CostProfile::default(),
+                metrics: ExecutorMetrics::default(),
+            });
+        }
+        let config = SchedulerConfig {
+            executor_type: "dynamic".to_string(),
+            ..Default::default()
+        };
+
+        let selected = select_scheduler_executor(
+            &config,
+            &pool,
+            &(Arc::new(NoopNodeExecutor) as Arc<dyn NodeExecutor>),
+            Some("preferred"),
+        )
+        .expect("suggested executor should be selected");
+
+        assert_eq!(selected.0.as_deref(), Some("preferred"));
+        pool.release_without_recording("preferred");
     }
 }

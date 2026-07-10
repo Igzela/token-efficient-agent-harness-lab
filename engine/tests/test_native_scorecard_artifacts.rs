@@ -592,6 +592,38 @@ async fn local_runner_artifact_is_visible_in_operator_evidence_as_bounded_metada
 
 struct MetricsNodeExecutor;
 
+struct OutputStateMetricsExecutor;
+
+impl engine::node_executor::NodeExecutor for OutputStateMetricsExecutor {
+    fn executor_type_name(&self) -> &str {
+        "agent_step"
+    }
+
+    fn execute_node(
+        &self,
+        _input: &engine::node_executor::NodeExecutionInput,
+    ) -> engine::node_executor::NodeExecutionOutput {
+        engine::node_executor::NodeExecutionOutput {
+            status: "completed".to_string(),
+            executor_type: "agent_step".to_string(),
+            output: Some(
+                json!({
+                    "action": "update_scratchpad",
+                    "state_read_bytes": 321,
+                    "state_write_bytes": 123
+                })
+                .to_string(),
+            ),
+            error_domain: None,
+            error_message: None,
+            input_tokens: None,
+            output_tokens: None,
+            estimated_cost: Some(0.0),
+            latency_ms: Some(1),
+        }
+    }
+}
+
 impl engine::node_executor::NodeExecutor for MetricsNodeExecutor {
     fn executor_type_name(&self) -> &str {
         "provider"
@@ -707,6 +739,23 @@ fn automatic_scorecard_uses_native_executor_metrics_when_available() {
     assert_eq!(scorecard["steps"][0]["duration_ms"], 33);
     assert_eq!(scorecard["steps"][1]["operation_kind"], "tool_call");
     assert_eq!(scorecard["steps"][1]["input_tokens"], 7);
+}
+
+#[test]
+fn automatic_scorecard_extracts_bounded_state_metrics_from_executor_output() {
+    let (store, _dir) = make_store();
+    let run_id = create_single_node_run(&store, "state metric output regression");
+
+    store
+        .tick_with_executor(&run_id, "tester", 0, &OutputStateMetricsExecutor)
+        .unwrap();
+
+    let artifacts = store
+        .native_scorecard_artifacts_by_run(&run_id, 10)
+        .unwrap();
+    let step = &artifacts[0]["scorecard"]["steps"][0];
+    assert_eq!(step["state_read_bytes"], 321);
+    assert_eq!(step["state_write_bytes"], 123);
 }
 
 #[test]

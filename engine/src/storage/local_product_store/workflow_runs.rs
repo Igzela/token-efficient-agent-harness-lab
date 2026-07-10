@@ -1739,10 +1739,44 @@ impl LocalProductStore {
             })?,
         };
 
-        let memory_context =
+        let memory_preview =
             self.memory_context_for_agent_step_node(run_id, node_id, config.max_context_tokens)?;
-        let assembled =
-            assemble_context_injection_with_bridge(node_id, &sources, &mappings, &config);
+        let memory_estimate = memory_preview
+            .as_ref()
+            .and_then(|context| context.get("estimated_tokens"))
+            .and_then(Value::as_u64)
+            .unwrap_or(0) as usize;
+        let memory_budget = if memory_preview.is_none() {
+            0
+        } else if sources.is_empty() {
+            config.max_context_tokens
+        } else {
+            memory_estimate
+                .min((config.max_context_tokens / 4).max(1))
+                .min(config.max_context_tokens)
+        };
+        let predecessor_budget = config.max_context_tokens.saturating_sub(memory_budget);
+        let predecessor_config = ContextAssemblyConfig {
+            enabled: config.enabled,
+            max_context_tokens: predecessor_budget,
+        };
+        let assembled = if predecessor_budget == 0 {
+            None
+        } else {
+            assemble_context_injection_with_bridge(
+                node_id,
+                &sources,
+                &mappings,
+                &predecessor_config,
+            )
+        };
+        let memory_context = if memory_budget == 0 {
+            None
+        } else if memory_budget == config.max_context_tokens {
+            memory_preview
+        } else {
+            self.memory_context_for_agent_step_node(run_id, node_id, memory_budget)?
+        };
         Ok(merge_memory_context_injection(
             node_id,
             assembled,
@@ -2141,6 +2175,55 @@ impl LocalProductStore {
                     .map_err(|e| e.to_string())?;
                 let values: Vec<Value> = rows.iter().map(queue_lease::prioritized_pg_row).collect();
                 Ok(values)
+            }),
+        }
+    }
+
+    pub fn list_active_workflow_runs_prioritized_page(
+        &self,
+        limit: i64,
+        offset: i64,
+    ) -> Result<Vec<Value>, String> {
+        let limit = limit.clamp(0, 500);
+        let offset = offset.max(0);
+        match &self.db {
+            DatabaseConnection::Sqlite(_) => self.with_conn(|conn| {
+                let sql = format!(
+                    "{} LIMIT ?1 OFFSET ?2",
+                    queue_lease::ACTIVE_RUNS_PRIORITIZED_SQL
+                );
+                let mut stmt = conn.prepare(&sql).map_err(|error| error.to_string())?;
+                let rows = stmt
+                    .query_map(params![limit, offset], queue_lease::prioritized_sqlite_row)
+                    .map_err(|error| error.to_string())?;
+                collect_values(rows)
+            }),
+            #[cfg(feature = "pg")]
+            DatabaseConnection::Pg(_) => self.with_pg_conn(|client| {
+                let sql = format!(
+                    "{} LIMIT $1 OFFSET $2",
+                    queue_lease::ACTIVE_RUNS_PRIORITIZED_SQL
+                );
+                let rows = client
+                    .query(&sql, &[&limit, &offset])
+                    .map_err(|error| error.to_string())?;
+                Ok(rows.iter().map(queue_lease::prioritized_pg_row).collect())
+            }),
+        }
+    }
+
+    pub fn count_active_workflow_runs(&self) -> Result<i64, String> {
+        match &self.db {
+            DatabaseConnection::Sqlite(_) => self.with_conn(|conn| {
+                conn.query_row(queue_lease::ACTIVE_RUN_COUNT_SQL, [], |row| row.get(0))
+                    .map_err(|error| error.to_string())
+            }),
+            #[cfg(feature = "pg")]
+            DatabaseConnection::Pg(_) => self.with_pg_conn(|client| {
+                client
+                    .query_one(queue_lease::ACTIVE_RUN_COUNT_SQL, &[])
+                    .map(|row| row.get(0))
+                    .map_err(|error| error.to_string())
             }),
         }
     }
@@ -2799,9 +2882,7 @@ impl LocalProductStore {
         match &self.db {
             DatabaseConnection::Sqlite(_) => self.with_conn(count_running_agent_steps_locked),
             #[cfg(feature = "pg")]
-            DatabaseConnection::Pg(_) => {
-                self.with_pg_conn(|client| pg_count_running_agent_steps(client))
-            }
+            DatabaseConnection::Pg(_) => self.with_pg_conn(pg_count_running_agent_steps),
         }
     }
 
@@ -3306,6 +3387,49 @@ fn merge_memory_context_injection(
     });
 
     if let Some(obj) = injection.as_object_mut() {
+        let predecessor_estimated = obj
+            .get("total_estimated_tokens")
+            .and_then(Value::as_u64)
+            .unwrap_or(0);
+        let predecessor_included = obj
+            .get("sources")
+            .and_then(Value::as_array)
+            .map(|sources| {
+                sources
+                    .iter()
+                    .filter_map(|source| source.get("included_tokens").and_then(Value::as_u64))
+                    .sum::<u64>()
+            })
+            .unwrap_or(0);
+        let memory_estimated = memory_context
+            .get("estimated_tokens")
+            .and_then(Value::as_u64)
+            .unwrap_or(0);
+        let memory_included = memory_context
+            .get("included_tokens")
+            .and_then(Value::as_u64)
+            .unwrap_or(0);
+        let was_truncated = obj
+            .get("truncated")
+            .and_then(Value::as_bool)
+            .unwrap_or(false)
+            || memory_context
+                .get("truncated")
+                .and_then(Value::as_bool)
+                .unwrap_or(false);
+        obj.insert(
+            "max_context_tokens".to_string(),
+            json!(config.max_context_tokens),
+        );
+        obj.insert(
+            "total_estimated_tokens".to_string(),
+            json!(predecessor_estimated.saturating_add(memory_estimated)),
+        );
+        obj.insert(
+            "included_token_total".to_string(),
+            json!(predecessor_included.saturating_add(memory_included)),
+        );
+        obj.insert("truncated".to_string(), json!(was_truncated));
         obj.insert("memory_context".to_string(), memory_context);
         if obj.get("source").and_then(Value::as_str) == Some("completed_predecessor_node_results") {
             obj.insert(

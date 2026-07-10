@@ -2,7 +2,7 @@
 
 Operator procedures for the local Agent Control Plane.
 
-Last updated: 2026-07-08.
+Last updated: 2026-07-10.
 
 ## Local Token-Efficiency Runner
 
@@ -34,13 +34,16 @@ export ACP_LOCAL_RUNNER_PROVIDER_TYPE=openai_compatible
 export ACP_LOCAL_RUNNER_BASE_URL=https://api.openai.com/v1
 export ACP_LOCAL_RUNNER_MODEL=gpt-4o-mini
 export ACP_LOCAL_RUNNER_API_KEY_ENV=OPENAI_API_KEY
+export ACP_PROVIDER_INPUT_COST_PER_1K_USD="REPLACE_WITH_PROVIDER_INPUT_RATE"
+export ACP_PROVIDER_OUTPUT_COST_PER_1K_USD="REPLACE_WITH_PROVIDER_OUTPUT_RATE"
 cargo run -p engine --bin local-runner-exec -- \
   --provider live \
   --iterations 10 \
+  --db .agent-control-plane/local-team.db \
   --output-dir /tmp/acp-local-runner-live
 ```
 
-`ACP_LOCAL_RUNNER_API_KEY_ENV` is a symbolic environment-variable reference, not the secret value; the referenced variable must already be present in the operator environment. Do not put provider credentials in command lines, docs, scorecards, logs, or artifacts. Live mode fails closed unless provider execution gates are ready and all local-runner provider metadata plus the referenced credential environment variable are present.
+`ACP_LOCAL_RUNNER_API_KEY_ENV` is a symbolic environment-variable reference, not the secret value; the referenced variable must already be present in the operator environment. Pricing must be the provider's positive USD cost per 1,000 tokens. Do not put provider credentials in command lines, docs, scorecards, logs, or artifacts. Live mode writes bounded redacted request/response/error and cost evidence to the app-owned database, reserves worst-case call cost before invocation, and fails closed unless gates, metadata, credential reference, pricing, budget, timeout, and audit storage are ready. Set `ACP_LOCAL_RUNNER_KILL_SWITCH=1` to block new live calls immediately.
 
 Focused validation:
 
@@ -106,3 +109,27 @@ Acceptance:
 ## Local Engine Reminder
 
 For normal local engine operation, use the existing dashboard build, engine start, health check, metrics, backup, restore, release, and incident-triage scripts in `scripts/` and the CI workflow as the source of truth.
+
+## Release Upgrade and Rollback
+
+From an extracted release directory, upgrade a user-local installation atomically:
+
+```bash
+./upgrade.sh \
+  --prefix "$HOME/.local" \
+  --data-dir "$HOME/.agent-control-plane"
+```
+
+The default upgrade replaces the binary and dashboard directory atomically, retains the prior binary as `agent-control-plane.bak`, removes stale dashboard assets, and does not guess how the service is managed. Restart it with the operator's process manager after success.
+
+For a managed service, provide paired explicit hooks:
+
+```bash
+./upgrade.sh \
+  --prefix "$HOME/.local" \
+  --data-dir "$HOME/.agent-control-plane" \
+  --stop-command '<process-manager stop command>' \
+  --restart-command '<process-manager start command>'
+```
+
+Both hooks are required together. If binary/dashboard replacement or restart fails, the script restores the prior binary and dashboard and attempts the old restart hook. Validate the packaged upgrade contract with `bash scripts/check_release_contract.sh` before publishing a release.

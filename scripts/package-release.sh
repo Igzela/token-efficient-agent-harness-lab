@@ -21,13 +21,18 @@ echo ""
 # Step 1: Build release binary
 echo "Building release binary..."
 cd "${REPO_ROOT}"
-cargo build --release -p engine 2>&1 | tail -3
-BINARY="${REPO_ROOT}/target/release/agent-control-plane"
+HOST_TARGET="$(rustc -vV | sed -n 's/^host: //p')"
+BUILD_TOOL="cargo"
+if [[ "${TARGET}" != "${HOST_TARGET}" ]] && command -v cross >/dev/null 2>&1; then
+    BUILD_TOOL="cross"
+fi
+"${BUILD_TOOL}" build --release -p engine --target "${TARGET}" 2>&1 | tail -3
+BINARY="${REPO_ROOT}/target/${TARGET}/release/agent-control-plane"
 if [[ ! -f "${BINARY}" ]]; then
     echo "Error: release binary not found after build"
     exit 1
 fi
-echo "  Binary: $(stat -c%s "${BINARY}") bytes"
+echo "  Binary: $(wc -c < "${BINARY}" | tr -d ' ') bytes"
 
 # Step 2: Build static dashboard
 echo "Building static dashboard..."
@@ -52,7 +57,7 @@ cp "${BINARY}" "${STAGE_DIR}/engine"
 chmod +x "${STAGE_DIR}/engine"
 
 if [[ -d "${DASHBOARD_OUT}" ]]; then
-    cp -r "${DASHBOARD_OUT}/"* "${STAGE_DIR}/dashboard/" 2>/dev/null || true
+    cp -a "${DASHBOARD_OUT}/." "${STAGE_DIR}/dashboard/"
 fi
 
 cp "${REPO_ROOT}/.env.example" "${STAGE_DIR}/.env.example"

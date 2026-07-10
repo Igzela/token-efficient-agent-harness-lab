@@ -342,6 +342,7 @@ impl LocalRunnerValidationExecutor {
     fn run_validation(
         input: &NodeExecutionInput,
     ) -> (NodeExecutionOutput, Option<serde_json::Value>) {
+        let started = std::time::Instant::now();
         let iterations = input
             .node_metadata
             .get("iterations")
@@ -377,7 +378,7 @@ impl LocalRunnerValidationExecutor {
                         input_tokens: None,
                         output_tokens: None,
                         estimated_cost: None,
-                        latency_ms: None,
+                        latency_ms: Some(started.elapsed().as_millis() as i64),
                     },
                     None,
                 );
@@ -397,7 +398,7 @@ impl LocalRunnerValidationExecutor {
                         input_tokens: None,
                         output_tokens: None,
                         estimated_cost: None,
-                        latency_ms: None,
+                        latency_ms: Some(started.elapsed().as_millis() as i64),
                     },
                     None,
                 );
@@ -418,7 +419,7 @@ impl LocalRunnerValidationExecutor {
                         input_tokens: None,
                         output_tokens: None,
                         estimated_cost: None,
-                        latency_ms: None,
+                        latency_ms: Some(started.elapsed().as_millis() as i64),
                     },
                     None,
                 );
@@ -440,7 +441,7 @@ impl LocalRunnerValidationExecutor {
                     input_tokens: None,
                     output_tokens: None,
                     estimated_cost: None,
-                    latency_ms: None,
+                    latency_ms: Some(started.elapsed().as_millis() as i64),
                 },
                 None,
             );
@@ -472,7 +473,7 @@ impl LocalRunnerValidationExecutor {
             input_tokens: Some(stateless_tokens + stateful_tokens),
             output_tokens: Some(0),
             estimated_cost: Some(0.0),
-            latency_ms: Some(iterations as i64 * 5),
+            latency_ms: Some(started.elapsed().as_millis() as i64),
         };
 
         (output, Some(summary))
@@ -2379,7 +2380,7 @@ mod tests {
                 Some(&json!({
                     "memory_digest": {
                         "source_refs": [
-                            "agent_state:run-mem:agent-mem:scratchpad_summary",
+                            "agent_state:run-ar2-mem:agent-mem:scratchpad_summary",
                             "/home/igzela/private/repo.rs"
                         ],
                         "expiry_policy": "forever",
@@ -2396,7 +2397,7 @@ mod tests {
             let digest = context.memory_digest.as_ref().expect("memory digest");
             assert_eq!(
                 digest["source_refs"],
-                json!(["agent_state:run-mem:agent-mem:scratchpad_summary"])
+                json!(["agent_state:run-ar2-mem:agent-mem:scratchpad_summary"])
             );
             assert!(!digest.to_string().contains("/home/igzela"));
             assert!(!digest.to_string().contains("sk-proj-secret-token"));
@@ -2448,6 +2449,7 @@ mod tests {
             .get("memory_digest")
             .expect("memory digest should persist");
         assert_eq!(digest["summary"], "progress from [redacted-path] using ***");
+        assert_eq!(digest["updated_at"], state.updated_at);
         assert_eq!(
             digest["source_refs"],
             json!(["agent_state:run-ar2-sync:agent-sync:scratchpad_summary"])

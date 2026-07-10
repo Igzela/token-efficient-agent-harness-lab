@@ -65,7 +65,7 @@ fi
 if [[ -d "${DASHBOARD_SRC}" ]]; then
     DASHBOARD_DST="${DATA_DIR}/dashboard"
     mkdir -p "${DASHBOARD_DST}"
-    cp -r "${DASHBOARD_SRC}/"* "${DASHBOARD_DST}/" 2>/dev/null || true
+    cp -a "${DASHBOARD_SRC}/." "${DASHBOARD_DST}/"
     echo "  -> ${DASHBOARD_DST}/"
 fi
 

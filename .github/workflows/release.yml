@@ -6,7 +6,7 @@ on:
       - "v*"
 
 permissions:
-  contents: write
+  contents: read
 
 env:
   CARGO_TERM_COLOR: always
@@ -14,7 +14,60 @@ env:
   PACKAGE_PREFIX: agent-control-plane
 
 jobs:
+  verify:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: testuser
+          POSTGRES_PASSWORD: testpass
+          POSTGRES_DB: testdb
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd="pg_isready -U testuser"
+          --health-interval=5s
+          --health-timeout=5s
+          --health-retries=5
+    env:
+      ACP_TEST_DATABASE_URL: postgres://testuser:testpass@localhost:5432/testdb
+    steps:
+      - name: Checkout without persisted credentials
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        with:
+          persist-credentials: false
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable 2026-07-10
+      - name: Install Bun
+        uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
+      - name: Install uv
+        uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b # v8.1.0
+        with:
+          python-version: "3.11"
+          enable-cache: false
+      - name: Verify Rust and TypeScript stack
+        run: bash scripts/verify_rust_typescript_stack.sh
+      - name: Verify PostgreSQL integration
+        run: cargo test -p engine --features pg-tests -- --test-threads=1
+      - name: Verify Python SDK
+        run: cd sdk/python && PYTHONPATH=src uv run --no-project python -m unittest discover -s tests
+      - name: Verify dependency advisories
+        run: |
+          cargo install cargo-audit --version 0.22.2 --locked
+          cargo audit --deny warnings
+          cd dashboard
+          bun audit
+          cd ../sdk/typescript
+          bun audit
+      - name: Verify release contract and agent handoff
+        run: |
+          bash scripts/check_github_action_pins.sh
+          bash scripts/check_release_contract.sh
+          uv run --no-project python scripts/check_agent_handoff.py
+
   build:
+    needs: verify
     strategy:
       fail-fast: false
       matrix:
@@ -36,19 +89,21 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        with:
+          persist-credentials: false
 
       - name: Install Rust stable
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable 2026-07-10
         with:
           targets: ${{ matrix.target }}
 
       - name: Install cross (aarch64-linux only)
         if: matrix.cross
-        run: cargo install cross --git https://github.com/cross-rs/cross
+        run: cargo install cross --git https://github.com/cross-rs/cross --rev 88f49ff79e777bef6d3564531636ee4d3cc2f8d2 --locked
 
       - name: Install Bun
-        uses: oven-sh/setup-bun@v2
+        uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
 
       - name: Build static dashboard
         run: |
@@ -76,6 +131,7 @@ jobs:
           cp "target/${{ matrix.target }}/release/${{ env.BINARY_NAME }}" "$PACKAGE_DIR/engine"
           cp -r dashboard/out/. "$PACKAGE_DIR/dashboard/"
           cp .env.example "$PACKAGE_DIR/"
+          cp README.md "$PACKAGE_DIR/"
           cp scripts/install.sh scripts/upgrade.sh "$PACKAGE_DIR/"
           chmod +x "$PACKAGE_DIR/engine" "$PACKAGE_DIR/install.sh" "$PACKAGE_DIR/upgrade.sh"
           tar -czf "$TARBALL" -C "$STAGING" "$PACKAGE"
@@ -90,7 +146,7 @@ jobs:
           echo "tarball=$TARBALL" >> "$GITHUB_OUTPUT"
 
       - name: Upload tarball artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: ${{ matrix.target }}
           path: |
@@ -101,10 +157,12 @@ jobs:
   publish:
     needs: build
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
 
     steps:
       - name: Download all artifacts
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
           path: artifacts
 
@@ -129,25 +187,25 @@ jobs:
           ### Linux x86_64
           ```bash
           tar -xzf agent-control-plane-${VERSION}-x86_64-unknown-linux-gnu.tar.gz
-          sudo agent-control-plane-${VERSION}-x86_64-unknown-linux-gnu/install.sh
+          agent-control-plane-${VERSION}-x86_64-unknown-linux-gnu/install.sh --prefix "$HOME/.local"
           ```
 
           ### Linux aarch64
           ```bash
           tar -xzf agent-control-plane-${VERSION}-aarch64-unknown-linux-gnu.tar.gz
-          sudo agent-control-plane-${VERSION}-aarch64-unknown-linux-gnu/install.sh
+          agent-control-plane-${VERSION}-aarch64-unknown-linux-gnu/install.sh --prefix "$HOME/.local"
           ```
 
           ### macOS x86_64 (Intel)
           ```bash
           tar -xzf agent-control-plane-${VERSION}-x86_64-apple-darwin.tar.gz
-          sudo agent-control-plane-${VERSION}-x86_64-apple-darwin/install.sh
+          agent-control-plane-${VERSION}-x86_64-apple-darwin/install.sh --prefix "$HOME/.local"
           ```
 
           ### macOS aarch64 (Apple Silicon)
           ```bash
           tar -xzf agent-control-plane-${VERSION}-aarch64-apple-darwin.tar.gz
-          sudo agent-control-plane-${VERSION}-aarch64-apple-darwin/install.sh
+          agent-control-plane-${VERSION}-aarch64-apple-darwin/install.sh --prefix "$HOME/.local"
           ```
 
           ## Verify Checksums
@@ -160,7 +218,7 @@ jobs:
           sed -i "s/\${VERSION}/${VERSION}/g" release-body.md
 
       - name: Create GitHub Release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2
         with:
           body_path: release-body.md
           files: release-assets/*

@@ -554,6 +554,53 @@ async fn axum_dashboard_exposes_read_only_cli_capability() {
 }
 
 #[tokio::test]
+async fn axum_decisions_clamps_huge_limit_and_honors_run_offset_with_real_total() {
+    let dir = tempdir().unwrap();
+    let store = LocalProductStore::new(dir.path().join("decisions-page.db")).unwrap();
+    for index in 0..3 {
+        store
+            .record_orchestration_decision(
+                "run-page",
+                Some(&format!("node-{index}")),
+                "execute",
+                "pagination test",
+                "noop",
+                None,
+                "high",
+                0.9,
+                &json!({"index": index}),
+            )
+            .unwrap();
+    }
+    let expected_second = store.get_decisions_for_run("run-page", 10).unwrap()[1]
+        .decision_id
+        .clone();
+    let app = build_axum_router(AxumApiState::new().with_local_store(store));
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method(Method::GET)
+                .uri(format!(
+                    "/api/v1/decisions?run_id=run-page&limit={}&offset=1",
+                    usize::MAX
+                ))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = response_json(response).await;
+    assert_eq!(body["limit"], 500);
+    assert_eq!(body["offset"], 1);
+    assert_eq!(body["total"], 3);
+    assert_eq!(body["decisions"].as_array().unwrap().len(), 2);
+    assert_eq!(body["decisions"][0]["decision_id"], expected_second);
+}
+
+#[tokio::test]
 async fn axum_dashboard_exposes_adaptive_fusion_operator_status() {
     let _guard = adaptive_operator_env_lock().lock().await;
     let default_app = build_axum_router(AxumApiState::new());
@@ -8000,6 +8047,34 @@ async fn axum_queue_runs_respects_limit_offset() {
     let body = response_json(response).await;
     assert_eq!(body["limit"], 10);
     assert_eq!(body["offset"], 5);
+}
+
+#[tokio::test]
+async fn axum_queue_runs_clamps_huge_limit_and_reports_database_total() {
+    let dir = tempdir().unwrap();
+    let store = LocalProductStore::new(dir.path().join("queue-clamp.db")).unwrap();
+    for _ in 0..3 {
+        create_plan_and_run(&store);
+    }
+    let app = build_axum_router(AxumApiState::new().with_local_store(store));
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method(Method::GET)
+                .uri(format!("/api/v1/queue/runs?limit={}&offset=1", usize::MAX))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = response_json(response).await;
+    assert_eq!(body["limit"], 500);
+    assert_eq!(body["offset"], 1);
+    assert_eq!(body["total"], 3);
+    assert_eq!(body["runs"].as_array().unwrap().len(), 2);
 }
 
 fn create_plan_and_run(store: &LocalProductStore) -> String {

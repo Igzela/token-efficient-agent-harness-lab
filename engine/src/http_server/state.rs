@@ -64,7 +64,7 @@ pub struct AxumApiState {
     pub(crate) tenant_resolver: Option<Arc<Mutex<TenantResolver>>>,
     pub(crate) rate_limiter: Arc<Mutex<RateLimiter>>,
     pub(crate) default_rate_limit: Option<i64>,
-    pub(crate) now: f64,
+    pub(crate) fixed_now: Option<f64>,
     pub(crate) dashboard_dir: Option<Arc<PathBuf>>,
     pub(crate) local_store: Option<Arc<LocalProductStore>>,
     pub(crate) backup_dir: Option<Arc<PathBuf>>,
@@ -92,7 +92,7 @@ impl AxumApiState {
             tenant_resolver: None,
             rate_limiter: Arc::new(Mutex::new(RateLimiter::new(60.0, 10_000))),
             default_rate_limit: None,
-            now: 0.0,
+            fixed_now: None,
             dashboard_dir: None,
             local_store: None,
             backup_dir: None,
@@ -118,8 +118,30 @@ impl AxumApiState {
         self.tenant_resolver = Some(Arc::new(Mutex::new(tenant_resolver)));
         self.rate_limiter = Arc::new(Mutex::new(rate_limiter));
         self.default_rate_limit = default_rate_limit;
-        self.now = now;
+        self.fixed_now = Some(now);
         self
+    }
+
+    pub fn with_auth_live(
+        mut self,
+        tenant_resolver: TenantResolver,
+        rate_limiter: RateLimiter,
+        default_rate_limit: Option<i64>,
+    ) -> Self {
+        self.tenant_resolver = Some(Arc::new(Mutex::new(tenant_resolver)));
+        self.rate_limiter = Arc::new(Mutex::new(rate_limiter));
+        self.default_rate_limit = default_rate_limit;
+        self.fixed_now = None;
+        self
+    }
+
+    pub(crate) fn now(&self) -> f64 {
+        self.fixed_now.unwrap_or_else(|| {
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|duration| duration.as_secs_f64())
+                .unwrap_or(f64::MAX)
+        })
     }
 
     pub fn with_dashboard_dir(mut self, dashboard_dir: impl Into<PathBuf>) -> Self {

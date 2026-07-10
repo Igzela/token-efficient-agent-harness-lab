@@ -69,7 +69,7 @@ fn test_tenant_resolver_create_and_resolve() {
 }
 
 #[test]
-fn test_add_api_key_reserves_generated_key_space() {
+fn test_generated_key_does_not_collide_with_added_key() {
     let mut resolver = TenantResolver::new();
     resolver.add_tenant(make_tenant("t1", "Test Tenant"));
     let admin_raw = "harness_0000000000000000000000000000000000000000000000000000000000000001";
@@ -203,4 +203,20 @@ fn test_auth_decision_serde() {
     let d: AuthDecision = serde_json::from_str(&json).unwrap();
     assert!(d.allowed);
     assert_eq!(d.tenant_id, Some("t1".to_string()));
+}
+
+#[test]
+fn independently_initialized_resolvers_generate_distinct_raw_keys() {
+    let mut first = TenantResolver::new();
+    first.add_tenant(make_tenant("t1", "Test"));
+    let (_, first_raw) = first.create_api_key("t1", None, None, 1000.0).unwrap();
+
+    let mut second = TenantResolver::new();
+    second.add_tenant(make_tenant("t1", "Test"));
+    let (_, second_raw) = second.create_api_key("t1", None, None, 1000.0).unwrap();
+
+    assert_ne!(
+        first_raw, second_raw,
+        "fresh resolver instances must not emit the same bearer token"
+    );
 }

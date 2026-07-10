@@ -1,6 +1,9 @@
 use serde_json::{json, Value};
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
+use crate::infrastructure::circuit_breaker::CircuitBreaker;
+use crate::provider::circuit_breaker_provider::CircuitBreakerProvider;
 use crate::provider::config::{
     provider_pricing_from_env, CredentialRef, ProviderConfig, PROVIDER_TYPES,
 };
@@ -9,8 +12,10 @@ use crate::provider::fake::FakeProvider;
 use crate::provider::openai::OpenAiProvider;
 use crate::provider::stub::StubProvider;
 use crate::provider::transport::ReqwestTransport;
-use crate::provider::Provider;
-use crate::provider::ProviderRequest;
+use crate::provider::{
+    Provider, ProviderAuditRecorder, ProviderError, ProviderRequest, ProviderResult,
+};
+use crate::storage::local_product_store::LocalProductStore;
 use crate::trusted_local::EffectiveExecutionGates;
 
 pub const SCENARIO_ID: &str = "provider_gated_remember_dont_reread_runner";
@@ -20,6 +25,102 @@ pub const LOCAL_RUNNER_PROVIDER_TYPE_ENV: &str = "ACP_LOCAL_RUNNER_PROVIDER_TYPE
 pub const LOCAL_RUNNER_BASE_URL_ENV: &str = "ACP_LOCAL_RUNNER_BASE_URL";
 pub const LOCAL_RUNNER_MODEL_ENV: &str = "ACP_LOCAL_RUNNER_MODEL";
 pub const LOCAL_RUNNER_API_KEY_ENV_REF: &str = "ACP_LOCAL_RUNNER_API_KEY_ENV";
+pub const LOCAL_RUNNER_KILL_SWITCH_ENV: &str = "ACP_LOCAL_RUNNER_KILL_SWITCH";
+
+struct AuditedProvider {
+    inner: Arc<dyn Provider>,
+    audit: Arc<ProviderAuditRecorder>,
+}
+
+impl AuditedProvider {
+    fn new(inner: Arc<dyn Provider>, store: Arc<LocalProductStore>) -> Self {
+        Self {
+            inner,
+            audit: Arc::new(ProviderAuditRecorder::with_store(store)),
+        }
+    }
+
+    fn audit_error(&self) -> ProviderError {
+        ProviderError {
+            schema_version: "provider_error.v1".to_string(),
+            provider_id: self.inner.provider_id().to_string(),
+            error_domain: "provider_audit".to_string(),
+            message: "provider audit persistence failed".to_string(),
+            retryable: false,
+        }
+    }
+}
+
+#[async_trait::async_trait]
+impl Provider for AuditedProvider {
+    fn provider_id(&self) -> &str {
+        self.inner.provider_id()
+    }
+
+    fn is_enabled(&self) -> bool {
+        self.inner.is_enabled()
+    }
+
+    fn default_model(&self) -> Option<&str> {
+        self.inner.default_model()
+    }
+
+    async fn invoke(&self, request: &ProviderRequest) -> ProviderResult {
+        let dispatch_id = request
+            .metadata
+            .get("dispatch_id")
+            .and_then(Value::as_str)
+            .unwrap_or("local-runner:unknown");
+        let request_extra = json!({"redaction_status": "redacted"});
+        self.audit
+            .try_create_and_record(
+                dispatch_id,
+                self.inner.provider_id(),
+                "request_sent",
+                Some(&request_extra),
+            )
+            .map_err(|_| self.audit_error())?;
+
+        let started = Instant::now();
+        match self.inner.invoke(request).await {
+            Ok(response) => {
+                let extra = json!({
+                    "input_token_count": response.input_tokens,
+                    "output_token_count": response.output_tokens,
+                    "cost": response.estimated_cost,
+                    "currency": "USD",
+                    "latency_ms": started.elapsed().as_millis() as i64,
+                    "redaction_status": "redacted",
+                });
+                self.audit
+                    .try_create_and_record(
+                        dispatch_id,
+                        self.inner.provider_id(),
+                        "response_received",
+                        Some(&extra),
+                    )
+                    .map_err(|_| self.audit_error())?;
+                Ok(response)
+            }
+            Err(error) => {
+                let extra = json!({
+                    "error_domain": error.error_domain,
+                    "latency_ms": started.elapsed().as_millis() as i64,
+                    "redaction_status": "redacted",
+                });
+                self.audit
+                    .try_create_and_record(
+                        dispatch_id,
+                        self.inner.provider_id(),
+                        "error",
+                        Some(&extra),
+                    )
+                    .map_err(|_| self.audit_error())?;
+                Err(error)
+            }
+        }
+    }
+}
 
 #[derive(Debug, Clone)]
 pub struct RunnerLimits {
@@ -59,6 +160,13 @@ pub struct RunnerConfig {
     pub model: String,
     pub limits: RunnerLimits,
     pub provider: Option<Arc<dyn Provider>>,
+    pub pricing: Option<RunnerPricing>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct RunnerPricing {
+    pub input_cost_per_1k: f64,
+    pub output_cost_per_1k: f64,
 }
 
 impl Default for RunnerConfig {
@@ -68,8 +176,19 @@ impl Default for RunnerConfig {
             model: "stub-deterministic".to_string(),
             limits: RunnerLimits::default(),
             provider: None,
+            pricing: None,
         }
     }
+}
+
+fn runner_pricing_from_env() -> Option<RunnerPricing> {
+    let pricing = provider_pricing_from_env();
+    let (input_cost_per_1k, output_cost_per_1k) =
+        pricing.input_cost_per_1k.zip(pricing.output_cost_per_1k)?;
+    (input_cost_per_1k > 0.0 && output_cost_per_1k > 0.0).then_some(RunnerPricing {
+        input_cost_per_1k,
+        output_cost_per_1k,
+    })
 }
 
 fn estimate_tokens(text: &str) -> i64 {
@@ -216,39 +335,136 @@ fn build_step(
     })
 }
 
+#[derive(Default)]
+struct RunnerUsage {
+    calls: usize,
+    tokens: i64,
+    run_cost_usd: f64,
+    prior_daily_cost_usd: f64,
+}
+
 pub fn run_mode(
     mode: &str,
     config: &RunnerConfig,
     provider: &Arc<dyn Provider>,
 ) -> Result<Value, String> {
+    if config.provider_kind == ProviderKind::Live {
+        return Err(
+            "live provider requires persistent daily cost evidence; use the guarded live runner"
+                .to_string(),
+        );
+    }
+    run_mode_with_usage(mode, config, provider, &mut RunnerUsage::default())
+}
+
+pub fn run_mode_with_daily_cost(
+    mode: &str,
+    config: &RunnerConfig,
+    provider: &Arc<dyn Provider>,
+    prior_daily_cost_usd: f64,
+) -> Result<Value, String> {
+    if config.provider_kind != ProviderKind::Live {
+        return Err("daily cost evidence is only accepted for live provider runs".to_string());
+    }
+    if !prior_daily_cost_usd.is_finite() || prior_daily_cost_usd < 0.0 {
+        return Err("prior daily cost must be finite and non-negative".to_string());
+    }
+    let mut usage = RunnerUsage {
+        prior_daily_cost_usd,
+        ..RunnerUsage::default()
+    };
+    run_mode_with_usage(mode, config, provider, &mut usage)
+}
+
+fn run_mode_with_usage(
+    mode: &str,
+    config: &RunnerConfig,
+    provider: &Arc<dyn Provider>,
+    usage: &mut RunnerUsage,
+) -> Result<Value, String> {
     if mode != "stateless_reread" && mode != "stateful_store" {
         return Err(format!("unsupported mode: {mode}"));
     }
+    let started = Instant::now();
     let run_id = format!("real-runner-{mode}");
+    let request_model = provider_request_model(config, provider).to_string();
     let mut history: Vec<Value> = Vec::new();
     let mut steps: Vec<Value> = Vec::new();
-    let mut total_tokens: i64 = 0;
-    let mut total_cost: f64 = 0.0;
+    let mut mode_cost: f64 = 0.0;
     let mut best_score_val: f64 = 0.0;
     let mut status = "fail";
 
-    for (calls, iteration) in (0..config.limits.iterations).enumerate() {
-        if calls >= config.limits.max_calls {
+    for iteration in 0..config.limits.iterations {
+        if config.provider_kind == ProviderKind::Live
+            && std::env::var(LOCAL_RUNNER_KILL_SWITCH_ENV).as_deref() == Ok("1")
+        {
+            return Err("local runner kill switch is active".to_string());
+        }
+        if usage.calls >= config.limits.max_calls {
             return Err("call limit exceeded".to_string());
+        }
+        if usage.run_cost_usd >= config.limits.run_cost_cap_usd {
+            return Err("run cost cap reached".to_string());
+        }
+        if usage.prior_daily_cost_usd + usage.run_cost_usd >= config.limits.daily_cost_cap_usd {
+            return Err("daily cost cap reached".to_string());
         }
         let prompt = make_prompt(mode, iteration, &history);
         let (context_tokens, repeated_context_tokens) =
             compute_context_tokens(mode, &prompt, &history);
 
-        let provider_req = ProviderRequest::local_stub(
-            provider.provider_id(),
-            provider_request_model(config, provider),
-            &prompt,
-        );
+        // A UTF-8 byte cannot expand to more than one provider token. Use that
+        // conservative upper bound, then cap the requested output by the
+        // remaining run token budget.
+        let reserved_input_tokens = std::cmp::max(1, prompt.len() as i64);
+        let remaining_output_tokens = config
+            .limits
+            .max_tokens
+            .saturating_sub(usage.tokens)
+            .saturating_sub(reserved_input_tokens);
+        if remaining_output_tokens <= 0 {
+            return Err("token reservation would exceed run token limit".to_string());
+        }
+        let request_max_output_tokens = std::cmp::min(1024, remaining_output_tokens);
 
+        if config.provider_kind == ProviderKind::Live {
+            let pricing = config.pricing.ok_or_else(|| {
+                "live runner requires positive pricing for cost reservation".to_string()
+            })?;
+            let reserved_cost = (reserved_input_tokens as f64 / 1_000.0)
+                * pricing.input_cost_per_1k
+                + (request_max_output_tokens as f64 / 1_000.0) * pricing.output_cost_per_1k;
+            if usage.run_cost_usd + reserved_cost > config.limits.run_cost_cap_usd {
+                return Err("call cost reservation would exceed run cost cap".to_string());
+            }
+            if usage.prior_daily_cost_usd + usage.run_cost_usd + reserved_cost
+                > config.limits.daily_cost_cap_usd
+            {
+                return Err("call cost reservation would exceed daily cost cap".to_string());
+            }
+        }
+
+        let mut provider_req =
+            ProviderRequest::local_stub(provider.provider_id(), &request_model, &prompt);
+        provider_req.metadata = json!({
+            "dispatch_id": format!("local-runner:{mode}:{iteration}"),
+            "max_tokens": request_max_output_tokens,
+        });
+
+        let timeout = Duration::try_from_secs_f64(config.limits.timeout_seconds)
+            .map_err(|_| "timeout must be finite and positive".to_string())?;
+        usage.calls += 1;
         let result = {
             let rt = tokio::runtime::Runtime::new().map_err(|e| e.to_string())?;
-            rt.block_on(provider.invoke(&provider_req))
+            rt.block_on(async {
+                tokio::time::timeout(timeout, provider.invoke(&provider_req)).await
+            })
+            .map_err(|_| {
+                format!(
+                    "provider invoke timed out after {} seconds",
+                    config.limits.timeout_seconds
+                )
+            })?
         };
 
         let resp = match result {
@@ -263,16 +479,26 @@ pub fn run_mode(
 
         let input_tokens = resp.input_tokens.unwrap_or(estimate_tokens(&prompt));
         let output_tokens = resp.output_tokens.unwrap_or(0);
-        total_tokens += input_tokens + output_tokens;
-        total_cost += resp.estimated_cost.unwrap_or(0.0);
+        usage.tokens += input_tokens + output_tokens;
+        let call_cost = match resp.estimated_cost {
+            Some(cost) if cost.is_finite() && cost >= 0.0 => cost,
+            Some(_) => return Err("provider returned invalid estimated cost".to_string()),
+            None if config.provider_kind == ProviderKind::Live => {
+                return Err("live provider response is missing estimated cost".to_string())
+            }
+            None => 0.0,
+        };
+        usage.run_cost_usd += call_cost;
+        mode_cost += call_cost;
 
-        if total_tokens > config.limits.max_tokens {
+        if usage.tokens > config.limits.max_tokens {
             return Err("token limit exceeded".to_string());
         }
-        if total_cost > config.limits.run_cost_cap_usd
-            || total_cost > config.limits.daily_cost_cap_usd
-        {
-            return Err("cost cap exceeded".to_string());
+        if usage.run_cost_usd > config.limits.run_cost_cap_usd {
+            return Err("run cost cap exceeded".to_string());
+        }
+        if usage.prior_daily_cost_usd + usage.run_cost_usd > config.limits.daily_cost_cap_usd {
+            return Err("daily cost cap exceeded".to_string());
         }
 
         let fallback_candidate = std::cmp::min(17, 3 + (iteration as i64) * 2);
@@ -329,7 +555,7 @@ pub fn run_mode(
         .map(|s| s["retrieved_ref_tokens"].as_i64().unwrap_or(0))
         .sum();
 
-    let duration_ms = std::cmp::max(1, steps.len() as i64 * 5);
+    let duration_ms = std::cmp::max(1, started.elapsed().as_millis() as i64);
 
     let quality_score = if status == "pass" {
         json!(best_score_val)
@@ -361,7 +587,7 @@ pub fn run_mode(
         "retry_count": 0,
         "step_count": steps.len() as i64,
         "duration_ms": duration_ms,
-        "estimated_cost_usd": (total_cost * 1_000_000.0).round() / 1_000_000.0,
+        "estimated_cost_usd": (mode_cost * 1_000_000.0).round() / 1_000_000.0,
         SOURCE_REF_KEY: format!("bounded-provider-gated-runner-{mode}"),
         "redaction_status": if config.provider_kind == ProviderKind::Live { "redacted" } else { "not_needed" },
         "runner_metadata": {
@@ -371,7 +597,7 @@ pub fn run_mode(
                 ProviderKind::Fake => "fake",
                 ProviderKind::Live => "live",
             },
-            "model": config.model,
+            "model": request_model,
             "external_calls": steps.len() as i64,
             "final_best_score": best_score_val,
             "context_protocol": if mode == "stateless_reread" {
@@ -432,7 +658,17 @@ fn build_live_openai_compatible_provider() -> Result<Arc<dyn Provider>, String> 
         &credential_env,
         "2026-01-01T00:00:00Z",
     );
-    provider_config.apply_pricing(&provider_pricing_from_env());
+    let pricing = provider_pricing_from_env();
+    let pricing_is_positive = pricing
+        .input_cost_per_1k
+        .zip(pricing.output_cost_per_1k)
+        .is_some_and(|(input, output)| input > 0.0 && output > 0.0);
+    if !pricing_is_positive {
+        return Err(
+            "live local runner requires positive input and output provider pricing".to_string(),
+        );
+    }
+    provider_config.apply_pricing(&pricing);
 
     Ok(Arc::new(OpenAiProvider::new(
         provider_config,
@@ -493,6 +729,11 @@ pub fn build_config(
             pass_threshold,
         },
         provider: None,
+        pricing: if provider_kind == ProviderKind::Live {
+            runner_pricing_from_env()
+        } else {
+            None
+        },
     })
 }
 
@@ -509,31 +750,193 @@ pub fn build_provider(
             if !gates.provider_execution {
                 return Err("live provider execution not enabled by current gates".to_string());
             }
-            if let Some(ref p) = config.provider {
-                return Ok(p.clone());
-            }
-            build_live_openai_compatible_provider()
+            Err(
+                "live provider requires a persistent audit store; use build_live_provider"
+                    .to_string(),
+            )
         }
     }
+}
+
+pub fn build_live_provider(
+    config: &RunnerConfig,
+    gates: Option<&EffectiveExecutionGates>,
+    store: Arc<LocalProductStore>,
+) -> Result<Arc<dyn Provider>, String> {
+    if config.provider_kind != ProviderKind::Live {
+        return Err("build_live_provider requires live provider kind".to_string());
+    }
+    let gates = gates.ok_or_else(|| "live provider requires execution gates".to_string())?;
+    if !gates.provider_execution {
+        return Err("live provider execution not enabled by current gates".to_string());
+    }
+    let base_provider = match &config.provider {
+        Some(provider) => provider.clone(),
+        None => build_live_openai_compatible_provider()?,
+    };
+    let circuit_breaker = Arc::new(CircuitBreaker::new(
+        format!("provider:{}", base_provider.provider_id()),
+        5,
+        30_000,
+    ));
+    let guarded: Arc<dyn Provider> =
+        Arc::new(CircuitBreakerProvider::new(base_provider, circuit_breaker));
+    Ok(Arc::new(AuditedProvider::new(guarded, store)))
 }
 
 pub fn run_pair(
     config: &RunnerConfig,
     provider: &Arc<dyn Provider>,
 ) -> Result<(Value, Value), String> {
-    let stateless = run_mode("stateless_reread", config, provider)?;
-    let stateful = run_mode("stateful_store", config, provider)?;
+    if config.provider_kind == ProviderKind::Live {
+        return Err(
+            "live provider requires persistent daily cost evidence; use the guarded live runner"
+                .to_string(),
+        );
+    }
+    let mut usage = RunnerUsage::default();
+    let stateless = run_mode_with_usage("stateless_reread", config, provider, &mut usage)?;
+    let stateful = run_mode_with_usage("stateful_store", config, provider, &mut usage)?;
     Ok((stateless, stateful))
+}
+
+pub fn run_pair_with_daily_cost(
+    config: &RunnerConfig,
+    provider: &Arc<dyn Provider>,
+    prior_daily_cost_usd: f64,
+) -> Result<(Value, Value), String> {
+    if config.provider_kind != ProviderKind::Live {
+        return Err("daily cost evidence is only accepted for live provider runs".to_string());
+    }
+    if !prior_daily_cost_usd.is_finite() || prior_daily_cost_usd < 0.0 {
+        return Err("prior daily cost must be finite and non-negative".to_string());
+    }
+    let mut usage = RunnerUsage {
+        prior_daily_cost_usd,
+        ..RunnerUsage::default()
+    };
+    let stateless = run_mode_with_usage("stateless_reread", config, provider, &mut usage)?;
+    let stateful = run_mode_with_usage("stateful_store", config, provider, &mut usage)?;
+    Ok((stateless, stateful))
+}
+
+pub fn run_live_pair_with_store(
+    config: &RunnerConfig,
+    provider: &Arc<dyn Provider>,
+    store: &LocalProductStore,
+) -> Result<(Value, Value), String> {
+    let date_prefix = chrono::Utc::now().format("%Y-%m-%d").to_string();
+    let prior_daily_cost_usd = store.daily_provider_audit_cost_usd(&date_prefix)?;
+    run_pair_with_daily_cost(config, provider, prior_daily_cost_usd)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::provider::fake::FakeProvider;
+    use crate::provider::{ProviderRequest, ProviderResponse, ProviderResult};
     use crate::trusted_local::TrustedLocalProfileStatus;
+    use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::{Mutex, OnceLock};
+    use std::time::Duration;
 
     static ENV_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+
+    struct ScriptedProvider {
+        delay: Duration,
+        estimated_cost: Option<f64>,
+        model: String,
+    }
+
+    struct CountingProvider {
+        calls: Arc<AtomicUsize>,
+    }
+
+    #[async_trait::async_trait]
+    impl Provider for CountingProvider {
+        fn provider_id(&self) -> &str {
+            "counting-provider"
+        }
+
+        fn is_enabled(&self) -> bool {
+            true
+        }
+
+        async fn invoke(&self, request: &ProviderRequest) -> ProviderResult {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            Ok(ProviderResponse {
+                schema_version: "provider_response.v1".to_string(),
+                provider_id: self.provider_id().to_string(),
+                model: request.model.clone(),
+                output: "candidate=17".to_string(),
+                input_tokens: Some(10),
+                output_tokens: Some(2),
+                estimated_cost: Some(0.01),
+                provider_request_id: None,
+            })
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl Provider for ScriptedProvider {
+        fn provider_id(&self) -> &str {
+            "scripted-provider"
+        }
+
+        fn is_enabled(&self) -> bool {
+            true
+        }
+
+        fn default_model(&self) -> Option<&str> {
+            Some(&self.model)
+        }
+
+        async fn invoke(&self, request: &ProviderRequest) -> ProviderResult {
+            tokio::time::sleep(self.delay).await;
+            Ok(ProviderResponse {
+                schema_version: "provider_response.v1".to_string(),
+                provider_id: self.provider_id().to_string(),
+                model: request.model.clone(),
+                output: "candidate=17".to_string(),
+                input_tokens: Some(10),
+                output_tokens: Some(2),
+                estimated_cost: self.estimated_cost,
+                provider_request_id: None,
+            })
+        }
+    }
+
+    fn scripted_runner(
+        delay: Duration,
+        estimated_cost: f64,
+        timeout_seconds: f64,
+        run_cost_cap_usd: f64,
+    ) -> (RunnerConfig, Arc<dyn Provider>) {
+        let provider: Arc<dyn Provider> = Arc::new(ScriptedProvider {
+            delay,
+            estimated_cost: Some(estimated_cost),
+            model: "actual-request-model".to_string(),
+        });
+        let config = RunnerConfig {
+            provider_kind: ProviderKind::Live,
+            model: "configured-model-alias".to_string(),
+            limits: RunnerLimits {
+                iterations: 2,
+                max_calls: 4,
+                max_tokens: 1_000,
+                timeout_seconds,
+                run_cost_cap_usd,
+                daily_cost_cap_usd: 1.0,
+                pass_threshold: 0.94,
+            },
+            provider: Some(provider.clone()),
+            pricing: Some(RunnerPricing {
+                input_cost_per_1k: 0.001,
+                output_cost_per_1k: 0.001,
+            }),
+        };
+        (config, provider)
+    }
 
     fn default_gates() -> EffectiveExecutionGates {
         EffectiveExecutionGates {
@@ -591,6 +994,8 @@ mod tests {
         std::env::remove_var(LOCAL_RUNNER_MODEL_ENV);
         std::env::remove_var(LOCAL_RUNNER_API_KEY_ENV_REF);
         std::env::remove_var("LOCAL_RUNNER_TEST_OPENAI_KEY");
+        std::env::remove_var(crate::provider::config::ACP_PROVIDER_INPUT_COST_PER_1K_USD);
+        std::env::remove_var(crate::provider::config::ACP_PROVIDER_OUTPUT_COST_PER_1K_USD);
     }
 
     fn live_config() -> RunnerConfig {
@@ -599,7 +1004,12 @@ mod tests {
             model: "live".to_string(),
             limits: RunnerLimits::default(),
             provider: None,
+            pricing: None,
         }
+    }
+
+    fn audit_store() -> Arc<crate::storage::local_product_store::LocalProductStore> {
+        Arc::new(crate::storage::local_product_store::LocalProductStore::new(":memory:").unwrap())
     }
 
     #[test]
@@ -617,6 +1027,7 @@ mod tests {
             model: "fake-deterministic".to_string(),
             limits: RunnerLimits::default(),
             provider: None,
+            pricing: None,
         };
         let provider = build_provider(&config, None).unwrap();
         assert_eq!(provider.provider_id(), "local-runner-fake");
@@ -663,7 +1074,7 @@ mod tests {
             clear_live_env();
             let config = live_config();
             assert_provider_err(
-                build_provider(&config, Some(&gates_with_provider())),
+                build_live_provider(&config, Some(&gates_with_provider()), audit_store()),
                 LOCAL_RUNNER_PROVIDER_TYPE_ENV,
             );
         });
@@ -678,9 +1089,17 @@ mod tests {
             std::env::set_var(LOCAL_RUNNER_MODEL_ENV, "test-model");
             std::env::set_var(LOCAL_RUNNER_API_KEY_ENV_REF, "LOCAL_RUNNER_TEST_OPENAI_KEY");
             std::env::set_var("LOCAL_RUNNER_TEST_OPENAI_KEY", "sk-local-runner-test");
+            std::env::set_var(
+                crate::provider::config::ACP_PROVIDER_INPUT_COST_PER_1K_USD,
+                "0.01",
+            );
+            std::env::set_var(
+                crate::provider::config::ACP_PROVIDER_OUTPUT_COST_PER_1K_USD,
+                "0.02",
+            );
             let config = live_config();
             assert_provider_err(
-                build_provider(&config, Some(&gates_with_provider())),
+                build_live_provider(&config, Some(&gates_with_provider()), audit_store()),
                 "openai_compatible",
             );
             clear_live_env();
@@ -697,8 +1116,28 @@ mod tests {
             std::env::set_var(LOCAL_RUNNER_API_KEY_ENV_REF, "LOCAL_RUNNER_TEST_OPENAI_KEY");
             let config = live_config();
             assert_provider_err(
-                build_provider(&config, Some(&gates_with_provider())),
+                build_live_provider(&config, Some(&gates_with_provider()), audit_store()),
                 "credential environment variable",
+            );
+            clear_live_env();
+        });
+    }
+
+    #[test]
+    fn live_provider_fails_closed_without_pricing() {
+        with_env_lock(|| {
+            clear_live_env();
+            std::env::remove_var(crate::provider::config::ACP_PROVIDER_INPUT_COST_PER_1K_USD);
+            std::env::remove_var(crate::provider::config::ACP_PROVIDER_OUTPUT_COST_PER_1K_USD);
+            std::env::set_var(LOCAL_RUNNER_PROVIDER_TYPE_ENV, "openai_compatible");
+            std::env::set_var(LOCAL_RUNNER_BASE_URL_ENV, "https://api.example.test/v1");
+            std::env::set_var(LOCAL_RUNNER_MODEL_ENV, "test-model");
+            std::env::set_var(LOCAL_RUNNER_API_KEY_ENV_REF, "LOCAL_RUNNER_TEST_OPENAI_KEY");
+            std::env::set_var("LOCAL_RUNNER_TEST_OPENAI_KEY", "sk-local-runner-test");
+
+            assert_provider_err(
+                build_live_provider(&live_config(), Some(&gates_with_provider()), audit_store()),
+                "pricing",
             );
             clear_live_env();
         });
@@ -713,8 +1152,17 @@ mod tests {
             std::env::set_var(LOCAL_RUNNER_MODEL_ENV, "test-model");
             std::env::set_var(LOCAL_RUNNER_API_KEY_ENV_REF, "LOCAL_RUNNER_TEST_OPENAI_KEY");
             std::env::set_var("LOCAL_RUNNER_TEST_OPENAI_KEY", "sk-local-runner-test");
+            std::env::set_var(
+                crate::provider::config::ACP_PROVIDER_INPUT_COST_PER_1K_USD,
+                "0.01",
+            );
+            std::env::set_var(
+                crate::provider::config::ACP_PROVIDER_OUTPUT_COST_PER_1K_USD,
+                "0.02",
+            );
             let config = live_config();
-            let provider = build_provider(&config, Some(&gates_with_provider())).unwrap();
+            let provider =
+                build_live_provider(&config, Some(&gates_with_provider()), audit_store()).unwrap();
             assert_eq!(provider.provider_id(), "local-runner-openai-compatible");
             assert!(provider.is_enabled());
             assert_eq!(provider.default_model(), Some("test-model"));
@@ -730,8 +1178,10 @@ mod tests {
             model: "live".to_string(),
             limits: RunnerLimits::default(),
             provider: Some(provider.clone()),
+            pricing: None,
         };
-        let result = build_provider(&config, Some(&gates_with_provider())).unwrap();
+        let result =
+            build_live_provider(&config, Some(&gates_with_provider()), audit_store()).unwrap();
         assert_eq!(result.provider_id(), "live-test");
     }
 
@@ -780,12 +1230,160 @@ mod tests {
     }
 
     #[test]
+    fn run_mode_enforces_provider_timeout() {
+        let (config, provider) = scripted_runner(Duration::from_millis(25), 0.0, 0.001, 0.25);
+
+        let error =
+            run_mode_with_daily_cost("stateless_reread", &config, &provider, 0.0).unwrap_err();
+
+        assert!(error.contains("timed out"), "unexpected error: {error}");
+    }
+
+    #[test]
+    fn run_mode_records_actual_model_and_measured_duration() {
+        let (config, provider) = scripted_runner(Duration::from_millis(15), 0.0, 1.0, 0.25);
+
+        let result = run_mode_with_daily_cost("stateless_reread", &config, &provider, 0.0).unwrap();
+
+        assert_eq!(result["runner_metadata"]["model"], "actual-request-model");
+        assert!(
+            result["duration_ms"].as_i64().unwrap_or_default() >= 10,
+            "duration should be measured from the provider call: {}",
+            result["duration_ms"]
+        );
+    }
+
+    #[test]
+    fn run_pair_shares_the_run_cost_cap_across_modes() {
+        let (config, provider) = scripted_runner(Duration::ZERO, 0.15, 1.0, 0.25);
+
+        let error = run_pair_with_daily_cost(&config, &provider, 0.0).unwrap_err();
+
+        assert!(
+            error.contains("cost cap exceeded"),
+            "unexpected error: {error}"
+        );
+    }
+
+    #[test]
+    fn live_run_fails_closed_when_provider_cost_is_unknown() {
+        let (mut config, _) = scripted_runner(Duration::ZERO, 0.0, 1.0, 0.25);
+        let provider: Arc<dyn Provider> = Arc::new(ScriptedProvider {
+            delay: Duration::ZERO,
+            estimated_cost: None,
+            model: "actual-request-model".to_string(),
+        });
+        config.provider = Some(provider.clone());
+
+        let error =
+            run_mode_with_daily_cost("stateless_reread", &config, &provider, 0.0).unwrap_err();
+
+        assert!(error.contains("cost"), "unexpected error: {error}");
+    }
+
+    #[test]
+    fn live_run_requires_persistent_daily_cost_evidence() {
+        let (config, provider) = scripted_runner(Duration::ZERO, 0.01, 1.0, 0.25);
+
+        let error = run_pair(&config, &provider).unwrap_err();
+
+        assert!(
+            error.contains("daily cost evidence"),
+            "unexpected error: {error}"
+        );
+    }
+
+    #[test]
+    fn prior_daily_cost_at_cap_blocks_before_provider_call() {
+        let calls = Arc::new(AtomicUsize::new(0));
+        let provider: Arc<dyn Provider> = Arc::new(CountingProvider {
+            calls: calls.clone(),
+        });
+        let mut config = live_config();
+        config.provider = Some(provider.clone());
+
+        let error = run_pair_with_daily_cost(&config, &provider, config.limits.daily_cost_cap_usd)
+            .unwrap_err();
+
+        assert!(
+            error.contains("daily cost cap"),
+            "unexpected error: {error}"
+        );
+        assert_eq!(calls.load(Ordering::SeqCst), 0);
+    }
+
+    #[test]
+    fn single_call_cost_reservation_blocks_before_provider_call() {
+        let calls = Arc::new(AtomicUsize::new(0));
+        let provider: Arc<dyn Provider> = Arc::new(CountingProvider {
+            calls: calls.clone(),
+        });
+        let mut config = live_config();
+        config.provider = Some(provider.clone());
+        config.pricing = Some(RunnerPricing {
+            input_cost_per_1k: 1.0,
+            output_cost_per_1k: 1.0,
+        });
+
+        let error = run_pair_with_daily_cost(&config, &provider, 0.0).unwrap_err();
+
+        assert!(
+            error.contains("cost reservation"),
+            "unexpected error: {error}"
+        );
+        assert_eq!(calls.load(Ordering::SeqCst), 0);
+    }
+
+    #[test]
+    fn audited_provider_persists_bounded_request_and_response_events() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Arc::new(
+            crate::storage::local_product_store::LocalProductStore::new(
+                dir.path().join("audit.db"),
+            )
+            .unwrap(),
+        );
+        let inner: Arc<dyn Provider> = Arc::new(ScriptedProvider {
+            delay: Duration::ZERO,
+            estimated_cost: Some(0.0125),
+            model: "audited-model".to_string(),
+        });
+        let provider: Arc<dyn Provider> = Arc::new(AuditedProvider::new(inner, store.clone()));
+        let mut request = ProviderRequest::local_stub(
+            provider.provider_id(),
+            "audited-model",
+            "private prompt with sk-do-not-persist",
+        );
+        request.metadata = json!({"dispatch_id": "local-runner:test:0"});
+
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+        runtime.block_on(provider.invoke(&request)).unwrap();
+
+        let events = store.provider_audit_events(10).unwrap();
+        assert_eq!(events.len(), 2);
+        assert!(events
+            .iter()
+            .any(|event| event["event_type"] == "request_sent"));
+        let response = events
+            .iter()
+            .find(|event| event["event_type"] == "response_received")
+            .unwrap();
+        assert_eq!(response["cost"], 0.0125);
+        assert_eq!(response["redaction_status"], "redacted");
+        let serialized = serde_json::to_string(&events).unwrap();
+        assert!(!serialized.contains("private prompt"));
+        assert!(!serialized.contains("sk-do-not-persist"));
+        assert!(!serialized.contains("candidate=17"));
+    }
+
+    #[test]
     fn fake_run_mode_has_zero_cost() {
         let config = RunnerConfig {
             provider_kind: ProviderKind::Fake,
             model: "fake".to_string(),
             limits: RunnerLimits::default(),
             provider: None,
+            pricing: None,
         };
         let provider = build_provider(&config, None).unwrap();
         let result = run_mode("stateless_reread", &config, &provider).unwrap();

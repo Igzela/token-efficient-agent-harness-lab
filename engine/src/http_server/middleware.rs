@@ -110,7 +110,8 @@ pub(crate) fn authorize(
             "auth unavailable",
         )
     })?;
-    let decision = guard.resolve_mut(auth_header, state.now);
+    let now = state.now();
+    let decision = guard.resolve_mut(auth_header, now);
     let context = auth_context_from_decision(decision, required_scope, request_id)?;
     let tenant_limit = guard.tenant_rate_limit(&context.tenant_id);
     drop(guard);
@@ -123,12 +124,7 @@ pub(crate) fn authorize(
             "rate limiter unavailable",
         )
     })?;
-    let rate = limiter.check(
-        &context.tenant_id,
-        &context.api_key_id,
-        rate_limit,
-        state.now,
-    );
+    let rate = limiter.check(&context.tenant_id, &context.api_key_id, rate_limit, now);
     if !rate.allowed {
         return Err(ApiError::new(
             StatusCode::TOO_MANY_REQUESTS,
