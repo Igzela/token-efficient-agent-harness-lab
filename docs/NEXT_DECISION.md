@@ -4,7 +4,7 @@
 
 Phase 8, V2 Real Production Output, Real Output Closeout, Adaptive Fusion AF-0 through AF-7, AR-2 (agent step executor), AR-3 (bounded planning, child task proposals, handoff), AR-4 (bounded concurrent multi-agent scheduling), AR-5 (review and debate primitives), and AR-6 (operator evidence read-model) are complete.
 
-The bounded LangGraph trace importer shipped in PR #149. The external-runtime boundary is therefore past schema/importer proof and ready for a real-world, importer-first benchmark pilot. This does not authorize an embedded LangGraph runner or any external-runtime dependency in the core engine.
+The bounded LangGraph trace importer shipped in PR #149, and PR #165 completed the active-doc decision for an importer-first pilot. LGB-1 through LGB-4 are now implemented: a real offline LangGraph evidence pair, generic v2 artifact handoff into the existing store, scenario comparison API/Dashboard, and checked reproducibility fixtures. This does not authorize an embedded LangGraph runner or any external-runtime dependency in the core engine.
 
 The Trusted Local Autonomous Execution Track (IAE) was approved on 2026-06-22. It authorizes the project and maintaining agents to move from fragmented opt-in execution toward a bounded trusted-local operating profile. That profile is now the recommended internal execution path.
 
@@ -25,7 +25,7 @@ On 2026-06-23 Charlie approved Full Agent Autonomy Mode for this repository. Mai
 | Adaptive Fusion AF-0 through AF-7 | Complete; current runtime gates remain implemented |
 | Agent Runtime AR-0 through AR-6 | **Complete and sealed** — decision baseline, agent identity/state/mailbox, step executor, planning/handoff, concurrent scheduling, review/debate primitives, operator evidence read-model. No AR-7 planned or authorized. |
 | Trusted Local Autonomous Execution | Complete through IAE-3 |
-| External Runtime Benchmark Boundary | Active planning boundary — external runtimes are benchmark/trace-ingest targets only, not core dependencies or a new Agent Runtime phase |
+| External Runtime Benchmark Boundary | Importer-first LangGraph pilot complete; external runtimes remain benchmark/trace-ingest targets only, not core dependencies or a new Agent Runtime phase |
 | Full Agent Autonomy Mode | Active for high-risk architecture, authority, migration, release/deploy workflow, and decision-supersession experiments |
 | Agent Autonomous Maintenance Mode | Active for implementation, docs, tests, CI, review, and bounded shipping |
 
@@ -76,25 +76,26 @@ The current direction is importer-first, not runner-first. Its foundation is imp
 1. architecture and handoff contract — implemented in `docs/ARCHITECTURE_BOOK.md` and this file;
 2. bounded, redacted trace-summary validation — implemented in `scripts/token_efficiency_scorecard.py`;
 3. `token_efficiency_scorecard.v1` evidence — implemented by the validator and exporters;
-4. native read-only artifact persistence — implemented through `native_scorecard_artifact.v1` and `LocalProductStore`;
-5. scorecard API and operator evidence reads — implemented;
-6. bounded LangGraph summary import and same-scenario comparison — implemented in `scripts/langgraph_trace_import.py` with focused tests;
-7. runtime-specific runners — deferred until a real importer-first pilot proves the evidence is useful and comparable.
+4. backward-compatible artifact persistence — native evidence retains `native_scorecard_artifact.v1`; external evidence uses `scorecard_artifact.v2`; both use the existing `LocalProductStore.native_scorecard_artifacts` table;
+5. scorecard API, scenario comparison, operator evidence, and Dashboard reads — implemented;
+6. bounded LangGraph summary import and strict same-scenario comparison — implemented in `scripts/langgraph_trace_import.py` with focused and end-to-end tests;
+7. first real importer-first pilot — captured offline with LangGraph 1.2.9, no external model/provider calls, and fixed summary/artifact fixtures; `tools/capture_langgraph_pilot.py` is the narrowly authorized, developer-invoked one-shot evidence harness and is not wired into the app, scheduler, provider, store, or CI;
+8. product/runtime-specific runners, scheduled captures, and provider-backed external pilots — still deferred and require a new explicit decision.
 
-The first external comparison target remains LangGraph stateful versus stateless reread, because it directly tests whether durable state and context pruning reduce repeated context cost. CrewAI and Microsoft Agent Framework should wait until one real LangGraph pilot has produced accepted, reproducible scorecards.
+The first external comparison target is complete: LangGraph `stateless_reread` versus `stateful_store` on one deterministic offline task. Both modes met quality 1.0; total tokens were 38,452 versus 11,294 (70.6283% reduction), repeated-context ratios were 71.4913% versus 1.5890%, and cost stayed $0 because no model/provider was called. CrewAI and Microsoft Agent Framework remain deferred until a separate decision.
 
-### Recommended LangGraph Benchmark Pilot
+### Completed LangGraph Benchmark Pilot
 
-This is the recommended next candidate, not a completed feature or a new Agent Runtime phase.
+PR #165 established the direction; this increment completes it without creating a new Agent Runtime phase.
 
-| Step | Deliverable | Acceptance |
+| Step | Status | Evidence |
 |---|---|---|
-| LGB-1 | Real bounded evidence pair | One stateless-reread summary and one stateful-store summary share the same scenario, task inputs, success criterion, runtime/provider identity, and redaction policy; no raw prompt, output, transcript, repository content, private path, or credential is retained |
-| LGB-2 | App-owned artifact handoff | Validated external scorecards enter the existing app-owned scorecard storage boundary idempotently; reuse the existing table and API path, versioning the envelope only if required for non-native runtime identity; do not add a second evidence store |
-| LGB-3 | Scenario comparison read-model | API and dashboard group scorecards by `scenario_id` and display stateful/stateless deltas for tokens, repeated context, cost, latency, retries, and quality without exposing raw step content |
-| LGB-4 | Reproducibility gate | A checked fixture and deterministic comparison test reproduce the reported deltas; token reduction counts as a win only when both modes meet the same quality/pass criterion |
+| LGB-1 | Complete | `tests/fixtures/langgraph_pilot/` contains redacted summary-level `stateless_reread` and `stateful_store` evidence from a real offline LangGraph 1.2.9 execution; external model calls are zero |
+| LGB-2 | Complete | `scorecard_artifact.v2` imports idempotently through the existing importer and `native_scorecard_artifacts` table; v1 native data and APIs remain compatible |
+| LGB-3 | Complete | `GET /api/v1/scorecards?scenario_id=...` and the Dashboard Benchmarks tab expose bounded baseline/candidate metrics and deltas |
+| LGB-4 | Complete | Python and Rust fixtures reproduce the comparison; canonical hash, derived-metric, incomparable-contract, cross-scenario, tamper, and repeat-import tests fail closed |
 
-Pilot execution must remain operator-initiated and importer-only. Provider calls are not permitted in CI. A LangGraph runner, scheduled external execution, or another runtime integration requires a later explicit decision after LGB-1 through LGB-4 are accepted.
+Product execution remains importer-only. The checked one-shot offline capture harness may be run explicitly by a developer only to regenerate this bounded fixture pair; it has no app/runtime authority and no provider/model configuration. Provider calls are not permitted in CI. An embedded LangGraph runner, scheduled external execution, provider-backed capture, or another runtime integration requires a later explicit decision.
 
 This direction does not authorize:
 

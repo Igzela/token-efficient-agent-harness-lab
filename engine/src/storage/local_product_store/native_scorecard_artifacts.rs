@@ -5,7 +5,13 @@ use sha2::{Digest, Sha256};
 use super::{append_audit_locked, collect_values, DatabaseConnection, LocalProductStore};
 
 pub const NATIVE_SCORECARD_ARTIFACT_SCHEMA_VERSION: &str = "native_scorecard_artifact.v1";
+pub const SCORECARD_ARTIFACT_SCHEMA_VERSION: &str = "scorecard_artifact.v2";
 pub const TOKEN_EFFICIENCY_SCORECARD_SCHEMA_VERSION: &str = "token_efficiency_scorecard.v1";
+const MAX_SCORECARD_ARTIFACT_BYTES: usize = 1_048_576;
+const MAX_SCORECARD_JSON_STRING_BYTES: usize = 1_024;
+const MAX_SCORECARD_JSON_ARRAY_ITEMS: usize = 1_000;
+const MAX_SCORECARD_JSON_OBJECT_FIELDS: usize = 128;
+const MAX_SCORECARD_JSON_DEPTH: usize = 16;
 
 impl LocalProductStore {
     pub fn record_automatic_native_scorecard_for_run(
@@ -30,11 +36,25 @@ impl LocalProductStore {
         artifact: &Value,
         actor: &str,
     ) -> Result<Value, String> {
-        validate_native_scorecard_artifact(artifact)?;
+        self.record_scorecard_artifact(artifact, actor)
+    }
+
+    pub fn record_scorecard_artifact(
+        &self,
+        artifact: &Value,
+        actor: &str,
+    ) -> Result<Value, String> {
+        validate_scorecard_artifact(artifact)?;
         let artifact_id = required_str(artifact, "artifact_id")?;
+        let envelope_schema = required_str(artifact, "schema_version")?;
+        let audit_action = if envelope_schema == SCORECARD_ARTIFACT_SCHEMA_VERSION {
+            "scorecard_artifact.record"
+        } else {
+            "native_scorecard_artifact.record"
+        };
         let scorecard = artifact
             .get("scorecard")
-            .ok_or_else(|| "native scorecard artifact missing scorecard".to_string())?;
+            .ok_or_else(|| "scorecard artifact missing scorecard".to_string())?;
         let run_id = required_str(scorecard, "adapter_run_id")?;
         let dispatch_id = optional_str(scorecard, "dispatch_id");
         let scorecard_schema_version = required_str(artifact, "scorecard_schema_version")?;
@@ -49,7 +69,7 @@ impl LocalProductStore {
                 return Ok(existing);
             }
             return Err(format!(
-                "native scorecard artifact id collision with different content: {artifact_id}"
+                "scorecard artifact id collision with different content: {artifact_id}"
             ));
         }
 
@@ -90,12 +110,13 @@ impl LocalProductStore {
                     conn,
                     &created_at,
                     actor,
-                    "native_scorecard_artifact.record",
+                    audit_action,
                     &format!("run/{run_id}/artifact/{artifact_id}"),
                     &json!({
                         "run_id": run_id,
                         "dispatch_id": dispatch_id,
-                        "schema_version": NATIVE_SCORECARD_ARTIFACT_SCHEMA_VERSION,
+                        "schema_version": artifact.get("schema_version"),
+                        "runtime_kind": scorecard.get("runtime_kind"),
                         "scorecard_schema_version": scorecard_schema_version,
                         "read_only": true,
                         "metadata_only": true,
@@ -132,7 +153,8 @@ impl LocalProductStore {
                 let audit_details = json!({
                     "run_id": run_id,
                     "dispatch_id": dispatch_id,
-                    "schema_version": NATIVE_SCORECARD_ARTIFACT_SCHEMA_VERSION,
+                    "schema_version": artifact.get("schema_version"),
+                    "runtime_kind": scorecard.get("runtime_kind"),
                     "scorecard_schema_version": scorecard_schema_version,
                     "read_only": true,
                     "metadata_only": true,
@@ -144,7 +166,7 @@ impl LocalProductStore {
                     client,
                     &created_at,
                     actor,
-                    "native_scorecard_artifact.record",
+                    audit_action,
                     &format!("run/{run_id}/artifact/{artifact_id}"),
                     &audit_details,
                 )?;
@@ -153,9 +175,7 @@ impl LocalProductStore {
         }
 
         self.get_native_scorecard_artifact(artifact_id)?
-            .ok_or_else(|| {
-                format!("native scorecard artifact not found after insert: {artifact_id}")
-            })
+            .ok_or_else(|| format!("scorecard artifact not found after insert: {artifact_id}"))
     }
 
     pub fn get_native_scorecard_artifact(
@@ -270,6 +290,50 @@ impl LocalProductStore {
                     .collect()
             }),
         }
+    }
+
+    pub fn scorecard_artifacts_by_scenario(
+        &self,
+        scenario_id: &str,
+        limit: i64,
+    ) -> Result<Vec<Value>, String> {
+        let capped = limit.clamp(1, 100);
+        match &self.db {
+            DatabaseConnection::Sqlite(_) => self.with_conn(|conn| {
+                let mut stmt = conn
+                    .prepare(
+                        "SELECT artifact_json FROM native_scorecard_artifacts
+                         WHERE json_extract(artifact_json, '$.scorecard.scenario_id') = ?1
+                         ORDER BY created_at ASC, artifact_sequence ASC
+                         LIMIT ?2",
+                    )
+                    .map_err(|e| e.to_string())?;
+                let rows = stmt
+                    .query_map(params![scenario_id, capped], native_scorecard_row)
+                    .map_err(|e| e.to_string())?;
+                collect_values(rows)
+            }),
+            #[cfg(feature = "pg")]
+            DatabaseConnection::Pg(_) => self.with_pg_conn(|client| {
+                let rows = client
+                    .query(
+                        "SELECT artifact_json FROM native_scorecard_artifacts
+                         WHERE artifact_json::jsonb #>> '{scorecard,scenario_id}' = $1
+                         ORDER BY created_at ASC, artifact_sequence ASC
+                         LIMIT $2",
+                        &[&scenario_id, &capped],
+                    )
+                    .map_err(|e| e.to_string())?;
+                rows.iter()
+                    .map(|row| parse_artifact_json(&row.get::<_, String>(0)))
+                    .collect()
+            }),
+        }
+    }
+
+    pub fn scorecard_comparison_by_scenario(&self, scenario_id: &str) -> Result<Value, String> {
+        let artifacts = self.scorecard_artifacts_by_scenario(scenario_id, 100)?;
+        build_scorecard_comparison(&artifacts)
     }
 }
 
@@ -490,6 +554,14 @@ fn workflow_node_to_scorecard_step(
 }
 
 fn validate_native_scorecard_scorecard(scorecard: &Value) -> Result<(), String> {
+    validate_scorecard_scorecard(scorecard, true, false)
+}
+
+fn validate_scorecard_scorecard(
+    scorecard: &Value,
+    require_native_runtime: bool,
+    require_comparison_contract: bool,
+) -> Result<(), String> {
     validate_no_raw_trace_keys(scorecard)?;
     for key in [
         "adapter_run_id",
@@ -509,8 +581,15 @@ fn validate_native_scorecard_scorecard(scorecard: &Value) -> Result<(), String> 
     if required_str(scorecard, "schema_version")? != TOKEN_EFFICIENCY_SCORECARD_SCHEMA_VERSION {
         return Err("scorecard.schema_version must be token_efficiency_scorecard.v1".to_string());
     }
-    if required_str(scorecard, "runtime_kind")? != "native_harness" {
+    let runtime_kind = required_str(scorecard, "runtime_kind")?;
+    if require_native_runtime && runtime_kind != "native_harness" {
         return Err("scorecard.runtime_kind must be native_harness".to_string());
+    }
+    if !matches!(
+        runtime_kind,
+        "native_harness" | "langgraph" | "crewai" | "microsoft_agent_framework" | "other"
+    ) {
+        return Err("scorecard.runtime_kind is not allowed".to_string());
     }
     if !matches!(
         required_str(scorecard, "mode")?,
@@ -594,16 +673,24 @@ fn validate_native_scorecard_scorecard(scorecard: &Value) -> Result<(), String> 
     ] {
         require_nonnegative_number(derived, key)?;
     }
-    let steps = scorecard
-        .get("steps")
-        .and_then(Value::as_array)
-        .ok_or_else(|| "scorecard.steps must be a list".to_string())?;
-    if number_i64(scorecard, "step_count") != steps.len() as i64 {
-        return Err("step_count must match scorecard steps".to_string());
+    let recomputed_derived = derived_metrics(scorecard);
+    if derived != &recomputed_derived {
+        return Err("scorecard.derived_metrics does not match trusted base fields".to_string());
     }
-    let run_id = required_str(scorecard, "adapter_run_id")?;
-    for (index, step) in steps.iter().enumerate() {
-        validate_scorecard_step(step, run_id, index)?;
+    if require_comparison_contract || scorecard.get("comparison_contract").is_some() {
+        validate_comparison_contract(scorecard)?;
+    }
+    if let Some(steps_value) = scorecard.get("steps") {
+        let steps = steps_value
+            .as_array()
+            .ok_or_else(|| "scorecard.steps must be a list when present".to_string())?;
+        if number_i64(scorecard, "step_count") != steps.len() as i64 {
+            return Err("step_count must match supplied scorecard steps".to_string());
+        }
+        let run_id = required_str(scorecard, "adapter_run_id")?;
+        for (index, step) in steps.iter().enumerate() {
+            validate_scorecard_step(step, run_id, index)?;
+        }
     }
     Ok(())
 }
@@ -708,11 +795,24 @@ fn parse_artifact_json(artifact_json: &str) -> Result<Value, String> {
     Ok(value)
 }
 
-fn validate_native_scorecard_artifact(artifact: &Value) -> Result<(), String> {
+fn validate_scorecard_artifact(artifact: &Value) -> Result<(), String> {
+    let serialized_size = serde_json::to_vec(artifact)
+        .map_err(|e| e.to_string())?
+        .len();
+    if serialized_size > MAX_SCORECARD_ARTIFACT_BYTES {
+        return Err(format!(
+            "bounded scorecard artifact exceeds {MAX_SCORECARD_ARTIFACT_BYTES} bytes"
+        ));
+    }
+    validate_json_bounds(artifact, "$", 0)?;
     validate_no_raw_trace_keys(artifact)?;
-    if required_str(artifact, "schema_version")? != NATIVE_SCORECARD_ARTIFACT_SCHEMA_VERSION {
+    let schema_version = required_str(artifact, "schema_version")?;
+    if !matches!(
+        schema_version,
+        NATIVE_SCORECARD_ARTIFACT_SCHEMA_VERSION | SCORECARD_ARTIFACT_SCHEMA_VERSION
+    ) {
         return Err(
-            "native scorecard artifact schema_version must be native_scorecard_artifact.v1"
+            "scorecard artifact schema_version must be native_scorecard_artifact.v1 or scorecard_artifact.v2"
                 .to_string(),
         );
     }
@@ -731,17 +831,273 @@ fn validate_native_scorecard_artifact(artifact: &Value) -> Result<(), String> {
     }
     let scorecard = artifact
         .get("scorecard")
-        .ok_or_else(|| "native scorecard artifact missing scorecard".to_string())?;
-    validate_native_scorecard_scorecard(scorecard)?;
+        .ok_or_else(|| "scorecard artifact missing scorecard".to_string())?;
+    let is_v2 = schema_version == SCORECARD_ARTIFACT_SCHEMA_VERSION;
+    validate_scorecard_scorecard(scorecard, !is_v2, is_v2)?;
+    if is_v2 {
+        let envelope_runtime = required_str(artifact, "runtime_kind")?;
+        if envelope_runtime != required_str(scorecard, "runtime_kind")? {
+            return Err(
+                "scorecard artifact runtime_kind must match scorecard.runtime_kind".to_string(),
+            );
+        }
+    }
     let redaction_status = required_str(scorecard, "redaction_status")?;
     if !matches!(redaction_status, "redacted" | "not_needed" | "rejected") {
         return Err("scorecard.redaction_status is not allowed".to_string());
     }
     let content_sha256 = required_str(artifact, "content_sha256")?;
     if content_sha256.len() != 64 || !content_sha256.chars().all(|ch| ch.is_ascii_hexdigit()) {
-        return Err("native scorecard artifact content_sha256 must be 64 hex chars".to_string());
+        return Err("scorecard artifact content_sha256 must be 64 hex chars".to_string());
+    }
+    let canonical = serde_json::to_string(scorecard).map_err(|e| e.to_string())?;
+    let expected_sha256 = hex::encode(Sha256::digest(canonical.as_bytes()));
+    if !content_sha256.eq_ignore_ascii_case(&expected_sha256) {
+        return Err(
+            "scorecard artifact content_sha256 does not match canonical scorecard".to_string(),
+        );
     }
     Ok(())
+}
+
+fn validate_comparison_contract(scorecard: &Value) -> Result<(), String> {
+    let contract = scorecard
+        .get("comparison_contract")
+        .ok_or_else(|| "scorecard.comparison_contract must be present".to_string())?;
+    for key in [
+        "scenario_digest",
+        "task_digest",
+        "runtime_kind",
+        "runtime_version",
+        "provider_id",
+        "model_id",
+        "tokenizer_id",
+        "pricing_id",
+        "quality_method",
+        "evaluator_version",
+        "redaction_policy",
+        "retry_policy",
+    ] {
+        required_str(contract, key)?;
+    }
+    for key in ["scenario_digest", "task_digest"] {
+        let digest = required_str(contract, key)?;
+        if digest.len() != 64 || !digest.chars().all(|ch| ch.is_ascii_hexdigit()) {
+            return Err(format!("comparison_contract.{key} must be 64 hex chars"));
+        }
+    }
+    if required_str(contract, "runtime_kind")? != required_str(scorecard, "runtime_kind")? {
+        return Err("comparison_contract.runtime_kind must match runtime_kind".to_string());
+    }
+    if required_str(contract, "runtime_version")? != required_str(scorecard, "runtime_version")? {
+        return Err("comparison_contract.runtime_version must match runtime_version".to_string());
+    }
+    if required_str(contract, "quality_method")? != required_str(scorecard, "quality_method")? {
+        return Err("comparison_contract.quality_method must match quality_method".to_string());
+    }
+    for key in [
+        "input_cost_per_1k_usd",
+        "output_cost_per_1k_usd",
+        "quality_threshold",
+        "seed",
+    ] {
+        require_nonnegative_number(contract, key)?;
+    }
+    let quality_threshold = number_f64(contract, "quality_threshold")?;
+    if quality_threshold > 1.0 {
+        return Err(
+            "comparison_contract.quality_threshold must be between 0.0 and 1.0".to_string(),
+        );
+    }
+    if contract.get("seed").and_then(Value::as_u64).is_none() {
+        return Err("comparison_contract.seed must be a non-negative integer".to_string());
+    }
+    let expected_cost = round_six(
+        number_f64(scorecard, "input_token_total")?
+            * number_f64(contract, "input_cost_per_1k_usd")?
+            / 1000.0
+            + number_f64(scorecard, "output_token_total")?
+                * number_f64(contract, "output_cost_per_1k_usd")?
+                / 1000.0,
+    );
+    let supplied_cost = number_f64(scorecard, "estimated_cost_usd")?;
+    if (expected_cost - supplied_cost).abs() > 0.0000005 {
+        return Err(
+            "scorecard.estimated_cost_usd does not match comparison_contract pricing".to_string(),
+        );
+    }
+    Ok(())
+}
+
+fn build_scorecard_comparison(artifacts: &[Value]) -> Result<Value, String> {
+    if artifacts.len() != 2 {
+        return Err(
+            "comparison requires exactly one stateless_reread baseline and one stateful_store candidate"
+                .to_string(),
+        );
+    }
+    for artifact in artifacts {
+        validate_scorecard_artifact(artifact)?;
+    }
+    let scorecards = artifacts
+        .iter()
+        .map(|artifact| {
+            artifact
+                .get("scorecard")
+                .ok_or_else(|| "scorecard artifact missing scorecard".to_string())
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    let baseline = scorecards
+        .iter()
+        .find(|card| card.get("mode").and_then(Value::as_str) == Some("stateless_reread"))
+        .copied()
+        .ok_or_else(|| "comparison requires a stateless_reread baseline".to_string())?;
+    let candidate = scorecards
+        .iter()
+        .find(|card| card.get("mode").and_then(Value::as_str) == Some("stateful_store"))
+        .copied()
+        .ok_or_else(|| "comparison requires a stateful_store candidate".to_string())?;
+    if required_str(baseline, "scenario_id")? != required_str(candidate, "scenario_id")? {
+        return Err("all compared scorecards must share scenario_id".to_string());
+    }
+    let contract = matching_comparison_contract(baseline, candidate)?;
+    let threshold = number_f64(contract, "quality_threshold")?;
+    let baseline_qualified = quality_qualified(baseline, threshold);
+    let candidate_qualified = quality_qualified(candidate, threshold);
+    let both_qualified = baseline_qualified && candidate_qualified;
+    let baseline_total = derived_i64(baseline, "total_tokens")?;
+    let candidate_total = derived_i64(candidate, "total_tokens")?;
+    let baseline_cost = number_f64(baseline, "estimated_cost_usd")?;
+    let candidate_cost = number_f64(candidate, "estimated_cost_usd")?;
+    let token_reduction_ratio = if baseline_total > 0 {
+        Some(round_six(
+            (baseline_total - candidate_total) as f64 / baseline_total as f64,
+        ))
+    } else {
+        None
+    };
+    let cost_reduction = round_six(baseline_cost - candidate_cost);
+    let token_advantage = both_qualified && token_reduction_ratio.is_some_and(|value| value > 0.0);
+    let cost_advantage = both_qualified && cost_reduction > 0.0;
+    let baseline_row = comparison_row(baseline, "baseline")?;
+    let candidate_row = comparison_row(candidate, "candidate")?;
+
+    Ok(json!({
+        "comparison_kind": "token_efficiency_scorecard_read_only_comparison",
+        "read_only": true,
+        "comparison_basis": "token_efficiency_scorecard.v1 bounded summaries",
+        "scenario_id": required_str(baseline, "scenario_id")?,
+        "comparison_contract": contract,
+        "baseline": baseline_row,
+        "candidate": candidate_row,
+        "quality_gate": {
+            "method": required_str(contract, "quality_method")?,
+            "threshold": threshold,
+            "baseline_qualified": baseline_qualified,
+            "candidate_qualified": candidate_qualified,
+            "both_qualified": both_qualified,
+        },
+        "deltas": {
+            "total_tokens": candidate_total - baseline_total,
+            "repeated_context_ratio": round_six(
+                derived_f64(candidate, "repeated_context_ratio")?
+                    - derived_f64(baseline, "repeated_context_ratio")?,
+            ),
+            "estimated_cost_usd": round_six(candidate_cost - baseline_cost),
+            "duration_ms": number_i64(candidate, "duration_ms") - number_i64(baseline, "duration_ms"),
+            "retry_count": number_i64(candidate, "retry_count") - number_i64(baseline, "retry_count"),
+            "quality_score": round_six(
+                number_f64(candidate, "quality_score")? - number_f64(baseline, "quality_score")?,
+            ),
+        },
+        "advantages": {
+            "token": {
+                "reported": token_advantage,
+                "reduction_ratio": if token_advantage { token_reduction_ratio.map(Value::from).unwrap_or(Value::Null) } else { Value::Null },
+            },
+            "cost": {
+                "reported": cost_advantage,
+                "reduction_usd": if cost_advantage { json!(cost_reduction) } else { Value::Null },
+            },
+        },
+        "rows": [baseline_row, candidate_row],
+    }))
+}
+
+fn matching_comparison_contract<'a>(
+    baseline: &'a Value,
+    candidate: &Value,
+) -> Result<&'a Value, String> {
+    let baseline_contract = baseline
+        .get("comparison_contract")
+        .ok_or_else(|| "baseline comparison_contract is required".to_string())?;
+    let candidate_contract = candidate
+        .get("comparison_contract")
+        .ok_or_else(|| "candidate comparison_contract is required".to_string())?;
+    for field in [
+        "scenario_digest",
+        "task_digest",
+        "runtime_kind",
+        "runtime_version",
+        "provider_id",
+        "model_id",
+        "tokenizer_id",
+        "pricing_id",
+        "input_cost_per_1k_usd",
+        "output_cost_per_1k_usd",
+        "quality_method",
+        "quality_threshold",
+        "evaluator_version",
+        "redaction_policy",
+        "retry_policy",
+        "seed",
+    ] {
+        if baseline_contract.get(field) != candidate_contract.get(field) {
+            return Err(format!("comparison_contract.{field} must match"));
+        }
+    }
+    Ok(baseline_contract)
+}
+
+fn quality_qualified(scorecard: &Value, threshold: f64) -> bool {
+    required_str(scorecard, "status").ok() == Some("pass")
+        && number_f64(scorecard, "quality_score").is_ok_and(|score| score >= threshold)
+}
+
+fn comparison_row(scorecard: &Value, comparison_role: &str) -> Result<Value, String> {
+    Ok(json!({
+        "comparison_role": comparison_role,
+        "adapter_run_id": required_str(scorecard, "adapter_run_id")?,
+        "runtime_kind": required_str(scorecard, "runtime_kind")?,
+        "runtime_version": required_str(scorecard, "runtime_version")?,
+        "scenario_id": required_str(scorecard, "scenario_id")?,
+        "mode": required_str(scorecard, "mode")?,
+        "state_strategy": required_str(scorecard, "state_strategy")?,
+        "status": required_str(scorecard, "status")?,
+        "quality_method": required_str(scorecard, "quality_method")?,
+        "quality_score": scorecard.get("quality_score"),
+        "total_tokens": derived_i64(scorecard, "total_tokens")?,
+        "repeated_context_ratio": derived_f64(scorecard, "repeated_context_ratio")?,
+        "estimated_cost_usd": number_f64(scorecard, "estimated_cost_usd")?,
+        "duration_ms": number_i64(scorecard, "duration_ms"),
+        "retry_count": number_i64(scorecard, "retry_count"),
+    }))
+}
+
+fn derived_i64(scorecard: &Value, key: &str) -> Result<i64, String> {
+    scorecard
+        .get("derived_metrics")
+        .and_then(|derived| derived.get(key))
+        .and_then(Value::as_i64)
+        .ok_or_else(|| format!("scorecard.derived_metrics.{key} must be an integer"))
+}
+
+fn derived_f64(scorecard: &Value, key: &str) -> Result<f64, String> {
+    scorecard
+        .get("derived_metrics")
+        .and_then(|derived| derived.get(key))
+        .and_then(Value::as_f64)
+        .ok_or_else(|| format!("scorecard.derived_metrics.{key} must be a number"))
 }
 
 fn validate_no_raw_trace_keys(value: &Value) -> Result<(), String> {
@@ -763,6 +1119,40 @@ fn validate_no_raw_trace_keys(value: &Value) -> Result<(), String> {
         }
         Value::String(text) if is_sensitive_value(text) => {
             return Err("sensitive trace value is not allowed in scorecard artifact".to_string());
+        }
+        _ => {}
+    }
+    Ok(())
+}
+
+fn validate_json_bounds(value: &Value, path: &str, depth: usize) -> Result<(), String> {
+    if depth > MAX_SCORECARD_JSON_DEPTH {
+        return Err(format!("bounded JSON depth exceeded at {path}"));
+    }
+    match value {
+        Value::Object(map) => {
+            if map.len() > MAX_SCORECARD_JSON_OBJECT_FIELDS {
+                return Err(format!(
+                    "bounded JSON object field count exceeded at {path}"
+                ));
+            }
+            for (key, nested) in map {
+                if key.len() > MAX_SCORECARD_JSON_STRING_BYTES {
+                    return Err(format!("bounded JSON key length exceeded at {path}"));
+                }
+                validate_json_bounds(nested, &format!("{path}.{key}"), depth + 1)?;
+            }
+        }
+        Value::Array(items) => {
+            if items.len() > MAX_SCORECARD_JSON_ARRAY_ITEMS {
+                return Err(format!("bounded JSON array item count exceeded at {path}"));
+            }
+            for (index, nested) in items.iter().enumerate() {
+                validate_json_bounds(nested, &format!("{path}[{index}]"), depth + 1)?;
+            }
+        }
+        Value::String(text) if text.len() > MAX_SCORECARD_JSON_STRING_BYTES => {
+            return Err(format!("bounded JSON string length exceeded at {path}"));
         }
         _ => {}
     }
@@ -799,6 +1189,10 @@ fn is_raw_trace_key(key: &str) -> bool {
         "raw_output",
         "transcript",
         "conversation",
+        "message",
+        "checkpoint",
+        "span",
+        "tool_payload",
         "message_history",
         "repository_text",
         "repo_full_text",
@@ -906,9 +1300,21 @@ fn number_i64(value: &Value, key: &str) -> i64 {
     positive_i64(value.get(key))
 }
 
+fn number_f64(value: &Value, key: &str) -> Result<f64, String> {
+    value
+        .get(key)
+        .and_then(Value::as_f64)
+        .filter(|number| number.is_finite() && *number >= 0.0)
+        .ok_or_else(|| format!("missing required non-negative number field: {key}"))
+}
+
 fn ratio(numerator: i64, denominator: i64) -> f64 {
     let denominator = denominator.max(1) as f64;
-    ((numerator as f64 / denominator) * 1_000_000.0).round() / 1_000_000.0
+    round_six(numerator as f64 / denominator)
+}
+
+fn round_six(value: f64) -> f64 {
+    (value * 1_000_000.0).round() / 1_000_000.0
 }
 
 fn required_str<'a>(value: &'a Value, key: &str) -> Result<&'a str, String> {

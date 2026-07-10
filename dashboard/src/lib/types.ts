@@ -858,11 +858,48 @@ export interface ScorecardEvidenceSummary {
   estimated_cost_usd: number | null;
 }
 
+export interface ScorecardComparisonRowSummary {
+  adapter_run_id: string;
+  runtime_kind: string;
+  runtime_version: string;
+  mode: string;
+  status: string;
+  quality_score: number | null;
+  total_tokens: number | null;
+  repeated_context_ratio: number | null;
+  estimated_cost_usd: number | null;
+  duration_ms: number | null;
+  retry_count: number | null;
+}
+
+export interface ScorecardComparisonDeltaSummary {
+  total_tokens: number | null;
+  repeated_context_ratio: number | null;
+  estimated_cost_usd: number | null;
+  duration_ms: number | null;
+  retry_count: number | null;
+  quality_score: number | null;
+}
+
+export interface ScorecardScenarioComparisonSummary {
+  scenario_id: string;
+  baseline: ScorecardComparisonRowSummary;
+  candidate: ScorecardComparisonRowSummary;
+  quality_threshold: number | null;
+  both_qualified: boolean;
+  deltas: ScorecardComparisonDeltaSummary;
+  token_advantage_reported: boolean;
+  token_reduction_ratio: number | null;
+  cost_advantage_reported: boolean;
+  cost_reduction_usd: number | null;
+}
+
 export interface ScorecardArtifactListResponse {
   metadata_only: true;
   read_only: true;
   target_repository_writes: string;
   artifacts: ScorecardArtifact[];
+  comparison?: Record<string, unknown> | null;
 }
 
 export interface OperatorEvidenceResponse {

@@ -1,6 +1,6 @@
 # Architecture Book
 
-Last updated: 2026-07-10 (security, scheduler, and release hardening audit)
+Last updated: 2026-07-10 (security, scheduler, release, and benchmark-evidence hardening audit)
 
 This is the current architecture baseline for the Token-Efficient Agent Harness Lab. Historical phase plans, closeout reports, and long-form strategy docs are retained in release-tagged git history; `docs/archive/README.md` is the working-tree index.
 
@@ -74,7 +74,7 @@ Allowed external-runtime work:
 - normalize native and external traces into the same token-efficiency evidence shape;
 - compare `native_control_plane`, `stateless_reread`, `stateful_store`, and `pruned_context` modes;
 - preserve runtime kind, runtime version, scenario id, mode, pass/fail status, quality method, token counts, tool-call counts, retry counts, duration, and artifact references;
-- store raw trace material only as bounded app-owned artifacts after redaction.
+- store only bounded summary-level evidence and opaque source hashes/references; raw trace material is not accepted.
 
 Non-goals unless a later documented replacement supersedes this boundary:
 
@@ -85,7 +85,9 @@ Non-goals unless a later documented replacement supersedes this boundary:
 - no provider calls in CI;
 - no target-output, merge, deploy, release, or protected-branch authority through an adapter.
 
-The scorecard contract is implemented by `scripts/token_efficiency_scorecard.py`, which validates bounded summaries and emits `token_efficiency_scorecard.v1`. Native harness exports use `scripts/native_scorecard_export.py` to read bounded dispatch/workflow/run/evidence JSON, reuse that validator, and emit a read-only `native_scorecard_artifact.v1` JSON envelope. The provider-gated remember-don't-reread runner can also emit the same envelopes with `--emit-artifacts` beside its stateless/stateful scorecards and comparison JSON, reusing the native exporter rather than defining another schema. Native workflow completion now also projects completed, failed, blocked, cancelled, and error terminal runs into the same envelope and persists it through `LocalProductStore` in the `native_scorecard_artifacts` table. The automatic projection is metadata/counter-only, idempotent by artifact id plus content hash, rejects raw trace and secret-shaped fields recursively, and is exposed through read-only scorecard APIs; no second schema or storage layer is introduced. Minimum run-level fields are:
+The scorecard contract is implemented by `scripts/token_efficiency_scorecard.py`, which validates bounded summaries and emits `token_efficiency_scorecard.v1`. Native harness exports retain the read-only `native_scorecard_artifact.v1` envelope. Runtime-neutral imports use the backward-compatible `scorecard_artifact.v2` envelope and preserve the scorecard's real `runtime_kind`; LangGraph evidence is never relabeled `native_harness`. Both versions persist through `LocalProductStore` in the existing `native_scorecard_artifacts` table and existing API/operator evidence boundary. No second schema, store, importer, scheduler, or runner is introduced.
+
+Before persistence, the store recomputes derived metrics from trusted run counters, canonicalizes the scorecard JSON, recomputes SHA-256, and rejects derived or content-hash mismatches. New imports are bounded to a 1 MiB artifact, 1 KiB JSON strings/keys, 1,000 array items, 128 object fields, and 16 nested levels; the file importer enforces the byte ceiling before parsing. These write-time limits do not alter legacy-row reads. V2 artifacts require a comparison contract binding scenario/task digests, runtime/version, provider/model, tokenizer, pricing/rates, quality method/threshold, evaluator version, redaction policy, retry policy, and seed. Scenario comparison requires exactly one explicit `stateless_reread` baseline and one `stateful_store` candidate with identical contracts. Token or cost advantage is reported only when both runs meet the shared quality threshold. Minimum run-level fields are:
 
 ```text
 adapter_run_id
@@ -112,9 +114,11 @@ duration_ms
 estimated_cost_usd
 raw_trace_artifact_id
 redaction_status
+comparison_contract (required for scorecard_artifact.v2)
+evidence_provenance (optional bounded capture metadata)
 ```
 
-Minimum step-level fields are:
+Step-level fields are optional for summary-only external evidence. When steps are supplied, their count and bounded fields are validated:
 
 ```text
 adapter_step_id
@@ -139,19 +143,20 @@ started_at
 finished_at
 ```
 
-Derived metrics should include total tokens, context share, repeated-context ratio, tool-redundancy ratio, tokens per passing run, cost per passing run, and step retry ratio. Token reduction is not success unless the task also passes under the same success criterion.
+Derived metrics include total tokens, context share, repeated-context ratio, tool-redundancy ratio, tokens per passing run, cost per passing run, and step retry ratio. They are never trusted from input. Token reduction is not success unless both baseline and candidate meet the same quality threshold.
 
 Implementation order remains importer-first:
 
 1. validate a bounded trace summary — implemented in `scripts/token_efficiency_scorecard.py`;
 2. emit `token_efficiency_scorecard.v1` evidence — implemented by the validator and native exporter;
-3. store scorecard evidence as a read-only app-owned artifact — implemented as `native_scorecard_artifact.v1` persisted through `LocalProductStore.native_scorecard_artifacts`, including automatic persistence at native workflow terminal-state transitions;
-4. compute derived metrics — implemented by the validator;
-5. expose read-only scorecards — implemented through `GET /api/v1/scorecards?run_id=...`, `GET /api/v1/scorecards?dispatch_id=...`, `GET /api/v1/scorecards/:artifact_id`, and the operator evidence read-model;
-6. import bounded LangGraph summaries and compare same-scenario stateful/stateless scorecards — implemented in `scripts/langgraph_trace_import.py`;
-7. only after a real importer-first pilot is accepted, consider runtime-specific runners through a separate decision.
+3. store scorecard evidence as a read-only app-owned artifact — native v1 and generic v2 both persist through `LocalProductStore.native_scorecard_artifacts`;
+4. recompute derived metrics and canonical content hash — implemented in Python normalization and Rust persistence;
+5. expose read-only scorecards — implemented through run, dispatch, artifact-id, and scenario queries plus operator evidence;
+6. import bounded LangGraph summaries and compare strict same-scenario stateful/stateless scorecards — implemented in `scripts/langgraph_trace_import.py` and the shared comparator;
+7. persist and display the first real importer-first pilot — implemented with fixed offline LangGraph 1.2.9 fixtures and Dashboard scenario deltas; the hash-bound `tools/capture_langgraph_pilot.py` is a developer-invoked one-shot evidence harness with no app, scheduler, provider, store, or CI integration;
+8. consider embedded/scheduled/provider-backed runtime-specific runners only through a later explicit decision.
 
-The first external baseline remains LangGraph stateful versus stateless reread. The next architecture increment is app-owned persistence and a scenario comparison read-model for real, operator-supplied bounded summaries. It must reuse the existing scorecard table/API boundary, versioning the artifact envelope only if non-native runtime identity cannot be represented safely. CrewAI and Microsoft Agent Framework should wait until that LangGraph pilot is reproducible and accepted.
+The first external baseline is complete: LangGraph stateful store versus stateless reread, captured offline with no provider/model call. This one-shot developer capture authorization does not change the product's importer-first boundary and cannot execute through the app. Rollback requires no database migration: revert the implementation commit. Existing v2 rows remain JSON-readable in the old table/API; optional data removal should use a verified backup rather than an automatic destructive down migration. CrewAI and Microsoft Agent Framework remain deferred.
 
 ## V2 Real Production Output Architecture
 

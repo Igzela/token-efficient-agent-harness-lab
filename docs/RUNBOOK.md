@@ -108,46 +108,81 @@ Acceptance:
 
 ## Bounded LangGraph Scorecard Import
 
-The LangGraph adapter accepts summary-level JSON only. It does not import LangGraph, run a graph, call a provider, read a repository, or persist an artifact. Prepare stateless and stateful summaries outside this repository with the same `scenario_id`, task inputs, quality criterion, runtime/provider identity, and redaction policy.
+The LangGraph adapter accepts summary-level JSON only. It does not import LangGraph, run a graph, call a provider, or read a repository. Prepare stateless and stateful summaries outside the product runtime with the same comparison contract: scenario/task digests, runtime/version, provider/model, tokenizer, pricing, quality method/threshold, evaluator version, redaction/retry policy, and seed.
 
-Normalize each bounded summary independently:
+The checked pilot can be recaptured explicitly with the development-only tool below. This transient command does not add LangGraph to the engine/app dependency graph, call a model/provider, or persist graph state; it writes only the two bounded summaries. The tool's SHA-256 is bound in each fixture's `evidence_provenance.source_capture_sha256`:
+
+```bash
+uv run --no-project \
+  --with langgraph==1.2.9 \
+  --with tiktoken==0.12.0 \
+  python tools/capture_langgraph_pilot.py \
+  --output-dir /tmp/acp-langgraph-pilot-evidence
+```
+
+Generate runtime-neutral v2 artifacts without relabeling LangGraph as native:
 
 ```bash
 uv run --no-project python scripts/langgraph_trace_import.py \
   /tmp/langgraph-stateless-summary.json \
-  --output /tmp/langgraph-stateless-scorecard.json
+  --artifact \
+  --output /tmp/langgraph-stateless.artifact.json
 
 uv run --no-project python scripts/langgraph_trace_import.py \
   /tmp/langgraph-stateful-summary.json \
-  --output /tmp/langgraph-stateful-scorecard.json
+  --artifact \
+  --output /tmp/langgraph-stateful.artifact.json
 ```
 
-Compare the normalized scorecards:
+Compare the summaries before persistence:
 
 ```bash
 uv run --no-project python scripts/langgraph_trace_import.py \
-  /tmp/langgraph-stateless-scorecard.json \
-  /tmp/langgraph-stateful-scorecard.json \
+  /tmp/langgraph-stateless-summary.json \
+  /tmp/langgraph-stateful-summary.json \
   --compare \
   --output /tmp/langgraph-comparison.json
 ```
+
+Import through the existing app-owned importer and table. The binary name is retained for backward compatibility; it accepts both `native_scorecard_artifact.v1` and `scorecard_artifact.v2`:
+
+```bash
+cargo run -p engine --bin import-native-scorecard-artifacts -- \
+  --db "${ACP_DB_PATH:-.agent-control-plane/local-team.db}" \
+  /tmp/langgraph-stateless.artifact.json \
+  /tmp/langgraph-stateful.artifact.json
+```
+
+Repeating the command must report both files as `unchanged`. After the engine starts, read the scenario comparison:
+
+```bash
+curl -fsS \
+  "http://127.0.0.1:8080/api/v1/scorecards?scenario_id=langgraph_offline_state_retention_pilot_2026_07_10"
+```
+
+The Dashboard exposes the same bounded view under `#benchmarks`.
 
 Run the focused importer tests:
 
 ```bash
 uv run --no-project python -m unittest tools.test_langgraph_trace_import
+cargo test -p engine --test test_native_scorecard_artifacts \
+  fixed_langgraph_pilot_import_is_idempotent_and_visible_end_to_end
 ```
 
 Acceptance:
 
 - both inputs pass bounded-field, raw-trace, and secret-shaped-value rejection;
+- new imports are capped at 1 MiB, 1 KiB per JSON string/key, 1,000 items per array (including steps), 128 fields per object, and 16 nested levels;
 - modes are exactly `stateless_reread` and `stateful_store` with one shared `scenario_id`;
-- both runs use the same pass/fail and quality method;
+- both runs have identical comparison contracts and explicit baseline/candidate roles;
 - the comparison reports tokens, repeated-context ratio, cost, latency, retries, and quality;
 - no raw LangGraph state, checkpoint, message, span, prompt, output, tool payload, repository content, private path, or credential is retained;
-- a token reduction is reported as beneficial only when both runs meet the same success criterion.
+- token/cost advantage is reported only when both runs meet the shared quality threshold;
+- canonical content hash and derived metrics are recomputed before persistence;
+- the fixed offline LangGraph 1.2.9 pilot reproduces 38,452 baseline tokens, 11,294 candidate tokens, and 70.6283% token reduction; both quality scores are 1.0 and both costs are $0, so no cost advantage is reported.
 
-Import into app-owned storage and dashboard comparison are not yet operator procedures. Do not relabel a LangGraph scorecard as a native artifact or insert it directly into the database; follow `docs/NEXT_DECISION.md` for the proposed handoff contract.
+Rollback requires no schema down migration. Revert the implementation commit; v2 rows remain JSON-readable in the existing table and old run/id API paths. If operators also want to remove pilot rows, restore a verified pre-import database backup instead of running an automatic destructive cleanup.
 
 ## Local Engine Reminder
 

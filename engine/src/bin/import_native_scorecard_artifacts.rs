@@ -1,12 +1,12 @@
 use clap::Parser;
-use engine::local_scorecard_import::import_native_scorecard_artifacts;
+use engine::local_scorecard_import::import_scorecard_artifacts;
 use engine::storage::local_product_store::LocalProductStore;
 use std::path::PathBuf;
 
 #[derive(Debug, Parser)]
 #[command(
     name = "import-native-scorecard-artifacts",
-    about = "Import native_scorecard_artifact.v1 JSON files into a local LocalProductStore DB"
+    about = "Import native_scorecard_artifact.v1 or scorecard_artifact.v2 JSON files into LocalProductStore"
 )]
 struct Args {
     #[arg(long, value_name = "PATH")]
@@ -26,7 +26,7 @@ fn main() {
             std::process::exit(1);
         }
     };
-    let summary = import_native_scorecard_artifacts(&store, &args.inputs, &args.actor);
+    let summary = import_scorecard_artifacts(&store, &args.inputs, &args.actor);
     println!(
         "{}",
         serde_json::to_string_pretty(&summary).expect("summary serializes")

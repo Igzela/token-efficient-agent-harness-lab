@@ -5,6 +5,8 @@ use std::path::{Path, PathBuf};
 
 use crate::storage::local_product_store::LocalProductStore;
 
+const MAX_SCORECARD_ARTIFACT_BYTES: u64 = 1_048_576;
+
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 pub struct LocalScorecardImportSummary {
     pub files_seen: usize,
@@ -15,6 +17,14 @@ pub struct LocalScorecardImportSummary {
 }
 
 pub fn import_native_scorecard_artifacts(
+    store: &LocalProductStore,
+    inputs: &[PathBuf],
+    actor: &str,
+) -> LocalScorecardImportSummary {
+    import_scorecard_artifacts(store, inputs, actor)
+}
+
+pub fn import_scorecard_artifacts(
     store: &LocalProductStore,
     inputs: &[PathBuf],
     actor: &str,
@@ -103,7 +113,20 @@ fn import_one(
     file: &Path,
     actor: &str,
 ) -> Result<ImportOutcome, String> {
+    let size = fs::metadata(file)
+        .map_err(|error| format!("cannot inspect file: {error}"))?
+        .len();
+    if size > MAX_SCORECARD_ARTIFACT_BYTES {
+        return Err(format!(
+            "bounded artifact exceeds {MAX_SCORECARD_ARTIFACT_BYTES} bytes"
+        ));
+    }
     let text = fs::read_to_string(file).map_err(|error| format!("cannot read file: {error}"))?;
+    if text.len() as u64 > MAX_SCORECARD_ARTIFACT_BYTES {
+        return Err(format!(
+            "bounded artifact exceeds {MAX_SCORECARD_ARTIFACT_BYTES} bytes"
+        ));
+    }
     let artifact: Value =
         serde_json::from_str(&text).map_err(|error| format!("invalid JSON: {error}"))?;
     let artifact_id = artifact
@@ -113,7 +136,7 @@ fn import_one(
         .ok_or_else(|| "artifact_id is required".to_string())?
         .to_string();
     let existed = store.get_native_scorecard_artifact(&artifact_id)?.is_some();
-    let stored = store.record_native_scorecard_artifact(&artifact, actor)?;
+    let stored = store.record_scorecard_artifact(&artifact, actor)?;
     let stored_id = stored
         .get("artifact_id")
         .and_then(Value::as_str)
@@ -151,9 +174,12 @@ pub fn validate_scorecard_for_bounded_export(scorecard: &Value) -> Result<bool, 
 
 #[cfg(test)]
 mod tests {
-    use super::import_native_scorecard_artifacts;
+    use super::{
+        import_native_scorecard_artifacts, import_scorecard_artifacts, MAX_SCORECARD_ARTIFACT_BYTES,
+    };
     use crate::storage::local_product_store::LocalProductStore;
     use serde_json::{json, Value};
+    use sha2::{Digest, Sha256};
     use tempfile::tempdir;
 
     fn local_runner_artifact(run_id: &str, mode: &str) -> Value {
@@ -163,6 +189,84 @@ mod tests {
             "full_history"
         };
         let total_tokens = if mode == "stateful_store" { 130 } else { 220 };
+        let scorecard = json!({
+            "schema_version": "token_efficiency_scorecard.v1",
+            "adapter_run_id": run_id,
+            "runtime_kind": "native_harness",
+            "runtime_version": "provider-gated-real-runner.v1",
+            "scenario_id": "provider_gated_remember_dont_reread_runner",
+            "mode": mode,
+            "state_strategy": state_strategy,
+            "status": "pass",
+            "pass_fail_reason": "same score threshold met",
+            "quality_score": 1.0,
+            "quality_method": "rule",
+            "input_token_total": total_tokens - 20,
+            "output_token_total": 20,
+            "context_token_total": total_tokens - 40,
+            "repeated_context_token_total": if mode == "stateful_store" { 12 } else { 80 },
+            "retrieved_ref_token_total": if mode == "stateful_store" { 10 } else { 0 },
+            "tool_call_count": 2,
+            "redundant_tool_call_count": 0,
+            "retry_count": 0,
+            "step_count": 2,
+            "duration_ms": 10,
+            "estimated_cost_usd": 0.0,
+            "raw_trace_artifact_id": format!("bounded-provider-gated-runner-{mode}"),
+            "redaction_status": "redacted",
+            "derived_metrics": {
+                "total_tokens": total_tokens,
+                "context_share": if mode == "stateful_store" { 0.692308 } else { 0.818182 },
+                "repeated_context_ratio": if mode == "stateful_store" { 0.133333 } else { 0.444444 },
+                "tool_redundancy_ratio": 0.0,
+                "tokens_per_passing_run": total_tokens,
+                "cost_per_passing_run": 0.0,
+                "step_retry_ratio": 0.0
+            },
+            "steps": [
+                {
+                    "adapter_step_id": format!("{run_id}-iter-00"),
+                    "adapter_run_id": run_id,
+                    "step_index": 0,
+                    "node_name": "real_experiment_iteration_00",
+                    "agent_role": "executor",
+                    "operation_kind": "model_call",
+                    "input_tokens": 50,
+                    "output_tokens": 10,
+                    "context_tokens": 40,
+                    "repeated_context_tokens": 0,
+                    "retrieved_refs_count": 0,
+                    "retrieved_ref_tokens": 0,
+                    "tool_name": null,
+                    "tool_call_id": null,
+                    "status": "pass",
+                    "error_kind": "none",
+                    "state_read_bytes": 0,
+                    "state_write_bytes": 0
+                },
+                {
+                    "adapter_step_id": format!("{run_id}-iter-01"),
+                    "adapter_run_id": run_id,
+                    "step_index": 1,
+                    "node_name": "real_experiment_iteration_01",
+                    "agent_role": "executor",
+                    "operation_kind": "model_call",
+                    "input_tokens": total_tokens - 70,
+                    "output_tokens": 10,
+                    "context_tokens": total_tokens - 80,
+                    "repeated_context_tokens": if mode == "stateful_store" { 12 } else { 80 },
+                    "retrieved_refs_count": if mode == "stateful_store" { 1 } else { 0 },
+                    "retrieved_ref_tokens": if mode == "stateful_store" { 10 } else { 0 },
+                    "tool_name": null,
+                    "tool_call_id": null,
+                    "status": "pass",
+                    "error_kind": "none",
+                    "state_read_bytes": if mode == "stateful_store" { 3 } else { 0 },
+                    "state_write_bytes": if mode == "stateful_store" { 96 } else { 0 }
+                }
+            ]
+        });
+        let content_sha256 = hex::encode(Sha256::digest(scorecard.to_string().as_bytes()));
         json!({
             "schema_version": "native_scorecard_artifact.v1",
             "artifact_kind": "token_efficiency_scorecard",
@@ -170,87 +274,11 @@ mod tests {
             "read_only": true,
             "created_at": "1970-01-01T00:00:00Z",
             "artifact_id": format!("scorecard-{run_id}-{mode}"),
-            "content_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "content_sha256": content_sha256,
             "scorecard_schema_version": "token_efficiency_scorecard.v1",
             "metadata_only": true,
             "target_repository_writes": "disabled",
-            "scorecard": {
-                "schema_version": "token_efficiency_scorecard.v1",
-                "adapter_run_id": run_id,
-                "runtime_kind": "native_harness",
-                "runtime_version": "provider-gated-real-runner.v1",
-                "scenario_id": "provider_gated_remember_dont_reread_runner",
-                "mode": mode,
-                "state_strategy": state_strategy,
-                "status": "pass",
-                "pass_fail_reason": "same score threshold met",
-                "quality_score": 1.0,
-                "quality_method": "rule",
-                "input_token_total": total_tokens - 20,
-                "output_token_total": 20,
-                "context_token_total": total_tokens - 40,
-                "repeated_context_token_total": if mode == "stateful_store" { 12 } else { 80 },
-                "retrieved_ref_token_total": if mode == "stateful_store" { 10 } else { 0 },
-                "tool_call_count": 2,
-                "redundant_tool_call_count": 0,
-                "retry_count": 0,
-                "step_count": 2,
-                "duration_ms": 10,
-                "estimated_cost_usd": 0.0,
-                "raw_trace_artifact_id": format!("bounded-provider-gated-runner-{mode}"),
-                "redaction_status": "redacted",
-                "derived_metrics": {
-                    "total_tokens": total_tokens,
-                    "context_share": 0.5,
-                    "repeated_context_ratio": if mode == "stateful_store" { 0.1 } else { 0.44 },
-                    "tool_redundancy_ratio": 0.0,
-                    "tokens_per_passing_run": total_tokens,
-                    "cost_per_passing_run": 0.0,
-                    "step_retry_ratio": 0.0
-                },
-                "steps": [
-                    {
-                        "adapter_step_id": format!("{run_id}-iter-00"),
-                        "adapter_run_id": run_id,
-                        "step_index": 0,
-                        "node_name": "real_experiment_iteration_00",
-                        "agent_role": "executor",
-                        "operation_kind": "model_call",
-                        "input_tokens": 50,
-                        "output_tokens": 10,
-                        "context_tokens": 40,
-                        "repeated_context_tokens": 0,
-                        "retrieved_refs_count": 0,
-                        "retrieved_ref_tokens": 0,
-                        "tool_name": null,
-                        "tool_call_id": null,
-                        "status": "pass",
-                        "error_kind": "none",
-                        "state_read_bytes": 0,
-                        "state_write_bytes": 0
-                    },
-                    {
-                        "adapter_step_id": format!("{run_id}-iter-01"),
-                        "adapter_run_id": run_id,
-                        "step_index": 1,
-                        "node_name": "real_experiment_iteration_01",
-                        "agent_role": "executor",
-                        "operation_kind": "model_call",
-                        "input_tokens": total_tokens - 70,
-                        "output_tokens": 10,
-                        "context_tokens": total_tokens - 80,
-                        "repeated_context_tokens": if mode == "stateful_store" { 12 } else { 80 },
-                        "retrieved_refs_count": if mode == "stateful_store" { 1 } else { 0 },
-                        "retrieved_ref_tokens": if mode == "stateful_store" { 10 } else { 0 },
-                        "tool_name": null,
-                        "tool_call_id": null,
-                        "status": "pass",
-                        "error_kind": "none",
-                        "state_read_bytes": if mode == "stateful_store" { 3 } else { 0 },
-                        "state_write_bytes": if mode == "stateful_store" { 96 } else { 0 }
-                    }
-                ]
-            }
+            "scorecard": scorecard
         })
     }
 
@@ -274,7 +302,7 @@ mod tests {
         .unwrap();
 
         let store = LocalProductStore::new(&db_path).unwrap();
-        let summary = import_native_scorecard_artifacts(
+        let summary = import_scorecard_artifacts(
             &store,
             std::slice::from_ref(&artifacts),
             "local-import-test",
@@ -291,7 +319,7 @@ mod tests {
             1
         );
 
-        let repeated = import_native_scorecard_artifacts(&store, &[artifacts], "local-import-test");
+        let repeated = import_scorecard_artifacts(&store, &[artifacts], "local-import-test");
         assert_eq!(repeated.files_seen, 2);
         assert_eq!(repeated.imported, 0);
         assert_eq!(repeated.unchanged, 2);
@@ -311,5 +339,25 @@ mod tests {
         assert_eq!(summary.unchanged, 0);
         assert_eq!(summary.errors.len(), 1);
         assert!(summary.errors[0].contains("artifact_id is required"));
+    }
+
+    #[test]
+    fn local_scorecard_import_rejects_oversized_files_before_parsing() {
+        let dir = tempdir().unwrap();
+        let store = LocalProductStore::new(dir.path().join("store.db")).unwrap();
+        let path = dir.path().join("oversized.json");
+        std::fs::write(
+            path.clone(),
+            vec![b' '; (MAX_SCORECARD_ARTIFACT_BYTES + 1) as usize],
+        )
+        .unwrap();
+
+        let summary = import_scorecard_artifacts(&store, &[path], "local-import-test");
+
+        assert_eq!(summary.files_seen, 1);
+        assert_eq!(summary.imported, 0);
+        assert_eq!(summary.unchanged, 0);
+        assert_eq!(summary.errors.len(), 1);
+        assert!(summary.errors[0].contains("bounded artifact exceeds"));
     }
 }

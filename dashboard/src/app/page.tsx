@@ -13,6 +13,7 @@ import { AdaptiveFusion } from "@/components/AdaptiveFusion";
 import { AuthPanel } from "@/components/AuthPanel";
 import { AuditLog } from "@/components/AuditLog";
 import { Backups } from "@/components/Backups";
+import { BenchmarkScorecards } from "@/components/BenchmarkScorecards";
 import { BoundaryBadges } from "@/components/BoundaryBadges";
 import { Costs } from "@/components/Costs";
 import { Dispatches } from "@/components/Dispatches";
@@ -34,7 +35,7 @@ import { TabGroup, type TabGroupDef } from "@/components/TabGroup";
 import { OperatorSurface } from "@/components/OperatorSurface";
 import { WorkflowRuns } from "@/components/WorkflowRuns";
 
-type Tab = "mission" | "dispatches" | "routing" | "regulator" | "fusion" | "operator" | "decisions" | "team" | "costs" | "operations" | "runs" | "patches" | "scheduler" | "pool" | "queue" | "settings" | "health" | "backups" | "audit";
+type Tab = "mission" | "dispatches" | "benchmarks" | "routing" | "regulator" | "fusion" | "operator" | "decisions" | "team" | "costs" | "operations" | "runs" | "patches" | "scheduler" | "pool" | "queue" | "settings" | "health" | "backups" | "audit";
 type AuthStatus = "ok" | "missing" | "denied" | "offline";
 type SetupStep = {
   detail: string;
@@ -45,6 +46,7 @@ type SetupStep = {
 const allTabs: { id: Tab; label: string }[] = [
   { id: "mission", label: "Mission Control" },
   { id: "dispatches", label: "Dispatches" },
+  { id: "benchmarks", label: "Benchmarks" },
   { id: "routing", label: "Routing" },
   { id: "regulator", label: "Regulator" },
   { id: "fusion", label: "Adaptive Fusion" },
@@ -77,6 +79,7 @@ const tabGroups: TabGroupDef[] = [
     label: "Activity",
     tabs: [
       { id: "dispatches", label: "Dispatches" },
+      { id: "benchmarks", label: "Benchmarks" },
       { id: "decisions", label: "Decisions" },
       { id: "costs", label: "Costs" },
     ],
@@ -463,6 +466,7 @@ export default function DashboardPage() {
                 totalDispatches={dashboard.counts.dispatches}
               />
             )}
+            {tab === "benchmarks" && <BenchmarkScorecards />}
             {tab === "routing" && <Routing rows={routingRows} />}
             {tab === "regulator" && <DynamicRegulator />}
             {tab === "fusion" && <AdaptiveFusion operatorStatus={dashboard.adaptive_fusion} />}

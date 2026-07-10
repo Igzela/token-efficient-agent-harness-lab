@@ -35,14 +35,14 @@ Full Agent Autonomy Mode remains active for repo-scoped, testable, observable, C
 | Native deterministic stateful pilot | `scripts/native_stateful_experiment_pilot.py` |
 | Provider-gated real runner | `scripts/provider_gated_real_runner.py`, `tools/test_provider_gated_real_runner.py` |
 | Local runner validation | `scripts/validate_local_runner.py`, `tools/test_validate_local_runner.py` |
-| LangGraph bounded import | `scripts/langgraph_trace_import.py` |
-| Native artifact persistence | `engine/src/storage/local_product_store/native_scorecard_artifacts.rs` |
-| Local scorecard artifact import | `engine/src/local_scorecard_import.rs`, `engine/src/bin/import_native_scorecard_artifacts.rs` |
+| LangGraph offline capture, bounded import, and v2 artifact export | `tools/capture_langgraph_pilot.py`, `scripts/langgraph_trace_import.py`, `tests/fixtures/langgraph_pilot/` |
+| Native v1 and generic v2 artifact persistence/comparison | `engine/src/storage/local_product_store/native_scorecard_artifacts.rs` |
+| Local scorecard artifact import (legacy CLI name retained) | `engine/src/local_scorecard_import.rs`, `engine/src/bin/import_native_scorecard_artifacts.rs` |
 | Local runner validation executor | `engine/src/node_executor.rs` (`LocalRunnerValidationExecutor`), `engine/src/executor_pool.rs`; automatic native scorecard artifact recording via `workflow_runs.rs` tick path |
 | Local runner provider adapter | `engine/src/local_runner_provider.rs`, `engine/src/provider/fake.rs` |
 | CLI stateful-vs-stateless experiment | `engine/src/bin/local_runner_exec.rs` |
-| Scorecard API | `engine/src/http_server/handlers/scorecards.rs` |
-| Operator/dashboard evidence | `operator_evidence.rs`, `dashboard/` scorecard surfaces |
+| Scorecard API and scenario comparison | `engine/src/http_server/handlers/scorecards.rs` |
+| Operator/dashboard evidence | `engine/src/http_server/handlers/operator_evidence.rs`, `dashboard/src/components/ScorecardEvidence.tsx`, `dashboard/src/components/BenchmarkScorecards.tsx` |
 
 ## Real Runner Routing
 
