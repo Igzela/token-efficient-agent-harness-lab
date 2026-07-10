@@ -50,7 +50,7 @@ The normative order is PE-1, PE-2, PE-3, PE-4, PE-5, and PE-6. Each stage should
 
 | Stage | Priority | Goal | Status |
 |---|---|---|---|
-| PE-1 | P0 | Token Efficiency Regression Lab | In progress: registry, single-scenario report core, and checked evidence pairs implemented; registry-wide batch/repeat-import/trend behavior is next |
+| PE-1 | P0 | Token Efficiency Regression Lab | In progress: registry, single-scenario/batch report cores, and checked evidence pairs implemented; repeat-import and trend behavior is next |
 | PE-2 | P0/P1 | Budget Intelligence and Anomaly Auto-Pause | Authorized after PE-1 contracts stabilize |
 | PE-3 | P1 | Operator Decision Center | Authorized after PE-2 evidence shape exists |
 | PE-4 | P1/P2 | Trace-backed Policy Replay | Authorized after sufficient versioned traces exist |
@@ -70,6 +70,8 @@ Implemented slice: `token_efficiency_regression_registry.v1` validates a canonic
 Implemented slice: `token_efficiency_regression_report.v1` deterministically recomputes one bounded current-vs-baseline/best-known report across tokens, repeated context, state bytes, cost, latency, retries, and quality. Canonical report and artifact hashes reject tampering; explicit outcomes cover pass, regression, missing baseline/best-known, incomparable contracts, and quality failure; native v1 and generic v2 envelopes remain compatible. It remains report-only with no persistence, CI blocking, routing, policy, provider, or mutation authority. Next: add checked evidence pairs for the native deterministic and local-stub scenarios, then registry-wide batch/repeat-import/trend behavior before storage/API/Dashboard work.
 
 Implemented slice: checked `native_scorecard_artifact.v1` baseline/candidate evidence now covers the native deterministic and local-stub scenarios alongside the existing LangGraph pair. Tests rebuild both generated pairs, normalize only exporter capture time, verify the complete remaining envelope, and fix deterministic report hashes and outcomes. The evidence records the expected `baseline.state_bytes` regression for both stateful candidates instead of hiding that trade-off. Next: add deterministic registry-wide batch recomputation plus repeat-import and trend behavior before persistence/API/Dashboard work.
+
+Implemented slice: `token_efficiency_regression_batch.v1` deterministically recomputes every registered scenario with exact coverage, sorted reports, outcome counts, nested report validation, and a canonical batch hash. Input order cannot affect output, missing baselines remain explicit without dropping scenarios, and malformed or tampered nested reports fail closed. The batch remains report-only with no persistence, provider, CI-blocking, routing, policy, or mutation authority. Next: add repeat-import and bounded trend semantics through the existing artifact/store boundary.
 
 ### PE-2 — Budget Intelligence and Anomaly Auto-Pause
 

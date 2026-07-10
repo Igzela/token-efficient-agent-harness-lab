@@ -28,6 +28,7 @@ VALIDATOR_SPEC.loader.exec_module(VALIDATOR)
 
 SCHEMA_VERSION = "token_efficiency_regression_registry.v1"
 REPORT_SCHEMA_VERSION = "token_efficiency_regression_report.v1"
+BATCH_SCHEMA_VERSION = "token_efficiency_regression_batch.v1"
 REQUIRED_METRICS = {
     "total_tokens",
     "repeated_context_ratio",
@@ -44,6 +45,14 @@ SUPPORTED_ARTIFACT_SCHEMAS = {
 IDENTIFIER = re.compile(r"^[a-z0-9][a-z0-9_-]{0,127}$")
 HEX_DIGEST = re.compile(r"^[0-9a-f]{64}$")
 LOWER_IS_BETTER = REQUIRED_METRICS - {"quality_score"}
+REPORT_OUTCOMES = {
+    "pass",
+    "regression",
+    "missing_baseline",
+    "missing_best_known",
+    "incomparable",
+    "quality_failure",
+}
 
 
 class RegressionRegistryError(ValueError):
@@ -273,6 +282,20 @@ def validate_regression_report(value: dict[str, Any]) -> dict[str, Any]:
         raise RegressionRegistryError(
             f"report.schema_version must be {REPORT_SCHEMA_VERSION}"
         )
+    registry_id = _string(report, "registry_id", "report")
+    if not IDENTIFIER.fullmatch(registry_id):
+        raise RegressionRegistryError("report.registry_id has an invalid shape")
+    registry_hash = _string(report, "registry_sha256", "report")
+    if not HEX_DIGEST.fullmatch(registry_hash):
+        raise RegressionRegistryError("report.registry_sha256 must be 64 lowercase hex chars")
+    scenario_id = _string(report, "scenario_id", "report")
+    if not IDENTIFIER.fullmatch(scenario_id):
+        raise RegressionRegistryError("report.scenario_id has an invalid shape")
+    for field in ("scenario_digest", "task_digest"):
+        if not HEX_DIGEST.fullmatch(_string(report, field, "report")):
+            raise RegressionRegistryError(
+                f"report.{field} must be 64 lowercase hex chars"
+            )
     supplied_hash = _string(report, "report_sha256", "report")
     if not HEX_DIGEST.fullmatch(supplied_hash):
         raise RegressionRegistryError("report.report_sha256 must be 64 lowercase hex chars")
@@ -289,14 +312,7 @@ def validate_regression_report(value: dict[str, Any]) -> dict[str, Any]:
         raise RegressionRegistryError("report.provider_calls must be disabled")
     if report.get("mutation_authority") != "none":
         raise RegressionRegistryError("report.mutation_authority must be none")
-    if report.get("outcome") not in {
-        "pass",
-        "regression",
-        "missing_baseline",
-        "missing_best_known",
-        "incomparable",
-        "quality_failure",
-    }:
+    if report.get("outcome") not in REPORT_OUTCOMES:
         raise RegressionRegistryError("report.outcome is unsupported")
     if not isinstance(report.get("reason_codes"), list):
         raise RegressionRegistryError("report.reason_codes must be a list")
@@ -472,6 +488,130 @@ def build_regression_report(
     if regression_reasons:
         payload.update(outcome="regression", reason_codes=regression_reasons)
     return _finalize_report(payload)
+
+
+def regression_batch_sha256(batch: dict[str, Any]) -> str:
+    """Hash a complete registry-wide batch except its self-referential hash."""
+
+    canonical = dict(_mapping(batch, "batch"))
+    canonical.pop("batch_sha256", None)
+    rendered = json.dumps(canonical, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(rendered.encode("utf-8")).hexdigest()
+
+
+def validate_regression_batch(value: dict[str, Any]) -> dict[str, Any]:
+    """Validate registry-wide report coverage, integrity, and safety metadata."""
+
+    batch = _mapping(value, "batch")
+    try:
+        VALIDATOR._validate_json_bounds(batch)
+        VALIDATOR._reject_raw_trace_keys(batch)
+    except VALIDATOR.ScorecardError as exc:
+        raise RegressionRegistryError(str(exc)) from exc
+    if batch.get("schema_version") != BATCH_SCHEMA_VERSION:
+        raise RegressionRegistryError(
+            f"batch.schema_version must be {BATCH_SCHEMA_VERSION}"
+        )
+    registry_id = _string(batch, "registry_id", "batch")
+    if not IDENTIFIER.fullmatch(registry_id):
+        raise RegressionRegistryError("batch.registry_id has an invalid shape")
+    registry_hash = _string(batch, "registry_sha256", "batch")
+    if not HEX_DIGEST.fullmatch(registry_hash):
+        raise RegressionRegistryError("batch.registry_sha256 must be 64 lowercase hex chars")
+    supplied_hash = _string(batch, "batch_sha256", "batch")
+    if not HEX_DIGEST.fullmatch(supplied_hash):
+        raise RegressionRegistryError("batch.batch_sha256 must be 64 lowercase hex chars")
+    if supplied_hash != regression_batch_sha256(batch):
+        raise RegressionRegistryError("batch.batch_sha256 does not match canonical content")
+    if batch.get("read_only") is not True or batch.get("report_only") is not True:
+        raise RegressionRegistryError("batch must remain read_only and report_only")
+    if batch.get("provider_calls") != "disabled":
+        raise RegressionRegistryError("batch.provider_calls must be disabled")
+    if batch.get("mutation_authority") != "none":
+        raise RegressionRegistryError("batch.mutation_authority must be none")
+
+    scenario_count = batch.get("scenario_count")
+    if (
+        isinstance(scenario_count, bool)
+        or not isinstance(scenario_count, int)
+        or not 3 <= scenario_count <= 100
+    ):
+        raise RegressionRegistryError("batch.scenario_count must be between 3 and 100")
+    reports = batch.get("reports")
+    if not isinstance(reports, list) or len(reports) != scenario_count:
+        raise RegressionRegistryError("batch reports must match scenario_count")
+    normalized_reports = [validate_regression_report(report) for report in reports]
+    scenario_ids = [report["scenario_id"] for report in normalized_reports]
+    if scenario_ids != sorted(scenario_ids) or len(scenario_ids) != len(set(scenario_ids)):
+        raise RegressionRegistryError("batch reports must have unique sorted scenario IDs")
+    for report in normalized_reports:
+        if (
+            report.get("registry_id") != registry_id
+            or report.get("registry_sha256") != registry_hash
+        ):
+            raise RegressionRegistryError("batch report registry binding mismatch")
+
+    expected_counts: dict[str, int] = {}
+    for report in normalized_reports:
+        outcome = report["outcome"]
+        expected_counts[outcome] = expected_counts.get(outcome, 0) + 1
+    expected_counts = dict(sorted(expected_counts.items()))
+    if batch.get("outcome_counts") != expected_counts:
+        raise RegressionRegistryError("batch.outcome_counts does not match reports")
+    return json.loads(json.dumps(batch, sort_keys=True, separators=(",", ":")))
+
+
+def build_regression_batch(
+    registry: dict[str, Any], evidence_by_scenario: dict[str, Any]
+) -> dict[str, Any]:
+    """Recompute a deterministic report-only batch for every registry scenario."""
+
+    normalized_registry = validate_registry(registry)
+    evidence = _mapping(evidence_by_scenario, "evidence_by_scenario")
+    scenario_ids = {scenario["scenario_id"] for scenario in normalized_registry["scenarios"]}
+    if set(evidence) != scenario_ids:
+        raise RegressionRegistryError(
+            "batch evidence coverage must exactly match registry scenarios"
+        )
+
+    reports = []
+    for scenario_id in sorted(scenario_ids):
+        scenario_evidence = _mapping(
+            evidence[scenario_id], f"evidence_by_scenario.{scenario_id}"
+        )
+        if set(scenario_evidence) != {"current", "baseline", "best_known"}:
+            raise RegressionRegistryError(
+                "batch scenario evidence must define current, baseline, and best_known"
+            )
+        reports.append(
+            build_regression_report(
+                normalized_registry,
+                scenario_id,
+                current=scenario_evidence["current"],
+                baseline=scenario_evidence["baseline"],
+                best_known=scenario_evidence["best_known"],
+            )
+        )
+
+    outcome_counts: dict[str, int] = {}
+    for report in reports:
+        outcome = report["outcome"]
+        outcome_counts[outcome] = outcome_counts.get(outcome, 0) + 1
+    payload = {
+        "schema_version": BATCH_SCHEMA_VERSION,
+        "registry_id": normalized_registry["registry_id"],
+        "registry_sha256": normalized_registry["registry_sha256"],
+        "scenario_count": len(reports),
+        "outcome_counts": dict(sorted(outcome_counts.items())),
+        "read_only": True,
+        "report_only": True,
+        "provider_calls": "disabled",
+        "mutation_authority": "none",
+        "reports": reports,
+    }
+    batch = dict(payload)
+    batch["batch_sha256"] = regression_batch_sha256(payload)
+    return validate_regression_batch(batch)
 
 
 def main(argv: list[str] | None = None) -> int:
