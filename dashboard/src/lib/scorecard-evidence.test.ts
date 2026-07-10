@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { hasRawTraceLeak, summarizeScorecardArtifact } from "./scorecard-evidence";
+import { hasRawTraceLeak, summarizeScorecardArtifact, summarizeScorecardComparison } from "./scorecard-evidence";
 
 const baseArtifact = {
   artifact_id: "scorecard-run-1-abc123",
@@ -52,6 +52,70 @@ describe("scorecard evidence summaries", () => {
     expect(hasRawTraceLeak({ scorecard: { raw_prompt: "do not display" } })).toBe(true);
     expect(hasRawTraceLeak({ scorecard: { transcript: "do not display" } })).toBe(true);
     expect(hasRawTraceLeak({ scorecard: { private_path: "/tmp/repo" } })).toBe(true);
+  });
+});
+
+describe("scorecard scenario comparison summaries", () => {
+  test("maps baseline candidate and bounded metric deltas", () => {
+    const summary = summarizeScorecardComparison({
+      scenario_id: "langgraph-pilot",
+      baseline: {
+        adapter_run_id: "stateless",
+        runtime_kind: "langgraph",
+        runtime_version: "1.2.9",
+        mode: "stateless_reread",
+        status: "pass",
+        quality_score: 1,
+        total_tokens: 38452,
+        repeated_context_ratio: 0.714913,
+        estimated_cost_usd: 0,
+        duration_ms: 39,
+        retry_count: 0,
+      },
+      candidate: {
+        adapter_run_id: "stateful",
+        runtime_kind: "langgraph",
+        runtime_version: "1.2.9",
+        mode: "stateful_store",
+        status: "pass",
+        quality_score: 1,
+        total_tokens: 11294,
+        repeated_context_ratio: 0.01589,
+        estimated_cost_usd: 0,
+        duration_ms: 4,
+        retry_count: 0,
+      },
+      quality_gate: { threshold: 1, both_qualified: true },
+      deltas: {
+        total_tokens: -27158,
+        repeated_context_ratio: -0.699023,
+        estimated_cost_usd: 0,
+        duration_ms: -35,
+        retry_count: 0,
+        quality_score: 0,
+      },
+      advantages: {
+        token: { reported: true, reduction_ratio: 0.706283 },
+        cost: { reported: false, reduction_usd: null },
+      },
+    });
+
+    expect(summary?.scenario_id).toBe("langgraph-pilot");
+    expect(summary?.baseline.total_tokens).toBe(38452);
+    expect(summary?.candidate.runtime_kind).toBe("langgraph");
+    expect(summary?.candidate.mode).toBe("stateful_store");
+    expect(summary?.deltas.total_tokens).toBe(-27158);
+    expect(summary?.deltas.repeated_context_ratio).toBe(-0.699023);
+    expect(summary?.deltas.estimated_cost_usd).toBe(0);
+    expect(summary?.deltas.duration_ms).toBe(-35);
+    expect(summary?.deltas.retry_count).toBe(0);
+    expect(summary?.deltas.quality_score).toBe(0);
+    expect(summary?.token_advantage_reported).toBe(true);
+    expect(summary?.cost_advantage_reported).toBe(false);
+  });
+
+  test("rejects incomplete comparison objects", () => {
+    expect(summarizeScorecardComparison({ scenario_id: "missing-rows" })).toBeNull();
   });
 });
 

@@ -152,6 +152,13 @@ class TokenEfficiencyScorecardTests(unittest.TestCase):
         self.assertIsNone(scorecard["derived_metrics"]["tokens_per_passing_run"])
         self.assertIsNone(scorecard["derived_metrics"]["cost_per_passing_run"])
 
+    def test_revalidating_scorecard_rejects_derived_metric_tampering(self) -> None:
+        scorecard = MODULE.import_scorecard(valid_summary())
+        scorecard["derived_metrics"]["total_tokens"] = 1
+
+        with self.assertRaisesRegex(MODULE.ScorecardError, "derived_metrics"):
+            MODULE.import_scorecard(scorecard)
+
 
 if __name__ == "__main__":
     unittest.main()

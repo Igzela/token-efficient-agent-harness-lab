@@ -26,21 +26,18 @@ sys.modules[VALIDATOR_SPEC.name] = VALIDATOR
 assert VALIDATOR_SPEC.loader is not None
 VALIDATOR_SPEC.loader.exec_module(VALIDATOR)
 
+COMPARISON_PATH = ROOT / "scripts" / "scorecard_comparison.py"
+COMPARISON_SPEC = importlib.util.spec_from_file_location("scorecard_comparison", COMPARISON_PATH)
+assert COMPARISON_SPEC is not None
+COMPARISON = importlib.util.module_from_spec(COMPARISON_SPEC)
+sys.modules[COMPARISON_SPEC.name] = COMPARISON
+assert COMPARISON_SPEC.loader is not None
+COMPARISON_SPEC.loader.exec_module(COMPARISON)
+
 
 RUNTIME_KIND = "langgraph"
 ALLOWED_MODES = {"stateless_reread", "stateful_store"}
-COMPARISON_FIELDS = [
-    "total_tokens",
-    "context_share",
-    "repeated_context_ratio",
-    "tool_call_count",
-    "retry_count",
-    "duration_ms",
-    "status",
-    "quality_method",
-    "tokens_per_passing_run",
-    "cost_per_passing_run",
-]
+COMPARISON_FIELDS = COMPARISON.COMPARISON_FIELDS
 
 
 class LangGraphTraceImportError(ValueError):
@@ -86,60 +83,23 @@ def import_langgraph_scorecard(summary: dict[str, Any]) -> dict[str, Any]:
         raise LangGraphTraceImportError(str(exc)) from exc
 
 
-def _comparison_value(scorecard: dict[str, Any], field: str) -> Any:
-    derived = _require_mapping(scorecard.get("derived_metrics", {}), "scorecard.derived_metrics")
-    if field == "total_tokens":
-        return derived.get("total_tokens")
-    if field == "context_share":
-        return derived.get("context_share")
-    if field == "repeated_context_ratio":
-        return derived.get("repeated_context_ratio")
-    if field == "tokens_per_passing_run":
-        return derived.get("tokens_per_passing_run")
-    if field == "cost_per_passing_run":
-        return derived.get("cost_per_passing_run")
-    return scorecard.get(field)
+def build_langgraph_artifact(scorecard: dict[str, Any]) -> dict[str, Any]:
+    """Build the shared v2 artifact envelope without relabeling runtime identity."""
+
+    normalized = import_langgraph_scorecard(scorecard)
+    return VALIDATOR.build_scorecard_artifact(normalized)
 
 
 def compare_scorecards(scorecards: list[dict[str, Any]]) -> dict[str, Any]:
     """Return a read-only field comparison across normalized scorecards."""
-
-    if len(scorecards) < 2:
-        raise LangGraphTraceImportError("comparison requires at least two scorecards")
-
-    normalized = []
-    for index, scorecard in enumerate(scorecards):
-        card = _require_mapping(scorecard, f"scorecards[{index}]")
-        if card.get("schema_version") != VALIDATOR.SCHEMA_VERSION:
-            card = import_langgraph_scorecard(card)
-        VALIDATOR._reject_raw_trace_keys(card)
-        normalized.append(card)
-
-    scenario_ids = {card.get("scenario_id") for card in normalized}
-    if len(scenario_ids) != 1:
-        raise LangGraphTraceImportError("all compared scorecards must share scenario_id")
-
-    rows = []
-    for card in normalized:
-        row = {
-            "adapter_run_id": card["adapter_run_id"],
-            "runtime_kind": card["runtime_kind"],
-            "runtime_version": card["runtime_version"],
-            "scenario_id": card["scenario_id"],
-            "mode": card["mode"],
-        }
-        for field in COMPARISON_FIELDS:
-            row[field] = _comparison_value(card, field)
-        rows.append(row)
-
-    return {
-        "comparison_kind": "token_efficiency_scorecard_read_only_comparison",
-        "read_only": True,
-        "comparison_basis": "token_efficiency_scorecard.v1 bounded summaries",
-        "scenario_id": normalized[0]["scenario_id"],
-        "fields": COMPARISON_FIELDS,
-        "rows": rows,
-    }
+    try:
+        normalized = [
+            import_langgraph_scorecard(_require_mapping(scorecard, f"scorecards[{index}]"))
+            for index, scorecard in enumerate(scorecards)
+        ]
+        return COMPARISON.compare_scorecards(normalized)
+    except COMPARISON.ScorecardComparisonError as exc:
+        raise LangGraphTraceImportError(str(exc)) from exc
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -148,13 +108,17 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument("inputs", nargs="+", type=Path, help="Bounded summary/scorecard JSON input(s)")
     parser.add_argument("--compare", action="store_true", help="Emit read-only comparison rows for two or more inputs")
+    parser.add_argument("--artifact", action="store_true", help="Emit a runtime-neutral scorecard_artifact.v2 envelope")
     parser.add_argument("--output", type=Path, help="Write JSON to this path; stdout is used by default")
     parser.add_argument("--compact", action="store_true", help="Emit compact JSON")
     args = parser.parse_args(argv)
 
     try:
         loaded = [_load_json(path) for path in args.inputs]
-        output = compare_scorecards(loaded) if args.compare else import_langgraph_scorecard(loaded[0])
+        if args.compare and args.artifact:
+            raise LangGraphTraceImportError("--compare and --artifact cannot be combined")
+        scorecard = None if args.compare else import_langgraph_scorecard(loaded[0])
+        output = compare_scorecards(loaded) if args.compare else build_langgraph_artifact(scorecard) if args.artifact else scorecard
         if not args.compare and len(loaded) != 1:
             raise LangGraphTraceImportError("multiple inputs require --compare")
     except LangGraphTraceImportError as exc:

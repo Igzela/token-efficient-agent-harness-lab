@@ -10,14 +10,17 @@ that a later storage/API layer can persist through LocalProductStore artifacts.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import re
 import sys
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
 
 SCHEMA_VERSION = "token_efficiency_scorecard.v1"
+ARTIFACT_SCHEMA_VERSION = "scorecard_artifact.v2"
 
 ALLOWED_RUNTIME_KINDS = {
     "native_harness",
@@ -87,6 +90,27 @@ RUN_REQUIRED_NONNEGATIVE_NUMBERS = {
 
 RUN_OPTIONAL_NONNEGATIVE_NUMBERS = {"estimated_cost_usd"}
 
+COMPARISON_CONTRACT_REQUIRED_STRINGS = {
+    "scenario_digest",
+    "task_digest",
+    "runtime_kind",
+    "runtime_version",
+    "provider_id",
+    "model_id",
+    "tokenizer_id",
+    "pricing_id",
+    "quality_method",
+    "evaluator_version",
+    "redaction_policy",
+    "retry_policy",
+}
+COMPARISON_CONTRACT_REQUIRED_NONNEGATIVE_NUMBERS = {
+    "input_cost_per_1k_usd",
+    "output_cost_per_1k_usd",
+    "quality_threshold",
+    "seed",
+}
+
 STEP_REQUIRED_STRINGS = {
     "adapter_step_id",
     "adapter_run_id",
@@ -115,6 +139,10 @@ RAW_TRACE_KEY_FRAGMENTS = {
     "raw_output",
     "transcript",
     "conversation",
+    "checkpoint",
+    "message",
+    "span",
+    "tool_payload",
     "message_history",
     "credential",
     "repository_text",
@@ -209,6 +237,74 @@ def _derive_metrics(scorecard: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _validate_comparison_contract(data: dict[str, Any]) -> dict[str, Any]:
+    contract = _require_mapping(data.get("comparison_contract"), "summary.comparison_contract")
+    for field in COMPARISON_CONTRACT_REQUIRED_STRINGS:
+        _require_string(contract, field, "summary.comparison_contract")
+    for field in COMPARISON_CONTRACT_REQUIRED_NONNEGATIVE_NUMBERS:
+        _require_nonnegative_number(contract, field, "summary.comparison_contract")
+
+    for field in ("scenario_digest", "task_digest"):
+        digest = contract[field]
+        if len(digest) != 64 or any(character not in "0123456789abcdefABCDEF" for character in digest):
+            raise ScorecardError(f"comparison_contract.{field} must be 64 hex chars")
+    if contract["runtime_kind"] != data["runtime_kind"]:
+        raise ScorecardError("comparison_contract.runtime_kind must match runtime_kind")
+    if contract["runtime_version"] != data["runtime_version"]:
+        raise ScorecardError("comparison_contract.runtime_version must match runtime_version")
+    if contract["quality_method"] != data["quality_method"]:
+        raise ScorecardError("comparison_contract.quality_method must match quality_method")
+    if not 0.0 <= contract["quality_threshold"] <= 1.0:
+        raise ScorecardError("comparison_contract.quality_threshold must be between 0.0 and 1.0")
+    if isinstance(contract["seed"], bool) or not isinstance(contract["seed"], int):
+        raise ScorecardError("comparison_contract.seed must be a non-negative integer")
+
+    normalized = {
+        field: contract[field]
+        for field in sorted(
+            COMPARISON_CONTRACT_REQUIRED_STRINGS
+            | COMPARISON_CONTRACT_REQUIRED_NONNEGATIVE_NUMBERS
+        )
+    }
+    normalized["scenario_digest"] = normalized["scenario_digest"].lower()
+    normalized["task_digest"] = normalized["task_digest"].lower()
+    return normalized
+
+
+def _derived_cost(scorecard: dict[str, Any], contract: dict[str, Any]) -> float:
+    return round(
+        float(scorecard["input_token_total"]) * float(contract["input_cost_per_1k_usd"]) / 1000.0
+        + float(scorecard["output_token_total"]) * float(contract["output_cost_per_1k_usd"]) / 1000.0,
+        6,
+    )
+
+
+def _validate_evidence_provenance(data: dict[str, Any]) -> dict[str, Any]:
+    provenance = _require_mapping(data.get("evidence_provenance"), "summary.evidence_provenance")
+    for field in ("capture_id", "captured_at", "source_kind", "source_capture_sha256"):
+        _require_string(provenance, field, "summary.evidence_provenance")
+    digest = provenance["source_capture_sha256"]
+    if len(digest) != 64 or any(character not in "0123456789abcdefABCDEF" for character in digest):
+        raise ScorecardError("evidence_provenance.source_capture_sha256 must be 64 hex chars")
+    external_model_calls = provenance.get("external_model_calls")
+    if (
+        isinstance(external_model_calls, bool)
+        or not isinstance(external_model_calls, int)
+        or external_model_calls < 0
+    ):
+        raise ScorecardError("evidence_provenance.external_model_calls must be a non-negative integer")
+    if provenance.get("summary_level") is not True:
+        raise ScorecardError("evidence_provenance.summary_level must be true")
+    return {
+        "capture_id": provenance["capture_id"],
+        "captured_at": provenance["captured_at"],
+        "source_kind": provenance["source_kind"],
+        "external_model_calls": external_model_calls,
+        "summary_level": True,
+        "source_capture_sha256": digest.lower(),
+    }
+
+
 def _validate_step(step: dict[str, Any], expected_run_id: str, index: int) -> dict[str, Any]:
     label = f"steps[{index}]"
     for field in STEP_REQUIRED_STRINGS:
@@ -272,12 +368,25 @@ def import_scorecard(summary: dict[str, Any]) -> dict[str, Any]:
         if not 0.0 <= quality_score <= 1.0:
             raise ScorecardError("quality_score must be between 0.0 and 1.0")
 
+    comparison_contract = None
+    if "comparison_contract" in data:
+        comparison_contract = _validate_comparison_contract(data)
+
     normalized = {"schema_version": SCHEMA_VERSION}
     for field in sorted(RUN_REQUIRED_STRINGS | RUN_REQUIRED_NONNEGATIVE_NUMBERS):
         normalized[field] = data[field]
     for optional_field in ("quality_score", "estimated_cost_usd"):
         if optional_field in data:
             normalized[optional_field] = data[optional_field]
+    if comparison_contract is not None:
+        normalized["comparison_contract"] = comparison_contract
+        expected_cost = _derived_cost(normalized, comparison_contract)
+        supplied_cost = data.get("estimated_cost_usd")
+        if supplied_cost is not None and abs(float(supplied_cost) - expected_cost) > 0.0000005:
+            raise ScorecardError("estimated_cost_usd does not match comparison_contract pricing")
+        normalized["estimated_cost_usd"] = expected_cost
+    if "evidence_provenance" in data:
+        normalized["evidence_provenance"] = _validate_evidence_provenance(data)
 
     steps = data.get("steps", [])
     if steps is None:
@@ -293,8 +402,48 @@ def import_scorecard(summary: dict[str, Any]) -> dict[str, Any]:
     if normalized_steps:
         normalized["steps"] = normalized_steps
 
-    normalized["derived_metrics"] = _derive_metrics(normalized)
+    recomputed_derived = _derive_metrics(normalized)
+    supplied_derived = data.get("derived_metrics")
+    if supplied_derived is not None:
+        supplied_derived = _require_mapping(supplied_derived, "summary.derived_metrics")
+        if supplied_derived != recomputed_derived:
+            raise ScorecardError("derived_metrics does not match trusted base fields")
+    normalized["derived_metrics"] = recomputed_derived
     return normalized
+
+
+def canonical_scorecard_json(scorecard: dict[str, Any]) -> str:
+    """Return the stable JSON representation bound by artifact hashes."""
+
+    normalized = import_scorecard(scorecard)
+    return json.dumps(normalized, sort_keys=True, separators=(",", ":"))
+
+
+def build_scorecard_artifact(
+    scorecard: dict[str, Any],
+    *,
+    created_at: str | None = None,
+) -> dict[str, Any]:
+    """Build a runtime-neutral, read-only scorecard_artifact.v2 envelope."""
+
+    normalized = import_scorecard(scorecard)
+    canonical = json.dumps(normalized, sort_keys=True, separators=(",", ":"))
+    content_sha256 = hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+    captured_at = created_at or datetime.now(UTC).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+    return {
+        "schema_version": ARTIFACT_SCHEMA_VERSION,
+        "artifact_kind": "token_efficiency_scorecard",
+        "runtime_kind": normalized["runtime_kind"],
+        "storage": "app_owned_artifact_json_export",
+        "read_only": True,
+        "metadata_only": True,
+        "target_repository_writes": "disabled",
+        "created_at": captured_at,
+        "artifact_id": f"scorecard-{normalized['adapter_run_id']}-{content_sha256[:12]}",
+        "content_sha256": content_sha256,
+        "scorecard_schema_version": normalized["schema_version"],
+        "scorecard": normalized,
+    }
 
 
 def load_json(path: Path) -> dict[str, Any]:

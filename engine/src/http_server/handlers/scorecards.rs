@@ -14,6 +14,7 @@ use crate::http_server::state::AxumApiState;
 pub(crate) struct ScorecardQuery {
     run_id: Option<String>,
     dispatch_id: Option<String>,
+    scenario_id: Option<String>,
     limit: Option<i64>,
 }
 
@@ -27,27 +28,49 @@ pub(crate) async fn api_scorecard_artifacts(
     authorize(&state, &headers, "dispatch:read", uri.path(), &request_id.0)?;
     let store = require_store(&state)?;
     let limit = query.limit.unwrap_or(50).clamp(1, 100);
-    let artifacts = match (query.run_id.as_deref(), query.dispatch_id.as_deref()) {
-        (Some(run_id), None) => store
+    let artifacts = match (
+        query.run_id.as_deref(),
+        query.dispatch_id.as_deref(),
+        query.scenario_id.as_deref(),
+    ) {
+        (Some(run_id), None, None) => store
             .native_scorecard_artifacts_by_run(run_id, limit)
             .map_err(internal_error)?,
-        (None, Some(dispatch_id)) => store
+        (None, Some(dispatch_id), None) => store
             .native_scorecard_artifacts_by_dispatch(dispatch_id, limit)
             .map_err(internal_error)?,
-        (Some(_), Some(_)) => {
+        (None, None, Some(scenario_id)) => store
+            .scorecard_artifacts_by_scenario(scenario_id, limit)
+            .map_err(internal_error)?,
+        (Some(_), Some(_), _) | (Some(_), _, Some(_)) | (_, Some(_), Some(_)) => {
             return Err(ApiError::with_code(
                 StatusCode::BAD_REQUEST,
                 "invalid_scorecard_query",
-                "provide only one of run_id or dispatch_id",
+                "provide only one of run_id, dispatch_id, or scenario_id",
             ));
         }
-        (None, None) => {
+        (None, None, None) => {
             return Err(ApiError::with_code(
                 StatusCode::BAD_REQUEST,
                 "invalid_scorecard_query",
-                "run_id or dispatch_id is required",
+                "run_id, dispatch_id, or scenario_id is required",
             ));
         }
+    };
+    let comparison = if let Some(scenario_id) = query.scenario_id.as_deref() {
+        Some(
+            store
+                .scorecard_comparison_by_scenario(scenario_id)
+                .map_err(|error| {
+                    ApiError::with_code(
+                        StatusCode::UNPROCESSABLE_ENTITY,
+                        "incomparable_scorecards",
+                        error,
+                    )
+                })?,
+        )
+    } else {
+        None
     };
 
     Ok((
@@ -57,6 +80,7 @@ pub(crate) async fn api_scorecard_artifacts(
             "read_only": true,
             "target_repository_writes": "disabled",
             "artifacts": artifacts,
+            "comparison": comparison,
         })),
     ))
 }
@@ -76,8 +100,8 @@ pub(crate) async fn api_scorecard_artifact_detail(
         .ok_or_else(|| {
             ApiError::with_code(
                 StatusCode::NOT_FOUND,
-                "native_scorecard_artifact_not_found",
-                "native scorecard artifact not found",
+                "scorecard_artifact_not_found",
+                "scorecard artifact not found",
             )
         })?;
     Ok((

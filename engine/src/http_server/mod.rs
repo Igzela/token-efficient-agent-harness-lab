@@ -1331,16 +1331,18 @@ fn append_scorecard_openapi_paths(doc: &mut Value) {
         "/api/v1/scorecards".to_string(),
         json!({
             "get": {
-                "summary": "List native scorecard artifacts by run or dispatch",
-                "description": "Requires dispatch:read scope. Returns app-owned read-only native_scorecard_artifact.v1 envelopes persisted in LocalProductStore. No raw traces or target repository writes are exposed.",
+                "summary": "List scorecard artifacts by run, dispatch, or scenario",
+                "description": "Requires dispatch:read scope. Returns app-owned read-only native_scorecard_artifact.v1 or scorecard_artifact.v2 envelopes from the existing LocalProductStore table. Scenario queries include an explicit baseline/candidate comparison. No raw traces or target repository writes are exposed.",
                 "parameters": [
                     {"name": "run_id", "in": "query", "schema": {"type": "string"}},
                     {"name": "dispatch_id", "in": "query", "schema": {"type": "string"}},
+                    {"name": "scenario_id", "in": "query", "schema": {"type": "string"}},
                     {"name": "limit", "in": "query", "schema": {"type": "integer", "default": 50, "minimum": 1, "maximum": 100}}
                 ],
                 "responses": {
-                    "200": {"description": "Native scorecard artifact list"},
-                    "400": {"description": "Missing or ambiguous query scope"}
+                    "200": {"description": "Scorecard artifact list and optional scenario comparison"},
+                    "400": {"description": "Missing or ambiguous query scope"},
+                    "422": {"description": "Scenario artifacts are not comparable"}
                 }
             }
         }),
@@ -1349,12 +1351,12 @@ fn append_scorecard_openapi_paths(doc: &mut Value) {
         "/api/v1/scorecards/{artifact_id}".to_string(),
         json!({
             "get": {
-                "summary": "Get native scorecard artifact by ID",
-                "description": "Requires dispatch:read scope. Returns one app-owned read-only native_scorecard_artifact.v1 envelope.",
+                "summary": "Get scorecard artifact by ID",
+                "description": "Requires dispatch:read scope. Returns one app-owned read-only native_scorecard_artifact.v1 or scorecard_artifact.v2 envelope.",
                 "parameters": [path_parameter("artifact_id")],
                 "responses": {
-                    "200": {"description": "Native scorecard artifact"},
-                    "404": {"description": "Native scorecard artifact not found"}
+                    "200": {"description": "Scorecard artifact"},
+                    "404": {"description": "Scorecard artifact not found"}
                 }
             }
         }),

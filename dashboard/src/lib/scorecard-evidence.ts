@@ -1,4 +1,9 @@
-import type { ScorecardArtifact, ScorecardEvidenceSummary } from "./types";
+import type {
+  ScorecardArtifact,
+  ScorecardComparisonRowSummary,
+  ScorecardEvidenceSummary,
+  ScorecardScenarioComparisonSummary,
+} from "./types";
 
 function asRecord(value: unknown): Record<string, unknown> {
   return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
@@ -34,6 +39,60 @@ export function summarizeScorecardArtifact(artifact: ScorecardArtifact): Scoreca
     step_count: numberOrNull(scorecard.step_count),
     duration_ms: numberOrNull(scorecard.duration_ms),
     estimated_cost_usd: numberOrNull(scorecard.estimated_cost_usd),
+  };
+}
+
+function summarizeComparisonRow(value: unknown): ScorecardComparisonRowSummary | null {
+  const row = asRecord(value);
+  const adapterRunId = stringOrNull(row.adapter_run_id);
+  const runtimeKind = stringOrNull(row.runtime_kind);
+  const runtimeVersion = stringOrNull(row.runtime_version);
+  const mode = stringOrNull(row.mode);
+  if (!adapterRunId || !runtimeKind || !runtimeVersion || !mode) return null;
+  return {
+    adapter_run_id: adapterRunId,
+    runtime_kind: runtimeKind,
+    runtime_version: runtimeVersion,
+    mode,
+    status: stringOrNull(row.status) ?? "unknown",
+    quality_score: numberOrNull(row.quality_score),
+    total_tokens: numberOrNull(row.total_tokens),
+    repeated_context_ratio: numberOrNull(row.repeated_context_ratio),
+    estimated_cost_usd: numberOrNull(row.estimated_cost_usd),
+    duration_ms: numberOrNull(row.duration_ms),
+    retry_count: numberOrNull(row.retry_count),
+  };
+}
+
+export function summarizeScorecardComparison(value: unknown): ScorecardScenarioComparisonSummary | null {
+  const comparison = asRecord(value);
+  const scenarioId = stringOrNull(comparison.scenario_id);
+  const baseline = summarizeComparisonRow(comparison.baseline);
+  const candidate = summarizeComparisonRow(comparison.candidate);
+  if (!scenarioId || !baseline || !candidate) return null;
+  const qualityGate = asRecord(comparison.quality_gate);
+  const deltas = asRecord(comparison.deltas);
+  const advantages = asRecord(comparison.advantages);
+  const tokenAdvantage = asRecord(advantages.token);
+  const costAdvantage = asRecord(advantages.cost);
+  return {
+    scenario_id: scenarioId,
+    baseline,
+    candidate,
+    quality_threshold: numberOrNull(qualityGate.threshold),
+    both_qualified: qualityGate.both_qualified === true,
+    deltas: {
+      total_tokens: numberOrNull(deltas.total_tokens),
+      repeated_context_ratio: numberOrNull(deltas.repeated_context_ratio),
+      estimated_cost_usd: numberOrNull(deltas.estimated_cost_usd),
+      duration_ms: numberOrNull(deltas.duration_ms),
+      retry_count: numberOrNull(deltas.retry_count),
+      quality_score: numberOrNull(deltas.quality_score),
+    },
+    token_advantage_reported: tokenAdvantage.reported === true,
+    token_reduction_ratio: numberOrNull(tokenAdvantage.reduction_ratio),
+    cost_advantage_reported: costAdvantage.reported === true,
+    cost_reduction_usd: numberOrNull(costAdvantage.reduction_usd),
   };
 }
 

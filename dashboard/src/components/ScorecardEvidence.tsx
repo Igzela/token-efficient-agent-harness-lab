@@ -45,7 +45,7 @@ export function ScorecardEvidence({
     return (
       <EmptyState
         title="No scorecard evidence"
-        description="This read-only view appears after a terminal native workflow records a token-efficiency scorecard artifact. No raw prompts, outputs, transcripts, repository content, private paths, or secrets are shown."
+        description="This read-only view appears after a validated native or external scorecard artifact is recorded. No raw prompts, outputs, transcripts, repository content, private paths, or secrets are shown."
         tone="info"
       />
     );

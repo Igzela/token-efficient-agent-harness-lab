@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import importlib.util
 import json
 import sys
@@ -89,6 +90,8 @@ def build_bounded_summary(mode: str, iterations: int = 10, status: str = "pass")
     context_total = sum(s["context_tokens"] for s in steps)
     repeated_total = sum(s["repeated_context_tokens"] for s in steps)
     refs_total = sum(s["retrieved_ref_tokens"] for s in steps)
+    quality_method = "test" if status == "pass" else "none"
+    final_score = max(_score(i) for i in range(iterations))
     summary: dict[str, Any] = {
         "adapter_run_id": run_id,
         "runtime_kind": "native_harness",
@@ -98,7 +101,27 @@ def build_bounded_summary(mode: str, iterations: int = 10, status: str = "pass")
         "state_strategy": "durable_state" if mode == "stateful_store" else "full_history",
         "status": status,
         "pass_fail_reason": "same deterministic success criterion met" if status == "pass" else "pilot forced non-passing run",
-        "quality_method": "test" if status == "pass" else "none",
+        "quality_method": quality_method,
+        "comparison_contract": {
+            "scenario_digest": hashlib.sha256(SCENARIO_ID.encode("utf-8")).hexdigest(),
+            "task_digest": hashlib.sha256(
+                f"{SCENARIO_ID}:iterations={iterations}:status={status}".encode("utf-8")
+            ).hexdigest(),
+            "runtime_kind": "native_harness",
+            "runtime_version": RUNTIME_VERSION,
+            "provider_id": "native-deterministic-pilot",
+            "model_id": "deterministic-score-function.v1",
+            "tokenizer_id": "deterministic-counter.v1",
+            "pricing_id": "native-pilot-fixed-pricing.v1",
+            "input_cost_per_1k_usd": 0.0015,
+            "output_cost_per_1k_usd": 0.006,
+            "quality_method": quality_method,
+            "quality_threshold": final_score if status == "pass" else 1.0,
+            "evaluator_version": "native-hidden-score.v1",
+            "redaction_policy": "not-needed-generated-summary.v1",
+            "retry_policy": "no-retry.v1",
+            "seed": 0,
+        },
         "input_token_total": input_total,
         "output_token_total": output_total,
         "context_token_total": context_total,
@@ -116,7 +139,7 @@ def build_bounded_summary(mode: str, iterations: int = 10, status: str = "pass")
             "deterministic": True,
             "external_calls": 0,
             "target_reads": 0,
-            "final_score": max(_score(i) for i in range(iterations)),
+            "final_score": final_score,
             "context_protocol": "full_history_reread" if mode == "stateless_reread" else "compact_summary_plus_recent_window",
         },
         "steps": steps,

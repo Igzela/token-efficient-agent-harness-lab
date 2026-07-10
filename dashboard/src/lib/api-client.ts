@@ -596,6 +596,7 @@ export async function cancelWorkflowRun(runId: string, reason?: string): Promise
 export async function fetchScorecards(params: {
   run_id?: string;
   dispatch_id?: string;
+  scenario_id?: string;
   limit?: number;
 }): Promise<ScorecardArtifactListResponse> {
   return fetchJson<ScorecardArtifactListResponse>(withQuery("/api/v1/scorecards", params));

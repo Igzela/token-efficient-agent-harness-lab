@@ -1,4 +1,5 @@
 use serde_json::{json, Value};
+use sha2::{Digest, Sha256};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -562,6 +563,8 @@ fn run_mode_with_usage(
     } else {
         Value::Null
     };
+    let comparison_contract =
+        local_runner_comparison_contract(config, provider.provider_id(), &request_model);
 
     Ok(json!({
         "adapter_run_id": run_id,
@@ -577,6 +580,7 @@ fn run_mode_with_usage(
             "score threshold not met within bounded iterations"
         },
         "quality_method": "rule",
+        "comparison_contract": comparison_contract,
         "input_token_total": input_total,
         "output_token_total": output_total,
         "context_token_total": context_total,
@@ -609,6 +613,54 @@ fn run_mode_with_usage(
         "steps": steps,
         "quality_score": quality_score,
     }))
+}
+
+fn local_runner_comparison_contract(
+    config: &RunnerConfig,
+    provider_id: &str,
+    model_id: &str,
+) -> Value {
+    let scenario_digest = hex::encode(Sha256::digest(SCENARIO_ID.as_bytes()));
+    let task_basis = format!(
+        "{SCENARIO_ID}:{provider_id}:{model_id}:iterations={}:threshold={}",
+        config.limits.iterations, config.limits.pass_threshold
+    );
+    let task_digest = hex::encode(Sha256::digest(task_basis.as_bytes()));
+    let (input_rate, output_rate) = config
+        .pricing
+        .map(|pricing| (pricing.input_cost_per_1k, pricing.output_cost_per_1k))
+        .unwrap_or((0.0, 0.0));
+    let provider_kind = match config.provider_kind {
+        ProviderKind::Stub => "stub",
+        ProviderKind::Fake => "fake",
+        ProviderKind::Live => "live",
+    };
+    json!({
+        "scenario_digest": scenario_digest,
+        "task_digest": task_digest,
+        "runtime_kind": "native_harness",
+        "runtime_version": RUNTIME_VERSION,
+        "provider_id": provider_id,
+        "model_id": model_id,
+        "tokenizer_id": if config.provider_kind == ProviderKind::Live {
+            "provider-reported"
+        } else {
+            "deterministic-estimator.v1"
+        },
+        "pricing_id": format!("local-runner-{provider_kind}-pricing.v1"),
+        "input_cost_per_1k_usd": input_rate,
+        "output_cost_per_1k_usd": output_rate,
+        "quality_method": "rule",
+        "quality_threshold": config.limits.pass_threshold,
+        "evaluator_version": "hidden-score-rule.v1",
+        "redaction_policy": if config.provider_kind == ProviderKind::Live {
+            "summary-redacted.v1"
+        } else {
+            "not-needed-generated-summary.v1"
+        },
+        "retry_policy": "provider-boundary.v1",
+        "seed": 0,
+    })
 }
 
 fn required_env(name: &str) -> Result<String, String> {

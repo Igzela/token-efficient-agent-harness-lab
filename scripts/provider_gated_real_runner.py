@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import importlib.util
 import json
 import os
@@ -228,6 +229,39 @@ def _make_prompt(mode: str, iteration: int, history: list[dict[str, Any]]) -> tu
     raise ProviderGatedRunnerError(f"unsupported mode: {mode}")
 
 
+def _comparison_contract(config: RunnerConfig, model: str | None = None) -> dict[str, Any]:
+    provider_kind = config.provider_kind
+    if provider_kind == "live":
+        input_rate = float(os.environ.get("ACP_PROVIDER_INPUT_COST_PER_1K_USD", "0"))
+        output_rate = float(os.environ.get("ACP_PROVIDER_OUTPUT_COST_PER_1K_USD", "0"))
+    else:
+        input_rate = 0.0
+        output_rate = 0.0
+    model_id = model or config.model
+    task_basis = (
+        f"{SCENARIO_ID}:{provider_kind}:{model_id}:iterations={config.limits.iterations}:"
+        f"threshold={config.limits.pass_threshold}"
+    )
+    return {
+        "scenario_digest": hashlib.sha256(SCENARIO_ID.encode("utf-8")).hexdigest(),
+        "task_digest": hashlib.sha256(task_basis.encode("utf-8")).hexdigest(),
+        "runtime_kind": "native_harness",
+        "runtime_version": RUNTIME_VERSION,
+        "provider_id": f"local-runner-{provider_kind}",
+        "model_id": model_id,
+        "tokenizer_id": "provider-reported" if provider_kind == "live" else "deterministic-estimator.v1",
+        "pricing_id": f"local-runner-{provider_kind}-pricing.v1",
+        "input_cost_per_1k_usd": input_rate,
+        "output_cost_per_1k_usd": output_rate,
+        "quality_method": "rule",
+        "quality_threshold": config.limits.pass_threshold,
+        "evaluator_version": "hidden-score-rule.v1",
+        "redaction_policy": "summary-redacted.v1" if config.live else "not-needed-generated-summary.v1",
+        "retry_policy": "provider-boundary.v1",
+        "seed": 0,
+    }
+
+
 def _step(mode: str, run_id: str, iteration: int, provider_result: ProviderResult, context_tokens: int, repeated_context_tokens: int, candidate: int, score: float) -> dict[str, Any]:
     return {
         "adapter_step_id": f"{run_id}-iter-{iteration:02d}",
@@ -305,6 +339,7 @@ def run_mode(mode: str, config: RunnerConfig, provider: ProviderClient) -> dict[
         "status": status,
         "pass_fail_reason": "same score threshold met" if status == "pass" else "score threshold not met within bounded iterations",
         "quality_method": "rule",
+        "comparison_contract": _comparison_contract(config),
         "input_token_total": input_total,
         "output_token_total": output_total,
         "context_token_total": context_total,
