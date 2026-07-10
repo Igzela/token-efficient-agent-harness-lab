@@ -106,6 +106,49 @@ Acceptance:
 - `GET /api/v1/scorecards?run_id=...` and `GET /api/v1/scorecards/{artifact_id}` expose app-owned artifacts;
 - `GET /api/v1/operator/evidence/:run_id` exposes bounded scorecard metadata and derived metrics, not `steps`, raw traces, prompts, outputs, transcripts, or unbounded content.
 
+## Bounded LangGraph Scorecard Import
+
+The LangGraph adapter accepts summary-level JSON only. It does not import LangGraph, run a graph, call a provider, read a repository, or persist an artifact. Prepare stateless and stateful summaries outside this repository with the same `scenario_id`, task inputs, quality criterion, runtime/provider identity, and redaction policy.
+
+Normalize each bounded summary independently:
+
+```bash
+uv run --no-project python scripts/langgraph_trace_import.py \
+  /tmp/langgraph-stateless-summary.json \
+  --output /tmp/langgraph-stateless-scorecard.json
+
+uv run --no-project python scripts/langgraph_trace_import.py \
+  /tmp/langgraph-stateful-summary.json \
+  --output /tmp/langgraph-stateful-scorecard.json
+```
+
+Compare the normalized scorecards:
+
+```bash
+uv run --no-project python scripts/langgraph_trace_import.py \
+  /tmp/langgraph-stateless-scorecard.json \
+  /tmp/langgraph-stateful-scorecard.json \
+  --compare \
+  --output /tmp/langgraph-comparison.json
+```
+
+Run the focused importer tests:
+
+```bash
+uv run --no-project python -m unittest tools.test_langgraph_trace_import
+```
+
+Acceptance:
+
+- both inputs pass bounded-field, raw-trace, and secret-shaped-value rejection;
+- modes are exactly `stateless_reread` and `stateful_store` with one shared `scenario_id`;
+- both runs use the same pass/fail and quality method;
+- the comparison reports tokens, repeated-context ratio, cost, latency, retries, and quality;
+- no raw LangGraph state, checkpoint, message, span, prompt, output, tool payload, repository content, private path, or credential is retained;
+- a token reduction is reported as beneficial only when both runs meet the same success criterion.
+
+Import into app-owned storage and dashboard comparison are not yet operator procedures. Do not relabel a LangGraph scorecard as a native artifact or insert it directly into the database; follow `docs/NEXT_DECISION.md` for the proposed handoff contract.
+
 ## Local Engine Reminder
 
 For normal local engine operation, use the existing dashboard build, engine start, health check, metrics, backup, restore, release, and incident-triage scripts in `scripts/` and the CI workflow as the source of truth.
