@@ -79,8 +79,8 @@ The current direction is importer-first, not runner-first. Its foundation is imp
 4. backward-compatible artifact persistence — native evidence retains `native_scorecard_artifact.v1`; external evidence uses `scorecard_artifact.v2`; both use the existing `LocalProductStore.native_scorecard_artifacts` table;
 5. scorecard API, scenario comparison, operator evidence, and Dashboard reads — implemented;
 6. bounded LangGraph summary import and strict same-scenario comparison — implemented in `scripts/langgraph_trace_import.py` with focused and end-to-end tests;
-7. first real importer-first pilot — captured offline with LangGraph 1.2.9, no external model/provider calls, and fixed summary/artifact fixtures;
-8. runtime-specific runners — still deferred and require a new explicit decision.
+7. first real importer-first pilot — captured offline with LangGraph 1.2.9, no external model/provider calls, and fixed summary/artifact fixtures; `tools/capture_langgraph_pilot.py` is the narrowly authorized, developer-invoked one-shot evidence harness and is not wired into the app, scheduler, provider, store, or CI;
+8. product/runtime-specific runners, scheduled captures, and provider-backed external pilots — still deferred and require a new explicit decision.
 
 The first external comparison target is complete: LangGraph `stateless_reread` versus `stateful_store` on one deterministic offline task. Both modes met quality 1.0; total tokens were 38,452 versus 11,294 (70.6283% reduction), repeated-context ratios were 71.4913% versus 1.5890%, and cost stayed $0 because no model/provider was called. CrewAI and Microsoft Agent Framework remain deferred until a separate decision.
 
@@ -95,7 +95,7 @@ PR #165 established the direction; this increment completes it without creating 
 | LGB-3 | Complete | `GET /api/v1/scorecards?scenario_id=...` and the Dashboard Benchmarks tab expose bounded baseline/candidate metrics and deltas |
 | LGB-4 | Complete | Python and Rust fixtures reproduce the comparison; canonical hash, derived-metric, incomparable-contract, cross-scenario, tamper, and repeat-import tests fail closed |
 
-Future pilot execution remains operator-initiated and importer-only. Provider calls are not permitted in CI. A LangGraph runner, scheduled external execution, or another runtime integration requires a later explicit decision.
+Product execution remains importer-only. The checked one-shot offline capture harness may be run explicitly by a developer only to regenerate this bounded fixture pair; it has no app/runtime authority and no provider/model configuration. Provider calls are not permitted in CI. An embedded LangGraph runner, scheduled external execution, provider-backed capture, or another runtime integration requires a later explicit decision.
 
 This direction does not authorize:
 

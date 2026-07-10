@@ -153,10 +153,10 @@ Implementation order remains importer-first:
 4. recompute derived metrics and canonical content hash — implemented in Python normalization and Rust persistence;
 5. expose read-only scorecards — implemented through run, dispatch, artifact-id, and scenario queries plus operator evidence;
 6. import bounded LangGraph summaries and compare strict same-scenario stateful/stateless scorecards — implemented in `scripts/langgraph_trace_import.py` and the shared comparator;
-7. persist and display the first real importer-first pilot — implemented with fixed offline LangGraph 1.2.9 fixtures and Dashboard scenario deltas;
-8. consider runtime-specific runners only through a later explicit decision.
+7. persist and display the first real importer-first pilot — implemented with fixed offline LangGraph 1.2.9 fixtures and Dashboard scenario deltas; the hash-bound `tools/capture_langgraph_pilot.py` is a developer-invoked one-shot evidence harness with no app, scheduler, provider, store, or CI integration;
+8. consider embedded/scheduled/provider-backed runtime-specific runners only through a later explicit decision.
 
-The first external baseline is complete: LangGraph stateful store versus stateless reread, captured offline with no provider/model call. Rollback requires no database migration: revert the implementation commit. Existing v2 rows remain JSON-readable in the old table/API; optional data removal should use a verified backup rather than an automatic destructive down migration. CrewAI and Microsoft Agent Framework remain deferred.
+The first external baseline is complete: LangGraph stateful store versus stateless reread, captured offline with no provider/model call. This one-shot developer capture authorization does not change the product's importer-first boundary and cannot execute through the app. Rollback requires no database migration: revert the implementation commit. Existing v2 rows remain JSON-readable in the old table/API; optional data removal should use a verified backup rather than an automatic destructive down migration. CrewAI and Microsoft Agent Framework remain deferred.
 
 ## V2 Real Production Output Architecture
 
