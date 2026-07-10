@@ -57,6 +57,14 @@ def fixed_evidence_paths(scenario_id: str) -> tuple[Path, Path]:
     )
 
 
+def fixed_evidence(scenario_id: str) -> tuple[dict, dict]:
+    baseline_path, candidate_path = fixed_evidence_paths(scenario_id)
+    return (
+        json.loads(baseline_path.read_text(encoding="utf-8")),
+        json.loads(candidate_path.read_text(encoding="utf-8")),
+    )
+
+
 def local_stub_config():
     return LOCAL_RUNNER.build_config(
         argparse.Namespace(
@@ -370,6 +378,99 @@ class TokenEfficiencyRegressionReportTests(unittest.TestCase):
                     rebuilt_candidate["created_at"] = candidate["created_at"]
                     self.assertEqual(baseline, rebuilt_baseline)
                     self.assertEqual(candidate, rebuilt_candidate)
+
+
+class TokenEfficiencyRegressionBatchTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.registry = MODULE.load_registry(FIXTURE_PATH)
+
+    def evidence(self) -> dict[str, dict]:
+        result = {}
+        for scenario in reversed(self.registry["scenarios"]):
+            baseline, candidate = fixed_evidence(scenario["scenario_id"])
+            result[scenario["scenario_id"]] = {
+                "current": candidate,
+                "baseline": baseline,
+                "best_known": candidate,
+            }
+        return result
+
+    def test_batch_is_deterministic_complete_sorted_and_report_only(self) -> None:
+        evidence = self.evidence()
+
+        batch = MODULE.build_regression_batch(self.registry, evidence)
+        repeated = MODULE.build_regression_batch(
+            self.registry, dict(reversed(list(evidence.items())))
+        )
+
+        self.assertEqual(batch, repeated)
+        self.assertEqual(batch["schema_version"], "token_efficiency_regression_batch.v1")
+        self.assertEqual(batch["scenario_count"], 3)
+        self.assertEqual(batch["outcome_counts"], {"pass": 1, "regression": 2})
+        self.assertEqual(
+            batch["batch_sha256"],
+            "1a0ae8b187915f7e16bb904af2b2073ef6dafb59197a8568abf34c39c971090a",
+        )
+        self.assertEqual(
+            [report["scenario_id"] for report in batch["reports"]],
+            sorted(evidence),
+        )
+        self.assertTrue(batch["read_only"])
+        self.assertTrue(batch["report_only"])
+        self.assertEqual(batch["provider_calls"], "disabled")
+        self.assertEqual(batch["mutation_authority"], "none")
+        self.assertEqual(batch, MODULE.validate_regression_batch(batch))
+
+    def test_batch_requires_exact_registry_coverage(self) -> None:
+        evidence = self.evidence()
+        evidence.pop(next(iter(evidence)))
+
+        with self.assertRaisesRegex(MODULE.RegressionRegistryError, "coverage"):
+            MODULE.build_regression_batch(self.registry, evidence)
+
+        evidence = self.evidence()
+        evidence["unknown-scenario"] = evidence[next(iter(evidence))]
+        with self.assertRaisesRegex(MODULE.RegressionRegistryError, "coverage"):
+            MODULE.build_regression_batch(self.registry, evidence)
+
+    def test_batch_aggregates_missing_baseline_without_dropping_scenario(self) -> None:
+        evidence = self.evidence()
+        first_scenario = self.registry["scenarios"][0]["scenario_id"]
+        evidence[first_scenario]["baseline"] = None
+
+        batch = MODULE.build_regression_batch(self.registry, evidence)
+
+        self.assertEqual(
+            batch["outcome_counts"],
+            {"missing_baseline": 1, "regression": 2},
+        )
+        self.assertEqual(len(batch["reports"]), batch["scenario_count"])
+
+    def test_batch_validation_rejects_nested_report_tampering(self) -> None:
+        batch = MODULE.build_regression_batch(self.registry, self.evidence())
+        batch["reports"][0]["outcome"] = "regression"
+        batch["batch_sha256"] = MODULE.regression_batch_sha256(batch)
+
+        with self.assertRaisesRegex(MODULE.RegressionRegistryError, "report_sha256"):
+            MODULE.validate_regression_batch(batch)
+
+    def test_batch_hash_rejects_aggregate_tampering(self) -> None:
+        batch = MODULE.build_regression_batch(self.registry, self.evidence())
+        batch["outcome_counts"] = {"pass": 3}
+
+        with self.assertRaisesRegex(MODULE.RegressionRegistryError, "batch_sha256"):
+            MODULE.validate_regression_batch(batch)
+
+    def test_batch_validation_rejects_invalid_nested_scenario_id_cleanly(self) -> None:
+        batch = MODULE.build_regression_batch(self.registry, self.evidence())
+        report_payload = dict(batch["reports"][0])
+        report_payload.pop("report_sha256")
+        report_payload["scenario_id"] = 7
+        batch["reports"][0] = MODULE._finalize_report(report_payload)
+        batch["batch_sha256"] = MODULE.regression_batch_sha256(batch)
+
+        with self.assertRaisesRegex(MODULE.RegressionRegistryError, "scenario_id"):
+            MODULE.validate_regression_batch(batch)
 
 
 if __name__ == "__main__":
