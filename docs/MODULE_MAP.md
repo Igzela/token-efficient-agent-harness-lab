@@ -1,6 +1,6 @@
 # Module Map
 
-Last updated: 2026-07-10.
+Last updated: 2026-07-11.
 
 This file maps current ownership. It is not a phase history.
 
@@ -31,6 +31,7 @@ Full Agent Autonomy Mode remains active for repo-scoped, testable, observable, C
 |---|---|
 | Scorecard validation | `scripts/token_efficiency_scorecard.py` |
 | Scorecard comparison | `scripts/scorecard_comparison.py` |
+| PE-1 scenario registry validation | `scripts/token_efficiency_regression.py`, `tools/test_token_efficiency_regression.py`, `tests/fixtures/token_efficiency_regression/registry.json` |
 | Native scorecard export | `scripts/native_scorecard_export.py` |
 | Native deterministic stateful pilot | `scripts/native_stateful_experiment_pilot.py` |
 | Provider-gated real runner | `scripts/provider_gated_real_runner.py`, `tools/test_provider_gated_real_runner.py` |
@@ -50,7 +51,7 @@ The PE-1 through PE-6 plan is defined in `docs/NEXT_DECISION.md`. These stages m
 
 | Stage | Primary owning paths | Boundary |
 |---|---|---|
-| PE-1 Token Efficiency Regression Lab | scorecard scripts; `native_scorecard_artifacts.rs`; scorecard HTTP handlers; benchmark Dashboard components; fixed fixtures | reuse scorecard v1/v2 and existing artifact table/API; no provider calls in CI |
+| PE-1 Token Efficiency Regression Lab | `scripts/token_efficiency_regression.py`; scorecard scripts; `native_scorecard_artifacts.rs`; scorecard HTTP handlers; benchmark Dashboard components; fixed fixtures | reuse scorecard v1/v2 and existing artifact table/API; registry and initial reports remain read-only; no provider calls in CI |
 | PE-2 Budget Intelligence and Anomaly Auto-Pause | `budget_manager.rs`; provider audit/cost evidence; scheduler pause controls; HTTP/operator evidence; Dashboard | forecasts and anomalies are derived evidence; auto-pause only through existing policy and audit controls; no auto-kill |
 | PE-3 Operator Decision Center | operator-evidence handlers; approvals; workflow/scheduler read models; Dashboard | derived action queue only; no second state machine, authority source, or hidden mutation path |
 | PE-4 Trace-backed Policy Replay | `engine/src/feedback/run_trace_recorder.rs`; `engine/src/feedback/policy_simulator.rs`; adaptive experiment/canary modules; operator evidence | shadow-first, versioned evidence, coverage and out-of-distribution checks; reuse existing canary/promotion/rollback |
