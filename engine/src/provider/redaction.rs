@@ -29,9 +29,10 @@ pub fn contains_sensitive_patterns(text: &str) -> bool {
     })
 }
 
-fn sensitive_patterns() -> [&'static str; 4] {
+fn sensitive_patterns() -> [&'static str; 5] {
     [
         r"(?i)\bsk-[A-Za-z0-9_\-]{12,}\b",
+        r"(?i)\bharness_[a-f0-9]{64}\b",
         r#"(?i)\b(api[_-]?key|secret|token|password|credential)\s*[:=]\s*['\"]?[^'\"\s,}]+"#,
         r"-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z ]*PRIVATE KEY-----",
         r"(?i)\bBearer\s+[A-Za-z0-9._\-]{12,}",
@@ -126,6 +127,14 @@ mod tests {
     fn redact_secrets_empty_text() {
         let result = redact_secrets("", &["sk-abc"]);
         assert_eq!(result, "");
+    }
+
+    #[test]
+    fn redacts_harness_api_key_shape() {
+        let key = format!("harness_{}", "a".repeat(64));
+        let text = format!("authorization={key}");
+        assert_eq!(redact_sensitive_patterns(&text), "authorization=***");
+        assert!(contains_sensitive_patterns(&key));
     }
 
     #[test]

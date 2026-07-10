@@ -2,6 +2,7 @@ use rusqlite::{params, OptionalExtension, Row};
 use serde_json::{json, Value};
 
 use super::{append_audit_locked, DatabaseConnection, LocalProductStore};
+use crate::agent_memory::normalize_memory_digest_for_agent;
 use crate::orchestration::schemas::{
     AgentState, MailboxMessage, AGENT_MESSAGE_SCHEMA_VERSION, AGENT_STATE_SCHEMA_VERSION,
     PROPOSAL_STATUSES, PROPOSAL_TYPES,
@@ -27,7 +28,8 @@ impl LocalProductStore {
     ) -> Result<AgentState, String> {
         let now = self.now();
         let caps_json = serde_json::to_string(capability_profile).map_err(|e| e.to_string())?;
-        let meta_json = serde_json::to_string(metadata).map_err(|e| e.to_string())?;
+        let metadata = normalize_agent_memory_metadata(metadata, run_id, agent_id);
+        let meta_json = serde_json::to_string(&metadata).map_err(|e| e.to_string())?;
 
         match &self.db {
             DatabaseConnection::Sqlite(_) => self.with_conn(|conn| {
@@ -93,38 +95,37 @@ impl LocalProductStore {
         objective: Option<&str>,
         metadata: Option<&Value>,
     ) -> Result<Option<AgentState>, String> {
-        let current = self.get_agent_state(agent_id, run_id)?;
-        let mut state = match current {
-            Some(s) => s,
-            None => return Ok(None),
-        };
-
         let now = self.now();
-        if let Some(s) = status {
-            state.status = s.to_string();
-        }
-        if let Some(s) = scratchpad_summary {
-            state.scratchpad_summary = Some(apply_size_cap_and_redact(s, MAX_SCRATCHPAD_BYTES));
-        }
-        if let Some(o) = objective {
-            state.objective = Some(o.to_string());
-        }
-        if let Some(m) = metadata {
-            if let Some(obj) = m.as_object() {
-                for (k, v) in obj {
-                    state.metadata.insert(k.clone(), v.clone());
-                }
-            }
-        }
-        state.updated_at = now.clone();
-
-        let caps_json =
-            serde_json::to_string(&state.capability_profile).map_err(|e| e.to_string())?;
-        let meta_json = serde_json::to_string(&state.metadata).map_err(|e| e.to_string())?;
-
         match &self.db {
             DatabaseConnection::Sqlite(_) => self.with_conn(|conn| {
-                conn.execute(
+                let tx = conn
+                    .unchecked_transaction()
+                    .map_err(|error| error.to_string())?;
+                let current = tx
+                    .query_row(
+                        "SELECT agent_id, run_id, role, capability_profile_json, objective,
+                                status, scratchpad_summary, redaction_filter, metadata_json,
+                                created_at, updated_at
+                         FROM agent_state WHERE agent_id=?1 AND run_id=?2",
+                        params![agent_id, run_id],
+                        sqlite_agent_state_row,
+                    )
+                    .optional()
+                    .map_err(|error| error.to_string())?;
+                let Some(state) = current else {
+                    return Ok(None);
+                };
+                let (state, caps_json, meta_json) = apply_agent_state_patch(
+                    state,
+                    run_id,
+                    agent_id,
+                    status,
+                    scratchpad_summary,
+                    objective,
+                    metadata,
+                    &now,
+                )?;
+                tx.execute(
                     "UPDATE agent_state SET role=?1, capability_profile_json=?2, objective=?3,
                      status=?4, scratchpad_summary=?5, redaction_filter=?6, metadata_json=?7,
                      updated_at=?8
@@ -144,38 +145,71 @@ impl LocalProductStore {
                 )
                 .map_err(|e| e.to_string())?;
                 append_audit_locked(
-                    conn,
+                    &tx,
                     &now,
                     "system",
                     "agent_state.update",
                     &format!("agent_state/{agent_id}/{run_id}"),
                     &json!({"agent_id": agent_id, "run_id": run_id}),
                 )?;
+                tx.commit().map_err(|error| error.to_string())?;
                 Ok(Some(state))
             }),
             #[cfg(feature = "pg")]
-            DatabaseConnection::Pg(_) => {
-                self.with_pg_conn(|client| {
-                    client.execute(
+            DatabaseConnection::Pg(_) => self.with_pg_conn(|client| {
+                let mut tx = client.transaction().map_err(|error| error.to_string())?;
+                let current = tx
+                    .query_opt(
+                        "SELECT agent_id, run_id, role, capability_profile_json, objective,
+                                status, scratchpad_summary, redaction_filter, metadata_json,
+                                created_at, updated_at
+                         FROM agent_state WHERE agent_id=$1 AND run_id=$2 FOR UPDATE",
+                        &[&agent_id, &run_id],
+                    )
+                    .map_err(|error| error.to_string())?;
+                let Some(row) = current else {
+                    return Ok(None);
+                };
+                let (state, caps_json, meta_json) = apply_agent_state_patch(
+                    pg_agent_state_row(&row),
+                    run_id,
+                    agent_id,
+                    status,
+                    scratchpad_summary,
+                    objective,
+                    metadata,
+                    &now,
+                )?;
+                tx.execute(
                     "UPDATE agent_state SET role=$1, capability_profile_json=$2, objective=$3,
                      status=$4, scratchpad_summary=$5, redaction_filter=$6, metadata_json=$7,
                      updated_at=$8
                      WHERE agent_id=$9 AND run_id=$10",
-                    &[&state.role, &caps_json, &state.objective, &state.status,
-                      &state.scratchpad_summary, &state.redaction_filter, &meta_json,
-                      &state.updated_at, &agent_id, &run_id],
-                ).map_err(|e| e.to_string())?;
-                    pg_runtime_audit(
-                        client,
-                        &now,
-                        "system",
-                        "agent_state.update",
-                        &format!("agent_state/{agent_id}/{run_id}"),
-                        &json!({"agent_id": agent_id, "run_id": run_id}),
-                    )?;
-                    Ok(Some(state))
-                })
-            }
+                    &[
+                        &state.role,
+                        &caps_json,
+                        &state.objective,
+                        &state.status,
+                        &state.scratchpad_summary,
+                        &state.redaction_filter,
+                        &meta_json,
+                        &state.updated_at,
+                        &agent_id,
+                        &run_id,
+                    ],
+                )
+                .map_err(|e| e.to_string())?;
+                pg_runtime_audit(
+                    &mut tx,
+                    &now,
+                    "system",
+                    "agent_state.update",
+                    &format!("agent_state/{agent_id}/{run_id}"),
+                    &json!({"agent_id": agent_id, "run_id": run_id}),
+                )?;
+                tx.commit().map_err(|error| error.to_string())?;
+                Ok(Some(state))
+            }),
         }
     }
 
@@ -1345,6 +1379,81 @@ impl LocalProductStore {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
+fn apply_agent_state_patch(
+    mut state: AgentState,
+    run_id: &str,
+    agent_id: &str,
+    status: Option<&str>,
+    scratchpad_summary: Option<&str>,
+    objective: Option<&str>,
+    metadata: Option<&Value>,
+    now: &str,
+) -> Result<(AgentState, String, String), String> {
+    let memory_digest_was_patched = metadata
+        .and_then(Value::as_object)
+        .is_some_and(|object| object.contains_key("memory_digest"));
+    let metadata = metadata.map(|value| normalize_agent_memory_metadata(value, run_id, agent_id));
+
+    if let Some(value) = status {
+        state.status = value.to_string();
+    }
+    if let Some(value) = scratchpad_summary {
+        state.scratchpad_summary = Some(apply_size_cap_and_redact(value, MAX_SCRATCHPAD_BYTES));
+    }
+    if let Some(value) = objective {
+        state.objective = Some(value.to_string());
+    }
+    if memory_digest_was_patched {
+        state.metadata.remove("memory_digest");
+    }
+    if let Some(object) = metadata.as_ref().and_then(Value::as_object) {
+        for (key, value) in object {
+            state.metadata.insert(key.clone(), value.clone());
+        }
+    }
+    let mut normalized_metadata = normalize_agent_memory_metadata(
+        &serde_json::to_value(&state.metadata).map_err(|error| error.to_string())?,
+        run_id,
+        agent_id,
+    );
+    if memory_digest_was_patched {
+        if let Some(digest) = normalized_metadata
+            .get_mut("memory_digest")
+            .and_then(Value::as_object_mut)
+        {
+            digest.insert("updated_at".to_string(), json!(now));
+        }
+    }
+    state.metadata =
+        serde_json::from_value(normalized_metadata).map_err(|error| error.to_string())?;
+    state.updated_at = now.to_string();
+
+    let caps_json =
+        serde_json::to_string(&state.capability_profile).map_err(|error| error.to_string())?;
+    let meta_json = serde_json::to_string(&state.metadata).map_err(|error| error.to_string())?;
+    Ok((state, caps_json, meta_json))
+}
+
+fn normalize_agent_memory_metadata(metadata: &Value, run_id: &str, agent_id: &str) -> Value {
+    let mut metadata = metadata.clone();
+    let Some(obj) = metadata.as_object_mut() else {
+        return metadata;
+    };
+    let Some(raw_digest) = obj.get("memory_digest").cloned() else {
+        return metadata;
+    };
+    match normalize_memory_digest_for_agent(&raw_digest, run_id, agent_id) {
+        Some(digest) => {
+            obj.insert("memory_digest".to_string(), digest);
+        }
+        None => {
+            obj.remove("memory_digest");
+        }
+    }
+    metadata
+}
+
 #[cfg(feature = "pg")]
 fn pg_proposal_row(row: &postgres::Row) -> Value {
     json!({
@@ -1541,7 +1650,7 @@ fn pg_mailbox_row(row: &postgres::Row) -> MailboxMessage {
 
 #[cfg(feature = "pg")]
 fn pg_runtime_audit(
-    client: &mut postgres::Client,
+    client: &mut impl postgres::GenericClient,
     now: &str,
     actor: &str,
     action: &str,
@@ -1602,6 +1711,8 @@ fn esc_sql(s: &str) -> String {
 mod tests {
     use super::*;
     use serde_json::json;
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+    use std::sync::{Arc, Barrier};
 
     fn test_store() -> LocalProductStore {
         LocalProductStore::new(":memory:").expect("failed to create in-memory store")
@@ -1636,6 +1747,41 @@ mod tests {
             vec!["code".to_string(), "test".to_string()]
         );
         assert_eq!(state.objective, Some("implement feature X".to_string()));
+    }
+
+    #[test]
+    fn test_create_agent_state_normalizes_memory_digest_before_storage() {
+        let store = test_store();
+        store
+            .create_agent_state(
+                "agent-1",
+                "run-1",
+                "implementer",
+                &["code".to_string()],
+                None,
+                "idle",
+                &json!({
+                    "memory_digest": {
+                        "source_refs": [
+                            "agent_state:run-1:agent-1:scratchpad_summary",
+                            "agent_state:other-run:agent-1:scratchpad_summary"
+                        ],
+                        "summary": "progress with sk-test-secret-token at /home/test/private.rs"
+                    }
+                }),
+            )
+            .expect("create state");
+
+        let state = store
+            .get_agent_state("agent-1", "run-1")
+            .expect("get state")
+            .expect("state exists");
+        let digest = state.metadata.get("memory_digest").expect("memory digest");
+        assert_eq!(
+            digest["source_refs"],
+            json!(["agent_state:run-1:agent-1:scratchpad_summary"])
+        );
+        assert_eq!(digest["summary"], "progress with *** at [redacted-path]");
     }
 
     #[test]
@@ -1713,13 +1859,189 @@ mod tests {
             .expect("update failed")
             .expect("state should exist");
 
-        assert_eq!(updated.metadata.get("memory_digest"), Some(&memory_digest));
+        let updated_digest = updated
+            .metadata
+            .get("memory_digest")
+            .expect("memory digest should exist");
+        assert_eq!(updated_digest["source_refs"], memory_digest["source_refs"]);
+        assert_eq!(updated_digest["summary"], memory_digest["summary"]);
+        assert_eq!(updated_digest["updated_at"], updated.updated_at);
 
         let reloaded = store
             .get_agent_state("agent-1", "run-1")
             .expect("get failed")
             .expect("state should exist");
-        assert_eq!(reloaded.metadata.get("memory_digest"), Some(&memory_digest));
+        assert_eq!(
+            reloaded.metadata.get("memory_digest"),
+            updated.metadata.get("memory_digest")
+        );
+    }
+
+    #[test]
+    fn test_update_agent_state_normalizes_memory_digest_before_storage() {
+        let store = test_store();
+        create_test_agent(&store, "agent-1", "run-1");
+
+        let updated = store
+            .update_agent_state(
+                "agent-1",
+                "run-1",
+                None,
+                None,
+                None,
+                Some(&json!({
+                    "memory_digest": {
+                        "source_refs": [
+                            "agent_state:run-1:agent-1:scratchpad_summary",
+                            "agent_state:other-run:agent-1:scratchpad_summary"
+                        ],
+                        "summary": "updated with sk-test-secret-token"
+                    }
+                })),
+            )
+            .expect("update state")
+            .expect("state exists");
+
+        let digest = updated
+            .metadata
+            .get("memory_digest")
+            .expect("memory digest");
+        assert_eq!(
+            digest["source_refs"],
+            json!(["agent_state:run-1:agent-1:scratchpad_summary"])
+        );
+        assert_eq!(digest["summary"], "updated with ***");
+        assert_eq!(digest["updated_at"], updated.updated_at);
+    }
+
+    #[test]
+    fn test_update_agent_state_null_memory_digest_clears_existing_digest() {
+        let store = test_store();
+        create_test_agent(&store, "agent-1", "run-1");
+        store
+            .update_agent_state(
+                "agent-1",
+                "run-1",
+                None,
+                None,
+                None,
+                Some(&json!({
+                    "memory_digest": {
+                        "source_refs": ["agent_state:run-1:agent-1:scratchpad_summary"],
+                        "summary": "safe summary"
+                    }
+                })),
+            )
+            .unwrap();
+
+        let updated = store
+            .update_agent_state(
+                "agent-1",
+                "run-1",
+                None,
+                None,
+                None,
+                Some(&json!({"memory_digest": null})),
+            )
+            .unwrap()
+            .unwrap();
+
+        assert!(!updated.metadata.contains_key("memory_digest"));
+        let reloaded = store.get_agent_state("agent-1", "run-1").unwrap().unwrap();
+        assert!(!reloaded.metadata.contains_key("memory_digest"));
+    }
+
+    #[test]
+    fn test_unrelated_update_rewrites_legacy_memory_digest_safely() {
+        let store = test_store();
+        create_test_agent(&store, "agent-1", "run-1");
+        let harness_key = format!("harness_{}", "c".repeat(64));
+        let legacy = json!({
+            "source": "legacy",
+            "memory_digest": {
+                "source_refs": [
+                    "agent_state:run-1:agent-1:scratchpad_summary",
+                    "agent_state:run-1:agent-2:scratchpad_summary"
+                ],
+                "summary": format!("key={harness_key} file=/workspace/private.txt")
+            }
+        });
+        store
+            .with_conn(|conn| {
+                conn.execute(
+                    "UPDATE agent_state SET metadata_json=?1 WHERE agent_id=?2 AND run_id=?3",
+                    params![legacy.to_string(), "agent-1", "run-1"],
+                )
+                .map_err(|error| error.to_string())?;
+                Ok(())
+            })
+            .unwrap();
+
+        let updated = store
+            .update_agent_state("agent-1", "run-1", Some("busy"), None, None, None)
+            .unwrap()
+            .unwrap();
+        let digest = updated.metadata.get("memory_digest").unwrap();
+        assert_eq!(
+            digest["source_refs"],
+            json!(["agent_state:run-1:agent-1:scratchpad_summary"])
+        );
+        assert_eq!(digest["summary"], "key=*** file=[redacted-path]");
+    }
+
+    #[test]
+    fn test_concurrent_metadata_patches_do_not_lose_disjoint_updates() {
+        let update_barrier = Arc::new(Barrier::new(2));
+        let clock_calls = Arc::new(AtomicUsize::new(0));
+        let synchronize_updates = Arc::new(AtomicBool::new(false));
+        let barrier_for_clock = update_barrier.clone();
+        let calls_for_clock = clock_calls.clone();
+        let synchronize_for_clock = synchronize_updates.clone();
+        let store = Arc::new(
+            LocalProductStore::new_with_clock(":memory:", move || {
+                let call = calls_for_clock.fetch_add(1, Ordering::SeqCst);
+                if synchronize_for_clock.load(Ordering::SeqCst) {
+                    barrier_for_clock.wait();
+                }
+                format!("2026-07-10T00:00:{call:02}Z")
+            })
+            .unwrap(),
+        );
+        create_test_agent(&store, "agent-1", "run-1");
+        synchronize_updates.store(true, Ordering::SeqCst);
+
+        let left_store = store.clone();
+        let left = std::thread::spawn(move || {
+            left_store
+                .update_agent_state(
+                    "agent-1",
+                    "run-1",
+                    None,
+                    None,
+                    None,
+                    Some(&json!({"left": 1})),
+                )
+                .unwrap();
+        });
+        let right_store = store.clone();
+        let right = std::thread::spawn(move || {
+            right_store
+                .update_agent_state(
+                    "agent-1",
+                    "run-1",
+                    None,
+                    None,
+                    None,
+                    Some(&json!({"right": 2})),
+                )
+                .unwrap();
+        });
+        left.join().unwrap();
+        right.join().unwrap();
+
+        let state = store.get_agent_state("agent-1", "run-1").unwrap().unwrap();
+        assert_eq!(state.metadata.get("left"), Some(&json!(1)));
+        assert_eq!(state.metadata.get("right"), Some(&json!(2)));
     }
 
     #[test]

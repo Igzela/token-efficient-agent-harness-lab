@@ -822,6 +822,22 @@ mod tests {
         Arc::new(pool)
     }
 
+    fn fail_only_pool() -> Arc<ExecutorPool> {
+        let pool = ExecutorPool::new();
+        pool.register(crate::executor_pool::ExecutorEntry {
+            executor_type: "fail".to_string(),
+            executor: Arc::new(crate::node_executor::FailNodeExecutor::default()),
+            capabilities: crate::executor_pool::ExecutorCapabilities::default(),
+            status: crate::executor_pool::ExecutorStatus {
+                concurrency_limit: 1,
+                ..Default::default()
+            },
+            cost_profile: crate::executor_pool::CostProfile::default(),
+            metrics: crate::executor_pool::ExecutorMetrics::default(),
+        });
+        Arc::new(pool)
+    }
+
     fn make_plan_value(ids: &crate::read_only_planner::WorkflowPlanIds) -> Value {
         json!({
             "schema_version": "read_only_plan.v1",
@@ -1162,6 +1178,68 @@ mod tests {
         let result = scheduler_tick(&store, &config, Arc::new(executor.clone()), &pool).unwrap();
         assert_eq!(result.ticks, 0);
         assert_eq!(result.retries, 0);
+    }
+
+    #[test]
+    fn scheduler_explicit_noop_never_routes_to_command_pool_executor() {
+        let store = test_store();
+        let run_id = create_plan_and_run(&store);
+        let config = SchedulerConfig {
+            executor_type: "noop".to_string(),
+            max_concurrent: 1,
+            queue_enabled: false,
+            backpressure_enabled: false,
+            ..Default::default()
+        };
+        let pool = test_pool();
+
+        scheduler_tick(&store, &config, Arc::new(NoopNodeExecutor), &pool).unwrap();
+
+        let run = store.get_workflow_run(&run_id).unwrap().unwrap();
+        assert_eq!(run["nodes"][0]["result"]["executor_type"], "noop");
+        let snapshot = pool.snapshot();
+        let command = snapshot
+            .iter()
+            .find(|entry| entry.executor_type == "command")
+            .unwrap();
+        assert_eq!(command.metrics.total_executions, 0);
+        let noop = snapshot
+            .iter()
+            .find(|entry| entry.executor_type == "noop")
+            .unwrap();
+        assert_eq!(noop.metrics.successful_executions, 1);
+    }
+
+    #[test]
+    fn scheduler_records_failed_node_output_as_pool_failure() {
+        let store = test_store();
+        create_plan_and_run(&store);
+        let config = SchedulerConfig {
+            executor_type: "fail".to_string(),
+            max_concurrent: 1,
+            queue_enabled: false,
+            backpressure_enabled: false,
+            ..Default::default()
+        };
+        let pool = fail_only_pool();
+
+        scheduler_tick(
+            &store,
+            &config,
+            Arc::new(crate::node_executor::FailNodeExecutor::default()),
+            &pool,
+        )
+        .unwrap();
+
+        let fail = pool
+            .snapshot()
+            .into_iter()
+            .find(|entry| entry.executor_type == "fail")
+            .unwrap();
+        assert_eq!(fail.metrics.total_executions, 1);
+        assert_eq!(fail.metrics.successful_executions, 0);
+        assert_eq!(fail.metrics.failed_executions, 1);
+        assert!(fail.status.failure_score > 0.0);
     }
 
     #[test]

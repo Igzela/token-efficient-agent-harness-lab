@@ -1,6 +1,7 @@
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::{HashMap, HashSet};
+use uuid::Uuid;
 
 pub const AUTH_SCHEMA_VERSION: &str = "auth.v1";
 const API_KEY_PREFIX: &str = "harness_";
@@ -73,7 +74,6 @@ pub fn validate_token_shape(token: &str) -> bool {
 pub struct TenantResolver {
     api_keys: HashMap<String, APIKey>,
     tenants: HashMap<String, Tenant>,
-    counter: u64,
 }
 
 impl Default for TenantResolver {
@@ -87,7 +87,6 @@ impl TenantResolver {
         Self {
             api_keys: HashMap::new(),
             tenants: HashMap::new(),
-            counter: 0,
         }
     }
 
@@ -96,11 +95,6 @@ impl TenantResolver {
     }
 
     pub fn add_api_key(&mut self, key: APIKey) {
-        if !self.api_keys.contains_key(&key.key_id) {
-            // Reserve the generated raw/key-id pair space for externally inserted keys
-            // such as ACP_ADMIN_API_KEY, whose raw token is not stored here.
-            self.counter = self.counter.saturating_add(2);
-        }
         self.api_keys.insert(key.key_id.clone(), key);
     }
 
@@ -120,6 +114,38 @@ impl TenantResolver {
             .and_then(|tenant| tenant.rate_limit)
     }
 
+    pub fn validate_api_key_scopes(
+        &self,
+        key_id: &str,
+        scopes: &HashSet<String>,
+    ) -> Result<(), String> {
+        let key = self
+            .api_keys
+            .get(key_id)
+            .ok_or_else(|| format!("unknown api key: {key_id}"))?;
+        let tenant = self
+            .tenants
+            .get(&key.tenant_id)
+            .ok_or_else(|| format!("unknown tenant: {}", key.tenant_id))?;
+        if !tenant.scopes.is_empty() && !scopes.is_subset(&tenant.scopes) {
+            return Err("key scopes exceed tenant scopes".to_string());
+        }
+        Ok(())
+    }
+
+    pub fn update_api_key_scopes(
+        &mut self,
+        key_id: &str,
+        scopes: HashSet<String>,
+    ) -> Result<(), String> {
+        self.validate_api_key_scopes(key_id, &scopes)?;
+        self.api_keys
+            .get_mut(key_id)
+            .expect("validated api key must still exist")
+            .scopes = scopes;
+        Ok(())
+    }
+
     pub fn create_api_key(
         &mut self,
         tenant_id: &str,
@@ -132,10 +158,12 @@ impl TenantResolver {
             .get(tenant_id)
             .ok_or_else(|| format!("unknown tenant: {tenant_id}"))?;
 
-        self.counter += 1;
-        let count = self.counter;
-        let raw_key = format!("{API_KEY_PREFIX}{count:064x}");
-        let salt = format!("salt-{count:032x}");
+        let raw_key = format!(
+            "{API_KEY_PREFIX}{}{}",
+            Uuid::new_v4().simple(),
+            Uuid::new_v4().simple()
+        );
+        let salt = format!("{}{}", Uuid::new_v4().simple(), Uuid::new_v4().simple());
         let key_hash = hash_api_key(&raw_key, &salt);
 
         let key_scopes = scopes.unwrap_or_else(|| tenant.scopes.clone());
@@ -146,10 +174,8 @@ impl TenantResolver {
             ));
         }
 
-        self.counter += 1;
-        let key_count = self.counter;
         let key = APIKey {
-            key_id: format!("key_{key_count:016x}"),
+            key_id: format!("key_{}", Uuid::new_v4().simple()),
             tenant_id: tenant_id.to_string(),
             key_hash,
             key_salt: salt,

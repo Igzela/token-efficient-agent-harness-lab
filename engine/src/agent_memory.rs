@@ -1,7 +1,7 @@
 use serde_json::{json, Map, Value};
 
 use crate::orchestration::schemas::AgentState;
-use crate::provider::redaction::redact_sensitive_patterns;
+use crate::provider::redaction::{contains_sensitive_patterns, redact_sensitive_patterns};
 
 const MEMORY_DIGEST_KEY: &str = "memory_digest";
 const MAX_MEMORY_SUMMARY_BYTES: usize = 1024;
@@ -12,8 +12,33 @@ pub fn load_memory_digest_from_agent_state(state: &AgentState) -> Option<Value> 
     state
         .metadata
         .get(MEMORY_DIGEST_KEY)
-        .and_then(normalize_memory_digest)
+        .and_then(|value| normalize_memory_digest_for_agent(value, &state.run_id, &state.agent_id))
         .or_else(|| scratchpad_digest(state))
+}
+
+pub fn normalize_memory_digest_for_agent(
+    value: &Value,
+    run_id: &str,
+    agent_id: &str,
+) -> Option<Value> {
+    let mut digest = normalize_memory_digest(value)?;
+    let expected_source_ref = format!("agent_state:{run_id}:{agent_id}:scratchpad_summary");
+    if let Some(source_refs) = digest.get_mut("source_refs").and_then(Value::as_array_mut) {
+        source_refs.retain(|source_ref| {
+            source_ref
+                .as_str()
+                .is_some_and(|source_ref| source_ref == expected_source_ref)
+        });
+    }
+    let has_source_refs = digest
+        .get("source_refs")
+        .and_then(Value::as_array)
+        .is_some_and(|refs| !refs.is_empty());
+    let has_summary = digest
+        .get("summary")
+        .and_then(Value::as_str)
+        .is_some_and(|summary| !summary.is_empty());
+    (has_source_refs || has_summary).then_some(digest)
 }
 
 pub fn normalize_memory_digest(value: &Value) -> Option<Value> {
@@ -176,15 +201,12 @@ pub fn build_memory_context_for_node(state: &AgentState, budget: usize) -> Optio
 }
 
 pub fn estimate_memory_state_bytes(digest: Option<&Value>, context: Option<&Value>) -> i64 {
-    let digest_bytes = digest
+    let persisted_digest = digest.or_else(|| context.and_then(|value| value.get("memory_digest")));
+    let source = persisted_digest.or(context);
+    source
         .and_then(|value| serde_json::to_vec(value).ok())
         .map(|bytes| bytes.len())
-        .unwrap_or(0);
-    let context_bytes = context
-        .and_then(|value| serde_json::to_vec(value).ok())
-        .map(|bytes| bytes.len())
-        .unwrap_or(0);
-    digest_bytes.saturating_add(context_bytes) as i64
+        .unwrap_or(0) as i64
 }
 
 fn scratchpad_digest(state: &AgentState) -> Option<Value> {
@@ -220,7 +242,7 @@ fn sanitize_memory_text(text: &str) -> String {
 fn redact_private_paths(text: &str) -> String {
     let path_re = regex::Regex::new(
         r"(?x)
-        (?P<unix>/(?:home|Users|root|tmp|var|etc)/[^\s,;]+)
+        (?P<unix>/(?:home|Users|root|tmp|var|etc|workspace)/[^\s,;]+)
         |
         (?P<windows>[A-Za-z]:\\[^\s,;]+)
         ",
@@ -251,6 +273,7 @@ fn is_safe_source_ref(source_ref: &str) -> bool {
         && source_ref.len() <= MAX_MEMORY_SOURCE_REF_BYTES
         && !source_ref.contains('/')
         && !source_ref.contains('\\')
+        && !contains_sensitive_patterns(source_ref)
         && source_ref
             .chars()
             .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '_' | '-' | ':' | '.'))
@@ -345,6 +368,50 @@ mod tests {
     }
 
     #[test]
+    fn load_digest_keeps_only_current_run_non_secret_source_refs() {
+        let state = state_with(
+            None,
+            Some(json!({
+                "source_refs": [
+                    "agent_state:run-1:agent-1:scratchpad_summary",
+                    "agent_state:other-run:agent-1:scratchpad_summary",
+                    "sk-abcdefghijklmnopqrstuvwxyz"
+                ],
+                "summary": "bounded summary"
+            })),
+        );
+
+        let digest = load_memory_digest_from_agent_state(&state).expect("memory digest");
+        assert_eq!(
+            digest["source_refs"],
+            json!(["agent_state:run-1:agent-1:scratchpad_summary"])
+        );
+    }
+
+    #[test]
+    fn normalizes_harness_key_workspace_path_and_exact_agent_source_ref() {
+        let harness_key = format!("harness_{}", "b".repeat(64));
+        let state = state_with(
+            None,
+            Some(json!({
+                "source_refs": [
+                    "agent_state:run-1:agent-1:scratchpad_summary",
+                    "agent_state:run-1:agent-2:scratchpad_summary",
+                    "agent_state:run-1:agent-1:forged_suffix"
+                ],
+                "summary": format!("key={harness_key} file=/workspace/private/src/lib.rs")
+            })),
+        );
+
+        let digest = load_memory_digest_from_agent_state(&state).expect("memory digest");
+        assert_eq!(
+            digest["source_refs"],
+            json!(["agent_state:run-1:agent-1:scratchpad_summary"])
+        );
+        assert_eq!(digest["summary"], "key=*** file=[redacted-path]");
+    }
+
+    #[test]
     fn consolidate_prefers_action_summary_and_keeps_metadata_only() {
         let state = state_with(
             Some("old summary"),
@@ -400,5 +467,24 @@ mod tests {
         assert!(context["included_tokens"].as_i64().unwrap() <= 4);
         assert_eq!(context["truncated"], true);
         assert!(estimate_memory_state_bytes(context.get("memory_digest"), Some(&context)) > 0);
+    }
+
+    #[test]
+    fn state_read_bytes_count_persisted_digest_once() {
+        let state = state_with(
+            None,
+            Some(json!({
+                "source_refs": ["agent_state:run-1:agent-1:scratchpad_summary"],
+                "summary": "bounded summary"
+            })),
+        );
+        let digest = load_memory_digest_from_agent_state(&state).unwrap();
+        let context = build_memory_context_for_node(&state, 100).unwrap();
+        let expected = serde_json::to_vec(&digest).unwrap().len() as i64;
+
+        assert_eq!(
+            estimate_memory_state_bytes(Some(&digest), Some(&context)),
+            expected
+        );
     }
 }

@@ -72,6 +72,7 @@ fn is_leap(y: u64) -> bool {
 pub struct ProviderAuditRecorder {
     events: Mutex<Vec<ProviderAuditEvent>>,
     counter: Mutex<u64>,
+    instance_id: String,
     store: Option<Arc<LocalProductStore>>,
 }
 
@@ -86,6 +87,7 @@ impl ProviderAuditRecorder {
         Self {
             events: Mutex::new(Vec::new()),
             counter: Mutex::new(0),
+            instance_id: uuid::Uuid::new_v4().simple().to_string(),
             store: None,
         }
     }
@@ -94,18 +96,24 @@ impl ProviderAuditRecorder {
         Self {
             events: Mutex::new(Vec::new()),
             counter: Mutex::new(0),
+            instance_id: uuid::Uuid::new_v4().simple().to_string(),
             store: Some(store),
         }
     }
 
-    pub fn record(&self, event: ProviderAuditEvent) {
+    pub fn try_record(&self, event: ProviderAuditEvent) -> Result<(), String> {
         if let Some(store) = &self.store {
-            let _ = store.record_provider_audit_event(&event);
+            store.record_provider_audit_event(&event)?;
         }
         self.events.lock().unwrap().push(event);
+        Ok(())
     }
 
-    pub fn create_and_record(
+    pub fn record(&self, event: ProviderAuditEvent) {
+        let _ = self.try_record(event);
+    }
+
+    fn create_event(
         &self,
         dispatch_id: &str,
         provider_id: &str,
@@ -115,7 +123,7 @@ impl ProviderAuditRecorder {
         let event_id = {
             let mut counter = self.counter.lock().unwrap();
             *counter += 1;
-            format!("paudit-{:012x}", *counter)
+            format!("paudit-{}-{:012x}", self.instance_id, *counter)
         };
 
         let mut event = ProviderAuditEvent {
@@ -154,9 +162,37 @@ impl ProviderAuditRecorder {
                 if let Some(v) = obj.get("error_domain").and_then(|v| v.as_str()) {
                     event.error_domain = Some(v.to_string());
                 }
+                if let Some(v) = obj.get("redaction_status").and_then(|v| v.as_str()) {
+                    if matches!(v, "redacted" | "not_applicable") {
+                        event.redaction_status = v.to_string();
+                    }
+                }
             }
         }
 
+        event
+    }
+
+    pub fn try_create_and_record(
+        &self,
+        dispatch_id: &str,
+        provider_id: &str,
+        event_type: &str,
+        extra: Option<&Value>,
+    ) -> Result<ProviderAuditEvent, String> {
+        let event = self.create_event(dispatch_id, provider_id, event_type, extra);
+        self.try_record(event.clone())?;
+        Ok(event)
+    }
+
+    pub fn create_and_record(
+        &self,
+        dispatch_id: &str,
+        provider_id: &str,
+        event_type: &str,
+        extra: Option<&Value>,
+    ) -> ProviderAuditEvent {
+        let event = self.create_event(dispatch_id, provider_id, event_type, extra);
         self.record(event.clone());
         event
     }
@@ -238,7 +274,8 @@ mod tests {
             "cost": 0.0025,
             "currency": "USD",
             "latency_ms": 42,
-            "error_domain": null
+            "error_domain": null,
+            "redaction_status": "redacted"
         });
         let event = r.create_and_record("d1", "p1", "response_received", Some(&extra));
         assert_eq!(event.input_token_count, Some(100));
@@ -247,6 +284,7 @@ mod tests {
         assert_eq!(event.currency.as_deref(), Some("USD"));
         assert_eq!(event.latency_ms, Some(42));
         assert!(event.error_domain.is_none());
+        assert_eq!(event.redaction_status, "redacted");
     }
 
     #[test]

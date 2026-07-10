@@ -56,24 +56,27 @@ pub(crate) async fn api_create_key(
         })?;
 
     let scopes_set: std::collections::HashSet<String> = request.scopes.iter().cloned().collect();
+    let now = state.now();
     let (key, raw_key) = guard
         .create_api_key(
             &context.tenant_id,
             Some(scopes_set),
             request.expires_at,
-            state.now,
+            now,
         )
         .map_err(|e| ApiError::new(axum::http::StatusCode::BAD_REQUEST, e))?;
 
-    store
-        .record_api_key_metadata(
-            &key.key_id,
-            &request.user_id,
-            &request.role,
-            &request.scopes,
-            &context.api_key_id,
-        )
-        .map_err(internal_error)?;
+    if let Err(error) = store.record_api_key_metadata_with_expiry(
+        &key.key_id,
+        &request.user_id,
+        &request.role,
+        &request.scopes,
+        key.expires_at,
+        &context.api_key_id,
+    ) {
+        guard.remove_api_key(&key.key_id);
+        return Err(internal_error(error));
+    }
 
     Ok((
         cors_headers(),
@@ -99,19 +102,23 @@ pub(crate) async fn api_revoke_key(
     let context = authorize(&state, &headers, "team:admin", uri.path(), &request_id.0)?;
     let store = require_store(&state)?;
 
+    let resolver = state.tenant_resolver.as_ref().ok_or_else(|| {
+        ApiError::new(
+            axum::http::StatusCode::SERVICE_UNAVAILABLE,
+            "auth unavailable",
+        )
+    })?;
+    let mut guard = resolver.lock().map_err(|_| {
+        ApiError::new(
+            axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+            "auth unavailable",
+        )
+    })?;
+    guard.remove_api_key(&key_id);
+
     let revoked = store
         .revoke_api_key_metadata(&key_id, &context.api_key_id)
         .map_err(internal_error)?;
-
-    if let Some(resolver) = &state.tenant_resolver {
-        let mut guard = resolver.lock().map_err(|_| {
-            ApiError::new(
-                axum::http::StatusCode::INTERNAL_SERVER_ERROR,
-                "auth unavailable",
-            )
-        })?;
-        guard.remove_api_key(&key_id);
-    }
 
     if !revoked {
         return Err(ApiError::new(
@@ -162,47 +169,79 @@ pub(crate) async fn api_rotate_key(
         })
         .unwrap_or_default();
     let expires_at = old_key["expires_at"].as_f64();
-
-    store
-        .revoke_api_key_metadata(&key_id, &context.api_key_id)
-        .map_err(internal_error)?;
-
-    if let Some(resolver) = &state.tenant_resolver {
-        let mut guard = resolver.lock().map_err(|_| {
-            ApiError::new(
-                axum::http::StatusCode::INTERNAL_SERVER_ERROR,
-                "auth unavailable",
-            )
-        })?;
-        guard.remove_api_key(&key_id);
-
-        let scopes_set: std::collections::HashSet<String> = scopes.iter().cloned().collect();
-        let (new_key, raw_key) = guard
-            .create_api_key(&context.tenant_id, Some(scopes_set), expires_at, state.now)
-            .map_err(|e| ApiError::new(axum::http::StatusCode::INTERNAL_SERVER_ERROR, e))?;
-
-        store
-            .record_api_key_metadata(&new_key.key_id, user_id, role, &scopes, &context.api_key_id)
-            .map_err(internal_error)?;
-
-        return Ok((
-            cors_headers(),
-            Json(json!({
-                "schema_version": AXUM_API_SCHEMA_VERSION,
-                "key_id": new_key.key_id,
-                "raw_key": raw_key,
-                "user_id": user_id,
-                "role": role,
-                "scopes": scopes,
-                "created_at": new_key.created_at,
-                "rotated_from": key_id,
-            })),
+    if old_key["revoked_at"].as_str().is_some() {
+        if let Some(resolver) = &state.tenant_resolver {
+            if let Ok(mut guard) = resolver.lock() {
+                guard.remove_api_key(&key_id);
+            }
+        }
+        return Err(ApiError::new(
+            axum::http::StatusCode::NOT_FOUND,
+            "key not found or already revoked",
         ));
     }
 
-    Err(ApiError::new(
-        axum::http::StatusCode::SERVICE_UNAVAILABLE,
-        "auth unavailable",
+    let resolver = state.tenant_resolver.as_ref().ok_or_else(|| {
+        ApiError::new(
+            axum::http::StatusCode::SERVICE_UNAVAILABLE,
+            "auth unavailable",
+        )
+    })?;
+    let mut guard = resolver.lock().map_err(|_| {
+        ApiError::new(
+            axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+            "auth unavailable",
+        )
+    })?;
+    let scopes_set: std::collections::HashSet<String> = scopes.iter().cloned().collect();
+    let now = state.now();
+    let (new_key, raw_key) = guard
+        .create_api_key(&context.tenant_id, Some(scopes_set), expires_at, now)
+        .map_err(|e| ApiError::new(axum::http::StatusCode::INTERNAL_SERVER_ERROR, e))?;
+
+    if let Err(error) = store.record_api_key_metadata_with_expiry(
+        &new_key.key_id,
+        user_id,
+        role,
+        &scopes,
+        new_key.expires_at,
+        &context.api_key_id,
+    ) {
+        guard.remove_api_key(&new_key.key_id);
+        return Err(internal_error(error));
+    }
+
+    match store.revoke_api_key_metadata(&key_id, &context.api_key_id) {
+        Ok(true) => {
+            guard.remove_api_key(&key_id);
+        }
+        Ok(false) => {
+            guard.remove_api_key(&new_key.key_id);
+            let _ = store.delete_api_key_metadata(&new_key.key_id, &context.api_key_id);
+            return Err(ApiError::new(
+                axum::http::StatusCode::NOT_FOUND,
+                "key not found or already revoked",
+            ));
+        }
+        Err(error) => {
+            guard.remove_api_key(&new_key.key_id);
+            let _ = store.delete_api_key_metadata(&new_key.key_id, &context.api_key_id);
+            return Err(internal_error(error));
+        }
+    }
+
+    Ok((
+        cors_headers(),
+        Json(json!({
+            "schema_version": AXUM_API_SCHEMA_VERSION,
+            "key_id": new_key.key_id,
+            "raw_key": raw_key,
+            "user_id": user_id,
+            "role": role,
+            "scopes": scopes,
+            "created_at": new_key.created_at,
+            "rotated_from": key_id,
+        })),
     ))
 }
 
@@ -216,19 +255,23 @@ pub(crate) async fn api_delete_key(
     let context = authorize(&state, &headers, "team:admin", uri.path(), &request_id.0)?;
     let store = require_store(&state)?;
 
+    let resolver = state.tenant_resolver.as_ref().ok_or_else(|| {
+        ApiError::new(
+            axum::http::StatusCode::SERVICE_UNAVAILABLE,
+            "auth unavailable",
+        )
+    })?;
+    let mut guard = resolver.lock().map_err(|_| {
+        ApiError::new(
+            axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+            "auth unavailable",
+        )
+    })?;
+    guard.remove_api_key(&key_id);
+
     let deleted = store
         .delete_api_key_metadata(&key_id, &context.api_key_id)
         .map_err(internal_error)?;
-
-    if let Some(resolver) = &state.tenant_resolver {
-        let mut guard = resolver.lock().map_err(|_| {
-            ApiError::new(
-                axum::http::StatusCode::INTERNAL_SERVER_ERROR,
-                "auth unavailable",
-            )
-        })?;
-        guard.remove_api_key(&key_id);
-    }
 
     if !deleted {
         return Err(ApiError::new(
@@ -254,6 +297,23 @@ pub(crate) async fn api_update_key_scopes(
     let _context = authorize(&state, &headers, "team:admin", uri.path(), &request_id.0)?;
     let store = require_store(&state)?;
 
+    let scopes: std::collections::HashSet<String> = request.scopes.iter().cloned().collect();
+    let resolver = state.tenant_resolver.as_ref().ok_or_else(|| {
+        ApiError::new(
+            axum::http::StatusCode::SERVICE_UNAVAILABLE,
+            "auth unavailable",
+        )
+    })?;
+    let mut guard = resolver.lock().map_err(|_| {
+        ApiError::new(
+            axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+            "auth unavailable",
+        )
+    })?;
+    guard
+        .validate_api_key_scopes(&key_id, &scopes)
+        .map_err(|error| ApiError::new(axum::http::StatusCode::BAD_REQUEST, error))?;
+
     let updated = store
         .update_api_key_scopes(&key_id, &request.scopes, &_context.api_key_id)
         .map_err(internal_error)?;
@@ -264,6 +324,13 @@ pub(crate) async fn api_update_key_scopes(
             "key not found",
         ));
     }
+
+    guard.update_api_key_scopes(&key_id, scopes).map_err(|_| {
+        ApiError::new(
+            axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+            "auth state update failed",
+        )
+    })?;
 
     Ok((
         cors_headers(),

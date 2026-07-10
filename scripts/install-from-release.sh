@@ -121,7 +121,7 @@ main() {
     # Install dashboard assets
     if [[ -d "${extracted_dir}/dashboard" ]]; then
         mkdir -p "${DATA_DIR}/dashboard"
-        cp -r "${extracted_dir}/dashboard/"* "${DATA_DIR}/dashboard/" 2>/dev/null || true
+        cp -a "${extracted_dir}/dashboard/." "${DATA_DIR}/dashboard/"
         echo "  -> ${DATA_DIR}/dashboard/"
     fi
 

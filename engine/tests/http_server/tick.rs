@@ -1023,4 +1023,3 @@ async fn axum_tick_with_provider_stub_records_audit_and_trace() {
     assert!(event_types.contains(&"request_sent"));
     assert!(event_types.contains(&"response_received"));
 }
-

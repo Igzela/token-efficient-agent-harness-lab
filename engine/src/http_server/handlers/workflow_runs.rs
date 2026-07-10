@@ -252,6 +252,13 @@ pub(crate) async fn api_tick_workflow_run(
 
     match executor_type {
         "command" => {
+            authorize(
+                &state,
+                &headers,
+                "dispatch:execute",
+                uri.path(),
+                &request_id.0,
+            )?;
             use crate::node_executor::CommandNodeExecutor;
             let executor = CommandNodeExecutor::default().with_timeout(timeout_ms);
             match store.tick_with_executor_and_command(

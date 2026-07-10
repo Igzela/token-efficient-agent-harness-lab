@@ -12,20 +12,42 @@ impl LocalProductStore {
         scopes: &[String],
         actor: &str,
     ) -> Result<Value, String> {
+        self.record_api_key_metadata_with_expiry(key_id, user_id, role, scopes, None, actor)
+    }
+
+    pub fn record_api_key_metadata_with_expiry(
+        &self,
+        key_id: &str,
+        user_id: &str,
+        role: &str,
+        scopes: &[String],
+        expires_at: Option<f64>,
+        actor: &str,
+    ) -> Result<Value, String> {
         let scopes_json = serde_json::to_string(scopes).map_err(|e| e.to_string())?;
+        let expires_at_text = expires_at.map(|value| value.to_string());
         match &self.db {
             DatabaseConnection::Sqlite(_) => self.with_conn(|conn| {
                 let now = self.now();
                 conn.execute(
                     "INSERT INTO api_key_metadata
-                     (key_id, user_id, role, scopes_json, created_at, created_by, revoked_at)
-                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, NULL)
+                     (key_id, user_id, role, scopes_json, created_at, created_by, revoked_at, expires_at)
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, NULL, ?7)
                      ON CONFLICT(key_id) DO UPDATE SET
                         user_id = excluded.user_id,
                         role = excluded.role,
                         scopes_json = excluded.scopes_json,
-                        created_by = excluded.created_by",
-                    params![key_id, user_id, role, scopes_json, now, actor],
+                        created_by = excluded.created_by,
+                        expires_at = excluded.expires_at",
+                    params![
+                        key_id,
+                        user_id,
+                        role,
+                        scopes_json,
+                        now,
+                        actor,
+                        expires_at_text
+                    ],
                 )
                 .map_err(|e| e.to_string())?;
                 append_audit_locked(
@@ -43,6 +65,7 @@ impl LocalProductStore {
                     "scopes": scopes,
                     "created_at": now,
                     "created_by": actor,
+                    "expires_at": expires_at,
                 }))
             }),
             #[cfg(feature = "pg")]
@@ -52,14 +75,23 @@ impl LocalProductStore {
                     client
                         .execute(
                             "INSERT INTO api_key_metadata
-                     (key_id, user_id, role, scopes_json, created_at, created_by, revoked_at)
-                     VALUES ($1, $2, $3, $4, $5, $6, NULL)
+                     (key_id, user_id, role, scopes_json, created_at, created_by, revoked_at, expires_at)
+                     VALUES ($1, $2, $3, $4, $5, $6, NULL, $7)
                      ON CONFLICT(key_id) DO UPDATE SET
                         user_id = excluded.user_id,
                         role = excluded.role,
                         scopes_json = excluded.scopes_json,
-                        created_by = excluded.created_by",
-                            &[&key_id, &user_id, &role, &scopes_json, &now, &actor],
+                        created_by = excluded.created_by,
+                        expires_at = excluded.expires_at",
+                            &[
+                                &key_id,
+                                &user_id,
+                                &role,
+                                &scopes_json,
+                                &now,
+                                &actor,
+                                &expires_at_text,
+                            ],
                         )
                         .map_err(|e| e.to_string())?;
                     let details =
@@ -76,6 +108,7 @@ impl LocalProductStore {
                         "scopes": scopes,
                         "created_at": now,
                         "created_by": actor,
+                        "expires_at": expires_at,
                     }))
                 })
             }
@@ -94,6 +127,9 @@ impl LocalProductStore {
                         let scopes_text: String = row.get(3)?;
                         let scopes: Vec<String> =
                             serde_json::from_str(&scopes_text).unwrap_or_default();
+                        let expires_at = row
+                            .get::<_, Option<String>>(8)?
+                            .and_then(|value| value.parse::<f64>().ok());
                         Ok(json!({
                             "key_id": row.get::<_, String>(0)?,
                             "user_id": row.get::<_, String>(1)?,
@@ -103,7 +139,7 @@ impl LocalProductStore {
                             "created_by": row.get::<_, String>(5)?,
                             "revoked_at": row.get::<_, Option<String>>(6)?,
                             "last_used_at": row.get::<_, Option<String>>(7)?,
-                            "expires_at": row.get::<_, Option<String>>(8)?,
+                            "expires_at": expires_at,
                         }))
                     },
                 );
@@ -129,6 +165,9 @@ impl LocalProductStore {
                 let row = &rows[0];
                 let scopes_text: String = row.get(3);
                 let scopes: Vec<String> = serde_json::from_str(&scopes_text).unwrap_or_default();
+                let expires_at = row
+                    .get::<_, Option<String>>(8)
+                    .and_then(|value| value.parse::<f64>().ok());
                 Ok(Some(json!({
                     "key_id": row.get::<_, String>(0),
                     "user_id": row.get::<_, String>(1),
@@ -138,7 +177,7 @@ impl LocalProductStore {
                     "created_by": row.get::<_, String>(5),
                     "revoked_at": row.get::<_, Option<String>>(6),
                     "last_used_at": row.get::<_, Option<String>>(7),
-                    "expires_at": row.get::<_, Option<String>>(8),
+                    "expires_at": expires_at,
                 })))
             }),
         }
@@ -161,6 +200,9 @@ impl LocalProductStore {
                         let scopes_text: String = row.get(3)?;
                         let scopes: Vec<String> =
                             serde_json::from_str(&scopes_text).unwrap_or_default();
+                        let expires_at = row
+                            .get::<_, Option<String>>(8)?
+                            .and_then(|value| value.parse::<f64>().ok());
                         Ok(json!({
                             "key_id": row.get::<_, String>(0)?,
                             "user_id": row.get::<_, String>(1)?,
@@ -170,7 +212,7 @@ impl LocalProductStore {
                             "created_by": row.get::<_, String>(5)?,
                             "revoked_at": row.get::<_, Option<String>>(6)?,
                             "last_used_at": row.get::<_, Option<String>>(7)?,
-                            "expires_at": row.get::<_, Option<String>>(8)?,
+                            "expires_at": expires_at,
                         }))
                     })
                     .map_err(|e| e.to_string())?;
@@ -193,6 +235,9 @@ impl LocalProductStore {
                     let scopes_text: String = row.get(3);
                     let scopes: Vec<String> =
                         serde_json::from_str(&scopes_text).unwrap_or_default();
+                    let expires_at = row
+                        .get::<_, Option<String>>(8)
+                        .and_then(|value| value.parse::<f64>().ok());
                     result.push(json!({
                         "key_id": row.get::<_, String>(0),
                         "user_id": row.get::<_, String>(1),
@@ -202,7 +247,7 @@ impl LocalProductStore {
                         "created_by": row.get::<_, String>(5),
                         "revoked_at": row.get::<_, Option<String>>(6),
                         "last_used_at": row.get::<_, Option<String>>(7),
-                        "expires_at": row.get::<_, Option<String>>(8),
+                        "expires_at": expires_at,
                     }));
                 }
                 Ok(result)

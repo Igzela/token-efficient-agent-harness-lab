@@ -216,6 +216,37 @@ fn provider_audit_events_respects_limit() {
 }
 
 #[test]
+fn daily_provider_audit_cost_counts_only_completed_responses_for_date() {
+    let dir = tempdir().unwrap();
+    let store = LocalProductStore::new(dir.path().join("test.db")).unwrap();
+
+    let mut first = make_event("evt-cost-1", "disp-001", "response_received");
+    first.cost = Some(0.125);
+    first.created_at = "2026-07-10T01:00:00Z".to_string();
+    store.record_provider_audit_event(&first).unwrap();
+
+    let mut second = make_event("evt-cost-2", "disp-002", "response_received");
+    second.cost = Some(0.375);
+    second.created_at = "2026-07-10T23:59:59Z".to_string();
+    store.record_provider_audit_event(&second).unwrap();
+
+    let mut request = make_event("evt-reserved", "disp-003", "request_sent");
+    request.cost = Some(99.0);
+    request.created_at = "2026-07-10T12:00:00Z".to_string();
+    store.record_provider_audit_event(&request).unwrap();
+
+    let mut other_day = make_event("evt-other-day", "disp-004", "response_received");
+    other_day.cost = Some(10.0);
+    other_day.created_at = "2026-07-09T23:59:59Z".to_string();
+    store.record_provider_audit_event(&other_day).unwrap();
+
+    assert_eq!(
+        store.daily_provider_audit_cost_usd("2026-07-10").unwrap(),
+        0.5
+    );
+}
+
+#[test]
 fn provider_audit_events_for_dispatch_filters() {
     let dir = tempdir().unwrap();
     let store = LocalProductStore::new(dir.path().join("test.db")).unwrap();
@@ -324,6 +355,29 @@ fn recorder_with_store_persists_events() {
     assert_eq!(persisted[0]["event_type"], "response_received");
     assert_eq!(persisted[0]["input_token_count"], 200);
     assert_eq!(persisted[1]["event_type"], "request_sent");
+}
+
+#[test]
+fn independent_recorders_do_not_collide_in_persistent_store() {
+    let dir = tempdir().unwrap();
+    let store = Arc::new(LocalProductStore::new(dir.path().join("test.db")).unwrap());
+
+    ProviderAuditRecorder::with_store(store.clone()).create_and_record(
+        "disp-first",
+        "p1",
+        "request_sent",
+        None,
+    );
+    ProviderAuditRecorder::with_store(store.clone()).create_and_record(
+        "disp-second",
+        "p1",
+        "request_sent",
+        None,
+    );
+
+    let persisted = store.provider_audit_events(10).unwrap();
+    assert_eq!(persisted.len(), 2);
+    assert_ne!(persisted[0]["event_id"], persisted[1]["event_id"]);
 }
 
 #[test]
@@ -2602,7 +2656,7 @@ fn context_assembly_injects_agent_memory_for_agent_step_metadata_only() {
             &json!({
                 "memory_digest": {
                     "source_refs": [
-                        "agent_state:run-memory:agent-memory:scratchpad_summary",
+                        "agent_state:run-0001:agent-memory:scratchpad_summary",
                         "/home/igzela/private/repo.rs"
                     ],
                     "expiry_policy": "forever",
@@ -2625,7 +2679,7 @@ fn context_assembly_injects_agent_memory_for_agent_step_metadata_only() {
     assert!(injection["sources"].as_array().unwrap().is_empty());
     assert_eq!(
         injection["memory_context"]["memory_digest"]["source_refs"],
-        json!(["agent_state:run-memory:agent-memory:scratchpad_summary"])
+        json!(["agent_state:run-0001:agent-memory:scratchpad_summary"])
     );
     assert!(
         injection["memory_context"]["included_tokens"]
@@ -2637,6 +2691,76 @@ fn context_assembly_injects_agent_memory_for_agent_step_metadata_only() {
     assert!(!rendered.contains("raw objective"));
     assert!(!rendered.contains("/home/igzela"));
     assert!(!rendered.contains("sk-test-secret-token"));
+
+    std::env::remove_var("ACP_CONTEXT_ASSEMBLY_ENABLED");
+    std::env::remove_var("ACP_CONTEXT_ASSEMBLY_MAX_TOKENS");
+}
+
+#[test]
+fn context_assembly_shares_budget_between_predecessors_and_agent_memory() {
+    let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    std::env::set_var("ACP_CONTEXT_ASSEMBLY_ENABLED", "1");
+    std::env::set_var("ACP_CONTEXT_ASSEMBLY_MAX_TOKENS", "4");
+    let dir = tempdir().unwrap();
+    let store = LocalProductStore::new(dir.path().join("ctx_agent_memory_budget.db")).unwrap();
+    let plan = store
+        .create_workflow_plan("ctx shared budget", "api", "actor", |ids, _| {
+            let mut plan = make_workflow_plan_with_nodes(ids);
+            let node = plan["graph"]["nodes"]
+                .as_array_mut()
+                .unwrap()
+                .iter_mut()
+                .find(|node| node["node_id"] == "node-b")
+                .unwrap()
+                .as_object_mut()
+                .unwrap();
+            node.insert("task_type".to_string(), json!("agent_step"));
+            node.insert("agent_id".to_string(), json!("agent-memory"));
+            node.insert("assigned_agent_id".to_string(), json!("agent-memory"));
+            Ok(plan)
+        })
+        .unwrap();
+    store
+        .create_workflow_run_from_plan(plan["plan_id"].as_str().unwrap(), "actor")
+        .unwrap();
+    store
+        .create_agent_state(
+            "agent-memory",
+            "run-0001",
+            "implementer",
+            &["code".to_string()],
+            None,
+            "idle",
+            &json!({
+                "memory_digest": {
+                    "source_refs": ["agent_state:run-0001:agent-memory:scratchpad_summary"],
+                    "summary": "0123456789abcdef0123456789abcdef"
+                }
+            }),
+        )
+        .unwrap();
+
+    store
+        .tick_with_executor("run-0001", "actor", 0, &LargeOutputExecutor)
+        .unwrap();
+    let tick = store
+        .tick_with_executor("run-0001", "actor", 0, &ContextEchoExecutor)
+        .unwrap();
+    let injection: Value =
+        serde_json::from_str(tick["result"]["output"].as_str().unwrap()).unwrap();
+    let predecessor_tokens: u64 = injection["sources"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|source| source["included_tokens"].as_u64().unwrap())
+        .sum();
+    let memory_tokens = injection["memory_context"]["included_tokens"]
+        .as_u64()
+        .unwrap();
+    assert!(
+        predecessor_tokens + memory_tokens <= 4,
+        "combined context must stay within the shared budget"
+    );
 
     std::env::remove_var("ACP_CONTEXT_ASSEMBLY_ENABLED");
     std::env::remove_var("ACP_CONTEXT_ASSEMBLY_MAX_TOKENS");

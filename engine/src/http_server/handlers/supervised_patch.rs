@@ -229,7 +229,7 @@ pub(crate) async fn api_create_supervised_patch_workspace(
     let unique_id = format!(
         "ws-{}-{}",
         chrono::Utc::now().timestamp_millis(),
-        &uuid_v4_simple()
+        uuid_v4_simple()
     );
     let config = TargetRepoOutputConfig::from_env();
     let (workspace_dir, source_revision, git) = match workspace_mode {

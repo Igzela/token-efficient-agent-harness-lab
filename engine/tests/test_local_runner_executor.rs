@@ -62,6 +62,22 @@ fn local_runner_executor_no_provider_calls() {
 }
 
 #[test]
+fn local_runner_executor_reports_measured_latency() {
+    let executor = LocalRunnerValidationExecutor;
+    let input = stub_input("run-lr-latency", "node-latency", 50);
+    let started = std::time::Instant::now();
+
+    let output = executor.execute_node(&input);
+
+    let elapsed_ms = started.elapsed().as_millis() as i64;
+    let reported_ms = output.latency_ms.expect("latency evidence");
+    assert!(
+        reported_ms <= elapsed_ms.saturating_add(50),
+        "reported latency {reported_ms}ms must track measured elapsed {elapsed_ms}ms"
+    );
+}
+
+#[test]
 fn local_runner_executor_output_is_bounded() {
     let executor = LocalRunnerValidationExecutor;
     let input = stub_input("run-lr-bound", "node-bound", 10);

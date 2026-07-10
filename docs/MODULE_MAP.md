@@ -1,6 +1,6 @@
 # Module Map
 
-Last updated: 2026-07-08.
+Last updated: 2026-07-10.
 
 This file maps current ownership. It is not a phase history.
 
@@ -13,17 +13,17 @@ Full Agent Autonomy Mode remains active for repo-scoped, testable, observable, C
 | `engine/src/main.rs`, `engine/src/http_server/` | active | Engine and API | HTTP and engine tests |
 | `engine/src/trusted_local.rs` | active | Local readiness policy | trusted-local tests |
 | `dispatch_engine.rs`, `task_analyzer/`, `model_selector.rs`, `budget_manager.rs` | active | Dispatch | dispatch tests |
-| `engine/src/provider/`, `engine/src/provider/fake.rs` | active | Model adapters + FakeProvider for testing | focused adapter tests plus full stack verification |
-| `engine/src/local_runner_provider.rs`, `engine/src/bin/local_runner_exec.rs` | active | Provider-backed stateful-vs-stateless runner (Stub/Fake/Live); Live is a gated OpenAI-compatible path requiring provider gates plus explicit `ACP_LOCAL_RUNNER_*` metadata | local_runner_provider unit tests, local-runner-exec binary |
+| `engine/src/provider/`, `engine/src/provider/fake.rs` | active | Model adapters, persistent bounded audit/redaction, and FakeProvider for testing | focused adapter/audit tests, RustSec audit, full stack verification |
+| `engine/src/local_runner_provider.rs`, `engine/src/bin/local_runner_exec.rs` | active | Provider-backed stateful-vs-stateless runner (Stub/Fake/Live); Live requires gates, persistent audit, positive pricing, pre-call cost reservation, bounded usage, timeout, and kill control | local_runner_provider unit tests, local-runner-exec binary, provider audit store tests |
 | `engine/src/cli/` | active | CLI adapters | engine tests |
 | `engine/src/agent_memory.rs` | active | Bounded AgentState memory policy helpers; no storage/runtime ownership | agent_memory unit tests plus agent-step/context-injection/operator-evidence tests |
-| `workflow/`, `scheduler.rs`, `node_executor.rs`, `executor_pool.rs` | active | Workflow | workflow and scheduler tests |
+| `workflow/`, `scheduler.rs`, `node_executor.rs`, `executor_pool.rs` | active | Workflow, durable dynamic-controller limits, deterministic/pinned routing, and pool accounting | workflow and scheduler tests |
 | `storage/local_product_store/` | active | Storage | local store tests |
 | `target_repo_output.rs`, `target_repo_output/authority.rs` | active | Target output | target-output tests |
 | `dashboard/` | active | Local UI | dashboard typecheck and build |
 | `sdk/typescript/`, `sdk/python/` | active | SDKs | SDK tests |
 | `wire_contract/v1/`, `codegen/` | active | Wire contracts | `scripts/check_wire_codegen_drift.sh` |
-| `scripts/`, `tools/` | active | Scripts and pilots | script-specific tests |
+| `scripts/`, `tools/`, `.github/workflows/` | active | Scripts, pilots, CI, release packaging, dependency/action pin gates, and atomic upgrade rollback | script-specific tests, release contract, action pin guard, CI |
 
 ## Token-Efficiency Ownership
 
