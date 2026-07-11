@@ -5,25 +5,38 @@ on:
     branches: [ main ]
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
-  apply-handoff-patch:
+  diagnose-handoff-patch:
     runs-on: ubuntu-latest
     steps:
       - name: Check out PR branch
         uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
         with:
           ref: ${{ github.head_ref }}
-          persist-credentials: true
-      - name: Apply and verify handoff repair
+          persist-credentials: false
+      - name: Capture handoff diagnostics
         run: |
-          python .github/pe3_handoff_patch.py
-          uv run --no-project python -m unittest tools.test_check_agent_handoff
-          uv run --no-project python scripts/check_agent_handoff.py
-          git diff --check
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add docs/NEXT_DECISION.md scripts/check_agent_handoff.py tools/test_check_agent_handoff.py
-          git commit -m "PE3-REPAIR-1 detect active packet state contradictions"
-          git push origin HEAD:${{ github.head_ref }}
+          set +e
+          {
+            echo '=== patch ==='
+            python .github/pe3_handoff_patch.py
+            echo "patch_exit=$?"
+            echo '=== unit tests ==='
+            uv run --no-project python -m unittest tools.test_check_agent_handoff
+            echo "unit_exit=$?"
+            echo '=== full handoff ==='
+            uv run --no-project python scripts/check_agent_handoff.py
+            echo "handoff_exit=$?"
+            echo '=== diff check ==='
+            git diff --check
+            echo "diff_exit=$?"
+          } > handoff-diagnostic.log 2>&1
+          cat handoff-diagnostic.log
+      - name: Upload handoff diagnostics
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: pe3-handoff-diagnostic
+          path: handoff-diagnostic.log
+          retention-days: 1
