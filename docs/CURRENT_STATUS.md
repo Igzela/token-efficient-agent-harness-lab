@@ -36,7 +36,7 @@ This repo is a local/small-team self-hosted agent workflow control plane. Rust `
 | Local runner operations | Active: validate, export, import, and inspect bounded scorecard artifacts locally |
 | Runner integration | Storage/API/operator evidence complete; workflow scheduling of local runner validation is implemented via `LocalRunnerValidationExecutor` in stub mode with automatic native scorecard recording on terminal tick |
 | Live provider adapter | Gated ready path: Stub/Fake/Live; Live requires gates, explicit metadata, symbolic credentials, positive pricing, persistent redacted audit, bounded calls/tokens/time/cost, and a kill switch |
-| Post-LGB Product Evolution Plan | PE-1 is complete; PE2-CONTRACT-1 is the earliest eligible `READY_FOR_TERRA` packet |
+| Post-LGB Product Evolution Plan | PE-1 is complete; PE2-CONTRACT-1 is implemented; PE2-FORECAST-1 is the next eligible packet |
 
 ## Planned Product Evolution Stages
 
@@ -45,7 +45,7 @@ The stages are packetized in `docs/NEXT_DECISION.md`. Codex may execute only pac
 | Stage | Priority | Capability | Current state |
 |---|---|---|---|
 | PE-1 | P0 | Token Efficiency Regression Lab | Complete and acceptance-sealed |
-| PE-2 | P0/P1 | Budget Intelligence and Anomaly Auto-Pause | In progress: evidence contract is `READY_FOR_TERRA`; later packets remain prerequisite-blocked |
+| PE-2 | P0/P1 | Budget Intelligence and Anomaly Auto-Pause | In progress: evidence contract implemented; deterministic forecast packet next |
 | PE-3 | P1 | Operator Decision Center | Detailed packets defined; blocked on PE-2 closeout |
 | PE-4 | P1/P2 | Trace-backed Policy Replay | Detailed packets defined; blocked on PE-3 closeout and trace coverage |
 | PE-5 | P1.5 | Release Provenance | Detailed packets defined; eligible after PE-1 closeout only by explicit independent-lane activation |
@@ -61,9 +61,18 @@ The stages are packetized in `docs/NEXT_DECISION.md`. Codex may execute only pac
 - PR #177 CI run 29137424748 passed all seven jobs, including PostgreSQL, Rust, TypeScript/Dashboard, Python, Docker, native runtime, full-stack cutover, formatting, clippy, and dependency audits;
 - PE-1 remains report-only: no CI blocking, provider calls, routing mutation, policy mutation, pause authority, or target-repository writes were added.
 
+## PE-2 Contract Evidence
+
+- `budget_forecast_evidence.v1` and `budget_anomaly_finding.v1` are additive Rust contracts under the existing budget owner;
+- scope, evidence windows, freshness, sample counts, coverage, pricing completeness, duplicate counts, confidence, stable reason codes, bounded references, and deterministic hashes are explicit;
+- `supported`, `insufficient_evidence`, and `invalid_evidence` remain distinct outcomes;
+- observed values are structurally separate from estimates and anomaly measurements;
+- malformed, oversized, tampered, sparse, contradictory, unpriced, missing-dimension, and invalid-window evidence fails closed or remains explicitly insufficient;
+- no persistence, API, SDK, Dashboard, provider, reservation, policy, pause, or target-output behavior changes are part of the contract packet.
+
 ## Current Gaps
 
-- PE-2 predictive exhaustion, explainable anomaly detection, read surfaces, and policy-gated high-confidence auto-pause are not implemented.
+- PE-2 deterministic forecast computation, explainable anomaly detection, read surfaces, and policy-gated high-confidence auto-pause are not implemented.
 - PE-3 has no unified derived decision queue.
 - `policy_simulator.rs` still relies on fixed estimates rather than trace-calibrated replay.
 - SBOM, signing, and provenance attestations are not yet part of the release contract.
