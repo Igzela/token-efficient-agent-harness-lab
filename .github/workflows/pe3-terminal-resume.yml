@@ -1,0 +1,147 @@
+name: pe3-terminal-resume
+
+on:
+  pull_request:
+    branches: [ main ]
+
+permissions:
+  contents: write
+
+jobs:
+  apply-repair:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out PR branch
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        with:
+          ref: ${{ github.head_ref }}
+          persist-credentials: true
+      - name: Apply terminal resume repair and tests
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          path = Path('engine/src/storage/local_product_store/operator_decision_queue/mod.rs')
+          text = path.read_text()
+          old = '''                let budget_decision = pause_reason.strip_prefix("budget_auto_pause:");
+                          let (kind, source_id, reason, evidence_references) =
+                              if let Some(decision_id) = budget_decision {
+                                  (
+                                      OperatorDecisionSourceKind::Recovery,
+                                      decision_id.to_string(),
+                                      "budget_pause_recovery_required",
+                                      vec![original_reference(
+                                          "budget_pause_decision",
+                                          decision_id,
+                                          None,
+                                      )],
+                                  )
+                              } else {
+                                  (
+                                      OperatorDecisionSourceKind::Workflow,
+                                      format!("workflow-pause-{run_id}"),
+                                      "workflow_paused",
+                                      vec![workflow_ref.clone()],
+                                  )
+                              };
+                          push_source(
+                              sources,
+                              SourceInput {
+                                  kind,
+                                  id: source_id,
+                                  resource: run_id.clone(),
+                                  conflict_key: format!("{run_id}:control"),
+                                  action: OperatorDecisionAction::Resume,
+                                  state: OperatorDecisionSourceState::Actionable,
+                                  severity: OperatorDecisionSeverity::Warning,
+                                  confidence: 1.0,
+                                  observed_at,
+                                  expires_at: None,
+                                  reason,
+                                  evidence_references,
+                              },
+                          )?;'''
+          new = '''                let budget_decision = pause_reason.strip_prefix("budget_auto_pause:");
+                          let terminal = matches!(status, "failed" | "completed" | "cancelled");
+                          let (kind, source_id, active_reason, terminal_reason, evidence_references) =
+                              if let Some(decision_id) = budget_decision {
+                                  (
+                                      OperatorDecisionSourceKind::Recovery,
+                                      decision_id.to_string(),
+                                      "budget_pause_recovery_required",
+                                      "budget_pause_terminal",
+                                      vec![original_reference(
+                                          "budget_pause_decision",
+                                          decision_id,
+                                          None,
+                                      )],
+                                  )
+                              } else {
+                                  (
+                                      OperatorDecisionSourceKind::Workflow,
+                                      format!("workflow-pause-{run_id}"),
+                                      "workflow_paused",
+                                      "workflow_pause_terminal",
+                                      vec![workflow_ref.clone()],
+                                  )
+                              };
+                          push_source(
+                              sources,
+                              SourceInput {
+                                  kind,
+                                  id: source_id,
+                                  resource: run_id.clone(),
+                                  conflict_key: format!("{run_id}:control"),
+                                  action: OperatorDecisionAction::Resume,
+                                  state: if terminal {
+                                      OperatorDecisionSourceState::Resolved
+                                  } else {
+                                      OperatorDecisionSourceState::Actionable
+                                  },
+                                  severity: if terminal {
+                                      OperatorDecisionSeverity::Info
+                                  } else {
+                                      OperatorDecisionSeverity::Warning
+                                  },
+                                  confidence: 1.0,
+                                  observed_at,
+                                  expires_at: None,
+                                  reason: if terminal { terminal_reason } else { active_reason },
+                                  evidence_references,
+                              },
+                          )?;'''
+          if old not in text:
+              raise SystemExit('terminal resume source anchor missing')
+          text = text.replace(old, new, 1)
+
+          marker = 'fn terminal_paused_runs_do_not_recommend_resume()'
+          if marker not in text:
+              anchor = '''    #[test]
+                  fn queue_derivation_is_deterministic_read_only_and_restart_safe() {'''
+              addition = '''    #[test]
+                  fn terminal_paused_runs_do_not_recommend_resume() {
+                      let directory = tempdir().unwrap();
+                      let store = test_store(directory.path().join("store.db"));
+                      for status in ["failed", "completed", "cancelled"] {
+                          let run = create_empty_run(&store, &format!("terminal-{status}"));
+                          set_run_status(&store, &run, status);
+                          store.update_run_pause_reason(&run, Some("manual")).unwrap();
+                      }
+                      let queue = store.operator_decision_queue(NOW, 300, 100, 0).unwrap();
+                      assert!(queue.items.iter().all(|item| {
+                          item.recommended_action != Some(OperatorDecisionAction::Resume)
+                      }));
+                  }
+
+              '''
+              if anchor not in text:
+                  raise SystemExit('terminal resume test anchor missing')
+              text = text.replace(anchor, addition + anchor, 1)
+          path.write_text(text)
+          PY
+          cargo fmt --all
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add engine/src/storage/local_product_store/operator_decision_queue/mod.rs
+          git commit -m "PE3-REPAIR-1 suppress terminal resume recommendations"
+          git push origin HEAD:${{ github.head_ref }}
