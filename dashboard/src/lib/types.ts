@@ -902,6 +902,28 @@ export interface ScorecardArtifactListResponse {
   comparison?: Record<string, unknown> | null;
 }
 
+export interface BudgetEvidenceArtifact {
+  schema_version: "budget_evidence_artifact.v1";
+  artifact_id: string;
+  artifact_kind: "forecast" | "anomaly";
+  evidence_id: string;
+  evidence_sha256: string;
+  created_at: string;
+  read_only: true;
+  metadata_only: true;
+  evidence: Record<string, unknown>;
+}
+
+export interface BudgetEvidenceArtifactListResponse {
+  artifacts: BudgetEvidenceArtifact[];
+  kind: "forecast" | "anomaly" | null;
+  limit: number;
+  offset: number;
+  read_only: true;
+  metadata_only: true;
+  mutation_authority: "none";
+}
+
 export interface OperatorEvidenceResponse {
   schema_version: "axum_api.v1";
   run_id: string;

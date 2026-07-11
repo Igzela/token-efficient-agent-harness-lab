@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
-import { fetchScorecards } from "@/lib/api-client";
+import { fetchBudgetEvidence, fetchScorecards } from "@/lib/api-client";
 import {
   fetchRegressionArtifacts,
   fetchRegressionTrend,
@@ -13,7 +13,7 @@ import {
   type RegressionTrendSummary,
 } from "@/lib/regression-evidence";
 import { summarizeScorecardComparison } from "@/lib/scorecard-evidence";
-import type { ScorecardScenarioComparisonSummary } from "@/lib/types";
+import type { BudgetEvidenceArtifact, ScorecardScenarioComparisonSummary } from "@/lib/types";
 import { StateBanner } from "./StateBanner";
 
 const DEFAULT_SCENARIO = "langgraph_offline_state_retention_pilot_2026_07_10";
@@ -39,6 +39,29 @@ function formatTimestamp(value: string): string {
 
 function compactHash(value: string): string {
   return value.length > 16 ? `${value.slice(0, 8)}…${value.slice(-8)}` : value;
+}
+
+function BudgetEvidenceLatest({ artifact }: { artifact: BudgetEvidenceArtifact }) {
+  const outcome = typeof artifact.evidence.outcome === "string" ? artifact.evidence.outcome : "invalid";
+  const reasons = Array.isArray(artifact.evidence.reason_codes)
+    ? artifact.evidence.reason_codes.filter((value): value is string => typeof value === "string")
+    : [];
+  const references = Array.isArray(artifact.evidence.evidence_references)
+    ? artifact.evidence.evidence_references.flatMap((value) => {
+      if (!value || typeof value !== "object") return [];
+      const reference = value as Record<string, unknown>;
+      return typeof reference.evidence_type === "string" && typeof reference.evidence_id === "string"
+        ? [`${reference.evidence_type}:${reference.evidence_id}`]
+        : [];
+    }).slice(0, 5)
+    : [];
+  const tone = outcome === "supported" ? "ok" : outcome === "insufficient_evidence" ? "warn" : "risk";
+  const title = artifact.artifact_kind === "forecast" ? "Latest budget forecast" : "Latest anomaly finding";
+  return <div className="card stack">
+    <div className="heading-row"><div><p className="eyebrow">Read-only budget evidence</p><h3>{title}</h3></div><span className={`pill ${tone}`}>{outcome.replaceAll("_", " ")}</span></div>
+    <p className="muted">{reasons.length ? reasons.join(", ") : "No bounded reason code was returned."}</p>
+    <div className="detail-summary"><div className="summary-tile"><span className="metric-label">Evidence</span><strong>{artifact.evidence_id}</strong></div><div className="summary-tile"><span className="metric-label">Hash</span><strong>{compactHash(artifact.evidence_sha256)}</strong></div><div className="summary-tile"><span className="metric-label">References</span><strong>{references.length}</strong><span className="muted">{references.length ? references.join(", ") : "none"}</span></div></div>
+  </div>;
 }
 
 function comparisonRows(summary: ScorecardScenarioComparisonSummary) {
@@ -206,6 +229,8 @@ export function BenchmarkScorecards() {
   const [loading, setLoading] = useState(false);
   const [benchmarkError, setBenchmarkError] = useState<string | null>(null);
   const [regressionError, setRegressionError] = useState<string | null>(null);
+  const [budgetEvidence, setBudgetEvidence] = useState<BudgetEvidenceArtifact[]>([]);
+  const [budgetEvidenceError, setBudgetEvidenceError] = useState<string | null>(null);
 
   const loadScenario = useCallback(async (requestedScenario: string) => {
     const normalized = requestedScenario.trim();
@@ -217,10 +242,12 @@ export function BenchmarkScorecards() {
     setLoading(true);
     setBenchmarkError(null);
     setRegressionError(null);
-    const [scorecardsResult, artifactsResult, trendResult] = await Promise.allSettled([
+    setBudgetEvidenceError(null);
+    const [scorecardsResult, artifactsResult, trendResult, budgetResult] = await Promise.allSettled([
       fetchScorecards({ scenario_id: normalized, limit: 100 }),
       fetchRegressionArtifacts({ scenario_id: normalized, limit: 100 }),
       fetchRegressionTrend(normalized, { limit: 100 }),
+      fetchBudgetEvidence({ limit: 100 }),
     ]);
 
     if (scorecardsResult.status === "fulfilled") {
@@ -250,6 +277,12 @@ export function BenchmarkScorecards() {
       setTrend(null);
       setRegressionError((current) => current ?? (trendResult.reason instanceof Error ? trendResult.reason.message : "Failed to load regression trend."));
     }
+    if (budgetResult.status === "fulfilled") {
+      setBudgetEvidence(budgetResult.value.artifacts);
+    } else {
+      setBudgetEvidence([]);
+      setBudgetEvidenceError(budgetResult.reason instanceof Error ? budgetResult.reason.message : "Failed to load budget evidence.");
+    }
     setLoading(false);
   }, []);
 
@@ -277,6 +310,7 @@ export function BenchmarkScorecards() {
         </form>
         {benchmarkError && <StateBanner title="Benchmark comparison unavailable" tone="risk"><p>{benchmarkError}</p></StateBanner>}
         {regressionError && <StateBanner title="Regression evidence unavailable" tone="risk"><p>{regressionError}</p></StateBanner>}
+        {budgetEvidenceError && <StateBanner title="Budget evidence unavailable" tone="risk"><p>{budgetEvidenceError}</p></StateBanner>}
       </div>
 
       {comparison && (
@@ -306,6 +340,9 @@ export function BenchmarkScorecards() {
 
       {regression && <RegressionLatest report={regression} />}
       {trend && <RegressionHistory trend={trend} />}
+      {!budgetEvidenceError && budgetEvidence.filter((artifact) => artifact.artifact_kind === "forecast").at(-1) && <BudgetEvidenceLatest artifact={budgetEvidence.filter((artifact) => artifact.artifact_kind === "forecast").at(-1)!} />}
+      {!budgetEvidenceError && budgetEvidence.filter((artifact) => artifact.artifact_kind === "anomaly").at(-1) && <BudgetEvidenceLatest artifact={budgetEvidence.filter((artifact) => artifact.artifact_kind === "anomaly").at(-1)!} />}
+      {!loading && !budgetEvidenceError && budgetEvidence.length === 0 && <StateBanner title="No budget evidence" tone="info"><p>No persisted forecast or anomaly evidence is available yet.</p></StateBanner>}
       {!loading && !regressionError && !regression && !trend && <StateBanner title="No regression evidence" tone="info"><p>No persisted regression report is available for this scenario.</p></StateBanner>}
     </section>
   );

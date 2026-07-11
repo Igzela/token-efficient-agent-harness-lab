@@ -167,6 +167,17 @@ test("regression readers use bounded list detail and trend endpoints", async () 
   assert(calls.every((call) => call.init.method === "GET"));
 });
 
+test("budget evidence readers use bounded encoded read-only endpoints", async () => {
+  const { calls, fetchImpl } = captureFetch({ read_only: true });
+  const client = new AgentControlPlaneClient({ baseUrl: "http://127.0.0.1:8080", fetchImpl });
+
+  await client.budgetEvidence({ kind: "anomaly", limit: 25, offset: 5 });
+  await client.budgetEvidenceArtifact("budget/anomaly one");
+
+  assert.equal(calls[0].url, "http://127.0.0.1:8080/api/v1/budget-evidence?kind=anomaly&limit=25&offset=5");
+  assert.equal(calls[1].url, "http://127.0.0.1:8080/api/v1/budget-evidence/budget%2Fanomaly%20one");
+});
+
 test("local state readers use product endpoints", async () => {
   const { calls, fetchImpl } = captureFetch({ ok: true });
   const client = new AgentControlPlaneClient({ baseUrl: "http://127.0.0.1:8080", fetchImpl });

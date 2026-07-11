@@ -33,6 +33,7 @@ Full Agent Autonomy Mode is active for repo-scoped planning and execution that r
 | Scorecard validation | `scripts/token_efficiency_scorecard.py` |
 | Scorecard comparison | `scripts/scorecard_comparison.py` |
 | PE-2 deterministic anomaly detection | `engine/src/budget_anomaly.rs`; additive contracts in `engine/src/budget_manager.rs` |
+| PE-2 budget evidence persistence/read surfaces | `engine/src/storage/local_product_store/budget_evidence_artifacts.rs`; scorecard HTTP handlers/routes/OpenAPI; Python/TypeScript SDK clients; `dashboard/src/components/BenchmarkScorecards.tsx` |
 | PE-1 scenario registry, fixed evidence, reports/batches, persistence, and bounded trends | `scripts/token_efficiency_regression.py`, `tools/test_token_efficiency_regression.py`, `tests/fixtures/token_efficiency_regression/registry.json`, `tests/fixtures/token_efficiency_regression/*/*.artifact.json`, `engine/src/storage/local_product_store/regression_report_artifacts.rs`, `engine/tests/test_regression_report_artifacts.rs` |
 | Native scorecard export | `scripts/native_scorecard_export.py` |
 | Native deterministic stateful pilot | `scripts/native_stateful_experiment_pilot.py` |

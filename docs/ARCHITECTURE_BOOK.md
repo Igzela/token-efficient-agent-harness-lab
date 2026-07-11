@@ -189,7 +189,7 @@ Do not create a second runtime kernel for V2. Extend the existing `node_executor
 
 `LocalProductStore` supports SQLite by default and PostgreSQL through the `pg` feature and `ACP_DATABASE_URL`.
 
-- Current version: v17; v17 adds bounded, read-only PE-1 regression report artifacts inside the existing `LocalProductStore` SQLite/PostgreSQL boundary.
+- Current version: v18; v18 adds immutable, hash-bound `budget_evidence_artifacts` envelopes for validated `budget_forecast_evidence.v1` and `budget_anomaly_finding.v1` inside the existing `LocalProductStore` SQLite/PostgreSQL boundary. The evidence hash plus kind determines idempotency; records are metadata-only, bounded, and read-only through `dispatch:read` surfaces. No pause, policy, provider, or budget authority is stored or granted. Rollback is a code revert; existing rows and tables remain intact.
 - SQLite uses WAL and app-managed backup/restore.
 - PostgreSQL disables app-managed backup; operators use `pg_dump` or managed backup.
 - PostgreSQL integration tests are gated behind `cargo test -p engine --features pg-tests`.

@@ -1451,3 +1451,31 @@ export interface RegressionArtifactResponse extends Omit<RegressionArtifactListR
 export interface RegressionTrendResponse extends Omit<RegressionArtifactListResponse, "artifacts"> {
   trend: RegressionTrend;
 }
+
+export interface BudgetEvidenceArtifactEnvelope {
+  schema_version: "budget_evidence_artifact.v1";
+  artifact_id: string;
+  artifact_kind: "forecast" | "anomaly";
+  evidence_id: string;
+  evidence_sha256: string;
+  created_at: string;
+  read_only: true;
+  metadata_only: true;
+  evidence: Record<string, unknown>;
+}
+
+export interface BudgetEvidenceArtifactListResponse {
+  metadata_only: true;
+  read_only: true;
+  report_only: true;
+  provider_calls: "disabled";
+  mutation_authority: "none";
+  artifacts: BudgetEvidenceArtifactEnvelope[];
+  kind: "forecast" | "anomaly" | null;
+  limit: number;
+  offset: number;
+}
+
+export interface BudgetEvidenceArtifactResponse extends Omit<BudgetEvidenceArtifactListResponse, "artifacts" | "kind" | "limit" | "offset"> {
+  artifact: BudgetEvidenceArtifactEnvelope;
+}

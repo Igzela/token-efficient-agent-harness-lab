@@ -94,6 +94,8 @@ import type {
   RegressionArtifactListResponse,
   RegressionArtifactResponse,
   RegressionTrendResponse,
+  BudgetEvidenceArtifactListResponse,
+  BudgetEvidenceArtifactResponse,
 } from "./wire-types.js";
 
 export interface AgentControlPlaneClientOptions {
@@ -188,6 +190,12 @@ export interface RegressionListOptions {
   limit?: number;
 }
 
+export interface BudgetEvidenceListOptions {
+  kind?: "forecast" | "anomaly";
+  limit?: number;
+  offset?: number;
+}
+
 export class AgentControlPlaneClient {
   private readonly baseUrl: string;
   private readonly apiKey?: string;
@@ -231,6 +239,20 @@ export class AgentControlPlaneClient {
   regressionTrend(scenarioId: string, limit?: number): Promise<RegressionTrendResponse> {
     return this.getJson<RegressionTrendResponse>(
       `/api/v1/regressions/trends/${encodeURIComponent(scenarioId)}${queryString({ limit })}`,
+    );
+  }
+
+  budgetEvidence(options: BudgetEvidenceListOptions = {}): Promise<BudgetEvidenceArtifactListResponse> {
+    return this.getJson<BudgetEvidenceArtifactListResponse>(`/api/v1/budget-evidence${queryString({
+      kind: options.kind,
+      limit: options.limit,
+      offset: options.offset,
+    })}`);
+  }
+
+  budgetEvidenceArtifact(artifactId: string): Promise<BudgetEvidenceArtifactResponse> {
+    return this.getJson<BudgetEvidenceArtifactResponse>(
+      `/api/v1/budget-evidence/${encodeURIComponent(artifactId)}`,
     );
   }
 

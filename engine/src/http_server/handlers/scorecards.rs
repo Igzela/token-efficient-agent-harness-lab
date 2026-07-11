@@ -29,6 +29,13 @@ pub(crate) struct RegressionTrendQuery {
     limit: Option<i64>,
 }
 
+#[derive(Debug, Deserialize)]
+pub(crate) struct BudgetEvidenceQuery {
+    kind: Option<String>,
+    limit: Option<i64>,
+    offset: Option<i64>,
+}
+
 pub(crate) async fn api_scorecard_artifacts(
     State(state): State<AxumApiState>,
     headers: HeaderMap,
@@ -209,4 +216,62 @@ fn regression_response(payload: serde_json::Value) -> serde_json::Value {
         .expect("regression response is object")
         .extend(payload.as_object().cloned().unwrap_or_default());
     response
+}
+
+pub(crate) async fn api_budget_evidence_artifacts(
+    State(state): State<AxumApiState>,
+    headers: HeaderMap,
+    uri: Uri,
+    axum::extract::Extension(request_id): axum::extract::Extension<RequestId>,
+    Query(query): Query<BudgetEvidenceQuery>,
+) -> Result<impl IntoResponse, ApiError> {
+    authorize(&state, &headers, "dispatch:read", uri.path(), &request_id.0)?;
+    let store = require_store(&state)?;
+    let kind = query.kind.as_deref();
+    if kind.is_some_and(|value| !matches!(value, "forecast" | "anomaly")) {
+        return Err(ApiError::with_code(
+            StatusCode::BAD_REQUEST,
+            "invalid_budget_evidence_query",
+            "kind must be forecast or anomaly",
+        ));
+    }
+    let limit = query.limit.unwrap_or(50).clamp(1, 100);
+    let offset = query.offset.unwrap_or(0).clamp(0, 10_000);
+    let artifacts = store
+        .budget_evidence_artifacts(kind, limit, offset)
+        .map_err(internal_error)?;
+    Ok((
+        cors_headers(),
+        Json(regression_response(json!({
+            "artifacts": artifacts,
+            "kind": kind,
+            "limit": limit,
+            "offset": offset,
+        }))),
+    ))
+}
+
+pub(crate) async fn api_budget_evidence_artifact_detail(
+    State(state): State<AxumApiState>,
+    headers: HeaderMap,
+    uri: Uri,
+    axum::extract::Extension(request_id): axum::extract::Extension<RequestId>,
+    Path(artifact_id): Path<String>,
+) -> Result<impl IntoResponse, ApiError> {
+    authorize(&state, &headers, "dispatch:read", uri.path(), &request_id.0)?;
+    let store = require_store(&state)?;
+    let artifact = store
+        .get_budget_evidence_artifact(&artifact_id)
+        .map_err(internal_error)?
+        .ok_or_else(|| {
+            ApiError::with_code(
+                StatusCode::NOT_FOUND,
+                "budget_evidence_artifact_not_found",
+                "budget evidence artifact not found",
+            )
+        })?;
+    Ok((
+        cors_headers(),
+        Json(regression_response(json!({"artifact": artifact}))),
+    ))
 }

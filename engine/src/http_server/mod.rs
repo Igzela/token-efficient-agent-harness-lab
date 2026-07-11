@@ -1403,6 +1403,32 @@ fn append_scorecard_openapi_paths(doc: &mut Value) {
             }
         }),
     );
+    paths.insert(
+        "/api/v1/budget-evidence".to_string(),
+        json!({
+            "get": {
+                "summary": "List bounded budget forecast and anomaly evidence",
+                "description": "Requires dispatch:read scope. Returns immutable, metadata-only validated budget evidence artifacts from LocalProductStore. No provider calls, pause action, policy mutation, or budget mutation authority is granted.",
+                "parameters": [
+                    {"name": "kind", "in": "query", "schema": {"type": "string", "enum": ["forecast", "anomaly"]}},
+                    {"name": "limit", "in": "query", "schema": {"type": "integer", "default": 50, "minimum": 1, "maximum": 100}},
+                    {"name": "offset", "in": "query", "schema": {"type": "integer", "default": 0, "minimum": 0, "maximum": 10000}}
+                ],
+                "responses": {"200": {"description": "Budget evidence artifact list"}, "400": {"description": "Invalid kind"}}
+            }
+        }),
+    );
+    paths.insert(
+        "/api/v1/budget-evidence/{artifact_id}".to_string(),
+        json!({
+            "get": {
+                "summary": "Get one bounded budget evidence artifact",
+                "description": "Requires dispatch:read scope. Returns one immutable validated forecast or anomaly envelope.",
+                "parameters": [path_parameter("artifact_id")],
+                "responses": {"200": {"description": "Budget evidence artifact"}, "404": {"description": "Budget evidence artifact not found"}}
+            }
+        }),
+    );
 }
 
 #[cfg(test)]

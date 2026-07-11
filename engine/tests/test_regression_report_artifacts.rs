@@ -361,3 +361,77 @@ async fn regression_api_lists_details_and_derives_trends_read_only() {
         "regression_artifact_not_found"
     );
 }
+
+#[tokio::test]
+async fn budget_evidence_api_is_read_only_bounded_and_explicit_when_empty() {
+    let (store, _dir) = make_store();
+    let app = build_axum_router(AxumApiState::new().with_local_store(store));
+
+    let list = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(Method::GET)
+                .uri("/api/v1/budget-evidence?limit=1000&offset=20000")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(list.status(), StatusCode::OK);
+    let body = response_json(list).await;
+    assert_eq!(body["read_only"], true);
+    assert_eq!(body["mutation_authority"], "none");
+    assert_eq!(body["artifacts"], json!([]));
+    assert_eq!(body["limit"], 100);
+    assert_eq!(body["offset"], 10_000);
+
+    let invalid_kind = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(Method::GET)
+                .uri("/api/v1/budget-evidence?kind=pause")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(invalid_kind.status(), StatusCode::BAD_REQUEST);
+    assert_eq!(
+        response_json(invalid_kind).await["code"],
+        "invalid_budget_evidence_query"
+    );
+
+    let missing = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(Method::GET)
+                .uri("/api/v1/budget-evidence/missing-artifact")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(missing.status(), StatusCode::NOT_FOUND);
+    assert_eq!(
+        response_json(missing).await["code"],
+        "budget_evidence_artifact_not_found"
+    );
+
+    let openapi = app
+        .oneshot(
+            Request::builder()
+                .method(Method::GET)
+                .uri("/api/v1/openapi.json")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(openapi.status(), StatusCode::OK);
+    assert!(response_json(openapi).await["paths"]
+        .get("/api/v1/budget-evidence")
+        .is_some());
+}

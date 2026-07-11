@@ -36,6 +36,7 @@ import type {
   SchedulerStatusResponse,
   OperatorEvidenceResponse,
   ScorecardArtifactListResponse,
+  BudgetEvidenceArtifactListResponse,
   PolicySimulationResult,
   SimulationReportResponse,
   StorageIntegrityResponse,
@@ -600,6 +601,14 @@ export async function fetchScorecards(params: {
   limit?: number;
 }): Promise<ScorecardArtifactListResponse> {
   return fetchJson<ScorecardArtifactListResponse>(withQuery("/api/v1/scorecards", params));
+}
+
+export async function fetchBudgetEvidence(params: {
+  kind?: "forecast" | "anomaly";
+  limit?: number;
+  offset?: number;
+} = {}): Promise<BudgetEvidenceArtifactListResponse> {
+  return fetchJson<BudgetEvidenceArtifactListResponse>(withQuery("/api/v1/budget-evidence", params));
 }
 
 export async function fetchOperatorEvidence(runId: string): Promise<OperatorEvidenceResponse> {

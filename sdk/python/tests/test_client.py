@@ -144,6 +144,23 @@ class ClientLocalStateTest(unittest.TestCase):
         )
 
     @patch("agent_control_plane_sdk.client.urlopen")
+    def test_budget_evidence_readers_encode_artifact_ids(self, mock_urlopen):
+        mock_urlopen.return_value = mock_response({"read_only": True})
+        client = AgentControlPlaneClient("http://localhost:8080")
+
+        client.budget_evidence(kind="anomaly", limit=25, offset=5)
+        client.budget_evidence_artifact("budget/anomaly one")
+
+        urls = [call.args[0].full_url for call in mock_urlopen.call_args_list]
+        self.assertEqual(
+            urls,
+            [
+                "http://localhost:8080/api/v1/budget-evidence?kind=anomaly&limit=25&offset=5",
+                "http://localhost:8080/api/v1/budget-evidence/budget%2Fanomaly%20one",
+            ],
+        )
+
+    @patch("agent_control_plane_sdk.client.urlopen")
     def test_dispatches_sends_pagination_and_search_query_params(self, mock_urlopen):
         mock_urlopen.return_value = mock_response({"schema_version": "axum_api.v1", "dispatches": []})
         client = AgentControlPlaneClient("http://localhost:8080")
