@@ -3,13 +3,14 @@ name: pe2-anomaly-debug
 on:
   pull_request:
     paths:
+      - ".github/pe2_anomaly_duplicate_ref_repair.py"
       - ".github/workflows/pe2-anomaly-debug.yml"
 
 permissions:
   contents: write
 
 jobs:
-  debug:
+  repair:
     if: github.event.pull_request.head.repo.full_name == github.repository && github.actor != 'github-actions[bot]'
     runs-on: ubuntu-latest
     steps:
@@ -20,18 +21,13 @@ jobs:
           persist-credentials: true
       - name: Install Rust stable
         uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable 2026-07-10
-      - name: Capture bounded failing test tail
-        shell: bash
+      - name: Repair duplicate evidence references
         run: |
-          set +e
-          cargo test -p engine > /tmp/pe2-anomaly-test.log 2>&1
-          status=$?
-          {
-            echo "cargo_test_exit=$status"
-            tail -n 240 /tmp/pe2-anomaly-test.log
-          } > .github/pe2_anomaly_debug.log
+          python .github/pe2_anomaly_duplicate_ref_repair.py
+          cargo fmt --all
+          cargo test -p engine budget_anomaly::tests::conflicting_duplicates_fail_closed
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add .github/pe2_anomaly_debug.log
-          git commit -m "chore: capture PE-2 anomaly test failure"
+          git add engine/src/budget_anomaly.rs
+          git commit -m "fix: deduplicate anomaly evidence references"
           git push origin HEAD:${{ github.head_ref }}
