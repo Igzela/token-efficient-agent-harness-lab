@@ -10,7 +10,7 @@ permissions:
   contents: write
 
 jobs:
-  repair:
+  diagnostic:
     if: github.event.pull_request.head.repo.full_name == github.repository && github.actor != 'github-actions[bot]'
     runs-on: ubuntu-latest
     steps:
@@ -21,13 +21,31 @@ jobs:
           persist-credentials: true
       - name: Install Rust stable
         uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable 2026-07-10
-      - name: Apply and verify evidence-reference repair
+      - name: Capture bounded repair diagnostics
+        shell: bash
         run: |
-          python .github/pe2_anomaly_duplicate_ref_repair.py
-          cargo fmt --all
-          cargo test -p engine budget_anomaly::tests::conflicting_duplicates_fail_closed
+          set +e
+          : > /tmp/pe2-anomaly-repair.log
+          python .github/pe2_anomaly_duplicate_ref_repair.py >> /tmp/pe2-anomaly-repair.log 2>&1
+          script_status=$?
+          fmt_status=not_run
+          test_status=not_run
+          if [ "$script_status" -eq 0 ]; then
+            cargo fmt --all >> /tmp/pe2-anomaly-repair.log 2>&1
+            fmt_status=$?
+          fi
+          if [ "$script_status" -eq 0 ] && [ "$fmt_status" -eq 0 ]; then
+            cargo test -p engine budget_anomaly::tests::conflicting_duplicates_fail_closed >> /tmp/pe2-anomaly-repair.log 2>&1
+            test_status=$?
+          fi
+          {
+            echo "script_status=$script_status"
+            echo "fmt_status=$fmt_status"
+            echo "test_status=$test_status"
+            tail -n 220 /tmp/pe2-anomaly-repair.log
+          } > .github/pe2_anomaly_repair_debug.log
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add engine/src/budget_anomaly.rs
-          git commit -m "fix: deduplicate anomaly evidence references"
+          git add .github/pe2_anomaly_repair_debug.log
+          git commit -m "chore: capture anomaly repair diagnostics"
           git push origin HEAD:${{ github.head_ref }}
