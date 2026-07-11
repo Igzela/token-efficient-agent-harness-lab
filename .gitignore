@@ -29,3 +29,7 @@ gpt_snapshot.txt
 # Separate workspace
 claude-drive/
 .claude/worktrees/
+
+# Vercel local link
+.vercel
+site/.vercel
