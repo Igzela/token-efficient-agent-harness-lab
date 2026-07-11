@@ -4,19 +4,20 @@ Last updated: 2026-07-11.
 
 This file maps current ownership. It is not a phase history.
 
-Full Agent Autonomy Mode remains active for repo-scoped, testable, observable, CI-gated, rollbackable work.
+Full Agent Autonomy Mode remains active inside approved Terra-ready task packets for repo-scoped, testable, observable, CI-gated, rollbackable work.
 
 ## Core Ownership
 
 | Module | Stage | Purpose | Verification |
 |---|---|---|---|
+| `.codex/config.toml`, `AGENTS.md`, `docs/NEXT_DECISION.md`, `scripts/check_agent_handoff.py` | active | Terra Medium executor default, planner/executor boundary, packet authority, and profile drift prevention | agent handoff check and CI |
 | `engine/src/main.rs`, `engine/src/http_server/` | active | Engine and API | HTTP and engine tests |
 | `engine/src/trusted_local.rs` | active | Local readiness policy | trusted-local tests |
 | `dispatch_engine.rs`, `task_analyzer/`, `model_selector.rs`, `budget_manager.rs` | active | Dispatch, routing, and bounded budget authority | dispatch and budget tests |
 | `engine/src/provider/`, `engine/src/provider/fake.rs` | active | Model adapters, persistent bounded audit/redaction, and FakeProvider for testing | focused adapter/audit tests, RustSec audit, full stack verification |
-| `engine/src/local_runner_provider.rs`, `engine/src/bin/local_runner_exec.rs` | active | Provider-backed stateful-vs-stateless runner (Stub/Fake/Live); Live requires gates, persistent audit, positive pricing, pre-call cost reservation, bounded usage, timeout, and kill control | local_runner_provider unit tests, local-runner-exec binary, provider audit store tests |
+| `engine/src/local_runner_provider.rs`, `engine/src/bin/local_runner_exec.rs` | active | Provider-backed stateful-vs-stateless runner (Stub/Fake/Live); Live requires gates, persistent audit, positive pricing, pre-call cost reservation, bounded usage, timeout, and kill control | local_runner_provider tests, local-runner-exec binary, provider audit store tests |
 | `engine/src/cli/` | active | CLI adapters | engine tests |
-| `engine/src/agent_memory.rs` | active | Bounded AgentState memory policy helpers; no storage/runtime ownership | agent_memory unit tests plus agent-step/context-injection/operator-evidence tests |
+| `engine/src/agent_memory.rs` | active | Bounded AgentState memory policy helpers; no storage/runtime ownership | agent_memory and agent-step/context-injection/operator-evidence tests |
 | `workflow/`, `scheduler.rs`, `node_executor.rs`, `executor_pool.rs` | active | Workflow, durable dynamic-controller limits, deterministic/pinned routing, and pool accounting | workflow and scheduler tests |
 | `storage/local_product_store/` | active | Storage | local store tests |
 | `target_repo_output.rs`, `target_repo_output/authority.rs` | active | Target output | target-output tests |
@@ -47,32 +48,35 @@ Full Agent Autonomy Mode remains active for repo-scoped, testable, observable, C
 
 ## Post-LGB Product Evolution Ownership
 
-The PE-1 through PE-6 plan is defined in `docs/NEXT_DECISION.md`. These stages must extend existing owners rather than create parallel kernels or state sources.
+The detailed Terra-ready packet sequence is defined in `docs/NEXT_DECISION.md`. Packets extend existing owners rather than create parallel kernels or state sources.
 
 | Stage | Primary owning paths | Boundary |
 |---|---|---|
-| PE-1 Token Efficiency Regression Lab | `scripts/token_efficiency_regression.py`; scorecard scripts; `native_scorecard_artifacts.rs`; `regression_report_artifacts.rs`; scorecard HTTP handlers; benchmark Dashboard components; fixed fixtures | reuse scorecard v1/v2 and the existing LocalProductStore/API boundary; registry and reports remain read-only; no provider calls in CI |
-| PE-2 Budget Intelligence and Anomaly Auto-Pause | `budget_manager.rs`; provider audit/cost evidence; scheduler pause controls; HTTP/operator evidence; Dashboard | forecasts and anomalies are derived evidence; auto-pause only through existing policy and audit controls; no auto-kill |
+| PE-1 Token Efficiency Regression Lab | regression script/tests/fixtures; `native_scorecard_artifacts.rs`; `regression_report_artifacts.rs`; scorecard HTTP handlers; benchmark Dashboard components | reuse scorecard v1/v2 and existing LocalProductStore/API; report-only; no provider calls in CI |
+| PE-2 Budget Intelligence and Anomaly Auto-Pause | `budget_manager.rs`; provider audit/cost evidence; scheduler pause controls; HTTP/operator evidence; Dashboard | forecasts/anomalies are derived evidence; auto-pause only through existing policy/audit; no auto-kill |
 | PE-3 Operator Decision Center | operator-evidence handlers; approvals; workflow/scheduler read models; Dashboard | derived action queue only; no second state machine, authority source, or hidden mutation path |
-| PE-4 Trace-backed Policy Replay | `engine/src/feedback/run_trace_recorder.rs`; `engine/src/feedback/policy_simulator.rs`; adaptive experiment/canary modules; operator evidence | shadow-first, versioned evidence, coverage and out-of-distribution checks; reuse existing canary/promotion/rollback |
-| PE-5 Release Provenance | `.github/workflows/release.yml`; release/install/upgrade scripts; container build paths | add SBOM, signatures, attestations, and verification without weakening current audits or atomic rollback |
-| PE-6 Fault Injection and Recovery Drills | focused engine integration tests; storage/provider/scheduler fault seams; backup/restore and upgrade rollback scripts; CI tooling | bounded deterministic drills; no destructive external testing; recovery invariants and rollback remain authoritative |
+| PE-4 Trace-backed Policy Replay | `engine/src/feedback/run_trace_recorder.rs`; `engine/src/feedback/policy_simulator.rs`; adaptive experiment/canary modules; operator evidence | shadow-first, versioned evidence, coverage/OOD checks; reuse canary/promotion/rollback |
+| PE-5 Release Provenance | `.github/workflows/release.yml`; release/install/upgrade scripts; container build paths | add SBOM, signatures, attestations, and verification without weakening audits or atomic rollback |
+| PE-6 Fault Injection and Recovery Drills | focused engine integration tests; storage/provider/scheduler fault seams; backup/restore and upgrade rollback scripts; CI tooling | bounded deterministic drills; no destructive external testing; recovery invariants remain authoritative |
 
 ## Planned Evolution Routing
 
-1. Implement PE-1 first and establish multi-scenario regression evidence before adding predictive or operator automation.
-2. Implement PE-2 after regression evidence is stable; keep forecasting explainable and auto-pause fail-closed.
-3. Build PE-3 as a derived read model over existing controls and evidence.
-4. Replace heuristic policy simulation incrementally in PE-4; do not give replay live influence until trace coverage and canary gates pass.
-5. PE-5 may proceed independently after PE-1 if it does not overlap active release changes.
-6. Implement PE-6 after recovery invariants for the affected subsystem are explicit and testable.
+1. Execute only the earliest `READY_FOR_TERRA` packet whose prerequisites are complete.
+2. Finish PE-1 Dashboard and acceptance seal before PE-2.
+3. Implement PE-2 contract, forecast, anomaly, read surfaces, policy-gated pause, and closeout in packet order.
+4. Build PE-3 as a derived read model before connecting existing mutation endpoints.
+5. Progress PE-4 from calibration to offline replay, shadow, and bounded canary.
+6. PE-5 may run independently only after PE-1 and explicit lane activation.
+7. Implement PE-6 only after each affected subsystem has explicit recovery invariants.
 
-Do not create another runtime, scheduler, graph kernel, mailbox, storage layer, policy authority, or dashboard data model.
+Do not create another runtime, scheduler, graph kernel, mailbox, storage layer, policy authority, artifact truth source, or Dashboard data model.
 
 ## Active Docs
 
-Keep current direction and routing inside active docs only:
+Keep direction and routing inside active surfaces only:
 
+- `AGENTS.md`
+- `.codex/config.toml`
 - `docs/ARCHITECTURE_BOOK.md`
 - `docs/CURRENT_STATUS.md`
 - `docs/NEXT_DECISION.md`
