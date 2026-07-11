@@ -296,11 +296,15 @@ PE-3 is active. Its versioned contract and mutation-free derived queue are compl
 
 ### Packet PE3-CLOSE-1 — PE-3 acceptance seal
 
-**State:** `READY_FOR_EXECUTION`
+**State:** `IN_PROGRESS`
 
 **Prerequisite:** PE3-ACTIONS-1 complete.
 
 **Goal:** Independently audit contracts, source adapters, derived queue, API/OpenAPI, SDKs, Dashboard, permitted actions, permissions, audit, recovery, SQLite/PostgreSQL compatibility, and rollback; repair bounded defects and activate PE4-CONTRACT-1 without beginning replay implementation.
+
+**Acceptance:** Recheck deterministic precedence/deduplication/conflict/expiry behavior, source-owner completeness and source-read failure, queue immutability/pagination/restart across SQLite and PostgreSQL, read API/OpenAPI/SDK/Dashboard compatibility, and adapter confirmation, exact-page hash binding, permission order, audit ownership, unsupported-action fail-closed behavior, and rollback. Closeout may repair only independently demonstrated PE-3 defects. It must leave no new queue store, action authority, scheduler, approval system, or Dashboard mutation control.
+
+**Completion evidence:** Focused action authorization regression, existing queue/read/dashboard/PostgreSQL evidence, the full repository verification baseline, exact-head green CI, and an updated `CURRENT_STATUS.md`/`NEXT_DECISION.md` that marks PE-3 complete and PE4-CONTRACT-1 ready. Rollback remains a revert of the individual PE-3 PRs; no migration cleanup is required.
 
 Later PE-3 packets remain: deterministic derived queue, read-only API/SDK/Dashboard surface, existing-control action adapters, and closeout.
 
