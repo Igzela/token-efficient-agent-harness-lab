@@ -558,6 +558,53 @@ async fn operator_decision_approval_action_is_hash_bound_confirmed_and_uses_exis
 }
 
 #[tokio::test]
+async fn operator_decision_actions_require_read_permission_before_queue_binding() {
+    let (store, _dir) = make_store();
+    let mut resolver = TenantResolver::new();
+    let scopes = HashSet::new();
+    resolver.add_tenant(Tenant {
+        tenant_id: "local".to_string(),
+        name: "Local".to_string(),
+        scopes: scopes.clone(),
+        rate_limit: Some(100),
+    });
+    let (_, raw_key) = resolver
+        .create_api_key("local", Some(scopes), None, 1.0)
+        .unwrap();
+    let app = build_axum_router(AxumApiState::new().with_local_store(store).with_auth(
+        resolver,
+        RateLimiter::new(60.0, 100),
+        Some(100),
+        1.0,
+    ));
+
+    let forbidden = app
+        .oneshot(
+            Request::builder()
+                .method(Method::POST)
+                .uri("/api/v1/operator/decisions/decision-1/actions")
+                .header(header::AUTHORIZATION, format!("Bearer {raw_key}"))
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(
+                    json!({
+                        "queue_sha256": "00".repeat(32),
+                        "generated_at": "2026-07-11T00:01:00Z",
+                        "maximum_freshness_seconds": 300,
+                        "limit": 25,
+                        "offset": 0,
+                        "action": "approve",
+                        "confirm_action": true
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(forbidden.status(), StatusCode::FORBIDDEN);
+}
+
+#[tokio::test]
 async fn budget_evidence_api_is_read_only_bounded_and_explicit_when_empty() {
     let (store, _dir) = make_store();
     let app = build_axum_router(AxumApiState::new().with_local_store(store));
