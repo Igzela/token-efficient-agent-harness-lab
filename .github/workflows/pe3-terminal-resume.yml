@@ -21,143 +21,102 @@ jobs:
           python - <<'PY'
           from pathlib import Path
 
-          path = Path('engine/src/storage/local_product_store/operator_decision_queue/mod.rs')
-          text = path.read_text()
-          old = '''                let budget_decision = pause_reason.strip_prefix("budget_auto_pause:");
-                          let (kind, source_id, reason, evidence_references) =
-                              if let Some(decision_id) = budget_decision {
-                                  (
-                                      OperatorDecisionSourceKind::Recovery,
-                                      decision_id.to_string(),
-                                      "budget_pause_recovery_required",
-                                      vec![original_reference(
-                                          "budget_pause_decision",
-                                          decision_id,
-                                          None,
-                                      )],
-                                  )
-                              } else {
-                                  (
-                                      OperatorDecisionSourceKind::Workflow,
-                                      format!("workflow-pause-{run_id}"),
-                                      "workflow_paused",
-                                      vec![workflow_ref.clone()],
-                                  )
-                              };
-                          push_source(
-                              sources,
-                              SourceInput {
-                                  kind,
-                                  id: source_id,
-                                  resource: run_id.clone(),
-                                  conflict_key: format!("{run_id}:control"),
-                                  action: OperatorDecisionAction::Resume,
-                                  state: OperatorDecisionSourceState::Actionable,
-                                  severity: OperatorDecisionSeverity::Warning,
-                                  confidence: 1.0,
-                                  observed_at,
-                                  expires_at: None,
-                                  reason,
-                                  evidence_references,
-                              },
-                          )?;'''
-          new = '''                let budget_decision = pause_reason.strip_prefix("budget_auto_pause:");
-                          let terminal = matches!(status, "failed" | "completed" | "cancelled");
-                          let (kind, source_id, active_reason, terminal_reason, evidence_references) =
-                              if let Some(decision_id) = budget_decision {
-                                  (
-                                      OperatorDecisionSourceKind::Recovery,
-                                      decision_id.to_string(),
-                                      "budget_pause_recovery_required",
-                                      "budget_pause_terminal",
-                                      vec![original_reference(
-                                          "budget_pause_decision",
-                                          decision_id,
-                                          None,
-                                      )],
-                                  )
-                              } else {
-                                  (
-                                      OperatorDecisionSourceKind::Workflow,
-                                      format!("workflow-pause-{run_id}"),
-                                      "workflow_paused",
-                                      "workflow_pause_terminal",
-                                      vec![workflow_ref.clone()],
-                                  )
-                              };
-                          push_source(
-                              sources,
-                              SourceInput {
-                                  kind,
-                                  id: source_id,
-                                  resource: run_id.clone(),
-                                  conflict_key: format!("{run_id}:control"),
-                                  action: OperatorDecisionAction::Resume,
-                                  state: if terminal {
-                                      OperatorDecisionSourceState::Resolved
-                                  } else {
-                                      OperatorDecisionSourceState::Actionable
-                                  },
-                                  severity: if terminal {
-                                      OperatorDecisionSeverity::Info
-                                  } else {
-                                      OperatorDecisionSeverity::Warning
-                                  },
-                                  confidence: 1.0,
-                                  observed_at,
-                                  expires_at: None,
-                                  reason: if terminal { terminal_reason } else { active_reason },
-                                  evidence_references,
-                              },
-                          )?;'''
-          if old not in text:
-              raise SystemExit('terminal resume source anchor missing')
-          text = text.replace(old, new, 1)
-
-          marker = 'fn terminal_paused_runs_do_not_recommend_resume()'
-          if marker not in text:
-              anchor = '''    #[test]
-                  fn queue_derivation_is_deterministic_read_only_and_restart_safe() {'''
-              addition = '''    #[test]
-                  fn terminal_paused_runs_do_not_recommend_resume() {
-                      let directory = tempdir().unwrap();
-                      let store = test_store(directory.path().join("store.db"));
-                      for status in ["failed", "completed", "cancelled"] {
-                          let run = create_empty_run(&store, &format!("terminal-{status}"));
-                          set_run_status(&store, &run, status);
-                          store.update_run_pause_reason(&run, Some("manual")).unwrap();
-                      }
-                      let queue = store.operator_decision_queue(NOW, 300, 100, 0).unwrap();
-                      assert!(queue.items.iter().all(|item| {
-                          item.recommended_action != Some(OperatorDecisionAction::Resume)
-                      }));
-                  }
-
-              '''
-              if anchor not in text:
-                  raise SystemExit('terminal resume test anchor missing')
-              text = text.replace(anchor, addition + anchor, 1)
-          path.write_text(text)
+          queue = Path('engine/src/storage/local_product_store/operator_decision_queue/mod.rs')
+          text = queue.read_text()
+          start_marker = '                let budget_decision = pause_reason.strip_prefix("budget_auto_pause:");\n'
+          end_marker = '            } else if status == "blocked" {\n'
+          start = text.find(start_marker)
+          end = text.find(end_marker, start)
+          if start < 0 or end < 0:
+              raise SystemExit('terminal resume source boundaries missing')
+          replacement = '''                let budget_decision = pause_reason.strip_prefix("budget_auto_pause:");
+                  let terminal = matches!(status, "failed" | "completed" | "cancelled");
+                  let (kind, source_id, active_reason, terminal_reason, evidence_references) =
+                      if let Some(decision_id) = budget_decision {
+                          (
+                              OperatorDecisionSourceKind::Recovery,
+                              decision_id.to_string(),
+                              "budget_pause_recovery_required",
+                              "budget_pause_terminal",
+                              vec![original_reference(
+                                  "budget_pause_decision",
+                                  decision_id,
+                                  None,
+                              )],
+                          )
+                      } else {
+                          (
+                              OperatorDecisionSourceKind::Workflow,
+                              format!("workflow-pause-{run_id}"),
+                              "workflow_paused",
+                              "workflow_pause_terminal",
+                              vec![workflow_ref.clone()],
+                          )
+                      };
+                  push_source(
+                      sources,
+                      SourceInput {
+                          kind,
+                          id: source_id,
+                          resource: run_id.clone(),
+                          conflict_key: format!("{run_id}:control"),
+                          action: OperatorDecisionAction::Resume,
+                          state: if terminal {
+                              OperatorDecisionSourceState::Resolved
+                          } else {
+                              OperatorDecisionSourceState::Actionable
+                          },
+                          severity: if terminal {
+                              OperatorDecisionSeverity::Info
+                          } else {
+                              OperatorDecisionSeverity::Warning
+                          },
+                          confidence: 1.0,
+                          observed_at,
+                          expires_at: None,
+                          reason: if terminal { terminal_reason } else { active_reason },
+                          evidence_references,
+                      },
+                  )?;
+'''
+          queue.write_text(text[:start] + replacement + text[end:])
 
           tests = Path('engine/tests/test_pe3_operator_action_repair.rs')
           test_text = tests.read_text()
-          old_test = '''    let (status, body) = post_action(
-                  app,
-                  &item.decision_id,
-                  action_body(
-                      &queue,
-                      OperatorDecisionAction::Rollback,
-                      &queue.generated_at,
-                  ),
-              )
-              .await;
-              assert_eq!(status, StatusCode::CONFLICT);
-              assert_eq!(
-                  body["code"],
-                  "operator_decision_action_not_allowlisted"
-              );'''
-          new_test = '''    for action in [
-                  OperatorDecisionAction::Rollback,
+          if 'fn terminal_paused_runs_do_not_recommend_resume()' not in test_text:
+              test_text += r'''
+
+          #[test]
+          fn terminal_paused_runs_do_not_recommend_resume() {
+              let directory = tempdir().unwrap();
+              let path = directory.path().join("local.db");
+              let (store, _clock) = make_store(&path, "2026-07-11T00:00:00Z");
+              for status in ["failed", "completed", "cancelled"] {
+                  let run = create_run(&store, status, json!([]), json!([]));
+                  let connection = rusqlite::Connection::open(&path).unwrap();
+                  connection
+                      .execute(
+                          "UPDATE workflow_runs SET status = ?1, pause_reason = 'manual', updated_at = ?2 WHERE run_id = ?3",
+                          rusqlite::params![status, "2026-07-11T00:00:00Z", run],
+                      )
+                      .unwrap();
+              }
+              let queue = store
+                  .operator_decision_queue("2026-07-11T00:00:00Z", 300, 100, 0)
+                  .unwrap();
+              assert!(queue.items.iter().all(|item| {
+                  item.recommended_action != Some(OperatorDecisionAction::Resume)
+              }));
+          }
+          '''
+          if 'fn inspect_and_acknowledge_are_explicitly_rejected()' not in test_text:
+              test_text += r'''
+
+          #[tokio::test]
+          async fn inspect_and_acknowledge_are_explicitly_rejected() {
+              let (_directory, _path, app, queue, item) =
+                  approval_fixture("2026-07-11T00:00:00Z", "2026-07-11T00:00:10Z");
+              for action in [
                   OperatorDecisionAction::Inspect,
                   OperatorDecisionAction::Acknowledge,
               ] {
@@ -172,10 +131,10 @@ jobs:
                       body["code"],
                       "operator_decision_action_not_allowlisted"
                   );
-              }'''
-          if old_test not in test_text:
-              raise SystemExit('unsupported action test anchor missing')
-          tests.write_text(test_text.replace(old_test, new_test, 1))
+              }
+          }
+          '''
+          tests.write_text(test_text)
           PY
           cargo fmt --all
           git config user.name "github-actions[bot]"
