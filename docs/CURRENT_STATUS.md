@@ -21,6 +21,7 @@ This repo is a local/small-team self-hosted agent workflow control plane. Rust `
 | Local stateful-vs-stateless runner | Implemented with bounded stub/fake/live paths and gated local execution |
 | Local runner evidence chain | Storage/API/operator evidence consumption and local artifact import implemented |
 | Agent memory policy layer | Implemented inside existing AgentState, AgentStepExecutor, context packing, workflow injection, operator evidence, and scorecard state-byte paths without a new runtime/store |
+| PE-1 Token Efficiency Regression Lab | Complete through deterministic registry/report/batch recomputation, bounded evidence, SQLite/PostgreSQL persistence, idempotent import, trends, read-only API/SDK, Dashboard history, and acceptance seal |
 | Post-R7 Wire/Type Governance Hardening | Implemented through `scripts/check_wire_codegen_drift.sh` |
 | Security and release hardening | Auth scope/expiry/live-clock fixes, persistent redacted provider audit, Rust/Bun advisory gates, SHA-pinned Actions, target-correct release packaging, and atomic upgrade rollback are implemented |
 
@@ -35,7 +36,7 @@ This repo is a local/small-team self-hosted agent workflow control plane. Rust `
 | Local runner operations | Active: validate, export, import, and inspect bounded scorecard artifacts locally |
 | Runner integration | Storage/API/operator evidence complete; workflow scheduling of local runner validation is implemented via `LocalRunnerValidationExecutor` in stub mode with automatic native scorecard recording on terminal tick |
 | Live provider adapter | Gated ready path: Stub/Fake/Live; Live requires gates, explicit metadata, symbolic credentials, positive pricing, persistent redacted audit, bounded calls/tokens/time/cost, and a kill switch |
-| Post-LGB Product Evolution Plan | PE-1 is in progress: registry/report/batch, fixed evidence, persistence/import/trends, and read-only API/SDK are implemented; Dashboard packet is ready |
+| Post-LGB Product Evolution Plan | PE-1 is complete; PE2-CONTRACT-1 is the earliest eligible `READY_FOR_TERRA` packet |
 
 ## Planned Product Evolution Stages
 
@@ -43,17 +44,26 @@ The stages are packetized in `docs/NEXT_DECISION.md`. Codex may execute only pac
 
 | Stage | Priority | Capability | Current state |
 |---|---|---|---|
-| PE-1 | P0 | Token Efficiency Regression Lab | In progress: Dashboard history/trend UX is `READY_FOR_TERRA`; closeout follows |
-| PE-2 | P0/P1 | Budget Intelligence and Anomaly Auto-Pause | Detailed packets defined; blocked on PE-1 closeout |
+| PE-1 | P0 | Token Efficiency Regression Lab | Complete and acceptance-sealed |
+| PE-2 | P0/P1 | Budget Intelligence and Anomaly Auto-Pause | In progress: evidence contract is `READY_FOR_TERRA`; later packets remain prerequisite-blocked |
 | PE-3 | P1 | Operator Decision Center | Detailed packets defined; blocked on PE-2 closeout |
 | PE-4 | P1/P2 | Trace-backed Policy Replay | Detailed packets defined; blocked on PE-3 closeout and trace coverage |
-| PE-5 | P1.5 | Release Provenance | Detailed packets defined; eligible after PE-1 closeout or explicit independent-lane activation |
+| PE-5 | P1.5 | Release Provenance | Detailed packets defined; eligible after PE-1 closeout only by explicit independent-lane activation |
 | PE-6 | P2 | Fault Injection and Recovery Drills | Detailed packets defined; blocked on recovery invariants and affected stage prerequisites |
+
+## PE-1 Acceptance Evidence
+
+- deterministic single-scenario and registry-wide report recomputation is covered by focused Python tests;
+- tamper, threshold, quality-failure, missing-baseline, missing-best-known, incomparable, cross-version, and registry-coverage cases are covered;
+- SQLite and PostgreSQL regression artifact persistence, repeat import, deterministic trends, and audit behavior are covered;
+- list/detail/trend HTTP routes and Python/TypeScript SDK readers are covered;
+- Dashboard tests cover all six outcomes, absent evidence roles, empty and one-point histories, transitions, encoded paths, and exclusion of raw fields;
+- PR #177 CI run 29137424748 passed all seven jobs, including PostgreSQL, Rust, TypeScript/Dashboard, Python, Docker, native runtime, full-stack cutover, formatting, clippy, and dependency audits;
+- PE-1 remains report-only: no CI blocking, provider calls, routing mutation, policy mutation, pause authority, or target-repository writes were added.
 
 ## Current Gaps
 
-- PE-1 Dashboard history, trend, baseline/best-known configuration, reasons, and evidence links remain incomplete.
-- PE-2 predictive exhaustion, explainable anomaly detection, and policy-gated high-confidence auto-pause are not implemented.
+- PE-2 predictive exhaustion, explainable anomaly detection, read surfaces, and policy-gated high-confidence auto-pause are not implemented.
 - PE-3 has no unified derived decision queue.
 - `policy_simulator.rs` still relies on fixed estimates rather than trace-calibrated replay.
 - SBOM, signing, and provenance attestations are not yet part of the release contract.
