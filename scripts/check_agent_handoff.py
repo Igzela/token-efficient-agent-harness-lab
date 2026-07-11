@@ -79,7 +79,7 @@ REQUIRED_FILES = {
         "Mandatory Executor Profile",
         "Terra-Ready Packet Protocol",
         "READY_FOR_TERRA",
-        "model_profile_mismatch",
+        "profile mismatch is a hard stop",
         "Hard Stops",
         "repo-scoped, testable, observable, and rollbackable",
         "Packet PE1-UI-1",
