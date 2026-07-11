@@ -1,0 +1,29 @@
+name: pe3-handoff-patch
+
+on:
+  pull_request:
+    branches: [ main ]
+
+permissions:
+  contents: write
+
+jobs:
+  apply-handoff-patch:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out PR branch
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        with:
+          ref: ${{ github.head_ref }}
+          persist-credentials: true
+      - name: Apply and verify handoff repair
+        run: |
+          python .github/pe3_handoff_patch.py
+          uv run --no-project python -m unittest tools.test_check_agent_handoff
+          uv run --no-project python scripts/check_agent_handoff.py
+          git diff --check
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add docs/NEXT_DECISION.md scripts/check_agent_handoff.py tools/test_check_agent_handoff.py
+          git commit -m "PE3-REPAIR-1 detect active packet state contradictions"
+          git push origin HEAD:${{ github.head_ref }}
