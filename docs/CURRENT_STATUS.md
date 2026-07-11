@@ -36,7 +36,7 @@ This repo is a local/small-team self-hosted agent workflow control plane. Rust `
 | Local runner operations | Active: validate, export, import, and inspect bounded scorecard artifacts locally |
 | Runner integration | Storage/API/operator evidence complete; workflow scheduling of local runner validation is implemented via `LocalRunnerValidationExecutor` in stub mode with automatic native scorecard recording on terminal tick |
 | Live provider adapter | Gated ready path: Stub/Fake/Live; Live requires gates, explicit metadata, symbolic credentials, positive pricing, persistent redacted audit, bounded calls/tokens/time/cost, and a kill switch |
-| Post-LGB Product Evolution Plan | PE-1 is complete; PE2-CONTRACT-1 is implemented; PE2-FORECAST-1 is the next eligible packet |
+| Post-LGB Product Evolution Plan | PE-1 is complete; PE2-CONTRACT-1 and PE2-FORECAST-1 are implemented; PE2-ANOMALY-1 is the next eligible packet |
 
 ## Planned Product Evolution Stages
 
@@ -45,7 +45,7 @@ The stages are packetized in `docs/NEXT_DECISION.md`. Codex may execute only pac
 | Stage | Priority | Capability | Current state |
 |---|---|---|---|
 | PE-1 | P0 | Token Efficiency Regression Lab | Complete and acceptance-sealed |
-| PE-2 | P0/P1 | Budget Intelligence and Anomaly Auto-Pause | In progress: evidence contract implemented; deterministic forecast packet next |
+| PE-2 | P0/P1 | Budget Intelligence and Anomaly Auto-Pause | In progress: evidence contract and deterministic forecasts implemented; anomaly packet next |
 | PE-3 | P1 | Operator Decision Center | Detailed packets defined; blocked on PE-2 closeout |
 | PE-4 | P1/P2 | Trace-backed Policy Replay | Detailed packets defined; blocked on PE-3 closeout and trace coverage |
 | PE-5 | P1.5 | Release Provenance | Detailed packets defined; eligible after PE-1 closeout only by explicit independent-lane activation |
@@ -70,9 +70,18 @@ The stages are packetized in `docs/NEXT_DECISION.md`. Codex may execute only pac
 - malformed, oversized, tampered, sparse, contradictory, unpriced, missing-dimension, and invalid-window evidence fails closed or remains explicitly insufficient;
 - no persistence, API, SDK, Dashboard, provider, reservation, policy, pause, or target-output behavior changes are part of the contract packet.
 
+## PE-2 Forecast Evidence
+
+- deterministic forecasts use only bounded posted observations and explicit half-open evidence windows;
+- observed token/cost totals remain separate from linear horizon estimates and exhaustion time;
+- sparse, stale, mixed required dimensions, missing dimensions, excessive duplicates, conflicting duplicates, and incomplete pricing return explicit bounded outcomes;
+- provider audit adaptation does not invent run, workspace, model, content hash, or non-USD pricing facts;
+- focused tests cover zero usage, bursty usage, mixed workloads, boundary time, deterministic ordering, duplicate reconciliation, conflicting evidence, and concurrent reads;
+- no persistence, API, SDK, Dashboard, budget/reservation mutation, policy, pause, or target-output behavior changes are part of the forecast packet.
+
 ## Current Gaps
 
-- PE-2 deterministic forecast computation, explainable anomaly detection, read surfaces, and policy-gated high-confidence auto-pause are not implemented.
+- PE-2 explainable anomaly detection, read surfaces, and policy-gated high-confidence auto-pause are not implemented.
 - PE-3 has no unified derived decision queue.
 - `policy_simulator.rs` still relies on fixed estimates rather than trace-calibrated replay.
 - SBOM, signing, and provenance attestations are not yet part of the release contract.
