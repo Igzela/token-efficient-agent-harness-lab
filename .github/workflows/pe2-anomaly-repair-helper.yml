@@ -19,14 +19,11 @@ jobs:
         with:
           ref: ${{ github.head_ref }}
           persist-credentials: true
-      - name: Install Rust stable
-        uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable 2026-07-10
-      - name: Repair and commit branch-only anomaly contract
+      - name: Update active PE-2 documents
         run: |
           python .github/pe2_anomaly_repair.py
-          cargo fmt --all
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add engine/src/budget_anomaly.rs
-          git commit -m "fix: preserve anomaly evidence coverage"
+          git add docs/CURRENT_STATUS.md docs/NEXT_DECISION.md
+          git commit -m "docs: advance PE-2 routing to read surfaces"
           git push origin HEAD:${{ github.head_ref }}
