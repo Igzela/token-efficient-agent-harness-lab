@@ -394,3 +394,94 @@ async fn blocked_retry_executes_once_then_old_binding_cannot_replay() {
         .unwrap();
     assert_eq!(attempt_count, 1);
 }
+
+#[tokio::test]
+async fn concurrent_approval_resolution_allows_exactly_one_owner_write() {
+    let directory = tempdir().unwrap();
+    let path = directory.path().join("local.db");
+    let (store, clock) = make_store(&path, "2026-07-11T00:00:00Z");
+    let run = create_run(&store, "approval-race", json!([]), json!([]));
+    request_approval(&store, &run, "node-z");
+    let queue = store
+        .operator_decision_queue("2026-07-11T00:00:00Z", 300, 100, 0)
+        .unwrap();
+    let item = item_for_action(&queue, OperatorDecisionAction::Approve);
+    clock.set("2026-07-11T00:00:10Z");
+    let app = build_axum_router(AxumApiState::new().with_local_store(store));
+    let body = action_body(&queue, OperatorDecisionAction::Approve, &queue.generated_at);
+    let (left, right) = tokio::join!(
+        post_action(app.clone(), &item.decision_id, body.clone()),
+        post_action(app, &item.decision_id, body),
+    );
+    let statuses = [left.0, right.0];
+    assert_eq!(
+        statuses
+            .iter()
+            .filter(|status| **status == StatusCode::OK)
+            .count(),
+        1
+    );
+    assert_eq!(
+        statuses
+            .iter()
+            .filter(|status| **status == StatusCode::CONFLICT)
+            .count(),
+        1
+    );
+
+    let connection = rusqlite::Connection::open(path).unwrap();
+    let resolved: i64 = connection
+        .query_row(
+            "SELECT COUNT(*) FROM workflow_run_approvals WHERE decision IN ('approved', 'rejected')",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(resolved, 1);
+}
+
+#[tokio::test]
+async fn approval_execution_survives_store_restart() {
+    let directory = tempdir().unwrap();
+    let path = directory.path().join("local.db");
+    let (store, clock) = make_store(&path, "2026-07-11T00:00:00Z");
+    let run = create_run(&store, "approval-restart", json!([]), json!([]));
+    request_approval(&store, &run, "node-z");
+    let queue = store
+        .operator_decision_queue("2026-07-11T00:00:00Z", 300, 100, 0)
+        .unwrap();
+    let item = item_for_action(&queue, OperatorDecisionAction::Approve);
+    drop(store);
+    clock.set("2026-07-11T00:00:10Z");
+    let clock_owner = clock.clone();
+    let reopened = LocalProductStore::new_with_clock(&path, move || clock_owner.now()).unwrap();
+    let app = build_axum_router(AxumApiState::new().with_local_store(reopened));
+    let (status, response) = post_action(
+        app,
+        &item.decision_id,
+        action_body(&queue, OperatorDecisionAction::Approve, &queue.generated_at),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{response}");
+}
+
+#[tokio::test]
+async fn unsupported_actions_are_explicitly_rejected() {
+    let (_directory, _path, app, queue, item) =
+        approval_fixture("2026-07-11T00:00:00Z", "2026-07-11T00:00:10Z");
+    let (status, body) = post_action(
+        app,
+        &item.decision_id,
+        action_body(
+            &queue,
+            OperatorDecisionAction::Rollback,
+            &queue.generated_at,
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CONFLICT);
+    assert_eq!(
+        body["error"]["code"],
+        "operator_decision_action_not_allowlisted"
+    );
+}

@@ -58,6 +58,16 @@ pub(crate) async fn api_apply_operator_decision_action(
             "queue hash, freshness, limit, or offset is outside the bounded contract",
         ));
     }
+    if matches!(
+        request.action,
+        OperatorDecisionAction::Rollback
+            | OperatorDecisionAction::Inspect
+            | OperatorDecisionAction::Acknowledge
+    ) {
+        return Err(unsupported(
+            "no compatible existing action owner is available",
+        ));
+    }
 
     let actor = authorize(&state, &headers, "dispatch:read", uri.path(), &request_id.0)?.api_key_id;
     let store = require_store(&state)?;
@@ -120,49 +130,26 @@ pub(crate) async fn api_apply_operator_decision_action(
         OperatorDecisionAction::Approve | OperatorDecisionAction::Reject => {
             require_source_kind(&current_source, "approval", "approval source is required")?;
             let approval_id = approval_evidence_id(&current_source, &request.action)?;
-            let approval = store
-                .workflow_run_approvals(&current_item.resource_id, 100)
-                .map_err(internal)?
-                .into_iter()
-                .find(|approval| {
-                    approval.get("approval_id").and_then(Value::as_str)
-                        == Some(approval_id.as_str())
-                })
-                .ok_or_else(|| {
-                    ApiError::with_code(
-                        StatusCode::CONFLICT,
-                        "operator_decision_source_changed",
-                        "approval source is no longer available",
-                    )
-                })?;
-            if approval.get("decision").and_then(Value::as_str) != Some("requested") {
-                return Err(ApiError::with_code(
-                    StatusCode::CONFLICT,
-                    "operator_decision_source_changed",
-                    "approval source is no longer pending",
-                ));
-            }
-            let node_id = approval["node_id"]
-                .as_str()
-                .ok_or_else(|| internal("approval source has no node id"))?;
             let decision = if matches!(request.action, OperatorDecisionAction::Approve) {
                 "approved"
             } else {
                 "rejected"
             };
             store
-                .record_workflow_run_approval(
+                .resolve_requested_workflow_run_approval(
                     &current_item.resource_id,
-                    node_id,
+                    &approval_id,
                     decision,
                     &actor,
                     request.reason.as_deref(),
-                    None,
-                    None,
-                    None,
-                    None,
                 )
-                .map_err(internal)?
+                .map_err(|error| {
+                    ApiError::with_code(
+                        StatusCode::CONFLICT,
+                        "operator_decision_source_changed",
+                        error,
+                    )
+                })?
         }
         OperatorDecisionAction::Resume => {
             let run = store
