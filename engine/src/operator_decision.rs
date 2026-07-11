@@ -9,6 +9,7 @@ use crate::event_schema::canonical_event_json;
 
 pub const OPERATOR_DECISION_SOURCE_SCHEMA_VERSION: &str = "operator_decision_source.v1";
 pub const OPERATOR_DECISION_ITEM_SCHEMA_VERSION: &str = "operator_decision_item.v1";
+pub const OPERATOR_DECISION_QUEUE_SCHEMA_VERSION: &str = "operator_decision_queue.v1";
 
 const MAX_IDENTIFIER_BYTES: usize = 160;
 const MAX_REASON_CODES: usize = 32;
@@ -66,11 +67,23 @@ pub enum OperatorDecisionSeverity {
 }
 
 impl OperatorDecisionSeverity {
-    fn rank(&self) -> u8 {
+    pub(crate) fn rank(&self) -> u8 {
         match self {
             Self::Info => 1,
             Self::Warning => 2,
             Self::Critical => 3,
+        }
+    }
+}
+
+impl OperatorDecisionOutcome {
+    pub(crate) fn rank(&self) -> u8 {
+        match self {
+            Self::Ready => 5,
+            Self::Conflict => 4,
+            Self::Expired => 3,
+            Self::InsufficientEvidence => 2,
+            Self::Resolved => 1,
         }
     }
 }
@@ -136,6 +149,19 @@ pub struct OperatorDecisionItem {
     pub selected_source: Option<OperatorDecisionEvidenceReference>,
     pub evidence_references: Vec<OperatorDecisionEvidenceReference>,
     pub content_sha256: String,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
+pub struct OperatorDecisionQueue {
+    pub schema_version: String,
+    pub generated_at: String,
+    pub maximum_freshness_seconds: u64,
+    pub total: usize,
+    pub limit: usize,
+    pub offset: usize,
+    pub source_counts: BTreeMap<String, usize>,
+    pub items: Vec<OperatorDecisionItem>,
+    pub queue_sha256: String,
 }
 
 impl OperatorDecisionSource {
@@ -208,6 +234,47 @@ impl OperatorDecisionItem {
         unhashed.content_sha256.clear();
         if canonical_hash(&unhashed)? != self.content_sha256 {
             return Err("operator decision item hash mismatch".to_string());
+        }
+        validate_size(self)
+    }
+}
+
+impl OperatorDecisionQueue {
+    pub fn seal(&mut self) -> Result<(), String> {
+        self.queue_sha256.clear();
+        self.queue_sha256 = canonical_hash(self)?;
+        self.validate()
+    }
+
+    pub fn validate(&self) -> Result<(), String> {
+        if self.schema_version != OPERATOR_DECISION_QUEUE_SCHEMA_VERSION {
+            return Err("unsupported operator decision queue schema version".to_string());
+        }
+        parse_time("generated_at", &self.generated_at)?;
+        if self.maximum_freshness_seconds == 0 || self.maximum_freshness_seconds > 30 * 24 * 60 * 60
+        {
+            return Err(
+                "operator decision queue freshness is outside the contract bound".to_string(),
+            );
+        }
+        if self.limit == 0
+            || self.limit > 100
+            || self.offset > 10_000
+            || self.items.len() > self.limit
+        {
+            return Err("operator decision queue pagination is outside bounds".to_string());
+        }
+        if self.total < self.items.len() || self.source_counts.len() > 8 {
+            return Err("operator decision queue counts are invalid".to_string());
+        }
+        for item in &self.items {
+            item.validate()?;
+        }
+        validate_hash(&self.queue_sha256)?;
+        let mut unhashed = self.clone();
+        unhashed.queue_sha256.clear();
+        if canonical_hash(&unhashed)? != self.queue_sha256 {
+            return Err("operator decision queue hash mismatch".to_string());
         }
         validate_size(self)
     }
