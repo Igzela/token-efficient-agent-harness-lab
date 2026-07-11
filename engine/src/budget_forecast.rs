@@ -96,7 +96,7 @@ pub fn build_budget_forecast(
                     vec!["invalid_evidence.timestamp".to_string()],
                     vec![],
                     false,
-                    BudgetObservedUsage::default(),
+                    empty_observed(),
                     None,
                 );
             }
@@ -110,7 +110,10 @@ pub fn build_budget_forecast(
     let mut deduplicated = BTreeMap::new();
     let mut duplicate_events = 0_u32;
     for observation in selected {
-        let key = (observation.evidence_type.clone(), observation.evidence_id.clone());
+        let key = (
+            observation.evidence_type.clone(),
+            observation.evidence_id.clone(),
+        );
         match deduplicated.get(&key) {
             None => {
                 deduplicated.insert(key, observation);
@@ -128,7 +131,7 @@ pub fn build_budget_forecast(
                     vec!["invalid_evidence.conflicting_duplicate".to_string()],
                     evidence_references(deduplicated.values()),
                     false,
-                    BudgetObservedUsage::default(),
+                    empty_observed(),
                     None,
                 );
             }
@@ -147,7 +150,7 @@ pub fn build_budget_forecast(
             vec![reason],
             evidence_references(selected.iter()),
             false,
-            BudgetObservedUsage::default(),
+            empty_observed(),
             None,
         );
     }
@@ -159,8 +162,13 @@ pub fn build_budget_forecast(
         .filter(|dimension| !observed_dimensions.contains(*dimension))
         .cloned()
         .collect::<Vec<_>>();
-    let mixed_dimensions = mixed_dimensions(&request.scope, &selected);
-    missing_fields.extend(mixed_dimensions.iter().map(|dimension| format!("{dimension}.mixed")));
+    let mixed_dimensions =
+        mixed_dimensions(&request.scope, &request.required_dimensions, &selected);
+    missing_fields.extend(
+        mixed_dimensions
+            .iter()
+            .map(|dimension| format!("{dimension}.mixed")),
+    );
     missing_fields.sort();
     missing_fields.dedup();
 
@@ -252,7 +260,11 @@ fn validate_request(request: &BudgetForecastRequest) -> Result<(), String> {
     {
         return Err("remaining_cost_usd must be finite and non-negative".to_string());
     }
-    if request.required_dimensions.windows(2).any(|pair| pair[0] >= pair[1]) {
+    if request
+        .required_dimensions
+        .windows(2)
+        .any(|pair| pair[0] >= pair[1])
+    {
         return Err("required_dimensions must be sorted and unique".to_string());
     }
     Ok(())
@@ -333,24 +345,55 @@ fn observed_dimensions(observations: &[BudgetUsageObservation]) -> Vec<String> {
 
 fn mixed_dimensions(
     scope: &BudgetEvidenceScope,
+    required_dimensions: &[String],
     observations: &[BudgetUsageObservation],
 ) -> Vec<String> {
     let mut mixed = Vec::new();
-    if scope.run_id.is_none() && distinct_count(observations.iter().filter_map(|item| item.run_id.as_deref())) > 1 {
+    if required_dimensions
+        .iter()
+        .any(|dimension| dimension == "run_id")
+        && scope.run_id.is_none()
+        && distinct_count(
+            observations
+                .iter()
+                .filter_map(|item| item.run_id.as_deref()),
+        ) > 1
+    {
         mixed.push("run_id".to_string());
     }
-    if scope.workspace_id.is_none()
-        && distinct_count(observations.iter().filter_map(|item| item.workspace_id.as_deref())) > 1
+    if required_dimensions
+        .iter()
+        .any(|dimension| dimension == "workspace_id")
+        && scope.workspace_id.is_none()
+        && distinct_count(
+            observations
+                .iter()
+                .filter_map(|item| item.workspace_id.as_deref()),
+        ) > 1
     {
         mixed.push("workspace_id".to_string());
     }
-    if scope.provider_id.is_none()
-        && distinct_count(observations.iter().filter_map(|item| item.provider_id.as_deref())) > 1
+    if required_dimensions
+        .iter()
+        .any(|dimension| dimension == "provider_id")
+        && scope.provider_id.is_none()
+        && distinct_count(
+            observations
+                .iter()
+                .filter_map(|item| item.provider_id.as_deref()),
+        ) > 1
     {
         mixed.push("provider_id".to_string());
     }
-    if scope.model_id.is_none()
-        && distinct_count(observations.iter().filter_map(|item| item.model_id.as_deref())) > 1
+    if required_dimensions
+        .iter()
+        .any(|dimension| dimension == "model_id")
+        && scope.model_id.is_none()
+        && distinct_count(
+            observations
+                .iter()
+                .filter_map(|item| item.model_id.as_deref()),
+        ) > 1
     {
         mixed.push("model_id".to_string());
     }
@@ -362,7 +405,21 @@ fn distinct_count<'a>(values: impl Iterator<Item = &'a str>) -> usize {
     values.collect::<BTreeSet<_>>().len()
 }
 
-fn aggregate_observed(observations: &[BudgetUsageObservation]) -> Result<BudgetObservedUsage, String> {
+fn empty_observed() -> BudgetObservedUsage {
+    BudgetObservedUsage {
+        input_tokens: None,
+        output_tokens: None,
+        total_tokens: None,
+        cost_usd: None,
+        latency_ms: None,
+        retry_count: None,
+        context_bytes: None,
+    }
+}
+
+fn aggregate_observed(
+    observations: &[BudgetUsageObservation],
+) -> Result<BudgetObservedUsage, String> {
     let mut input_tokens = 0_i64;
     let mut output_tokens = 0_i64;
     let mut total_tokens = 0_i64;
@@ -619,7 +676,12 @@ mod tests {
         }
     }
 
-    fn observation(id: &str, minute: u32, tokens: i64, cost: Option<f64>) -> BudgetUsageObservation {
+    fn observation(
+        id: &str,
+        minute: u32,
+        tokens: i64,
+        cost: Option<f64>,
+    ) -> BudgetUsageObservation {
         BudgetUsageObservation {
             evidence_type: "provider_audit_event".to_string(),
             evidence_id: id.to_string(),
@@ -653,8 +715,14 @@ mod tests {
         assert_eq!(first, second);
         assert_eq!(first.outcome, BudgetEvidenceOutcome::Supported);
         assert_eq!(first.observed.total_tokens, Some(600));
-        assert_eq!(first.estimate.as_ref().unwrap().expected_total_tokens, Some(600.0));
-        assert_eq!(first.estimate.as_ref().unwrap().expected_cost_usd, Some(6.0));
+        assert_eq!(
+            first.estimate.as_ref().unwrap().expected_total_tokens,
+            Some(600.0)
+        );
+        assert_eq!(
+            first.estimate.as_ref().unwrap().expected_cost_usd,
+            Some(6.0)
+        );
         assert_eq!(
             first.estimate.as_ref().unwrap().exhaustion_at.as_deref(),
             Some("2026-07-10T02:05:00Z")
@@ -666,12 +734,17 @@ mod tests {
         let sparse = build_budget_forecast(&request(), &supported_observations()[..2]).unwrap();
         assert_eq!(sparse.outcome, BudgetEvidenceOutcome::InsufficientEvidence);
         assert!(sparse.estimate.is_none());
-        assert!(sparse.reason_codes.contains(&"insufficient_evidence.sparse".to_string()));
+        assert!(sparse
+            .reason_codes
+            .contains(&"insufficient_evidence.sparse".to_string()));
 
         let mut unpriced = supported_observations();
         unpriced[1].cost_usd = None;
         let unpriced = build_budget_forecast(&request(), &unpriced).unwrap();
-        assert_eq!(unpriced.outcome, BudgetEvidenceOutcome::InsufficientEvidence);
+        assert_eq!(
+            unpriced.outcome,
+            BudgetEvidenceOutcome::InsufficientEvidence
+        );
         assert!(unpriced
             .reason_codes
             .contains(&"insufficient_evidence.incomplete_pricing".to_string()));
@@ -686,7 +759,10 @@ mod tests {
         ];
         let forecast = build_budget_forecast(&request(), &observations).unwrap();
         assert_eq!(forecast.outcome, BudgetEvidenceOutcome::Supported);
-        assert_eq!(forecast.estimate.as_ref().unwrap().expected_total_tokens, Some(0.0));
+        assert_eq!(
+            forecast.estimate.as_ref().unwrap().expected_total_tokens,
+            Some(0.0)
+        );
         assert!(forecast.estimate.as_ref().unwrap().exhaustion_at.is_none());
     }
 
@@ -698,7 +774,10 @@ mod tests {
             observation("burst-3", 59, 600, Some(6.0)),
         ];
         let forecast = build_budget_forecast(&request(), &observations).unwrap();
-        assert_eq!(forecast.estimate.as_ref().unwrap().expected_total_tokens, Some(600.0));
+        assert_eq!(
+            forecast.estimate.as_ref().unwrap().expected_total_tokens,
+            Some(600.0)
+        );
         assert_eq!(forecast.reason_codes, vec!["forecast.deterministic"]);
     }
 
@@ -716,8 +795,13 @@ mod tests {
         }
         observations[2].model_id = Some("model-b".to_string());
         let forecast = build_budget_forecast(&request, &observations).unwrap();
-        assert_eq!(forecast.outcome, BudgetEvidenceOutcome::InsufficientEvidence);
-        assert!(forecast.reason_codes.contains(&"insufficient_evidence.mixed_dimensions".to_string()));
+        assert_eq!(
+            forecast.outcome,
+            BudgetEvidenceOutcome::InsufficientEvidence
+        );
+        assert!(forecast
+            .reason_codes
+            .contains(&"insufficient_evidence.mixed_dimensions".to_string()));
     }
 
     #[test]
@@ -746,7 +830,10 @@ mod tests {
         conflicting.last_mut().unwrap().total_tokens = Some(999);
         let invalid = build_budget_forecast(&request(), &conflicting).unwrap();
         assert_eq!(invalid.outcome, BudgetEvidenceOutcome::InvalidEvidence);
-        assert_eq!(invalid.reason_codes, vec!["invalid_evidence.conflicting_duplicate"]);
+        assert_eq!(
+            invalid.reason_codes,
+            vec!["invalid_evidence.conflicting_duplicate"]
+        );
     }
 
     #[test]
