@@ -10,35 +10,30 @@ The active direction is the Post-LGB Product Evolution plan. PE-2 is active; PE-
 
 ## Full Agent Autonomy Mode
 
-Full Agent Autonomy Mode remains active for repo-scoped, testable, observable, and rollbackable execution inside an approved Terra-ready task packet.
+Full Agent Autonomy Mode is active for repo-scoped, testable, observable, CI-gated, and rollbackable planning and execution.
 
 ### Autonomously maintain and evolve
 
-A Terra Medium Codex executor may inspect, implement, test, review, open a PR, repair ordinary CI failures, update active docs, and merge a packet when all packet and playbook gates pass.
+The coding agent may inspect, plan, implement, test, review, open PRs, repair CI, update active docs, merge eligible work, and continue across packets after refreshing `main`.
 
-It may not create new architecture directions, authority semantics, migration policy, security policy, release trust policy, or recovery invariants. Those decisions must already be fixed by the external planner in the packet.
+The agent may also resolve bounded architecture, authority, schema, migration, security, release, and recovery decisions when current code, merged history, tests, and active documents provide enough evidence for a smallest compatible and rollbackable design. Material decisions must be recorded in an existing authoritative document and verified through a coherent PR before dependent behavior relies on them.
 
-## Mandatory Executor Profile
+The packet sequence remains the default execution structure. It protects scope, prerequisites, acceptance, compatibility, and rollback without requiring a separate external planner for every implementation detail.
 
-All Codex execution for this plan uses:
+## Model Selection
 
-- `gpt-5.6-terra`
-- reasoning effort `medium`
-- review model `gpt-5.6-terra`
-- plan-mode reasoning effort `medium`
+Model and reasoning-effort selection are user/tool settings. This repository does not require, forbid, or validate a model tier. Model choice does not weaken review, testing, CI, audit, compatibility, or rollback requirements.
 
-The project default is `.codex/config.toml`. Do not use Sol or self-escalate reasoning effort. A profile mismatch is a hard stop, not permission to continue with a different model.
+## Execution-Ready Packet Protocol
 
-## Terra-Ready Packet Protocol
-
-Codex may execute only a packet marked `READY_FOR_TERRA` whose prerequisites are complete. It must choose the earliest such packet in the normative sequence.
+Execute packets marked `READY_FOR_EXECUTION` whose prerequisites are complete. Prefer the earliest packet in the normative sequence unless an explicit independent lane is activated or a prerequisite defect must be repaired first.
 
 Packet states:
 
-- `READY_FOR_TERRA` — contract is complete and prerequisites are satisfied.
+- `READY_FOR_EXECUTION` — contract is sufficiently complete and prerequisites are satisfied.
 - `BLOCKED_PREREQUISITE` — contract is defined, but an earlier packet must complete first.
-- `PLANNER_DECISION_REQUIRED` — implementation must not begin until the missing decision is supplied.
-- `IN_PROGRESS` — one active branch/PR owns the packet.
+- `DECISION_REQUIRED` — implementation depends on a material decision; the agent may resolve it from repository evidence or report the exact unresolved requirement.
+- `IN_PROGRESS` — one active branch or PR owns the packet.
 - `COMPLETE` — acceptance evidence is merged and active docs are updated.
 
 Every packet inherits these requirements:
@@ -49,27 +44,30 @@ Every packet inherits these requirements:
 | Prerequisites | Exact earlier packets or existing contracts that must be complete |
 | Owning paths | Existing source/test/document owners to extend |
 | Allowed changes | Minimum coherent implementation surfaces |
-| Forbidden changes | No parallel runtime, scheduler, store, policy authority, mailbox, artifact truth source, or Dashboard state model |
+| Forbidden changes | No parallel runtime, scheduler, store, policy authority, mailbox, artifact truth source, or Dashboard state model without a documented replacement decision |
 | Contract | Versioned inputs, outputs, reason codes, bounds, permissions, and failure states |
 | Verification | Focused tests plus applicable full repository validation |
 | Compatibility | SQLite/PostgreSQL, API/SDK, existing rows, and old callers remain compatible when applicable |
 | Rollback | `git revert` plus any bounded cleanup procedure |
 | Completion evidence | PR, commit, CI run, test evidence, compatibility, residual risk, and next packet status |
-| Stop triggers | Missing contract, authority expansion, irreversible migration, security ambiguity, conflicting active docs/code, or two failed repair cycles |
+| Stop triggers | Irreversible external action, unavailable required authority/credentials, unresolved material contradiction, or missing recovery path |
 
-Stage prose is context only. It does not authorize implementation outside the packets below.
+Stage prose is context. Packets are the default implementation units, but the agent may update a packet or add the smallest missing contract in the same authoritative file when evidence supports the change.
 
 ## Hard Stops
 
 Stop with evidence rather than improvising when any of these applies:
 
-- the required packet is not `READY_FOR_TERRA`;
-- the executor profile is not Terra Medium;
-- code and active documents conflict on authority or ownership;
-- a change requires a second runtime, store, scheduler, policy authority, or Dashboard state model;
-- a migration is irreversible or lacks SQLite/PostgreSQL compatibility and rollback;
-- security, release, provider, pause, or target-output authority is ambiguous;
-- two coherent repair cycles fail to resolve the same CI root cause.
+- a real secret would enter version control;
+- test or CI evidence would be falsified or a known failure hidden;
+- a required rollback or recovery path would be removed without a tested replacement;
+- an irreversible external operation lacks explicit authority and tested recovery;
+- required human approval, credentials, or external access are unavailable;
+- another agent owns conflicting in-progress work that cannot be safely reconciled;
+- materially contradictory requirements cannot be resolved from current code, history, tests, and authoritative documents;
+- required CI is failed, queued, in progress, or unexpectedly skipped.
+
+A missing bounded design detail, a stale packet, or an initial failed repair is not itself a hard stop. Audit the repository, update the contract, repair the root cause, and continue when the result remains testable, observable, compatible, and rollbackable.
 
 ## Post-LGB Product Evolution Plan
 
@@ -174,7 +172,7 @@ Stage invariants:
 
 ### Packet PE2-ANOMALY-1 — Explainable anomaly detector
 
-**State:** `READY_FOR_TERRA`
+**State:** `READY_FOR_EXECUTION`
 
 **Prerequisite:** PE2-FORECAST-1 complete.
 
@@ -200,7 +198,7 @@ Stage invariants:
 
 **Acceptance:** Idempotent persistence if used, bounded pagination, permissions, OpenAPI/router parity, encoded SDK paths, empty/error/sparse UI states, evidence links, migration/backward compatibility, and full stack verification.
 
-**Stop triggers:** Persistence semantics were not fixed by PE2-CONTRACT-1 or require rewriting existing budget history.
+**Stop triggers:** Persistence semantics were not fixed by PE2-CONTRACT-1 or require rewriting existing budget history. The agent may define the smallest additive persistence contract in this file or `docs/ARCHITECTURE_BOOK.md` before implementation when current store conventions make the answer clear.
 
 ### Packet PE2-PAUSE-1 — Policy-gated high-confidence auto-pause
 
@@ -220,7 +218,7 @@ Stage invariants:
 
 **Acceptance:** False positives, concurrency, duplicate trigger, audit failure, pause failure compensation, disabled policy, sparse data, incomplete pricing, resume, override, permission, restart, and rollback tests.
 
-**Stop triggers:** Existing pause semantics cannot guarantee idempotency/compensation, policy ownership is ambiguous, or audit cannot precede/atomically bind the authority decision.
+**Stop triggers:** Existing pause semantics cannot guarantee idempotency/compensation, policy ownership is ambiguous, or audit cannot precede/atomically bind the authority decision. The agent may first implement a separate evidence-backed contract or compatibility repair PR; it must not silently create a second pause authority.
 
 ### Packet PE2-CLOSE-1 — PE-2 acceptance seal
 
@@ -270,13 +268,13 @@ PE-5 retains external/ephemeral signing identity, source/workflow/target/depende
 
 ### Packet PE6-INVARIANTS-1 — Recovery invariants contract
 
-**State:** `PLANNER_DECISION_REQUIRED`
+**State:** `DECISION_REQUIRED`
 
-PE-6 may not inject failures until each affected subsystem has explicit normal-state, failure-state, recovery-success, rollback-success, data-integrity, audit, timeout, and abort invariants. No destructive external testing is authorized.
+The agent may define recovery invariants from existing subsystem contracts and tests before any injection work. Each affected subsystem must have explicit normal-state, failure-state, recovery-success, rollback-success, data-integrity, audit, timeout, and abort invariants. No destructive external testing is authorized.
 
 ## Active Routing
 
-1. Execute PE2-ANOMALY-1 from latest `main`.
-2. Merge only after focused validation, full CI, architecture/authority review, and no unresolved objection.
-3. Refresh `main`, re-read active docs/code, and continue PE2-FORECAST-1, PE2-ANOMALY-1, PE2-READ-1, PE2-PAUSE-1, then PE2-CLOSE-1.
-4. After PE-2 closeout, mark PE-3 next but do not start it in the PE-1-to-PE-2 effort.
+1. Finish and merge PE2-ANOMALY-1 from the current owned PR or latest `main`, only after the diff is clean and all required CI is green.
+2. Refresh `main`, re-read active docs/code, and continue PE2-READ-1, PE2-PAUSE-1, then PE2-CLOSE-1.
+3. Resolve bounded missing decisions autonomously when repository evidence supports a smallest compatible and rollbackable contract; use a separate decision/contract PR when the risk surface warrants it.
+4. After PE-2 closeout, mark PE-3 next but do not start it in the bounded PE-1-to-PE-2 effort unless the user expands the objective.
