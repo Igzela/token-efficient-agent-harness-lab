@@ -5,6 +5,7 @@ mod agent_runtime;
 mod audit;
 mod auto_adjustments;
 mod boundaries;
+mod budget_evidence_artifacts;
 mod config;
 mod costs;
 mod decisions;

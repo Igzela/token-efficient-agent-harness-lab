@@ -6,8 +6,8 @@ pub(super) enum Dialect {
     Postgres,
 }
 
-pub(super) const CURRENT_SQLITE_SCHEMA_VERSION: i64 = 17;
-pub(super) const CURRENT_POSTGRES_SCHEMA_VERSION: i64 = 17;
+pub(super) const CURRENT_SQLITE_SCHEMA_VERSION: i64 = 18;
+pub(super) const CURRENT_POSTGRES_SCHEMA_VERSION: i64 = 18;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) struct SchemaMigration {
@@ -83,6 +83,10 @@ pub(super) const SQLITE_MIGRATIONS: &[SchemaMigration] = &[
     SchemaMigration {
         version: 17,
         description: "add token-efficiency regression report artifact table",
+    },
+    SchemaMigration {
+        version: 18,
+        description: "add immutable budget evidence artifact table",
     },
 ];
 
@@ -334,6 +338,18 @@ CREATE TABLE IF NOT EXISTS regression_report_artifacts (
 CREATE INDEX IF NOT EXISTS idx_regression_report_artifacts_registry ON regression_report_artifacts(registry_id, artifact_sequence);
 CREATE INDEX IF NOT EXISTS idx_regression_report_artifacts_scenario ON regression_report_artifacts(scenario_id, artifact_sequence);
 CREATE INDEX IF NOT EXISTS idx_regression_report_artifacts_created ON regression_report_artifacts(created_at);
+
+CREATE TABLE IF NOT EXISTS budget_evidence_artifacts (
+    artifact_sequence INTEGER PRIMARY KEY,
+    artifact_id TEXT NOT NULL UNIQUE,
+    artifact_kind TEXT NOT NULL,
+    evidence_id TEXT NOT NULL,
+    evidence_sha256 TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    artifact_json TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_budget_evidence_artifacts_kind ON budget_evidence_artifacts(artifact_kind, artifact_sequence);
+CREATE INDEX IF NOT EXISTS idx_budget_evidence_artifacts_created ON budget_evidence_artifacts(created_at);
 
 CREATE TABLE IF NOT EXISTS scheduler_feedback (
     feedback_id TEXT PRIMARY KEY,
@@ -768,6 +784,18 @@ CREATE TABLE IF NOT EXISTS regression_report_artifacts (
 CREATE INDEX IF NOT EXISTS idx_regression_report_artifacts_registry ON regression_report_artifacts(registry_id, artifact_sequence);
 CREATE INDEX IF NOT EXISTS idx_regression_report_artifacts_scenario ON regression_report_artifacts(scenario_id, artifact_sequence);
 CREATE INDEX IF NOT EXISTS idx_regression_report_artifacts_created ON regression_report_artifacts(created_at);
+
+CREATE TABLE IF NOT EXISTS budget_evidence_artifacts (
+    artifact_sequence BIGSERIAL PRIMARY KEY,
+    artifact_id TEXT NOT NULL UNIQUE,
+    artifact_kind TEXT NOT NULL,
+    evidence_id TEXT NOT NULL,
+    evidence_sha256 TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    artifact_json TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_budget_evidence_artifacts_kind ON budget_evidence_artifacts(artifact_kind, artifact_sequence);
+CREATE INDEX IF NOT EXISTS idx_budget_evidence_artifacts_created ON budget_evidence_artifacts(created_at);
 
 CREATE TABLE IF NOT EXISTS scheduler_feedback (
     feedback_id TEXT PRIMARY KEY,
