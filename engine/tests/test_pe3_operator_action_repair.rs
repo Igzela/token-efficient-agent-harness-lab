@@ -183,10 +183,7 @@ async fn mutation_rejects_expired_and_future_queue_timestamps() {
     )
     .await;
     assert_eq!(status, StatusCode::CONFLICT);
-    assert_eq!(
-        body["error"]["code"],
-        "operator_decision_generated_at_stale"
-    );
+    assert_eq!(body["code"], "operator_decision_generated_at_stale");
 
     let (_directory, _path, app, queue, item) =
         approval_fixture("2026-07-11T00:05:01Z", "2026-07-11T00:05:00Z");
@@ -197,10 +194,7 @@ async fn mutation_rejects_expired_and_future_queue_timestamps() {
     )
     .await;
     assert_eq!(status, StatusCode::CONFLICT);
-    assert_eq!(
-        body["error"]["code"],
-        "operator_decision_generated_at_future"
-    );
+    assert_eq!(body["code"], "operator_decision_generated_at_future");
 }
 
 #[tokio::test]
@@ -236,7 +230,7 @@ async fn source_resolution_after_read_invalidates_hash_and_decision() {
     )
     .await;
     assert_eq!(status, StatusCode::CONFLICT);
-    assert_eq!(body["error"]["code"], "operator_decision_queue_changed");
+    assert_eq!(body["code"], "operator_decision_queue_changed");
 }
 
 #[tokio::test]
@@ -265,7 +259,7 @@ async fn source_change_and_exact_page_order_change_fail_closed() {
     )
     .await;
     assert_eq!(status, StatusCode::CONFLICT);
-    assert_eq!(body["error"]["code"], "operator_decision_queue_changed");
+    assert_eq!(body["code"], "operator_decision_queue_changed");
 }
 
 #[tokio::test]
@@ -276,7 +270,7 @@ async fn queue_hash_and_decision_id_replay_are_rejected() {
     bad_hash["queue_sha256"] = json!("00".repeat(32));
     let (status, body) = post_action(app.clone(), &item.decision_id, bad_hash).await;
     assert_eq!(status, StatusCode::CONFLICT);
-    assert_eq!(body["error"]["code"], "operator_decision_queue_changed");
+    assert_eq!(body["code"], "operator_decision_queue_changed");
 
     let (status, body) = post_action(
         app,
@@ -285,7 +279,7 @@ async fn queue_hash_and_decision_id_replay_are_rejected() {
     )
     .await;
     assert_eq!(status, StatusCode::NOT_FOUND);
-    assert_eq!(body["error"]["code"], "operator_decision_not_found");
+    assert_eq!(body["code"], "operator_decision_not_found");
 }
 
 #[tokio::test]
@@ -480,8 +474,5 @@ async fn unsupported_actions_are_explicitly_rejected() {
     )
     .await;
     assert_eq!(status, StatusCode::CONFLICT);
-    assert_eq!(
-        body["error"]["code"],
-        "operator_decision_action_not_allowlisted"
-    );
+    assert_eq!(body["code"], "operator_decision_action_not_allowlisted");
 }

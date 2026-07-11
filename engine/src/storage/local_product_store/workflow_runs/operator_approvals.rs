@@ -1,10 +1,10 @@
 use rusqlite::{params, OptionalExtension};
 use serde_json::{json, Value};
 
+use super::super::{append_audit_locked, DatabaseConnection, LocalProductStore};
 use super::{ensure_run_exists_locked, next_sequence};
 #[cfg(feature = "pg")]
 use super::{pg_append_audit, pg_ensure_run_exists, pg_next_sequence};
-use super::super::{append_audit_locked, DatabaseConnection, LocalProductStore};
 
 impl LocalProductStore {
     pub fn resolve_requested_workflow_run_approval(
