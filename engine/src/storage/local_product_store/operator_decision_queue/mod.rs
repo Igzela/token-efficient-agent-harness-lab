@@ -818,7 +818,7 @@ mod tests {
             .items
             .iter()
             .filter(|item| item.resource_id == run)
-            .filter_map(|item| item.recommended_action.clone())
+            .filter_map(|item| item.recommended_action)
             .collect::<BTreeSet<_>>();
         assert_eq!(
             actions,
