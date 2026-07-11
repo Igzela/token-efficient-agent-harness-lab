@@ -163,16 +163,17 @@ jobs:
         uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable 2026-07-10
         with:
           components: rustfmt
-      - name: Generate rustfmt patch
-        run: |
-          cargo fmt --all
-          git diff --binary > rustfmt.patch
-          test -s rustfmt.patch
-      - name: Upload rustfmt patch
+      - name: Format Rust files
+        run: cargo fmt --all
+      - name: Upload formatted files
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
-          name: pe3-rustfmt-patch
-          path: rustfmt.patch
+          name: pe3-rustfmt-files
+          path: |
+            engine/src/http_server/handlers/operator_decision_actions.rs
+            engine/src/operator_decision/mod.rs
+            engine/src/storage/local_product_store/operator_decision_queue/mod.rs
+            engine/tests/test_pe3_operator_action_repair.rs
           retention-days: 1
 
   docker-build:
