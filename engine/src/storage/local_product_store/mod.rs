@@ -22,6 +22,7 @@ pub mod pg_backend;
 mod plans;
 mod policy_proposals;
 mod provider_audit;
+mod regression_report_artifacts;
 mod schema;
 mod supervised_patch;
 mod team;

@@ -50,7 +50,7 @@ The normative order is PE-1, PE-2, PE-3, PE-4, PE-5, and PE-6. Each stage should
 
 | Stage | Priority | Goal | Status |
 |---|---|---|---|
-| PE-1 | P0 | Token Efficiency Regression Lab | In progress: registry, single-scenario/batch report cores, and checked evidence pairs implemented; repeat-import and trend behavior is next |
+| PE-1 | P0 | Token Efficiency Regression Lab | In progress: registry, single-scenario/batch report cores, checked evidence pairs, and idempotent LocalProductStore persistence implemented; file import and bounded trend behavior are next |
 | PE-2 | P0/P1 | Budget Intelligence and Anomaly Auto-Pause | Authorized after PE-1 contracts stabilize |
 | PE-3 | P1 | Operator Decision Center | Authorized after PE-2 evidence shape exists |
 | PE-4 | P1/P2 | Trace-backed Policy Replay | Authorized after sufficient versioned traces exist |
@@ -72,6 +72,8 @@ Implemented slice: `token_efficiency_regression_report.v1` deterministically rec
 Implemented slice: checked `native_scorecard_artifact.v1` baseline/candidate evidence now covers the native deterministic and local-stub scenarios alongside the existing LangGraph pair. Tests rebuild both generated pairs, normalize only exporter capture time, verify the complete remaining envelope, and fix deterministic report hashes and outcomes. The evidence records the expected `baseline.state_bytes` regression for both stateful candidates instead of hiding that trade-off. Next: add deterministic registry-wide batch recomputation plus repeat-import and trend behavior before persistence/API/Dashboard work.
 
 Implemented slice: `token_efficiency_regression_batch.v1` deterministically recomputes every registered scenario with exact coverage, sorted reports, outcome counts, nested report validation, and a canonical batch hash. Input order cannot affect output, missing baselines remain explicit without dropping scenarios, and malformed or tampered nested reports fail closed. The batch remains report-only with no persistence, provider, CI-blocking, routing, policy, or mutation authority. Next: add repeat-import and bounded trend semantics through the existing artifact/store boundary.
+
+Implemented slice: schema v17 adds `regression_report_artifacts` inside the existing `LocalProductStore` SQLite/PostgreSQL boundary. Deterministic report and batch hashes become idempotent artifact IDs; repeated recording returns the existing envelope, and bounded list/scenario reads validate inner self-hashes plus envelope coherence. Audit records contain metadata and hashes only; raw or sensitive payload keys fail closed. The slice adds no API, SDK, Dashboard, provider, CI-blocking, routing, policy, or mutation authority. Next: add the bounded file importer and deterministic trend semantics over this table, then expose the existing boundary through API/SDK/Dashboard.
 
 ### PE-2 — Budget Intelligence and Anomaly Auto-Pause
 

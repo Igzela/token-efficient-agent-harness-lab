@@ -7,11 +7,11 @@ use super::{append_audit_locked, collect_values, DatabaseConnection, LocalProduc
 pub const NATIVE_SCORECARD_ARTIFACT_SCHEMA_VERSION: &str = "native_scorecard_artifact.v1";
 pub const SCORECARD_ARTIFACT_SCHEMA_VERSION: &str = "scorecard_artifact.v2";
 pub const TOKEN_EFFICIENCY_SCORECARD_SCHEMA_VERSION: &str = "token_efficiency_scorecard.v1";
-const MAX_SCORECARD_ARTIFACT_BYTES: usize = 1_048_576;
-const MAX_SCORECARD_JSON_STRING_BYTES: usize = 1_024;
-const MAX_SCORECARD_JSON_ARRAY_ITEMS: usize = 1_000;
-const MAX_SCORECARD_JSON_OBJECT_FIELDS: usize = 128;
-const MAX_SCORECARD_JSON_DEPTH: usize = 16;
+pub(super) const MAX_SCORECARD_ARTIFACT_BYTES: usize = 1_048_576;
+pub(super) const MAX_SCORECARD_JSON_STRING_BYTES: usize = 1_024;
+pub(super) const MAX_SCORECARD_JSON_ARRAY_ITEMS: usize = 1_000;
+pub(super) const MAX_SCORECARD_JSON_OBJECT_FIELDS: usize = 128;
+pub(super) const MAX_SCORECARD_JSON_DEPTH: usize = 16;
 
 impl LocalProductStore {
     pub fn record_automatic_native_scorecard_for_run(
@@ -1100,7 +1100,7 @@ fn derived_f64(scorecard: &Value, key: &str) -> Result<f64, String> {
         .ok_or_else(|| format!("scorecard.derived_metrics.{key} must be a number"))
 }
 
-fn validate_no_raw_trace_keys(value: &Value) -> Result<(), String> {
+pub(super) fn validate_no_raw_trace_keys(value: &Value) -> Result<(), String> {
     match value {
         Value::Object(map) => {
             for (key, nested) in map {
@@ -1125,7 +1125,7 @@ fn validate_no_raw_trace_keys(value: &Value) -> Result<(), String> {
     Ok(())
 }
 
-fn validate_json_bounds(value: &Value, path: &str, depth: usize) -> Result<(), String> {
+pub(super) fn validate_json_bounds(value: &Value, path: &str, depth: usize) -> Result<(), String> {
     if depth > MAX_SCORECARD_JSON_DEPTH {
         return Err(format!("bounded JSON depth exceeded at {path}"));
     }

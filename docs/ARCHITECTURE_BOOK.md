@@ -189,7 +189,7 @@ Do not create a second runtime kernel for V2. Extend the existing `node_executor
 
 `LocalProductStore` supports SQLite by default and PostgreSQL through the `pg` feature and `ACP_DATABASE_URL`.
 
-- Current version: v16
+- Current version: v17; v17 adds bounded, read-only PE-1 regression report artifacts inside the existing `LocalProductStore` SQLite/PostgreSQL boundary.
 - SQLite uses WAL and app-managed backup/restore.
 - PostgreSQL disables app-managed backup; operators use `pg_dump` or managed backup.
 - PostgreSQL integration tests are gated behind `cargo test -p engine --features pg-tests`.
