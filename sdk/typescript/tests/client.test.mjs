@@ -186,6 +186,33 @@ test("operator decision reader uses the bounded read-only endpoint", async () =>
   assert.equal(calls[0].init.method, "GET");
 });
 
+test("operator decision action posts an explicitly confirmed hash-bound request", async () => {
+  const { calls, fetchImpl } = captureFetch({ schema_version: "operator_decision_action_result.v1" });
+  const client = new AgentControlPlaneClient({ baseUrl: "http://127.0.0.1:8080", fetchImpl });
+  await client.applyOperatorDecision("decision/one", {
+    queue_sha256: "a".repeat(64),
+    generated_at: "2026-07-11T00:01:00Z",
+    maximum_freshness_seconds: 300,
+    limit: 25,
+    offset: 5,
+    action: "approve",
+    confirm_action: true,
+    reason: "reviewed",
+  });
+  assert.equal(calls[0].url, "http://127.0.0.1:8080/api/v1/operator/decisions/decision%2Fone/actions");
+  assert.equal(calls[0].init.method, "POST");
+  assert.deepEqual(JSON.parse(calls[0].init.body), {
+    queue_sha256: "a".repeat(64),
+    generated_at: "2026-07-11T00:01:00Z",
+    maximum_freshness_seconds: 300,
+    limit: 25,
+    offset: 5,
+    action: "approve",
+    confirm_action: true,
+    reason: "reviewed",
+  });
+});
+
 test("local state readers use product endpoints", async () => {
   const { calls, fetchImpl } = captureFetch({ ok: true });
   const client = new AgentControlPlaneClient({ baseUrl: "http://127.0.0.1:8080", fetchImpl });

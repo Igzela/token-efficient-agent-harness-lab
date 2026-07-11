@@ -1501,3 +1501,28 @@ export interface OperatorDecisionQueueResponse {
   target_repository_writes: "disabled"; queue: OperatorDecisionQueue;
 }
 export interface OperatorDecisionQueueOptions { generated_at?: string; maximum_freshness_seconds?: number; limit?: number; offset?: number; }
+export interface OperatorDecisionBudgetPausePolicy {
+  schema_version: "budget_auto_pause_policy.v1";
+  enabled: boolean;
+  minimum_confidence_score: number;
+  maximum_freshness_seconds: number;
+  require_critical_severity: boolean;
+}
+export interface OperatorDecisionActionRequest {
+  queue_sha256: string;
+  generated_at: string;
+  maximum_freshness_seconds: number;
+  limit: number;
+  offset: number;
+  action: OperatorDecisionAction;
+  confirm_action: boolean;
+  reason?: string;
+  budget_policy?: OperatorDecisionBudgetPausePolicy;
+}
+export interface OperatorDecisionActionResponse {
+  schema_version: "operator_decision_action_result.v1";
+  decision_id: string;
+  queue_sha256: string;
+  action: OperatorDecisionAction;
+  owner_result: unknown;
+}

@@ -282,7 +282,7 @@ PE-3 is active. Its versioned contract and mutation-free derived queue are compl
 
 ### Packet PE3-ACTIONS-1 — Existing-control action adapters
 
-**State:** `READY_FOR_EXECUTION`
+**State:** `COMPLETE`
 
 **Prerequisite:** PE3-READ-1 complete.
 
@@ -290,9 +290,13 @@ PE-3 is active. Its versioned contract and mutation-free derived queue are compl
 
 **Forbidden:** No generic action executor, new authority table, implicit confirmation, cross-resource action, automatic execution, or bypass of existing control endpoints.
 
+**Contract decision:** `POST /api/v1/operator/decisions/{decision_id}/actions` is an allowlisted adapter, not an execution authority. Every request must carry explicit confirmation, the exact derived queue hash, generation timestamp, freshness bound, limit, and offset from its read response. The adapter recomputes that exact queue page, rejects hash/source/ready/action mismatch, and invokes an existing owner only. `approve`/`reject` require an approval source and record a new decision through the existing approval owner; `resume` and `retry` require a workflow source; `pause` requires a budget anomaly source, `dispatch:execute`, and the existing enabled budget auto-pause policy. `rollback`, `inspect`, and `acknowledge` fail closed until a compatible existing owner is explicitly available. The Python and TypeScript SDKs expose this explicit request shape; no Dashboard action control is added by this packet.
+
+**Rollback:** Revert the adapter route and module. No migration or new stored state exists; existing owner audit and compensation records remain authoritative.
+
 ### Packet PE3-CLOSE-1 — PE-3 acceptance seal
 
-**State:** `BLOCKED_PREREQUISITE`
+**State:** `READY_FOR_EXECUTION`
 
 **Prerequisite:** PE3-ACTIONS-1 complete.
 

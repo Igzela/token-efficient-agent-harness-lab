@@ -46,7 +46,7 @@ The stages are packetized in `docs/NEXT_DECISION.md`. The agent should execute p
 |---|---|---|---|
 | PE-1 | P0 | Token Efficiency Regression Lab | Complete and acceptance-sealed |
 | PE-2 | P0/P1 | Budget Intelligence and Anomaly Auto-Pause | Complete and acceptance-sealed |
-| PE-3 | P1 | Operator Decision Center | In progress: versioned contracts, derived queue, and read-only API/OpenAPI/SDK/Dashboard Decision Center implemented; guarded existing-control action adapters next |
+| PE-3 | P1 | Operator Decision Center | In progress: versioned contracts, derived queue, read-only API/OpenAPI/SDK/Dashboard Decision Center, and hash-bound existing-control action adapters implemented; independent acceptance closeout next |
 | PE-4 | P1/P2 | Trace-backed Policy Replay | Detailed packets defined; blocked on PE-3 closeout and trace coverage |
 | PE-5 | P1.5 | Release Provenance | Detailed packets defined; eligible after PE-1 closeout only by explicit independent-lane activation |
 | PE-6 | P2 | Fault Injection and Recovery Drills | Detailed packets defined; blocked on recovery invariants and affected stage prerequisites |
@@ -90,7 +90,7 @@ The stages are packetized in `docs/NEXT_DECISION.md`. The agent should execute p
 
 ## Current Gaps
 
-- PE-3 has no allowlisted existing-control action adapters yet.
+- PE-3 has not yet completed its independent acceptance closeout.
 - `policy_simulator.rs` still relies on fixed estimates rather than trace-calibrated replay.
 - SBOM, signing, and provenance attestations are not yet part of the release contract.
 - There is no systematic fault-injection and recovery-drill harness.
