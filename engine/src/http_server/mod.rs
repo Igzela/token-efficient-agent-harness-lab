@@ -1429,6 +1429,28 @@ fn append_scorecard_openapi_paths(doc: &mut Value) {
             }
         }),
     );
+    paths.insert(
+        "/api/v1/budget-evidence/{artifact_id}/auto-pause".to_string(),
+        json!({
+            "post": {
+                "summary": "Apply a policy-gated budget anomaly pause",
+                "description": "Requires dispatch:execute scope and explicit confirmation. Default-off policy, validated high-confidence fresh critical evidence, persistent audit, and the existing workflow pause owner are required.",
+                "parameters": [path_parameter("artifact_id")],
+                "responses": {"200": {"description": "Idempotent pause decision"}, "400": {"description": "Confirmation missing"}, "403": {"description": "Missing permission"}, "409": {"description": "Policy or evidence rejected"}}
+            }
+        }),
+    );
+    paths.insert(
+        "/api/v1/budget-pauses/{run_id}/recovery".to_string(),
+        json!({
+            "post": {
+                "summary": "Resume or override an audited budget pause",
+                "description": "Requires dispatch:execute scope, explicit confirmation, recovery mode, and bounded operator reason. Cause and evidence hashes remain persisted.",
+                "parameters": [path_parameter("run_id")],
+                "responses": {"200": {"description": "Audited recovery decision"}, "400": {"description": "Confirmation missing"}, "403": {"description": "Missing permission"}, "409": {"description": "Recovery rejected"}}
+            }
+        }),
+    );
 }
 
 #[cfg(test)]

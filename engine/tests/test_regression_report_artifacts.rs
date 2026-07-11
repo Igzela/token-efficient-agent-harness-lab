@@ -1,10 +1,13 @@
 use axum::body::{to_bytes, Body};
-use axum::http::{Method, Request, StatusCode};
+use axum::http::{header, Method, Request, StatusCode};
 use engine::event_schema::canonical_event_json;
 use engine::http_server::{build_axum_router, AxumApiState};
+use engine::infrastructure::auth::{Tenant, TenantResolver};
+use engine::infrastructure::rate_limiter::RateLimiter;
 use engine::storage::local_product_store::LocalProductStore;
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
+use std::collections::HashSet;
 use tempfile::tempdir;
 use tower::ServiceExt;
 
@@ -434,4 +437,49 @@ async fn budget_evidence_api_is_read_only_bounded_and_explicit_when_empty() {
     assert!(response_json(openapi).await["paths"]
         .get("/api/v1/budget-evidence")
         .is_some());
+}
+
+#[tokio::test]
+async fn budget_auto_pause_requires_execute_permission_and_explicit_confirmation() {
+    let (store, _dir) = make_store();
+    let mut resolver = TenantResolver::new();
+    let scopes = HashSet::from(["dispatch:read".to_string()]);
+    resolver.add_tenant(Tenant {
+        tenant_id: "local".to_string(),
+        name: "Local".to_string(),
+        scopes: scopes.clone(),
+        rate_limit: Some(100),
+    });
+    let (_, raw_key) = resolver
+        .create_api_key("local", Some(scopes), None, 1.0)
+        .unwrap();
+    let app = build_axum_router(AxumApiState::new().with_local_store(store).with_auth(
+        resolver,
+        RateLimiter::new(60.0, 100),
+        Some(100),
+        1.0,
+    ));
+    let forbidden = app.clone().oneshot(Request::builder().method(Method::POST).uri("/api/v1/budget-evidence/missing/auto-pause").header(header::AUTHORIZATION, format!("Bearer {raw_key}")).header(header::CONTENT_TYPE, "application/json").body(Body::from(json!({"run_id":"run-1","confirm_auto_pause":true,"policy":{"schema_version":"budget_auto_pause_policy.v1","enabled":true,"minimum_confidence_score":0.9,"maximum_freshness_seconds":300,"require_critical_severity":true}}).to_string())).unwrap()).await.unwrap();
+    assert_eq!(forbidden.status(), StatusCode::FORBIDDEN);
+
+    let (store, _dir) = make_store();
+    let app = build_axum_router(AxumApiState::new().with_local_store(store));
+    let missing_confirmation = app
+        .oneshot(
+            Request::builder()
+                .method(Method::POST)
+                .uri("/api/v1/budget-evidence/missing/auto-pause")
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(
+                    json!({"run_id":"run-1","confirm_auto_pause":false}).to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(missing_confirmation.status(), StatusCode::BAD_REQUEST);
+    assert_eq!(
+        response_json(missing_confirmation).await["code"],
+        "budget_auto_pause_confirmation_required"
+    );
 }

@@ -2270,6 +2270,8 @@ impl LocalProductStore {
         match &self.db {
             DatabaseConnection::Sqlite(_) => self.with_conn(|conn| {
                 ensure_run_exists_locked(conn, run_id)?;
+                let budget_pause_active: bool = conn.query_row("SELECT EXISTS(SELECT 1 FROM budget_pause_decisions WHERE run_id = ?1 AND state = 'paused')", params![run_id], |row| row.get(0)).map_err(|e| e.to_string())?;
+                if budget_pause_active { return Err("active budget auto-pause requires explicit audited recovery".to_string()); }
                 let updated = self.now();
                 let rows = conn
                     .execute(
@@ -2285,6 +2287,8 @@ impl LocalProductStore {
             #[cfg(feature = "pg")]
             DatabaseConnection::Pg(_) => self.with_pg_conn(|client| {
                 pg_ensure_run_exists(client, run_id)?;
+                let budget_pause_active: bool = client.query_one("SELECT EXISTS(SELECT 1 FROM budget_pause_decisions WHERE run_id = $1 AND state = 'paused')", &[&run_id]).map_err(|e| e.to_string())?.get(0);
+                if budget_pause_active { return Err("active budget auto-pause requires explicit audited recovery".to_string()); }
                 let updated = self.now();
                 let rows = client
                     .execute(

@@ -35,6 +35,7 @@ impl LocalProductStore {
                     16 => Self::migrate_v16_add_native_scorecard_artifacts(conn)?,
                     17 => Self::migrate_v17_add_regression_report_artifacts(conn)?,
                     18 => Self::migrate_v18_add_budget_evidence_artifacts(conn)?,
+                    19 => Self::migrate_v19_add_budget_pause_decisions(conn)?,
                     _ => return Err(format!("unknown migration version: {}", migration.version)),
                 }
                 conn.execute_batch(&format!("PRAGMA user_version = {}", migration.version))
@@ -584,6 +585,27 @@ CREATE TABLE IF NOT EXISTS budget_evidence_artifacts (
 CREATE INDEX IF NOT EXISTS idx_budget_evidence_artifacts_kind ON budget_evidence_artifacts(artifact_kind, artifact_sequence);
 CREATE INDEX IF NOT EXISTS idx_budget_evidence_artifacts_created ON budget_evidence_artifacts(created_at);
 ",
+        )
+        .map_err(|e| e.to_string())
+    }
+
+    fn migrate_v19_add_budget_pause_decisions(conn: &Connection) -> Result<(), String> {
+        conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS budget_pause_decisions (
+                decision_id TEXT PRIMARY KEY,
+                run_id TEXT NOT NULL,
+                artifact_id TEXT NOT NULL,
+                evidence_sha256 TEXT NOT NULL,
+                state TEXT NOT NULL,
+                cause TEXT NOT NULL,
+                policy_json TEXT NOT NULL,
+                actor TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                recovery_reason TEXT,
+                UNIQUE(run_id, artifact_id)
+            );
+            CREATE INDEX IF NOT EXISTS idx_budget_pause_decisions_run ON budget_pause_decisions(run_id, created_at);",
         )
         .map_err(|e| e.to_string())
     }

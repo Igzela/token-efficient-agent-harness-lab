@@ -189,7 +189,7 @@ Do not create a second runtime kernel for V2. Extend the existing `node_executor
 
 `LocalProductStore` supports SQLite by default and PostgreSQL through the `pg` feature and `ACP_DATABASE_URL`.
 
-- Current version: v18; v18 adds immutable, hash-bound `budget_evidence_artifacts` envelopes for validated `budget_forecast_evidence.v1` and `budget_anomaly_finding.v1` inside the existing `LocalProductStore` SQLite/PostgreSQL boundary. The evidence hash plus kind determines idempotency; records are metadata-only, bounded, and read-only through `dispatch:read` surfaces. No pause, policy, provider, or budget authority is stored or granted. Rollback is a code revert; existing rows and tables remain intact.
+- Current version: v19. v18 adds immutable, hash-bound `budget_evidence_artifacts`; v19 adds `budget_pause_decisions`, the atomic audit/recovery record for the existing workflow-run pause owner. Auto-pause is default-off and requires explicit `dispatch:execute` confirmation plus validated, fresh, pricing-complete, high-confidence critical anomaly evidence scoped to the target run. Decision insert, audit, and pause update commit atomically; repeated evidence is idempotent, and resume/override requires a bounded operator reason while preserving cause and evidence hash. No kill, provider/model, reservation, scheduler, or target-output authority is added. Rollback is a code revert that leaves additive tables inert; existing pause/recovery evidence remains readable in storage.
 - SQLite uses WAL and app-managed backup/restore.
 - PostgreSQL disables app-managed backup; operators use `pg_dump` or managed backup.
 - PostgreSQL integration tests are gated behind `cargo test -p engine --features pg-tests`.

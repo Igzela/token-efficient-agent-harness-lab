@@ -6,8 +6,8 @@ pub(super) enum Dialect {
     Postgres,
 }
 
-pub(super) const CURRENT_SQLITE_SCHEMA_VERSION: i64 = 18;
-pub(super) const CURRENT_POSTGRES_SCHEMA_VERSION: i64 = 18;
+pub(super) const CURRENT_SQLITE_SCHEMA_VERSION: i64 = 19;
+pub(super) const CURRENT_POSTGRES_SCHEMA_VERSION: i64 = 19;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) struct SchemaMigration {
@@ -87,6 +87,10 @@ pub(super) const SQLITE_MIGRATIONS: &[SchemaMigration] = &[
     SchemaMigration {
         version: 18,
         description: "add immutable budget evidence artifact table",
+    },
+    SchemaMigration {
+        version: 19,
+        description: "add policy-gated budget auto-pause decisions",
     },
 ];
 
@@ -350,6 +354,22 @@ CREATE TABLE IF NOT EXISTS budget_evidence_artifacts (
 );
 CREATE INDEX IF NOT EXISTS idx_budget_evidence_artifacts_kind ON budget_evidence_artifacts(artifact_kind, artifact_sequence);
 CREATE INDEX IF NOT EXISTS idx_budget_evidence_artifacts_created ON budget_evidence_artifacts(created_at);
+
+CREATE TABLE IF NOT EXISTS budget_pause_decisions (
+    decision_id TEXT PRIMARY KEY,
+    run_id TEXT NOT NULL,
+    artifact_id TEXT NOT NULL,
+    evidence_sha256 TEXT NOT NULL,
+    state TEXT NOT NULL,
+    cause TEXT NOT NULL,
+    policy_json TEXT NOT NULL,
+    actor TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    recovery_reason TEXT,
+    UNIQUE(run_id, artifact_id)
+);
+CREATE INDEX IF NOT EXISTS idx_budget_pause_decisions_run ON budget_pause_decisions(run_id, created_at);
 
 CREATE TABLE IF NOT EXISTS scheduler_feedback (
     feedback_id TEXT PRIMARY KEY,
@@ -796,6 +816,22 @@ CREATE TABLE IF NOT EXISTS budget_evidence_artifacts (
 );
 CREATE INDEX IF NOT EXISTS idx_budget_evidence_artifacts_kind ON budget_evidence_artifacts(artifact_kind, artifact_sequence);
 CREATE INDEX IF NOT EXISTS idx_budget_evidence_artifacts_created ON budget_evidence_artifacts(created_at);
+
+CREATE TABLE IF NOT EXISTS budget_pause_decisions (
+    decision_id TEXT PRIMARY KEY,
+    run_id TEXT NOT NULL,
+    artifact_id TEXT NOT NULL,
+    evidence_sha256 TEXT NOT NULL,
+    state TEXT NOT NULL,
+    cause TEXT NOT NULL,
+    policy_json TEXT NOT NULL,
+    actor TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    recovery_reason TEXT,
+    UNIQUE(run_id, artifact_id)
+);
+CREATE INDEX IF NOT EXISTS idx_budget_pause_decisions_run ON budget_pause_decisions(run_id, created_at);
 
 CREATE TABLE IF NOT EXISTS scheduler_feedback (
     feedback_id TEXT PRIMARY KEY,

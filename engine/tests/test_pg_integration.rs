@@ -7,7 +7,11 @@ use engine::budget_forecast::{
     build_budget_forecast, BudgetForecastRequest, BudgetUsageObservation,
 };
 #[cfg(feature = "pg-tests")]
-use engine::budget_manager::BudgetEvidenceScope;
+use engine::budget_manager::{
+    BudgetAnomalyFinding, BudgetAnomalyKind, BudgetAnomalyMeasurement, BudgetAnomalySeverity,
+    BudgetConfidence, BudgetConfidenceLevel, BudgetEvidenceCoverage, BudgetEvidenceOutcome,
+    BudgetEvidenceReference, BudgetEvidenceScope, BudgetEvidenceWindow,
+};
 #[cfg(feature = "pg-tests")]
 use engine::event_schema::canonical_event_json;
 #[cfg(feature = "pg-tests")]
@@ -15,6 +19,8 @@ use engine::feedback::{
     ContextualPolicyPromotion, ContextualPolicyPromotionGate, ObjectiveProfile,
     CONTEXTUAL_POLICY_PROMOTION_SCHEMA_VERSION,
 };
+#[cfg(feature = "pg-tests")]
+use engine::storage::local_product_store::BudgetAutoPausePolicy;
 #[cfg(feature = "pg-tests")]
 use engine::storage::local_product_store::LocalProductStore;
 #[cfg(feature = "pg-tests")]
@@ -112,6 +118,57 @@ fn pg_budget_forecast(tag: &str) -> engine::budget_manager::BudgetForecastEviden
     .expect("build pg budget forecast")
 }
 
+#[cfg(feature = "pg-tests")]
+fn pg_budget_anomaly(run_id: &str, tag: &str) -> BudgetAnomalyFinding {
+    let mut finding = BudgetAnomalyFinding {
+        schema_version: "budget_anomaly_finding.v1".to_string(),
+        finding_id: format!("pg-anomaly-{tag}"),
+        scope: BudgetEvidenceScope {
+            run_id: Some(run_id.to_string()),
+            ..Default::default()
+        },
+        outcome: BudgetEvidenceOutcome::Supported,
+        window: BudgetEvidenceWindow {
+            start_inclusive: "2026-07-11T00:00:00Z".to_string(),
+            end_exclusive: "2026-07-11T00:10:00Z".to_string(),
+            generated_at: "2026-07-11T00:10:10Z".to_string(),
+            freshness_seconds: 10,
+            sample_count: 3,
+        },
+        coverage: BudgetEvidenceCoverage {
+            required_dimensions: vec!["run_id".to_string()],
+            observed_dimensions: vec!["run_id".to_string()],
+            pricing_complete: true,
+            duplicate_events: 0,
+            missing_fields: vec![],
+        },
+        confidence: BudgetConfidence {
+            level: BudgetConfidenceLevel::High,
+            score: 0.99,
+            reason_codes: vec!["stable_baseline".to_string()],
+        },
+        reason_codes: vec!["token_spike".to_string()],
+        evidence_references: vec![BudgetEvidenceReference {
+            evidence_type: "provider_audit_event".to_string(),
+            evidence_id: format!("event-{tag}"),
+            content_sha256: Some("a".repeat(64)),
+        }],
+        detected: true,
+        anomaly_kind: Some(BudgetAnomalyKind::TokenSpike),
+        severity: Some(BudgetAnomalySeverity::Critical),
+        measurement: Some(BudgetAnomalyMeasurement {
+            metric: "total_tokens".to_string(),
+            observed: 200.0,
+            baseline: 100.0,
+            threshold: 1.5,
+            normalized_delta: 1.0,
+        }),
+        evidence_sha256: String::new(),
+    };
+    finding.seal().unwrap();
+    finding
+}
+
 #[test]
 #[cfg(feature = "pg-tests")]
 fn pg_new_postgres_creates_store() {
@@ -200,6 +257,53 @@ fn pg_budget_evidence_artifact_is_idempotent_and_readable() {
         .expect("list budget evidence")
         .iter()
         .any(|artifact| artifact["artifact_id"] == first["artifact_id"]));
+}
+
+#[test]
+#[cfg(feature = "pg-tests")]
+fn pg_budget_auto_pause_and_recovery_are_atomic_and_idempotent() {
+    let Some(store) = test_store() else { return };
+    let tag = uuid_tag();
+    let plan = store.create_workflow_plan(&format!("pause {tag}"), "pg-test", "pg-test", |ids, _| Ok(json!({"status":"planned_read_only","graph":{"nodes":[],"edges":[],"workflow_id":ids.workflow_id,"dispatch_id":ids.dispatch_id},"analysis":{},"boundaries":{"execution_authority":"disabled"}}))).unwrap();
+    let run = store
+        .create_workflow_run_from_plan(plan["plan_id"].as_str().unwrap(), "pg-test")
+        .unwrap();
+    let run_id = run["run_id"].as_str().unwrap();
+    let artifact = store
+        .record_budget_anomaly_finding(&pg_budget_anomaly(run_id, &tag), "pg-test")
+        .unwrap();
+    let policy = BudgetAutoPausePolicy {
+        enabled: true,
+        ..Default::default()
+    };
+    let first = store
+        .apply_budget_auto_pause(
+            artifact["artifact_id"].as_str().unwrap(),
+            run_id,
+            &policy,
+            "pg-test",
+        )
+        .unwrap();
+    let repeated = store
+        .apply_budget_auto_pause(
+            artifact["artifact_id"].as_str().unwrap(),
+            run_id,
+            &policy,
+            "pg-test",
+        )
+        .unwrap();
+    assert_eq!(first, repeated);
+    assert!(
+        store.get_workflow_run(run_id).unwrap().unwrap()["pause_reason"]
+            .as_str()
+            .unwrap()
+            .starts_with("budget_auto_pause:")
+    );
+    let recovered = store
+        .recover_budget_auto_pause(run_id, "resume", "pg operator review", "pg-test")
+        .unwrap();
+    assert_eq!(recovered["state"], "resume");
+    assert!(store.get_workflow_run(run_id).unwrap().unwrap()["pause_reason"].is_null());
 }
 
 #[test]

@@ -32,6 +32,7 @@ const INTEGRITY_TABLES: &[&str] = &[
     "native_scorecard_artifacts",
     "regression_report_artifacts",
     "budget_evidence_artifacts",
+    "budget_pause_decisions",
     "scheduler_feedback",
     "tool_capabilities",
     "tool_allowlists",

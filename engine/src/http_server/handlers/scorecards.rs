@@ -9,6 +9,7 @@ use crate::http_server::middleware::{
     authorize, cors_headers, internal_error, require_store, ApiError, RequestId,
 };
 use crate::http_server::state::AxumApiState;
+use crate::storage::local_product_store::BudgetAutoPausePolicy;
 
 #[derive(Debug, Deserialize)]
 pub(crate) struct ScorecardQuery {
@@ -34,6 +35,21 @@ pub(crate) struct BudgetEvidenceQuery {
     kind: Option<String>,
     limit: Option<i64>,
     offset: Option<i64>,
+}
+
+#[derive(Debug, Deserialize)]
+pub(crate) struct BudgetAutoPauseRequest {
+    run_id: String,
+    confirm_auto_pause: bool,
+    #[serde(default)]
+    policy: BudgetAutoPausePolicy,
+}
+
+#[derive(Debug, Deserialize)]
+pub(crate) struct BudgetPauseRecoveryRequest {
+    recovery: String,
+    reason: String,
+    confirm_recovery: bool,
 }
 
 pub(crate) async fn api_scorecard_artifacts(
@@ -273,5 +289,85 @@ pub(crate) async fn api_budget_evidence_artifact_detail(
     Ok((
         cors_headers(),
         Json(regression_response(json!({"artifact": artifact}))),
+    ))
+}
+
+pub(crate) async fn api_apply_budget_auto_pause(
+    State(state): State<AxumApiState>,
+    headers: HeaderMap,
+    uri: Uri,
+    axum::extract::Extension(request_id): axum::extract::Extension<RequestId>,
+    Path(artifact_id): Path<String>,
+    Json(request): Json<BudgetAutoPauseRequest>,
+) -> Result<impl IntoResponse, ApiError> {
+    let context = authorize(
+        &state,
+        &headers,
+        "dispatch:execute",
+        uri.path(),
+        &request_id.0,
+    )?;
+    if !request.confirm_auto_pause {
+        return Err(ApiError::with_code(
+            StatusCode::BAD_REQUEST,
+            "budget_auto_pause_confirmation_required",
+            "confirm_auto_pause must be true",
+        ));
+    }
+    let decision = require_store(&state)?
+        .apply_budget_auto_pause(
+            &artifact_id,
+            &request.run_id,
+            &request.policy,
+            &context.api_key_id,
+        )
+        .map_err(|error| {
+            ApiError::with_code(StatusCode::CONFLICT, "budget_auto_pause_rejected", error)
+        })?;
+    Ok((
+        cors_headers(),
+        Json(json!({"schema_version": "axum_api.v1", "decision": decision})),
+    ))
+}
+
+pub(crate) async fn api_recover_budget_auto_pause(
+    State(state): State<AxumApiState>,
+    headers: HeaderMap,
+    uri: Uri,
+    axum::extract::Extension(request_id): axum::extract::Extension<RequestId>,
+    Path(run_id): Path<String>,
+    Json(request): Json<BudgetPauseRecoveryRequest>,
+) -> Result<impl IntoResponse, ApiError> {
+    let context = authorize(
+        &state,
+        &headers,
+        "dispatch:execute",
+        uri.path(),
+        &request_id.0,
+    )?;
+    if !request.confirm_recovery {
+        return Err(ApiError::with_code(
+            StatusCode::BAD_REQUEST,
+            "budget_pause_recovery_confirmation_required",
+            "confirm_recovery must be true",
+        ));
+    }
+    let decision = require_store(&state)?
+        .recover_budget_auto_pause(
+            &run_id,
+            &request.recovery,
+            &request.reason,
+            &context.api_key_id,
+        )
+        .map_err(|error| {
+            ApiError::with_code(
+                StatusCode::CONFLICT,
+                "budget_pause_recovery_rejected",
+                error,
+            )
+        })?;
+    Ok((
+        cors_headers(),
+        Json(json!({"schema_version": "axum_api.v1", "decision": decision})),
     ))
 }
