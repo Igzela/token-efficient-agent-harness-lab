@@ -1,0 +1,4 @@
+User-agent: *
+Allow: /
+
+Sitemap: https://token-efficient-agent-harness-lab.vercel.app/sitemap.xml

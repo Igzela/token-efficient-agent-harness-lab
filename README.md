@@ -3,41 +3,57 @@
 [![CI](https://github.com/Igzela/token-efficient-agent-harness-lab/actions/workflows/tests.yml/badge.svg)](https://github.com/Igzela/token-efficient-agent-harness-lab/actions/workflows/tests.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Rust](https://img.shields.io/badge/Rust-stable-orange.svg)](https://www.rust-lang.org/)
-[![Tests](https://img.shields.io/badge/tests-1654%20passing-brightgreen.svg)](#running-tests)
+[![Tests](https://img.shields.io/badge/tests-1654%20passing-brightgreen.svg)](#how-to-run-tests)
+[![Site](https://img.shields.io/badge/site-landing%20page-0ea5e9)](https://token-efficient-agent-harness-lab.vercel.app)
 
-A local deterministic harness and self-hosted macro-orchestrator control plane for studying event-sourced agent workflow infrastructure. Includes a Rust engine with axum API, SQLite state, TypeScript dashboard and SDK, and Python SDK.
+**Agent workflows you can measure, pause, and prove.**
 
-> **This is a local research tool, not a cloud SaaS.** Provider and adaptive execution use the fail-closed IAE trusted-local profile for bounded internal operation; legacy explicit gates remain available for compatibility. No container/VM isolation is provided.
+Self-hosted control plane for token-efficient, event-sourced agent systems: deterministic budget evidence, regression scorecards, adaptive routing, audited dispatch, and a local operator dashboard that fails closed instead of inventing success.
 
-For the full system architecture, data flows, API surface, and safety boundaries, see [`docs/ARCHITECTURE_BOOK.md`](docs/ARCHITECTURE_BOOK.md).
+| | |
+|---|---|
+| **Landing page** | [token-efficient-agent-harness-lab.vercel.app](https://token-efficient-agent-harness-lab.vercel.app) |
+| **Engine** | Rust · axum · SQLite (PostgreSQL optional) |
+| **Surfaces** | Dashboard · TypeScript SDK · Python SDK |
+| **Posture** | Local-first research lab · MIT · not a cloud SaaS |
+
+### Why this exists
+
+Most agent demos optimize the first happy path. This lab optimizes the **evidence trail**:
+
+- **Token efficiency regression (PE-1)** — hash-bound scorecards you can recompute offline
+- **Budget intelligence (PE-2)** — forecasts, explainable anomalies, policy-gated auto-pause
+- **Operator decision center (PE-3)** — derived decision queues from posted evidence
+- **Adaptive fusion + trusted-local execution** — bounded multi-model routing behind explicit gates
+- **Real repository output (V2)** — audited patch/PR production against real git targets
+
+> **Boundary:** local / small-team research tool — not multi-tenant SaaS, not a free provider proxy, no container/VM isolation claim. Provider and adaptive paths use the fail-closed IAE trusted-local profile (legacy explicit gates remain for compatibility).
+
+Architecture, data flows, API surface, and safety boundaries: [`docs/ARCHITECTURE_BOOK.md`](docs/ARCHITECTURE_BOOK.md) · product roadmap packets: [`docs/NEXT_DECISION.md`](docs/NEXT_DECISION.md).
 
 ## Quick Start
 
-### Real output pilots: produce verified branches
-
-For an end-to-end proof across Python, Rust, and Node repositories:
-
 ```bash
-scripts/real_output_pilots.py
-```
-
-The script uses an authenticated local Claude CLI to modify three disposable real git repositories, runs each repository's tests, captures verification evidence, records approval, and pushes three distinct `acp/*` branches to local bare remotes. Every target `main` ref is checked before and after.
-
-```bash
-# Clone and build
 git clone https://github.com/Igzela/token-efficient-agent-harness-lab.git
 cd token-efficient-agent-harness-lab
 cargo build -p engine
 
-# Build and serve dashboard
 cd dashboard && bun install --frozen-lockfile && bun run build:static && cd ..
 ACP_DASHBOARD_DIR=dashboard/out cargo run -p engine
 # Open http://127.0.0.1:8080
 ```
 
-**Prerequisites:** Rust stable toolchain, [Bun](https://bun.sh/) (for dashboard), Python 3.10+ with [uv](https://docs.astral.sh/uv/) (for scripts).
+**Prerequisites:** Rust stable · [Bun](https://bun.sh/) · Python 3.10+ with [uv](https://docs.astral.sh/uv/) (scripts). See [CONTRIBUTING.md](CONTRIBUTING.md).
 
-See [CONTRIBUTING.md](CONTRIBUTING.md) for detailed setup instructions.
+### Real output pilots (optional proof)
+
+End-to-end verified branches across disposable Python, Rust, and Node repositories:
+
+```bash
+scripts/real_output_pilots.py
+```
+
+Uses an authenticated local Claude CLI, runs each repo’s tests, records approval, and pushes `acp/*` branches to local bare remotes without moving target `main`.
 
 ## Installation
 
