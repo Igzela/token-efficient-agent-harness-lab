@@ -60,10 +60,8 @@ pub fn detect_budget_anomaly(
         "baseline_start_inclusive",
         &request.baseline_start_inclusive,
     )?;
-    let current_start = parse_timestamp(
-        "current_start_inclusive",
-        &request.current_start_inclusive,
-    )?;
+    let current_start =
+        parse_timestamp("current_start_inclusive", &request.current_start_inclusive)?;
     let current_end = parse_timestamp("current_end_exclusive", &request.current_end_exclusive)?;
     let generated = parse_timestamp("generated_at", &request.generated_at)?;
     let freshness_seconds = (generated - current_end).num_seconds() as u64;
@@ -99,8 +97,42 @@ pub fn detect_budget_anomaly(
         }
     }
 
-    let (baseline, baseline_duplicates) = deduplicate(request, baseline)?;
-    let (current, current_duplicates) = deduplicate(request, current)?;
+    let (baseline, baseline_duplicates) = match deduplicate(baseline) {
+        Ok(value) => value,
+        Err(()) => {
+            return make_finding(
+                request,
+                BudgetEvidenceOutcome::InvalidEvidence,
+                false,
+                0,
+                freshness_seconds,
+                0,
+                vec!["invalid_evidence.conflicting_duplicate".to_string()],
+                vec![],
+                vec![],
+                false,
+                None,
+            );
+        }
+    };
+    let (current, current_duplicates) = match deduplicate(current) {
+        Ok(value) => value,
+        Err(()) => {
+            return make_finding(
+                request,
+                BudgetEvidenceOutcome::InvalidEvidence,
+                false,
+                baseline.len() as u32,
+                freshness_seconds,
+                baseline_duplicates,
+                vec!["invalid_evidence.conflicting_duplicate".to_string()],
+                evidence_references(baseline.iter()),
+                observed_dimensions(&baseline),
+                false,
+                None,
+            );
+        }
+    };
     let duplicate_events = baseline_duplicates.saturating_add(current_duplicates);
     let mut combined = baseline
         .iter()
@@ -145,7 +177,9 @@ pub fn detect_budget_anomaly(
         missing_fields.push(metric_name(&request.anomaly_kind).to_string());
     }
     if matches!(request.anomaly_kind, BudgetAnomalyKind::ModelMixShift)
-        && combined.iter().any(|observation| observation.model_id.is_none())
+        && combined
+            .iter()
+            .any(|observation| observation.model_id.is_none())
     {
         missing_fields.push("model_id".to_string());
     }
@@ -193,18 +227,17 @@ pub fn detect_budget_anomaly(
         );
     }
 
-    let (baseline_value, current_value) = metric_values(&request.anomaly_kind, &baseline, &current)?;
+    let (baseline_value, current_value) =
+        metric_values(&request.anomaly_kind, &baseline, &current)?;
     let delta = current_value - baseline_value;
-    let (normalized_delta, threshold) = if matches!(
-        request.anomaly_kind,
-        BudgetAnomalyKind::ModelMixShift
-    ) {
-        (current_value, request.relative_increase_threshold)
-    } else if baseline_value > 0.0 {
-        (delta / baseline_value, request.relative_increase_threshold)
-    } else {
-        (delta, request.absolute_increase_threshold)
-    };
+    let (normalized_delta, threshold) =
+        if matches!(request.anomaly_kind, BudgetAnomalyKind::ModelMixShift) {
+            (current_value, request.relative_increase_threshold)
+        } else if baseline_value > 0.0 {
+            (delta / baseline_value, request.relative_increase_threshold)
+        } else {
+            (delta, request.absolute_increase_threshold)
+        };
     let detected = normalized_delta > threshold;
     let severity = detected.then(|| {
         if normalized_delta > request.critical_increase_threshold {
@@ -248,10 +281,8 @@ fn validate_request(request: &BudgetAnomalyRequest) -> Result<(), String> {
         "baseline_start_inclusive",
         &request.baseline_start_inclusive,
     )?;
-    let current_start = parse_timestamp(
-        "current_start_inclusive",
-        &request.current_start_inclusive,
-    )?;
+    let current_start =
+        parse_timestamp("current_start_inclusive", &request.current_start_inclusive)?;
     let current_end = parse_timestamp("current_end_exclusive", &request.current_end_exclusive)?;
     let generated = parse_timestamp("generated_at", &request.generated_at)?;
     if baseline_start >= current_start || current_start >= current_end {
@@ -298,9 +329,8 @@ fn validate_request(request: &BudgetAnomalyRequest) -> Result<(), String> {
 }
 
 fn deduplicate(
-    request: &BudgetAnomalyRequest,
     mut observations: Vec<BudgetAnomalyObservation>,
-) -> Result<(Vec<BudgetAnomalyObservation>, u32), String> {
+) -> Result<(Vec<BudgetAnomalyObservation>, u32), ()> {
     observations.sort_by(|left, right| observation_key(left).cmp(&observation_key(right)));
     let mut deduplicated = BTreeMap::new();
     let mut duplicate_events = 0_u32;
@@ -316,12 +346,7 @@ fn deduplicate(
             Some(existing) if existing == &observation => {
                 duplicate_events = duplicate_events.saturating_add(1);
             }
-            Some(_) => {
-                return Err(format!(
-                    "{}: conflicting duplicate evidence",
-                    request.finding_id
-                ));
-            }
+            Some(_) => return Err(()),
         }
     }
     Ok((deduplicated.into_values().collect(), duplicate_events))
@@ -374,10 +399,7 @@ fn invalid_observation_reason(observations: &[BudgetAnomalyObservation]) -> Opti
     None
 }
 
-fn metric_complete(
-    kind: &BudgetAnomalyKind,
-    observations: &[BudgetAnomalyObservation],
-) -> bool {
+fn metric_complete(kind: &BudgetAnomalyKind, observations: &[BudgetAnomalyObservation]) -> bool {
     !observations.is_empty()
         && observations.iter().all(|observation| match kind {
             BudgetAnomalyKind::CostSpike => observation.cost_usd.is_some(),
@@ -503,7 +525,11 @@ fn mixed_required_dimensions(
     let mut mixed = Vec::new();
     if required_dimensions.iter().any(|value| value == "run_id")
         && scope.run_id.is_none()
-        && distinct_count(observations.iter().filter_map(|item| item.run_id.as_deref())) > 1
+        && distinct_count(
+            observations
+                .iter()
+                .filter_map(|item| item.run_id.as_deref()),
+        ) > 1
     {
         mixed.push("run_id".to_string());
     }
@@ -713,12 +739,7 @@ mod tests {
         }
     }
 
-    fn observation(
-        id: &str,
-        hour: u32,
-        minute: u32,
-        value: i64,
-    ) -> BudgetAnomalyObservation {
+    fn observation(id: &str, hour: u32, minute: u32, value: i64) -> BudgetAnomalyObservation {
         BudgetAnomalyObservation {
             evidence_type: "provider_audit_event".to_string(),
             evidence_id: id.to_string(),
@@ -740,7 +761,9 @@ mod tests {
         baseline
             .into_iter()
             .enumerate()
-            .map(|(index, value)| observation(&format!("baseline-{index}"), 0, 10 + index as u32, value))
+            .map(|(index, value)| {
+                observation(&format!("baseline-{index}"), 0, 10 + index as u32, value)
+            })
             .chain(current.into_iter().enumerate().map(|(index, value)| {
                 observation(&format!("current-{index}"), 1, 10 + index as u32, value)
             }))
@@ -769,11 +792,9 @@ mod tests {
             BudgetAnomalyKind::LatencySpike,
             BudgetAnomalyKind::ContextGrowth,
         ] {
-            let finding = detect_budget_anomaly(
-                &request(kind.clone()),
-                &paired([10, 10, 10], [30, 30, 30]),
-            )
-            .unwrap();
+            let finding =
+                detect_budget_anomaly(&request(kind.clone()), &paired([10, 10, 10], [30, 30, 30]))
+                    .unwrap();
             assert!(finding.detected, "{kind:?}");
             assert_eq!(finding.anomaly_kind, Some(kind));
             assert_eq!(finding.severity, Some(BudgetAnomalySeverity::Critical));
@@ -817,12 +838,12 @@ mod tests {
 
         let mut observations = paired([100, 100, 100], [300, 300, 300]);
         observations[4].cost_usd = None;
-        let unpriced = detect_budget_anomaly(
-            &request(BudgetAnomalyKind::CostSpike),
-            &observations,
-        )
-        .unwrap();
-        assert_eq!(unpriced.outcome, BudgetEvidenceOutcome::InsufficientEvidence);
+        let unpriced =
+            detect_budget_anomaly(&request(BudgetAnomalyKind::CostSpike), &observations).unwrap();
+        assert_eq!(
+            unpriced.outcome,
+            BudgetEvidenceOutcome::InsufficientEvidence
+        );
         assert!(unpriced
             .reason_codes
             .contains(&"insufficient_evidence.incomplete_pricing".to_string()));
@@ -882,8 +903,12 @@ mod tests {
         let mut conflicting = observations[1].clone();
         conflicting.total_tokens = Some(999);
         observations.push(conflicting);
-        assert!(detect_budget_anomaly(&request, &observations)
-            .unwrap_err()
-            .contains("conflicting duplicate evidence"));
+        let finding = detect_budget_anomaly(&request, &observations).unwrap();
+        assert_eq!(finding.outcome, BudgetEvidenceOutcome::InvalidEvidence);
+        assert_eq!(
+            finding.reason_codes,
+            vec!["invalid_evidence.conflicting_duplicate"]
+        );
+        assert!(!finding.detected);
     }
 }
