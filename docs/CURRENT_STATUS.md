@@ -36,7 +36,7 @@ This repo is a local/small-team self-hosted agent workflow control plane. Rust `
 | Local runner operations | Active: validate, export, import, and inspect bounded scorecard artifacts locally |
 | Runner integration | Storage/API/operator evidence complete; workflow scheduling of local runner validation is implemented via `LocalRunnerValidationExecutor` in stub mode with automatic native scorecard recording on terminal tick |
 | Live provider adapter | Gated ready path: Stub/Fake/Live; Live requires gates, explicit metadata, symbolic credentials, positive pricing, persistent redacted audit, bounded calls/tokens/time/cost, and a kill switch |
-| Post-LGB Product Evolution Plan | PE-1 is complete; PE2-CONTRACT-1 and PE2-FORECAST-1 are implemented; PE2-ANOMALY-1 is the next eligible packet |
+| Post-LGB Product Evolution Plan | PE-1 is complete; PE2-CONTRACT-1, PE2-FORECAST-1, and PE2-ANOMALY-1 are implemented; PE2-READ-1 is the next eligible packet |
 
 ## Planned Product Evolution Stages
 
@@ -45,7 +45,7 @@ The stages are packetized in `docs/NEXT_DECISION.md`. The agent should execute p
 | Stage | Priority | Capability | Current state |
 |---|---|---|---|
 | PE-1 | P0 | Token Efficiency Regression Lab | Complete and acceptance-sealed |
-| PE-2 | P0/P1 | Budget Intelligence and Anomaly Auto-Pause | In progress: evidence contract and deterministic forecasts implemented; anomaly packet next |
+| PE-2 | P0/P1 | Budget Intelligence and Anomaly Auto-Pause | In progress: evidence contract, deterministic forecasts, and explainable anomaly detection implemented; read surfaces next |
 | PE-3 | P1 | Operator Decision Center | Detailed packets defined; blocked on PE-2 closeout |
 | PE-4 | P1/P2 | Trace-backed Policy Replay | Detailed packets defined; blocked on PE-3 closeout and trace coverage |
 | PE-5 | P1.5 | Release Provenance | Detailed packets defined; eligible after PE-1 closeout only by explicit independent-lane activation |
@@ -79,9 +79,18 @@ The stages are packetized in `docs/NEXT_DECISION.md`. The agent should execute p
 - focused tests cover zero usage, bursty usage, mixed workloads, boundary time, deterministic ordering, duplicate reconciliation, conflicting evidence, and concurrent reads;
 - no persistence, API, SDK, Dashboard, budget/reservation mutation, policy, pause, or target-output behavior changes are part of the forecast packet.
 
+## PE-2 Anomaly Evidence
+
+- deterministic rules cover cost, token, retry, latency, context-growth, and model-mix findings over explicit equal-duration windows;
+- supported normal evidence remains `detected=false`, while sparse, stale, mixed, incomplete, or excessive-duplicate evidence remains explicitly insufficient;
+- coverage metadata derives `missing_fields` only from fields absent in filtered evidence and preserves observed dimensions on applicable invalid-evidence paths;
+- conflicting duplicates and malformed metric evidence fail closed as versioned `invalid_evidence` findings with bounded references and reason codes;
+- thresholds are explicit and deterministic; equality does not create a false positive and no adaptive or opaque score is introduced;
+- no persistence, API, SDK, Dashboard, provider substitution, budget/reservation mutation, policy, pause, termination, or target-output behavior changes are part of the anomaly packet.
+
 ## Current Gaps
 
-- PE-2 explainable anomaly detection, read surfaces, and policy-gated high-confidence auto-pause are not implemented on `main`.
+- PE-2 persistence/read surfaces and policy-gated high-confidence auto-pause are not implemented.
 - PE-3 has no unified derived decision queue.
 - `policy_simulator.rs` still relies on fixed estimates rather than trace-calibrated replay.
 - SBOM, signing, and provenance attestations are not yet part of the release contract.
