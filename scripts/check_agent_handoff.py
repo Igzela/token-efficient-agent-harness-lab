@@ -241,7 +241,15 @@ def main() -> int:
         run_guard(["bash", str(toolchain_guard)], "toolchain drift guard", failures)
 
     secret_scan = ROOT / "scripts" / "acp_secret_scan.py"
-    run_guard([sys.executable, str(secret_scan)], "secret scan", failures)
+    secret_result = subprocess.run(
+        [sys.executable, str(secret_scan)],
+        capture_output=True,
+        text=True,
+    )
+    if secret_result.returncode != 0:
+        print("Agent handoff check FAILED — secret scan:")
+        print((secret_result.stdout or secret_result.stderr).strip())
+        return 1
 
     check_schema_document_drift(failures)
     check_phase_handoff(failures)
