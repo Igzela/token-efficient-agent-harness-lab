@@ -46,8 +46,8 @@ The stages are packetized in `docs/NEXT_DECISION.md`. The agent should execute p
 |---|---|---|---|
 | PE-1 | P0 | Token Efficiency Regression Lab | Complete and acceptance-sealed |
 | PE-2 | P0/P1 | Budget Intelligence and Anomaly Auto-Pause | Complete and acceptance-sealed |
-| PE-3 | P1 | Operator Decision Center | In progress: versioned contracts, derived queue, read-only API/OpenAPI/SDK/Dashboard Decision Center, and hash-bound existing-control action adapters implemented; independent acceptance closeout next |
-| PE-4 | P1/P2 | Trace-backed Policy Replay | Detailed packets defined; blocked on PE-3 closeout and trace coverage |
+| PE-3 | P1 | Operator Decision Center | Complete and acceptance-sealed: versioned contracts, derived queue, read-only API/OpenAPI/SDK/Dashboard, hash-bound existing-control actions, and independent authorization closeout are merged |
+| PE-4 | P1/P2 | Trace-backed Policy Replay | Contract in progress: trace coverage, calibration, comparability, freshness, and out-of-distribution refusal gates are being defined before replay implementation |
 | PE-5 | P1.5 | Release Provenance | Detailed packets defined; eligible after PE-1 closeout only by explicit independent-lane activation |
 | PE-6 | P2 | Fault Injection and Recovery Drills | Detailed packets defined; blocked on recovery invariants and affected stage prerequisites |
 

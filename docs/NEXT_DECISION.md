@@ -312,11 +312,17 @@ Later PE-3 packets remain: deterministic derived queue, read-only API/SDK/Dashbo
 
 ### Packet PE4-CONTRACT-1 — Calibration and coverage contract
 
-**State:** `BLOCKED_PREREQUISITE`
+**State:** `IN_PROGRESS`
 
 **Prerequisite:** PE3 closeout and sufficient versioned trace evidence.
 
-PE-4 remains offline-replay first, then shadow, then bounded canary through existing experiment/promotion/pause/rollback owners. Sparse, stale, uncovered, or out-of-distribution evidence must refuse recommendations.
+**Goal:** Define a versioned, deterministic replay eligibility contract over existing `feedback_trace.v1` and offline-evaluation owners before adding replay persistence, live routing, or promotion behavior.
+
+**Contract decision:** `policy_replay_contract.v1` accepts only bounded, non-secret `feedback_trace.v1` observations with a parseable timestamp, stable trace/dispatch identity, task class, selected candidate identity, terminal outcome, measured cost/latency, and a compatible quality measurement. A replay cohort is comparable only when its task class, objective, candidate definition, measurement schema, and time window match; duplicate identities, inconsistent candidate definitions, missing measurements, stale traces, and mixed incompatible schemas are rejected with sorted reason codes. Eligibility requires at least 30 accepted observations per compared candidate, at least 3 paired judge/reference samples per judge, no more than 10% rejected or uncovered observations, and a configurable maximum trace age no greater than 30 days. A candidate outside the observed task-class, objective, endpoint/member set, complexity bucket, or cost/latency envelope is `out_of_distribution`; any insufficient, stale, incomparable, uncovered, or OOD cohort produces a hash-bound refusal, never a recommendation.
+
+**Authority and progression:** Offline reports remain derived evidence, `shadow_only`, and non-mutating. PE4-REPLAY-1 may reuse `RunTraceRecorder` and `OfflineEvaluationEngine` only after this contract is implemented and tested. Shadow, bounded canary, promotion, pause, and rollback must call their existing owners; no offline or shadow result changes live policy. Existing `ContextualPolicyPromotion` retains its confirmation, evidence, rollout, pause, and rollback gates.
+
+**Acceptance and rollback:** Add deterministic contract tests for complete, sparse, stale, duplicate, incompatible, uncovered, and OOD cohorts; prove no provider, routing, policy, audit, or target-repository mutation on either recommendation or refusal. The contract packet adds only code/docs/tests; rollback is a revert with no migration or cleanup.
 
 ## PE-5 — Release Provenance
 
