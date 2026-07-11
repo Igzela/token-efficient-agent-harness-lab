@@ -152,36 +152,6 @@ jobs:
       - name: Verify Rust + TypeScript stack
         run: bash scripts/verify_rust_typescript_stack.sh
 
-  rustfmt-apply:
-    if: github.event_name == 'pull_request'
-    runs-on: ubuntu-latest
-    permissions:
-      contents: write
-    steps:
-      - name: Check out PR branch
-        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
-        with:
-          ref: ${{ github.head_ref }}
-          persist-credentials: true
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable 2026-07-10
-        with:
-          components: rustfmt
-      - name: Apply rustfmt once
-        run: |
-          cargo fmt --all
-          if git diff --quiet; then
-            exit 0
-          fi
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add engine/src/http_server/handlers/operator_decision_actions.rs \
-                  engine/src/operator_decision/mod.rs \
-                  engine/src/storage/local_product_store/operator_decision_queue/mod.rs \
-                  engine/tests/test_pe3_operator_action_repair.rs
-          git commit -m "style: apply rustfmt to PE3 repair"
-          git push origin HEAD:${{ github.head_ref }}
-
   docker-build:
     runs-on: ubuntu-latest
     steps:
