@@ -6,6 +6,7 @@ mod audit;
 mod auto_adjustments;
 mod boundaries;
 mod budget_evidence_artifacts;
+mod budget_pause_decisions;
 mod config;
 mod costs;
 mod decisions;
@@ -50,6 +51,7 @@ pub use adaptive_observation::{
     AdaptiveObservationInput, AdaptiveObservationSummary, ADAPTIVE_OBSERVATION_SCHEMA_VERSION,
 };
 pub use boundaries::local_boundaries;
+pub use budget_pause_decisions::{BudgetAutoPausePolicy, BUDGET_AUTO_PAUSE_POLICY_SCHEMA_VERSION};
 pub use export_import::{ImportCounts, ImportResult, LOCAL_IMPORT_SCHEMA_VERSION};
 pub use integrity::{IntegrityReport, TableIntegrity};
 

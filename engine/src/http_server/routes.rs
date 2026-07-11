@@ -304,6 +304,14 @@ fn axum_routes() -> Router<AxumApiState> {
             get(scorecards::api_budget_evidence_artifact_detail).options(cors_preflight),
         )
         .route(
+            "/api/v1/budget-evidence/:artifact_id/auto-pause",
+            post(scorecards::api_apply_budget_auto_pause).options(cors_preflight),
+        )
+        .route(
+            "/api/v1/budget-pauses/:run_id/recovery",
+            post(scorecards::api_recover_budget_auto_pause).options(cors_preflight),
+        )
+        .route(
             "/api/v1/backups",
             get(backups::api_list_backups)
                 .post(backups::api_create_backup)
