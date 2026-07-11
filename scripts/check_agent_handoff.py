@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Validate the coding-agent handoff and Terra Medium execution contract."""
+"""Validate coding-agent handoff, autonomy, and active-document contracts."""
 
 from __future__ import annotations
 
@@ -14,28 +14,19 @@ ROOT = Path(__file__).resolve().parents[1]
 
 REQUIRED_FILES = {
     "AGENTS.md": [
-        "Autonomous Advancement Authority",
+        "Autonomous Operating Model",
+        "Model Selection",
+        "Execution-Ready Task Packets",
+        "READY_FOR_EXECUTION",
+        "DECISION_REQUIRED",
+        "Full Agent Autonomy Mode",
         "Autonomous Advancement Loop",
         "Documentation Maintenance Rule",
-        "Full Agent Autonomy Mode",
-        "Mandatory Codex Execution Profile",
-        "gpt-5.6-terra",
-        "reasoning effort: `medium`",
-        "READY_FOR_TERRA",
-        "model_profile_mismatch",
-        "two coherent repair cycles",
-        "new architecture directions",
-        "authority-boundary changes",
-        "default execution/profile changes",
-        "auth/security redesign",
-        "database migrations",
-        "release/tag/deploy workflow changes",
-        "target-output authority changes",
-        "superseding accepted decisions",
+        "resolve bounded design gaps",
         "do not commit real secrets",
         "do not falsify test or CI evidence",
         "do not intentionally hide failures",
-        "do not remove rollback paths",
+        "do not remove rollback paths without a tested replacement",
         "do not perform irreversible external destruction without a recovery path",
         "Post-R7 wire/type governance hardening implemented:",
         "scripts/check_wire_codegen_drift.sh",
@@ -66,22 +57,21 @@ REQUIRED_FILES = {
         "Tests:",
         "Phase 4",
         "Full Agent Autonomy Mode",
-        "Codex executor profile",
-        "gpt-5.6-terra",
-        "READY_FOR_TERRA",
-        ".codex/config.toml",
+        "Model selection",
+        "READY_FOR_EXECUTION",
+        "Autonomous decision authority",
         "Post-R7 Wire/Type Governance Hardening",
         "scripts/check_wire_codegen_drift.sh",
     ],
     "docs/NEXT_DECISION.md": [
         "Full Agent Autonomy Mode",
         "Autonomously maintain and evolve",
-        "Mandatory Executor Profile",
-        "Terra-Ready Packet Protocol",
-        "READY_FOR_TERRA",
-        "profile mismatch is a hard stop",
+        "Model Selection",
+        "Execution-Ready Packet Protocol",
+        "READY_FOR_EXECUTION",
+        "DECISION_REQUIRED",
         "Hard Stops",
-        "repo-scoped, testable, observable, and rollbackable",
+        "repo-scoped, testable, observable, CI-gated, and rollbackable",
         "Packet PE1-UI-1",
         "Packet PE2-CONTRACT-1",
         "Packet PE3-CONTRACT-1",
@@ -93,12 +83,15 @@ REQUIRED_FILES = {
         "# Module Map",
         "| Module | Stage | Purpose |",
         "Full Agent Autonomy Mode",
+        "READY_FOR_EXECUTION",
         "`scripts/check_wire_codegen_drift.sh`",
     ],
     "docs/REAL_WORLD_TESTING_PLAYBOOK.md": [
         "# Real-World Testing Playbook",
-        "Agent Autonomous Maintenance Mode",
         "Full Agent Autonomy Mode",
+        "Model Selection",
+        "Action Permission Matrix",
+        "New architecture/authority/recovery decision",
         "docs/archive/",
     ],
     "docs/RUNBOOK.md": [
@@ -113,12 +106,21 @@ REQUIRED_FILES = {
     ],
 }
 
-EXPECTED_CODEX_PROFILE = {
-    "model": "gpt-5.6-terra",
-    "review_model": "gpt-5.6-terra",
-    "model_reasoning_effort": "medium",
-    "plan_mode_reasoning_effort": "medium",
-}
+MODEL_AGNOSTIC_FILES = [
+    "AGENTS.md",
+    "docs/CURRENT_STATUS.md",
+    "docs/NEXT_DECISION.md",
+    "docs/MODULE_MAP.md",
+    "docs/REAL_WORLD_TESTING_PLAYBOOK.md",
+]
+
+FORBIDDEN_MODEL_LOCK_MARKERS = [
+    "gpt-5.6-terra",
+    "READY_FOR_TERRA",
+    "model_profile_mismatch",
+    "Mandatory Codex Execution Profile",
+    "Mandatory Executor Profile",
+]
 
 
 def check_required_text(failures: list[str]) -> None:
@@ -133,24 +135,17 @@ def check_required_text(failures: list[str]) -> None:
                 failures.append(f"{relative_path} is missing required text: {snippet!r}")
 
 
-def check_codex_profile(failures: list[str]) -> None:
-    path = ROOT / ".codex" / "config.toml"
-    if not path.exists():
-        failures.append("missing project Codex profile: .codex/config.toml")
-        return
-    text = path.read_text(encoding="utf-8")
-    parsed: dict[str, str] = {}
-    for key, value in re.findall(r'^([A-Za-z0-9_]+)\s*=\s*"([^"]+)"\s*$', text, re.MULTILINE):
-        parsed[key] = value
-    for key, expected in EXPECTED_CODEX_PROFILE.items():
-        actual = parsed.get(key)
-        if actual != expected:
-            failures.append(
-                f".codex/config.toml must set {key}={expected!r}; found {actual!r}"
-            )
-    lowered = text.lower()
-    if "gpt-5.6-sol" in lowered or re.search(r'\bsol\b', lowered):
-        failures.append(".codex/config.toml must not configure Sol")
+def check_model_agnostic_governance(failures: list[str]) -> None:
+    for relative_path in MODEL_AGNOSTIC_FILES:
+        path = ROOT / relative_path
+        if not path.exists():
+            continue
+        text = path.read_text(encoding="utf-8")
+        for marker in FORBIDDEN_MODEL_LOCK_MARKERS:
+            if marker in text:
+                failures.append(
+                    f"{relative_path} must remain model-agnostic; found stale marker {marker!r}"
+                )
 
 
 def run_guard(command: list[str], label: str, failures: list[str]) -> None:
@@ -224,7 +219,7 @@ def check_phase_handoff(failures: list[str]) -> None:
 def main() -> int:
     failures: list[str] = []
     check_required_text(failures)
-    check_codex_profile(failures)
+    check_model_agnostic_governance(failures)
 
     wire_guard = ROOT / "scripts" / "check_wire_codegen_drift.sh"
     if not wire_guard.exists():
