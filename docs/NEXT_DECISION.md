@@ -2,11 +2,62 @@
 
 ## Current Direction
 
-The dispatch kernel, V2, Adaptive Fusion AF-0 through AF-7, Agent Runtime AR-0 through AR-6, Trusted Local Autonomous Execution IAE-0 through IAE-3, scorecard integrity hardening, and the importer-first LangGraph pilot are complete.
+The dispatch kernel, V2, Adaptive Fusion AF-0 through AF-7, Agent Runtime AR-0 through AR-6, Trusted Local Autonomous Execution IAE-0 through IAE-3, scorecard integrity hardening, and the importer-first external benchmark path are complete.
 
-PR #166 completed generic `scorecard_artifact.v2`, canonical integrity checks, app-owned persistence, scenario API/Dashboard comparison, and the first real offline LangGraph evidence pair. The next direction is the Post-LGB Product Evolution plan, PE-1 through PE-6. It turns existing evidence and controls into regression detection, budget intelligence, operator decisions, trace-backed policy evaluation, release provenance, and verified recovery.
+The active direction is the Post-LGB Product Evolution plan, PE-1 through PE-6. This is not AR-7, another LGB ladder, or a second control plane.
 
-This is not AR-7, another LGB ladder, or a second control plane.
+`docs/NEXT_DECISION.md` is the single forward-plan artifact. Historical detail remains in `docs/ARCHITECTURE_BOOK.md`, archived plans, merged PRs, and repository history.
+
+## Full Agent Autonomy Mode
+
+Full Agent Autonomy Mode remains active for repo-scoped, testable, observable, and rollbackable execution **inside an approved Terra-ready task packet**.
+
+### Autonomously maintain and evolve
+
+A Terra Medium Codex executor may inspect, implement, test, review, open a PR, repair ordinary CI failures, update active docs, and merge a packet when all packet and playbook gates pass.
+
+It may not create new architecture directions, authority semantics, migration policy, security policy, release trust policy, or recovery invariants. Those decisions must already be fixed by the external planner in the packet.
+
+## Mandatory Executor Profile
+
+All Codex execution for this plan uses:
+
+- `gpt-5.6-terra`
+- reasoning effort `medium`
+- review model `gpt-5.6-terra`
+- plan-mode reasoning effort `medium`
+
+The project default is `.codex/config.toml`. Do not use Sol or self-escalate reasoning effort. A profile mismatch is a hard stop, not permission to continue with a different model.
+
+## Terra-Ready Packet Protocol
+
+Codex may execute only a packet marked `READY_FOR_TERRA` whose prerequisites are complete. It must choose the earliest such packet in the normative sequence.
+
+Packet states:
+
+- `READY_FOR_TERRA` — contract is complete and prerequisites are satisfied.
+- `BLOCKED_PREREQUISITE` — contract is defined, but an earlier packet must complete first.
+- `PLANNER_DECISION_REQUIRED` — implementation must not begin until the missing decision is supplied.
+- `IN_PROGRESS` — one active branch/PR owns the packet.
+- `COMPLETE` — acceptance evidence is merged and active docs are updated.
+
+Every packet inherits these required fields:
+
+| Field | Required contract |
+|---|---|
+| Goal | One observable result, not a broad stage aspiration |
+| Prerequisites | Exact earlier packets or existing contracts that must be complete |
+| Owning paths | Existing source/test/document owners to extend |
+| Allowed changes | Minimum coherent implementation surfaces |
+| Forbidden changes | No parallel runtime, scheduler, store, policy authority, mailbox, artifact truth source, or Dashboard state model |
+| Contract | Versioned inputs, outputs, reason codes, bounds, permissions, and failure states |
+| Verification | Focused tests plus applicable full repository validation |
+| Compatibility | SQLite/PostgreSQL, API/SDK, existing rows, and old callers remain compatible when applicable |
+| Rollback | `git revert` plus any bounded cleanup procedure |
+| Completion evidence | PR, commit, CI run, test evidence, compatibility, residual risk, and next packet status |
+| Stop triggers | Missing contract, authority expansion, irreversible migration, security ambiguity, conflicting active docs/code, or two failed repair cycles |
+
+Stage prose is context only. It does not authorize implementation outside the packets below.
 
 ## Stable Tracks
 
@@ -18,96 +69,454 @@ This is not AR-7, another LGB ladder, or a second control plane.
 | Adaptive Fusion | Complete through AF-7 |
 | Agent Runtime | Complete and sealed at AR-6 |
 | Trusted Local Autonomous Execution | Complete through IAE-3 |
-| External Runtime Benchmark Boundary | Importer-first LangGraph pilot complete |
-| Full Agent Autonomy Mode | Active |
-| Agent Autonomous Maintenance Mode | Active |
-
-Historical phase detail remains in `docs/ARCHITECTURE_BOOK.md`, archived plans, merged PRs, and repository history. This file is the single forward-plan artifact.
-
-## Full Agent Autonomy Mode
-
-Maintaining agents may autonomously propose, implement, test, review, merge, and iterate work when it is repo-scoped, testable, observable, and rollbackable.
-
-### Autonomously maintain and evolve
-
-Agents may proceed without per-PR confirmation when they start from latest `main`, choose one bounded PE acceptance slice, preserve existing authority boundaries, add focused and full-stack verification, repair CI until green, document compatibility and rollback, and update existing active docs rather than adding duplicate roadmap/status files.
-
-## Hard Stops
-
-Agents must not commit credentials, falsify evidence, hide failures, remove recovery paths, bypass existing auth/budget/audit/approval controls, create unbounded execution, persist raw sensitive runtime content in evidence, or perform irreversible external destruction without a recovery path.
-
-## Architecture refactor (R-series)
-
-The R-series remains sealed at R7. PE work must extend the existing Rust runtime/API/storage, SDK, Dashboard, release, and recovery owners. A replacement requires an explicit documented decision, threat-model delta, migration plan, verification, and rollback.
-
-## External Runtime Benchmark Direction
-
-External runtimes remain bounded benchmark, replay, or trace-summary ingest targets. Native v1 and generic v2 artifacts share the existing store/API boundary. Comparisons must validate canonical hashes, derived metrics, scenario compatibility, and quality equivalence. Provider calls remain forbidden in CI. Embedded external runners, scheduled external execution, and external target authority remain unauthorized unless this file is explicitly changed.
+| External Runtime Benchmark Boundary | Importer-first pilot complete |
+| Agent Autonomous Maintenance Mode | Active through Terra-ready packets |
+| Full Agent Autonomy Mode | Active inside packet boundaries |
 
 ## Post-LGB Product Evolution Plan
 
-The normative order is PE-1, PE-2, PE-3, PE-4, PE-5, and PE-6. Each stage should be split into scoped PRs. PE-5 may proceed after PE-1 in parallel when no release work conflicts.
+Normative order is PE-1, PE-2, PE-3, PE-4, PE-5, and PE-6. PE-5 may proceed after PE-1 when no release work conflicts, but the executor still selects the earliest eligible packet unless the user explicitly activates the PE-5 lane.
 
 | Stage | Priority | Goal | Status |
 |---|---|---|---|
-| PE-1 | P0 | Token Efficiency Regression Lab | In progress: registry, report/batch cores, checked evidence, persistence/import/trends, and read-only API/SDK implemented; Dashboard history/trend UX is next |
-| PE-2 | P0/P1 | Budget Intelligence and Anomaly Auto-Pause | Authorized after PE-1 contracts stabilize |
-| PE-3 | P1 | Operator Decision Center | Authorized after PE-2 evidence shape exists |
-| PE-4 | P1/P2 | Trace-backed Policy Replay | Authorized after sufficient versioned traces exist |
-| PE-5 | P1.5 | Release Provenance | Authorized after PE-1; may proceed independently |
-| PE-6 | P2 | Fault Injection and Recovery Drills | Authorized after recovery invariants are explicit |
+| PE-1 | P0 | Token Efficiency Regression Lab | Core, persistence, trends, and API/SDK complete; Dashboard and closeout remain |
+| PE-2 | P0/P1 | Budget Intelligence and Anomaly Auto-Pause | Packetized; blocked on PE-1 closeout |
+| PE-3 | P1 | Operator Decision Center | Packetized; blocked on PE-2 closeout |
+| PE-4 | P1/P2 | Trace-backed Policy Replay | Packetized; blocked on PE-3 closeout and trace coverage |
+| PE-5 | P1.5 | Release Provenance | Packetized; eligible after PE-1 closeout or by explicit lane activation |
+| PE-6 | P2 | Fault Injection and Recovery Drills | Packetized; blocked on explicit subsystem recovery invariants |
 
-### PE-1 — Token Efficiency Regression Lab
+## PE-1 — Token Efficiency Regression Lab
 
-Build a bounded multi-scenario registry over existing scorecard v1/v2 artifacts. Each scenario must define digests, baseline/candidate roles, quality method and threshold, allowed regressions, and comparison metadata. Include at least three fixed summary-only scenarios, including the existing LangGraph pilot.
+Implemented facts:
 
-Compare current evidence with explicit baseline and best-known results across tokens, repeated context, state bytes, cost, latency, retries, and quality. Return `incomparable` when contracts or quality differ. Persist only bounded regression reports through the existing artifact/store/API boundary. Add Dashboard history, trend, baseline, best-known configuration, regression reason, and evidence links.
+- canonical `token_efficiency_regression_registry.v1`
+- deterministic single-scenario and registry-wide batch reports
+- fixed bounded evidence for LangGraph, native deterministic, and local stub scenarios
+- SQLite/PostgreSQL `LocalProductStore` persistence and idempotent local import
+- deterministic bounded history/trend read model
+- read-only HTTP list/detail/trend endpoints and Python/TypeScript SDK readers
+- report-only behavior with no CI blocking, provider call, routing change, or mutation authority
 
-Initial mode is report-only: no CI blocking, routing change, policy mutation, or provider call. Acceptance requires deterministic recomputation plus tamper, threshold, quality-failure, missing-baseline, incomparable, repeat-import, cross-version, and trend tests.
+### Packet PE1-UI-1 — Dashboard history and trend UX
 
-Implemented slice: `token_efficiency_regression_registry.v1` validates a canonical hash-bound registry of three summary-only scenarios against the existing LangGraph fixture, native deterministic pilot, and local stub runner. It fixes explicit baseline/candidate roles, quality thresholds, allowed regressions, supported v1/v2 artifact contracts, and report-only/zero-provider/zero-mutation metadata. It adds no storage, API, Dashboard, CI-blocking, routing, or policy authority. Next: deterministically recompute bounded current-vs-baseline and best-known regression reports from fixed evidence, including missing-baseline, incomparable, threshold, and quality-failure outcomes.
+**State:** `READY_FOR_TERRA`
 
-Implemented slice: `token_efficiency_regression_report.v1` deterministically recomputes one bounded current-vs-baseline/best-known report across tokens, repeated context, state bytes, cost, latency, retries, and quality. Canonical report and artifact hashes reject tampering; explicit outcomes cover pass, regression, missing baseline/best-known, incomparable contracts, and quality failure; native v1 and generic v2 envelopes remain compatible. It remains report-only with no persistence, CI blocking, routing, policy, provider, or mutation authority. Next: add checked evidence pairs for the native deterministic and local-stub scenarios, then registry-wide batch/repeat-import/trend behavior before storage/API/Dashboard work.
+**Goal:** Existing regression API data is visible in the current Dashboard with scenario history, bounded trend, baseline/best-known context, regression reasons, and evidence links.
 
-Implemented slice: checked `native_scorecard_artifact.v1` baseline/candidate evidence now covers the native deterministic and local-stub scenarios alongside the existing LangGraph pair. Tests rebuild both generated pairs, normalize only exporter capture time, verify the complete remaining envelope, and fix deterministic report hashes and outcomes. The evidence records the expected `baseline.state_bytes` regression for both stateful candidates instead of hiding that trade-off. Next: add deterministic registry-wide batch recomputation plus repeat-import and trend behavior before persistence/API/Dashboard work.
+**Prerequisites:** PR #175 merged; `/api/v1/regressions`, detail, and trend endpoints available; existing SDK contracts available.
 
-Implemented slice: `token_efficiency_regression_batch.v1` deterministically recomputes every registered scenario with exact coverage, sorted reports, outcome counts, nested report validation, and a canonical batch hash. Input order cannot affect output, missing baselines remain explicit without dropping scenarios, and malformed or tampered nested reports fail closed. The batch remains report-only with no persistence, provider, CI-blocking, routing, policy, or mutation authority. Next: add repeat-import and bounded trend semantics through the existing artifact/store boundary.
+**Owning paths:** `dashboard/`; existing benchmark/scorecard components; existing Dashboard API client; focused Dashboard tests. Update `docs/CURRENT_STATUS.md`, this file, and `docs/MODULE_MAP.md` only if ownership/facts change.
 
-Implemented slice: schema v17 adds `regression_report_artifacts` inside the existing `LocalProductStore` SQLite/PostgreSQL boundary. Deterministic report and batch hashes become idempotent artifact IDs; repeated recording returns the existing envelope, and bounded list/scenario reads validate inner self-hashes plus envelope coherence. Audit records contain metadata and hashes only; raw or sensitive payload keys fail closed. The slice adds no API, SDK, Dashboard, provider, CI-blocking, routing, policy, or mutation authority. Next: add the bounded file importer and deterministic trend semantics over this table, then expose the existing boundary through API/SDK/Dashboard.
+**Allowed changes:** Add or extend current scorecard/benchmark UI components, bounded client calls, loading/empty/error states, deterministic formatting, and tests.
 
-Implemented slice: the existing bounded local scorecard importer now dispatches `token_efficiency_regression_report.v1` and `token_efficiency_regression_batch.v1` files into the same `LocalProductStore` artifact boundary. It retains the legacy CLI/API name for compatibility, preserves the 1 MiB pre-parse ceiling, supports mixed scorecard/regression directories, and reports deterministic repeats as unchanged. It adds no second importer, provider calls, API/Dashboard state, or mutation authority. Next: add deterministic bounded history/trend semantics over persisted reports.
+**Forbidden changes:** No new API route, storage table, persistence path, scheduler, provider call, policy authority, write action, or second Dashboard state model. Do not change regression report/trend semantics to make the UI easier.
 
-Implemented slice: `token_efficiency_regression_trend.v1` derives the most recent bounded scenario history directly from validated `regression_report_artifacts` without new persistence. Stable sequence ordering, canonical trend hashes, sparse history, outcome/reason transitions, cross-envelope evidence links, and lower/higher-is-better metric direction are deterministic across SQLite and PostgreSQL. Persistence now accepts every outcome in the authoritative report contract. The read model remains report-only with no provider, routing, policy, CI-blocking, or mutation authority. Next: expose bounded artifacts and trends through the existing read-only API and SDK, then add the Dashboard history/trend view.
+**Contract:**
 
-Implemented slice: the existing scorecard HTTP owner now exposes read-only regression list, detail, and scenario-trend endpoints under `/api/v1/regressions`, all guarded by `dispatch:read` and documented in OpenAPI. Python and TypeScript SDKs provide encoded bounded readers and TypeScript response contracts. Responses preserve metadata-only, provider-disabled, zero-mutation, and target-write-disabled boundaries. Next: add the Dashboard history/trend view with baseline/best-known configuration, regression reasons, and evidence links.
+- consume existing list/detail/trend responses only
+- scenario selection must encode identifiers through existing client helpers
+- show outcome and reason codes without converting regressions into passes
+- show baseline and best-known evidence roles when present
+- evidence links expose only bounded artifact IDs/hashes/metadata already returned by the API
+- handle empty history, one-point history, missing baseline, missing best-known, incomparable, quality failure, regression, and pass
+- cap rendered history at the server-provided bounded result
 
-### PE-2 — Budget Intelligence and Anomaly Auto-Pause
+**Verification:** Component/unit tests for all states above; Dashboard lint, typecheck, production build, static export; applicable full stack and handoff checks; browser DOM smoke when available.
 
-Add simple versioned forecasts for exhaustion time and expected spend/tokens by run, workspace, provider, and model. Detect explainable cost, token, retry, latency, context-growth, and model-mix anomalies. Evidence must include version, window, coverage, confidence, and reason codes.
+**Compatibility:** Existing Dashboard routes and scorecard views remain functional; no API or storage migration.
 
-Automatic pause is permitted only for high-confidence, policy-enabled conditions through existing pause and audit controls. Resume or override requires operator evidence. No automatic termination, silent budget mutation, provider substitution, or opaque forecasting. Acceptance includes sparse-data, false-positive, concurrency, idempotency, audit, resume, and incomplete-pricing tests.
+**Rollback:** Revert the packet PR; no stored state cleanup.
 
-### PE-3 — Operator Decision Center
+**Stop triggers:** Required fields are missing from the existing API contract; UI requires new authority or persistence; current Dashboard ownership conflicts with the module map.
 
-Create one prioritized derived action queue from existing approvals, blocked or stalled runs, repeated failures, budget risk, benchmark regressions, invalid policy configuration, scheduler state, and rollback candidates.
+### Packet PE1-CLOSE-1 — PE-1 acceptance seal
 
-Each action item must include reason, severity, confidence, evidence links, recommended action, required authority, age, and resolution state. Reuse existing mutation endpoints. The center must not become a second scheduler, policy authority, approval store, or hidden mutation path. Acceptance includes deterministic derivation, deduplication, stale invalidation, permissions, pagination, and evidence-to-action traceability.
+**State:** `BLOCKED_PREREQUISITE`
 
-### PE-4 — Trace-backed Policy Replay
+**Prerequisite:** PE1-UI-1 complete.
 
-Replace fixed heuristic simulation incrementally with versioned trace-backed calibration by task class, complexity, provider/model, and execution profile. Record sample size, coverage, time window, confidence, and out-of-distribution status. Refuse recommendations when evidence is sparse, stale, or outside supported coverage.
+**Goal:** Prove every PE-1 acceptance item is implemented and tested, close stale wording, and mark PE-1 complete without adding new capability.
 
-Compare candidate policies on success, quality, cost, latency, retries, and review outcomes. Reuse existing shadow evaluation, canary, promotion snapshot, pause, and rollback paths. Progress from offline replay to shadow evaluation to bounded canary only after explicit thresholds pass. Keep observed and estimated outcomes separate.
+**Allowed changes:** Tests, fixtures, active-doc corrections, and narrow defects found by the audit.
 
-### PE-5 — Release Provenance
+**Forbidden changes:** No CI blocking or mutation authority; no new product feature; no reopening completed phase ladders.
 
-Add SPDX or CycloneDX SBOMs, artifact and image signatures, and build attestations tied to source commit, workflow, target, dependency state, and artifact digest. Installer and upgrade verification must reject invalid required evidence while preserving atomic rollback. Keep signing material outside the repository. Acceptance includes tamper rejection, target correctness, verification tests, existing advisory gates, and rollback-compatible installation.
+**Acceptance:** Deterministic recomputation; tamper, threshold, quality-failure, missing-baseline, missing-best-known, incomparable, repeat-import, cross-version, trend, API/SDK, and Dashboard evidence all pass. SQLite/PostgreSQL remain aligned. Full CI is green.
 
-### PE-6 — Fault Injection and Recovery Drills
+**Rollback:** Revert closeout corrections individually; implemented PE-1 functionality remains usable.
 
-Define recovery invariants before each drill: permitted data loss, authority behavior, fail-closed expectation, recovery sequence, and required evidence. Add bounded deterministic scenarios for audit-store failure, provider timeout or invalid response, budget concurrency, scheduler restart, database interruption, artifact corruption, upgrade interruption, pause recovery, and duplicate mailbox delivery.
+**Stop triggers:** Any acceptance gap requires a new behavior contract rather than a bounded defect repair; mark `PLANNER_DECISION_REQUIRED` with evidence.
 
-Drills must remain local/CI-safe and isolated from real external state. Record recovery success, divergence, duplicate execution, data loss, fail-open violations, and recovery time. Acceptance requires repeatable assertions, cleanup verification, explicit residual risk, and operator procedures added to `RUNBOOK.md` only after they work.
+## PE-2 — Budget Intelligence and Anomaly Auto-Pause
+
+Stage invariants:
+
+- forecasts and anomalies are derived evidence, not facts
+- every result records version, window, coverage, confidence, reason codes, and evidence references
+- sparse or incomplete data returns `insufficient_evidence`
+- automatic pause is allowed only through existing pause/audit controls when policy-enabled and high-confidence
+- no automatic termination, silent budget mutation, provider substitution, or opaque forecast
+
+### Packet PE2-CONTRACT-1 — Budget intelligence evidence contract
+
+**State:** `BLOCKED_PREREQUISITE`
+
+**Prerequisite:** PE1-CLOSE-1 complete.
+
+**Goal:** Define and validate versioned bounded contracts for forecasts, anomaly findings, confidence, coverage, reason codes, and `insufficient_evidence` outcomes; report-only only.
+
+**Owning paths:** `engine/src/budget_manager.rs`; existing provider audit/cost evidence; scheduler/workflow evidence; `LocalProductStore` validation owners; focused Rust tests; architecture/module docs when durable ownership changes.
+
+**Allowed changes:** Contract structs/validators and deterministic fixtures/tests. Reuse existing evidence owners.
+
+**Forbidden changes:** No pause call, policy mutation, new provider invocation, new pricing source, or Dashboard work.
+
+**Acceptance:** Bounds, canonical serialization/hash where existing evidence uses hashes, malformed/tampered input rejection, sparse data, incomplete pricing, unknown model, clock/window boundaries, and SQLite/PostgreSQL-compatible representation are tested.
+
+**Stop triggers:** Existing cost/audit evidence cannot identify the required dimensions without a new source-of-truth decision.
+
+### Packet PE2-FORECAST-1 — Deterministic budget forecasts
+
+**State:** `BLOCKED_PREREQUISITE`
+
+**Prerequisite:** PE2-CONTRACT-1 complete.
+
+**Goal:** Produce read-only expected tokens/spend and exhaustion-time forecasts by run, workspace, provider, and model from existing posted evidence.
+
+**Allowed changes:** Deterministic forecast computation, bounded aggregation, read-model tests.
+
+**Forbidden changes:** No external model call, learned opaque model, budget mutation, reservation change, or pause.
+
+**Contract:** Separate observed values from estimates; include sample count, window, coverage, confidence, pricing completeness, assumptions, and reason codes. Refuse a forecast when evidence is stale, sparse, contradictory, or unpriced.
+
+**Acceptance:** Sparse, zero-usage, bursty, mixed-model, incomplete-pricing, boundary-time, deterministic ordering, and concurrency-safe read tests.
+
+### Packet PE2-ANOMALY-1 — Explainable anomaly detector
+
+**State:** `BLOCKED_PREREQUISITE`
+
+**Prerequisite:** PE2-FORECAST-1 complete.
+
+**Goal:** Detect bounded cost, token, retry, latency, context-growth, and model-mix anomalies with explicit thresholds, confidence, and reason codes.
+
+**Allowed changes:** Deterministic/statistical rule implementation over the versioned contract and existing evidence.
+
+**Forbidden changes:** No hidden adaptive threshold, provider substitution, pause, termination, or policy mutation.
+
+**Acceptance:** Normal, spike, gradual drift, mixed workloads, sparse history, false-positive boundaries, duplicated evidence, out-of-order evidence, and deterministic recomputation tests.
+
+### Packet PE2-READ-1 — Persistence, API, SDK, and Dashboard read surfaces
+
+**State:** `BLOCKED_PREREQUISITE`
+
+**Prerequisite:** PE2-ANOMALY-1 complete.
+
+**Goal:** Expose bounded forecasts and anomaly evidence through existing store/API/SDK/Dashboard owners.
+
+**Allowed changes:** Additive `LocalProductStore` schema only if persistence is required by the contract; read-only HTTP/OpenAPI; Python/TypeScript readers; current Dashboard components; SQLite/PostgreSQL migrations/tests.
+
+**Forbidden changes:** No pause action or second state model.
+
+**Acceptance:** Idempotent persistence if used, bounded pagination, permissions, OpenAPI/router parity, encoded SDK paths, empty/error/sparse UI states, migration compatibility, and full stack verification.
+
+**Stop triggers:** Persistence semantics were not fixed by PE2-CONTRACT-1 or require rewriting existing budget history.
+
+### Packet PE2-PAUSE-1 — Policy-gated high-confidence auto-pause
+
+**State:** `BLOCKED_PREREQUISITE`
+
+**Prerequisite:** PE2-READ-1 complete.
+
+**Goal:** Invoke the existing pause mechanism only for policy-enabled, high-confidence supported findings, with complete audit and idempotent recovery behavior.
+
+**Owning paths:** Existing scheduler/workflow pause controls, policy gates, audit, operator evidence, API controls, and focused integration tests.
+
+**Allowed changes:** A narrow decision adapter from validated anomaly evidence to the existing pause endpoint/path; explicit enablement; audit; resume/override evidence.
+
+**Forbidden changes:** No auto-kill, silent budget edit, provider/model substitution, new pause state machine, default enablement, or resume without operator evidence.
+
+**Contract:** Fail closed on missing policy, incomplete pricing, low confidence, stale evidence, unsupported anomaly, audit failure, concurrent duplicate triggers, or unavailable pause owner. Repeated triggers are idempotent. Resume and override preserve cause/evidence.
+
+**Acceptance:** False positives, concurrency, duplicate trigger, audit failure, pause failure compensation, disabled policy, sparse data, incomplete pricing, resume, override, permission, and restart tests.
+
+**Stop triggers:** Existing pause semantics cannot guarantee idempotency/compensation or policy ownership is ambiguous.
+
+### Packet PE2-CLOSE-1 — PE-2 acceptance seal
+
+**State:** `BLOCKED_PREREQUISITE`
+
+**Prerequisite:** PE2-PAUSE-1 complete.
+
+**Goal:** Audit the whole PE-2 chain, repair bounded defects, mark PE-2 complete, and activate PE-3-CONTRACT-1.
+
+**Acceptance:** Forecast/anomaly evidence is explainable and bounded; auto-pause is explicitly enabled, high-confidence, audited, idempotent, fail-closed, and recoverable; full CI and SQLite/PostgreSQL checks are green.
+
+## PE-3 — Operator Decision Center
+
+Stage invariants:
+
+- one derived action queue over existing evidence and controls
+- no second scheduler, policy authority, approval store, or hidden mutation path
+- each item includes reason, severity, confidence, evidence links, recommended action, required authority, age, and resolution state
+
+### Packet PE3-CONTRACT-1 — Decision item and source contract
+
+**State:** `BLOCKED_PREREQUISITE`
+
+**Prerequisite:** PE2-CLOSE-1 complete.
+
+**Goal:** Define bounded versioned action-item/source contracts and deterministic source precedence for approvals, blocked/stalled runs, repeated failures, budget risk, benchmark regressions, invalid policy, scheduler state, and rollback candidates.
+
+**Allowed changes:** Contracts, validators, fixtures, reason/severity/confidence taxonomy, and tests.
+
+**Forbidden changes:** No queue persistence, action execution, new authority, or Dashboard.
+
+**Acceptance:** Missing/stale/conflicting sources, permissions metadata, deduplication identity, and evidence-link bounds are tested.
+
+### Packet PE3-QUEUE-1 — Deterministic derived action queue
+
+**State:** `BLOCKED_PREREQUISITE`
+
+**Prerequisite:** PE3-CONTRACT-1 complete.
+
+**Goal:** Derive a prioritized, paginated queue with deterministic ordering, deduplication, age, stale invalidation, and resolution projection from existing owners.
+
+**Forbidden changes:** No hidden writes or second state machine. Resolution must map to an existing authoritative fact or a narrowly defined existing-store record fixed in the contract.
+
+**Acceptance:** Duplicate sources, priority ties, stale evidence, resolved/reopened items, missing source, bounded pagination, permissions, and deterministic recomputation.
+
+### Packet PE3-READ-1 — API, SDK, and Dashboard decision center
+
+**State:** `BLOCKED_PREREQUISITE`
+
+**Prerequisite:** PE3-QUEUE-1 complete.
+
+**Goal:** Expose the derived queue and evidence through existing read-only API/SDK/Dashboard owners.
+
+**Acceptance:** Router/OpenAPI parity, permission tests, encoded SDK paths, pagination, empty/error/stale UI, evidence navigation, and no mutation path in read components.
+
+### Packet PE3-ACTION-1 — Existing-control action adapters
+
+**State:** `BLOCKED_PREREQUISITE`
+
+**Prerequisite:** PE3-READ-1 complete.
+
+**Goal:** Let an authorized operator invoke only already-existing mutation endpoints from an action item, preserving each endpoint's permission, approval, audit, idempotency, and rollback behavior.
+
+**Forbidden changes:** No generic execute-anything endpoint, implicit approval, hidden scheduler command, policy mutation, or new authority.
+
+**Acceptance:** Required-authority mismatch, stale item, duplicate request, endpoint failure, audit failure, compensation, permission, and evidence-to-action traceability tests.
+
+**Stop triggers:** A recommended action has no existing authoritative endpoint or requires altered approval semantics.
+
+### Packet PE3-CLOSE-1 — PE-3 acceptance seal
+
+**State:** `BLOCKED_PREREQUISITE`
+
+**Prerequisite:** PE3-ACTION-1 complete.
+
+**Goal:** Audit deterministic derivation, deduplication, stale invalidation, permissions, pagination, resolution, and action traceability; then activate PE4-CONTRACT-1.
+
+## PE-4 — Trace-backed Policy Replay
+
+Stage invariants:
+
+- observed and estimated outcomes remain separate
+- recommendations are refused for sparse, stale, uncovered, or out-of-distribution evidence
+- progression is offline replay, then shadow evaluation, then bounded canary
+- reuse existing experiment, promotion, pause, and rollback controls
+
+### Packet PE4-CONTRACT-1 — Calibration and coverage contract
+
+**State:** `BLOCKED_PREREQUISITE`
+
+**Prerequisite:** PE3-CLOSE-1 complete and sufficient versioned trace evidence exists.
+
+**Goal:** Define versioned calibration slices by task class, complexity, provider/model, and execution profile, including sample size, window, coverage, confidence, OOD, and refusal reason codes.
+
+**Owning paths:** `engine/src/feedback/run_trace_recorder.rs`, `engine/src/feedback/policy_simulator.rs`, existing experiment evidence, focused tests.
+
+**Forbidden changes:** No live influence, promotion, routing mutation, or heuristic removal outside supported slices.
+
+**Acceptance:** Sparse/stale/OOD/contradictory trace behavior, leakage prevention, deterministic partitions, and observed-vs-estimated separation.
+
+### Packet PE4-REPLAY-1 — Offline trace-backed policy replay
+
+**State:** `BLOCKED_PREREQUISITE`
+
+**Prerequisite:** PE4-CONTRACT-1 complete.
+
+**Goal:** Compare candidate policies offline on success, quality, cost, latency, retries, and review outcomes for covered slices; refuse unsupported recommendations.
+
+**Allowed changes:** Incremental replacement of fixed heuristic estimates only where coverage passes; retain explicit fallback/refusal elsewhere.
+
+**Acceptance:** Golden replay, coverage boundary, OOD, stale trace, policy-version mismatch, deterministic result, and no-live-influence tests.
+
+### Packet PE4-SHADOW-1 — Shadow policy evaluation
+
+**State:** `BLOCKED_PREREQUISITE`
+
+**Prerequisite:** PE4-REPLAY-1 complete.
+
+**Goal:** Run candidate policy decisions in shadow through existing experiment/evidence owners without changing live routing.
+
+**Acceptance:** Live/shadow separation, correlation, bounded evidence, failure isolation, restart, and operator visibility tests.
+
+### Packet PE4-CANARY-1 — Guarded canary and promotion integration
+
+**State:** `BLOCKED_PREREQUISITE`
+
+**Prerequisite:** PE4-SHADOW-1 complete with explicit threshold evidence.
+
+**Goal:** Reuse existing canary, promotion snapshot, pause, and rollback paths for a bounded candidate policy only after offline and shadow gates pass.
+
+**Forbidden changes:** No automatic broad rollout, bypassed approval, missing rollback snapshot, or promotion on insufficient/OOD evidence.
+
+**Acceptance:** Threshold pass/fail, concurrent promotion, pause, rollback, snapshot integrity, stale evidence, permission, and restart tests.
+
+**Stop triggers:** Existing promotion/rollback cannot represent the candidate safely or threshold policy is not specified.
+
+### Packet PE4-CLOSE-1 — PE-4 acceptance seal
+
+**State:** `BLOCKED_PREREQUISITE`
+
+**Prerequisite:** PE4-CANARY-1 complete.
+
+**Goal:** Prove the offline-to-shadow-to-canary chain and activate the next eligible stage packet.
+
+## PE-5 — Release Provenance
+
+Stage invariants:
+
+- signing material remains outside the repository
+- provenance binds source commit, workflow, target, dependency state, and artifact digest
+- installer/upgrade verification fails closed while preserving atomic rollback
+- current audits and target-correct packaging remain mandatory
+
+### Packet PE5-SBOM-1 — Deterministic SBOM generation
+
+**State:** `BLOCKED_PREREQUISITE`
+
+**Prerequisite:** PE1-CLOSE-1 complete and no conflicting release PR is active; user may explicitly activate this lane.
+
+**Goal:** Produce bounded SPDX or CycloneDX SBOMs for release binaries and container images through existing release workflows.
+
+**Owning paths:** `.github/workflows/release.yml`, release/container scripts, release-contract checks.
+
+**Forbidden changes:** No release publication, persistent signing key, disabled dependency audit, or target relabeling.
+
+**Acceptance:** Deterministic content where practical, target/dependency correctness, missing component failure, tamper tests, and dry-run artifacts.
+
+### Packet PE5-ATTEST-1 — Build provenance attestations
+
+**State:** `BLOCKED_PREREQUISITE`
+
+**Prerequisite:** PE5-SBOM-1 complete.
+
+**Goal:** Generate provenance tying source, workflow, target, dependencies/SBOM, and final digests.
+
+**Acceptance:** Wrong commit/target/digest/workflow rejection, reproducible verification fixture, and no secret material.
+
+### Packet PE5-SIGN-1 — Artifact and image signing
+
+**State:** `BLOCKED_PREREQUISITE`
+
+**Prerequisite:** PE5-ATTEST-1 complete.
+
+**Goal:** Sign release artifacts/images through external or ephemeral CI identity and verify signatures without storing private signing material in the repository.
+
+**Acceptance:** Valid, missing, wrong identity, wrong target, expired/revoked where supported, and tampered signature tests. CI tests use disposable fixtures only.
+
+**Stop triggers:** Trust root, identity policy, or key custody is unspecified.
+
+### Packet PE5-INSTALL-1 — Installer and upgrade provenance enforcement
+
+**State:** `BLOCKED_PREREQUISITE`
+
+**Prerequisite:** PE5-SIGN-1 complete.
+
+**Goal:** Require the configured SBOM/provenance/signature evidence before install/upgrade, and preserve existing atomic rollback on verification or activation failure.
+
+**Acceptance:** Missing/tampered/mismatched evidence, network interruption, partial download, activation failure, prior-version restoration, and target correctness tests.
+
+### Packet PE5-CLOSE-1 — PE-5 acceptance seal
+
+**State:** `BLOCKED_PREREQUISITE`
+
+**Prerequisite:** PE5-INSTALL-1 complete.
+
+**Goal:** Audit provenance from build to install and mark PE-5 complete without publishing an external release unless separately authorized.
+
+## PE-6 — Fault Injection and Recovery Drills
+
+Stage invariants:
+
+- drills are bounded, deterministic, local/CI-safe, and isolated from real external state
+- each drill fixes permitted data loss, authority behavior, fail-closed expectation, recovery sequence, cleanup, and required evidence before implementation
+- reports record recovery success, divergence, duplicate execution, data loss, fail-open violations, and recovery time
+
+### Packet PE6-INVARIANTS-1 — Recovery invariant catalog and harness contract
+
+**State:** `BLOCKED_PREREQUISITE`
+
+**Prerequisite:** PE4-CLOSE-1 complete; PE5-CLOSE-1 complete for release/upgrade drills.
+
+**Goal:** Encode bounded versioned drill/invariant/report contracts and reusable local fault seams without executing destructive external operations.
+
+**Owning paths:** focused engine integration tests, storage/provider/scheduler fault seams, backup/restore, upgrade rollback, and CI tooling.
+
+**Forbidden changes:** No production fault toggle exposed remotely, no real provider sabotage, no destructive shared database test, and no unbounded retry.
+
+**Acceptance:** Contract validation, cleanup enforcement, timeout, fail-closed default, deterministic report, and test-environment isolation.
+
+### Packet PE6-STORAGE-1 — Audit, database, and artifact recovery drills
+
+**State:** `BLOCKED_PREREQUISITE`
+
+**Prerequisite:** PE6-INVARIANTS-1 complete.
+
+**Goal:** Test audit-store failure, database interruption/restart, bounded state loss, artifact corruption, backup/restore, and integrity recovery.
+
+**Acceptance:** SQLite and PostgreSQL scenarios, no fail-open authority, permitted data-loss assertion, duplicate detection, cleanup, and recovery-time evidence.
+
+### Packet PE6-RUNTIME-1 — Provider, budget, scheduler, and mailbox drills
+
+**State:** `BLOCKED_PREREQUISITE`
+
+**Prerequisite:** PE6-STORAGE-1 complete.
+
+**Goal:** Test provider timeout/invalid response, budget concurrency, scheduler restart, pause recovery, and duplicate mailbox delivery through existing seams.
+
+**Acceptance:** No double execution/charge, preserved audit, fail-closed gates, idempotent recovery, bounded retries, and cleanup.
+
+### Packet PE6-RELEASE-1 — Upgrade and provenance failure drills
+
+**State:** `BLOCKED_PREREQUISITE`
+
+**Prerequisite:** PE6-RUNTIME-1 and PE5-CLOSE-1 complete.
+
+**Goal:** Test interrupted upgrade, invalid provenance/signature, corrupted artifact, activation failure, and restoration of the previous verified version.
+
+**Acceptance:** Atomic rollback, target correctness, no partial active installation, retained evidence, and cleanup.
+
+### Packet PE6-OPS-1 — Drill reporting and proven runbook procedures
+
+**State:** `BLOCKED_PREREQUISITE`
+
+**Prerequisite:** PE6-RELEASE-1 complete.
+
+**Goal:** Expose bounded drill reports through existing operator evidence/read surfaces and add only successfully tested operator procedures to `docs/RUNBOOK.md`.
+
+**Forbidden changes:** No new operational fact store or untested runbook claim.
+
+### Packet PE6-CLOSE-1 — Final evolution-plan acceptance seal
+
+**State:** `BLOCKED_PREREQUISITE`
+
+**Prerequisite:** PE6-OPS-1 complete.
+
+**Goal:** Audit PE-1 through PE-6 boundaries, evidence, CI, rollback, active docs, and remaining risks; mark the plan complete without inventing PE-7.
 
 ## Cross-Stage Rules
 
@@ -117,20 +526,26 @@ Drills must remain local/CI-safe and isolated from real external state. Record r
 - Maintain SQLite/PostgreSQL compatibility when storage changes.
 - Separate facts, estimates, recommendations, and live actions.
 - Start with observation before granting new mutation authority.
+- Provider calls remain forbidden in CI.
+- Do not persist raw prompts, outputs, transcripts, secrets, repository payloads, or other sensitive runtime content in evidence.
 - Include compatibility, residual risk, and rollback in every PR.
+- One active product packet at a time unless the user explicitly activates the independent PE-5 lane.
 
-## Allowed Next Paths
+## Hard Stops
 
-- Implement the earliest incomplete PE stage in normative order.
-- Split a stage into multiple scoped PRs.
-- Perform maintenance, regression hardening, CI repair, documentation correction, and real-world validation.
-- Advance PE-5 after PE-1 when release work is not already active.
-- Supersede the order only by updating this file with rationale, risks, acceptance criteria, and rollback.
-- Maintain completed AR, AF, IAE, V2, scorecard, and importer behavior without reopening their phase ladders.
+Agents must not commit credentials, falsify evidence, hide failures, remove recovery paths, bypass auth/budget/audit/approval controls, create unbounded execution, persist raw sensitive runtime content, or perform irreversible external destruction without recovery.
+
+Additional Terra execution hard stops:
+
+- no `READY_FOR_TERRA` packet with satisfied prerequisites
+- current model profile is not Terra Medium
+- packet conflicts with code or another authoritative document
+- an unspecified architecture, authority, schema, migration, security, trust, signing, or recovery decision is required
+- two coherent repair cycles fail on the same root cause
 
 ## Auto-Merge Policy
 
-Scoped docs, tests, fixes, implementation, migration, security, release, and authority changes may be merged autonomously when green, reviewed, observable, and rollbackable. External release publication or irreversible effects require verified evidence and recovery.
+Scoped docs, tests, fixes, implementation, migration, security, release, and authority changes may be merged autonomously when the packet is ready, scope/risk are reviewed, all CI is green, the handoff guard passes, evidence is truthful, and rollback is clear. External release publication or irreversible effects require separate verified authority.
 
 ## Minimum Verification
 
@@ -149,18 +564,19 @@ uv run --no-project python scripts/check_agent_handoff.py
 git diff --check
 ```
 
-Add release, browser, Docker, backup/restore, or fault-specific checks when those surfaces change.
+Add release, browser, Docker, migration, backup/restore, or fault-specific checks when those surfaces change.
 
 ## Documentation Maintenance
 
-Use existing active docs only. Put durable contracts in `ARCHITECTURE_BOOK.md`, current facts in `CURRENT_STATUS.md`, forward authority here, ownership in `MODULE_MAP.md`, validation discipline in `REAL_WORLD_TESTING_PLAYBOOK.md`, and proven operator procedures in `RUNBOOK.md`.
+Use existing active docs only. Put durable architecture in `ARCHITECTURE_BOOK.md`, current facts in `CURRENT_STATUS.md`, forward authority and packets here, ownership in `MODULE_MAP.md`, validation discipline in `REAL_WORLD_TESTING_PLAYBOOK.md`, and proven operator procedures in `RUNBOOK.md`.
 
 ## Before Starting Autonomous Work
 
-1. Read `docs/CURRENT_STATUS.md`, this file, and `docs/MODULE_MAP.md`.
-2. Select the earliest incomplete PE stage and one bounded acceptance slice.
-3. Audit current code before assuming functionality is absent.
-4. State non-goals and safety boundaries.
-5. Implement on a branch, test, review, and repair CI until green.
-6. Update active docs with facts.
-7. Report PR, commits, compatibility, evidence, CI, residual risk, rollback, and the next unfinished item.
+1. Confirm Terra Medium execution profile.
+2. Read `AGENTS.md`, `docs/CURRENT_STATUS.md`, this file, and `docs/MODULE_MAP.md`.
+3. Select the earliest `READY_FOR_TERRA` packet whose prerequisites are complete.
+4. Audit current code before assuming functionality is absent.
+5. Restate packet scope, non-goals, ownership, and stop triggers.
+6. Implement on a branch, test, review, and repair ordinary CI failures for at most two coherent cycles.
+7. Update active docs with facts only.
+8. Report packet, model profile, PR, commits, compatibility, evidence, CI, residual risk, rollback, and next packet state.

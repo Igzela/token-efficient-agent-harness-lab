@@ -1,10 +1,5 @@
 #!/usr/bin/env python3
-"""Validate the coding-agent handoff surface.
-
-This check is intentionally lightweight. It prevents a future autonomous
-session from committing a state where the entry documents no longer describe
-how the next agent should continue.
-"""
+"""Validate the coding-agent handoff and Terra Medium execution contract."""
 
 from __future__ import annotations
 
@@ -23,6 +18,12 @@ REQUIRED_FILES = {
         "Autonomous Advancement Loop",
         "Documentation Maintenance Rule",
         "Full Agent Autonomy Mode",
+        "Mandatory Codex Execution Profile",
+        "gpt-5.6-terra",
+        "reasoning effort: `medium`",
+        "READY_FOR_TERRA",
+        "model_profile_mismatch",
+        "two coherent repair cycles",
         "new architecture directions",
         "authority-boundary changes",
         "default execution/profile changes",
@@ -65,16 +66,28 @@ REQUIRED_FILES = {
         "Tests:",
         "Phase 4",
         "Full Agent Autonomy Mode",
+        "Codex executor profile",
+        "gpt-5.6-terra",
+        "READY_FOR_TERRA",
+        ".codex/config.toml",
         "Post-R7 Wire/Type Governance Hardening",
         "scripts/check_wire_codegen_drift.sh",
     ],
     "docs/NEXT_DECISION.md": [
         "Full Agent Autonomy Mode",
         "Autonomously maintain and evolve",
-        "Allowed Next Paths",
+        "Mandatory Executor Profile",
+        "Terra-Ready Packet Protocol",
+        "READY_FOR_TERRA",
+        "profile mismatch is a hard stop",
         "Hard Stops",
-        "Architecture refactor (R-series)",
         "repo-scoped, testable, observable, and rollbackable",
+        "Packet PE1-UI-1",
+        "Packet PE2-CONTRACT-1",
+        "Packet PE3-CONTRACT-1",
+        "Packet PE4-CONTRACT-1",
+        "Packet PE5-SBOM-1",
+        "Packet PE6-INVARIANTS-1",
     ],
     "docs/MODULE_MAP.md": [
         "# Module Map",
@@ -100,130 +113,146 @@ REQUIRED_FILES = {
     ],
 }
 
+EXPECTED_CODEX_PROFILE = {
+    "model": "gpt-5.6-terra",
+    "review_model": "gpt-5.6-terra",
+    "model_reasoning_effort": "medium",
+    "plan_mode_reasoning_effort": "medium",
+}
 
-def main() -> int:
-    failures: list[str] = []
 
+def check_required_text(failures: list[str]) -> None:
     for relative_path, snippets in REQUIRED_FILES.items():
         path = ROOT / relative_path
         if not path.exists():
             failures.append(f"missing required handoff file: {relative_path}")
             continue
-
         text = path.read_text(encoding="utf-8")
         for snippet in snippets:
             if snippet not in text:
                 failures.append(f"{relative_path} is missing required text: {snippet!r}")
 
-    wire_codegen_guard = ROOT / "scripts" / "check_wire_codegen_drift.sh"
-    if not wire_codegen_guard.exists():
-        failures.append("missing required wire codegen drift guard: scripts/check_wire_codegen_drift.sh")
-    elif not wire_codegen_guard.is_file():
-        failures.append("wire codegen drift guard is not a file: scripts/check_wire_codegen_drift.sh")
-    elif not os.access(wire_codegen_guard, os.X_OK):
-        failures.append("wire codegen drift guard is not executable: scripts/check_wire_codegen_drift.sh")
 
-    if failures:
-        print("Agent handoff check FAILED:")
-        for failure in failures:
-            print(f"- {failure}")
-        return 1
+def check_codex_profile(failures: list[str]) -> None:
+    path = ROOT / ".codex" / "config.toml"
+    if not path.exists():
+        failures.append("missing project Codex profile: .codex/config.toml")
+        return
+    text = path.read_text(encoding="utf-8")
+    parsed: dict[str, str] = {}
+    for key, value in re.findall(r'^([A-Za-z0-9_]+)\s*=\s*"([^"]+)"\s*$', text, re.MULTILINE):
+        parsed[key] = value
+    for key, expected in EXPECTED_CODEX_PROFILE.items():
+        actual = parsed.get(key)
+        if actual != expected:
+            failures.append(
+                f".codex/config.toml must set {key}={expected!r}; found {actual!r}"
+            )
+    lowered = text.lower()
+    if "gpt-5.6-sol" in lowered or re.search(r'\bsol\b', lowered):
+        failures.append(".codex/config.toml must not configure Sol")
 
-    drift_guard = ROOT / "scripts" / "check_toolchain_drift.sh"
-    if drift_guard.exists():
-        result = subprocess.run(
-            ["bash", str(drift_guard)],
-            capture_output=True,
-            text=True,
-        )
-        if result.returncode != 0:
-            print("Agent handoff check FAILED — toolchain drift guard:")
-            print(result.stdout.strip())
-            return 1
 
-    result = subprocess.run(
-        ["bash", str(wire_codegen_guard)],
-        capture_output=True,
-        text=True,
-    )
+def run_guard(command: list[str], label: str, failures: list[str]) -> None:
+    result = subprocess.run(command, capture_output=True, text=True)
     if result.returncode != 0:
-        print("Agent handoff check FAILED — wire codegen drift guard:")
-        print(result.stdout.strip())
-        return 1
+        output = (result.stdout or result.stderr).strip()
+        failures.append(f"{label} failed: {output}")
 
-    secret_scan = ROOT / "scripts" / "acp_secret_scan.py"
-    result = subprocess.run(
-        [sys.executable, str(secret_scan)],
-        capture_output=True,
-        text=True,
-    )
-    if result.returncode != 0:
-        print("Agent handoff check FAILED — secret scan:")
-        print(result.stdout.strip())
-        return 1
 
-    # --- Drift checks ---
-
-    # Check 1: Schema catalog version constant exists and is readable
+def check_schema_document_drift(failures: list[str]) -> None:
     schema_path = ROOT / "engine" / "src" / "storage" / "local_product_store" / "schema.rs"
     migrations_path = ROOT / "engine" / "src" / "storage" / "local_product_store" / "migrations.rs"
-    code_version = None
-    if schema_path.exists():
-        schema_text = schema_path.read_text(encoding="utf-8")
-        match = re.search(r'CURRENT_SQLITE_SCHEMA_VERSION\s*:\s*i64\s*=\s*(\d+)', schema_text)
+    architecture_path = ROOT / "docs" / "ARCHITECTURE_BOOK.md"
+
+    code_version: int | None = None
+    if not schema_path.exists():
+        failures.append("schema.rs not found at expected path")
+    else:
+        match = re.search(
+            r"CURRENT_SQLITE_SCHEMA_VERSION\s*:\s*i64\s*=\s*(\d+)",
+            schema_path.read_text(encoding="utf-8"),
+        )
         if not match:
             failures.append("Cannot parse CURRENT_SQLITE_SCHEMA_VERSION from schema.rs")
         else:
             code_version = int(match.group(1))
-    else:
-        failures.append("schema.rs not found at expected path")
 
-    if migrations_path.exists():
-        migrations_text = migrations_path.read_text(encoding="utf-8")
-        if "CURRENT_SCHEMA_VERSION" not in migrations_text:
-            failures.append("migrations.rs is missing CURRENT_SCHEMA_VERSION constant")
-    else:
+    if not migrations_path.exists():
         failures.append("migrations.rs not found at expected path")
+    elif "CURRENT_SCHEMA_VERSION" not in migrations_path.read_text(encoding="utf-8"):
+        failures.append("migrations.rs is missing CURRENT_SCHEMA_VERSION constant")
 
-    # Check 2: Architecture Book exists, is non-empty, and schema version matches schema.rs
-    arch_book = ROOT / "docs" / "ARCHITECTURE_BOOK.md"
-    if not arch_book.exists():
+    if not architecture_path.exists():
         failures.append("docs/ARCHITECTURE_BOOK.md not found")
-    elif arch_book.stat().st_size == 0:
+    elif architecture_path.stat().st_size == 0:
         failures.append("docs/ARCHITECTURE_BOOK.md is empty")
     elif code_version is not None:
-        # Cross-check schema version between schema.rs and ARCHITECTURE_BOOK.md
-        arch_text = arch_book.read_text(encoding="utf-8")
-        m_doc = re.search(r'Current version:\s*v(\d+)', arch_text)
-        if not m_doc:
+        match = re.search(
+            r"Current version:\s*v(\d+)",
+            architecture_path.read_text(encoding="utf-8"),
+        )
+        if not match:
             failures.append(
                 "ARCHITECTURE_BOOK.md is missing 'Current version: vN' "
                 "(required for schema version drift check)"
             )
-        else:
-            doc_version = int(m_doc.group(1))
-            if code_version != doc_version:
-                failures.append(
-                    f"Schema version mismatch: schema.rs has v{code_version}, "
-                    f"ARCHITECTURE_BOOK.md has v{doc_version}"
-                )
-
-    # Check 4: active Phase 6 work has a forward plan in NEXT_DECISION.
-    current_status_path = ROOT / "docs" / "CURRENT_STATUS.md"
-    if current_status_path.exists():
-        status_text = current_status_path.read_text(encoding="utf-8")
-        if "Phase 6" in status_text and ("active track" in status_text or "IN PROGRESS" in status_text):
-            next_decision_path = ROOT / "docs" / "NEXT_DECISION.md"
-            next_decision_text = (
-                next_decision_path.read_text(encoding="utf-8")
-                if next_decision_path.exists()
-                else ""
+        elif int(match.group(1)) != code_version:
+            failures.append(
+                f"Schema version mismatch: schema.rs has v{code_version}, "
+                f"ARCHITECTURE_BOOK.md has v{match.group(1)}"
             )
-            if "Phase 6" not in next_decision_text:
-                failures.append(
-                    "docs/NEXT_DECISION.md must describe active Phase 6 work "
-                    "when CURRENT_STATUS declares Phase 6 active"
-                )
+
+
+def check_phase_handoff(failures: list[str]) -> None:
+    status_path = ROOT / "docs" / "CURRENT_STATUS.md"
+    next_path = ROOT / "docs" / "NEXT_DECISION.md"
+    if not status_path.exists():
+        return
+    status_text = status_path.read_text(encoding="utf-8")
+    if "Phase 6" in status_text and (
+        "active track" in status_text.lower() or "IN PROGRESS" in status_text
+    ):
+        next_text = next_path.read_text(encoding="utf-8") if next_path.exists() else ""
+        if "Phase 6" not in next_text:
+            failures.append(
+                "docs/NEXT_DECISION.md must describe active Phase 6 work "
+                "when CURRENT_STATUS declares Phase 6 active"
+            )
+
+
+def main() -> int:
+    failures: list[str] = []
+    check_required_text(failures)
+    check_codex_profile(failures)
+
+    wire_guard = ROOT / "scripts" / "check_wire_codegen_drift.sh"
+    if not wire_guard.exists():
+        failures.append("missing required wire codegen drift guard")
+    elif not wire_guard.is_file():
+        failures.append("wire codegen drift guard is not a file")
+    elif not os.access(wire_guard, os.X_OK):
+        failures.append("wire codegen drift guard is not executable")
+    else:
+        run_guard(["bash", str(wire_guard)], "wire codegen drift guard", failures)
+
+    toolchain_guard = ROOT / "scripts" / "check_toolchain_drift.sh"
+    if toolchain_guard.exists():
+        run_guard(["bash", str(toolchain_guard)], "toolchain drift guard", failures)
+
+    secret_scan = ROOT / "scripts" / "acp_secret_scan.py"
+    secret_result = subprocess.run(
+        [sys.executable, str(secret_scan)],
+        capture_output=True,
+        text=True,
+    )
+    if secret_result.returncode != 0:
+        print("Agent handoff check FAILED — secret scan:")
+        print((secret_result.stdout or secret_result.stderr).strip())
+        return 1
+
+    check_schema_document_drift(failures)
+    check_phase_handoff(failures)
 
     if failures:
         print("Agent handoff check FAILED:")
