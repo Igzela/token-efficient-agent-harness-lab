@@ -36,7 +36,7 @@ This repo is a local/small-team self-hosted agent workflow control plane. Rust `
 | Local runner operations | Active: validate, export, import, and inspect bounded scorecard artifacts locally |
 | Runner integration | Storage/API/operator evidence complete; workflow scheduling of local runner validation is implemented via `LocalRunnerValidationExecutor` in stub mode with automatic native scorecard recording on terminal tick |
 | Live provider adapter | Gated ready path: Stub/Fake/Live; Live requires gates, explicit metadata, symbolic credentials, positive pricing, persistent redacted audit, bounded calls/tokens/time/cost, and a kill switch |
-| Post-LGB Product Evolution Plan | PE-1 and PE-2 are acceptance-sealed; PE3-CONTRACT-1, PE3-QUEUE-1, and PE3-READ-1 are complete; PE3-ACTIONS-1 is next |
+| Post-LGB Product Evolution Plan | PE-1 and PE-2 are acceptance-sealed; PE3-REPAIR-1 is the only active packet after independent review found defects in the merged PE-3 chain; PE-4 contract repair remains blocked on a truthful PE-3 closeout |
 
 ## Planned Product Evolution Stages
 
@@ -46,10 +46,10 @@ The stages are packetized in `docs/NEXT_DECISION.md`. The agent should execute p
 |---|---|---|---|
 | PE-1 | P0 | Token Efficiency Regression Lab | Complete and acceptance-sealed |
 | PE-2 | P0/P1 | Budget Intelligence and Anomaly Auto-Pause | Complete and acceptance-sealed |
-| PE-3 | P1 | Operator Decision Center | Complete and acceptance-sealed: versioned contracts, derived queue, read-only API/OpenAPI/SDK/Dashboard, hash-bound existing-control actions, and independent authorization closeout are merged |
-| PE-4 | P1/P2 | Trace-backed Policy Replay | Contract in progress: trace coverage, calibration, comparability, freshness, and out-of-distribution refusal gates are being defined before replay implementation |
-| PE-5 | P1.5 | Release Provenance | Detailed packets defined; eligible after PE-1 closeout only by explicit independent-lane activation |
-| PE-6 | P2 | Fault Injection and Recovery Drills | Detailed packets defined; blocked on recovery invariants and affected stage prerequisites |
+| PE-3 | P1 | Operator Decision Center | Independent repair in progress; the prior closeout is not accepted as evidence until PE3-REPAIR-1 and a separate PE3-CLOSE-1 pass exact-head and post-merge CI |
+| PE-4 | P1/P2 | Trace-backed Policy Replay | Contract text is merged, but PR #193 is only an initial caller-asserted eligibility prototype and is superseded pending PE4-CONTRACT-REPAIR-1 after PE-3 closeout |
+| PE-5 | P1.5 | Release Provenance | Not started; inactive in the current bounded objective |
+| PE-6 | P2 | Fault Injection and Recovery Drills | Not started; blocked on explicit recovery invariants and affected stage prerequisites |
 
 ## PE-1 Acceptance Evidence
 
@@ -90,7 +90,7 @@ The stages are packetized in `docs/NEXT_DECISION.md`. The agent should execute p
 
 ## Current Gaps
 
-- PE-3 has not yet completed its independent acceptance closeout.
+- PE-3 is under PE3-REPAIR-1 because independent review found historical mutation replay, source-identity, evidence-chain, Retry, and action-owner defects; the separate PE3-CLOSE-1 has not started.
 - `policy_simulator.rs` still relies on fixed estimates rather than trace-calibrated replay.
 - SBOM, signing, and provenance attestations are not yet part of the release contract.
 - There is no systematic fault-injection and recovery-drill harness.
@@ -128,6 +128,14 @@ The stages are packetized in `docs/NEXT_DECISION.md`. The agent should execute p
 - `ready`, `conflict`, `expired`, `insufficient_evidence`, and `resolved` remain explicit, and only `ready` may recommend an action;
 - canonical hashes bind source and item content; tamper, expiry, staleness, low confidence, missing sources, resolution, and ordering are covered by focused Rust tests;
 - no persistence, API, SDK, Dashboard, provider, policy, approval, pause/resume/retry/rollback, or target-output authority is added by the contract packet.
+
+## PE-3 Independent Repair Evidence
+
+- mutation actions are being changed to validate the client read time against the store clock and re-bind the exact current page, decision, resource, action, source kind, source ID, and source hash before invoking an owner;
+- derived decision sources are being bound to bounded original evidence references, with an absent hash retained when no trustworthy owner hash exists;
+- Retry is limited to blocked runs with a genuinely ready node, terminal failed runs do not produce ready actions, and pending approvals expose separate exact approve/reject decisions;
+- approval resolution is being made atomic in the existing workflow owner for SQLite and PostgreSQL, while unsupported rollback/inspect/acknowledge remain explicit fail-closed outcomes;
+- this is work in progress, not acceptance. PE-3 becomes complete only after the repair merges green and a separate independent closeout verifies the whole chain.
 
 ## Handoff Guard Anchors
 
