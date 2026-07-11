@@ -38,7 +38,7 @@ export interface RegressionTrendPointSummary {
   artifact_id: string;
   created_at: string;
   current_metrics: Record<string, number>;
-  evidence: Partial<Record<"current" | "baseline" | "best_known", RegressionEvidenceReference>>;
+  evidence: RegressionReportSummary["evidence"];
   outcome: RegressionOutcome;
   reason_codes: string[];
   report_sha256: string;
@@ -101,46 +101,42 @@ const OUTCOMES = new Set<RegressionOutcome>([
   "quality_failure",
 ]);
 
-function record(value: unknown): Record<string, unknown> | null {
+function object(value: unknown): Record<string, unknown> | null {
   return value !== null && typeof value === "object" && !Array.isArray(value)
     ? value as Record<string, unknown>
     : null;
 }
 
-function stringValue(value: unknown): string | null {
+function text(value: unknown): string | null {
   return typeof value === "string" && value.length > 0 ? value : null;
 }
 
-function numberValue(value: unknown): number | null {
+function finite(value: unknown): number | null {
   return typeof value === "number" && Number.isFinite(value) ? value : null;
 }
 
-function stringList(value: unknown): string[] {
+function texts(value: unknown): string[] {
   return Array.isArray(value) ? value.filter((item): item is string => typeof item === "string") : [];
 }
 
-function outcomeValue(value: unknown): RegressionOutcome | null {
+function outcome(value: unknown): RegressionOutcome | null {
   return typeof value === "string" && OUTCOMES.has(value as RegressionOutcome)
     ? value as RegressionOutcome
     : null;
 }
 
 function evidenceReference(value: unknown): RegressionEvidenceReference | null {
-  const item = record(value);
-  if (!item) return null;
-  const adapterRunId = stringValue(item.adapter_run_id);
-  const artifactSchemaVersion = stringValue(item.artifact_schema_version);
-  const contentSha256 = stringValue(item.content_sha256);
-  if (!adapterRunId || !artifactSchemaVersion || !contentSha256) return null;
-  return {
-    adapter_run_id: adapterRunId,
-    artifact_schema_version: artifactSchemaVersion,
-    content_sha256: contentSha256,
-  };
+  const item = object(value);
+  const adapterRunId = text(item?.adapter_run_id);
+  const artifactSchemaVersion = text(item?.artifact_schema_version);
+  const contentSha256 = text(item?.content_sha256);
+  return adapterRunId && artifactSchemaVersion && contentSha256
+    ? { adapter_run_id: adapterRunId, artifact_schema_version: artifactSchemaVersion, content_sha256: contentSha256 }
+    : null;
 }
 
 function evidenceReferences(value: unknown): RegressionReportSummary["evidence"] {
-  const source = record(value);
+  const source = object(value);
   const result: RegressionReportSummary["evidence"] = {};
   if (!source) return result;
   for (const role of ["current", "baseline", "best_known"] as const) {
@@ -150,47 +146,40 @@ function evidenceReferences(value: unknown): RegressionReportSummary["evidence"]
   return result;
 }
 
-function metricSummary(value: unknown): RegressionMetricSummary | null {
-  const item = record(value);
-  if (!item || typeof item.regressed !== "boolean") return null;
-  return {
-    allowed_regression: numberValue(item.allowed_regression),
-    current: numberValue(item.current),
-    delta: numberValue(item.delta),
-    normalized_regression: numberValue(item.normalized_regression),
-    reference: numberValue(item.reference),
-    regressed: item.regressed,
-  };
-}
-
 function comparisonMetrics(value: unknown): Record<string, RegressionMetricSummary> {
-  const comparison = record(value);
-  const metrics = record(comparison?.metrics);
+  const metrics = object(object(value)?.metrics);
   const result: Record<string, RegressionMetricSummary> = {};
   if (!metrics) return result;
-  for (const [name, rawMetric] of Object.entries(metrics)) {
-    const metric = metricSummary(rawMetric);
-    if (metric) result[name] = metric;
+  for (const [name, raw] of Object.entries(metrics)) {
+    const metric = object(raw);
+    if (!metric || typeof metric.regressed !== "boolean") continue;
+    result[name] = {
+      allowed_regression: finite(metric.allowed_regression),
+      current: finite(metric.current),
+      delta: finite(metric.delta),
+      normalized_regression: finite(metric.normalized_regression),
+      reference: finite(metric.reference),
+      regressed: metric.regressed,
+    };
   }
   return result;
 }
 
 export function summarizeRegressionArtifact(value: unknown): RegressionReportSummary | null {
-  const artifact = record(value);
-  const report = record(artifact?.report);
-  if (!artifact || !report) return null;
-  const artifactId = stringValue(artifact.artifact_id);
-  const createdAt = stringValue(artifact.created_at);
-  const scenarioId = stringValue(report.scenario_id);
-  const reportSha256 = stringValue(report.report_sha256);
-  const outcome = outcomeValue(report.outcome);
-  if (!artifactId || !createdAt || !scenarioId || !reportSha256 || !outcome) return null;
-  const comparisons = record(report.comparisons);
+  const artifact = object(value);
+  const report = object(artifact?.report);
+  const artifactId = text(artifact?.artifact_id);
+  const createdAt = text(artifact?.created_at);
+  const scenarioId = text(report?.scenario_id);
+  const reportSha256 = text(report?.report_sha256);
+  const reportOutcome = outcome(report?.outcome);
+  if (!artifactId || !createdAt || !scenarioId || !reportSha256 || !reportOutcome || !report) return null;
+  const comparisons = object(report.comparisons);
   const summary: RegressionReportSummary = {
     artifact_id: artifactId,
     created_at: createdAt,
-    outcome,
-    reason_codes: stringList(report.reason_codes),
+    outcome: reportOutcome,
+    reason_codes: texts(report.reason_codes),
     report_sha256: reportSha256,
     scenario_id: scenarioId,
     evidence: evidenceReferences(report.evidence),
@@ -204,79 +193,64 @@ export function summarizeRegressionArtifact(value: unknown): RegressionReportSum
 }
 
 function trendPoint(value: unknown): RegressionTrendPointSummary | null {
-  const item = record(value);
-  if (!item) return null;
-  const artifactId = stringValue(item.artifact_id);
-  const createdAt = stringValue(item.created_at);
-  const outcome = outcomeValue(item.outcome);
-  const reportSha256 = stringValue(item.report_sha256);
-  if (!artifactId || !createdAt || !outcome || !reportSha256) return null;
-  const rawMetrics = record(item.current_metrics);
+  const item = object(value);
+  const artifactId = text(item?.artifact_id);
+  const createdAt = text(item?.created_at);
+  const pointOutcome = outcome(item?.outcome);
+  const reportSha256 = text(item?.report_sha256);
+  if (!item || !artifactId || !createdAt || !pointOutcome || !reportSha256) return null;
   const currentMetrics: Record<string, number> = {};
-  if (rawMetrics) {
-    for (const [name, rawValue] of Object.entries(rawMetrics)) {
-      const metric = numberValue(rawValue);
-      if (metric !== null) currentMetrics[name] = metric;
-    }
+  for (const [name, raw] of Object.entries(object(item.current_metrics) ?? {})) {
+    const metric = finite(raw);
+    if (metric !== null) currentMetrics[name] = metric;
   }
   return {
     artifact_id: artifactId,
     created_at: createdAt,
     current_metrics: currentMetrics,
     evidence: evidenceReferences(item.evidence),
-    outcome,
-    reason_codes: stringList(item.reason_codes),
+    outcome: pointOutcome,
+    reason_codes: texts(item.reason_codes),
     report_sha256: reportSha256,
   };
 }
 
 function trendTransition(value: unknown): RegressionTrendTransitionSummary | null {
-  const item = record(value);
-  if (!item) return null;
-  const fromArtifactId = stringValue(item.from_artifact_id);
-  const toArtifactId = stringValue(item.to_artifact_id);
-  const fromOutcome = outcomeValue(item.from_outcome);
-  const toOutcome = outcomeValue(item.to_outcome);
-  if (!fromArtifactId || !toArtifactId || !fromOutcome || !toOutcome || typeof item.outcome_changed !== "boolean") return null;
-  const rawDeltas = record(item.metric_deltas);
+  const item = object(value);
+  const fromArtifactId = text(item?.from_artifact_id);
+  const toArtifactId = text(item?.to_artifact_id);
+  const fromOutcome = outcome(item?.from_outcome);
+  const toOutcome = outcome(item?.to_outcome);
+  if (!item || !fromArtifactId || !toArtifactId || !fromOutcome || !toOutcome || typeof item.outcome_changed !== "boolean") return null;
   const metricDeltas: RegressionTrendTransitionSummary["metric_deltas"] = {};
-  if (rawDeltas) {
-    for (const [name, rawDelta] of Object.entries(rawDeltas)) {
-      const delta = record(rawDelta);
-      const amount = numberValue(delta?.delta);
-      const direction = delta?.direction;
-      if (amount !== null && (direction === "improved" || direction === "regressed" || direction === "unchanged")) {
-        metricDeltas[name] = { delta: amount, direction };
-      }
+  for (const [name, raw] of Object.entries(object(item.metric_deltas) ?? {})) {
+    const delta = object(raw);
+    const amount = finite(delta?.delta);
+    const direction = delta?.direction;
+    if (amount !== null && (direction === "improved" || direction === "regressed" || direction === "unchanged")) {
+      metricDeltas[name] = { delta: amount, direction };
     }
   }
   return {
     from_artifact_id: fromArtifactId,
     from_outcome: fromOutcome,
     metric_deltas: metricDeltas,
-    new_reason_codes: stringList(item.new_reason_codes),
+    new_reason_codes: texts(item.new_reason_codes),
     outcome_changed: item.outcome_changed,
-    resolved_reason_codes: stringList(item.resolved_reason_codes),
+    resolved_reason_codes: texts(item.resolved_reason_codes),
     to_artifact_id: toArtifactId,
     to_outcome: toOutcome,
   };
 }
 
 export function summarizeRegressionTrend(value: unknown): RegressionTrendSummary | null {
-  const trend = record(value);
-  if (!trend) return null;
-  const scenarioId = stringValue(trend.scenario_id);
-  const trendSha256 = stringValue(trend.trend_sha256);
-  if (!scenarioId || !trendSha256 || !Array.isArray(trend.points) || !Array.isArray(trend.transitions)) return null;
+  const trend = object(value);
+  const scenarioId = text(trend?.scenario_id);
+  const trendSha256 = text(trend?.trend_sha256);
+  if (!trend || !scenarioId || !trendSha256 || !Array.isArray(trend.points) || !Array.isArray(trend.transitions)) return null;
   const points = trend.points.map(trendPoint).filter((item): item is RegressionTrendPointSummary => item !== null);
   const transitions = trend.transitions.map(trendTransition).filter((item): item is RegressionTrendTransitionSummary => item !== null);
-  return {
-    point_count: points.length,
-    points,
-    scenario_id: scenarioId,
-    transitions,
-    trend_sha256: trendSha256,
-  };
+  return { point_count: points.length, points, scenario_id: scenarioId, transitions, trend_sha256: trendSha256 };
 }
 
 function authHeaders(): Record<string, string> {
@@ -297,7 +271,7 @@ async function fetchRegressionJson<T>(url: string): Promise<T> {
     let body: unknown;
     try {
       body = await response.json();
-      const payload = record(body);
+      const payload = object(body);
       if (typeof payload?.error === "string") message = payload.error;
       if (typeof payload?.code === "string") code = payload.code;
     } catch {
@@ -308,10 +282,7 @@ async function fetchRegressionJson<T>(url: string): Promise<T> {
   return response.json();
 }
 
-export async function fetchRegressionArtifacts(params: {
-  scenario_id?: string;
-  limit?: number;
-} = {}): Promise<RegressionArtifactListResponse> {
+export async function fetchRegressionArtifacts(params: { scenario_id?: string; limit?: number } = {}): Promise<RegressionArtifactListResponse> {
   const query = new URLSearchParams();
   if (params.scenario_id) query.set("scenario_id", params.scenario_id);
   if (params.limit !== undefined) query.set("limit", String(params.limit));
@@ -319,14 +290,11 @@ export async function fetchRegressionArtifacts(params: {
   return fetchRegressionJson<RegressionArtifactListResponse>(`/api/v1/regressions${suffix ? `?${suffix}` : ""}`);
 }
 
-export async function fetchRegressionTrend(
-  scenarioId: string,
-  params: { limit?: number } = {},
-): Promise<RegressionTrendResponse> {
+export async function fetchRegressionTrend(scenarioId: string, params: { limit?: number } = {}): Promise<RegressionTrendResponse> {
   const query = new URLSearchParams();
   if (params.limit !== undefined) query.set("limit", String(params.limit));
   const suffix = query.toString();
   return fetchRegressionJson<RegressionTrendResponse>(
-    `/api/v1/regressions/scenarios/${encodeURIComponent(scenarioId)}/trend${suffix ? `?${suffix}` : ""}`,
+    `/api/v1/regressions/trends/${encodeURIComponent(scenarioId)}${suffix ? `?${suffix}` : ""}`,
   );
 }
