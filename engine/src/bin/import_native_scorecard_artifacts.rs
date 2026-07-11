@@ -6,7 +6,7 @@ use std::path::PathBuf;
 #[derive(Debug, Parser)]
 #[command(
     name = "import-native-scorecard-artifacts",
-    about = "Import native_scorecard_artifact.v1 or scorecard_artifact.v2 JSON files into LocalProductStore"
+    about = "Import bounded scorecard or token-efficiency regression JSON files into LocalProductStore"
 )]
 struct Args {
     #[arg(long, value_name = "PATH")]
