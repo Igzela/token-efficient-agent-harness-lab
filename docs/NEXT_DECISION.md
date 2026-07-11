@@ -50,7 +50,7 @@ The normative order is PE-1, PE-2, PE-3, PE-4, PE-5, and PE-6. Each stage should
 
 | Stage | Priority | Goal | Status |
 |---|---|---|---|
-| PE-1 | P0 | Token Efficiency Regression Lab | In progress: registry, single-scenario/batch report cores, checked evidence pairs, idempotent LocalProductStore persistence, and repeat-safe file import implemented; bounded trend behavior is next |
+| PE-1 | P0 | Token Efficiency Regression Lab | In progress: registry, report/batch cores, checked evidence, persistence/import, and bounded trend behavior implemented; read-only API and SDK exposure are next |
 | PE-2 | P0/P1 | Budget Intelligence and Anomaly Auto-Pause | Authorized after PE-1 contracts stabilize |
 | PE-3 | P1 | Operator Decision Center | Authorized after PE-2 evidence shape exists |
 | PE-4 | P1/P2 | Trace-backed Policy Replay | Authorized after sufficient versioned traces exist |
@@ -76,6 +76,8 @@ Implemented slice: `token_efficiency_regression_batch.v1` deterministically reco
 Implemented slice: schema v17 adds `regression_report_artifacts` inside the existing `LocalProductStore` SQLite/PostgreSQL boundary. Deterministic report and batch hashes become idempotent artifact IDs; repeated recording returns the existing envelope, and bounded list/scenario reads validate inner self-hashes plus envelope coherence. Audit records contain metadata and hashes only; raw or sensitive payload keys fail closed. The slice adds no API, SDK, Dashboard, provider, CI-blocking, routing, policy, or mutation authority. Next: add the bounded file importer and deterministic trend semantics over this table, then expose the existing boundary through API/SDK/Dashboard.
 
 Implemented slice: the existing bounded local scorecard importer now dispatches `token_efficiency_regression_report.v1` and `token_efficiency_regression_batch.v1` files into the same `LocalProductStore` artifact boundary. It retains the legacy CLI/API name for compatibility, preserves the 1 MiB pre-parse ceiling, supports mixed scorecard/regression directories, and reports deterministic repeats as unchanged. It adds no second importer, provider calls, API/Dashboard state, or mutation authority. Next: add deterministic bounded history/trend semantics over persisted reports.
+
+Implemented slice: `token_efficiency_regression_trend.v1` derives the most recent bounded scenario history directly from validated `regression_report_artifacts` without new persistence. Stable sequence ordering, canonical trend hashes, sparse history, outcome/reason transitions, cross-envelope evidence links, and lower/higher-is-better metric direction are deterministic across SQLite and PostgreSQL. Persistence now accepts every outcome in the authoritative report contract. The read model remains report-only with no provider, routing, policy, CI-blocking, or mutation authority. Next: expose bounded artifacts and trends through the existing read-only API and SDK, then add the Dashboard history/trend view.
 
 ### PE-2 — Budget Intelligence and Anomaly Auto-Pause
 
