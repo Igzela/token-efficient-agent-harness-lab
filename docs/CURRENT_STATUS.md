@@ -46,7 +46,7 @@ The stages are packetized in `docs/NEXT_DECISION.md`. The agent should execute p
 |---|---|---|---|
 | PE-1 | P0 | Token Efficiency Regression Lab | Complete and acceptance-sealed |
 | PE-2 | P0/P1 | Budget Intelligence and Anomaly Auto-Pause | Complete and acceptance-sealed |
-| PE-3 | P1 | Operator Decision Center | Detailed packets defined; contract packet ready but not started |
+| PE-3 | P1 | Operator Decision Center | In progress: versioned source/item contract and deterministic fail-closed resolution implemented; derived queue next |
 | PE-4 | P1/P2 | Trace-backed Policy Replay | Detailed packets defined; blocked on PE-3 closeout and trace coverage |
 | PE-5 | P1.5 | Release Provenance | Detailed packets defined; eligible after PE-1 closeout only by explicit independent-lane activation |
 | PE-6 | P2 | Fault Injection and Recovery Drills | Detailed packets defined; blocked on recovery invariants and affected stage prerequisites |
@@ -120,6 +120,14 @@ The stages are packetized in `docs/NEXT_DECISION.md`. The agent should execute p
 - exact-head CI runs 29138661868, 29139346681, 29141664483, 29142831181, and 29143549699 passed all required jobs, including PostgreSQL, Rust, TypeScript/Dashboard, Python, Docker, native runtime, and full-stack cutover;
 - schema v19 migration, deterministic evidence recomputation, tamper rejection, bounded API/SDK/Dashboard reads, default-off policy, permission/confirmation gates, false-positive boundaries, concurrent idempotency, audit/pause rollback, restart, resume, and override behavior are covered;
 - PE-2 introduced no auto-kill, silent budget mutation, provider/model substitution, implicit recovery, second pause owner, or target-repository authority.
+
+## PE-3 Contract Evidence
+
+- `operator_decision_source.v1` and `operator_decision_item.v1` normalize bounded references to existing evidence owners and remain derived evidence;
+- deterministic resolution orders severity, source precedence, confidence, observation time, and source ID; duplicates collapse and equal-ranked incompatible actions fail closed;
+- `ready`, `conflict`, `expired`, `insufficient_evidence`, and `resolved` remain explicit, and only `ready` may recommend an action;
+- canonical hashes bind source and item content; tamper, expiry, staleness, low confidence, missing sources, resolution, and ordering are covered by focused Rust tests;
+- no persistence, API, SDK, Dashboard, provider, policy, approval, pause/resume/retry/rollback, or target-output authority is added by the contract packet.
 
 ## Handoff Guard Anchors
 
