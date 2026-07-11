@@ -151,6 +151,22 @@ test("dashboard reads local dashboard endpoint", async () => {
   assert.equal(calls[0].init.method, "GET");
 });
 
+test("regression readers use bounded list detail and trend endpoints", async () => {
+  const { calls, fetchImpl } = captureFetch({ read_only: true });
+  const client = new AgentControlPlaneClient({ baseUrl: "http://127.0.0.1:8080", fetchImpl });
+
+  await client.regressions({ scenario_id: "scenario one", limit: 25 });
+  await client.regression("artifact/one");
+  await client.regressionTrend("scenario/one", 10);
+
+  assert.deepEqual(calls.map((call) => call.url), [
+    "http://127.0.0.1:8080/api/v1/regressions?scenario_id=scenario+one&limit=25",
+    "http://127.0.0.1:8080/api/v1/regressions/artifact%2Fone",
+    "http://127.0.0.1:8080/api/v1/regressions/trends/scenario%2Fone?limit=10",
+  ]);
+  assert(calls.every((call) => call.init.method === "GET"));
+});
+
 test("local state readers use product endpoints", async () => {
   const { calls, fetchImpl } = captureFetch({ ok: true });
   const client = new AgentControlPlaneClient({ baseUrl: "http://127.0.0.1:8080", fetchImpl });

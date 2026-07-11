@@ -1361,6 +1361,48 @@ fn append_scorecard_openapi_paths(doc: &mut Value) {
             }
         }),
     );
+    paths.insert(
+        "/api/v1/regressions".to_string(),
+        json!({
+            "get": {
+                "summary": "List bounded token-efficiency regression artifacts",
+                "description": "Requires dispatch:read scope. Returns read-only metadata-bounded report or batch envelopes from the existing LocalProductStore boundary. No provider calls, raw payloads, or mutation authority.",
+                "parameters": [
+                    {"name": "scenario_id", "in": "query", "schema": {"type": "string"}},
+                    {"name": "limit", "in": "query", "schema": {"type": "integer", "default": 50, "minimum": 1, "maximum": 100}}
+                ],
+                "responses": {"200": {"description": "Regression artifact list"}}
+            }
+        }),
+    );
+    paths.insert(
+        "/api/v1/regressions/{artifact_id}".to_string(),
+        json!({
+            "get": {
+                "summary": "Get one bounded token-efficiency regression artifact",
+                "description": "Requires dispatch:read scope. Returns one validated read-only regression report or batch envelope.",
+                "parameters": [path_parameter("artifact_id")],
+                "responses": {
+                    "200": {"description": "Regression artifact"},
+                    "404": {"description": "Regression artifact not found"}
+                }
+            }
+        }),
+    );
+    paths.insert(
+        "/api/v1/regressions/trends/{scenario_id}".to_string(),
+        json!({
+            "get": {
+                "summary": "Get deterministic bounded regression history and trend",
+                "description": "Requires dispatch:read scope. Derives up to 100 recent points with outcome, reason, evidence-link, and metric-direction transitions; report-only and mutation-free.",
+                "parameters": [
+                    path_parameter("scenario_id"),
+                    {"name": "limit", "in": "query", "schema": {"type": "integer", "default": 50, "minimum": 1, "maximum": 100}}
+                ],
+                "responses": {"200": {"description": "Regression trend read model"}}
+            }
+        }),
+    );
 }
 
 #[cfg(test)]
@@ -1387,6 +1429,16 @@ mod tests {
             paths.contains_key("/api/v1/storage/integrity"),
             "OpenAPI document must include /api/v1/storage/integrity to match the axum router registration"
         );
+        for path in [
+            "/api/v1/regressions",
+            "/api/v1/regressions/{artifact_id}",
+            "/api/v1/regressions/trends/{scenario_id}",
+        ] {
+            assert!(
+                paths.contains_key(path),
+                "OpenAPI document must include {path} to match the axum router registration"
+            );
+        }
         assert!(
             !paths.contains_key("/api/v1/integrity"),
             "OpenAPI document must NOT include /api/v1/integrity (the correct path is /api/v1/storage/integrity)"
@@ -1404,6 +1456,18 @@ mod tests {
             "dispatch_id",
         );
         assert_path_parameter(&doc, "/api/v1/plans/{plan_id}", "get", "plan_id");
+        assert_path_parameter(
+            &doc,
+            "/api/v1/regressions/{artifact_id}",
+            "get",
+            "artifact_id",
+        );
+        assert_path_parameter(
+            &doc,
+            "/api/v1/regressions/trends/{scenario_id}",
+            "get",
+            "scenario_id",
+        );
         assert_path_parameter(&doc, "/api/v1/workflow-runs/{run_id}", "get", "run_id");
         assert_path_parameter(
             &doc,

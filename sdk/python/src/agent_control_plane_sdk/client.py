@@ -30,6 +30,28 @@ class AgentControlPlaneClient:
     def dashboard(self) -> dict[str, Any]:
         return self._get("/api/v1/dashboard")
 
+    def regressions(
+        self, scenario_id: str | None = None, limit: int | None = None
+    ) -> dict[str, Any]:
+        params: dict[str, Any] = {}
+        if scenario_id is not None:
+            params["scenario_id"] = scenario_id
+        if limit is not None:
+            params["limit"] = limit
+        return self._get(_query_path("/api/v1/regressions", params))
+
+    def regression(self, artifact_id: str) -> dict[str, Any]:
+        return self._get(f"/api/v1/regressions/{_quote_path_segment(artifact_id)}")
+
+    def regression_trend(
+        self, scenario_id: str, limit: int | None = None
+    ) -> dict[str, Any]:
+        params: dict[str, Any] = {}
+        if limit is not None:
+            params["limit"] = limit
+        path = f"/api/v1/regressions/trends/{_quote_path_segment(scenario_id)}"
+        return self._get(_query_path(path, params))
+
     def metrics(self) -> dict[str, Any]:
         return self._get("/api/v1/metrics")
 
