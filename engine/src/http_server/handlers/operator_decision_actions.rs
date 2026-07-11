@@ -58,6 +58,7 @@ pub(crate) async fn api_apply_operator_decision_action(
             "queue hash, freshness, limit, or offset is outside the bounded contract",
         ));
     }
+    let actor = authorize(&state, &headers, "dispatch:read", uri.path(), &request_id.0)?.api_key_id;
     if matches!(
         request.action,
         OperatorDecisionAction::Rollback
@@ -69,7 +70,6 @@ pub(crate) async fn api_apply_operator_decision_action(
         ));
     }
 
-    let actor = authorize(&state, &headers, "dispatch:read", uri.path(), &request_id.0)?.api_key_id;
     let store = require_store(&state)?;
     let current_time = store.operator_decision_now();
     validate_mutation_time(
