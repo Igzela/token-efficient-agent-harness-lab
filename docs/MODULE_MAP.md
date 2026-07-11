@@ -42,7 +42,7 @@ Full Agent Autonomy Mode remains active for repo-scoped, testable, observable, C
 | Local runner validation executor | `engine/src/node_executor.rs` (`LocalRunnerValidationExecutor`), `engine/src/executor_pool.rs`; automatic native scorecard artifact recording via `workflow_runs.rs` tick path |
 | Local runner provider adapter | `engine/src/local_runner_provider.rs`, `engine/src/provider/fake.rs` |
 | CLI stateful-vs-stateless experiment | `engine/src/bin/local_runner_exec.rs` |
-| Scorecard API and scenario comparison | `engine/src/http_server/handlers/scorecards.rs` |
+| Scorecard comparison and PE-1 regression read-only API/SDK | `engine/src/http_server/handlers/scorecards.rs`, `sdk/python/src/agent_control_plane_sdk/client.py`, `sdk/typescript/src/index.ts`, `sdk/typescript/src/api-types.ts` |
 | Operator/dashboard evidence | `engine/src/http_server/handlers/operator_evidence.rs`, `dashboard/src/components/ScorecardEvidence.tsx`, `dashboard/src/components/BenchmarkScorecards.tsx` |
 
 ## Post-LGB Product Evolution Ownership

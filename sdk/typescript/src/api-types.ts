@@ -1407,3 +1407,47 @@ export interface DecisionStatsResponse {
   request_id?: string;
   stats: DecisionLogStats;
 }
+
+export interface RegressionArtifactEnvelope {
+  schema_version: "token_efficiency_regression_artifact.v1";
+  artifact_id: string;
+  artifact_kind: "token_efficiency_regression_report" | "token_efficiency_regression_batch";
+  report_schema_version: string;
+  content_sha256: string;
+  registry_id: string;
+  registry_sha256: string;
+  scenario_id: string | null;
+  created_at: string;
+  read_only: true;
+  metadata_only: true;
+  report: Record<string, unknown>;
+}
+
+export interface RegressionTrend {
+  schema_version: "token_efficiency_regression_trend.v1";
+  scenario_id: string;
+  read_only: true;
+  report_only: true;
+  point_count: number;
+  points: Array<Record<string, unknown>>;
+  transitions: Array<Record<string, unknown>>;
+  latest: Record<string, unknown> | null;
+  trend_sha256: string;
+}
+
+export interface RegressionArtifactListResponse {
+  metadata_only: true;
+  read_only: true;
+  report_only: true;
+  provider_calls: "disabled";
+  mutation_authority: "none";
+  artifacts: RegressionArtifactEnvelope[];
+}
+
+export interface RegressionArtifactResponse extends Omit<RegressionArtifactListResponse, "artifacts"> {
+  artifact: RegressionArtifactEnvelope;
+}
+
+export interface RegressionTrendResponse extends Omit<RegressionArtifactListResponse, "artifacts"> {
+  trend: RegressionTrend;
+}

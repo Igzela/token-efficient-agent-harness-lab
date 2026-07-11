@@ -50,7 +50,7 @@ The normative order is PE-1, PE-2, PE-3, PE-4, PE-5, and PE-6. Each stage should
 
 | Stage | Priority | Goal | Status |
 |---|---|---|---|
-| PE-1 | P0 | Token Efficiency Regression Lab | In progress: registry, report/batch cores, checked evidence, persistence/import, and bounded trend behavior implemented; read-only API and SDK exposure are next |
+| PE-1 | P0 | Token Efficiency Regression Lab | In progress: registry, report/batch cores, checked evidence, persistence/import/trends, and read-only API/SDK implemented; Dashboard history/trend UX is next |
 | PE-2 | P0/P1 | Budget Intelligence and Anomaly Auto-Pause | Authorized after PE-1 contracts stabilize |
 | PE-3 | P1 | Operator Decision Center | Authorized after PE-2 evidence shape exists |
 | PE-4 | P1/P2 | Trace-backed Policy Replay | Authorized after sufficient versioned traces exist |
@@ -78,6 +78,8 @@ Implemented slice: schema v17 adds `regression_report_artifacts` inside the exis
 Implemented slice: the existing bounded local scorecard importer now dispatches `token_efficiency_regression_report.v1` and `token_efficiency_regression_batch.v1` files into the same `LocalProductStore` artifact boundary. It retains the legacy CLI/API name for compatibility, preserves the 1 MiB pre-parse ceiling, supports mixed scorecard/regression directories, and reports deterministic repeats as unchanged. It adds no second importer, provider calls, API/Dashboard state, or mutation authority. Next: add deterministic bounded history/trend semantics over persisted reports.
 
 Implemented slice: `token_efficiency_regression_trend.v1` derives the most recent bounded scenario history directly from validated `regression_report_artifacts` without new persistence. Stable sequence ordering, canonical trend hashes, sparse history, outcome/reason transitions, cross-envelope evidence links, and lower/higher-is-better metric direction are deterministic across SQLite and PostgreSQL. Persistence now accepts every outcome in the authoritative report contract. The read model remains report-only with no provider, routing, policy, CI-blocking, or mutation authority. Next: expose bounded artifacts and trends through the existing read-only API and SDK, then add the Dashboard history/trend view.
+
+Implemented slice: the existing scorecard HTTP owner now exposes read-only regression list, detail, and scenario-trend endpoints under `/api/v1/regressions`, all guarded by `dispatch:read` and documented in OpenAPI. Python and TypeScript SDKs provide encoded bounded readers and TypeScript response contracts. Responses preserve metadata-only, provider-disabled, zero-mutation, and target-write-disabled boundaries. Next: add the Dashboard history/trend view with baseline/best-known configuration, regression reasons, and evidence links.
 
 ### PE-2 — Budget Intelligence and Anomaly Auto-Pause
 

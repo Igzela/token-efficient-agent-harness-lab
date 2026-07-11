@@ -125,6 +125,25 @@ class ClientLocalStateTest(unittest.TestCase):
         )
 
     @patch("agent_control_plane_sdk.client.urlopen")
+    def test_regression_readers_use_bounded_endpoints(self, mock_urlopen):
+        mock_urlopen.return_value = mock_response({"read_only": True})
+        client = AgentControlPlaneClient("http://localhost:8080")
+
+        client.regressions(scenario_id="scenario one", limit=25)
+        client.regression("artifact/one")
+        client.regression_trend("scenario/one", limit=10)
+
+        urls = [call.args[0].full_url for call in mock_urlopen.call_args_list]
+        self.assertEqual(
+            urls,
+            [
+                "http://localhost:8080/api/v1/regressions?scenario_id=scenario+one&limit=25",
+                "http://localhost:8080/api/v1/regressions/artifact%2Fone",
+                "http://localhost:8080/api/v1/regressions/trends/scenario%2Fone?limit=10",
+            ],
+        )
+
+    @patch("agent_control_plane_sdk.client.urlopen")
     def test_dispatches_sends_pagination_and_search_query_params(self, mock_urlopen):
         mock_urlopen.return_value = mock_response({"schema_version": "axum_api.v1", "dispatches": []})
         client = AgentControlPlaneClient("http://localhost:8080")

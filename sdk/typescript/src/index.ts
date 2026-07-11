@@ -91,6 +91,9 @@ import type {
   QueueRunListResponse,
   QueueRunResponse,
   QueueTenantListResponse,
+  RegressionArtifactListResponse,
+  RegressionArtifactResponse,
+  RegressionTrendResponse,
 } from "./wire-types.js";
 
 export interface AgentControlPlaneClientOptions {
@@ -180,6 +183,11 @@ export interface ProposalListOptions {
   status?: string;
 }
 
+export interface RegressionListOptions {
+  scenario_id?: string;
+  limit?: number;
+}
+
 export class AgentControlPlaneClient {
   private readonly baseUrl: string;
   private readonly apiKey?: string;
@@ -205,6 +213,25 @@ export class AgentControlPlaneClient {
 
   dashboard(): Promise<LocalDashboardState> {
     return this.getJson<LocalDashboardState>("/api/v1/dashboard");
+  }
+
+  regressions(options: RegressionListOptions = {}): Promise<RegressionArtifactListResponse> {
+    return this.getJson<RegressionArtifactListResponse>(`/api/v1/regressions${queryString({
+      scenario_id: options.scenario_id,
+      limit: options.limit,
+    })}`);
+  }
+
+  regression(artifactId: string): Promise<RegressionArtifactResponse> {
+    return this.getJson<RegressionArtifactResponse>(
+      `/api/v1/regressions/${encodeURIComponent(artifactId)}`,
+    );
+  }
+
+  regressionTrend(scenarioId: string, limit?: number): Promise<RegressionTrendResponse> {
+    return this.getJson<RegressionTrendResponse>(
+      `/api/v1/regressions/trends/${encodeURIComponent(scenarioId)}${queryString({ limit })}`,
+    );
   }
 
   metrics(): Promise<OperationsMetricsResponse> {

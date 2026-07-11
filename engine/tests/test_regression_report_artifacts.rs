@@ -1,8 +1,17 @@
+use axum::body::{to_bytes, Body};
+use axum::http::{Method, Request, StatusCode};
 use engine::event_schema::canonical_event_json;
+use engine::http_server::{build_axum_router, AxumApiState};
 use engine::storage::local_product_store::LocalProductStore;
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use tempfile::tempdir;
+use tower::ServiceExt;
+
+async fn response_json(response: axum::response::Response) -> Value {
+    let bytes = to_bytes(response.into_body(), 1_048_576).await.unwrap();
+    serde_json::from_slice(&bytes).unwrap()
+}
 
 fn hash_payload(value: &Value) -> String {
     hex::encode(Sha256::digest(
@@ -272,4 +281,83 @@ fn regression_trend_handles_sparse_history_without_inventing_evidence() {
     assert_eq!(trend["points"], json!([]));
     assert_eq!(trend["transitions"], json!([]));
     assert_eq!(trend["latest"], Value::Null);
+}
+
+#[tokio::test]
+async fn regression_api_lists_details_and_derives_trends_read_only() {
+    let (store, _dir) = make_store();
+    let stored = store
+        .record_regression_report_artifact(
+            &sample_trend_report("pass", 100, "scorecard_artifact.v2"),
+            "pe1-api-test",
+        )
+        .unwrap();
+    let artifact_id = stored["artifact_id"].as_str().unwrap().to_string();
+    let app = build_axum_router(AxumApiState::new().with_local_store(store));
+
+    let list = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(Method::GET)
+                .uri("/api/v1/regressions?scenario_id=native_remember_dont_reread_pilot&limit=10")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(list.status(), StatusCode::OK);
+    let list_body = response_json(list).await;
+    assert_eq!(list_body["read_only"], true);
+    assert_eq!(list_body["mutation_authority"], "none");
+    assert_eq!(list_body["artifacts"].as_array().unwrap().len(), 1);
+
+    let detail = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(Method::GET)
+                .uri(format!("/api/v1/regressions/{artifact_id}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(detail.status(), StatusCode::OK);
+    assert_eq!(
+        response_json(detail).await["artifact"]["artifact_id"],
+        artifact_id
+    );
+
+    let trend = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(Method::GET)
+                .uri("/api/v1/regressions/trends/native_remember_dont_reread_pilot?limit=10")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(trend.status(), StatusCode::OK);
+    let trend_body = response_json(trend).await;
+    assert_eq!(trend_body["trend"]["point_count"], 1);
+    assert_eq!(trend_body["provider_calls"], "disabled");
+
+    let missing = app
+        .oneshot(
+            Request::builder()
+                .method(Method::GET)
+                .uri("/api/v1/regressions/missing-artifact")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(missing.status(), StatusCode::NOT_FOUND);
+    assert_eq!(
+        response_json(missing).await["code"],
+        "regression_artifact_not_found"
+    );
 }
