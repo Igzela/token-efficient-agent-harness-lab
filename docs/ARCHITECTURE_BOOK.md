@@ -194,6 +194,10 @@ Do not create a second runtime kernel for V2. Extend the existing `node_executor
 - PostgreSQL disables app-managed backup; operators use `pg_dump` or managed backup.
 - PostgreSQL integration tests are gated behind `cargo test -p engine --features pg-tests`.
 
+## Operator Decision Contracts
+
+PE-3 begins with additive `operator_decision_source.v1` and `operator_decision_item.v1` Rust contracts in `engine/src/operator_decision.rs`. They normalize bounded references to existing approval, recovery, rollback, budget, policy, workflow, scheduler, and benchmark evidence without becoming a new source of truth. Resolution is deterministic: severity, fixed source precedence, confidence, observation time, then lexical source ID. Exact source duplicates collapse; equal-ranked incompatible actions become an explicit conflict. Expired, stale, low-confidence, informational, resolved, and insufficient sources cannot produce a ready recommendation. Only a future allowlisted adapter may connect `ready` items to existing control owners, and it must preserve their confirmation, permission, audit, idempotency, compensation, and rollback gates. Contract rollback is a code revert with no migration.
+
 ## Execution Modes
 
 `ACP_EXECUTION_MODE` controls dispatch execution:

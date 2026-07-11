@@ -236,11 +236,59 @@ PE-3 is next but not started. PE2-CLOSE-1 is complete, so its contract packet is
 
 ### Packet PE3-CONTRACT-1 — Decision item and source contract
 
-**State:** `READY_FOR_EXECUTION`
+**State:** `COMPLETE`
 
 **Prerequisite:** PE2-CLOSE-1 complete.
 
-**Goal:** Define bounded versioned action-item/source contracts and deterministic source precedence over existing approvals, workflow/scheduler, budget, benchmark, policy, and rollback evidence. No queue persistence, action execution, new authority, or Dashboard work is authorized by this packet.
+**Goal:** Define bounded versioned action-item/source contracts and deterministic source precedence over existing approvals, workflow/scheduler, budget, benchmark, policy, rollback, and recovery evidence. No queue persistence, action execution, new authority, or Dashboard work is authorized by this packet.
+
+**Contract:** `operator_decision_source.v1` and `operator_decision_item.v1` are derived-evidence contracts. Sources carry bounded source/resource/conflict IDs, source state, requested action, severity, confidence, observation/expiry times, reason codes, evidence references, and a canonical hash. Items carry an explicit `ready`, `conflict`, `expired`, `insufficient_evidence`, or `resolved` outcome. Only `ready` may contain a recommended action.
+
+**Deterministic resolution:** Critical before warning before info; then source precedence `approval > recovery > rollback > budget > policy > workflow > scheduler > benchmark`; then confidence, newest observation, and lexical source ID. Exact source duplicates collapse. Equal severity, precedence, and confidence with incompatible actions fails closed as `conflict`. Expired, stale, low-confidence, informational, resolved, and insufficient sources never become executable recommendations.
+
+**Compatibility and authority:** Additive Rust contracts and pure resolution semantics only. No persisted rows, API/SDK/Dashboard changes, source mutation, action dispatch, approval decision, pause/resume/retry/rollback call, provider call, or target write.
+
+**Rollback:** Revert the packet PR; no data migration or cleanup.
+
+### Packet PE3-QUEUE-1 — Deterministic derived decision queue
+
+**State:** `READY_FOR_EXECUTION`
+
+**Prerequisite:** PE3-CONTRACT-1 complete.
+
+**Goal:** Adapt existing approval, workflow, scheduler, budget, benchmark, policy, rollback, and recovery evidence into the contract and derive one bounded, deterministic, mutation-free queue.
+
+**Owning paths:** Existing `LocalProductStore` readers, operator-evidence handler, and `operator_decision.rs`. The queue is recomputed from existing truth owners; it is not a new persisted source of truth.
+
+**Acceptance:** Empty, duplicate, conflict, expiry, stale, sparse, cross-run, source failure, precedence, deterministic ordering, bounded pagination, restart, SQLite, and PostgreSQL evidence tests. No action execution or Dashboard work.
+
+### Packet PE3-READ-1 — API, SDK, and Dashboard decision center
+
+**State:** `BLOCKED_PREREQUISITE`
+
+**Prerequisite:** PE3-QUEUE-1 complete.
+
+**Goal:** Expose the derived queue through bounded `dispatch:read` HTTP/OpenAPI, Python SDK, TypeScript SDK, and the existing Dashboard navigation/state owner with explicit empty, insufficient, conflict, expired, resolved, and error states.
+
+**Acceptance:** Encoded paths, pagination, permission, compatibility, redaction, evidence links, deterministic UI ordering, and no hidden mutation controls.
+
+### Packet PE3-ACTIONS-1 — Existing-control action adapters
+
+**State:** `BLOCKED_PREREQUISITE`
+
+**Prerequisite:** PE3-READ-1 complete.
+
+**Goal:** Map only explicitly allowlisted ready decisions to existing approval, pause, resume, retry, rollback, acknowledge, and inspect owners. Preserve each owner's permission, confirmation, audit, idempotency, compensation, restart, and rollback gates.
+
+**Forbidden:** No generic action executor, new authority table, implicit confirmation, cross-resource action, automatic execution, or bypass of existing control endpoints.
+
+### Packet PE3-CLOSE-1 — PE-3 acceptance seal
+
+**State:** `BLOCKED_PREREQUISITE`
+
+**Prerequisite:** PE3-ACTIONS-1 complete.
+
+**Goal:** Independently audit contracts, source adapters, derived queue, API/OpenAPI, SDKs, Dashboard, permitted actions, permissions, audit, recovery, SQLite/PostgreSQL compatibility, and rollback; repair bounded defects and activate PE4-CONTRACT-1 without beginning replay implementation.
 
 Later PE-3 packets remain: deterministic derived queue, read-only API/SDK/Dashboard surface, existing-control action adapters, and closeout.
 
@@ -274,6 +322,6 @@ The agent may define recovery invariants from existing subsystem contracts and t
 
 ## Active Routing
 
-1. PE-2 is complete; do not reopen it without concrete regression evidence.
-2. PE3-CONTRACT-1 is the next eligible packet for a future session.
-3. Do not implement PE-3 persistence, queue, action execution, or Dashboard work before its contract packet is reviewed and merged.
+1. Merge PE3-CONTRACT-1 after focused/full verification and green CI.
+2. Refresh `main`, then execute PE3-QUEUE-1.
+3. Continue PE3-READ-1, PE3-ACTIONS-1, and PE3-CLOSE-1 in order; do not begin PE-4 implementation before closeout.
