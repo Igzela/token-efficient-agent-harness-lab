@@ -20,29 +20,32 @@ jobs:
         run: |
           python - <<'PY'
           from pathlib import Path
+          import re
+
           path = Path('engine/src/http_server/handlers/operator_decision_actions.rs')
           text = path.read_text()
-          block = '''    if matches!(
-              request.action,
-              OperatorDecisionAction::Rollback
-                  | OperatorDecisionAction::Inspect
-                  | OperatorDecisionAction::Acknowledge
-          ) {
-              return Err(unsupported(
-                  "no compatible existing action owner is available",
-              ));
-          }
-
-          '''
-          if block not in text:
+          pattern = re.compile(
+              r'    if matches!\(\n'
+              r'        request\.action,\n'
+              r'        OperatorDecisionAction::Rollback\n'
+              r'            \| OperatorDecisionAction::Inspect\n'
+              r'            \| OperatorDecisionAction::Acknowledge\n'
+              r'    \) \{\n'
+              r'        return Err\(unsupported\(\n'
+              r'            "no compatible existing action owner is available",\n'
+              r'        \)\);\n'
+              r'    \}\n\n'
+          )
+          match = pattern.search(text)
+          if not match:
               raise SystemExit('unsupported action block missing')
-          text = text.replace(block, '', 1)
-          anchor = '''    let actor = authorize(&state, &headers, "dispatch:read", uri.path(), &request_id.0)?.api_key_id;
-          '''
-          replacement = anchor + block
+          block = match.group(0)
+          text = text[:match.start()] + text[match.end():]
+          anchor = '    let actor = authorize(&state, &headers, "dispatch:read", uri.path(), &request_id.0)?.api_key_id;\n'
           if anchor not in text:
               raise SystemExit('authorize anchor missing')
-          path.write_text(text.replace(anchor, replacement, 1))
+          text = text.replace(anchor, anchor + block, 1)
+          path.write_text(text)
           PY
           cargo fmt --all
           git config user.name "github-actions[bot]"
