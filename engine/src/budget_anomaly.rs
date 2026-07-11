@@ -255,7 +255,7 @@ pub fn detect_budget_anomaly(
             (delta, request.absolute_increase_threshold)
         };
     let detected = normalized_delta > threshold;
-    let severity = detected.then(|| {
+    let severity = detected.then_some({
         if normalized_delta > request.critical_increase_threshold {
             BudgetAnomalySeverity::Critical
         } else {
@@ -608,18 +608,31 @@ fn distinct_count<'a>(values: impl Iterator<Item = &'a str>) -> usize {
 fn evidence_references<'a>(
     observations: impl Iterator<Item = &'a BudgetAnomalyObservation>,
 ) -> Vec<BudgetEvidenceReference> {
-    let mut references = observations
-        .map(|observation| BudgetEvidenceReference {
-            evidence_type: observation.evidence_type.clone(),
-            evidence_id: observation.evidence_id.clone(),
-            content_sha256: observation.content_sha256.clone(),
-        })
-        .collect::<Vec<_>>();
-    references.sort_by(|left, right| {
-        (left.evidence_type.as_str(), left.evidence_id.as_str())
-            .cmp(&(right.evidence_type.as_str(), right.evidence_id.as_str()))
-    });
+    let mut references = BTreeMap::new();
+    for observation in observations {
+        let key = (
+            observation.evidence_type.clone(),
+            observation.evidence_id.clone(),
+        );
+        references
+            .entry(key)
+            .and_modify(|hash| {
+                if *hash != observation.content_sha256 {
+                    *hash = None;
+                }
+            })
+            .or_insert_with(|| observation.content_sha256.clone());
+    }
     references
+        .into_iter()
+        .map(
+            |((evidence_type, evidence_id), content_sha256)| BudgetEvidenceReference {
+                evidence_type,
+                evidence_id,
+                content_sha256,
+            },
+        )
+        .collect()
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -912,6 +925,7 @@ mod tests {
         assert_eq!(actual.measurement, expected.measurement);
         assert_eq!(actual.reason_codes, expected.reason_codes);
         assert_eq!(actual.coverage.duplicate_events, 1);
+        assert_eq!(actual.evidence_references, expected.evidence_references);
     }
 
     #[test]
@@ -974,6 +988,7 @@ mod tests {
         let mut observations = paired([100, 100, 100], [300, 300, 300]);
         let mut conflicting = observations[1].clone();
         conflicting.total_tokens = Some(999);
+        conflicting.content_sha256 = Some("f".repeat(64));
         observations.push(conflicting);
         let finding = detect_budget_anomaly(&request, &observations).unwrap();
         assert_eq!(finding.outcome, BudgetEvidenceOutcome::InvalidEvidence);
@@ -987,5 +1002,19 @@ mod tests {
             .observed_dimensions
             .contains(&"provider_id".to_string()));
         assert!(finding.coverage.missing_fields.is_empty());
+        assert_eq!(finding.evidence_references.len(), 3);
+        assert!(finding.evidence_references.windows(2).all(|pair| (
+            pair[0].evidence_type.as_str(),
+            pair[0].evidence_id.as_str()
+        ) < (
+            pair[1].evidence_type.as_str(),
+            pair[1].evidence_id.as_str()
+        )));
+        let conflicting_reference = finding
+            .evidence_references
+            .iter()
+            .find(|reference| reference.evidence_id == observations[1].evidence_id)
+            .unwrap();
+        assert_eq!(conflicting_reference.content_sha256, None);
     }
 }
