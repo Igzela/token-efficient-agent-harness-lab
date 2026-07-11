@@ -76,7 +76,7 @@ Normative order is PE-1, PE-2, PE-3, PE-4, PE-5, and PE-6. Do not start PE-3 bef
 | Stage | Priority | Goal | Status |
 |---|---|---|---|
 | PE-1 | P0 | Token Efficiency Regression Lab | Complete and acceptance-sealed |
-| PE-2 | P0/P1 | Budget Intelligence and Anomaly Auto-Pause | Active; anomaly packet ready |
+| PE-2 | P0/P1 | Budget Intelligence and Anomaly Auto-Pause | Active; anomaly packet complete, read surfaces ready |
 | PE-3 | P1 | Operator Decision Center | Packetized; blocked on PE-2 closeout |
 | PE-4 | P1/P2 | Trace-backed Policy Replay | Packetized; blocked on PE-3 closeout and trace coverage |
 | PE-5 | P1.5 | Release Provenance | Packetized; inactive unless explicitly activated |
@@ -172,7 +172,7 @@ Stage invariants:
 
 ### Packet PE2-ANOMALY-1 — Explainable anomaly detector
 
-**State:** `READY_FOR_EXECUTION`
+**State:** `COMPLETE`
 
 **Prerequisite:** PE2-FORECAST-1 complete.
 
@@ -182,11 +182,11 @@ Stage invariants:
 
 **Forbidden changes:** No hidden adaptive threshold, provider/model substitution, pause, termination, budget/policy mutation, persistence/API/Dashboard work, or opaque score.
 
-**Acceptance:** Normal, spike, gradual drift, mixed workloads, sparse history, false-positive boundaries, duplicated evidence, out-of-order evidence, deterministic recomputation, and `insufficient_evidence` tests.
+**Acceptance:** Normal, spike, gradual drift, mixed workloads, sparse history, false-positive boundaries, duplicated evidence, out-of-order evidence, deterministic recomputation, exact coverage metadata, invalid-evidence preservation, and `insufficient_evidence` tests.
 
 ### Packet PE2-READ-1 — Persistence, API, SDK, and Dashboard read surfaces
 
-**State:** `BLOCKED_PREREQUISITE`
+**State:** `READY_FOR_EXECUTION`
 
 **Prerequisite:** PE2-ANOMALY-1 complete.
 
@@ -274,7 +274,7 @@ The agent may define recovery invariants from existing subsystem contracts and t
 
 ## Active Routing
 
-1. Finish and merge PE2-ANOMALY-1 from the current owned PR or latest `main`, only after the diff is clean and all required CI is green.
-2. Refresh `main`, re-read active docs/code, and continue PE2-READ-1, PE2-PAUSE-1, then PE2-CLOSE-1.
-3. Resolve bounded missing decisions autonomously when repository evidence supports a smallest compatible and rollbackable contract; use a separate decision/contract PR when the risk surface warrants it.
-4. After PE-2 closeout, mark PE-3 next but do not start it in the bounded PE-1-to-PE-2 effort unless the user expands the objective.
+1. Execute PE2-READ-1 from latest `main`.
+2. Merge only after focused validation, full CI, architecture/authority review, and no unresolved objection.
+3. Refresh `main`, re-read active docs/code, and continue PE2-PAUSE-1, then PE2-CLOSE-1.
+4. After PE-2 closeout, mark PE-3 next but do not start it in the PE-1-to-PE-2 effort.
