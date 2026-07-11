@@ -67,7 +67,7 @@ The detailed execution-ready packet sequence is defined in `docs/NEXT_DECISION.m
 
 1. Prefer the earliest `READY_FOR_EXECUTION` packet whose prerequisites are complete.
 2. Repair bounded prerequisite defects, stale contracts, or documentation drift before dependent work when necessary.
-3. PE-1 is acceptance-sealed; complete PE-2 anomaly, read surfaces, policy-gated pause, and closeout in packet order.
+3. PE-1 and PE-2 are acceptance-sealed; PE3-CONTRACT-1 is next but has not started.
 4. Build PE-3 as a derived read model before connecting existing mutation endpoints.
 5. Progress PE-4 from calibration to offline replay, shadow, and bounded canary.
 6. PE-5 may run independently only after explicit lane activation.

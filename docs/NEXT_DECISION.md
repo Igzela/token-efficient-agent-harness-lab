@@ -4,7 +4,7 @@
 
 The dispatch kernel, V2, Adaptive Fusion AF-0 through AF-7, Agent Runtime AR-0 through AR-6, Trusted Local Autonomous Execution IAE-0 through IAE-3, scorecard integrity hardening, the importer-first external benchmark path, and PE-1 Token Efficiency Regression Lab are complete.
 
-The active direction is the Post-LGB Product Evolution plan. PE-2 is active; PE-3 is next but not started. This is not AR-7, another LGB ladder, or a second control plane.
+The active direction is the Post-LGB Product Evolution plan. PE-2 is complete and acceptance-sealed; PE-3 is next but not started. This is not AR-7, another LGB ladder, or a second control plane.
 
 `docs/NEXT_DECISION.md` is the single forward-plan artifact. Historical detail remains in `docs/ARCHITECTURE_BOOK.md`, archived plans, merged PRs, and repository history.
 
@@ -76,8 +76,8 @@ Normative order is PE-1, PE-2, PE-3, PE-4, PE-5, and PE-6. Do not start PE-3 bef
 | Stage | Priority | Goal | Status |
 |---|---|---|---|
 | PE-1 | P0 | Token Efficiency Regression Lab | Complete and acceptance-sealed |
-| PE-2 | P0/P1 | Budget Intelligence and Anomaly Auto-Pause | Active; anomaly packet complete, read surfaces ready |
-| PE-3 | P1 | Operator Decision Center | Packetized; blocked on PE-2 closeout |
+| PE-2 | P0/P1 | Budget Intelligence and Anomaly Auto-Pause | Complete and acceptance-sealed |
+| PE-3 | P1 | Operator Decision Center | Packetized; contract packet ready but not started |
 | PE-4 | P1/P2 | Trace-backed Policy Replay | Packetized; blocked on PE-3 closeout and trace coverage |
 | PE-5 | P1.5 | Release Provenance | Packetized; inactive unless explicitly activated |
 | PE-6 | P2 | Fault Injection and Recovery Drills | Packetized; blocked on explicit recovery invariants |
@@ -222,7 +222,7 @@ Stage invariants:
 
 ### Packet PE2-CLOSE-1 — PE-2 acceptance seal
 
-**State:** `READY_FOR_EXECUTION`
+**State:** `COMPLETE`
 
 **Prerequisite:** PE2-PAUSE-1 complete.
 
@@ -232,11 +232,11 @@ Stage invariants:
 
 ## PE-3 — Operator Decision Center
 
-PE-3 is next but not started. It remains blocked until PE2-CLOSE-1 is complete.
+PE-3 is next but not started. PE2-CLOSE-1 is complete, so its contract packet is eligible for a future session.
 
 ### Packet PE3-CONTRACT-1 — Decision item and source contract
 
-**State:** `BLOCKED_PREREQUISITE`
+**State:** `READY_FOR_EXECUTION`
 
 **Prerequisite:** PE2-CLOSE-1 complete.
 
@@ -274,7 +274,6 @@ The agent may define recovery invariants from existing subsystem contracts and t
 
 ## Active Routing
 
-1. Execute PE2-CLOSE-1 from latest `main` after PE2-PAUSE-1 is merged.
-2. Merge only after focused validation, full CI, architecture/authority review, and no unresolved objection.
-3. Refresh `main`, re-read active docs/code, and seal PE-2 without starting PE-3.
-4. After PE-2 closeout, mark PE-3 next but do not start it in the PE-1-to-PE-2 effort.
+1. PE-2 is complete; do not reopen it without concrete regression evidence.
+2. PE3-CONTRACT-1 is the next eligible packet for a future session.
+3. Do not implement PE-3 persistence, queue, action execution, or Dashboard work before its contract packet is reviewed and merged.
