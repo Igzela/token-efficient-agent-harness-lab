@@ -36,7 +36,7 @@ This repo is a local/small-team self-hosted agent workflow control plane. Rust `
 | Local runner operations | Active: validate, export, import, and inspect bounded scorecard artifacts locally |
 | Runner integration | Storage/API/operator evidence complete; workflow scheduling of local runner validation is implemented via `LocalRunnerValidationExecutor` in stub mode with automatic native scorecard recording on terminal tick |
 | Live provider adapter | Gated ready path: Stub/Fake/Live; Live requires gates, explicit metadata, symbolic credentials, positive pricing, persistent redacted audit, bounded calls/tokens/time/cost, and a kill switch |
-| Post-LGB Product Evolution Plan | PE-1 is complete; PE2-CONTRACT-1 through PE2-PAUSE-1 are implemented; PE2-CLOSE-1 is the next eligible packet |
+| Post-LGB Product Evolution Plan | PE-1 and PE-2 are acceptance-sealed; PE3-CONTRACT-1 is the next eligible packet but has not started |
 
 ## Planned Product Evolution Stages
 
@@ -45,8 +45,8 @@ The stages are packetized in `docs/NEXT_DECISION.md`. The agent should execute p
 | Stage | Priority | Capability | Current state |
 |---|---|---|---|
 | PE-1 | P0 | Token Efficiency Regression Lab | Complete and acceptance-sealed |
-| PE-2 | P0/P1 | Budget Intelligence and Anomaly Auto-Pause | In progress: evidence, forecasts, anomalies, persistence/read surfaces, and policy-gated pause implemented; acceptance closeout next |
-| PE-3 | P1 | Operator Decision Center | Detailed packets defined; blocked on PE-2 closeout |
+| PE-2 | P0/P1 | Budget Intelligence and Anomaly Auto-Pause | Complete and acceptance-sealed |
+| PE-3 | P1 | Operator Decision Center | Detailed packets defined; contract packet ready but not started |
 | PE-4 | P1/P2 | Trace-backed Policy Replay | Detailed packets defined; blocked on PE-3 closeout and trace coverage |
 | PE-5 | P1.5 | Release Provenance | Detailed packets defined; eligible after PE-1 closeout only by explicit independent-lane activation |
 | PE-6 | P2 | Fault Injection and Recovery Drills | Detailed packets defined; blocked on recovery invariants and affected stage prerequisites |
@@ -90,7 +90,6 @@ The stages are packetized in `docs/NEXT_DECISION.md`. The agent should execute p
 
 ## Current Gaps
 
-- PE-2 acceptance closeout remains to be sealed after the pause PR is green and merged.
 - PE-3 has no unified derived decision queue.
 - `policy_simulator.rs` still relies on fixed estimates rather than trace-calibrated replay.
 - SBOM, signing, and provenance attestations are not yet part of the release contract.
@@ -114,6 +113,13 @@ The stages are packetized in `docs/NEXT_DECISION.md`. The agent should execute p
 - decision persistence, audit, and the existing `workflow_runs.pause_reason` update are one transaction, so audit or pause failures compensate by rollback;
 - duplicate/concurrent triggers return the same decision; audited resume/override preserves the cause and evidence hash and prevents replay of recovered evidence;
 - generic pause mutation cannot clear or replace an active budget pause; no auto-kill, implicit resume, budget edit, provider/model substitution, or second pause state machine was added.
+
+## PE-2 Acceptance Evidence
+
+- contract, forecast, anomaly, read-surface, and pause packets merged as PRs #179, #180, #181, #183, and #184;
+- exact-head CI runs 29138661868, 29139346681, 29141664483, 29142831181, and 29143549699 passed all required jobs, including PostgreSQL, Rust, TypeScript/Dashboard, Python, Docker, native runtime, and full-stack cutover;
+- schema v19 migration, deterministic evidence recomputation, tamper rejection, bounded API/SDK/Dashboard reads, default-off policy, permission/confirmation gates, false-positive boundaries, concurrent idempotency, audit/pause rollback, restart, resume, and override behavior are covered;
+- PE-2 introduced no auto-kill, silent budget mutation, provider/model substitution, implicit recovery, second pause owner, or target-repository authority.
 
 ## Handoff Guard Anchors
 
