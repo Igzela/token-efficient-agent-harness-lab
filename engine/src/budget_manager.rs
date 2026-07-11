@@ -149,6 +149,7 @@ pub struct BudgetAnomalyFinding {
     pub confidence: BudgetConfidence,
     pub reason_codes: Vec<String>,
     pub evidence_references: Vec<BudgetEvidenceReference>,
+    pub detected: bool,
     pub anomaly_kind: Option<BudgetAnomalyKind>,
     pub severity: Option<BudgetAnomalySeverity>,
     pub measurement: Option<BudgetAnomalyMeasurement>,
@@ -224,22 +225,33 @@ impl BudgetAnomalyFinding {
             self,
         )?;
         match self.outcome {
-            BudgetEvidenceOutcome::Supported => {
+            BudgetEvidenceOutcome::Supported if self.detected => {
                 let kind = self
                     .anomaly_kind
                     .as_ref()
-                    .ok_or_else(|| "supported anomaly requires a kind".to_string())?;
+                    .ok_or_else(|| "detected anomaly requires a kind".to_string())?;
                 if self.severity.is_none() || self.measurement.is_none() {
-                    return Err("supported anomaly requires severity and measurement".to_string());
+                    return Err("detected anomaly requires severity and measurement".to_string());
                 }
                 if matches!(kind, BudgetAnomalyKind::CostSpike) && !self.coverage.pricing_complete {
                     return Err("cost anomaly requires complete pricing".to_string());
                 }
                 validate_measurement(self.measurement.as_ref().expect("checked above"))?;
             }
+            BudgetEvidenceOutcome::Supported => {
+                if self.anomaly_kind.is_some()
+                    || self.severity.is_some()
+                    || self.measurement.is_some()
+                {
+                    return Err(
+                        "normal supported evidence must not contain an anomaly finding".to_string(),
+                    );
+                }
+            }
             BudgetEvidenceOutcome::InsufficientEvidence
             | BudgetEvidenceOutcome::InvalidEvidence => {
-                if self.anomaly_kind.is_some()
+                if self.detected
+                    || self.anomaly_kind.is_some()
                     || self.severity.is_some()
                     || self.measurement.is_some()
                 {
@@ -851,6 +863,7 @@ mod tests {
             confidence: confidence(),
             reason_codes: vec!["anomaly.token_spike".to_string()],
             evidence_references: vec![reference()],
+            detected: true,
             anomaly_kind: Some(BudgetAnomalyKind::TokenSpike),
             severity: Some(BudgetAnomalySeverity::Warning),
             measurement: Some(BudgetAnomalyMeasurement {
@@ -871,6 +884,35 @@ mod tests {
         assert_eq!(
             finding.validate().unwrap_err(),
             "cost anomaly requires complete pricing"
+        );
+    }
+
+    #[test]
+    fn normal_supported_evidence_is_explicit_and_contains_no_finding() {
+        let mut finding = BudgetAnomalyFinding {
+            schema_version: BUDGET_ANOMALY_FINDING_SCHEMA_VERSION.to_string(),
+            finding_id: "finding-normal-1".to_string(),
+            scope: scope(),
+            outcome: BudgetEvidenceOutcome::Supported,
+            window: window(8),
+            coverage: coverage(true),
+            confidence: confidence(),
+            reason_codes: vec!["anomaly.none".to_string()],
+            evidence_references: vec![reference()],
+            detected: false,
+            anomaly_kind: None,
+            severity: None,
+            measurement: None,
+            evidence_sha256: String::new(),
+        };
+        finding.seal().unwrap();
+        finding.validate().unwrap();
+
+        finding.anomaly_kind = Some(BudgetAnomalyKind::TokenSpike);
+        finding.seal().unwrap();
+        assert_eq!(
+            finding.validate().unwrap_err(),
+            "normal supported evidence must not contain an anomaly finding"
         );
     }
 
