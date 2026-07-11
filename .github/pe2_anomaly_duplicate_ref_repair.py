@@ -1,5 +1,6 @@
 from pathlib import Path
 
+# Temporary branch-only root-cause repair; removed before merge.
 path = Path("engine/src/budget_anomaly.rs")
 text = path.read_text()
 
