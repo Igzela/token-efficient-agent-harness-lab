@@ -4,7 +4,7 @@
 
 The dispatch kernel, V2, Adaptive Fusion AF-0 through AF-7, Agent Runtime AR-0 through AR-6, Trusted Local Autonomous Execution IAE-0 through IAE-3, scorecard integrity hardening, the importer-first external benchmark path, and PE-1 Token Efficiency Regression Lab are complete.
 
-The active direction is the Post-LGB Product Evolution plan. PE-2 is complete and acceptance-sealed; PE-3 is next but not started. This is not AR-7, another LGB ladder, or a second control plane.
+The active direction is the Post-LGB Product Evolution plan. PE-2 is complete and acceptance-sealed; PE-3 is active with its contract and derived-queue packets complete. This is not AR-7, another LGB ladder, or a second control plane.
 
 `docs/NEXT_DECISION.md` is the single forward-plan artifact. Historical detail remains in `docs/ARCHITECTURE_BOOK.md`, archived plans, merged PRs, and repository history.
 
@@ -77,7 +77,7 @@ Normative order is PE-1, PE-2, PE-3, PE-4, PE-5, and PE-6. Do not start PE-3 bef
 |---|---|---|---|
 | PE-1 | P0 | Token Efficiency Regression Lab | Complete and acceptance-sealed |
 | PE-2 | P0/P1 | Budget Intelligence and Anomaly Auto-Pause | Complete and acceptance-sealed |
-| PE-3 | P1 | Operator Decision Center | Packetized; contract packet ready but not started |
+| PE-3 | P1 | Operator Decision Center | In progress; contract and derived queue complete, read surfaces next |
 | PE-4 | P1/P2 | Trace-backed Policy Replay | Packetized; blocked on PE-3 closeout and trace coverage |
 | PE-5 | P1.5 | Release Provenance | Packetized; inactive unless explicitly activated |
 | PE-6 | P2 | Fault Injection and Recovery Drills | Packetized; blocked on explicit recovery invariants |
@@ -232,7 +232,7 @@ Stage invariants:
 
 ## PE-3 — Operator Decision Center
 
-PE-3 is next but not started. PE2-CLOSE-1 is complete, so its contract packet is eligible for a future session.
+PE-3 is active. Its versioned contract and mutation-free derived queue are complete; the read-surface packet is next.
 
 ### Packet PE3-CONTRACT-1 — Decision item and source contract
 
@@ -252,7 +252,7 @@ PE-3 is next but not started. PE2-CLOSE-1 is complete, so its contract packet is
 
 ### Packet PE3-QUEUE-1 — Deterministic derived decision queue
 
-**State:** `READY_FOR_EXECUTION`
+**State:** `COMPLETE`
 
 **Prerequisite:** PE3-CONTRACT-1 complete.
 
@@ -262,9 +262,13 @@ PE-3 is next but not started. PE2-CLOSE-1 is complete, so its contract packet is
 
 **Acceptance:** Empty, duplicate, conflict, expiry, stale, sparse, cross-run, source failure, precedence, deterministic ordering, bounded pagination, restart, SQLite, and PostgreSQL evidence tests. No action execution or Dashboard work.
 
+**Implementation:** `operator_decision_queue.v1` is recomputed from existing LocalProductStore readers for approvals, workflow state, scheduler heartbeat, budget anomalies, benchmark reports, policy proposals, and rollback/recovery audit evidence. It is bounded to 100 source rows per owner and 100 returned items, hash-bound, deterministically ordered, and fail-closed when an owner cannot be read. Queue reads create no rows or audit events. SQLite tests cover empty, deterministic, read-only, cross-run, pagination, restart, and source-failure behavior; the PostgreSQL integration test covers equivalent requested-approval derivation.
+
+**Compatibility and rollback:** No table, migration, HTTP, SDK, Dashboard, action, or authority change. SQLite and PostgreSQL use their existing readers. Revert the packet PR; no cleanup is required because the queue is never persisted.
+
 ### Packet PE3-READ-1 — API, SDK, and Dashboard decision center
 
-**State:** `BLOCKED_PREREQUISITE`
+**State:** `READY_FOR_EXECUTION`
 
 **Prerequisite:** PE3-QUEUE-1 complete.
 

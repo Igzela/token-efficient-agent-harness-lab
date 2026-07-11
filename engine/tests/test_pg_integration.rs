@@ -261,6 +261,71 @@ fn pg_budget_evidence_artifact_is_idempotent_and_readable() {
 
 #[test]
 #[cfg(feature = "pg-tests")]
+fn pg_operator_decision_queue_derives_requested_approval_without_mutation() {
+    let Some(store) = test_store() else { return };
+    let tag = uuid_tag();
+    let plan = store
+        .create_workflow_plan(
+            &format!("decision queue {tag}"),
+            "pg-test",
+            "pg-test",
+            |ids, _| {
+                Ok(json!({
+                    "status": "planned_read_only",
+                    "graph": {
+                        "nodes": [],
+                        "edges": [],
+                        "workflow_id": ids.workflow_id,
+                        "dispatch_id": ids.dispatch_id
+                    },
+                    "analysis": {},
+                    "boundaries": {"execution_authority": "disabled"}
+                }))
+            },
+        )
+        .unwrap();
+    let run = store
+        .create_workflow_run_from_plan(plan["plan_id"].as_str().unwrap(), "pg-test")
+        .unwrap();
+    let run_id = run["run_id"].as_str().unwrap();
+    store
+        .record_workflow_run_approval(
+            run_id,
+            "node-a",
+            "requested",
+            "pg-test",
+            Some("operator review"),
+            None,
+            None,
+            None,
+            None,
+        )
+        .unwrap();
+    let audits_before = store.audit_events(100).unwrap();
+
+    let queue = store
+        .operator_decision_queue(&utc_now_string(), 300, 100, 0)
+        .unwrap();
+
+    let expected_key = format!("{run_id}:node-a:approval");
+    let item = queue
+        .items
+        .iter()
+        .find(|item| item.conflict_key == expected_key)
+        .expect("requested approval decision");
+    assert_eq!(
+        item.outcome,
+        engine::operator_decision::OperatorDecisionOutcome::Ready
+    );
+    assert_eq!(
+        item.recommended_action,
+        Some(engine::operator_decision::OperatorDecisionAction::Approve)
+    );
+    assert_eq!(store.audit_events(100).unwrap(), audits_before);
+}
+
+#[test]
+#[cfg(feature = "pg-tests")]
 fn pg_budget_auto_pause_and_recovery_are_atomic_and_idempotent() {
     let Some(store) = test_store() else { return };
     let tag = uuid_tag();
