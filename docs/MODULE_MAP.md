@@ -4,13 +4,13 @@ Last updated: 2026-07-11.
 
 This file maps current ownership. It is not a phase history.
 
-Full Agent Autonomy Mode remains active inside approved Terra-ready task packets for repo-scoped, testable, observable, CI-gated, rollbackable work.
+Full Agent Autonomy Mode is active for repo-scoped planning and execution that remains testable, observable, CI-gated, and rollbackable. Execution-ready packets are the default work units, not a model-specific restriction.
 
 ## Core Ownership
 
 | Module | Stage | Purpose | Verification |
 |---|---|---|---|
-| `.codex/config.toml`, `AGENTS.md`, `docs/NEXT_DECISION.md`, `scripts/check_agent_handoff.py` | active | Terra Medium executor default, planner/executor boundary, packet authority, and profile drift prevention | agent handoff check and CI |
+| `AGENTS.md`, `docs/NEXT_DECISION.md`, `docs/REAL_WORLD_TESTING_PLAYBOOK.md`, `scripts/check_agent_handoff.py` | active | autonomous authority, packet routing, evidence discipline, and governance drift prevention | agent handoff check and CI |
 | `engine/src/main.rs`, `engine/src/http_server/` | active | Engine and API | HTTP and engine tests |
 | `engine/src/trusted_local.rs` | active | Local readiness policy | trusted-local tests |
 | `dispatch_engine.rs`, `task_analyzer/`, `model_selector.rs`, `budget_manager.rs` | active | Dispatch, routing, and bounded budget authority | dispatch and budget tests |
@@ -49,34 +49,34 @@ Full Agent Autonomy Mode remains active inside approved Terra-ready task packets
 
 ## Post-LGB Product Evolution Ownership
 
-The detailed Terra-ready packet sequence is defined in `docs/NEXT_DECISION.md`. Packets extend existing owners rather than create parallel kernels or state sources.
+The detailed execution-ready packet sequence is defined in `docs/NEXT_DECISION.md`. Packets extend existing owners rather than create parallel kernels or state sources. Material ownership changes require a documented replacement, compatibility path, tests, and rollback.
 
 | Stage | Primary owning paths | Boundary |
 |---|---|---|
 | PE-1 Token Efficiency Regression Lab | regression script/tests/fixtures; `native_scorecard_artifacts.rs`; `regression_report_artifacts.rs`; scorecard HTTP handlers; SDKs; benchmark Dashboard components | complete; reuse scorecard v1/v2 and existing LocalProductStore/API; report-only; no provider calls in CI |
 | PE-2 Budget Intelligence and Anomaly Auto-Pause | `budget_manager.rs`; provider audit/cost evidence; scheduler/workflow pause controls; HTTP/operator evidence; SDKs; Dashboard | forecasts/anomalies are derived evidence; auto-pause only through existing policy/audit; no auto-kill |
-| PE-3 Operator Decision Center | operator-evidence handlers; approvals; workflow/scheduler read models; Dashboard | derived action queue only; no second state machine, authority source, or hidden mutation path |
+| PE-3 Operator Decision Center | operator-evidence handlers; approvals; workflow/scheduler read models; Dashboard | derived action queue first; no hidden mutation path or duplicate authority source |
 | PE-4 Trace-backed Policy Replay | `engine/src/feedback/run_trace_recorder.rs`; `engine/src/feedback/policy_simulator.rs`; adaptive experiment/canary modules; operator evidence | shadow-first, versioned evidence, coverage/OOD checks; reuse canary/promotion/rollback |
 | PE-5 Release Provenance | `.github/workflows/release.yml`; release/install/upgrade scripts; container build paths | add SBOM, signatures, attestations, and verification without weakening audits or atomic rollback |
 | PE-6 Fault Injection and Recovery Drills | focused engine integration tests; storage/provider/scheduler fault seams; backup/restore and upgrade rollback scripts; CI tooling | bounded deterministic drills; no destructive external testing; recovery invariants remain authoritative |
 
 ## Planned Evolution Routing
 
-1. Execute only the earliest `READY_FOR_TERRA` packet whose prerequisites are complete.
-2. PE-1 is acceptance-sealed; execute PE-2 contract, forecast, anomaly, read surfaces, policy-gated pause, and closeout in packet order.
-3. Build PE-3 as a derived read model before connecting existing mutation endpoints.
-4. Progress PE-4 from calibration to offline replay, shadow, and bounded canary.
-5. PE-5 may run independently only after explicit lane activation.
-6. Implement PE-6 only after each affected subsystem has explicit recovery invariants.
+1. Prefer the earliest `READY_FOR_EXECUTION` packet whose prerequisites are complete.
+2. Repair bounded prerequisite defects, stale contracts, or documentation drift before dependent work when necessary.
+3. PE-1 is acceptance-sealed; complete PE-2 anomaly, read surfaces, policy-gated pause, and closeout in packet order.
+4. Build PE-3 as a derived read model before connecting existing mutation endpoints.
+5. Progress PE-4 from calibration to offline replay, shadow, and bounded canary.
+6. PE-5 may run independently only after explicit lane activation.
+7. Define PE-6 recovery invariants before fault injection.
 
-Do not create another runtime, scheduler, graph kernel, mailbox, storage layer, policy authority, artifact truth source, or Dashboard data model.
+Do not create another runtime, scheduler, graph kernel, mailbox, storage layer, policy authority, artifact truth source, or Dashboard data model without an explicit replacement decision, migration plan, compatibility evidence, and rollback.
 
 ## Active Docs
 
 Keep direction and routing inside active surfaces only:
 
 - `AGENTS.md`
-- `.codex/config.toml`
 - `docs/ARCHITECTURE_BOOK.md`
 - `docs/CURRENT_STATUS.md`
 - `docs/NEXT_DECISION.md`
