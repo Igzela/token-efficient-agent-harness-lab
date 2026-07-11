@@ -52,6 +52,21 @@ class AgentControlPlaneClient:
         path = f"/api/v1/regressions/trends/{_quote_path_segment(scenario_id)}"
         return self._get(_query_path(path, params))
 
+    def budget_evidence(
+        self, kind: str | None = None, limit: int | None = None
+    ) -> dict[str, Any]:
+        params: dict[str, Any] = {}
+        if kind is not None:
+            params["kind"] = kind
+        if limit is not None:
+            params["limit"] = limit
+        return self._get(_query_path("/api/v1/budget-evidence", params))
+
+    def budget_evidence_artifact(self, artifact_id: str) -> dict[str, Any]:
+        return self._get(
+            f"/api/v1/budget-evidence/{_quote_path_segment(artifact_id)}"
+        )
+
     def metrics(self) -> dict[str, Any]:
         return self._get("/api/v1/metrics")
 
