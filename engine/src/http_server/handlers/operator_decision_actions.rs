@@ -59,14 +59,7 @@ pub(crate) async fn api_apply_operator_decision_action(
         ));
     }
 
-    let actor = authorize(
-        &state,
-        &headers,
-        "dispatch:read",
-        uri.path(),
-        &request_id.0,
-    )?
-    .api_key_id;
+    let actor = authorize(&state, &headers, "dispatch:read", uri.path(), &request_id.0)?.api_key_id;
     let store = require_store(&state)?;
     let current_time = store.operator_decision_now();
     validate_mutation_time(
@@ -92,7 +85,10 @@ pub(crate) async fn api_apply_operator_decision_action(
     }
     let bound_item = find_bound_item(bound_queue.items, &decision_id)?;
     validate_requested_action(&bound_item, &request.action)?;
-    let bound_source = bound_item.selected_source.clone().ok_or_else(not_ready_source)?;
+    let bound_source = bound_item
+        .selected_source
+        .clone()
+        .ok_or_else(not_ready_source)?;
 
     let current_queue = store
         .operator_decision_queue(
@@ -114,13 +110,11 @@ pub(crate) async fn api_apply_operator_decision_action(
                 "decision is no longer present on the exact current queue page",
             )
         })?;
-    validate_current_binding(
-        &bound_item,
-        &current_item,
-        &bound_source,
-        &request.action,
-    )?;
-    let current_source = current_item.selected_source.clone().ok_or_else(not_ready_source)?;
+    validate_current_binding(&bound_item, &current_item, &bound_source, &request.action)?;
+    let current_source = current_item
+        .selected_source
+        .clone()
+        .ok_or_else(not_ready_source)?;
 
     let result = match request.action {
         OperatorDecisionAction::Approve | OperatorDecisionAction::Reject => {
@@ -131,9 +125,7 @@ pub(crate) async fn api_apply_operator_decision_action(
                 .map_err(internal)?
                 .into_iter()
                 .find(|approval| {
-                    approval
-                        .get("approval_id")
-                        .and_then(Value::as_str)
+                    approval.get("approval_id").and_then(Value::as_str)
                         == Some(approval_id.as_str())
                 })
                 .ok_or_else(|| {
@@ -208,19 +200,10 @@ pub(crate) async fn api_apply_operator_decision_action(
                         )
                     })?;
                 store
-                    .recover_budget_auto_pause(
-                        &current_item.resource_id,
-                        "resume",
-                        reason,
-                        &actor,
-                    )
+                    .recover_budget_auto_pause(&current_item.resource_id, "resume", reason, &actor)
                     .map_err(internal)?
             } else {
-                require_source_kind(
-                    &current_source,
-                    "workflow",
-                    "workflow source is required",
-                )?;
+                require_source_kind(&current_source, "workflow", "workflow source is required")?;
                 store
                     .update_run_pause_reason(&current_item.resource_id, None)
                     .map_err(internal)?;

@@ -94,9 +94,9 @@ fn collect_workflow_and_approval_sources(
             continue;
         };
         let run_id = run_id.to_string();
-        let run = store
-            .get_workflow_run(&run_id)?
-            .ok_or_else(|| format!("workflow run disappeared while deriving decisions: {run_id}"))?;
+        let run = store.get_workflow_run(&run_id)?.ok_or_else(|| {
+            format!("workflow run disappeared while deriving decisions: {run_id}")
+        })?;
         let status = string(&run, "status").unwrap_or("unknown");
         let observed_at = string(&run, "updated_at").or_else(|| string(&run, "created_at"));
         if let Some(observed_at) = observed_at {
@@ -152,12 +152,11 @@ fn collect_workflow_and_approval_sources(
                         "workflow_blocked_no_ready_node",
                     )
                 };
-                let confidence =
-                    if matches!(state, OperatorDecisionSourceState::Actionable) {
-                        1.0
-                    } else {
-                        0.0
-                    };
+                let confidence = if matches!(state, OperatorDecisionSourceState::Actionable) {
+                    1.0
+                } else {
+                    0.0
+                };
                 push_source(
                     sources,
                     SourceInput {
@@ -362,29 +361,28 @@ fn collect_budget_sources(
             .and_then(Value::as_f64)
             .unwrap_or(0.0);
         let critical = string(evidence, "severity") == Some("critical");
-        let (action, state, severity, reason) =
-            if outcome == "supported" && detected && critical {
-                (
-                    OperatorDecisionAction::Pause,
-                    OperatorDecisionSourceState::Actionable,
-                    OperatorDecisionSeverity::Critical,
-                    "budget_critical_anomaly_detected",
-                )
-            } else if outcome == "supported" && detected {
-                (
-                    OperatorDecisionAction::Inspect,
-                    OperatorDecisionSourceState::Informational,
-                    OperatorDecisionSeverity::Warning,
-                    "budget_noncritical_anomaly_observed",
-                )
-            } else {
-                (
-                    OperatorDecisionAction::Inspect,
-                    OperatorDecisionSourceState::InsufficientEvidence,
-                    OperatorDecisionSeverity::Info,
-                    "budget_evidence_insufficient",
-                )
-            };
+        let (action, state, severity, reason) = if outcome == "supported" && detected && critical {
+            (
+                OperatorDecisionAction::Pause,
+                OperatorDecisionSourceState::Actionable,
+                OperatorDecisionSeverity::Critical,
+                "budget_critical_anomaly_detected",
+            )
+        } else if outcome == "supported" && detected {
+            (
+                OperatorDecisionAction::Inspect,
+                OperatorDecisionSourceState::Informational,
+                OperatorDecisionSeverity::Warning,
+                "budget_noncritical_anomaly_observed",
+            )
+        } else {
+            (
+                OperatorDecisionAction::Inspect,
+                OperatorDecisionSourceState::InsufficientEvidence,
+                OperatorDecisionSeverity::Info,
+                "budget_evidence_insufficient",
+            )
+        };
         push_source(
             sources,
             SourceInput {
@@ -870,15 +868,7 @@ mod tests {
         request_approval(&store, &run, "node-a");
         store
             .record_workflow_run_approval(
-                &run,
-                "node-a",
-                "approved",
-                "operator",
-                None,
-                None,
-                None,
-                None,
-                None,
+                &run, "node-a", "approved", "operator", None, None, None, None, None,
             )
             .unwrap();
         let queue = store.operator_decision_queue(NOW, 300, 100, 0).unwrap();

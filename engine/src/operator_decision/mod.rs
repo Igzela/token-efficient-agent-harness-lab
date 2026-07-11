@@ -277,8 +277,7 @@ impl OperatorDecisionQueue {
             return Err("unsupported operator decision queue schema version".to_string());
         }
         parse_time("generated_at", &self.generated_at)?;
-        if self.maximum_freshness_seconds == 0
-            || self.maximum_freshness_seconds > 30 * 24 * 60 * 60
+        if self.maximum_freshness_seconds == 0 || self.maximum_freshness_seconds > 30 * 24 * 60 * 60
         {
             return Err(
                 "operator decision queue freshness is outside the contract bound".to_string(),
@@ -386,8 +385,7 @@ pub fn derive_operator_decision_item(
                 })
                 && parse_time("observed_at", &source.observed_at).is_ok_and(|observed| {
                     generated >= observed
-                        && (generated - observed).num_seconds() as u64
-                            <= maximum_freshness_seconds
+                        && (generated - observed).num_seconds() as u64 <= maximum_freshness_seconds
                 })
         })
         .collect::<Vec<_>>();
@@ -460,7 +458,9 @@ pub fn derive_operator_decision_item(
             .iter()
             .find(|source| source_matches_reference(source, reference))
     });
-    let confidence = selected_source.map(|source| source.confidence).unwrap_or(0.0);
+    let confidence = selected_source
+        .map(|source| source.confidence)
+        .unwrap_or(0.0);
     let expires_at = selected_source.and_then(|source| source.expires_at.clone());
     let decision_id = decision_id(conflict_key, &references)?;
     let mut item = OperatorDecisionItem {
@@ -522,7 +522,8 @@ fn decision_id(
     conflict_key: &str,
     references: &[OperatorDecisionEvidenceReference],
 ) -> Result<String, String> {
-    let encoded = serde_json::to_vec(&(conflict_key, references)).map_err(|error| error.to_string())?;
+    let encoded =
+        serde_json::to_vec(&(conflict_key, references)).map_err(|error| error.to_string())?;
     Ok(format!("operator-decision-{:x}", Sha256::digest(encoded)))
 }
 
@@ -592,9 +593,7 @@ fn validate_references(references: &[OperatorDecisionEvidenceReference]) -> Resu
         validate_reference(reference)?;
     }
     if references.windows(2).any(|pair| pair[0] >= pair[1]) {
-        return Err(
-            "operator decision evidence references must be sorted and unique".to_string(),
-        );
+        return Err("operator decision evidence references must be sorted and unique".to_string());
     }
     Ok(())
 }

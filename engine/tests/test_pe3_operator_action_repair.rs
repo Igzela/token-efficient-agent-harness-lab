@@ -111,9 +111,7 @@ async fn post_action(app: Router, decision_id: &str, body: Value) -> (StatusCode
         .oneshot(
             Request::builder()
                 .method(Method::POST)
-                .uri(format!(
-                    "/api/v1/operator/decisions/{decision_id}/actions"
-                ))
+                .uri(format!("/api/v1/operator/decisions/{decision_id}/actions"))
                 .header("content-type", "application/json")
                 .body(Body::from(body.to_string()))
                 .unwrap(),
@@ -185,7 +183,10 @@ async fn mutation_rejects_expired_and_future_queue_timestamps() {
     )
     .await;
     assert_eq!(status, StatusCode::CONFLICT);
-    assert_eq!(body["error"]["code"], "operator_decision_generated_at_stale");
+    assert_eq!(
+        body["error"]["code"],
+        "operator_decision_generated_at_stale"
+    );
 
     let (_directory, _path, app, queue, item) =
         approval_fixture("2026-07-11T00:05:01Z", "2026-07-11T00:05:00Z");
@@ -196,7 +197,10 @@ async fn mutation_rejects_expired_and_future_queue_timestamps() {
     )
     .await;
     assert_eq!(status, StatusCode::CONFLICT);
-    assert_eq!(body["error"]["code"], "operator_decision_generated_at_future");
+    assert_eq!(
+        body["error"]["code"],
+        "operator_decision_generated_at_future"
+    );
 }
 
 #[tokio::test]
@@ -268,11 +272,7 @@ async fn source_change_and_exact_page_order_change_fail_closed() {
 async fn queue_hash_and_decision_id_replay_are_rejected() {
     let (_directory, _path, app, queue, item) =
         approval_fixture("2026-07-11T00:00:00Z", "2026-07-11T00:00:10Z");
-    let mut bad_hash = action_body(
-        &queue,
-        OperatorDecisionAction::Approve,
-        &queue.generated_at,
-    );
+    let mut bad_hash = action_body(&queue, OperatorDecisionAction::Approve, &queue.generated_at);
     bad_hash["queue_sha256"] = json!("00".repeat(32));
     let (status, body) = post_action(app.clone(), &item.decision_id, bad_hash).await;
     assert_eq!(status, StatusCode::CONFLICT);
@@ -281,11 +281,7 @@ async fn queue_hash_and_decision_id_replay_are_rejected() {
     let (status, body) = post_action(
         app,
         "operator-decision-deadbeef",
-        action_body(
-            &queue,
-            OperatorDecisionAction::Approve,
-            &queue.generated_at,
-        ),
+        action_body(&queue, OperatorDecisionAction::Approve, &queue.generated_at),
     )
     .await;
     assert_eq!(status, StatusCode::NOT_FOUND);
