@@ -1471,8 +1471,11 @@ export interface BudgetEvidenceArtifactListResponse {
   provider_calls: "disabled";
   mutation_authority: "none";
   artifacts: BudgetEvidenceArtifactEnvelope[];
+  kind: "forecast" | "anomaly" | null;
+  limit: number;
+  offset: number;
 }
 
-export interface BudgetEvidenceArtifactResponse extends Omit<BudgetEvidenceArtifactListResponse, "artifacts"> {
+export interface BudgetEvidenceArtifactResponse extends Omit<BudgetEvidenceArtifactListResponse, "artifacts" | "kind" | "limit" | "offset"> {
   artifact: BudgetEvidenceArtifactEnvelope;
 }

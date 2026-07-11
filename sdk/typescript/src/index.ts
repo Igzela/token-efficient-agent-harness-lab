@@ -193,6 +193,7 @@ export interface RegressionListOptions {
 export interface BudgetEvidenceListOptions {
   kind?: "forecast" | "anomaly";
   limit?: number;
+  offset?: number;
 }
 
 export class AgentControlPlaneClient {
@@ -245,6 +246,7 @@ export class AgentControlPlaneClient {
     return this.getJson<BudgetEvidenceArtifactListResponse>(`/api/v1/budget-evidence${queryString({
       kind: options.kind,
       limit: options.limit,
+      offset: options.offset,
     })}`);
   }
 

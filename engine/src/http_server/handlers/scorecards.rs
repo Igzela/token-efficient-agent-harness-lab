@@ -33,6 +33,7 @@ pub(crate) struct RegressionTrendQuery {
 pub(crate) struct BudgetEvidenceQuery {
     kind: Option<String>,
     limit: Option<i64>,
+    offset: Option<i64>,
 }
 
 pub(crate) async fn api_scorecard_artifacts(
@@ -234,12 +235,19 @@ pub(crate) async fn api_budget_evidence_artifacts(
             "kind must be forecast or anomaly",
         ));
     }
+    let limit = query.limit.unwrap_or(50).clamp(1, 100);
+    let offset = query.offset.unwrap_or(0).clamp(0, 10_000);
     let artifacts = store
-        .budget_evidence_artifacts(kind, query.limit.unwrap_or(50))
+        .budget_evidence_artifacts(kind, limit, offset)
         .map_err(internal_error)?;
     Ok((
         cors_headers(),
-        Json(regression_response(json!({"artifacts": artifacts}))),
+        Json(regression_response(json!({
+            "artifacts": artifacts,
+            "kind": kind,
+            "limit": limit,
+            "offset": offset,
+        }))),
     ))
 }
 

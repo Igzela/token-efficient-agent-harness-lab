@@ -46,12 +46,21 @@ function BudgetEvidenceLatest({ artifact }: { artifact: BudgetEvidenceArtifact }
   const reasons = Array.isArray(artifact.evidence.reason_codes)
     ? artifact.evidence.reason_codes.filter((value): value is string => typeof value === "string")
     : [];
+  const references = Array.isArray(artifact.evidence.evidence_references)
+    ? artifact.evidence.evidence_references.flatMap((value) => {
+      if (!value || typeof value !== "object") return [];
+      const reference = value as Record<string, unknown>;
+      return typeof reference.evidence_type === "string" && typeof reference.evidence_id === "string"
+        ? [`${reference.evidence_type}:${reference.evidence_id}`]
+        : [];
+    }).slice(0, 5)
+    : [];
   const tone = outcome === "supported" ? "ok" : outcome === "insufficient_evidence" ? "warn" : "risk";
   const title = artifact.artifact_kind === "forecast" ? "Latest budget forecast" : "Latest anomaly finding";
   return <div className="card stack">
     <div className="heading-row"><div><p className="eyebrow">Read-only budget evidence</p><h3>{title}</h3></div><span className={`pill ${tone}`}>{outcome.replaceAll("_", " ")}</span></div>
     <p className="muted">{reasons.length ? reasons.join(", ") : "No bounded reason code was returned."}</p>
-    <div className="detail-summary"><div className="summary-tile"><span className="metric-label">Evidence</span><strong>{artifact.evidence_id}</strong></div><div className="summary-tile"><span className="metric-label">Hash</span><strong>{compactHash(artifact.evidence_sha256)}</strong></div></div>
+    <div className="detail-summary"><div className="summary-tile"><span className="metric-label">Evidence</span><strong>{artifact.evidence_id}</strong></div><div className="summary-tile"><span className="metric-label">Hash</span><strong>{compactHash(artifact.evidence_sha256)}</strong></div><div className="summary-tile"><span className="metric-label">References</span><strong>{references.length}</strong><span className="muted">{references.length ? references.join(", ") : "none"}</span></div></div>
   </div>;
 }
 

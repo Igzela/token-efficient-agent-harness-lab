@@ -44,34 +44,35 @@ impl LocalProductStore {
         &self,
         kind: Option<&str>,
         limit: i64,
+        offset: i64,
     ) -> Result<Vec<Value>, String> {
-        let kind = kind.filter(|kind| matches!(*kind, "forecast" | "anomaly"));
-        if kind.is_none() && limit < 0 {
+        if kind.is_some_and(|kind| !matches!(kind, "forecast" | "anomaly")) {
             return Err("budget evidence artifact kind must be forecast or anomaly".to_string());
         }
         let capped = limit.clamp(1, 100);
+        let offset = offset.clamp(0, 10_000);
         match &self.db {
             DatabaseConnection::Sqlite(_) => self.with_conn(|conn| {
                 let rows = if let Some(kind) = kind {
                     let mut statement = conn
                         .prepare(
                             "SELECT artifact_json FROM budget_evidence_artifacts
-                             WHERE artifact_kind = ?1 ORDER BY artifact_sequence ASC LIMIT ?2",
+                             WHERE artifact_kind = ?1 ORDER BY artifact_sequence ASC LIMIT ?2 OFFSET ?3",
                         )
                         .map_err(|error| error.to_string())?;
                     let rows = statement
-                        .query_map(params![kind, capped], budget_evidence_artifact_row)
+                        .query_map(params![kind, capped, offset], budget_evidence_artifact_row)
                         .map_err(|error| error.to_string())?;
                     collect_values(rows)?
                 } else {
                     let mut statement = conn
                         .prepare(
                             "SELECT artifact_json FROM budget_evidence_artifacts
-                             ORDER BY artifact_sequence ASC LIMIT ?1",
+                             ORDER BY artifact_sequence ASC LIMIT ?1 OFFSET ?2",
                         )
                         .map_err(|error| error.to_string())?;
                     let rows = statement
-                        .query_map(params![capped], budget_evidence_artifact_row)
+                        .query_map(params![capped, offset], budget_evidence_artifact_row)
                         .map_err(|error| error.to_string())?;
                     collect_values(rows)?
                 };
@@ -82,14 +83,14 @@ impl LocalProductStore {
                 let rows = if let Some(kind) = kind {
                     client.query(
                         "SELECT artifact_json FROM budget_evidence_artifacts
-                         WHERE artifact_kind = $1 ORDER BY artifact_sequence ASC LIMIT $2",
-                        &[&kind, &capped],
+                         WHERE artifact_kind = $1 ORDER BY artifact_sequence ASC LIMIT $2 OFFSET $3",
+                        &[&kind, &capped, &offset],
                     )
                 } else {
                     client.query(
                         "SELECT artifact_json FROM budget_evidence_artifacts
-                         ORDER BY artifact_sequence ASC LIMIT $1",
-                        &[&capped],
+                         ORDER BY artifact_sequence ASC LIMIT $1 OFFSET $2",
+                        &[&capped, &offset],
                     )
                 }
                 .map_err(|error| error.to_string())?;
@@ -407,10 +408,17 @@ mod tests {
         store
             .record_budget_anomaly_finding(&finding, "test")
             .unwrap();
-        let artifacts = store.budget_evidence_artifacts(None, 100).unwrap();
+        let artifacts = store.budget_evidence_artifacts(None, 100, 0).unwrap();
         assert_eq!(artifacts.len(), 2);
         assert_eq!(artifacts[0]["artifact_kind"], "forecast");
         assert_eq!(artifacts[1]["artifact_kind"], "anomaly");
+        assert_eq!(
+            store.budget_evidence_artifacts(None, 1, 1).unwrap()[0]["artifact_kind"],
+            "anomaly"
+        );
+        assert!(store
+            .budget_evidence_artifacts(Some("pause"), 10, 0)
+            .is_err());
         let artifact_id = first["artifact_id"].as_str().unwrap();
         let connection = rusqlite::Connection::open(store.db_path()).unwrap();
         connection.execute("UPDATE budget_evidence_artifacts SET artifact_json = '{\"tampered\":true}' WHERE artifact_id = ?1", params![artifact_id]).unwrap();

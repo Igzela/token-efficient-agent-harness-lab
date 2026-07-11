@@ -606,6 +606,7 @@ export async function fetchScorecards(params: {
 export async function fetchBudgetEvidence(params: {
   kind?: "forecast" | "anomaly";
   limit?: number;
+  offset?: number;
 } = {}): Promise<BudgetEvidenceArtifactListResponse> {
   return fetchJson<BudgetEvidenceArtifactListResponse>(withQuery("/api/v1/budget-evidence", params));
 }

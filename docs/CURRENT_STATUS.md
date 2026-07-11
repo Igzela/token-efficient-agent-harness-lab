@@ -36,7 +36,7 @@ This repo is a local/small-team self-hosted agent workflow control plane. Rust `
 | Local runner operations | Active: validate, export, import, and inspect bounded scorecard artifacts locally |
 | Runner integration | Storage/API/operator evidence complete; workflow scheduling of local runner validation is implemented via `LocalRunnerValidationExecutor` in stub mode with automatic native scorecard recording on terminal tick |
 | Live provider adapter | Gated ready path: Stub/Fake/Live; Live requires gates, explicit metadata, symbolic credentials, positive pricing, persistent redacted audit, bounded calls/tokens/time/cost, and a kill switch |
-| Post-LGB Product Evolution Plan | PE-1 is complete; PE2-CONTRACT-1, PE2-FORECAST-1, and PE2-ANOMALY-1 are implemented; PE2-READ-1 is the next eligible packet |
+| Post-LGB Product Evolution Plan | PE-1 is complete; PE2-CONTRACT-1 through PE2-READ-1 are implemented; PE2-PAUSE-1 is the next eligible packet |
 
 ## Planned Product Evolution Stages
 
@@ -45,7 +45,7 @@ The stages are packetized in `docs/NEXT_DECISION.md`. The agent should execute p
 | Stage | Priority | Capability | Current state |
 |---|---|---|---|
 | PE-1 | P0 | Token Efficiency Regression Lab | Complete and acceptance-sealed |
-| PE-2 | P0/P1 | Budget Intelligence and Anomaly Auto-Pause | In progress: evidence contract, deterministic forecasts, and explainable anomaly detection implemented; read surfaces next |
+| PE-2 | P0/P1 | Budget Intelligence and Anomaly Auto-Pause | In progress: evidence, forecasts, anomalies, persistence, and read surfaces implemented; policy-gated pause next |
 | PE-3 | P1 | Operator Decision Center | Detailed packets defined; blocked on PE-2 closeout |
 | PE-4 | P1/P2 | Trace-backed Policy Replay | Detailed packets defined; blocked on PE-3 closeout and trace coverage |
 | PE-5 | P1.5 | Release Provenance | Detailed packets defined; eligible after PE-1 closeout only by explicit independent-lane activation |
@@ -90,7 +90,7 @@ The stages are packetized in `docs/NEXT_DECISION.md`. The agent should execute p
 
 ## Current Gaps
 
-- PE-2 persistence/read surfaces and policy-gated high-confidence auto-pause are not implemented.
+- PE-2 policy-gated high-confidence auto-pause is not implemented.
 - PE-3 has no unified derived decision queue.
 - `policy_simulator.rs` still relies on fixed estimates rather than trace-calibrated replay.
 - SBOM, signing, and provenance attestations are not yet part of the release contract.
@@ -98,6 +98,14 @@ The stages are packetized in `docs/NEXT_DECISION.md`. The agent should execute p
 - External runtime runners, scheduled external execution, CrewAI, and Microsoft Agent Framework integrations remain unauthorized unless a later evidence-backed decision changes the importer-first boundary.
 - Remote adapter support for the local runner remains deferred.
 - Keep existing runtime/module ownership boundaries unless an execution-ready packet or documented replacement decision explicitly changes them.
+
+## PE-2 Read Evidence
+
+- schema v18 adds immutable, hash-bound budget forecast/anomaly envelopes to the existing SQLite/PostgreSQL `LocalProductStore` boundary;
+- persistence is validated, idempotent, deterministically ordered, tamper-detecting, and bounded to limit 100 with offset capped at 10,000;
+- read-only `dispatch:read` HTTP/OpenAPI plus Python/TypeScript SDK readers preserve encoded artifact paths and existing callers;
+- the existing Benchmark Dashboard route exposes explicit supported, insufficient, invalid, empty, and error states with bounded evidence IDs, hashes, and reason codes;
+- no pause, policy, provider, budget/reservation, scheduler, termination, or target-output authority is added.
 
 ## Handoff Guard Anchors
 

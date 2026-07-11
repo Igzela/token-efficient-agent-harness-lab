@@ -916,6 +916,9 @@ export interface BudgetEvidenceArtifact {
 
 export interface BudgetEvidenceArtifactListResponse {
   artifacts: BudgetEvidenceArtifact[];
+  kind: "forecast" | "anomaly" | null;
+  limit: number;
+  offset: number;
   read_only: true;
   metadata_only: true;
   mutation_authority: "none";

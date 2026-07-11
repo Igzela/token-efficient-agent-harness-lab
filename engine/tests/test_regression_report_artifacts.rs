@@ -372,7 +372,7 @@ async fn budget_evidence_api_is_read_only_bounded_and_explicit_when_empty() {
         .oneshot(
             Request::builder()
                 .method(Method::GET)
-                .uri("/api/v1/budget-evidence?limit=100")
+                .uri("/api/v1/budget-evidence?limit=1000&offset=20000")
                 .body(Body::empty())
                 .unwrap(),
         )
@@ -383,6 +383,8 @@ async fn budget_evidence_api_is_read_only_bounded_and_explicit_when_empty() {
     assert_eq!(body["read_only"], true);
     assert_eq!(body["mutation_authority"], "none");
     assert_eq!(body["artifacts"], json!([]));
+    assert_eq!(body["limit"], 100);
+    assert_eq!(body["offset"], 10_000);
 
     let invalid_kind = app
         .clone()

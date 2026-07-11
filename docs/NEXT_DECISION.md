@@ -186,7 +186,7 @@ Stage invariants:
 
 ### Packet PE2-READ-1 — Persistence, API, SDK, and Dashboard read surfaces
 
-**State:** `READY_FOR_EXECUTION`
+**State:** `COMPLETE`
 
 **Prerequisite:** PE2-ANOMALY-1 complete.
 
@@ -202,7 +202,7 @@ Stage invariants:
 
 ### Packet PE2-PAUSE-1 — Policy-gated high-confidence auto-pause
 
-**State:** `BLOCKED_PREREQUISITE`
+**State:** `READY_FOR_EXECUTION`
 
 **Prerequisite:** PE2-READ-1 complete.
 
@@ -274,7 +274,7 @@ The agent may define recovery invariants from existing subsystem contracts and t
 
 ## Active Routing
 
-1. Execute PE2-READ-1 from latest `main`.
+1. Execute PE2-PAUSE-1 from latest `main` after PE2-READ-1 is merged.
 2. Merge only after focused validation, full CI, architecture/authority review, and no unresolved objection.
-3. Refresh `main`, re-read active docs/code, and continue PE2-PAUSE-1, then PE2-CLOSE-1.
+3. Refresh `main`, re-read active docs/code, and continue PE2-CLOSE-1.
 4. After PE-2 closeout, mark PE-3 next but do not start it in the PE-1-to-PE-2 effort.

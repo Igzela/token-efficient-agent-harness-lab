@@ -3,6 +3,12 @@
 // CI runs these with a PostgreSQL service container.
 
 #[cfg(feature = "pg-tests")]
+use engine::budget_forecast::{
+    build_budget_forecast, BudgetForecastRequest, BudgetUsageObservation,
+};
+#[cfg(feature = "pg-tests")]
+use engine::budget_manager::BudgetEvidenceScope;
+#[cfg(feature = "pg-tests")]
 use engine::event_schema::canonical_event_json;
 #[cfg(feature = "pg-tests")]
 use engine::feedback::{
@@ -63,6 +69,47 @@ fn pg_regression_report(tag: &str) -> Value {
     let canonical = canonical_event_json(&report).expect("canonical report");
     report["report_sha256"] = json!(hex::encode(Sha256::digest(canonical.as_bytes())));
     report
+}
+
+#[cfg(feature = "pg-tests")]
+fn pg_budget_forecast(tag: &str) -> engine::budget_manager::BudgetForecastEvidence {
+    let observations = (0..3)
+        .map(|index| BudgetUsageObservation {
+            evidence_type: "provider_audit_event".to_string(),
+            evidence_id: format!("pg-budget-{tag}-{index}"),
+            content_sha256: Some(format!("{:064x}", index)),
+            occurred_at: format!("2026-07-10T00:{:02}:00Z", 10 + index),
+            run_id: None,
+            workspace_id: None,
+            provider_id: Some("provider-a".to_string()),
+            model_id: Some("model-a".to_string()),
+            input_tokens: Some(10),
+            output_tokens: Some(10),
+            total_tokens: Some(20),
+            cost_usd: Some(0.01),
+        })
+        .collect::<Vec<_>>();
+    build_budget_forecast(
+        &BudgetForecastRequest {
+            forecast_id: format!("forecast-{tag}"),
+            scope: BudgetEvidenceScope {
+                provider_id: Some("provider-a".to_string()),
+                ..Default::default()
+            },
+            start_inclusive: "2026-07-10T00:00:00Z".to_string(),
+            end_exclusive: "2026-07-10T01:00:00Z".to_string(),
+            generated_at: "2026-07-10T01:01:00Z".to_string(),
+            horizon_seconds: 60,
+            remaining_tokens: Some(100),
+            remaining_cost_usd: Some(1.0),
+            required_dimensions: vec!["provider_id".to_string()],
+            min_samples: 3,
+            max_freshness_seconds: 600,
+            max_duplicate_events: 1,
+        },
+        &observations,
+    )
+    .expect("build pg budget forecast")
 }
 
 #[test]
@@ -127,6 +174,32 @@ fn pg_regression_report_artifact_is_idempotent_and_readable() {
         .expect("regression trend");
     assert_eq!(trend["point_count"], 1);
     assert_eq!(trend["latest"]["outcome"], "pass");
+}
+
+#[test]
+#[cfg(feature = "pg-tests")]
+fn pg_budget_evidence_artifact_is_idempotent_and_readable() {
+    let Some(store) = test_store() else { return };
+    let forecast = pg_budget_forecast(&uuid_tag());
+    let first = store
+        .record_budget_forecast_evidence(&forecast, "pg-test")
+        .expect("record budget forecast");
+    let repeated = store
+        .record_budget_forecast_evidence(&forecast, "pg-test")
+        .expect("repeat budget forecast");
+    assert_eq!(first, repeated);
+    let artifact_id = first["artifact_id"].as_str().expect("artifact id");
+    assert_eq!(
+        store
+            .get_budget_evidence_artifact(artifact_id)
+            .expect("get budget evidence"),
+        Some(first.clone())
+    );
+    assert!(store
+        .budget_evidence_artifacts(Some("forecast"), 100, 0)
+        .expect("list budget evidence")
+        .iter()
+        .any(|artifact| artifact["artifact_id"] == first["artifact_id"]));
 }
 
 #[test]

@@ -53,13 +53,15 @@ class AgentControlPlaneClient:
         return self._get(_query_path(path, params))
 
     def budget_evidence(
-        self, kind: str | None = None, limit: int | None = None
+        self, kind: str | None = None, limit: int | None = None, offset: int | None = None
     ) -> dict[str, Any]:
         params: dict[str, Any] = {}
         if kind is not None:
             params["kind"] = kind
         if limit is not None:
             params["limit"] = limit
+        if offset is not None:
+            params["offset"] = offset
         return self._get(_query_path("/api/v1/budget-evidence", params))
 
     def budget_evidence_artifact(self, artifact_id: str) -> dict[str, Any]:
