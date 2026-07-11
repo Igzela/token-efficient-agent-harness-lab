@@ -186,7 +186,6 @@ pub fn detect_budget_anomaly(
     let mut missing_fields =
         missing_required_dimensions(&request.required_dimensions, &observed_dimensions);
     let mixed = mixed_required_dimensions(&request.scope, &request.required_dimensions, &combined);
-    missing_fields.extend(mixed.iter().map(|dimension| format!("{dimension}.mixed")));
 
     let metric_complete = metric_complete(&request.anomaly_kind, &baseline)
         && metric_complete(&request.anomaly_kind, &current);
@@ -933,6 +932,7 @@ mod tests {
         assert!(finding
             .reason_codes
             .contains(&"insufficient_evidence.mixed_dimensions".to_string()));
+        assert!(finding.coverage.missing_fields.is_empty());
     }
 
     #[test]
