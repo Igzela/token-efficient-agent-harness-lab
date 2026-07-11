@@ -412,6 +412,152 @@ async fn operator_decision_queue_api_is_bounded_read_only_and_explicit_when_empt
 }
 
 #[tokio::test]
+async fn operator_decision_approval_action_is_hash_bound_confirmed_and_uses_existing_owner() {
+    let (store, _dir) = make_store();
+    let plan = store
+        .create_workflow_plan("operator decision action", "test", "operator", |ids, _| {
+            Ok(json!({
+                "status": "planned_read_only",
+                "graph": {"nodes": [], "edges": [], "workflow_id": ids.workflow_id, "dispatch_id": ids.dispatch_id},
+                "analysis": {},
+                "boundaries": {"execution_authority": "disabled"}
+            }))
+        })
+        .unwrap();
+    let run = store
+        .create_workflow_run_from_plan(plan["plan_id"].as_str().unwrap(), "operator")
+        .unwrap();
+    let run_id = run["run_id"].as_str().unwrap().to_string();
+    store
+        .record_workflow_run_approval(
+            &run_id,
+            "node-a",
+            "requested",
+            "operator",
+            Some("review needed"),
+            None,
+            None,
+            None,
+            None,
+        )
+        .unwrap();
+    let generated_at = chrono::Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string();
+    let queue = store
+        .operator_decision_queue(&generated_at, 300, 25, 0)
+        .unwrap();
+    let item = queue
+        .items
+        .iter()
+        .find(|item| item.resource_id == run_id)
+        .unwrap();
+    let app = build_axum_router(AxumApiState::new().with_local_store(store));
+
+    let unconfirmed = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(Method::POST)
+                .uri(format!(
+                    "/api/v1/operator/decisions/{}/actions",
+                    item.decision_id
+                ))
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(
+                    json!({
+                        "queue_sha256": queue.queue_sha256,
+                        "generated_at": generated_at,
+                        "maximum_freshness_seconds": 300,
+                        "limit": 25,
+                        "offset": 0,
+                        "action": "approve",
+                        "confirm_action": false
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(unconfirmed.status(), StatusCode::BAD_REQUEST);
+    assert_eq!(
+        response_json(unconfirmed).await["code"],
+        "operator_decision_confirmation_required"
+    );
+
+    let accepted = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(Method::POST)
+                .uri(format!(
+                    "/api/v1/operator/decisions/{}/actions",
+                    item.decision_id
+                ))
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(
+                    json!({
+                        "queue_sha256": queue.queue_sha256,
+                        "generated_at": generated_at,
+                        "maximum_freshness_seconds": 300,
+                        "limit": 25,
+                        "offset": 0,
+                        "action": "approve",
+                        "confirm_action": true,
+                        "reason": "operator reviewed"
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(accepted.status(), StatusCode::OK);
+    assert_eq!(response_json(accepted).await["action"], "approve");
+
+    let approvals = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(Method::GET)
+                .uri(format!("/api/v1/workflow-runs/{run_id}/approvals"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let approvals = response_json(approvals).await;
+    assert_eq!(approvals["approvals"].as_array().unwrap().len(), 2);
+    assert_eq!(approvals["approvals"][1]["decision"], "approved");
+
+    let changed = app
+        .oneshot(
+            Request::builder()
+                .method(Method::POST)
+                .uri(format!(
+                    "/api/v1/operator/decisions/{}/actions",
+                    item.decision_id
+                ))
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(
+                    json!({
+                        "queue_sha256": "00".repeat(32), "generated_at": generated_at,
+                        "maximum_freshness_seconds": 300, "limit": 25, "offset": 0,
+                        "action": "approve", "confirm_action": true
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(changed.status(), StatusCode::CONFLICT);
+    assert_eq!(
+        response_json(changed).await["code"],
+        "operator_decision_queue_changed"
+    );
+}
+
+#[tokio::test]
 async fn budget_evidence_api_is_read_only_bounded_and_explicit_when_empty() {
     let (store, _dir) = make_store();
     let app = build_axum_router(AxumApiState::new().with_local_store(store));

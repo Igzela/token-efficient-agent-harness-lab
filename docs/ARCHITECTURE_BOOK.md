@@ -202,6 +202,8 @@ PE-3 uses additive `operator_decision_source.v1`, `operator_decision_item.v1`, a
 
 The read surface is additive `GET /api/v1/operator/decisions`, documented in OpenAPI and exposed by the existing Python/TypeScript SDKs and Dashboard navigation. It requires `dispatch:read`, returns the hash-bound derived queue plus explicit read-only boundary metadata, accepts bounded pagination/freshness parameters, and offers no mutation control. It may use a supplied timestamp for deterministic evidence review; otherwise it derives using server time. Route rollback is a code revert with no stored state.
 
+PE3-ACTIONS adds a narrowly allowlisted, hash-bound adapter route and explicit Python/TypeScript SDK request shapes. It re-derives the exact read page from the supplied timestamp, freshness, limit, and offset contract, rejects stale hash, missing confirmation, source/action mismatch, and unavailable owners, then invokes only a compatible existing owner. It does not grant generic execution authority: approval records preserve their metadata-only semantics; budget pause still requires `dispatch:execute`, confirmation, an enabled existing policy, and the original transaction/audit/recovery path; unsupported rollback/inspect/acknowledge requests fail closed. Rollback is a route/module revert with no data cleanup.
+
 ## Execution Modes
 
 `ACP_EXECUTION_MODE` controls dispatch execution:

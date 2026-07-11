@@ -98,6 +98,8 @@ import type {
   BudgetEvidenceArtifactResponse,
   OperatorDecisionQueueOptions,
   OperatorDecisionQueueResponse,
+  OperatorDecisionActionRequest,
+  OperatorDecisionActionResponse,
 } from "./wire-types.js";
 
 export interface AgentControlPlaneClientOptions {
@@ -260,6 +262,16 @@ export class AgentControlPlaneClient {
 
   operatorDecisions(options: OperatorDecisionQueueOptions = {}): Promise<OperatorDecisionQueueResponse> {
     return this.getJson<OperatorDecisionQueueResponse>(`/api/v1/operator/decisions${queryString({ ...options })}`);
+  }
+
+  applyOperatorDecision(
+    decisionId: string,
+    request: OperatorDecisionActionRequest,
+  ): Promise<OperatorDecisionActionResponse> {
+    return this.postJson<OperatorDecisionActionResponse>(
+      `/api/v1/operator/decisions/${encodeURIComponent(decisionId)}/actions`,
+      request,
+    );
   }
 
   metrics(): Promise<OperationsMetricsResponse> {

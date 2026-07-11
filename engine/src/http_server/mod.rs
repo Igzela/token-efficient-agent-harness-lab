@@ -1225,6 +1225,7 @@ pub fn openapi_document() -> serde_json::Value {
     append_adaptive_fusion_openapi_paths(&mut doc);
     append_operator_evidence_openapi_paths(&mut doc);
     append_operator_decision_openapi_paths(&mut doc);
+    append_operator_decision_action_openapi_paths(&mut doc);
     append_scorecard_openapi_paths(&mut doc);
     doc
 }
@@ -1341,6 +1342,23 @@ fn append_operator_decision_openapi_paths(doc: &mut Value) {
                     {"name": "offset", "in": "query", "schema": {"type": "integer", "default": 0, "minimum": 0, "maximum": 10000}}
                 ],
                 "responses": {"200": {"description": "Deterministic derived decision queue"}, "400": {"description": "Invalid queue query"}, "403": {"description": "Missing dispatch:read scope"}, "500": {"description": "An evidence owner could not be read"}}
+            }
+        }),
+    );
+}
+
+fn append_operator_decision_action_openapi_paths(doc: &mut Value) {
+    let Some(paths) = doc.get_mut("paths").and_then(Value::as_object_mut) else {
+        return;
+    };
+    paths.insert(
+        "/api/v1/operator/decisions/{decision_id}/actions".to_string(),
+        json!({
+            "post": {
+                "summary": "Apply one hash-bound allowlisted operator decision through its existing owner",
+                "description": "Requires explicit confirmation and the exact current derived queue page binding (hash, timestamp, freshness, limit, and offset). The adapter re-derives the decision and invokes only the existing approval, workflow resume/retry, or budget auto-pause owner. Unsupported actions fail closed. This route adds no general execution authority.",
+                "parameters": [path_parameter("decision_id")],
+                "responses": {"200": {"description": "Existing owner result"}, "400": {"description": "Confirmation or required budget policy missing"}, "403": {"description": "Missing owner permission"}, "404": {"description": "Decision absent from bound queue"}, "409": {"description": "Queue/source changed, decision not ready, or owner rejected action"}}
             }
         }),
     );
@@ -1502,6 +1520,7 @@ mod tests {
         );
         for path in [
             "/api/v1/operator/decisions",
+            "/api/v1/operator/decisions/{decision_id}/actions",
             "/api/v1/regressions",
             "/api/v1/regressions/{artifact_id}",
             "/api/v1/regressions/trends/{scenario_id}",

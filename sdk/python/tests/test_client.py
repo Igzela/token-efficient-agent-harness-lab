@@ -171,6 +171,44 @@ class ClientLocalStateTest(unittest.TestCase):
         )
 
     @patch("agent_control_plane_sdk.client.urlopen")
+    def test_apply_operator_decision_posts_hash_bound_explicit_action(self, mock_urlopen):
+        mock_urlopen.return_value = mock_response({"schema_version": "operator_decision_action_result.v1"})
+        client = AgentControlPlaneClient("http://localhost:8080")
+
+        client.apply_operator_decision(
+            "decision/one",
+            queue_sha256="a" * 64,
+            generated_at="2026-07-11T00:01:00Z",
+            maximum_freshness_seconds=300,
+            limit=25,
+            offset=5,
+            action="approve",
+            confirm_action=True,
+            reason="reviewed",
+        )
+
+        request = mock_urlopen.call_args[0][0]
+        self.assertEqual(
+            request.full_url,
+            "http://localhost:8080/api/v1/operator/decisions/decision%2Fone/actions",
+        )
+        self.assertEqual(request.method, "POST")
+        self.assertEqual(
+            json.loads(request.data),
+            {
+                "queue_sha256": "a" * 64,
+                "generated_at": "2026-07-11T00:01:00Z",
+                "maximum_freshness_seconds": 300,
+                "limit": 25,
+                "offset": 5,
+                "action": "approve",
+                "confirm_action": True,
+                "reason": "reviewed",
+                "budget_policy": None,
+            },
+        )
+
+    @patch("agent_control_plane_sdk.client.urlopen")
     def test_dispatches_sends_pagination_and_search_query_params(self, mock_urlopen):
         mock_urlopen.return_value = mock_response({"schema_version": "axum_api.v1", "dispatches": []})
         client = AgentControlPlaneClient("http://localhost:8080")

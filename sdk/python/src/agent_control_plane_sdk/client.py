@@ -87,6 +87,35 @@ class AgentControlPlaneClient:
                 params[key] = value
         return self._get(_query_path("/api/v1/operator/decisions", params))
 
+    def apply_operator_decision(
+        self,
+        decision_id: str,
+        *,
+        queue_sha256: str,
+        generated_at: str,
+        maximum_freshness_seconds: int,
+        limit: int,
+        offset: int,
+        action: str,
+        confirm_action: bool,
+        reason: str | None = None,
+        budget_policy: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        return self._post(
+            f"/api/v1/operator/decisions/{_quote_path_segment(decision_id)}/actions",
+            {
+                "queue_sha256": queue_sha256,
+                "generated_at": generated_at,
+                "maximum_freshness_seconds": maximum_freshness_seconds,
+                "limit": limit,
+                "offset": offset,
+                "action": action,
+                "confirm_action": confirm_action,
+                "reason": reason,
+                "budget_policy": budget_policy,
+            },
+        )
+
     def metrics(self) -> dict[str, Any]:
         return self._get("/api/v1/metrics")
 
