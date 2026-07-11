@@ -189,9 +189,12 @@ impl BudgetForecastEvidence {
                     .ok_or_else(|| "supported forecast requires an estimate".to_string())?;
                 validate_forecast_estimate(estimate)?;
             }
-            BudgetEvidenceOutcome::InsufficientEvidence | BudgetEvidenceOutcome::InvalidEvidence => {
+            BudgetEvidenceOutcome::InsufficientEvidence
+            | BudgetEvidenceOutcome::InvalidEvidence => {
                 if self.estimate.is_some() {
-                    return Err("unsupported forecast outcome must not contain estimates".to_string());
+                    return Err(
+                        "unsupported forecast outcome must not contain estimates".to_string()
+                    );
                 }
             }
         }
@@ -229,20 +232,19 @@ impl BudgetAnomalyFinding {
                 if self.severity.is_none() || self.measurement.is_none() {
                     return Err("supported anomaly requires severity and measurement".to_string());
                 }
-                if matches!(kind, BudgetAnomalyKind::CostSpike)
-                    && !self.coverage.pricing_complete
-                {
+                if matches!(kind, BudgetAnomalyKind::CostSpike) && !self.coverage.pricing_complete {
                     return Err("cost anomaly requires complete pricing".to_string());
                 }
                 validate_measurement(self.measurement.as_ref().expect("checked above"))?;
             }
-            BudgetEvidenceOutcome::InsufficientEvidence | BudgetEvidenceOutcome::InvalidEvidence => {
+            BudgetEvidenceOutcome::InsufficientEvidence
+            | BudgetEvidenceOutcome::InvalidEvidence => {
                 if self.anomaly_kind.is_some()
                     || self.severity.is_some()
                     || self.measurement.is_some()
                 {
                     return Err(
-                        "unsupported anomaly outcome must not contain a finding".to_string(),
+                        "unsupported anomaly outcome must not contain a finding".to_string()
                     );
                 }
             }
@@ -485,9 +487,9 @@ fn validate_reason_codes(name: &str, values: &[String]) -> Result<(), String> {
     for value in values {
         if value.is_empty()
             || value.len() > 96
-            || !value
-                .chars()
-                .all(|ch| ch.is_ascii_lowercase() || ch.is_ascii_digit() || matches!(ch, '_' | '.' | '-'))
+            || !value.chars().all(|ch| {
+                ch.is_ascii_lowercase() || ch.is_ascii_digit() || matches!(ch, '_' | '.' | '-')
+            })
         {
             return Err(format!("{name} contains an invalid reason code"));
         }
@@ -519,9 +521,9 @@ fn validate_sorted_unique(name: &str, values: &[String], maximum: usize) -> Resu
 fn validate_identifier(name: &str, value: &str) -> Result<(), String> {
     if value.is_empty()
         || value.len() > MAX_IDENTIFIER_BYTES
-        || !value.chars().all(|ch| {
-            ch.is_ascii_alphanumeric() || matches!(ch, '_' | '-' | '.' | ':' | '/' | '@')
-        })
+        || !value
+            .chars()
+            .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '_' | '-' | '.' | ':' | '/' | '@'))
     {
         return Err(format!("invalid {name}"));
     }
@@ -756,7 +758,10 @@ mod tests {
     fn tampered_forecast_is_rejected() {
         let mut evidence = supported_forecast();
         evidence.estimate.as_mut().unwrap().expected_cost_usd = Some(99.0);
-        assert_eq!(evidence.validate().unwrap_err(), "budget evidence hash mismatch");
+        assert_eq!(
+            evidence.validate().unwrap_err(),
+            "budget evidence hash mismatch"
+        );
     }
 
     #[test]
@@ -872,10 +877,7 @@ mod tests {
     #[test]
     fn malformed_and_noncanonical_fields_are_rejected() {
         let mut evidence = supported_forecast();
-        evidence.reason_codes = vec![
-            "forecast.second".to_string(),
-            "forecast.first".to_string(),
-        ];
+        evidence.reason_codes = vec!["forecast.second".to_string(), "forecast.first".to_string()];
         evidence.seal().unwrap();
         assert_eq!(
             evidence.validate().unwrap_err(),
