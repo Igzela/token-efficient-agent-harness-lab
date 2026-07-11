@@ -33,7 +33,7 @@ This repo is a local/small-team self-hosted agent workflow control plane. Rust `
 | Local runner operations | Active: validate, export, import, and inspect bounded scorecard artifacts locally |
 | Runner integration | Storage/API/operator evidence complete; workflow scheduling of local runner validation is implemented via `LocalRunnerValidationExecutor` in stub mode with automatic native scorecard recording on terminal tick |
 | Live provider adapter | Gated ready path: `local_runner_provider.rs` supports Stub/Fake/Live; Live requires gates, explicit metadata, symbolic credentials, positive pricing, persistent redacted audit, bounded calls/tokens/time/cost, and a kill switch |
-| Post-LGB Product Evolution Plan | PE-1 is in progress: the bounded v1 registry, deterministic single-scenario and registry-wide batch report cores, checked fixed evidence pairs, and idempotent bounded report persistence are implemented with canonical hashes and zero mutation authority |
+| Post-LGB Product Evolution Plan | PE-1 is in progress: the bounded v1 registry, deterministic single-scenario and registry-wide batch report cores, checked fixed evidence pairs, idempotent bounded report persistence, and repeat-safe file import are implemented with canonical hashes and zero mutation authority |
 
 ## Planned Product Evolution Stages
 
@@ -41,7 +41,7 @@ These stages are authorized but not yet complete. They must advance through scop
 
 | Stage | Priority | Capability | Current state |
 |---|---|---|---|
-| PE-1 | P0 | Token Efficiency Regression Lab | In progress: registry, single-scenario/batch report cores, checked evidence pairs, and idempotent LocalProductStore persistence complete; next is file import and bounded trend behavior |
+| PE-1 | P0 | Token Efficiency Regression Lab | In progress: registry, single-scenario/batch report cores, checked evidence pairs, idempotent LocalProductStore persistence, and bounded file import complete; next is bounded trend behavior |
 | PE-2 | P0/P1 | Budget Intelligence and Anomaly Auto-Pause | Planned after PE-1: forecast exhaustion, explain anomalies, pause only on high-confidence policy-backed signals |
 | PE-3 | P1 | Operator Decision Center | Planned: derived action queue over existing approvals, evidence, budget risk, failures, scheduler controls, and rollback candidates |
 | PE-4 | P1/P2 | Trace-backed Policy Replay | Planned: replace fixed heuristic estimates with versioned trace-backed calibration, coverage checks, shadow replay, and guarded canary progression |
@@ -50,7 +50,7 @@ These stages are authorized but not yet complete. They must advance through scop
 
 ## Current Gaps
 
-- PE-1 has a versioned, hash-bound registry, deterministic single-scenario and registry-wide batch report cores, checked baseline/candidate evidence for the LangGraph, native deterministic, and local-stub scenarios, plus bounded SQLite/PostgreSQL persistence with idempotent repeat recording and tamper validation. File import, history/trends, API, SDK, and Dashboard remain incomplete.
+- PE-1 has a versioned, hash-bound registry, deterministic single-scenario and registry-wide batch report cores, checked baseline/candidate evidence for the LangGraph, native deterministic, and local-stub scenarios, plus bounded SQLite/PostgreSQL persistence and repeat-safe mixed scorecard/regression file import. History/trends, API, SDK, and Dashboard remain incomplete.
 - Budget controls are enforced, but predictive exhaustion, explainable anomaly detection, and high-confidence automatic pause are not implemented.
 - Operator evidence and controls exist, but there is no unified derived decision queue.
 - `policy_simulator.rs` still relies on fixed success, latency, review, and relative-cost estimates rather than trace-calibrated replay.

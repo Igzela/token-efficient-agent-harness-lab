@@ -38,7 +38,7 @@ Full Agent Autonomy Mode remains active for repo-scoped, testable, observable, C
 | Local runner validation | `scripts/validate_local_runner.py`, `tools/test_validate_local_runner.py` |
 | LangGraph offline capture, bounded import, and v2 artifact export | `tools/capture_langgraph_pilot.py`, `scripts/langgraph_trace_import.py`, `tests/fixtures/langgraph_pilot/` |
 | Native v1 and generic v2 artifact persistence/comparison | `engine/src/storage/local_product_store/native_scorecard_artifacts.rs` |
-| Local scorecard artifact import (legacy CLI name retained) | `engine/src/local_scorecard_import.rs`, `engine/src/bin/import_native_scorecard_artifacts.rs` |
+| Local scorecard and PE-1 regression artifact import (legacy CLI name retained) | `engine/src/local_scorecard_import.rs`, `engine/src/bin/import_native_scorecard_artifacts.rs` |
 | Local runner validation executor | `engine/src/node_executor.rs` (`LocalRunnerValidationExecutor`), `engine/src/executor_pool.rs`; automatic native scorecard artifact recording via `workflow_runs.rs` tick path |
 | Local runner provider adapter | `engine/src/local_runner_provider.rs`, `engine/src/provider/fake.rs` |
 | CLI stateful-vs-stateless experiment | `engine/src/bin/local_runner_exec.rs` |

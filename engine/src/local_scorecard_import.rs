@@ -129,6 +129,15 @@ fn import_one(
     }
     let artifact: Value =
         serde_json::from_str(&text).map_err(|error| format!("invalid JSON: {error}"))?;
+    match artifact.get("schema_version").and_then(Value::as_str) {
+        Some("token_efficiency_regression_report.v1") => {
+            return import_regression_artifact(store, &artifact, actor, "report", "report_sha256");
+        }
+        Some("token_efficiency_regression_batch.v1") => {
+            return import_regression_artifact(store, &artifact, actor, "batch", "batch_sha256");
+        }
+        _ => {}
+    }
     let artifact_id = artifact
         .get("artifact_id")
         .and_then(Value::as_str)
@@ -137,6 +146,35 @@ fn import_one(
         .to_string();
     let existed = store.get_native_scorecard_artifact(&artifact_id)?.is_some();
     let stored = store.record_scorecard_artifact(&artifact, actor)?;
+    let stored_id = stored
+        .get("artifact_id")
+        .and_then(Value::as_str)
+        .unwrap_or(&artifact_id)
+        .to_string();
+    if existed {
+        Ok(ImportOutcome::Unchanged(stored_id))
+    } else {
+        Ok(ImportOutcome::Imported(stored_id))
+    }
+}
+
+fn import_regression_artifact(
+    store: &LocalProductStore,
+    artifact: &Value,
+    actor: &str,
+    kind: &str,
+    hash_field: &str,
+) -> Result<ImportOutcome, String> {
+    let content_sha256 = artifact
+        .get(hash_field)
+        .and_then(Value::as_str)
+        .filter(|value| !value.trim().is_empty())
+        .ok_or_else(|| format!("{hash_field} is required"))?;
+    let artifact_id = format!("regression-{kind}-{content_sha256}");
+    let existed = store
+        .get_regression_report_artifact(&artifact_id)?
+        .is_some();
+    let stored = store.record_regression_report_artifact(artifact, actor)?;
     let stored_id = stored
         .get("artifact_id")
         .and_then(Value::as_str)
@@ -177,6 +215,7 @@ mod tests {
     use super::{
         import_native_scorecard_artifacts, import_scorecard_artifacts, MAX_SCORECARD_ARTIFACT_BYTES,
     };
+    use crate::event_schema::canonical_event_json;
     use crate::storage::local_product_store::LocalProductStore;
     use serde_json::{json, Value};
     use sha2::{Digest, Sha256};
@@ -282,6 +321,28 @@ mod tests {
         })
     }
 
+    fn regression_report(scenario_id: &str) -> Value {
+        let mut report = json!({
+            "schema_version": "token_efficiency_regression_report.v1",
+            "registry_id": "pe1-fixed-summary-scenarios",
+            "registry_sha256": "11".repeat(32),
+            "scenario_id": scenario_id,
+            "scenario_digest": "22".repeat(32),
+            "task_digest": "33".repeat(32),
+            "read_only": true,
+            "report_only": true,
+            "provider_calls": "disabled",
+            "mutation_authority": "none",
+            "outcome": "pass",
+            "reason_codes": [],
+            "evidence": {},
+            "comparisons": {}
+        });
+        let canonical = canonical_event_json(&report).unwrap();
+        report["report_sha256"] = json!(hex::encode(Sha256::digest(canonical.as_bytes())));
+        report
+    }
+
     #[test]
     fn local_scorecard_import_records_directory_idempotently() {
         let dir = tempdir().unwrap();
@@ -318,6 +379,41 @@ mod tests {
                 .len(),
             1
         );
+
+        let repeated = import_scorecard_artifacts(&store, &[artifacts], "local-import-test");
+        assert_eq!(repeated.files_seen, 2);
+        assert_eq!(repeated.imported, 0);
+        assert_eq!(repeated.unchanged, 2);
+        assert!(repeated.errors.is_empty());
+    }
+
+    #[test]
+    fn local_scorecard_import_routes_regression_reports_idempotently() {
+        let dir = tempdir().unwrap();
+        let artifacts = dir.path().join("artifacts");
+        std::fs::create_dir(&artifacts).unwrap();
+        std::fs::write(
+            artifacts.join("scorecard.json"),
+            local_runner_artifact("mixed-scorecard", "stateful_store").to_string(),
+        )
+        .unwrap();
+        std::fs::write(
+            artifacts.join("regression.json"),
+            regression_report("native_remember_dont_reread_pilot").to_string(),
+        )
+        .unwrap();
+        let store = LocalProductStore::new(dir.path().join("store.db")).unwrap();
+
+        let first = import_scorecard_artifacts(
+            &store,
+            std::slice::from_ref(&artifacts),
+            "local-import-test",
+        );
+        assert_eq!(first.files_seen, 2);
+        assert_eq!(first.imported, 2);
+        assert_eq!(first.unchanged, 0);
+        assert!(first.errors.is_empty());
+        assert_eq!(store.regression_report_artifacts(10).unwrap().len(), 1);
 
         let repeated = import_scorecard_artifacts(&store, &[artifacts], "local-import-test");
         assert_eq!(repeated.files_seen, 2);
