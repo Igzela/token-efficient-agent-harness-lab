@@ -35,7 +35,7 @@ Full Agent Autonomy Mode is active for repo-scoped planning and execution that r
 | PE-2 deterministic anomaly detection | `engine/src/budget_anomaly.rs`; additive contracts in `engine/src/budget_manager.rs` |
 | PE-2 budget evidence persistence/read surfaces | `engine/src/storage/local_product_store/budget_evidence_artifacts.rs`; scorecard HTTP handlers/routes/OpenAPI; Python/TypeScript SDK clients; `dashboard/src/components/BenchmarkScorecards.tsx` |
 | PE-2 policy-gated auto-pause | `engine/src/storage/local_product_store/budget_pause_decisions.rs`; existing `workflow_runs.pause_reason`; scorecard HTTP handlers/routes/OpenAPI; audit/operator evidence |
-| PE-3 operator decision contracts, deterministic resolution, and derived queue | `engine/src/operator_decision.rs`; `engine/src/storage/local_product_store/operator_decision_queue.rs`; existing approval/workflow/scheduler/budget/benchmark/policy/rollback/recovery readers; PostgreSQL coverage in `engine/tests/test_pg_integration.rs` |
+| PE-3 operator decision contracts, derived queue, and read surface | `engine/src/operator_decision.rs`; `engine/src/storage/local_product_store/operator_decision_queue.rs`; `engine/src/http_server/handlers/operator_decisions.rs`; routes/OpenAPI; Python/TypeScript SDKs; `dashboard/src/components/OperatorDecisionCenter.tsx`; existing approval/workflow/scheduler/budget/benchmark/policy/rollback/recovery readers |
 | PE-1 scenario registry, fixed evidence, reports/batches, persistence, and bounded trends | `scripts/token_efficiency_regression.py`, `tools/test_token_efficiency_regression.py`, `tests/fixtures/token_efficiency_regression/registry.json`, `tests/fixtures/token_efficiency_regression/*/*.artifact.json`, `engine/src/storage/local_product_store/regression_report_artifacts.rs`, `engine/tests/test_regression_report_artifacts.rs` |
 | Native scorecard export | `scripts/native_scorecard_export.py` |
 | Native deterministic stateful pilot | `scripts/native_stateful_experiment_pilot.py` |
@@ -68,7 +68,7 @@ The detailed execution-ready packet sequence is defined in `docs/NEXT_DECISION.m
 
 1. Prefer the earliest `READY_FOR_EXECUTION` packet whose prerequisites are complete.
 2. Repair bounded prerequisite defects, stale contracts, or documentation drift before dependent work when necessary.
-3. PE-1 and PE-2 are acceptance-sealed; PE3-CONTRACT-1 and PE3-QUEUE-1 are complete; PE3-READ-1 is next.
+3. PE-1 and PE-2 are acceptance-sealed; PE3-CONTRACT-1, PE3-QUEUE-1, and PE3-READ-1 are complete; PE3-ACTIONS-1 is next.
 4. Build PE-3 as a derived read model before connecting existing mutation endpoints.
 5. Progress PE-4 from calibration to offline replay, shadow, and bounded canary.
 6. PE-5 may run independently only after explicit lane activation.

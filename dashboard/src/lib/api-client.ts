@@ -35,6 +35,7 @@ import type {
   RegulatorStateResponse,
   SchedulerStatusResponse,
   OperatorEvidenceResponse,
+  OperatorDecisionQueueResponse,
   ScorecardArtifactListResponse,
   BudgetEvidenceArtifactListResponse,
   PolicySimulationResult,
@@ -615,6 +616,10 @@ export async function fetchOperatorEvidence(runId: string): Promise<OperatorEvid
   return fetchJson<OperatorEvidenceResponse>(
     `${BASE}/api/v1/operator/evidence/${encodeURIComponent(runId)}`,
   );
+}
+
+export async function fetchOperatorDecisions(params: { generated_at?: string; maximum_freshness_seconds?: number; limit?: number; offset?: number } = {}): Promise<OperatorDecisionQueueResponse> {
+  return fetchJson<OperatorDecisionQueueResponse>(withQuery("/api/v1/operator/decisions", params));
 }
 
 export async function fetchWorkflowRuns(params: {

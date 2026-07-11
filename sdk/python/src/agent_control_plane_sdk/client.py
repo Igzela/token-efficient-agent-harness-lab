@@ -69,6 +69,24 @@ class AgentControlPlaneClient:
             f"/api/v1/budget-evidence/{_quote_path_segment(artifact_id)}"
         )
 
+    def operator_decisions(
+        self,
+        generated_at: str | None = None,
+        maximum_freshness_seconds: int | None = None,
+        limit: int | None = None,
+        offset: int | None = None,
+    ) -> dict[str, Any]:
+        params: dict[str, Any] = {}
+        for key, value in {
+            "generated_at": generated_at,
+            "maximum_freshness_seconds": maximum_freshness_seconds,
+            "limit": limit,
+            "offset": offset,
+        }.items():
+            if value is not None:
+                params[key] = value
+        return self._get(_query_path("/api/v1/operator/decisions", params))
+
     def metrics(self) -> dict[str, Any]:
         return self._get("/api/v1/metrics")
 

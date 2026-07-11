@@ -178,6 +178,14 @@ test("budget evidence readers use bounded encoded read-only endpoints", async ()
   assert.equal(calls[1].url, "http://127.0.0.1:8080/api/v1/budget-evidence/budget%2Fanomaly%20one");
 });
 
+test("operator decision reader uses the bounded read-only endpoint", async () => {
+  const { calls, fetchImpl } = captureFetch({ read_only: true });
+  const client = new AgentControlPlaneClient({ baseUrl: "http://127.0.0.1:8080", fetchImpl });
+  await client.operatorDecisions({ generated_at: "2026-07-11T00:01:00Z", maximum_freshness_seconds: 300, limit: 25, offset: 5 });
+  assert.equal(calls[0].url, "http://127.0.0.1:8080/api/v1/operator/decisions?generated_at=2026-07-11T00%3A01%3A00Z&maximum_freshness_seconds=300&limit=25&offset=5");
+  assert.equal(calls[0].init.method, "GET");
+});
+
 test("local state readers use product endpoints", async () => {
   const { calls, fetchImpl } = captureFetch({ ok: true });
   const client = new AgentControlPlaneClient({ baseUrl: "http://127.0.0.1:8080", fetchImpl });

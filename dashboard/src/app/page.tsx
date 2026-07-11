@@ -34,8 +34,9 @@ import { Team } from "@/components/Team";
 import { TabGroup, type TabGroupDef } from "@/components/TabGroup";
 import { OperatorSurface } from "@/components/OperatorSurface";
 import { WorkflowRuns } from "@/components/WorkflowRuns";
+import { OperatorDecisionCenter } from "@/components/OperatorDecisionCenter";
 
-type Tab = "mission" | "dispatches" | "benchmarks" | "routing" | "regulator" | "fusion" | "operator" | "decisions" | "team" | "costs" | "operations" | "runs" | "patches" | "scheduler" | "pool" | "queue" | "settings" | "health" | "backups" | "audit";
+type Tab = "mission" | "dispatches" | "benchmarks" | "routing" | "regulator" | "fusion" | "operator" | "decisions" | "decision-center" | "team" | "costs" | "operations" | "runs" | "patches" | "scheduler" | "pool" | "queue" | "settings" | "health" | "backups" | "audit";
 type AuthStatus = "ok" | "missing" | "denied" | "offline";
 type SetupStep = {
   detail: string;
@@ -52,6 +53,7 @@ const allTabs: { id: Tab; label: string }[] = [
   { id: "fusion", label: "Adaptive Fusion" },
   { id: "operator", label: "Operator" },
   { id: "decisions", label: "Decisions" },
+  { id: "decision-center", label: "Decision Center" },
   { id: "team", label: "Team" },
   { id: "costs", label: "Costs" },
   { id: "operations", label: "Operations" },
@@ -81,6 +83,7 @@ const tabGroups: TabGroupDef[] = [
       { id: "dispatches", label: "Dispatches" },
       { id: "benchmarks", label: "Benchmarks" },
       { id: "decisions", label: "Decisions" },
+      { id: "decision-center", label: "Decision Center" },
       { id: "costs", label: "Costs" },
     ],
     collapsible: true,
@@ -472,6 +475,7 @@ export default function DashboardPage() {
             {tab === "fusion" && <AdaptiveFusion operatorStatus={dashboard.adaptive_fusion} />}
             {tab === "operator" && <OperatorSurface />}
             {tab === "decisions" && <DecisionLog />}
+            {tab === "decision-center" && <OperatorDecisionCenter />}
             {tab === "team" && (
               <Team dashboard={dashboard} refreshDashboard={(d) => setDashboard(d)} />
             )}

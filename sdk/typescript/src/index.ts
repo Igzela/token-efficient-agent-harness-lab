@@ -96,6 +96,8 @@ import type {
   RegressionTrendResponse,
   BudgetEvidenceArtifactListResponse,
   BudgetEvidenceArtifactResponse,
+  OperatorDecisionQueueOptions,
+  OperatorDecisionQueueResponse,
 } from "./wire-types.js";
 
 export interface AgentControlPlaneClientOptions {
@@ -254,6 +256,10 @@ export class AgentControlPlaneClient {
     return this.getJson<BudgetEvidenceArtifactResponse>(
       `/api/v1/budget-evidence/${encodeURIComponent(artifactId)}`,
     );
+  }
+
+  operatorDecisions(options: OperatorDecisionQueueOptions = {}): Promise<OperatorDecisionQueueResponse> {
+    return this.getJson<OperatorDecisionQueueResponse>(`/api/v1/operator/decisions${queryString({ ...options })}`);
   }
 
   metrics(): Promise<OperationsMetricsResponse> {

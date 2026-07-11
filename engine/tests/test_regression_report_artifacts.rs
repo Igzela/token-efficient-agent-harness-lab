@@ -366,6 +366,52 @@ async fn regression_api_lists_details_and_derives_trends_read_only() {
 }
 
 #[tokio::test]
+async fn operator_decision_queue_api_is_bounded_read_only_and_explicit_when_empty() {
+    let (store, _dir) = make_store();
+    let app = build_axum_router(AxumApiState::new().with_local_store(store));
+    let response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(Method::GET)
+                .uri("/api/v1/operator/decisions?generated_at=2026-07-11T00%3A01%3A00Z&maximum_freshness_seconds=300&limit=500&offset=-2")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = response_json(response).await;
+    assert_eq!(body["read_only"], true);
+    assert_eq!(body["metadata_only"], true);
+    assert_eq!(body["mutation_authority"], "none");
+    assert_eq!(
+        body["queue"]["schema_version"],
+        "operator_decision_queue.v1"
+    );
+    assert_eq!(body["queue"]["total"], 0);
+    assert_eq!(body["queue"]["limit"], 100);
+    assert_eq!(body["queue"]["offset"], 0);
+    assert!(body["queue"]["queue_sha256"].as_str().unwrap().len() == 64);
+
+    let invalid = app
+        .oneshot(
+            Request::builder()
+                .method(Method::GET)
+                .uri("/api/v1/operator/decisions?generated_at=2026-07-11T00%3A01%3A00Z&maximum_freshness_seconds=0")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(invalid.status(), StatusCode::BAD_REQUEST);
+    assert_eq!(
+        response_json(invalid).await["code"],
+        "invalid_operator_decision_query"
+    );
+}
+
+#[tokio::test]
 async fn budget_evidence_api_is_read_only_bounded_and_explicit_when_empty() {
     let (store, _dir) = make_store();
     let app = build_axum_router(AxumApiState::new().with_local_store(store));

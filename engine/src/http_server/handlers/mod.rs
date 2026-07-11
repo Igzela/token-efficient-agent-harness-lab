@@ -10,6 +10,7 @@ pub(crate) mod executor_pool;
 pub(crate) mod health;
 pub(crate) mod keys;
 pub(crate) mod operations;
+pub(crate) mod operator_decisions;
 pub(crate) mod operator_evidence;
 pub(crate) mod plans;
 pub(crate) mod provider;
