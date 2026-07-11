@@ -1,0 +1,301 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Token-Efficient Agent Harness Lab — Local control plane for measurable agents</title>
+  <meta name="description" content="Open-source, self-hosted agent control plane. Measure token efficiency, budget anomalies, adaptive routing, and audited workflows — fail-closed, local-first, MIT licensed." />
+  <meta name="theme-color" content="#0f172a" />
+  <meta property="og:title" content="Token-Efficient Agent Harness Lab" />
+  <meta property="og:description" content="Self-hosted control plane for token-efficient, auditable agent workflows. Rust engine · 1600+ tests · MIT." />
+  <meta property="og:type" content="website" />
+  <meta property="og:url" content="https://token-efficient-agent-harness-lab.vercel.app" />
+  <meta name="twitter:card" content="summary_large_image" />
+  <meta name="twitter:title" content="Token-Efficient Agent Harness Lab" />
+  <meta name="twitter:description" content="Stop guessing agent cost. Measure, pause, and prove token efficiency — on your machine." />
+  <link rel="icon" href="favicon.svg" type="image/svg+xml" />
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <a class="skip-link" href="#main">Skip to content</a>
+
+  <header class="nav">
+    <div class="wrap nav-inner">
+      <a class="brand" href="#">
+        <span class="brand-mark" aria-hidden="true"></span>
+        <span class="brand-text">Agent Harness Lab</span>
+      </a>
+      <nav class="nav-links" aria-label="Primary">
+        <a href="#why">Why</a>
+        <a href="#features">Features</a>
+        <a href="#stack">Stack</a>
+        <a href="#start">Quick start</a>
+        <a href="#boundary">Boundary</a>
+      </nav>
+      <div class="nav-cta">
+        <a class="btn btn-ghost" href="https://github.com/Igzela/token-efficient-agent-harness-lab" rel="noopener">GitHub</a>
+        <a class="btn btn-primary" href="#start">Run locally</a>
+      </div>
+    </div>
+  </header>
+
+  <main id="main">
+    <section class="hero">
+      <div class="wrap hero-grid">
+        <div class="hero-copy">
+          <p class="eyebrow">Open source · Local-first · MIT</p>
+          <h1>
+            Agent workflows you can
+            <span class="gradient">measure, pause, and prove</span>
+          </h1>
+          <p class="lead">
+            Token-Efficient Agent Harness Lab is a self-hosted control plane for studying and operating
+            event-sourced agent systems — with deterministic budgets, regression scorecards,
+            adaptive routing evidence, and an operator dashboard that refuses to invent facts.
+          </p>
+          <div class="hero-actions">
+            <a class="btn btn-primary btn-lg" href="https://github.com/Igzela/token-efficient-agent-harness-lab" rel="noopener">
+              Star on GitHub
+            </a>
+            <a class="btn btn-secondary btn-lg" href="#start">Get started in minutes</a>
+          </div>
+          <ul class="trust-row" aria-label="Highlights">
+            <li><strong>1600+</strong> Rust tests</li>
+            <li><strong>Fail-closed</strong> by design</li>
+            <li><strong>SQLite</strong> local default</li>
+            <li><strong>Rust + TS + Python</strong></li>
+          </ul>
+        </div>
+        <div class="hero-panel" aria-hidden="true">
+          <div class="panel-card">
+            <div class="panel-head">
+              <span class="dot ok"></span>
+              <span>Operator evidence</span>
+              <span class="chip">local</span>
+            </div>
+            <div class="metric-grid">
+              <div class="metric">
+                <span class="metric-label">Token efficiency</span>
+                <span class="metric-value">regression lab</span>
+                <span class="metric-hint">PE-1 sealed · report-only</span>
+              </div>
+              <div class="metric">
+                <span class="metric-label">Budget intelligence</span>
+                <span class="metric-value">anomaly → pause</span>
+                <span class="metric-hint">PE-2 sealed · policy-gated</span>
+              </div>
+              <div class="metric">
+                <span class="metric-label">Decision center</span>
+                <span class="metric-value">derived queue</span>
+                <span class="metric-hint">PE-3 in progress</span>
+              </div>
+              <div class="metric">
+                <span class="metric-label">Runtime posture</span>
+                <span class="metric-value">trusted-local</span>
+                <span class="metric-hint">IAE fail-closed gates</span>
+              </div>
+            </div>
+            <pre class="snippet"><code># One process: API + dashboard
+cargo build -p engine
+cd dashboard && bun install && bun run build:static
+ACP_DASHBOARD_DIR=dashboard/out cargo run -p engine
+# → http://127.0.0.1:8080</code></pre>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section class="logos-strip">
+      <div class="wrap">
+        <p class="strip-label">Built for people who care about the bill <em>and</em> the audit trail</p>
+      </div>
+    </section>
+
+    <section id="why" class="section">
+      <div class="wrap">
+        <header class="section-head">
+          <h2>Agents are cheap to start — expensive to trust</h2>
+          <p>
+            Most stacks optimize demos. This lab optimizes <strong>evidence</strong>:
+            what ran, what it cost, what changed, when to stop, and how you prove it again next week.
+          </p>
+        </header>
+        <div class="cards three">
+          <article class="card">
+            <h3>Token spend without scorecards</h3>
+            <p>Providers invoice tokens. Without deterministic regression reports, “efficiency” is a vibe — not a hash-bound artifact you can recompute offline.</p>
+          </article>
+          <article class="card">
+            <h3>Automation without a kill switch</h3>
+            <p>Unbounded agent loops burn money and trust. Policy-gated auto-pause, auth scopes, cost caps, and audit logs keep autonomy inside explicit rails.</p>
+          </article>
+          <article class="card">
+            <h3>Dashboards that invent zero costs</h3>
+            <p>If pricing is not configured, the system says so. Sparse or tampered evidence returns <code>insufficient_evidence</code> — never a silent green check.</p>
+          </article>
+        </div>
+      </div>
+    </section>
+
+    <section id="features" class="section section-alt">
+      <div class="wrap">
+        <header class="section-head">
+          <h2>What you get</h2>
+          <p>A research-grade harness that already ships production-shaped surfaces — not a slide deck.</p>
+        </header>
+        <div class="feature-grid">
+          <article class="feature">
+            <span class="feature-icon">◎</span>
+            <h3>Token Efficiency Regression Lab</h3>
+            <p>Deterministic registries, batch recomputation, trends, SQLite/PostgreSQL persistence, and read-only API/SDK/Dashboard history. Report-only by design.</p>
+          </article>
+          <article class="feature">
+            <span class="feature-icon">▣</span>
+            <h3>Budget intelligence &amp; auto-pause</h3>
+            <p>Forecasts and anomaly findings with coverage, confidence, and reason codes. High-confidence pause only through existing authority — idempotent and reversible.</p>
+          </article>
+          <article class="feature">
+            <span class="feature-icon">⇄</span>
+            <h3>Adaptive fusion routing</h3>
+            <p>Bounded multi-endpoint routing, experiments, promotion, and operator evidence — activated through a trusted-local profile, not ambient magic.</p>
+          </article>
+          <article class="feature">
+            <span class="feature-icon">⚙</span>
+            <h3>Dispatch kernel + agent runtime</h3>
+            <p>Event-sourced workflow control, bounded multi-agent semantics, mailbox/step executors, and operator read models sealed through AR-6.</p>
+          </article>
+          <article class="feature">
+            <span class="feature-icon">✎</span>
+            <h3>Real repository output (V2)</h3>
+            <p>Auditable patch/PR production against real git targets with verification evidence — for labs that want more than mock JSON.</p>
+          </article>
+          <article class="feature">
+            <span class="feature-icon">⬡</span>
+            <h3>Wire contracts that don’t drift</h3>
+            <p>Codegen across Rust, TypeScript, and Python with CI drift checks. One wire truth, three SDK surfaces.</p>
+          </article>
+        </div>
+      </div>
+    </section>
+
+    <section id="stack" class="section">
+      <div class="wrap stack-grid">
+        <div>
+          <header class="section-head left">
+            <h2>Stack that prefers boring reliability</h2>
+            <p>Rust engine as sole runtime/API/storage. Static dashboard. Optional PostgreSQL. Docker when you want it — not required for first run.</p>
+          </header>
+          <ul class="stack-list">
+            <li><strong>Engine</strong> — Rust · axum · SQLite default</li>
+            <li><strong>Dashboard</strong> — Next.js static export · Bun</li>
+            <li><strong>SDKs</strong> — TypeScript + Python readers</li>
+            <li><strong>CI</strong> — multi-job green path · ~7–9 min</li>
+            <li><strong>License</strong> — MIT · public research lab</li>
+          </ul>
+        </div>
+        <div class="arch">
+          <div class="arch-row">
+            <div class="arch-box">Dashboard</div>
+            <div class="arch-box">TS SDK</div>
+            <div class="arch-box">Python SDK</div>
+          </div>
+          <div class="arch-arrow">HTTP · wire contracts</div>
+          <div class="arch-box arch-core">Rust engine · dispatch · budget · adaptive · audit</div>
+          <div class="arch-arrow">app-owned local state</div>
+          <div class="arch-row">
+            <div class="arch-box">SQLite</div>
+            <div class="arch-box">PostgreSQL</div>
+            <div class="arch-box">Backups</div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section id="start" class="section section-alt">
+      <div class="wrap">
+        <header class="section-head">
+          <h2>Quick start</h2>
+          <p>Run the control plane on loopback. No cloud account required.</p>
+        </header>
+        <div class="start-grid">
+          <div class="start-card">
+            <h3>1. From source</h3>
+            <pre class="snippet"><code>git clone https://github.com/Igzela/token-efficient-agent-harness-lab.git
+cd token-efficient-agent-harness-lab
+cargo build -p engine
+cd dashboard && bun install --frozen-lockfile && bun run build:static && cd ..
+ACP_DASHBOARD_DIR=dashboard/out cargo run -p engine
+# Open http://127.0.0.1:8080</code></pre>
+          </div>
+          <div class="start-card">
+            <h3>2. Docker (optional)</h3>
+            <pre class="snippet"><code>docker run -d -p 8080:8080 -v acp-data:/data \
+  igzela/agent-control-plane:latest</code></pre>
+            <p class="muted">Or <code>docker compose --profile combined up -d</code> from a clone.</p>
+          </div>
+          <div class="start-card">
+            <h3>3. Verify the stack</h3>
+            <pre class="snippet"><code>bash scripts/verify_rust_typescript_stack.sh
+uv run --no-project python scripts/acp_local_doctor.py</code></pre>
+            <p class="muted">Primary cutover check: wire drift, Rust, TS SDK, dashboard, live smoke routes.</p>
+          </div>
+        </div>
+        <div class="cta-band">
+          <div>
+            <h3>Ready to dig in?</h3>
+            <p>Architecture book, runbook, and packetized roadmap live in the repo.</p>
+          </div>
+          <div class="cta-actions">
+            <a class="btn btn-primary" href="https://github.com/Igzela/token-efficient-agent-harness-lab" rel="noopener">Open repository</a>
+            <a class="btn btn-secondary" href="https://github.com/Igzela/token-efficient-agent-harness-lab/blob/main/docs/ARCHITECTURE_BOOK.md" rel="noopener">Architecture book</a>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section id="boundary" class="section">
+      <div class="wrap">
+        <header class="section-head">
+          <h2>Honest boundaries</h2>
+          <p>Promotion without false promises. Read this before starring for “hosted multi-tenant agents.”</p>
+        </header>
+        <div class="boundary">
+          <div class="boundary-col yes">
+            <h3>This project is</h3>
+            <ul>
+              <li>A local / small-team self-hosted harness</li>
+              <li>Deterministic, evidence-first, fail-closed</li>
+              <li>Useful for research, internal ops, and reproducible cost studies</li>
+              <li>MIT open source with public CI</li>
+            </ul>
+          </div>
+          <div class="boundary-col no">
+            <h3>This project is not</h3>
+            <ul>
+              <li>A cloud SaaS or multi-tenant product</li>
+              <li>A promise of container/VM isolation</li>
+              <li>An always-on free provider proxy</li>
+              <li>A system that invents pricing or success when evidence is thin</li>
+            </ul>
+          </div>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <footer class="footer">
+    <div class="wrap footer-inner">
+      <div>
+        <strong>Token-Efficient Agent Harness Lab</strong>
+        <p class="muted">© 2026 Igzela · MIT License</p>
+      </div>
+      <div class="footer-links">
+        <a href="https://github.com/Igzela/token-efficient-agent-harness-lab" rel="noopener">GitHub</a>
+        <a href="https://github.com/Igzela/token-efficient-agent-harness-lab/blob/main/SECURITY.md" rel="noopener">Security</a>
+        <a href="https://github.com/Igzela/token-efficient-agent-harness-lab/blob/main/CONTRIBUTING.md" rel="noopener">Contributing</a>
+        <a href="https://github.com/Igzela/token-efficient-agent-harness-lab/releases" rel="noopener">Releases</a>
+      </div>
+    </div>
+  </footer>
+</body>
+</html>
