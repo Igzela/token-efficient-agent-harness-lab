@@ -1,9 +1,8 @@
 name: pe3-diagnostic
 
 on:
-  push:
-    branches:
-      - codex/pe3-independent-repair
+  pull_request:
+    branches: [ main ]
 
 permissions:
   contents: read
