@@ -60,5 +60,88 @@ class CheckAgentHandoffTests(unittest.TestCase):
         self.assertIn("Agent handoff check FAILED — secret scan:", output.getvalue())
 
 
+    def test_structural_guard_rejects_completed_active_route(self) -> None:
+        checker = load_handoff_checker()
+        next_text = """| Stage | Priority | Goal | Status |
+|---|---|---|---|
+| PE-3 | P1 | x | Complete |
+### Packet PE3-A-1 — a
+**State:** `COMPLETE`
+## Active Routing
+1. Execute PE3-A-1.
+"""
+        failures = checker.active_state_failures(next_text, next_text)
+        self.assertIn("Active Routing points to completed packet PE3-A-1", failures)
+
+    def test_structural_guard_rejects_duplicate_packet_state(self) -> None:
+        checker = load_handoff_checker()
+        next_text = """### Packet PE3-A-1 — a
+**State:** `COMPLETE`
+**State:** `IN_PROGRESS`
+## Active Routing
+1. Execute PE3-A-1.
+"""
+        failures = checker.active_state_failures(next_text, next_text)
+        self.assertTrue(
+            any("exactly one structural State" in failure for failure in failures),
+            failures,
+        )
+
+    def test_structural_guard_rejects_incomplete_prerequisite(self) -> None:
+        checker = load_handoff_checker()
+        next_text = """| Stage | Priority | Goal | Status |
+|---|---|---|---|
+| PE-3 | P1 | x | In progress |
+### Packet PE3-A-1 — a
+**State:** `IN_PROGRESS`
+### Packet PE3-B-1 — b
+**State:** `READY_FOR_EXECUTION`
+**Prerequisite:** PE3-A-1 complete.
+## Active Routing
+1. Execute PE3-B-1.
+"""
+        failures = checker.active_state_failures(next_text, next_text)
+        self.assertTrue(
+            any("prerequisites are not complete" in failure for failure in failures),
+            failures,
+        )
+
+    def test_structural_guard_rejects_stage_summary_without_owner(self) -> None:
+        checker = load_handoff_checker()
+        next_text = """| Stage | Priority | Goal | Status |
+|---|---|---|---|
+| PE-3 | P1 | x | In progress |
+### Packet PE3-A-1 — a
+**State:** `COMPLETE`
+### Packet PE3-B-1 — b
+**State:** `BLOCKED_PREREQUISITE`
+**Prerequisite:** PE3-A-1 complete.
+## Active Routing
+1. Execute PE3-B-1.
+"""
+        failures = checker.active_state_failures(next_text, next_text)
+        self.assertIn("PE-3 summary says in progress but no packet is IN_PROGRESS", failures)
+
+    def test_structural_guard_accepts_consistent_packet_routing(self) -> None:
+        checker = load_handoff_checker()
+        text = """## Active Tracks
+| Track | Status |
+|---|---|
+| x | active |
+## Planned Product Evolution Stages
+| Stage | Priority | Goal | Status |
+|---|---|---|---|
+| PE-3 | P1 | x | In progress |
+### Packet PE3-A-1 — a
+**State:** `COMPLETE`
+### Packet PE3-B-1 — b
+**State:** `IN_PROGRESS`
+**Prerequisite:** PE3-A-1 complete.
+## Active Routing
+1. Execute PE3-B-1.
+"""
+        self.assertEqual(checker.active_state_failures(text, text), [])
+
+
 if __name__ == "__main__":
     unittest.main()

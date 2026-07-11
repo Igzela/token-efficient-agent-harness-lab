@@ -78,7 +78,7 @@ Normative order is PE-1, PE-2, PE-3, PE-4, PE-5, and PE-6. Do not start PE-3 bef
 | PE-1 | P0 | Token Efficiency Regression Lab | Complete and acceptance-sealed |
 | PE-2 | P0/P1 | Budget Intelligence and Anomaly Auto-Pause | Complete and acceptance-sealed |
 | PE-3 | P1 | Operator Decision Center | In progress; PE3-REPAIR-1 owns the merged-chain defects and PE3-CLOSE-1 is blocked on that repair |
-| PE-4 | P1/P2 | Trace-backed Policy Replay | Not started beyond merged contract text and the superseded #193 prototype; PE4-CONTRACT-REPAIR-1 is blocked on PE3-CLOSE-1 |
+| PE-4 | P1/P2 | Trace-backed Policy Replay | Contract repair blocked on PE3-CLOSE-1; no offline replay, read, shadow, canary, or promotion packet is accepted as started |
 | PE-5 | P1.5 | Release Provenance | Packetized; inactive unless explicitly activated |
 | PE-6 | P2 | Fault Injection and Recovery Drills | Packetized; blocked on explicit recovery invariants |
 
