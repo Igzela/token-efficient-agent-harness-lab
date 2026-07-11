@@ -1,0 +1,37 @@
+name: pe2-anomaly-debug
+
+on:
+  pull_request:
+    paths:
+      - ".github/workflows/pe2-anomaly-debug.yml"
+
+permissions:
+  contents: write
+
+jobs:
+  debug:
+    if: github.event.pull_request.head.repo.full_name == github.repository && github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout PR branch
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        with:
+          ref: ${{ github.head_ref }}
+          persist-credentials: true
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable 2026-07-10
+      - name: Capture bounded failing test tail
+        shell: bash
+        run: |
+          set +e
+          cargo test -p engine > /tmp/pe2-anomaly-test.log 2>&1
+          status=$?
+          {
+            echo "cargo_test_exit=$status"
+            tail -n 240 /tmp/pe2-anomaly-test.log
+          } > .github/pe2_anomaly_debug.log
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add .github/pe2_anomaly_debug.log
+          git commit -m "chore: capture PE-2 anomaly test failure"
+          git push origin HEAD:${{ github.head_ref }}
