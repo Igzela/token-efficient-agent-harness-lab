@@ -1,0 +1,52 @@
+name: pe3-auth-order
+
+on:
+  pull_request:
+    branches: [ main ]
+
+permissions:
+  contents: write
+
+jobs:
+  apply-repair:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out PR branch
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        with:
+          ref: ${{ github.head_ref }}
+          persist-credentials: true
+      - name: Apply bounded authorization-order repair
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          path = Path('engine/src/http_server/handlers/operator_decision_actions.rs')
+          text = path.read_text()
+          block = '''    if matches!(
+              request.action,
+              OperatorDecisionAction::Rollback
+                  | OperatorDecisionAction::Inspect
+                  | OperatorDecisionAction::Acknowledge
+          ) {
+              return Err(unsupported(
+                  "no compatible existing action owner is available",
+              ));
+          }
+
+          '''
+          if block not in text:
+              raise SystemExit('unsupported action block missing')
+          text = text.replace(block, '', 1)
+          anchor = '''    let actor = authorize(&state, &headers, "dispatch:read", uri.path(), &request_id.0)?.api_key_id;
+          '''
+          replacement = anchor + block
+          if anchor not in text:
+              raise SystemExit('authorize anchor missing')
+          path.write_text(text.replace(anchor, replacement, 1))
+          PY
+          cargo fmt --all
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add engine/src/http_server/handlers/operator_decision_actions.rs
+          git commit -m "PE3-REPAIR-1 authorize unsupported action requests before refusal"
+          git push origin HEAD:${{ github.head_ref }}
