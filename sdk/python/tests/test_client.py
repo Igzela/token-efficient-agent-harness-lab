@@ -161,6 +161,16 @@ class ClientLocalStateTest(unittest.TestCase):
         )
 
     @patch("agent_control_plane_sdk.client.urlopen")
+    def test_operator_decisions_sends_bounded_queue_query(self, mock_urlopen):
+        mock_urlopen.return_value = mock_response({"read_only": True})
+        client = AgentControlPlaneClient("http://localhost:8080")
+        client.operator_decisions("2026-07-11T00:01:00Z", 300, 25, 5)
+        self.assertEqual(
+            mock_urlopen.call_args[0][0].full_url,
+            "http://localhost:8080/api/v1/operator/decisions?generated_at=2026-07-11T00%3A01%3A00Z&maximum_freshness_seconds=300&limit=25&offset=5",
+        )
+
+    @patch("agent_control_plane_sdk.client.urlopen")
     def test_dispatches_sends_pagination_and_search_query_params(self, mock_urlopen):
         mock_urlopen.return_value = mock_response({"schema_version": "axum_api.v1", "dispatches": []})
         client = AgentControlPlaneClient("http://localhost:8080")

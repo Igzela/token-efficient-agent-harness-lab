@@ -932,6 +932,10 @@ export interface OperatorEvidenceResponse {
   operator_summary?: Record<string, unknown>;
 }
 
+export type OperatorDecisionOutcome = "ready" | "conflict" | "expired" | "insufficient_evidence" | "resolved";
+export interface OperatorDecisionItem { decision_id: string; conflict_key: string; resource_id: string; outcome: OperatorDecisionOutcome; recommended_action: string | null; severity: "info" | "warning" | "critical"; confidence: number; generated_at: string; freshness_seconds: number; reason_codes: string[]; selected_source: { evidence_type: string; evidence_id: string; content_sha256: string | null } | null; evidence_references: { evidence_type: string; evidence_id: string; content_sha256: string | null }[]; }
+export interface OperatorDecisionQueueResponse { read_only: true; metadata_only: true; mutation_authority: "none"; provider_calls: "disabled"; target_repository_writes: "disabled"; queue: { schema_version: "operator_decision_queue.v1"; generated_at: string; maximum_freshness_seconds: number; total: number; limit: number; offset: number; source_counts: Record<string, number>; items: OperatorDecisionItem[]; queue_sha256: string; }; }
+
 export interface WorkflowRunNode {
   node_id: string;
   task_type: string;

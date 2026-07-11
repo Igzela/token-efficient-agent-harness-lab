@@ -14,7 +14,7 @@
 - Real-World Testing Mode — validated through real tasks, branches, commits, PRs, CI, and gated autonomous merge
 - Agent Autonomous Maintenance Mode — agents audit, plan, implement, verify, review, document, and ship bounded changes
 - Full Agent Autonomy Mode — repository-scoped architecture, authority, security, migration, release-workflow, recovery, and target-output evolution is authorized when testable, observable, CI-gated, and rollbackable
-- Post-LGB Product Evolution — PE-1 and PE-2 are complete; PE-3 is active with its decision contract and mutation-free derived queue implemented; later stages are governed by `docs/NEXT_DECISION.md`
+- Post-LGB Product Evolution — PE-1 and PE-2 are complete; PE-3 is active with its decision contracts, mutation-free derived queue, and read-only surface implemented; later stages are governed by `docs/NEXT_DECISION.md`
 
 **Complete tracks:**
 - Dispatch Kernel Phases 1–7

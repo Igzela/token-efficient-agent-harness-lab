@@ -200,6 +200,8 @@ PE-3 uses additive `operator_decision_source.v1`, `operator_decision_item.v1`, a
 
 `LocalProductStore::operator_decision_queue` recomputes the queue through existing SQLite/PostgreSQL readers; it does not persist queue rows, emit audits, or mutate any source. Source reads and returned pagination are bounded, output is deterministically ordered and hash-bound, and an unreadable evidence owner fails the complete derivation closed instead of silently omitting decisions. Restart behavior is therefore the same deterministic recomputation over existing truth owners. Only a future allowlisted adapter may connect `ready` items to existing control owners, and it must preserve their confirmation, permission, audit, idempotency, compensation, and rollback gates. Contract and queue rollback is a code revert with no migration or data cleanup.
 
+The read surface is additive `GET /api/v1/operator/decisions`, documented in OpenAPI and exposed by the existing Python/TypeScript SDKs and Dashboard navigation. It requires `dispatch:read`, returns the hash-bound derived queue plus explicit read-only boundary metadata, accepts bounded pagination/freshness parameters, and offers no mutation control. It may use a supplied timestamp for deterministic evidence review; otherwise it derives using server time. Route rollback is a code revert with no stored state.
+
 ## Execution Modes
 
 `ACP_EXECUTION_MODE` controls dispatch execution:

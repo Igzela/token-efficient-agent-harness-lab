@@ -268,7 +268,7 @@ PE-3 is active. Its versioned contract and mutation-free derived queue are compl
 
 ### Packet PE3-READ-1 — API, SDK, and Dashboard decision center
 
-**State:** `READY_FOR_EXECUTION`
+**State:** `COMPLETE`
 
 **Prerequisite:** PE3-QUEUE-1 complete.
 
@@ -276,9 +276,13 @@ PE-3 is active. Its versioned contract and mutation-free derived queue are compl
 
 **Acceptance:** Encoded paths, pagination, permission, compatibility, redaction, evidence links, deterministic UI ordering, and no hidden mutation controls.
 
+**Implementation:** `GET /api/v1/operator/decisions` exposes the derived `operator_decision_queue.v1` under existing `dispatch:read`. It validates bounded freshness and uses a caller-supplied timestamp when deterministic replay is needed. The route, OpenAPI, Python SDK, TypeScript SDK, and Dashboard Decision Center share the same read-only envelope. The Dashboard renders ready, conflict, expired, insufficient-evidence, and resolved items with bounded source references but no execution controls.
+
+**Compatibility and rollback:** Additive route and SDK methods only; no migration, queue persistence, permission, audit, or action-owner change. Revert the packet PR to remove the route and UI; existing rows and clients remain unchanged.
+
 ### Packet PE3-ACTIONS-1 — Existing-control action adapters
 
-**State:** `BLOCKED_PREREQUISITE`
+**State:** `READY_FOR_EXECUTION`
 
 **Prerequisite:** PE3-READ-1 complete.
 

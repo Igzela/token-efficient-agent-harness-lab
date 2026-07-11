@@ -1479,3 +1479,25 @@ export interface BudgetEvidenceArtifactListResponse {
 export interface BudgetEvidenceArtifactResponse extends Omit<BudgetEvidenceArtifactListResponse, "artifacts" | "kind" | "limit" | "offset"> {
   artifact: BudgetEvidenceArtifactEnvelope;
 }
+
+export type OperatorDecisionOutcome = "ready" | "conflict" | "expired" | "insufficient_evidence" | "resolved";
+export type OperatorDecisionAction = "approve" | "reject" | "pause" | "resume" | "retry" | "rollback" | "inspect" | "acknowledge";
+export interface OperatorDecisionEvidenceReference { evidence_type: string; evidence_id: string; content_sha256: string | null; }
+export interface OperatorDecisionItem {
+  schema_version: "operator_decision_item.v1";
+  decision_id: string; conflict_key: string; resource_id: string; outcome: OperatorDecisionOutcome;
+  recommended_action: OperatorDecisionAction | null; severity: "info" | "warning" | "critical";
+  confidence: number; generated_at: string; freshness_seconds: number; expires_at: string | null;
+  reason_codes: string[]; selected_source: OperatorDecisionEvidenceReference | null;
+  evidence_references: OperatorDecisionEvidenceReference[]; content_sha256: string;
+}
+export interface OperatorDecisionQueue {
+  schema_version: "operator_decision_queue.v1"; generated_at: string; maximum_freshness_seconds: number;
+  total: number; limit: number; offset: number; source_counts: Record<string, number>;
+  items: OperatorDecisionItem[]; queue_sha256: string;
+}
+export interface OperatorDecisionQueueResponse {
+  read_only: true; metadata_only: true; mutation_authority: "none"; provider_calls: "disabled";
+  target_repository_writes: "disabled"; queue: OperatorDecisionQueue;
+}
+export interface OperatorDecisionQueueOptions { generated_at?: string; maximum_freshness_seconds?: number; limit?: number; offset?: number; }

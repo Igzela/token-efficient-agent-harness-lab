@@ -1224,6 +1224,7 @@ pub fn openapi_document() -> serde_json::Value {
     append_provider_endpoint_openapi_paths(&mut doc);
     append_adaptive_fusion_openapi_paths(&mut doc);
     append_operator_evidence_openapi_paths(&mut doc);
+    append_operator_decision_openapi_paths(&mut doc);
     append_scorecard_openapi_paths(&mut doc);
     doc
 }
@@ -1318,6 +1319,28 @@ fn append_operator_evidence_openapi_paths(doc: &mut Value) {
                     "200": {"description": "Operator evidence read-model"},
                     "404": {"description": "Run not found (returns empty evidence)"}
                 }
+            }
+        }),
+    );
+}
+
+fn append_operator_decision_openapi_paths(doc: &mut Value) {
+    let Some(paths) = doc.get_mut("paths").and_then(Value::as_object_mut) else {
+        return;
+    };
+    paths.insert(
+        "/api/v1/operator/decisions".to_string(),
+        json!({
+            "get": {
+                "summary": "Read the bounded derived operator decision queue",
+                "description": "Requires dispatch:read scope. Recomputes operator_decision_queue.v1 from existing evidence owners. Read-only and metadata-only: no approval, pause, resume, retry, rollback, provider, or target-repository authority is granted.",
+                "parameters": [
+                    {"name": "generated_at", "in": "query", "schema": {"type": "string", "format": "date-time"}},
+                    {"name": "maximum_freshness_seconds", "in": "query", "schema": {"type": "integer", "default": 300, "minimum": 1, "maximum": 2592000}},
+                    {"name": "limit", "in": "query", "schema": {"type": "integer", "default": 50, "minimum": 1, "maximum": 100}},
+                    {"name": "offset", "in": "query", "schema": {"type": "integer", "default": 0, "minimum": 0, "maximum": 10000}}
+                ],
+                "responses": {"200": {"description": "Deterministic derived decision queue"}, "400": {"description": "Invalid queue query"}, "403": {"description": "Missing dispatch:read scope"}, "500": {"description": "An evidence owner could not be read"}}
             }
         }),
     );
@@ -1478,6 +1501,7 @@ mod tests {
             "OpenAPI document must include /api/v1/storage/integrity to match the axum router registration"
         );
         for path in [
+            "/api/v1/operator/decisions",
             "/api/v1/regressions",
             "/api/v1/regressions/{artifact_id}",
             "/api/v1/regressions/trends/{scenario_id}",
