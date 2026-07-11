@@ -27,12 +27,12 @@ jobs:
             echo '=== cargo fmt --check ==='
             cargo fmt --all -- --check
             echo "fmt_exit=$?"
-            echo '=== cargo check ==='
-            cargo check -p engine --all-targets --all-features
-            echo "check_exit=$?"
-            echo '=== focused test compile ==='
-            cargo test -p engine --test test_pe3_operator_action_repair --no-run
-            echo "focused_compile_exit=$?"
+            echo '=== focused PE3 tests ==='
+            cargo test -p engine --test test_pe3_operator_action_repair -- --nocapture
+            echo "focused_exit=$?"
+            echo '=== default clippy ==='
+            cargo clippy -p engine -- -D warnings
+            echo "clippy_exit=$?"
           } > pe3-diagnostic.log 2>&1
           cat pe3-diagnostic.log
       - name: Upload diagnostics
