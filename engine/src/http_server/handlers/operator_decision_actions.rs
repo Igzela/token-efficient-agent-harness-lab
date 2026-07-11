@@ -2,13 +2,19 @@ use axum::extract::{Path, State};
 use axum::http::{HeaderMap, StatusCode, Uri};
 use axum::response::IntoResponse;
 use axum::Json;
+use chrono::DateTime;
 use serde::Deserialize;
-use serde_json::json;
+use serde_json::{json, Value};
 
 use crate::http_server::middleware::{authorize, cors_headers, require_store, ApiError, RequestId};
 use crate::http_server::state::AxumApiState;
-use crate::operator_decision::OperatorDecisionAction;
+use crate::operator_decision::{
+    OperatorDecisionAction, OperatorDecisionEvidenceReference, OperatorDecisionItem,
+    OperatorDecisionOutcome,
+};
 use crate::storage::local_product_store::BudgetAutoPausePolicy;
+
+const MAX_MUTATION_QUEUE_AGE_SECONDS: u64 = 300;
 
 #[derive(Debug, Deserialize)]
 pub(crate) struct OperatorDecisionActionRequest {
@@ -38,64 +44,98 @@ pub(crate) async fn api_apply_operator_decision_action(
             "confirm_action must be true",
         ));
     }
-    let actor = authorize(&state, &headers, "dispatch:read", uri.path(), &request_id.0)?.api_key_id;
+    if request.maximum_freshness_seconds == 0
+        || request.maximum_freshness_seconds > 30 * 24 * 60 * 60
+        || request.limit <= 0
+        || request.limit > 100
+        || request.offset < 0
+        || request.offset > 10_000
+        || !valid_hash(&request.queue_sha256)
+    {
+        return Err(ApiError::with_code(
+            StatusCode::BAD_REQUEST,
+            "invalid_operator_decision_action_request",
+            "queue hash, freshness, limit, or offset is outside the bounded contract",
+        ));
+    }
+
+    let actor = authorize(
+        &state,
+        &headers,
+        "dispatch:read",
+        uri.path(),
+        &request_id.0,
+    )?
+    .api_key_id;
     let store = require_store(&state)?;
-    let queue = store
+    let current_time = store.operator_decision_now();
+    validate_mutation_time(
+        &request.generated_at,
+        &current_time,
+        request.maximum_freshness_seconds,
+    )?;
+
+    let bound_queue = store
         .operator_decision_queue(
             &request.generated_at,
             request.maximum_freshness_seconds,
             request.limit,
             request.offset,
         )
-        .map_err(|error| {
-            ApiError::with_code(
-                StatusCode::CONFLICT,
-                "operator_decision_queue_changed",
-                error,
-            )
-        })?;
-    if queue.queue_sha256 != request.queue_sha256 {
+        .map_err(queue_changed)?;
+    if bound_queue.queue_sha256 != request.queue_sha256 {
         return Err(ApiError::with_code(
             StatusCode::CONFLICT,
             "operator_decision_queue_changed",
-            "decision queue hash no longer matches",
+            "decision queue hash no longer matches the bound read page",
         ));
     }
-    let item = queue
+    let bound_item = find_bound_item(bound_queue.items, &decision_id)?;
+    validate_requested_action(&bound_item, &request.action)?;
+    let bound_source = bound_item.selected_source.clone().ok_or_else(not_ready_source)?;
+
+    let current_queue = store
+        .operator_decision_queue(
+            &current_time,
+            request.maximum_freshness_seconds,
+            request.limit,
+            request.offset,
+        )
+        .map_err(queue_changed)?;
+    let current_item = current_queue
         .items
-        .into_iter()
+        .iter()
         .find(|item| item.decision_id == decision_id)
+        .cloned()
         .ok_or_else(|| {
             ApiError::with_code(
-                StatusCode::NOT_FOUND,
-                "operator_decision_not_found",
-                "decision is not present in the bound queue",
+                StatusCode::CONFLICT,
+                "operator_decision_current_state_changed",
+                "decision is no longer present on the exact current queue page",
             )
         })?;
-    if item.recommended_action.as_ref() != Some(&request.action) {
-        return Err(ApiError::with_code(
-            StatusCode::CONFLICT,
-            "operator_decision_not_ready",
-            "decision does not currently recommend this action",
-        ));
-    }
-    let source = item.selected_source.ok_or_else(|| {
-        ApiError::with_code(
-            StatusCode::CONFLICT,
-            "operator_decision_not_ready",
-            "decision has no selected source",
-        )
-    })?;
+    validate_current_binding(
+        &bound_item,
+        &current_item,
+        &bound_source,
+        &request.action,
+    )?;
+    let current_source = current_item.selected_source.clone().ok_or_else(not_ready_source)?;
+
     let result = match request.action {
         OperatorDecisionAction::Approve | OperatorDecisionAction::Reject => {
-            if source.evidence_type != "approval" {
-                return Err(unsupported("approval source is required"));
-            }
+            require_source_kind(&current_source, "approval", "approval source is required")?;
+            let approval_id = approval_evidence_id(&current_source, &request.action)?;
             let approval = store
-                .workflow_run_approvals(&item.resource_id, 100)
+                .workflow_run_approvals(&current_item.resource_id, 100)
                 .map_err(internal)?
                 .into_iter()
-                .find(|approval| approval["approval_id"] == source.evidence_id)
+                .find(|approval| {
+                    approval
+                        .get("approval_id")
+                        .and_then(Value::as_str)
+                        == Some(approval_id.as_str())
+                })
                 .ok_or_else(|| {
                     ApiError::with_code(
                         StatusCode::CONFLICT,
@@ -103,6 +143,13 @@ pub(crate) async fn api_apply_operator_decision_action(
                         "approval source is no longer available",
                     )
                 })?;
+            if approval.get("decision").and_then(Value::as_str) != Some("requested") {
+                return Err(ApiError::with_code(
+                    StatusCode::CONFLICT,
+                    "operator_decision_source_changed",
+                    "approval source is no longer pending",
+                ));
+            }
             let node_id = approval["node_id"]
                 .as_str()
                 .ok_or_else(|| internal("approval source has no node id"))?;
@@ -113,7 +160,7 @@ pub(crate) async fn api_apply_operator_decision_action(
             };
             store
                 .record_workflow_run_approval(
-                    &item.resource_id,
+                    &current_item.resource_id,
                     node_id,
                     decision,
                     &actor,
@@ -126,20 +173,100 @@ pub(crate) async fn api_apply_operator_decision_action(
                 .map_err(internal)?
         }
         OperatorDecisionAction::Resume => {
-            if source.evidence_type != "workflow" {
-                return Err(unsupported("workflow source is required"));
-            }
-            store
-                .request_workflow_run_resume(&item.resource_id, &actor, request.reason.as_deref())
+            let run = store
+                .get_workflow_run(&current_item.resource_id)
                 .map_err(internal)?
+                .ok_or_else(|| source_changed("workflow run is no longer available"))?;
+            let pause_reason = run
+                .get("pause_reason")
+                .and_then(Value::as_str)
+                .ok_or_else(|| source_changed("workflow run is no longer paused"))?
+                .to_string();
+            if pause_reason.starts_with("budget_auto_pause:") {
+                require_source_kind(
+                    &current_source,
+                    "recovery",
+                    "budget recovery source is required",
+                )?;
+                authorize(
+                    &state,
+                    &headers,
+                    "dispatch:execute",
+                    uri.path(),
+                    &request_id.0,
+                )?;
+                let reason = request
+                    .reason
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|reason| !reason.is_empty())
+                    .ok_or_else(|| {
+                        ApiError::with_code(
+                            StatusCode::BAD_REQUEST,
+                            "operator_decision_recovery_reason_required",
+                            "budget pause recovery requires a bounded operator reason",
+                        )
+                    })?;
+                store
+                    .recover_budget_auto_pause(
+                        &current_item.resource_id,
+                        "resume",
+                        reason,
+                        &actor,
+                    )
+                    .map_err(internal)?
+            } else {
+                require_source_kind(
+                    &current_source,
+                    "workflow",
+                    "workflow source is required",
+                )?;
+                store
+                    .update_run_pause_reason(&current_item.resource_id, None)
+                    .map_err(internal)?;
+                match store.request_workflow_run_resume(
+                    &current_item.resource_id,
+                    &actor,
+                    request.reason.as_deref(),
+                ) {
+                    Ok(result) => result,
+                    Err(error) => {
+                        let compensation = store
+                            .update_run_pause_reason(
+                                &current_item.resource_id,
+                                Some(&pause_reason),
+                            )
+                            .map_err(|compensation_error| {
+                                internal(format!(
+                                    "resume failed: {error}; pause compensation failed: {compensation_error}"
+                                ))
+                            });
+                        compensation?;
+                        return Err(internal(format!(
+                            "resume failed and pause reason was restored: {error}"
+                        )));
+                    }
+                }
+            }
         }
         OperatorDecisionAction::Retry => {
-            if source.evidence_type != "workflow" {
-                return Err(unsupported("workflow source is required"));
+            require_source_kind(&current_source, "workflow", "workflow source is required")?;
+            let run = store
+                .get_workflow_run(&current_item.resource_id)
+                .map_err(internal)?
+                .ok_or_else(|| source_changed("workflow run is no longer available"))?;
+            if run.get("status").and_then(Value::as_str) != Some("blocked") {
+                return Err(source_changed("workflow run is no longer retryable"));
             }
             store
-                .tick_with_retry(&item.resource_id, &actor, 0)
-                .map_err(internal)?
+                .tick_with_retry(&current_item.resource_id, &actor, 0)
+                .map_err(|error| {
+                    ApiError::with_code(
+                        StatusCode::CONFLICT,
+                        "operator_decision_action_rejected",
+                        error,
+                    )
+                })?
         }
         OperatorDecisionAction::Pause => {
             authorize(
@@ -149,9 +276,11 @@ pub(crate) async fn api_apply_operator_decision_action(
                 uri.path(),
                 &request_id.0,
             )?;
-            if source.evidence_type != "budget" {
-                return Err(unsupported("budget anomaly source is required"));
-            }
+            require_source_kind(
+                &current_source,
+                "budget",
+                "budget anomaly source is required",
+            )?;
             let policy = request.budget_policy.as_ref().ok_or_else(|| {
                 ApiError::with_code(
                     StatusCode::BAD_REQUEST,
@@ -160,7 +289,12 @@ pub(crate) async fn api_apply_operator_decision_action(
                 )
             })?;
             store
-                .apply_budget_auto_pause(&source.evidence_id, &item.resource_id, policy, &actor)
+                .apply_budget_auto_pause(
+                    &current_source.evidence_id,
+                    &current_item.resource_id,
+                    policy,
+                    &actor,
+                )
                 .map_err(|error| {
                     ApiError::with_code(
                         StatusCode::CONFLICT,
@@ -177,16 +311,170 @@ pub(crate) async fn api_apply_operator_decision_action(
             ))
         }
     };
+
     Ok((
         cors_headers(),
         Json(json!({
             "schema_version": "operator_decision_action_result.v1",
             "decision_id": decision_id,
             "queue_sha256": request.queue_sha256,
+            "current_queue_sha256": current_queue.queue_sha256,
+            "current_generated_at": current_time,
             "action": request.action,
             "owner_result": result,
         })),
     ))
+}
+
+fn validate_mutation_time(
+    generated_at: &str,
+    current_time: &str,
+    requested_freshness_seconds: u64,
+) -> Result<(), ApiError> {
+    let generated = DateTime::parse_from_rfc3339(generated_at).map_err(|_| {
+        ApiError::with_code(
+            StatusCode::BAD_REQUEST,
+            "invalid_operator_decision_generated_at",
+            "generated_at must be RFC3339",
+        )
+    })?;
+    let current = DateTime::parse_from_rfc3339(current_time).map_err(|_| {
+        ApiError::with_code(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "operator_decision_clock_unavailable",
+            "store clock did not return RFC3339",
+        )
+    })?;
+    if generated > current {
+        return Err(ApiError::with_code(
+            StatusCode::CONFLICT,
+            "operator_decision_generated_at_future",
+            "mutation queue timestamp is later than the store clock",
+        ));
+    }
+    let age_seconds = (current - generated).num_seconds() as u64;
+    let allowed_age = requested_freshness_seconds.min(MAX_MUTATION_QUEUE_AGE_SECONDS);
+    if age_seconds > allowed_age {
+        return Err(ApiError::with_code(
+            StatusCode::CONFLICT,
+            "operator_decision_generated_at_stale",
+            "mutation queue timestamp is older than the allowed action freshness",
+        ));
+    }
+    Ok(())
+}
+
+fn find_bound_item(
+    items: Vec<OperatorDecisionItem>,
+    decision_id: &str,
+) -> Result<OperatorDecisionItem, ApiError> {
+    items
+        .into_iter()
+        .find(|item| item.decision_id == decision_id)
+        .ok_or_else(|| {
+            ApiError::with_code(
+                StatusCode::NOT_FOUND,
+                "operator_decision_not_found",
+                "decision is not present in the bound queue page",
+            )
+        })
+}
+
+fn validate_requested_action(
+    item: &OperatorDecisionItem,
+    action: &OperatorDecisionAction,
+) -> Result<(), ApiError> {
+    if item.outcome != OperatorDecisionOutcome::Ready
+        || item.recommended_action.as_ref() != Some(action)
+    {
+        return Err(ApiError::with_code(
+            StatusCode::CONFLICT,
+            "operator_decision_not_ready",
+            "decision does not exactly recommend this action",
+        ));
+    }
+    Ok(())
+}
+
+fn validate_current_binding(
+    bound: &OperatorDecisionItem,
+    current: &OperatorDecisionItem,
+    bound_source: &OperatorDecisionEvidenceReference,
+    action: &OperatorDecisionAction,
+) -> Result<(), ApiError> {
+    validate_requested_action(current, action)?;
+    if current.conflict_key != bound.conflict_key
+        || current.resource_id != bound.resource_id
+        || current.selected_source.as_ref() != Some(bound_source)
+    {
+        return Err(ApiError::with_code(
+            StatusCode::CONFLICT,
+            "operator_decision_current_state_changed",
+            "current decision source, resource, or conflict binding differs from the read decision",
+        ));
+    }
+    Ok(())
+}
+
+fn approval_evidence_id(
+    source: &OperatorDecisionEvidenceReference,
+    action: &OperatorDecisionAction,
+) -> Result<String, ApiError> {
+    let expected_suffix = if matches!(action, OperatorDecisionAction::Approve) {
+        ":approve"
+    } else {
+        ":reject"
+    };
+    source
+        .evidence_id
+        .strip_suffix(expected_suffix)
+        .map(str::to_string)
+        .ok_or_else(|| {
+            ApiError::with_code(
+                StatusCode::CONFLICT,
+                "operator_decision_source_changed",
+                "approval source identity does not match the requested action",
+            )
+        })
+}
+
+fn require_source_kind(
+    source: &OperatorDecisionEvidenceReference,
+    expected: &str,
+    message: &str,
+) -> Result<(), ApiError> {
+    if source.evidence_type != expected {
+        return Err(unsupported(message));
+    }
+    Ok(())
+}
+
+fn valid_hash(value: &str) -> bool {
+    value.len() == 64 && value.bytes().all(|byte| byte.is_ascii_hexdigit())
+}
+
+fn not_ready_source() -> ApiError {
+    ApiError::with_code(
+        StatusCode::CONFLICT,
+        "operator_decision_not_ready",
+        "decision has no selected source",
+    )
+}
+
+fn queue_changed(error: impl ToString) -> ApiError {
+    ApiError::with_code(
+        StatusCode::CONFLICT,
+        "operator_decision_queue_changed",
+        error.to_string(),
+    )
+}
+
+fn source_changed(message: &str) -> ApiError {
+    ApiError::with_code(
+        StatusCode::CONFLICT,
+        "operator_decision_source_changed",
+        message,
+    )
 }
 
 fn unsupported(message: &str) -> ApiError {
