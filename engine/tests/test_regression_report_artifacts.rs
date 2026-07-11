@@ -59,6 +59,28 @@ fn sample_batch() -> Value {
     batch
 }
 
+fn sample_trend_report(outcome: &str, total_tokens: i64, artifact_schema_version: &str) -> Value {
+    let mut report = sample_report("native_remember_dont_reread_pilot", outcome);
+    report["evidence"]["current"]["artifact_schema_version"] = json!(artifact_schema_version);
+    report["comparisons"] = json!({
+        "best_known": {
+            "metrics": {
+                "total_tokens": {
+                    "current": total_tokens,
+                    "reference": 100,
+                    "delta": total_tokens - 100,
+                    "normalized_regression": if total_tokens > 100 { (total_tokens - 100) as f64 / 100.0 } else { 0.0 },
+                    "allowed_regression": 0.05,
+                    "regressed": total_tokens > 105
+                }
+            }
+        }
+    });
+    report.as_object_mut().unwrap().remove("report_sha256");
+    report["report_sha256"] = json!(hash_payload(&report));
+    report
+}
+
 fn make_store() -> (LocalProductStore, tempfile::TempDir) {
     let dir = tempdir().unwrap();
     let store = LocalProductStore::new(dir.path().join("local.db")).unwrap();
@@ -132,6 +154,29 @@ fn regression_artifact_rejects_hash_tamper_and_sensitive_payloads() {
 }
 
 #[test]
+fn regression_artifact_persists_all_report_contract_outcomes() {
+    let (store, _dir) = make_store();
+    for (index, outcome) in [
+        "pass",
+        "regression",
+        "missing_baseline",
+        "missing_best_known",
+        "incomparable",
+        "quality_failure",
+    ]
+    .iter()
+    .enumerate()
+    {
+        let report = sample_report(&format!("outcome-{index}"), outcome);
+        let stored = store
+            .record_regression_report_artifact(&report, "pe1-outcome-test")
+            .unwrap();
+        assert_eq!(stored["report"]["outcome"], *outcome);
+    }
+    assert_eq!(store.regression_report_artifacts(100).unwrap().len(), 6);
+}
+
+#[test]
 fn regression_artifact_rejects_envelope_tamper_on_read() {
     let (store, _dir) = make_store();
     let stored = store
@@ -154,4 +199,77 @@ fn regression_artifact_rejects_envelope_tamper_on_read() {
         .get_regression_report_artifact(&artifact_id)
         .unwrap_err();
     assert!(error.contains("envelope does not match report"));
+}
+
+#[test]
+fn regression_trend_is_deterministic_bounded_and_directional() {
+    let (store, _dir) = make_store();
+    for report in [
+        sample_trend_report("pass", 120, "native_scorecard_artifact.v1"),
+        sample_trend_report("pass", 100, "scorecard_artifact.v2"),
+        sample_trend_report("regression", 150, "scorecard_artifact.v2"),
+    ] {
+        store
+            .record_regression_report_artifact(&report, "pe1-trend-test")
+            .unwrap();
+    }
+
+    let trend = store
+        .regression_report_trend("native_remember_dont_reread_pilot", 10)
+        .unwrap();
+    assert_eq!(
+        trend["schema_version"],
+        "token_efficiency_regression_trend.v1"
+    );
+    assert_eq!(trend["point_count"], 3);
+    assert_eq!(trend["read_only"], true);
+    assert_eq!(trend["report_only"], true);
+    assert_eq!(trend["latest"]["outcome"], "regression");
+    assert_eq!(trend["points"][0]["current_metrics"]["total_tokens"], 120);
+    assert_eq!(
+        trend["points"][1]["evidence"]["current"]["artifact_schema_version"],
+        "scorecard_artifact.v2"
+    );
+    assert_eq!(
+        trend["transitions"][0]["metric_deltas"]["total_tokens"]["delta"],
+        -20.0
+    );
+    assert_eq!(
+        trend["transitions"][0]["metric_deltas"]["total_tokens"]["direction"],
+        "improved"
+    );
+    assert_eq!(
+        trend["transitions"][1]["metric_deltas"]["total_tokens"]["delta"],
+        50.0
+    );
+    assert_eq!(
+        trend["transitions"][1]["metric_deltas"]["total_tokens"]["direction"],
+        "regressed"
+    );
+    assert_eq!(
+        trend,
+        store
+            .regression_report_trend("native_remember_dont_reread_pilot", 10)
+            .unwrap()
+    );
+    assert_eq!(trend["trend_sha256"].as_str().unwrap().len(), 64);
+
+    let bounded = store
+        .regression_report_trend("native_remember_dont_reread_pilot", 2)
+        .unwrap();
+    assert_eq!(bounded["point_count"], 2);
+    assert_eq!(bounded["points"][0]["current_metrics"]["total_tokens"], 100);
+    assert_eq!(bounded["points"][1]["current_metrics"]["total_tokens"], 150);
+}
+
+#[test]
+fn regression_trend_handles_sparse_history_without_inventing_evidence() {
+    let (store, _dir) = make_store();
+    let trend = store
+        .regression_report_trend("missing-scenario", 10)
+        .unwrap();
+    assert_eq!(trend["point_count"], 0);
+    assert_eq!(trend["points"], json!([]));
+    assert_eq!(trend["transitions"], json!([]));
+    assert_eq!(trend["latest"], Value::Null);
 }

@@ -121,6 +121,12 @@ fn pg_regression_report_artifact_is_idempotent_and_readable() {
             .expect("get regression report"),
         Some(first)
     );
+    let scenario_id = report["scenario_id"].as_str().expect("scenario id");
+    let trend = store
+        .regression_report_trend(scenario_id, 10)
+        .expect("regression trend");
+    assert_eq!(trend["point_count"], 1);
+    assert_eq!(trend["latest"]["outcome"], "pass");
 }
 
 #[test]

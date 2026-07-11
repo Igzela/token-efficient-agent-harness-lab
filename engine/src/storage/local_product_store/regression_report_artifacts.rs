@@ -12,6 +12,16 @@ use super::{append_audit_locked, collect_values, DatabaseConnection, LocalProduc
 const REGRESSION_ARTIFACT_SCHEMA_VERSION: &str = "token_efficiency_regression_artifact.v1";
 const REGRESSION_REPORT_SCHEMA_VERSION: &str = "token_efficiency_regression_report.v1";
 const REGRESSION_BATCH_SCHEMA_VERSION: &str = "token_efficiency_regression_batch.v1";
+const REGRESSION_TREND_SCHEMA_VERSION: &str = "token_efficiency_regression_trend.v1";
+const TREND_METRICS: &[&str] = &[
+    "total_tokens",
+    "repeated_context_ratio",
+    "state_bytes",
+    "estimated_cost_usd",
+    "duration_ms",
+    "retry_count",
+    "quality_score",
+];
 
 struct ValidatedReport<'a> {
     artifact_kind: &'static str,
@@ -189,6 +199,53 @@ impl LocalProductStore {
         self.query_regression_report_artifacts(Some(scenario_id), limit)
     }
 
+    pub fn regression_report_trend(&self, scenario_id: &str, limit: i64) -> Result<Value, String> {
+        if scenario_id.trim().is_empty() || scenario_id.len() > 128 {
+            return Err("regression trend scenario_id must be a bounded id".to_string());
+        }
+        let artifacts = self.recent_regression_reports_by_scenario(scenario_id, limit)?;
+        build_regression_trend(scenario_id, &artifacts)
+    }
+
+    fn recent_regression_reports_by_scenario(
+        &self,
+        scenario_id: &str,
+        limit: i64,
+    ) -> Result<Vec<Value>, String> {
+        let capped = limit.clamp(1, 100);
+        let mut artifacts = match &self.db {
+            DatabaseConnection::Sqlite(_) => self.with_conn(|conn| {
+                let mut stmt = conn
+                    .prepare(
+                        "SELECT artifact_json FROM regression_report_artifacts
+                         WHERE scenario_id = ?1
+                         ORDER BY artifact_sequence DESC LIMIT ?2",
+                    )
+                    .map_err(|e| e.to_string())?;
+                let rows = stmt
+                    .query_map(params![scenario_id, capped], regression_artifact_row)
+                    .map_err(|e| e.to_string())?;
+                collect_values(rows)
+            })?,
+            #[cfg(feature = "pg")]
+            DatabaseConnection::Pg(_) => self.with_pg_conn(|client| {
+                let rows = client
+                    .query(
+                        "SELECT artifact_json FROM regression_report_artifacts
+                         WHERE scenario_id = $1
+                         ORDER BY artifact_sequence DESC LIMIT $2",
+                        &[&scenario_id, &capped],
+                    )
+                    .map_err(|e| e.to_string())?;
+                rows.iter()
+                    .map(|row| parse_stored_artifact(&row.get::<_, String>(0)))
+                    .collect::<Result<Vec<_>, _>>()
+            })?,
+        };
+        artifacts.reverse();
+        Ok(artifacts)
+    }
+
     fn query_regression_report_artifacts(
         &self,
         scenario_id: Option<&str>,
@@ -242,6 +299,152 @@ impl LocalProductStore {
     }
 }
 
+fn build_regression_trend(scenario_id: &str, artifacts: &[Value]) -> Result<Value, String> {
+    let points = artifacts
+        .iter()
+        .map(trend_point)
+        .collect::<Result<Vec<_>, _>>()?;
+    let transitions = points
+        .windows(2)
+        .map(|window| trend_transition(&window[0], &window[1]))
+        .collect::<Result<Vec<_>, _>>()?;
+    let mut trend = json!({
+        "schema_version": REGRESSION_TREND_SCHEMA_VERSION,
+        "scenario_id": scenario_id,
+        "read_only": true,
+        "report_only": true,
+        "provider_calls": "disabled",
+        "mutation_authority": "none",
+        "point_count": points.len(),
+        "points": points,
+        "transitions": transitions,
+        "latest": points.last().cloned().unwrap_or(Value::Null),
+    });
+    let canonical = canonical_event_json(&trend).map_err(|e| e.to_string())?;
+    trend["trend_sha256"] = json!(hex::encode(Sha256::digest(canonical.as_bytes())));
+    if serde_json::to_vec(&trend).map_err(|e| e.to_string())?.len() > MAX_SCORECARD_ARTIFACT_BYTES {
+        return Err("regression trend exceeds bounded size".to_string());
+    }
+    validate_json_bounds(&trend, "regression_trend", 0)?;
+    validate_no_raw_trace_keys(&trend)
+        .map_err(|_| "raw or sensitive payload is not allowed in regression trend".to_string())?;
+    Ok(trend)
+}
+
+fn trend_point(artifact: &Value) -> Result<Value, String> {
+    let report = artifact
+        .get("report")
+        .ok_or_else(|| "regression trend artifact missing report".to_string())?;
+    let metrics = report
+        .pointer("/comparisons/best_known/metrics")
+        .or_else(|| report.pointer("/comparisons/baseline/metrics"))
+        .and_then(Value::as_object)
+        .map(|metrics| {
+            TREND_METRICS
+                .iter()
+                .filter_map(|name| {
+                    let metric = metrics.get(*name)?;
+                    metric
+                        .get("current")
+                        .filter(|value| value.is_number())
+                        .map(|value| ((*name).to_string(), value.clone()))
+                })
+                .collect::<Map<_, _>>()
+        })
+        .unwrap_or_default();
+    Ok(json!({
+        "artifact_id": required_str(artifact, "artifact_id")?,
+        "created_at": required_str(artifact, "created_at")?,
+        "registry_id": required_str(report, "registry_id")?,
+        "registry_sha256": required_str(report, "registry_sha256")?,
+        "report_sha256": required_str(report, "report_sha256")?,
+        "outcome": required_str(report, "outcome")?,
+        "reason_codes": required_array(report, "reason_codes")?,
+        "evidence": trend_evidence_links(report),
+        "current_metrics": metrics,
+    }))
+}
+
+fn trend_evidence_links(report: &Value) -> Value {
+    let mut links = Map::new();
+    let evidence = report.get("evidence").and_then(Value::as_object);
+    for role in ["current", "baseline", "best_known"] {
+        let Some(source) = evidence
+            .and_then(|value| value.get(role))
+            .and_then(Value::as_object)
+        else {
+            continue;
+        };
+        let mut link = Map::new();
+        for field in [
+            "adapter_run_id",
+            "artifact_schema_version",
+            "content_sha256",
+        ] {
+            if let Some(value) = source.get(field).filter(|value| value.is_string()) {
+                link.insert(field.to_string(), value.clone());
+            }
+        }
+        links.insert(role.to_string(), Value::Object(link));
+    }
+    Value::Object(links)
+}
+
+fn trend_transition(from: &Value, to: &Value) -> Result<Value, String> {
+    let from_reasons = string_set(required_array(from, "reason_codes")?);
+    let to_reasons = string_set(required_array(to, "reason_codes")?);
+    let from_metrics = required_object(from, "current_metrics")?;
+    let to_metrics = required_object(to, "current_metrics")?;
+    let mut metric_deltas = Map::new();
+    for (name, to_value) in to_metrics {
+        let Some(from_number) = from_metrics.get(name).and_then(Value::as_f64) else {
+            continue;
+        };
+        let Some(to_number) = to_value.as_f64() else {
+            continue;
+        };
+        let delta = round_six(to_number - from_number);
+        let harmful_delta = if name == "quality_score" {
+            -delta
+        } else {
+            delta
+        };
+        let direction = if harmful_delta > 0.0 {
+            "regressed"
+        } else if harmful_delta < 0.0 {
+            "improved"
+        } else {
+            "unchanged"
+        };
+        metric_deltas.insert(
+            name.clone(),
+            json!({"delta": delta, "direction": direction}),
+        );
+    }
+    Ok(json!({
+        "from_artifact_id": required_str(from, "artifact_id")?,
+        "to_artifact_id": required_str(to, "artifact_id")?,
+        "from_outcome": required_str(from, "outcome")?,
+        "to_outcome": required_str(to, "outcome")?,
+        "outcome_changed": required_str(from, "outcome")? != required_str(to, "outcome")?,
+        "new_reason_codes": to_reasons.difference(&from_reasons).cloned().collect::<Vec<_>>(),
+        "resolved_reason_codes": from_reasons.difference(&to_reasons).cloned().collect::<Vec<_>>(),
+        "metric_deltas": metric_deltas,
+    }))
+}
+
+fn string_set(values: &[Value]) -> std::collections::BTreeSet<String> {
+    values
+        .iter()
+        .filter_map(Value::as_str)
+        .map(str::to_string)
+        .collect()
+}
+
+fn round_six(value: f64) -> f64 {
+    (value * 1_000_000.0).round() / 1_000_000.0
+}
+
 fn validate_report(report: &Value) -> Result<ValidatedReport<'_>, String> {
     let bytes = serde_json::to_vec(report).map_err(|e| e.to_string())?;
     if bytes.len() > MAX_SCORECARD_ARTIFACT_BYTES {
@@ -263,9 +466,19 @@ fn validate_report(report: &Value) -> Result<ValidatedReport<'_>, String> {
             required_hash(report, "task_digest")?;
             required_object(report, "evidence")?;
             required_object(report, "comparisons")?;
-            required_array(report, "reason_codes")?;
+            let reason_codes = required_array(report, "reason_codes")?;
+            if reason_codes.len() > 32
+                || reason_codes.iter().any(|value| {
+                    value
+                        .as_str()
+                        .is_none_or(|reason| reason.is_empty() || reason.len() > 128)
+                })
+            {
+                return Err("regression report reason_codes must be bounded strings".to_string());
+            }
             match required_str(report, "outcome")? {
-                "pass" | "regression" | "insufficient_evidence" => {}
+                "pass" | "regression" | "missing_baseline" | "missing_best_known"
+                | "incomparable" | "quality_failure" => {}
                 other => return Err(format!("unsupported regression outcome: {other}")),
             }
             let content_sha256 = validate_self_hash(report, "report_sha256")?;
