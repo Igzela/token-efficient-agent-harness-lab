@@ -3,6 +3,8 @@
 // CI runs these with a PostgreSQL service container.
 
 #[cfg(feature = "pg-tests")]
+use engine::event_schema::canonical_event_json;
+#[cfg(feature = "pg-tests")]
 use engine::feedback::{
     ContextualPolicyPromotion, ContextualPolicyPromotionGate, ObjectiveProfile,
     CONTEXTUAL_POLICY_PROMOTION_SCHEMA_VERSION,
@@ -10,7 +12,9 @@ use engine::feedback::{
 #[cfg(feature = "pg-tests")]
 use engine::storage::local_product_store::LocalProductStore;
 #[cfg(feature = "pg-tests")]
-use serde_json::json;
+use serde_json::{json, Value};
+#[cfg(feature = "pg-tests")]
+use sha2::{Digest, Sha256};
 
 #[cfg(feature = "pg-tests")]
 fn utc_now_string() -> String {
@@ -36,6 +40,29 @@ fn test_store() -> Option<LocalProductStore> {
 #[cfg(feature = "pg-tests")]
 fn uuid_tag() -> String {
     uuid::Uuid::new_v4().to_string()
+}
+
+#[cfg(feature = "pg-tests")]
+fn pg_regression_report(tag: &str) -> Value {
+    let mut report = json!({
+        "schema_version": "token_efficiency_regression_report.v1",
+        "registry_id": format!("pe1-pg-{tag}"),
+        "registry_sha256": "11".repeat(32),
+        "scenario_id": format!("scenario-{tag}"),
+        "scenario_digest": "22".repeat(32),
+        "task_digest": "33".repeat(32),
+        "read_only": true,
+        "report_only": true,
+        "provider_calls": "disabled",
+        "mutation_authority": "none",
+        "outcome": "pass",
+        "reason_codes": [],
+        "evidence": {},
+        "comparisons": {}
+    });
+    let canonical = canonical_event_json(&report).expect("canonical report");
+    report["report_sha256"] = json!(hex::encode(Sha256::digest(canonical.as_bytes())));
+    report
 }
 
 #[test]
@@ -73,6 +100,27 @@ fn pg_config_upsert_read() {
     let snap = store.config_snapshot().expect("config_snapshot");
     let read_back = snap.get(&key).expect("key should exist in config snapshot");
     assert_eq!(*read_back, value, "round-tripped JSON must match");
+}
+
+#[test]
+#[cfg(feature = "pg-tests")]
+fn pg_regression_report_artifact_is_idempotent_and_readable() {
+    let Some(store) = test_store() else { return };
+    let report = pg_regression_report(&uuid_tag());
+    let first = store
+        .record_regression_report_artifact(&report, "pg-test")
+        .expect("record regression report");
+    let repeated = store
+        .record_regression_report_artifact(&report, "pg-test")
+        .expect("repeat regression report");
+    assert_eq!(first, repeated);
+    let artifact_id = first["artifact_id"].as_str().expect("artifact id");
+    assert_eq!(
+        store
+            .get_regression_report_artifact(artifact_id)
+            .expect("get regression report"),
+        Some(first)
+    );
 }
 
 #[test]

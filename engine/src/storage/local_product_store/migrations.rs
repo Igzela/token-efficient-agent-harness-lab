@@ -33,6 +33,7 @@ impl LocalProductStore {
                     14 => Self::migrate_v14_add_agent_state_and_mailbox(conn)?,
                     15 => Self::migrate_v15_add_agent_proposals(conn)?,
                     16 => Self::migrate_v16_add_native_scorecard_artifacts(conn)?,
+                    17 => Self::migrate_v17_add_regression_report_artifacts(conn)?,
                     _ => return Err(format!("unknown migration version: {}", migration.version)),
                 }
                 conn.execute_batch(&format!("PRAGMA user_version = {}", migration.version))
@@ -539,6 +540,29 @@ CREATE TABLE IF NOT EXISTS native_scorecard_artifacts (
 CREATE INDEX IF NOT EXISTS idx_native_scorecard_artifacts_run ON native_scorecard_artifacts(run_id);
 CREATE INDEX IF NOT EXISTS idx_native_scorecard_artifacts_dispatch ON native_scorecard_artifacts(dispatch_id);
 CREATE INDEX IF NOT EXISTS idx_native_scorecard_artifacts_created ON native_scorecard_artifacts(created_at);
+",
+        )
+        .map_err(|e| e.to_string())
+    }
+
+    fn migrate_v17_add_regression_report_artifacts(conn: &Connection) -> Result<(), String> {
+        conn.execute_batch(
+            "
+CREATE TABLE IF NOT EXISTS regression_report_artifacts (
+    artifact_sequence INTEGER PRIMARY KEY,
+    artifact_id TEXT NOT NULL UNIQUE,
+    artifact_kind TEXT NOT NULL,
+    report_schema_version TEXT NOT NULL,
+    registry_id TEXT NOT NULL,
+    registry_sha256 TEXT NOT NULL,
+    scenario_id TEXT,
+    content_sha256 TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    artifact_json TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_regression_report_artifacts_registry ON regression_report_artifacts(registry_id, artifact_sequence);
+CREATE INDEX IF NOT EXISTS idx_regression_report_artifacts_scenario ON regression_report_artifacts(scenario_id, artifact_sequence);
+CREATE INDEX IF NOT EXISTS idx_regression_report_artifacts_created ON regression_report_artifacts(created_at);
 ",
         )
         .map_err(|e| e.to_string())

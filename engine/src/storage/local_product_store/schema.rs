@@ -6,8 +6,8 @@ pub(super) enum Dialect {
     Postgres,
 }
 
-pub(super) const CURRENT_SQLITE_SCHEMA_VERSION: i64 = 16;
-pub(super) const CURRENT_POSTGRES_SCHEMA_VERSION: i64 = 16;
+pub(super) const CURRENT_SQLITE_SCHEMA_VERSION: i64 = 17;
+pub(super) const CURRENT_POSTGRES_SCHEMA_VERSION: i64 = 17;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) struct SchemaMigration {
@@ -79,6 +79,10 @@ pub(super) const SQLITE_MIGRATIONS: &[SchemaMigration] = &[
     SchemaMigration {
         version: 16,
         description: "add native scorecard artifact evidence table",
+    },
+    SchemaMigration {
+        version: 17,
+        description: "add token-efficiency regression report artifact table",
     },
 ];
 
@@ -314,6 +318,22 @@ CREATE TABLE IF NOT EXISTS native_scorecard_artifacts (
 CREATE INDEX IF NOT EXISTS idx_native_scorecard_artifacts_run ON native_scorecard_artifacts(run_id);
 CREATE INDEX IF NOT EXISTS idx_native_scorecard_artifacts_dispatch ON native_scorecard_artifacts(dispatch_id);
 CREATE INDEX IF NOT EXISTS idx_native_scorecard_artifacts_created ON native_scorecard_artifacts(created_at);
+
+CREATE TABLE IF NOT EXISTS regression_report_artifacts (
+    artifact_sequence INTEGER PRIMARY KEY,
+    artifact_id TEXT NOT NULL UNIQUE,
+    artifact_kind TEXT NOT NULL,
+    report_schema_version TEXT NOT NULL,
+    registry_id TEXT NOT NULL,
+    registry_sha256 TEXT NOT NULL,
+    scenario_id TEXT,
+    content_sha256 TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    artifact_json TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_regression_report_artifacts_registry ON regression_report_artifacts(registry_id, artifact_sequence);
+CREATE INDEX IF NOT EXISTS idx_regression_report_artifacts_scenario ON regression_report_artifacts(scenario_id, artifact_sequence);
+CREATE INDEX IF NOT EXISTS idx_regression_report_artifacts_created ON regression_report_artifacts(created_at);
 
 CREATE TABLE IF NOT EXISTS scheduler_feedback (
     feedback_id TEXT PRIMARY KEY,
@@ -733,6 +753,22 @@ CREATE INDEX IF NOT EXISTS idx_native_scorecard_artifacts_run ON native_scorecar
 CREATE INDEX IF NOT EXISTS idx_native_scorecard_artifacts_dispatch ON native_scorecard_artifacts(dispatch_id);
 CREATE INDEX IF NOT EXISTS idx_native_scorecard_artifacts_created ON native_scorecard_artifacts(created_at);
 
+CREATE TABLE IF NOT EXISTS regression_report_artifacts (
+    artifact_sequence BIGSERIAL PRIMARY KEY,
+    artifact_id TEXT NOT NULL UNIQUE,
+    artifact_kind TEXT NOT NULL,
+    report_schema_version TEXT NOT NULL,
+    registry_id TEXT NOT NULL,
+    registry_sha256 TEXT NOT NULL,
+    scenario_id TEXT,
+    content_sha256 TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    artifact_json TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_regression_report_artifacts_registry ON regression_report_artifacts(registry_id, artifact_sequence);
+CREATE INDEX IF NOT EXISTS idx_regression_report_artifacts_scenario ON regression_report_artifacts(scenario_id, artifact_sequence);
+CREATE INDEX IF NOT EXISTS idx_regression_report_artifacts_created ON regression_report_artifacts(created_at);
+
 CREATE TABLE IF NOT EXISTS scheduler_feedback (
     feedback_id TEXT PRIMARY KEY,
     run_id TEXT NOT NULL,
@@ -988,6 +1024,10 @@ mod tests {
             "idx_native_scorecard_artifacts_run",
             "idx_native_scorecard_artifacts_dispatch",
             "idx_native_scorecard_artifacts_created",
+            "regression_report_artifacts",
+            "idx_regression_report_artifacts_registry",
+            "idx_regression_report_artifacts_scenario",
+            "idx_regression_report_artifacts_created",
         ] {
             assert!(
                 SQLITE_DDL.contains(expected),
