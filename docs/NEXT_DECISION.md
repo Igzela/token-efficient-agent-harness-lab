@@ -2,15 +2,15 @@
 
 ## Current Direction
 
-The dispatch kernel, V2, Adaptive Fusion AF-0 through AF-7, Agent Runtime AR-0 through AR-6, Trusted Local Autonomous Execution IAE-0 through IAE-3, scorecard integrity hardening, and the importer-first external benchmark path are complete.
+The dispatch kernel, V2, Adaptive Fusion AF-0 through AF-7, Agent Runtime AR-0 through AR-6, Trusted Local Autonomous Execution IAE-0 through IAE-3, scorecard integrity hardening, the importer-first external benchmark path, and PE-1 Token Efficiency Regression Lab are complete.
 
-The active direction is the Post-LGB Product Evolution plan, PE-1 through PE-6. This is not AR-7, another LGB ladder, or a second control plane.
+The active direction is the Post-LGB Product Evolution plan. PE-2 is active; PE-3 is next but not started. This is not AR-7, another LGB ladder, or a second control plane.
 
 `docs/NEXT_DECISION.md` is the single forward-plan artifact. Historical detail remains in `docs/ARCHITECTURE_BOOK.md`, archived plans, merged PRs, and repository history.
 
 ## Full Agent Autonomy Mode
 
-Full Agent Autonomy Mode remains active for repo-scoped, testable, observable, and rollbackable execution **inside an approved Terra-ready task packet**.
+Full Agent Autonomy Mode remains active for repo-scoped, testable, observable, and rollbackable execution inside an approved Terra-ready task packet.
 
 ### Autonomously maintain and evolve
 
@@ -41,7 +41,7 @@ Packet states:
 - `IN_PROGRESS` — one active branch/PR owns the packet.
 - `COMPLETE` — acceptance evidence is merged and active docs are updated.
 
-Every packet inherits these required fields:
+Every packet inherits these requirements:
 
 | Field | Required contract |
 |---|---|
@@ -59,122 +59,102 @@ Every packet inherits these required fields:
 
 Stage prose is context only. It does not authorize implementation outside the packets below.
 
-## Stable Tracks
+## Hard Stops
 
-| Track | Status |
-|---|---|
-| Core dispatch kernel | Complete |
-| Architecture refactor R-series | Sealed at R7 |
-| V2 Real Production Output | Complete through V2-5 |
-| Adaptive Fusion | Complete through AF-7 |
-| Agent Runtime | Complete and sealed at AR-6 |
-| Trusted Local Autonomous Execution | Complete through IAE-3 |
-| External Runtime Benchmark Boundary | Importer-first pilot complete |
-| Agent Autonomous Maintenance Mode | Active through Terra-ready packets |
-| Full Agent Autonomy Mode | Active inside packet boundaries |
+Stop with evidence rather than improvising when any of these applies:
+
+- the required packet is not `READY_FOR_TERRA`;
+- the executor profile is not Terra Medium;
+- code and active documents conflict on authority or ownership;
+- a change requires a second runtime, store, scheduler, policy authority, or Dashboard state model;
+- a migration is irreversible or lacks SQLite/PostgreSQL compatibility and rollback;
+- security, release, provider, pause, or target-output authority is ambiguous;
+- two coherent repair cycles fail to resolve the same CI root cause.
 
 ## Post-LGB Product Evolution Plan
 
-Normative order is PE-1, PE-2, PE-3, PE-4, PE-5, and PE-6. PE-5 may proceed after PE-1 when no release work conflicts, but the executor still selects the earliest eligible packet unless the user explicitly activates the PE-5 lane.
+Normative order is PE-1, PE-2, PE-3, PE-4, PE-5, and PE-6. Do not start PE-3 before PE-2 closeout.
 
 | Stage | Priority | Goal | Status |
 |---|---|---|---|
-| PE-1 | P0 | Token Efficiency Regression Lab | Core, persistence, trends, and API/SDK complete; Dashboard and closeout remain |
-| PE-2 | P0/P1 | Budget Intelligence and Anomaly Auto-Pause | Packetized; blocked on PE-1 closeout |
+| PE-1 | P0 | Token Efficiency Regression Lab | Complete and acceptance-sealed |
+| PE-2 | P0/P1 | Budget Intelligence and Anomaly Auto-Pause | Active; contract packet ready |
 | PE-3 | P1 | Operator Decision Center | Packetized; blocked on PE-2 closeout |
 | PE-4 | P1/P2 | Trace-backed Policy Replay | Packetized; blocked on PE-3 closeout and trace coverage |
-| PE-5 | P1.5 | Release Provenance | Packetized; eligible after PE-1 closeout or by explicit lane activation |
-| PE-6 | P2 | Fault Injection and Recovery Drills | Packetized; blocked on explicit subsystem recovery invariants |
+| PE-5 | P1.5 | Release Provenance | Packetized; inactive unless explicitly activated |
+| PE-6 | P2 | Fault Injection and Recovery Drills | Packetized; blocked on explicit recovery invariants |
 
 ## PE-1 — Token Efficiency Regression Lab
 
-Implemented facts:
+Implemented and accepted:
 
-- canonical `token_efficiency_regression_registry.v1`
-- deterministic single-scenario and registry-wide batch reports
-- fixed bounded evidence for LangGraph, native deterministic, and local stub scenarios
-- SQLite/PostgreSQL `LocalProductStore` persistence and idempotent local import
-- deterministic bounded history/trend read model
-- read-only HTTP list/detail/trend endpoints and Python/TypeScript SDK readers
-- report-only behavior with no CI blocking, provider call, routing change, or mutation authority
+- canonical `token_efficiency_regression_registry.v1`;
+- deterministic single-scenario and registry-wide batch reports;
+- fixed bounded evidence for LangGraph, native deterministic, and local stub scenarios;
+- SQLite/PostgreSQL `LocalProductStore` persistence and idempotent local import;
+- deterministic bounded history/trend read model;
+- read-only HTTP list/detail/trend endpoints and Python/TypeScript SDK readers;
+- current Dashboard history/trend UX with all explicit incomplete and failure outcomes;
+- report-only behavior with no CI blocking, provider call, routing change, policy mutation, pause authority, or target-repository write.
 
 ### Packet PE1-UI-1 — Dashboard history and trend UX
 
-**State:** `READY_FOR_TERRA`
+**State:** `COMPLETE`
 
-**Goal:** Existing regression API data is visible in the current Dashboard with scenario history, bounded trend, baseline/best-known context, regression reasons, and evidence links.
-
-**Prerequisites:** PR #175 merged; `/api/v1/regressions`, detail, and trend endpoints available; existing SDK contracts available.
-
-**Owning paths:** `dashboard/`; existing benchmark/scorecard components; existing Dashboard API client; focused Dashboard tests. Update `docs/CURRENT_STATUS.md`, this file, and `docs/MODULE_MAP.md` only if ownership/facts change.
-
-**Allowed changes:** Add or extend current scorecard/benchmark UI components, bounded client calls, loading/empty/error states, deterministic formatting, and tests.
-
-**Forbidden changes:** No new API route, storage table, persistence path, scheduler, provider call, policy authority, write action, or second Dashboard state model. Do not change regression report/trend semantics to make the UI easier.
-
-**Contract:**
-
-- consume existing list/detail/trend responses only
-- scenario selection must encode identifiers through existing client helpers
-- show outcome and reason codes without converting regressions into passes
-- show baseline and best-known evidence roles when present
-- evidence links expose only bounded artifact IDs/hashes/metadata already returned by the API
-- handle empty history, one-point history, missing baseline, missing best-known, incomparable, quality failure, regression, and pass
-- cap rendered history at the server-provided bounded result
-
-**Verification:** Component/unit tests for all states above; Dashboard lint, typecheck, production build, static export; applicable full stack and handoff checks; browser DOM smoke when available.
-
-**Compatibility:** Existing Dashboard routes and scorecard views remain functional; no API or storage migration.
-
-**Rollback:** Revert the packet PR; no stored state cleanup.
-
-**Stop triggers:** Required fields are missing from the existing API contract; UI requires new authority or persistence; current Dashboard ownership conflicts with the module map.
+**Evidence:** PR #177; CI run 29137424748; all seven jobs green. Existing Benchmarks route was extended additively and no API/storage/authority contract changed.
 
 ### Packet PE1-CLOSE-1 — PE-1 acceptance seal
 
-**State:** `BLOCKED_PREREQUISITE`
+**State:** `COMPLETE`
 
-**Prerequisite:** PE1-UI-1 complete.
-
-**Goal:** Prove every PE-1 acceptance item is implemented and tested, close stale wording, and mark PE-1 complete without adding new capability.
-
-**Allowed changes:** Tests, fixtures, active-doc corrections, and narrow defects found by the audit.
-
-**Forbidden changes:** No CI blocking or mutation authority; no new product feature; no reopening completed phase ladders.
-
-**Acceptance:** Deterministic recomputation; tamper, threshold, quality-failure, missing-baseline, missing-best-known, incomparable, repeat-import, cross-version, trend, API/SDK, and Dashboard evidence all pass. SQLite/PostgreSQL remain aligned. Full CI is green.
-
-**Rollback:** Revert closeout corrections individually; implemented PE-1 functionality remains usable.
-
-**Stop triggers:** Any acceptance gap requires a new behavior contract rather than a bounded defect repair; mark `PLANNER_DECISION_REQUIRED` with evidence.
+**Acceptance:** Deterministic recomputation; tamper, threshold, quality-failure, missing-baseline, missing-best-known, incomparable, repeat-import, cross-version, trend, API/SDK, Dashboard, SQLite, and PostgreSQL evidence are verified. Full CI is green.
 
 ## PE-2 — Budget Intelligence and Anomaly Auto-Pause
 
 Stage invariants:
 
-- forecasts and anomalies are derived evidence, not facts
-- every result records version, window, coverage, confidence, reason codes, and evidence references
-- sparse or incomplete data returns `insufficient_evidence`
-- automatic pause is allowed only through existing pause/audit controls when policy-enabled and high-confidence
-- no automatic termination, silent budget mutation, provider substitution, or opaque forecast
+- forecasts and anomalies are derived evidence, not business facts;
+- every result records schema version, evidence window, coverage, confidence, reason codes, and bounded evidence references;
+- sparse, stale, contradictory, incomplete, or incomparable evidence returns an explicit bounded outcome such as `insufficient_evidence`;
+- observed values and estimates remain separate;
+- automatic pause is allowed only through existing pause and audit authority when explicitly policy-enabled and high-confidence;
+- automatic pause must be idempotent, observable, reversible, and fail closed;
+- no automatic termination, silent budget mutation, provider/model substitution, reservation rewrite, or opaque scoring.
 
 ### Packet PE2-CONTRACT-1 — Budget intelligence evidence contract
 
-**State:** `BLOCKED_PREREQUISITE`
+**State:** `READY_FOR_TERRA`
 
 **Prerequisite:** PE1-CLOSE-1 complete.
 
-**Goal:** Define and validate versioned bounded contracts for forecasts, anomaly findings, confidence, coverage, reason codes, and `insufficient_evidence` outcomes; report-only only.
+**Goal:** Define and validate versioned bounded contracts for forecasts, anomaly findings, confidence, coverage, reason codes, evidence references, and `insufficient_evidence` outcomes; report-only only.
 
 **Owning paths:** `engine/src/budget_manager.rs`; existing provider audit/cost evidence; scheduler/workflow evidence; `LocalProductStore` validation owners; focused Rust tests; architecture/module docs when durable ownership changes.
 
-**Allowed changes:** Contract structs/validators and deterministic fixtures/tests. Reuse existing evidence owners.
+**Allowed changes:** Contract structs, enums, validators, canonical serialization/hash where existing evidence uses hashes, and deterministic fixtures/tests. Reuse existing evidence owners.
 
-**Forbidden changes:** No pause call, policy mutation, new provider invocation, new pricing source, or Dashboard work.
+**Forbidden changes:** No pause call, policy mutation, new provider invocation, new pricing source, persistence migration, API/SDK/Dashboard surface, or business-fact claim.
 
-**Acceptance:** Bounds, canonical serialization/hash where existing evidence uses hashes, malformed/tampered input rejection, sparse data, incomplete pricing, unknown model, clock/window boundaries, and SQLite/PostgreSQL-compatible representation are tested.
+**Contract:**
 
-**Stop triggers:** Existing cost/audit evidence cannot identify the required dimensions without a new source-of-truth decision.
+- forecast schema: `budget_forecast_evidence.v1`;
+- anomaly schema: `budget_anomaly_finding.v1`;
+- dimensions are bounded identifiers for run, workspace, provider, and model when present in existing evidence;
+- evidence window has explicit inclusive start, exclusive end, generated-at time, sample count, and freshness;
+- coverage records observed/required dimensions, pricing completeness, duplicate handling, and missing fields;
+- confidence is an explicit enum plus bounded numeric score and deterministic reasons;
+- outcome is one of `supported`, `insufficient_evidence`, or `invalid_evidence` at contract level;
+- reason codes are stable bounded strings, never free-form authority;
+- evidence references contain only existing bounded IDs/hashes/metadata;
+- malformed, oversized, tampered, future-window, inverted-window, unknown-model, and incomplete-pricing inputs fail closed or return explicit insufficiency as specified by the validator.
+
+**Verification:** Focused Rust contract/serde/validator tests; malformed and tamper tests; sparse, incomplete-pricing, unknown-model, boundary-time, canonical ordering/hash, and SQLite/PostgreSQL-compatible JSON representation tests; formatting, clippy, full stack, handoff, and CI.
+
+**Compatibility:** Additive Rust contracts only; no persisted row, API, SDK, Dashboard, reservation, pricing, or runtime behavior changes.
+
+**Rollback:** Revert the packet PR; no data cleanup.
+
+**Stop triggers:** Existing posted cost/audit evidence cannot identify the required dimensions without a new source-of-truth decision; canonical time semantics conflict across owners; a contract would imply pause or budget authority.
 
 ### Packet PE2-FORECAST-1 — Deterministic budget forecasts
 
@@ -184,13 +164,13 @@ Stage invariants:
 
 **Goal:** Produce read-only expected tokens/spend and exhaustion-time forecasts by run, workspace, provider, and model from existing posted evidence.
 
-**Allowed changes:** Deterministic forecast computation, bounded aggregation, read-model tests.
+**Allowed changes:** Deterministic forecast computation and bounded aggregation over the versioned contract and existing evidence.
 
-**Forbidden changes:** No external model call, learned opaque model, budget mutation, reservation change, or pause.
+**Forbidden changes:** No external model call, learned/opaque model, budget mutation, reservation change, pricing invention, persistence/API/Dashboard work, or pause.
 
-**Contract:** Separate observed values from estimates; include sample count, window, coverage, confidence, pricing completeness, assumptions, and reason codes. Refuse a forecast when evidence is stale, sparse, contradictory, or unpriced.
+**Contract:** Separate observed values from estimates; include sample count, window, coverage, confidence, pricing completeness, assumptions, and reason codes. Refuse a forecast when evidence is stale, sparse, contradictory, duplicated beyond deterministic reconciliation, or unpriced.
 
-**Acceptance:** Sparse, zero-usage, bursty, mixed-model, incomplete-pricing, boundary-time, deterministic ordering, and concurrency-safe read tests.
+**Acceptance:** Sparse, zero-usage, bursty, mixed-model, incomplete-pricing, boundary-time, deterministic ordering, duplicated/out-of-order evidence, and concurrency-safe read tests.
 
 ### Packet PE2-ANOMALY-1 — Explainable anomaly detector
 
@@ -198,13 +178,13 @@ Stage invariants:
 
 **Prerequisite:** PE2-FORECAST-1 complete.
 
-**Goal:** Detect bounded cost, token, retry, latency, context-growth, and model-mix anomalies with explicit thresholds, confidence, and reason codes.
+**Goal:** Detect bounded cost, token, retry, latency, context-growth, and model-mix anomalies with explicit thresholds, confidence, coverage, evidence, and reason codes.
 
-**Allowed changes:** Deterministic/statistical rule implementation over the versioned contract and existing evidence.
+**Allowed changes:** Deterministic/statistical rules over the versioned contract and existing evidence.
 
-**Forbidden changes:** No hidden adaptive threshold, provider substitution, pause, termination, or policy mutation.
+**Forbidden changes:** No hidden adaptive threshold, provider/model substitution, pause, termination, budget/policy mutation, persistence/API/Dashboard work, or opaque score.
 
-**Acceptance:** Normal, spike, gradual drift, mixed workloads, sparse history, false-positive boundaries, duplicated evidence, out-of-order evidence, and deterministic recomputation tests.
+**Acceptance:** Normal, spike, gradual drift, mixed workloads, sparse history, false-positive boundaries, duplicated evidence, out-of-order evidence, deterministic recomputation, and `insufficient_evidence` tests.
 
 ### Packet PE2-READ-1 — Persistence, API, SDK, and Dashboard read surfaces
 
@@ -214,11 +194,11 @@ Stage invariants:
 
 **Goal:** Expose bounded forecasts and anomaly evidence through existing store/API/SDK/Dashboard owners.
 
-**Allowed changes:** Additive `LocalProductStore` schema only if persistence is required by the contract; read-only HTTP/OpenAPI; Python/TypeScript readers; current Dashboard components; SQLite/PostgreSQL migrations/tests.
+**Allowed changes:** Additive `LocalProductStore` schema only if persistence is required by the accepted contract; read-only HTTP/OpenAPI; Python/TypeScript readers; current Dashboard components; SQLite/PostgreSQL migrations/tests.
 
-**Forbidden changes:** No pause action or second state model.
+**Forbidden changes:** No pause action, policy mutation, provider call, business-fact conversion, or second state model.
 
-**Acceptance:** Idempotent persistence if used, bounded pagination, permissions, OpenAPI/router parity, encoded SDK paths, empty/error/sparse UI states, migration compatibility, and full stack verification.
+**Acceptance:** Idempotent persistence if used, bounded pagination, permissions, OpenAPI/router parity, encoded SDK paths, empty/error/sparse UI states, evidence links, migration/backward compatibility, and full stack verification.
 
 **Stop triggers:** Persistence semantics were not fixed by PE2-CONTRACT-1 or require rewriting existing budget history.
 
@@ -232,15 +212,15 @@ Stage invariants:
 
 **Owning paths:** Existing scheduler/workflow pause controls, policy gates, audit, operator evidence, API controls, and focused integration tests.
 
-**Allowed changes:** A narrow decision adapter from validated anomaly evidence to the existing pause endpoint/path; explicit enablement; audit; resume/override evidence.
+**Allowed changes:** A narrow decision adapter from validated anomaly evidence to the existing pause path; explicit default-off enablement; audit; resume/override evidence.
 
-**Forbidden changes:** No auto-kill, silent budget edit, provider/model substitution, new pause state machine, default enablement, or resume without operator evidence.
+**Forbidden changes:** No auto-kill, silent budget edit, provider/model substitution, new pause state machine, default enablement, implicit resume, or resume without operator evidence.
 
-**Contract:** Fail closed on missing policy, incomplete pricing, low confidence, stale evidence, unsupported anomaly, audit failure, concurrent duplicate triggers, or unavailable pause owner. Repeated triggers are idempotent. Resume and override preserve cause/evidence.
+**Contract:** Fail closed on missing/disabled policy, incomplete pricing, low confidence, stale evidence, unsupported anomaly, missing coverage, audit failure, concurrent duplicate triggers, or unavailable pause owner. Repeated triggers are idempotent. Resume and override preserve cause and evidence.
 
-**Acceptance:** False positives, concurrency, duplicate trigger, audit failure, pause failure compensation, disabled policy, sparse data, incomplete pricing, resume, override, permission, and restart tests.
+**Acceptance:** False positives, concurrency, duplicate trigger, audit failure, pause failure compensation, disabled policy, sparse data, incomplete pricing, resume, override, permission, restart, and rollback tests.
 
-**Stop triggers:** Existing pause semantics cannot guarantee idempotency/compensation or policy ownership is ambiguous.
+**Stop triggers:** Existing pause semantics cannot guarantee idempotency/compensation, policy ownership is ambiguous, or audit cannot precede/atomically bind the authority decision.
 
 ### Packet PE2-CLOSE-1 — PE-2 acceptance seal
 
@@ -248,17 +228,13 @@ Stage invariants:
 
 **Prerequisite:** PE2-PAUSE-1 complete.
 
-**Goal:** Audit the whole PE-2 chain, repair bounded defects, mark PE-2 complete, and activate PE-3-CONTRACT-1.
+**Goal:** Audit the entire PE-2 chain, repair bounded defects, mark PE-2 complete, and activate PE3-CONTRACT-1 without beginning PE-3.
 
-**Acceptance:** Forecast/anomaly evidence is explainable and bounded; auto-pause is explicitly enabled, high-confidence, audited, idempotent, fail-closed, and recoverable; full CI and SQLite/PostgreSQL checks are green.
+**Acceptance:** Forecast/anomaly evidence is explainable, deterministic, versioned, bounded, and explicitly insufficient when unsupported; read surfaces are compatible; auto-pause is default-off, explicitly enabled, high-confidence, audited, idempotent, fail-closed, reversible, and recoverable; full CI and SQLite/PostgreSQL checks are green.
 
 ## PE-3 — Operator Decision Center
 
-Stage invariants:
-
-- one derived action queue over existing evidence and controls
-- no second scheduler, policy authority, approval store, or hidden mutation path
-- each item includes reason, severity, confidence, evidence links, recommended action, required authority, age, and resolution state
+PE-3 is next but not started. It remains blocked until PE2-CLOSE-1 is complete.
 
 ### Packet PE3-CONTRACT-1 — Decision item and source contract
 
@@ -266,317 +242,41 @@ Stage invariants:
 
 **Prerequisite:** PE2-CLOSE-1 complete.
 
-**Goal:** Define bounded versioned action-item/source contracts and deterministic source precedence for approvals, blocked/stalled runs, repeated failures, budget risk, benchmark regressions, invalid policy, scheduler state, and rollback candidates.
+**Goal:** Define bounded versioned action-item/source contracts and deterministic source precedence over existing approvals, workflow/scheduler, budget, benchmark, policy, and rollback evidence. No queue persistence, action execution, new authority, or Dashboard work is authorized by this packet.
 
-**Allowed changes:** Contracts, validators, fixtures, reason/severity/confidence taxonomy, and tests.
-
-**Forbidden changes:** No queue persistence, action execution, new authority, or Dashboard.
-
-**Acceptance:** Missing/stale/conflicting sources, permissions metadata, deduplication identity, and evidence-link bounds are tested.
-
-### Packet PE3-QUEUE-1 — Deterministic derived action queue
-
-**State:** `BLOCKED_PREREQUISITE`
-
-**Prerequisite:** PE3-CONTRACT-1 complete.
-
-**Goal:** Derive a prioritized, paginated queue with deterministic ordering, deduplication, age, stale invalidation, and resolution projection from existing owners.
-
-**Forbidden changes:** No hidden writes or second state machine. Resolution must map to an existing authoritative fact or a narrowly defined existing-store record fixed in the contract.
-
-**Acceptance:** Duplicate sources, priority ties, stale evidence, resolved/reopened items, missing source, bounded pagination, permissions, and deterministic recomputation.
-
-### Packet PE3-READ-1 — API, SDK, and Dashboard decision center
-
-**State:** `BLOCKED_PREREQUISITE`
-
-**Prerequisite:** PE3-QUEUE-1 complete.
-
-**Goal:** Expose the derived queue and evidence through existing read-only API/SDK/Dashboard owners.
-
-**Acceptance:** Router/OpenAPI parity, permission tests, encoded SDK paths, pagination, empty/error/stale UI, evidence navigation, and no mutation path in read components.
-
-### Packet PE3-ACTION-1 — Existing-control action adapters
-
-**State:** `BLOCKED_PREREQUISITE`
-
-**Prerequisite:** PE3-READ-1 complete.
-
-**Goal:** Let an authorized operator invoke only already-existing mutation endpoints from an action item, preserving each endpoint's permission, approval, audit, idempotency, and rollback behavior.
-
-**Forbidden changes:** No generic execute-anything endpoint, implicit approval, hidden scheduler command, policy mutation, or new authority.
-
-**Acceptance:** Required-authority mismatch, stale item, duplicate request, endpoint failure, audit failure, compensation, permission, and evidence-to-action traceability tests.
-
-**Stop triggers:** A recommended action has no existing authoritative endpoint or requires altered approval semantics.
-
-### Packet PE3-CLOSE-1 — PE-3 acceptance seal
-
-**State:** `BLOCKED_PREREQUISITE`
-
-**Prerequisite:** PE3-ACTION-1 complete.
-
-**Goal:** Audit deterministic derivation, deduplication, stale invalidation, permissions, pagination, resolution, and action traceability; then activate PE4-CONTRACT-1.
+Later PE-3 packets remain: deterministic derived queue, read-only API/SDK/Dashboard surface, existing-control action adapters, and closeout.
 
 ## PE-4 — Trace-backed Policy Replay
-
-Stage invariants:
-
-- observed and estimated outcomes remain separate
-- recommendations are refused for sparse, stale, uncovered, or out-of-distribution evidence
-- progression is offline replay, then shadow evaluation, then bounded canary
-- reuse existing experiment, promotion, pause, and rollback controls
 
 ### Packet PE4-CONTRACT-1 — Calibration and coverage contract
 
 **State:** `BLOCKED_PREREQUISITE`
 
-**Prerequisite:** PE3-CLOSE-1 complete and sufficient versioned trace evidence exists.
+**Prerequisite:** PE3 closeout and sufficient versioned trace evidence.
 
-**Goal:** Define versioned calibration slices by task class, complexity, provider/model, and execution profile, including sample size, window, coverage, confidence, OOD, and refusal reason codes.
-
-**Owning paths:** `engine/src/feedback/run_trace_recorder.rs`, `engine/src/feedback/policy_simulator.rs`, existing experiment evidence, focused tests.
-
-**Forbidden changes:** No live influence, promotion, routing mutation, or heuristic removal outside supported slices.
-
-**Acceptance:** Sparse/stale/OOD/contradictory trace behavior, leakage prevention, deterministic partitions, and observed-vs-estimated separation.
-
-### Packet PE4-REPLAY-1 — Offline trace-backed policy replay
-
-**State:** `BLOCKED_PREREQUISITE`
-
-**Prerequisite:** PE4-CONTRACT-1 complete.
-
-**Goal:** Compare candidate policies offline on success, quality, cost, latency, retries, and review outcomes for covered slices; refuse unsupported recommendations.
-
-**Allowed changes:** Incremental replacement of fixed heuristic estimates only where coverage passes; retain explicit fallback/refusal elsewhere.
-
-**Acceptance:** Golden replay, coverage boundary, OOD, stale trace, policy-version mismatch, deterministic result, and no-live-influence tests.
-
-### Packet PE4-SHADOW-1 — Shadow policy evaluation
-
-**State:** `BLOCKED_PREREQUISITE`
-
-**Prerequisite:** PE4-REPLAY-1 complete.
-
-**Goal:** Run candidate policy decisions in shadow through existing experiment/evidence owners without changing live routing.
-
-**Acceptance:** Live/shadow separation, correlation, bounded evidence, failure isolation, restart, and operator visibility tests.
-
-### Packet PE4-CANARY-1 — Guarded canary and promotion integration
-
-**State:** `BLOCKED_PREREQUISITE`
-
-**Prerequisite:** PE4-SHADOW-1 complete with explicit threshold evidence.
-
-**Goal:** Reuse existing canary, promotion snapshot, pause, and rollback paths for a bounded candidate policy only after offline and shadow gates pass.
-
-**Forbidden changes:** No automatic broad rollout, bypassed approval, missing rollback snapshot, or promotion on insufficient/OOD evidence.
-
-**Acceptance:** Threshold pass/fail, concurrent promotion, pause, rollback, snapshot integrity, stale evidence, permission, and restart tests.
-
-**Stop triggers:** Existing promotion/rollback cannot represent the candidate safely or threshold policy is not specified.
-
-### Packet PE4-CLOSE-1 — PE-4 acceptance seal
-
-**State:** `BLOCKED_PREREQUISITE`
-
-**Prerequisite:** PE4-CANARY-1 complete.
-
-**Goal:** Prove the offline-to-shadow-to-canary chain and activate the next eligible stage packet.
+PE-4 remains offline-replay first, then shadow, then bounded canary through existing experiment/promotion/pause/rollback owners. Sparse, stale, uncovered, or out-of-distribution evidence must refuse recommendations.
 
 ## PE-5 — Release Provenance
-
-Stage invariants:
-
-- signing material remains outside the repository
-- provenance binds source commit, workflow, target, dependency state, and artifact digest
-- installer/upgrade verification fails closed while preserving atomic rollback
-- current audits and target-correct packaging remain mandatory
 
 ### Packet PE5-SBOM-1 — Deterministic SBOM generation
 
 **State:** `BLOCKED_PREREQUISITE`
 
-**Prerequisite:** PE1-CLOSE-1 complete and no conflicting release PR is active; user may explicitly activate this lane.
+**Prerequisite:** explicit independent-lane activation and no conflicting release PR.
 
-**Goal:** Produce bounded SPDX or CycloneDX SBOMs for release binaries and container images through existing release workflows.
-
-**Owning paths:** `.github/workflows/release.yml`, release/container scripts, release-contract checks.
-
-**Forbidden changes:** No release publication, persistent signing key, disabled dependency audit, or target relabeling.
-
-**Acceptance:** Deterministic content where practical, target/dependency correctness, missing component failure, tamper tests, and dry-run artifacts.
-
-### Packet PE5-ATTEST-1 — Build provenance attestations
-
-**State:** `BLOCKED_PREREQUISITE`
-
-**Prerequisite:** PE5-SBOM-1 complete.
-
-**Goal:** Generate provenance tying source, workflow, target, dependencies/SBOM, and final digests.
-
-**Acceptance:** Wrong commit/target/digest/workflow rejection, reproducible verification fixture, and no secret material.
-
-### Packet PE5-SIGN-1 — Artifact and image signing
-
-**State:** `BLOCKED_PREREQUISITE`
-
-**Prerequisite:** PE5-ATTEST-1 complete.
-
-**Goal:** Sign release artifacts/images through external or ephemeral CI identity and verify signatures without storing private signing material in the repository.
-
-**Acceptance:** Valid, missing, wrong identity, wrong target, expired/revoked where supported, and tampered signature tests. CI tests use disposable fixtures only.
-
-**Stop triggers:** Trust root, identity policy, or key custody is unspecified.
-
-### Packet PE5-INSTALL-1 — Installer and upgrade provenance enforcement
-
-**State:** `BLOCKED_PREREQUISITE`
-
-**Prerequisite:** PE5-SIGN-1 complete.
-
-**Goal:** Require the configured SBOM/provenance/signature evidence before install/upgrade, and preserve existing atomic rollback on verification or activation failure.
-
-**Acceptance:** Missing/tampered/mismatched evidence, network interruption, partial download, activation failure, prior-version restoration, and target correctness tests.
-
-### Packet PE5-CLOSE-1 — PE-5 acceptance seal
-
-**State:** `BLOCKED_PREREQUISITE`
-
-**Prerequisite:** PE5-INSTALL-1 complete.
-
-**Goal:** Audit provenance from build to install and mark PE-5 complete without publishing an external release unless separately authorized.
+PE-5 retains external/ephemeral signing identity, source/workflow/target/dependency/artifact binding, fail-closed installer verification, and atomic rollback. It is not active in this effort.
 
 ## PE-6 — Fault Injection and Recovery Drills
 
-Stage invariants:
+### Packet PE6-INVARIANTS-1 — Recovery invariants contract
 
-- drills are bounded, deterministic, local/CI-safe, and isolated from real external state
-- each drill fixes permitted data loss, authority behavior, fail-closed expectation, recovery sequence, cleanup, and required evidence before implementation
-- reports record recovery success, divergence, duplicate execution, data loss, fail-open violations, and recovery time
+**State:** `PLANNER_DECISION_REQUIRED`
 
-### Packet PE6-INVARIANTS-1 — Recovery invariant catalog and harness contract
+PE-6 may not inject failures until each affected subsystem has explicit normal-state, failure-state, recovery-success, rollback-success, data-integrity, audit, timeout, and abort invariants. No destructive external testing is authorized.
 
-**State:** `BLOCKED_PREREQUISITE`
+## Active Routing
 
-**Prerequisite:** PE4-CLOSE-1 complete; PE5-CLOSE-1 complete for release/upgrade drills.
-
-**Goal:** Encode bounded versioned drill/invariant/report contracts and reusable local fault seams without executing destructive external operations.
-
-**Owning paths:** focused engine integration tests, storage/provider/scheduler fault seams, backup/restore, upgrade rollback, and CI tooling.
-
-**Forbidden changes:** No production fault toggle exposed remotely, no real provider sabotage, no destructive shared database test, and no unbounded retry.
-
-**Acceptance:** Contract validation, cleanup enforcement, timeout, fail-closed default, deterministic report, and test-environment isolation.
-
-### Packet PE6-STORAGE-1 — Audit, database, and artifact recovery drills
-
-**State:** `BLOCKED_PREREQUISITE`
-
-**Prerequisite:** PE6-INVARIANTS-1 complete.
-
-**Goal:** Test audit-store failure, database interruption/restart, bounded state loss, artifact corruption, backup/restore, and integrity recovery.
-
-**Acceptance:** SQLite and PostgreSQL scenarios, no fail-open authority, permitted data-loss assertion, duplicate detection, cleanup, and recovery-time evidence.
-
-### Packet PE6-RUNTIME-1 — Provider, budget, scheduler, and mailbox drills
-
-**State:** `BLOCKED_PREREQUISITE`
-
-**Prerequisite:** PE6-STORAGE-1 complete.
-
-**Goal:** Test provider timeout/invalid response, budget concurrency, scheduler restart, pause recovery, and duplicate mailbox delivery through existing seams.
-
-**Acceptance:** No double execution/charge, preserved audit, fail-closed gates, idempotent recovery, bounded retries, and cleanup.
-
-### Packet PE6-RELEASE-1 — Upgrade and provenance failure drills
-
-**State:** `BLOCKED_PREREQUISITE`
-
-**Prerequisite:** PE6-RUNTIME-1 and PE5-CLOSE-1 complete.
-
-**Goal:** Test interrupted upgrade, invalid provenance/signature, corrupted artifact, activation failure, and restoration of the previous verified version.
-
-**Acceptance:** Atomic rollback, target correctness, no partial active installation, retained evidence, and cleanup.
-
-### Packet PE6-OPS-1 — Drill reporting and proven runbook procedures
-
-**State:** `BLOCKED_PREREQUISITE`
-
-**Prerequisite:** PE6-RELEASE-1 complete.
-
-**Goal:** Expose bounded drill reports through existing operator evidence/read surfaces and add only successfully tested operator procedures to `docs/RUNBOOK.md`.
-
-**Forbidden changes:** No new operational fact store or untested runbook claim.
-
-### Packet PE6-CLOSE-1 — Final evolution-plan acceptance seal
-
-**State:** `BLOCKED_PREREQUISITE`
-
-**Prerequisite:** PE6-OPS-1 complete.
-
-**Goal:** Audit PE-1 through PE-6 boundaries, evidence, CI, rollback, active docs, and remaining risks; mark the plan complete without inventing PE-7.
-
-## Cross-Stage Rules
-
-- Reuse existing `LocalProductStore`, workflow, scheduler, provider, feedback, operator-evidence, Dashboard, SDK, release, and recovery owners.
-- Do not add a second scheduler, graph kernel, mailbox, storage layer, policy authority, artifact truth source, or Dashboard state model.
-- Use bounded versioned contracts and deterministic recomputation where practical.
-- Maintain SQLite/PostgreSQL compatibility when storage changes.
-- Separate facts, estimates, recommendations, and live actions.
-- Start with observation before granting new mutation authority.
-- Provider calls remain forbidden in CI.
-- Do not persist raw prompts, outputs, transcripts, secrets, repository payloads, or other sensitive runtime content in evidence.
-- Include compatibility, residual risk, and rollback in every PR.
-- One active product packet at a time unless the user explicitly activates the independent PE-5 lane.
-
-## Hard Stops
-
-Agents must not commit credentials, falsify evidence, hide failures, remove recovery paths, bypass auth/budget/audit/approval controls, create unbounded execution, persist raw sensitive runtime content, or perform irreversible external destruction without recovery.
-
-Additional Terra execution hard stops:
-
-- no `READY_FOR_TERRA` packet with satisfied prerequisites
-- current model profile is not Terra Medium
-- packet conflicts with code or another authoritative document
-- an unspecified architecture, authority, schema, migration, security, trust, signing, or recovery decision is required
-- two coherent repair cycles fail on the same root cause
-
-## Auto-Merge Policy
-
-Scoped docs, tests, fixes, implementation, migration, security, release, and authority changes may be merged autonomously when the packet is ready, scope/risk are reviewed, all CI is green, the handoff guard passes, evidence is truthful, and rollback is clear. External release publication or irreversible effects require separate verified authority.
-
-## Minimum Verification
-
-Run focused checks plus applicable full repository validation:
-
-```bash
-cargo fmt --all -- --check
-cargo clippy -p engine --all-targets --all-features -- -D warnings
-cargo test -p engine
-cargo test -p engine --features pg-tests -- --test-threads=1
-PYTHONPATH=src uv run --no-project python -m unittest discover -s tests
-bash scripts/verify_rust_typescript_stack.sh
-bash scripts/check_wire_codegen_drift.sh
-uv run --no-project python tools/check_security_baseline.py
-uv run --no-project python scripts/check_agent_handoff.py
-git diff --check
-```
-
-Add release, browser, Docker, migration, backup/restore, or fault-specific checks when those surfaces change.
-
-## Documentation Maintenance
-
-Use existing active docs only. Put durable architecture in `ARCHITECTURE_BOOK.md`, current facts in `CURRENT_STATUS.md`, forward authority and packets here, ownership in `MODULE_MAP.md`, validation discipline in `REAL_WORLD_TESTING_PLAYBOOK.md`, and proven operator procedures in `RUNBOOK.md`.
-
-## Before Starting Autonomous Work
-
-1. Confirm Terra Medium execution profile.
-2. Read `AGENTS.md`, `docs/CURRENT_STATUS.md`, this file, and `docs/MODULE_MAP.md`.
-3. Select the earliest `READY_FOR_TERRA` packet whose prerequisites are complete.
-4. Audit current code before assuming functionality is absent.
-5. Restate packet scope, non-goals, ownership, and stop triggers.
-6. Implement on a branch, test, review, and repair ordinary CI failures for at most two coherent cycles.
-7. Update active docs with facts only.
-8. Report packet, model profile, PR, commits, compatibility, evidence, CI, residual risk, rollback, and next packet state.
+1. Execute PE2-CONTRACT-1 from latest `main`.
+2. Merge only after focused validation, full CI, architecture/authority review, and no unresolved objection.
+3. Refresh `main`, re-read active docs/code, and continue PE2-FORECAST-1, PE2-ANOMALY-1, PE2-READ-1, PE2-PAUSE-1, then PE2-CLOSE-1.
+4. After PE-2 closeout, mark PE-3 next but do not start it in the PE-1-to-PE-2 effort.
