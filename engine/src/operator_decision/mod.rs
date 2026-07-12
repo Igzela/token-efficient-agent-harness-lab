@@ -494,6 +494,10 @@ fn source_matches_reference(
 }
 
 fn source_order(left: &OperatorDecisionSource, right: &OperatorDecisionSource) -> Ordering {
+    let left_observed = parse_time("observed_at", &left.observed_at)
+        .expect("source_order receives validated operator decision sources");
+    let right_observed = parse_time("observed_at", &right.observed_at)
+        .expect("source_order receives validated operator decision sources");
     right
         .severity
         .rank()
@@ -505,7 +509,7 @@ fn source_order(left: &OperatorDecisionSource, right: &OperatorDecisionSource) -
                 .cmp(&left.source_kind.precedence())
         })
         .then_with(|| right.confidence.total_cmp(&left.confidence))
-        .then_with(|| right.observed_at.cmp(&left.observed_at))
+        .then_with(|| right_observed.cmp(&left_observed))
         .then_with(|| left.source_kind.cmp(&right.source_kind))
         .then_with(|| left.source_id.cmp(&right.source_id))
 }
