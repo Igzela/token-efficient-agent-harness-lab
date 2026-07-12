@@ -159,6 +159,7 @@ pub struct AdaptiveCanaryDecision {
     pub status: String,
     pub canary_id: String,
     pub idempotency_key: String,
+    pub scope: String,
     pub policy_version: String,
     pub policy_hash: String,
     pub candidate_id: String,
@@ -302,6 +303,7 @@ impl AdaptiveExperimentController {
             status: status.to_string(),
             canary_id: request.canary_id.clone(),
             idempotency_key: request.idempotency_key.clone(),
+            scope: request.scope.clone(),
             policy_version: request.policy_version.clone(),
             policy_hash: request.policy_hash.clone(),
             candidate_id: request.candidate_id.clone(),
@@ -317,27 +319,61 @@ impl AdaptiveExperimentController {
             blocked_reasons,
             content_sha256: String::new(),
         };
-        decision.content_sha256 = stable_hash(&json!({
-            "schema_version": decision.schema_version,
-            "status": decision.status,
-            "canary_id": decision.canary_id,
-            "idempotency_key": decision.idempotency_key,
-            "policy_version": decision.policy_version,
-            "policy_hash": decision.policy_hash,
-            "candidate_id": decision.candidate_id,
-            "candidate_version": decision.candidate_version,
-            "candidate_definition_sha256": decision.candidate_definition_sha256,
-            "rollout_percentage": decision.rollout_percentage,
-            "duration_seconds": decision.duration_seconds,
-            "minimum_evidence": decision.minimum_evidence,
-            "source_shadow_content_sha256": decision.source_shadow_content_sha256,
-            "rollback_target": decision.rollback_target,
-            "paused": decision.paused,
-            "compensation_required": decision.compensation_required,
-            "blocked_reasons": decision.blocked_reasons,
-        }));
+        decision.content_sha256 = adaptive_canary_decision_sha256(&decision);
         Ok(decision)
     }
+}
+
+pub fn adaptive_canary_decision_sha256(decision: &AdaptiveCanaryDecision) -> String {
+    stable_hash(&json!({
+        "schema_version": decision.schema_version,
+        "status": decision.status,
+        "canary_id": decision.canary_id,
+        "idempotency_key": decision.idempotency_key,
+        "scope": decision.scope,
+        "policy_version": decision.policy_version,
+        "policy_hash": decision.policy_hash,
+        "candidate_id": decision.candidate_id,
+        "candidate_version": decision.candidate_version,
+        "candidate_definition_sha256": decision.candidate_definition_sha256,
+        "rollout_percentage": decision.rollout_percentage,
+        "duration_seconds": decision.duration_seconds,
+        "minimum_evidence": decision.minimum_evidence,
+        "source_shadow_content_sha256": decision.source_shadow_content_sha256,
+        "rollback_target": decision.rollback_target,
+        "paused": decision.paused,
+        "compensation_required": decision.compensation_required,
+        "blocked_reasons": decision.blocked_reasons,
+    }))
+}
+
+pub fn validate_canary_decision(decision: &AdaptiveCanaryDecision) -> Result<(), String> {
+    if decision.schema_version != ADAPTIVE_CANARY_SCHEMA_VERSION
+        || !matches!(decision.status.as_str(), "started" | "paused" | "blocked")
+        || !valid_id(&decision.canary_id)
+        || !valid_id(&decision.idempotency_key)
+        || !valid_id(&decision.scope)
+        || !valid_id(&decision.policy_version)
+        || !valid_id(&decision.candidate_id)
+        || !valid_id(&decision.candidate_version)
+        || !valid_hash(&decision.policy_hash)
+        || !valid_hash(&decision.candidate_definition_sha256)
+        || !valid_hash(&decision.source_shadow_content_sha256)
+        || !valid_hash(&decision.content_sha256)
+        || adaptive_canary_decision_sha256(decision) != decision.content_sha256
+        || decision.rollout_percentage == 0
+        || decision.rollout_percentage > 5
+        || decision.duration_seconds == 0
+        || decision.duration_seconds > 86_400
+        || decision.minimum_evidence == 0
+        || decision.rollback_target != format!("policy:{}", decision.policy_hash)
+        || (decision.status == "started") != decision.compensation_required
+        || (decision.status == "paused") != decision.paused
+        || contains_sensitive_patterns(&serde_json::to_string(decision).unwrap_or_default())
+    {
+        return Err("adaptive canary decision is not hash-valid and bounded".to_string());
+    }
+    Ok(())
 }
 
 fn validate_canary_request(request: &AdaptiveCanaryRequest) -> Vec<String> {
@@ -626,6 +662,8 @@ mod canary_tests {
         assert!(decision.compensation_required);
         assert_eq!(decision.rollout_percentage, 5);
         assert_eq!(decision.rollback_target, format!("policy:{:064x}", 1));
+        assert_eq!(decision.scope, "tenant-local");
+        assert!(validate_canary_decision(&decision).is_ok());
         assert_eq!(
             decision,
             AdaptiveExperimentController::start_canary(
@@ -635,6 +673,31 @@ mod canary_tests {
             )
             .unwrap()
         );
+    }
+
+    #[test]
+    fn canary_decision_is_idempotent_restart_safe_and_hash_bound() {
+        let first = AdaptiveExperimentController::start_canary(
+            &request(true, true),
+            &shadow(),
+            &AdaptiveExperimentGate::from_flags(true, true, false, false),
+        )
+        .unwrap();
+        let restarted = AdaptiveExperimentController::start_canary(
+            &request(true, true),
+            &shadow(),
+            &AdaptiveExperimentGate::from_flags(true, true, false, false),
+        )
+        .unwrap();
+        assert_eq!(first, restarted);
+        assert_eq!(
+            adaptive_canary_decision_sha256(&first),
+            first.content_sha256
+        );
+
+        let mut tampered = first;
+        tampered.scope = "other-scope".to_string();
+        assert!(validate_canary_decision(&tampered).is_err());
     }
 
     #[test]
