@@ -148,6 +148,40 @@ fn shared_source_id_across_kinds_uses_exact_selected_identity() {
 }
 
 #[test]
+fn observation_precedence_uses_instants_not_rfc3339_text() {
+    let mut older = source(
+        OperatorDecisionSourceKind::Workflow,
+        "workflow-older",
+        OperatorDecisionAction::Retry,
+    );
+    older.observed_at = "2026-07-11T01:00:00+01:00".to_string();
+    older.expires_at = Some("2026-07-11T02:00:00+01:00".to_string());
+    older.seal().unwrap();
+
+    let mut newer = source(
+        OperatorDecisionSourceKind::Workflow,
+        "workflow-newer",
+        OperatorDecisionAction::Retry,
+    );
+    newer.observed_at = "2026-07-11T00:30:00Z".to_string();
+    newer.expires_at = Some("2026-07-11T01:30:00Z".to_string());
+    newer.seal().unwrap();
+
+    let item = derive_operator_decision_item(
+        "run-1:control",
+        &[older, newer],
+        "2026-07-11T00:40:00Z",
+        3600,
+    )
+    .unwrap();
+
+    assert_eq!(
+        item.selected_source.expect("selected source").evidence_id,
+        "workflow-newer"
+    );
+}
+
+#[test]
 fn equal_precedence_action_conflict_fails_closed() {
     let approve = source(
         OperatorDecisionSourceKind::Approval,
