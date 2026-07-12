@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       command:
-        description: Command to execute (select-task | next-task | retry-task | block-task | status)
+        description: Command to execute (select-task | next-task | retry-task | block-task | status | emergency-stop)
         required: true
         type: choice
         options:
@@ -13,6 +13,7 @@ on:
           - retry-task
           - block-task
           - status
+          - emergency-stop
       issue:
         description: Issue number (required for select-task, retry-task, block-task)
         required: false
@@ -33,8 +34,29 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  control:
+  gate:
     runs-on: ubuntu-latest
+    outputs:
+      enabled: ${{ steps.check.outputs.enabled }}
+    steps:
+      - name: Check orchestrator gate
+        id: check
+        env:
+          AGENT_ORCHESTRATOR_ENABLED: ${{ vars.AGENT_ORCHESTRATOR_ENABLED }}
+        run: |
+          if [ "${AGENT_ORCHESTRATOR_ENABLED:-false}" != "true" ]; then
+            echo "AGENT_ORCHESTRATOR_ENABLED is not true. Controller disabled."
+            echo "enabled=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "enabled=true" >> "$GITHUB_OUTPUT"
+          fi
+
+  control:
+    needs: gate
+    if: needs.gate.outputs.enabled == 'true'
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ github.token }}
     steps:
       - name: Check out repository
         uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
@@ -46,19 +68,8 @@ jobs:
         with:
           python-version: "3.11"
 
-      - name: Check orchestrator gate
-        run: |
-          if [ "${AGENT_ORCHESTRATOR_ENABLED:-false}" != "true" ]; then
-            echo "AGENT_ORCHESTRATOR_ENABLED is not true. Controller disabled."
-            exit 0
-          fi
-        env:
-          AGENT_ORCHESTRATOR_ENABLED: ${{ vars.AGENT_ORCHESTRATOR_ENABLED }}
-
       - name: Execute controller command
         id: command
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           COMMAND=${{ github.event.inputs.command }}
 
@@ -66,18 +77,31 @@ jobs:
             select-task)
               python3 scripts/agent-control/state_manager.py select-task \
                 ${{ github.event.inputs.issue }}
+              echo "Dispatching worker for issue #${{ github.event.inputs.issue }}"
+              gh workflow run agent-worker.yml \
+                --ref main \
+                -f issue="${{ github.event.inputs.issue }}" \
+                -f dry_run=false
               ;;
             next-task)
               ISSUE=$(python3 scripts/agent-control/state_manager.py next-task)
               echo "selected_issue=$ISSUE" >> "$GITHUB_OUTPUT"
               if [ -n "$ISSUE" ] && [ "$ISSUE" != "None" ]; then
-                gh workflow run agent-intake.yml --ref main -f issue="$ISSUE"
+                echo "Dispatching worker for issue #$ISSUE"
+                gh workflow run agent-worker.yml \
+                  --ref main \
+                  -f issue="$ISSUE" \
+                  -f dry_run=false
               fi
               ;;
             retry-task)
               python3 scripts/agent-control/state_manager.py retry-task \
                 ${{ github.event.inputs.issue }}
-              gh workflow run agent-intake.yml --ref main -f issue="${{ github.event.inputs.issue }}"
+              echo "Dispatching worker for retry of issue #${{ github.event.inputs.issue }}"
+              gh workflow run agent-worker.yml \
+                --ref main \
+                -f issue="${{ github.event.inputs.issue }}" \
+                -f dry_run=false
               ;;
             block-task)
               python3 scripts/agent-control/state_manager.py block-task \
@@ -87,11 +111,16 @@ jobs:
             status)
               python3 scripts/agent-control/state_manager.py status
               ;;
+            emergency-stop)
+              echo "To activate emergency stop, set the AGENT_EMERGENCY_STOP"
+              echo "repository variable to 'true' via GitHub UI or API."
+              python3 scripts/agent-control/state_manager.py emergency-stop
+              ;;
           esac
 
       - name: Report result
         run: |
           ISSUE="${{ steps.command.outputs.selected_issue }}"
           if [ -n "$ISSUE" ] && [ "$ISSUE" != "None" ]; then
-            echo "Dispatched agent-intake for issue #$ISSUE"
+            echo "Dispatched agent-worker for issue #$ISSUE"
           fi

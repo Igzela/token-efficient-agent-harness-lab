@@ -103,11 +103,11 @@ def build_implementation_prompt(issue_number, template="implementation.md"):
     return prompt
 
 
-def build_ci_repair_prompt(pr_number, head_sha, failed_jobs, logs, repair_count, template="ci_repair.md"):
+def build_ci_repair_prompt(pr_number, head_sha, failed_jobs_json, logs, repair_count, template="ci_repair.md"):
     ctx = build_context(0)
     ctx["pr_number"] = pr_number
     ctx["head_sha"] = head_sha
-    ctx["failed_jobs"] = failed_jobs
+    ctx["failed_jobs"] = failed_jobs_json
     ctx["logs"] = logs[:50000] if logs else ""
     ctx["repair_count"] = repair_count
 
@@ -118,7 +118,7 @@ def build_ci_repair_prompt(pr_number, head_sha, failed_jobs, logs, repair_count,
     prompt = template_text
     prompt = prompt.replace("{{PR_NUMBER}}", str(pr_number))
     prompt = prompt.replace("{{HEAD_SHA}}", head_sha)
-    prompt = prompt.replace("{{FAILED_JOBS}}", json.dumps(failed_jobs))
+    prompt = prompt.replace("{{FAILED_JOBS}}", failed_jobs_json if isinstance(failed_jobs_json, str) else json.dumps(failed_jobs_json))
     prompt = prompt.replace("{{LOGS}}", ctx["logs"])
     prompt = prompt.replace("{{REPAIR_COUNT}}", str(repair_count))
     prompt = prompt.replace("{{REPO_NAME}}", f"{REPO_OWNER}/{REPO_NAME}")
@@ -170,7 +170,7 @@ def build_review_prompt(pr_number, head_sha, template="review.md"):
 
 def main():
     if len(sys.argv) < 3:
-        print("Usage: prompt_builder.py <implementation|ci-repair|review> <issue_or_pr> [sha] [failed_jobs...]",
+        print("Usage: prompt_builder.py <implementation|ci-repair|review> <issue_or_pr> [sha] [failed_jobs_json]",
               file=sys.stderr)
         sys.exit(1)
 
@@ -186,7 +186,7 @@ def main():
 
     elif command == "ci-repair":
         sha = sys.argv[3] if len(sys.argv) > 3 else ""
-        failed_jobs = sys.argv[4:] if len(sys.argv) > 4 else []
+        failed_jobs = sys.argv[4] if len(sys.argv) > 4 else "[]"
         repair_count = int(os.environ.get("AGENT_REPAIR_COUNT", "0"))
         logs = os.environ.get("AGENT_FAILED_LOGS", "")
         prompt = build_ci_repair_prompt(number, sha, failed_jobs, logs, repair_count)

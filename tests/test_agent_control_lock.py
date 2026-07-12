@@ -28,7 +28,6 @@ class TestLockManager(unittest.TestCase):
     def test_acquire_and_release(self):
         self.assertTrue(lm.acquire_lock(self.test_key, timeout_secs=5))
         lm.release_lock(self.test_key)
-        # Should be able to re-acquire after release
         self.assertTrue(lm.acquire_lock(self.test_key, timeout_secs=5))
         lm.release_lock(self.test_key)
 
@@ -40,7 +39,7 @@ class TestLockManager(unittest.TestCase):
     def test_release_twice_ok(self):
         self.assertTrue(lm.acquire_lock(self.test_key, timeout_secs=5))
         lm.release_lock(self.test_key)
-        lm.release_lock(self.test_key)  # should not raise
+        lm.release_lock(self.test_key)
 
     def test_concurrent_locks(self):
         results = []
@@ -99,13 +98,8 @@ class TestLockStaleDetection(unittest.TestCase):
     def test_stale_lock_cleanup(self):
         key = f"test-stale-{os.getpid()}-{time.time_ns()}"
         lm.acquire_lock(key, timeout_secs=5)
-
-        # Verify locked
         self.assertFalse(lm.acquire_lock(key, timeout_secs=1))
-
         lm.release_lock(key)
-
-        # Verify free
         self.assertTrue(lm.acquire_lock(key, timeout_secs=5))
         lm.release_lock(key)
 

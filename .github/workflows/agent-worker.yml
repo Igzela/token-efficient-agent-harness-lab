@@ -22,16 +22,42 @@ concurrency:
   group: agent-worker-${{ github.event.inputs.issue }}
   cancel-in-progress: false
 
-env:
-  AGENT_REPO: ${{ github.repository }}
-  AGENT_WORKTREE_BASE: /tmp/agent-worktrees
-
 jobs:
+  gate:
+    runs-on: ubuntu-latest
+    outputs:
+      enabled: ${{ steps.check.outputs.can_start }}
+      emergency_stopped: ${{ steps.check.outputs.emergency_stopped }}
+    steps:
+      - name: Check orchestrator gate and emergency stop
+        id: check
+        env:
+          AGENT_ORCHESTRATOR_ENABLED: ${{ vars.AGENT_ORCHESTRATOR_ENABLED }}
+          AGENT_EMERGENCY_STOP: ${{ vars.AGENT_EMERGENCY_STOP }}
+        run: |
+          if [ "${AGENT_ORCHESTRATOR_ENABLED:-false}" != "true" ]; then
+            echo "AGENT_ORCHESTRATOR_ENABLED is not true. Worker disabled."
+            echo "can_start=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          if [ "${AGENT_EMERGENCY_STOP:-false}" = "true" ]; then
+            echo "Emergency stop is active. Worker disabled."
+            echo "can_start=false" >> "$GITHUB_OUTPUT"
+            echo "emergency_stopped=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          echo "can_start=true" >> "$GITHUB_OUTPUT"
+          echo "emergency_stopped=false" >> "$GITHUB_OUTPUT"
+
   validate:
+    needs: gate
+    if: needs.gate.outputs.enabled == 'true'
     runs-on: ubuntu-latest
     outputs:
       can_start: ${{ steps.check.outputs.can_start }}
       worker_count: ${{ steps.check.outputs.worker_count }}
+    env:
+      GH_TOKEN: ${{ github.token }}
     steps:
       - name: Check out repository
         uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
@@ -43,46 +69,50 @@ jobs:
         with:
           python-version: "3.11"
 
-      - name: Validate issue state
+      - name: Validate issue state and capacity
         id: check
         run: |
           ISSUE=${{ github.event.inputs.issue }}
 
-          if [ "${AGENT_ORCHESTRATOR_ENABLED:-false}" != "true" ]; then
-            echo "AGENT_ORCHESTRATOR_ENABLED is not true. Worker disabled."
-            echo "can_start=false" >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
-
           LABELS=$(python3 scripts/agent-control/state_manager.py get-labels "$ISSUE")
           if echo "$LABELS" | grep -qv "agent-ready"; then
+            echo "Issue #$ISSUE does not have agent-ready label."
             echo "can_start=false" >> "$GITHUB_OUTPUT"
             exit 0
           fi
-          if echo "$LABELS" | grep -Eq "(agent-running|ci-repairing|final-review|agent-complete|agent-blocked)"; then
+          if echo "$LABELS" | grep -Eq "(agent-running|ci-repairing|review-running|agent-complete|agent-blocked)"; then
+            echo "Issue #$ISSUE is already active or terminal ($LABELS)."
             echo "can_start=false" >> "$GITHUB_OUTPUT"
             exit 0
           fi
           if ! python3 scripts/agent-control/state_manager.py check-deps "$ISSUE"; then
+            echo "Issue #$ISSUE has unresolved dependencies."
             echo "can_start=false" >> "$GITHUB_OUTPUT"
             exit 0
           fi
           CAPACITY=$(python3 scripts/agent-control/lock_manager.py capacity 2>&1 || echo "full")
           WORKERS=$(python3 scripts/agent-control/lock_manager.py count)
           if [ "$CAPACITY" = "full" ]; then
+            echo "Repository capacity full ($WORKERS active workers)."
             echo "can_start=false" >> "$GITHUB_OUTPUT"
             echo "worker_count=$WORKERS" >> "$GITHUB_OUTPUT"
             exit 0
           fi
           echo "can_start=true" >> "$GITHUB_OUTPUT"
           echo "worker_count=$WORKERS" >> "$GITHUB_OUTPUT"
-        env:
-          AGENT_ORCHESTRATOR_ENABLED: ${{ vars.AGENT_ORCHESTRATOR_ENABLED }}
 
   implement:
-    needs: validate
+    needs: [gate, validate]
     if: needs.validate.outputs.can_start == 'true'
     runs-on: [self-hosted, vader, agent-worker]
+    outputs:
+      pr_number: ${{ steps.push.outputs.pr_number }}
+      head_sha: ${{ steps.push.outputs.head_sha }}
+      branch: ${{ steps.worktree.outputs.branch }}
+      worktree_path: ${{ steps.worktree.outputs.worktree_path }}
+    env:
+      AGENT_REPO: ${{ github.repository }}
+      GH_TOKEN: ${{ github.token }}
     steps:
       - name: Check out repository
         uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
@@ -95,9 +125,8 @@ jobs:
         with:
           python-version: "3.11"
 
-      - name: Configure git authentication
+      - name: Configure git
         run: |
-          gh auth setup-git
           git config user.name "agent-orchestrator[bot]"
           git config user.email "agent-orchestrator[bot]@users.noreply.github.com"
 
@@ -111,6 +140,28 @@ jobs:
         run: |
           python3 scripts/agent-control/state_manager.py set-labels \
             ${{ github.event.inputs.issue }} agent-running
+
+      - name: Create isolated worktree
+        id: worktree
+        run: |
+          ISSUE=${{ github.event.inputs.issue }}
+          BRANCH="agent/issue-$ISSUE"
+
+          python3 scripts/agent-control/state_manager.py comment "$ISSUE" \
+            "## Agent Orchestrator: Worker Starting
+          Branch: \`$BRANCH\`
+          Creating isolated worktree for implementation."
+
+          python3 scripts/agent-control/worktree_manager.py create "$ISSUE" "$BRANCH"
+          WORKTREE_PATH=$(python3 scripts/agent-control/worktree_manager.py create "$ISSUE" "$BRANCH" 2>/dev/null | grep "worktree=" | cut -d= -f2)
+
+          if [ -z "$WORKTREE_PATH" ]; then
+            echo "ERROR: Failed to create worktree"
+            exit 1
+          fi
+
+          echo "worktree_path=$WORKTREE_PATH" >> "$GITHUB_OUTPUT"
+          echo "branch=$BRANCH" >> "$GITHUB_OUTPUT"
 
       - name: Build implementation prompt
         id: prompt
@@ -126,49 +177,60 @@ jobs:
           bash scripts/agent-control/codex_wrapper.sh \
             implement \
             /tmp/agent-prompt/issue-${{ github.event.inputs.issue }}.txt \
-            /tmp/agent-output/${{ github.event.inputs.issue }}
+            /tmp/agent-output/${{ github.event.inputs.issue }} \
+            "${{ steps.worktree.outputs.worktree_path }}"
         env:
-          AGENT_ORCHESTRATOR_ENABLED: "true"
+          AGENT_ORCHESTRATOR_ENABLED: ${{ vars.AGENT_ORCHESTRATOR_ENABLED }}
+          AGENT_EMERGENCY_STOP: ${{ vars.AGENT_EMERGENCY_STOP }}
 
-      - name: Push branch and create PR
+      - name: Verify Codex produced changes
         if: github.event.inputs.dry_run != 'true'
-        id: pr
+        id: changes
         run: |
-          ISSUE=${{ github.event.inputs.issue }}
-          BRANCH="agent/issue-$ISSUE"
-
-          # Recheck remote head before push
-          git fetch origin "$BRANCH" 2>/dev/null || true
-          LOCAL=$(git rev-parse HEAD)
-          REMOTE=$(git rev-parse "origin/$BRANCH" 2>/dev/null || echo "")
-          if [ -n "$REMOTE" ] && [ "$LOCAL" != "$REMOTE" ]; then
-            echo "ERROR: Remote head changed. Expected $LOCAL, got $REMOTE"
-            exit 1
+          cd "${{ steps.worktree.outputs.worktree_path }}"
+          if git diff --quiet && git diff --cached --quiet; then
+            echo "Codex produced no changes."
+            echo "has_changes=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "has_changes=true" >> "$GITHUB_OUTPUT"
           fi
 
+      - name: Create branch and commit (orchestrator-owned)
+        if: github.event.inputs.dry_run != 'true' && steps.changes.outputs.has_changes == 'true'
+        run: |
+          cd "${{ steps.worktree.outputs.worktree_path }}"
           git add -A
-          git diff --cached --quiet || git commit -m "agent: implement #$ISSUE"
-          python3 scripts/agent-control/worktree_manager.py push "$BRANCH"
-          python3 scripts/agent-control/worktree_manager.py create-pr "$ISSUE" "$BRANCH"
+          git diff --cached --quiet || git commit -m "agent: implement #${{ github.event.inputs.issue }}"
+          echo "Committed changes in worktree"
 
-      - name: Record worker state
+      - name: Push branch
+        if: github.event.inputs.dry_run != 'true' && steps.changes.outputs.has_changes == 'true'
+        id: push
         run: |
           ISSUE=${{ github.event.inputs.issue }}
-          PR_NUMBER=$(gh pr list --head "agent/issue-$ISSUE" --json number --jq '.[0].number' 2>/dev/null || echo "0")
-          HEAD_SHA=$(gh pr view "$PR_NUMBER" --json headRefOid --jq '.headRefOid' 2>/dev/null || echo "unknown")
+          BRANCH="${{ steps.worktree.outputs.branch }}"
+          cd "${{ steps.worktree.outputs.worktree_path }}"
+
+          python3 scripts/agent-control/worktree_manager.py push "$BRANCH"
+
+          PR_INFO=$(python3 scripts/agent-control/worktree_manager.py create-pr "$ISSUE" "$BRANCH" \
+            "agent: implement #$ISSUE" \
+            "Implements #$ISSUE" 2>&1)
+
+          PR_NUMBER=$(echo "$PR_INFO" | grep "pr_number=" | cut -d= -f2)
+          HEAD_SHA=$(git rev-parse HEAD)
+
+          echo "pr_number=$PR_NUMBER" >> "$GITHUB_OUTPUT"
+          echo "head_sha=$HEAD_SHA" >> "$GITHUB_OUTPUT"
+
           python3 scripts/agent-control/state_manager.py record-worker \
             "$ISSUE" "$PR_NUMBER" "$HEAD_SHA" "implementation"
 
-      - name: Comment on issue
-        run: |
-          ISSUE=${{ github.event.inputs.issue }}
-          PR_NUMBER=$(gh pr list --head "agent/issue-$ISSUE" --json number --jq '.[0].number' 2>/dev/null || echo "0")
-          HEAD_SHA=$(gh pr view "$PR_NUMBER" --json headRefOid --jq '.headRefOid' 2>/dev/null || echo "unknown")
           python3 scripts/agent-control/state_manager.py comment "$ISSUE" \
             "## Agent Orchestrator: Implementation Complete
-          PR: #${PR_NUMBER}
-          Branch: \`agent/issue-${ISSUE}\`
-          Head SHA: \`${HEAD_SHA}\`
+          PR: #$PR_NUMBER
+          Branch: \`$BRANCH\`
+          Head SHA: \`$HEAD_SHA\`
           Waiting for CI to complete before final review."
 
       - name: Dry-run report
@@ -176,6 +238,8 @@ jobs:
         run: |
           echo "=== Dry-Run Worker Report ==="
           echo "Issue: ${{ github.event.inputs.issue }}"
+          echo "Worktree: ${{ steps.worktree.outputs.worktree_path }}"
+          echo "Branch: ${{ steps.worktree.outputs.branch }}"
           echo "Codex invocation: SKIPPED"
           echo "Branch push: SKIPPED"
           echo "PR creation: SKIPPED"
@@ -190,6 +254,8 @@ jobs:
     needs: implement
     if: failure()
     runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ github.token }}
     steps:
       - name: Check out repository
         uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6

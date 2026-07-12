@@ -1,6 +1,8 @@
 """Git worktree management for the agent orchestrator.
 
 Creates, manages, and cleans up isolated git worktrees for Codex workers.
+Only manages worktrees within the configured WORKTREE_BASE that match
+the orchestrator naming pattern.
 """
 
 import os
@@ -10,6 +12,10 @@ import sys
 import tempfile
 
 WORKTREE_BASE = pathlib.Path(os.environ.get("AGENT_WORKTREE_BASE", "/tmp/agent-worktrees"))
+
+# Only these prefixes are considered orchestrator-owned
+ORCHESTRATOR_PREFIXES = ("issue-",)
+ORCHESTRATOR_BRANCH_PREFIX = "agent/issue-"
 
 
 def _git(*args, cwd=None):
@@ -30,8 +36,34 @@ def _gh(*args):
     return result.stdout.strip()
 
 
+def _is_orchestrator_path(path):
+    """Check if a path is within the orchestrator worktree base and matches naming pattern."""
+    try:
+        resolved = pathlib.Path(path).resolve()
+        base_resolved = WORKTREE_BASE.resolve()
+        if not str(resolved).startswith(str(base_resolved)):
+            return False
+        name = resolved.name
+        return any(name.startswith(p) for p in ORCHESTRATOR_PREFIXES)
+    except (OSError, ValueError):
+        return False
+
+
+def _is_orchestrator_worktree(path, repo_path):
+    """Check if a path is a registered git worktree owned by the orchestrator."""
+    if not _is_orchestrator_path(path):
+        return False
+    wt_list = _git("worktree", "list", "--porcelain", cwd=repo_path)
+    if not wt_list:
+        return False
+    for line in wt_list.split("\n"):
+        if line.startswith("worktree ") and line[9:].strip() == str(path.resolve()):
+            return True
+    return False
+
+
 def create_worktree(issue_number, branch_name, repo_path):
-    branch = branch_name or f"agent/issue-{issue_number}"
+    branch = branch_name or f"{ORCHESTRATOR_BRANCH_PREFIX}{issue_number}"
     worktree_path = WORKTREE_BASE / f"issue-{issue_number}"
 
     _git("fetch", "origin", cwd=repo_path)
@@ -56,19 +88,25 @@ def create_worktree(issue_number, branch_name, repo_path):
 
 def remove_worktree(issue_number, repo_path):
     worktree_path = WORKTREE_BASE / f"issue-{issue_number}"
-    branch = f"agent/issue-{issue_number}"
 
-    if worktree_path.exists():
+    if worktree_path.exists() and _is_orchestrator_path(worktree_path):
         _git("worktree", "remove", str(worktree_path), "--force", cwd=repo_path)
 
     _git("worktree", "prune", cwd=repo_path)
 
-    if worktree_path.exists():
+    if worktree_path.exists() and _is_orchestrator_path(worktree_path):
         import shutil
         shutil.rmtree(worktree_path, ignore_errors=True)
 
 
 def cleanup_stale_worktrees(repo_path, max_age_hours=24):
+    """Remove only orchestrator-owned stale worktrees.
+
+    Safety checks:
+    1. Path must be within WORKTREE_BASE
+    2. Path name must match orchestrator naming pattern (issue-*)
+    3. Path must be registered as a git worktree OR have explicit ownership evidence
+    """
     import shutil
     import time
 
@@ -81,11 +119,13 @@ def cleanup_stale_worktrees(repo_path, max_age_hours=24):
     for entry in WORKTREE_BASE.iterdir():
         if not entry.is_dir():
             continue
+        if not _is_orchestrator_path(entry):
+            continue
         try:
             mtime = entry.stat().st_mtime
             if now - mtime > max_age_hours * 3600:
-                issue_part = entry.name.replace("issue-", "")
-                if issue_part.isdigit() or True:
+                is_wt = _is_orchestrator_worktree(entry, repo_path)
+                if is_wt:
                     _git("worktree", "remove", str(entry), "--force", cwd=repo_path)
                 shutil.rmtree(entry, ignore_errors=True)
                 count += 1

@@ -1,6 +1,6 @@
 """Issue/PR state management for the agent orchestrator.
 
-All state is persisted in GitHub Issues, PRs, labels, and comments.
+All state is persisted in GitHub Issues, labels, and Issue comments.
 This module never stores state locally -- it reads/writes via the `gh` CLI.
 """
 
@@ -17,29 +17,32 @@ LABEL_DRAFT = "agent-draft"
 LABEL_READY = "agent-ready"
 LABEL_RUNNING = "agent-running"
 LABEL_CI_REPAIRING = "ci-repairing"
-LABEL_FINAL_REVIEW = "final-review"
+LABEL_REVIEW_RUNNING = "review-running"
+LABEL_REVIEW_PASSED = "review-passed"
 LABEL_BLOCKED = "agent-blocked"
 LABEL_COMPLETE = "agent-complete"
 
-ACTIVE_LABELS = {LABEL_RUNNING, LABEL_CI_REPAIRING, LABEL_FINAL_REVIEW}
+ACTIVE_LABELS = {LABEL_RUNNING, LABEL_CI_REPAIRING, LABEL_REVIEW_RUNNING}
 TERMINAL_LABELS = {LABEL_COMPLETE, LABEL_BLOCKED}
-ALL_LABELS = ACTIVE_LABELS | TERMINAL_LABELS | {LABEL_DRAFT, LABEL_READY}
+ALL_LABELS = ACTIVE_LABELS | TERMINAL_LABELS | {LABEL_DRAFT, LABEL_READY, LABEL_REVIEW_PASSED}
 
 MAX_REPAIR_ATTEMPTS = 2
 
+EMERGENCY_STOP_VAR = "AGENT_EMERGENCY_STOP"
+
 
 def _gh(*args, **kwargs):
-    input_data = kwargs.get("input_data")
     cmd = [GH] + list(args)
-    stdin = None
+    input_data = kwargs.get("input_data")
+    stdin_val = None
     if input_data is not None:
-        stdin = input_data.encode() if isinstance(input_data, str) else input_data
+        stdin_val = input_data.encode() if isinstance(input_data, str) else input_data
     try:
         result = subprocess.run(
             cmd,
             capture_output=True,
             text=True,
-            input=input_data if isinstance(input_data, str) else None,
+            input=stdin_val,
             timeout=30,
         )
         if result.returncode != 0:
@@ -49,6 +52,11 @@ def _gh(*args, **kwargs):
     except subprocess.TimeoutExpired:
         print(f"gh timed out: {' '.join(cmd)}", file=sys.stderr)
         return None
+
+
+def is_emergency_stopped():
+    val = os.environ.get(EMERGENCY_STOP_VAR, "false")
+    return val.lower() == "true"
 
 
 def get_issue_labels(issue_number, repo=""):
@@ -111,7 +119,33 @@ def comment_on_issue(issue_number, body, repo=""):
     if repo:
         args.extend(["--repo", repo])
     args.extend(["--body", body])
-    _gh(*args, input_data="")
+    _gh(*args)
+
+
+def get_issue_comments(issue_number, repo=""):
+    """Get all comments on an Issue, newest first."""
+    args = ["issue", "view", str(issue_number), "--json", "comments"]
+    if repo:
+        args.extend(["--repo", repo])
+    result = _gh(*args)
+    if not result:
+        return []
+    try:
+        data = json.loads(result)
+        comments = data.get("comments", [])
+        return list(reversed(comments))
+    except json.JSONDecodeError:
+        return []
+
+
+def get_issue_comment_bodies(issue_number, search_text, repo=""):
+    """Search Issue comments (not PR comments) for matching text, newest first."""
+    comments = get_issue_comments(issue_number, repo)
+    for comment in comments:
+        body = comment.get("body", "")
+        if search_text in body:
+            return body
+    return None
 
 
 def get_pr_info(pr_number, repo=""):
@@ -125,23 +159,6 @@ def get_pr_info(pr_number, repo=""):
         return json.loads(result)
     except json.JSONDecodeError:
         return None
-
-
-def get_pr_comment_body(pr_number, search_text, repo=""):
-    args = ["pr", "view", str(pr_number), "--json", "comments", "--jq", ".comments[]"]
-    if repo:
-        args.extend(["--repo", repo])
-    result = _gh(*args)
-    if not result:
-        return None
-    try:
-        comments = json.loads(f"[{result.replace('}\n{', '},{')}]")
-        for comment in comments:
-            if search_text in comment.get("body", ""):
-                return comment["body"]
-    except json.JSONDecodeError:
-        pass
-    return None
 
 
 def parse_dependencies(body):
@@ -185,7 +202,8 @@ def record_worker_state(issue_number, pr_number, head_sha, worker_type, extra=No
 
 
 def read_worker_state(issue_number, repo=""):
-    body = get_pr_comment_body(issue_number, "agent-orchestrator-state", repo)
+    """Read the most recent worker state from Issue comments."""
+    body = get_issue_comment_bodies(issue_number, "agent-orchestrator-state", repo)
     if not body:
         return None
     try:
@@ -194,7 +212,7 @@ def read_worker_state(issue_number, repo=""):
         return None
 
 
-def record_ci_state(issue_number, pr_number, head_sha, ci_run_id, status, repo=""):
+def record_ci_state(issue_number, pr_number, head_sha, ci_run_id, status, extra=None, repo=""):
     state = {
         "kind": "agent-orchestrator-ci-state",
         "version": 1,
@@ -202,12 +220,37 @@ def record_ci_state(issue_number, pr_number, head_sha, ci_run_id, status, repo="
         "head_sha": head_sha,
         "ci_run_id": ci_run_id,
         "status": status,
+        "extra": extra or {},
     }
     comment_on_issue(issue_number, json.dumps(state), repo)
 
 
 def read_ci_state(issue_number, repo=""):
-    body = get_pr_comment_body(issue_number, "agent-orchestrator-ci-state", repo)
+    """Read the most recent CI state from Issue comments."""
+    body = get_issue_comment_bodies(issue_number, "agent-orchestrator-ci-state", repo)
+    if not body:
+        return None
+    try:
+        return json.loads(body)
+    except json.JSONDecodeError:
+        return None
+
+
+def record_review_state(issue_number, pr_number, head_sha, verdict, summary, repo=""):
+    state = {
+        "kind": "agent-orchestrator-review-state",
+        "version": 1,
+        "pr_number": pr_number,
+        "head_sha": head_sha,
+        "verdict": verdict,
+        "summary": summary,
+    }
+    comment_on_issue(issue_number, json.dumps(state), repo)
+
+
+def read_review_state(issue_number, repo=""):
+    """Read the most recent review state from Issue comments."""
+    body = get_issue_comment_bodies(issue_number, "agent-orchestrator-review-state", repo)
     if not body:
         return None
     try:
@@ -236,8 +279,8 @@ def get_ci_repairing_issues(repo=""):
         return []
 
 
-def get_final_review_issues(repo=""):
-    result = _gh("issue", "list", "--label", LABEL_FINAL_REVIEW, "--state", "open", "--json", "number")
+def get_review_running_issues(repo=""):
+    result = _gh("issue", "list", "--label", LABEL_REVIEW_RUNNING, "--state", "open", "--json", "number")
     if not result:
         return []
     try:
@@ -315,7 +358,23 @@ def main():
         head_sha = sys.argv[4]
         ci_run_id = sys.argv[5]
         status = sys.argv[6]
-        record_ci_state(issue_number, pr_number, head_sha, ci_run_id, status, repo)
+        record_ci_state(issue_number, pr_number, head_sha, ci_run_id, status, repo=repo)
+
+    elif command == "record-review":
+        issue_number = int(sys.argv[2])
+        pr_number = int(sys.argv[3])
+        head_sha = sys.argv[4]
+        verdict = sys.argv[5]
+        summary = " ".join(sys.argv[6:]) if len(sys.argv) > 6 else ""
+        record_review_state(issue_number, pr_number, head_sha, verdict, summary, repo=repo)
+
+    elif command == "read-review":
+        issue_number = int(sys.argv[2])
+        state = read_review_state(issue_number, repo)
+        if state:
+            print(json.dumps(state))
+        else:
+            print("null")
 
     elif command == "record-merge":
         issue_number = int(sys.argv[2])
@@ -328,6 +387,16 @@ def main():
         pr_number = int(sys.argv[2])
         issue_number = int(sys.argv[3])
         expected_sha = sys.argv[4]
+
+        if is_emergency_stopped():
+            print("FATAL: Emergency stop is active. Merge blocked.", file=sys.stderr)
+            sys.exit(1)
+
+        labels = get_issue_labels(issue_number, repo)
+        if TERMINAL_LABELS & labels:
+            print(f"FATAL: Issue #{issue_number} is in terminal state ({labels})", file=sys.stderr)
+            sys.exit(1)
+
         pr = get_pr_info(pr_number, repo)
         if not pr:
             print(f"FATAL: PR #{pr_number} not found", file=sys.stderr)
@@ -335,13 +404,29 @@ def main():
         if pr.get("state") != "OPEN":
             print(f"FATAL: PR #{pr_number} is not open (state={pr.get('state')})", file=sys.stderr)
             sys.exit(1)
+        if pr.get("baseRefName") != "main":
+            print(f"FATAL: PR #{pr_number} does not target main (targets {pr.get('baseRefName')})", file=sys.stderr)
+            sys.exit(1)
         actual_sha = pr.get("headRefOid")
         if actual_sha != expected_sha:
             print(f"FATAL: PR head SHA mismatch: expected {expected_sha}, got {actual_sha}", file=sys.stderr)
             sys.exit(1)
-        labels = get_issue_labels(issue_number, repo)
-        if LABEL_FINAL_REVIEW in labels:
-            print(f"WARNING: Issue #{issue_number} still has {LABEL_FINAL_REVIEW} label", file=sys.stderr)
+
+        if LABEL_REVIEW_PASSED not in labels:
+            print(f"FATAL: Issue #{issue_number} does not have {LABEL_REVIEW_PASSED} label", file=sys.stderr)
+            sys.exit(1)
+
+        review_state = read_review_state(issue_number, repo)
+        if not review_state:
+            print(f"FATAL: No review state found for issue #{issue_number}", file=sys.stderr)
+            sys.exit(1)
+        if review_state.get("verdict") != "PASS":
+            print(f"FATAL: Review verdict is {review_state.get('verdict')}, expected PASS", file=sys.stderr)
+            sys.exit(1)
+        if review_state.get("head_sha") != expected_sha:
+            print(f"FATAL: Review SHA {review_state.get('head_sha')} does not match expected {expected_sha}", file=sys.stderr)
+            sys.exit(1)
+
         print(f"Merge conditions verified: PR #{pr_number} @ {actual_sha}")
 
     elif command == "select-task":
@@ -349,6 +434,9 @@ def main():
         labels = get_issue_labels(issue_number, repo)
         if TERMINAL_LABELS & labels:
             print(f"Task #{issue_number} is already in terminal state", file=sys.stderr)
+            sys.exit(1)
+        if ACTIVE_LABELS & labels:
+            print(f"Task #{issue_number} is already active ({labels})", file=sys.stderr)
             sys.exit(1)
         set_labels(issue_number, LABEL_READY, repo=repo)
         print(f"Task #{issue_number} selected as agent-ready")
@@ -372,18 +460,23 @@ def main():
         comment_on_issue(issue_number, f"## Agent Orchestrator: Blocked\n**Reason:** {reason}", repo)
         print(f"Task #{issue_number} blocked: {reason}")
 
+    elif command == "emergency-stop":
+        print("Emergency stop requires setting the AGENT_EMERGENCY_STOP repository variable to 'true'.")
+        print("This must be done through the GitHub UI or API, not through this script.")
+        sys.exit(0)
+
     elif command == "status":
         ready = _gh("issue", "list", "--label", LABEL_READY, "--state", "open", "--json", "number")
         running = _gh("issue", "list", "--label", LABEL_RUNNING, "--state", "open", "--json", "number")
         repairing = _gh("issue", "list", "--label", LABEL_CI_REPAIRING, "--state", "open", "--json", "number")
-        reviewing = _gh("issue", "list", "--label", LABEL_FINAL_REVIEW, "--state", "open", "--json", "number")
+        review_running = _gh("issue", "list", "--label", LABEL_REVIEW_RUNNING, "--state", "open", "--json", "number")
         blocked = _gh("issue", "list", "--label", LABEL_BLOCKED, "--state", "open", "--json", "number")
         complete = _gh("issue", "list", "--label", LABEL_COMPLETE, "--state", "all", "--json", "number")
         try:
             print(f"ready: {len(json.loads(ready))}" if ready else "ready: 0")
             print(f"running: {len(json.loads(running))}" if running else "running: 0")
             print(f"ci-repairing: {len(json.loads(repairing))}" if repairing else "ci-repairing: 0")
-            print(f"final-review: {len(json.loads(reviewing))}" if reviewing else "final-review: 0")
+            print(f"review-running: {len(json.loads(review_running))}" if review_running else "review-running: 0")
             print(f"blocked: {len(json.loads(blocked))}" if blocked else "blocked: 0")
             print(f"complete: {len(json.loads(complete))}" if complete else "complete: 0")
         except (json.JSONDecodeError, TypeError):

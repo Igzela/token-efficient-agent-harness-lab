@@ -12,13 +12,39 @@ permissions:
   issues: write
   pull-requests: write
 
-concurrency:
-  group: agent-ci-monitor
-  cancel-in-progress: false
-
 jobs:
-  process:
+  gate:
     runs-on: ubuntu-latest
+    outputs:
+      enabled: ${{ steps.check.outputs.enabled }}
+      emergency_stopped: ${{ steps.check.outputs.emergency_stopped }}
+    steps:
+      - name: Check orchestrator gate and emergency stop
+        id: check
+        env:
+          AGENT_ORCHESTRATOR_ENABLED: ${{ vars.AGENT_ORCHESTRATOR_ENABLED }}
+          AGENT_EMERGENCY_STOP: ${{ vars.AGENT_EMERGENCY_STOP }}
+        run: |
+          if [ "${AGENT_ORCHESTRATOR_ENABLED:-false}" != "true" ]; then
+            echo "AGENT_ORCHESTRATOR_ENABLED is not true. CI monitoring disabled."
+            echo "enabled=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          if [ "${AGENT_EMERGENCY_STOP:-false}" = "true" ]; then
+            echo "Emergency stop is active. CI monitoring disabled."
+            echo "enabled=false" >> "$GITHUB_OUTPUT"
+            echo "emergency_stopped=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          echo "enabled=true" >> "$GITHUB_OUTPUT"
+          echo "emergency_stopped=false" >> "$GITHUB_OUTPUT"
+
+  process:
+    needs: gate
+    if: needs.gate.outputs.enabled == 'true'
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ github.token }}
     steps:
       - name: Check out repository
         uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
@@ -29,15 +55,6 @@ jobs:
         uses: actions/setup-python@8d9ed9ac5c53483de85588cdf95a591a75ab9f55 # v5
         with:
           python-version: "3.11"
-
-      - name: Check orchestrator gate
-        run: |
-          if [ "${AGENT_ORCHESTRATOR_ENABLED:-false}" != "true" ]; then
-            echo "AGENT_ORCHESTRATOR_ENABLED is not true. CI monitoring disabled."
-            exit 0
-          fi
-        env:
-          AGENT_ORCHESTRATOR_ENABLED: ${{ vars.AGENT_ORCHESTRATOR_ENABLED }}
 
       - name: Process CI completion
         id: ci
@@ -59,7 +76,7 @@ jobs:
           python3 scripts/agent-control/state_manager.py set-labels "$ISSUE" agent-blocked
           python3 scripts/agent-control/state_manager.py comment "$ISSUE" \
             "## Agent Orchestrator: CI Repair Limit Exceeded
-          PR: #${PR}
+          PR: #$PR
           The CI repair limit was reached without achieving green CI.
           This task has been marked \`agent-blocked\`."
 
@@ -73,6 +90,7 @@ jobs:
           RUN_ID=$(echo "$RESULT" | python3 -c "import sys,json; print(json.load(sys.stdin)['ci_run_id'])")
           FAILED=$(echo "$RESULT" | python3 -c "import sys,json; print(json.dumps(json.load(sys.stdin)['failed_jobs']))")
           REPAIR_COUNT=$(echo "$RESULT" | python3 -c "import sys,json; print(json.load(sys.stdin)['repair_count'])")
+          LOGS=$(echo "$RESULT" | python3 -c "import sys,json; print(json.load(sys.stdin).get('logs',''))")
 
           gh workflow run agent-ci-repair.yml \
             --ref main \
@@ -81,7 +99,8 @@ jobs:
             -f head_sha="$SHA" \
             -f failed_jobs="$FAILED" \
             -f repair_count="$REPAIR_COUNT" \
-            -f ci_run_id="$RUN_ID"
+            -f ci_run_id="$RUN_ID" \
+            -f failed_logs="$LOGS"
 
       - name: Dispatch review
         if: fromJson(steps.ci.outputs.result).action == 'trigger_review'
@@ -109,7 +128,7 @@ jobs:
             echo "AGENT_AUTO_MERGE_ENABLED is not true. Merge not dispatched."
             python3 scripts/agent-control/state_manager.py comment "$ISSUE" \
               "## Agent Orchestrator: Merge Ready (Auto-Merge Disabled)
-            PR: #${PR}
+            PR: #$PR
             All CI checks passed and review is complete. Auto-merge is disabled.
             Set AGENT_AUTO_MERGE_ENABLED=true to enable automatic merging."
             exit 0

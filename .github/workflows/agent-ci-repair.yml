@@ -27,6 +27,11 @@ on:
         description: CI run ID that failed
         required: true
         type: number
+      failed_logs:
+        description: Bounded failed logs
+        required: false
+        default: ""
+        type: string
 
 permissions:
   contents: write
@@ -38,8 +43,35 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  gate:
+    runs-on: ubuntu-latest
+    outputs:
+      enabled: ${{ steps.check.outputs.enabled }}
+    steps:
+      - name: Check orchestrator gate and emergency stop
+        id: check
+        env:
+          AGENT_ORCHESTRATOR_ENABLED: ${{ vars.AGENT_ORCHESTRATOR_ENABLED }}
+          AGENT_EMERGENCY_STOP: ${{ vars.AGENT_EMERGENCY_STOP }}
+        run: |
+          if [ "${AGENT_ORCHESTRATOR_ENABLED:-false}" != "true" ]; then
+            echo "AGENT_ORCHESTRATOR_ENABLED is not true. CI repair disabled."
+            echo "enabled=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          if [ "${AGENT_EMERGENCY_STOP:-false}" = "true" ]; then
+            echo "Emergency stop is active. CI repair disabled."
+            echo "enabled=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          echo "enabled=true" >> "$GITHUB_OUTPUT"
+
   repair:
+    needs: gate
+    if: needs.gate.outputs.enabled == 'true'
     runs-on: [self-hosted, vader, ci-repair]
+    env:
+      GH_TOKEN: ${{ github.token }}
     steps:
       - name: Check out repository
         uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
@@ -53,18 +85,8 @@ jobs:
         with:
           python-version: "3.11"
 
-      - name: Check orchestrator gate
-        run: |
-          if [ "${AGENT_ORCHESTRATOR_ENABLED:-false}" != "true" ]; then
-            echo "AGENT_ORCHESTRATOR_ENABLED is not true. CI repair disabled."
-            exit 0
-          fi
-        env:
-          AGENT_ORCHESTRATOR_ENABLED: ${{ vars.AGENT_ORCHESTRATOR_ENABLED }}
-
       - name: Configure git
         run: |
-          gh auth setup-git
           git config user.name "agent-orchestrator[bot]"
           git config user.email "agent-orchestrator[bot]@users.noreply.github.com"
 
@@ -77,6 +99,14 @@ jobs:
             exit 1
           fi
 
+      - name: Verify repair count within limit
+        run: |
+          COUNT=${{ github.event.inputs.repair_count }}
+          if [ "$COUNT" -gt 2 ]; then
+            echo "FATAL: Repair count $COUNT exceeds maximum of 2"
+            exit 1
+          fi
+
       - name: Mark ci-repairing
         run: |
           python3 scripts/agent-control/state_manager.py set-labels \
@@ -84,13 +114,12 @@ jobs:
 
       - name: Build repair prompt
         id: prompt
-        env:
-          AGENT_FAILED_LOGS: ""
         run: |
           mkdir -p /tmp/agent-prompt
           python3 scripts/agent-control/prompt_builder.py ci-repair \
             ${{ github.event.inputs.pr_number }} \
             ${{ github.event.inputs.head_sha }} \
+            ${{ github.event.inputs.failed_jobs }} \
             > /tmp/agent-prompt/repair-${{ github.event.inputs.pr_number }}.txt
 
       - name: Run Codex (CI repair)
@@ -99,9 +128,11 @@ jobs:
           bash scripts/agent-control/codex_wrapper.sh \
             ci-repair \
             /tmp/agent-prompt/repair-${{ github.event.inputs.pr_number }}.txt \
-            /tmp/agent-output/repair-${{ github.event.inputs.pr_number }}
+            /tmp/agent-output/repair-${{ github.event.inputs.pr_number }} \
+            "$PWD"
         env:
-          AGENT_ORCHESTRATOR_ENABLED: "true"
+          AGENT_ORCHESTRATOR_ENABLED: ${{ vars.AGENT_ORCHESTRATOR_ENABLED }}
+          AGENT_EMERGENCY_STOP: ${{ vars.AGENT_EMERGENCY_STOP }}
 
       - name: Push repair commits
         run: |
@@ -109,7 +140,6 @@ jobs:
           git add -A
           git diff --cached --quiet || git commit -m "ci-repair: attempt ${{ github.event.inputs.repair_count }} for #${{ github.event.inputs.issue_number }}"
 
-          # Recheck head before push
           git fetch origin "$PR_BRANCH"
           LOCAL=$(git rev-parse HEAD)
           REMOTE=$(git rev-parse "origin/$PR_BRANCH" 2>/dev/null || echo "")
@@ -142,6 +172,8 @@ jobs:
     needs: repair
     if: failure()
     runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ github.token }}
     steps:
       - name: Check out repository
         uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6

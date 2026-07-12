@@ -16,7 +16,7 @@ PR #{{PR_NUMBER}} at head SHA `{{HEAD_SHA}}` has CI failures.
 
 ### Repair Attempt
 
-This is repair attempt #{{REPAIR_COUNT}} (maximum {{REPAIR_COUNT}}).
+This is repair attempt #{{REPAIR_COUNT}} (maximum 2).
 
 ### Repository Governance
 
@@ -26,16 +26,28 @@ This is repair attempt #{{REPAIR_COUNT}} (maximum {{REPAIR_COUNT}}).
 
 ### Instructions
 
-1. Checkout the PR branch and verify the head SHA matches `{{HEAD_SHA}}`.
+1. Verify the head SHA matches `{{HEAD_SHA}}`.
 2. Diagnose the root cause of each failed job from the logs.
 3. Implement the smallest scoped fix at the actual root cause.
    - Do NOT weaken tests, guards, or CI gates.
    - Do NOT change scope beyond the failing tests/lint/checks.
    - Do NOT add new features or unrelated fixes.
 4. Run the focused checks that failed to verify the fix.
-5. If the fix requires changes beyond the failing surface, or if the root cause is unclear, add a PR comment describing the ambiguity and stop.
-6. Commit with message prefix "ci-repair: " and push.
-7. The orchestrator will re-trigger CI.
+5. If the fix requires changes beyond the failing surface, or if the root cause is unclear, report the ambiguity and stop.
+
+### Your Role
+
+You are a **file editor and local validator only**. You must:
+
+- Edit files in the workspace to fix CI failures.
+- Run local checks to verify the fix.
+- Report your results.
+
+### What You Must NOT Do
+
+- **Do NOT commit changes** (the orchestrator handles commits).
+- **Do NOT push branches** (the orchestrator handles pushes).
+- **Do NOT create or update PRs.**
 
 ### Stop Conditions
 

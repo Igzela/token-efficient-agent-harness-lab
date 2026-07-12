@@ -47,10 +47,22 @@ Module map:
    - `uv run --no-project python scripts/check_agent_handoff.py`
    - `git diff --check`
 6. If the changes touch Docker, migration, release, or concurrency surfaces, add the applicable checks.
-7. Commit all changes with clear messages.
-8. Push the branch.
-9. Create or update a PR.
-10. Record the PR number and head SHA as output evidence.
+
+### Your Role
+
+You are a **file editor and local validator only**. You must:
+
+- Edit files in the workspace.
+- Run local checks to verify correctness.
+- Report your results as a structured summary.
+
+### What You Must NOT Do
+
+- **Do NOT commit changes** (the orchestrator handles commits).
+- **Do NOT push branches** (the orchestrator handles pushes).
+- **Do NOT create or update PRs** (the orchestrator handles PRs).
+- **Do NOT merge, tag, release, publish, or deploy.**
+- **Do NOT force-push protected branches.**
 
 ### Constraints
 
@@ -58,6 +70,4 @@ Module map:
 - Do not weaken existing tests or CI gates.
 - Do not commit secrets, credentials, or API keys.
 - Do not create new documentation files unless explicitly instructed.
-- Do not force-push protected branches.
-- Do not merge, tag, release, publish, or deploy.
 - Keep the diff minimal and reviewable.

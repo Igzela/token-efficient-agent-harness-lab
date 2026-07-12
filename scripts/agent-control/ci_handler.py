@@ -1,8 +1,8 @@
 """CI event processing for the agent orchestrator.
 
 Determines the next action when a workflow run completes:
-- success + final-review label -> ready to merge
-- success + no final-review -> trigger final review
+- success + review-passed label -> ready to merge
+- success + no review-passed -> trigger final review
 - failure + retries < MAX -> trigger CI repair
 - failure + retries >= MAX -> mark blocked
 """
@@ -103,7 +103,7 @@ def process_ci_completion(event_path):
     issue_labels = sm.get_issue_labels(issue_number)
 
     if info["conclusion"] == "success":
-        if sm.LABEL_FINAL_REVIEW in issue_labels:
+        if sm.LABEL_REVIEW_PASSED in issue_labels:
             return {
                 "action": "merge_ready",
                 "pr_number": pr_number,
@@ -123,8 +123,11 @@ def process_ci_completion(event_path):
     else:
         state = sm.read_ci_state(issue_number)
         repair_count = 0
-        if state and state.get("status") == "failure":
-            repair_count = state.get("extra", {}).get("repair_count", 0)
+        if state and state.get("status", "").startswith("failure_repair_"):
+            try:
+                repair_count = int(state.get("status", "").split("_")[-1])
+            except (ValueError, IndexError):
+                repair_count = state.get("extra", {}).get("repair_count", 0)
         repair_count += 1
 
         if repair_count > MAX_REPAIR_ATTEMPTS:

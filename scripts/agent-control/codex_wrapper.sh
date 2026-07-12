@@ -3,16 +3,16 @@
 # Centralized Codex CLI invocation wrapper for the agent orchestrator.
 #
 # Usage:
-#   codex_wrapper.sh <worker-type> <prompt-file> <output-dir>
+#   codex_wrapper.sh <worker-type> <prompt-file> <output-dir> [workspace]
 #
 # Worker types:
-#   implement   -- workspace-write sandbox, creates branches/PRs
+#   implement   -- workspace-write sandbox, edits files
 #   ci-repair   -- workspace-write sandbox, bounded CI fixes
 #   review      -- read-only sandbox, structured JSON verdict
 #
 # The wrapper:
-#   1. Validates the environment (Codex CLI, auth, HOME, CODEX_HOME).
-#   2. Checks the orchestrator gate (AGENT_ORCHESTRATOR_ENABLED).
+#   1. Validates the environment (Codex CLI, auth, HOME).
+#   2. Checks the orchestrator gate (AGENT_ORCHESTRATOR_ENABLED) and emergency stop.
 #   3. Runs codex exec with supported flags only.
 #   4. Captures exit code, JSONL output, and last message.
 #   5. For review workers, validates the output against the JSON schema.
@@ -23,11 +23,12 @@
 #   - Uses the narrowest sandbox for each worker type.
 #   - Never prints or uploads authentication material.
 #   - Fails closed on any unexpected condition.
+#   - Never commits, pushes, merges, or creates PRs.
 
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-WORKER_TYPE="${1:?Usage: codex_wrapper.sh <worker-type> <prompt-file> <output-dir>}"
+WORKER_TYPE="${1:?Usage: codex_wrapper.sh <worker-type> <prompt-file> <output-dir> [workspace]}"
 PROMPT_FILE="${2:?Missing prompt file}"
 OUTPUT_DIR="${3:?Missing output dir}"
 WORKSPACE="${4:-$PWD}"
@@ -36,6 +37,11 @@ WORKSPACE="${4:-$PWD}"
 if [ "${AGENT_ORCHESTRATOR_ENABLED:-false}" != "true" ]; then
   echo "AGENT_ORCHESTRATOR_ENABLED is not true. Aborting Codex invocation."
   exit 0
+fi
+
+if [ "${AGENT_EMERGENCY_STOP:-false}" = "true" ]; then
+  echo "Emergency stop is active. Aborting Codex invocation."
+  exit 1
 fi
 
 # ---- Preflight ----
@@ -54,17 +60,24 @@ fi
 
 echo "codex_auth=ok"
 
+# Validate HOME is set (required for set -u safety)
 if [ -z "${HOME:-}" ]; then
   echo "FATAL: HOME is not set" >&2
   exit 1
 fi
 
-if [ ! -d "${CODEX_HOME:-$HOME/.codex}" ]; then
+# Validate CODEX_HOME only if set; do not reference unset variable
+if [ -n "${CODEX_HOME:-}" ] && [ ! -d "$CODEX_HOME" ]; then
   echo "WARNING: CODEX_HOME ($CODEX_HOME) does not exist; defaulting to ~/.codex" >&2
 fi
 
 if [ ! -f "$PROMPT_FILE" ]; then
   echo "FATAL: prompt file not found: $PROMPT_FILE" >&2
+  exit 1
+fi
+
+if [ ! -d "$WORKSPACE" ]; then
+  echo "FATAL: workspace directory not found: $WORKSPACE" >&2
   exit 1
 fi
 
@@ -78,6 +91,10 @@ case "$WORKER_TYPE" in
     ;;
   review)
     SANDBOX_MODE="read-only"
+    ;;
+  *)
+    echo "FATAL: unknown worker type: $WORKER_TYPE" >&2
+    exit 1
     ;;
 esac
 

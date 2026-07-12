@@ -26,8 +26,41 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  merge:
+  gate:
     runs-on: ubuntu-latest
+    outputs:
+      enabled: ${{ steps.check.outputs.enabled }}
+    steps:
+      - name: Check orchestrator and auto-merge gates
+        id: check
+        env:
+          AGENT_ORCHESTRATOR_ENABLED: ${{ vars.AGENT_ORCHESTRATOR_ENABLED }}
+          AGENT_AUTO_MERGE_ENABLED: ${{ vars.AGENT_AUTO_MERGE_ENABLED }}
+          AGENT_EMERGENCY_STOP: ${{ vars.AGENT_EMERGENCY_STOP }}
+        run: |
+          if [ "${AGENT_ORCHESTRATOR_ENABLED:-false}" != "true" ]; then
+            echo "AGENT_ORCHESTRATOR_ENABLED is not true. Merge disabled."
+            echo "enabled=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          if [ "${AGENT_AUTO_MERGE_ENABLED:-false}" != "true" ]; then
+            echo "AGENT_AUTO_MERGE_ENABLED is not true. Merge disabled."
+            echo "enabled=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          if [ "${AGENT_EMERGENCY_STOP:-false}" = "true" ]; then
+            echo "Emergency stop is active. Merge disabled."
+            echo "enabled=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          echo "enabled=true" >> "$GITHUB_OUTPUT"
+
+  merge:
+    needs: gate
+    if: needs.gate.outputs.enabled == 'true'
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ github.token }}
     steps:
       - name: Check out repository
         uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
@@ -39,26 +72,12 @@ jobs:
         with:
           python-version: "3.11"
 
-      - name: Check orchestrator gate
-        run: |
-          if [ "${AGENT_ORCHESTRATOR_ENABLED:-false}" != "true" ]; then
-            echo "AGENT_ORCHESTRATOR_ENABLED is not true. Merge disabled."
-            exit 0
-          fi
-        env:
-          AGENT_ORCHESTRATOR_ENABLED: ${{ vars.AGENT_ORCHESTRATOR_ENABLED }}
-
-      - name: Verify merge conditions inline
+      - name: Verify all merge conditions
         run: |
           python3 scripts/agent-control/state_manager.py verify-merge \
             ${{ github.event.inputs.pr_number }} \
             ${{ github.event.inputs.issue_number }} \
             ${{ github.event.inputs.head_sha }}
-
-      - name: Mark agent-complete
-        run: |
-          python3 scripts/agent-control/state_manager.py set-labels \
-            ${{ github.event.inputs.issue_number }} agent-complete
 
       - name: Rebase and merge
         run: |
@@ -74,6 +93,11 @@ jobs:
             ${{ github.event.inputs.issue_number }} \
             ${{ github.event.inputs.pr_number }} \
             ${{ github.event.inputs.head_sha }}
+
+      - name: Mark agent-complete and clean up labels
+        run: |
+          python3 scripts/agent-control/state_manager.py set-labels \
+            ${{ github.event.inputs.issue_number }} agent-complete
 
       - name: Close issue
         run: |
@@ -93,6 +117,8 @@ jobs:
     needs: merge
     if: failure()
     runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ github.token }}
     steps:
       - name: Check out repository
         uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
@@ -108,3 +134,9 @@ jobs:
         run: |
           python3 scripts/agent-control/state_manager.py set-labels \
             ${{ github.event.inputs.issue_number }} agent-blocked
+          python3 scripts/agent-control/state_manager.py comment \
+            ${{ github.event.inputs.issue_number }} \
+            "## Agent Orchestrator: Merge Failed
+          PR: #${{ github.event.inputs.pr_number }}
+          The merge attempt encountered an error.
+          This task has been marked \`agent-blocked\`."

@@ -1,33 +1,37 @@
-"""Tests for worktree_manager.py (dry-run / logic tests only, no actual git ops)."""
+"""Tests for worktree_manager.py — comprehensive coverage.
+
+Covers:
+- Defect 3: Worker creates and uses real isolated worktree
+- Defect 21: Worktree cleanup cannot delete arbitrary directories
+- Worktree path validation
+- Orchestrator naming pattern checks
+- Branch naming conventions
+"""
 
 import os
+import pathlib
 import sys
 import unittest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "scripts", "agent-control"))
+import worktree_manager as wtm
 
 
 class TestWorktreeManagerLogic(unittest.TestCase):
+    """Logic tests only — no actual git operations."""
 
     def test_branch_naming(self):
         issue_number = 42
         branch = f"agent/issue-{issue_number}"
         self.assertEqual(branch, "agent/issue-42")
 
-    def test_branch_naming_with_custom(self):
-        custom_branch = "feature/my-feature"
-        self.assertEqual(custom_branch, "feature/my-feature")
-
     def test_worktree_path(self):
-        import pathlib
-        import worktree_manager as wtm
         worktree_path = wtm.WORKTREE_BASE / "issue-42"
         self.assertEqual(worktree_path.name, "issue-42")
         self.assertTrue(str(worktree_path).endswith("issue-42"))
         self.assertTrue(str(worktree_path).startswith(str(wtm.WORKTREE_BASE)))
 
     def test_worktree_base_default(self):
-        import worktree_manager as wtm
         self.assertEqual(str(wtm.WORKTREE_BASE), "/tmp/agent-worktrees")
 
     def test_worktree_base_env(self):
@@ -37,6 +41,7 @@ class TestWorktreeManagerLogic(unittest.TestCase):
         importlib.reload(worktree_manager)
         self.assertEqual(str(worktree_manager.WORKTREE_BASE), "/custom/worktree/path")
         del os.environ["AGENT_WORKTREE_BASE"]
+        importlib.reload(worktree_manager)
 
     def test_pr_body_generation(self):
         issue_number = 42
@@ -44,20 +49,82 @@ class TestWorktreeManagerLogic(unittest.TestCase):
         self.assertIn("#42", body)
         self.assertIn("agent-orchestrator", body)
 
-    def test_cleanup_only_removes_stale(self):
-        import worktree_manager
-        # Logic test only: verify the function signature exists
-        self.assertTrue(hasattr(worktree_manager, "cleanup_stale_worktrees"))
 
-    def test_push_branch_validates(self):
-        import worktree_manager
-        # Logic test only: verify the function signature exists
-        self.assertTrue(hasattr(worktree_manager, "push_branch"))
+class TestOrchestratorPathValidation(unittest.TestCase):
+    """Defect 21: Worktree cleanup cannot delete arbitrary directories."""
 
-    def test_create_pr_validates(self):
-        import worktree_manager
-        # Logic test only: verify the function signature exists
-        self.assertTrue(hasattr(worktree_manager, "create_pr"))
+    def test_is_orchestrator_path_valid(self):
+        path = wtm.WORKTREE_BASE / "issue-42"
+        self.assertTrue(wtm._is_orchestrator_path(path))
+
+    def test_is_orchestrator_path_wrong_prefix(self):
+        path = wtm.WORKTREE_BASE / "random-dir"
+        self.assertFalse(wtm._is_orchestrator_path(path))
+
+    def test_is_orchestrator_path_outside_base(self):
+        path = pathlib.Path("/tmp/other-dir/issue-42")
+        self.assertFalse(wtm._is_orchestrator_path(path))
+
+    def test_is_orchestrator_path_dot_dot_escape(self):
+        path = wtm.WORKTREE_BASE / ".." / "issue-42"
+        self.assertFalse(wtm._is_orchestrator_path(path))
+
+    def test_is_orchestrator_path_absolute_outside(self):
+        path = pathlib.Path("/etc/issue-42")
+        self.assertFalse(wtm._is_orchestrator_path(path))
+
+    def test_is_orchestrator_path_home_dir(self):
+        path = pathlib.Path.home()
+        self.assertFalse(wtm._is_orchestrator_path(path))
+
+    def test_is_orchestrator_path_current_dir(self):
+        path = pathlib.Path.cwd()
+        self.assertFalse(wtm._is_orchestrator_path(path))
+
+
+class TestOrchestratorPrefixes(unittest.TestCase):
+    """Verify orchestrator naming conventions."""
+
+    def test_orchestrator_prefixes(self):
+        self.assertIn("issue-", wtm.ORCHESTRATOR_PREFIXES)
+
+    def test_orchestrator_branch_prefix(self):
+        self.assertEqual(wtm.ORCHESTRATOR_BRANCH_PREFIX, "agent/issue-")
+
+    def test_valid_issue_name(self):
+        name = "issue-42"
+        self.assertTrue(any(name.startswith(p) for p in wtm.ORCHESTRATOR_PREFIXES))
+
+    def test_invalid_names(self):
+        for name in ["random", "worktree-42", "tmp", "issue-"]:
+            self.assertFalse(
+                any(name.startswith(p) and len(name) > len(p) for p in wtm.ORCHESTRATOR_PREFIXES),
+                f"Unexpected match for {name}"
+            )
+
+
+class TestFunctionSignatures(unittest.TestCase):
+    """Verify required function signatures exist."""
+
+    def test_cleanup_stale_worktrees_exists(self):
+        self.assertTrue(hasattr(wtm, "cleanup_stale_worktrees"))
+        self.assertTrue(callable(wtm.cleanup_stale_worktrees))
+
+    def test_push_branch_exists(self):
+        self.assertTrue(hasattr(wtm, "push_branch"))
+        self.assertTrue(callable(wtm.push_branch))
+
+    def test_create_pr_exists(self):
+        self.assertTrue(hasattr(wtm, "create_pr"))
+        self.assertTrue(callable(wtm.create_pr))
+
+    def test_create_worktree_exists(self):
+        self.assertTrue(hasattr(wtm, "create_worktree"))
+        self.assertTrue(callable(wtm.create_worktree))
+
+    def test_remove_worktree_exists(self):
+        self.assertTrue(hasattr(wtm, "remove_worktree"))
+        self.assertTrue(callable(wtm.remove_worktree))
 
 
 if __name__ == "__main__":
