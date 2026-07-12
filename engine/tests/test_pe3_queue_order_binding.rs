@@ -90,11 +90,7 @@ fn action_body(queue: &OperatorDecisionQueue, action: OperatorDecisionAction) ->
     })
 }
 
-async fn post_action(
-    app: Router,
-    item: &OperatorDecisionItem,
-    body: Value,
-) -> (StatusCode, Value) {
+async fn post_action(app: Router, item: &OperatorDecisionItem, body: Value) -> (StatusCode, Value) {
     let response = app
         .oneshot(
             Request::builder()
@@ -166,10 +162,7 @@ async fn decision_reordering_within_the_same_page_fails_closed() {
     )
     .await;
     assert_eq!(status, StatusCode::CONFLICT, "{response}");
-    assert_eq!(
-        response["code"],
-        "operator_decision_current_state_changed"
-    );
+    assert_eq!(response["code"], "operator_decision_current_state_changed");
 
     let connection = rusqlite::Connection::open(path).unwrap();
     let approved: i64 = connection
@@ -205,12 +198,8 @@ async fn every_unsupported_action_is_explicitly_fail_closed() {
         OperatorDecisionAction::Inspect,
         OperatorDecisionAction::Acknowledge,
     ] {
-        let (status, response) =
-            post_action(app.clone(), &item, action_body(&queue, action)).await;
+        let (status, response) = post_action(app.clone(), &item, action_body(&queue, action)).await;
         assert_eq!(status, StatusCode::CONFLICT, "{response}");
-        assert_eq!(
-            response["code"],
-            "operator_decision_action_not_allowlisted"
-        );
+        assert_eq!(response["code"], "operator_decision_action_not_allowlisted");
     }
 }

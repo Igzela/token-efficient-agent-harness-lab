@@ -181,10 +181,7 @@ fn conflicting_duplicate_identity_is_rejected_in_every_input_order() {
     let mut reject = approve.clone();
     reject.action = OperatorDecisionAction::Reject;
     reject.seal().unwrap();
-    for inputs in [
-        vec![approve.clone(), reject.clone()],
-        vec![reject, approve],
-    ] {
+    for inputs in [vec![approve.clone(), reject.clone()], vec![reject, approve]] {
         assert!(derive_operator_decision_item(
             "run-1:control",
             &inputs,
@@ -230,14 +227,9 @@ fn expiry_staleness_low_confidence_and_missing_sources_are_explicit() {
     expired.expires_at = Some("2026-07-11T00:02:00Z".to_string());
     expired.seal().unwrap();
     assert_eq!(
-        derive_operator_decision_item(
-            "run-1:control",
-            &[expired],
-            "2026-07-11T00:05:00Z",
-            600,
-        )
-        .unwrap()
-        .outcome,
+        derive_operator_decision_item("run-1:control", &[expired], "2026-07-11T00:05:00Z", 600,)
+            .unwrap()
+            .outcome,
         OperatorDecisionOutcome::Expired
     );
 
@@ -247,14 +239,9 @@ fn expiry_staleness_low_confidence_and_missing_sources_are_explicit() {
         OperatorDecisionAction::Retry,
     );
     assert_eq!(
-        derive_operator_decision_item(
-            "run-1:control",
-            &[stale],
-            "2026-07-11T00:20:01Z",
-            600,
-        )
-        .unwrap()
-        .outcome,
+        derive_operator_decision_item("run-1:control", &[stale], "2026-07-11T00:20:01Z", 600,)
+            .unwrap()
+            .outcome,
         OperatorDecisionOutcome::InsufficientEvidence
     );
 
@@ -266,14 +253,9 @@ fn expiry_staleness_low_confidence_and_missing_sources_are_explicit() {
     low.confidence = 0.4;
     low.seal().unwrap();
     assert_eq!(
-        derive_operator_decision_item(
-            "run-1:control",
-            &[low],
-            "2026-07-11T00:05:00Z",
-            600,
-        )
-        .unwrap()
-        .outcome,
+        derive_operator_decision_item("run-1:control", &[low], "2026-07-11T00:05:00Z", 600,)
+            .unwrap()
+            .outcome,
         OperatorDecisionOutcome::InsufficientEvidence
     );
     assert_eq!(
@@ -293,13 +275,9 @@ fn resolved_sources_never_recommend_actions() {
     );
     resolved.state = OperatorDecisionSourceState::Resolved;
     resolved.seal().unwrap();
-    let item = derive_operator_decision_item(
-        "run-1:control",
-        &[resolved],
-        "2026-07-11T00:05:00Z",
-        600,
-    )
-    .unwrap();
+    let item =
+        derive_operator_decision_item("run-1:control", &[resolved], "2026-07-11T00:05:00Z", 600)
+            .unwrap();
     assert_eq!(item.outcome, OperatorDecisionOutcome::Resolved);
     assert!(item.recommended_action.is_none());
     assert!(item.selected_source.is_none());
