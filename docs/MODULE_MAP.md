@@ -68,9 +68,9 @@ The detailed execution-ready packet sequence is defined in `docs/NEXT_DECISION.m
 
 1. Prefer the earliest `READY_FOR_EXECUTION` packet whose prerequisites are complete.
 2. Repair bounded prerequisite defects, stale contracts, or documentation drift before dependent work when necessary.
-3. PE-1, PE-2, and PE-3 are acceptance-sealed; PE4-CONTRACT-REPAIR-1, PE4-OFFLINE-1, PE4-READ-1, PE4-SHADOW-1, and PE4-CANARY-1 are merged; PE4-PROMOTION-1 is active. PE4-CLOSE-1 remains blocked.
+3. PE-1 through PE-4 are acceptance-sealed; PE-5 and PE-6 remain inactive and unstarted.
 4. Treat PE-3 as a derived read model plus allowlisted existing-owner adapter; mutation binds current evidence and never becomes a generic executor.
-5. Complete PE4-PROMOTION-1 through the existing promotion owner after the merged trace contract, offline replay, read, shadow, and canary owners; replay remains derived and non-mutating.
+5. Preserve PE-4's existing owners and acceptance evidence; do not begin PE-5 or PE-6 without explicit lane activation.
 6. PE-5 may run independently only after explicit lane activation.
 7. Define PE-6 recovery invariants before fault injection.
 
