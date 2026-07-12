@@ -4,7 +4,7 @@
 
 The dispatch kernel, V2, Adaptive Fusion AF-0 through AF-7, Agent Runtime AR-0 through AR-6, Trusted Local Autonomous Execution IAE-0 through IAE-3, scorecard integrity hardening, the importer-first external benchmark path, and PE-1 Token Efficiency Regression Lab are complete.
 
-The active direction is the Post-LGB Product Evolution plan. PE-1, PE-2, and PE-3 remain acceptance-sealed; PE-4 is under `PE4-POST-CLOSE-REPAIR-1`, and its pre-repair closeout is not final acceptance evidence. PE-5 and PE-6 remain unstarted. This is not AR-7, another LGB ladder, or a second control plane.
+The active direction is the Post-LGB Product Evolution plan. PE-1 through PE-4 remain acceptance-sealed, with PE-4 sealed under `PE4-POST-CLOSE-REPAIR-1`; its weaker pre-repair semantics are superseded. PE-5 and PE-6 remain unstarted. This is not AR-7, another LGB ladder, or a second control plane.
 
 `docs/NEXT_DECISION.md` is the single forward-plan artifact. Historical detail remains in `docs/ARCHITECTURE_BOOK.md`, archived plans, merged PRs, and repository history.
 
@@ -78,7 +78,7 @@ Normative order is PE-1, PE-2, PE-3, PE-4, PE-5, and PE-6. Do not start PE-3 bef
 | PE-1 | P0 | Token Efficiency Regression Lab | Complete and acceptance-sealed |
 | PE-2 | P0/P1 | Budget Intelligence and Anomaly Auto-Pause | Complete and acceptance-sealed |
 | PE-3 | P1 | Operator Decision Center | Complete and independently acceptance-sealed |
-| PE-4 | P1/P2 | Trace-backed Policy Replay | `PE4-POST-CLOSE-REPAIR-1` in progress; pre-repair seal superseded pending final repair evidence |
+| PE-4 | P1/P2 | Trace-backed Policy Replay | Acceptance-sealed under `PE4-POST-CLOSE-REPAIR-1`; weaker pre-repair semantics superseded |
 | PE-5 | P1.5 | Release Provenance | Packetized; inactive unless explicitly activated |
 | PE-6 | P2 | Fault Injection and Recovery Drills | Packetized; blocked on explicit recovery invariants |
 
@@ -458,7 +458,7 @@ PE-3 is complete and acceptance-sealed. PE3-REPAIR-1 corrected observation-time 
 
 ### Packet PE4-POST-CLOSE-REPAIR-1 — PE-4 semantic, provenance, boundedness, and calibration repair
 
-**State:** `IN_PROGRESS`
+**State:** `COMPLETE`
 
 **Prerequisite:** PR #203/PE4-CLOSE-1 is merged, PR #205 documentation governance is merged separately, local `main` equals `origin/main`, and the repair branch starts at `0f92dadc6cf1cb712231dbb917bf9904f8346d86`.
 
@@ -472,9 +472,9 @@ PE-3 is complete and acceptance-sealed. PE3-REPAIR-1 corrected observation-time 
 
 **Forbidden:** No caller boolean or self-computed hash as authority, provider call in CI, live routing/policy mutation from offline/shadow, weaker coverage or calibration gates, new product stage, parallel owner, raw sensitive payload, or PE-5/PE-6 activation.
 
-**Acceptance:** Focused replay eligibility, outcome, calibration, OOD, boundedness, owner tamper/restart/idempotency, artifact historical-row, SQLite/PostgreSQL/migration, HTTP/OpenAPI, SDK, Dashboard, shadow, canary, promotion, pause, rollback, and restart tests pass. Then run the complete repository verification baseline, push one implementation PR, wait for exact-head full CI, independently review the final diff, update these active documents in the same PR with final evidence, rerun exact-final-head CI, merge only fully green, and verify post-merge `main` CI. Rollback is a code revert; v21 nullable columns and historical v1 rows remain inert/readable.
+**Acceptance:** Focused replay eligibility, outcome, calibration, OOD, boundedness, owner tamper/restart/idempotency, artifact historical-row, SQLite/PostgreSQL/migration, HTTP/OpenAPI, SDK, Dashboard, shadow, canary, promotion, pause, rollback, and restart tests pass. The complete repository verification baseline passed locally, the single implementation PR is #206, and exact implementation-head CI run `29190133210` passed all seven required jobs: `docker-build`, `native-runtime`, `pg-integration-tests`, `python-tests`, `rust-tests`, `rust-typescript-cutover`, and `typescript-tests`. The final documentation head must pass the identical exact-head 7/7 matrix before merge, followed by post-merge `main` CI verification. Rollback is a code revert; v21 nullable columns and historical v1 rows remain inert/readable.
 
-**Completion evidence:** Pending exact final head, focused results, full CI job results, final documentation update, merge, and post-merge `main` verification.
+**Completion evidence:** PE-4 remains acceptance-sealed with `PE4-POST-CLOSE-REPAIR-1` included in its evidence; weaker pre-repair semantics are superseded; PR #206 records the final documentation-head SHA, exact final-head CI, merge, and post-merge `main` verification. PE-5 and PE-6 remain unstarted.
 
 ## PE-5 — Release Provenance
 
@@ -496,5 +496,6 @@ The agent may define recovery invariants from existing subsystem contracts and t
 
 ## Active Routing
 
-1. Preserve the PE-4 acceptance evidence and its final post-merge main verification.
-2. Keep PE5-SBOM-1 and PE6-INVARIANTS-1 inactive and unstarted unless explicitly activated.
+1. `PE5-SBOM-1` remains blocked and is not activated; no later product packet is routed.
+2. Preserve the sealed PE-4 acceptance evidence; no stale pre-repair routing or evidence may authorize current shadow, canary, or promotion.
+3. Keep `PE6-INVARIANTS-1` at decision-required and inactive unless explicitly activated.

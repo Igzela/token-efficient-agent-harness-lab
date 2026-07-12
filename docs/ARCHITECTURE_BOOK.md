@@ -1,6 +1,6 @@
 # Architecture Book
 
-Last updated: 2026-07-10 (security, scheduler, release, and benchmark-evidence hardening audit)
+Last updated: 2026-07-12 (PE-4 post-close semantic, provenance, boundedness, and calibration repair)
 
 This is the current architecture baseline for the Token-Efficient Agent Harness Lab. Historical phase plans, closeout reports, and long-form strategy docs are retained in release-tagged git history; `docs/archive/README.md` is the working-tree index.
 
@@ -231,6 +231,8 @@ The pre-repair PE-4 closeout is under correction and must not be used as final a
 The current contracts are `policy_replay_contract.v3`, `trace_replay_evidence.v2`, `offline_policy_replay.v2`, and `judge_calibration.v1`. Coverage is integer-based and inclusive at 90%; the central rejection taxonomy distinguishes observation-local coverage failures from cohort-fatal evidence failures and request-fatal contract failures. Recorder outcome semantics distinguish terminal execution, execution result, evaluation completion/result, overall dispatch success, quality, and tool success, so completed-but-low-quality and failed-but-measured observations remain valid negative samples when consistent. Judge calibration uses paired judge/reference values, at least 3 samples, absolute bias tolerance 0.10, and MAE tolerance 0.15; non-judge quality paths do not require calibration.
 
 All relevant canonical bytes, raw sections, identifiers, arrays, report cardinalities, references, JSON depth, result size, numeric envelopes, and token additions are bounded. Canonical representations are precomputed before deterministic ordering, and serialization/overflow failures fail closed. Caller-provided scope is only a constraint; empirical task/domain/intent/objective, candidate definition/member set, policy/cohort, complexity, and cost/latency/token/retry support must be present in accepted observations. Unsupported counterfactuals return explicit OOD or insufficient evidence. Current v2 artifacts may authorize existing downstream validation; old v1 artifacts remain readable as historical-only and cannot authorize shadow, canary, or promotion. Rollback is a code revert with v21 columns and old rows preserved/inert.
+
+The PE-4 correction is acceptance-sealed under packet `PE4-POST-CLOSE-REPAIR-1` in the single implementation PR #206. The exact implementation head `655483670214741817f713d1715b1630c7ddedff` passed full required CI run `29190133210` (all seven jobs green); the final documentation-head CI and post-merge `main` verification are required release evidence and are recorded with the PR. The weaker pre-repair semantics are superseded, existing permission/confirmation/audit/pause/compensation/snapshot/rollback owners remain authoritative, and PE-5/PE-6 remain unstarted.
 
 ## Execution Modes
 

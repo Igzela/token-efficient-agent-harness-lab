@@ -36,7 +36,7 @@ This repo is a local/small-team self-hosted agent workflow control plane. Rust `
 | Local runner operations | Active: validate, export, import, and inspect bounded scorecard artifacts locally |
 | Runner integration | Storage/API/operator evidence complete; workflow scheduling of local runner validation is implemented via `LocalRunnerValidationExecutor` in stub mode with automatic native scorecard recording on terminal tick |
 | Live provider adapter | Gated ready path: Stub/Fake/Live; Live requires gates, explicit metadata, symbolic credentials, positive pricing, persistent redacted audit, bounded calls/tokens/time/cost, and a kill switch |
-| Post-LGB Product Evolution Plan | PE-1 through PE-3 remain acceptance-sealed; PE-4 is under `PE4-POST-CLOSE-REPAIR-1`; PE-5 and PE-6 remain unstarted |
+| Post-LGB Product Evolution Plan | PE-1 through PE-4 remain acceptance-sealed, with PE-4 sealed under `PE4-POST-CLOSE-REPAIR-1`; PE-5 and PE-6 remain unstarted |
 
 ## Planned Product Evolution Stages
 
@@ -47,7 +47,7 @@ The stages are packetized in `docs/NEXT_DECISION.md`. The agent should execute p
 | PE-1 | P0 | Token Efficiency Regression Lab | Complete and acceptance-sealed |
 | PE-2 | P0/P1 | Budget Intelligence and Anomaly Auto-Pause | Complete and acceptance-sealed |
 | PE-3 | P1 | Operator Decision Center | Complete and independently acceptance-sealed after PE3-REPAIR-1 and PE3-CLOSE-1 |
-| PE-4 | P1/P2 | Trace-backed Policy Replay | Under post-close correctness repair `PE4-POST-CLOSE-REPAIR-1`; the pre-repair closeout is not final acceptance evidence |
+| PE-4 | P1/P2 | Trace-backed Policy Replay | Acceptance-sealed with `PE4-POST-CLOSE-REPAIR-1`; weaker pre-repair semantics are superseded |
 | PE-5 | P1.5 | Release Provenance | Not started; inactive in the current bounded objective |
 | PE-6 | P2 | Fault Injection and Recovery Drills | Not started; blocked on explicit recovery invariants and affected stage prerequisites |
 
@@ -90,7 +90,7 @@ The stages are packetized in `docs/NEXT_DECISION.md`. The agent should execute p
 
 ## Current Gaps
 
-- PE4-CONTRACT-REPAIR-1 through PE4-CLOSE-1 are historical merged work. Their weaker replay semantics are superseded while `PE4-POST-CLOSE-REPAIR-1` is in progress; the prior closeout claim is not acceptance evidence for this repair.
+- PE4-CONTRACT-REPAIR-1 through PE4-CLOSE-1 are historical merged work. Their weaker replay semantics are superseded by `PE4-POST-CLOSE-REPAIR-1` and cannot authorize current acceptance, shadow, canary, or promotion.
 - `policy_simulator.rs` still relies on fixed estimates rather than trace-calibrated replay.
 - SBOM, signing, and provenance attestations are not yet part of the release contract.
 - There is no systematic fault-injection and recovery-drill harness.
@@ -173,12 +173,13 @@ The stages are packetized in `docs/NEXT_DECISION.md`. The agent should execute p
 
 ## PE-4 Post-close Repair — PE4-POST-CLOSE-REPAIR-1
 
-- **State:** `IN_PROGRESS` on `codex/pe4-post-close-repair`; starting `main` after the separately merged documentation-only PR #205 is `0f92dadc6cf1cb712231dbb917bf9904f8346d86`. The pre-repair PE-4 closeout is not final acceptance evidence.
+- **State:** `ACCEPTANCE-SEALED` in the single implementation PR #206 on `codex/pe4-post-close-repair`; starting `main` after the separately merged documentation-only PR #205 was `0f92dadc6cf1cb712231dbb917bf9904f8346d86`, and the exact implementation head was `655483670214741817f713d1715b1630c7ddedff`. The pre-repair PE-4 closeout is superseded.
 - **Coverage contract:** `policy_replay_contract.v3` uses an inclusive integer 90% accepted boundary. Observation-local stale, missing, incomplete, malformed non-authoritative, and ordinary uncovered observations count against coverage; tamper, sensitive data, conflicting identity, inconsistent candidate definitions, canonicalization/serialization failure, and irreconcilable cohort failures are cohort-fatal; request/contract failures are request-fatal. IDs, reason codes, references, ordering, and hashes remain sorted and bounded.
 - **Provenance:** trusted replay input is derived only from the existing `dispatch_history` owner through `RunTraceRecorder`, bound to owner history ID, `dispatch_history_trace_owner.v1`, and the owner-stored recorder hash. The public raw constructor and request deserialization cannot establish eligibility. SQLite and PostgreSQL add aligned schema version 21 nullable provenance columns; old rows without binding, mismatched IDs/schema/hashes, tampering, and restart inconsistencies refuse as `untrusted_trace_source`.
 - **Schema and outcomes:** normalized evidence is `trace_replay_evidence.v2`; offline reports/policies are `offline_policy_replay.v2`; judge calibration is `judge_calibration.v1` with minimum 3 paired samples, absolute signed-bias tolerance 0.10, and MAE tolerance 0.15. Existing v1 offline rows remain readable as historical-only and non-authorizing. Recorder semantics distinguish terminal execution, execution outcome, evaluation completion/outcome, overall dispatch success, quality, and tool-success; failed quality and failed execution samples remain valid negative evidence when complete and consistent.
 - **Boundedness and OOD:** request/trace/result canonical bytes, raw sections, JSON depth, identifiers, task fields, member endpoints, candidates, judges/pairs, evidence references, report arrays, reason codes, and token/retry/metric envelopes are explicitly bounded. Canonical forms are precomputed before ordering and failure paths are fail-closed. Caller scope is a constraint only; empirical support for task/domain/intent/objective, policy/cohort, candidate definition/member set, complexity, and measured cost/latency/tokens/retries must come from accepted observations, otherwise replay returns explicit OOD or insufficient evidence.
-- **Downstream boundary:** offline replay, v2 artifact persistence, HTTP/OpenAPI, SDKs, Dashboard, shadow, canary, promotion, pause, and rollback continue to reuse existing owners. Historical v1 reports cannot authorize shadow, canary, or promotion. PE-5 and PE-6 remain unstarted. Final acceptance, exact-head CI, same-PR documentation evidence, merge, and post-merge `main` verification are pending.
+- **Downstream boundary:** offline replay, v2 artifact persistence, HTTP/OpenAPI, SDKs, Dashboard, shadow, canary, promotion, pause, and rollback continue to reuse existing owners. Historical v1 reports cannot authorize shadow, canary, or promotion. PE-5 and PE-6 remain unstarted, and no stale active routing remains.
+- **Acceptance evidence:** PR #206 is the only repair PR. Exact implementation-head CI run `29190133210` passed all seven required jobs: `docker-build`, `native-runtime`, `pg-integration-tests`, `python-tests`, `rust-tests`, `rust-typescript-cutover`, and `typescript-tests`. The same PR's final documentation head must pass the identical 7/7 matrix before merge; post-merge `main` CI remains required release evidence.
 
 ## Handoff Guard Anchors
 
