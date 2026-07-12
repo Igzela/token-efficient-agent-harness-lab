@@ -62,14 +62,14 @@ fn source_seal_sorts_deduplicates_and_hash_binds_original_evidence() {
         evidence_id: "event-2".to_string(),
         content_sha256: Some("ab".repeat(32)),
     };
-    source.evidence_references = vec![second.clone(), first.clone(), second];
+    source.evidence_references = vec![second.clone(), first.clone(), second.clone()];
     source.reason_codes = vec![
         "workflow_blocked_ready_node".to_string(),
         "operator_attention_required".to_string(),
         "workflow_blocked_ready_node".to_string(),
     ];
     source.seal().unwrap();
-    assert_eq!(source.evidence_references, vec![first, source.evidence_references[1].clone()]);
+    assert_eq!(source.evidence_references, vec![first, second]);
     assert_eq!(source.reason_codes.len(), 2);
 
     let mut tampered = source.clone();
@@ -137,7 +137,10 @@ fn shared_source_id_across_kinds_uses_exact_selected_identity() {
         600,
     )
     .unwrap();
-    assert_eq!(item.recommended_action, Some(OperatorDecisionAction::Approve));
+    assert_eq!(
+        item.recommended_action,
+        Some(OperatorDecisionAction::Approve)
+    );
     assert_eq!(item.confidence, 0.71);
     let selected = item.selected_source.expect("selected source");
     assert_eq!(selected.evidence_type, "approval");
