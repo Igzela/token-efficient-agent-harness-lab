@@ -222,6 +222,8 @@ PE4-CANARY-1 extends the existing `AdaptiveExperimentController` rather than cre
 
 PE4-PROMOTION-1 extends the existing `AdaptiveAutoPromotionController` and `LocalProductStore` promotion owner. `AdaptivePromotionEvidenceChain` binds a sufficient offline report, the exact shadow comparison re-derived from that report, a validated started canary decision, rollout scope, rollback target, and canonical content hash. Promotion rejects caller-only evidence, invalid or stale/tampered/uncalibrated/OOD evidence, incompatible candidate/policy/trace bindings, missing coverage, and failed sample/confidence/quality/cost/latency/failure guardrails. The accepted policy records the source chain hash and continues through existing confirmation, permission, audit, snapshot, pause, compensation, and rollback behavior; offline/shadow evidence alone never authorizes promotion.
 
+PE4-CLOSE-1 independently re-audited the complete trace-to-promotion chain and found no remaining implementation defect. The acceptance seal relies on the existing focused contract, replay, read, shadow, canary, promotion, storage, API, SDK, Dashboard, PostgreSQL, concurrency, restart, permission, audit, pause, compensation, and rollback tests plus exact-head/post-merge CI. PE-4 remains derived where specified, non-mutating before guarded promotion, and rollbackable through existing owners; PE-5 and PE-6 are not activated.
+
 ## Execution Modes
 
 `ACP_EXECUTION_MODE` controls dispatch execution:
