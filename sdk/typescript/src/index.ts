@@ -96,6 +96,9 @@ import type {
   RegressionTrendResponse,
   BudgetEvidenceArtifactListResponse,
   BudgetEvidenceArtifactResponse,
+  OfflineReplayArtifactListResponse,
+  OfflineReplayArtifactResponse,
+  OfflineReplayListOptions,
   OperatorDecisionQueueOptions,
   OperatorDecisionQueueResponse,
   OperatorDecisionActionRequest,
@@ -200,6 +203,8 @@ export interface BudgetEvidenceListOptions {
   offset?: number;
 }
 
+export type { OfflineReplayListOptions };
+
 export class AgentControlPlaneClient {
   private readonly baseUrl: string;
   private readonly apiKey?: string;
@@ -257,6 +262,20 @@ export class AgentControlPlaneClient {
   budgetEvidenceArtifact(artifactId: string): Promise<BudgetEvidenceArtifactResponse> {
     return this.getJson<BudgetEvidenceArtifactResponse>(
       `/api/v1/budget-evidence/${encodeURIComponent(artifactId)}`,
+    );
+  }
+
+  offlineReplayArtifacts(options: OfflineReplayListOptions = {}): Promise<OfflineReplayArtifactListResponse> {
+    return this.getJson<OfflineReplayArtifactListResponse>(`/api/v1/offline-replays${queryString({
+      status: options.status,
+      limit: options.limit,
+      offset: options.offset,
+    })}`);
+  }
+
+  offlineReplayArtifact(artifactId: string): Promise<OfflineReplayArtifactResponse> {
+    return this.getJson<OfflineReplayArtifactResponse>(
+      `/api/v1/offline-replays/${encodeURIComponent(artifactId)}`,
     );
   }
 

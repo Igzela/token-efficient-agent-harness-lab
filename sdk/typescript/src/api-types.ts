@@ -1480,6 +1480,58 @@ export interface BudgetEvidenceArtifactResponse extends Omit<BudgetEvidenceArtif
   artifact: BudgetEvidenceArtifactEnvelope;
 }
 
+export type OfflineReplayStatus =
+  | "sufficient"
+  | "insufficient_evidence"
+  | "incompatible_cohort"
+  | "stale_evidence"
+  | "tampered_evidence"
+  | "uncalibrated_evidence"
+  | "out_of_distribution"
+  | string;
+
+export interface OfflineReplayArtifactEnvelope {
+  schema_version: "offline_replay_artifact.v1";
+  artifact_id: string;
+  report_schema_version: "offline_policy_replay.v1";
+  status: OfflineReplayStatus;
+  eligibility_content_sha256: string;
+  content_sha256: string;
+  created_at: string;
+  read_only: true;
+  metadata_only: true;
+  provider_calls: "disabled";
+  mutation_authority: "none";
+  target_repository_writes: "disabled";
+  report: Record<string, unknown>;
+}
+
+export interface OfflineReplayListOptions {
+  status?: OfflineReplayStatus;
+  limit?: number;
+  offset?: number;
+}
+
+export interface OfflineReplayArtifactListResponse {
+  schema_version: "offline_replay_read.v1";
+  artifacts: OfflineReplayArtifactEnvelope[];
+  status?: OfflineReplayStatus | null;
+  limit: number;
+  offset: number;
+  empty: boolean;
+  read_only: true;
+  metadata_only: true;
+  mutation_authority: "none";
+}
+
+export interface OfflineReplayArtifactResponse {
+  schema_version: "offline_replay_read.v1";
+  artifact: OfflineReplayArtifactEnvelope;
+  read_only: true;
+  metadata_only: true;
+  mutation_authority: "none";
+}
+
 export type OperatorDecisionOutcome = "ready" | "conflict" | "expired" | "insufficient_evidence" | "resolved";
 export type OperatorDecisionAction = "approve" | "reject" | "pause" | "resume" | "retry" | "rollback" | "inspect" | "acknowledge";
 export interface OperatorDecisionEvidenceReference { evidence_type: string; evidence_id: string; content_sha256: string | null; }

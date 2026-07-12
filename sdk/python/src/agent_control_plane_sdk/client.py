@@ -69,6 +69,26 @@ class AgentControlPlaneClient:
             f"/api/v1/budget-evidence/{_quote_path_segment(artifact_id)}"
         )
 
+    def offline_replay_artifacts(
+        self,
+        status: str | None = None,
+        limit: int | None = None,
+        offset: int | None = None,
+    ) -> dict[str, Any]:
+        params: dict[str, Any] = {}
+        if status is not None:
+            params["status"] = status
+        if limit is not None:
+            params["limit"] = limit
+        if offset is not None:
+            params["offset"] = offset
+        return self._get(_query_path("/api/v1/offline-replays", params))
+
+    def offline_replay_artifact(self, artifact_id: str) -> dict[str, Any]:
+        return self._get(
+            f"/api/v1/offline-replays/{_quote_path_segment(artifact_id)}"
+        )
+
     def operator_decisions(
         self,
         generated_at: str | None = None,

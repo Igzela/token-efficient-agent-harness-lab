@@ -1471,6 +1471,32 @@ fn append_scorecard_openapi_paths(doc: &mut Value) {
         }),
     );
     paths.insert(
+        "/api/v1/offline-replays".to_string(),
+        json!({
+            "get": {
+                "summary": "List bounded trace-backed offline replay evidence",
+                "description": "Requires dispatch:read scope. Returns immutable, hash-bound replay reports derived from accepted trace evidence. Results are insufficient or invalid when evidence cannot establish comparability; no provider calls or production mutation are allowed.",
+                "parameters": [
+                    {"name": "status", "in": "query", "schema": {"type": "string", "enum": ["sufficient", "insufficient_evidence", "incompatible_cohort", "stale_evidence", "tampered_evidence", "uncalibrated_evidence", "out_of_distribution"]}},
+                    {"name": "limit", "in": "query", "schema": {"type": "integer", "default": 50, "minimum": 1, "maximum": 100}},
+                    {"name": "offset", "in": "query", "schema": {"type": "integer", "default": 0, "minimum": 0, "maximum": 10000}}
+                ],
+                "responses": {"200": {"description": "Offline replay evidence list"}, "400": {"description": "Invalid status"}}
+            }
+        }),
+    );
+    paths.insert(
+        "/api/v1/offline-replays/{artifact_id}".to_string(),
+        json!({
+            "get": {
+                "summary": "Get one bounded trace-backed offline replay report",
+                "description": "Requires dispatch:read scope. Returns one validated, immutable replay report with source evidence hashes and no mutation authority.",
+                "parameters": [path_parameter("artifact_id")],
+                "responses": {"200": {"description": "Offline replay evidence artifact"}, "404": {"description": "Offline replay artifact not found"}}
+            }
+        }),
+    );
+    paths.insert(
         "/api/v1/budget-evidence/{artifact_id}/auto-pause".to_string(),
         json!({
             "post": {

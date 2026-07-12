@@ -6,8 +6,8 @@ pub(super) enum Dialect {
     Postgres,
 }
 
-pub(super) const CURRENT_SQLITE_SCHEMA_VERSION: i64 = 19;
-pub(super) const CURRENT_POSTGRES_SCHEMA_VERSION: i64 = 19;
+pub(super) const CURRENT_SQLITE_SCHEMA_VERSION: i64 = 20;
+pub(super) const CURRENT_POSTGRES_SCHEMA_VERSION: i64 = 20;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) struct SchemaMigration {
@@ -91,6 +91,10 @@ pub(super) const SQLITE_MIGRATIONS: &[SchemaMigration] = &[
     SchemaMigration {
         version: 19,
         description: "add policy-gated budget auto-pause decisions",
+    },
+    SchemaMigration {
+        version: 20,
+        description: "add offline replay evidence artifacts",
     },
 ];
 
@@ -370,6 +374,19 @@ CREATE TABLE IF NOT EXISTS budget_pause_decisions (
     UNIQUE(run_id, artifact_id)
 );
 CREATE INDEX IF NOT EXISTS idx_budget_pause_decisions_run ON budget_pause_decisions(run_id, created_at);
+
+CREATE TABLE IF NOT EXISTS offline_replay_artifacts (
+    artifact_sequence INTEGER PRIMARY KEY,
+    artifact_id TEXT NOT NULL UNIQUE,
+    report_schema_version TEXT NOT NULL,
+    status TEXT NOT NULL,
+    eligibility_content_sha256 TEXT NOT NULL,
+    content_sha256 TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    artifact_json TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_offline_replay_artifacts_status ON offline_replay_artifacts(status, artifact_sequence);
+CREATE INDEX IF NOT EXISTS idx_offline_replay_artifacts_created ON offline_replay_artifacts(created_at);
 
 CREATE TABLE IF NOT EXISTS scheduler_feedback (
     feedback_id TEXT PRIMARY KEY,
@@ -832,6 +849,19 @@ CREATE TABLE IF NOT EXISTS budget_pause_decisions (
     UNIQUE(run_id, artifact_id)
 );
 CREATE INDEX IF NOT EXISTS idx_budget_pause_decisions_run ON budget_pause_decisions(run_id, created_at);
+
+CREATE TABLE IF NOT EXISTS offline_replay_artifacts (
+    artifact_sequence BIGSERIAL PRIMARY KEY,
+    artifact_id TEXT NOT NULL UNIQUE,
+    report_schema_version TEXT NOT NULL,
+    status TEXT NOT NULL,
+    eligibility_content_sha256 TEXT NOT NULL,
+    content_sha256 TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    artifact_json TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_offline_replay_artifacts_status ON offline_replay_artifacts(status, artifact_sequence);
+CREATE INDEX IF NOT EXISTS idx_offline_replay_artifacts_created ON offline_replay_artifacts(created_at);
 
 CREATE TABLE IF NOT EXISTS scheduler_feedback (
     feedback_id TEXT PRIMARY KEY,

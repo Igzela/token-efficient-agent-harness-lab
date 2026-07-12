@@ -452,6 +452,32 @@ test("simulationReport sends limit query param", async () => {
   assert.equal(calls[0].init.method, "GET");
 });
 
+test("offline replay readers send filters and encode artifact ids", async () => {
+  const { calls, fetchImpl } = captureFetch({
+    schema_version: "offline_replay_read.v1",
+    artifacts: [],
+  });
+  const client = new AgentControlPlaneClient({ baseUrl: "http://127.0.0.1:8080", fetchImpl });
+
+  await client.offlineReplayArtifacts({
+    status: "insufficient evidence",
+    limit: 25,
+    offset: 5,
+  });
+  await client.offlineReplayArtifact("offline/replay one");
+
+  assert.equal(
+    calls[0].url,
+    "http://127.0.0.1:8080/api/v1/offline-replays?status=insufficient+evidence&limit=25&offset=5",
+  );
+  assert.equal(
+    calls[1].url,
+    "http://127.0.0.1:8080/api/v1/offline-replays/offline%2Freplay%20one",
+  );
+  assert.equal(calls[0].init.method, "GET");
+  assert.equal(calls[1].init.method, "GET");
+});
+
 test("proposal methods call controlled-loop endpoints", async () => {
   const { calls, fetchImpl } = captureFetch({
     schema_version: "axum_api.v1",

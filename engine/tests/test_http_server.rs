@@ -6,6 +6,10 @@ use std::sync::OnceLock;
 
 use axum::body::{to_bytes, Body};
 use axum::http::{header, Method, Request, StatusCode};
+use engine::feedback::{
+    offline_replay_report_sha256, OfflinePolicyDefinition, OfflineReplayReport,
+    OfflineReplayStatus, OFFLINE_REPLAY_SCHEMA_VERSION,
+};
 use engine::http_server::{
     build_axum_router, build_axum_router_with_dashboard, AxumApiState, CliCapability,
 };
@@ -2738,6 +2742,85 @@ async fn axum_preflight_returns_cors_headers() {
         response.headers().get(header::ACCESS_CONTROL_ALLOW_ORIGIN),
         Some(&"*".parse().unwrap())
     );
+}
+
+#[tokio::test]
+async fn axum_offline_replay_read_surface_is_bounded_and_read_only() {
+    let dir = tempdir().unwrap();
+    let store = LocalProductStore::new(dir.path().join("offline-replay.db")).unwrap();
+    let current_policy = OfflinePolicyDefinition::new("current", "v1", Default::default()).unwrap();
+    let mut report = OfflineReplayReport {
+        schema_version: OFFLINE_REPLAY_SCHEMA_VERSION.to_string(),
+        status: OfflineReplayStatus::InsufficientEvidence,
+        reason_codes: vec!["insufficient_replay_observations".to_string()],
+        current_policy,
+        candidate_policies: Vec::new(),
+        observed_facts: Vec::new(),
+        counterfactual_estimates: Vec::new(),
+        comparisons: Vec::new(),
+        outcomes: Vec::new(),
+        eligibility_content_sha256: format!("{:064x}", 7),
+        source_trace_ids: Vec::new(),
+        source_evidence_content_sha256: Vec::new(),
+        shadow_only: true,
+        influence_selected_tier: false,
+        influence_executor_type: false,
+        influence_retry_path: false,
+        influence_routing_policy: false,
+        content_sha256: String::new(),
+    };
+    report.content_sha256 = offline_replay_report_sha256(&report).unwrap();
+    let artifact = store
+        .record_offline_replay_artifact(&report, "http-test")
+        .unwrap();
+    let artifact_id = artifact["artifact_id"].as_str().unwrap();
+    let app = build_axum_router(AxumApiState::new().with_local_store(store));
+
+    let list = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(Method::GET)
+                .uri("/api/v1/offline-replays?status=insufficient_evidence&limit=1&offset=0")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(list.status(), StatusCode::OK);
+    let body = response_json(list).await;
+    assert_eq!(body["schema_version"], "offline_replay_read.v1");
+    assert_eq!(body["artifacts"].as_array().unwrap().len(), 1);
+    assert_eq!(body["read_only"], true);
+
+    let detail = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(Method::GET)
+                .uri(format!("/api/v1/offline-replays/{artifact_id}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(detail.status(), StatusCode::OK);
+    assert_eq!(
+        response_json(detail).await["artifact"]["artifact_id"],
+        artifact_id
+    );
+
+    let invalid = app
+        .oneshot(
+            Request::builder()
+                .method(Method::GET)
+                .uri("/api/v1/offline-replays?status=invalid")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(invalid.status(), StatusCode::BAD_REQUEST);
 }
 
 #[tokio::test]

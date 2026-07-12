@@ -38,6 +38,13 @@ pub(crate) struct BudgetEvidenceQuery {
 }
 
 #[derive(Debug, Deserialize)]
+pub(crate) struct OfflineReplayQuery {
+    status: Option<String>,
+    limit: Option<i64>,
+    offset: Option<i64>,
+}
+
+#[derive(Debug, Deserialize)]
 pub(crate) struct BudgetAutoPauseRequest {
     run_id: String,
     confirm_auto_pause: bool,
@@ -263,6 +270,86 @@ pub(crate) async fn api_budget_evidence_artifacts(
             "kind": kind,
             "limit": limit,
             "offset": offset,
+        }))),
+    ))
+}
+
+pub(crate) async fn api_offline_replay_artifacts(
+    State(state): State<AxumApiState>,
+    headers: HeaderMap,
+    uri: Uri,
+    axum::extract::Extension(request_id): axum::extract::Extension<RequestId>,
+    Query(query): Query<OfflineReplayQuery>,
+) -> Result<impl IntoResponse, ApiError> {
+    authorize(&state, &headers, "dispatch:read", uri.path(), &request_id.0)?;
+    let store = require_store(&state)?;
+    let status = query.status.as_deref();
+    if status.is_some_and(|value| {
+        !matches!(
+            value,
+            "sufficient"
+                | "insufficient_evidence"
+                | "incompatible_cohort"
+                | "stale_evidence"
+                | "tampered_evidence"
+                | "uncalibrated_evidence"
+                | "out_of_distribution"
+        )
+    }) {
+        return Err(ApiError::with_code(
+            StatusCode::BAD_REQUEST,
+            "invalid_offline_replay_status",
+            "status is not a supported offline replay status",
+        ));
+    }
+    let limit = query.limit.unwrap_or(50).clamp(1, 100);
+    let offset = query.offset.unwrap_or(0).clamp(0, 10_000);
+    let artifacts = store
+        .offline_replay_artifacts(status, limit, offset)
+        .map_err(internal_error)?;
+    Ok((
+        cors_headers(),
+        Json(regression_response(json!({
+            "schema_version": "offline_replay_read.v1",
+            "artifacts": artifacts,
+            "status": status,
+            "limit": limit,
+            "offset": offset,
+            "empty": artifacts.is_empty(),
+            "read_only": true,
+            "metadata_only": true,
+            "mutation_authority": "none",
+        }))),
+    ))
+}
+
+pub(crate) async fn api_offline_replay_artifact_detail(
+    State(state): State<AxumApiState>,
+    headers: HeaderMap,
+    uri: Uri,
+    axum::extract::Extension(request_id): axum::extract::Extension<RequestId>,
+    Path(artifact_id): Path<String>,
+) -> Result<impl IntoResponse, ApiError> {
+    authorize(&state, &headers, "dispatch:read", uri.path(), &request_id.0)?;
+    let store = require_store(&state)?;
+    let artifact = store
+        .get_offline_replay_artifact(&artifact_id)
+        .map_err(internal_error)?
+        .ok_or_else(|| {
+            ApiError::with_code(
+                StatusCode::NOT_FOUND,
+                "offline_replay_artifact_not_found",
+                "offline replay artifact not found",
+            )
+        })?;
+    Ok((
+        cors_headers(),
+        Json(regression_response(json!({
+            "schema_version": "offline_replay_read.v1",
+            "artifact": artifact,
+            "read_only": true,
+            "metadata_only": true,
+            "mutation_authority": "none",
         }))),
     ))
 }
