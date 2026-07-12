@@ -20,7 +20,8 @@ pub mod shadow_router;
 
 pub use adaptive_auto_promotion::{
     AdaptiveAutoPromotionController, AdaptiveAutoPromotionEvidence, AdaptiveAutoPromotionGate,
-    AdaptiveAutoPromotionPolicy, AdaptiveAutoPromotionRequest,
+    AdaptiveAutoPromotionPolicy, AdaptiveAutoPromotionRequest, AdaptivePromotionEvidenceChain,
+    ADAPTIVE_PROMOTION_EVIDENCE_CHAIN_SCHEMA_VERSION,
 };
 pub use adaptive_candidate::CandidateKind as AdaptiveCandidateKind;
 pub use adaptive_candidate::{

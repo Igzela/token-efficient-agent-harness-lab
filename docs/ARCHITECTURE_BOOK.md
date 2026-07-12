@@ -220,6 +220,8 @@ PE4-SHADOW-1 adds `ShadowRouter::compare_replay_report` as a derived, hash-bound
 
 PE4-CANARY-1 extends the existing `AdaptiveExperimentController` rather than creating a second experiment owner. `AdaptiveCanaryDecision` is a deterministic, hash-bound, non-persistent decision envelope requiring exact policy/candidate/scope bindings, trace-backed shadow coverage, explicit confirmation and permission, bounded 1–5% traffic and 24-hour duration, existing gate/pause/kill controls, compensation metadata, and an exact rollback target. Repeated evaluation is idempotent and restart-safe; the decision contract does not call providers, mutate live routing or policy, or authorize full rollout. Promotion remains a separate later owner and requires the complete evidence chain.
 
+PE4-PROMOTION-1 extends the existing `AdaptiveAutoPromotionController` and `LocalProductStore` promotion owner. `AdaptivePromotionEvidenceChain` binds a sufficient offline report, the exact shadow comparison re-derived from that report, a validated started canary decision, rollout scope, rollback target, and canonical content hash. Promotion rejects caller-only evidence, invalid or stale/tampered/uncalibrated/OOD evidence, incompatible candidate/policy/trace bindings, missing coverage, and failed sample/confidence/quality/cost/latency/failure guardrails. The accepted policy records the source chain hash and continues through existing confirmation, permission, audit, snapshot, pause, compensation, and rollback behavior; offline/shadow evidence alone never authorizes promotion.
+
 ## Execution Modes
 
 `ACP_EXECUTION_MODE` controls dispatch execution:

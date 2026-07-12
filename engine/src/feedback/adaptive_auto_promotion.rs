@@ -1,16 +1,23 @@
 use std::collections::BTreeSet;
 
-use serde::{Deserialize, Serialize};
-
+use super::offline_evaluation::{
+    offline_replay_report_sha256, OfflineReplayReport, OfflineReplayStatus,
+};
+use super::policy_snapshot::stable_hash;
 use super::{
+    adaptive_experiment::{validate_canary_decision, AdaptiveCanaryDecision},
     ContextualPolicyPromotion, ContextualPolicyPromotionVerdict, ObjectiveProfile,
-    PromotedAdaptivePolicy, CONTEXTUAL_POLICY_PROMOTION_SCHEMA_VERSION,
+    PromotedAdaptivePolicy, ShadowReplayComparison, ShadowRouter,
+    CONTEXTUAL_POLICY_PROMOTION_SCHEMA_VERSION,
 };
 use crate::provider::redaction::contains_sensitive_patterns;
 use crate::trusted_local::EffectiveExecutionGates;
+use serde::{Deserialize, Serialize};
 
 const MAX_EVIDENCE: usize = 10_000;
 const MAX_ID_BYTES: usize = 160;
+pub const ADAPTIVE_PROMOTION_EVIDENCE_CHAIN_SCHEMA_VERSION: &str =
+    "adaptive_promotion_evidence_chain.v1";
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct AdaptiveAutoPromotionEvidence {
@@ -35,6 +42,29 @@ pub struct AdaptiveAutoPromotionRequest {
     pub baseline_candidate_id: String,
     pub expected_active_policy_hash: Option<String>,
     pub rollout_percentage: u8,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct AdaptivePromotionEvidenceChain {
+    pub schema_version: String,
+    pub offline: OfflineReplayReport,
+    pub shadow: ShadowReplayComparison,
+    pub canary: AdaptiveCanaryDecision,
+    pub rollout_scope: String,
+    pub rollback_target: String,
+    pub content_sha256: String,
+}
+
+impl AdaptivePromotionEvidenceChain {
+    pub fn finalize(&mut self) {
+        self.content_sha256 = self.content_sha256();
+    }
+
+    pub fn content_sha256(&self) -> String {
+        let mut unsigned = self.clone();
+        unsigned.content_sha256.clear();
+        stable_hash(&serde_json::to_value(unsigned).expect("promotion chain is serializable"))
+    }
 }
 
 impl AdaptiveAutoPromotionRequest {
@@ -159,6 +189,7 @@ impl AdaptiveAutoPromotionController {
         gate: &AdaptiveAutoPromotionGate,
     ) -> ContextualPolicyPromotionVerdict {
         let mut blocked_reasons = validate_request(request);
+        blocked_reasons.push("complete_evidence_chain_required".to_string());
         blocked_reasons.extend(validate_policy(policy));
         if !gate.enabled || !gate.active {
             blocked_reasons.push("adaptive_auto_promotion_gates_disabled".to_string());
@@ -295,6 +326,210 @@ impl AdaptiveAutoPromotionController {
             )),
         }
     }
+
+    pub fn evaluate_with_evidence_chain(
+        request: &AdaptiveAutoPromotionRequest,
+        chain: &AdaptivePromotionEvidenceChain,
+        active_policy: Option<&PromotedAdaptivePolicy>,
+        policy: &AdaptiveAutoPromotionPolicy,
+        gate: &AdaptiveAutoPromotionGate,
+        confirm_promotion: bool,
+        permission_granted: bool,
+    ) -> ContextualPolicyPromotionVerdict {
+        let mut blocked_reasons = validate_request(request);
+        blocked_reasons.extend(validate_policy(policy));
+        blocked_reasons.extend(validate_evidence_chain(chain, request, active_policy));
+        if !gate.enabled || !gate.active {
+            blocked_reasons.push("adaptive_auto_promotion_gates_disabled".to_string());
+        }
+        if gate.killed {
+            blocked_reasons.push("adaptive_auto_promotion_kill_switch_active".to_string());
+        }
+        if matches!(request.risk_level.as_str(), "high" | "critical") {
+            blocked_reasons.push("high_risk_context_excluded".to_string());
+        }
+        validate_active_policy(request, active_policy, &mut blocked_reasons);
+        if active_policy.is_none() {
+            blocked_reasons.push("active_policy_required_for_rollback".to_string());
+        }
+        if !confirm_promotion {
+            blocked_reasons.push("confirm_adaptive_policy_promotion is required".to_string());
+        }
+        if !permission_granted {
+            blocked_reasons.push("adaptive_policy_promotion_permission_required".to_string());
+        }
+
+        let comparison = chain.offline.comparisons.iter().find(|comparison| {
+            comparison.task_class == request.task_class
+                && comparison.candidate_selection.candidate_id == request.candidate_id
+                && comparison.current_observed_candidate_id == request.baseline_candidate_id
+        });
+        let Some(comparison) = comparison else {
+            blocked_reasons.push("offline_candidate_comparison_missing".to_string());
+            return blocked_verdict(blocked_reasons);
+        };
+
+        let sample_count = comparison.current_observed.sample_count;
+        let confidence = confidence(sample_count);
+        let mean_quality_delta = comparison.quality_score_delta;
+        let mean_cost_reduction = -comparison.cost_usd_delta;
+        let mean_latency_reduction = -comparison.latency_ms_delta;
+        let failure_rate_delta = -comparison.success_rate_delta;
+        if sample_count < policy.min_samples_per_candidate {
+            blocked_reasons.push("minimum_sample_count_not_met".to_string());
+        }
+        if confidence < policy.min_confidence {
+            blocked_reasons.push("minimum_confidence_not_met".to_string());
+        }
+        if mean_quality_delta < policy.min_quality_delta {
+            blocked_reasons.push("quality_regression_detected".to_string());
+        }
+        if mean_cost_reduction < policy.min_cost_reduction {
+            blocked_reasons.push("cost_regression_detected".to_string());
+        }
+        if mean_latency_reduction < policy.min_latency_reduction_ms {
+            blocked_reasons.push("latency_regression_detected".to_string());
+        }
+        if failure_rate_delta > policy.max_failure_rate_delta {
+            blocked_reasons.push("failure_rate_regression_detected".to_string());
+        }
+        blocked_reasons.sort();
+        blocked_reasons.dedup();
+        if !blocked_reasons.is_empty() {
+            return blocked_verdict(blocked_reasons);
+        }
+
+        let promotion = ContextualPolicyPromotion {
+            schema_version: CONTEXTUAL_POLICY_PROMOTION_SCHEMA_VERSION.to_string(),
+            task_class: request.task_class.clone(),
+            objective: request.objective,
+            candidate_id: request.candidate_id.clone(),
+            baseline_candidate_id: request.baseline_candidate_id.clone(),
+            sample_count,
+            confidence,
+            mean_quality_delta,
+            mean_cost_reduction,
+            failure_rate_delta,
+            evidence_run_ids: chain.offline.source_trace_ids.clone(),
+            risk_level: request.risk_level.clone(),
+            confirm_adaptive_policy_promotion: true,
+        };
+        ContextualPolicyPromotionVerdict {
+            schema_version: CONTEXTUAL_POLICY_PROMOTION_SCHEMA_VERSION.to_string(),
+            eligible: true,
+            blocked_reasons: Vec::new(),
+            policy: Some(PromotedAdaptivePolicy::new_auto_with_evidence(
+                &promotion,
+                mean_latency_reduction,
+                request.rollout_percentage,
+                active_policy.map(|active| active.policy_hash.clone()),
+                chain.content_sha256.clone(),
+            )),
+        }
+    }
+}
+
+fn blocked_verdict(mut blocked_reasons: Vec<String>) -> ContextualPolicyPromotionVerdict {
+    blocked_reasons.sort();
+    blocked_reasons.dedup();
+    ContextualPolicyPromotionVerdict {
+        schema_version: CONTEXTUAL_POLICY_PROMOTION_SCHEMA_VERSION.to_string(),
+        eligible: false,
+        blocked_reasons,
+        policy: None,
+    }
+}
+
+fn validate_evidence_chain(
+    chain: &AdaptivePromotionEvidenceChain,
+    request: &AdaptiveAutoPromotionRequest,
+    active_policy: Option<&PromotedAdaptivePolicy>,
+) -> Vec<String> {
+    let mut reasons = Vec::new();
+    if chain.schema_version != ADAPTIVE_PROMOTION_EVIDENCE_CHAIN_SCHEMA_VERSION
+        || !valid_hash(&chain.content_sha256)
+        || chain.content_sha256() != chain.content_sha256
+        || !valid_id(&chain.rollout_scope)
+        || !valid_hash(&chain.rollback_target)
+        || contains_sensitive_patterns(&serde_json::to_string(chain).unwrap_or_default())
+    {
+        reasons.push("invalid_promotion_evidence_chain".to_string());
+    }
+    if offline_replay_report_sha256(&chain.offline)
+        .map(|hash| hash != chain.offline.content_sha256)
+        .unwrap_or(true)
+        || !chain.offline.shadow_only
+        || chain.offline.status != OfflineReplayStatus::Sufficient
+    {
+        reasons.push("offline_evidence_not_sufficient_or_hash_valid".to_string());
+    }
+    if chain
+        .offline
+        .replay_judge_calibrations
+        .iter()
+        .any(|calibration| {
+            calibration.sample_count < 3
+                || calibration.status != "calibrated"
+                || !calibration.mean_signed_bias.is_finite()
+                || !calibration.mean_absolute_error.is_finite()
+        })
+    {
+        reasons.push("judge_reference_calibration_not_valid".to_string());
+    }
+    if let Err(error) = ShadowRouter::validate_replay_comparison(&chain.shadow) {
+        reasons.push(error);
+    }
+    match ShadowRouter::compare_replay_report(&chain.offline) {
+        Ok(derived_shadow) if derived_shadow == chain.shadow => {}
+        _ => reasons.push("shadow_evidence_not_derived_from_offline_report".to_string()),
+    }
+    if chain.shadow.status != OfflineReplayStatus::Sufficient {
+        reasons.push("shadow_evidence_not_sufficient".to_string());
+    }
+    if let Err(error) = validate_canary_decision(&chain.canary) {
+        reasons.push(error);
+    }
+    if chain.canary.status != "started"
+        || !chain.canary.compensation_required
+        || chain.canary.source_shadow_content_sha256 != chain.shadow.content_sha256
+        || chain.canary.scope != chain.rollout_scope
+    {
+        reasons.push("bounded_canary_binding_or_compensation_invalid".to_string());
+    }
+    let Some(policy_comparison) = chain.offline.comparisons.iter().find(|comparison| {
+        comparison.task_class == request.task_class
+            && comparison.candidate_selection.candidate_id == request.candidate_id
+            && comparison.current_observed_candidate_id == request.baseline_candidate_id
+    }) else {
+        reasons.push("offline_candidate_comparison_missing".to_string());
+        return reasons;
+    };
+    if chain.shadow.policy_id.as_deref() != Some(policy_comparison.policy_id.as_str())
+        || chain.shadow.policy_version.as_deref() != Some(policy_comparison.policy_version.as_str())
+        || chain.shadow.policy_hash.as_deref() != Some(policy_comparison.policy_hash.as_str())
+        || chain.canary.policy_version != policy_comparison.policy_version
+        || chain.canary.policy_hash != policy_comparison.policy_hash
+        || chain.canary.candidate_id != policy_comparison.candidate_selection.candidate_id
+        || chain.canary.candidate_version != policy_comparison.candidate_selection.candidate_version
+        || chain.canary.candidate_definition_sha256
+            != policy_comparison
+                .candidate_selection
+                .candidate_definition_sha256
+        || chain.canary.minimum_evidence > policy_comparison.current_observed.sample_count
+        || policy_comparison.current_observed.trace_ids.is_empty()
+        || policy_comparison
+            .current_observed
+            .evidence_content_sha256
+            .is_empty()
+    {
+        reasons.push("promotion_evidence_binding_mismatch".to_string());
+    }
+    if let Some(active) = active_policy {
+        if chain.rollback_target != active.policy_hash {
+            reasons.push("promotion_rollback_target_mismatch".to_string());
+        }
+    }
+    reasons
 }
 
 #[derive(Default)]
