@@ -4,7 +4,7 @@
 
 The dispatch kernel, V2, Adaptive Fusion AF-0 through AF-7, Agent Runtime AR-0 through AR-6, Trusted Local Autonomous Execution IAE-0 through IAE-3, scorecard integrity hardening, the importer-first external benchmark path, and PE-1 Token Efficiency Regression Lab are complete.
 
-The active direction is the Post-LGB Product Evolution plan. PE-1, PE-2, and PE-3 are complete and acceptance-sealed. PE4-CONTRACT-REPAIR-1, PE4-OFFLINE-1, PE4-READ-1, and PE4-SHADOW-1 are merged; PE4-CANARY-1 is active, while promotion is blocked on the canary merge. PE4-CLOSE-1, PE-5, and PE-6 remain unstarted. This is not AR-7, another LGB ladder, or a second control plane.
+The active direction is the Post-LGB Product Evolution plan. PE-1, PE-2, and PE-3 are complete and acceptance-sealed. PE4-CONTRACT-REPAIR-1, PE4-OFFLINE-1, PE4-READ-1, PE4-SHADOW-1, and PE4-CANARY-1 are merged; PE4-PROMOTION-1 is active. PE4-CLOSE-1, PE-5, and PE-6 remain unstarted. This is not AR-7, another LGB ladder, or a second control plane.
 
 `docs/NEXT_DECISION.md` is the single forward-plan artifact. Historical detail remains in `docs/ARCHITECTURE_BOOK.md`, archived plans, merged PRs, and repository history.
 
@@ -78,7 +78,7 @@ Normative order is PE-1, PE-2, PE-3, PE-4, PE-5, and PE-6. Do not start PE-3 bef
 | PE-1 | P0 | Token Efficiency Regression Lab | Complete and acceptance-sealed |
 | PE-2 | P0/P1 | Budget Intelligence and Anomaly Auto-Pause | Complete and acceptance-sealed |
 | PE-3 | P1 | Operator Decision Center | Complete and independently acceptance-sealed |
-| PE-4 | P1/P2 | Trace-backed Policy Replay | Contract, offline replay, READ, and SHADOW merged; PE4-CANARY-1 active; promotion blocked on canary merge; PE4-CLOSE-1 remains unstarted |
+| PE-4 | P1/P2 | Trace-backed Policy Replay | Contract, offline replay, READ, SHADOW, and CANARY merged; PE4-PROMOTION-1 active; PE4-CLOSE-1 remains unstarted |
 | PE-5 | P1.5 | Release Provenance | Packetized; inactive unless explicitly activated |
 | PE-6 | P2 | Fault Injection and Recovery Drills | Packetized; blocked on explicit recovery invariants |
 
@@ -404,7 +404,7 @@ PE-3 is complete and acceptance-sealed. PE3-REPAIR-1 corrected observation-time 
 
 ### Packet PE4-CANARY-1 — Bounded canary through the existing experiment owner
 
-**State:** `IN_PROGRESS`
+**State:** `COMPLETE`
 
 **Prerequisite:** PE4-SHADOW-1 merged as PR #200 with exact-head CI and post-merge `main` CI green; the existing `AdaptiveExperimentController` is the verified canary authority.
 
@@ -418,11 +418,13 @@ PE-3 is complete and acceptance-sealed. PE3-REPAIR-1 corrected observation-time 
 
 **Implementation boundary:** This packet adds only a deterministic, hash-bound decision envelope and focused owner tests. It does not add a persistence table, HTTP mutation route, provider call, live routing/policy mutation, or parallel experiment state machine. Audit and actual activation remain with the existing experiment/operator owners.
 
+**Completion evidence:** PR #201 merged as `4e5bdbb2a80a6c791e2fb508b60a8d44bd2b1c3d` from exact head `3dfd5f6af73c27601724f6cf7d6a6f6e68a6b1bd`; exact-head CI `29185418126` passed all seven required jobs. Post-merge `main` CI `29185710538` is monitored while PE4-PROMOTION-1 proceeds.
+
 ### Packet PE4-PROMOTION-1 — Authoritative guarded promotion
 
-**State:** `BLOCKED_PREREQUISITE`
+**State:** `IN_PROGRESS`
 
-**Prerequisite:** PE4-CANARY-1 merged with post-merge `main` CI green and existing promotion authority verified.
+**Prerequisite:** PE4-CANARY-1 merged as PR #201 with exact-head CI green; post-merge `main` CI `29185710538` is monitored; the existing `AdaptiveAutoPromotionController` and `LocalProductStore` promotion path are the verified authority.
 
 **Goal:** Extend the existing promotion owner so promotion requires the complete compatible evidence chain.
 
@@ -431,6 +433,8 @@ PE-3 is complete and acceptance-sealed. PE3-REPAIR-1 corrected observation-time 
 **Contract:** Require compatible offline, shadow, and bounded canary evidence; coverage; actual calibration where applicable; non-OOD evidence; quality/cost/latency guardrails; exact policy versions; source hashes; rollout scope; and rollback target. Offline or shadow evidence alone never authorizes promotion.
 
 **Acceptance and rollback:** Confirmation, permission, audit, idempotency, pause, resume, rollback, restart, compensation, version/hash binding, and fail-closed negative-path tests pass. Revert the packet through the existing promotion owner; no parallel authority is created.
+
+**Implementation boundary:** The caller-only promotion path is fail-closed. The new chain path re-derives shadow from offline evidence, validates canary and judge calibration bindings, records the chain hash in the promoted policy, and delegates application, audit, snapshot, pause, compensation, and rollback to existing owners. No new migration, provider path, full-rollout shortcut, or second promotion authority is added.
 
 ### Packet PE4-CLOSE-1 — Independent PE-4 acceptance seal
 
@@ -464,6 +468,6 @@ The agent may define recovery invariants from existing subsystem contracts and t
 
 ## Active Routing
 
-1. Monitor the exact-head CI for PE4-CANARY-1 and merge it only after all seven required jobs are green and no unresolved objection remains; then refresh `main` and verify post-merge CI.
-2. Execute PE4-PROMOTION-1 as a separate coherent PR after the canary merge and post-merge verification; then execute PE4-CLOSE-1 independently.
+1. Monitor post-merge main CI `29185710538` and complete PE4-PROMOTION-1 as a separate coherent PR; merge only after its exact head is 7/7 green and no unresolved objection remains, then refresh `main` and verify post-merge CI.
+2. Execute PE4-CLOSE-1 independently after promotion merge and post-merge verification.
 3. Leave PE-5 and PE-6 unstarted.
