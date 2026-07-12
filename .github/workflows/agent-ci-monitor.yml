@@ -6,7 +6,7 @@ on:
     types: [completed]
 
 permissions:
-  actions: read
+  actions: write
   checks: read
   contents: write
   issues: write
@@ -21,16 +21,8 @@ env:
   AGENT_GH_CMD: gh
 
 jobs:
-  analyze:
+  process:
     runs-on: ubuntu-latest
-    outputs:
-      action: ${{ steps.ci.outputs.action }}
-      pr_number: ${{ steps.ci.outputs.pr_number }}
-      issue_number: ${{ steps.ci.outputs.issue_number }}
-      head_sha: ${{ steps.ci.outputs.head_sha }}
-      failed_jobs: ${{ steps.ci.outputs.failed_jobs }}
-      repair_count: ${{ steps.ci.outputs.repair_count }}
-      ci_run_id: ${{ steps.ci.outputs.ci_run_id }}
     steps:
       - name: Check out repository
         uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
@@ -47,61 +39,72 @@ jobs:
         env:
           GITHUB_EVENT_PATH: ${{ github.event_path }}
         run: |
-          python3 ${{ github.workspace }}/scripts/agent-control/ci_handler.py
+          RESULT=$(python3 ${{ github.workspace }}/scripts/agent-control/ci_handler.py 2>&1)
+          echo "$RESULT"
+          echo "result<<REOF" >> "$GITHUB_OUTPUT"
+          echo "$RESULT" >> "$GITHUB_OUTPUT"
+          echo "REOF" >> "$GITHUB_OUTPUT"
 
-  dispatch-repair:
-    needs: analyze
-    if: needs.analyze.outputs.action == 'trigger_repair'
-    uses: ./.github/workflows/agent-ci-repair.yml
-    with:
-      pr_number: ${{ needs.analyze.outputs.pr_number }}
-      issue_number: ${{ needs.analyze.outputs.issue_number }}
-      head_sha: ${{ needs.analyze.outputs.head_sha }}
-      failed_jobs: ${{ needs.analyze.outputs.failed_jobs }}
-      repair_count: ${{ needs.analyze.outputs.repair_count }}
-      ci_run_id: ${{ needs.analyze.outputs.ci_run_id }}
-
-  dispatch-review:
-    needs: analyze
-    if: needs.analyze.outputs.action == 'trigger_review'
-    uses: ./.github/workflows/agent-review.yml
-    with:
-      pr_number: ${{ needs.analyze.outputs.pr_number }}
-      issue_number: ${{ needs.analyze.outputs.issue_number }}
-      head_sha: ${{ needs.analyze.outputs.head_sha }}
-
-  dispatch-merge:
-    needs: analyze
-    if: needs.analyze.outputs.action == 'merge_ready'
-    uses: ./.github/workflows/agent-merge.yml
-    with:
-      pr_number: ${{ needs.analyze.outputs.pr_number }}
-      issue_number: ${{ needs.analyze.outputs.issue_number }}
-      head_sha: ${{ needs.analyze.outputs.head_sha }}
-
-  handle-blocked:
-    needs: analyze
-    if: needs.analyze.outputs.action == 'blocked'
-    runs-on: ubuntu-latest
-    steps:
-      - name: Check out repository
-        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
-        with:
-          persist-credentials: false
-
-      - name: Mark issue blocked
+      - name: Handle blocked
+        if: fromJson(steps.ci.outputs.result).action == 'blocked'
         run: |
-          ISSUE=${{ needs.analyze.outputs.issue_number }}
-          PR=${{ needs.analyze.outputs.pr_number }}
-          REASON="${{ needs.analyze.outputs.reason }}"
+          ISSUE=$(echo '${{ steps.ci.outputs.result }}' | python3 -c "import sys,json; print(json.load(sys.stdin)['issue_number'])")
+          PR=$(echo '${{ steps.ci.outputs.result }}' | python3 -c "import sys,json; print(json.load(sys.stdin)['pr_number'])")
           python3 ${{ github.workspace }}/scripts/agent-control/state_manager.py set-labels "$ISSUE" agent-blocked
           python3 ${{ github.workspace }}/scripts/agent-control/state_manager.py comment "$ISSUE" \
             "## Agent Orchestrator: CI Repair Limit Exceeded
 
           PR: #${PR}
-          
+
           The CI repair limit was reached without achieving green CI.
-          
-          Reason: ${REASON}
-          
+
           This task has been marked \`agent-blocked\`. Manual intervention is required."
+
+      - name: Dispatch CI repair
+        if: fromJson(steps.ci.outputs.result).action == 'trigger_repair'
+        run: |
+          RESULT='${{ steps.ci.outputs.result }}'
+          PR=$(echo "$RESULT" | python3 -c "import sys,json; print(json.load(sys.stdin)['pr_number'])")
+          ISSUE=$(echo "$RESULT" | python3 -c "import sys,json; print(json.load(sys.stdin)['issue_number'])")
+          SHA=$(echo "$RESULT" | python3 -c "import sys,json; print(json.load(sys.stdin)['head_sha'])")
+          RUN_ID=$(echo "$RESULT" | python3 -c "import sys,json; print(json.load(sys.stdin)['ci_run_id'])")
+          FAILED=$(echo "$RESULT" | python3 -c "import sys,json; print(json.dumps(json.load(sys.stdin)['failed_jobs']))")
+          REPAIR_COUNT=$(echo "$RESULT" | python3 -c "import sys,json; print(json.load(sys.stdin)['repair_count'])")
+          LOGS=$(echo "$RESULT" | python3 -c "import sys,json; print(json.load(sys.stdin).get('logs',''))" | head -c 50000)
+
+          gh workflow run agent-ci-repair.yml \
+            --ref ${{ github.ref_name }} \
+            -f pr_number="$PR" \
+            -f issue_number="$ISSUE" \
+            -f head_sha="$SHA" \
+            -f failed_jobs="$FAILED" \
+            -f repair_count="$REPAIR_COUNT" \
+            -f ci_run_id="$RUN_ID"
+
+      - name: Dispatch review
+        if: fromJson(steps.ci.outputs.result).action == 'trigger_review'
+        run: |
+          RESULT='${{ steps.ci.outputs.result }}'
+          PR=$(echo "$RESULT" | python3 -c "import sys,json; print(json.load(sys.stdin)['pr_number'])")
+          ISSUE=$(echo "$RESULT" | python3 -c "import sys,json; print(json.load(sys.stdin)['issue_number'])")
+          SHA=$(echo "$RESULT" | python3 -c "import sys,json; print(json.load(sys.stdin)['head_sha'])")
+
+          gh workflow run agent-review.yml \
+            --ref ${{ github.ref_name }} \
+            -f pr_number="$PR" \
+            -f issue_number="$ISSUE" \
+            -f head_sha="$SHA"
+
+      - name: Dispatch merge
+        if: fromJson(steps.ci.outputs.result).action == 'merge_ready'
+        run: |
+          RESULT='${{ steps.ci.outputs.result }}'
+          PR=$(echo "$RESULT" | python3 -c "import sys,json; print(json.load(sys.stdin)['pr_number'])")
+          ISSUE=$(echo "$RESULT" | python3 -c "import sys,json; print(json.load(sys.stdin)['issue_number'])")
+          SHA=$(echo "$RESULT" | python3 -c "import sys,json; print(json.load(sys.stdin)['head_sha'])")
+
+          gh workflow run agent-merge.yml \
+            --ref ${{ github.ref_name }} \
+            -f pr_number="$PR" \
+            -f issue_number="$ISSUE" \
+            -f head_sha="$SHA"

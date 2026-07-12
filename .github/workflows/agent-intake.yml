@@ -55,71 +55,54 @@ jobs:
       - name: Validate labels
         id: labels
         run: |
-          ISSUE=${{ steps.vars.outputs.issue }}
-          LABELS=$(python3 ${{ github.workspace }}/scripts/agent-control/state_manager.py get-labels "$ISSUE")
-          echo "current_labels=$LABELS" >> "$GITHUB_OUTPUT"
-          echo "Current labels: $LABELS"
+          python3 ${{ github.workspace }}/scripts/agent-control/state_manager.py get-labels \
+            ${{ steps.vars.outputs.issue }} > /tmp/agent-labels.txt
+          echo "current_labels=$(cat /tmp/agent-labels.txt)" >> "$GITHUB_OUTPUT"
 
       - name: Handle agent-draft
-        if: contains(steps.labels.outputs.current_labels, 'agent-draft') && !contains(steps.labels.outputs.current_labels, 'agent-ready')
+        if: >
+          contains(steps.labels.outputs.current_labels, 'agent-draft') &&
+          !contains(steps.labels.outputs.current_labels, 'agent-ready')
         run: |
           ISSUE=${{ steps.vars.outputs.issue }}
           python3 ${{ github.workspace }}/scripts/agent-control/state_manager.py comment "$ISSUE" \
             "## Agent Orchestrator Intake
-
-Task registered as **draft** (label: \`agent-draft\`).
-
-The task specification is recorded but will not be executed until:
-- The label is changed to \`agent-ready\`.
-- All declared dependencies are resolved.
-
-To discard the draft, remove the \`agent-draft\` label."
-          echo "Draft registered for issue #$ISSUE"
+          Task registered as **draft** (label: \`agent-draft\`).
+          Change label to \`agent-ready\` when dependencies are resolved to start execution."
 
       - name: Check dependencies
         id: deps
         if: contains(steps.labels.outputs.current_labels, 'agent-ready')
         run: |
-          ISSUE=${{ steps.vars.outputs.issue }}
-          if python3 ${{ github.workspace }}/scripts/agent-control/state_manager.py check-deps "$ISSUE"; then
+          if python3 ${{ github.workspace }}/scripts/agent-control/state_manager.py check-deps \
+            ${{ steps.vars.outputs.issue }}; then
             echo "status=ready" >> "$GITHUB_OUTPUT"
-            echo "Dependencies satisfied for #$ISSUE"
           else
             echo "status=blocked" >> "$GITHUB_OUTPUT"
-            echo "Dependencies not satisfied for #$ISSUE"
           fi
 
       - name: Mark ready for execution
         if: steps.deps.outputs.status == 'ready'
         run: |
-          ISSUE=${{ steps.vars.outputs.issue }}
-          python3 ${{ github.workspace }}/scripts/agent-control/state_manager.py add-labels "$ISSUE" agent-ready
-          python3 ${{ github.workspace }}/scripts/agent-control/state_manager.py remove-labels "$ISSUE" agent-draft
-          echo "Issue #$ISSUE is ready for execution"
+          python3 ${{ github.workspace }}/scripts/agent-control/state_manager.py add-labels \
+            ${{ steps.vars.outputs.issue }} agent-ready
+          python3 ${{ github.workspace }}/scripts/agent-control/state_manager.py remove-labels \
+            ${{ steps.vars.outputs.issue }} agent-draft
 
       - name: Mark blocked on dependencies
         if: steps.deps.outputs.status == 'blocked'
         run: |
-          ISSUE=${{ steps.vars.outputs.issue }}
-          python3 ${{ github.workspace }}/scripts/agent-control/state_manager.py add-labels "$ISSUE" agent-blocked
-          python3 ${{ github.workspace }}/scripts/agent-control/state_manager.py comment "$ISSUE" \
+          python3 ${{ github.workspace }}/scripts/agent-control/state_manager.py add-labels \
+            ${{ steps.vars.outputs.issue }} agent-blocked
+          python3 ${{ github.workspace }}/scripts/agent-control/state_manager.py comment \
+            ${{ steps.vars.outputs.issue }} \
             "## Agent Orchestrator: Dependencies Not Met
-
-This task has unresolved dependencies and has been labeled \`agent-blocked\`.
-
-Please ensure all prerequisite issues are labeled \`agent-complete\` before adding the \`agent-ready\` label."
-          echo "Issue #$ISSUE blocked on dependencies"
+          This task has unresolved dependencies and has been labeled \`agent-blocked\`.
+          Ensure all prerequisite issues are labeled \`agent-complete\` before adding \`agent-ready\`."
 
       - name: Dry-run report
         if: github.event.inputs.dry_run == 'true'
         run: |
-          ISSUE=${{ steps.vars.outputs.issue }}
-          STATUS=${{ steps.deps.outputs.status || 'draft' }}
           echo "=== Dry-Run Intake Report ==="
-          echo "Issue: #$ISSUE"
+          echo "Issue: ${{ steps.vars.outputs.issue }}"
           echo "Labels: ${{ steps.labels.outputs.current_labels }}"
-          echo "Dependency status: $STATUS"
-          echo "Side effects would have been:"
-          echo "  - Labels updated"
-          echo "  - Comment posted (if blocked)"
-          echo "  - Worker started (if ready and not dry-run)"

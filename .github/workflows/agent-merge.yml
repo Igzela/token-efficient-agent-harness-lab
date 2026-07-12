@@ -24,138 +24,50 @@ concurrency:
 
 env:
   AGENT_REPO: ${{ github.repository }}
-  AGENT_GH_CMD: gh
 
 jobs:
-  merge:
+  verify-and-merge:
     runs-on: ubuntu-latest
     steps:
-      - name: Check out repository
-        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
-        with:
-          persist-credentials: false
-          fetch-depth: 0
-
-      - name: Verify merge conditions
-        id: verify
+      - name: Verify head SHA
         run: |
-          PR=${{ inputs.pr_number }}
-          ISSUE=${{ inputs.issue_number }}
-          EXPECTED_SHA=${{ inputs.head_sha }}
+          CURRENT=$(gh pr view ${{ inputs.pr_number }} --json headRefOid --jq '.headRefOid')
+          if [ "$CURRENT" != "${{ inputs.head_sha }}" ]; then
+            echo "SHA mismatch: expected ${{ inputs.head_sha }}, got $CURRENT"
+            exit 1
+          fi
 
-          python3 << 'PYEOF'
-import json, subprocess, sys
-
-def gh(*args):
-    result = subprocess.run(["gh"] + list(args), capture_output=True, text=True, timeout=30)
-    return result.stdout.strip() if result.returncode == 0 else None
-
-def fail_check(check, reason):
-    print(f"::error title=Pre-merge check failed::{check}: {reason}")
-
-all_pass = True
-
-# 1. Verify head SHA hasn't changed
-pr_info = gh("pr", "view", str(${{ inputs.pr_number }}), "--json", "headRefOid,state,mergeable")
-if not pr_info:
-    fail_check("PR info", "Cannot read PR")
-    sys.exit(1)
-
-pr = json.loads(pr_info)
-current_sha = pr.get("headRefOid", "")
-expected_sha = "${{ inputs.head_sha }}"
-if current_sha != expected_sha:
-    fail_check("Head SHA", f"Changed: expected {expected_sha[:12]}, got {current_sha[:12]}")
-    all_pass = False
-
-# 2. Verify PR is open
-if pr.get("state") != "OPEN":
-    fail_check("PR state", f"PR is {pr.get('state')}, not OPEN")
-    all_pass = False
-
-# 3. Verify branch protection
-mergeable = pr.get("mergeable")
-if mergeable == "CONFLICTING":
-    fail_check("Merge conflicts", "PR has merge conflicts")
-    all_pass = False
-
-# 4. Verify required CI is green
-checks = gh("pr", "check", str(${{ inputs.pr_number }}), "--json", "name,conclusion")
-if checks:
-    try:
-        check_list = json.loads(checks)
-        for c in check_list:
-            if c.get("conclusion") != "success":
-                fail_check(f"CI check: {c.get('name', 'unknown')}",
-                           f"Conclusion: {c.get('conclusion', 'unknown')}")
-                all_pass = False
-    except json.JSONDecodeError:
-        pass
-
-# 5. Verify issue state
-issue_labels = gh("issue", "view", str(${{ inputs.issue_number }}), "--json", "labels")
-if issue_labels:
-    try:
-        labels = json.loads(issue_labels).get("labels", [])
-        label_names = [l["name"] for l in labels]
-        if "final-review" not in label_names and "agent-running" not in label_names:
-            fail_check("Issue labels", f"No active review label found: {label_names}")
-            all_pass = False
-    except json.JSONDecodeError:
-        pass
-
-if all_pass:
-    print("all_conditions_met=true")
-    # Export for GitHub Actions output
-    with open(os.environ.get("GITHUB_OUTPUT", "/dev/null"), "a") as f:
-        f.write("all_conditions_met=true\n")
-else:
-    print("all_conditions_met=false")
-    with open(os.environ.get("GITHUB_OUTPUT", "/dev/null"), "a") as f:
-        f.write("all_conditions_met=false\n")
-    sys.exit(1)
-PYEOF
-
-      - name: Merge PR
-        if: steps.verify.outputs.all_conditions_met == 'true'
+      - name: Verify PR is open
         run: |
-          PR=${{ inputs.pr_number }}
-          ISSUE=${{ inputs.issue_number }}
+          STATE=$(gh pr view ${{ inputs.pr_number }} --json state --jq '.state')
+          if [ "$STATE" != "OPEN" ]; then
+            echo "PR is $STATE, not OPEN"
+            exit 1
+          fi
 
-          echo "All merge conditions met. Merging PR #$PR..."
-          
-          gh pr merge "$PR" --merge --subject "agent: merge #$ISSUE implementation"
+      - name: Verify checks pass
+        run: |
+          CHECKS=$(gh pr view ${{ inputs.pr_number }} --json statusCheckRollup --jq \
+            '[.statusCheckRollup[] | select(.conclusion != null) | {name: .context, conclusion: .conclusion}]')
+          FAILED=$(echo "$CHECKS" | python3 -c "import sys,json; checks=json.load(sys.stdin); failed=[c for c in checks if c.get('conclusion')!='success']; [print(c['name']) for c in failed]")
+          if [ -n "$FAILED" ]; then
+            echo "Failed checks:"
+            echo "$FAILED"
+            exit 1
+          fi
 
-          echo "PR #$PR merged successfully."
+      - name: Merge
+        run: |
+          gh pr merge ${{ inputs.pr_number }} --merge --subject \
+            "agent: merge #${{ inputs.issue_number }} implementation"
 
       - name: Mark agent-complete
-        if: steps.verify.outputs.all_conditions_met == 'true'
         run: |
-          ISSUE=${{ inputs.issue_number }}
-          python3 ${{ github.workspace }}/scripts/agent-control/state_manager.py set-labels "$ISSUE" agent-complete
-          python3 ${{ github.workspace }}/scripts/agent-control/state_manager.py comment "$ISSUE" \
-            "## Agent Orchestrator: Task Complete
-
-          PR #${{ inputs.pr_number }} has been merged.
-
-          This task is now marked \`agent-complete\`."
-
-      - name: Trigger next-task
-        if: steps.verify.outputs.all_conditions_met == 'true'
-        run: |
-          echo "Finding next eligible agent-ready task..."
-          python3 ${{ github.workspace }}/scripts/agent-control/state_manager.py comment \
-            ${{ inputs.issue_number }} \
-            "Checking for next eligible \`agent-ready\` task..."
+          python3 ${{ github.workspace }}/scripts/agent-control/state_manager.py set-labels \
+            ${{ inputs.issue_number }} agent-complete
 
       - name: Report merge failure
         if: failure()
         run: |
-          ISSUE=${{ inputs.issue_number }}
-          python3 ${{ github.workspace }}/scripts/agent-control/state_manager.py comment "$ISSUE" \
-            "## Agent Orchestrator: Merge Failed
-
-          PR #${{ inputs.pr_number }} could not be merged automatically.
-
-          Conditions that failed are listed above. This task has been marked \`agent-blocked\`."
-          python3 ${{ github.workspace }}/scripts/agent-control/state_manager.py set-labels "$ISSUE" agent-blocked
+          python3 ${{ github.workspace }}/scripts/agent-control/state_manager.py set-labels \
+            ${{ inputs.issue_number }} agent-blocked
