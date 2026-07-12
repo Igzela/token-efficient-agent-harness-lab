@@ -2760,6 +2760,7 @@ async fn axum_offline_replay_read_surface_is_bounded_and_read_only() {
         comparisons: Vec::new(),
         outcomes: Vec::new(),
         eligibility_content_sha256: format!("{:064x}", 7),
+        replay_judge_calibrations: Vec::new(),
         source_trace_ids: Vec::new(),
         source_evidence_content_sha256: Vec::new(),
         shadow_only: true,

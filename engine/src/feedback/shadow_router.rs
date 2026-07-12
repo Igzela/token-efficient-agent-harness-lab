@@ -530,6 +530,7 @@ mod tests {
             comparisons: vec![comparison],
             outcomes: Vec::new(),
             eligibility_content_sha256: format!("{:064x}", 6),
+            replay_judge_calibrations: Vec::new(),
             source_trace_ids: vec!["trace-actual".to_string(), "trace-candidate".to_string()],
             source_evidence_content_sha256: vec![format!("{:064x}", 4), format!("{:064x}", 5)],
             shadow_only: true,
