@@ -94,5 +94,7 @@ pub use replay_eligibility::{
 };
 pub use run_trace_recorder::{RunTrace, RunTraceRecorder, RUN_TRACE_SCHEMA_VERSION};
 pub use shadow_router::{
-    tier_cost_multiplier, ShadowRouteOutput, ShadowRouter, SHADOW_ROUTE_SCHEMA_VERSION,
+    tier_cost_multiplier, ShadowDriftEvidence, ShadowPolicyComparison, ShadowReplayComparison,
+    ShadowRouteOutput, ShadowRouter, SHADOW_REPLAY_COMPARISON_SCHEMA_VERSION,
+    SHADOW_ROUTE_SCHEMA_VERSION,
 };
