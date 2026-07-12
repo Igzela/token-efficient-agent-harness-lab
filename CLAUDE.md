@@ -13,7 +13,7 @@
 **Active tracks:**
 - Real-World Testing Mode — validated through real tasks, branches, commits, PRs, CI, and gated autonomous merge
 - Agent Autonomous Maintenance Mode — agents audit, plan, implement, verify, review, document, and ship bounded changes
-- Full Agent Autonomy Mode — repository-scoped architecture, authority, security, migration, release-workflow, recovery, and target-output evolution is authorized when testable, observable, CI-gated, and rollbackable
+- Full Agent Autonomy Mode — repository-scoped architecture, authority, security, migration, release-workflow, recovery, and target-output evolution is authorized when testable, observable, verification-gated, and rollbackable
 - Post-LGB Product Evolution — PE-1, PE-2, PE-3, and PE-4 are acceptance-sealed; PE-5 and PE-6 remain unstarted; later stages are governed by `docs/NEXT_DECISION.md`
 
 **Complete tracks:**
@@ -48,7 +48,7 @@ Material decisions must be evidence-backed, recorded in an existing authoritativ
 
 Model and reasoning-effort selection are controlled by the user or execution environment. This repository does not require a particular model, model family, or reasoning tier.
 
-Do not edit model configuration merely to satisfy repository instructions. Model choice never reduces testing, review, CI, audit, compatibility, compensation, or rollback requirements.
+Do not edit model configuration merely to satisfy repository instructions. Model choice never reduces testing, review, CI, audit, compatibility, compensation, or rollback requirements. Strictly documentation-only PRs may use the targeted merge exception in `docs/REAL_WORLD_TESTING_PLAYBOOK.md`; the underlying evidence for any implementation claim must already be verified.
 
 ## Minimal Agent Reading Model
 
@@ -95,11 +95,11 @@ For each autonomous session:
 8. Review authority, compatibility, security, audit, compensation, and rollback.
 9. Repair failures at their root cause; do not weaken tests or guards.
 10. Update the smallest necessary active documentation.
-11. Run `uv run --no-project python scripts/check_agent_handoff.py` and `bash scripts/check_wire_codegen_drift.sh`.
-12. Commit in English, push, open or update a PR, and wait for complete green CI.
-13. Merge only when the real-world testing playbook permits it.
+11. Run `uv run --no-project python scripts/check_agent_handoff.py` and applicable verification.
+12. Commit in English, push, and open or update a PR. Wait for complete green CI unless the final diff qualifies for the strict documentation-only exception in the playbook.
+13. Merge only when the real-world testing playbook classifier or its documentation-only exception permits it.
 14. Refresh `main` and continue when the bounded objective includes later packets.
-15. Report decisions, files, tests, CI, compatibility, residual risks, rollback, and next state.
+15. Report decisions, files, tests, CI or targeted documentation checks, compatibility, residual risks, rollback, and next state.
 
 ## Rules
 
@@ -109,7 +109,7 @@ For each autonomous session:
 4. Use `docs/NEXT_DECISION.md` as the single forward plan.
 5. Keep documentation current and small.
 6. Run the handoff guard before commit.
-7. Do not invent evidence or claim CI success before all required jobs complete.
+7. Do not invent evidence or claim implementation/CI success before the required underlying evidence exists. Documentation-only merge eligibility does not establish implementation success.
 8. Do not overwrite another agent's active work without reconciling scope and ownership.
 
 ## Documentation Maintenance
