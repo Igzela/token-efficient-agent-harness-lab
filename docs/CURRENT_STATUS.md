@@ -36,7 +36,7 @@ This repo is a local/small-team self-hosted agent workflow control plane. Rust `
 | Local runner operations | Active: validate, export, import, and inspect bounded scorecard artifacts locally |
 | Runner integration | Storage/API/operator evidence complete; workflow scheduling of local runner validation is implemented via `LocalRunnerValidationExecutor` in stub mode with automatic native scorecard recording on terminal tick |
 | Live provider adapter | Gated ready path: Stub/Fake/Live; Live requires gates, explicit metadata, symbolic credentials, positive pricing, persistent redacted audit, bounded calls/tokens/time/cost, and a kill switch |
-| Post-LGB Product Evolution Plan | PE-1, PE-2, and PE-3 are acceptance-sealed; PE4-CONTRACT-REPAIR-1 and PE4-OFFLINE-1 are merged; PE4-READ-1 is active; PE-5 and PE-6 remain unstarted |
+| Post-LGB Product Evolution Plan | PE-1, PE-2, and PE-3 are acceptance-sealed; PE4-CONTRACT-REPAIR-1, PE4-OFFLINE-1, PE4-READ-1, and PE4-SHADOW-1 are merged; PE4-CANARY-1 is active; promotion is prepared but not merged; PE4-CLOSE-1, PE-5, and PE-6 remain unstarted |
 
 ## Planned Product Evolution Stages
 
@@ -47,7 +47,7 @@ The stages are packetized in `docs/NEXT_DECISION.md`. The agent should execute p
 | PE-1 | P0 | Token Efficiency Regression Lab | Complete and acceptance-sealed |
 | PE-2 | P0/P1 | Budget Intelligence and Anomaly Auto-Pause | Complete and acceptance-sealed |
 | PE-3 | P1 | Operator Decision Center | Complete and independently acceptance-sealed after PE3-REPAIR-1 and PE3-CLOSE-1 |
-| PE-4 | P1/P2 | Trace-backed Policy Replay | PE4-CONTRACT-REPAIR-1 and PE4-OFFLINE-1 merged; PE4-READ-1 is active; PR #193 remains only a caller-asserted prototype and is not replay evidence |
+| PE-4 | P1/P2 | Trace-backed Policy Replay | Contract, offline replay, read surfaces, and shadow comparison are merged; PE4-CANARY-1 is active; promotion and closeout remain unmerged; PR #193 remains only a caller-asserted prototype and is not replay evidence |
 | PE-5 | P1.5 | Release Provenance | Not started; inactive in the current bounded objective |
 | PE-6 | P2 | Fault Injection and Recovery Drills | Not started; blocked on explicit recovery invariants and affected stage prerequisites |
 
@@ -90,7 +90,7 @@ The stages are packetized in `docs/NEXT_DECISION.md`. The agent should execute p
 
 ## Current Gaps
 
-- PE4-CONTRACT-REPAIR-1 is merged in PR #197: `policy_replay_contract.v2`/`trace_replay_evidence.v1` derive normalized evidence from `RunTrace`, validate source hashes and contradictory sections, expose accepted/rejected coverage and actual paired calibration, and fail closed for missing, stale, unpriced, unmeasured, incompatible, OOD, or tampered evidence. PE4-OFFLINE-1 is merged in PR #198; PE4-READ-1 is active and the dependent shadow/canary/promotion/closeout packets remain unstarted.
+- PE4-CONTRACT-REPAIR-1 is merged in PR #197: `policy_replay_contract.v2`/`trace_replay_evidence.v1` derive normalized evidence from `RunTrace`, validate source hashes and contradictory sections, expose accepted/rejected coverage and actual paired calibration, and fail closed for missing, stale, unpriced, unmeasured, incompatible, OOD, or tampered evidence. PE4-OFFLINE-1 is merged in PR #198; PE4-READ-1 is merged in PR #199; PE4-SHADOW-1 is merged in PR #200; PE4-CANARY-1 is active while promotion and closeout remain unmerged.
 - `policy_simulator.rs` still relies on fixed estimates rather than trace-calibrated replay.
 - SBOM, signing, and provenance attestations are not yet part of the release contract.
 - There is no systematic fault-injection and recovery-drill harness.
@@ -149,7 +149,16 @@ The stages are packetized in `docs/NEXT_DECISION.md`. The agent should execute p
 - PE4-OFFLINE-1 derives eligibility inside `OfflineEvaluationEngine::replay_policies` from raw `ReplayEligibilityRequest` trace-owner input; callers cannot supply an authoritative `ReplayEligibilityResult`.
 - Explicit versioned current and candidate policy definitions are hash-bound. Reports separate observed facts from comparable-cohort counterfactual estimates and retain source trace/evidence hashes, candidate definitions, policy versions, and a report hash.
 - Deterministic outcomes include sufficient, insufficient, incompatible cohort, stale, tampered, uncalibrated, and out-of-distribution. The replay report is always shadow-only and sets every live-influence flag false; it makes no provider call and mutates no production state.
-- Focused replay tests cover observed/counterfactual separation, determinism, policy binding, source tampering, stale input, and OOD candidate selection. PE4-READ-1 adds additive schema v20 `offline_replay_artifacts` storage with SQLite/PostgreSQL parity, hash-bound idempotent recording, metadata-only audit, deterministic paginated/status-filtered read routes, OpenAPI parity, encoded Python/TypeScript readers, and explicit DynamicRegulator empty/insufficient-invalid-OOD/error states. It is in progress on the dedicated READ branch; no live mutation, provider call, or promotion authority is added.
+- Focused replay tests cover observed/counterfactual separation, determinism, policy binding, source tampering, stale input, and OOD candidate selection. PE4-READ-1 adds additive schema v20 `offline_replay_artifacts` storage with SQLite/PostgreSQL parity, hash-bound idempotent recording, metadata-only audit, deterministic paginated/status-filtered read routes, OpenAPI parity, encoded Python/TypeScript readers, and explicit DynamicRegulator empty/insufficient-invalid-OOD/error states. It is merged; no live mutation, provider call, or promotion authority is added.
+
+## PE-4 Shadow Evidence
+
+- PE4-SHADOW-1 is merged as PR #200 (`54b3d46192f1de9b0bbaf1a1d83a7abaafff0201`, exact head `51a4b3a8b89ad1f65d74767b452e2546cf2526d7`). The hash-bound `ShadowReplayComparison` preserves observed facts separately from counterfactual predictions, binds source coverage and policy/candidate versions, records drift and insufficiency/OOD boundaries, and keeps every live-influence flag false. It cannot call providers or change routing/policy state.
+
+## PE-4 Canary Evidence
+
+- PE4-CANARY-1 adds a bounded `adaptive_canary.v1` decision through the existing experiment owner. It binds policy/candidate/scope versions and hashes to sufficient shadow evidence, requires default-off gates, explicit confirmation and permission, limits traffic to 1–5% and duration to 24 hours, and honors existing pause/kill gates.
+- The decision carries a canonical content hash, idempotency key, compensation-required marker, and rollback target. Repeated evaluation is deterministic across restart and tampering fails validation; it is not a persisted experiment state machine and has no provider, routing, policy, budget, or full-rollout authority.
 
 ## Handoff Guard Anchors
 

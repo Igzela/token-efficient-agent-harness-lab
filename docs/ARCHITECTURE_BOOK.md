@@ -216,6 +216,10 @@ Offline replay and shadow comparison remain derived, read-only evidence and cann
 
 PE4-READ-1 exposes the existing offline replay report through `LocalProductStore::offline_replay_artifacts`, `GET /api/v1/offline-replays`, and the encoded Python/TypeScript SDK readers. The artifact is bounded to the existing metadata-only artifact size/depth limits, ordered by store sequence, filtered by explicit replay status, and revalidated on every read so tampering is an error rather than an empty result. SQLite v20 uses an additive migration; PostgreSQL current DDL and the v19-to-v20 migration create the same table/index contract. The existing DynamicRegulator renders empty, insufficient/invalid/OOD, and transport-error states. There is no write HTTP route, provider invocation, policy mutation, or promotion authority.
 
+PE4-SHADOW-1 is merged as PR #200 (`54b3d46192f1de9b0bbaf1a1d83a7abaafff0201`, exact head `51a4b3a8b89ad1f65d74767b452e2546cf2526d7`). `ShadowRouter::compare_replay_report` produces a deterministic, hash-bound `ShadowReplayComparison` that keeps observed facts separate from counterfactual estimates, binds policy/candidate/trace/evidence hashes, records drift and insufficiency/OOD boundaries, and leaves every live-influence flag false. It reuses the existing evaluation/shadow owner and makes no provider call or routing/policy mutation. Post-merge main CI `29185040397` is monitored while the dependent canary packet proceeds.
+
+PE4-CANARY-1 extends the existing `AdaptiveExperimentController` with a versioned, hash-bound canary decision. It requires exact policy/candidate/scope bindings, compatible shadow coverage, default-off gates, bounded 1–5% traffic and one-second-to-24-hour duration, explicit confirmation and permission, and existing pause/kill gates. Decision content hashes make repeated invocation restart-safe and tamper-detecting; the decision carries compensation and rollback metadata. It is a plan/decision contract only and cannot create a second experiment owner, call a provider, mutate routing/policy/budget state, or authorize full rollout.
+
 ## Execution Modes
 
 `ACP_EXECUTION_MODE` controls dispatch execution:

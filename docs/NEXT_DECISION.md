@@ -4,7 +4,7 @@
 
 The dispatch kernel, V2, Adaptive Fusion AF-0 through AF-7, Agent Runtime AR-0 through AR-6, Trusted Local Autonomous Execution IAE-0 through IAE-3, scorecard integrity hardening, the importer-first external benchmark path, and PE-1 Token Efficiency Regression Lab are complete.
 
-The active direction is the Post-LGB Product Evolution plan. PE-1, PE-2, and PE-3 are complete and acceptance-sealed. PE4-CONTRACT-REPAIR-1 and PE4-OFFLINE-1 are merged and PE4-READ-1 is the active packet; later PE-4 packets are packetized but not started, and PE-5 and PE-6 remain unstarted. This is not AR-7, another LGB ladder, or a second control plane.
+The active direction is the Post-LGB Product Evolution plan. PE-1, PE-2, and PE-3 are complete and acceptance-sealed. PE4-CONTRACT-REPAIR-1, PE4-OFFLINE-1, PE4-READ-1, and PE4-SHADOW-1 are merged; PE4-CANARY-1 is active, promotion is prepared but not merged, and PE4-CLOSE-1, PE-5, and PE-6 remain unstarted. This is not AR-7, another LGB ladder, or a second control plane.
 
 `docs/NEXT_DECISION.md` is the single forward-plan artifact. Historical detail remains in `docs/ARCHITECTURE_BOOK.md`, archived plans, merged PRs, and repository history.
 
@@ -78,7 +78,7 @@ Normative order is PE-1, PE-2, PE-3, PE-4, PE-5, and PE-6. Do not start PE-3 bef
 | PE-1 | P0 | Token Efficiency Regression Lab | Complete and acceptance-sealed |
 | PE-2 | P0/P1 | Budget Intelligence and Anomaly Auto-Pause | Complete and acceptance-sealed |
 | PE-3 | P1 | Operator Decision Center | Complete and independently acceptance-sealed |
-| PE-4 | P1/P2 | Trace-backed Policy Replay | PE4-CONTRACT-REPAIR-1 and PE4-OFFLINE-1 merged; PE4-READ-1 active; shadow, canary, promotion, and closeout remain unstarted |
+| PE-4 | P1/P2 | Trace-backed Policy Replay | Contract, offline replay, read surfaces, and shadow comparison merged; PE4-CANARY-1 active; promotion prepared but not merged; PE4-CLOSE-1 remains unstarted |
 | PE-5 | P1.5 | Release Provenance | Packetized; inactive unless explicitly activated |
 | PE-6 | P2 | Fault Injection and Recovery Drills | Packetized; blocked on explicit recovery invariants |
 
@@ -374,7 +374,7 @@ PE-3 is complete and acceptance-sealed. PE3-REPAIR-1 corrected observation-time 
 
 ### Packet PE4-READ-1 — Read-only replay evidence surfaces
 
-**State:** `IN_PROGRESS`
+**State:** `COMPLETE`
 
 **Prerequisite:** PE4-OFFLINE-1 merged with post-merge `main` CI green (`5a4a3e049574f54500dfdf4dc312f68ac5b6d78d`; post-merge CI `29183843076` monitored).
 
@@ -384,13 +384,13 @@ PE-3 is complete and acceptance-sealed. PE3-REPAIR-1 corrected observation-time 
 
 **Contract:** Persist only validated `offline_replay_artifact.v1` envelopes whose report, policy hashes, eligibility hash, source evidence hashes, schema version, and shadow-only flags verify. Writes are idempotent and audit metadata-only; reads use deterministic bounded ordering/pagination and validate stored JSON on every read. HTTP/OpenAPI/SDK/Dashboard readers expose empty, insufficient, invalid, stale, tampered, OOD, and error states. SQLite v20 and PostgreSQL v20 remain aligned, old rows/callers remain compatible, and no live policy mutation or new evidence authority is added.
 
-**Acceptance and rollback:** HTTP/OpenAPI parity, encoded SDK paths, migration compatibility, SQLite/PostgreSQL, Dashboard states, idempotent hash-bound recording, tamper rejection, and read-only permission tests pass. Revert the additive route/storage changes; preserve existing data.
+**Acceptance and rollback:** PR #199 merged as `92ade400174ee49d1efa3d1447830d936aa3e4b6` from exact head `5c78ca1d5aa1b93516f15822991f3edcfa3072f2`; exact-head CI `29184325125` passed all seven jobs after repairing the integrity owner, and post-merge main CI `29184652464` passed all seven jobs. HTTP/OpenAPI parity, encoded SDK paths, migration compatibility, SQLite/PostgreSQL, Dashboard states, idempotent hash-bound recording, tamper rejection, integrity-table coverage, and read-only permission tests pass. Revert the additive route/storage changes; preserve existing data.
 
 ### Packet PE4-SHADOW-1 — Shadow comparison only
 
-**State:** `BLOCKED_PREREQUISITE`
+**State:** `COMPLETE`
 
-**Prerequisite:** PE4-READ-1 merged with post-merge `main` CI green and existing shadow/evaluation owners verified.
+**Prerequisite:** PE4-READ-1 complete with post-merge `main` CI green and existing shadow/evaluation owners verified.
 
 **Goal:** Compare predicted and observed quality, cost, latency, retry, and coverage using the existing shadow-routing/evaluation owners.
 
@@ -398,13 +398,13 @@ PE-3 is complete and acceptance-sealed. PE3-REPAIR-1 corrected observation-time 
 
 **Contract:** Shadow only; bind policy/candidate/trace versions and hashes; record drift, insufficiency, stale, tampered, uncalibrated, and OOD evidence; provider adapters may be used only through existing authorization, cost, audit, timeout, and kill gates.
 
-**Acceptance and rollback:** Shadow non-mutation, version binding, drift, insufficiency, permission, audit, timeout, kill, and restart tests pass. Revert the packet; no live route or policy changes remain.
+**Acceptance and rollback:** PR #200 merged as `54b3d46192f1de9b0bbaf1a1d83a7abaafff0201` from exact head `51a4b3a8b89ad1f65d74767b452e2546cf2526d7`; exact-head CI `29184759873` passed all seven jobs. Focused shadow tests cover hash binding, observed/counterfactual separation, drift, insufficiency/OOD, non-mutation, and deterministic output. Post-merge main CI `29185040397` is monitored while the dependent canary packet proceeds. Revert the packet; no live route or policy changes remain.
 
 ### Packet PE4-CANARY-1 — Bounded canary through the existing experiment owner
 
-**State:** `BLOCKED_PREREQUISITE`
+**State:** `IN_PROGRESS`
 
-**Prerequisite:** PE4-SHADOW-1 merged with post-merge `main` CI green and existing experiment/canary authority verified.
+**Prerequisite:** PE4-SHADOW-1 merged as PR #200 with exact-head CI green; post-merge main CI `29185040397` is monitored while this canary PR is prepared, and the existing `AdaptiveExperimentController` remains the experiment owner.
 
 **Goal:** Add default-off, explicitly confirmed, permissioned, bounded, reversible canary execution through the existing experiment owner.
 
@@ -412,7 +412,7 @@ PE-3 is complete and acceptance-sealed. PE3-REPAIR-1 corrected observation-time 
 
 **Contract:** Require exact policy/candidate versions, minimum compatible evidence, bounded scope and duration, explicit confirmation and permission, existing audit/idempotency, automatic pause through the existing pause authority, compensation, restart safety, and rollback. No direct full rollout or second canary state machine.
 
-**Acceptance and rollback:** Default-off, scope/duration, minimum evidence, pause, compensation, restart, audit, idempotency, and rollback tests pass. Revert the packet and leave prior experiment state untouched.
+**Acceptance and rollback:** Default-off, scope/duration, minimum evidence, pause/kill, compensation marker, restart/idempotency determinism, hash/tamper validation, and rollback-target tests pass. The decision remains non-persistent and non-mutating; revert the packet and leave prior experiment state untouched.
 
 ### Packet PE4-PROMOTION-1 — Authoritative guarded promotion
 
@@ -460,6 +460,6 @@ The agent may define recovery invariants from existing subsystem contracts and t
 
 ## Active Routing
 
-1. Finish PE4-READ-1 as the active read-only evidence PR; later packets remain blocked until its post-merge CI is green.
-2. Execute PE4-SHADOW-1, PE4-CANARY-1, PE4-PROMOTION-1, and PE4-CLOSE-1 as separate coherent PRs after each prerequisite is merged and verified.
+1. Complete PE4-CANARY-1 through the existing experiment owner; the shadow merge's post-merge CI remains monitored and must be green before shadow acceptance is finally recorded.
+2. Execute PE4-PROMOTION-1 and PE4-CLOSE-1 as separate coherent PRs after each prerequisite is merged and verified.
 3. Leave PE-5 and PE-6 unstarted.
