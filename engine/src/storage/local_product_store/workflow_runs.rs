@@ -7,6 +7,7 @@ use crate::workflow::context_pack::{
     assemble_context_injection_with_bridge, ContextAssemblyConfig, ContextSource,
 };
 mod dag_mutations;
+mod operator_approvals;
 mod queue_lease;
 
 use dag_mutations::{insert_workflow_run_edge_locked, insert_workflow_run_node_locked};

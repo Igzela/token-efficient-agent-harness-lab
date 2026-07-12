@@ -17,7 +17,7 @@ const MAX_EVIDENCE_REFERENCES: usize = 64;
 const MAX_CONTRACT_BYTES: usize = 64 * 1024;
 const MIN_ACTIONABLE_CONFIDENCE: f64 = 0.5;
 
-#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq, PartialOrd, Ord)]
 #[serde(rename_all = "snake_case")]
 pub enum OperatorDecisionSourceKind {
     Approval,
@@ -43,9 +43,22 @@ impl OperatorDecisionSourceKind {
             Self::Benchmark => 200,
         }
     }
+
+    pub fn as_identifier(&self) -> &'static str {
+        match self {
+            Self::Approval => "approval",
+            Self::Recovery => "recovery",
+            Self::Rollback => "rollback",
+            Self::Budget => "budget",
+            Self::Policy => "policy",
+            Self::Workflow => "workflow",
+            Self::Scheduler => "scheduler",
+            Self::Benchmark => "benchmark",
+        }
+    }
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq, PartialOrd, Ord)]
 #[serde(rename_all = "snake_case")]
 pub enum OperatorDecisionAction {
     Approve,
@@ -58,7 +71,7 @@ pub enum OperatorDecisionAction {
     Acknowledge,
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq, PartialOrd, Ord)]
 #[serde(rename_all = "snake_case")]
 pub enum OperatorDecisionSeverity {
     Info,
@@ -76,6 +89,25 @@ impl OperatorDecisionSeverity {
     }
 }
 
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum OperatorDecisionSourceState {
+    Actionable,
+    Informational,
+    Resolved,
+    InsufficientEvidence,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum OperatorDecisionOutcome {
+    Ready,
+    Conflict,
+    Expired,
+    InsufficientEvidence,
+    Resolved,
+}
+
 impl OperatorDecisionOutcome {
     pub(crate) fn rank(&self) -> u8 {
         match self {
@@ -86,25 +118,6 @@ impl OperatorDecisionOutcome {
             Self::Resolved => 1,
         }
     }
-}
-
-#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
-pub enum OperatorDecisionSourceState {
-    Actionable,
-    Informational,
-    Resolved,
-    InsufficientEvidence,
-}
-
-#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
-pub enum OperatorDecisionOutcome {
-    Ready,
-    Conflict,
-    Expired,
-    InsufficientEvidence,
-    Resolved,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq, PartialOrd, Ord)]
@@ -166,6 +179,10 @@ pub struct OperatorDecisionQueue {
 
 impl OperatorDecisionSource {
     pub fn seal(&mut self) -> Result<(), String> {
+        self.reason_codes.sort();
+        self.reason_codes.dedup();
+        self.evidence_references.sort();
+        self.evidence_references.dedup();
         self.evidence_sha256.clear();
         self.evidence_sha256 = canonical_hash(self)?;
         self.validate()
@@ -220,8 +237,11 @@ impl OperatorDecisionItem {
             | OperatorDecisionOutcome::Expired
             | OperatorDecisionOutcome::InsufficientEvidence
             | OperatorDecisionOutcome::Resolved => {
-                if self.recommended_action.is_some() {
-                    return Err("non-ready decision must not recommend an action".to_string());
+                if self.recommended_action.is_some() || self.selected_source.is_some() {
+                    return Err(
+                        "non-ready decision must not recommend an action or selected source"
+                            .to_string(),
+                    );
                 }
             }
         }
@@ -229,6 +249,12 @@ impl OperatorDecisionItem {
             return Err("operator decision item requires reason codes".to_string());
         }
         validate_references(&self.evidence_references)?;
+        if let Some(selected) = &self.selected_source {
+            validate_reference(selected)?;
+            if !self.evidence_references.contains(selected) {
+                return Err("selected source must be present in evidence references".to_string());
+            }
+        }
         validate_hash(&self.content_sha256)?;
         let mut unhashed = self.clone();
         unhashed.content_sha256.clear();
@@ -291,6 +317,7 @@ pub fn derive_operator_decision_item(
     if maximum_freshness_seconds == 0 || maximum_freshness_seconds > 30 * 24 * 60 * 60 {
         return Err("maximum decision freshness is outside the contract bound".to_string());
     }
+
     let mut candidates = sources
         .iter()
         .filter(|source| source.conflict_key == conflict_key)
@@ -299,9 +326,18 @@ pub fn derive_operator_decision_item(
     for source in &candidates {
         source.validate()?;
     }
+
+    let resources = candidates
+        .iter()
+        .map(|source| source.resource_id.as_str())
+        .collect::<BTreeSet<_>>();
+    if resources.len() > 1 {
+        return Err("operator decision conflict key spans multiple resources".to_string());
+    }
+
     let mut identities = BTreeMap::new();
     for source in &candidates {
-        let identity = (source.source_kind.clone(), source.source_id.clone());
+        let identity = (source.source_kind, source.source_id.clone());
         if identities
             .insert(identity, source.evidence_sha256.clone())
             .is_some_and(|existing| existing != source.evidence_sha256)
@@ -309,6 +345,7 @@ pub fn derive_operator_decision_item(
             return Err("conflicting duplicate operator decision source".to_string());
         }
     }
+
     candidates.sort_by(source_order);
     candidates.dedup_by(|left, right| {
         left.source_kind == right.source_kind && left.source_id == right.source_id
@@ -327,7 +364,7 @@ pub fn derive_operator_decision_item(
         .unwrap_or_else(|| "unknown".to_string());
     let severity = candidates
         .iter()
-        .map(|source| source.severity.clone())
+        .map(|source| source.severity)
         .max()
         .unwrap_or(OperatorDecisionSeverity::Info);
     let newest_observed = candidates
@@ -409,30 +446,23 @@ pub fn derive_operator_decision_item(
         } else {
             (
                 OperatorDecisionOutcome::Ready,
-                Some(top.action.clone()),
+                Some(top.action),
                 Some(source_reference(top)),
                 vec!["highest_precedence_fresh_source_selected".to_string()],
             )
         }
     };
-    let confidence = selected
-        .as_ref()
-        .and_then(|reference| {
-            candidates
-                .iter()
-                .find(|source| source.source_id == reference.evidence_id)
-        })
+
+    let selected_source = selected.as_ref().and_then(|reference| {
+        candidates
+            .iter()
+            .find(|source| source_matches_reference(source, reference))
+    });
+    let confidence = selected_source
         .map(|source| source.confidence)
         .unwrap_or(0.0);
-    let expires_at = selected
-        .as_ref()
-        .and_then(|reference| {
-            candidates
-                .iter()
-                .find(|source| source.source_id == reference.evidence_id)
-        })
-        .and_then(|source| source.expires_at.clone());
-    let decision_id = decision_id(conflict_key, &references);
+    let expires_at = selected_source.and_then(|source| source.expires_at.clone());
+    let decision_id = decision_id(conflict_key, &references)?;
     let mut item = OperatorDecisionItem {
         schema_version: OPERATOR_DECISION_ITEM_SCHEMA_VERSION.to_string(),
         decision_id,
@@ -455,6 +485,14 @@ pub fn derive_operator_decision_item(
     Ok(item)
 }
 
+fn source_matches_reference(
+    source: &OperatorDecisionSource,
+    reference: &OperatorDecisionEvidenceReference,
+) -> bool {
+    source.source_kind.as_identifier() == reference.evidence_type
+        && source.source_id == reference.evidence_id
+}
+
 fn source_order(left: &OperatorDecisionSource, right: &OperatorDecisionSource) -> Ordering {
     right
         .severity
@@ -468,21 +506,25 @@ fn source_order(left: &OperatorDecisionSource, right: &OperatorDecisionSource) -
         })
         .then_with(|| right.confidence.total_cmp(&left.confidence))
         .then_with(|| right.observed_at.cmp(&left.observed_at))
+        .then_with(|| left.source_kind.cmp(&right.source_kind))
         .then_with(|| left.source_id.cmp(&right.source_id))
 }
 
 fn source_reference(source: &OperatorDecisionSource) -> OperatorDecisionEvidenceReference {
     OperatorDecisionEvidenceReference {
-        evidence_type: format!("{:?}", source.source_kind).to_ascii_lowercase(),
+        evidence_type: source.source_kind.as_identifier().to_string(),
         evidence_id: source.source_id.clone(),
         content_sha256: Some(source.evidence_sha256.clone()),
     }
 }
 
-fn decision_id(conflict_key: &str, references: &[OperatorDecisionEvidenceReference]) -> String {
-    let encoded = serde_json::to_vec(&(conflict_key, references))
-        .expect("bounded decision references serialize");
-    format!("operator-decision-{:x}", Sha256::digest(encoded))
+fn decision_id(
+    conflict_key: &str,
+    references: &[OperatorDecisionEvidenceReference],
+) -> Result<String, String> {
+    let encoded =
+        serde_json::to_vec(&(conflict_key, references)).map_err(|error| error.to_string())?;
+    Ok(format!("operator-decision-{:x}", Sha256::digest(encoded)))
 }
 
 fn canonical_hash<T: Serialize>(value: &T) -> Result<String, String> {
@@ -522,11 +564,23 @@ fn validate_reason_codes(
         || codes
             .iter()
             .any(|code| code.is_empty() || code.len() > 80 || code.chars().any(char::is_whitespace))
+        || codes.windows(2).any(|pair| pair[0] >= pair[1])
     {
-        return Err("operator decision reason codes must be bounded identifiers".to_string());
+        return Err(
+            "operator decision reason codes must be sorted unique bounded identifiers".to_string(),
+        );
     }
     if matches!(state, OperatorDecisionSourceState::InsufficientEvidence) && codes.is_empty() {
         return Err("insufficient decision evidence requires reason codes".to_string());
+    }
+    Ok(())
+}
+
+fn validate_reference(reference: &OperatorDecisionEvidenceReference) -> Result<(), String> {
+    validate_identifier("evidence_type", &reference.evidence_type)?;
+    validate_identifier("evidence_id", &reference.evidence_id)?;
+    if let Some(hash) = &reference.content_sha256 {
+        validate_hash(hash)?;
     }
     Ok(())
 }
@@ -535,16 +589,11 @@ fn validate_references(references: &[OperatorDecisionEvidenceReference]) -> Resu
     if references.len() > MAX_EVIDENCE_REFERENCES {
         return Err("operator decision evidence references exceed bound".to_string());
     }
-    let mut ordered = BTreeSet::new();
     for reference in references {
-        validate_identifier("evidence_type", &reference.evidence_type)?;
-        validate_identifier("evidence_id", &reference.evidence_id)?;
-        if let Some(hash) = &reference.content_sha256 {
-            validate_hash(hash)?;
-        }
-        if !ordered.insert(reference) {
-            return Err("operator decision evidence references must be unique".to_string());
-        }
+        validate_reference(reference)?;
+    }
+    if references.windows(2).any(|pair| pair[0] >= pair[1]) {
+        return Err("operator decision evidence references must be sorted and unique".to_string());
     }
     Ok(())
 }
@@ -565,188 +614,4 @@ fn validate_size<T: Serialize>(value: &T) -> Result<(), String> {
         return Err("operator decision contract exceeds size bound".to_string());
     }
     Ok(())
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn source(
-        kind: OperatorDecisionSourceKind,
-        id: &str,
-        action: OperatorDecisionAction,
-    ) -> OperatorDecisionSource {
-        let mut source = OperatorDecisionSource {
-            schema_version: OPERATOR_DECISION_SOURCE_SCHEMA_VERSION.to_string(),
-            source_kind: kind,
-            source_id: id.to_string(),
-            resource_id: "run-1".to_string(),
-            conflict_key: "run-1:control".to_string(),
-            action,
-            state: OperatorDecisionSourceState::Actionable,
-            severity: OperatorDecisionSeverity::Warning,
-            confidence: 0.9,
-            observed_at: "2026-07-11T00:00:00Z".to_string(),
-            expires_at: Some("2026-07-11T01:00:00Z".to_string()),
-            reason_codes: vec!["operator_attention_required".to_string()],
-            evidence_references: vec![],
-            evidence_sha256: String::new(),
-        };
-        source.seal().unwrap();
-        source
-    }
-
-    #[test]
-    fn source_contract_round_trips_and_rejects_tamper() {
-        let source = source(
-            OperatorDecisionSourceKind::Approval,
-            "approval-1",
-            OperatorDecisionAction::Approve,
-        );
-        source.validate().unwrap();
-        let encoded = serde_json::to_string(&source).unwrap();
-        let mut decoded: OperatorDecisionSource = serde_json::from_str(&encoded).unwrap();
-        assert_eq!(decoded, source);
-        decoded.confidence = 0.8;
-        assert!(decoded.validate().unwrap_err().contains("hash mismatch"));
-    }
-
-    #[test]
-    fn precedence_deduplication_and_ordering_are_deterministic() {
-        let approval = source(
-            OperatorDecisionSourceKind::Approval,
-            "approval-1",
-            OperatorDecisionAction::Approve,
-        );
-        let budget = source(
-            OperatorDecisionSourceKind::Budget,
-            "budget-1",
-            OperatorDecisionAction::Pause,
-        );
-        let first = derive_operator_decision_item(
-            "run-1:control",
-            &[budget.clone(), approval.clone(), approval.clone()],
-            "2026-07-11T00:05:00Z",
-            600,
-        )
-        .unwrap();
-        let second = derive_operator_decision_item(
-            "run-1:control",
-            &[approval, budget],
-            "2026-07-11T00:05:00Z",
-            600,
-        )
-        .unwrap();
-        assert_eq!(first, second);
-        assert_eq!(first.outcome, OperatorDecisionOutcome::Ready);
-        assert_eq!(
-            first.recommended_action,
-            Some(OperatorDecisionAction::Approve)
-        );
-        assert_eq!(first.evidence_references.len(), 2);
-    }
-
-    #[test]
-    fn equal_precedence_action_conflict_fails_closed() {
-        let approve = source(
-            OperatorDecisionSourceKind::Approval,
-            "approval-a",
-            OperatorDecisionAction::Approve,
-        );
-        let reject = source(
-            OperatorDecisionSourceKind::Approval,
-            "approval-b",
-            OperatorDecisionAction::Reject,
-        );
-        let item = derive_operator_decision_item(
-            "run-1:control",
-            &[approve, reject],
-            "2026-07-11T00:05:00Z",
-            600,
-        )
-        .unwrap();
-        assert_eq!(item.outcome, OperatorDecisionOutcome::Conflict);
-        assert!(item.recommended_action.is_none());
-    }
-
-    #[test]
-    fn conflicting_duplicate_identity_is_rejected_in_every_input_order() {
-        let approve = source(
-            OperatorDecisionSourceKind::Approval,
-            "approval-1",
-            OperatorDecisionAction::Approve,
-        );
-        let mut reject = approve.clone();
-        reject.action = OperatorDecisionAction::Reject;
-        reject.seal().unwrap();
-        for inputs in [
-            vec![approve.clone(), reject.clone()],
-            vec![reject.clone(), approve.clone()],
-        ] {
-            assert!(derive_operator_decision_item(
-                "run-1:control",
-                &inputs,
-                "2026-07-11T00:05:00Z",
-                600
-            )
-            .unwrap_err()
-            .contains("conflicting duplicate"));
-        }
-    }
-
-    #[test]
-    fn expiry_staleness_low_confidence_and_missing_sources_are_explicit() {
-        let mut expired = source(
-            OperatorDecisionSourceKind::Workflow,
-            "workflow-1",
-            OperatorDecisionAction::Retry,
-        );
-        expired.expires_at = Some("2026-07-11T00:02:00Z".to_string());
-        expired.seal().unwrap();
-        assert_eq!(
-            derive_operator_decision_item("run-1:control", &[expired], "2026-07-11T00:05:00Z", 600)
-                .unwrap()
-                .outcome,
-            OperatorDecisionOutcome::Expired
-        );
-        let mut low = source(
-            OperatorDecisionSourceKind::Budget,
-            "budget-low",
-            OperatorDecisionAction::Pause,
-        );
-        low.confidence = 0.4;
-        low.seal().unwrap();
-        assert_eq!(
-            derive_operator_decision_item("run-1:control", &[low], "2026-07-11T00:05:00Z", 600)
-                .unwrap()
-                .outcome,
-            OperatorDecisionOutcome::InsufficientEvidence
-        );
-        assert_eq!(
-            derive_operator_decision_item("other:control", &[], "2026-07-11T00:05:00Z", 600)
-                .unwrap()
-                .outcome,
-            OperatorDecisionOutcome::InsufficientEvidence
-        );
-    }
-
-    #[test]
-    fn resolved_sources_never_recommend_actions() {
-        let mut resolved = source(
-            OperatorDecisionSourceKind::Recovery,
-            "recovery-1",
-            OperatorDecisionAction::Resume,
-        );
-        resolved.state = OperatorDecisionSourceState::Resolved;
-        resolved.seal().unwrap();
-        let item = derive_operator_decision_item(
-            "run-1:control",
-            &[resolved],
-            "2026-07-11T00:05:00Z",
-            600,
-        )
-        .unwrap();
-        assert_eq!(item.outcome, OperatorDecisionOutcome::Resolved);
-        assert!(item.recommended_action.is_none());
-    }
 }

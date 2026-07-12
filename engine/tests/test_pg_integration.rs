@@ -307,21 +307,112 @@ fn pg_operator_decision_queue_derives_requested_approval_without_mutation() {
         .operator_decision_queue(&utc_now_string(), 300, 100, 0)
         .unwrap();
 
-    let expected_key = format!("{run_id}:node-a:approval");
-    let item = queue
-        .items
-        .iter()
-        .find(|item| item.conflict_key == expected_key)
-        .expect("requested approval decision");
-    assert_eq!(
-        item.outcome,
-        engine::operator_decision::OperatorDecisionOutcome::Ready
-    );
-    assert_eq!(
-        item.recommended_action,
-        Some(engine::operator_decision::OperatorDecisionAction::Approve)
-    );
+    for (suffix, action) in [
+        (
+            "approve",
+            engine::operator_decision::OperatorDecisionAction::Approve,
+        ),
+        (
+            "reject",
+            engine::operator_decision::OperatorDecisionAction::Reject,
+        ),
+    ] {
+        let expected_key = format!("{run_id}:node-a:approval:{suffix}");
+        let item = queue
+            .items
+            .iter()
+            .find(|item| item.conflict_key == expected_key)
+            .expect("requested approval decision");
+        assert_eq!(
+            item.outcome,
+            engine::operator_decision::OperatorDecisionOutcome::Ready
+        );
+        assert_eq!(item.recommended_action, Some(action));
+        let source = item.selected_source.as_ref().expect("selected source");
+        assert_eq!(source.evidence_type, "approval");
+        assert!(source.evidence_id.ends_with(&format!(":{suffix}")));
+    }
     assert_eq!(store.audit_events(100).unwrap(), audits_before);
+}
+
+#[test]
+#[cfg(feature = "pg-tests")]
+fn pg_atomic_requested_approval_resolution_allows_one_winner() {
+    use std::sync::{Arc, Barrier};
+
+    let Some(store) = test_store() else { return };
+    let tag = uuid_tag();
+    let plan = store
+        .create_workflow_plan(
+            &format!("approval race {tag}"),
+            "pg-test",
+            "pg-test",
+            |ids, _| {
+                Ok(json!({
+                    "status": "planned_read_only",
+                    "graph": {
+                        "nodes": [],
+                        "edges": [],
+                        "workflow_id": ids.workflow_id,
+                        "dispatch_id": ids.dispatch_id
+                    },
+                    "analysis": {},
+                    "boundaries": {"execution_authority": "disabled"}
+                }))
+            },
+        )
+        .unwrap();
+    let run = store
+        .create_workflow_run_from_plan(plan["plan_id"].as_str().unwrap(), "pg-test")
+        .unwrap();
+    let run_id = run["run_id"].as_str().unwrap().to_string();
+    let request = store
+        .record_workflow_run_approval(
+            &run_id,
+            "node-a",
+            "requested",
+            "pg-test",
+            Some("operator review"),
+            None,
+            None,
+            None,
+            None,
+        )
+        .unwrap();
+    let request_id = request["approval_id"].as_str().unwrap().to_string();
+    let store = Arc::new(store);
+    let barrier = Arc::new(Barrier::new(3));
+    let mut handles = Vec::new();
+    for resolution in ["approved", "rejected"] {
+        let store = Arc::clone(&store);
+        let barrier = Arc::clone(&barrier);
+        let run_id = run_id.clone();
+        let request_id = request_id.clone();
+        handles.push(std::thread::spawn(move || {
+            barrier.wait();
+            store.resolve_requested_workflow_run_approval(
+                &run_id,
+                &request_id,
+                resolution,
+                "pg-test",
+                Some("race"),
+            )
+        }));
+    }
+    barrier.wait();
+    let results = handles
+        .into_iter()
+        .map(|handle| handle.join().unwrap())
+        .collect::<Vec<_>>();
+    assert_eq!(results.iter().filter(|result| result.is_ok()).count(), 1);
+    assert_eq!(results.iter().filter(|result| result.is_err()).count(), 1);
+    let resolved = store
+        .workflow_run_approvals(&run_id, 100)
+        .unwrap()
+        .into_iter()
+        .filter(|approval| matches!(approval["decision"].as_str(), Some("approved" | "rejected")))
+        .count();
+    assert_eq!(resolved, 1);
 }
 
 #[test]
