@@ -4,7 +4,7 @@
 
 The dispatch kernel, V2, Adaptive Fusion AF-0 through AF-7, Agent Runtime AR-0 through AR-6, Trusted Local Autonomous Execution IAE-0 through IAE-3, scorecard integrity hardening, the importer-first external benchmark path, and PE-1 Token Efficiency Regression Lab are complete.
 
-The active direction is the Post-LGB Product Evolution plan. PE-2 is complete and acceptance-sealed. PE-3 is under PE3-REPAIR-1 after independent review found defects in the merged chain; PE-4 contract repair remains blocked until a separate truthful PE3-CLOSE-1. This is not AR-7, another LGB ladder, or a second control plane.
+The active direction is the Post-LGB Product Evolution plan. PE-1, PE-2, and PE-3 are complete and acceptance-sealed. PE4-CONTRACT-REPAIR-1 is the active next packet; PE-5 and PE-6 remain unstarted. This is not AR-7, another LGB ladder, or a second control plane.
 
 `docs/NEXT_DECISION.md` is the single forward-plan artifact. Historical detail remains in `docs/ARCHITECTURE_BOOK.md`, archived plans, merged PRs, and repository history.
 
@@ -77,8 +77,8 @@ Normative order is PE-1, PE-2, PE-3, PE-4, PE-5, and PE-6. Do not start PE-3 bef
 |---|---|---|---|
 | PE-1 | P0 | Token Efficiency Regression Lab | Complete and acceptance-sealed |
 | PE-2 | P0/P1 | Budget Intelligence and Anomaly Auto-Pause | Complete and acceptance-sealed |
-| PE-3 | P1 | Operator Decision Center | In progress; PE3-REPAIR-1 owns the merged-chain defects and PE3-CLOSE-1 is blocked on that repair |
-| PE-4 | P1/P2 | Trace-backed Policy Replay | Contract repair blocked on PE3-CLOSE-1; no offline replay, read, shadow, canary, or promotion packet is accepted as started |
+| PE-3 | P1 | Operator Decision Center | Complete and independently acceptance-sealed |
+| PE-4 | P1/P2 | Trace-backed Policy Replay | PE4-CONTRACT-REPAIR-1 is active; no offline replay, read, shadow, canary, or promotion packet is accepted as started |
 | PE-5 | P1.5 | Release Provenance | Packetized; inactive unless explicitly activated |
 | PE-6 | P2 | Fault Injection and Recovery Drills | Packetized; blocked on explicit recovery invariants |
 
@@ -232,7 +232,7 @@ Stage invariants:
 
 ## PE-3 — Operator Decision Center
 
-PE-3 is active only through PE3-REPAIR-1. The contract, queue, read surface, actions, and prior closeout are merged, but the prior closeout is not accepted because independent review found mutation freshness, source identity, evidence-chain, Retry, and action-owner defects.
+PE-3 is complete and acceptance-sealed. PE3-REPAIR-1 corrected observation-time ordering by comparing parsed instants, and PE3-CLOSE-1 independently re-audited the contract, derived queue, read surfaces, action adapters, existing owners, compatibility, and rollback boundaries.
 
 ### Packet PE3-CONTRACT-1 — Decision item and source contract
 
@@ -296,7 +296,7 @@ PE-3 is active only through PE3-REPAIR-1. The contract, queue, read surface, act
 
 ### Packet PE3-REPAIR-1 — Independent merged-chain repair
 
-**State:** `IN_PROGRESS`
+**State:** `COMPLETE`
 
 **Prerequisite:** PE3-ACTIONS-1 complete.
 
@@ -304,13 +304,13 @@ PE-3 is active only through PE3-REPAIR-1. The contract, queue, read surface, act
 
 **Contract:** Read-only deterministic replay may retain a caller-supplied time. Mutation validates that time against the store clock, rejects stale/future reads, re-derives the exact bound page and exact current page, and binds decision ID, conflict key, resource, action, source kind, source ID, source hash, page, and freshness before owner invocation. Derived sources preserve bounded original evidence IDs and trustworthy hashes without fabricating absent hashes. Retry is ready only for blocked runs with a ready node. Approval resolution is atomic in the existing workflow owner across SQLite/PostgreSQL. Unsupported rollback, inspect, and acknowledge remain explicit fail-closed actions.
 
-**Acceptance:** Focused freshness, tamper, source-change/resolution, page/order, hash/decision replay, cross-kind identity, approve/reject, retry terminal/no-ready/repeat/concurrency, resume compensation, permission, audit, restart, SQLite/PostgreSQL, and unsupported-action tests; full exact-head CI; no temporary workflow or repair file in the final diff.
+**Acceptance:** Focused freshness, tamper, source-change/resolution, page/order, hash/decision replay, cross-kind identity, approve/reject, retry terminal/no-ready/repeat/concurrency, resume compensation, permission, audit, restart, SQLite/PostgreSQL, unsupported-action, and observation-instant ordering tests; full exact-head CI; no temporary workflow or repair file in the final diff.
 
 **Rollback:** Revert the repair PR. No migration or queue cleanup; existing owner audit records remain authoritative.
 
 ### Packet PE3-CLOSE-1 — PE-3 acceptance seal
 
-**State:** `BLOCKED_PREREQUISITE`
+**State:** `COMPLETE`
 
 **Prerequisite:** PE3-REPAIR-1 complete.
 
@@ -318,7 +318,7 @@ PE-3 is active only through PE3-REPAIR-1. The contract, queue, read surface, act
 
 **Acceptance:** Recheck deterministic precedence/deduplication/conflict/expiry behavior, source-owner completeness and source-read failure, queue immutability/pagination/restart across SQLite and PostgreSQL, read API/OpenAPI/SDK/Dashboard compatibility, and adapter confirmation, exact-page hash binding, permission order, audit ownership, unsupported-action fail-closed behavior, and rollback. Closeout may repair only independently demonstrated PE-3 defects. It must leave no new queue store, action authority, scheduler, approval system, or Dashboard mutation control.
 
-**Completion evidence:** Focused action authorization regression, existing queue/read/dashboard/PostgreSQL evidence, the full repository verification baseline, exact-head green CI, and an updated `CURRENT_STATUS.md`/`NEXT_DECISION.md` that marks PE-3 complete and PE4-CONTRACT-1 ready. Rollback remains a revert of the individual PE-3 PRs; no migration cleanup is required.
+**Completion evidence:** Independent review of the merged PE-3 chain, focused action authorization regression, existing queue/read/Dashboard/PostgreSQL evidence, the full repository verification baseline, exact-head green CI, and synchronized authoritative documents. PE4-CONTRACT-REPAIR-1 is ready for execution; rollback remains a revert of the individual PE-3 PRs and no migration cleanup is required.
 
 ## PE-4 — Trace-backed Policy Replay
 
@@ -338,9 +338,9 @@ PE-3 is active only through PE3-REPAIR-1. The contract, queue, read surface, act
 
 ### Packet PE4-CONTRACT-REPAIR-1 — Real trace-backed replay evidence
 
-**State:** `BLOCKED_PREREQUISITE`
+**State:** `READY_FOR_EXECUTION`
 
-**Prerequisite:** PE3-CLOSE-1 complete.
+**Prerequisite:** PE3-CLOSE-1 complete and sufficient versioned trace evidence available from existing owners.
 
 **Goal:** Replace or subordinate the #193 prototype with deterministic normalized replay observations derived from existing RunTrace, persisted feedback/attribution evidence, offline evaluation, policy simulation, and compatible quality evidence.
 
@@ -370,6 +370,6 @@ The agent may define recovery invariants from existing subsystem contracts and t
 
 ## Active Routing
 
-1. Complete PE3-REPAIR-1 on its exact reviewed head and merge only after all required CI jobs are green.
-2. Refresh `main`, verify post-merge CI, then execute PE3-CLOSE-1 as a separate independent closeout PR.
-3. After PE3-CLOSE-1 is complete, execute PE4-CONTRACT-REPAIR-1; leave PE-5 and PE-6 unstarted.
+1. Execute PE4-CONTRACT-REPAIR-1 as a separate trace-grounded contract PR; leave PE4 offline/shadow/canary/promotion work unstarted until its contract is merged and verified.
+2. Continue through the separately packetized PE4 offline, read, shadow, canary, promotion, and closeout slices only after their prerequisites and existing authority owners are verified.
+3. Leave PE-5 and PE-6 unstarted.
