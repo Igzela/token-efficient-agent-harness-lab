@@ -24,10 +24,6 @@ concurrency:
 
 env:
   AGENT_REPO: ${{ github.repository }}
-  AGENT_REPO_OWNER: ${{ github.repository_owner }}
-  AGENT_REPO_NAME: ${{ github.event.repository.name }}
-  AGENT_GH_CMD: gh
-  AGENT_BRANCH: agent/issue-${{ github.event.inputs.issue }}
   AGENT_WORKTREE_BASE: /tmp/agent-worktrees
 
 jobs:
@@ -42,11 +38,23 @@ jobs:
         with:
           persist-credentials: false
 
+      - name: Set up Python
+        uses: actions/setup-python@8d9ed9ac5c53483de85588cdf95a591a75ab9f55 # v5
+        with:
+          python-version: "3.11"
+
       - name: Validate issue state
         id: check
         run: |
           ISSUE=${{ github.event.inputs.issue }}
-          LABELS=$(python3 ${{ github.workspace }}/scripts/agent-control/state_manager.py get-labels "$ISSUE")
+
+          if [ "${AGENT_ORCHESTRATOR_ENABLED:-false}" != "true" ]; then
+            echo "AGENT_ORCHESTRATOR_ENABLED is not true. Worker disabled."
+            echo "can_start=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          LABELS=$(python3 scripts/agent-control/state_manager.py get-labels "$ISSUE")
           if echo "$LABELS" | grep -qv "agent-ready"; then
             echo "can_start=false" >> "$GITHUB_OUTPUT"
             exit 0
@@ -55,12 +63,12 @@ jobs:
             echo "can_start=false" >> "$GITHUB_OUTPUT"
             exit 0
           fi
-          if ! python3 ${{ github.workspace }}/scripts/agent-control/state_manager.py check-deps "$ISSUE"; then
+          if ! python3 scripts/agent-control/state_manager.py check-deps "$ISSUE"; then
             echo "can_start=false" >> "$GITHUB_OUTPUT"
             exit 0
           fi
-          CAPACITY=$(python3 ${{ github.workspace }}/scripts/agent-control/lock_manager.py capacity 2>&1 || echo "full")
-          WORKERS=$(python3 ${{ github.workspace }}/scripts/agent-control/lock_manager.py count)
+          CAPACITY=$(python3 scripts/agent-control/lock_manager.py capacity 2>&1 || echo "full")
+          WORKERS=$(python3 scripts/agent-control/lock_manager.py count)
           if [ "$CAPACITY" = "full" ]; then
             echo "can_start=false" >> "$GITHUB_OUTPUT"
             echo "worker_count=$WORKERS" >> "$GITHUB_OUTPUT"
@@ -68,6 +76,8 @@ jobs:
           fi
           echo "can_start=true" >> "$GITHUB_OUTPUT"
           echo "worker_count=$WORKERS" >> "$GITHUB_OUTPUT"
+        env:
+          AGENT_ORCHESTRATOR_ENABLED: ${{ vars.AGENT_ORCHESTRATOR_ENABLED }}
 
   implement:
     needs: validate
@@ -80,74 +90,73 @@ jobs:
           persist-credentials: false
           fetch-depth: 0
 
-      - name: Configure git
-        run: |
-          git config user.name "agent-orchestrator[bot]"
-          git config user.email "agent-orchestrator[bot]@users.noreply.github.com"
-
       - name: Set up Python
         uses: actions/setup-python@8d9ed9ac5c53483de85588cdf95a591a75ab9f55 # v5
         with:
           python-version: "3.11"
 
+      - name: Configure git authentication
+        run: |
+          gh auth setup-git
+          git config user.name "agent-orchestrator[bot]"
+          git config user.email "agent-orchestrator[bot]@users.noreply.github.com"
+
       - name: Acquire lock
         id: lock
         run: |
-          ISSUE=${{ github.event.inputs.issue }}
-          python3 ${{ github.workspace }}/scripts/agent-control/lock_manager.py acquire "implementation:issue-$ISSUE" 60
-          echo "lock_key=implementation:issue-$ISSUE" >> "$GITHUB_OUTPUT"
+          python3 scripts/agent-control/lock_manager.py acquire "implementation:issue-${{ github.event.inputs.issue }}" 60
+          echo "lock_key=implementation:issue-${{ github.event.inputs.issue }}" >> "$GITHUB_OUTPUT"
 
       - name: Mark agent-running
         run: |
-          python3 ${{ github.workspace }}/scripts/agent-control/state_manager.py set-labels \
+          python3 scripts/agent-control/state_manager.py set-labels \
             ${{ github.event.inputs.issue }} agent-running
 
       - name: Build implementation prompt
         id: prompt
         run: |
-          ISSUE=${{ github.event.inputs.issue }}
-          python3 ${{ github.workspace }}/scripts/agent-control/prompt_builder.py implementation "$ISSUE" > /tmp/agent-prompt-$ISSUE.txt
+          mkdir -p /tmp/agent-prompt
+          python3 scripts/agent-control/prompt_builder.py implementation \
+            ${{ github.event.inputs.issue }} > /tmp/agent-prompt/issue-${{ github.event.inputs.issue }}.txt
 
       - name: Run Codex (implementation worker)
         if: github.event.inputs.dry_run != 'true'
         id: codex
-        env:
-          CODEX_AUTH_TOKEN: ${{ secrets.CODEX_AUTH_TOKEN }}
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          ISSUE=${{ github.event.inputs.issue }}
-          echo "Invoking codex exec for issue #$ISSUE..."
-          set +e
-          codex exec \
-            --target-dir "${{ github.workspace }}" \
-            --goal "$(cat /tmp/agent-prompt-$ISSUE.txt)" \
-            --sliding-context \
-            --print \
-            --no-sandbox \
-            2>&1 | tee /tmp/codex-output-$ISSUE.log
-          echo "exit_code=${PIPESTATUS[0]}" >> "$GITHUB_OUTPUT"
-          set -e
+          bash scripts/agent-control/codex_wrapper.sh \
+            implement \
+            /tmp/agent-prompt/issue-${{ github.event.inputs.issue }}.txt \
+            /tmp/agent-output/${{ github.event.inputs.issue }}
+        env:
+          AGENT_ORCHESTRATOR_ENABLED: "true"
 
-      - name: Push and create PR
+      - name: Push branch and create PR
         if: github.event.inputs.dry_run != 'true'
         id: pr
         run: |
           ISSUE=${{ github.event.inputs.issue }}
           BRANCH="agent/issue-$ISSUE"
+
+          # Recheck remote head before push
+          git fetch origin "$BRANCH" 2>/dev/null || true
+          LOCAL=$(git rev-parse HEAD)
+          REMOTE=$(git rev-parse "origin/$BRANCH" 2>/dev/null || echo "")
+          if [ -n "$REMOTE" ] && [ "$LOCAL" != "$REMOTE" ]; then
+            echo "ERROR: Remote head changed. Expected $LOCAL, got $REMOTE"
+            exit 1
+          fi
+
           git add -A
-          git diff --cached --quiet || \
-            git commit -m "agent: implement #$ISSUE"
-          python3 ${{ github.workspace }}/scripts/agent-control/worktree_manager.py push "$BRANCH"
-          PR_RESULT=$(python3 ${{ github.workspace }}/scripts/agent-control/worktree_manager.py create-pr \
-            "$ISSUE" "$BRANCH")
-          echo "pr_result=$PR_RESULT" >> "$GITHUB_OUTPUT"
+          git diff --cached --quiet || git commit -m "agent: implement #$ISSUE"
+          python3 scripts/agent-control/worktree_manager.py push "$BRANCH"
+          python3 scripts/agent-control/worktree_manager.py create-pr "$ISSUE" "$BRANCH"
 
       - name: Record worker state
         run: |
           ISSUE=${{ github.event.inputs.issue }}
           PR_NUMBER=$(gh pr list --head "agent/issue-$ISSUE" --json number --jq '.[0].number' 2>/dev/null || echo "0")
           HEAD_SHA=$(gh pr view "$PR_NUMBER" --json headRefOid --jq '.headRefOid' 2>/dev/null || echo "unknown")
-          python3 ${{ github.workspace }}/scripts/agent-control/state_manager.py record-worker \
+          python3 scripts/agent-control/state_manager.py record-worker \
             "$ISSUE" "$PR_NUMBER" "$HEAD_SHA" "implementation"
 
       - name: Comment on issue
@@ -155,12 +164,12 @@ jobs:
           ISSUE=${{ github.event.inputs.issue }}
           PR_NUMBER=$(gh pr list --head "agent/issue-$ISSUE" --json number --jq '.[0].number' 2>/dev/null || echo "0")
           HEAD_SHA=$(gh pr view "$PR_NUMBER" --json headRefOid --jq '.headRefOid' 2>/dev/null || echo "unknown")
-          python3 ${{ github.workspace }}/scripts/agent-control/state_manager.py comment "$ISSUE" \
+          python3 scripts/agent-control/state_manager.py comment "$ISSUE" \
             "## Agent Orchestrator: Implementation Complete
           PR: #${PR_NUMBER}
           Branch: \`agent/issue-${ISSUE}\`
           Head SHA: \`${HEAD_SHA}\`
-          Waiting for CI to complete before proceeding to final review."
+          Waiting for CI to complete before final review."
 
       - name: Dry-run report
         if: github.event.inputs.dry_run == 'true'
@@ -174,7 +183,7 @@ jobs:
       - name: Release lock
         if: always()
         run: |
-          python3 ${{ github.workspace }}/scripts/agent-control/lock_manager.py release \
+          python3 scripts/agent-control/lock_manager.py release \
             "implementation:issue-${{ github.event.inputs.issue }}" || true
 
   failure-handler:
@@ -187,11 +196,17 @@ jobs:
         with:
           persist-credentials: false
 
+      - name: Set up Python
+        uses: actions/setup-python@8d9ed9ac5c53483de85588cdf95a591a75ab9f55 # v5
+        with:
+          python-version: "3.11"
+
       - name: Mark blocked on failure
         run: |
-          ISSUE=${{ github.event.inputs.issue }}
-          python3 ${{ github.workspace }}/scripts/agent-control/state_manager.py set-labels "$ISSUE" agent-blocked
-          python3 ${{ github.workspace }}/scripts/agent-control/state_manager.py comment "$ISSUE" \
+          python3 scripts/agent-control/state_manager.py set-labels \
+            ${{ github.event.inputs.issue }} agent-blocked
+          python3 scripts/agent-control/state_manager.py comment \
+            ${{ github.event.inputs.issue }} \
             "## Agent Orchestrator: Worker Failed
           The implementation worker encountered an error.
           This task has been marked \`agent-blocked\`."

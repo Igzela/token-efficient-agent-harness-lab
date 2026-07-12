@@ -1,15 +1,18 @@
 name: agent-merge
 
 on:
-  workflow_call:
+  workflow_dispatch:
     inputs:
       pr_number:
+        description: PR number to merge
         required: true
         type: number
       issue_number:
+        description: Associated issue number
         required: true
         type: number
       head_sha:
+        description: Expected exact PR head SHA
         required: true
         type: string
 
@@ -19,55 +22,89 @@ permissions:
   pull-requests: write
 
 concurrency:
-  group: agent-merge-${{ inputs.pr_number }}
+  group: agent-merge-${{ github.event.inputs.pr_number }}
   cancel-in-progress: false
 
-env:
-  AGENT_REPO: ${{ github.repository }}
-
 jobs:
-  verify-and-merge:
+  merge:
     runs-on: ubuntu-latest
     steps:
-      - name: Verify head SHA
-        run: |
-          CURRENT=$(gh pr view ${{ inputs.pr_number }} --json headRefOid --jq '.headRefOid')
-          if [ "$CURRENT" != "${{ inputs.head_sha }}" ]; then
-            echo "SHA mismatch: expected ${{ inputs.head_sha }}, got $CURRENT"
-            exit 1
-          fi
+      - name: Check out repository
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        with:
+          persist-credentials: false
 
-      - name: Verify PR is open
-        run: |
-          STATE=$(gh pr view ${{ inputs.pr_number }} --json state --jq '.state')
-          if [ "$STATE" != "OPEN" ]; then
-            echo "PR is $STATE, not OPEN"
-            exit 1
-          fi
+      - name: Set up Python
+        uses: actions/setup-python@8d9ed9ac5c53483de85588cdf95a591a75ab9f55 # v5
+        with:
+          python-version: "3.11"
 
-      - name: Verify checks pass
+      - name: Check orchestrator gate
         run: |
-          CHECKS=$(gh pr view ${{ inputs.pr_number }} --json statusCheckRollup --jq \
-            '[.statusCheckRollup[] | select(.conclusion != null) | {name: .context, conclusion: .conclusion}]')
-          FAILED=$(echo "$CHECKS" | python3 -c "import sys,json; checks=json.load(sys.stdin); failed=[c for c in checks if c.get('conclusion')!='success']; [print(c['name']) for c in failed]")
-          if [ -n "$FAILED" ]; then
-            echo "Failed checks:"
-            echo "$FAILED"
-            exit 1
+          if [ "${AGENT_ORCHESTRATOR_ENABLED:-false}" != "true" ]; then
+            echo "AGENT_ORCHESTRATOR_ENABLED is not true. Merge disabled."
+            exit 0
           fi
+        env:
+          AGENT_ORCHESTRATOR_ENABLED: ${{ vars.AGENT_ORCHESTRATOR_ENABLED }}
 
-      - name: Merge
+      - name: Verify merge conditions inline
         run: |
-          gh pr merge ${{ inputs.pr_number }} --merge --subject \
-            "agent: merge #${{ inputs.issue_number }} implementation"
+          python3 scripts/agent-control/state_manager.py verify-merge \
+            ${{ github.event.inputs.pr_number }} \
+            ${{ github.event.inputs.issue_number }} \
+            ${{ github.event.inputs.head_sha }}
 
       - name: Mark agent-complete
         run: |
-          python3 ${{ github.workspace }}/scripts/agent-control/state_manager.py set-labels \
-            ${{ inputs.issue_number }} agent-complete
+          python3 scripts/agent-control/state_manager.py set-labels \
+            ${{ github.event.inputs.issue_number }} agent-complete
 
-      - name: Report merge failure
-        if: failure()
+      - name: Rebase and merge
         run: |
-          python3 ${{ github.workspace }}/scripts/agent-control/state_manager.py set-labels \
-            ${{ inputs.issue_number }} agent-blocked
+          gh pr merge ${{ github.event.inputs.pr_number }} --rebase --body \
+            "## Agent Orchestrator: Merge
+          Issue: #${{ github.event.inputs.issue_number }}
+          Merged head: \`${{ github.event.inputs.head_sha }}\`
+          Review and CI verification completed automatically."
+
+      - name: Record merge state
+        run: |
+          python3 scripts/agent-control/state_manager.py record-merge \
+            ${{ github.event.inputs.issue_number }} \
+            ${{ github.event.inputs.pr_number }} \
+            ${{ github.event.inputs.head_sha }}
+
+      - name: Close issue
+        run: |
+          gh issue close ${{ github.event.inputs.issue_number }} \
+            --comment "This issue was resolved automatically by the agent orchestrator."
+
+      - name: Comment on issue
+        run: |
+          python3 scripts/agent-control/state_manager.py comment \
+            ${{ github.event.inputs.issue_number }} \
+            "## Agent Orchestrator: Merged
+          PR: #${{ github.event.inputs.pr_number }}
+          Merged head: \`${{ github.event.inputs.head_sha }}\`
+          This issue has been resolved automatically."
+
+  failure-handler:
+    needs: merge
+    if: failure()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        with:
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@8d9ed9ac5c53483de85588cdf95a591a75ab9f55 # v5
+        with:
+          python-version: "3.11"
+
+      - name: Mark blocked on merge failure
+        run: |
+          python3 scripts/agent-control/state_manager.py set-labels \
+            ${{ github.event.inputs.issue_number }} agent-blocked

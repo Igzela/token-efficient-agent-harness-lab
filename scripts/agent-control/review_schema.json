@@ -1,0 +1,54 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "AgentOrchestratorReviewVerdict",
+  "description": "Structured final-review output from the Codex review worker",
+  "type": "object",
+  "required": [
+    "verdict",
+    "summary",
+    "reviewed_head_sha"
+  ],
+  "properties": {
+    "verdict": {
+      "type": "string",
+      "enum": ["PASS", "PASS_WITH_NOTES", "BLOCKED", "FAIL"],
+      "description": "PASS: ready to merge with no blocking issues. PASS_WITH_NOTES: non-blocking suggestions only; does NOT authorize merge unless governance explicitly permits it. BLOCKED: one or more blocking issues. FAIL: critical defects or does not satisfy the task."
+    },
+    "summary": {
+      "type": "string",
+      "description": "One-line summary of the review"
+    },
+    "reviewed_head_sha": {
+      "type": "string",
+      "description": "The exact PR head SHA that was reviewed"
+    },
+    "blockers": {
+      "type": "array",
+      "items": { "type": "string" },
+      "description": "Issues that must be resolved before merge (verdict BLOCKED or FAIL only)"
+    },
+    "major_notes": {
+      "type": "array",
+      "items": { "type": "string" },
+      "description": "Significant observations that should be addressed"
+    },
+    "minor_notes": {
+      "type": "array",
+      "items": { "type": "string" },
+      "description": "Minor suggestions"
+    },
+    "ci_green": {
+      "type": "boolean",
+      "description": "Whether all required CI jobs were green at time of review"
+    },
+    "security_ok": {
+      "type": "boolean",
+      "description": "Whether the diff passes security review"
+    },
+    "rollback_ok": {
+      "type": "boolean",
+      "description": "Whether the change has a clear rollback path"
+    }
+  },
+  "additionalProperties": false
+}

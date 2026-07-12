@@ -317,13 +317,77 @@ def main():
         status = sys.argv[6]
         record_ci_state(issue_number, pr_number, head_sha, ci_run_id, status, repo)
 
-    elif command == "read-ci":
+    elif command == "record-merge":
         issue_number = int(sys.argv[2])
-        state = read_ci_state(issue_number, repo)
-        if state:
-            print(json.dumps(state))
+        pr_number = int(sys.argv[3])
+        head_sha = sys.argv[4]
+        record_worker_state(issue_number, pr_number, head_sha, "merge",
+                            extra={"status": "merged"}, repo=repo)
+
+    elif command == "verify-merge":
+        pr_number = int(sys.argv[2])
+        issue_number = int(sys.argv[3])
+        expected_sha = sys.argv[4]
+        pr = get_pr_info(pr_number, repo)
+        if not pr:
+            print(f"FATAL: PR #{pr_number} not found", file=sys.stderr)
+            sys.exit(1)
+        if pr.get("state") != "OPEN":
+            print(f"FATAL: PR #{pr_number} is not open (state={pr.get('state')})", file=sys.stderr)
+            sys.exit(1)
+        actual_sha = pr.get("headRefOid")
+        if actual_sha != expected_sha:
+            print(f"FATAL: PR head SHA mismatch: expected {expected_sha}, got {actual_sha}", file=sys.stderr)
+            sys.exit(1)
+        labels = get_issue_labels(issue_number, repo)
+        if LABEL_FINAL_REVIEW in labels:
+            print(f"WARNING: Issue #{issue_number} still has {LABEL_FINAL_REVIEW} label", file=sys.stderr)
+        print(f"Merge conditions verified: PR #{pr_number} @ {actual_sha}")
+
+    elif command == "select-task":
+        issue_number = int(sys.argv[2])
+        labels = get_issue_labels(issue_number, repo)
+        if TERMINAL_LABELS & labels:
+            print(f"Task #{issue_number} is already in terminal state", file=sys.stderr)
+            sys.exit(1)
+        set_labels(issue_number, LABEL_READY, repo=repo)
+        print(f"Task #{issue_number} selected as agent-ready")
+
+    elif command == "next-task":
+        result = _gh("issue", "list", "--label", LABEL_READY, "--state", "open", "--json", "number", "--jq", ".[0].number")
+        if result:
+            print(result)
         else:
-            print("null")
+            print("None")
+
+    elif command == "retry-task":
+        issue_number = int(sys.argv[2])
+        set_labels(issue_number, LABEL_READY, repo=repo)
+        print(f"Task #{issue_number} reset to {LABEL_READY} for retry")
+
+    elif command == "block-task":
+        issue_number = int(sys.argv[2])
+        reason = " ".join(sys.argv[3:]) if len(sys.argv) > 3 else "Blocked by operator"
+        set_labels(issue_number, LABEL_BLOCKED, repo=repo)
+        comment_on_issue(issue_number, f"## Agent Orchestrator: Blocked\n**Reason:** {reason}", repo)
+        print(f"Task #{issue_number} blocked: {reason}")
+
+    elif command == "status":
+        ready = _gh("issue", "list", "--label", LABEL_READY, "--state", "open", "--json", "number")
+        running = _gh("issue", "list", "--label", LABEL_RUNNING, "--state", "open", "--json", "number")
+        repairing = _gh("issue", "list", "--label", LABEL_CI_REPAIRING, "--state", "open", "--json", "number")
+        reviewing = _gh("issue", "list", "--label", LABEL_FINAL_REVIEW, "--state", "open", "--json", "number")
+        blocked = _gh("issue", "list", "--label", LABEL_BLOCKED, "--state", "open", "--json", "number")
+        complete = _gh("issue", "list", "--label", LABEL_COMPLETE, "--state", "all", "--json", "number")
+        try:
+            print(f"ready: {len(json.loads(ready))}" if ready else "ready: 0")
+            print(f"running: {len(json.loads(running))}" if running else "running: 0")
+            print(f"ci-repairing: {len(json.loads(repairing))}" if repairing else "ci-repairing: 0")
+            print(f"final-review: {len(json.loads(reviewing))}" if reviewing else "final-review: 0")
+            print(f"blocked: {len(json.loads(blocked))}" if blocked else "blocked: 0")
+            print(f"complete: {len(json.loads(complete))}" if complete else "complete: 0")
+        except (json.JSONDecodeError, TypeError):
+            pass
 
     else:
         print(f"Unknown command: {command}", file=sys.stderr)

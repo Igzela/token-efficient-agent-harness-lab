@@ -1,15 +1,18 @@
 name: agent-review
 
 on:
-  workflow_call:
+  workflow_dispatch:
     inputs:
       pr_number:
+        description: PR number to review
         required: true
         type: number
       issue_number:
+        description: Associated issue number
         required: true
         type: number
       head_sha:
+        description: Expected exact PR head SHA
         required: true
         type: string
 
@@ -20,72 +23,110 @@ permissions:
   checks: read
 
 concurrency:
-  group: agent-review-${{ inputs.pr_number }}
+  group: agent-review-${{ github.event.inputs.pr_number }}
   cancel-in-progress: false
-
-env:
-  AGENT_REPO: ${{ github.repository }}
-  AGENT_GH_CMD: gh
 
 jobs:
   review:
     runs-on: [self-hosted, vader, review]
-    outputs:
-      verdict: ${{ steps.verdict.outputs.verdict }}
     steps:
       - name: Check out repository
         uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
         with:
           persist-credentials: false
 
+      - name: Set up Python
+        uses: actions/setup-python@8d9ed9ac5c53483de85588cdf95a591a75ab9f55 # v5
+        with:
+          python-version: "3.11"
+
+      - name: Check orchestrator gate
+        run: |
+          if [ "${AGENT_ORCHESTRATOR_ENABLED:-false}" != "true" ]; then
+            echo "AGENT_ORCHESTRATOR_ENABLED is not true. Review disabled."
+            exit 0
+          fi
+        env:
+          AGENT_ORCHESTRATOR_ENABLED: ${{ vars.AGENT_ORCHESTRATOR_ENABLED }}
+
       - name: Verify head SHA
         run: |
-          CURRENT=$(gh pr view ${{ inputs.pr_number }} --json headRefOid --jq '.headRefOid')
-          if [ "$CURRENT" != "${{ inputs.head_sha }}" ]; then
-            echo "SHA mismatch"
+          CURRENT=$(gh pr view ${{ github.event.inputs.pr_number }} --json headRefOid --jq '.headRefOid')
+          if [ "$CURRENT" != "${{ github.event.inputs.head_sha }}" ]; then
+            echo "FATAL: PR head SHA has changed. Expected ${{ github.event.inputs.head_sha }}, got $CURRENT"
             exit 1
           fi
 
       - name: Mark final-review
         run: |
-          python3 ${{ github.workspace }}/scripts/agent-control/state_manager.py set-labels \
-            ${{ inputs.issue_number }} final-review
+          python3 scripts/agent-control/state_manager.py set-labels \
+            ${{ github.event.inputs.issue_number }} final-review
 
       - name: Build review prompt
         id: prompt
         run: |
-          python3 ${{ github.workspace }}/scripts/agent-control/prompt_builder.py review \
-            ${{ inputs.pr_number }} ${{ inputs.head_sha }} > /tmp/review-prompt.txt
+          mkdir -p /tmp/agent-prompt
+          python3 scripts/agent-control/prompt_builder.py review \
+            ${{ github.event.inputs.pr_number }} \
+            ${{ github.event.inputs.head_sha }} \
+            > /tmp/agent-prompt/review-${{ github.event.inputs.pr_number }}.txt
 
       - name: Run Codex (review worker)
         id: codex
-        env:
-          CODEX_AUTH_TOKEN: ${{ secrets.CODEX_AUTH_TOKEN }}
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          codex exec \
-            --target-dir "${{ github.workspace }}" \
-            --goal "$(cat /tmp/review-prompt.txt)" \
-            --sliding-context \
-            --print \
-            --no-sandbox \
-            2>&1 | tee /tmp/codex-review-${{ inputs.pr_number }}.log
+          bash scripts/agent-control/codex_wrapper.sh \
+            review \
+            /tmp/agent-prompt/review-${{ github.event.inputs.pr_number }}.txt \
+            /tmp/agent-output/review-${{ github.event.inputs.pr_number }}
+        env:
+          AGENT_ORCHESTRATOR_ENABLED: "true"
 
-      - name: Parse review verdict
+      - name: Parse and validate review verdict
         id: verdict
         run: |
-          python3 -c "import json,re; log=open('/tmp/codex-review-${{ inputs.pr_number }}.log').read(); m=re.search(r'\{[^}]+\"verdict\"[^}]+\}', log, re.DOTALL); v=json.loads(m.group()) if m else {'verdict':'FAIL','summary':'No verdict found'}; [print(f'{k}={v[k]}') for k in v]" >> "$GITHUB_OUTPUT"
+          python3 scripts/agent-control/validate_review.py \
+            /tmp/agent-output/review-${{ github.event.inputs.pr_number }}/codex-last-message.json \
+            ${{ github.event.inputs.pr_number }} \
+            ${{ github.event.inputs.head_sha }}
 
       - name: Post review comment
         run: |
-          gh pr review ${{ inputs.pr_number }} --body \
+          VERDICT="${{ steps.verdict.outputs.verdict }}"
+          SUMMARY="${{ steps.verdict.outputs.summary }}"
+
+          gh pr review ${{ github.event.inputs.pr_number }} --body \
             "## Agent Orchestrator: Final Review
-          Verdict: \`${{ steps.verdict.outputs.verdict || 'FAIL' }}\`
+
+          **Verdict:** \`${VERDICT}\`
+          **Summary:** ${SUMMARY}
+          **Reviewed head:** \`${{ github.event.inputs.head_sha }}\`
+
+          ---
           _Review generated by agent-orchestrator_"
 
       - name: Handle non-pass verdicts
-        if: steps.verdict.outputs.verdict != 'PASS' && steps.verdict.outputs.verdict != 'PASS_WITH_NOTES'
+        if: steps.verdict.outputs.verdict != 'PASS' && steps.verdict.outputs.verdict != ''
         run: |
-          python3 ${{ github.workspace }}/scripts/agent-control/state_manager.py set-labels \
-            ${{ inputs.issue_number }} agent-blocked
+          python3 scripts/agent-control/state_manager.py set-labels \
+            ${{ github.event.inputs.issue_number }} agent-blocked
           exit 1
+
+  failure-handler:
+    needs: review
+    if: failure()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        with:
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@8d9ed9ac5c53483de85588cdf95a591a75ab9f55 # v5
+        with:
+          python-version: "3.11"
+
+      - name: Mark blocked on review failure
+        run: |
+          python3 scripts/agent-control/state_manager.py set-labels \
+            ${{ github.event.inputs.issue_number }} agent-blocked

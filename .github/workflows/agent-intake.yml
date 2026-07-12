@@ -25,12 +25,11 @@ concurrency:
 
 env:
   AGENT_REPO: ${{ github.repository }}
-  AGENT_GH_CMD: gh
 
 jobs:
   intake:
     if: >
-      github.event_name == 'workflow_dispatch' ||
+      (github.event_name == 'workflow_dispatch') ||
       (github.event_name == 'issues' &&
        (github.event.action == 'opened' ||
         (github.event.action == 'labeled' &&
@@ -43,6 +42,11 @@ jobs:
         with:
           persist-credentials: false
 
+      - name: Set up Python
+        uses: actions/setup-python@8d9ed9ac5c53483de85588cdf95a591a75ab9f55 # v5
+        with:
+          python-version: "3.11"
+
       - name: Set issue number
         id: vars
         run: |
@@ -52,10 +56,20 @@ jobs:
             echo "issue=${{ github.event.issue.number }}" >> "$GITHUB_OUTPUT"
           fi
 
+      - name: Check orchestrator gate
+        run: |
+          if [ "${AGENT_ORCHESTRATOR_ENABLED:-false}" != "true" ] && [ "${{ github.event.inputs.dry_run }}" != "true" ]; then
+            echo "AGENT_ORCHESTRATOR_ENABLED is not true. Intake processing disabled."
+            echo "Run with dry_run=true to validate without side effects."
+            exit 0
+          fi
+        env:
+          AGENT_ORCHESTRATOR_ENABLED: ${{ vars.AGENT_ORCHESTRATOR_ENABLED }}
+
       - name: Validate labels
         id: labels
         run: |
-          python3 ${{ github.workspace }}/scripts/agent-control/state_manager.py get-labels \
+          python3 scripts/agent-control/state_manager.py get-labels \
             ${{ steps.vars.outputs.issue }} > /tmp/agent-labels.txt
           echo "current_labels=$(cat /tmp/agent-labels.txt)" >> "$GITHUB_OUTPUT"
 
@@ -64,18 +78,16 @@ jobs:
           contains(steps.labels.outputs.current_labels, 'agent-draft') &&
           !contains(steps.labels.outputs.current_labels, 'agent-ready')
         run: |
-          ISSUE=${{ steps.vars.outputs.issue }}
-          python3 ${{ github.workspace }}/scripts/agent-control/state_manager.py comment "$ISSUE" \
+          python3 scripts/agent-control/state_manager.py comment ${{ steps.vars.outputs.issue }} \
             "## Agent Orchestrator Intake
-          Task registered as **draft** (label: \`agent-draft\`).
+          Task registered as **draft** (\`agent-draft\`).
           Change label to \`agent-ready\` when dependencies are resolved to start execution."
 
       - name: Check dependencies
         id: deps
         if: contains(steps.labels.outputs.current_labels, 'agent-ready')
         run: |
-          if python3 ${{ github.workspace }}/scripts/agent-control/state_manager.py check-deps \
-            ${{ steps.vars.outputs.issue }}; then
+          if python3 scripts/agent-control/state_manager.py check-deps ${{ steps.vars.outputs.issue }}; then
             echo "status=ready" >> "$GITHUB_OUTPUT"
           else
             echo "status=blocked" >> "$GITHUB_OUTPUT"
@@ -83,22 +95,26 @@ jobs:
 
       - name: Mark ready for execution
         if: steps.deps.outputs.status == 'ready'
+        env:
+          AGENT_ORCHESTRATOR_ENABLED: ${{ vars.AGENT_ORCHESTRATOR_ENABLED }}
         run: |
-          python3 ${{ github.workspace }}/scripts/agent-control/state_manager.py add-labels \
-            ${{ steps.vars.outputs.issue }} agent-ready
-          python3 ${{ github.workspace }}/scripts/agent-control/state_manager.py remove-labels \
-            ${{ steps.vars.outputs.issue }} agent-draft
+          python3 scripts/agent-control/state_manager.py add-labels ${{ steps.vars.outputs.issue }} agent-ready
+          python3 scripts/agent-control/state_manager.py remove-labels ${{ steps.vars.outputs.issue }} agent-draft
+          if [ "${AGENT_ORCHESTRATOR_ENABLED:-false}" = "true" ]; then
+            echo "Orchestrator enabled. Worker will be dispatched."
+          else
+            echo "Orchestrator disabled. Issue labeled agent-ready but worker will not start."
+            echo "Set AGENT_ORCHESTRATOR_ENABLED=true to activate."
+          fi
 
       - name: Mark blocked on dependencies
         if: steps.deps.outputs.status == 'blocked'
         run: |
-          python3 ${{ github.workspace }}/scripts/agent-control/state_manager.py add-labels \
-            ${{ steps.vars.outputs.issue }} agent-blocked
-          python3 ${{ github.workspace }}/scripts/agent-control/state_manager.py comment \
-            ${{ steps.vars.outputs.issue }} \
+          python3 scripts/agent-control/state_manager.py add-labels ${{ steps.vars.outputs.issue }} agent-blocked
+          python3 scripts/agent-control/state_manager.py comment ${{ steps.vars.outputs.issue }} \
             "## Agent Orchestrator: Dependencies Not Met
           This task has unresolved dependencies and has been labeled \`agent-blocked\`.
-          Ensure all prerequisite issues are labeled \`agent-complete\` before adding \`agent-ready\`."
+          Resolve dependencies and add \`agent-ready\` to start execution."
 
       - name: Dry-run report
         if: github.event.inputs.dry_run == 'true'
@@ -106,3 +122,4 @@ jobs:
           echo "=== Dry-Run Intake Report ==="
           echo "Issue: ${{ steps.vars.outputs.issue }}"
           echo "Labels: ${{ steps.labels.outputs.current_labels }}"
+          echo "Side effects would have been: update labels, post comments"

@@ -30,22 +30,26 @@ Evaluate the PR against these dimensions:
 8. **Rollback**: Clear rollback path? Migration reversible (if applicable)?
 9. **Documentation**: Active docs updated (AGENTS.md, CURRENT_STATUS, NEXT_DECISION, ARCHITECTURE_BOOK)?
 
-### Review Verdict
+### Review Schema
 
-Return a structured verdict as JSON on the last line:
+Output ONLY a JSON object on the last line of your response. The JSON must match this schema:
 
-```json
-{
-  "verdict": "PASS" | "PASS_WITH_NOTES" | "BLOCKED" | "FAIL",
-  "summary": "One-line summary of the review",
-  "notes": ["List of specific observations or required changes"],
-  "rollback_ok": true | false,
-  "ci_green": true | false,
-  "security_ok": true | false
-}
-```
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `verdict` | string | yes | `"PASS"` \| `"PASS_WITH_NOTES"` \| `"BLOCKED"` \| `"FAIL"` |
+| `summary` | string | yes | One-line summary |
+| `reviewed_head_sha` | string | yes | The SHA being reviewed (`{{HEAD_SHA}}`) |
+| `blockers` | array | no | List of blocking issues |
+| `major_notes` | array | no | List of major (non-blocking) observations |
+| `minor_notes` | array | no | List of minor suggestions |
+| `ci_green` | boolean | no | All required CI green |
+| `security_ok` | boolean | no | No security concerns |
+| `rollback_ok` | boolean | no | Clear rollback path (if applicable) |
 
+Verdict meanings:
 - `PASS`: Ready to merge with no blocking issues.
 - `PASS_WITH_NOTES`: Minor non-blocking suggestions; safe to merge.
-- `BLOCKED`: One or more blocking issues must be resolved before merge.
+- `BLOCKED`: One or more blocking issues (`blockers`) must be resolved.
 - `FAIL`: The implementation does not satisfy the task or has critical defects.
+
+**Reminder**: Output ONLY a single JSON object on the last line. No explanation, no markdown fences.

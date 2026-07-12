@@ -147,6 +147,10 @@ def build_review_prompt(pr_number, head_sha, template="review.md"):
         except json.JSONDecodeError:
             pass
 
+    schema_path = pathlib.Path(__file__).resolve().parent / "review_schema.json"
+    if schema_path.exists():
+        ctx["review_schema"] = schema_path.read_text()
+
     template_text = load_prompt_template(template)
     if not template_text:
         return None
@@ -157,6 +161,9 @@ def build_review_prompt(pr_number, head_sha, template="review.md"):
     prompt = prompt.replace("{{DIFF}}", ctx["diff"][:100000])
     prompt = prompt.replace("{{REPO_NAME}}", f"{REPO_OWNER}/{REPO_NAME}")
     prompt = prompt.replace("{{AGENTS_MD}}", ctx.get("AGENTS_md", ""))
+
+    if ctx.get("review_schema"):
+        prompt += "\n\n### Authoritative Schema\n\n```json\n" + ctx["review_schema"] + "\n```\n"
 
     return prompt
 

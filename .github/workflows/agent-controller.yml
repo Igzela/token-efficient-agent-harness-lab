@@ -4,37 +4,36 @@ on:
   workflow_dispatch:
     inputs:
       command:
-        description: Control command
+        description: Command to execute (select-task | next-task | retry-task | block-task | status)
         required: true
         type: choice
         options:
-          - dry-run
-          - emergency-stop
-          - emergency-resume
-          - cleanup
-          - cleanup-stale
+          - select-task
           - next-task
-          - force-start
-          - force-block
-          - force-complete
+          - retry-task
+          - block-task
+          - status
       issue:
-        description: Issue number (required for force-* and next-task)
+        description: Issue number (required for select-task, retry-task, block-task)
         required: false
         type: number
+      reason:
+        description: Reason (required for block-task)
+        required: false
+        type: string
 
 permissions:
   actions: write
   contents: read
   issues: write
-  pull-requests: write
+  pull-requests: read
 
-env:
-  AGENT_REPO: ${{ github.repository }}
-  AGENT_GH_CMD: gh
-  AGENT_WORKTREE_BASE: /tmp/agent-worktrees
+concurrency:
+  group: agent-controller
+  cancel-in-progress: false
 
 jobs:
-  controller:
+  control:
     runs-on: ubuntu-latest
     steps:
       - name: Check out repository
@@ -47,65 +46,52 @@ jobs:
         with:
           python-version: "3.11"
 
-      - name: Dry-run
-        if: github.event.inputs.command == 'dry-run'
+      - name: Check orchestrator gate
         run: |
-          python3 ${{ github.workspace }}/scripts/agent-control/dry_run.py
+          if [ "${AGENT_ORCHESTRATOR_ENABLED:-false}" != "true" ]; then
+            echo "AGENT_ORCHESTRATOR_ENABLED is not true. Controller disabled."
+            exit 0
+          fi
+        env:
+          AGENT_ORCHESTRATOR_ENABLED: ${{ vars.AGENT_ORCHESTRATOR_ENABLED }}
 
-      - name: Emergency stop
-        if: github.event.inputs.command == 'emergency-stop'
+      - name: Execute controller command
+        id: command
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          for run in $(gh run list --workflow agent-worker --limit 10 --json databaseId --jq '.[].databaseId' 2>/dev/null); do
-            gh run cancel "$run" 2>/dev/null || true
-          done
-          for run in $(gh run list --workflow agent-ci-repair --limit 10 --json databaseId --jq '.[].databaseId' 2>/dev/null); do
-            gh run cancel "$run" 2>/dev/null || true
-          done
-          for run in $(gh run list --workflow agent-review --limit 10 --json databaseId --jq '.[].databaseId' 2>/dev/null); do
-            gh run cancel "$run" 2>/dev/null || true
-          done
-          for issue in $(python3 ${{ github.workspace }}/scripts/agent-control/state_manager.py active-workers); do
-            python3 ${{ github.workspace }}/scripts/agent-control/state_manager.py set-labels "$issue" agent-blocked
-          done
-          echo "Emergency stop completed."
+          COMMAND=${{ github.event.inputs.command }}
 
-      - name: Emergency resume
-        if: github.event.inputs.command == 'emergency-resume' && github.event.inputs.issue != ''
-        run: |
-          python3 ${{ github.workspace }}/scripts/agent-control/state_manager.py set-labels \
-            ${{ github.event.inputs.issue }} agent-ready
-          python3 ${{ github.workspace }}/scripts/agent-control/state_manager.py remove-labels \
-            ${{ github.event.inputs.issue }} agent-blocked
+          case "$COMMAND" in
+            select-task)
+              python3 scripts/agent-control/state_manager.py select-task \
+                ${{ github.event.inputs.issue }}
+              ;;
+            next-task)
+              ISSUE=$(python3 scripts/agent-control/state_manager.py next-task)
+              echo "selected_issue=$ISSUE" >> "$GITHUB_OUTPUT"
+              if [ -n "$ISSUE" ] && [ "$ISSUE" != "None" ]; then
+                gh workflow run agent-intake.yml --ref main -f issue="$ISSUE"
+              fi
+              ;;
+            retry-task)
+              python3 scripts/agent-control/state_manager.py retry-task \
+                ${{ github.event.inputs.issue }}
+              gh workflow run agent-intake.yml --ref main -f issue="${{ github.event.inputs.issue }}"
+              ;;
+            block-task)
+              python3 scripts/agent-control/state_manager.py block-task \
+                ${{ github.event.inputs.issue }} \
+                "${{ github.event.inputs.reason }}"
+              ;;
+            status)
+              python3 scripts/agent-control/state_manager.py status
+              ;;
+          esac
 
-      - name: Cleanup
-        if: github.event.inputs.command == 'cleanup'
+      - name: Report result
         run: |
-          python3 ${{ github.workspace }}/scripts/agent-control/cleanup.py
-
-      - name: Cleanup stale worktrees
-        if: github.event.inputs.command == 'cleanup-stale'
-        run: |
-          python3 ${{ github.workspace }}/scripts/agent-control/cleanup.py
-
-      - name: Force start
-        if: github.event.inputs.command == 'force-start' && github.event.inputs.issue != ''
-        run: |
-          python3 ${{ github.workspace }}/scripts/agent-control/state_manager.py set-labels \
-            ${{ github.event.inputs.issue }} agent-ready
-
-      - name: Force block
-        if: github.event.inputs.command == 'force-block' && github.event.inputs.issue != ''
-        run: |
-          python3 ${{ github.workspace }}/scripts/agent-control/state_manager.py set-labels \
-            ${{ github.event.inputs.issue }} agent-blocked
-
-      - name: Force complete
-        if: github.event.inputs.command == 'force-complete' && github.event.inputs.issue != ''
-        run: |
-          python3 ${{ github.workspace }}/scripts/agent-control/state_manager.py set-labels \
-            ${{ github.event.inputs.issue }} agent-complete
-
-      - name: Next task
-        if: github.event.inputs.command == 'next-task'
-        run: |
-          gh issue list --label agent-ready --state open --json number,title --jq '.[] | "#\(.number): \(.title)"'
+          ISSUE="${{ steps.command.outputs.selected_issue }}"
+          if [ -n "$ISSUE" ] && [ "$ISSUE" != "None" ]; then
+            echo "Dispatched agent-intake for issue #$ISSUE"
+          fi
