@@ -9,8 +9,9 @@ use super::adaptive_fusion::{objective_weights, ObjectiveProfile};
 use super::replay_eligibility::{
     evaluate_replay_eligibility, replay_eligibility_result_sha256,
     replay_observation_evidence_sha256, CostEvidenceKind, EvidenceDisposition,
-    ReplayEligibilityRequest, ReplayEligibilityResult, ReplayObservationEvidence,
-    POLICY_REPLAY_CONTRACT_SCHEMA_VERSION, TRACE_REPLAY_EVIDENCE_SCHEMA_VERSION,
+    JudgeCalibrationEvidence, ReplayEligibilityRequest, ReplayEligibilityResult,
+    ReplayObservationEvidence, POLICY_REPLAY_CONTRACT_SCHEMA_VERSION,
+    TRACE_REPLAY_EVIDENCE_SCHEMA_VERSION,
 };
 use super::run_trace_recorder::RunTrace;
 use crate::provider::redaction::contains_sensitive_patterns;
@@ -170,6 +171,8 @@ pub struct OfflineReplayReport {
     pub comparisons: Vec<OfflinePolicyComparison>,
     pub outcomes: Vec<OfflineReplayOutcome>,
     pub eligibility_content_sha256: String,
+    /// Calibration derived from paired judge/reference values in the trace-backed eligibility result.
+    pub replay_judge_calibrations: Vec<JudgeCalibrationEvidence>,
     pub source_trace_ids: Vec<String>,
     pub source_evidence_content_sha256: Vec<String>,
     pub shadow_only: bool,
@@ -624,6 +627,7 @@ impl OfflineEvaluationEngine {
             comparisons,
             outcomes,
             eligibility_content_sha256: eligibility.content_sha256.clone(),
+            replay_judge_calibrations: eligibility.judge_calibrations.clone(),
             source_trace_ids: accepted
                 .iter()
                 .map(|evidence| evidence.observation.trace_id.clone())
@@ -843,6 +847,7 @@ fn blocked_replay_report(
             reason_codes: sorted_reasons,
         }],
         eligibility_content_sha256: eligibility.content_sha256.clone(),
+        replay_judge_calibrations: eligibility.judge_calibrations.clone(),
         source_trace_ids: eligibility
             .observations
             .iter()
