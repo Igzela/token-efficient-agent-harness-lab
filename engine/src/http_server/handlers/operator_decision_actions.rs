@@ -93,7 +93,7 @@ pub(crate) async fn api_apply_operator_decision_action(
             "decision queue hash no longer matches the bound read page",
         ));
     }
-    let bound_item = find_bound_item(bound_queue.items, &decision_id)?;
+    let (bound_position, bound_item) = find_bound_item(&bound_queue.items, &decision_id)?;
     validate_requested_action(&bound_item, &request.action)?;
     let bound_source = bound_item
         .selected_source
@@ -108,11 +108,12 @@ pub(crate) async fn api_apply_operator_decision_action(
             request.offset,
         )
         .map_err(queue_changed)?;
-    let current_item = current_queue
+    let (current_position, current_item) = current_queue
         .items
         .iter()
-        .find(|item| item.decision_id == decision_id)
-        .cloned()
+        .enumerate()
+        .find(|(_, item)| item.decision_id == decision_id)
+        .map(|(position, item)| (position, item.clone()))
         .ok_or_else(|| {
             ApiError::with_code(
                 StatusCode::CONFLICT,
@@ -120,7 +121,14 @@ pub(crate) async fn api_apply_operator_decision_action(
                 "decision is no longer present on the exact current queue page",
             )
         })?;
-    validate_current_binding(&bound_item, &current_item, &bound_source, &request.action)?;
+    validate_current_binding(
+        &bound_item,
+        &current_item,
+        &bound_source,
+        &request.action,
+        bound_position,
+        current_position,
+    )?;
     let current_source = current_item
         .selected_source
         .clone()
@@ -335,12 +343,14 @@ fn validate_mutation_time(
 }
 
 fn find_bound_item(
-    items: Vec<OperatorDecisionItem>,
+    items: &[OperatorDecisionItem],
     decision_id: &str,
-) -> Result<OperatorDecisionItem, ApiError> {
+) -> Result<(usize, OperatorDecisionItem), ApiError> {
     items
-        .into_iter()
-        .find(|item| item.decision_id == decision_id)
+        .iter()
+        .enumerate()
+        .find(|(_, item)| item.decision_id == decision_id)
+        .map(|(position, item)| (position, item.clone()))
         .ok_or_else(|| {
             ApiError::with_code(
                 StatusCode::NOT_FOUND,
@@ -371,16 +381,19 @@ fn validate_current_binding(
     current: &OperatorDecisionItem,
     bound_source: &OperatorDecisionEvidenceReference,
     action: &OperatorDecisionAction,
+    bound_position: usize,
+    current_position: usize,
 ) -> Result<(), ApiError> {
     validate_requested_action(current, action)?;
     if current.conflict_key != bound.conflict_key
         || current.resource_id != bound.resource_id
         || current.selected_source.as_ref() != Some(bound_source)
+        || current_position != bound_position
     {
         return Err(ApiError::with_code(
             StatusCode::CONFLICT,
             "operator_decision_current_state_changed",
-            "current decision source, resource, or conflict binding differs from the read decision",
+            "current decision source, resource, conflict binding, or page order differs from the read decision",
         ));
     }
     Ok(())
