@@ -20,7 +20,7 @@ When current code, merged history, and active documents provide enough evidence,
 
 Model and reasoning-effort selection are user/tool settings, not repository policy. The repository does not require, forbid, or validate a particular model tier. Do not change model configuration files unless the user explicitly requests it.
 
-Quality gates do not change with model choice: claims must be evidence-backed, tests must be real, CI must be complete, and risky changes must retain audit, compatibility, compensation, and rollback.
+Quality gates do not change with model choice: claims must be evidence-backed, tests must be real, and risky changes must retain review, CI, audit, compatibility, compensation, and rollback. A strictly documentation-only PR may use the targeted merge exception defined in `docs/REAL_WORLD_TESTING_PLAYBOOK.md`; that exception does not weaken evidence required for any implementation claim recorded by the documentation.
 
 ## Execution-Ready Task Packets
 
@@ -52,7 +52,7 @@ Prefer the earliest eligible packet in the normative sequence. The agent may fir
 
 ## Full Agent Autonomy Mode
 
-Full Agent Autonomy Mode is active for repo-scoped, testable, observable, CI-gated, and rollbackable work.
+Full Agent Autonomy Mode is active for repo-scoped, testable, observable, verification-gated, and rollbackable work. Runtime, code, configuration, schema, workflow, release, and authority changes remain full-CI-gated; strictly documentation-only changes may use the targeted exception below.
 
 Allowed autonomous work includes:
 
@@ -92,11 +92,23 @@ Stop rather than work around any of these:
 - do not remove rollback paths without a tested replacement
 - do not perform irreversible external destruction without a recovery path and explicit authority
 - do not bypass required human approval or external credentials
-- do not merge with failed, queued, in-progress, or unexpectedly skipped required CI
+- do not merge code, tests, scripts, workflows, configuration, schemas, migrations, generated artifacts, dependency files, runtime behavior, authority changes, release changes, or external-action changes with failed, queued, in-progress, or unexpectedly skipped required CI
 - do not overwrite another agent's in-progress work without reconciling branch ownership
 - stop when materially contradictory requirements cannot be resolved from repository evidence
 
 A difficult implementation, failed first attempt, or missing bounded design detail is not by itself a hard stop. Diagnose, revise the plan, and continue while each repair cycle is evidence-driven and remains inside repository safety boundaries.
+
+## Documentation-Only Merge Exception
+
+A PR may merge without waiting for the repository's full CI matrix only when the final diff is strictly documentation-only:
+
+- only Markdown or plain-text documentation entrypoints and files are changed, such as `README.md`, `AGENTS.md`, `CLAUDE.md`, and `docs/**/*.md`;
+- no code, tests, scripts, workflows, configuration, schema, migration, generated artifact, dependency manifest/lockfile, release artifact, or executable file changes;
+- no tag, release, deployment, provider call, target-repository write, or other external action is performed;
+- the final diff is reviewed and `git diff --check` plus `uv run --no-project python scripts/check_agent_handoff.py` pass, together with any applicable documentation/link check;
+- there is no unresolved human objection and branch-protection rules permit the merge.
+
+This exception permits fast factual synchronization, clarification, pruning, and documentation-governance edits. It does not allow documentation to claim that code, a migration, a release, CI, or runtime behavior is complete without already verified underlying evidence. If the diff is mixed, generated, executable, security-sensitive outside prose, or uncertain, use the normal complete-green-CI gate. A later docs-specific CI failure must be repaired promptly, but the merge is not retroactively treated as implementation evidence.
 
 ## Autonomous Advancement Loop
 
@@ -114,10 +126,10 @@ For every autonomous session:
 10. Repair failures at the root cause; do not weaken tests or guards to obtain green CI.
 11. Update only the smallest necessary active docs.
 12. Run `uv run --no-project python scripts/check_agent_handoff.py`.
-13. Commit in English, push, open a PR, and wait for complete green CI.
-14. Merge only when the playbook classifier permits it and no unresolved human objection exists.
+13. Commit in English, push, and open a PR. Wait for complete green CI unless the final diff qualifies for the documentation-only merge exception.
+14. Merge only when the playbook classifier or its documentation-only exception permits it and no unresolved human objection exists.
 15. Refresh `main`, update packet states, and continue when the bounded objective includes later packets.
-16. Report packet/slice, decisions, files, tests, CI run, compatibility, residual risk, rollback, and next state.
+16. Report packet/slice, decisions, files, tests, CI run or documentation-only targeted checks, compatibility, residual risk, rollback, and next state.
 
 ## Verification Baseline
 
@@ -136,7 +148,7 @@ uv run --no-project python scripts/check_agent_handoff.py
 git diff --check
 ```
 
-Add release, browser, Docker, migration, backup/restore, concurrency, compensation, or fault-specific checks when the change touches those surfaces.
+Add release, browser, Docker, migration, backup/restore, concurrency, compensation, or fault-specific checks when the change touches those surfaces. Strictly documentation-only PRs use the targeted checks specified above rather than the full baseline unless their content requires an additional check.
 
 ## Documentation Maintenance Rule
 
