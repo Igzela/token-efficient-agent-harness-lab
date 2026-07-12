@@ -5,7 +5,9 @@ use axum::body::{to_bytes, Body};
 use axum::http::{Method, Request, StatusCode};
 use axum::Router;
 use engine::http_server::{build_axum_router, AxumApiState};
-use engine::operator_decision::{OperatorDecisionAction, OperatorDecisionItem, OperatorDecisionQueue};
+use engine::operator_decision::{
+    OperatorDecisionAction, OperatorDecisionItem, OperatorDecisionQueue,
+};
 use engine::storage::local_product_store::LocalProductStore;
 use serde_json::{json, Value};
 use tempfile::tempdir;
@@ -88,7 +90,11 @@ fn action_body(queue: &OperatorDecisionQueue, action: OperatorDecisionAction) ->
     })
 }
 
-async fn post_action(app: Router, item: &OperatorDecisionItem, body: Value) -> (StatusCode, Value) {
+async fn post_action(
+    app: Router,
+    item: &OperatorDecisionItem,
+    body: Value,
+) -> (StatusCode, Value) {
     let response = app
         .oneshot(
             Request::builder()
@@ -199,7 +205,8 @@ async fn every_unsupported_action_is_explicitly_fail_closed() {
         OperatorDecisionAction::Inspect,
         OperatorDecisionAction::Acknowledge,
     ] {
-        let (status, response) = post_action(app.clone(), &item, action_body(&queue, action)).await;
+        let (status, response) =
+            post_action(app.clone(), &item, action_body(&queue, action)).await;
         assert_eq!(status, StatusCode::CONFLICT, "{response}");
         assert_eq!(
             response["code"],
