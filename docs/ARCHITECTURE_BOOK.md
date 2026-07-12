@@ -218,6 +218,8 @@ PE4-READ-1 exposes the existing offline replay report through `LocalProductStore
 
 PE4-SHADOW-1 adds `ShadowRouter::compare_replay_report` as a derived, hash-bound comparison owner. It carries observed facts separately from counterfactual predictions, source trace/evidence coverage, explicit drift boundary and insufficiency/OOD statuses, and all live-influence flags remain false. It does not invoke providers or mutate routing, policy, experiments, budgets, or production state.
 
+PE4-CANARY-1 extends the existing `AdaptiveExperimentController` rather than creating a second experiment owner. `AdaptiveCanaryDecision` is a deterministic, hash-bound, non-persistent decision envelope requiring exact policy/candidate/scope bindings, trace-backed shadow coverage, explicit confirmation and permission, bounded 1–5% traffic and 24-hour duration, existing gate/pause/kill controls, compensation metadata, and an exact rollback target. Repeated evaluation is idempotent and restart-safe; the decision contract does not call providers, mutate live routing or policy, or authorize full rollout. Promotion remains a separate later owner and requires the complete evidence chain.
+
 ## Execution Modes
 
 `ACP_EXECUTION_MODE` controls dispatch execution:
