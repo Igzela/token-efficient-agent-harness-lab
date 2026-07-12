@@ -33,3 +33,8 @@ claude-drive/
 # Vercel local link
 .vercel
 site/.vercel
+
+# Agent orchestrator
+/tmp/agent-orchestrator-locks/
+/tmp/agent-worktrees/
+/tmp/codex-*.log

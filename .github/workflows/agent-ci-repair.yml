@@ -1,0 +1,145 @@
+name: agent-ci-repair
+
+on:
+  workflow_call:
+    inputs:
+      pr_number:
+        required: true
+        type: number
+      issue_number:
+        required: true
+        type: number
+      head_sha:
+        required: true
+        type: string
+      failed_jobs:
+        required: true
+        type: string
+      repair_count:
+        required: true
+        type: number
+      ci_run_id:
+        required: true
+        type: number
+
+permissions:
+  contents: write
+  issues: write
+  pull-requests: write
+
+concurrency:
+  group: agent-ci-repair-${{ inputs.pr_number }}
+  cancel-in-progress: false
+
+env:
+  AGENT_REPO: ${{ github.repository }}
+  AGENT_GH_CMD: gh
+  AGENT_REPAIR_COUNT: ${{ inputs.repair_count }}
+  AGENT_FAILED_LOGS: ""
+
+jobs:
+  repair:
+    runs-on: [self-hosted, vader, ci-repair]
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+          ref: refs/pull/${{ inputs.pr_number }}/head
+
+      - name: Configure git
+        run: |
+          git config user.name "agent-orchestrator[bot]"
+          git config user.email "agent-orchestrator[bot]@users.noreply.github.com"
+
+      - name: Verify head SHA
+        run: |
+          ACTUAL_SHA=$(git rev-parse HEAD)
+          EXPECTED_SHA="${{ inputs.head_sha }}"
+          if [ "$ACTUAL_SHA" != "$EXPECTED_SHA" ]; then
+            echo "ERROR: Head SHA mismatch. Expected $EXPECTED_SHA, got $ACTUAL_SHA"
+            exit 1
+          fi
+          echo "Head SHA verified: $ACTUAL_SHA"
+
+      - name: Fetch failed job logs
+        id: logs
+        run: |
+          LOGS=$(gh run view ${{ inputs.ci_run_id }} --log-failed 2>/dev/null || echo "Logs not available")
+          echo "logs<<LEOF" >> "$GITHUB_OUTPUT"
+          echo "$LOGS" | head -c 50000 >> "$GITHUB_OUTPUT"
+          echo "LEOF" >> "$GITHUB_OUTPUT"
+
+      - name: Mark ci-repairing
+        run: |
+          python3 ${{ github.workspace }}/scripts/agent-control/state_manager.py set-labels \
+            ${{ inputs.issue_number }} ci-repairing
+
+      - name: Build repair prompt
+        id: prompt
+        env:
+          AGENT_FAILED_LOGS: ${{ steps.logs.outputs.logs }}
+        run: |
+          PROMPT=$(python3 ${{ github.workspace }}/scripts/agent-control/prompt_builder.py \
+            ci-repair ${{ inputs.pr_number }} ${{ inputs.head_sha }} \
+            ${{ inputs.failed_jobs }})
+          echo "prompt<<PEOF" >> "$GITHUB_OUTPUT"
+          echo "$PROMPT" >> "$GITHUB_OUTPUT"
+          echo "PEOF" >> "$GITHUB_OUTPUT"
+
+      - name: Run Codex (CI repair)
+        env:
+          CODEX_AUTH_TOKEN: ${{ secrets.CODEX_AUTH_TOKEN }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          PR_BRANCH=$(gh pr view ${{ inputs.pr_number }} --json headRefName --jq '.headRefName')
+          echo "Repairing PR #${{ inputs.pr_number }} on branch $PR_BRANCH (attempt ${{ inputs.repair_count }})"
+
+          codex exec \
+            --target-dir "${{ github.workspace }}" \
+            --goal "${{ steps.prompt.outputs.prompt }}" \
+            --sliding-context \
+            --print \
+            --no-sandbox \
+            2>&1 | tee /tmp/codex-repair-${{ inputs.pr_number }}.log
+
+          # Push repair commits
+          git push origin "HEAD:$PR_BRANCH" 2>&1 || echo "Push failed or nothing to push"
+
+      - name: Record CI repair state
+        run: |
+          HEAD_SHA=$(git rev-parse HEAD)
+          python3 ${{ github.workspace }}/scripts/agent-control/state_manager.py record-ci \
+            ${{ inputs.issue_number }} ${{ inputs.pr_number }} "$HEAD_SHA" \
+            "${{ inputs.ci_run_id }}" "failure_repair_${{ inputs.repair_count }}"
+
+      - name: Comment on issue
+        run: |
+          python3 ${{ github.workspace }}/scripts/agent-control/state_manager.py comment \
+            ${{ inputs.issue_number }} \
+            "## Agent Orchestrator: CI Repair Attempt #${{ inputs.repair_count }}
+
+          PR: #${{ inputs.pr_number }}
+          
+          CI repair attempt #${{ inputs.repair_count }} completed. CI will re-trigger on the push.
+
+          Failed jobs: ${{ inputs.failed_jobs }}
+          Head SHA: ${{ inputs.head_sha }}"
+
+  failure-handler:
+    needs: repair
+    if: failure()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Mark blocked on repair failure
+        run: |
+          python3 ${{ github.workspace }}/scripts/agent-control/state_manager.py set-labels \
+            ${{ inputs.issue_number }} agent-blocked
+          python3 ${{ github.workspace }}/scripts/agent-control/state_manager.py comment \
+            ${{ inputs.issue_number }} \
+            "## Agent Orchestrator: CI Repair Failed
+
+          The CI repair worker encountered an error for PR #${{ inputs.pr_number }}.
+          
+          This task has been marked \`agent-blocked\`. Manual intervention is required."

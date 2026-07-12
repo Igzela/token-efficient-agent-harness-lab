@@ -38,6 +38,19 @@ This repo is a local/small-team self-hosted agent workflow control plane. Rust `
 | Live provider adapter | Gated ready path: Stub/Fake/Live; Live requires gates, explicit metadata, symbolic credentials, positive pricing, persistent redacted audit, bounded calls/tokens/time/cost, and a kill switch |
 | Post-LGB Product Evolution Plan | PE-1 through PE-4 remain acceptance-sealed, with PE-4 sealed under `PE4-POST-CLOSE-REPAIR-1`; PE-5 and PE-6 remain unstarted |
 
+## Event-Driven Agent Orchestrator
+
+The event-driven GitHub Actions orchestrator is implemented and awaiting production validation. It uses:
+- Short-lived Codex workers invoked on Vader-hosted self-hosted runners.
+- State persisted in GitHub Issues, labels, PR comments, and workflow artifacts.
+- Concurrency: one active worker per issue, maximum two repository-wide.
+- Dry-run mode for validation without Codex invocation or branch pushes.
+- Emergency-stop, cleanup, and manual controller workflows.
+
+Labels: `agent-draft`, `agent-ready`, `agent-running`, `ci-repairing`, `final-review`, `agent-blocked`, `agent-complete`.
+
+The orchestrator is activation-safe: workflows are present but do not auto-start until the PR is merged and the CI monitor is validated. Codex invocation wrappers are inactive until `CODEX_AUTH_TOKEN` and self-hosted runner labels are configured.
+
 ## Planned Product Evolution Stages
 
 The stages are packetized in `docs/NEXT_DECISION.md`. The agent should execute packets marked `READY_FOR_EXECUTION` whose prerequisites are complete, while repairing bounded prerequisite defects or contract drift when needed.

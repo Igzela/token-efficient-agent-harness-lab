@@ -1,0 +1,176 @@
+name: agent-controller
+
+on:
+  workflow_dispatch:
+    inputs:
+      command:
+        description: Control command
+        required: true
+        type: choice
+        options:
+          - dry-run
+          - emergency-stop
+          - emergency-resume
+          - cleanup
+          - cleanup-stale
+          - next-task
+          - force-start
+          - force-block
+          - force-complete
+      issue:
+        description: Issue number (required for force-* and next-task)
+        required: false
+        type: number
+      pr_number:
+        description: PR number (optional context)
+        required: false
+        type: number
+
+permissions:
+  actions: write
+  contents: read
+  issues: write
+  pull-requests: write
+
+env:
+  AGENT_REPO: ${{ github.repository }}
+  AGENT_GH_CMD: gh
+  AGENT_WORKTREE_BASE: /tmp/agent-worktrees
+
+jobs:
+  controller:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        with:
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@8d9ed9ac5c53483de85588cdf95a591a75ab9f55 # v5
+        with:
+          python-version: "3.11"
+
+      - name: Dry-run
+        if: github.event.inputs.command == 'dry-run'
+        run: |
+          echo "=== Agent Orchestrator Dry-Run ==="
+          python3 ${{ github.workspace }}/scripts/agent-control/dry_run.py
+
+      - name: Emergency stop
+        if: github.event.inputs.command == 'emergency-stop'
+        run: |
+          echo "=== EMERGENCY STOP ==="
+          # Cancel all pending agent workflow runs
+          for run in $(gh run list --workflow agent-worker --limit 10 --json databaseId --jq '.[].databaseId' 2>/dev/null); do
+            echo "Cancelling workflow run $run..."
+            gh run cancel "$run" 2>/dev/null || true
+          done
+          for run in $(gh run list --workflow agent-ci-repair --limit 10 --json databaseId --jq '.[].databaseId' 2>/dev/null); do
+            echo "Cancelling CI repair run $run..."
+            gh run cancel "$run" 2>/dev/null || true
+          done
+          for run in $(gh run list --workflow agent-review --limit 10 --json databaseId --jq '.[].databaseId' 2>/dev/null); do
+            echo "Cancelling review run $run..."
+            gh run cancel "$run" 2>/dev/null || true
+          done
+
+          # Mark all active issues as blocked
+          for issue in $(python3 ${{ github.workspace }}/scripts/agent-control/state_manager.py active-workers); do
+            echo "Marking issue #$issue as blocked..."
+            python3 ${{ github.workspace }}/scripts/agent-control/state_manager.py set-labels "$issue" agent-blocked
+            python3 ${{ github.workspace }}/scripts/agent-control/state_manager.py comment "$issue" \
+              "## Agent Orchestrator: Emergency Stop
+
+          All active workers have been stopped via emergency-stop command.
+          
+          This task has been marked \`agent-blocked\`."
+          done
+
+          echo "Emergency stop completed."
+
+      - name: Emergency resume
+        if: github.event.inputs.command == 'emergency-resume' && github.event.inputs.issue != ''
+        run: |
+          ISSUE=${{ github.event.inputs.issue }}
+          python3 ${{ github.workspace }}/scripts/agent-control/state_manager.py set-labels "$ISSUE" agent-ready
+          python3 ${{ github.workspace }}/scripts/agent-control/state_manager.py remove-labels "$ISSUE" agent-blocked
+          python3 ${{ github.workspace }}/scripts/agent-control/state_manager.py comment "$ISSUE" \
+            "## Agent Orchestrator: Emergency Resume
+
+          This task has been resumed via emergency-resume command.
+          
+          It is now labeled \`agent-ready\` and can be picked up by the next worker."
+
+      - name: Cleanup
+        if: github.event.inputs.command == 'cleanup'
+        run: |
+          echo "=== Cleanup ==="
+          python3 ${{ github.workspace }}/scripts/agent-control/cleanup.py
+
+      - name: Cleanup stale worktrees
+        if: github.event.inputs.command == 'cleanup-stale'
+        run: |
+          echo "=== Cleanup Stale Worktrees ==="
+          python3 ${{ github.workspace }}/scripts/agent-control/cleanup.py
+          python3 ${{ github.workspace }}/scripts/agent-control/worktree_manager.py cleanup-stale 24
+
+      - name: Force start
+        if: github.event.inputs.command == 'force-start' && github.event.inputs.issue != ''
+        run: |
+          ISSUE=${{ github.event.inputs.issue }}
+          python3 ${{ github.workspace }}/scripts/agent-control/state_manager.py set-labels "$ISSUE" agent-ready
+          python3 ${{ github.workspace }}/scripts/agent-control/state_manager.py comment "$ISSUE" \
+            "## Agent Orchestrator: Force Start
+
+          This task has been force-started via the controller.
+          
+          It is labeled \`agent-ready\` and will be picked up by the next available worker."
+
+      - name: Force block
+        if: github.event.inputs.command == 'force-block' && github.event.inputs.issue != ''
+        run: |
+          ISSUE=${{ github.event.inputs.issue }}
+          python3 ${{ github.workspace }}/scripts/agent-control/state_manager.py set-labels "$ISSUE" agent-blocked
+          python3 ${{ github.workspace }}/scripts/agent-control/state_manager.py comment "$ISSUE" \
+            "## Agent Orchestrator: Force Block
+
+          This task has been force-blocked via the controller."
+
+      - name: Force complete
+        if: github.event.inputs.command == 'force-complete' && github.event.inputs.issue != ''
+        run: |
+          ISSUE=${{ github.event.inputs.issue }}
+          python3 ${{ github.workspace }}/scripts/agent-control/state_manager.py set-labels "$ISSUE" agent-complete
+          python3 ${{ github.workspace }}/scripts/agent-control/state_manager.py comment "$ISSUE" \
+            "## Agent Orchestrator: Force Complete
+
+          This task has been force-completed via the controller."
+
+      - name: Next task
+        if: github.event.inputs.command == 'next-task'
+        run: |
+          echo "=== Find Next Eligible Task ==="
+          python3 -c "
+import json, subprocess, sys
+
+def gh(*args):
+    result = subprocess.run(['gh'] + list(args), capture_output=True, text=True, timeout=30)
+    return result.stdout.strip() if result.returncode == 0 else None
+
+# Find all agent-ready issues
+issues = gh('issue', 'list', '--label', 'agent-ready', '--state', 'open', '--json', 'number,title')
+if not issues:
+    print('No agent-ready issues found.')
+    sys.exit(0)
+
+try:
+    issue_list = json.loads(issues)
+except json.JSONDecodeError:
+    print('Failed to parse issue list')
+    sys.exit(1)
+
+print(f'Found {len(issue_list)} agent-ready issue(s):')
+for issue in issue_list:
+    print(f'  #{issue[\"number\"]}: {issue[\"title\"]}')
+"

@@ -1,0 +1,107 @@
+name: agent-ci-monitor
+
+on:
+  workflow_run:
+    workflows: [tests]
+    types: [completed]
+
+permissions:
+  actions: read
+  checks: read
+  contents: write
+  issues: write
+  pull-requests: write
+
+concurrency:
+  group: agent-ci-monitor
+  cancel-in-progress: false
+
+env:
+  AGENT_REPO: ${{ github.repository }}
+  AGENT_GH_CMD: gh
+
+jobs:
+  analyze:
+    runs-on: ubuntu-latest
+    outputs:
+      action: ${{ steps.ci.outputs.action }}
+      pr_number: ${{ steps.ci.outputs.pr_number }}
+      issue_number: ${{ steps.ci.outputs.issue_number }}
+      head_sha: ${{ steps.ci.outputs.head_sha }}
+      failed_jobs: ${{ steps.ci.outputs.failed_jobs }}
+      repair_count: ${{ steps.ci.outputs.repair_count }}
+      ci_run_id: ${{ steps.ci.outputs.ci_run_id }}
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        with:
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@8d9ed9ac5c53483de85588cdf95a591a75ab9f55 # v5
+        with:
+          python-version: "3.11"
+
+      - name: Process CI completion
+        id: ci
+        env:
+          GITHUB_EVENT_PATH: ${{ github.event_path }}
+        run: |
+          python3 ${{ github.workspace }}/scripts/agent-control/ci_handler.py
+
+  dispatch-repair:
+    needs: analyze
+    if: needs.analyze.outputs.action == 'trigger_repair'
+    uses: ./.github/workflows/agent-ci-repair.yml
+    with:
+      pr_number: ${{ needs.analyze.outputs.pr_number }}
+      issue_number: ${{ needs.analyze.outputs.issue_number }}
+      head_sha: ${{ needs.analyze.outputs.head_sha }}
+      failed_jobs: ${{ needs.analyze.outputs.failed_jobs }}
+      repair_count: ${{ needs.analyze.outputs.repair_count }}
+      ci_run_id: ${{ needs.analyze.outputs.ci_run_id }}
+
+  dispatch-review:
+    needs: analyze
+    if: needs.analyze.outputs.action == 'trigger_review'
+    uses: ./.github/workflows/agent-review.yml
+    with:
+      pr_number: ${{ needs.analyze.outputs.pr_number }}
+      issue_number: ${{ needs.analyze.outputs.issue_number }}
+      head_sha: ${{ needs.analyze.outputs.head_sha }}
+
+  dispatch-merge:
+    needs: analyze
+    if: needs.analyze.outputs.action == 'merge_ready'
+    uses: ./.github/workflows/agent-merge.yml
+    with:
+      pr_number: ${{ needs.analyze.outputs.pr_number }}
+      issue_number: ${{ needs.analyze.outputs.issue_number }}
+      head_sha: ${{ needs.analyze.outputs.head_sha }}
+
+  handle-blocked:
+    needs: analyze
+    if: needs.analyze.outputs.action == 'blocked'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        with:
+          persist-credentials: false
+
+      - name: Mark issue blocked
+        run: |
+          ISSUE=${{ needs.analyze.outputs.issue_number }}
+          PR=${{ needs.analyze.outputs.pr_number }}
+          REASON="${{ needs.analyze.outputs.reason }}"
+          python3 ${{ github.workspace }}/scripts/agent-control/state_manager.py set-labels "$ISSUE" agent-blocked
+          python3 ${{ github.workspace }}/scripts/agent-control/state_manager.py comment "$ISSUE" \
+            "## Agent Orchestrator: CI Repair Limit Exceeded
+
+          PR: #${PR}
+          
+          The CI repair limit was reached without achieving green CI.
+          
+          Reason: ${REASON}
+          
+          This task has been marked \`agent-blocked\`. Manual intervention is required."
