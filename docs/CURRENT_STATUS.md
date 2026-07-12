@@ -36,7 +36,7 @@ This repo is a local/small-team self-hosted agent workflow control plane. Rust `
 | Local runner operations | Active: validate, export, import, and inspect bounded scorecard artifacts locally |
 | Runner integration | Storage/API/operator evidence complete; workflow scheduling of local runner validation is implemented via `LocalRunnerValidationExecutor` in stub mode with automatic native scorecard recording on terminal tick |
 | Live provider adapter | Gated ready path: Stub/Fake/Live; Live requires gates, explicit metadata, symbolic credentials, positive pricing, persistent redacted audit, bounded calls/tokens/time/cost, and a kill switch |
-| Post-LGB Product Evolution Plan | PE-1, PE-2, and PE-3 are acceptance-sealed; PE4-CONTRACT-REPAIR-1 is the active next packet; PE-5 and PE-6 remain unstarted |
+| Post-LGB Product Evolution Plan | PE-1, PE-2, and PE-3 are acceptance-sealed; PE4-CONTRACT-REPAIR-1 is the active packet; PE-5 and PE-6 remain unstarted |
 
 ## Planned Product Evolution Stages
 
@@ -132,6 +132,7 @@ The stages are packetized in `docs/NEXT_DECISION.md`. The agent should execute p
 ## PE-3 Independent Repair and Acceptance Evidence
 
 - PR #195 repaired PE3-REPAIR-1's independently found timestamp-ordering defect: validated RFC3339 observation times are compared by instant rather than by textual representation, with a focused offset-boundary regression test;
+- PR #195 merged as `8efe09b5fd2346b7e12ff3fc7cd897d6177c7eae` from exact head `fc547fd5c42d1ace86c58fd6a291aadeaad60272`; exact-head CI run `29180711721` passed all seven required jobs;
 - the merged repair chain binds mutation actions to store-time freshness, exact queue pages and current state, source identity/hash, action, resource, conflict key, pagination, permission, confirmation, existing audit, owner idempotency, compensation, restart, and rollback behavior;
 - focused evidence covers canonical contracts, precedence/deduplication/conflict, exact source identity, bounded original references without fabricated hashes, expiry/staleness, SQLite/PostgreSQL approval atomicity, blocked Retry and terminal behavior, budget pause/recovery, resume compensation, unsupported actions, concurrent actions, restart, API/OpenAPI, Python/TypeScript SDKs, and the read-only Dashboard;
 - PE3-CLOSE-1 independently re-audited the merged chain and found no remaining PE-3 defect. PE-3 is acceptance-sealed; rollback remains a revert of the individual repair or closeout PRs, with no migration cleanup.

@@ -306,6 +306,8 @@ PE-3 is complete and acceptance-sealed. PE3-REPAIR-1 corrected observation-time 
 
 **Acceptance:** Focused freshness, tamper, source-change/resolution, page/order, hash/decision replay, cross-kind identity, approve/reject, retry terminal/no-ready/repeat/concurrency, resume compensation, permission, audit, restart, SQLite/PostgreSQL, unsupported-action, and observation-instant ordering tests; full exact-head CI; no temporary workflow or repair file in the final diff.
 
+**Completion evidence:** PR #195 merged as `8efe09b5fd2346b7e12ff3fc7cd897d6177c7eae` from exact head `fc547fd5c42d1ace86c58fd6a291aadeaad60272`; exact-head CI run `29180711721` passed all seven required jobs.
+
 **Rollback:** Revert the repair PR. No migration or queue cleanup; existing owner audit records remain authoritative.
 
 ### Packet PE3-CLOSE-1 — PE-3 acceptance seal
