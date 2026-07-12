@@ -485,6 +485,32 @@ fn complete_evidence_chain_is_required_for_promotion() {
         Some(chain.content_sha256.as_str())
     );
 
+    let mut derived_tampered = chain.clone();
+    derived_tampered
+        .shadow
+        .reason_codes
+        .push("forged".to_string());
+    derived_tampered.shadow.content_sha256 =
+        engine::feedback::shadow_replay_comparison_sha256(&derived_tampered.shadow);
+    derived_tampered.finalize();
+    let derived_tampered_verdict = AdaptiveAutoPromotionController::evaluate_with_evidence_chain(
+        &promotion_request,
+        &derived_tampered,
+        Some(&active),
+        &AdaptiveAutoPromotionPolicy {
+            min_samples_per_candidate: 3,
+            min_confidence: 0.7,
+            ..Default::default()
+        },
+        &AdaptiveAutoPromotionGate::from_flags(true, true, false),
+        true,
+        true,
+    );
+    assert!(!derived_tampered_verdict.eligible);
+    assert!(derived_tampered_verdict
+        .blocked_reasons
+        .contains(&"shadow_evidence_not_derived_from_offline_report".to_string()));
+
     let mut tampered = chain;
     tampered.shadow.content_sha256 = "0".repeat(64);
     assert!(

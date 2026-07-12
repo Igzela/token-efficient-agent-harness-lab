@@ -479,6 +479,10 @@ fn validate_evidence_chain(
     if let Err(error) = ShadowRouter::validate_replay_comparison(&chain.shadow) {
         reasons.push(error);
     }
+    match ShadowRouter::compare_replay_report(&chain.offline) {
+        Ok(derived_shadow) if derived_shadow == chain.shadow => {}
+        _ => reasons.push("shadow_evidence_not_derived_from_offline_report".to_string()),
+    }
     if chain.shadow.status != OfflineReplayStatus::Sufficient {
         reasons.push("shadow_evidence_not_sufficient".to_string());
     }
