@@ -60,7 +60,7 @@ The detailed execution-ready packet sequence is defined in `docs/NEXT_DECISION.m
 | PE-1 Token Efficiency Regression Lab | regression script/tests/fixtures; `native_scorecard_artifacts.rs`; `regression_report_artifacts.rs`; scorecard HTTP handlers; SDKs; benchmark Dashboard components | complete; reuse scorecard v1/v2 and existing LocalProductStore/API; report-only; no provider calls in CI |
 | PE-2 Budget Intelligence and Anomaly Auto-Pause | `budget_manager.rs`; provider audit/cost evidence; scheduler/workflow pause controls; HTTP/operator evidence; SDKs; Dashboard | forecasts/anomalies are derived evidence; auto-pause only through existing policy/audit; no auto-kill |
 | PE-3 Operator Decision Center | `operator_decision/mod.rs`; `operator_decision_queue/mod.rs`; operator decision HTTP handlers; existing approvals/workflow/scheduler/budget/benchmark/policy/rollback/recovery owners; SDKs; read-only Dashboard | derived queue with mutation-time current binding; no hidden generic executor or duplicate authority source |
-| PE-4 Trace-backed Policy Replay | `engine/src/feedback/run_trace_recorder.rs`; persisted feedback/attribution owners; `engine/src/feedback/offline_evaluation.rs`; `engine/src/feedback/policy_simulator.rs`; `engine/src/feedback/shadow_router.rs`; `engine/src/feedback/contextual_policy.rs`; existing experiment/canary, pause/resume, rollback, operator-evidence, API/SDK/Dashboard owners | normalized trace evidence first; offline/shadow are non-mutating; reuse experiment, canary, promotion, pause, and rollback authority |
+| PE-4 Trace-backed Policy Replay | `engine/src/feedback/replay_eligibility.rs`; `engine/src/feedback/run_trace_recorder.rs`; persisted feedback/attribution owners; `engine/src/feedback/offline_evaluation.rs`; `engine/src/feedback/policy_simulator.rs`; `engine/src/feedback/shadow_router.rs`; `engine/src/feedback/contextual_policy.rs`; existing experiment/canary, pause/resume, rollback, operator-evidence, API/SDK/Dashboard owners | normalized trace evidence first; offline/shadow are non-mutating; reuse experiment, canary, promotion, pause, and rollback authority |
 | PE-5 Release Provenance | `.github/workflows/release.yml`; release/install/upgrade scripts; container build paths | add SBOM, signatures, attestations, and verification without weakening audits or atomic rollback |
 | PE-6 Fault Injection and Recovery Drills | focused engine integration tests; storage/provider/scheduler fault seams; backup/restore and upgrade rollback scripts; CI tooling | bounded deterministic drills; no destructive external testing; recovery invariants remain authoritative |
 
@@ -68,9 +68,9 @@ The detailed execution-ready packet sequence is defined in `docs/NEXT_DECISION.m
 
 1. Prefer the earliest `READY_FOR_EXECUTION` packet whose prerequisites are complete.
 2. Repair bounded prerequisite defects, stale contracts, or documentation drift before dependent work when necessary.
-3. PE-1 and PE-2 are acceptance-sealed; PE3-REPAIR-1 is the only active packet and PE3-CLOSE-1 remains blocked on it.
+3. PE-1, PE-2, and PE-3 are acceptance-sealed; PE4-CONTRACT-REPAIR-1 is the active packet and its dependent PE-4 packets remain blocked until it is merged.
 4. Treat PE-3 as a derived read model plus allowlisted existing-owner adapter; mutation binds current evidence and never becomes a generic executor.
-5. After PE3-CLOSE-1, repair PE-4 from real trace normalization and coverage/calibration/OOD evidence before offline replay, read surfaces, shadow, canary, or promotion.
+5. Complete PE4-CONTRACT-REPAIR-1 from real trace normalization and coverage/calibration/OOD evidence before offline replay, read surfaces, shadow, canary, or promotion.
 6. PE-5 may run independently only after explicit lane activation.
 7. Define PE-6 recovery invariants before fault injection.
 
