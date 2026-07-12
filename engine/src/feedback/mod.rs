@@ -20,7 +20,8 @@ pub mod shadow_router;
 
 pub use adaptive_auto_promotion::{
     AdaptiveAutoPromotionController, AdaptiveAutoPromotionEvidence, AdaptiveAutoPromotionGate,
-    AdaptiveAutoPromotionPolicy, AdaptiveAutoPromotionRequest,
+    AdaptiveAutoPromotionPolicy, AdaptiveAutoPromotionRequest, AdaptivePromotionEvidenceChain,
+    ADAPTIVE_PROMOTION_EVIDENCE_CHAIN_SCHEMA_VERSION,
 };
 pub use adaptive_candidate::CandidateKind as AdaptiveCandidateKind;
 pub use adaptive_candidate::{
@@ -29,10 +30,11 @@ pub use adaptive_candidate::{
     ADAPTIVE_CANDIDATE_SCHEMA_VERSION, ADAPTIVE_CANDIDATE_SET_SCHEMA_VERSION,
 };
 pub use adaptive_experiment::{
-    AdaptiveCanaryDecision, AdaptiveCanaryRequest, AdaptiveExperimentController,
-    AdaptiveExperimentDecision, AdaptiveExperimentError, AdaptiveExperimentGate,
-    AdaptiveExperimentLimits, AdaptiveExperimentPolicy, AdaptiveExperimentRequest,
-    ADAPTIVE_CANARY_SCHEMA_VERSION, ADAPTIVE_EXPERIMENT_SCHEMA_VERSION,
+    adaptive_canary_decision_sha256, validate_canary_decision, AdaptiveCanaryDecision,
+    AdaptiveCanaryRequest, AdaptiveExperimentController, AdaptiveExperimentDecision,
+    AdaptiveExperimentError, AdaptiveExperimentGate, AdaptiveExperimentLimits,
+    AdaptiveExperimentPolicy, AdaptiveExperimentRequest, ADAPTIVE_CANARY_SCHEMA_VERSION,
+    ADAPTIVE_EXPERIMENT_SCHEMA_VERSION,
 };
 pub use adaptive_fusion::{
     AdaptiveFusionPlan, AdaptiveFusionPlanner, DeliberationMode, EndpointScorecard,

@@ -120,6 +120,8 @@ pub struct PromotedAdaptivePolicy {
     pub rollout_percentage: u8,
     #[serde(default)]
     pub previous_policy_hash: Option<String>,
+    #[serde(default)]
+    pub evidence_chain_sha256: Option<String>,
     pub shadow_first: bool,
     pub live_execution_authority: bool,
     pub requires_explicit_adaptive_plan: bool,
@@ -273,7 +275,7 @@ impl ContextualPolicyPromotionGate {
 
 impl PromotedAdaptivePolicy {
     pub fn new(promotion: &ContextualPolicyPromotion) -> Self {
-        Self::build(promotion, 0.0, false, 100, None)
+        Self::build(promotion, 0.0, false, 100, None, None)
     }
 
     pub fn new_auto(
@@ -288,6 +290,24 @@ impl PromotedAdaptivePolicy {
             true,
             rollout_percentage,
             previous_policy_hash,
+            None,
+        )
+    }
+
+    pub fn new_auto_with_evidence(
+        promotion: &ContextualPolicyPromotion,
+        mean_latency_reduction: f64,
+        rollout_percentage: u8,
+        previous_policy_hash: Option<String>,
+        evidence_chain_sha256: String,
+    ) -> Self {
+        Self::build(
+            promotion,
+            mean_latency_reduction,
+            true,
+            rollout_percentage,
+            previous_policy_hash,
+            Some(evidence_chain_sha256),
         )
     }
 
@@ -297,6 +317,7 @@ impl PromotedAdaptivePolicy {
         auto_promoted: bool,
         rollout_percentage: u8,
         previous_policy_hash: Option<String>,
+        evidence_chain_sha256: Option<String>,
     ) -> Self {
         let policy_key = contextual_policy_key(&promotion.task_class, promotion.objective);
         let mut evidence_run_ids = promotion.evidence_run_ids.clone();
@@ -338,6 +359,14 @@ impl PromotedAdaptivePolicy {
                 );
             }
         }
+        if let Some(evidence_chain_sha256) = &evidence_chain_sha256 {
+            if let Some(object) = hash_input.as_object_mut() {
+                object.insert(
+                    "evidence_chain_sha256".to_string(),
+                    json!(evidence_chain_sha256),
+                );
+            }
+        }
         let policy_hash = stable_hash(&hash_input);
         Self {
             schema_version: CONTEXTUAL_POLICY_SCHEMA_VERSION.to_string(),
@@ -357,6 +386,7 @@ impl PromotedAdaptivePolicy {
             auto_promoted,
             rollout_percentage,
             previous_policy_hash,
+            evidence_chain_sha256,
             shadow_first: true,
             live_execution_authority: false,
             requires_explicit_adaptive_plan: true,
@@ -385,6 +415,7 @@ impl PromotedAdaptivePolicy {
             self.auto_promoted,
             self.rollout_percentage,
             self.previous_policy_hash.clone(),
+            self.evidence_chain_sha256.clone(),
         );
         self.schema_version == CONTEXTUAL_POLICY_SCHEMA_VERSION
             && self.policy_key == contextual_policy_key(&self.task_class, self.objective)
@@ -397,6 +428,10 @@ impl PromotedAdaptivePolicy {
             && (1..=100).contains(&self.rollout_percentage)
             && self
                 .previous_policy_hash
+                .as_ref()
+                .is_none_or(|hash| valid_policy_hash(hash))
+            && self
+                .evidence_chain_sha256
                 .as_ref()
                 .is_none_or(|hash| valid_policy_hash(hash))
             && (self.auto_promoted

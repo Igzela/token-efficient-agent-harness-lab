@@ -4,7 +4,7 @@
 
 The dispatch kernel, V2, Adaptive Fusion AF-0 through AF-7, Agent Runtime AR-0 through AR-6, Trusted Local Autonomous Execution IAE-0 through IAE-3, scorecard integrity hardening, the importer-first external benchmark path, and PE-1 Token Efficiency Regression Lab are complete.
 
-The active direction is the Post-LGB Product Evolution plan. PE-1, PE-2, and PE-3 are complete and acceptance-sealed. PE4-CONTRACT-REPAIR-1 and PE4-OFFLINE-1 are merged and PE4-READ-1 is the active packet; later PE-4 packets are packetized but not started, and PE-5 and PE-6 remain unstarted. This is not AR-7, another LGB ladder, or a second control plane.
+The active direction is the Post-LGB Product Evolution plan. PE-1, PE-2, and PE-3 are complete and acceptance-sealed. PE4-CONTRACT-REPAIR-1 and PE4-OFFLINE-1 are merged. PE4-READ-1 is in progress with CI monitored; PE4-SHADOW-1, PE4-CANARY-1, and PE4-PROMOTION-1 have parallel implementation branches but are not merged. PE4-CLOSE-1, PE-5, and PE-6 remain unstarted. This is not AR-7, another LGB ladder, or a second control plane.
 
 `docs/NEXT_DECISION.md` is the single forward-plan artifact. Historical detail remains in `docs/ARCHITECTURE_BOOK.md`, archived plans, merged PRs, and repository history.
 
@@ -78,7 +78,7 @@ Normative order is PE-1, PE-2, PE-3, PE-4, PE-5, and PE-6. Do not start PE-3 bef
 | PE-1 | P0 | Token Efficiency Regression Lab | Complete and acceptance-sealed |
 | PE-2 | P0/P1 | Budget Intelligence and Anomaly Auto-Pause | Complete and acceptance-sealed |
 | PE-3 | P1 | Operator Decision Center | Complete and independently acceptance-sealed |
-| PE-4 | P1/P2 | Trace-backed Policy Replay | PE4-CONTRACT-REPAIR-1 and PE4-OFFLINE-1 merged; PE4-READ-1 active; shadow, canary, promotion, and closeout remain unstarted |
+| PE-4 | P1/P2 | Trace-backed Policy Replay | Contract and offline replay merged; PE4-READ-1 is in progress; shadow/canary/promotion implementation branches are prepared but not merged; PE4-CLOSE-1 remains unstarted |
 | PE-5 | P1.5 | Release Provenance | Packetized; inactive unless explicitly activated |
 | PE-6 | P2 | Fault Injection and Recovery Drills | Packetized; blocked on explicit recovery invariants |
 
@@ -376,7 +376,7 @@ PE-3 is complete and acceptance-sealed. PE3-REPAIR-1 corrected observation-time 
 
 **State:** `IN_PROGRESS`
 
-**Prerequisite:** PE4-OFFLINE-1 merged with post-merge `main` CI green (`5a4a3e049574f54500dfdf4dc312f68ac5b6d78d`; post-merge CI `29183843076` monitored).
+**Prerequisite:** PE4-OFFLINE-1 merged with post-merge `main` CI green (`5a4a3e049574f54500dfdf4dc312f68ac5b6d78d`; post-merge CI `29183843076` passed all seven required jobs).
 
 **Goal:** Expose bounded accepted replay and comparison evidence through existing read owners only.
 
@@ -384,13 +384,13 @@ PE-3 is complete and acceptance-sealed. PE3-REPAIR-1 corrected observation-time 
 
 **Contract:** Persist only validated `offline_replay_artifact.v1` envelopes whose report, policy hashes, eligibility hash, source evidence hashes, schema version, and shadow-only flags verify. Writes are idempotent and audit metadata-only; reads use deterministic bounded ordering/pagination and validate stored JSON on every read. HTTP/OpenAPI/SDK/Dashboard readers expose empty, insufficient, invalid, stale, tampered, OOD, and error states. SQLite v20 and PostgreSQL v20 remain aligned, old rows/callers remain compatible, and no live policy mutation or new evidence authority is added.
 
-**Acceptance and rollback:** HTTP/OpenAPI parity, encoded SDK paths, migration compatibility, SQLite/PostgreSQL, Dashboard states, idempotent hash-bound recording, tamper rejection, and read-only permission tests pass. Revert the additive route/storage changes; preserve existing data.
+**Acceptance and rollback:** HTTP/OpenAPI parity, encoded SDK paths, migration compatibility, SQLite/PostgreSQL, Dashboard states, idempotent hash-bound recording, tamper rejection, integrity-table coverage, and read-only permission tests pass. PR #199 exact head `5c78ca1` contains the integrity-table repair after its first exact-head CI exposed the stale 31-table expectation; merge waits for a new 7/7 run. Revert the additive route/storage changes; preserve existing data.
 
 ### Packet PE4-SHADOW-1 — Shadow comparison only
 
 **State:** `BLOCKED_PREREQUISITE`
 
-**Prerequisite:** PE4-READ-1 merged with post-merge `main` CI green and existing shadow/evaluation owners verified.
+**Prerequisite:** PE4-READ-1 is the owning read PR and its CI is monitored; merge remains gated on 7/7 green and post-merge main verification. The shadow implementation is prepared from the READ head and is not mergeable until READ is merged.
 
 **Goal:** Compare predicted and observed quality, cost, latency, retry, and coverage using the existing shadow-routing/evaluation owners.
 
@@ -404,7 +404,7 @@ PE-3 is complete and acceptance-sealed. PE3-REPAIR-1 corrected observation-time 
 
 **State:** `BLOCKED_PREREQUISITE`
 
-**Prerequisite:** PE4-SHADOW-1 merged with post-merge `main` CI green and existing experiment/canary authority verified.
+**Prerequisite:** PE4-SHADOW-1 is prepared from the shadow implementation head and is not mergeable until its predecessor is merged with green post-merge main CI.
 
 **Goal:** Add default-off, explicitly confirmed, permissioned, bounded, reversible canary execution through the existing experiment owner.
 
@@ -418,7 +418,7 @@ PE-3 is complete and acceptance-sealed. PE3-REPAIR-1 corrected observation-time 
 
 **State:** `BLOCKED_PREREQUISITE`
 
-**Prerequisite:** PE4-CANARY-1 merged with post-merge `main` CI green and existing promotion authority verified.
+**Prerequisite:** PE4-CANARY-1 is prepared from the canary implementation head and is not mergeable until its predecessor is merged with green post-merge main CI.
 
 **Goal:** Extend the existing promotion owner so promotion requires the complete compatible evidence chain.
 
@@ -426,7 +426,7 @@ PE-3 is complete and acceptance-sealed. PE3-REPAIR-1 corrected observation-time 
 
 **Contract:** Require compatible offline, shadow, and bounded canary evidence; coverage; actual calibration where applicable; non-OOD evidence; quality/cost/latency guardrails; exact policy versions; source hashes; rollout scope; and rollback target. Offline or shadow evidence alone never authorizes promotion.
 
-**Acceptance and rollback:** Confirmation, permission, audit, idempotency, pause, resume, rollback, restart, compensation, version/hash binding, and fail-closed negative-path tests pass. Revert the packet through the existing promotion owner; no parallel authority is created.
+**Acceptance and rollback:** Confirmation, permission, audit, idempotency, pause, resume, rollback, restart, compensation, version/hash binding, and fail-closed negative-path tests pass. The implementation blocks the caller-only auto-promotion path, records a hash-bound evidence-chain reference in the promoted policy, and reuses the existing transactional policy apply/rollback owner; no parallel authority is created. Revert the packet through the existing promotion owner.
 
 ### Packet PE4-CLOSE-1 — Independent PE-4 acceptance seal
 
@@ -460,6 +460,6 @@ The agent may define recovery invariants from existing subsystem contracts and t
 
 ## Active Routing
 
-1. Finish PE4-READ-1 as the active read-only evidence PR; later packets remain blocked until its post-merge CI is green.
-2. Execute PE4-SHADOW-1, PE4-CANARY-1, PE4-PROMOTION-1, and PE4-CLOSE-1 as separate coherent PRs after each prerequisite is merged and verified.
+1. Monitor PE4-READ-1 CI and merge only after its exact head is 7/7 green; the prepared shadow/canary/promotion branches may be reviewed and repaired while CI runs.
+2. Merge PE4-SHADOW-1, PE4-CANARY-1, and PE4-PROMOTION-1 as separate coherent PRs only after each exact head and post-merge main CI is green; then execute PE4-CLOSE-1 independently.
 3. Leave PE-5 and PE-6 unstarted.
