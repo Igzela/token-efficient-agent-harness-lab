@@ -5,8 +5,8 @@ use serde_json::{json, Value};
 use super::{append_audit_locked, DatabaseConnection, LocalProductStore};
 use crate::feedback::policy_snapshot::stable_hash;
 use crate::feedback::{
-    AdaptiveAutoPromotionController, AdaptiveAutoPromotionEvidence, AdaptiveAutoPromotionGate,
-    AdaptiveAutoPromotionPolicy, AdaptiveAutoPromotionRequest, ContextualPolicyPromotionVerdict,
+    AdaptiveAutoPromotionController, AdaptiveAutoPromotionGate, AdaptiveAutoPromotionPolicy,
+    AdaptiveAutoPromotionRequest, AdaptivePromotionEvidenceChain, ContextualPolicyPromotionVerdict,
     PromotedAdaptivePolicy, CONTEXTUAL_POLICY_SCHEMA_VERSION,
 };
 
@@ -162,9 +162,39 @@ impl LocalProductStore {
     pub fn auto_promote_adaptive_fusion_policy(
         &self,
         request: &AdaptiveAutoPromotionRequest,
+        _policy: &AdaptiveAutoPromotionPolicy,
+        _gate: &AdaptiveAutoPromotionGate,
+        actor: &str,
+    ) -> Result<Value, String> {
+        self.audit_adaptive_policy(
+            actor,
+            "adaptive_policy.apply.rejected",
+            &format!("{}:{}", request.task_class, request.candidate_id),
+            &json!({
+                "actor": actor,
+                "blocked_reasons": ["complete_evidence_chain_required"],
+                "source": "adaptive_fusion",
+            }),
+        )?;
+        Ok(apply_result(
+            None,
+            None,
+            None,
+            "blocked",
+            false,
+            vec!["complete_evidence_chain_required".to_string()],
+        ))
+    }
+
+    pub fn promote_adaptive_fusion_policy_with_evidence_chain(
+        &self,
+        request: &AdaptiveAutoPromotionRequest,
+        chain: &AdaptivePromotionEvidenceChain,
         policy: &AdaptiveAutoPromotionPolicy,
         gate: &AdaptiveAutoPromotionGate,
         actor: &str,
+        confirm_promotion: bool,
+        permission_granted: bool,
     ) -> Result<Value, String> {
         let active = self
             .active_adaptive_fusion_policies()?
@@ -172,28 +202,14 @@ impl LocalProductStore {
             .find(|active| {
                 active.task_class == request.task_class && active.objective == request.objective
             });
-        let evidence = self
-            .adaptive_observations()?
-            .into_iter()
-            .map(|observation| AdaptiveAutoPromotionEvidence {
-                observation_id: observation.observation_id,
-                run_id: observation.run_id,
-                task_class: observation.task_class,
-                objective: observation.objective,
-                candidate_id: observation.candidate_id,
-                sequence: observation.sequence,
-                success: observation.success,
-                quality_score: observation.quality_score,
-                cost_usd: observation.cost_usd,
-                latency_ms: observation.latency_ms,
-            })
-            .collect::<Vec<_>>();
-        let verdict = AdaptiveAutoPromotionController::evaluate(
+        let verdict = AdaptiveAutoPromotionController::evaluate_with_evidence_chain(
             request,
-            &evidence,
+            chain,
             active.as_ref(),
             policy,
             gate,
+            confirm_promotion,
+            permission_granted,
         );
         self.apply_adaptive_fusion_policy(&verdict, actor)
     }

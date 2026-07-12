@@ -1,11 +1,19 @@
+use engine::feedback::offline_replay_report_sha256;
 use engine::feedback::{
     AdaptiveAutoPromotionController, AdaptiveAutoPromotionEvidence, AdaptiveAutoPromotionGate,
-    AdaptiveAutoPromotionPolicy, AdaptiveAutoPromotionRequest, ContextualPolicyPromotion,
-    ContextualPolicyPromotionGate, ObjectiveProfile, CONTEXTUAL_POLICY_PROMOTION_SCHEMA_VERSION,
+    AdaptiveAutoPromotionPolicy, AdaptiveAutoPromotionRequest, AdaptiveCanaryRequest,
+    AdaptiveExperimentController, AdaptiveExperimentGate, AdaptivePromotionEvidenceChain,
+    ContextualPolicyPromotion, ContextualPolicyPromotionGate, ObjectiveProfile,
+    OfflineCounterfactualEstimate, OfflineObservedFacts, OfflinePolicyComparison,
+    OfflinePolicyDefinition, OfflinePolicySelection, OfflineReplayOutcome, OfflineReplayReport,
+    OfflineReplayStatus, ShadowRouter, ADAPTIVE_CANARY_SCHEMA_VERSION,
+    ADAPTIVE_PROMOTION_EVIDENCE_CHAIN_SCHEMA_VERSION, CONTEXTUAL_POLICY_PROMOTION_SCHEMA_VERSION,
+    OFFLINE_REPLAY_SCHEMA_VERSION,
 };
 use engine::storage::local_product_store::{
     AdaptiveObservationInput, LocalProductStore, ADAPTIVE_OBSERVATION_SCHEMA_VERSION,
 };
+use std::collections::BTreeMap;
 use tempfile::tempdir;
 
 fn baseline_verdict() -> engine::feedback::ContextualPolicyPromotionVerdict {
@@ -98,7 +106,7 @@ fn auto_promotion_is_default_off_and_killable() {
 }
 
 #[test]
-fn eligible_evidence_builds_hashed_staged_policy_without_confirmation() {
+fn caller_only_evidence_is_no_longer_authoritative() {
     let active = baseline_verdict().policy.unwrap();
     let verdict = AdaptiveAutoPromotionController::evaluate(
         &request(Some(active.policy_hash.clone())),
@@ -108,21 +116,11 @@ fn eligible_evidence_builds_hashed_staged_policy_without_confirmation() {
         &AdaptiveAutoPromotionGate::from_flags(true, true, false),
     );
 
-    assert!(verdict.eligible);
-    let policy = verdict.policy.unwrap();
-    assert!(policy.auto_promoted);
-    assert_eq!(policy.rollout_percentage, 25);
-    assert_eq!(
-        policy.previous_policy_hash.as_deref(),
-        Some(active.policy_hash.as_str())
-    );
-    assert!(policy.mean_quality_delta > 0.0);
-    assert!(policy.mean_cost_reduction > 0.0);
-    assert!(policy.mean_latency_reduction > 0.0);
-    assert!(policy.is_valid());
-    let round_trip: engine::feedback::PromotedAdaptivePolicy =
-        serde_json::from_str(&serde_json::to_string(&policy).unwrap()).unwrap();
-    assert!(round_trip.is_valid(), "{round_trip:?}");
+    assert!(!verdict.eligible);
+    assert!(verdict
+        .blocked_reasons
+        .contains(&"complete_evidence_chain_required".to_string()));
+    assert!(verdict.policy.is_none());
 }
 
 #[test]
@@ -262,20 +260,247 @@ fn local_evidence_auto_promotion_snapshots_and_rolls_back() {
             "operator",
         )
         .unwrap();
-    assert_eq!(applied["applied"], true);
-    let adjustment_id = applied["adjustment_id"].as_str().unwrap();
-    let promoted = store.active_adaptive_fusion_policies().unwrap().remove(0);
-    assert_eq!(promoted.candidate_id, "strong");
-    assert_eq!(promoted.rollout_percentage, 25);
+    assert_eq!(applied["applied"], false);
+    assert_eq!(applied["status"], "blocked");
     assert_eq!(
-        promoted.previous_policy_hash.as_deref(),
-        Some(active.policy_hash.as_str())
+        applied["blocked_reasons"][0],
+        "complete_evidence_chain_required"
     );
-
-    let rolled_back = store
-        .rollback_adaptive_fusion_policy(adjustment_id, true, "operator")
-        .unwrap();
-    assert_eq!(rolled_back["rolled_back"], true);
     let restored = store.active_adaptive_fusion_policies().unwrap().remove(0);
     assert_eq!(restored.policy_hash, active.policy_hash);
+}
+
+fn replay_report_for_promotion() -> OfflineReplayReport {
+    let definition_hash = format!("{:064x}", 3);
+    let current_policy = OfflinePolicyDefinition::new(
+        "current",
+        "policy-current-v1",
+        BTreeMap::from([(
+            "coding".to_string(),
+            OfflinePolicySelection {
+                candidate_id: "cheap".to_string(),
+                candidate_version: "candidate-v1".to_string(),
+                candidate_definition_sha256: definition_hash.clone(),
+            },
+        )]),
+    )
+    .unwrap();
+    let candidate_policy = OfflinePolicyDefinition::new(
+        "candidate-policy",
+        "policy-candidate-v1",
+        BTreeMap::from([(
+            "coding".to_string(),
+            OfflinePolicySelection {
+                candidate_id: "strong".to_string(),
+                candidate_version: "candidate-v2".to_string(),
+                candidate_definition_sha256: definition_hash.clone(),
+            },
+        )]),
+    )
+    .unwrap();
+    let observed = OfflineObservedFacts {
+        task_class: "coding".to_string(),
+        candidate_id: "cheap".to_string(),
+        candidate_version: "candidate-v1".to_string(),
+        candidate_definition_sha256: definition_hash.clone(),
+        member_endpoint_ids: vec!["endpoint-cheap".to_string()],
+        trace_ids: vec![
+            "trace-1".to_string(),
+            "trace-2".to_string(),
+            "trace-3".to_string(),
+        ],
+        evidence_content_sha256: vec![format!("{:064x}", 4), format!("{:064x}", 5)],
+        sample_count: 3,
+        success_rate: 0.8,
+        average_quality_score: 0.8,
+        average_tool_success_score: 0.9,
+        average_cost_usd: 0.08,
+        average_latency_ms: 800.0,
+        average_total_tokens: 100.0,
+        average_retry_count: 0.1,
+    };
+    let predicted = OfflineCounterfactualEstimate {
+        policy_id: candidate_policy.policy_id.clone(),
+        policy_version: candidate_policy.policy_version.clone(),
+        policy_hash: candidate_policy.policy_hash.clone(),
+        task_class: "coding".to_string(),
+        selection: candidate_policy.selections["coding"].clone(),
+        source_candidate_id: "strong".to_string(),
+        source_candidate_version: "candidate-v2".to_string(),
+        source_candidate_definition_sha256: definition_hash,
+        source_trace_ids: vec![
+            "trace-4".to_string(),
+            "trace-5".to_string(),
+            "trace-6".to_string(),
+        ],
+        source_evidence_content_sha256: vec![format!("{:064x}", 6), format!("{:064x}", 7)],
+        sample_count: 3,
+        estimated_success_rate: 0.9,
+        estimated_quality_score: 0.85,
+        estimated_tool_success_score: 0.92,
+        estimated_cost_usd: 0.06,
+        estimated_latency_ms: 700.0,
+        estimated_total_tokens: 90.0,
+        estimated_retry_count: 0.1,
+        estimation_method: "observed_comparable_candidate_cohort".to_string(),
+    };
+    let comparison = OfflinePolicyComparison {
+        policy_id: candidate_policy.policy_id.clone(),
+        policy_version: candidate_policy.policy_version.clone(),
+        policy_hash: candidate_policy.policy_hash.clone(),
+        task_class: "coding".to_string(),
+        current_observed_candidate_id: "cheap".to_string(),
+        candidate_selection: predicted.selection.clone(),
+        current_observed: observed.clone(),
+        counterfactual: predicted.clone(),
+        success_rate_delta: 0.1,
+        quality_score_delta: 0.05,
+        tool_success_score_delta: 0.02,
+        cost_usd_delta: -0.02,
+        latency_ms_delta: -100.0,
+        total_tokens_delta: -10.0,
+        retry_count_delta: 0.0,
+    };
+    let mut report = OfflineReplayReport {
+        schema_version: OFFLINE_REPLAY_SCHEMA_VERSION.to_string(),
+        status: OfflineReplayStatus::Sufficient,
+        reason_codes: Vec::new(),
+        current_policy,
+        candidate_policies: vec![candidate_policy],
+        observed_facts: vec![observed],
+        counterfactual_estimates: vec![predicted],
+        comparisons: vec![comparison],
+        outcomes: vec![OfflineReplayOutcome {
+            status: OfflineReplayStatus::Sufficient,
+            policy_id: Some("candidate-policy".to_string()),
+            task_class: Some("coding".to_string()),
+            reason_codes: Vec::new(),
+        }],
+        eligibility_content_sha256: format!("{:064x}", 8),
+        replay_judge_calibrations: Vec::new(),
+        source_trace_ids: vec![
+            "trace-1".to_string(),
+            "trace-2".to_string(),
+            "trace-3".to_string(),
+        ],
+        source_evidence_content_sha256: vec![format!("{:064x}", 4), format!("{:064x}", 5)],
+        shadow_only: true,
+        influence_selected_tier: false,
+        influence_executor_type: false,
+        influence_retry_path: false,
+        influence_routing_policy: false,
+        content_sha256: String::new(),
+    };
+    report.content_sha256 = offline_replay_report_sha256(&report).unwrap();
+    report
+}
+
+#[test]
+fn complete_evidence_chain_is_required_for_promotion() {
+    let report = replay_report_for_promotion();
+    let shadow = ShadowRouter::compare_replay_report(&report).unwrap();
+    let candidate = &report.candidate_policies[0];
+    let canary = AdaptiveExperimentController::start_canary(
+        &AdaptiveCanaryRequest {
+            canary_id: "canary-1".to_string(),
+            task_class: "coding".to_string(),
+            scope: "team-coding".to_string(),
+            policy_version: candidate.policy_version.clone(),
+            policy_hash: candidate.policy_hash.clone(),
+            candidate_id: "strong".to_string(),
+            candidate_version: "candidate-v2".to_string(),
+            candidate_definition_sha256: candidate.selections["coding"]
+                .candidate_definition_sha256
+                .clone(),
+            rollout_percentage: 5,
+            duration_seconds: 3_600,
+            minimum_evidence: 3,
+            confirm_canary: true,
+            permission_granted: true,
+            idempotency_key: "canary-idempotency-1".to_string(),
+        },
+        &shadow,
+        &AdaptiveExperimentGate::from_flags(true, true, false, false),
+    )
+    .unwrap();
+    assert_eq!(canary.schema_version, ADAPTIVE_CANARY_SCHEMA_VERSION);
+    let active = baseline_verdict().policy.unwrap();
+    let mut chain = AdaptivePromotionEvidenceChain {
+        schema_version: ADAPTIVE_PROMOTION_EVIDENCE_CHAIN_SCHEMA_VERSION.to_string(),
+        offline: report,
+        shadow,
+        canary,
+        rollout_scope: "team-coding".to_string(),
+        rollback_target: active.policy_hash.clone(),
+        content_sha256: String::new(),
+    };
+    chain.finalize();
+    let promotion_request = request(Some(active.policy_hash.clone()));
+    let verdict = AdaptiveAutoPromotionController::evaluate_with_evidence_chain(
+        &promotion_request,
+        &chain,
+        Some(&active),
+        &AdaptiveAutoPromotionPolicy {
+            min_samples_per_candidate: 3,
+            min_confidence: 0.7,
+            ..Default::default()
+        },
+        &AdaptiveAutoPromotionGate::from_flags(true, true, false),
+        true,
+        true,
+    );
+    assert!(verdict.eligible, "{verdict:?}");
+    let promoted = verdict.policy.unwrap();
+    assert_eq!(
+        promoted.evidence_chain_sha256.as_deref(),
+        Some(chain.content_sha256.as_str())
+    );
+    assert!(promoted.is_valid());
+
+    let dir = tempdir().unwrap();
+    let store = LocalProductStore::new(dir.path().join("promotion-chain.db")).unwrap();
+    store
+        .apply_adaptive_fusion_policy(&baseline_verdict(), "operator")
+        .unwrap();
+    let applied = store
+        .promote_adaptive_fusion_policy_with_evidence_chain(
+            &promotion_request,
+            &chain,
+            &AdaptiveAutoPromotionPolicy {
+                min_samples_per_candidate: 3,
+                min_confidence: 0.7,
+                ..Default::default()
+            },
+            &AdaptiveAutoPromotionGate::from_flags(true, true, false),
+            "operator",
+            true,
+            true,
+        )
+        .unwrap();
+    assert_eq!(applied["applied"], true);
+    assert_eq!(
+        store.active_adaptive_fusion_policies().unwrap()[0]
+            .evidence_chain_sha256
+            .as_deref(),
+        Some(chain.content_sha256.as_str())
+    );
+
+    let mut tampered = chain;
+    tampered.shadow.content_sha256 = "0".repeat(64);
+    assert!(
+        !AdaptiveAutoPromotionController::evaluate_with_evidence_chain(
+            &promotion_request,
+            &tampered,
+            Some(&active),
+            &AdaptiveAutoPromotionPolicy {
+                min_samples_per_candidate: 3,
+                min_confidence: 0.7,
+                ..Default::default()
+            },
+            &AdaptiveAutoPromotionGate::from_flags(true, true, false),
+            true,
+            true,
+        )
+        .eligible
+    );
 }
