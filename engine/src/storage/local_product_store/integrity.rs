@@ -46,6 +46,7 @@ const INTEGRITY_TABLES: &[&str] = &[
     "agent_state",
     "agent_mailbox",
     "agent_proposals",
+    "offline_replay_artifacts",
 ];
 
 impl LocalProductStore {
