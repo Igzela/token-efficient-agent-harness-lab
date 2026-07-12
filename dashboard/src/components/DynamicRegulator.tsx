@@ -10,6 +10,7 @@ import {
   fetchFeedbackPatterns,
   fetchFeedbackTraces,
   fetchGeneratedProposals,
+  fetchOfflineReplayArtifacts,
   fetchProposals,
   fetchPolicySimulationReport,
   fetchSimulationReport,
@@ -24,6 +25,7 @@ import type {
   FeedbackCostOfPassResponse,
   FeedbackPatternListResponse,
   FeedbackTraceListResponse,
+  OfflineReplayArtifactListResponse,
   PolicySimulationResult,
   SimulationReportResponse,
 } from "@/lib/types";
@@ -39,6 +41,7 @@ type RegulatorData = {
   patterns: FeedbackPatternListResponse | null;
   simulation: SimulationReportResponse | null;
   policySimulation: PolicySimulationResult | null;
+  offlineReplay: OfflineReplayArtifactListResponse | null;
   proposals: ControlledLoopProposal[];
   autoAdjustments: AutoAdjustmentsReport | null;
 };
@@ -55,6 +58,7 @@ const emptyData: RegulatorData = {
   patterns: null,
   simulation: null,
   policySimulation: null,
+  offlineReplay: null,
   proposals: [],
   autoAdjustments: null,
 };
@@ -82,6 +86,13 @@ function formatCost(value: unknown): string {
   return typeof value === "number" ? `$${value.toFixed(4)}` : "n/a";
 }
 
+function replayReasonCodes(artifact: OfflineReplayArtifactListResponse["artifacts"][number]): string {
+  const reasons = artifact.report.reason_codes;
+  return Array.isArray(reasons) && reasons.length > 0
+    ? reasons.slice(0, 3).map(String).join(", ")
+    : "no blocking reason recorded";
+}
+
 export function DynamicRegulator() {
   const [data, setData] = useState<RegulatorData>(emptyData);
   const [error, setError] = useState<RegulatorError | null>(null);
@@ -93,18 +104,25 @@ export function DynamicRegulator() {
 
   function load() {
     setLoading(true);
+    let offlineReplayError: string | null = null;
     Promise.all([
-      fetchDispatchMetrics({ limit: 200 }),
-      fetchFeedbackTraces({ limit: 20 }),
-      fetchFeedbackCostOfPass(),
-      fetchFeedbackPatterns({ limit: 20 }),
-      fetchSimulationReport({ limit: 50 }),
-      fetchPolicySimulationReport({ limit: 50, policy: "complexity_aware" }),
-      fetchProposals({ limit: 20 }),
-      fetchGeneratedProposals({ limit: 10 }),
-      fetchAutoAdjustments({ limit: 20 }),
+      Promise.all([
+        fetchDispatchMetrics({ limit: 200 }),
+        fetchFeedbackTraces({ limit: 20 }),
+        fetchFeedbackCostOfPass(),
+        fetchFeedbackPatterns({ limit: 20 }),
+        fetchSimulationReport({ limit: 50 }),
+        fetchPolicySimulationReport({ limit: 50, policy: "complexity_aware" }),
+        fetchProposals({ limit: 20 }),
+        fetchGeneratedProposals({ limit: 10 }),
+        fetchAutoAdjustments({ limit: 20 }),
+      ]),
+      fetchOfflineReplayArtifacts({ limit: 20 }).catch((e) => {
+        offlineReplayError = e instanceof Error ? e.message : "Offline replay evidence unavailable";
+        return null;
+      }),
     ])
-      .then(([metrics, traces, costs, patterns, simulation, policySimulation, proposals, generated, autoAdjustments]) => {
+      .then(([[metrics, traces, costs, patterns, simulation, policySimulation, proposals, generated, autoAdjustments], offlineReplay]) => {
         setData({
           metrics,
           traces,
@@ -112,11 +130,12 @@ export function DynamicRegulator() {
           patterns,
           simulation,
           policySimulation,
+          offlineReplay,
           proposals: proposals.proposals,
           autoAdjustments,
         });
         setGeneratedProposals(generated.candidates || []);
-        setError(null);
+        setError(offlineReplayError ? { message: offlineReplayError, type: "error" } : null);
       })
       .catch((e) => {
         setData(emptyData);
@@ -161,6 +180,7 @@ export function DynamicRegulator() {
   const patternRows = data.patterns?.patterns ?? [];
   const simulationRows = data.simulation?.report ?? [];
   const policyDelta = data.policySimulation;
+  const replayArtifacts = data.offlineReplay?.artifacts ?? [];
 
   return (
     <section className="card stack">
@@ -616,6 +636,45 @@ export function DynamicRegulator() {
                       <td>{row.tier ?? "unknown"}</td>
                       <td>{row.status}</td>
                       <td>{row.recommendation ?? "diagnostic"}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            )}
+          </div>
+
+          <div className="subcard stack">
+            <h3>Trace-backed Offline Replay</h3>
+            <p style={{ fontSize: "0.8rem", color: "var(--text-muted, #888)", margin: 0 }}>
+              read-only evidence; no provider calls or live policy effect
+            </p>
+            {data.offlineReplay === null && error?.type === "error" ? (
+              <StateBanner title="Offline replay evidence unavailable" tone="risk">
+                <p>{error.message}</p>
+              </StateBanner>
+            ) : replayArtifacts.length === 0 ? (
+              <EmptyState
+                title="No offline replay artifacts"
+                description="Accepted trace-backed replay evidence appears here after an offline replay is recorded. Empty does not authorize promotion."
+                tone="info"
+              />
+            ) : (
+              <table>
+                <thead>
+                  <tr>
+                    <th>Status</th>
+                    <th>Reason</th>
+                    <th>Evidence hash</th>
+                    <th>Created</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {replayArtifacts.slice(0, 8).map((artifact) => (
+                    <tr key={artifact.artifact_id}>
+                      <td>{artifact.status}</td>
+                      <td>{replayReasonCodes(artifact)}</td>
+                      <td>{artifact.content_sha256.slice(0, 12)}…</td>
+                      <td>{artifact.created_at}</td>
                     </tr>
                   ))}
                 </tbody>

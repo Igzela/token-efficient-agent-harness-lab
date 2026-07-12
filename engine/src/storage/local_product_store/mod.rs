@@ -19,6 +19,7 @@ mod integrity;
 mod keys;
 mod migrations;
 mod native_scorecard_artifacts;
+mod offline_replay_artifacts;
 mod operator_decision_queue;
 #[cfg(feature = "pg")]
 pub mod pg_backend;

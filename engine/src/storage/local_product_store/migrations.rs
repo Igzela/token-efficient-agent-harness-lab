@@ -36,6 +36,7 @@ impl LocalProductStore {
                     17 => Self::migrate_v17_add_regression_report_artifacts(conn)?,
                     18 => Self::migrate_v18_add_budget_evidence_artifacts(conn)?,
                     19 => Self::migrate_v19_add_budget_pause_decisions(conn)?,
+                    20 => Self::migrate_v20_add_offline_replay_artifacts(conn)?,
                     _ => return Err(format!("unknown migration version: {}", migration.version)),
                 }
                 conn.execute_batch(&format!("PRAGMA user_version = {}", migration.version))
@@ -606,6 +607,24 @@ CREATE INDEX IF NOT EXISTS idx_budget_evidence_artifacts_created ON budget_evide
                 UNIQUE(run_id, artifact_id)
             );
             CREATE INDEX IF NOT EXISTS idx_budget_pause_decisions_run ON budget_pause_decisions(run_id, created_at);",
+        )
+        .map_err(|e| e.to_string())
+    }
+
+    fn migrate_v20_add_offline_replay_artifacts(conn: &Connection) -> Result<(), String> {
+        conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS offline_replay_artifacts (
+                artifact_sequence INTEGER PRIMARY KEY,
+                artifact_id TEXT NOT NULL UNIQUE,
+                report_schema_version TEXT NOT NULL,
+                status TEXT NOT NULL,
+                eligibility_content_sha256 TEXT NOT NULL,
+                content_sha256 TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                artifact_json TEXT NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_offline_replay_artifacts_status ON offline_replay_artifacts(status, artifact_sequence);
+            CREATE INDEX IF NOT EXISTS idx_offline_replay_artifacts_created ON offline_replay_artifacts(created_at);",
         )
         .map_err(|e| e.to_string())
     }

@@ -313,6 +313,14 @@ fn axum_routes() -> Router<AxumApiState> {
             get(scorecards::api_budget_evidence_artifact_detail).options(cors_preflight),
         )
         .route(
+            "/api/v1/offline-replays",
+            get(scorecards::api_offline_replay_artifacts).options(cors_preflight),
+        )
+        .route(
+            "/api/v1/offline-replays/:artifact_id",
+            get(scorecards::api_offline_replay_artifact_detail).options(cors_preflight),
+        )
+        .route(
             "/api/v1/budget-evidence/:artifact_id/auto-pause",
             post(scorecards::api_apply_budget_auto_pause).options(cors_preflight),
         )

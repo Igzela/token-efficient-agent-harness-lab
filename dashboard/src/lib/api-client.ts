@@ -38,6 +38,7 @@ import type {
   OperatorDecisionQueueResponse,
   ScorecardArtifactListResponse,
   BudgetEvidenceArtifactListResponse,
+  OfflineReplayArtifactListResponse,
   PolicySimulationResult,
   SimulationReportResponse,
   StorageIntegrityResponse,
@@ -349,6 +350,14 @@ export async function fetchSimulationReport(params: { limit?: number } = {}): Pr
 
 export async function fetchPolicySimulationReport(params: { limit?: number; policy?: string } = {}): Promise<PolicySimulationResult> {
   return fetchJson<PolicySimulationResult>(withQuery("/api/v1/simulation/policy-delta", params));
+}
+
+export async function fetchOfflineReplayArtifacts(params: {
+  status?: string;
+  limit?: number;
+  offset?: number;
+} = {}): Promise<OfflineReplayArtifactListResponse> {
+  return fetchJson<OfflineReplayArtifactListResponse>(withQuery("/api/v1/offline-replays", params));
 }
 
 export async function fetchProposals(params: {

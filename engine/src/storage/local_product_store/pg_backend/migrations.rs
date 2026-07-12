@@ -91,6 +91,22 @@ impl LocalProductStore {
                              ALTER TABLE orchestration_decisions ADD COLUMN degraded_reason TEXT;"
                         }
                     }
+                    20 => {
+                        "CREATE TABLE IF NOT EXISTS offline_replay_artifacts (
+                             artifact_sequence BIGSERIAL PRIMARY KEY,
+                             artifact_id TEXT NOT NULL UNIQUE,
+                             report_schema_version TEXT NOT NULL,
+                             status TEXT NOT NULL,
+                             eligibility_content_sha256 TEXT NOT NULL,
+                             content_sha256 TEXT NOT NULL,
+                             created_at TEXT NOT NULL,
+                             artifact_json TEXT NOT NULL
+                         );
+                         CREATE INDEX IF NOT EXISTS idx_offline_replay_artifacts_status
+                             ON offline_replay_artifacts(status, artifact_sequence);
+                         CREATE INDEX IF NOT EXISTS idx_offline_replay_artifacts_created
+                             ON offline_replay_artifacts(created_at);"
+                    }
                     _ => {
                         return Err(format!(
                             "unknown pg migration version: {}",

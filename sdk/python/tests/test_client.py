@@ -161,6 +161,25 @@ class ClientLocalStateTest(unittest.TestCase):
         )
 
     @patch("agent_control_plane_sdk.client.urlopen")
+    def test_offline_replay_readers_send_filters_and_encode_artifact_ids(self, mock_urlopen):
+        mock_urlopen.return_value = mock_response({"schema_version": "offline_replay_read.v1"})
+        client = AgentControlPlaneClient("http://localhost:8080")
+
+        client.offline_replay_artifacts(
+            status="insufficient evidence", limit=25, offset=5
+        )
+        client.offline_replay_artifact("offline/replay one")
+
+        urls = [call.args[0].full_url for call in mock_urlopen.call_args_list]
+        self.assertEqual(
+            urls,
+            [
+                "http://localhost:8080/api/v1/offline-replays?status=insufficient+evidence&limit=25&offset=5",
+                "http://localhost:8080/api/v1/offline-replays/offline%2Freplay%20one",
+            ],
+        )
+
+    @patch("agent_control_plane_sdk.client.urlopen")
     def test_operator_decisions_sends_bounded_queue_query(self, mock_urlopen):
         mock_urlopen.return_value = mock_response({"read_only": True})
         client = AgentControlPlaneClient("http://localhost:8080")

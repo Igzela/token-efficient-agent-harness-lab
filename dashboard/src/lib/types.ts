@@ -442,6 +442,44 @@ export interface PolicySimulationResult {
   safety: string;
 }
 
+export type OfflineReplayStatus =
+  | "sufficient"
+  | "insufficient_evidence"
+  | "incompatible_cohort"
+  | "stale_evidence"
+  | "tampered_evidence"
+  | "uncalibrated_evidence"
+  | "out_of_distribution"
+  | string;
+
+export interface OfflineReplayArtifact {
+  schema_version: "offline_replay_artifact.v1";
+  artifact_id: string;
+  report_schema_version: "offline_policy_replay.v1";
+  status: OfflineReplayStatus;
+  eligibility_content_sha256: string;
+  content_sha256: string;
+  created_at: string;
+  read_only: true;
+  metadata_only: true;
+  provider_calls: "disabled";
+  mutation_authority: "none";
+  target_repository_writes: "disabled";
+  report: Record<string, unknown>;
+}
+
+export interface OfflineReplayArtifactListResponse {
+  schema_version: "offline_replay_read.v1";
+  artifacts: OfflineReplayArtifact[];
+  status?: OfflineReplayStatus | null;
+  limit: number;
+  offset: number;
+  empty: boolean;
+  read_only: true;
+  metadata_only: true;
+  mutation_authority: "none";
+}
+
 export type ProposalStatus =
   | "pending"
   | "approved"
