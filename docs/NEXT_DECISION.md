@@ -370,7 +370,7 @@ PE-3 is complete and acceptance-sealed. PE3-REPAIR-1 corrected observation-time 
 
 **Acceptance and rollback:** Comparable task/objective/measurement/policy/member/complexity cohorts, paired coverage, calibrated judge evidence, cost/latency/token/retry envelopes, deterministic ordering, and non-mutation tests pass. Revert the packet; no migration or cleanup.
 
-**Completion evidence:** PR #198 merged as `5a4a3e049574f54500dfdf4dc312f68ac5b6d78d` from exact head `0ab7f8c8274ba2fce2c90aaaf7d6d3a04d4560dd`; exact-head CI `29183389219` passed all seven required jobs. Post-merge `main` CI `29183843076` is the current monitored run. The merged implementation derives eligibility internally from raw trace-owner input, keeps observed facts separate from estimates, and remains shadow-only/non-mutating.
+**Completion evidence:** PR #198 merged as `5a4a3e049574f54500dfdf4dc312f68ac5b6d78d` from exact head `0ab7f8c8274ba2fce2c90aaaf7d6d3a04d4560dd`; exact-head CI `29183389219` and post-merge `main` CI `29183843076` passed all seven required jobs. The merged implementation derives eligibility internally from raw trace-owner input, keeps observed facts separate from estimates, and remains shadow-only/non-mutating.
 
 ### Packet PE4-READ-1 — Read-only replay evidence surfaces
 
@@ -418,7 +418,7 @@ PE-3 is complete and acceptance-sealed. PE3-REPAIR-1 corrected observation-time 
 
 **Implementation boundary:** This packet adds only a deterministic, hash-bound decision envelope and focused owner tests. It does not add a persistence table, HTTP mutation route, provider call, live routing/policy mutation, or parallel experiment state machine. Audit and actual activation remain with the existing experiment/operator owners.
 
-**Completion evidence:** PR #201 merged as `4e5bdbb2a80a6c791e2fb508b60a8d44bd2b1c3d` from exact head `3dfd5f6af73c27601724f6cf7d6a6f6e68a6b1bd`; exact-head CI `29185418126` passed all seven required jobs. Post-merge `main` CI `29185710538` is monitored while PE4-PROMOTION-1 proceeds.
+**Completion evidence:** PR #201 merged as `4e5bdbb2a80a6c791e2fb508b60a8d44bd2b1c3d` from exact head `3dfd5f6af73c27601724f6cf7d6a6f6e68a6b1bd`; exact-head CI `29185418126` and post-merge `main` CI `29185710538` passed all seven required jobs.
 
 ### Packet PE4-PROMOTION-1 — Authoritative guarded promotion
 
@@ -436,21 +436,21 @@ PE-3 is complete and acceptance-sealed. PE3-REPAIR-1 corrected observation-time 
 
 **Implementation boundary:** The caller-only promotion path is fail-closed. The new chain path re-derives shadow from offline evidence, validates canary and judge calibration bindings, records the chain hash in the promoted policy, and delegates application, audit, snapshot, pause, compensation, and rollback to existing owners. No new migration, provider path, full-rollout shortcut, or second promotion authority is added.
 
-**Completion evidence:** PR #202 merged as `92b53e9abf2bebd51bddc6c0f7db880edabd396b` from exact head `230dba873365657db9881d7f661fd44a93164b45`; exact-head CI `29185784794` passed all seven required jobs. Post-merge main CI `29186024415` is monitored while the independent closeout audit completes.
+**Completion evidence:** PR #202 merged as `92b53e9abf2bebd51bddc6c0f7db880edabd396b` from exact head `230dba873365657db9881d7f661fd44a93164b45`; exact-head CI `29185784794` and post-merge main CI `29186024415` passed all seven required jobs.
 
 ### Packet PE4-CLOSE-1 — Independent PE-4 acceptance seal
 
 **State:** `COMPLETE`
 
-**Prerequisite:** PE4-PROMOTION-1 merged as PR #202 with exact-head CI green; post-merge `main` CI `29186024415` is monitored for the final closeout head.
+**Prerequisite:** PE4-PROMOTION-1 merged as PR #202 with exact-head and post-merge `main` CI green.
 
 **Goal:** Independently audit and acceptance-seal the complete PE-4 chain.
 
 **Audit:** Trace grounding, comparability, coverage, calibration, OOD, offline non-mutation, read/API/OpenAPI/SDK/Dashboard compatibility, SQLite/PostgreSQL parity, shadow non-mutation, canary safety, promotion authority, permissions, confirmation, audit, pause, resume, compensation, rollback, restart, active-document consistency, and residual risks.
 
-**Acceptance and rollback:** Repair any discovered defect in a separate coherent implementation PR before closeout; merge only with exact-head 7/7 CI and green post-merge `main` CI. Mark PE-4 complete only in the closeout evidence. Revert the individual implementation PRs; preserve existing owner data and recovery paths.
+**Acceptance and rollback:** Repair any discovered defect in a separate coherent implementation PR before closeout; merge only with exact-head 7/7 CI and green post-merge `main` CI. Revert the individual implementation PRs; preserve existing owner data and recovery paths.
 
-**Completion evidence:** Independent audit found no remaining defect. Focused closeout checks passed for canary (3), promotion (5), offline replay (14), bounded read HTTP, and clean SQLite integrity; existing merged tests and CI cover trace contract, API/OpenAPI/SDK/Dashboard, migration, PostgreSQL, concurrency, restart, permissions, confirmation, audit, pause, compensation, and rollback. The closeout PR must carry the final exact-head 7/7 CI and post-merge main evidence before PE-4 is treated as sealed.
+**Completion evidence:** Independent audit found no remaining defect. Focused closeout checks passed for canary (3), promotion (5), offline replay (14), bounded read HTTP, and clean SQLite integrity; existing merged tests and CI cover trace contract, API/OpenAPI/SDK/Dashboard, migration, PostgreSQL, concurrency, restart, permissions, confirmation, audit, pause, compensation, and rollback. PR #203 merged as `008bc8c8879d6e7c9641fec57aa974f98af1c6b5` from exact head `2110676667dd1b57a36bc6f3744016599a02860a`; exact-head CI `29186113263` and final post-merge `main` CI `29186372526` passed all seven required jobs. PE-4 is independently acceptance-sealed.
 
 ## PE-5 — Release Provenance
 
