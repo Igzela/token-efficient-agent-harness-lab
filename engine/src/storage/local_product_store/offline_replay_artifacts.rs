@@ -2,9 +2,12 @@ use rusqlite::{params, Row};
 use serde_json::{json, Value};
 
 use crate::feedback::{
-    offline_replay_report_sha256, OfflineEvaluationEngine, OfflineReplayReport,
-    OfflineReplayRequest, OfflineReplayStatus, OFFLINE_REPLAY_SCHEMA_VERSION,
+    judge_calibration_is_acceptable, offline_replay_report_sha256,
+    validate_offline_replay_report_bounds, OfflineEvaluationEngine, OfflineReplayReport,
+    OfflineReplayRequest, OfflineReplayStatus, LEGACY_OFFLINE_REPLAY_SCHEMA_VERSION,
+    OFFLINE_REPLAY_SCHEMA_VERSION,
 };
+use sha2::{Digest, Sha256};
 
 use super::native_scorecard_artifacts::{validate_json_bounds, MAX_SCORECARD_ARTIFACT_BYTES};
 use super::{append_audit_locked, collect_values, DatabaseConnection, LocalProductStore};
@@ -31,6 +34,11 @@ impl LocalProductStore {
     ) -> Result<Value, String> {
         let stored = build_stored_artifact(report, self.now())?;
         let artifact_id = required_str(&stored, "artifact_id")?.to_string();
+        let report_schema_version = required_str(&stored, "report_schema_version")?.to_string();
+        let status = required_str(&stored, "status")?.to_string();
+        let eligibility_content_sha256 =
+            required_str(&stored, "eligibility_content_sha256")?.to_string();
+        let content_sha256 = required_str(&stored, "content_sha256")?.to_string();
         let artifact_json = stored.to_string();
         let created_at = required_str(&stored, "created_at")?.to_string();
         match &self.db {
@@ -46,12 +54,10 @@ impl LocalProductStore {
                         params![
                             sequence,
                             artifact_id,
-                            stored["report_schema_version"].as_str().unwrap_or_default(),
-                            stored["status"].as_str().unwrap_or_default(),
-                            stored["eligibility_content_sha256"]
-                                .as_str()
-                                .unwrap_or_default(),
-                            stored["content_sha256"].as_str().unwrap_or_default(),
+                            report_schema_version,
+                            status,
+                            eligibility_content_sha256,
+                            content_sha256,
                             created_at,
                             artifact_json,
                         ],
@@ -81,12 +87,10 @@ impl LocalProductStore {
                          RETURNING artifact_sequence",
                         &[
                             &artifact_id,
-                            &stored["report_schema_version"].as_str().unwrap_or_default(),
-                            &stored["status"].as_str().unwrap_or_default(),
-                            &stored["eligibility_content_sha256"]
-                                .as_str()
-                                .unwrap_or_default(),
-                            &stored["content_sha256"].as_str().unwrap_or_default(),
+                            &report_schema_version,
+                            &status,
+                            &eligibility_content_sha256,
+                            &content_sha256,
                             &created_at,
                             &artifact_json,
                         ],
@@ -230,9 +234,17 @@ fn build_stored_artifact(
 }
 
 fn validate_report(report: &OfflineReplayReport) -> Result<(), String> {
-    if report.schema_version != OFFLINE_REPLAY_SCHEMA_VERSION
-        || offline_replay_report_sha256(report).map_err(|error| error.to_string())?
-            != report.content_sha256
+    validate_report_for_schema(report, false)
+}
+
+fn validate_report_for_schema(
+    report: &OfflineReplayReport,
+    allow_legacy: bool,
+) -> Result<(), String> {
+    validate_offline_replay_report_bounds(report)?;
+    let is_current = report.schema_version == OFFLINE_REPLAY_SCHEMA_VERSION;
+    let is_legacy = report.schema_version == LEGACY_OFFLINE_REPLAY_SCHEMA_VERSION;
+    if !(is_current || allow_legacy && is_legacy)
         || !report.shadow_only
         || report.influence_selected_tier
         || report.influence_executor_type
@@ -241,8 +253,24 @@ fn validate_report(report: &OfflineReplayReport) -> Result<(), String> {
     {
         return Err("offline replay report is not a valid read-only report".to_string());
     }
+    let report_hash = if is_current {
+        offline_replay_report_sha256(report).map_err(|error| error.to_string())?
+    } else {
+        legacy_sha256_without_content_hash(report)?
+    };
+    if report_hash != report.content_sha256 {
+        return Err("offline replay report hash is invalid".to_string());
+    }
     if !valid_sha256(&report.content_sha256) || !valid_sha256(&report.eligibility_content_sha256) {
         return Err("offline replay report hash is invalid".to_string());
+    }
+    if is_current
+        && report
+            .replay_judge_calibrations
+            .iter()
+            .any(|calibration| !judge_calibration_is_acceptable(calibration))
+    {
+        return Err("offline replay judge calibration is invalid".to_string());
     }
     for hash in report
         .source_evidence_content_sha256
@@ -265,7 +293,15 @@ fn validate_report(report: &OfflineReplayReport) -> Result<(), String> {
         }
     }
     for policy in std::iter::once(&report.current_policy).chain(report.candidate_policies.iter()) {
-        if policy.content_sha256().map_err(|error| error.to_string())? != policy.policy_hash {
+        if is_current && policy.schema_version != OFFLINE_REPLAY_SCHEMA_VERSION {
+            return Err("offline replay policy schema is invalid".to_string());
+        }
+        let policy_hash = if is_current {
+            policy.content_sha256().map_err(|error| error.to_string())?
+        } else {
+            legacy_sha256_without_policy_hash(policy)?
+        };
+        if policy_hash != policy.policy_hash {
             return Err("offline replay policy hash is invalid".to_string());
         }
     }
@@ -281,8 +317,10 @@ fn validate_stored_artifact(artifact: &Value) -> Result<(), String> {
         return Err("offline replay artifact exceeds bounded size".to_string());
     }
     validate_json_bounds(artifact, "offline_replay_artifact", 0)?;
+    let report_schema_version = required_str(artifact, "report_schema_version")?;
     if required_str(artifact, "schema_version")? != OFFLINE_REPLAY_ARTIFACT_SCHEMA_VERSION
-        || required_str(artifact, "report_schema_version")? != OFFLINE_REPLAY_SCHEMA_VERSION
+        || (report_schema_version != OFFLINE_REPLAY_SCHEMA_VERSION
+            && report_schema_version != LEGACY_OFFLINE_REPLAY_SCHEMA_VERSION)
         || required_str(artifact, "artifact_id")?
             != format!(
                 "offline-replay-{}",
@@ -303,7 +341,7 @@ fn validate_stored_artifact(artifact: &Value) -> Result<(), String> {
             .ok_or_else(|| "offline replay artifact missing report".to_string())?,
     )
     .map_err(|error| error.to_string())?;
-    validate_report(&report)?;
+    validate_report_for_schema(&report, true)?;
     if required_str(artifact, "status")? != status_string(report.status)
         || required_str(artifact, "eligibility_content_sha256")?
             != report.eligibility_content_sha256
@@ -315,9 +353,41 @@ fn validate_stored_artifact(artifact: &Value) -> Result<(), String> {
 }
 
 fn parse_stored_artifact(raw: &str) -> Result<Value, String> {
-    let artifact: Value = serde_json::from_str(raw).map_err(|error| error.to_string())?;
+    let mut artifact: Value = serde_json::from_str(raw).map_err(|error| error.to_string())?;
     validate_stored_artifact(&artifact)?;
+    if artifact
+        .get("report_schema_version")
+        .and_then(Value::as_str)
+        == Some(LEGACY_OFFLINE_REPLAY_SCHEMA_VERSION)
+    {
+        if let Value::Object(map) = &mut artifact {
+            map.insert("historical_only".to_string(), Value::Bool(true));
+            map.insert(
+                "authorization".to_string(),
+                Value::String("none".to_string()),
+            );
+        }
+    }
     Ok(artifact)
+}
+
+fn legacy_sha256_without_content_hash(report: &OfflineReplayReport) -> Result<String, String> {
+    let mut unsigned = report.clone();
+    unsigned.content_sha256.clear();
+    legacy_sha256(&unsigned)
+}
+
+fn legacy_sha256_without_policy_hash(
+    policy: &crate::feedback::OfflinePolicyDefinition,
+) -> Result<String, String> {
+    let mut unsigned = policy.clone();
+    unsigned.policy_hash.clear();
+    legacy_sha256(&unsigned)
+}
+
+fn legacy_sha256<T: serde::Serialize>(value: &T) -> Result<String, String> {
+    let bytes = serde_json::to_vec(value).map_err(|error| error.to_string())?;
+    Ok(hex::encode(Sha256::digest(bytes)))
 }
 
 fn required_str<'a>(value: &'a Value, key: &str) -> Result<&'a str, String> {
@@ -410,7 +480,8 @@ fn pg_append_audit(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::feedback::{OfflinePolicyDefinition, OfflinePolicySelection};
+    use crate::feedback::{OfflinePolicyDefinition, OfflinePolicySelection, ShadowRouter};
+    use serde_json::json;
     use std::collections::BTreeMap;
     use tempfile::tempdir;
 
@@ -488,5 +559,64 @@ mod tests {
             )
             .unwrap();
         assert!(store.get_offline_replay_artifact(artifact_id).is_err());
+    }
+
+    #[test]
+    fn legacy_replay_artifacts_are_readable_but_non_authorizing() {
+        let directory = tempdir().unwrap();
+        let store = LocalProductStore::new(directory.path().join("legacy-store.db")).unwrap();
+        let mut legacy = report();
+        legacy.schema_version = LEGACY_OFFLINE_REPLAY_SCHEMA_VERSION.to_string();
+        legacy.current_policy.schema_version = LEGACY_OFFLINE_REPLAY_SCHEMA_VERSION.to_string();
+        for policy in &mut legacy.candidate_policies {
+            policy.schema_version = LEGACY_OFFLINE_REPLAY_SCHEMA_VERSION.to_string();
+            policy.policy_hash = legacy_sha256_without_policy_hash(policy).unwrap();
+        }
+        legacy.current_policy.policy_hash =
+            legacy_sha256_without_policy_hash(&legacy.current_policy).unwrap();
+        legacy.content_sha256 = legacy_sha256_without_content_hash(&legacy).unwrap();
+        let artifact = json!({
+            "schema_version": OFFLINE_REPLAY_ARTIFACT_SCHEMA_VERSION,
+            "artifact_id": format!("offline-replay-{}", legacy.content_sha256),
+            "report_schema_version": LEGACY_OFFLINE_REPLAY_SCHEMA_VERSION,
+            "status": status_string(legacy.status),
+            "eligibility_content_sha256": legacy.eligibility_content_sha256,
+            "content_sha256": legacy.content_sha256,
+            "created_at": "2026-07-12T00:00:00Z",
+            "storage": "local_product_store",
+            "read_only": true,
+            "metadata_only": true,
+            "provider_calls": "disabled",
+            "mutation_authority": "none",
+            "target_repository_writes": "disabled",
+            "report": legacy,
+        });
+        let connection = rusqlite::Connection::open(store.db_path()).unwrap();
+        connection
+            .execute(
+                "INSERT INTO offline_replay_artifacts
+                 (artifact_sequence, artifact_id, report_schema_version, status,
+                  eligibility_content_sha256, content_sha256, created_at, artifact_json)
+                 VALUES (1, ?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+                params![
+                    artifact["artifact_id"].as_str().unwrap(),
+                    artifact["report_schema_version"].as_str().unwrap(),
+                    artifact["status"].as_str().unwrap(),
+                    artifact["eligibility_content_sha256"].as_str().unwrap(),
+                    artifact["content_sha256"].as_str().unwrap(),
+                    artifact["created_at"].as_str().unwrap(),
+                    artifact.to_string(),
+                ],
+            )
+            .unwrap();
+
+        let loaded = store
+            .get_offline_replay_artifact(artifact["artifact_id"].as_str().unwrap())
+            .unwrap()
+            .unwrap();
+        assert_eq!(loaded["historical_only"], true);
+        assert_eq!(loaded["authorization"], "none");
+        let parsed: OfflineReplayReport = serde_json::from_value(loaded["report"].clone()).unwrap();
+        assert!(ShadowRouter::compare_replay_report(&parsed).is_err());
     }
 }

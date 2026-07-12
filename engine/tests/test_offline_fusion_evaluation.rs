@@ -2,12 +2,13 @@ use engine::feedback::{
     offline_replay_report_sha256, CandidateKind, JudgeEvidence, ObjectiveProfile,
     OfflineEvaluationEngine, OfflinePolicyDefinition, OfflinePolicySelection,
     OfflineReplayObservation, OfflineReplayRequest, OfflineReplayStatus, ReplayEligibilityRequest,
-    ReplayEvidenceScope, ReplayTraceInput, RunTrace, RunTraceRecorder,
-    OFFLINE_EVALUATION_SCHEMA_VERSION, OFFLINE_REPLAY_SCHEMA_VERSION,
-    POLICY_REPLAY_CONTRACT_SCHEMA_VERSION, RUN_TRACE_SCHEMA_VERSION,
+    ReplayEvidenceScope, RunTrace, RunTraceRecorder, OFFLINE_EVALUATION_SCHEMA_VERSION,
+    OFFLINE_REPLAY_SCHEMA_VERSION, RUN_TRACE_SCHEMA_VERSION,
 };
+use engine::storage::LocalProductStore;
 use serde_json::json;
 use std::collections::BTreeMap;
+use tempfile::tempdir;
 
 #[allow(clippy::too_many_arguments)]
 fn observation(
@@ -130,21 +131,47 @@ fn trace(candidate_id: &str, index: usize, policy_hash: &str) -> RunTrace {
 }
 
 fn replay_eligibility_request(policy_hash: &str) -> ReplayEligibilityRequest {
-    let traces = ["candidate-a", "candidate-b"]
-        .into_iter()
-        .flat_map(|candidate_id| {
-            (0..30).map(move |index| {
-                ReplayTraceInput::from_trace(trace(candidate_id, index, policy_hash)).unwrap()
-            })
-        })
-        .collect();
-    ReplayEligibilityRequest {
-        schema_version: POLICY_REPLAY_CONTRACT_SCHEMA_VERSION.to_string(),
-        generated_at: "2026-07-12T00:01:00Z".to_string(),
-        maximum_trace_age_seconds: 300,
-        scope: ReplayEvidenceScope::default(),
-        traces,
+    let dir = tempdir().unwrap();
+    let store = LocalProductStore::new(dir.path().join("replay-owner.db")).unwrap();
+    let mut dispatch_ids = Vec::new();
+    for candidate_id in ["candidate-a", "candidate-b"] {
+        for index in 0..30 {
+            let trace = trace(candidate_id, index, policy_hash);
+            let dispatch_id = format!("owner-{candidate_id}-{index}");
+            let bundle = json!({
+                "analysis": trace.analysis,
+                "decision": trace.decision,
+                "execution_result": {
+                    "executor_type": trace.executor_type,
+                    "status": trace.execution_status,
+                    "latency_ms": trace.latency_ms,
+                    "input_tokens": trace.input_tokens,
+                    "output_tokens": trace.output_tokens,
+                    "actual_cost_usd": trace.total_cost,
+                    "retry_count": trace.retry_count,
+                    "success": true
+                },
+                "evaluation_result": trace.evaluation,
+                "record": {
+                    "dispatch_id": dispatch_id,
+                    "created_at": trace.created_at,
+                    "final_status": trace.final_status
+                }
+            });
+            let stored = store
+                .record_dispatch("{}", "test-owner", &bundle, "test")
+                .unwrap();
+            dispatch_ids.push(stored["dispatch_id"].as_str().unwrap().to_string());
+        }
     }
+    store
+        .trusted_replay_eligibility_request(
+            &dispatch_ids,
+            "2026-07-12T00:01:00Z",
+            300,
+            ReplayEvidenceScope::default(),
+        )
+        .unwrap()
 }
 
 fn policy(
@@ -234,6 +261,39 @@ fn run_trace_adapter_reuses_existing_quality_cost_latency_and_success_evidence()
         replay.observation_id,
         "replay-dispatch-1-provider-a/model-a"
     );
+}
+
+#[test]
+fn offline_aggregation_preserves_negative_quality_samples() {
+    let observations = vec![
+        observation(
+            "negative-sample",
+            "code_review",
+            "endpoint-a",
+            CandidateKind::Endpoint,
+            0.1,
+            false,
+            0.2,
+            0.1,
+            200,
+        ),
+        observation(
+            "positive-sample",
+            "code_review",
+            "endpoint-a",
+            CandidateKind::Endpoint,
+            0.9,
+            true,
+            0.8,
+            0.1,
+            200,
+        ),
+    ];
+    let report = OfflineEvaluationEngine::evaluate(&observations).unwrap();
+    let aggregate = &report.task_classes[0].candidates[0];
+    assert_close(aggregate.success_rate, 0.5);
+    assert_close(aggregate.average_quality_score, 0.5);
+    assert_close(aggregate.average_tool_success_score, 0.5);
 }
 
 #[test]
@@ -413,7 +473,7 @@ fn judge_calibration_reports_signed_bias_and_requires_three_samples() {
         .unwrap();
 
     assert_eq!(judge_a.sample_count, 3);
-    assert_eq!(judge_a.status, "calibrated");
+    assert_eq!(judge_a.status, "within_tolerance");
     assert_close(judge_a.mean_signed_bias, 0.1);
     assert_close(judge_a.mean_absolute_error, 0.1);
     assert_close(judge_a.recommended_score_offset, -0.1);
@@ -594,7 +654,7 @@ fn trace_replay_separates_observed_facts_and_counterfactual_estimates() {
     assert_eq!(report.source_trace_ids.len(), 60);
     assert!(report
         .source_trace_ids
-        .contains(&"trace-candidate-a-0".to_string()));
+        .contains(&"trace-owner-candidate-a-0".to_string()));
 }
 
 #[test]
@@ -658,6 +718,10 @@ fn trace_replay_exposes_stale_and_out_of_distribution_outcomes() {
     assert_eq!(stale.status, OfflineReplayStatus::StaleEvidence);
 
     let mut ood_request = offline_replay_request();
+    // Caller limits constrain the request but cannot create empirical support
+    // for a candidate that is absent from the accepted owner-backed cohort.
+    ood_request.eligibility.scope.max_total_tokens = Some(1_000);
+    ood_request.eligibility.scope.max_latency_ms = Some(1_000);
     ood_request.candidate_policies = vec![policy("ood-policy", "candidate-z", &replay_hash('d'))];
     let ood = OfflineEvaluationEngine::replay_policies(&ood_request).unwrap();
     assert_eq!(ood.status, OfflineReplayStatus::OutOfDistribution);

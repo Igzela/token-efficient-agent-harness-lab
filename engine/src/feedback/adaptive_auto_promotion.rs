@@ -4,6 +4,7 @@ use super::offline_evaluation::{
     offline_replay_report_sha256, OfflineReplayReport, OfflineReplayStatus,
 };
 use super::policy_snapshot::stable_hash;
+use super::replay_eligibility::judge_calibration_is_acceptable;
 use super::{
     adaptive_experiment::{validate_canary_decision, AdaptiveCanaryDecision},
     ContextualPolicyPromotion, ContextualPolicyPromotionVerdict, ObjectiveProfile,
@@ -61,9 +62,14 @@ impl AdaptivePromotionEvidenceChain {
     }
 
     pub fn content_sha256(&self) -> String {
+        self.try_content_sha256().unwrap_or_default()
+    }
+
+    pub fn try_content_sha256(&self) -> Result<String, String> {
         let mut unsigned = self.clone();
         unsigned.content_sha256.clear();
-        stable_hash(&serde_json::to_value(unsigned).expect("promotion chain is serializable"))
+        let value = serde_json::to_value(unsigned).map_err(|error| error.to_string())?;
+        Ok(stable_hash(&value))
     }
 }
 
@@ -448,10 +454,13 @@ fn validate_evidence_chain(
     let mut reasons = Vec::new();
     if chain.schema_version != ADAPTIVE_PROMOTION_EVIDENCE_CHAIN_SCHEMA_VERSION
         || !valid_hash(&chain.content_sha256)
-        || chain.content_sha256() != chain.content_sha256
+        || chain
+            .try_content_sha256()
+            .map(|hash| hash != chain.content_sha256)
+            .unwrap_or(true)
         || !valid_id(&chain.rollout_scope)
         || !valid_hash(&chain.rollback_target)
-        || contains_sensitive_patterns(&serde_json::to_string(chain).unwrap_or_default())
+        || sensitive_or_unserializable(chain)
     {
         reasons.push("invalid_promotion_evidence_chain".to_string());
     }
@@ -463,16 +472,12 @@ fn validate_evidence_chain(
     {
         reasons.push("offline_evidence_not_sufficient_or_hash_valid".to_string());
     }
-    if chain
-        .offline
-        .replay_judge_calibrations
-        .iter()
-        .any(|calibration| {
-            calibration.sample_count < 3
-                || calibration.status != "calibrated"
-                || !calibration.mean_signed_bias.is_finite()
-                || !calibration.mean_absolute_error.is_finite()
-        })
+    if !chain.offline.replay_judge_calibrations.is_empty()
+        && chain
+            .offline
+            .replay_judge_calibrations
+            .iter()
+            .any(|calibration| !judge_calibration_is_acceptable(calibration))
     {
         reasons.push("judge_reference_calibration_not_valid".to_string());
     }
@@ -603,7 +608,7 @@ fn validate_request(request: &AdaptiveAutoPromotionRequest) -> Vec<String> {
     {
         violations.push("invalid_expected_policy_hash".to_string());
     }
-    if contains_sensitive_patterns(&serde_json::to_string(request).unwrap_or_default()) {
+    if sensitive_or_unserializable(request) {
         violations.push("sensitive_pattern_detected".to_string());
     }
     violations
@@ -675,7 +680,7 @@ fn validate_evidence(observation: &AdaptiveAutoPromotionEvidence) -> Vec<String>
     {
         violations.push("invalid_auto_promotion_evidence_metrics".to_string());
     }
-    if contains_sensitive_patterns(&serde_json::to_string(observation).unwrap_or_default()) {
+    if sensitive_or_unserializable(observation) {
         violations.push("sensitive_pattern_detected".to_string());
     }
     violations
@@ -687,6 +692,12 @@ fn confidence(samples: usize) -> f64 {
     } else {
         samples as f64 / (samples as f64 + 1.0)
     }
+}
+
+fn sensitive_or_unserializable<T: Serialize>(value: &T) -> bool {
+    serde_json::to_string(value)
+        .map(|serialized| contains_sensitive_patterns(&serialized))
+        .unwrap_or(true)
 }
 
 fn normalized(value: f64) -> bool {

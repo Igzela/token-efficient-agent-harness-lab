@@ -4,7 +4,7 @@
 
 The dispatch kernel, V2, Adaptive Fusion AF-0 through AF-7, Agent Runtime AR-0 through AR-6, Trusted Local Autonomous Execution IAE-0 through IAE-3, scorecard integrity hardening, the importer-first external benchmark path, and PE-1 Token Efficiency Regression Lab are complete.
 
-The active direction is the Post-LGB Product Evolution plan. PE-1, PE-2, PE-3, and PE-4 are complete and acceptance-sealed. PE-5 and PE-6 remain unstarted. This is not AR-7, another LGB ladder, or a second control plane.
+The active direction is the Post-LGB Product Evolution plan. PE-1, PE-2, and PE-3 remain acceptance-sealed; PE-4 is under `PE4-POST-CLOSE-REPAIR-1`, and its pre-repair closeout is not final acceptance evidence. PE-5 and PE-6 remain unstarted. This is not AR-7, another LGB ladder, or a second control plane.
 
 `docs/NEXT_DECISION.md` is the single forward-plan artifact. Historical detail remains in `docs/ARCHITECTURE_BOOK.md`, archived plans, merged PRs, and repository history.
 
@@ -78,7 +78,7 @@ Normative order is PE-1, PE-2, PE-3, PE-4, PE-5, and PE-6. Do not start PE-3 bef
 | PE-1 | P0 | Token Efficiency Regression Lab | Complete and acceptance-sealed |
 | PE-2 | P0/P1 | Budget Intelligence and Anomaly Auto-Pause | Complete and acceptance-sealed |
 | PE-3 | P1 | Operator Decision Center | Complete and independently acceptance-sealed |
-| PE-4 | P1/P2 | Trace-backed Policy Replay | Complete and independently acceptance-sealed |
+| PE-4 | P1/P2 | Trace-backed Policy Replay | `PE4-POST-CLOSE-REPAIR-1` in progress; pre-repair seal superseded pending final repair evidence |
 | PE-5 | P1.5 | Release Provenance | Packetized; inactive unless explicitly activated |
 | PE-6 | P2 | Fault Injection and Recovery Drills | Packetized; blocked on explicit recovery invariants |
 
@@ -332,6 +332,8 @@ PE-3 is complete and acceptance-sealed. PE3-REPAIR-1 corrected observation-time 
 
 **Goal:** Define a versioned, deterministic replay eligibility contract over existing `feedback_trace.v1` and offline-evaluation owners before adding replay persistence, live routing, or promotion behavior.
 
+**Historical/pre-repair note:** This v2/v1 contract is retained for merged-history context only. `PE4-POST-CLOSE-REPAIR-1` supersedes it with the active v3/v2 owner-bound contract; this historical text is not current acceptance evidence.
+
 **Contract decision:** The original `policy_replay_contract.v1` design boundary accepts only bounded, non-secret `feedback_trace.v1` observations with a parseable timestamp, stable trace/dispatch identity, task class, selected candidate identity, terminal outcome, measured cost/latency, and a compatible quality measurement. A replay cohort is comparable only when its task class, objective, candidate definition, measurement schema, and time window match; duplicate identities, inconsistent candidate definitions, missing measurements, stale traces, and mixed incompatible schemas are rejected with sorted reason codes. Eligibility requires at least 30 accepted observations per compared candidate, at least 3 paired judge/reference samples per judge, no more than 10% rejected or uncovered observations, and a configurable maximum trace age no greater than 30 days. A candidate outside the observed task-class, objective, endpoint/member set, complexity bucket, or cost/latency envelope is `out_of_distribution`; any insufficient, stale, incomparable, uncovered, or OOD cohort produces a hash-bound refusal, never a recommendation. PE4-CONTRACT-REPAIR-1 implements this boundary as the stricter normalized `policy_replay_contract.v2`/`trace_replay_evidence.v1` contract below.
 
 **Authority and progression:** Offline reports remain derived evidence, `shadow_only`, and non-mutating. PE4-REPLAY-1 may reuse `RunTraceRecorder` and `OfflineEvaluationEngine` only after this contract is implemented and tested. Shadow, bounded canary, promotion, pause, and rollback must call their existing owners; no offline or shadow result changes live policy. Existing `ContextualPolicyPromotion` retains its confirmation, evidence, rollout, pause, and rollback gates.
@@ -364,6 +366,8 @@ PE-3 is complete and acceptance-sealed. PE3-REPAIR-1 corrected observation-time 
 
 **Goal:** Evaluate accepted trace-derived cohorts against explicit current and candidate policy descriptions without changing production state.
 
+**Historical/pre-repair note:** This merged PE4-REPLAY-1 contract is retained for context only. Its v2/v1 semantics are superseded by `PE4-POST-CLOSE-REPAIR-1` and cannot authorize current acceptance, shadow, canary, or promotion.
+
 **Owning paths:** `engine/src/feedback/offline_evaluation.rs`, `engine/src/feedback/policy_simulator.rs`, and focused offline replay tests.
 
 **Contract:** Consume raw `ReplayEligibilityRequest` trace-owner input and derive accepted `trace_replay_evidence.v1` observations inside the existing eligibility owner; callers cannot establish `eligible`, coverage, calibration, or accepted evidence by supplying a result. Compare explicit versioned current and candidate policy definitions while keeping observed facts separate from counterfactual estimates. Bind every report to trace/evidence hashes and candidate/policy versions, and return deterministic `insufficient_evidence`, `incompatible_cohort`, `stale`, `tampered`, `uncalibrated`, and `out_of_distribution` outcomes. No provider call, substitution, live routing, opaque authority score, or mutation.
@@ -380,9 +384,9 @@ PE-3 is complete and acceptance-sealed. PE3-REPAIR-1 corrected observation-time 
 
 **Goal:** Expose bounded accepted replay and comparison evidence through existing read owners only.
 
-**Owning paths:** `engine/src/storage/local_product_store/offline_replay_artifacts.rs` and additive schema v20 migration, existing scorecard HTTP/OpenAPI handlers/routes, Python/TypeScript SDK readers, and the existing `DynamicRegulator` Dashboard surface.
+**Owning paths:** `engine/src/storage/local_product_store/offline_replay_artifacts.rs` and the historical additive schema v20 migration, plus the existing scorecard HTTP/OpenAPI handlers/routes, Python/TypeScript SDK readers, and `DynamicRegulator` Dashboard surface; the post-close repair adds aligned schema v21 dispatch provenance.
 
-**Contract:** Persist only validated `offline_replay_artifact.v1` envelopes whose report, policy hashes, eligibility hash, source evidence hashes, schema version, and shadow-only flags verify. Writes are idempotent and audit metadata-only; reads use deterministic bounded ordering/pagination and validate stored JSON on every read. HTTP/OpenAPI/SDK/Dashboard readers expose empty, insufficient, invalid, stale, tampered, OOD, and error states. SQLite v20 and PostgreSQL v20 remain aligned, old rows/callers remain compatible, and no live policy mutation or new evidence authority is added.
+**Contract:** Persist only validated `offline_replay_artifact.v1` envelopes whose report, policy hashes, eligibility hash, source evidence hashes, schema version, and shadow-only flags verify. Writes are idempotent and audit metadata-only; reads use deterministic bounded ordering/pagination and validate stored JSON on every read. HTTP/OpenAPI/SDK/Dashboard readers expose empty, insufficient, invalid, stale, tampered, OOD, and error states. Historical SQLite/PostgreSQL v20 remains aligned and readable; current v2 reports and v21 dispatch provenance are governed by `PE4-POST-CLOSE-REPAIR-1`, and no live policy mutation or new evidence authority is added.
 
 **Acceptance and rollback:** PR #199 merged as `92ade400174ee49d1efa3d1447830d936aa3e4b6` from exact head `5c78ca1d5aa1b93516f15822991f3edcfa3072f2`; exact-head CI `29184325125` passed all seven jobs after repairing the integrity owner, and post-merge main CI `29184652464` passed all seven jobs. HTTP/OpenAPI parity, encoded SDK paths, migration compatibility, SQLite/PostgreSQL, Dashboard states, idempotent hash-bound recording, tamper rejection, integrity-table coverage, and read-only permission tests pass. Revert the additive route/storage changes; preserve existing data.
 
@@ -450,7 +454,27 @@ PE-3 is complete and acceptance-sealed. PE3-REPAIR-1 corrected observation-time 
 
 **Acceptance and rollback:** Repair any discovered defect in a separate coherent implementation PR before closeout; merge only with exact-head 7/7 CI and green post-merge `main` CI. Revert the individual implementation PRs; preserve existing owner data and recovery paths.
 
-**Completion evidence:** Independent audit found no remaining defect. Focused closeout checks passed for canary (3), promotion (5), offline replay (14), bounded read HTTP, and clean SQLite integrity; existing merged tests and CI cover trace contract, API/OpenAPI/SDK/Dashboard, migration, PostgreSQL, concurrency, restart, permissions, confirmation, audit, pause, compensation, and rollback. PR #203 merged as `008bc8c8879d6e7c9641fec57aa974f98af1c6b5` from exact head `2110676667dd1b57a36bc6f3744016599a02860a`; exact-head CI `29186113263` and final post-merge `main` CI `29186372526` passed all seven required jobs. PE-4 is independently acceptance-sealed.
+**Completion evidence:** Historical pre-repair closeout evidence only: independent audit reported no remaining defect; focused closeout checks passed for canary (3), promotion (5), offline replay (14), bounded read HTTP, and clean SQLite integrity; existing merged tests and CI covered trace contract, API/OpenAPI/SDK/Dashboard, migration, PostgreSQL, concurrency, restart, permissions, confirmation, audit, pause, compensation, and rollback. PR #203 merged as `008bc8c8879d6e7c9641fec57aa974f98af1c6b5` from exact head `2110676667dd1b57a36bc6f3744016599a02860a`; exact-head CI `29186113263` and final post-merge `main` CI `29186372526` passed all seven required jobs. Its acceptance claim is superseded by `PE4-POST-CLOSE-REPAIR-1`.
+
+### Packet PE4-POST-CLOSE-REPAIR-1 — PE-4 semantic, provenance, boundedness, and calibration repair
+
+**State:** `IN_PROGRESS`
+
+**Prerequisite:** PR #203/PE4-CLOSE-1 is merged, PR #205 documentation governance is merged separately, local `main` equals `origin/main`, and the repair branch starts at `0f92dadc6cf1cb712231dbb917bf9904f8346d86`.
+
+**Goal:** Repair the merged PE-4 correctness defects without adding a product stage, PE-5/PE-6 work, or a second replay/experiment/canary/promotion/pause/policy/audit/rollback owner.
+
+**Contract:** Use `policy_replay_contract.v3`, `trace_replay_evidence.v2`, `offline_policy_replay.v2`, `dispatch_history_trace_owner.v1`, and `judge_calibration.v1`. The accepted boundary is exactly inclusive at 90%. A central severity taxonomy distinguishes observation-local coverage failures, cohort-fatal evidence failures, and request-fatal contract failures. Trusted evidence must be derived from the existing persisted `dispatch_history` owner through `RunTraceRecorder`; raw imports and public request deserialization cannot authorize replay. Recorder-derived execution terminality, execution outcome, evaluation completion/outcome, overall dispatch success, quality, and tool-success remain distinct. Judge calibration requires at least 3 paired values and is within tolerance only when absolute signed bias is at most 0.10 and MAE is at most 0.15. Caller scope constrains replay but never supplies empirical support; unsupported candidate/cohort/metric evidence is explicit OOD or insufficient evidence.
+
+**Compatibility and migration:** Additive SQLite/PostgreSQL schema v21 stores nullable owner trace schema/hash columns on `dispatch_history`; old rows remain readable but without an immutable binding they fail closed as `untrusted_trace_source`. Current replay/report hashes are versioned and never reinterpret old hashes. Offline artifact rows with `offline_policy_replay.v1` remain readable as historical-only and cannot authorize shadow, canary, or promotion. All canonical bytes, raw sections, identifiers, arrays, report cardinalities, references, depths, result size, and numeric sums are bounded; serialization and overflow failures fail closed without runtime panics.
+
+**Owning paths:** Existing replay eligibility/recorder/offline/shadow/experiment/promotion/contextual-policy/storage migration/HTTP/OpenAPI/SDK/Dashboard paths and their focused tests. Reuse existing permission, confirmation, audit, pause, compensation, snapshot, and rollback owners.
+
+**Forbidden:** No caller boolean or self-computed hash as authority, provider call in CI, live routing/policy mutation from offline/shadow, weaker coverage or calibration gates, new product stage, parallel owner, raw sensitive payload, or PE-5/PE-6 activation.
+
+**Acceptance:** Focused replay eligibility, outcome, calibration, OOD, boundedness, owner tamper/restart/idempotency, artifact historical-row, SQLite/PostgreSQL/migration, HTTP/OpenAPI, SDK, Dashboard, shadow, canary, promotion, pause, rollback, and restart tests pass. Then run the complete repository verification baseline, push one implementation PR, wait for exact-head full CI, independently review the final diff, update these active documents in the same PR with final evidence, rerun exact-final-head CI, merge only fully green, and verify post-merge `main` CI. Rollback is a code revert; v21 nullable columns and historical v1 rows remain inert/readable.
+
+**Completion evidence:** Pending exact final head, focused results, full CI job results, final documentation update, merge, and post-merge `main` verification.
 
 ## PE-5 — Release Provenance
 

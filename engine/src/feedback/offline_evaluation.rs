@@ -7,23 +7,36 @@ use sha2::{Digest, Sha256};
 
 use super::adaptive_fusion::{objective_weights, ObjectiveProfile};
 use super::replay_eligibility::{
-    evaluate_replay_eligibility, replay_eligibility_result_sha256,
-    replay_observation_evidence_sha256, CostEvidenceKind, EvidenceDisposition,
-    JudgeCalibrationEvidence, ReplayEligibilityRequest, ReplayEligibilityResult,
-    ReplayObservationEvidence, POLICY_REPLAY_CONTRACT_SCHEMA_VERSION,
-    TRACE_REPLAY_EVIDENCE_SCHEMA_VERSION,
+    canonical_json, evaluate_replay_eligibility, replay_eligibility_result_sha256,
+    replay_observation_evidence_sha256, replay_reason_category, CostEvidenceKind,
+    EvidenceDisposition, JudgeCalibrationEvidence, ReplayEligibilityRequest,
+    ReplayEligibilityResult, ReplayObservationEvidence, ReplayReasonCategory,
+    POLICY_REPLAY_CONTRACT_SCHEMA_VERSION, TRACE_REPLAY_EVIDENCE_SCHEMA_VERSION,
 };
 use super::run_trace_recorder::RunTrace;
 use crate::provider::redaction::contains_sensitive_patterns;
 
 pub const OFFLINE_EVALUATION_SCHEMA_VERSION: &str = "offline_fusion_evaluation.v1";
-pub const OFFLINE_REPLAY_SCHEMA_VERSION: &str = "offline_policy_replay.v1";
+pub const OFFLINE_REPLAY_SCHEMA_VERSION: &str = "offline_policy_replay.v2";
+pub const LEGACY_OFFLINE_REPLAY_SCHEMA_VERSION: &str = "offline_policy_replay.v1";
 const MAX_OBSERVATIONS: usize = 10_000;
 const MAX_CANDIDATES_PER_TASK_CLASS: usize = 512;
 const MAX_OBSERVATION_COST_USD: f64 = 1_000_000.0;
 const MAX_ID_BYTES: usize = 160;
+const MAX_MEMBER_ENDPOINTS: usize = 64;
+const MAX_OBSERVATION_CANONICAL_BYTES: usize = 1024 * 1024;
+const MAX_REPLAY_REQUEST_CANONICAL_BYTES: usize = 16 * 1024 * 1024;
+const MAX_REPLAY_RESULT_CANONICAL_BYTES: usize = 16 * 1024 * 1024;
 const MIN_JUDGE_CALIBRATION_SAMPLES: usize = 3;
 const MAX_POLICY_CANDIDATES: usize = 32;
+const MAX_POLICY_SELECTIONS_PER_POLICY: usize = 512;
+const MAX_REPORT_TASK_CLASSES: usize = 512;
+const MAX_REPORT_FACTS: usize = MAX_OBSERVATIONS;
+const MAX_REPORT_OUTCOMES: usize = MAX_OBSERVATIONS;
+const MAX_REPORT_COMPARISONS: usize = MAX_OBSERVATIONS;
+const MAX_REPORT_REASON_CODES: usize = 256;
+const MAX_REPORT_JUDGES: usize = 128;
+const MAX_REPORT_JUDGE_PAIRS_PER_JUDGE: usize = 10_000;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct OfflinePolicySelection {
@@ -376,6 +389,8 @@ pub struct TaskClassEvaluation {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct JudgeCalibration {
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub schema_version: String,
     pub judge_endpoint_id: String,
     pub sample_count: usize,
     pub mean_signed_bias: f64,
@@ -551,7 +566,7 @@ impl OfflineEvaluationEngine {
             ));
         }
 
-        let observed_facts = aggregate_replay_facts(&accepted);
+        let observed_facts = aggregate_replay_facts(&accepted)?;
         let Some(current_selection) = request.current_policy.selections.get(&cohort.task_class)
         else {
             return Ok(blocked_replay_report(
@@ -661,10 +676,14 @@ impl OfflineEvaluationEngine {
         let mut ordered = ordered
             .into_iter()
             .map(|observation| {
-                let canonical = canonical_observation(&observation).unwrap_or_default();
-                (observation, canonical)
+                let canonical = canonical_observation(&observation).ok_or_else(|| {
+                    OfflineEvaluationError::validation(vec![
+                        "observation_serialization_failed".to_string()
+                    ])
+                })?;
+                Ok((observation, canonical))
             })
-            .collect::<Vec<_>>();
+            .collect::<Result<Vec<_>, OfflineEvaluationError>>()?;
         ordered.sort_by(|(left, left_canonical), (right, right_canonical)| {
             left.observation_id
                 .cmp(&right.observation_id)
@@ -748,6 +767,11 @@ impl OfflineEvaluationEngine {
 
 fn validate_replay_request(request: &OfflineReplayRequest) -> Vec<String> {
     let mut violations = Vec::new();
+    match canonical_json(request) {
+        Some(canonical) if canonical.len() <= MAX_REPLAY_REQUEST_CANONICAL_BYTES => {}
+        Some(_) => violations.push("replay_request_size_limit_exceeded".to_string()),
+        None => violations.push("replay_request_serialization_failed".to_string()),
+    }
     if request.schema_version != OFFLINE_REPLAY_SCHEMA_VERSION {
         violations.push("invalid_offline_replay_schema".to_string());
     }
@@ -764,6 +788,104 @@ fn validate_replay_request(request: &OfflineReplayRequest) -> Vec<String> {
         violations.push("policy_candidate_limit_exceeded".to_string());
     }
     violations
+}
+
+pub(crate) fn validate_offline_replay_report_bounds(
+    report: &OfflineReplayReport,
+) -> Result<(), String> {
+    if report.reason_codes.len() > MAX_REPORT_REASON_CODES
+        || report.candidate_policies.len() > MAX_POLICY_CANDIDATES
+        || report.observed_facts.len() > MAX_REPORT_FACTS
+        || report.counterfactual_estimates.len() > MAX_REPORT_FACTS
+        || report.comparisons.len() > MAX_REPORT_COMPARISONS
+        || report.outcomes.len() > MAX_REPORT_OUTCOMES
+        || report.replay_judge_calibrations.len() > MAX_REPORT_JUDGES
+        || report.source_trace_ids.len() > MAX_REPORT_FACTS
+        || report.source_evidence_content_sha256.len() > MAX_REPORT_FACTS
+        || report.source_trace_ids.iter().any(|value| !valid_id(value))
+    {
+        return Err("offline_replay_report_cardinality_limit_exceeded".to_string());
+    }
+    let task_classes = report
+        .observed_facts
+        .iter()
+        .map(|facts| facts.task_class.as_str())
+        .collect::<BTreeSet<_>>();
+    if task_classes.len() > MAX_REPORT_TASK_CLASSES {
+        return Err("offline_replay_report_task_class_bound_exceeded".to_string());
+    }
+    for policy in std::iter::once(&report.current_policy).chain(report.candidate_policies.iter()) {
+        if policy.selections.len() > MAX_POLICY_SELECTIONS_PER_POLICY
+            || !valid_id(&policy.policy_id)
+            || !valid_id(&policy.policy_version)
+        {
+            return Err("offline_replay_report_policy_bound_exceeded".to_string());
+        }
+        for (task_class, selection) in &policy.selections {
+            if !valid_id(task_class)
+                || !valid_id(&selection.candidate_id)
+                || !valid_id(&selection.candidate_version)
+            {
+                return Err("offline_replay_report_policy_bound_exceeded".to_string());
+            }
+        }
+    }
+    for facts in &report.observed_facts {
+        if facts.member_endpoint_ids.len() > MAX_MEMBER_ENDPOINTS
+            || facts.trace_ids.len() > MAX_REPORT_FACTS
+            || facts.evidence_content_sha256.len() > MAX_REPORT_FACTS
+            || !valid_id(&facts.task_class)
+            || !valid_id(&facts.candidate_id)
+            || !valid_id(&facts.candidate_version)
+            || facts
+                .member_endpoint_ids
+                .iter()
+                .any(|value| !valid_id(value))
+            || facts.trace_ids.iter().any(|value| !valid_id(value))
+        {
+            return Err("offline_replay_report_fact_bound_exceeded".to_string());
+        }
+    }
+    for estimate in &report.counterfactual_estimates {
+        if estimate.source_trace_ids.len() > MAX_REPORT_FACTS
+            || estimate.source_evidence_content_sha256.len() > MAX_REPORT_FACTS
+            || !valid_id(&estimate.policy_id)
+            || !valid_id(&estimate.policy_version)
+            || !valid_id(&estimate.task_class)
+            || !valid_id(&estimate.source_candidate_id)
+            || !valid_id(&estimate.source_candidate_version)
+            || !valid_id(&estimate.selection.candidate_id)
+            || !valid_id(&estimate.selection.candidate_version)
+            || estimate
+                .source_trace_ids
+                .iter()
+                .any(|value| !valid_id(value))
+        {
+            return Err("offline_replay_report_estimate_bound_exceeded".to_string());
+        }
+    }
+    for outcome in &report.outcomes {
+        if outcome.reason_codes.len() > MAX_REPORT_REASON_CODES
+            || outcome
+                .policy_id
+                .as_deref()
+                .is_some_and(|value| !valid_id(value))
+            || outcome
+                .task_class
+                .as_deref()
+                .is_some_and(|value| !valid_id(value))
+        {
+            return Err("offline_replay_report_outcome_bound_exceeded".to_string());
+        }
+    }
+    for calibration in &report.replay_judge_calibrations {
+        if !valid_id(&calibration.judge_endpoint_id)
+            || calibration.sample_count > MAX_REPORT_JUDGE_PAIRS_PER_JUDGE
+        {
+            return Err("offline_replay_report_calibration_bound_exceeded".to_string());
+        }
+    }
+    Ok(())
 }
 
 fn validate_policy_definition(
@@ -785,6 +907,9 @@ fn validate_policy_definition(
     if policy.selections.is_empty() {
         violations.push(format!("missing_{label}_selection"));
     }
+    if policy.selections.len() > MAX_POLICY_SELECTIONS_PER_POLICY {
+        violations.push(format!("{label}_selection_limit_exceeded"));
+    }
     for (task_class, selection) in &policy.selections {
         if !valid_id(task_class)
             || !valid_id(&selection.candidate_id)
@@ -797,29 +922,25 @@ fn validate_policy_definition(
 }
 
 fn status_for_reasons(reasons: &[String]) -> OfflineReplayStatus {
-    if reasons.iter().any(|reason| {
-        reason.contains("tampered") || reason.contains("malformed") || reason.contains("hash")
-    }) {
-        OfflineReplayStatus::TamperedEvidence
-    } else if reasons
+    let category = reasons
         .iter()
-        .any(|reason| reason.contains("stale") || reason.contains("future"))
-    {
-        OfflineReplayStatus::StaleEvidence
-    } else if reasons
-        .iter()
-        .any(|reason| reason.contains("calibration") || reason.contains("uncalibrated"))
-    {
-        OfflineReplayStatus::UncalibratedEvidence
-    } else if reasons.iter().any(|reason| reason.contains("cohort")) {
-        OfflineReplayStatus::IncompatibleCohort
-    } else if reasons
-        .iter()
-        .any(|reason| reason.contains("out_of_distribution"))
-    {
-        OfflineReplayStatus::OutOfDistribution
-    } else {
-        OfflineReplayStatus::InsufficientEvidence
+        .map(|reason| match replay_reason_category(reason) {
+            ReplayReasonCategory::Tampered => 6,
+            ReplayReasonCategory::Stale => 5,
+            ReplayReasonCategory::Calibration => 4,
+            ReplayReasonCategory::Cohort => 3,
+            ReplayReasonCategory::OutOfDistribution => 2,
+            ReplayReasonCategory::Insufficient => 1,
+        })
+        .max()
+        .unwrap_or(1);
+    match category {
+        6 => OfflineReplayStatus::TamperedEvidence,
+        5 => OfflineReplayStatus::StaleEvidence,
+        4 => OfflineReplayStatus::UncalibratedEvidence,
+        3 => OfflineReplayStatus::IncompatibleCohort,
+        2 => OfflineReplayStatus::OutOfDistribution,
+        _ => OfflineReplayStatus::InsufficientEvidence,
     }
 }
 
@@ -875,7 +996,9 @@ fn blocked_replay_report(
     report
 }
 
-fn aggregate_replay_facts(accepted: &[&ReplayObservationEvidence]) -> Vec<OfflineObservedFacts> {
+fn aggregate_replay_facts(
+    accepted: &[&ReplayObservationEvidence],
+) -> Result<Vec<OfflineObservedFacts>, OfflineEvaluationError> {
     let mut groups = BTreeMap::<(String, String, String, String), ReplayFactAccumulator>::new();
     for evidence in accepted {
         let observation = &evidence.observation;
@@ -913,10 +1036,18 @@ fn aggregate_replay_facts(accepted: &[&ReplayObservationEvidence]) -> Vec<Offlin
             .or_insert_with(|| ReplayFactAccumulator::new(observation))
             .add(observation, &evidence.content_sha256);
     }
-    groups
+    if groups
+        .values()
+        .any(|accumulator| accumulator.token_overflowed)
+    {
+        return Err(OfflineEvaluationError::validation(vec![
+            "token_addition_overflow".to_string(),
+        ]));
+    }
+    Ok(groups
         .into_iter()
         .map(|(key, accumulator)| accumulator.finish(key))
-        .collect()
+        .collect())
 }
 
 #[derive(Debug, Default)]
@@ -932,6 +1063,7 @@ struct ReplayFactAccumulator {
     latency_total: f64,
     total_tokens_total: f64,
     retry_total: f64,
+    token_overflowed: bool,
 }
 
 impl ReplayFactAccumulator {
@@ -956,11 +1088,14 @@ impl ReplayFactAccumulator {
         self.tool_success_total += observation.tool_success_score.unwrap_or_default();
         self.cost_total += observation.cost_usd.unwrap_or_default();
         self.latency_total += observation.latency_ms.unwrap_or_default() as f64;
-        self.total_tokens_total += observation
+        match observation
             .input_tokens
             .unwrap_or_default()
-            .saturating_add(observation.output_tokens.unwrap_or_default())
-            as f64;
+            .checked_add(observation.output_tokens.unwrap_or_default())
+        {
+            Some(total) => self.total_tokens_total += total as f64,
+            None => self.token_overflowed = true,
+        }
         self.retry_total += observation.retry_count.unwrap_or_default() as f64;
     }
 
@@ -1100,6 +1235,13 @@ fn finalize_replay_report(report: &mut OfflineReplayReport) {
     report.source_evidence_content_sha256 =
         sorted_unique(std::mem::take(&mut report.source_evidence_content_sha256));
     report.candidate_policies = ordered_policies(&report.candidate_policies);
+    let bounds_valid = match validate_offline_replay_report_bounds(report) {
+        Ok(()) => true,
+        Err(reason) => {
+            report.reason_codes.push(reason);
+            false
+        }
+    };
     report.outcomes.sort_by(|left, right| {
         left.policy_id
             .cmp(&right.policy_id)
@@ -1107,13 +1249,27 @@ fn finalize_replay_report(report: &mut OfflineReplayReport) {
             .then_with(|| status_rank(left.status).cmp(&status_rank(right.status)))
     });
     report.content_sha256.clear();
-    report.content_sha256 =
-        offline_replay_report_sha256(report).expect("offline replay report is serializable");
+    match canonical_json(report) {
+        Some(canonical) if canonical.len() <= MAX_REPLAY_RESULT_CANONICAL_BYTES => {
+            if bounds_valid {
+                report.content_sha256 = hex::encode(Sha256::digest(canonical.as_bytes()));
+            }
+        }
+        Some(_) => report
+            .reason_codes
+            .push("result_size_limit_exceeded".to_string()),
+        None => report
+            .reason_codes
+            .push("serialization_failure".to_string()),
+    }
+    report.reason_codes.sort();
+    report.reason_codes.dedup();
 }
 
 fn canonical_sha256<T: Serialize>(value: &T) -> Option<String> {
-    let bytes = serde_json::to_vec(value).ok()?;
-    Some(hex::encode(Sha256::digest(bytes)))
+    Some(hex::encode(Sha256::digest(
+        canonical_json(value)?.as_bytes(),
+    )))
 }
 
 pub fn offline_replay_report_sha256(
@@ -1328,15 +1484,23 @@ fn calibrate_judges(observations: &[OfflineReplayObservation]) -> Vec<JudgeCalib
             let mean_absolute_error =
                 biases.iter().map(|bias| bias.abs()).sum::<f64>() / denominator;
             JudgeCalibration {
+                schema_version: super::replay_eligibility::JUDGE_CALIBRATION_SCHEMA_VERSION
+                    .to_string(),
                 judge_endpoint_id,
                 sample_count,
                 mean_signed_bias,
                 mean_absolute_error,
                 recommended_score_offset: -mean_signed_bias,
-                status: if sample_count >= MIN_JUDGE_CALIBRATION_SAMPLES {
-                    "calibrated"
-                } else {
+                status: if sample_count < MIN_JUDGE_CALIBRATION_SAMPLES {
                     "insufficient_data"
+                } else if mean_signed_bias.abs()
+                    <= super::replay_eligibility::MAX_JUDGE_ABSOLUTE_BIAS + f64::EPSILON
+                    && mean_absolute_error
+                        <= super::replay_eligibility::MAX_JUDGE_MEAN_ABSOLUTE_ERROR + f64::EPSILON
+                {
+                    "within_tolerance"
+                } else {
+                    "outside_tolerance"
                 }
                 .to_string(),
             }
@@ -1369,6 +1533,9 @@ fn validate_observation(observation: &OfflineReplayObservation) -> Vec<String> {
         .member_endpoint_ids
         .iter()
         .all(|member| valid_id(member));
+    if observation.member_endpoint_ids.len() > MAX_MEMBER_ENDPOINTS {
+        violations.push("member_endpoint_limit_exceeded".to_string());
+    }
     let valid_member_count = match observation.candidate_kind {
         CandidateKind::Endpoint => {
             observation.member_endpoint_ids.len() == 1
@@ -1398,8 +1565,15 @@ fn validate_observation(observation: &OfflineReplayObservation) -> Vec<String> {
             violations.push("invalid_judge_evidence".to_string());
         }
     }
-    if canonical_observation(observation).is_some_and(|value| contains_sensitive_patterns(&value)) {
-        violations.push("sensitive_pattern_detected".to_string());
+    match canonical_observation(observation) {
+        Some(value) if value.len() > MAX_OBSERVATION_CANONICAL_BYTES => {
+            violations.push("observation_size_limit_exceeded".to_string())
+        }
+        Some(value) if contains_sensitive_patterns(&value) => {
+            violations.push("sensitive_pattern_detected".to_string())
+        }
+        Some(_) => {}
+        None => violations.push("observation_serialization_failed".to_string()),
     }
     violations
 }
@@ -1432,4 +1606,140 @@ fn record_rejections(reasons: &mut BTreeMap<String, usize>, violations: &[String
 
 fn record_rejection(reasons: &mut BTreeMap<String, usize>, reason: &str) {
     *reasons.entry(reason.to_string()).or_default() += 1;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn oversized_policy() -> OfflinePolicyDefinition {
+        OfflinePolicyDefinition {
+            schema_version: OFFLINE_REPLAY_SCHEMA_VERSION.to_string(),
+            policy_id: "policy".to_string(),
+            policy_version: "v1".to_string(),
+            policy_hash: String::new(),
+            selections: BTreeMap::from([(
+                "task".to_string(),
+                OfflinePolicySelection {
+                    candidate_id: "candidate".to_string(),
+                    candidate_version: "v1".to_string(),
+                    candidate_definition_sha256: "a".repeat(64),
+                },
+            )]),
+        }
+    }
+
+    #[test]
+    fn replay_request_envelope_is_bounded_before_owner_evaluation() {
+        let mut policy = oversized_policy();
+        policy.policy_id = "x".repeat(MAX_REPLAY_REQUEST_CANONICAL_BYTES + 1);
+        let request = OfflineReplayRequest {
+            schema_version: OFFLINE_REPLAY_SCHEMA_VERSION.to_string(),
+            eligibility: ReplayEligibilityRequest {
+                schema_version: POLICY_REPLAY_CONTRACT_SCHEMA_VERSION.to_string(),
+                generated_at: "2026-07-12T00:00:00Z".to_string(),
+                maximum_trace_age_seconds: 300,
+                scope: Default::default(),
+                traces: Vec::new(),
+            },
+            current_policy: policy,
+            candidate_policies: Vec::new(),
+        };
+
+        assert!(validate_replay_request(&request)
+            .iter()
+            .any(|violation| violation == "replay_request_size_limit_exceeded"));
+
+        let mut too_many_selections = oversized_policy();
+        too_many_selections.selections = (0..=MAX_POLICY_SELECTIONS_PER_POLICY)
+            .map(|index| {
+                (
+                    format!("task-{index}"),
+                    OfflinePolicySelection {
+                        candidate_id: "candidate".to_string(),
+                        candidate_version: "v1".to_string(),
+                        candidate_definition_sha256: "a".repeat(64),
+                    },
+                )
+            })
+            .collect();
+        let request = OfflineReplayRequest {
+            current_policy: too_many_selections,
+            ..request
+        };
+        assert!(validate_replay_request(&request)
+            .iter()
+            .any(|violation| violation == "current_policy_selection_limit_exceeded"));
+    }
+
+    #[test]
+    fn replay_result_size_failure_is_explicit_and_non_authorizing() {
+        let mut policy = oversized_policy();
+        policy.policy_id = "x".repeat(MAX_REPLAY_RESULT_CANONICAL_BYTES + 1);
+        let mut report = OfflineReplayReport {
+            schema_version: OFFLINE_REPLAY_SCHEMA_VERSION.to_string(),
+            status: OfflineReplayStatus::Sufficient,
+            reason_codes: Vec::new(),
+            current_policy: policy,
+            candidate_policies: Vec::new(),
+            observed_facts: Vec::new(),
+            counterfactual_estimates: Vec::new(),
+            comparisons: Vec::new(),
+            outcomes: Vec::new(),
+            eligibility_content_sha256: String::new(),
+            replay_judge_calibrations: Vec::new(),
+            source_trace_ids: Vec::new(),
+            source_evidence_content_sha256: Vec::new(),
+            shadow_only: true,
+            influence_selected_tier: false,
+            influence_executor_type: false,
+            influence_retry_path: false,
+            influence_routing_policy: false,
+            content_sha256: String::new(),
+        };
+
+        finalize_replay_report(&mut report);
+
+        assert!(report.content_sha256.is_empty());
+        assert!(report
+            .reason_codes
+            .contains(&"result_size_limit_exceeded".to_string()));
+    }
+
+    #[test]
+    fn replay_report_cardinality_is_bounded_before_downstream_use() {
+        let mut report = OfflineReplayReport {
+            schema_version: OFFLINE_REPLAY_SCHEMA_VERSION.to_string(),
+            status: OfflineReplayStatus::InsufficientEvidence,
+            reason_codes: Vec::new(),
+            current_policy: oversized_policy(),
+            candidate_policies: Vec::new(),
+            observed_facts: Vec::new(),
+            counterfactual_estimates: Vec::new(),
+            comparisons: Vec::new(),
+            outcomes: Vec::new(),
+            eligibility_content_sha256: String::new(),
+            replay_judge_calibrations: Vec::new(),
+            source_trace_ids: (0..=MAX_REPORT_FACTS)
+                .map(|index| format!("trace-{index}"))
+                .collect(),
+            source_evidence_content_sha256: Vec::new(),
+            shadow_only: true,
+            influence_selected_tier: false,
+            influence_executor_type: false,
+            influence_retry_path: false,
+            influence_routing_policy: false,
+            content_sha256: String::new(),
+        };
+
+        assert_eq!(
+            validate_offline_replay_report_bounds(&report),
+            Err("offline_replay_report_cardinality_limit_exceeded".to_string())
+        );
+        finalize_replay_report(&mut report);
+        assert!(report
+            .reason_codes
+            .contains(&"offline_replay_report_cardinality_limit_exceeded".to_string()));
+        assert!(report.content_sha256.is_empty());
+    }
 }

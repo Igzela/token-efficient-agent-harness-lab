@@ -6,8 +6,8 @@ pub(super) enum Dialect {
     Postgres,
 }
 
-pub(super) const CURRENT_SQLITE_SCHEMA_VERSION: i64 = 20;
-pub(super) const CURRENT_POSTGRES_SCHEMA_VERSION: i64 = 20;
+pub(super) const CURRENT_SQLITE_SCHEMA_VERSION: i64 = 21;
+pub(super) const CURRENT_POSTGRES_SCHEMA_VERSION: i64 = 21;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) struct SchemaMigration {
@@ -96,6 +96,10 @@ pub(super) const SQLITE_MIGRATIONS: &[SchemaMigration] = &[
         version: 20,
         description: "add offline replay evidence artifacts",
     },
+    SchemaMigration {
+        version: 21,
+        description: "bind dispatch history to immutable recorder-owned trace hashes",
+    },
 ];
 
 pub(super) const POSTGRES_MIGRATIONS: &[SchemaMigration] = SQLITE_MIGRATIONS;
@@ -123,7 +127,9 @@ CREATE TABLE IF NOT EXISTS dispatch_history (
     output_tokens INTEGER,
     estimated_cost_usd REAL,
     executor_type TEXT NOT NULL DEFAULT 'noop',
-    latency_ms INTEGER
+    latency_ms INTEGER,
+    trace_schema_version TEXT,
+    trace_content_sha256 TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_dispatch_history_created ON dispatch_history(created_at);
 CREATE INDEX IF NOT EXISTS idx_dispatch_history_dispatch_id ON dispatch_history(dispatch_id);
@@ -590,7 +596,9 @@ CREATE TABLE IF NOT EXISTS dispatch_history (
     output_tokens INTEGER,
     estimated_cost_usd DOUBLE PRECISION,
     executor_type TEXT NOT NULL DEFAULT 'noop',
-    latency_ms INTEGER
+    latency_ms INTEGER,
+    trace_schema_version TEXT,
+    trace_content_sha256 TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_dispatch_history_created ON dispatch_history(created_at);
 CREATE INDEX IF NOT EXISTS idx_dispatch_history_dispatch_id ON dispatch_history(dispatch_id);

@@ -438,7 +438,7 @@ impl PromotedAdaptivePolicy {
                 || (self.mean_latency_reduction == 0.0
                     && self.rollout_percentage == 100
                     && self.previous_policy_hash.is_none()))
-            && !contains_sensitive_patterns(&serde_json::to_string(self).unwrap_or_default())
+            && serializable_and_not_sensitive(self)
             && self.policy_hash == expected.policy_hash
     }
 }
@@ -865,6 +865,12 @@ fn valid_id(value: &str) -> bool {
             .chars()
             .all(|character| character.is_ascii_alphanumeric() || "-_.:/@".contains(character))
         && !contains_sensitive_patterns(value)
+}
+
+fn serializable_and_not_sensitive<T: Serialize>(value: &T) -> bool {
+    serde_json::to_string(value)
+        .map(|serialized| !contains_sensitive_patterns(&serialized))
+        .unwrap_or(false)
 }
 
 #[allow(dead_code)]

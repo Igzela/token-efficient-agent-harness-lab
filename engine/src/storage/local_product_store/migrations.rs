@@ -37,6 +37,7 @@ impl LocalProductStore {
                     18 => Self::migrate_v18_add_budget_evidence_artifacts(conn)?,
                     19 => Self::migrate_v19_add_budget_pause_decisions(conn)?,
                     20 => Self::migrate_v20_add_offline_replay_artifacts(conn)?,
+                    21 => Self::migrate_v21_add_dispatch_trace_provenance(conn)?,
                     _ => return Err(format!("unknown migration version: {}", migration.version)),
                 }
                 conn.execute_batch(&format!("PRAGMA user_version = {}", migration.version))
@@ -627,6 +628,22 @@ CREATE INDEX IF NOT EXISTS idx_budget_evidence_artifacts_created ON budget_evide
             CREATE INDEX IF NOT EXISTS idx_offline_replay_artifacts_created ON offline_replay_artifacts(created_at);",
         )
         .map_err(|e| e.to_string())
+    }
+
+    fn migrate_v21_add_dispatch_trace_provenance(conn: &Connection) -> Result<(), String> {
+        if !column_exists(conn, "dispatch_history", "trace_schema_version")? {
+            conn.execute_batch(
+                "ALTER TABLE dispatch_history ADD COLUMN trace_schema_version TEXT;",
+            )
+            .map_err(|e| e.to_string())?;
+        }
+        if !column_exists(conn, "dispatch_history", "trace_content_sha256")? {
+            conn.execute_batch(
+                "ALTER TABLE dispatch_history ADD COLUMN trace_content_sha256 TEXT;",
+            )
+            .map_err(|e| e.to_string())?;
+        }
+        Ok(())
     }
 }
 

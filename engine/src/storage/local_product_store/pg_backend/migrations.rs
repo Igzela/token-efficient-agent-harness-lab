@@ -107,6 +107,12 @@ impl LocalProductStore {
                          CREATE INDEX IF NOT EXISTS idx_offline_replay_artifacts_created
                              ON offline_replay_artifacts(created_at);"
                     }
+                    21 => {
+                        "ALTER TABLE dispatch_history
+                         ADD COLUMN IF NOT EXISTS trace_schema_version TEXT;
+                         ALTER TABLE dispatch_history
+                         ADD COLUMN IF NOT EXISTS trace_content_sha256 TEXT;"
+                    }
                     _ => {
                         return Err(format!(
                             "unknown pg migration version: {}",

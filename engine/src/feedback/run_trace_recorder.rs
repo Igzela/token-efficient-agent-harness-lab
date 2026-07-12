@@ -67,7 +67,8 @@ impl RunTraceRecorder {
 
         let final_status = final_status_from_bundle(bundle);
         let evaluation_status = evaluation_status_from_bundle(bundle);
-        let success = dispatch_success(bundle, &final_status, &evaluation_status);
+        let success =
+            overall_dispatch_success_from_bundle(bundle, &final_status, &evaluation_status);
 
         RunTrace {
             schema_version: RUN_TRACE_SCHEMA_VERSION.to_string(),
@@ -122,6 +123,13 @@ impl RunTraceRecorder {
             "status": status,
             "executor_type": &trace.executor_type,
             "success": trace.success,
+            "execution_status": &trace.execution_status,
+            "execution_terminal": trace.execution_status.as_deref().is_some_and(is_terminal_status),
+            "execution_succeeded": execution_succeeded(trace),
+            "evaluation_status": &trace.evaluation_status,
+            "evaluation_completed": evaluation_completed(Some(&trace.evaluation_status)),
+            "evaluation_passed": evaluation_passed(trace),
+            "overall_success": overall_dispatch_success(trace),
             "latency_ms": trace.latency_ms,
             "cost_usd": if let Some(cost) = trace.estimated_cost_usd {
                 json!(cost)
@@ -397,30 +405,85 @@ fn evaluation_status_from_bundle(bundle: &Value) -> String {
         .to_string()
 }
 
-fn dispatch_success(bundle: &Value, final_status: &str, evaluation_status: &str) -> bool {
-    if bundle
+pub fn overall_dispatch_success_from_bundle(
+    bundle: &Value,
+    final_status: &str,
+    evaluation_status: &str,
+) -> bool {
+    let execution_success = bundle
         .pointer("/execution_result/success")
         .and_then(Value::as_bool)
-        .unwrap_or(false)
-    {
-        return true;
-    }
+        .or_else(|| {
+            execution_outcome(
+                bundle
+                    .pointer("/execution_result/status")
+                    .and_then(Value::as_str),
+            )
+        })
+        .or_else(|| execution_outcome(Some(final_status)));
+    let evaluation_success = evaluation_outcome(Some(evaluation_status));
+    execution_success.unwrap_or(false) && evaluation_success.unwrap_or(false)
+}
 
-    let fs = final_status.to_ascii_lowercase();
-    let es = evaluation_status.to_ascii_lowercase();
-
-    if matches!(
-        fs.as_str(),
-        "failed" | "fail" | "error" | "cancelled" | "timeout" | "timed_out"
-    ) || matches!(es.as_str(), "failed" | "fail" | "error")
-    {
-        return false;
-    }
-
+pub fn is_terminal_status(status: &str) -> bool {
     matches!(
-        fs.as_str(),
-        "completed" | "success" | "succeeded" | "passed"
-    ) || matches!(es.as_str(), "pass" | "passed" | "success" | "succeeded")
+        status.trim().to_ascii_lowercase().as_str(),
+        "completed"
+            | "success"
+            | "succeeded"
+            | "passed"
+            | "failed"
+            | "fail"
+            | "error"
+            | "cancelled"
+            | "timeout"
+            | "timed_out"
+            | "not_executed"
+    )
+}
+
+pub fn execution_outcome(status: Option<&str>) -> Option<bool> {
+    match status?.trim().to_ascii_lowercase().as_str() {
+        "completed" | "success" | "succeeded" | "passed" => Some(true),
+        "failed" | "fail" | "error" | "cancelled" | "timeout" | "timed_out" | "not_executed" => {
+            Some(false)
+        }
+        _ => None,
+    }
+}
+
+pub fn evaluation_outcome(status: Option<&str>) -> Option<bool> {
+    match status?.trim().to_ascii_lowercase().as_str() {
+        "pass" | "passed" | "success" | "succeeded" => Some(true),
+        "fail" | "failed" | "error" | "cancelled" | "timeout" | "timed_out" | "not_executed" => {
+            Some(false)
+        }
+        _ => None,
+    }
+}
+
+pub fn evaluation_completed(status: Option<&str>) -> bool {
+    matches!(
+        status
+            .unwrap_or_default()
+            .trim()
+            .to_ascii_lowercase()
+            .as_str(),
+        "completed" | "pass" | "passed" | "success" | "succeeded" | "fail" | "failed" | "error"
+    )
+}
+
+pub fn execution_succeeded(trace: &RunTrace) -> Option<bool> {
+    execution_outcome(trace.execution_status.as_deref())
+        .or_else(|| execution_outcome(Some(&trace.final_status)))
+}
+
+pub fn evaluation_passed(trace: &RunTrace) -> Option<bool> {
+    evaluation_outcome(Some(&trace.evaluation_status))
+}
+
+pub fn overall_dispatch_success(trace: &RunTrace) -> bool {
+    execution_succeeded(trace).unwrap_or(false) && evaluation_passed(trace).unwrap_or(false)
 }
 
 fn failure_domain_val(bundle: &Value, success: bool) -> Option<String> {
@@ -536,6 +599,61 @@ mod tests {
         assert!(!trace.success);
         assert_eq!(trace.final_status, "failed");
         assert_eq!(trace.failure_domain.as_deref(), Some("unknown"));
+    }
+
+    #[test]
+    fn test_execution_and_evaluation_outcomes_remain_distinct() {
+        let completed_but_failed_evaluation = json!({
+            "dispatch_id": "d-quality-fail",
+            "bundle": {
+                "record": { "final_status": "completed" },
+                "execution_result": {
+                    "status": "completed",
+                    "success": true,
+                    "executor_type": "cli"
+                },
+                "evaluation_result": { "status": "failed" }
+            }
+        });
+        let trace = RunTraceRecorder::record_from_dispatch(&completed_but_failed_evaluation);
+        assert_eq!(execution_succeeded(&trace), Some(true));
+        assert_eq!(evaluation_passed(&trace), Some(false));
+        assert!(!overall_dispatch_success(&trace));
+        assert!(!trace.success);
+
+        let failed_execution_with_evidence = json!({
+            "dispatch_id": "d-timeout",
+            "bundle": {
+                "record": { "final_status": "timed_out" },
+                "execution_result": {
+                    "status": "timeout",
+                    "success": false,
+                    "executor_type": "cli"
+                },
+                "evaluation_result": { "status": "passed" }
+            }
+        });
+        let trace = RunTraceRecorder::record_from_dispatch(&failed_execution_with_evidence);
+        assert_eq!(execution_succeeded(&trace), Some(false));
+        assert_eq!(evaluation_passed(&trace), Some(true));
+        assert!(!overall_dispatch_success(&trace));
+
+        let completed_evaluation_without_pass = json!({
+            "dispatch_id": "d-evaluation-complete",
+            "bundle": {
+                "record": { "final_status": "completed" },
+                "execution_result": {
+                    "status": "completed",
+                    "success": false,
+                    "executor_type": "cli"
+                },
+                "evaluation_result": { "status": "completed" }
+            }
+        });
+        let trace = RunTraceRecorder::record_from_dispatch(&completed_evaluation_without_pass);
+        assert!(evaluation_completed(Some(&trace.evaluation_status)));
+        assert_eq!(evaluation_passed(&trace), None);
+        assert!(!overall_dispatch_success(&trace));
     }
 
     #[test]
