@@ -4,7 +4,7 @@ Operational execution guide for real branches, commits, PRs, CI, review, rollbac
 
 ## Mode Summary
 
-The project validates changes through real repository work. Full Agent Autonomy Mode permits repo-scoped planning and execution when changes are testable, observable, reviewed, CI-gated, and rollbackable.
+The project validates changes through real repository work. Full Agent Autonomy Mode permits repo-scoped planning and execution when changes are testable, observable, reviewed, verification-gated, and rollbackable. Code, runtime, configuration, schema, workflow, release, authority, and external-action changes remain full-CI-gated. Strictly documentation-only changes may use the targeted exception defined below.
 
 Execution-ready packets are the default work units:
 
@@ -42,7 +42,7 @@ The packet in `docs/NEXT_DECISION.md`, current code, merged history, and verifie
 
 | Risk | Typical scope | Required evidence |
 |---|---|---|
-| low | docs, tests, deterministic CI fix, small isolated code | focused check, handoff guard, reviewable diff |
+| low | docs, tests, deterministic CI fix, small isolated code | focused check, handoff guard, reviewable diff; docs-only PRs may use the targeted merge exception |
 | medium | new endpoint/UI/SDK, multi-module read model, bounded behavior change | focused integration tests, full stack, compatibility, rollback |
 | high | auth, provider authority, schema migration, automatic pause/promotion, release trust, recovery | explicit contract, threat/failure review, concurrency/fault tests, full CI, audit, compensation/rollback |
 
@@ -58,7 +58,7 @@ A PR is autonomously merge-eligible only when all are true:
 | packet/slice state | represented truthfully in active docs when state changes |
 | scope | matches goal, owners, decisions, allowed changes, and non-goals |
 | risk | classified with matching focused evidence |
-| CI | every required job completed successfully |
+| CI | every required job completed successfully, unless the final diff qualifies for the strict documentation-only merge exception |
 | handoff guard | pass |
 | review | diff reviewed against architecture, authority, compatibility, security, audit, and rollback |
 | rollback | clear and sufficient |
@@ -66,6 +66,21 @@ A PR is autonomously merge-eligible only when all are true:
 | human objection | none unresolved |
 
 Green CI alone is not permission to merge a misleading, incompatible, or unreviewed change.
+
+## Documentation-Only Merge Exception
+
+A PR may merge before the repository's full CI matrix completes only when its final diff is strictly documentation-only.
+
+All of the following are required:
+
+1. Changed paths are limited to Markdown or plain-text documentation entrypoints and files, such as `README.md`, `AGENTS.md`, `CLAUDE.md`, and `docs/**/*.md`.
+2. The PR changes no code, tests, scripts, GitHub Actions/workflows, configuration, schema, migration, generated artifact, executable file, dependency manifest or lockfile, release artifact, or runtime data.
+3. The PR performs no tag, release, deployment, provider call, target-repository write, or other external mutation.
+4. The final diff has been reviewed and `git diff --check` plus `uv run --no-project python scripts/check_agent_handoff.py` pass. Run any applicable documentation/link validator when the touched surface has one.
+5. The PR has a clear rollback by revert, no unresolved human objection, and no branch-protection rule prevents merging.
+6. Any factual claim about code, runtime behavior, migration success, release state, or prior CI is backed by already verified underlying repository evidence. The docs-only PR itself cannot create that evidence.
+
+This exception is intended for factual synchronization, stale-state cleanup, clarification, pruning, typo/link repair, and documentation-governance changes. If the diff is mixed, generated, executable, security-sensitive outside prose, or uncertain, the normal complete-green-CI gate applies. If later CI reports a docs-specific failure, repair it promptly; do not reinterpret the early merge as proof of unrelated implementation correctness.
 
 ## Feedback Trace Fields
 
@@ -82,7 +97,7 @@ Every product or governance PR should record:
 | `decision_record` | material design decision and authoritative location, when applicable |
 | `packet_contract_check` | pass/fail with deviations explained |
 | `focused_tests` | commands and results |
-| `ci_result` | pass/fail/queued with run ID |
+| `ci_result` | pass/fail/queued with run ID, or docs-only exception plus targeted check results |
 | `handoff_guard_result` | pass/fail |
 | `repair_summary` | root causes and coherent repair attempts |
 | `merge_result` | merged/blocked/pending |
@@ -102,7 +117,7 @@ Stop and report evidence when any occurs:
 5. required human approval, external credentials, or unavailable access blocks validation;
 6. another agent owns conflicting in-progress work that cannot be reconciled safely;
 7. materially contradictory requirements cannot be resolved from code, merged history, tests, and authoritative documents;
-8. required CI remains failed, queued, in progress, or unexpectedly skipped at merge time.
+8. required CI remains failed, queued, in progress, or unexpectedly skipped at merge time, unless the final diff meets every requirement of the strict documentation-only merge exception.
 
 Do not stop merely because a packet is stale, a bounded decision is missing, or an initial implementation failed. Audit, update the contract, repair the root cause, and continue while work remains evidence-driven and rollbackable.
 
@@ -123,9 +138,9 @@ For each coherent packet or slice:
 - [ ] Review the diff against packet, architecture, module ownership, authority, security, compatibility, audit, and rollback
 - [ ] Run `uv run --no-project python scripts/check_agent_handoff.py`
 - [ ] Open or update a PR with accurate feedback trace fields
-- [ ] Wait for every required CI job to complete
+- [ ] Wait for every required CI job to complete, unless the final diff qualifies for the strict documentation-only merge exception
 - [ ] Repair failures at their root cause; do not weaken tests or guards
-- [ ] Merge only when the auto-merge classifier passes
+- [ ] Merge only when the auto-merge classifier or documentation-only exception passes
 - [ ] Refresh `main`, update active state, and continue if the bounded objective includes later packets
 
 ## Verification Baseline
@@ -145,17 +160,17 @@ uv run --no-project python scripts/check_agent_handoff.py
 git diff --check
 ```
 
-Add browser, Docker, migration, release, signing, backup/restore, concurrency, compensation, or fault-specific checks when the change touches those surfaces.
+Add browser, Docker, migration, release, signing, backup/restore, concurrency, compensation, or fault-specific checks when the change touches those surfaces. Strictly documentation-only PRs use the targeted checks in the exception instead of the full baseline unless an additional documentation-specific check is applicable.
 
 ## PR and Merge Policy
 
-Agents may autonomously create and merge scoped PRs when the classifier passes. Do not combine unrelated packets or risk surfaces merely to reduce PR count.
+Agents may autonomously create and merge scoped PRs when the classifier or documentation-only exception passes. Do not combine unrelated packets or risk surfaces merely to reduce PR count.
 
 A bounded objective may span multiple PRs in one session. After each merge, refresh `main`, reconcile active docs and open work, and continue only from the new repository state.
 
 Documentation-only corrections should use a branch/PR by default. Direct-to-main documentation changes are reserved for explicit user authorization and must pass handoff/diff validation.
 
-CI must be completely green. Queued, in-progress, unexpectedly skipped, action-required, or failed CI is not success.
+For any PR that is not strictly documentation-only, CI must be completely green. Queued, in-progress, unexpectedly skipped, action-required, or failed CI is not success. A qualifying docs-only PR may merge after its targeted checks and final review without waiting for the full CI matrix.
 
 ## Documentation Maintenance
 
@@ -177,7 +192,7 @@ Every run reports:
 - packet or slice ID and starting/ending state
 - material decisions made and where they were recorded
 - exact files and behavior changed
-- focused tests and full CI run
+- focused tests and full CI run, or docs-only targeted checks and the observed CI state
 - compatibility, authority, security, and audit result
 - residual risk and rollback
 - merge decision
