@@ -831,6 +831,13 @@ export interface FeedbackTrace {
   node_id?: string | null;
   executor_type?: ExecutorType | string | null;
   success?: boolean | null;
+  execution_status?: string | null;
+  execution_terminal?: boolean | null;
+  execution_succeeded?: boolean | null;
+  evaluation_status?: string | null;
+  evaluation_completed?: boolean | null;
+  evaluation_passed?: boolean | null;
+  overall_success?: boolean | null;
   latency_ms?: number | null;
   cost_usd?: number | null;
   quality_score?: number | null;
@@ -1493,7 +1500,7 @@ export type OfflineReplayStatus =
 export interface OfflineReplayArtifactEnvelope {
   schema_version: "offline_replay_artifact.v1";
   artifact_id: string;
-  report_schema_version: "offline_policy_replay.v1";
+  report_schema_version: "offline_policy_replay.v1" | "offline_policy_replay.v2";
   status: OfflineReplayStatus;
   eligibility_content_sha256: string;
   content_sha256: string;
@@ -1503,6 +1510,8 @@ export interface OfflineReplayArtifactEnvelope {
   provider_calls: "disabled";
   mutation_authority: "none";
   target_repository_writes: "disabled";
+  historical_only?: boolean;
+  authorization?: "none";
   report: Record<string, unknown>;
 }
 

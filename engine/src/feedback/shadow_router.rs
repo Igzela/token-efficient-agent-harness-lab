@@ -1,11 +1,13 @@
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
+use super::offline_evaluation::validate_offline_replay_report_bounds;
 use super::offline_evaluation::{
     offline_replay_report_sha256, OfflineCounterfactualEstimate, OfflineObservedFacts,
     OfflinePolicyComparison, OfflineReplayReport, OfflineReplayStatus,
     OFFLINE_REPLAY_SCHEMA_VERSION,
 };
+use super::replay_eligibility::judge_calibration_is_acceptable;
 use super::run_trace_recorder::RunTrace;
 
 pub const SHADOW_ROUTE_SCHEMA_VERSION: &str = "shadow_route.v1";
@@ -202,7 +204,9 @@ impl ShadowRouter {
             || comparison.influence_retry_path
             || comparison.influence_routing_policy
             || !valid_hash(&comparison.content_sha256)
-            || shadow_replay_comparison_sha256(comparison) != comparison.content_sha256
+            || try_shadow_replay_comparison_sha256(comparison)
+                .map(|hash| hash != comparison.content_sha256)
+                .unwrap_or(true)
         {
             return Err("shadow replay comparison is not hash-valid and shadow-only".to_string());
         }
@@ -243,6 +247,7 @@ fn shadow_policy_comparison(
 }
 
 fn validate_replay_report(report: &OfflineReplayReport) -> Result<(), String> {
+    validate_offline_replay_report_bounds(report)?;
     if report.schema_version != OFFLINE_REPLAY_SCHEMA_VERSION
         || offline_replay_report_sha256(report).map_err(|error| error.to_string())?
             != report.content_sha256
@@ -254,7 +259,36 @@ fn validate_replay_report(report: &OfflineReplayReport) -> Result<(), String> {
     {
         return Err("shadow input report is not a valid immutable offline report".to_string());
     }
+    if !valid_hash(&report.eligibility_content_sha256)
+        || report
+            .source_evidence_content_sha256
+            .iter()
+            .any(|hash| !valid_hash(hash))
+        || report
+            .observed_facts
+            .iter()
+            .flat_map(|fact| fact.evidence_content_sha256.iter())
+            .any(|hash| !valid_hash(hash))
+        || report
+            .counterfactual_estimates
+            .iter()
+            .flat_map(|estimate| estimate.source_evidence_content_sha256.iter())
+            .any(|hash| !valid_hash(hash))
+    {
+        return Err("shadow input report contains invalid source evidence hashes".to_string());
+    }
+    if !report.replay_judge_calibrations.is_empty()
+        && report
+            .replay_judge_calibrations
+            .iter()
+            .any(|calibration| !judge_calibration_is_acceptable(calibration))
+    {
+        return Err("shadow input report has invalid judge calibration".to_string());
+    }
     for policy in std::iter::once(&report.current_policy).chain(report.candidate_policies.iter()) {
+        if policy.schema_version != OFFLINE_REPLAY_SCHEMA_VERSION {
+            return Err("shadow input report contains an invalid policy schema".to_string());
+        }
         if policy.content_sha256().map_err(|error| error.to_string())? != policy.policy_hash {
             return Err("shadow input report contains an invalid policy hash".to_string());
         }
@@ -263,11 +297,16 @@ fn validate_replay_report(report: &OfflineReplayReport) -> Result<(), String> {
 }
 
 pub fn shadow_replay_comparison_sha256(comparison: &ShadowReplayComparison) -> String {
+    try_shadow_replay_comparison_sha256(comparison).unwrap_or_default()
+}
+
+pub fn try_shadow_replay_comparison_sha256(
+    comparison: &ShadowReplayComparison,
+) -> Result<String, String> {
     let mut unsigned = comparison.clone();
     unsigned.content_sha256.clear();
-    hex::encode(Sha256::digest(
-        serde_json::to_vec(&unsigned).expect("shadow comparison is serializable"),
-    ))
+    let bytes = serde_json::to_vec(&unsigned).map_err(|error| error.to_string())?;
+    Ok(hex::encode(Sha256::digest(bytes)))
 }
 
 fn valid_hash(value: &str) -> bool {
@@ -581,5 +620,20 @@ mod tests {
             comparison.reason_codes,
             vec!["candidate_out_of_distribution"]
         );
+    }
+
+    #[test]
+    fn shadow_refuses_outside_tolerance_judge_calibration() {
+        let mut report = replay_report();
+        report.replay_judge_calibrations = vec![crate::feedback::JudgeCalibrationEvidence {
+            schema_version: crate::feedback::JUDGE_CALIBRATION_SCHEMA_VERSION.to_string(),
+            judge_endpoint_id: "judge-1".to_string(),
+            sample_count: 3,
+            mean_signed_bias: 0.9,
+            mean_absolute_error: 0.9,
+            status: "outside_tolerance".to_string(),
+        }];
+        report.content_sha256 = offline_replay_report_sha256(&report).unwrap();
+        assert!(ShadowRouter::compare_replay_report(&report).is_err());
     }
 }

@@ -430,6 +430,107 @@ fn dispatch_history_records_usage_data() {
 }
 
 #[test]
+fn dispatch_history_owner_provenance_survives_restart_and_deduplicates_imports() {
+    let dir = tempdir().unwrap();
+    let path = dir.path().join("owner.db");
+    let store = LocalProductStore::new(&path).unwrap();
+    let bundle = make_bundle_with_usage(
+        "owner-dispatch",
+        "provider",
+        Some(10),
+        Some(5),
+        Some(0.01),
+        Some(20),
+    );
+    store
+        .record_dispatch("{}", "test", &bundle, "actor")
+        .unwrap();
+
+    let ids = vec!["owner-dispatch".to_string(), "owner-dispatch".to_string()];
+    let first = store
+        .trusted_replay_eligibility_request(
+            &ids,
+            "2026-05-29T12:01:00Z",
+            300,
+            engine::feedback::ReplayEvidenceScope::default(),
+        )
+        .unwrap();
+    drop(store);
+    let restarted = LocalProductStore::new(&path).unwrap();
+    let second = restarted
+        .trusted_replay_eligibility_request(
+            &["owner-dispatch".to_string()],
+            "2026-05-29T12:01:00Z",
+            300,
+            engine::feedback::ReplayEvidenceScope::default(),
+        )
+        .unwrap();
+    assert_eq!(first.traces.len(), 1);
+    assert_eq!(first.traces[0].trace, second.traces[0].trace);
+}
+
+#[test]
+fn dispatch_history_owner_tampering_and_missing_binding_are_refused() {
+    let dir = tempdir().unwrap();
+    let path = dir.path().join("owner-tamper.db");
+    {
+        let store = LocalProductStore::new(&path).unwrap();
+        store
+            .record_dispatch(
+                "{}",
+                "test",
+                &make_bundle_with_usage(
+                    "tamper-dispatch",
+                    "provider",
+                    Some(10),
+                    Some(5),
+                    Some(0.01),
+                    Some(20),
+                ),
+                "actor",
+            )
+            .unwrap();
+    }
+    let connection = rusqlite::Connection::open(&path).unwrap();
+    connection
+        .execute(
+            "UPDATE dispatch_history SET bundle_json = ?1 WHERE dispatch_id = ?2",
+            rusqlite::params!["{\"tampered\":true}", "tamper-dispatch"],
+        )
+        .unwrap();
+    drop(connection);
+    let store = LocalProductStore::new(&path).unwrap();
+    let error = store
+        .trusted_replay_eligibility_request(
+            &["tamper-dispatch".to_string()],
+            "2026-05-29T12:01:00Z",
+            300,
+            engine::feedback::ReplayEvidenceScope::default(),
+        )
+        .unwrap_err();
+    assert!(error.contains("untrusted_trace_source"));
+    drop(store);
+    let connection = rusqlite::Connection::open(&path).unwrap();
+    connection
+        .execute(
+            "UPDATE dispatch_history SET trace_content_sha256 = NULL WHERE dispatch_id = ?1",
+            rusqlite::params!["tamper-dispatch"],
+        )
+        .unwrap();
+    drop(connection);
+    let store = LocalProductStore::new(&path).unwrap();
+    let error = store
+        .trusted_replay_eligibility_request(
+            &["tamper-dispatch".to_string()],
+            "2026-05-29T12:01:00Z",
+            300,
+            engine::feedback::ReplayEvidenceScope::default(),
+        )
+        .unwrap_err();
+    assert!(error.contains("untrusted_trace_source"));
+}
+
+#[test]
 fn dispatch_history_lists_usage_data() {
     let dir = tempdir().unwrap();
     let store = LocalProductStore::new(dir.path().join("test.db")).unwrap();

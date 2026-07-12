@@ -60,14 +60,15 @@ pub use endpoint_registry::{
     ModelEndpointRegistryError, ModelEndpointRegistrySnapshot, ModelEndpointSpec, RegistryMutation,
     ENDPOINT_REGISTRY_SCHEMA_VERSION,
 };
+pub(crate) use offline_evaluation::validate_offline_replay_report_bounds;
 pub use offline_evaluation::{
     offline_replay_report_sha256, CandidateAggregate, CandidateKind, JudgeCalibration,
     JudgeEvidence, OfflineCounterfactualEstimate, OfflineEvaluationEngine, OfflineEvaluationError,
     OfflineEvaluationReport, OfflineObservedFacts, OfflinePolicyComparison,
     OfflinePolicyDefinition, OfflinePolicySelection, OfflineReplayObservation,
     OfflineReplayOutcome, OfflineReplayReport, OfflineReplayRequest, OfflineReplayStatus,
-    ShadowCandidateRecommendation, TaskClassEvaluation, OFFLINE_EVALUATION_SCHEMA_VERSION,
-    OFFLINE_REPLAY_SCHEMA_VERSION,
+    ShadowCandidateRecommendation, TaskClassEvaluation, LEGACY_OFFLINE_REPLAY_SCHEMA_VERSION,
+    OFFLINE_EVALUATION_SCHEMA_VERSION, OFFLINE_REPLAY_SCHEMA_VERSION,
 };
 pub use outcome_attributor::{OutcomeAttribution, OutcomeAttributor};
 pub use pattern_detector::{DetectedPattern, PatternDetector};
@@ -87,17 +88,24 @@ pub use proposal_serializer::{
 };
 pub use proposal_validator::{ProposalValidator, ValidationResult};
 pub use replay_eligibility::{
-    evaluate_replay_eligibility, replay_eligibility_result_sha256,
-    replay_observation_evidence_sha256, trace_content_sha256, CostEvidenceKind,
-    EvidenceDisposition, JudgeCalibrationEvidence, JudgeReferenceEvidence,
-    NormalizedReplayObservation, ReplayCandidateBinding, ReplayCohort, ReplayCoverage,
-    ReplayEligibilityRequest, ReplayEligibilityResult, ReplayEnvelope, ReplayEvidenceError,
-    ReplayEvidenceReference, ReplayEvidenceScope, ReplayMetricEnvelope, ReplayObservationEvidence,
-    ReplayTraceInput, POLICY_REPLAY_CONTRACT_SCHEMA_VERSION, TRACE_REPLAY_EVIDENCE_SCHEMA_VERSION,
+    evaluate_replay_eligibility, judge_calibration_is_acceptable, replay_eligibility_result_sha256,
+    replay_observation_evidence_sha256, replay_reason_category, replay_rejection_severity,
+    trace_content_sha256, CostEvidenceKind, EvidenceDisposition, JudgeCalibrationEvidence,
+    JudgeReferenceEvidence, NormalizedReplayObservation, ReplayCandidateBinding, ReplayCohort,
+    ReplayCoverage, ReplayEligibilityRequest, ReplayEligibilityResult, ReplayEnvelope,
+    ReplayEvidenceError, ReplayEvidenceReference, ReplayEvidenceScope, ReplayMetricEnvelope,
+    ReplayObservationEvidence, ReplayReasonCategory, ReplayRejectionSeverity, ReplayTraceInput,
+    JUDGE_CALIBRATION_SCHEMA_VERSION, MAX_JUDGE_ABSOLUTE_BIAS, MAX_JUDGE_MEAN_ABSOLUTE_ERROR,
+    POLICY_REPLAY_CONTRACT_SCHEMA_VERSION, TRACE_OWNER_SCHEMA_VERSION,
+    TRACE_REPLAY_EVIDENCE_SCHEMA_VERSION,
 };
-pub use run_trace_recorder::{RunTrace, RunTraceRecorder, RUN_TRACE_SCHEMA_VERSION};
+pub use run_trace_recorder::{
+    evaluation_completed, evaluation_outcome, execution_outcome, execution_succeeded,
+    is_terminal_status, overall_dispatch_success, overall_dispatch_success_from_bundle, RunTrace,
+    RunTraceRecorder, RUN_TRACE_SCHEMA_VERSION,
+};
 pub use shadow_router::{
-    shadow_replay_comparison_sha256, tier_cost_multiplier, ShadowDriftEvidence,
-    ShadowPolicyComparison, ShadowReplayComparison, ShadowRouteOutput, ShadowRouter,
-    SHADOW_REPLAY_COMPARISON_SCHEMA_VERSION, SHADOW_ROUTE_SCHEMA_VERSION,
+    shadow_replay_comparison_sha256, tier_cost_multiplier, try_shadow_replay_comparison_sha256,
+    ShadowDriftEvidence, ShadowPolicyComparison, ShadowReplayComparison, ShadowRouteOutput,
+    ShadowRouter, SHADOW_REPLAY_COMPARISON_SCHEMA_VERSION, SHADOW_ROUTE_SCHEMA_VERSION,
 };

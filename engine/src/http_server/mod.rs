@@ -1475,7 +1475,7 @@ fn append_scorecard_openapi_paths(doc: &mut Value) {
         json!({
             "get": {
                 "summary": "List bounded trace-backed offline replay evidence",
-                "description": "Requires dispatch:read scope. Returns immutable, hash-bound replay reports derived from accepted trace evidence. Results are insufficient or invalid when evidence cannot establish comparability; no provider calls or production mutation are allowed.",
+                "description": "Requires dispatch:read scope. Returns immutable, hash-bound replay reports derived from accepted owner-backed trace evidence. Current v2 reports are eligible for downstream validation; readable v1 historical reports are explicitly non-authorizing. Results are insufficient or invalid when evidence cannot establish comparability; no provider calls or production mutation are allowed.",
                 "parameters": [
                     {"name": "status", "in": "query", "schema": {"type": "string", "enum": ["sufficient", "insufficient_evidence", "incompatible_cohort", "stale_evidence", "tampered_evidence", "uncalibrated_evidence", "out_of_distribution"]}},
                     {"name": "limit", "in": "query", "schema": {"type": "integer", "default": 50, "minimum": 1, "maximum": 100}},
@@ -1490,7 +1490,7 @@ fn append_scorecard_openapi_paths(doc: &mut Value) {
         json!({
             "get": {
                 "summary": "Get one bounded trace-backed offline replay report",
-                "description": "Requires dispatch:read scope. Returns one validated, immutable replay report with source evidence hashes and no mutation authority.",
+                "description": "Requires dispatch:read scope. Returns one validated, immutable replay report with source evidence hashes and no mutation authority. Legacy v1 reports remain historical-only and cannot authorize shadow, canary, or promotion.",
                 "parameters": [path_parameter("artifact_id")],
                 "responses": {"200": {"description": "Offline replay evidence artifact"}, "404": {"description": "Offline replay artifact not found"}}
             }

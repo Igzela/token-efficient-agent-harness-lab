@@ -9080,7 +9080,13 @@ async fn test_cost_of_pass_still_works() {
                 "record": {"dispatch_id": "disp-cop-a", "final_status": "completed"},
                 "decision": {"selected_tier": "balanced_worker", "budget_reservation": {"reserved_cost": 0.10}},
                 "analysis": {"risk_level": "low", "task_class": "code_review"},
-                "execution_result": {"executor_type": "noop", "estimated_cost": 0.05},
+                "execution_result": {
+                    "executor_type": "noop",
+                    "status": "completed",
+                    "success": true,
+                    "estimated_cost": 0.05
+                },
+                "evaluation_result": {"status": "pass"},
             }),
             "test",
         )
@@ -9094,7 +9100,13 @@ async fn test_cost_of_pass_still_works() {
                 "record": {"dispatch_id": "disp-cop-b", "final_status": "completed"},
                 "decision": {"selected_tier": "balanced_worker", "budget_reservation": {"reserved_cost": 0.08}},
                 "analysis": {"risk_level": "low", "task_class": "code_review"},
-                "execution_result": {"executor_type": "noop", "estimated_cost": 0.03},
+                "execution_result": {
+                    "executor_type": "noop",
+                    "status": "completed",
+                    "success": true,
+                    "estimated_cost": 0.03
+                },
+                "evaluation_result": {"status": "pass"},
             }),
             "test",
         )

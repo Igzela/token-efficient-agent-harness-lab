@@ -369,7 +369,7 @@ pub fn validate_canary_decision(decision: &AdaptiveCanaryDecision) -> Result<(),
         || decision.rollback_target != format!("policy:{}", decision.policy_hash)
         || (decision.status == "started") != decision.compensation_required
         || (decision.status == "paused") != decision.paused
-        || contains_sensitive_patterns(&serde_json::to_string(decision).unwrap_or_default())
+        || !serializable_and_not_sensitive(decision)
     {
         return Err("adaptive canary decision is not hash-valid and bounded".to_string());
     }
@@ -406,7 +406,7 @@ fn validate_canary_request(request: &AdaptiveCanaryRequest) -> Vec<String> {
     if request.minimum_evidence == 0 || request.minimum_evidence > MAX_CANARY_EVIDENCE {
         violations.push("invalid_canary_minimum_evidence".to_string());
     }
-    if contains_sensitive_patterns(&serde_json::to_string(request).unwrap_or_default()) {
+    if !serializable_and_not_sensitive(request) {
         violations.push("sensitive_pattern_detected".to_string());
     }
     violations
@@ -423,7 +423,7 @@ fn validate_request(request: &AdaptiveExperimentRequest) -> Vec<String> {
     ) {
         violations.push("invalid_risk_level".to_string());
     }
-    if contains_sensitive_patterns(&serde_json::to_string(request).unwrap_or_default()) {
+    if !serializable_and_not_sensitive(request) {
         violations.push("sensitive_pattern_detected".to_string());
     }
     violations
@@ -472,6 +472,12 @@ fn valid_id(value: &str) -> bool {
 
 fn valid_hash(value: &str) -> bool {
     value.len() == 64 && value.bytes().all(|byte| byte.is_ascii_hexdigit())
+}
+
+fn serializable_and_not_sensitive<T: Serialize>(value: &T) -> bool {
+    serde_json::to_string(value)
+        .map(|serialized| !contains_sensitive_patterns(&serialized))
+        .unwrap_or(false)
 }
 
 fn env_enabled(key: &str) -> bool {

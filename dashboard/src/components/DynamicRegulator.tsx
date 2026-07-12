@@ -671,7 +671,11 @@ export function DynamicRegulator() {
                 <tbody>
                   {replayArtifacts.slice(0, 8).map((artifact) => (
                     <tr key={artifact.artifact_id}>
-                      <td>{artifact.status}</td>
+                      <td>
+                        {artifact.historical_only
+                          ? "historical (not authorizing)"
+                          : artifact.status}
+                      </td>
                       <td>{replayReasonCodes(artifact)}</td>
                       <td>{artifact.content_sha256.slice(0, 12)}…</td>
                       <td>{artifact.created_at}</td>

@@ -4,9 +4,11 @@ use std::collections::BTreeMap;
 
 use super::{append_audit_locked, collect_values, str_at, DatabaseConnection, LocalProductStore};
 use crate::feedback::{
-    serialize_candidate_to_api_response, AutoAdjustmentGuard, AutoAdjustmentPolicy,
-    GeneratedProposalCandidate, OutcomeAttributor, PatternDetector, PolicyCandidate,
-    PolicyProposer, PolicySimulator, PolicySnapshotPreview, RunTraceRecorder,
+    overall_dispatch_success_from_bundle, serialize_candidate_to_api_response,
+    trace_content_sha256, AutoAdjustmentGuard, AutoAdjustmentPolicy, GeneratedProposalCandidate,
+    OutcomeAttributor, PatternDetector, PolicyCandidate, PolicyProposer, PolicySimulator,
+    PolicySnapshotPreview, ReplayEligibilityRequest, ReplayEvidenceScope, ReplayTraceInput,
+    RunTraceRecorder, TRACE_OWNER_SCHEMA_VERSION,
 };
 
 impl LocalProductStore {
@@ -73,6 +75,20 @@ impl LocalProductStore {
                 )
                 .map_err(|e| e.to_string())?;
                 let history_id = conn.last_insert_rowid();
+                let trace = RunTraceRecorder::record_from_bundle(
+                    bundle,
+                    dispatch_id,
+                    Some(history_id),
+                    Some(created_at.to_string()),
+                );
+                let trace_hash = trace_content_sha256(&trace).map_err(|e| e.to_string())?;
+                conn.execute(
+                    "UPDATE dispatch_history
+                     SET trace_schema_version = ?1, trace_content_sha256 = ?2
+                     WHERE history_id = ?3",
+                    params![TRACE_OWNER_SCHEMA_VERSION, trace_hash, history_id],
+                )
+                .map_err(|e| e.to_string())?;
                 append_audit_locked(
                     conn,
                     &self.now(),
@@ -132,6 +148,21 @@ impl LocalProductStore {
                     )
                     .map_err(|e| e.to_string())?;
                 let history_id: i64 = row.get(0);
+                let trace = RunTraceRecorder::record_from_bundle(
+                    bundle,
+                    dispatch_id,
+                    Some(history_id),
+                    Some(created_at.to_string()),
+                );
+                let trace_hash = trace_content_sha256(&trace).map_err(|e| e.to_string())?;
+                client
+                    .execute(
+                        "UPDATE dispatch_history
+                         SET trace_schema_version = $1, trace_content_sha256 = $2
+                         WHERE history_id = $3",
+                        &[&TRACE_OWNER_SCHEMA_VERSION, &trace_hash, &history_id],
+                    )
+                    .map_err(|e| e.to_string())?;
                 let now = self.now();
                 let details = json!({"history_id": history_id, "request_source": request_source}).to_string();
                 client
@@ -309,6 +340,92 @@ impl LocalProductStore {
         }
     }
 
+    /// Build replay input only from immutable, owner-bound dispatch history.
+    /// Raw trace imports never enter this path and old rows without the v21
+    /// binding are refused as `untrusted_trace_source`.
+    pub fn trusted_replay_eligibility_request(
+        &self,
+        dispatch_ids: &[String],
+        generated_at: impl Into<String>,
+        maximum_trace_age_seconds: u64,
+        scope: ReplayEvidenceScope,
+    ) -> Result<ReplayEligibilityRequest, String> {
+        let mut ids = dispatch_ids.to_vec();
+        ids.sort();
+        ids.dedup();
+        if ids.is_empty() {
+            return Err("untrusted_trace_source: no dispatch owner records".to_string());
+        }
+        if ids.len() > 10_000 {
+            return Err("observation_limit_exceeded".to_string());
+        }
+        let mut traces = Vec::with_capacity(ids.len());
+        match &self.db {
+            DatabaseConnection::Sqlite(_) => self.with_conn(|conn| {
+                for dispatch_id in &ids {
+                    let row = conn
+                        .query_row(
+                            "SELECT history_id, dispatch_id, created_at, bundle_json,
+                                    trace_schema_version, trace_content_sha256
+                             FROM dispatch_history
+                             WHERE dispatch_id = ?1
+                             ORDER BY history_id DESC
+                             LIMIT 1",
+                            params![dispatch_id],
+                            |row| {
+                                Ok((
+                                    row.get::<_, i64>(0)?,
+                                    row.get::<_, String>(1)?,
+                                    row.get::<_, String>(2)?,
+                                    row.get::<_, String>(3)?,
+                                    row.get::<_, Option<String>>(4)?,
+                                    row.get::<_, Option<String>>(5)?,
+                                ))
+                            },
+                        )
+                        .map_err(|e| format!("untrusted_trace_source: {e}"))?;
+                    traces.push(trusted_trace_from_owner_row(row)?);
+                }
+                Ok(())
+            })?,
+            #[cfg(feature = "pg")]
+            DatabaseConnection::Pg(_) => self.with_pg_conn(|client| {
+                for dispatch_id in &ids {
+                    let row = client
+                        .query_opt(
+                            "SELECT history_id, dispatch_id, created_at, bundle_json,
+                                    trace_schema_version, trace_content_sha256
+                             FROM dispatch_history
+                             WHERE dispatch_id = $1
+                             ORDER BY history_id DESC
+                             LIMIT 1",
+                            &[dispatch_id],
+                        )
+                        .map_err(|e| format!("untrusted_trace_source: {e}"))?
+                        .ok_or_else(|| {
+                            format!("untrusted_trace_source: missing dispatch {dispatch_id}")
+                        })?;
+                    traces.push(trusted_trace_from_owner_row((
+                        row.get::<_, i64>(0),
+                        row.get::<_, String>(1),
+                        row.get::<_, String>(2),
+                        row.get::<_, String>(3),
+                        row.get::<_, Option<String>>(4),
+                        row.get::<_, Option<String>>(5),
+                    ))?);
+                }
+                Ok(())
+            })?,
+        }
+        Ok(ReplayEligibilityRequest {
+            schema_version: crate::feedback::POLICY_REPLAY_CONTRACT_SCHEMA_VERSION.to_string(),
+            generated_at: generated_at.into(),
+            maximum_trace_age_seconds,
+            scope,
+            traces,
+        })
+    }
+
     pub fn dispatch_metrics(&self, limit: i64) -> Result<Value, String> {
         let dispatches = self.dispatches_for_read_models(limit.clamp(0, 500), 0)?;
         let mut totals = MetricBucket::default();
@@ -323,7 +440,8 @@ impl LocalProductStore {
             let task_class = task_class(bundle);
             let final_status = final_status(dispatch, bundle);
             let evaluation_status = evaluation_status(bundle);
-            let success = dispatch_success(bundle, &final_status, &evaluation_status);
+            let success =
+                overall_dispatch_success_from_bundle(bundle, &final_status, &evaluation_status);
 
             totals.ingest(dispatch, bundle, success);
             by_tier
@@ -476,7 +594,8 @@ impl LocalProductStore {
             }
             let final_status = final_status(&dispatch, bundle);
             let evaluation_status = evaluation_status(bundle);
-            let success = dispatch_success(bundle, &final_status, &evaluation_status);
+            let success =
+                overall_dispatch_success_from_bundle(bundle, &final_status, &evaluation_status);
             groups
                 .entry((task_class, selected_tier))
                 .or_default()
@@ -891,6 +1010,42 @@ fn escape_like(value: &str) -> String {
     escaped
 }
 
+type PersistedTraceOwnerRow = (i64, String, String, String, Option<String>, Option<String>);
+
+fn trusted_trace_from_owner_row(row: PersistedTraceOwnerRow) -> Result<ReplayTraceInput, String> {
+    let (history_id, dispatch_id, created_at, bundle_json, schema_version, stored_hash) = row;
+    let schema_version = schema_version
+        .filter(|value| value == TRACE_OWNER_SCHEMA_VERSION)
+        .ok_or_else(|| {
+            "untrusted_trace_source: owner schema is missing or unsupported".to_string()
+        })?;
+    let stored_hash = stored_hash
+        .filter(|value| value.len() == 64 && value.bytes().all(|byte| byte.is_ascii_hexdigit()))
+        .ok_or_else(|| "untrusted_trace_source: owner hash is missing or malformed".to_string())?;
+    let bundle: Value = serde_json::from_str(&bundle_json)
+        .map_err(|e| format!("untrusted_trace_source: malformed owner bundle: {e}"))?;
+    let trace = RunTraceRecorder::record_from_bundle(
+        &bundle,
+        &dispatch_id,
+        Some(history_id),
+        Some(created_at),
+    );
+    if trace.dispatch_id != dispatch_id || trace.history_id != Some(history_id) {
+        return Err("untrusted_trace_source: owner identity mismatch".to_string());
+    }
+    let recomputed_hash = trace_content_sha256(&trace).map_err(|e| e.to_string())?;
+    if recomputed_hash != stored_hash {
+        return Err("untrusted_trace_source: owner record tampered".to_string());
+    }
+    ReplayTraceInput::from_persisted_owner(
+        trace,
+        history_id.to_string(),
+        schema_version,
+        stored_hash,
+    )
+    .map_err(|e| e.to_string())
+}
+
 fn task_class(bundle: &Value) -> String {
     first_str(
         bundle,
@@ -936,35 +1091,6 @@ fn executor_type(dispatch: &Value, bundle: &Value) -> String {
         .or_else(|| str_at(bundle, &["execution_result", "executor_type"]))
         .unwrap_or("unknown")
         .to_string()
-}
-
-fn dispatch_success(bundle: &Value, final_status: &str, evaluation_status: &str) -> bool {
-    if bundle
-        .pointer("/execution_result/success")
-        .and_then(Value::as_bool)
-        .unwrap_or(false)
-    {
-        return true;
-    }
-
-    let final_status = final_status.to_ascii_lowercase();
-    let evaluation_status = evaluation_status.to_ascii_lowercase();
-
-    if matches!(
-        final_status.as_str(),
-        "failed" | "fail" | "error" | "cancelled" | "timeout" | "timed_out"
-    ) || matches!(evaluation_status.as_str(), "failed" | "fail" | "error")
-    {
-        return false;
-    }
-
-    matches!(
-        final_status.as_str(),
-        "completed" | "success" | "succeeded" | "passed"
-    ) || matches!(
-        evaluation_status.as_str(),
-        "pass" | "passed" | "success" | "succeeded"
-    )
 }
 
 fn reserved_cost(dispatch: &Value, bundle: &Value) -> f64 {
