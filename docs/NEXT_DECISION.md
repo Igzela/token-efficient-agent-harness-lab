@@ -4,7 +4,7 @@
 
 The dispatch kernel, V2, Adaptive Fusion AF-0 through AF-7, Agent Runtime AR-0 through AR-6, Trusted Local Autonomous Execution IAE-0 through IAE-3, scorecard integrity hardening, the importer-first external benchmark path, and PE-1 Token Efficiency Regression Lab are complete.
 
-The active direction is the Post-LGB Product Evolution plan. PE-1, PE-2, and PE-3 are complete and acceptance-sealed. PE4-CONTRACT-REPAIR-1 is the active packet; its dependent PE-4 packets are packetized but not started, and PE-5 and PE-6 remain unstarted. This is not AR-7, another LGB ladder, or a second control plane.
+The active direction is the Post-LGB Product Evolution plan. PE-1, PE-2, and PE-3 are complete and acceptance-sealed. PE4-CONTRACT-REPAIR-1 is merged and PE4-OFFLINE-1 is the active packet; later PE-4 packets are packetized but not started, and PE-5 and PE-6 remain unstarted. This is not AR-7, another LGB ladder, or a second control plane.
 
 `docs/NEXT_DECISION.md` is the single forward-plan artifact. Historical detail remains in `docs/ARCHITECTURE_BOOK.md`, archived plans, merged PRs, and repository history.
 
@@ -78,7 +78,7 @@ Normative order is PE-1, PE-2, PE-3, PE-4, PE-5, and PE-6. Do not start PE-3 bef
 | PE-1 | P0 | Token Efficiency Regression Lab | Complete and acceptance-sealed |
 | PE-2 | P0/P1 | Budget Intelligence and Anomaly Auto-Pause | Complete and acceptance-sealed |
 | PE-3 | P1 | Operator Decision Center | Complete and independently acceptance-sealed |
-| PE-4 | P1/P2 | Trace-backed Policy Replay | PE4-CONTRACT-REPAIR-1 is active; no offline replay, read, shadow, canary, or promotion packet is accepted as started |
+| PE-4 | P1/P2 | Trace-backed Policy Replay | PE4-CONTRACT-REPAIR-1 merged; PE4-OFFLINE-1 active; read, shadow, canary, and promotion remain unstarted |
 | PE-5 | P1.5 | Release Provenance | Packetized; inactive unless explicitly activated |
 | PE-6 | P2 | Fault Injection and Recovery Drills | Packetized; blocked on explicit recovery invariants |
 
@@ -340,7 +340,7 @@ PE-3 is complete and acceptance-sealed. PE3-REPAIR-1 corrected observation-time 
 
 ### Packet PE4-CONTRACT-REPAIR-1 — Real trace-backed replay evidence
 
-**State:** `IN_PROGRESS`
+**State:** `COMPLETE`
 
 **Prerequisite:** PE3-CLOSE-1 complete and sufficient versioned trace evidence available from existing owners.
 
@@ -354,17 +354,19 @@ PE-3 is complete and acceptance-sealed. PE3-REPAIR-1 corrected observation-time 
 
 **Acceptance:** Versioned normalized-observation, cohort, coverage, calibration, eligibility, and refusal contracts; trace-hash and contradictory-section tests; a safe adapter into the existing offline evaluator; no silent serialization fallback; no fabricated evidence hash; no live mutation; exact-head full CI. Rollback is a code revert with no migration or cleanup.
 
+**Completion evidence:** PR #197 merged as `d38d31bf17824e1587003268f5d6f58c6ba4afdd` from exact head `0af41d2b26f26f81fc9c7ae95066bfe3d3183cf7`; exact-head CI `29182261087` and post-merge `main` CI `29182505029` passed all seven required jobs. The merged contract derives all eligibility from trace-owner input and keeps the compatibility constructor non-authoritative.
+
 ### Packet PE4-OFFLINE-1 — Deterministic comparable-cohort replay
 
-**State:** `BLOCKED_PREREQUISITE`
+**State:** `IN_PROGRESS`
 
-**Prerequisite:** PE4-CONTRACT-REPAIR-1 merged with post-merge `main` CI green.
+**Prerequisite:** PE4-CONTRACT-REPAIR-1 merged with post-merge `main` CI green (`d38d31bf17824e1587003268f5d6f58c6ba4afdd`, CI `29182505029`).
 
 **Goal:** Evaluate accepted trace-derived cohorts against explicit current and candidate policy descriptions without changing production state.
 
 **Owning paths:** `engine/src/feedback/offline_evaluation.rs`, `engine/src/feedback/policy_simulator.rs`, and focused offline replay tests.
 
-**Contract:** Consume only accepted `trace_replay_evidence.v1` observations and explicit versioned candidate policies. Keep observed facts separate from counterfactual estimates, bind every result to trace hashes and candidate/policy versions, and return deterministic `insufficient_evidence`, `incompatible_cohort`, `stale`, `tampered`, `uncalibrated`, and `out_of_distribution` outcomes. No provider call, substitution, live routing, opaque authority score, or mutation.
+**Contract:** Consume raw `ReplayEligibilityRequest` trace-owner input and derive accepted `trace_replay_evidence.v1` observations inside the existing eligibility owner; callers cannot establish `eligible`, coverage, calibration, or accepted evidence by supplying a result. Compare explicit versioned current and candidate policy definitions while keeping observed facts separate from counterfactual estimates. Bind every report to trace/evidence hashes and candidate/policy versions, and return deterministic `insufficient_evidence`, `incompatible_cohort`, `stale`, `tampered`, `uncalibrated`, and `out_of_distribution` outcomes. No provider call, substitution, live routing, opaque authority score, or mutation.
 
 **Acceptance and rollback:** Comparable task/objective/measurement/policy/member/complexity cohorts, paired coverage, calibrated judge evidence, cost/latency/token/retry envelopes, deterministic ordering, and non-mutation tests pass. Revert the packet; no migration or cleanup.
 
@@ -456,6 +458,6 @@ The agent may define recovery invariants from existing subsystem contracts and t
 
 ## Active Routing
 
-1. Finish PE4-CONTRACT-REPAIR-1 as a separate trace-grounded contract PR; its dependent packets remain blocked until post-merge CI is green.
-2. Execute PE4-OFFLINE-1, PE4-READ-1, PE4-SHADOW-1, PE4-CANARY-1, PE4-PROMOTION-1, and PE4-CLOSE-1 as separate coherent PRs after each prerequisite is merged and verified.
+1. Finish PE4-OFFLINE-1 as a separate deterministic replay PR; later packets remain blocked until its post-merge CI is green.
+2. Execute PE4-READ-1, PE4-SHADOW-1, PE4-CANARY-1, PE4-PROMOTION-1, and PE4-CLOSE-1 as separate coherent PRs after each prerequisite is merged and verified.
 3. Leave PE-5 and PE-6 unstarted.

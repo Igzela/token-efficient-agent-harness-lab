@@ -36,7 +36,7 @@ This repo is a local/small-team self-hosted agent workflow control plane. Rust `
 | Local runner operations | Active: validate, export, import, and inspect bounded scorecard artifacts locally |
 | Runner integration | Storage/API/operator evidence complete; workflow scheduling of local runner validation is implemented via `LocalRunnerValidationExecutor` in stub mode with automatic native scorecard recording on terminal tick |
 | Live provider adapter | Gated ready path: Stub/Fake/Live; Live requires gates, explicit metadata, symbolic credentials, positive pricing, persistent redacted audit, bounded calls/tokens/time/cost, and a kill switch |
-| Post-LGB Product Evolution Plan | PE-1, PE-2, and PE-3 are acceptance-sealed; PE4-CONTRACT-REPAIR-1 is the active packet; PE-5 and PE-6 remain unstarted |
+| Post-LGB Product Evolution Plan | PE-1, PE-2, and PE-3 are acceptance-sealed; PE4-CONTRACT-REPAIR-1 is merged and PE4-OFFLINE-1 is the active packet; PE-5 and PE-6 remain unstarted |
 
 ## Planned Product Evolution Stages
 
@@ -47,7 +47,7 @@ The stages are packetized in `docs/NEXT_DECISION.md`. The agent should execute p
 | PE-1 | P0 | Token Efficiency Regression Lab | Complete and acceptance-sealed |
 | PE-2 | P0/P1 | Budget Intelligence and Anomaly Auto-Pause | Complete and acceptance-sealed |
 | PE-3 | P1 | Operator Decision Center | Complete and independently acceptance-sealed after PE3-REPAIR-1 and PE3-CLOSE-1 |
-| PE-4 | P1/P2 | Trace-backed Policy Replay | PE4-CONTRACT-REPAIR-1 is active; PR #193 remains only a caller-asserted prototype and is not replay evidence |
+| PE-4 | P1/P2 | Trace-backed Policy Replay | PE4-CONTRACT-REPAIR-1 merged; PE4-OFFLINE-1 is active; PR #193 remains only a caller-asserted prototype and is not replay evidence |
 | PE-5 | P1.5 | Release Provenance | Not started; inactive in the current bounded objective |
 | PE-6 | P2 | Fault Injection and Recovery Drills | Not started; blocked on explicit recovery invariants and affected stage prerequisites |
 
@@ -90,7 +90,7 @@ The stages are packetized in `docs/NEXT_DECISION.md`. The agent should execute p
 
 ## Current Gaps
 
-- PE4-CONTRACT-REPAIR-1 is in progress on the dedicated contract branch: `policy_replay_contract.v2`/`trace_replay_evidence.v1` derive normalized evidence from `RunTrace`, validate source hashes and contradictory sections, expose accepted/rejected coverage and actual paired calibration, and fail closed for missing, stale, unpriced, unmeasured, incompatible, OOD, or tampered evidence. The dependent offline/read/shadow/canary/promotion/closeout packets are packetized but not started.
+- PE4-CONTRACT-REPAIR-1 is merged in PR #197: `policy_replay_contract.v2`/`trace_replay_evidence.v1` derive normalized evidence from `RunTrace`, validate source hashes and contradictory sections, expose accepted/rejected coverage and actual paired calibration, and fail closed for missing, stale, unpriced, unmeasured, incompatible, OOD, or tampered evidence. PE4-OFFLINE-1 is active; the dependent read/shadow/canary/promotion/closeout packets are packetized but not started.
 - `policy_simulator.rs` still relies on fixed estimates rather than trace-calibrated replay.
 - SBOM, signing, and provenance attestations are not yet part of the release contract.
 - There is no systematic fault-injection and recovery-drill harness.
@@ -139,10 +139,17 @@ The stages are packetized in `docs/NEXT_DECISION.md`. The agent should execute p
 
 ## PE-4 Contract Repair Evidence
 
-- The active branch replaces the caller-asserted replay gate with `policy_replay_contract.v2` and `trace_replay_evidence.v1` under the existing feedback owner.
+- PR #197 merged the replacement for the caller-asserted replay gate with `policy_replay_contract.v2` and `trace_replay_evidence.v1` under the existing feedback owner.
 - `ReplayTraceInput` verifies a canonical `RunTrace` content hash; normalized observations derive candidate identity/version/definition, task context, policy binding, measurement schema, terminal outcome, measured or posted cost, latency, tokens, retries, quality, and judge/reference pairs from persisted trace sections only.
 - Accepted and rejected evidence, bounded source references, deterministic cohort/coverage/envelope output, actual paired judge calibration, stale/malformed/duplicate/incompatible/missing/unpriced/unmeasured/OOD/tampered reason codes, and `shadow_only` non-mutation are explicit.
-- `OfflineEvaluationEngine::evaluate_trace_evidence` is the safe bridge; the older caller-shaped constructor remains compatibility-only and is not an eligibility or trust source. No migration, HTTP/API/SDK/Dashboard, routing, policy, provider, budget, experiment, pause, promotion, or production-state mutation is part of this packet.
+- `OfflineEvaluationEngine::evaluate_trace_evidence` is the safe bridge; the older caller-shaped constructor remains compatibility-only and is not an eligibility or trust source. PR #197 merged with no migration, HTTP/API/SDK/Dashboard, routing, policy, provider, budget, experiment, pause, promotion, or production-state mutation.
+
+## PE-4 Offline Replay Evidence
+
+- PE4-OFFLINE-1 derives eligibility inside `OfflineEvaluationEngine::replay_policies` from raw `ReplayEligibilityRequest` trace-owner input; callers cannot supply an authoritative `ReplayEligibilityResult`.
+- Explicit versioned current and candidate policy definitions are hash-bound. Reports separate observed facts from comparable-cohort counterfactual estimates and retain source trace/evidence hashes, candidate definitions, policy versions, and a report hash.
+- Deterministic outcomes include sufficient, insufficient, incompatible cohort, stale, tampered, uncalibrated, and out-of-distribution. The replay report is always shadow-only and sets every live-influence flag false; it makes no provider call and mutates no production state.
+- Focused replay tests cover observed/counterfactual separation, determinism, policy binding, source tampering, stale input, and OOD candidate selection. Read/API/SDK/Dashboard persistence and surfaces remain unstarted.
 
 ## Handoff Guard Anchors
 

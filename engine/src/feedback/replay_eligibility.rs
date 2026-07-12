@@ -376,6 +376,26 @@ pub fn trace_content_sha256(trace: &RunTrace) -> Result<String, ReplayEvidenceEr
     Ok(sha256_hex(canonical.as_bytes()))
 }
 
+pub fn replay_observation_evidence_sha256(
+    evidence: &ReplayObservationEvidence,
+) -> Result<String, ReplayEvidenceError> {
+    let mut copy = evidence.clone();
+    copy.content_sha256.clear();
+    hash_value(&copy).ok_or_else(|| ReplayEvidenceError {
+        code: "replay_evidence_serialization_failed".to_string(),
+    })
+}
+
+pub fn replay_eligibility_result_sha256(
+    result: &ReplayEligibilityResult,
+) -> Result<String, ReplayEvidenceError> {
+    let mut copy = result.clone();
+    copy.content_sha256.clear();
+    hash_value(&copy).ok_or_else(|| ReplayEvidenceError {
+        code: "replay_result_serialization_failed".to_string(),
+    })
+}
+
 fn build_observation(
     input: ReplayTraceInput,
     generated_at: Option<DateTime<FixedOffset>>,
@@ -1205,14 +1225,12 @@ fn finalize_observation(evidence: &mut ReplayObservationEvidence) {
     } else {
         EvidenceDisposition::Rejected
     };
-    evidence.content_sha256.clear();
-    evidence.content_sha256 = hash_value(evidence).expect("replay evidence is serializable");
+    evidence.content_sha256 =
+        replay_observation_evidence_sha256(evidence).expect("replay evidence is serializable");
 }
 
 fn hash_result(result: &ReplayEligibilityResult) -> String {
-    let mut copy = result.clone();
-    copy.content_sha256.clear();
-    hash_value(&copy).expect("replay eligibility result is serializable")
+    replay_eligibility_result_sha256(result).expect("replay eligibility result is serializable")
 }
 
 fn hash_value<T: Serialize>(value: &T) -> Option<String> {
