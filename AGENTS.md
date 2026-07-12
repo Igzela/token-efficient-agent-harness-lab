@@ -4,7 +4,7 @@ This repository is the Token-Efficient Agent Harness Lab: a local deterministic 
 
 ## Current State
 
-The Rust `engine/` is the sole runtime, API, and storage implementation. The dispatch kernel, V2 output track, Adaptive Fusion through AF-7, Agent Runtime through AR-6, Trusted Local Autonomous Execution through IAE-3, the importer-first benchmark path, PE-1, PE-2, and PE-3 are complete and acceptance-sealed. PE4-CONTRACT-REPAIR-1 and PE4-OFFLINE-1 are merged; PE4-READ-1 is the active packet, while later PE-4 shadow/canary/promotion/closeout packets remain unstarted, and PE-5 and PE-6 remain unstarted. Later work remains governed by `docs/NEXT_DECISION.md`.
+The Rust `engine/` is the sole runtime, API, and storage implementation. The dispatch kernel, V2 output track, Adaptive Fusion through AF-7, Agent Runtime through AR-6, Trusted Local Autonomous Execution through IAE-3, the importer-first benchmark path, PE-1, PE-2, and PE-3 are complete and acceptance-sealed. PE4-CONTRACT-REPAIR-1, PE4-OFFLINE-1, and PE4-READ-1 are merged; PE4-SHADOW-1 is the active packet, while canary/promotion implementation branches are prepared but not merged. PE4-CLOSE-1, PE-5, and PE-6 remain unstarted. Later work remains governed by `docs/NEXT_DECISION.md`.
 
 Post-R7 wire/type governance hardening implemented: `scripts/check_wire_codegen_drift.sh`.
 
