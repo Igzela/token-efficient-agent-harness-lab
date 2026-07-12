@@ -1,6 +1,6 @@
 # Current Status
 
-Last updated: 2026-07-11.
+Last updated: 2026-07-12.
 
 ## Summary
 
@@ -90,7 +90,7 @@ The stages are packetized in `docs/NEXT_DECISION.md`. The agent should execute p
 
 ## Current Gaps
 
-- PE4-CONTRACT-REPAIR-1 must replace or subordinate the caller-asserted replay prototype with evidence derived from real `RunTrace` and existing feedback/attribution owners.
+- PE4-CONTRACT-REPAIR-1 is in progress on the dedicated contract branch: `policy_replay_contract.v2`/`trace_replay_evidence.v1` derive normalized evidence from `RunTrace`, validate source hashes and contradictory sections, expose accepted/rejected coverage and actual paired calibration, and fail closed for missing, stale, unpriced, unmeasured, incompatible, OOD, or tampered evidence. The dependent offline/read/shadow/canary/promotion/closeout packets are packetized but not started.
 - `policy_simulator.rs` still relies on fixed estimates rather than trace-calibrated replay.
 - SBOM, signing, and provenance attestations are not yet part of the release contract.
 - There is no systematic fault-injection and recovery-drill harness.
@@ -136,6 +136,13 @@ The stages are packetized in `docs/NEXT_DECISION.md`. The agent should execute p
 - the merged repair chain binds mutation actions to store-time freshness, exact queue pages and current state, source identity/hash, action, resource, conflict key, pagination, permission, confirmation, existing audit, owner idempotency, compensation, restart, and rollback behavior;
 - focused evidence covers canonical contracts, precedence/deduplication/conflict, exact source identity, bounded original references without fabricated hashes, expiry/staleness, SQLite/PostgreSQL approval atomicity, blocked Retry and terminal behavior, budget pause/recovery, resume compensation, unsupported actions, concurrent actions, restart, API/OpenAPI, Python/TypeScript SDKs, and the read-only Dashboard;
 - PE3-CLOSE-1 independently re-audited the merged chain and found no remaining PE-3 defect. PE-3 is acceptance-sealed; rollback remains a revert of the individual repair or closeout PRs, with no migration cleanup.
+
+## PE-4 Contract Repair Evidence
+
+- The active branch replaces the caller-asserted replay gate with `policy_replay_contract.v2` and `trace_replay_evidence.v1` under the existing feedback owner.
+- `ReplayTraceInput` verifies a canonical `RunTrace` content hash; normalized observations derive candidate identity/version/definition, task context, policy binding, measurement schema, terminal outcome, measured or posted cost, latency, tokens, retries, quality, and judge/reference pairs from persisted trace sections only.
+- Accepted and rejected evidence, bounded source references, deterministic cohort/coverage/envelope output, actual paired judge calibration, stale/malformed/duplicate/incompatible/missing/unpriced/unmeasured/OOD/tampered reason codes, and `shadow_only` non-mutation are explicit.
+- `OfflineEvaluationEngine::evaluate_trace_evidence` is the safe bridge; the older caller-shaped constructor remains compatibility-only and is not an eligibility or trust source. No migration, HTTP/API/SDK/Dashboard, routing, policy, provider, budget, experiment, pause, promotion, or production-state mutation is part of this packet.
 
 ## Handoff Guard Anchors
 

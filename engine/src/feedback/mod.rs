@@ -80,10 +80,14 @@ pub use proposal_serializer::{
 };
 pub use proposal_validator::{ProposalValidator, ValidationResult};
 pub use replay_eligibility::{
-    evaluate_replay_eligibility, ReplayEligibilityInput, ReplayEligibilityRequest,
-    ReplayEligibilityResult, POLICY_REPLAY_CONTRACT_SCHEMA_VERSION,
+    evaluate_replay_eligibility, trace_content_sha256, CostEvidenceKind, EvidenceDisposition,
+    JudgeCalibrationEvidence, JudgeReferenceEvidence, NormalizedReplayObservation,
+    ReplayCandidateBinding, ReplayCohort, ReplayEligibilityRequest, ReplayEligibilityResult,
+    ReplayEnvelope, ReplayEvidenceError, ReplayEvidenceReference, ReplayEvidenceScope,
+    ReplayMetricEnvelope, ReplayObservationEvidence, ReplayTraceInput,
+    POLICY_REPLAY_CONTRACT_SCHEMA_VERSION, TRACE_REPLAY_EVIDENCE_SCHEMA_VERSION,
 };
-pub use run_trace_recorder::RunTraceRecorder;
+pub use run_trace_recorder::{RunTrace, RunTraceRecorder};
 pub use shadow_router::{
     tier_cost_multiplier, ShadowRouteOutput, ShadowRouter, SHADOW_ROUTE_SCHEMA_VERSION,
 };

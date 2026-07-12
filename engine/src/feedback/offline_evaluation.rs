@@ -5,6 +5,7 @@ use std::fmt;
 use serde::{Deserialize, Serialize};
 
 use super::adaptive_fusion::{objective_weights, ObjectiveProfile};
+use super::replay_eligibility::{CostEvidenceKind, EvidenceDisposition, ReplayObservationEvidence};
 use super::run_trace_recorder::RunTrace;
 use crate::provider::redaction::contains_sensitive_patterns;
 
@@ -47,6 +48,81 @@ pub struct OfflineReplayObservation {
 }
 
 impl OfflineReplayObservation {
+    /// Convert only an accepted trace-derived replay observation into the
+    /// legacy aggregation shape. Caller-supplied candidate definitions and
+    /// coverage claims do not enter this adapter.
+    pub fn from_replay_evidence(
+        evidence: &ReplayObservationEvidence,
+    ) -> Result<Self, OfflineEvaluationError> {
+        if evidence.disposition != EvidenceDisposition::Accepted {
+            return Err(OfflineEvaluationError::validation(vec![
+                "replay_evidence_not_accepted".to_string(),
+            ]));
+        }
+        let observation = &evidence.observation;
+        let (
+            Some(candidate_id),
+            Some(task_class),
+            Some(quality_score),
+            Some(tool_success_score),
+            Some(cost_usd),
+            Some(latency_ms),
+            Some(success),
+        ) = (
+            observation.candidate_id.clone(),
+            observation.task_class.clone(),
+            observation.quality_score,
+            observation.tool_success_score,
+            observation.cost_usd,
+            observation.latency_ms,
+            observation.success,
+        )
+        else {
+            return Err(OfflineEvaluationError::validation(vec![
+                "incomplete_trace_replay_measurements".to_string(),
+            ]));
+        };
+        if !matches!(
+            observation.cost_kind,
+            Some(CostEvidenceKind::Measured | CostEvidenceKind::Posted)
+        ) {
+            return Err(OfflineEvaluationError::validation(vec![
+                "unmeasured_or_unpriced_trace_cost".to_string(),
+            ]));
+        }
+        let candidate_kind = if observation.member_endpoint_ids.len() <= 1 {
+            CandidateKind::Endpoint
+        } else {
+            CandidateKind::Portfolio
+        };
+        let judge_evidence = observation
+            .judge_reference
+            .as_ref()
+            .map(|pair| JudgeEvidence {
+                judge_endpoint_id: pair.judge_endpoint_id.clone(),
+                judge_score: pair.judge_score,
+                reference_score: pair.reference_score,
+            });
+        Ok(Self {
+            schema_version: OFFLINE_EVALUATION_SCHEMA_VERSION.to_string(),
+            observation_id: observation.observation_id.clone(),
+            run_id: observation.dispatch_id.clone(),
+            task_class,
+            candidate_id,
+            candidate_kind,
+            member_endpoint_ids: observation.member_endpoint_ids.clone(),
+            success,
+            quality_score,
+            tool_success_score,
+            cost_usd,
+            latency_ms,
+            judge_evidence,
+        })
+    }
+
+    /// Compatibility adapter for older callers. This remains intentionally
+    /// caller-asserted and must not be used to establish replay eligibility;
+    /// new replay paths must call `from_replay_evidence`.
     #[allow(clippy::too_many_arguments)]
     pub fn from_run_trace(
         trace: &RunTrace,
@@ -191,6 +267,16 @@ impl std::error::Error for OfflineEvaluationError {}
 pub struct OfflineEvaluationEngine;
 
 impl OfflineEvaluationEngine {
+    pub fn evaluate_trace_evidence(
+        evidence: &[ReplayObservationEvidence],
+    ) -> Result<OfflineEvaluationReport, OfflineEvaluationError> {
+        let observations = evidence
+            .iter()
+            .map(OfflineReplayObservation::from_replay_evidence)
+            .collect::<Result<Vec<_>, _>>()?;
+        Self::evaluate(&observations)
+    }
+
     pub fn evaluate(
         observations: &[OfflineReplayObservation],
     ) -> Result<OfflineEvaluationReport, OfflineEvaluationError> {

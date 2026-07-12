@@ -3,7 +3,7 @@ use serde_json::{json, Value};
 
 pub const RUN_TRACE_SCHEMA_VERSION: &str = "feedback_trace.v1";
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct RunTrace {
     pub schema_version: String,
     pub trace_id: String,
