@@ -167,7 +167,9 @@ The stages are packetized in `docs/NEXT_DECISION.md`. The agent should execute p
 
 - Independent closeout re-audited trace grounding, comparability, accepted/rejected coverage, calibration, stale/tampered/unpriced/unmeasured/OOD refusals, offline non-mutation, shadow derivation, canary bounds and gates, promotion chain/guardrails, permissions, confirmation, audit, pause, compensation, restart/idempotency, rollback, API/OpenAPI/SDK/Dashboard read compatibility, and SQLite/PostgreSQL parity.
 - Focused closeout checks passed: CANARY 3/3, PROMOTION 5/5, offline replay 14/14, bounded offline replay HTTP read, and clean SQLite integrity. Existing merged PE3/PE4 tests cover concurrency, restart, migration, PostgreSQL, permission, confirmation, audit, pause, compensation, and rollback paths.
-- PE4-PROMOTION-1 merged at `92b53e9abf2bebd51bddc6c0f7db880edabd396b` from exact head `230dba873365657db9881d7f661fd44a93164b45`; exact-head CI `29185784794` passed all seven jobs. Post-merge main CI `29186024415` is monitored before closeout merge.
+- PE4-PROMOTION-1 merged at `92b53e9abf2bebd51bddc6c0f7db880edabd396b` from exact head `230dba873365657db9881d7f661fd44a93164b45`; exact-head CI `29185784794` passed all seven jobs, and post-merge main CI `29186024415` passed all seven jobs.
+
+- PE4-CLOSE-1 is merged as PR #203 at `008bc8c8879d6e7c9641fec57aa974f98af1c6b5` from exact head `2110676667dd1b57a36bc6f3744016599a02860a`; exact-head CI `29186113263` passed all seven jobs, and final post-merge main CI `29186372526` passed all seven jobs. PE-4 is independently acceptance-sealed; PE-5 and PE-6 remain unstarted.
 
 ## Handoff Guard Anchors
 
