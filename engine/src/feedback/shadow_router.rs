@@ -193,6 +193,21 @@ impl ShadowRouter {
         comparison.content_sha256 = shadow_replay_comparison_sha256(&comparison);
         Ok(comparison)
     }
+
+    pub fn validate_replay_comparison(comparison: &ShadowReplayComparison) -> Result<(), String> {
+        if comparison.schema_version != SHADOW_REPLAY_COMPARISON_SCHEMA_VERSION
+            || !comparison.shadow_only
+            || comparison.influence_selected_tier
+            || comparison.influence_executor_type
+            || comparison.influence_retry_path
+            || comparison.influence_routing_policy
+            || !valid_hash(&comparison.content_sha256)
+            || shadow_replay_comparison_sha256(comparison) != comparison.content_sha256
+        {
+            return Err("shadow replay comparison is not hash-valid and shadow-only".to_string());
+        }
+        Ok(())
+    }
 }
 
 fn shadow_policy_comparison(
@@ -247,12 +262,16 @@ fn validate_replay_report(report: &OfflineReplayReport) -> Result<(), String> {
     Ok(())
 }
 
-fn shadow_replay_comparison_sha256(comparison: &ShadowReplayComparison) -> String {
+pub fn shadow_replay_comparison_sha256(comparison: &ShadowReplayComparison) -> String {
     let mut unsigned = comparison.clone();
     unsigned.content_sha256.clear();
     hex::encode(Sha256::digest(
         serde_json::to_vec(&unsigned).expect("shadow comparison is serializable"),
     ))
+}
+
+fn valid_hash(value: &str) -> bool {
+    value.len() == 64 && value.bytes().all(|byte| byte.is_ascii_hexdigit())
 }
 
 pub fn tier_cost_multiplier(tier: &str) -> f64 {
@@ -511,6 +530,7 @@ mod tests {
             comparisons: vec![comparison],
             outcomes: Vec::new(),
             eligibility_content_sha256: format!("{:064x}", 6),
+            replay_judge_calibrations: Vec::new(),
             source_trace_ids: vec!["trace-actual".to_string(), "trace-candidate".to_string()],
             source_evidence_content_sha256: vec![format!("{:064x}", 4), format!("{:064x}", 5)],
             shadow_only: true,

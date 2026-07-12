@@ -29,9 +29,11 @@ pub use adaptive_candidate::{
     ADAPTIVE_CANDIDATE_SCHEMA_VERSION, ADAPTIVE_CANDIDATE_SET_SCHEMA_VERSION,
 };
 pub use adaptive_experiment::{
-    AdaptiveExperimentController, AdaptiveExperimentDecision, AdaptiveExperimentError,
-    AdaptiveExperimentGate, AdaptiveExperimentLimits, AdaptiveExperimentPolicy,
-    AdaptiveExperimentRequest, ADAPTIVE_EXPERIMENT_SCHEMA_VERSION,
+    adaptive_canary_decision_sha256, validate_canary_decision, AdaptiveCanaryDecision,
+    AdaptiveCanaryRequest, AdaptiveExperimentController, AdaptiveExperimentDecision,
+    AdaptiveExperimentError, AdaptiveExperimentGate, AdaptiveExperimentLimits,
+    AdaptiveExperimentPolicy, AdaptiveExperimentRequest, ADAPTIVE_CANARY_SCHEMA_VERSION,
+    ADAPTIVE_EXPERIMENT_SCHEMA_VERSION,
 };
 pub use adaptive_fusion::{
     AdaptiveFusionPlan, AdaptiveFusionPlanner, DeliberationMode, EndpointScorecard,
@@ -94,7 +96,7 @@ pub use replay_eligibility::{
 };
 pub use run_trace_recorder::{RunTrace, RunTraceRecorder, RUN_TRACE_SCHEMA_VERSION};
 pub use shadow_router::{
-    tier_cost_multiplier, ShadowDriftEvidence, ShadowPolicyComparison, ShadowReplayComparison,
-    ShadowRouteOutput, ShadowRouter, SHADOW_REPLAY_COMPARISON_SCHEMA_VERSION,
-    SHADOW_ROUTE_SCHEMA_VERSION,
+    shadow_replay_comparison_sha256, tier_cost_multiplier, ShadowDriftEvidence,
+    ShadowPolicyComparison, ShadowReplayComparison, ShadowRouteOutput, ShadowRouter,
+    SHADOW_REPLAY_COMPARISON_SCHEMA_VERSION, SHADOW_ROUTE_SCHEMA_VERSION,
 };
