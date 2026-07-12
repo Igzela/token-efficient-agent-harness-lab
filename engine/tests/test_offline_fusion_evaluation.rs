@@ -1,8 +1,13 @@
 use engine::feedback::{
-    CandidateKind, JudgeEvidence, ObjectiveProfile, OfflineEvaluationEngine,
-    OfflineReplayObservation, RunTraceRecorder, OFFLINE_EVALUATION_SCHEMA_VERSION,
+    offline_replay_report_sha256, CandidateKind, JudgeEvidence, ObjectiveProfile,
+    OfflineEvaluationEngine, OfflinePolicyDefinition, OfflinePolicySelection,
+    OfflineReplayObservation, OfflineReplayRequest, OfflineReplayStatus, ReplayEligibilityRequest,
+    ReplayEvidenceScope, ReplayTraceInput, RunTrace, RunTraceRecorder,
+    OFFLINE_EVALUATION_SCHEMA_VERSION, OFFLINE_REPLAY_SCHEMA_VERSION,
+    POLICY_REPLAY_CONTRACT_SCHEMA_VERSION, RUN_TRACE_SCHEMA_VERSION,
 };
 use serde_json::json;
+use std::collections::BTreeMap;
 
 #[allow(clippy::too_many_arguments)]
 fn observation(
@@ -41,6 +46,142 @@ fn assert_close(actual: f64, expected: f64) {
         (actual - expected).abs() < 1e-9,
         "actual={actual}, expected={expected}"
     );
+}
+
+fn replay_hash(value: char) -> String {
+    std::iter::repeat_n(value, 64).collect()
+}
+
+fn trace(candidate_id: &str, index: usize, policy_hash: &str) -> RunTrace {
+    let candidate_definition_sha256 = if candidate_id == "candidate-a" {
+        replay_hash('b')
+    } else {
+        replay_hash('c')
+    };
+    let (quality_score, cost_usd) = if candidate_id == "candidate-a" {
+        (0.8, 0.1)
+    } else {
+        (0.95, 0.3)
+    };
+    RunTrace {
+        schema_version: RUN_TRACE_SCHEMA_VERSION.to_string(),
+        trace_id: format!("trace-{candidate_id}-{index}"),
+        dispatch_id: format!("dispatch-{candidate_id}-{index}"),
+        history_id: Some(index as i64),
+        created_at: Some("2026-07-12T00:00:00Z".to_string()),
+        task_class: "code_generate".to_string(),
+        task_domain: Some("code".to_string()),
+        task_intent: Some("generate".to_string()),
+        selected_tier: candidate_id.to_string(),
+        selected_profile: None,
+        routing_policy: Some("routing-policy".to_string()),
+        complexity_score: Some(0.5),
+        constraints: Vec::new(),
+        human_review_flag: false,
+        retry_policy: None,
+        shadow_routes: Vec::new(),
+        executor_type: "test".to_string(),
+        execution_status: Some("completed".to_string()),
+        latency_ms: Some(100),
+        input_tokens: Some(10),
+        output_tokens: Some(20),
+        estimated_cost_usd: None,
+        reserved_cost: cost_usd,
+        total_cost: cost_usd,
+        retry_count: 0,
+        evaluation_status: "pass".to_string(),
+        final_status: "completed".to_string(),
+        success: true,
+        failure_domain: None,
+        analysis: json!({
+            "task_class": "code_generate",
+            "task_domain": "code",
+            "task_intent": "generate",
+            "objective": "quality",
+            "complexity_bucket": "medium"
+        }),
+        decision: json!({
+            "candidate_id": candidate_id,
+            "selected_tier": candidate_id,
+            "candidate_version": "candidate-v1",
+            "candidate_hash": candidate_definition_sha256,
+            "routing_policy": "routing-policy",
+            "policy_version": "current-policy-v1",
+            "policy_hash": policy_hash,
+            "member_endpoint_ids": [candidate_id]
+        }),
+        execution: json!({
+            "status": "completed",
+            "latency_ms": 100,
+            "input_tokens": 10,
+            "output_tokens": 20,
+            "actual_cost_usd": cost_usd,
+            "retry_count": 0,
+            "success": true
+        }),
+        evaluation: json!({
+            "status": "pass",
+            "measurement_schema_version": "measurements-v1",
+            "quality_score": quality_score,
+            "tool_success_score": 0.95,
+            "quality_score_source": "reference"
+        }),
+    }
+}
+
+fn replay_eligibility_request(policy_hash: &str) -> ReplayEligibilityRequest {
+    let traces = ["candidate-a", "candidate-b"]
+        .into_iter()
+        .flat_map(|candidate_id| {
+            (0..30).map(move |index| {
+                ReplayTraceInput::from_trace(trace(candidate_id, index, policy_hash)).unwrap()
+            })
+        })
+        .collect();
+    ReplayEligibilityRequest {
+        schema_version: POLICY_REPLAY_CONTRACT_SCHEMA_VERSION.to_string(),
+        generated_at: "2026-07-12T00:01:00Z".to_string(),
+        maximum_trace_age_seconds: 300,
+        scope: ReplayEvidenceScope::default(),
+        traces,
+    }
+}
+
+fn policy(
+    policy_id: &str,
+    candidate_id: &str,
+    candidate_definition_sha256: &str,
+) -> OfflinePolicyDefinition {
+    OfflinePolicyDefinition::new(
+        policy_id,
+        if policy_id == "current" {
+            "current-policy-v1"
+        } else {
+            "candidate-policy-v1"
+        },
+        BTreeMap::from([(
+            "code_generate".to_string(),
+            OfflinePolicySelection {
+                candidate_id: candidate_id.to_string(),
+                candidate_version: "candidate-v1".to_string(),
+                candidate_definition_sha256: candidate_definition_sha256.to_string(),
+            },
+        )]),
+    )
+    .unwrap()
+}
+
+fn offline_replay_request() -> OfflineReplayRequest {
+    let candidate_a_hash = replay_hash('b');
+    let candidate_b_hash = replay_hash('c');
+    let current = policy("current", "candidate-a", &candidate_a_hash);
+    let candidate = policy("candidate-policy", "candidate-b", &candidate_b_hash);
+    OfflineReplayRequest {
+        schema_version: OFFLINE_REPLAY_SCHEMA_VERSION.to_string(),
+        eligibility: replay_eligibility_request(&current.policy_hash),
+        current_policy: current,
+        candidate_policies: vec![candidate],
+    }
 }
 
 #[test]
@@ -423,4 +564,104 @@ fn report_is_always_shadow_only_with_zero_live_influence() {
     assert!(!report.influence_executor_type);
     assert!(!report.influence_retry_path);
     assert!(!report.influence_routing_policy);
+}
+
+#[test]
+fn trace_replay_separates_observed_facts_and_counterfactual_estimates() {
+    let request = offline_replay_request();
+    let report = OfflineEvaluationEngine::replay_policies(&request).unwrap();
+
+    assert_eq!(report.status, OfflineReplayStatus::Sufficient);
+    assert_eq!(report.observed_facts.len(), 2);
+    assert_eq!(report.counterfactual_estimates.len(), 1);
+    assert_eq!(report.comparisons.len(), 1);
+    assert_eq!(
+        report.counterfactual_estimates[0].policy_id,
+        "candidate-policy"
+    );
+    assert_eq!(
+        report.counterfactual_estimates[0].estimation_method,
+        "observed_comparable_candidate_cohort"
+    );
+    assert_eq!(
+        report.counterfactual_estimates[0].source_candidate_id,
+        "candidate-b"
+    );
+    assert_close(report.comparisons[0].quality_score_delta, 0.15);
+    assert_close(report.comparisons[0].cost_usd_delta, 0.2);
+    assert!(report.shadow_only);
+    assert!(!report.influence_routing_policy);
+    assert_eq!(report.source_trace_ids.len(), 60);
+    assert!(report
+        .source_trace_ids
+        .contains(&"trace-candidate-a-0".to_string()));
+}
+
+#[test]
+fn trace_replay_is_deterministic_and_policy_hash_bound() {
+    let request = offline_replay_request();
+    let first = OfflineEvaluationEngine::replay_policies(&request).unwrap();
+    let second = OfflineEvaluationEngine::replay_policies(&request).unwrap();
+
+    assert_eq!(first, second);
+    assert_eq!(
+        offline_replay_report_sha256(&first).unwrap(),
+        first.content_sha256
+    );
+    assert_eq!(
+        first.current_policy.policy_hash,
+        request.current_policy.policy_hash
+    );
+    assert_eq!(
+        first.counterfactual_estimates[0].policy_hash,
+        request.candidate_policies[0].policy_hash
+    );
+    assert_eq!(
+        first.counterfactual_estimates[0]
+            .selection
+            .candidate_definition_sha256,
+        replay_hash('c')
+    );
+
+    let mut reordered = request;
+    reordered.candidate_policies = vec![
+        policy("z-policy", "candidate-z", &replay_hash('d')),
+        policy("candidate-policy", "candidate-b", &replay_hash('c')),
+    ];
+    let mut reversed = reordered.clone();
+    reversed.candidate_policies.reverse();
+    assert_eq!(
+        OfflineEvaluationEngine::replay_policies(&reordered).unwrap(),
+        OfflineEvaluationEngine::replay_policies(&reversed).unwrap()
+    );
+}
+
+#[test]
+fn trace_replay_rejects_tampered_evidence_before_estimation() {
+    let mut request = offline_replay_request();
+    request.eligibility.traces[0].trace.evaluation["quality_score"] = json!(0.1);
+
+    let report = OfflineEvaluationEngine::replay_policies(&request).unwrap();
+
+    assert_eq!(report.status, OfflineReplayStatus::TamperedEvidence);
+    assert!(report
+        .reason_codes
+        .contains(&"tampered_evidence".to_string()));
+    assert!(report.counterfactual_estimates.is_empty());
+}
+
+#[test]
+fn trace_replay_exposes_stale_and_out_of_distribution_outcomes() {
+    let mut stale_request = offline_replay_request();
+    stale_request.eligibility.generated_at = "2026-08-12T00:01:00Z".to_string();
+    let stale = OfflineEvaluationEngine::replay_policies(&stale_request).unwrap();
+    assert_eq!(stale.status, OfflineReplayStatus::StaleEvidence);
+
+    let mut ood_request = offline_replay_request();
+    ood_request.candidate_policies = vec![policy("ood-policy", "candidate-z", &replay_hash('d'))];
+    let ood = OfflineEvaluationEngine::replay_policies(&ood_request).unwrap();
+    assert_eq!(ood.status, OfflineReplayStatus::OutOfDistribution);
+    assert!(ood
+        .reason_codes
+        .contains(&"candidate_policy_candidate_not_observed_in_comparable_cohort".to_string()));
 }

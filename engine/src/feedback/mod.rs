@@ -58,9 +58,13 @@ pub use endpoint_registry::{
     ENDPOINT_REGISTRY_SCHEMA_VERSION,
 };
 pub use offline_evaluation::{
-    CandidateAggregate, CandidateKind, JudgeCalibration, JudgeEvidence, OfflineEvaluationEngine,
-    OfflineEvaluationError, OfflineEvaluationReport, OfflineReplayObservation,
+    offline_replay_report_sha256, CandidateAggregate, CandidateKind, JudgeCalibration,
+    JudgeEvidence, OfflineCounterfactualEstimate, OfflineEvaluationEngine, OfflineEvaluationError,
+    OfflineEvaluationReport, OfflineObservedFacts, OfflinePolicyComparison,
+    OfflinePolicyDefinition, OfflinePolicySelection, OfflineReplayObservation,
+    OfflineReplayOutcome, OfflineReplayReport, OfflineReplayRequest, OfflineReplayStatus,
     ShadowCandidateRecommendation, TaskClassEvaluation, OFFLINE_EVALUATION_SCHEMA_VERSION,
+    OFFLINE_REPLAY_SCHEMA_VERSION,
 };
 pub use outcome_attributor::{OutcomeAttribution, OutcomeAttributor};
 pub use pattern_detector::{DetectedPattern, PatternDetector};
@@ -80,14 +84,15 @@ pub use proposal_serializer::{
 };
 pub use proposal_validator::{ProposalValidator, ValidationResult};
 pub use replay_eligibility::{
-    evaluate_replay_eligibility, trace_content_sha256, CostEvidenceKind, EvidenceDisposition,
-    JudgeCalibrationEvidence, JudgeReferenceEvidence, NormalizedReplayObservation,
-    ReplayCandidateBinding, ReplayCohort, ReplayEligibilityRequest, ReplayEligibilityResult,
-    ReplayEnvelope, ReplayEvidenceError, ReplayEvidenceReference, ReplayEvidenceScope,
-    ReplayMetricEnvelope, ReplayObservationEvidence, ReplayTraceInput,
-    POLICY_REPLAY_CONTRACT_SCHEMA_VERSION, TRACE_REPLAY_EVIDENCE_SCHEMA_VERSION,
+    evaluate_replay_eligibility, replay_eligibility_result_sha256,
+    replay_observation_evidence_sha256, trace_content_sha256, CostEvidenceKind,
+    EvidenceDisposition, JudgeCalibrationEvidence, JudgeReferenceEvidence,
+    NormalizedReplayObservation, ReplayCandidateBinding, ReplayCohort, ReplayCoverage,
+    ReplayEligibilityRequest, ReplayEligibilityResult, ReplayEnvelope, ReplayEvidenceError,
+    ReplayEvidenceReference, ReplayEvidenceScope, ReplayMetricEnvelope, ReplayObservationEvidence,
+    ReplayTraceInput, POLICY_REPLAY_CONTRACT_SCHEMA_VERSION, TRACE_REPLAY_EVIDENCE_SCHEMA_VERSION,
 };
-pub use run_trace_recorder::{RunTrace, RunTraceRecorder};
+pub use run_trace_recorder::{RunTrace, RunTraceRecorder, RUN_TRACE_SCHEMA_VERSION};
 pub use shadow_router::{
     tier_cost_multiplier, ShadowRouteOutput, ShadowRouter, SHADOW_ROUTE_SCHEMA_VERSION,
 };

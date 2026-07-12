@@ -3,18 +3,182 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 
 use super::adaptive_fusion::{objective_weights, ObjectiveProfile};
-use super::replay_eligibility::{CostEvidenceKind, EvidenceDisposition, ReplayObservationEvidence};
+use super::replay_eligibility::{
+    evaluate_replay_eligibility, replay_eligibility_result_sha256,
+    replay_observation_evidence_sha256, CostEvidenceKind, EvidenceDisposition,
+    ReplayEligibilityRequest, ReplayEligibilityResult, ReplayObservationEvidence,
+    POLICY_REPLAY_CONTRACT_SCHEMA_VERSION, TRACE_REPLAY_EVIDENCE_SCHEMA_VERSION,
+};
 use super::run_trace_recorder::RunTrace;
 use crate::provider::redaction::contains_sensitive_patterns;
 
 pub const OFFLINE_EVALUATION_SCHEMA_VERSION: &str = "offline_fusion_evaluation.v1";
+pub const OFFLINE_REPLAY_SCHEMA_VERSION: &str = "offline_policy_replay.v1";
 const MAX_OBSERVATIONS: usize = 10_000;
 const MAX_CANDIDATES_PER_TASK_CLASS: usize = 512;
 const MAX_OBSERVATION_COST_USD: f64 = 1_000_000.0;
 const MAX_ID_BYTES: usize = 160;
 const MIN_JUDGE_CALIBRATION_SAMPLES: usize = 3;
+const MAX_POLICY_CANDIDATES: usize = 32;
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct OfflinePolicySelection {
+    pub candidate_id: String,
+    pub candidate_version: String,
+    pub candidate_definition_sha256: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct OfflinePolicyDefinition {
+    pub schema_version: String,
+    pub policy_id: String,
+    pub policy_version: String,
+    pub policy_hash: String,
+    pub selections: BTreeMap<String, OfflinePolicySelection>,
+}
+
+impl OfflinePolicyDefinition {
+    pub fn new(
+        policy_id: impl Into<String>,
+        policy_version: impl Into<String>,
+        selections: BTreeMap<String, OfflinePolicySelection>,
+    ) -> Result<Self, OfflineEvaluationError> {
+        let mut definition = Self {
+            schema_version: OFFLINE_REPLAY_SCHEMA_VERSION.to_string(),
+            policy_id: policy_id.into(),
+            policy_version: policy_version.into(),
+            policy_hash: String::new(),
+            selections,
+        };
+        definition.policy_hash = definition.content_sha256()?;
+        Ok(definition)
+    }
+
+    pub fn content_sha256(&self) -> Result<String, OfflineEvaluationError> {
+        let mut unsigned = self.clone();
+        unsigned.policy_hash.clear();
+        canonical_sha256(&unsigned).ok_or_else(|| {
+            OfflineEvaluationError::validation(vec!["policy_serialization_failed".to_string()])
+        })
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct OfflineReplayRequest {
+    pub schema_version: String,
+    /// Raw trace-owner input. The eligibility result is always derived inside
+    /// `replay_policies`; callers cannot establish replay authority by
+    /// supplying `eligible`, accepted observations, coverage, or calibration.
+    pub eligibility: ReplayEligibilityRequest,
+    pub current_policy: OfflinePolicyDefinition,
+    pub candidate_policies: Vec<OfflinePolicyDefinition>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum OfflineReplayStatus {
+    Sufficient,
+    InsufficientEvidence,
+    IncompatibleCohort,
+    StaleEvidence,
+    TamperedEvidence,
+    UncalibratedEvidence,
+    OutOfDistribution,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct OfflineObservedFacts {
+    pub task_class: String,
+    pub candidate_id: String,
+    pub candidate_version: String,
+    pub candidate_definition_sha256: String,
+    pub member_endpoint_ids: Vec<String>,
+    pub trace_ids: Vec<String>,
+    pub evidence_content_sha256: Vec<String>,
+    pub sample_count: usize,
+    pub success_rate: f64,
+    pub average_quality_score: f64,
+    pub average_tool_success_score: f64,
+    pub average_cost_usd: f64,
+    pub average_latency_ms: f64,
+    pub average_total_tokens: f64,
+    pub average_retry_count: f64,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct OfflineCounterfactualEstimate {
+    pub policy_id: String,
+    pub policy_version: String,
+    pub policy_hash: String,
+    pub task_class: String,
+    pub selection: OfflinePolicySelection,
+    pub source_candidate_id: String,
+    pub source_candidate_version: String,
+    pub source_candidate_definition_sha256: String,
+    pub source_trace_ids: Vec<String>,
+    pub source_evidence_content_sha256: Vec<String>,
+    pub sample_count: usize,
+    pub estimated_success_rate: f64,
+    pub estimated_quality_score: f64,
+    pub estimated_tool_success_score: f64,
+    pub estimated_cost_usd: f64,
+    pub estimated_latency_ms: f64,
+    pub estimated_total_tokens: f64,
+    pub estimated_retry_count: f64,
+    pub estimation_method: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct OfflinePolicyComparison {
+    pub policy_id: String,
+    pub policy_version: String,
+    pub policy_hash: String,
+    pub task_class: String,
+    pub current_observed_candidate_id: String,
+    pub candidate_selection: OfflinePolicySelection,
+    pub current_observed: OfflineObservedFacts,
+    pub counterfactual: OfflineCounterfactualEstimate,
+    pub success_rate_delta: f64,
+    pub quality_score_delta: f64,
+    pub tool_success_score_delta: f64,
+    pub cost_usd_delta: f64,
+    pub latency_ms_delta: f64,
+    pub total_tokens_delta: f64,
+    pub retry_count_delta: f64,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct OfflineReplayOutcome {
+    pub status: OfflineReplayStatus,
+    pub policy_id: Option<String>,
+    pub task_class: Option<String>,
+    pub reason_codes: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct OfflineReplayReport {
+    pub schema_version: String,
+    pub status: OfflineReplayStatus,
+    pub reason_codes: Vec<String>,
+    pub current_policy: OfflinePolicyDefinition,
+    pub candidate_policies: Vec<OfflinePolicyDefinition>,
+    pub observed_facts: Vec<OfflineObservedFacts>,
+    pub counterfactual_estimates: Vec<OfflineCounterfactualEstimate>,
+    pub comparisons: Vec<OfflinePolicyComparison>,
+    pub outcomes: Vec<OfflineReplayOutcome>,
+    pub eligibility_content_sha256: String,
+    pub source_trace_ids: Vec<String>,
+    pub source_evidence_content_sha256: Vec<String>,
+    pub shadow_only: bool,
+    pub influence_selected_tier: bool,
+    pub influence_executor_type: bool,
+    pub influence_retry_path: bool,
+    pub influence_routing_policy: bool,
+    pub content_sha256: String,
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -277,6 +441,208 @@ impl OfflineEvaluationEngine {
         Self::evaluate(&observations)
     }
 
+    pub fn replay_policies(
+        request: &OfflineReplayRequest,
+    ) -> Result<OfflineReplayReport, OfflineEvaluationError> {
+        let violations = validate_replay_request(request);
+        if !violations.is_empty() {
+            return Err(OfflineEvaluationError::validation(violations));
+        }
+
+        let eligibility = evaluate_replay_eligibility(&request.eligibility);
+        let eligibility_hash = replay_eligibility_result_sha256(&eligibility)
+            .map_err(|error| OfflineEvaluationError::validation(vec![error.code]))?;
+        if eligibility_hash != eligibility.content_sha256 {
+            return Ok(blocked_replay_report(
+                request,
+                &eligibility,
+                OfflineReplayStatus::TamperedEvidence,
+                vec!["tampered_replay_result".to_string()],
+                eligibility_hash,
+            ));
+        }
+        if eligibility.schema_version != POLICY_REPLAY_CONTRACT_SCHEMA_VERSION
+            || eligibility.evidence_schema_version != TRACE_REPLAY_EVIDENCE_SCHEMA_VERSION
+        {
+            return Ok(blocked_replay_report(
+                request,
+                &eligibility,
+                OfflineReplayStatus::TamperedEvidence,
+                vec!["invalid_replay_evidence_schema".to_string()],
+                eligibility_hash,
+            ));
+        }
+
+        let accepted = eligibility
+            .observations
+            .iter()
+            .filter(|evidence| evidence.disposition == EvidenceDisposition::Accepted)
+            .collect::<Vec<_>>();
+        if accepted.iter().any(|evidence| {
+            replay_observation_evidence_sha256(evidence)
+                .map(|hash| hash != evidence.content_sha256)
+                .unwrap_or(true)
+        }) {
+            return Ok(blocked_replay_report(
+                request,
+                &eligibility,
+                OfflineReplayStatus::TamperedEvidence,
+                vec!["tampered_replay_observation".to_string()],
+                eligibility_hash,
+            ));
+        }
+
+        if !eligibility.eligible {
+            return Ok(blocked_replay_report(
+                request,
+                &eligibility,
+                status_for_reasons(&eligibility.reason_codes),
+                eligibility.reason_codes.clone(),
+                eligibility_hash,
+            ));
+        }
+
+        let Some(cohort) = eligibility.cohort.as_ref() else {
+            return Ok(blocked_replay_report(
+                request,
+                &eligibility,
+                OfflineReplayStatus::InsufficientEvidence,
+                vec!["missing_replay_cohort".to_string()],
+                eligibility_hash,
+            ));
+        };
+        if accepted.iter().any(|evidence| {
+            let observation = &evidence.observation;
+            let Some(candidate_id) = observation.candidate_id.as_ref() else {
+                return true;
+            };
+            let Some(binding) = cohort.candidate_bindings.get(candidate_id) else {
+                return true;
+            };
+            binding.candidate_version
+                != observation.candidate_version.as_deref().unwrap_or_default()
+                || binding.candidate_definition_sha256
+                    != observation
+                        .candidate_definition_sha256
+                        .as_deref()
+                        .unwrap_or_default()
+                || binding.member_endpoint_ids != observation.member_endpoint_ids
+        }) {
+            return Ok(blocked_replay_report(
+                request,
+                &eligibility,
+                OfflineReplayStatus::IncompatibleCohort,
+                vec!["candidate_binding_mismatch".to_string()],
+                eligibility_hash,
+            ));
+        }
+        if cohort.policy_version.as_deref() != Some(request.current_policy.policy_version.as_str())
+            || cohort.policy_hash.as_deref() != Some(request.current_policy.policy_hash.as_str())
+        {
+            return Ok(blocked_replay_report(
+                request,
+                &eligibility,
+                OfflineReplayStatus::IncompatibleCohort,
+                vec!["current_policy_binding_mismatch".to_string()],
+                eligibility_hash,
+            ));
+        }
+
+        let observed_facts = aggregate_replay_facts(&accepted);
+        let Some(current_selection) = request.current_policy.selections.get(&cohort.task_class)
+        else {
+            return Ok(blocked_replay_report(
+                request,
+                &eligibility,
+                OfflineReplayStatus::OutOfDistribution,
+                vec!["missing_current_policy_selection".to_string()],
+                eligibility_hash,
+            ));
+        };
+        let Some(current_observed) = find_observed_fact(&observed_facts, current_selection) else {
+            return Ok(blocked_replay_report(
+                request,
+                &eligibility,
+                OfflineReplayStatus::OutOfDistribution,
+                vec!["current_policy_candidate_not_observed".to_string()],
+                eligibility_hash,
+            ));
+        };
+
+        let candidate_policies = ordered_policies(&request.candidate_policies);
+        let mut counterfactual_estimates = Vec::new();
+        let mut comparisons = Vec::new();
+        let mut outcomes = Vec::new();
+        for policy in &candidate_policies {
+            let Some(selection) = policy.selections.get(&cohort.task_class) else {
+                outcomes.push(OfflineReplayOutcome {
+                    status: OfflineReplayStatus::OutOfDistribution,
+                    policy_id: Some(policy.policy_id.clone()),
+                    task_class: Some(cohort.task_class.clone()),
+                    reason_codes: vec!["missing_candidate_policy_selection".to_string()],
+                });
+                continue;
+            };
+            let Some(source) = find_observed_fact(&observed_facts, selection) else {
+                outcomes.push(OfflineReplayOutcome {
+                    status: OfflineReplayStatus::OutOfDistribution,
+                    policy_id: Some(policy.policy_id.clone()),
+                    task_class: Some(cohort.task_class.clone()),
+                    reason_codes: vec![
+                        "candidate_policy_candidate_not_observed_in_comparable_cohort".to_string(),
+                    ],
+                });
+                continue;
+            };
+            let estimate = make_counterfactual_estimate(policy, selection, source);
+            comparisons.push(make_policy_comparison(
+                policy,
+                selection,
+                current_observed,
+                &estimate,
+            ));
+            counterfactual_estimates.push(estimate);
+        }
+
+        let mut report = OfflineReplayReport {
+            schema_version: OFFLINE_REPLAY_SCHEMA_VERSION.to_string(),
+            status: if outcomes.is_empty() {
+                OfflineReplayStatus::Sufficient
+            } else {
+                overall_status(&outcomes)
+            },
+            reason_codes: outcomes
+                .iter()
+                .flat_map(|outcome| outcome.reason_codes.iter().cloned())
+                .collect::<BTreeSet<_>>()
+                .into_iter()
+                .collect(),
+            current_policy: request.current_policy.clone(),
+            candidate_policies,
+            observed_facts,
+            counterfactual_estimates,
+            comparisons,
+            outcomes,
+            eligibility_content_sha256: eligibility.content_sha256.clone(),
+            source_trace_ids: accepted
+                .iter()
+                .map(|evidence| evidence.observation.trace_id.clone())
+                .collect(),
+            source_evidence_content_sha256: accepted
+                .iter()
+                .map(|evidence| evidence.content_sha256.clone())
+                .collect(),
+            shadow_only: true,
+            influence_selected_tier: false,
+            influence_executor_type: false,
+            influence_retry_path: false,
+            influence_routing_policy: false,
+            content_sha256: String::new(),
+        };
+        finalize_replay_report(&mut report);
+        Ok(report)
+    }
+
     pub fn evaluate(
         observations: &[OfflineReplayObservation],
     ) -> Result<OfflineEvaluationReport, OfflineEvaluationError> {
@@ -374,6 +740,387 @@ impl OfflineEvaluationEngine {
             influence_routing_policy: false,
         })
     }
+}
+
+fn validate_replay_request(request: &OfflineReplayRequest) -> Vec<String> {
+    let mut violations = Vec::new();
+    if request.schema_version != OFFLINE_REPLAY_SCHEMA_VERSION {
+        violations.push("invalid_offline_replay_schema".to_string());
+    }
+    validate_policy_definition(&request.current_policy, "current_policy", &mut violations);
+    let mut policy_ids = BTreeSet::new();
+    policy_ids.insert(request.current_policy.policy_id.clone());
+    for policy in &request.candidate_policies {
+        validate_policy_definition(policy, "candidate_policy", &mut violations);
+        if !policy_ids.insert(policy.policy_id.clone()) {
+            violations.push("duplicate_policy_identity".to_string());
+        }
+    }
+    if request.candidate_policies.len() > MAX_POLICY_CANDIDATES {
+        violations.push("policy_candidate_limit_exceeded".to_string());
+    }
+    violations
+}
+
+fn validate_policy_definition(
+    policy: &OfflinePolicyDefinition,
+    label: &str,
+    violations: &mut Vec<String>,
+) {
+    if policy.schema_version != OFFLINE_REPLAY_SCHEMA_VERSION {
+        violations.push(format!("invalid_{label}_schema"));
+    }
+    if !valid_id(&policy.policy_id) || !valid_id(&policy.policy_version) {
+        violations.push(format!("invalid_{label}_identity"));
+    }
+    if !valid_hash(&policy.policy_hash) {
+        violations.push(format!("invalid_{label}_hash"));
+    } else if policy.content_sha256().ok().as_deref() != Some(policy.policy_hash.as_str()) {
+        violations.push(format!("tampered_{label}"));
+    }
+    if policy.selections.is_empty() {
+        violations.push(format!("missing_{label}_selection"));
+    }
+    for (task_class, selection) in &policy.selections {
+        if !valid_id(task_class)
+            || !valid_id(&selection.candidate_id)
+            || !valid_id(&selection.candidate_version)
+            || !valid_hash(&selection.candidate_definition_sha256)
+        {
+            violations.push(format!("invalid_{label}_candidate_binding"));
+        }
+    }
+}
+
+fn status_for_reasons(reasons: &[String]) -> OfflineReplayStatus {
+    if reasons.iter().any(|reason| {
+        reason.contains("tampered") || reason.contains("malformed") || reason.contains("hash")
+    }) {
+        OfflineReplayStatus::TamperedEvidence
+    } else if reasons
+        .iter()
+        .any(|reason| reason.contains("stale") || reason.contains("future"))
+    {
+        OfflineReplayStatus::StaleEvidence
+    } else if reasons
+        .iter()
+        .any(|reason| reason.contains("calibration") || reason.contains("uncalibrated"))
+    {
+        OfflineReplayStatus::UncalibratedEvidence
+    } else if reasons.iter().any(|reason| reason.contains("cohort")) {
+        OfflineReplayStatus::IncompatibleCohort
+    } else if reasons
+        .iter()
+        .any(|reason| reason.contains("out_of_distribution"))
+    {
+        OfflineReplayStatus::OutOfDistribution
+    } else {
+        OfflineReplayStatus::InsufficientEvidence
+    }
+}
+
+fn blocked_replay_report(
+    request: &OfflineReplayRequest,
+    eligibility: &ReplayEligibilityResult,
+    status: OfflineReplayStatus,
+    reason_codes: Vec<String>,
+    eligibility_hash: String,
+) -> OfflineReplayReport {
+    let sorted_reasons = sorted_unique(reason_codes);
+    let mut report = OfflineReplayReport {
+        schema_version: OFFLINE_REPLAY_SCHEMA_VERSION.to_string(),
+        status,
+        reason_codes: sorted_reasons.clone(),
+        current_policy: request.current_policy.clone(),
+        candidate_policies: ordered_policies(&request.candidate_policies),
+        observed_facts: Vec::new(),
+        counterfactual_estimates: Vec::new(),
+        comparisons: Vec::new(),
+        outcomes: vec![OfflineReplayOutcome {
+            status,
+            policy_id: None,
+            task_class: None,
+            reason_codes: sorted_reasons,
+        }],
+        eligibility_content_sha256: eligibility.content_sha256.clone(),
+        source_trace_ids: eligibility
+            .observations
+            .iter()
+            .map(|evidence| evidence.observation.trace_id.clone())
+            .collect(),
+        source_evidence_content_sha256: eligibility
+            .observations
+            .iter()
+            .filter(|evidence| valid_hash(&evidence.content_sha256))
+            .map(|evidence| evidence.content_sha256.clone())
+            .collect(),
+        shadow_only: true,
+        influence_selected_tier: false,
+        influence_executor_type: false,
+        influence_retry_path: false,
+        influence_routing_policy: false,
+        content_sha256: String::new(),
+    };
+    report.eligibility_content_sha256 = if eligibility_hash.is_empty() {
+        report.eligibility_content_sha256.clone()
+    } else {
+        eligibility_hash
+    };
+    finalize_replay_report(&mut report);
+    report
+}
+
+fn aggregate_replay_facts(accepted: &[&ReplayObservationEvidence]) -> Vec<OfflineObservedFacts> {
+    let mut groups = BTreeMap::<(String, String, String, String), ReplayFactAccumulator>::new();
+    for evidence in accepted {
+        let observation = &evidence.observation;
+        let Some((task_class, candidate_id, candidate_version, candidate_definition_sha256)) =
+            observation
+                .task_class
+                .clone()
+                .zip(observation.candidate_id.clone())
+                .zip(observation.candidate_version.clone())
+                .zip(observation.candidate_definition_sha256.clone())
+                .map(
+                    |(
+                        ((task_class, candidate_id), candidate_version),
+                        candidate_definition_sha256,
+                    )| {
+                        (
+                            task_class,
+                            candidate_id,
+                            candidate_version,
+                            candidate_definition_sha256,
+                        )
+                    },
+                )
+        else {
+            continue;
+        };
+        let key = (
+            task_class,
+            candidate_id,
+            candidate_version,
+            candidate_definition_sha256,
+        );
+        groups
+            .entry(key)
+            .or_insert_with(|| ReplayFactAccumulator::new(observation))
+            .add(observation, &evidence.content_sha256);
+    }
+    groups
+        .into_iter()
+        .map(|(key, accumulator)| accumulator.finish(key))
+        .collect()
+}
+
+#[derive(Debug, Default)]
+struct ReplayFactAccumulator {
+    member_endpoint_ids: Vec<String>,
+    trace_ids: BTreeSet<String>,
+    evidence_content_sha256: BTreeSet<String>,
+    sample_count: usize,
+    success_count: usize,
+    quality_total: f64,
+    tool_success_total: f64,
+    cost_total: f64,
+    latency_total: f64,
+    total_tokens_total: f64,
+    retry_total: f64,
+}
+
+impl ReplayFactAccumulator {
+    fn new(observation: &super::replay_eligibility::NormalizedReplayObservation) -> Self {
+        Self {
+            member_endpoint_ids: observation.member_endpoint_ids.clone(),
+            ..Self::default()
+        }
+    }
+
+    fn add(
+        &mut self,
+        observation: &super::replay_eligibility::NormalizedReplayObservation,
+        evidence_content_sha256: &str,
+    ) {
+        self.trace_ids.insert(observation.trace_id.clone());
+        self.evidence_content_sha256
+            .insert(evidence_content_sha256.to_string());
+        self.sample_count += 1;
+        self.success_count += usize::from(observation.success.unwrap_or(false));
+        self.quality_total += observation.quality_score.unwrap_or_default();
+        self.tool_success_total += observation.tool_success_score.unwrap_or_default();
+        self.cost_total += observation.cost_usd.unwrap_or_default();
+        self.latency_total += observation.latency_ms.unwrap_or_default() as f64;
+        self.total_tokens_total += observation
+            .input_tokens
+            .unwrap_or_default()
+            .saturating_add(observation.output_tokens.unwrap_or_default())
+            as f64;
+        self.retry_total += observation.retry_count.unwrap_or_default() as f64;
+    }
+
+    fn finish(
+        self,
+        (task_class, candidate_id, candidate_version, candidate_definition_sha256): (
+            String,
+            String,
+            String,
+            String,
+        ),
+    ) -> OfflineObservedFacts {
+        let denominator = self.sample_count as f64;
+        OfflineObservedFacts {
+            task_class,
+            candidate_id,
+            candidate_version,
+            candidate_definition_sha256,
+            member_endpoint_ids: self.member_endpoint_ids,
+            trace_ids: self.trace_ids.into_iter().collect(),
+            evidence_content_sha256: self.evidence_content_sha256.into_iter().collect(),
+            sample_count: self.sample_count,
+            success_rate: self.success_count as f64 / denominator,
+            average_quality_score: self.quality_total / denominator,
+            average_tool_success_score: self.tool_success_total / denominator,
+            average_cost_usd: self.cost_total / denominator,
+            average_latency_ms: self.latency_total / denominator,
+            average_total_tokens: self.total_tokens_total / denominator,
+            average_retry_count: self.retry_total / denominator,
+        }
+    }
+}
+
+fn find_observed_fact<'a>(
+    facts: &'a [OfflineObservedFacts],
+    selection: &OfflinePolicySelection,
+) -> Option<&'a OfflineObservedFacts> {
+    facts.iter().find(|fact| {
+        fact.candidate_id == selection.candidate_id
+            && fact.candidate_version == selection.candidate_version
+            && fact.candidate_definition_sha256 == selection.candidate_definition_sha256
+    })
+}
+
+fn make_counterfactual_estimate(
+    policy: &OfflinePolicyDefinition,
+    selection: &OfflinePolicySelection,
+    source: &OfflineObservedFacts,
+) -> OfflineCounterfactualEstimate {
+    OfflineCounterfactualEstimate {
+        policy_id: policy.policy_id.clone(),
+        policy_version: policy.policy_version.clone(),
+        policy_hash: policy.policy_hash.clone(),
+        task_class: source.task_class.clone(),
+        selection: selection.clone(),
+        source_candidate_id: source.candidate_id.clone(),
+        source_candidate_version: source.candidate_version.clone(),
+        source_candidate_definition_sha256: source.candidate_definition_sha256.clone(),
+        source_trace_ids: source.trace_ids.clone(),
+        source_evidence_content_sha256: source.evidence_content_sha256.clone(),
+        sample_count: source.sample_count,
+        estimated_success_rate: source.success_rate,
+        estimated_quality_score: source.average_quality_score,
+        estimated_tool_success_score: source.average_tool_success_score,
+        estimated_cost_usd: source.average_cost_usd,
+        estimated_latency_ms: source.average_latency_ms,
+        estimated_total_tokens: source.average_total_tokens,
+        estimated_retry_count: source.average_retry_count,
+        estimation_method: "observed_comparable_candidate_cohort".to_string(),
+    }
+}
+
+fn make_policy_comparison(
+    policy: &OfflinePolicyDefinition,
+    selection: &OfflinePolicySelection,
+    current_observed: &OfflineObservedFacts,
+    counterfactual: &OfflineCounterfactualEstimate,
+) -> OfflinePolicyComparison {
+    OfflinePolicyComparison {
+        policy_id: policy.policy_id.clone(),
+        policy_version: policy.policy_version.clone(),
+        policy_hash: policy.policy_hash.clone(),
+        task_class: current_observed.task_class.clone(),
+        current_observed_candidate_id: current_observed.candidate_id.clone(),
+        candidate_selection: selection.clone(),
+        current_observed: current_observed.clone(),
+        counterfactual: counterfactual.clone(),
+        success_rate_delta: counterfactual.estimated_success_rate - current_observed.success_rate,
+        quality_score_delta: counterfactual.estimated_quality_score
+            - current_observed.average_quality_score,
+        tool_success_score_delta: counterfactual.estimated_tool_success_score
+            - current_observed.average_tool_success_score,
+        cost_usd_delta: counterfactual.estimated_cost_usd - current_observed.average_cost_usd,
+        latency_ms_delta: counterfactual.estimated_latency_ms - current_observed.average_latency_ms,
+        total_tokens_delta: counterfactual.estimated_total_tokens
+            - current_observed.average_total_tokens,
+        retry_count_delta: counterfactual.estimated_retry_count
+            - current_observed.average_retry_count,
+    }
+}
+
+fn ordered_policies(policies: &[OfflinePolicyDefinition]) -> Vec<OfflinePolicyDefinition> {
+    let mut ordered = policies.to_vec();
+    ordered.sort_by(|left, right| left.policy_id.cmp(&right.policy_id));
+    ordered
+}
+
+fn overall_status(outcomes: &[OfflineReplayOutcome]) -> OfflineReplayStatus {
+    outcomes
+        .iter()
+        .map(|outcome| outcome.status)
+        .max_by_key(|status| status_rank(*status))
+        .unwrap_or(OfflineReplayStatus::Sufficient)
+}
+
+fn status_rank(status: OfflineReplayStatus) -> u8 {
+    match status {
+        OfflineReplayStatus::Sufficient => 0,
+        OfflineReplayStatus::InsufficientEvidence => 1,
+        OfflineReplayStatus::OutOfDistribution => 2,
+        OfflineReplayStatus::UncalibratedEvidence => 3,
+        OfflineReplayStatus::IncompatibleCohort => 4,
+        OfflineReplayStatus::StaleEvidence => 5,
+        OfflineReplayStatus::TamperedEvidence => 6,
+    }
+}
+
+fn sorted_unique(mut values: Vec<String>) -> Vec<String> {
+    values.sort();
+    values.dedup();
+    values
+}
+
+fn finalize_replay_report(report: &mut OfflineReplayReport) {
+    report.reason_codes = sorted_unique(std::mem::take(&mut report.reason_codes));
+    report.source_trace_ids = sorted_unique(std::mem::take(&mut report.source_trace_ids));
+    report.source_evidence_content_sha256 =
+        sorted_unique(std::mem::take(&mut report.source_evidence_content_sha256));
+    report.candidate_policies = ordered_policies(&report.candidate_policies);
+    report.outcomes.sort_by(|left, right| {
+        left.policy_id
+            .cmp(&right.policy_id)
+            .then_with(|| left.task_class.cmp(&right.task_class))
+            .then_with(|| status_rank(left.status).cmp(&status_rank(right.status)))
+    });
+    report.content_sha256.clear();
+    report.content_sha256 =
+        offline_replay_report_sha256(report).expect("offline replay report is serializable");
+}
+
+fn canonical_sha256<T: Serialize>(value: &T) -> Option<String> {
+    let bytes = serde_json::to_vec(value).ok()?;
+    Some(hex::encode(Sha256::digest(bytes)))
+}
+
+pub fn offline_replay_report_sha256(
+    report: &OfflineReplayReport,
+) -> Result<String, OfflineEvaluationError> {
+    let mut unsigned = report.clone();
+    unsigned.content_sha256.clear();
+    canonical_sha256(&unsigned).ok_or_else(|| {
+        OfflineEvaluationError::validation(vec![
+            "offline_replay_report_serialization_failed".to_string()
+        ])
+    })
 }
 
 #[derive(Debug)]
@@ -662,6 +1409,10 @@ fn valid_id(value: &str) -> bool {
         && value
             .chars()
             .all(|character| character.is_ascii_alphanumeric() || "-_.:/@".contains(character))
+}
+
+fn valid_hash(value: &str) -> bool {
+    value.len() == 64 && value.chars().all(|character| character.is_ascii_hexdigit())
 }
 
 fn normalized(value: f64) -> bool {
