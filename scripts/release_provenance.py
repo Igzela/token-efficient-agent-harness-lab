@@ -1684,88 +1684,6 @@ def _external_verification_entries(value: Any) -> list[Mapping[str, Any]]:
     return []
 
 
-def _external_verification_is_valid(
-    path: Path | None,
-    provenance: Mapping[str, Any],
-    artifact_sha256: str,
-) -> bool:
-    if path is None or not path.is_file() or path.stat().st_size > MAX_JSON_BYTES:
-        return False
-    try:
-        value = read_json(path)
-    except ContractError:
-        return False
-    entries = _external_verification_entries(value)
-    if not entries:
-        return False
-
-    repository = provenance.get("repository")
-    ref = provenance.get("source", {}).get("ref")
-    workflow = provenance.get("workflow", {}).get("path")
-    predicates: set[str] = set()
-    for entry in entries:
-        verification = entry.get("verificationResult")
-        if not isinstance(verification, dict):
-            return False
-        statement = verification.get("statement")
-        signature = verification.get("signature")
-        certificate = signature.get("certificate") if isinstance(signature, dict) else None
-        timestamps = verification.get("verifiedTimestamps")
-        if not isinstance(statement, dict) or not isinstance(certificate, dict):
-            return False
-        if not isinstance(timestamps, list) or not timestamps:
-            return False
-
-        predicate = statement.get("predicateType")
-        if not isinstance(predicate, str):
-            return False
-        predicates.add(predicate)
-        subjects = statement.get("subject")
-        if not isinstance(subjects, list) or not subjects:
-            return False
-        if not any(
-            isinstance(subject, dict)
-            and isinstance(subject.get("digest"), dict)
-            and subject["digest"].get("sha256") == artifact_sha256
-            for subject in subjects
-        ):
-            return False
-
-        if certificate.get("oidcIssuer") != PRODUCTION_ISSUER:
-            return False
-        if certificate.get("sourceRepository") != repository:
-            return False
-        if certificate.get("sourceRepositoryRef") != ref:
-            return False
-        san = certificate.get("subjectAlternativeName")
-        workflow_claim = certificate.get("sourceRepositoryWorkflow")
-        if workflow not in str(san) and workflow not in str(workflow_claim):
-            return False
-
-    return {SLSA_PREDICATE_TYPE, SPDX_PREDICATE_TYPE}.issubset(predicates)
-
-
-def _production_identity_valid(identity: Mapping[str, Any], provenance: Mapping[str, Any]) -> bool:
-    policy = provenance.get("verification_policy", {})
-    repository = provenance.get("repository")
-    workflow = provenance.get("workflow", {}).get("path")
-    ref = provenance.get("source", {}).get("ref")
-    return (
-        identity.get("class") == "production-ephemeral-oidc"
-        and identity.get("issuer") == PRODUCTION_ISSUER
-        and identity.get("repository") == repository
-        and identity.get("workflow") == workflow
-        and identity.get("ref") == ref
-        and identity.get("subject") == f"repo:{repository}:ref:{ref}"
-        and policy.get("production_identity_class") == "production-ephemeral-oidc"
-        and policy.get("issuer") == PRODUCTION_ISSUER
-        and policy.get("repository") == repository
-        and policy.get("workflow") == workflow
-        and ref is not None
-        and str(ref).startswith("refs/tags/v")
-    )
-
-
 def verify_bundle(
     *,
     artifact_path: Path,
@@ -1775,7 +1693,7 @@ def verify_bundle(
     mode: str,
     external_verification_path: Path | None = None,
 ) -> dict[str, Any]:
-    """Verify all local bindings and return a machine-readable fail-closed result."""
+    """Read legacy v1 fixture evidence without granting production authority."""
 
     inputs: dict[str, Any] = {}
     for label, path in (
@@ -1789,6 +1707,10 @@ def verify_bundle(
             inputs[f"{label}_sha256"] = sha256_file(path)
     if external_verification_path is not None and external_verification_path.is_file():
         inputs["external_verification_sha256"] = sha256_file(external_verification_path)
+    if mode != "fixture":
+        return _invalid_result(
+            ["LEGACY_PRODUCTION_VERIFICATION_UNSUPPORTED"], inputs, "unsupported"
+        )
     if not artifact_path.is_file():
         return _invalid_result(["ARTIFACT_EVIDENCE_MISSING"], inputs, "unsupported")
     if not sbom_path.is_file():
@@ -1803,19 +1725,7 @@ def verify_bundle(
         sbom = read_json(sbom_path)
         attestation = read_json(attestation_path)
     except ContractError:
-        # The production actions/attest output is an in-toto bundle. Its
-        # opaque bytes remain digest-bound here; GitHub CLI verification is
-        # the authority for its signature and claims. Fixture mode requires
-        # the normalized JSON form so tests cannot accidentally authorize it.
-        if mode == "production":
-            try:
-                provenance = read_json(provenance_path)
-                sbom = read_json(sbom_path)
-            except ContractError:
-                return _invalid_result(["PROVENANCE_INVALID"], inputs)
-            attestation = {"opaque_production_bundle": True}
-        else:
-            return _invalid_result(["PROVENANCE_INVALID"], inputs)
+        return _invalid_result(["PROVENANCE_INVALID"], inputs)
     if not isinstance(provenance, dict) or not isinstance(sbom, dict):
         return _invalid_result(["PROVENANCE_INVALID"], inputs)
     if provenance.get("schema_version") != SCHEMA_VERSION:
@@ -1979,39 +1889,15 @@ def verify_bundle(
     rollback = provenance.get("rollback", {})
     if not rollback.get("previous_known_good") or not rollback.get("target"):
         reasons.append("ROLLBACK_TARGET_MISSING")
-    if mode == "production" and (
-        rollback.get("previous_known_good") in {"unknown", "not-published-dry-run"}
-        or rollback.get("target") in {"unknown", "not-published-dry-run"}
-    ):
-        reasons.append("ROLLBACK_TARGET_MISSING")
-
-    if mode not in {"fixture", "production"}:
-        reasons.append("SCHEMA_UNSUPPORTED")
-    if mode == "fixture":
-        if identity.get("class") != "fixture":
-            reasons.append("UNTRUSTED_IDENTITY")
-        else:
-            reasons.append("FIXTURE_IDENTITY_NON_AUTHORITATIVE")
+    if identity.get("class") != "fixture":
+        reasons.append("UNTRUSTED_IDENTITY")
     else:
-        if identity.get("class") == "fixture" or not _production_identity_valid(identity, provenance):
-            reasons.append("UNTRUSTED_IDENTITY")
-        if external_verification_path is None or not external_verification_path.is_file():
-            reasons.extend(
-                ["ATTESTATION_NOT_EXTERNALLY_VERIFIED", "EXTERNAL_VERIFICATION_UNAVAILABLE"]
-            )
-        elif not _external_verification_is_valid(
-            external_verification_path, provenance, actual_artifact_sha
-        ):
-            reasons.extend(
-                ["ATTESTATION_NOT_EXTERNALLY_VERIFIED", "EXTERNAL_VERIFICATION_INVALID"]
-            )
+        reasons.append("FIXTURE_IDENTITY_NON_AUTHORITATIVE")
 
     if reasons:
         status = "verified_fixture" if mode == "fixture" and reasons == ["FIXTURE_IDENTITY_NON_AUTHORITATIVE"] else "rejected"
         return _invalid_result(reasons, inputs, status)
-    return _invalid_result(
-        ["VERIFIED_EXTERNAL_EPHEMERAL_IDENTITY"], inputs, "verified"
-    )
+    return _invalid_result(["LEGACY_VERIFICATION_UNSUPPORTED"], inputs, "unsupported")
 
 
 def _metadata_from_args(args: argparse.Namespace, root: Path) -> dict[str, Any]:
@@ -2116,7 +2002,7 @@ def command_create_attestation(args: argparse.Namespace) -> int:
     metadata = read_json(Path(args.metadata))
     artifact = Path(args.artifact)
     sbom = Path(args.sbom)
-    identity = fixture_identity(metadata) if args.identity == "fixture" else production_identity(metadata)
+    identity = fixture_identity(metadata)
     attestation = build_attestation_fixture(
         metadata=metadata,
         artifact_sha256=sha256_file(artifact),
@@ -2340,7 +2226,7 @@ def build_parser() -> argparse.ArgumentParser:
     attestation.add_argument("--artifact", required=True)
     attestation.add_argument("--sbom", required=True)
     attestation.add_argument("--output", required=True)
-    attestation.add_argument("--identity", choices=("fixture", "production"), default="fixture")
+    attestation.add_argument("--identity", choices=("fixture",), default="fixture")
     attestation.set_defaults(function=command_create_attestation)
 
     provenance = subparsers.add_parser("create-provenance")
@@ -2372,7 +2258,7 @@ def build_parser() -> argparse.ArgumentParser:
     verify.add_argument("--sbom", required=True)
     verify.add_argument("--attestation", required=True)
     verify.add_argument("--provenance", required=True)
-    verify.add_argument("--mode", choices=("fixture", "production"), required=True)
+    verify.add_argument("--mode", choices=("fixture",), required=True)
     verify.add_argument("--external-verification")
     verify.add_argument("--output")
     verify.set_defaults(function=command_verify)

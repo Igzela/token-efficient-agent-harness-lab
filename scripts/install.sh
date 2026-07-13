@@ -13,6 +13,7 @@ MANIFEST_PATH=""
 SLSA_BUNDLE_PATH=""
 SPDX_BUNDLE_PATH=""
 MANIFEST_BUNDLE_PATH=""
+HEALTH_COMMAND=""
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -24,6 +25,7 @@ while [[ $# -gt 0 ]]; do
         --slsa-bundle) [[ $# -ge 2 ]] || exit 2; SLSA_BUNDLE_PATH="$2"; shift 2 ;;
         --spdx-bundle) [[ $# -ge 2 ]] || exit 2; SPDX_BUNDLE_PATH="$2"; shift 2 ;;
         --manifest-bundle) [[ $# -ge 2 ]] || exit 2; MANIFEST_BUNDLE_PATH="$2"; shift 2 ;;
+        --health-command) [[ $# -ge 2 ]] || exit 2; HEALTH_COMMAND="$2"; shift 2 ;;
         --development) DEVELOPMENT=true; shift ;;
         *) echo "Unknown option: $1" >&2; exit 2 ;;
     esac
@@ -116,6 +118,16 @@ cleanup_failed_install() {
 trap 'cleanup_failed_install $?' ERR
 trap 'cleanup_failed_install 130' INT TERM
 
+run_install_health_check() {
+    command -v timeout >/dev/null
+    timeout --signal=TERM --kill-after=2s 10s "${TARGET}" --help >/dev/null
+    if [[ -n "${HEALTH_COMMAND}" ]]; then
+        ACP_INSTALLED_BINARY="${TARGET}" \
+            timeout --signal=TERM --kill-after=2s 10s bash -lc "${HEALTH_COMMAND}"
+    fi
+    echo "  Installed binary health verification passed."
+}
+
 install -m 0755 "${BINARY}" "${BINARY_STAGE}"
 DASHBOARD_SRC="${SCRIPT_DIR}/dashboard"
 [[ -d "${DASHBOARD_SRC}" ]] || DASHBOARD_SRC="${REPO_ROOT}/dashboard/out"
@@ -151,6 +163,7 @@ if [[ -f "${ENV_STAGE}" ]]; then
     ENV_ACTIVATED=true
 fi
 
+run_install_health_check
 COMMITTED=true
 trap - ERR INT TERM
 if [[ "${DASHBOARD_EXISTED}" == "true" ]]; then

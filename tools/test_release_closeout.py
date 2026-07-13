@@ -167,9 +167,11 @@ class ReleaseCloseoutTests(unittest.TestCase):
                 provenance_path=paths["provenance"],
                 mode="production",
             )
-            self.assertEqual(result["status"], "rejected")
-            self.assertIn("UNTRUSTED_IDENTITY", result["reason_codes"])
-            self.assertIn("EXTERNAL_VERIFICATION_UNAVAILABLE", result["reason_codes"])
+            self.assertEqual(result["status"], "unsupported")
+            self.assertEqual(
+                result["reason_codes"],
+                ["LEGACY_PRODUCTION_VERIFICATION_UNSUPPORTED"],
+            )
 
     def test_release_workflow_and_installer_guards_are_present(self) -> None:
         workflow = (ROOT / ".github/workflows/release.yml").read_text()

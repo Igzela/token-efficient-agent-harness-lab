@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import importlib.util
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -178,6 +179,22 @@ class ReleaseInstallationTests(unittest.TestCase):
         self.assertNotEqual(result.returncode, 0)
         self.assertFalse((prefix / "bin" / "agent-control-plane").exists())
 
+    def test_production_release_paths_never_call_legacy_verify(self) -> None:
+        paths = (
+            ROOT / ".github/workflows/release.yml",
+            ROOT / "scripts/install.sh",
+            ROOT / "scripts/install-from-release.sh",
+            ROOT / "scripts/upgrade.sh",
+            ROOT / "scripts/package-release.sh",
+        )
+        legacy_call = re.compile(r"release_provenance\.py[\"']?\s+verify(?:\s|\\)")
+        for path in paths:
+            with self.subTest(path=path.relative_to(ROOT)):
+                text = path.read_text()
+                self.assertNotRegex(text, legacy_call)
+                if "--mode production" in text:
+                    self.assertIn("verify-release", text)
+
     def test_fixture_identity_cannot_upgrade_an_existing_installation(self) -> None:
         release = self.make_release_dir()
         evidence = build_fixture_evidence(self.root / "fixture")
@@ -257,6 +274,55 @@ class ReleaseInstallationTests(unittest.TestCase):
                 self.assertFalse((prefix / "bin" / "agent-control-plane").exists())
                 self.assertEqual((data / "dashboard" / "operator.html").read_text(), "old\n")
                 self.assertEqual((data / "operator.db").read_text(), "keep\n")
+
+    def test_fresh_install_broken_binary_fails_health_and_restores_state(self) -> None:
+        release = self.make_release_dir()
+        (release / "engine").write_bytes(b"not-an-executable-format\n")
+        (release / "engine").chmod(0o755)
+        prefix = self.root / "broken-prefix"
+        data = self.root / "broken-data"
+        (prefix / "bin").mkdir(parents=True)
+        (data / "dashboard").mkdir(parents=True)
+        (data / "dashboard" / "operator.html").write_text("old dashboard\n")
+        (data / "operator.db").write_text("keep\n")
+
+        result = self.run_script(
+            release / "install.sh",
+            "--prefix", str(prefix), "--data-dir", str(data), "--development",
+        )
+
+        self.assertNotEqual(result.returncode, 0)
+        self.assertFalse((prefix / "bin" / "agent-control-plane").exists())
+        self.assertEqual(
+            (data / "dashboard" / "operator.html").read_text(), "old dashboard\n"
+        )
+        self.assertEqual((data / "operator.db").read_text(), "keep\n")
+        self.assertIn("INSTALL_FAILED_NO_PARTIAL_ACTIVATION", result.stderr)
+        self.assertNotIn("Installation complete", result.stdout)
+
+    def test_fresh_install_explicit_health_failure_restores_state(self) -> None:
+        release = self.make_release_dir()
+        prefix = self.root / "health-prefix"
+        data = self.root / "health-data"
+        (prefix / "bin").mkdir(parents=True)
+        (data / "dashboard").mkdir(parents=True)
+        (data / "dashboard" / "operator.html").write_text("old dashboard\n")
+        (data / "operator.db").write_text("keep\n")
+
+        result = self.run_script(
+            release / "install.sh",
+            "--prefix", str(prefix), "--data-dir", str(data), "--development",
+            "--health-command", "exit 23",
+        )
+
+        self.assertNotEqual(result.returncode, 0)
+        self.assertFalse((prefix / "bin" / "agent-control-plane").exists())
+        self.assertEqual(
+            (data / "dashboard" / "operator.html").read_text(), "old dashboard\n"
+        )
+        self.assertEqual((data / "operator.db").read_text(), "keep\n")
+        self.assertIn("INSTALL_FAILED_NO_PARTIAL_ACTIVATION", result.stderr)
+        self.assertNotIn("Installation complete", result.stdout)
 
     def test_upgrade_binary_dashboard_and_interruption_faults_restore_exact_state(self) -> None:
         for fault in (

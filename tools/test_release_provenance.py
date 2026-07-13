@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import importlib.util
 import json
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -151,7 +152,7 @@ class ReleaseProvenanceTests(unittest.TestCase):
         self.assertIn("FIXTURE_IDENTITY_NON_AUTHORITATIVE", result["reason_codes"])
         self.assertNotEqual(result["status"], "verified")
 
-    def test_fixture_identity_can_never_satisfy_production_policy(self) -> None:
+    def test_fixture_identity_cannot_enable_legacy_production_verification(self) -> None:
         paths = self.make_bundle()
         result = MODULE.verify_bundle(
             artifact_path=paths["artifact"],
@@ -160,10 +161,12 @@ class ReleaseProvenanceTests(unittest.TestCase):
             provenance_path=paths["provenance"],
             mode="production",
         )
-        self.assertEqual(result["status"], "rejected")
-        self.assertIn("UNTRUSTED_IDENTITY", result["reason_codes"])
+        self.assertEqual(result["status"], "unsupported")
+        self.assertEqual(
+            result["reason_codes"], ["LEGACY_PRODUCTION_VERIFICATION_UNSUPPORTED"]
+        )
 
-    def test_production_policy_requires_external_attestation_verification(self) -> None:
+    def test_legacy_production_request_is_unsupported_without_transcript(self) -> None:
         paths = self.make_bundle()
         unverified = MODULE.verify_bundle(
             artifact_path=paths["artifact"],
@@ -172,9 +175,10 @@ class ReleaseProvenanceTests(unittest.TestCase):
             provenance_path=paths["provenance"],
             mode="production",
         )
-        self.assertEqual(unverified["status"], "rejected")
-        self.assertIn("UNTRUSTED_IDENTITY", unverified["reason_codes"])
-        self.assertIn("ATTESTATION_NOT_EXTERNALLY_VERIFIED", unverified["reason_codes"])
+        self.assertEqual(unverified["status"], "unsupported")
+        self.assertEqual(
+            unverified["reason_codes"], ["LEGACY_PRODUCTION_VERIFICATION_UNSUPPORTED"]
+        )
 
     def test_unstructured_external_transcript_cannot_authorize_production(self) -> None:
         paths = self.make_bundle()
@@ -188,10 +192,102 @@ class ReleaseProvenanceTests(unittest.TestCase):
             mode="production",
             external_verification_path=external,
         )
-        self.assertEqual(result["status"], "rejected")
-        self.assertIn("EXTERNAL_VERIFICATION_INVALID", result["reason_codes"])
+        self.assertEqual(result["status"], "unsupported")
+        self.assertEqual(
+            result["reason_codes"], ["LEGACY_PRODUCTION_VERIFICATION_UNSUPPORTED"]
+        )
 
-    def test_production_policy_requires_a_real_rollback_target(self) -> None:
+    def test_matching_legacy_external_transcript_cannot_authorize_production(self) -> None:
+        paths = self.make_bundle()
+        provenance = json.loads(paths["provenance"].read_text())
+        provenance["attestation"]["identity"] = MODULE.production_identity(self.metadata)
+        MODULE.write_canonical_json(paths["provenance"], provenance)
+        artifact_sha = MODULE.sha256_file(paths["artifact"])
+        certificate = {
+            "oidcIssuer": MODULE.PRODUCTION_ISSUER,
+            "sourceRepository": self.metadata["repository"],
+            "sourceRepositoryRef": self.metadata["ref"],
+            "sourceRepositoryWorkflow": self.metadata["workflow"],
+            "subjectAlternativeName": self.metadata["workflow"],
+        }
+        entries = []
+        for predicate_type in (MODULE.SLSA_PREDICATE_TYPE, MODULE.SPDX_PREDICATE_TYPE):
+            entries.append(
+                {
+                    "verificationResult": {
+                        "statement": {
+                            "predicateType": predicate_type,
+                            "subject": [{"digest": {"sha256": artifact_sha}}],
+                        },
+                        "signature": {"certificate": certificate},
+                        "verifiedTimestamps": ["2026-07-13T00:00:00Z"],
+                    }
+                }
+            )
+        external = self.root / "matching-external.json"
+        MODULE.write_canonical_json(external, entries)
+
+        result = MODULE.verify_bundle(
+            artifact_path=paths["artifact"],
+            sbom_path=paths["sbom"],
+            attestation_path=paths["attestation"],
+            provenance_path=paths["provenance"],
+            mode="production",
+            external_verification_path=external,
+        )
+        self.assertEqual(result["status"], "unsupported")
+        self.assertIn("LEGACY_PRODUCTION_VERIFICATION_UNSUPPORTED", result["reason_codes"])
+
+        cli = subprocess.run(
+            [
+                sys.executable,
+                str(SCRIPT),
+                "verify",
+                "--artifact",
+                str(paths["artifact"]),
+                "--sbom",
+                str(paths["sbom"]),
+                "--attestation",
+                str(paths["attestation"]),
+                "--provenance",
+                str(paths["provenance"]),
+                "--mode",
+                "production",
+                "--external-verification",
+                str(external),
+            ],
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+        self.assertNotEqual(cli.returncode, 0)
+        self.assertNotIn('"status":"verified"', cli.stdout)
+
+    def test_legacy_attestation_cli_rejects_production_identity(self) -> None:
+        result = subprocess.run(
+            [
+                sys.executable,
+                str(SCRIPT),
+                "create-attestation",
+                "--metadata",
+                str(self.root / "metadata.json"),
+                "--artifact",
+                str(self.artifact),
+                "--sbom",
+                str(self.root / "sbom.json"),
+                "--output",
+                str(self.root / "attestation.json"),
+                "--identity",
+                "production",
+            ],
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+        self.assertNotEqual(result.returncode, 0)
+        self.assertFalse((self.root / "attestation.json").exists())
+
+    def test_arbitrary_rollback_cannot_restore_legacy_production_authority(self) -> None:
         paths = self.make_bundle()
         provenance = json.loads(paths["provenance"].read_text())
         provenance["rollback"] = {
@@ -206,8 +302,10 @@ class ReleaseProvenanceTests(unittest.TestCase):
             provenance_path=paths["provenance"],
             mode="production",
         )
-        self.assertEqual(result["status"], "rejected")
-        self.assertIn("ROLLBACK_TARGET_MISSING", result["reason_codes"])
+        self.assertEqual(result["status"], "unsupported")
+        self.assertEqual(
+            result["reason_codes"], ["LEGACY_PRODUCTION_VERIFICATION_UNSUPPORTED"]
+        )
 
     def test_artifact_tampering_is_rejected_with_bounded_reason(self) -> None:
         paths = self.make_bundle()
@@ -277,7 +375,7 @@ class ReleaseProvenanceTests(unittest.TestCase):
             sbom_path=paths["sbom"],
             attestation_path=paths["attestation"],
             provenance_path=paths["provenance"],
-            mode="production",
+            mode="fixture",
         )
         self.assertEqual(result["status"], "unsupported")
         self.assertIn("ATTESTATION_EVIDENCE_MISSING", result["reason_codes"])
