@@ -193,6 +193,21 @@ class TestPatchArtifactContract(unittest.TestCase):
         with self.assertRaises(artifact_contract.ArtifactContractError):
             artifact_contract.validate_issue_scope("task has no machine-readable scope", manifest)
 
+    def test_issue_template_scope_marker_is_editable_and_parser_rejects_broad_paths(self):
+        template = (ROOT / ".github" / "ISSUE_TEMPLATE" / "agent_task.md").read_text()
+        self.assertEqual(
+            artifact_contract.parse_issue_scope(template),
+            ["src/", "tests/"],
+        )
+        for body in (
+            '<!-- agent-orchestrator-scope:v1 {"allowed_paths":[]} -->',
+            '<!-- agent-orchestrator-scope:v1 {"allowed_paths":["."]} -->',
+            '<!-- agent-orchestrator-scope:v1 {"allowed_paths":["*"]} -->',
+            '<!-- agent-orchestrator-scope:v1 {"allowed_paths":["src/","src/"]} -->',
+        ):
+            with self.subTest(body=body), self.assertRaises(artifact_contract.ArtifactContractError):
+                artifact_contract.parse_issue_scope(body)
+
 
 class TestWorkflowTrustBoundaries(unittest.TestCase):
     def workflow(self, name: str) -> str:
@@ -235,6 +250,14 @@ class TestWorkflowTrustBoundaries(unittest.TestCase):
         for test_file in expected:
             self.assertIn(test_file, source)
         self.assertIn("verify_orchestrator_test_suite.py", source)
+
+    def test_controller_setup_alias_and_review_waiting_labels_are_declared(self):
+        controller = self.workflow("agent-controller.yml")
+        labels = (CONTROL / "setup_labels.py").read_text()
+        self.assertIn("setup-controls", controller)
+        self.assertIn("agent-review-blocked", labels)
+        self.assertIn("agent-merge-ready", labels)
+        self.assertIn("retry-review", controller)
 
 
 if __name__ == "__main__":

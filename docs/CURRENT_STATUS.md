@@ -47,9 +47,9 @@ The event-driven GitHub Actions orchestrator is implemented and awaiting product
 - State persisted in GitHub Issues, labels, PR comments, and short-retention workflow artifacts; one active worker per Issue and at most two repository-wide under `agent-dispatch-global`.
 - Failed canonical CI identified by exact run ID, bounded/redacted failure evidence, at most two repairs, a fresh independent read-only review, and expected-SHA merge confirmation.
 
-Labels: `agent-draft`, `agent-ready`, `agent-running`, `ci-repairing`, `review-running`, `review-passed`, `agent-blocked`, `agent-complete`.
+Labels: `agent-draft`, `agent-ready`, `agent-running`, `ci-repairing`, `review-running`, `review-passed`, `agent-merge-ready`, `agent-review-blocked`, `agent-blocked`, `agent-complete`. `agent-merge-ready` and `agent-review-blocked` are non-active waiting/terminal states, so they do not consume worker capacity; only exact `PASS` produces merge-ready authorization.
 
-The orchestrator is activation-safe: workflows are present but inactive until the control Issue enables them. `agent-control` and `agent-emergency-stop` are present; `agent-orchestrator-enabled` and `agent-auto-merge-enabled` are absent. Codex invocation requires Vader runner labels and the runner service account's cached interactive login. `AGENT_PUSH_TOKEN` remains a GitHub-hosted finalizer-only, Contents-read/write PAT for branch pushes; Stage B service-user validation remains outstanding.
+The orchestrator is activation-safe: workflows are present but inactive until the control Issue enables them. `agent-control` and `agent-emergency-stop` are present; `agent-orchestrator-enabled` and `agent-auto-merge-enabled` are absent. Codex invocation requires Vader runner labels and the runner service account's cached interactive login. CI acquisition reuses one observed exact-head `tests` run before making at most one workflow-dispatch fallback, records the bound run and duplicates, and ignores stale/duplicate completion events. `AGENT_PUSH_TOKEN` remains a GitHub-hosted finalizer-only, Contents-read/write PAT for branch pushes; Stage B service-user validation remains outstanding.
 
 ## Planned Product Evolution Stages
 

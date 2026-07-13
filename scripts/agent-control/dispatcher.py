@@ -31,6 +31,9 @@ def _claim(issue: int, target_label: str, dispatch_id: str, action: str) -> tupl
     if target_label == sm.LABEL_RUNNING:
         if sm.LABEL_READY not in labels or labels & (sm.ACTIVE_LABELS | sm.TERMINAL_LABELS):
             return False, [], "issue_not_ready"
+        scope_valid, scope = sm.validate_task_scope(issue, repo)
+        if not scope_valid:
+            return False, [], f"invalid_scope:{scope}"
         associated = sm.has_open_issue_pr(issue, repo)
         if associated is None:
             return False, [], "association_state_unavailable"
@@ -85,6 +88,11 @@ def dispatch_ready(issue: int, dispatch_id: str | None = None) -> dict[str, obje
         return {"dispatched": False, "issue": issue, "reason": "disabled_or_emergency_stopped"}
     claimed, previous, reason = _claim(issue, sm.LABEL_RUNNING, dispatch_id, "worker")
     if not claimed:
+        if reason.startswith("invalid_scope:"):
+            sm.record_dispatch_state(
+                issue, dispatch_id, "worker", "rejected",
+                {"reason": "invalid_scope", "detail": reason.removeprefix("invalid_scope:")}, _repo(),
+            )
         return {"dispatched": reason == "already_dispatched", "issue": issue, "reason": reason}
     if not _run_workflow("agent-worker.yml", {"issue": issue, "dry_run": "false"}):
         _rollback(issue, dispatch_id, previous, "workflow_dispatch_failed")
@@ -142,6 +150,12 @@ def dispatch_merge(pr: int, issue: int, sha: str) -> dict[str, object]:
     existing = sm.read_dispatch_state(issue, dispatch_id, _repo())
     if existing and existing.get("status") == "dispatched":
         return {"dispatched": True, "already_dispatched": True, "dispatch_id": dispatch_id}
+    labels = sm.get_issue_labels(issue, _repo())
+    if sm.LABEL_MERGE_READY not in labels or sm.LABEL_REVIEW_PASSED not in labels:
+        return {"dispatched": False, "reason": "issue_not_merge_ready"}
+    review = sm.read_review_state(issue, _repo())
+    if not review or review.get("pr_number") != int(pr) or review.get("head_sha") != sha or review.get("verdict") != "PASS":
+        return {"dispatched": False, "reason": "review_head_mismatch"}
     fields = {"pr_number": pr, "issue_number": issue, "head_sha": sha}
     if not sm.record_dispatch_state(issue, dispatch_id, "merge", "claimed", fields, _repo()):
         return {"dispatched": False, "reason": "claim_state_failed"}

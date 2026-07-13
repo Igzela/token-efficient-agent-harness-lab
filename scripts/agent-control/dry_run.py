@@ -46,8 +46,14 @@ def test_event_filtering():
              sm.LABEL_REVIEW_RUNNING in sm.ACTIVE_LABELS)
     log_test("review-passed is not an active label",
              sm.LABEL_REVIEW_PASSED not in sm.ACTIVE_LABELS)
+    log_test("agent-merge-ready releases capacity",
+             sm.LABEL_MERGE_READY not in sm.ACTIVE_LABELS)
+    log_test("agent-review-blocked releases capacity",
+             sm.LABEL_REVIEW_BLOCKED not in sm.ACTIVE_LABELS)
     log_test("agent-blocked is a terminal label",
              sm.LABEL_BLOCKED in sm.TERMINAL_LABELS)
+    log_test("agent-review-blocked is an operator terminal state",
+             sm.LABEL_REVIEW_BLOCKED in sm.TERMINAL_LABELS)
     log_test("agent-complete is a terminal label",
              sm.LABEL_COMPLETE in sm.TERMINAL_LABELS)
     log_test("unknown labels are ignored",

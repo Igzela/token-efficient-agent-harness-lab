@@ -20,6 +20,7 @@ on:
           - dispatch-review
           - dispatch-merge
           - dispatch-next
+          - retry-review
       issue:
         required: false
         type: number
@@ -71,6 +72,9 @@ jobs:
           case "${{ inputs.command }}" in
             setup-controls|status|enable-orchestrator|disable-orchestrator|enable-auto-merge|disable-auto-merge|emergency-stop|emergency-resume)
               python3 scripts/agent-control/control_state.py "${{ inputs.command }}"
+              ;;
+            retry-review)
+              python3 scripts/agent-control/state_manager.py retry-review "${{ inputs.issue }}"
               ;;
             dispatch-ready)
               python3 scripts/agent-control/control_state.py require-live >/dev/null

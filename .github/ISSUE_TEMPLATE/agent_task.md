@@ -16,6 +16,14 @@ assignees: ''
 
 <!-- Minimum coherent implementation surface. -->
 
+### Machine-readable scope
+
+Edit this marker before applying `agent-ready`. Use explicit files or narrow directory prefixes; do not use `.` or wildcard paths.
+
+<!-- agent-orchestrator-scope:v1
+{"allowed_paths":["src/","tests/"]}
+-->
+
 ### Forbidden Changes
 
 <!--

@@ -198,6 +198,23 @@ def validate_index(repo: Path, manifest: dict[str, Any]) -> None:
 def validate_issue_scope(issue_body: str, manifest: dict[str, Any]) -> None:
     """Require every changed path to be declared by the task Issue itself."""
 
+    allowed = parse_issue_scope(issue_body)
+    for changed in manifest["changed_files"]:
+        if not any(changed == path or (path.endswith("/") and changed.startswith(path)) for path in allowed):
+            raise ArtifactContractError(f"artifact path is outside the task Issue scope: {changed}")
+
+
+def _scope_path_safe(path: str) -> bool:
+    if not _safe_path(path) or path in {".", "./", "/"} or any(char in path for char in "*?[]"):
+        return False
+    if path.endswith("/") and path[:-1] in {"", "."}:
+        return False
+    return True
+
+
+def parse_issue_scope(issue_body: str) -> list[str]:
+    """Parse and validate the one canonical editable Issue scope marker."""
+
     match = ISSUE_SCOPE_PATTERN.search(issue_body or "")
     if not match:
         raise ArtifactContractError("task Issue lacks an agent-orchestrator scope marker")
@@ -206,13 +223,13 @@ def validate_issue_scope(issue_body: str, manifest: dict[str, Any]) -> None:
     except json.JSONDecodeError as exc:
         raise ArtifactContractError("task Issue scope marker is invalid JSON") from exc
     allowed = scope.get("allowed_paths") if isinstance(scope, dict) else None
-    if not isinstance(allowed, list) or not allowed or not all(isinstance(path, str) and _safe_path(path) for path in allowed):
+    if not isinstance(allowed, list) or not allowed or not all(
+        isinstance(path, str) and _scope_path_safe(path) for path in allowed
+    ):
         raise ArtifactContractError("task Issue scope has no valid allowed_paths")
     if len(allowed) != len(set(allowed)):
         raise ArtifactContractError("task Issue scope has duplicate allowed paths")
-    for changed in manifest["changed_files"]:
-        if not any(changed == path or (path.endswith("/") and changed.startswith(path)) for path in allowed):
-            raise ArtifactContractError(f"artifact path is outside the task Issue scope: {changed}")
+    return allowed
 
 
 def _optional_sha(value: str) -> str | None:
@@ -221,7 +238,7 @@ def _optional_sha(value: str) -> str | None:
 
 def main() -> None:
     if len(sys.argv) < 2:
-        raise SystemExit("Usage: artifact_contract.py <create|validate|validate-index> ...")
+        raise SystemExit("Usage: artifact_contract.py <create|validate|validate-index|validate-scope-definition> ...")
     command = sys.argv[1]
     try:
         if command == "create":
@@ -260,6 +277,10 @@ def main() -> None:
                 raise ArtifactContractError("invalid validate-scope arguments")
             manifest = _validate_manifest(json.loads(Path(sys.argv[3]).read_text()))
             validate_issue_scope(Path(sys.argv[2]).read_text(), manifest)
+        elif command == "validate-scope-definition":
+            if len(sys.argv) != 3:
+                raise ArtifactContractError("invalid validate-scope-definition arguments")
+            print(json.dumps({"allowed_paths": parse_issue_scope(Path(sys.argv[2]).read_text())}, sort_keys=True))
         else:
             raise ArtifactContractError(f"unknown artifact command: {command}")
     except (ArtifactContractError, ValueError, json.JSONDecodeError) as exc:

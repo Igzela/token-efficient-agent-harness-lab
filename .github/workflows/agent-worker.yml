@@ -98,6 +98,11 @@ jobs:
             echo "can_start=false" >> "$GITHUB_OUTPUT"
             exit 0
           fi
+          if ! python3 scripts/agent-control/state_manager.py validate-scope "${{ inputs.issue }}" >/dev/null; then
+            echo "can_start=false" >> "$GITHUB_OUTPUT"
+            echo "invalid Issue scope; no Vader worker will start"
+            exit 0
+          fi
           LABELS=$(python3 scripts/agent-control/state_manager.py get-labels "${{ inputs.issue }}")
           if echo "$LABELS" | grep -qw agent-running && ! echo "$LABELS" | grep -Eq '(ci-repairing|review-running|agent-complete|agent-blocked)'; then
             echo "can_start=true" >> "$GITHUB_OUTPUT"
@@ -229,6 +234,10 @@ jobs:
           gh issue view "${{ inputs.issue }}" --json body --jq .body > "$RUNNER_TEMP/task-issue-body.md"
           python3 scripts/agent-control/artifact_contract.py validate-scope "$RUNNER_TEMP/task-issue-body.md" \
             "$RUNNER_TEMP/agent-artifact/agent-result.json"
+      - name: Recheck control immediately before applying implementation patch
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python3 scripts/agent-control/control_state.py require-live >/dev/null
       - name: Apply patch to clean exact base checkout and recompute paths
         env:
           BASE_SHA: ${{ needs.vader-implementation.outputs.base_sha }}
@@ -287,13 +296,15 @@ jobs:
           BRANCH: ${{ needs.vader-implementation.outputs.branch }}
         run: |
           set -euo pipefail
-          BODY="Closes #${{ inputs.issue }}\n\n<!-- agent-orchestrator-binding: {\"issue_number\": ${{ inputs.issue }}, \"branch\": \"$BRANCH\"} -->"
-          PR_NUMBER=$(gh pr list --head "$BRANCH" --state open --json number --jq '.[0].number // empty')
-          if [ -z "$PR_NUMBER" ]; then
-            PR_NUMBER=$(gh pr create --base main --head "$BRANCH" --title "agent: implement #${{ inputs.issue }}" --body "$BODY" --json number --jq .number)
-          else
-            gh pr edit "$PR_NUMBER" --body "$BODY"
-          fi
+          python3 scripts/agent-control/control_state.py require-live >/dev/null
+          BODY_FILE="$RUNNER_TEMP/agent-pr-body.md"
+          printf 'Closes #%s\n\n<!-- agent-orchestrator-binding: {"issue_number": %s, "branch": "%s"} -->\n' \
+            "${{ inputs.issue }}" "${{ inputs.issue }}" "$BRANCH" > "$BODY_FILE"
+          PR_JSON=$(python3 scripts/agent-control/pr_binding.py create-or-update \
+            "${{ inputs.issue }}" "$BRANCH" "$(git rev-parse HEAD)" \
+            "agent: implement #${{ inputs.issue }}" "$BODY_FILE")
+          PR_NUMBER=$(jq -er '.number' <<<"$PR_JSON")
+          test "$PR_NUMBER" -gt 0
           echo "pr_number=$PR_NUMBER" >> "$GITHUB_OUTPUT"
       - name: Persist worker state with github.token
         env:
@@ -310,8 +321,21 @@ jobs:
         run: |
           set -euo pipefail
           python3 scripts/agent-control/control_state.py require-live >/dev/null
-          CI=$(python3 scripts/agent-control/ci_verifier.py dispatch "$BRANCH" "${{ steps.commit.outputs.head_sha }}")
+          EXISTING=$(python3 scripts/agent-control/state_manager.py read-ci-acquisition "${{ inputs.issue }}" \
+            "${{ steps.pr.outputs.pr_number }}" "${{ steps.commit.outputs.head_sha }}")
+          if [ "$EXISTING" != "null" ]; then
+            CI="$EXISTING"
+          else
+            python3 scripts/agent-control/control_state.py require-live >/dev/null
+            CI=$(python3 scripts/agent-control/ci_verifier.py acquire "${{ steps.pr.outputs.pr_number }}" "$BRANCH" "${{ steps.commit.outputs.head_sha }}")
+          fi
           RUN_ID=$(jq -er '.workflow_run_id' <<<"$CI")
+          if [ "$EXISTING" = "null" ]; then
+            SOURCE=$(jq -er '.source' <<<"$CI")
+            DUPLICATES=$(jq -c '.duplicate_run_ids // []' <<<"$CI")
+            python3 scripts/agent-control/state_manager.py record-ci-acquisition "${{ inputs.issue }}" \
+              "${{ steps.pr.outputs.pr_number }}" "${{ steps.commit.outputs.head_sha }}" "$RUN_ID" "$SOURCE" "$DUPLICATES"
+          fi
           EXTRA=$(jq -c --argjson id "$RUN_ID" '{workflow_name,required_jobs,successful_jobs:[],workflow_run_id:$id}' scripts/agent-control/ci_requirements.json)
           python3 scripts/agent-control/state_manager.py record-ci "${{ inputs.issue }}" "${{ steps.pr.outputs.pr_number }}" \
             "${{ steps.commit.outputs.head_sha }}" "$RUN_ID" dispatched "$EXTRA"
@@ -338,7 +362,7 @@ jobs:
             exit 0
           fi
           LABELS=$(python3 scripts/agent-control/state_manager.py get-labels "${{ inputs.issue }}")
-          if echo "$LABELS" | grep -qw agent-running && ! echo "$LABELS" | grep -Eq '(agent-complete|review-running|review-passed)'; then
+          if echo "$LABELS" | grep -qw agent-running && ! echo "$LABELS" | grep -Eq '(agent-complete|agent-blocked|agent-review-blocked|agent-merge-ready|review-running|review-passed)'; then
             python3 scripts/agent-control/state_manager.py set-labels "${{ inputs.issue }}" agent-blocked
           else
             echo "stale or superseded outcome; state unchanged"

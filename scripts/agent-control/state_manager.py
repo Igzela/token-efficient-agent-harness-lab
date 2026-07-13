@@ -20,14 +20,26 @@ LABEL_RUNNING = "agent-running"
 LABEL_CI_REPAIRING = "ci-repairing"
 LABEL_REVIEW_RUNNING = "review-running"
 LABEL_REVIEW_PASSED = "review-passed"
+LABEL_REVIEW_BLOCKED = "agent-review-blocked"
+LABEL_MERGE_READY = "agent-merge-ready"
 LABEL_BLOCKED = "agent-blocked"
 LABEL_COMPLETE = "agent-complete"
 
 ACTIVE_LABELS = {LABEL_RUNNING, LABEL_CI_REPAIRING, LABEL_REVIEW_RUNNING}
-TERMINAL_LABELS = {LABEL_COMPLETE, LABEL_BLOCKED}
-ALL_LABELS = ACTIVE_LABELS | TERMINAL_LABELS | {LABEL_DRAFT, LABEL_READY, LABEL_REVIEW_PASSED}
+TERMINAL_LABELS = {LABEL_COMPLETE, LABEL_BLOCKED, LABEL_REVIEW_BLOCKED}
+ALL_LABELS = ACTIVE_LABELS | TERMINAL_LABELS | {
+    LABEL_DRAFT, LABEL_READY, LABEL_REVIEW_PASSED, LABEL_MERGE_READY,
+}
 
 MAX_REPAIR_ATTEMPTS = 2
+
+
+def labels_for_review_verdict(verdict):
+    """Return the non-active state labels for a finalized review verdict."""
+
+    if verdict == "PASS":
+        return {LABEL_REVIEW_PASSED, LABEL_MERGE_READY}
+    return {LABEL_REVIEW_BLOCKED}
 
 def _gh(*args, **kwargs):
     cmd = [GH] + list(args)
@@ -227,6 +239,38 @@ def record_ci_state(issue_number, pr_number, head_sha, ci_run_id, status, extra=
     return comment_on_issue(issue_number, json.dumps(state), repo)
 
 
+def record_ci_acquisition(issue_number, pr_number, head_sha, run_id, source, duplicate_run_ids=None, repo=""):
+    state = {
+        "kind": "agent-orchestrator-ci-acquisition",
+        "version": 1,
+        "pr_number": int(pr_number),
+        "head_sha": head_sha,
+        "workflow_run_id": int(run_id),
+        "source": source,
+        "status": "bound",
+        "duplicate_run_ids": [int(value) for value in (duplicate_run_ids or [])],
+    }
+    return comment_on_issue(issue_number, json.dumps(state, sort_keys=True), repo)
+
+
+def read_ci_acquisition(issue_number, pr_number=None, head_sha=None, repo=""):
+    comments = get_issue_comments(issue_number, repo)
+    for comment in comments:
+        body = comment.get("body", "")
+        if "agent-orchestrator-ci-acquisition" not in body:
+            continue
+        try:
+            state = json.loads(body)
+        except json.JSONDecodeError:
+            continue
+        if pr_number is not None and state.get("pr_number") != int(pr_number):
+            continue
+        if head_sha is not None and state.get("head_sha") != head_sha:
+            continue
+        return state
+    return None
+
+
 def read_ci_state(issue_number, repo=""):
     """Read the most recent CI state from Issue comments."""
     body = get_issue_comment_bodies(issue_number, "agent-orchestrator-ci-state", repo)
@@ -238,6 +282,15 @@ def read_ci_state(issue_number, repo=""):
         return None
 
 
+def validate_task_scope(issue_number, repo=""):
+    """Validate the canonical scope marker before a task can be dispatched."""
+
+    try:
+        import artifact_contract
+        scope = artifact_contract.parse_issue_scope(get_issue_body(issue_number, repo))
+        return True, scope
+    except (RuntimeError, ValueError, TypeError, json.JSONDecodeError) as exc:
+        return False, str(exc)
 def record_review_state(issue_number, pr_number, head_sha, verdict, summary, repo=""):
     state = {
         "kind": "agent-orchestrator-review-state",
@@ -248,6 +301,22 @@ def record_review_state(issue_number, pr_number, head_sha, verdict, summary, rep
         "summary": summary,
     }
     return comment_on_issue(issue_number, json.dumps(state), repo)
+
+
+def invalidate_evidence(issue_number, pr_number, new_head_sha, old_head_sha, repo=""):
+    """Bind explicit non-authorizing CI/review state to a newly pushed head."""
+
+    previous_ci = read_ci_state(issue_number, repo) or {}
+    previous_run = previous_ci.get("workflow_run_id") or previous_ci.get("ci_run_id") or 0
+    if not record_ci_state(
+        issue_number, pr_number, new_head_sha, previous_run, "invalidated",
+        extra={"invalidated_head": old_head_sha, "reason": "new_head"}, repo=repo,
+    ):
+        return False
+    return record_review_state(
+        issue_number, pr_number, new_head_sha, "INVALIDATED",
+        f"prior evidence for head {old_head_sha} was invalidated by new head {new_head_sha}", repo,
+    )
 
 
 def record_merge_state(issue_number, pr_number, expected_head_sha, merge_commit_sha, repo=""):
@@ -353,6 +422,9 @@ def has_open_issue_pr(issue_number, repo=""):
 
 
 def record_dispatch_state(issue_number, dispatch_id, action, status, details=None, repo=""):
+    existing = read_dispatch_state(issue_number, dispatch_id, repo)
+    if existing and existing.get("status") == status and existing.get("action") == action:
+        return True
     state = {
         "kind": "agent-orchestrator-dispatch-state",
         "version": 1,
@@ -481,6 +553,8 @@ def verify_merge_requirements(pr_number, issue_number, expected_sha, repo=""):
     labels = get_issue_labels(issue_number, repo)
     if LABEL_REVIEW_PASSED not in labels:
         raise RuntimeError("review-passed label is absent")
+    if LABEL_MERGE_READY not in labels:
+        raise RuntimeError("agent-merge-ready label is absent")
     if LABEL_REVIEW_RUNNING in labels:
         raise RuntimeError("review-running label remains")
     pr = get_pr_info(pr_number, repo)
@@ -542,6 +616,14 @@ def main():
             print("FATAL: unable to set Issue labels", file=sys.stderr)
             sys.exit(1)
 
+    elif command == "validate-scope":
+        issue_number = int(sys.argv[2])
+        valid, value = validate_task_scope(issue_number, repo)
+        if not valid:
+            print(f"FATAL: invalid task scope: {value}", file=sys.stderr)
+            sys.exit(1)
+        print(json.dumps({"allowed_paths": value}, sort_keys=True))
+
     elif command == "add-labels":
         issue_number = int(sys.argv[2])
         if not add_labels(issue_number, *sys.argv[3:], repo=repo):
@@ -599,6 +681,36 @@ def main():
             print("FATAL: unable to persist CI state", file=sys.stderr)
             sys.exit(1)
 
+    elif command == "record-ci-acquisition":
+        issue_number = int(sys.argv[2])
+        pr_number = int(sys.argv[3])
+        head_sha = sys.argv[4]
+        run_id = sys.argv[5]
+        source = sys.argv[6]
+        duplicate_ids = json.loads(sys.argv[7]) if len(sys.argv) > 7 else []
+        if not record_ci_acquisition(
+            issue_number, pr_number, head_sha, run_id, source, duplicate_ids, repo,
+        ):
+            print("FATAL: unable to persist CI acquisition", file=sys.stderr)
+            sys.exit(1)
+
+    elif command == "read-ci-acquisition":
+        issue_number = int(sys.argv[2])
+        pr_number = int(sys.argv[3]) if len(sys.argv) > 3 else None
+        head_sha = sys.argv[4] if len(sys.argv) > 4 else None
+        state = read_ci_acquisition(issue_number, pr_number, head_sha, repo)
+        print(json.dumps(state) if state else "null")
+
+    elif command == "record-dispatch":
+        issue_number = int(sys.argv[2])
+        dispatch_id = sys.argv[3]
+        action = sys.argv[4]
+        status = sys.argv[5]
+        details = json.loads(sys.argv[6]) if len(sys.argv) > 6 else None
+        if not record_dispatch_state(issue_number, dispatch_id, action, status, details, repo):
+            print("FATAL: unable to persist dispatch state", file=sys.stderr)
+            sys.exit(1)
+
     elif command == "record-review":
         issue_number = int(sys.argv[2])
         pr_number = int(sys.argv[3])
@@ -607,6 +719,15 @@ def main():
         summary = " ".join(sys.argv[6:]) if len(sys.argv) > 6 else ""
         if not record_review_state(issue_number, pr_number, head_sha, verdict, summary, repo=repo):
             print("FATAL: unable to persist review state", file=sys.stderr)
+            sys.exit(1)
+
+    elif command == "invalidate-evidence":
+        issue_number = int(sys.argv[2])
+        pr_number = int(sys.argv[3])
+        new_head_sha = sys.argv[4]
+        old_head_sha = sys.argv[5]
+        if not invalidate_evidence(issue_number, pr_number, new_head_sha, old_head_sha, repo):
+            print("FATAL: unable to invalidate prior evidence", file=sys.stderr)
             sys.exit(1)
 
     elif command == "read-review":
@@ -667,7 +788,7 @@ def main():
         else:
             print("None")
 
-    elif command == "retry-task":
+    elif command in {"retry-task", "retry-review"}:
         issue_number = int(sys.argv[2])
         set_labels(issue_number, LABEL_READY, repo=repo)
         print(f"Task #{issue_number} reset to {LABEL_READY} for retry")
@@ -684,6 +805,8 @@ def main():
         running = _gh("issue", "list", "--label", LABEL_RUNNING, "--state", "open", "--json", "number")
         repairing = _gh("issue", "list", "--label", LABEL_CI_REPAIRING, "--state", "open", "--json", "number")
         review_running = _gh("issue", "list", "--label", LABEL_REVIEW_RUNNING, "--state", "open", "--json", "number")
+        review_blocked = _gh("issue", "list", "--label", LABEL_REVIEW_BLOCKED, "--state", "open", "--json", "number")
+        merge_ready = _gh("issue", "list", "--label", LABEL_MERGE_READY, "--state", "open", "--json", "number")
         blocked = _gh("issue", "list", "--label", LABEL_BLOCKED, "--state", "open", "--json", "number")
         complete = _gh("issue", "list", "--label", LABEL_COMPLETE, "--state", "all", "--json", "number")
         try:
@@ -691,6 +814,8 @@ def main():
             print(f"running: {len(json.loads(running))}" if running else "running: 0")
             print(f"ci-repairing: {len(json.loads(repairing))}" if repairing else "ci-repairing: 0")
             print(f"review-running: {len(json.loads(review_running))}" if review_running else "review-running: 0")
+            print(f"review-blocked: {len(json.loads(review_blocked))}" if review_blocked else "review-blocked: 0")
+            print(f"merge-ready: {len(json.loads(merge_ready))}" if merge_ready else "merge-ready: 0")
             print(f"blocked: {len(json.loads(blocked))}" if blocked else "blocked: 0")
             print(f"complete: {len(json.loads(complete))}" if complete else "complete: 0")
         except (json.JSONDecodeError, TypeError):

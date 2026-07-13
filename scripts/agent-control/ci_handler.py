@@ -111,6 +111,38 @@ def _record_ci(issue, pr, sha, run_id, status, run, repair_count=0):
         raise RuntimeError("unable to persist exact-head CI state")
 
 
+def _is_duplicate_exact_head_run(issue, pr, sha, run_id, branch):
+    if run_id is None:
+        return True
+    try:
+        run_number = int(run_id)
+    except (TypeError, ValueError):
+        return True
+    acquisition = sm.read_ci_acquisition(issue, pr, sha)
+    try:
+        acquired_number = int(acquisition.get("workflow_run_id", 0)) if acquisition else None
+    except (TypeError, ValueError):
+        return True
+    if acquired_number is not None and acquired_number != run_number:
+        return True
+    state = sm.read_ci_state(issue)
+    if state and state.get("pr_number") == int(pr) and state.get("head_sha") == sha:
+        previous_run = state.get("workflow_run_id") or state.get("ci_run_id")
+        if str(previous_run) == str(run_number) and state.get("status") in {"success", "invalidated"}:
+            return True
+        if str(previous_run) == str(run_number) and str(state.get("status", "")).startswith("failure_repair_"):
+            return True
+    exact_runs = ci_verifier.find_exact_runs(branch, sha)
+    if len(exact_runs) > 1:
+        try:
+            canonical_number = int(exact_runs[0].get("databaseId", 0))
+        except (TypeError, ValueError):
+            return True
+        if canonical_number != run_number:
+            return True
+    return False
+
+
 def process_ci_completion(event_path):
     info = parse_workflow_run_event(event_path)
     expected_repo = os.environ.get("AGENT_REPO") or os.environ.get("GITHUB_REPOSITORY", "")
@@ -132,11 +164,19 @@ def process_ci_completion(event_path):
         return {"action": "noop", "reason": "pr_not_open"}
     current_head = pr_info.get("headRefOid", "")
     expected_head = info["pr_head_sha"] or info["head_sha"]
-    if current_head != expected_head or run.get("headSha") != expected_head:
+    expected_branch = pr_info.get("headRefName", "")
+    if (
+        current_head != expected_head
+        or run.get("headSha") != expected_head
+        or info["head_branch"] != expected_branch
+        or run.get("headBranch") != expected_branch
+    ):
         return {"action": "stale", "reason": "head_sha_mismatch"}
     issue_number = _find_issue_for_pr(pr_number)
     if not issue_number:
         return {"action": "noop", "reason": "no_canonical_issue_binding"}
+    if _is_duplicate_exact_head_run(issue_number, pr_number, current_head, info["run_id"], info["head_branch"]):
+        return {"action": "noop", "reason": "duplicate_exact_head_run"}
     binding_ok, binding_reason = sm.verify_issue_pr_binding(issue_number, pr_number, current_head)
     if not binding_ok:
         return {"action": "noop", "reason": f"binding_rejected:{binding_reason}"}

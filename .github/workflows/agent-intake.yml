@@ -7,7 +7,7 @@ on:
 permissions:
   actions: write
   contents: read
-  issues: read
+  issues: write
 
 concurrency:
   group: agent-intake-${{ github.event.issue.number }}
@@ -38,6 +38,14 @@ jobs:
           LABELS=$(python3 scripts/agent-control/state_manager.py get-labels "${{ github.event.issue.number }}")
           if ! echo "$LABELS" | grep -qw agent-ready; then
             echo "no-op: Issue is not agent-ready"
+            exit 0
+          fi
+          if ! python3 scripts/agent-control/state_manager.py validate-scope "${{ github.event.issue.number }}"; then
+            echo "no-op: Issue has no valid machine-readable scope; Vader was not invoked"
+            python3 scripts/agent-control/state_manager.py record-dispatch \
+              "${{ github.event.issue.number }}" \
+              "intake:${{ github.event.delivery }}:${{ github.event.issue.number }}" \
+              worker rejected '{"reason":"invalid_scope"}'
             exit 0
           fi
           if ! python3 scripts/agent-control/state_manager.py check-deps "${{ github.event.issue.number }}" >/dev/null; then

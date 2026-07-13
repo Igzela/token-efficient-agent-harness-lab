@@ -53,11 +53,35 @@ def run_info(run_id: int | str) -> dict[str, Any] | None:
         "view",
         str(run_id),
         "--json",
-        "databaseId,status,conclusion,headSha,headBranch,workflowName,createdAt,updatedAt,jobs",
+        "databaseId,status,conclusion,headSha,headBranch,workflowName,createdAt,updatedAt,event,jobs",
     )
 
 
-def find_exact_run(branch: str, head_sha: str) -> dict[str, Any] | None:
+def verify_failed_run(run_id: int | str, expected_sha: str) -> dict[str, Any]:
+    """Validate the exact failed canonical run used to prepare a repair."""
+
+    requirements = load_requirements()
+    run = run_info(run_id)
+    if not run:
+        raise CIVerificationError("workflow run is absent")
+    if run.get("workflowName") != requirements["workflow_name"]:
+        raise CIVerificationError("workflow name does not match canonical tests workflow")
+    if run.get("status") != "completed":
+        raise CIVerificationError("failed workflow run is not completed")
+    if run.get("conclusion") != "failure":
+        raise CIVerificationError("workflow run is not a failure")
+    if run.get("headSha") != expected_sha:
+        raise CIVerificationError("failed workflow run head SHA does not match expected head")
+    return {
+        "workflow_name": requirements["workflow_name"],
+        "workflow_run_id": run.get("databaseId") or run_id,
+        "head_sha": expected_sha,
+        "status": run.get("status"),
+        "conclusion": run.get("conclusion"),
+    }
+
+
+def find_exact_runs(branch: str, head_sha: str) -> list[dict[str, Any]]:
     requirements = load_requirements()
     runs = _gh_json(
         "run",
@@ -72,11 +96,75 @@ def find_exact_run(branch: str, head_sha: str) -> dict[str, Any] | None:
         "databaseId,status,conclusion,headSha,headBranch,workflowName,createdAt,updatedAt,event",
     )
     if not isinstance(runs, list):
-        return None
-    for run in runs:
-        if run.get("headSha") == head_sha and run.get("workflowName") == requirements["workflow_name"]:
-            return run_info(run.get("databaseId")) or run
-    return None
+        return []
+    exact = [
+        run for run in runs
+        if run.get("headSha") == head_sha
+        and run.get("headBranch") == branch
+        and run.get("workflowName") == requirements["workflow_name"]
+    ]
+    exact.sort(key=lambda run: int(run.get("databaseId", 0)))
+    return [run_info(run.get("databaseId")) or run for run in exact]
+
+
+def find_exact_run(branch: str, head_sha: str) -> dict[str, Any] | None:
+    runs = find_exact_runs(branch, head_sha)
+    return runs[0] if runs else None
+
+
+def acquire_exact_ci(
+    pr_number: int,
+    branch: str,
+    head_sha: str,
+    observe_seconds: int = 20,
+    dispatch_timeout_seconds: int = 60,
+) -> dict[str, Any]:
+    """Reuse one exact-head run, falling back to at most one dispatch."""
+
+    requirements = load_requirements()
+    deadline = time.monotonic() + observe_seconds
+    runs: list[dict[str, Any]] = []
+    while time.monotonic() < deadline:
+        runs = find_exact_runs(branch, head_sha)
+        if runs:
+            break
+        time.sleep(2)
+
+    source = "pull_request"
+    if not runs:
+        result = subprocess.run(
+            [
+                "gh", "workflow", "run", f"{requirements['workflow_name']}.yml",
+                "--ref", branch, "-f", f"expected_sha={head_sha}",
+            ], capture_output=True, text=True, timeout=60,
+        )
+        if result.returncode != 0:
+            raise CIVerificationError("canonical tests workflow dispatch failed")
+        source = "workflow_dispatch"
+        deadline = time.monotonic() + dispatch_timeout_seconds
+        while time.monotonic() < deadline:
+            runs = find_exact_runs(branch, head_sha)
+            if runs:
+                break
+            time.sleep(2)
+    if not runs:
+        raise CIVerificationError("exact-head CI run did not become observable")
+    selected = runs[0]
+    event = selected.get("event")
+    if event == "workflow_dispatch":
+        source = "workflow_dispatch"
+    elif event == "pull_request":
+        source = "pull_request"
+    duplicate_ids = [run.get("databaseId") for run in runs[1:] if run.get("databaseId") is not None]
+    return {
+        "kind": "agent-orchestrator-ci-acquisition",
+        "pr_number": int(pr_number),
+        "head_sha": head_sha,
+        "workflow_run_id": selected.get("databaseId"),
+        "source": source,
+        "status": "bound",
+        "duplicate_run_ids": duplicate_ids,
+    }
 
 
 def verify_exact_head_ci(
@@ -133,45 +221,26 @@ def verify_exact_head_ci(
 
 
 def dispatch_exact_ci(branch: str, head_sha: str, timeout_seconds: int = 60) -> dict[str, Any]:
-    requirements = load_requirements()
-    result = subprocess.run(
-        [
-            "gh",
-            "workflow",
-            "run",
-            f"{requirements['workflow_name']}.yml",
-            "--ref",
-            branch,
-            "-f",
-            f"expected_sha={head_sha}",
-        ],
-        capture_output=True,
-        text=True,
-        timeout=60,
-    )
-    if result.returncode != 0:
-        raise CIVerificationError("canonical tests workflow dispatch failed")
-    deadline = time.monotonic() + timeout_seconds
-    while time.monotonic() < deadline:
-        run = find_exact_run(branch, head_sha)
-        if run:
-            return {
-                "workflow_run_id": run.get("databaseId"),
-                "workflow_name": requirements["workflow_name"],
-                "head_sha": head_sha,
-                "status": run.get("status"),
-            }
-        time.sleep(2)
-    raise CIVerificationError("exact-head CI run did not become observable")
+    acquisition = acquire_exact_ci(0, branch, head_sha, 0, timeout_seconds)
+    acquisition["workflow_name"] = load_requirements()["workflow_name"]
+    return acquisition
 
 
 def main() -> None:
     import sys
 
-    if len(sys.argv) != 4 or sys.argv[1] != "dispatch":
-        raise SystemExit("Usage: ci_verifier.py dispatch <branch> <head-sha>")
     try:
-        print(json.dumps(dispatch_exact_ci(sys.argv[2], sys.argv[3]), sort_keys=True))
+        if len(sys.argv) == 4 and sys.argv[1] == "dispatch":
+            result = dispatch_exact_ci(sys.argv[2], sys.argv[3])
+        elif len(sys.argv) == 4 and sys.argv[1] == "verify-failed-run":
+            result = verify_failed_run(sys.argv[2], sys.argv[3])
+        elif len(sys.argv) == 5 and sys.argv[1] == "acquire":
+            result = acquire_exact_ci(int(sys.argv[2]), sys.argv[3], sys.argv[4])
+        else:
+            raise SystemExit(
+                "Usage: ci_verifier.py <dispatch branch sha|verify-failed-run run-id sha|acquire pr branch sha>"
+            )
+        print(json.dumps(result, sort_keys=True))
     except CIVerificationError as exc:
         print(f"CI_VERIFICATION_ERROR: {exc}", file=sys.stderr)
         raise SystemExit(1) from exc

@@ -14,7 +14,11 @@ Covers:
 
 import json
 import os
+import pathlib
+import stat
+import subprocess
 import sys
+import tempfile
 import unittest
 from unittest import mock
 from contextlib import redirect_stdout
@@ -32,7 +36,7 @@ class TestLabelDefinitions(unittest.TestCase):
         required = [
             "agent-draft", "agent-ready", "agent-running",
             "ci-repairing", "review-running", "review-passed",
-            "agent-blocked", "agent-complete",
+            "agent-review-blocked", "agent-merge-ready", "agent-blocked", "agent-complete",
         ]
         for label in required:
             self.assertIn(label, sm.ALL_LABELS)
@@ -56,6 +60,12 @@ class TestLabelDefinitions(unittest.TestCase):
 
     def test_review_passed_is_not_terminal(self):
         self.assertNotIn(sm.LABEL_REVIEW_PASSED, sm.TERMINAL_LABELS)
+
+    def test_review_blocked_releases_capacity_and_merge_ready_is_waiting(self):
+        self.assertIn(sm.LABEL_REVIEW_BLOCKED, sm.TERMINAL_LABELS)
+        self.assertNotIn(sm.LABEL_REVIEW_BLOCKED, sm.ACTIVE_LABELS)
+        self.assertNotIn(sm.LABEL_MERGE_READY, sm.ACTIVE_LABELS)
+        self.assertNotIn(sm.LABEL_MERGE_READY, sm.TERMINAL_LABELS)
 
     def test_review_running_and_review_passed_are_different(self):
         self.assertNotEqual(sm.LABEL_REVIEW_RUNNING, sm.LABEL_REVIEW_PASSED)
@@ -142,6 +152,42 @@ class TestControlIssueLabels(unittest.TestCase):
              redirect_stdout(StringIO()):
             control_state.main()
         read.assert_called_once_with("owner/repo")
+
+    def test_setup_controls_cli_is_idempotent_and_keeps_disabled_defaults(self):
+        with tempfile.TemporaryDirectory() as temp:
+            temp_path = pathlib.Path(temp)
+            state_path = temp_path / "state.json"
+            gh_path = temp_path / "gh"
+            gh_path.write_text(
+                "#!/usr/bin/env python3\n"
+                "import json, os, sys\n"
+                "path = os.environ['CONTROL_STUB_STATE']\n"
+                "state = json.load(open(path))\n"
+                "args = sys.argv[1:]\n"
+                "if args[:2] == ['label', 'list']:\n"
+                "    print(json.dumps([{'name': name} for name in state['labels']]))\n"
+                "elif args[:2] == ['label', 'create']:\n"
+                "    state['labels'].append(args[2]); json.dump(state, open(path, 'w'))\n"
+                "elif args[:2] == ['api', '--paginate']:\n"
+                "    if state['issue']:\n"
+                "        print(json.dumps([{'number':208,'state':'open','title':'[agent-control] Orchestrator controls','body':'<!-- agent-orchestrator-control:v1 -->','labels':[{'name':'agent-control'},{'name':'agent-emergency-stop'}]}]))\n"
+                "    else: print('[]')\n"
+                "elif args[:2] == ['issue', 'create']:\n"
+                "    state['issue'] = True; json.dump(state, open(path, 'w')); print('https://github.com/acme/repo/issues/208')\n"
+                "else: raise SystemExit('unexpected gh args: ' + repr(args))\n"
+            )
+            gh_path.chmod(gh_path.stat().st_mode | stat.S_IXUSR)
+            state_path.write_text(json.dumps({"labels": [], "issue": False}))
+            env = {**os.environ, "PATH": f"{temp}:{os.environ['PATH']}", "CONTROL_STUB_STATE": str(state_path)}
+            command = [sys.executable, str(pathlib.Path(__file__).parents[1] / "scripts/agent-control/control_state.py"), "setup-controls", "--repo", "acme/repo"]
+            first = subprocess.run(command, cwd=pathlib.Path(__file__).parents[1], env=env, capture_output=True, text=True)
+            second = subprocess.run(command, cwd=pathlib.Path(__file__).parents[1], env=env, capture_output=True, text=True)
+        self.assertEqual(first.returncode, 0, first.stderr)
+        self.assertEqual(second.returncode, 0, second.stderr)
+        result = json.loads(second.stdout)
+        self.assertEqual(result["labels"], ["agent-control", "agent-emergency-stop"])
+        self.assertFalse(result["orchestrator_enabled"])
+        self.assertFalse(result["auto_merge_enabled"])
 
 
 class TestWorkerStateStructure(unittest.TestCase):

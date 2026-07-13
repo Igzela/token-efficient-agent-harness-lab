@@ -203,7 +203,7 @@ def mutate_control_labels(command: str, repo: str | None = None) -> dict[str, An
 def main() -> None:
     if len(sys.argv) < 2:
         print(
-            "Usage: control_state.py <setup|status|read|require-live|require-auto-merge|"
+            "Usage: control_state.py <setup|setup-controls|status|read|require-live|require-auto-merge|"
             "enable-orchestrator|disable-orchestrator|enable-auto-merge|disable-auto-merge|"
             "emergency-stop|emergency-resume> [--repo OWNER/REPO]",
             file=sys.stderr,
@@ -220,7 +220,7 @@ def main() -> None:
         print("invalid repository argument", file=sys.stderr)
         raise SystemExit(2)
     try:
-        if command == "setup":
+        if command in {"setup", "setup-controls"}:
             state = setup(repo)
         elif command in {"status", "read"}:
             state = read_control_state(repo)

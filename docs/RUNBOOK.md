@@ -194,7 +194,7 @@ The implementation and CI-repair finalizers require the repository secret `AGENT
 
 The PAT is never copied to Vader, artifacts, or remote URLs. The push step fails closed if it is missing and uses a temporary `GIT_ASKPASS` directory below `RUNNER_TEMP`; cleanup removes only that directory. It never calls `gh auth setup-git` and never changes the runner user's global Git credential helper. Rotate or revoke the PAT immediately after any suspected exposure.
 
-Create the disabled control Issue once with `python3 scripts/agent-control/control_state.py setup --repo OWNER/REPO`. The command creates the four control labels and one open Issue titled `[agent-control] Orchestrator controls` with marker `<!-- agent-orchestrator-control:v1 -->`. A newly created control Issue has `agent-control` and `agent-emergency-stop`, but neither enable label. Operators change only that Issue's labels:
+Create the disabled control Issue once with `python3 scripts/agent-control/control_state.py setup-controls --repo OWNER/REPO` (the `setup` spelling remains an explicit compatibility alias). The command creates the four control labels and one open Issue titled `[agent-control] Orchestrator controls` with marker `<!-- agent-orchestrator-control:v1 -->`. A newly created control Issue has `agent-control` and `agent-emergency-stop`, but neither enable label. Operators change only that Issue's labels:
 
 ```bash
 uv run --no-project python scripts/agent-control/control_state.py status --repo OWNER/REPO
@@ -213,6 +213,8 @@ Every task Issue intended for implementation must also declare its permitted cha
 ```html
 <!-- agent-orchestrator-scope:v1 {"allowed_paths":["scripts/agent-control/","tests/test_agent_orchestrator_artifacts.py"]} -->
 ```
+
+Review terminal states are explicit: exact `PASS` removes `review-running`, adds `review-passed` and `agent-merge-ready`, and waits without consuming capacity when auto-merge is disabled; `PASS_WITH_NOTES`, `BLOCKED`, `FAIL`, malformed output, or a moved head add `agent-review-blocked` and do not authorize merge. Use `python3 scripts/agent-control/state_manager.py retry-review ISSUE` only after operator inspection; it returns the Issue to `agent-ready` for a fresh exact-head run.
 
 ## Release Upgrade and Rollback
 

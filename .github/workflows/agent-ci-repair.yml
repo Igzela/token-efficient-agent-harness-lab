@@ -52,19 +52,19 @@ jobs:
           set -euo pipefail
           python3 scripts/agent-control/control_state.py require-live >/dev/null
           python3 scripts/agent-control/state_manager.py verify-binding "${{ inputs.issue_number }}" "${{ inputs.pr_number }}" "${{ inputs.head_sha }}"
-          python3 - <<'PY'
-          import ci_verifier
-          run = ci_verifier.run_info("${{ inputs.ci_run_id }}")
-          assert run and run.get("workflowName") == "tests"
-          assert run.get("headSha") == "${{ inputs.head_sha }}"
-          assert run.get("conclusion") == "failure"
-          PY
+          python3 scripts/agent-control/ci_verifier.py verify-failed-run \
+            "${{ inputs.ci_run_id }}" "${{ inputs.head_sha }}"
       - name: Fetch bounded failed jobs, steps, and redacted logs by run ID
         env:
           AGENT_REPO: ${{ github.repository }}
           GH_TOKEN: ${{ github.token }}
         run: python3 scripts/agent-control/ci_evidence.py "${{ inputs.ci_run_id }}" > "$RUNNER_TEMP/repair-evidence.json"
-      - name: Upload bounded repair evidence
+      - name: Recheck control immediately before repair evidence upload
+        env:
+          AGENT_REPO: ${{ github.repository }}
+          GH_TOKEN: ${{ github.token }}
+        run: python3 scripts/agent-control/control_state.py require-live >/dev/null
+      - name: Upload bounded repair evidence artifact
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: repair-evidence-${{ github.run_id }}-${{ inputs.pr_number }}
@@ -187,6 +187,10 @@ jobs:
           gh issue view "${{ inputs.issue_number }}" --json body --jq .body > "$RUNNER_TEMP/task-issue-body.md"
           python3 scripts/agent-control/artifact_contract.py validate-scope "$RUNNER_TEMP/task-issue-body.md" \
             "$RUNNER_TEMP/agent-artifact/agent-result.json"
+      - name: Recheck control immediately before applying repair patch
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python3 scripts/agent-control/control_state.py require-live >/dev/null
       - name: Apply repair patch to clean exact failed head
         run: |
           set -euo pipefail
@@ -227,26 +231,57 @@ jobs:
             git -c credential.helper= -c credential.useHttpPath=true \
             push --force-with-lease="refs/heads/$BRANCH:${{ inputs.head_sha }}" \
             "https://github.com/${GITHUB_REPOSITORY}.git" "HEAD:refs/heads/$BRANCH"
-      - name: Recheck control immediately before PR update and CI dispatch
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          set -euo pipefail
-          python3 scripts/agent-control/control_state.py require-live >/dev/null
-          python3 scripts/agent-control/state_manager.py verify-binding "${{ inputs.issue_number }}" "${{ inputs.pr_number }}" "${{ inputs.head_sha }}"
-          BODY="Closes #${{ inputs.issue_number }}\n\n<!-- agent-orchestrator-binding: {\"issue_number\": ${{ inputs.issue_number }}, \"branch\": \"$BRANCH\"} -->"
-          gh pr edit "${{ inputs.pr_number }}" --body "$BODY"
-      - name: Persist new exact head and dispatch fresh canonical CI
+      - name: Recheck control and verify the newly pushed exact head
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
           python3 scripts/agent-control/control_state.py require-live >/dev/null
           HEAD="${{ steps.commit.outputs.head_sha }}"
+          python3 scripts/agent-control/pr_binding.py verify-post-push \
+            "${{ inputs.issue_number }}" "${{ inputs.pr_number }}" "$BRANCH" "$HEAD"
+      - name: Update the canonical PR after post-push verification
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          python3 scripts/agent-control/control_state.py require-live >/dev/null
+          BODY_FILE="$RUNNER_TEMP/agent-pr-body.md"
+          printf 'Closes #%s\n\n<!-- agent-orchestrator-binding: {"issue_number": %s, "branch": "%s"} -->\n' \
+            "${{ inputs.issue_number }}" "${{ inputs.issue_number }}" "$BRANCH" > "$BODY_FILE"
+          python3 scripts/agent-control/pr_binding.py create-or-update \
+            "${{ inputs.issue_number }}" "$BRANCH" "${{ steps.commit.outputs.head_sha }}" \
+            "agent: repair CI for #${{ inputs.issue_number }}" "$BODY_FILE" >/dev/null
+      - name: Persist new exact head, invalidate old evidence, and acquire CI
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          python3 scripts/agent-control/control_state.py require-live >/dev/null
+          HEAD="${{ steps.commit.outputs.head_sha }}"
+          python3 scripts/agent-control/control_state.py require-live >/dev/null
           python3 scripts/agent-control/state_manager.py record-worker "${{ inputs.issue_number }}" "${{ inputs.pr_number }}" "$HEAD" ci-repair "{\"branch\":\"$BRANCH\",\"failed_run_id\":${{ inputs.ci_run_id }},\"repair_attempt\":${{ inputs.repair_count }}}"
-          CI=$(python3 scripts/agent-control/ci_verifier.py dispatch "$BRANCH" "$HEAD")
+          python3 scripts/agent-control/control_state.py require-live >/dev/null
+          python3 scripts/agent-control/state_manager.py invalidate-evidence "${{ inputs.issue_number }}" \
+            "${{ inputs.pr_number }}" "$HEAD" "${{ inputs.head_sha }}"
+          EXISTING=$(python3 scripts/agent-control/state_manager.py read-ci-acquisition "${{ inputs.issue_number }}" \
+            "${{ inputs.pr_number }}" "$HEAD")
+          if [ "$EXISTING" != "null" ]; then
+            CI="$EXISTING"
+          else
+            python3 scripts/agent-control/control_state.py require-live >/dev/null
+            CI=$(python3 scripts/agent-control/ci_verifier.py acquire "${{ inputs.pr_number }}" "$BRANCH" "$HEAD")
+          fi
           RUN_ID=$(jq -er '.workflow_run_id' <<<"$CI")
+          if [ "$EXISTING" = "null" ]; then
+            SOURCE=$(jq -er '.source' <<<"$CI")
+            DUPLICATES=$(jq -c '.duplicate_run_ids // []' <<<"$CI")
+            python3 scripts/agent-control/control_state.py require-live >/dev/null
+            python3 scripts/agent-control/state_manager.py record-ci-acquisition "${{ inputs.issue_number }}" \
+              "${{ inputs.pr_number }}" "$HEAD" "$RUN_ID" "$SOURCE" "$DUPLICATES"
+          fi
           EXTRA=$(jq -c --argjson id "$RUN_ID" --argjson repairs "${{ inputs.repair_count }}" '{workflow_name,required_jobs,successful_jobs:[],workflow_run_id:$id,repair_count:$repairs}' scripts/agent-control/ci_requirements.json)
+          python3 scripts/agent-control/control_state.py require-live >/dev/null
           python3 scripts/agent-control/state_manager.py record-ci "${{ inputs.issue_number }}" "${{ inputs.pr_number }}" "$HEAD" "$RUN_ID" dispatched "$EXTRA"
 
   failure-handler:
@@ -265,8 +300,18 @@ jobs:
           AGENT_REPO: ${{ github.repository }}
           GH_TOKEN: ${{ github.token }}
         run: |
-          if ! python3 scripts/agent-control/control_state.py require-live >/dev/null; then exit 0; fi
+          if ! python3 scripts/agent-control/control_state.py require-live >/dev/null; then
+            echo "disabled or emergency-stopped; repair state unchanged"
+            exit 0
+          fi
+          if ! python3 scripts/agent-control/state_manager.py verify-binding \
+            "${{ inputs.issue_number }}" "${{ inputs.pr_number }}" "${{ inputs.head_sha }}"; then
+            echo "stale repair failure; a newer exact head owns the Issue state"
+            exit 0
+          fi
           LABELS=$(python3 scripts/agent-control/state_manager.py get-labels "${{ inputs.issue_number }}")
-          if echo "$LABELS" | grep -qw ci-repairing; then
+          if echo "$LABELS" | grep -qw ci-repairing && ! echo "$LABELS" | grep -Eq '(review-passed|agent-merge-ready|agent-review-blocked|agent-complete|agent-blocked)'; then
             python3 scripts/agent-control/state_manager.py set-labels "${{ inputs.issue_number }}" agent-blocked
+          else
+            echo "newer or nonterminal state exists; state unchanged"
           fi

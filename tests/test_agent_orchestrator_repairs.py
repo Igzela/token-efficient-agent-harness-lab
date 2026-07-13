@@ -5,6 +5,8 @@ from __future__ import annotations
 import json
 import os
 import pathlib
+import stat
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -19,6 +21,7 @@ import ci_handler
 import ci_verifier
 import control_state
 import dispatcher
+import pr_binding
 import state_manager
 
 
@@ -67,6 +70,17 @@ class TestWorkflowContracts(unittest.TestCase):
                 self.assertIn("agent.patch", source)
                 self.assertIn("agent-result.json", source)
 
+    def test_finalizers_use_verified_pr_binding_cli_and_supported_ci_acquisition(self):
+        worker = self.read("agent-worker.yml")
+        repair = self.read("agent-ci-repair.yml")
+        self.assertIn("pr_binding.py create-or-update", worker)
+        self.assertNotIn("gh pr create", worker)
+        self.assertNotIn("--json number --jq", worker)
+        self.assertIn("pr_binding.py verify-post-push", repair)
+        self.assertIn("ci_verifier.py verify-failed-run", repair)
+        self.assertIn("ci_verifier.py acquire", worker)
+        self.assertIn("ci_verifier.py acquire", repair)
+
     def test_review_worker_is_read_only_and_only_pass_authorizes_merge(self):
         source = self.read("agent-review.yml")
         vader = source.split("  vader-review:", 1)[1].split("\n  finalize:", 1)[0]
@@ -77,6 +91,24 @@ class TestWorkflowContracts(unittest.TestCase):
         self.assertIn("steps.verdict.outputs.verdict == 'PASS'", source)
         self.assertIn("steps.verdict.outputs.verdict != 'PASS'", source)
         self.assertIn("require-auto-merge", source)
+        self.assertIn("agent-review-blocked", source)
+        self.assertIn("agent-merge-ready", source)
+        self.assertNotIn('set-labels "${{ inputs.issue_number }}" agent-running', source)
+
+    def test_review_terminal_states_release_capacity_and_retry_is_explicit(self):
+        self.assertEqual(
+            state_manager.labels_for_review_verdict("PASS"),
+            {state_manager.LABEL_REVIEW_PASSED, state_manager.LABEL_MERGE_READY},
+        )
+        self.assertEqual(
+            state_manager.labels_for_review_verdict("PASS_WITH_NOTES"),
+            {state_manager.LABEL_REVIEW_BLOCKED},
+        )
+        self.assertEqual(
+            state_manager.ACTIVE_LABELS & state_manager.labels_for_review_verdict("PASS"),
+            set(),
+        )
+        self.assertIn("retry-review", self.read("agent-controller.yml"))
 
     def test_merge_requires_exact_head_ci_pass_review_and_objections_without_admin_api(self):
         source = self.read("agent-merge.yml") + (CONTROL / "state_manager.py").read_text()
@@ -112,6 +144,7 @@ class TestDispatcher(unittest.TestCase):
              mock.patch.object(dispatcher.sm, "read_dispatch_state", side_effect=lambda _i, key, _r: recorded.get(key)), \
              mock.patch.object(dispatcher.sm, "get_issue_labels", return_value=labels), \
              mock.patch.object(dispatcher.sm, "has_open_issue_pr", return_value=False), \
+             mock.patch.object(dispatcher.sm, "validate_task_scope", return_value=(True, ["src/"])), \
              mock.patch.object(dispatcher.sm, "get_active_issue_numbers", return_value=set()), \
              mock.patch.object(dispatcher.sm, "set_labels", side_effect=set_labels), \
              mock.patch.object(dispatcher.sm, "record_dispatch_state", side_effect=record), \
@@ -121,6 +154,72 @@ class TestDispatcher(unittest.TestCase):
         self.assertTrue(first["dispatched"])
         self.assertTrue(second["dispatched"])
         self.assertEqual(len(workflow_calls), 1)
+
+    def test_initial_pr_creation_cli_parses_supported_rest_response_and_reuses_pr(self):
+        sha = "a" * 40
+        with tempfile.TemporaryDirectory() as temp:
+            temp_path = pathlib.Path(temp)
+            state_path = temp_path / "pr-state.json"
+            gh_path = temp_path / "gh"
+            gh_path.write_text(
+                "#!/usr/bin/env python3\n"
+                "import json, os, sys\n"
+                "state = os.environ['PR_STATE']\n"
+                "args = sys.argv[1:]\n"
+                "if args[:2] == ['pr', 'list']:\n"
+                "    print(json.dumps([json.load(open(state))]) if os.path.exists(state) else '[]')\n"
+                "elif args[:2] == ['api', '--method'] and 'POST' in args:\n"
+                "    url = 'https://github.com/acme/repo/pull/123'\n"
+                "    value = {'number':123,'html_url':url,'url':url,'state':'OPEN','baseRefName':'main','headRefName':'agent/issue-42','headRefOid':os.environ['PR_SHA'],'body':'Closes #42\\n\\n<!-- agent-orchestrator-binding: {\\\"issue_number\\\": 42, \\\"branch\\\": \\\"agent/issue-42\\\"} -->'}\n"
+                "    json.dump(value, open(state, 'w')); print(json.dumps({'number':123,'html_url':url}))\n"
+                "elif args[:2] == ['api', '--method'] and 'PATCH' in args:\n"
+                "    value = json.load(open(state)); print(json.dumps(value))\n"
+                "elif args[:2] == ['pr', 'view']:\n"
+                "    print(json.dumps(json.load(open(state))))\n"
+                "else: raise SystemExit('unexpected gh args: ' + repr(args))\n"
+            )
+            gh_path.chmod(gh_path.stat().st_mode | stat.S_IXUSR)
+            body = temp_path / "body.md"
+            body.write_text(
+                'Closes #42\n\n'
+                '<!-- agent-orchestrator-binding: {"issue_number": 42, "branch": "agent/issue-42"} -->\n'
+            )
+            env = {
+                **os.environ,
+                "AGENT_GH_CMD": str(gh_path),
+                "AGENT_REPO": "acme/repo",
+                "PR_STATE": str(state_path),
+                "PR_SHA": sha,
+            }
+            command = [
+                sys.executable, str(CONTROL / "pr_binding.py"), "create-or-update",
+                "42", "agent/issue-42", sha, "agent: implement #42", str(body),
+            ]
+            first = subprocess.run(command, cwd=ROOT, env=env, capture_output=True, text=True)
+            second = subprocess.run(command, cwd=ROOT, env=env, capture_output=True, text=True)
+        self.assertEqual(first.returncode, 0, first.stderr)
+        self.assertEqual(second.returncode, 0, second.stderr)
+        self.assertEqual(json.loads(first.stdout)["number"], 123)
+        self.assertEqual(json.loads(second.stdout)["number"], 123)
+
+    def test_ci_failed_run_cli_works_from_repository_root_with_stubbed_gh(self):
+        sha = "b" * 40
+        with tempfile.TemporaryDirectory() as temp:
+            gh_path = pathlib.Path(temp) / "gh"
+            gh_path.write_text(
+                "#!/usr/bin/env python3\n"
+                "import json\n"
+                "print(json.dumps({'databaseId':456,'workflowName':'tests','status':'completed','conclusion':'failure','headSha':'%s'}))\n"
+                % sha
+            )
+            gh_path.chmod(gh_path.stat().st_mode | stat.S_IXUSR)
+            env = {**os.environ, "PATH": f"{temp}:{os.environ['PATH']}"}
+            result = subprocess.run(
+                [sys.executable, str(CONTROL / "ci_verifier.py"), "verify-failed-run", "456", sha],
+                cwd=ROOT, env=env, capture_output=True, text=True,
+            )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(json.loads(result.stdout)["workflow_run_id"], 456)
 
     def test_capacity_full_is_nonterminal(self):
         with mock.patch.object(dispatcher.control_state, "require_live", return_value={}), \
@@ -135,6 +234,20 @@ class TestDispatcher(unittest.TestCase):
             result = dispatcher.dispatch_ready(12, "worker:12")
         self.assertFalse(result["dispatched"])
         self.assertEqual(result["reason"], "disabled_or_emergency_stopped")
+
+    def test_invalid_scope_is_rejected_before_capacity_claim_or_workflow(self):
+        with mock.patch.object(dispatcher.control_state, "require_live", return_value={}), \
+             mock.patch.object(dispatcher, "_repo", return_value="acme/repo"), \
+             mock.patch.object(dispatcher.sm, "read_dispatch_state", return_value=None), \
+             mock.patch.object(dispatcher.sm, "get_issue_labels", return_value={state_manager.LABEL_READY}), \
+             mock.patch.object(dispatcher.sm, "validate_task_scope", return_value=(False, "wildcard")), \
+             mock.patch.object(dispatcher.sm, "record_dispatch_state", return_value=True) as record, \
+             mock.patch.object(dispatcher, "_run_workflow") as workflow:
+            result = dispatcher.dispatch_ready(77, "worker:77")
+        self.assertFalse(result["dispatched"])
+        self.assertIn("invalid_scope", result["reason"])
+        record.assert_called_once()
+        workflow.assert_not_called()
 
 
 class TestCIEventTrust(unittest.TestCase):
@@ -156,6 +269,73 @@ class TestCIEventTrust(unittest.TestCase):
             os.unlink(path)
         self.assertEqual(result["action"], "noop")
         self.assertEqual(result["reason"], "fork_or_foreign_head_repository")
+
+    def test_exact_head_run_with_a_different_branch_is_stale(self):
+        sha = "1" * 40
+        body = 'Closes #42\n\n<!-- agent-orchestrator-binding: {"issue_number": 42, "branch": "agent/issue-42"} -->'
+        event_path = self.event_file({
+            "repository": {"full_name": "trusted/repo"},
+            "workflow_run": {
+                "name": "tests", "status": "completed", "conclusion": "success",
+                "head_branch": "agent/issue-42", "head_sha": sha, "id": 99,
+                "head_repository": {"full_name": "trusted/repo"},
+                "pull_requests": [{"number": 207, "head": {"sha": sha}}],
+            },
+        })
+        pr = {
+            "state": "OPEN", "headRefName": "agent/issue-42", "headRefOid": sha,
+            "body": body,
+        }
+        run = {
+            "workflowName": "tests", "status": "completed", "conclusion": "success",
+            "headSha": sha, "headBranch": "agent/other", "databaseId": 99,
+        }
+        try:
+            with mock.patch.dict(os.environ, {"AGENT_REPO": "trusted/repo"}, clear=False), \
+                 mock.patch.object(ci_handler.ci_verifier, "run_info", return_value=run), \
+                 mock.patch.object(ci_handler.sm, "get_pr_info", return_value=pr):
+                result = ci_handler.process_ci_completion(event_path)
+        finally:
+            os.unlink(event_path)
+        self.assertEqual(result, {"action": "stale", "reason": "head_sha_mismatch"})
+
+
+class TestRepairHeadTransition(unittest.TestCase):
+    def test_post_push_verification_accepts_h2_before_new_worker_state(self):
+        body = 'Closes #42\n\n<!-- agent-orchestrator-binding: {"issue_number": 42, "branch": "agent/issue-42"} -->'
+        pr = {
+            "number": 207, "state": "OPEN", "baseRefName": "main",
+            "headRefName": "agent/issue-42", "headRefOid": "b" * 40,
+            "body": body, "url": "https://github.com/acme/repo/pull/207",
+        }
+        with mock.patch.object(pr_binding, "_open_prs", return_value=[pr]):
+            result = pr_binding.verify_post_push_binding(42, 207, "agent/issue-42", "b" * 40, "acme/repo")
+        self.assertEqual(result["head_sha"], "b" * 40)
+
+    def test_new_worker_state_binds_h2_and_old_head_is_rejected(self):
+        pr = {
+            "number": 207, "state": "OPEN", "baseRefName": "main",
+            "headRefName": "agent/issue-42", "headRefOid": "b" * 40,
+            "body": 'Closes #42\n\n<!-- agent-orchestrator-binding: {"issue_number": 42, "branch": "agent/issue-42"} -->',
+        }
+        with mock.patch.object(state_manager, "get_pr_info", return_value=pr), \
+             mock.patch.object(state_manager, "read_worker_state", return_value={"pr_number": 207, "head_sha": "b" * 40, "extra": {"branch": "agent/issue-42"}}), \
+             mock.patch.object(state_manager, "_gh", return_value="[]"):
+            ok, reason = state_manager.verify_issue_pr_binding(42, 207, "b" * 40, "acme/repo")
+            old_ok, old_reason = state_manager.verify_issue_pr_binding(42, 207, "a" * 40, "acme/repo")
+        self.assertTrue(ok, reason)
+        self.assertFalse(old_ok)
+        self.assertEqual(old_reason, "head_mismatch")
+
+    def test_old_ci_and_review_evidence_cannot_authorize_new_head(self):
+        with mock.patch.object(state_manager, "get_issue_labels", return_value={state_manager.LABEL_REVIEW_PASSED, state_manager.LABEL_MERGE_READY}), \
+             mock.patch.object(state_manager, "get_pr_info", return_value={"state": "OPEN", "baseRefName": "main", "headRefOid": "b" * 40, "mergeable": "MERGEABLE", "mergeStateStatus": "CLEAN", "reviews": []}), \
+             mock.patch.object(state_manager, "verify_issue_pr_binding", return_value=(True, "ok")), \
+             mock.patch.object(state_manager, "read_review_state", return_value={"pr_number": 207, "head_sha": "a" * 40, "verdict": "PASS"}), \
+             mock.patch.object(state_manager, "unresolved_review_threads", return_value=[]), \
+             mock.patch.object(control_state, "require_auto_merge", return_value={}):
+            with self.assertRaises(RuntimeError):
+                state_manager.verify_merge_requirements(207, 42, "b" * 40, "acme/repo")
 
 
 class TestExactHeadCI(unittest.TestCase):
@@ -180,6 +360,44 @@ class TestExactHeadCI(unittest.TestCase):
         with mock.patch.object(ci_verifier, "run_info", return_value=run):
             with self.assertRaises(ci_verifier.CIVerificationError):
                 ci_verifier.verify_exact_head_ci(2, "a" * 40, 1, {"headRefOid": "b" * 40})
+
+    def test_existing_natural_exact_head_run_is_reused_without_dispatch(self):
+        run = {"databaseId": 11, "event": "pull_request", "headSha": "c" * 40, "headBranch": "agent/issue-7", "workflowName": "tests"}
+        with mock.patch.object(ci_verifier, "find_exact_runs", return_value=[run]), \
+             mock.patch.object(ci_verifier.subprocess, "run") as dispatch:
+            result = ci_verifier.acquire_exact_ci(7, "agent/issue-7", "c" * 40, observe_seconds=1)
+        dispatch.assert_not_called()
+        self.assertEqual(result["workflow_run_id"], 11)
+        self.assertEqual(result["source"], "pull_request")
+
+    def test_missing_exact_head_run_dispatches_once_then_binds_one(self):
+        run = {"databaseId": 12, "event": "workflow_dispatch", "headSha": "d" * 40, "headBranch": "agent/issue-8", "workflowName": "tests"}
+        with mock.patch.object(ci_verifier, "find_exact_runs", side_effect=[[], [run]]), \
+             mock.patch.object(ci_verifier.subprocess, "run", return_value=mock.Mock(returncode=0)) as dispatch:
+            result = ci_verifier.acquire_exact_ci(8, "agent/issue-8", "d" * 40, observe_seconds=0)
+        dispatch.assert_called_once()
+        self.assertEqual(result["workflow_run_id"], 12)
+        self.assertEqual(result["source"], "workflow_dispatch")
+
+    def test_two_exact_head_runs_select_one_and_mark_duplicate(self):
+        runs = [
+            {"databaseId": 21, "event": "pull_request", "headSha": "e" * 40, "headBranch": "agent/issue-9", "workflowName": "tests"},
+            {"databaseId": 22, "event": "workflow_dispatch", "headSha": "e" * 40, "headBranch": "agent/issue-9", "workflowName": "tests"},
+        ]
+        with mock.patch.object(ci_verifier, "find_exact_runs", return_value=runs):
+            result = ci_verifier.acquire_exact_ci(9, "agent/issue-9", "e" * 40, observe_seconds=1)
+        self.assertEqual(result["workflow_run_id"], 21)
+        self.assertEqual(result["duplicate_run_ids"], [22])
+
+    def test_duplicate_success_or_failure_event_is_idempotent(self):
+        with mock.patch.object(ci_handler.sm, "read_ci_acquisition", return_value={"workflow_run_id": 31}), \
+             mock.patch.object(ci_handler.sm, "read_ci_state", return_value=None), \
+             mock.patch.object(ci_handler.ci_verifier, "find_exact_runs", return_value=[]):
+            self.assertTrue(ci_handler._is_duplicate_exact_head_run(42, 207, "f" * 40, 32, "agent/issue-42"))
+        with mock.patch.object(ci_handler.sm, "read_ci_acquisition", return_value=None), \
+             mock.patch.object(ci_handler.sm, "read_ci_state", return_value={"pr_number": 207, "head_sha": "f" * 40, "workflow_run_id": 33, "status": "failure_repair_0"}), \
+             mock.patch.object(ci_handler.ci_verifier, "find_exact_runs", return_value=[]):
+            self.assertTrue(ci_handler._is_duplicate_exact_head_run(42, 207, "f" * 40, 33, "agent/issue-42"))
 
 
 if __name__ == "__main__":

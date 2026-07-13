@@ -58,6 +58,11 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: python3 scripts/agent-control/prompt_builder.py review "${{ inputs.pr_number }}" "${{ inputs.head_sha }}" > "$RUNNER_TEMP/review-prompt.txt"
       - name: Upload trusted review input
+        env:
+          AGENT_REPO: ${{ github.repository }}
+          GH_TOKEN: ${{ github.token }}
+        run: python3 scripts/agent-control/control_state.py require-live >/dev/null
+      - name: Upload trusted review input artifact
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: review-input-${{ github.run_id }}-${{ inputs.pr_number }}
@@ -147,18 +152,18 @@ jobs:
         run: |
           set -euo pipefail
           python3 scripts/agent-control/control_state.py require-live >/dev/null
-          python3 scripts/agent-control/state_manager.py set-labels "${{ inputs.issue_number }}" agent-running review-passed
+          python3 scripts/agent-control/state_manager.py set-labels "${{ inputs.issue_number }}" review-passed agent-merge-ready
           if python3 scripts/agent-control/control_state.py require-auto-merge >/dev/null; then
             python3 scripts/agent-control/dispatcher.py dispatch-merge "${{ inputs.pr_number }}" "${{ inputs.issue_number }}" "${{ inputs.head_sha }}"
           fi
-      - name: Keep non-PASS verdict non-authorizing
+      - name: Move non-PASS verdict to operator-review state
         if: steps.verdict.outputs.verdict != 'PASS'
         env:
           AGENT_REPO: ${{ github.repository }}
           GH_TOKEN: ${{ github.token }}
         run: |
           python3 scripts/agent-control/control_state.py require-live >/dev/null
-          python3 scripts/agent-control/state_manager.py set-labels "${{ inputs.issue_number }}" agent-running
+          python3 scripts/agent-control/state_manager.py set-labels "${{ inputs.issue_number }}" agent-review-blocked
 
   failure-handler:
     needs: [prepare, vader-review, finalize]
@@ -171,10 +176,23 @@ jobs:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
         with:
           persist-credentials: false
-      - name: Leave disabled, emergency, malformed, and moved-head states nonterminal
+      - name: Move only the current failed review to operator-review state
         env:
           AGENT_REPO: ${{ github.repository }}
           GH_TOKEN: ${{ github.token }}
         run: |
-          if ! python3 scripts/agent-control/control_state.py require-live >/dev/null; then exit 0; fi
-          echo "review failure requires operator inspection without overwriting current state"
+          if ! python3 scripts/agent-control/control_state.py require-live >/dev/null; then
+            echo "disabled or emergency-stopped; review state unchanged"
+            exit 0
+          fi
+          if ! python3 scripts/agent-control/state_manager.py verify-binding \
+            "${{ inputs.issue_number }}" "${{ inputs.pr_number }}" "${{ inputs.head_sha }}"; then
+            echo "stale review failure; a newer exact head owns the Issue state"
+            exit 0
+          fi
+          LABELS=$(python3 scripts/agent-control/state_manager.py get-labels "${{ inputs.issue_number }}")
+          if echo "$LABELS" | grep -qw review-running && ! echo "$LABELS" | grep -Eq '(review-passed|agent-review-blocked|agent-merge-ready|agent-complete|agent-blocked)'; then
+            python3 scripts/agent-control/state_manager.py set-labels "${{ inputs.issue_number }}" agent-review-blocked
+          else
+            echo "newer review state exists; state unchanged"
+          fi
