@@ -142,6 +142,27 @@ class CheckAgentHandoffTests(unittest.TestCase):
 """
         self.assertEqual(checker.active_state_failures(text, text), [])
 
+    def test_structural_guard_parses_current_level_packet_headings(self) -> None:
+        checker = load_handoff_checker()
+        text = """| Stage | Priority | Goal | Status |
+|---|---|---|---|
+| PE-5 | P1.5 | Release Provenance | Activated; first packet ready |
+## Packet PE5-CONTRACT-1 — contract
+**State:** `READY_FOR_EXECUTION`
+## Packet PE5-SBOM-1 — sbom
+**State:** `BLOCKED_PREREQUISITE`
+**Prerequisite:** PE5-CONTRACT-1 complete.
+## Active Routing
+1. Start PE5-CONTRACT-1.
+"""
+
+        packets = checker.parse_packet_contracts(text, [])
+        self.assertEqual(packets["PE5-CONTRACT-1"]["state"], "READY_FOR_EXECUTION")
+        self.assertEqual(
+            packets["PE5-SBOM-1"]["prerequisites"], ["PE5-CONTRACT-1"]
+        )
+        self.assertEqual(checker.active_state_failures(text, text), [])
+
 
 if __name__ == "__main__":
     unittest.main()
