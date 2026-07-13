@@ -587,6 +587,7 @@ def validate_result(result: Mapping[str, Any], scenario: Mapping[str, Any] | Non
     if not SOURCE_HEAD_RE.fullmatch(str(result["source_head"])):
         raise ContractError("invalid result source_head")
     environment = _validate_environment(result["environment"])
+    validated_scenario = validate_scenario(scenario) if scenario is not None else None
     resources = result["resources"]
     if not isinstance(resources, list) or not resources:
         raise ContractError("result resources are missing")
@@ -613,7 +614,12 @@ def validate_result(result: Mapping[str, Any], scenario: Mapping[str, Any] | Non
     expected_kinds = ("recovery", "rollback", "integrity", "audit", "restart", "cleanup")
     if any(item["kind"] != expected for item, expected in zip(evidence, expected_kinds)):
         raise ContractError("result evidence field is bound to the wrong evidence kind")
-    _validate_evidence_refs(result["evidence_refs"], evidence, MAX_EVIDENCE_REFS)
+    evidence_ref_limit = (
+        validated_scenario["max_evidence_refs"]
+        if validated_scenario is not None
+        else MAX_EVIDENCE_REFS
+    )
+    _validate_evidence_refs(result["evidence_refs"], evidence, evidence_ref_limit)
 
     status = result["status"]
     if status not in STATUSES:
@@ -644,8 +650,7 @@ def validate_result(result: Mapping[str, Any], scenario: Mapping[str, Any] | Non
         raise ContractError("unsupported result needs an explicit reason")
     if status == "invalid_scenario" and not ({"UNKNOWN_SCENARIO", "UNKNOWN_FAULT_POINT", "NON_DISPOSABLE_RESOURCE", "SCENARIO_BOUNDS_EXCEEDED"} & set(reason_codes)):
         raise ContractError("invalid scenario result needs a bounded reason")
-    if scenario is not None:
-        validated_scenario = validate_scenario(scenario)
+    if validated_scenario is not None:
         if result["scenario_id"] != validated_scenario["scenario_id"] or result["scenario_version"] != validated_scenario["scenario_version"]:
             raise ContractError("result is bound to a different scenario")
         if result["scenario_sha256"] != scenario_sha256(validated_scenario):
@@ -686,6 +691,7 @@ def build_report(
         raise ContractError("report must contain a bounded result set")
     if any(result["source_head"] != source_head or result["seed"] != seed or result["worker_id"] != worker_id for result in normalized):
         raise ContractError("report result binding mismatch")
+    _validate_report_environment_binding(validated_environment, normalized)
     counts = {status: 0 for status in sorted(STATUSES)}
     for result in normalized:
         counts[result["status"]] += 1
@@ -707,6 +713,22 @@ def build_report(
     return report
 
 
+def _validate_report_environment_binding(
+    environment: Mapping[str, Any], results: list[Mapping[str, Any]]
+) -> None:
+    """Require aggregate report capabilities to cover every result capability."""
+
+    report_capabilities = set(environment["capabilities"])
+    for result in results:
+        result_capabilities = set(result["environment"]["capabilities"])
+        missing = result_capabilities - report_capabilities
+        if missing:
+            raise ContractError(
+                "report environment is missing result capabilities: "
+                + ",".join(sorted(missing))
+            )
+
+
 def validate_report(report: Mapping[str, Any]) -> dict[str, Any]:
     if not isinstance(report, dict):
         raise ContractError("report must be an object")
@@ -726,8 +748,10 @@ def validate_report(report: Mapping[str, Any]) -> dict[str, Any]:
     if not isinstance(results, list) or not results:
         raise ContractError("report results are missing")
     seen_scenarios: set[str] = set()
+    validated_results: list[dict[str, Any]] = []
     for result in results:
         validated_result = validate_result(result)
+        validated_results.append(validated_result)
         if validated_result["scenario_id"] in seen_scenarios:
             raise ContractError("report contains duplicate scenario results")
         seen_scenarios.add(validated_result["scenario_id"])
@@ -737,6 +761,7 @@ def validate_report(report: Mapping[str, Any]) -> dict[str, Any]:
             or validated_result["worker_id"] != report["worker_id"]
         ):
             raise ContractError("report result is not bound to its source/seed/worker")
+    _validate_report_environment_binding(report["environment"], validated_results)
     summary = report["summary"]
     if not isinstance(summary, dict) or set(summary) != {"counts", "total"}:
         raise ContractError("report summary is invalid")

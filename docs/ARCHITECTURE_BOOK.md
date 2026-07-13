@@ -1,6 +1,6 @@
 # Architecture Book
 
-Last updated: 2026-07-13 (PE-4 final evidence; PE-5 release provenance and PE-6 recovery-drill boundaries activated)
+Last updated: 2026-07-13 (PE-5 and PE-6 independently sealed)
 
 This is the current architecture baseline for the Token-Efficient Agent Harness Lab. Historical phase plans, closeout reports, and long-form strategy docs are retained in release-tagged git history; `docs/archive/README.md` is the working-tree index.
 
@@ -408,7 +408,7 @@ These are accepted current limitations, not hidden TODOs:
 - The bounded LangGraph importer and same-scenario comparison are implemented, but no external runtime runner is embedded and no real LangGraph benchmark evidence is persisted automatically. Current architecture permits only importer-first, operator-supplied trace-summary normalization through existing evidence, artifact, audit, and storage boundaries.
 - Cloud SaaS, hosted/cloud deployment, multi-tenant service, and direct release/tag/deploy/apply controls are not implemented. PE-5 adds release evidence and verification, not app-runtime release authority.
 - Complete release SBOM/signing/attestation/verification is accepted under PE-5; no production identity or public release was exercised for acceptance.
-- PE-6 grouped implementation is active; independent recovery-drill closeout remains pending and must audit the merged chain.
+- PE-6 grouped implementation and independent recovery-drill closeout are accepted. Aggregate report environment capabilities cover every result capability; no runtime/release authority was added.
 - Some routing, quality, and orchestration modules remain partially active rather than unified under one policy layer.
 
 The Adaptive Fusion Routing track extends `model_selector`, `feedback`, `provider`, storage, and existing HTTP/workflow/executor boundaries without creating a parallel routing, policy, workflow, or storage kernel. AF-0 through AF-6 add planning, endpoint metadata, offline evaluation, authenticated bounded execution, contextual policy, panel fusion, safe observations, controlled experiments, evidence-driven promotion, and guarded completions. Legacy independent gates remain supported.

@@ -73,6 +73,18 @@ class CheckAgentHandoffTests(unittest.TestCase):
         failures = checker.active_state_failures(next_text, next_text)
         self.assertIn("Active Routing points to completed packet PE3-A-1", failures)
 
+    def test_structural_guard_accepts_terminal_objective_routing(self) -> None:
+        checker = load_handoff_checker()
+        text = """| Stage | Priority | Goal | Status |
+|---|---|---|---|
+| PE-3 | P1 | x | Complete |
+### Packet PE3-A-1 — a
+**State:** `COMPLETE`
+## Active Routing
+1. Terminal objective: PE3-A-1 is complete; no later packet is activated.
+"""
+        self.assertEqual(checker.active_state_failures(text, text), [])
+
     def test_structural_guard_rejects_duplicate_packet_state(self) -> None:
         checker = load_handoff_checker()
         next_text = """### Packet PE3-A-1 — a

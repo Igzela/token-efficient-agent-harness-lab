@@ -305,13 +305,26 @@ def active_state_failures(status_text: str, next_text: str) -> list[str]:
 
     routing = _section(next_text, "## Active Routing")
     routed_packets = re.findall(r"PE\d+-[A-Z0-9-]+", routing)
+    terminal_routing = bool(re.search(r"\bterminal objective\b", routing, re.IGNORECASE))
     if not routed_packets:
-        failures.append("Active Routing must name at least one packet")
+        if not terminal_routing:
+            failures.append("Active Routing must name at least one packet")
     for packet_id in routed_packets:
         if packet_id not in packets:
             failures.append(f"Active Routing references unknown packet {packet_id}")
-        elif packets[packet_id]["state"] == "COMPLETE":
+        elif packets[packet_id]["state"] == "COMPLETE" and not terminal_routing:
             failures.append(f"Active Routing points to completed packet {packet_id}")
+    if terminal_routing:
+        incomplete = [
+            packet_id
+            for packet_id, packet in packets.items()
+            if packet["state"] != "COMPLETE"
+        ]
+        if incomplete:
+            failures.append(
+                "terminal objective routing requires every packet to be complete: "
+                + ",".join(sorted(incomplete))
+            )
     if routed_packets and routed_packets[0] in packets:
         first = packets[routed_packets[0]]
         incomplete = [
