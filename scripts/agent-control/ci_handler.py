@@ -134,7 +134,7 @@ def _is_duplicate_exact_head_run(issue, pr, sha, run_id, branch):
     except (TypeError, ValueError):
         return True
     acquisition = sm.read_ci_acquisition(issue, pr, sha)
-    exact_runs = ci_verifier._acquirable_runs(ci_verifier.find_exact_runs(branch, sha))
+    exact_runs = ci_verifier._acquirable_runs(ci_verifier.find_exact_runs(branch, sha, pr))
     selected = ci_verifier.select_canonical_run(exact_runs)
     if selected is not None:
         try:
@@ -175,8 +175,8 @@ def _persist_canonical_acquisition(issue, pr, sha, branch, event_run):
 
     requirements = ci_verifier.load_requirements()
     candidates = [
-        run for run in ci_verifier.find_exact_runs(branch, sha)
-        if ci_verifier._candidate_matches(run, branch, sha, requirements)
+        run for run in ci_verifier.find_exact_runs(branch, sha, pr)
+        if ci_verifier._candidate_matches(run, branch, sha, requirements, pr)
     ]
     acquirable = ci_verifier._acquirable_runs(candidates)
     selected = ci_verifier.select_canonical_run(acquirable)
@@ -203,6 +203,7 @@ def _persist_canonical_acquisition(issue, pr, sha, branch, event_run):
         if run_id != selected_id and run_id not in unsupported_ids
     ]
     source = "workflow_dispatch" if selected.get("event") == "workflow_dispatch" else "pull_request"
+    previous_acquisition = sm.read_ci_acquisition(issue, pr, sha)
     metadata = {
         "status": status,
         "observed_run_ids": observed_ids,
@@ -212,13 +213,85 @@ def _persist_canonical_acquisition(issue, pr, sha, branch, event_run):
         ),
         "superseded_run_ids": superseded_ids,
         "unsupported_run_ids": unsupported_ids,
-        "fallback_dispatched": False,
+        "fallback_dispatched": bool((previous_acquisition or {}).get("fallback_dispatched", False)),
     }
     if not sm.record_ci_acquisition(
         issue, pr, sha, selected_id, source, superseded_ids, metadata=metadata
     ):
         raise RuntimeError("unable to persist canonical exact-head acquisition")
     return True
+
+
+def _reselect_unsupported(issue, pr, sha, branch, event_run):
+    """Give an unsupported terminal run one bounded exact-head fallback chance.
+
+    The workflow-run event itself cannot authorise repair or review.  If the
+    bounded acquisition finds a supported replacement, persist it and leave
+    the replacement's own completion event to drive the next action.  Only an
+    exhausted reselection attempt is allowed to become a terminal block.
+    """
+
+    previous = sm.read_ci_acquisition(issue, pr, sha)
+    if previous and previous.get("fallback_dispatched"):
+        candidates = ci_verifier.find_exact_runs(branch, sha, pr)
+        acquirable = ci_verifier._acquirable_runs(candidates)
+        selected = ci_verifier.select_canonical_run(acquirable)
+        if not selected:
+            return None
+        selected_id = selected.get("databaseId")
+        acquisition = {
+            "workflow_run_id": selected_id,
+            "source": "workflow_dispatch" if selected.get("event") == "workflow_dispatch" else "pull_request",
+            "status": "bound",
+            "selection_reason": ci_verifier._selection_reason(selected, acquirable),
+            "observed_run_ids": [
+                run.get("databaseId") for run in candidates if run.get("databaseId") is not None
+            ],
+            "superseded_run_ids": [
+                run.get("databaseId") for run in candidates
+                if run.get("databaseId") not in (None, selected_id)
+                and run in acquirable
+            ],
+            "unsupported_run_ids": [
+                run.get("databaseId") for run in candidates
+                if run.get("databaseId") is not None and run not in acquirable
+            ],
+            "fallback_dispatched": True,
+            "duplicate_run_ids": [],
+        }
+    else:
+        try:
+            acquisition = ci_verifier.acquire_exact_ci(
+                pr, branch, sha, observe_seconds=0, dispatch_timeout_seconds=60
+            )
+        except ci_verifier.CIVerificationError:
+            return None
+    try:
+        selected_id = int(acquisition["workflow_run_id"])
+        event_id = int(event_run.get("databaseId", 0))
+    except (KeyError, TypeError, ValueError):
+        return None
+    if selected_id == event_id:
+        return None
+    metadata = {
+        "status": acquisition.get("status", "bound"),
+        "observed_run_ids": acquisition.get("observed_run_ids", []),
+        "selection_reason": acquisition.get("selection_reason", ""),
+        "superseded_run_ids": acquisition.get("superseded_run_ids", []),
+        "unsupported_run_ids": acquisition.get("unsupported_run_ids", []),
+        "fallback_dispatched": acquisition.get("fallback_dispatched", False),
+    }
+    if not sm.record_ci_acquisition(
+        issue,
+        pr,
+        sha,
+        selected_id,
+        acquisition.get("source", "workflow_dispatch"),
+        acquisition.get("duplicate_run_ids", []),
+        metadata=metadata,
+    ):
+        raise RuntimeError("unable to persist reselected exact-head acquisition")
+    return acquisition
 
 
 def _state_unavailable_result(issue, pr, sha, run_id, detail):
@@ -289,6 +362,23 @@ def process_ci_completion(event_path):
         )
 
     if info["conclusion"] in TERMINAL_UNSUPPORTED_CONCLUSIONS:
+        try:
+            replacement = _reselect_unsupported(
+                issue_number, pr_number, current_head, expected_branch, run
+            )
+        except (RuntimeError, sm.StateUnavailableError) as exc:
+            return _state_unavailable_result(
+                issue_number, pr_number, current_head, info["run_id"], str(exc)
+            )
+        if replacement is not None:
+            return {
+                "action": "noop",
+                "pr_number": pr_number,
+                "issue_number": issue_number,
+                "head_sha": current_head,
+                "ci_run_id": replacement.get("workflow_run_id"),
+                "reason": "ci_reselected_after_unsupported_run",
+            }
         conclusion = info["conclusion"]
         try:
             _record_ci(

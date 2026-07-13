@@ -632,6 +632,7 @@ class TestExactHeadCI(unittest.TestCase):
                  mock.patch.object(ci_handler, "_find_issue_for_pr", return_value=42), \
                  mock.patch.object(ci_handler, "_is_duplicate_exact_head_run", return_value=False), \
                  mock.patch.object(ci_handler.sm, "verify_issue_pr_binding", return_value=(True, "ok")), \
+                 mock.patch.object(ci_handler.sm, "read_ci_acquisition", return_value=None), \
                  mock.patch.object(ci_handler.sm, "record_ci_acquisition", return_value=True), \
                  mock.patch.object(ci_handler, "_record_ci") as record:
                 result = ci_handler.process_ci_completion(event_path.name)
@@ -641,6 +642,7 @@ class TestExactHeadCI(unittest.TestCase):
                  mock.patch.object(ci_handler, "_find_issue_for_pr", return_value=42), \
                  mock.patch.object(ci_handler, "_is_duplicate_exact_head_run", return_value=False), \
                  mock.patch.object(ci_handler.sm, "verify_issue_pr_binding", return_value=(True, "ok")), \
+                 mock.patch.object(ci_handler.sm, "read_ci_acquisition", return_value=None), \
                  mock.patch.object(ci_handler.sm, "record_ci_acquisition", return_value=True), \
                  mock.patch.object(ci_handler, "_record_ci", side_effect=RuntimeError("write failed")):
                 unavailable = ci_handler.process_ci_completion(event_path.name)
@@ -724,6 +726,27 @@ class TestExactHeadCI(unittest.TestCase):
                 ci_verifier.acquire_exact_ci(1, "agent/x", sha, observe_seconds=0, dispatch_timeout_seconds=0)
         dispatch.assert_called_once()
 
+    def test_completion_reselects_after_unsupported_run_before_blocking(self):
+        event_run = {"databaseId": 940, "event": "pull_request"}
+        replacement = {
+            "workflow_run_id": 941,
+            "source": "workflow_dispatch",
+            "status": "bound",
+            "selection_reason": "newest_completed_supported",
+            "observed_run_ids": [940, 941],
+            "superseded_run_ids": [940],
+            "unsupported_run_ids": [940],
+            "fallback_dispatched": True,
+            "duplicate_run_ids": [940],
+        }
+        with mock.patch.object(ci_handler.ci_verifier, "acquire_exact_ci", return_value=replacement), \
+             mock.patch.object(ci_handler.sm, "read_ci_acquisition", return_value=None), \
+             mock.patch.object(ci_handler.sm, "record_ci_acquisition", return_value=True) as record:
+            selected = ci_handler._reselect_unsupported(42, 207, "a" * 40, "agent/x", event_run)
+        self.assertEqual(selected, replacement)
+        record.assert_called_once()
+        self.assertTrue(record.call_args.kwargs["metadata"]["fallback_dispatched"])
+
     def test_timed_out_natural_run_is_reselected_when_later_natural_success_exists(self):
         sha = "2" * 40
         runs = [
@@ -792,6 +815,20 @@ class TestExactHeadCI(unittest.TestCase):
              mock.patch.object(ci_verifier.subprocess, "run", return_value=mock.Mock(returncode=1)) as dispatch:
             with self.assertRaises(ci_verifier.CIVerificationError):
                 ci_verifier.acquire_exact_ci(1, "agent/x", sha, observe_seconds=0, dispatch_timeout_seconds=0)
+        dispatch.assert_called_once()
+
+    def test_candidate_identity_rejects_wrong_pull_request_when_provider_binds_one(self):
+        sha = "7" * 40
+        candidate = {
+            "databaseId": 955, "event": "pull_request", "status": "completed", "conclusion": "success",
+            "headSha": sha, "headBranch": "agent/x", "workflowName": "tests",
+            "headRepository": "trusted/repo", "pullRequestNumbers": [208],
+        }
+        with mock.patch.dict(os.environ, {"AGENT_REPO": "trusted/repo"}, clear=False), \
+             mock.patch.object(ci_verifier, "find_exact_runs", return_value=[candidate]), \
+             mock.patch.object(ci_verifier.subprocess, "run", return_value=mock.Mock(returncode=1)) as dispatch:
+            with self.assertRaises(ci_verifier.CIVerificationError):
+                ci_verifier.acquire_exact_ci(207, "agent/x", sha, observe_seconds=0, dispatch_timeout_seconds=0)
         dispatch.assert_called_once()
 
     def test_reselection_keeps_repair_count_and_ignores_stale_failure_after_success(self):

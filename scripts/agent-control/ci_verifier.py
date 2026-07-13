@@ -69,6 +69,13 @@ def run_info(run_id: int | str) -> dict[str, Any] | None:
             summary["workflowId"] = details.get("workflow_id")
             summary["path"] = details.get("path")
             summary["attempt"] = details.get("run_attempt")
+            pull_requests = details.get("pull_requests")
+            if isinstance(pull_requests, list):
+                summary["pullRequestNumbers"] = sorted(
+                    int(item["number"])
+                    for item in pull_requests
+                    if isinstance(item, dict) and str(item.get("number", "")).isdigit()
+                )
     return summary
 
 
@@ -107,7 +114,34 @@ def verify_failed_run(run_id: int | str, expected_sha: str) -> dict[str, Any]:
     }
 
 
-def find_exact_runs(branch: str, head_sha: str) -> list[dict[str, Any]]:
+def _candidate_pr_numbers(run: dict[str, Any]) -> list[int] | None:
+    """Return provider PR identity when the run API supplied it.
+
+    Natural pull-request runs are required to carry the expected PR when this
+    field is available.  Dispatch runs commonly have no pull-request payload,
+    so an absent/empty list is intentionally allowed for that event type.
+    """
+
+    if "pullRequestNumbers" in run:
+        value = run.get("pullRequestNumbers")
+    elif "pull_requests" in run:
+        value = run.get("pull_requests")
+    elif "pull_request_number" in run or "pr_number" in run:
+        value = [run.get("pull_request_number", run.get("pr_number"))]
+    else:
+        return None
+    if not isinstance(value, list):
+        return []
+    numbers: list[int] = []
+    for item in value:
+        if isinstance(item, dict):
+            item = item.get("number")
+        if isinstance(item, int) or (isinstance(item, str) and item.isdigit()):
+            numbers.append(int(item))
+    return sorted(set(numbers))
+
+
+def find_exact_runs(branch: str, head_sha: str, expected_pr: int | None = None) -> list[dict[str, Any]]:
     requirements = load_requirements()
     target = os.environ.get("AGENT_REPO") or os.environ.get("GITHUB_REPOSITORY")
     args = [
@@ -124,11 +158,14 @@ def find_exact_runs(branch: str, head_sha: str) -> list[dict[str, Any]]:
         return []
     exact = [run for run in runs if run.get("headSha") == head_sha and run.get("headBranch") == branch]
     enriched = [run_info(run.get("databaseId")) or run for run in exact]
-    return [run for run in enriched if _candidate_matches(run, branch, head_sha, requirements)]
+    return [
+        run for run in enriched
+        if _candidate_matches(run, branch, head_sha, requirements, expected_pr)
+    ]
 
 
-def find_exact_run(branch: str, head_sha: str) -> dict[str, Any] | None:
-    return select_canonical_run(find_exact_runs(branch, head_sha))
+def find_exact_run(branch: str, head_sha: str, expected_pr: int | None = None) -> dict[str, Any] | None:
+    return select_canonical_run(find_exact_runs(branch, head_sha, expected_pr))
 
 
 def _acquirable_runs(runs: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -145,7 +182,13 @@ def _acquirable_runs(runs: list[dict[str, Any]]) -> list[dict[str, Any]]:
     ]
 
 
-def _candidate_matches(run: dict[str, Any], branch: str, head_sha: str, requirements: dict[str, Any]) -> bool:
+def _candidate_matches(
+    run: dict[str, Any],
+    branch: str,
+    head_sha: str,
+    requirements: dict[str, Any],
+    expected_pr: int | None = None,
+) -> bool:
     if run.get("headSha") != head_sha or run.get("headBranch") != branch:
         return False
     if run.get("workflowName") != requirements["workflow_name"]:
@@ -159,6 +202,14 @@ def _candidate_matches(run: dict[str, Any], branch: str, head_sha: str, requirem
     workflow_path = requirements.get("workflow_path")
     if workflow_path and run.get("path") not in (None, workflow_path):
         return False
+    if expected_pr is not None:
+        numbers = _candidate_pr_numbers(run)
+        if numbers is not None and run.get("event") == "pull_request":
+            if int(expected_pr) not in numbers:
+                return False
+        elif numbers:
+            if int(expected_pr) not in numbers:
+                return False
     return True
 
 
@@ -220,8 +271,8 @@ def acquire_exact_ci(
     selected: dict[str, Any] | None = None
     while True:
         all_runs = [
-            run for run in find_exact_runs(branch, head_sha)
-            if _candidate_matches(run, branch, head_sha, requirements)
+            run for run in find_exact_runs(branch, head_sha, pr_number)
+            if _candidate_matches(run, branch, head_sha, requirements, pr_number)
         ]
         selected = select_canonical_run(all_runs)
         if selected and selected.get("status") == "completed":
