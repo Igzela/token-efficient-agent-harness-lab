@@ -220,7 +220,7 @@ PACKET_HEADING_RE = re.compile(
     rf"^#{{2,3}} Packet (?P<packet>{PACKET_ID_PATTERN})\b.*$", re.MULTILINE
 )
 PACKET_STATE_RE = re.compile(
-    r"^\*\*State:\*\* `(?P<state>[A-Z_]+)`(?:\s+.*)?$", re.MULTILINE
+    r"^\*\*State:\*\* `(?P<state>[A-Z_]+)`(?:[ \t]+.*)?$", re.MULTILINE
 )
 STAGE_ROW_RE = re.compile(
     r"^\|\s*(?P<stage>PE-\d+)\s*\|[^|]*\|[^|]*\|\s*(?P<summary>[^|]+?)\s*\|$",
