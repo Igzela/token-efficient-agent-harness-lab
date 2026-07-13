@@ -78,6 +78,17 @@ It does touch CI workflows/scripts/tests and several active documents. Therefore
 - before #207 merges, it must rebase or refresh from current `main` and preserve this PE-5/PE-6 plan and final PE-4 evidence;
 - changes to `.github/workflows/tests.yml` or shared CI verification must be reconciled explicitly rather than overwritten.
 
+## Grouped PR Execution Boundaries
+
+The packet definitions below remain required internal milestones and acceptance coverage. They are grouped into the following review boundaries to reduce serial CI and PR overhead without changing their normative order:
+
+- `PE5-IMPLEMENT-1` owns `PE5-CONTRACT-1` through `PE5-PUBLISH-1` on one branch and one PR. The milestones are completed in order with focused local checks; full repository validation and exact-head CI run only on the complete grouped head.
+- `PE5-CLOSE-1` remains a separate independent audit/repair/acceptance PR for the merged PE-5 chain.
+- `PE6-IMPLEMENT-1` owns `PE6-INVARIANTS-1` through `PE6-EVIDENCE-1` on one branch and one PR, with the same local-milestone and final-head CI rule.
+- `PE6-CLOSE-1` remains a separate independent audit/repair/acceptance PR for the merged PE-6 chain.
+
+No internal milestone receives a separate PR, merge, or full CI wait. Final packet-state documentation for a grouped implementation is included in that implementation's reviewed head before exact-head CI.
+
 ## Stage Status
 
 | Stage | Priority | Capability | State |
@@ -86,7 +97,7 @@ It does touch CI workflows/scripts/tests and several active documents. Therefore
 | PE-2 | P0/P1 | Budget Intelligence and Anomaly Auto-Pause | `COMPLETE` and acceptance-sealed |
 | PE-3 | P1 | Operator Decision Center | `COMPLETE` and independently acceptance-sealed |
 | PE-4 | P1/P2 | Trace-backed Policy Replay | `COMPLETE` and acceptance-sealed under PE4-POST-CLOSE-REPAIR-1 |
-| PE-5 | P1.5 | Release Provenance | Activated; first packet ready |
+| PE-5 | P1.5 | Release Provenance | `PE5-IMPLEMENT-1` in progress; internal milestones remain ordered |
 | PE-6 | P2 | Fault Injection and Recovery Drills | Packetized; blocked on PE5-CLOSE-1 |
 
 # PE-5 — Release Provenance
@@ -118,7 +129,7 @@ No packet in PE-5 authorizes an actual public release, tag creation, deployment,
 
 ## Packet PE5-CONTRACT-1 — Release subject, evidence, and trust contract
 
-**State:** `READY_FOR_EXECUTION`
+**State:** `IN_PROGRESS`
 
 **Prerequisite:** PE-4 final acceptance above; no conflicting release-provenance PR; inspect PR #207 and refresh from current `main`.
 
@@ -152,7 +163,7 @@ No packet in PE-5 authorizes an actual public release, tag creation, deployment,
 
 **Rollback:** Revert the contract PR; no artifact or data cleanup.
 
-**Completion:** Merge exact-head green CI, refresh `main`, record the accepted contract, mark PE5-SBOM-1 ready.
+**Completion within grouped implementation:** Complete and locally verify this milestone on `PE5-IMPLEMENT-1`; do not open or merge an internal-milestone PR. Record its final state in the grouped implementation head before the one exact-head CI run.
 
 ## Packet PE5-SBOM-1 — Deterministic artifact and container SBOMs
 
@@ -180,7 +191,7 @@ No packet in PE-5 authorizes an actual public release, tag creation, deployment,
 
 **Rollback:** Revert SBOM integration; existing package build remains available only if the accepted contract explicitly permits a non-provenance development build. No accepted release may silently omit required SBOM evidence.
 
-**Completion:** Merge exact-head green CI, refresh `main`, mark PE5-ATTEST-1 ready.
+**Completion within grouped implementation:** Complete and locally verify this milestone on `PE5-IMPLEMENT-1`; retain the ordered evidence in the grouped implementation head.
 
 ## Packet PE5-ATTEST-1 — External ephemeral signing and provenance attestations
 
@@ -208,7 +219,7 @@ No packet in PE-5 authorizes an actual public release, tag creation, deployment,
 
 **Rollback:** Revert attestation integration; revoke or disable external trust policy if necessary. No private-key cleanup should be required because production private keys are forbidden.
 
-**Completion:** Merge exact-head green CI, refresh `main`, mark PE5-VERIFY-1 ready.
+**Completion within grouped implementation:** Complete and locally verify this milestone on `PE5-IMPLEMENT-1`; retain the ordered evidence in the grouped implementation head.
 
 ## Packet PE5-VERIFY-1 — Fail-closed installer and upgrader verification
 
@@ -239,7 +250,7 @@ No packet in PE-5 authorizes an actual public release, tag creation, deployment,
 
 **Rollback:** Revert enforcement and installer changes only through a reviewed rollback that does not label unverified releases as verified. Preserve prior known-good installations and evidence.
 
-**Completion:** Merge exact-head green CI, refresh `main`, mark PE5-PUBLISH-1 ready.
+**Completion within grouped implementation:** Complete and locally verify this milestone on `PE5-IMPLEMENT-1`; final packet states and closeout routing are committed before the grouped implementation's exact-head CI.
 
 ## Packet PE5-PUBLISH-1 — Release workflow ordering and publish gate
 
@@ -337,7 +348,7 @@ No destructive external provider call, production database corruption, real targ
 
 **Rollback:** Revert the contract PR; no live state or migration.
 
-**Completion:** Merge exact-head green CI, refresh `main`, mark PE6-HARNESS-1 ready.
+**Completion within grouped implementation:** Complete and locally verify this milestone on `PE6-IMPLEMENT-1`; do not open or merge an internal-milestone PR.
 
 ## Packet PE6-HARNESS-1 — Deterministic bounded fault-injection harness
 
@@ -367,7 +378,7 @@ No destructive external provider call, production database corruption, real targ
 
 **Rollback:** Revert harness/test seams and remove disposable artifacts. No production data cleanup.
 
-**Completion:** Merge exact-head green CI, refresh `main`, mark PE6-STORAGE-1 ready.
+**Completion within grouped implementation:** Complete and locally verify this milestone on `PE6-IMPLEMENT-1`; retain the ordered evidence in the grouped implementation head.
 
 ## Packet PE6-STORAGE-1 — SQLite/PostgreSQL integrity, interruption, backup, and restore drills
 
@@ -395,7 +406,7 @@ No destructive external provider call, production database corruption, real targ
 
 **Rollback:** Revert test seams and harness scenarios; preserve production storage behavior.
 
-**Completion:** Merge exact-head green CI, refresh `main`, mark PE6-WORKFLOW-1 ready.
+**Completion within grouped implementation:** Complete and locally verify this milestone on `PE6-IMPLEMENT-1`; retain the ordered evidence in the grouped implementation head.
 
 ## Packet PE6-WORKFLOW-1 — Workflow, scheduler, executor, pause, and compensation drills
 
@@ -422,7 +433,7 @@ No destructive external provider call, production database corruption, real targ
 
 **Rollback:** Revert test seams/scenarios only; existing runtime owners remain unchanged unless a demonstrated defect requires a separate bounded repair in the same packet PR.
 
-**Completion:** Merge exact-head green CI, refresh `main`, mark PE6-PROVIDER-1 ready.
+**Completion within grouped implementation:** Complete and locally verify this milestone on `PE6-IMPLEMENT-1`; retain the ordered evidence in the grouped implementation head.
 
 ## Packet PE6-PROVIDER-1 — Provider, budget, audit, timeout, and kill-control drills
 
@@ -450,7 +461,7 @@ No destructive external provider call, production database corruption, real targ
 
 **Rollback:** Revert test seams/scenarios; existing provider and budget authority remain unchanged.
 
-**Completion:** Merge exact-head green CI, refresh `main`, mark PE6-RELEASE-1 ready.
+**Completion within grouped implementation:** Complete and locally verify this milestone on `PE6-IMPLEMENT-1`; retain the ordered evidence in the grouped implementation head.
 
 ## Packet PE6-RELEASE-1 — Provenance, installer, upgrade, and rollback drills
 
@@ -479,7 +490,7 @@ No destructive external provider call, production database corruption, real targ
 
 **Rollback:** Revert drill scenarios/test seams; do not weaken PE-5 enforcement to make drills pass.
 
-**Completion:** Merge exact-head green CI, refresh `main`, mark PE6-EVIDENCE-1 ready.
+**Completion within grouped implementation:** Complete and locally verify this milestone on `PE6-IMPLEMENT-1`; final packet states and closeout routing are committed before the grouped implementation's exact-head CI.
 
 ## Packet PE6-EVIDENCE-1 — Drill registry, reports, CI execution, and operator inspection
 
@@ -536,9 +547,11 @@ No destructive external provider call, production database corruption, real targ
 
 ## Active Routing
 
-1. Start `PE5-CONTRACT-1` from the latest `main` after inspecting open PR #207.
-2. Complete PE-5 packets in order: CONTRACT → SBOM → ATTEST → VERIFY → PUBLISH → CLOSE.
-3. After PE5-CLOSE-1 is merged and post-merge CI is green, complete PE-6 in order: INVARIANTS → HARNESS → STORAGE → WORKFLOW → PROVIDER → RELEASE → EVIDENCE → CLOSE.
-4. Refresh `main`, active documents, open PRs, and CI after every merge.
-5. Keep #207's orchestrator lane separate; reconcile shared CI/docs instead of overwriting either lane.
-6. Do not create PE-7, a second release owner, a second recovery owner, or a new runtime/control plane during this objective.
+1. Continue the active `PE5-CONTRACT-1` milestone on the grouped PE-5 implementation branch after inspecting open PR #207.
+2. Complete PE-5 internal milestones in order, then run one final grouped implementation validation/CI and merge it.
+3. Independently audit and merge `PE5-CLOSE-1`, then verify post-merge `main` CI before starting PE-6.
+4. Complete the grouped PE-6 implementation branch from `PE6-INVARIANTS-1` through `PE6-EVIDENCE-1`, then run one final validation/CI and merge it.
+5. Independently audit and merge `PE6-CLOSE-1`, then verify post-merge `main` CI.
+6. Refresh `main`, active documents, open PRs, and CI after every grouped merge.
+7. Keep #207's orchestrator lane separate; reconcile shared CI/docs instead of overwriting either lane.
+8. Do not create PE-7, a second release owner, a second recovery owner, or a new runtime/control plane during this objective.

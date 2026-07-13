@@ -40,17 +40,18 @@ There is no pending PE-4 documentation-head or post-merge CI requirement. The ev
 
 | Stage | Priority | Capability | Current state |
 |---|---|---|---|
-| PE-5 | P1.5 | Release Provenance | Activated; `PE5-CONTRACT-1` is `READY_FOR_EXECUTION` |
+| PE-5 | P1.5 | Release Provenance | Grouped `PE5-IMPLEMENT-1` in progress; internal milestones `PE5-CONTRACT-1` through `PE5-PUBLISH-1` remain ordered and PE-5 is not yet acceptance-sealed |
 | PE-6 | P2 | Fault Injection and Recovery Drills | Packetized; blocked until PE5-CLOSE-1 and then begins with `PE6-INVARIANTS-1` |
 
 The detailed contracts and normative order are in `docs/NEXT_DECISION.md`.
 
 ## Current Gaps
 
-- Release artifacts do not yet carry a complete deterministic SBOM, source/workflow/artifact binding, signed provenance or attestation, and fail-closed installer verification as one accepted release contract.
+- The grouped PE-5 implementation now supplies the versioned contract, deterministic SPDX 2.3 package/container SBOM path, production OIDC attestation workflow, fail-closed installer/upgrader checks, and publish gate on its review branch; independent PE5-CLOSE-1 acceptance evidence is still pending.
 - `policy_simulator.rs` still relies on fixed estimates rather than trace-calibrated replay; this remains outside PE-5/PE-6 unless a packet demonstrates a prerequisite impact.
 - There is no systematic bounded fault-injection registry and recovery-drill harness across storage, workflow/scheduler/executor, provider/budget/audit, and release upgrade/rollback seams.
 - External destructive testing, production provider calls, real target-repository corruption, and persistent signing secrets remain unauthorized.
+- The local PE-5 dry run uses a fixture identity and is explicitly `verified_fixture`, never production `verified`; no external production identity, real tag, or public release was exercised.
 - Remote adapter support for the local runner and new external runtime frameworks remain deferred.
 
 ## Open Work Coordination

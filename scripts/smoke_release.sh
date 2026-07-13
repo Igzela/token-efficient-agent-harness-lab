@@ -152,6 +152,7 @@ check_file "engine binary" "${RELEASE_DIR}/engine"
 check_dir "dashboard directory" "${RELEASE_DIR}/dashboard"
 check_file "install.sh" "${RELEASE_DIR}/install.sh"
 check_file "upgrade.sh" "${RELEASE_DIR}/upgrade.sh"
+check_file "release provenance verifier" "${RELEASE_DIR}/release_provenance.py"
 check_file "README.md" "${RELEASE_DIR}/README.md"
 check_file ".env.example" "${RELEASE_DIR}/.env.example"
 
@@ -164,7 +165,7 @@ echo "=== Install Script Smoke ==="
 
 INSTALL_DIR="${SMOKE_DIR}/install-test"
 mkdir -p "${INSTALL_DIR}/bin"
-(cd "${RELEASE_DIR}" && bash install.sh --prefix "${INSTALL_DIR}" 2>&1 | sed 's/^/  /')
+(cd "${RELEASE_DIR}" && bash install.sh --prefix "${INSTALL_DIR}" --development 2>&1 | sed 's/^/  /')
 
 if [[ -x "${INSTALL_DIR}/bin/agent-control-plane" ]]; then
     echo "  PASS  install.sh placed executable binary"
