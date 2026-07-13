@@ -2,500 +2,543 @@
 
 ## Current Direction
 
-The dispatch kernel, V2, Adaptive Fusion AF-0 through AF-7, Agent Runtime AR-0 through AR-6, Trusted Local Autonomous Execution IAE-0 through IAE-3, scorecard integrity hardening, the importer-first external benchmark path, and PE-1 Token Efficiency Regression Lab are complete.
+The dispatch kernel, V2 output authority, Adaptive Fusion through AF-7, Agent Runtime through AR-6, Trusted Local Autonomous Execution through IAE-3, and PE-1 through PE-4 are complete and acceptance-sealed.
 
-The active direction is the Post-LGB Product Evolution plan. PE-1 through PE-4 remain acceptance-sealed, with PE-4 sealed under `PE4-POST-CLOSE-REPAIR-1`; its weaker pre-repair semantics are superseded. PE-5 and PE-6 remain unstarted. This is not AR-7, another LGB ladder, or a second control plane.
+PE-4 is sealed under `PE4-POST-CLOSE-REPAIR-1`. Its final accepted evidence is:
 
-`docs/NEXT_DECISION.md` is the single forward-plan artifact. Historical detail remains in `docs/ARCHITECTURE_BOOK.md`, archived plans, merged PRs, and repository history.
+- PR #206
+- exact final head `80d9f9342956e1fd5931b59dcc426908d450b32b`
+- merge commit `f2a736a39e5de82d60da2a0b64d1c255d55ec326`
+- exact-final-head CI run `29190482093`, seven of seven required jobs passed
+- post-merge `main` CI run `29190797214`, seven of seven required jobs passed
 
-## Full Agent Autonomy Mode
+Older PE-4 replay contracts, artifacts, and closeout claims remain historical only and cannot authorize current replay, shadow, canary, or promotion behavior.
 
-Full Agent Autonomy Mode is active for repo-scoped, testable, observable, CI-gated, and rollbackable planning and execution.
+The active direction is now:
 
-### Autonomously maintain and evolve
+1. complete PE-5 Release Provenance;
+2. independently acceptance-seal PE-5;
+3. complete PE-6 Fault Injection and Recovery Drills;
+4. independently acceptance-seal PE-6.
 
-The coding agent may inspect, plan, implement, test, review, open PRs, repair CI, update active docs, merge eligible work, and continue across packets after refreshing `main`.
+Do not create another roadmap or product-evolution document. This file is the normative forward plan.
 
-The agent may also resolve bounded architecture, authority, schema, migration, security, release, and recovery decisions when current code, merged history, tests, and active documents provide enough evidence for a smallest compatible and rollbackable design. Material decisions must be recorded in an existing authoritative document and verified through a coherent PR before dependent behavior relies on them.
+## Execution Protocol
 
-The packet sequence remains the default execution structure. It protects scope, prerequisites, acceptance, compatibility, and rollback without requiring a separate external planner for every implementation detail.
-
-## Model Selection
-
-Model and reasoning-effort selection are user/tool settings. This repository does not require, forbid, or validate a model tier. Model choice does not weaken review, testing, CI, audit, compatibility, or rollback requirements.
-
-## Execution-Ready Packet Protocol
-
-Execute packets marked `READY_FOR_EXECUTION` whose prerequisites are complete. Prefer the earliest packet in the normative sequence unless an explicit independent lane is activated or a prerequisite defect must be repaired first.
+Use one coherent branch and PR per packet unless a bounded prerequisite repair must be separated to preserve reviewability or rollback.
 
 Packet states:
 
-- `READY_FOR_EXECUTION` — contract is sufficiently complete and prerequisites are satisfied.
-- `BLOCKED_PREREQUISITE` — contract is defined, but an earlier packet must complete first.
-- `DECISION_REQUIRED` — implementation depends on a material decision; the agent may resolve it from repository evidence or report the exact unresolved requirement.
-- `IN_PROGRESS` — one active branch or PR owns the packet.
-- `COMPLETE` — acceptance evidence is merged and active docs are updated.
+- `READY_FOR_EXECUTION` — prerequisites and contract are sufficient to begin;
+- `BLOCKED_PREREQUISITE` — defined but waiting for an earlier packet;
+- `DECISION_REQUIRED` — a material decision is unresolved and cannot be safely derived from repository evidence;
+- `IN_PROGRESS` — one active branch or PR owns the packet;
+- `COMPLETE` — implementation and acceptance evidence are merged and active documents are synchronized.
 
-Every packet inherits these requirements:
+Every implementation packet must state and verify:
 
-| Field | Required contract |
-|---|---|
-| Goal | One observable result, not a broad stage aspiration |
-| Prerequisites | Exact earlier packets or existing contracts that must be complete |
-| Owning paths | Existing source/test/document owners to extend |
-| Allowed changes | Minimum coherent implementation surfaces |
-| Forbidden changes | No parallel runtime, scheduler, store, policy authority, mailbox, artifact truth source, or Dashboard state model without a documented replacement decision |
-| Contract | Versioned inputs, outputs, reason codes, bounds, permissions, and failure states |
-| Verification | Focused tests plus applicable full repository validation |
-| Compatibility | SQLite/PostgreSQL, API/SDK, existing rows, and old callers remain compatible when applicable |
-| Rollback | `git revert` plus any bounded cleanup procedure |
-| Completion evidence | PR, commit, CI run, test evidence, compatibility, residual risk, and next packet status |
-| Stop triggers | Irreversible external action, unavailable required authority/credentials, unresolved material contradiction, or missing recovery path |
+- exact goal and observable result;
+- prerequisites and owning paths;
+- allowed and forbidden changes;
+- versioned inputs, outputs, reason codes, bounds, and failure states;
+- authority, permissions, credentials, audit, compensation, and rollback where applicable;
+- compatibility with existing release artifacts, SQLite/PostgreSQL data, APIs/SDKs, installers, workflows, and old callers where applicable;
+- focused tests and full applicable repository verification;
+- exact final-head CI before merge and post-merge `main` CI;
+- residual risk and next packet state.
 
-Stage prose is context. Packets are the default implementation units, but the agent may update a packet or add the smallest missing contract in the same authoritative file when evidence supports the change.
+Strict documentation-only corrections may use the targeted merge gate in `docs/REAL_WORLD_TESTING_PLAYBOOK.md`. Any code, script, workflow, configuration, dependency, schema, migration, generated artifact, executable, release, or external-state change requires the complete applicable CI matrix.
 
 ## Hard Stops
 
-Stop with evidence rather than improvising when any of these applies:
+Stop and report exact evidence rather than improvising when:
 
-- a real secret would enter version control;
-- test or CI evidence would be falsified or a known failure hidden;
-- a required rollback or recovery path would be removed without a tested replacement;
-- an irreversible external operation lacks explicit authority and tested recovery;
-- required human approval, credentials, or external access are unavailable;
-- another agent owns conflicting in-progress work that cannot be safely reconciled;
-- materially contradictory requirements cannot be resolved from current code, history, tests, and authoritative documents;
-- required CI is failed, queued, in progress, or unexpectedly skipped.
+- a real secret, private signing key, recovery credential, or unredacted sensitive payload would enter version control or an artifact;
+- required test or CI evidence would be falsified or a known failure hidden;
+- an irreversible external action lacks explicit authority and a tested recovery path;
+- required human approval, external credentials, signing identity, release authority, or protected environment is unavailable;
+- another active PR owns conflicting implementation work that cannot be safely rebased or separated;
+- an existing authority or rollback owner would be bypassed or silently replaced;
+- a destructive fault cannot be bounded to disposable local/CI resources;
+- required exact-head CI is failed, queued, in progress, cancelled, action-required, or unexpectedly skipped.
 
-A missing bounded design detail, a stale packet, or an initial failed repair is not itself a hard stop. Audit the repository, update the contract, repair the root cause, and continue when the result remains testable, observable, compatible, and rollbackable.
+A stale document, an initial failed implementation, or a bounded missing design detail is not itself a hard stop. Audit, repair, test, and continue when the result remains explicit, compatible, observable, and rollbackable.
 
-## Post-LGB Product Evolution Plan
+## Coordination with PR #207
 
-Normative order is PE-1, PE-2, PE-3, PE-4, PE-5, and PE-6. Do not start PE-3 before PE-2 closeout.
+PR #207 is a separate disabled-by-default repository-maintenance orchestrator. It does not own the Rust engine, release provenance contract, release installer verification, or PE-6 recovery semantics.
 
-| Stage | Priority | Goal | Status |
+It does touch CI workflows/scripts/tests and several active documents. Therefore:
+
+- do not copy or reimplement its orchestrator;
+- do not modify `scripts/agent-control/` or `.github/workflows/agent-*.yml` as part of PE-5/PE-6;
+- inspect its actual state before each packet;
+- if #207 merges, refresh `main` before continuing;
+- if #207 remains open, keep PE-5/PE-6 PRs off its owned paths where practical;
+- before #207 merges, it must rebase or refresh from current `main` and preserve this PE-5/PE-6 plan and final PE-4 evidence;
+- changes to `.github/workflows/tests.yml` or shared CI verification must be reconciled explicitly rather than overwritten.
+
+## Stage Status
+
+| Stage | Priority | Capability | State |
 |---|---|---|---|
-| PE-1 | P0 | Token Efficiency Regression Lab | Complete and acceptance-sealed |
-| PE-2 | P0/P1 | Budget Intelligence and Anomaly Auto-Pause | Complete and acceptance-sealed |
-| PE-3 | P1 | Operator Decision Center | Complete and independently acceptance-sealed |
-| PE-4 | P1/P2 | Trace-backed Policy Replay | Acceptance-sealed under `PE4-POST-CLOSE-REPAIR-1`; weaker pre-repair semantics superseded |
-| PE-5 | P1.5 | Release Provenance | Packetized; inactive unless explicitly activated |
-| PE-6 | P2 | Fault Injection and Recovery Drills | Packetized; blocked on explicit recovery invariants |
+| PE-1 | P0 | Token Efficiency Regression Lab | `COMPLETE` and acceptance-sealed |
+| PE-2 | P0/P1 | Budget Intelligence and Anomaly Auto-Pause | `COMPLETE` and acceptance-sealed |
+| PE-3 | P1 | Operator Decision Center | `COMPLETE` and independently acceptance-sealed |
+| PE-4 | P1/P2 | Trace-backed Policy Replay | `COMPLETE` and acceptance-sealed under PE4-POST-CLOSE-REPAIR-1 |
+| PE-5 | P1.5 | Release Provenance | Activated; first packet ready |
+| PE-6 | P2 | Fault Injection and Recovery Drills | Packetized; blocked on PE5-CLOSE-1 |
 
-## PE-1 — Token Efficiency Regression Lab
+# PE-5 — Release Provenance
 
-Implemented and accepted:
+## Stage Invariants
 
-- canonical `token_efficiency_regression_registry.v1`;
-- deterministic single-scenario and registry-wide batch reports;
-- fixed bounded evidence for LangGraph, native deterministic, and local stub scenarios;
-- SQLite/PostgreSQL `LocalProductStore` persistence and idempotent local import;
-- deterministic bounded history/trend read model;
-- read-only HTTP list/detail/trend endpoints and Python/TypeScript SDK readers;
-- current Dashboard history/trend UX with all explicit incomplete and failure outcomes;
-- report-only behavior with no CI blocking, provider call, routing change, policy mutation, pause authority, or target-repository write.
+PE-5 extends the existing release workflow, package builders, installer/upgrader, container build, dependency locks, audit, and atomic rollback paths. It must not create a second release pipeline or artifact truth source.
 
-### Packet PE1-UI-1 — Dashboard history and trend UX
+Release provenance is derived evidence, not proof supplied by a caller. Every accepted release subject must bind, where applicable:
 
-**State:** `COMPLETE`
+- repository identity and source commit;
+- release tag or explicit non-publishing dry-run identity;
+- workflow file identity, workflow run, job, and builder environment;
+- target OS/architecture and package kind;
+- dependency lockfile hashes and build-input hashes;
+- release artifact digest, size, media type, and filename;
+- SBOM digest and schema;
+- provenance/attestation digest and predicate type;
+- signing or attestation identity and verification policy;
+- verification result, bounded reason codes, and rollback target.
 
-**Evidence:** PR #177; CI run 29137424748; all seven jobs green. Existing Benchmarks route was extended additively and no API/storage/authority contract changed.
+Production signing identity must be external and ephemeral, preferably workload-identity/OIDC-backed when the existing platform supports it. Persistent private signing keys, exported key material, repository secrets containing private keys, and signing credentials copied to self-hosted workers are forbidden.
 
-### Packet PE1-CLOSE-1 — PE-1 acceptance seal
+Tests may use clearly isolated fixture identities and disposable keys that can never authorize a production release.
 
-**State:** `COMPLETE`
+A release must fail closed when required source, workflow, builder, target, dependency, artifact, SBOM, attestation, signature, or identity binding is missing, malformed, oversized, stale, inconsistent, or untrusted.
 
-**Acceptance:** Deterministic recomputation; tamper, threshold, quality-failure, missing-baseline, missing-best-known, incomparable, repeat-import, cross-version, trend, API/SDK, Dashboard, SQLite, and PostgreSQL evidence are verified. Full CI is green.
+No packet in PE-5 authorizes an actual public release, tag creation, deployment, package publication, or installer rollout unless the repository already has that authority and the user explicitly authorizes the external action. Dry-run and local verification are sufficient for implementation acceptance where external publication is not authorized.
 
-## PE-2 — Budget Intelligence and Anomaly Auto-Pause
+## Packet PE5-CONTRACT-1 — Release subject, evidence, and trust contract
 
-Stage invariants:
+**State:** `READY_FOR_EXECUTION`
 
-- forecasts and anomalies are derived evidence, not business facts;
-- every result records schema version, evidence window, coverage, confidence, reason codes, and bounded evidence references;
-- sparse, stale, contradictory, incomplete, or incomparable evidence returns an explicit bounded outcome such as `insufficient_evidence`;
-- observed values and estimates remain separate;
-- automatic pause is allowed only through existing pause and audit authority when explicitly policy-enabled and high-confidence;
-- automatic pause must be idempotent, observable, reversible, and fail closed;
-- no automatic termination, silent budget mutation, provider/model substitution, reservation rewrite, or opaque scoring.
+**Prerequisite:** PE-4 final acceptance above; no conflicting release-provenance PR; inspect PR #207 and refresh from current `main`.
 
-### Packet PE2-CONTRACT-1 — Budget intelligence evidence contract
+**Goal:** Define one versioned, bounded, deterministic release-provenance contract and threat model over the existing release/build/install/upgrade owners before generating or enforcing new evidence.
 
-**State:** `COMPLETE`
+**Owning paths:**
 
-**Prerequisite:** PE1-CLOSE-1 complete.
+- `.github/workflows/release.yml` and existing release workflow helpers;
+- existing release, packaging, install, upgrade, rollback, checksum, and container-build scripts;
+- dependency lockfiles and target packaging metadata;
+- `docs/ARCHITECTURE_BOOK.md`, `docs/MODULE_MAP.md`, and focused contract tests.
 
-**Goal:** Define and validate versioned bounded contracts for forecasts, anomaly findings, confidence, coverage, reason codes, evidence references, and `insufficient_evidence` outcomes; report-only only.
+**Allowed changes:** Contract structs/schemas, canonical serialization and hashing, bounded validators, reason-code taxonomy, fixtures, threat/failure analysis, and additive test helpers.
 
-**Owning paths:** `engine/src/budget_manager.rs`; existing provider audit/cost evidence; scheduler/workflow evidence; `LocalProductStore` validation owners; focused Rust tests; architecture/module docs when durable ownership changes.
+**Forbidden changes:** No real signing, artifact publication, tag creation, installer enforcement, production secret, persistent private key, release upload, deployment, database migration, API/SDK/Dashboard work, or second release owner.
 
-**Allowed changes:** Contract structs, enums, validators, canonical serialization/hash where existing evidence uses hashes, and deterministic fixtures/tests. Reuse existing evidence owners.
+**Contract requirements:**
 
-**Forbidden changes:** No pause call, policy mutation, new provider invocation, new pricing source, persistence migration, API/SDK/Dashboard surface, or business-fact claim.
+- define a canonical release-subject schema and a provenance verification-result schema;
+- distinguish `verified`, `invalid`, `insufficient_evidence`, `untrusted_identity`, and `unsupported` outcomes;
+- define source, workflow, builder, target, dependency, artifact, SBOM, attestation, signer, and rollback bindings;
+- define maximum bytes, collection sizes, identifier lengths, nesting, artifact counts, target counts, and reason counts;
+- define deterministic ordering and hashes without serialization fallback or runtime panic;
+- define production versus fixture signer identity and prevent fixture evidence from authorizing release;
+- define compatibility and version-bump rules;
+- define external-action and credential hard stops.
 
-**Contract:**
+**Verification:** Contract, serde/canonicalization, tamper, missing-field, oversized, target mismatch, fixture-identity, unsupported-schema, deterministic ordering, and no-panic tests; full applicable repository checks.
 
-- forecast schema: `budget_forecast_evidence.v1`;
-- anomaly schema: `budget_anomaly_finding.v1`;
-- dimensions are bounded identifiers for run, workspace, provider, and model when present in existing evidence;
-- evidence window has explicit inclusive start, exclusive end, generated-at time, sample count, and freshness;
-- coverage records observed/required dimensions, pricing completeness, duplicate handling, and missing fields;
-- confidence is an explicit enum plus bounded numeric score and deterministic reasons;
-- outcome is one of `supported`, `insufficient_evidence`, or `invalid_evidence` at contract level;
-- reason codes are stable bounded strings, never free-form authority;
-- evidence references contain only existing bounded IDs/hashes/metadata;
-- malformed, oversized, tampered, future-window, inverted-window, unknown-model, and incomplete-pricing inputs fail closed or return explicit insufficiency as specified by the validator.
+**Compatibility:** Contract-only and additive. Existing releases and installers remain unchanged and non-provenance-authorizing.
 
-**Verification:** Focused Rust contract/serde/validator tests; malformed and tamper tests; sparse, incomplete-pricing, unknown-model, boundary-time, canonical ordering/hash, and SQLite/PostgreSQL-compatible JSON representation tests; formatting, clippy, full stack, handoff, and CI.
+**Rollback:** Revert the contract PR; no artifact or data cleanup.
 
-**Compatibility:** Additive Rust contracts only; no persisted row, API, SDK, Dashboard, reservation, pricing, or runtime behavior changes.
+**Completion:** Merge exact-head green CI, refresh `main`, record the accepted contract, mark PE5-SBOM-1 ready.
 
-**Rollback:** Revert the packet PR; no data cleanup.
-
-**Stop triggers:** Existing posted cost/audit evidence cannot identify the required dimensions without a new source-of-truth decision; canonical time semantics conflict across owners; a contract would imply pause or budget authority.
-
-### Packet PE2-FORECAST-1 — Deterministic budget forecasts
-
-**State:** `COMPLETE`
-
-**Prerequisite:** PE2-CONTRACT-1 complete.
-
-**Goal:** Produce read-only expected tokens/spend and exhaustion-time forecasts by run, workspace, provider, and model from existing posted evidence.
-
-**Allowed changes:** Deterministic forecast computation and bounded aggregation over the versioned contract and existing evidence.
-
-**Forbidden changes:** No external model call, learned/opaque model, budget mutation, reservation change, pricing invention, persistence/API/Dashboard work, or pause.
-
-**Contract:** Separate observed values from estimates; include sample count, window, coverage, confidence, pricing completeness, assumptions, and reason codes. Refuse a forecast when evidence is stale, sparse, contradictory, duplicated beyond deterministic reconciliation, or unpriced.
-
-**Acceptance:** Sparse, zero-usage, bursty, mixed-model, incomplete-pricing, boundary-time, deterministic ordering, duplicated/out-of-order evidence, and concurrency-safe read tests.
-
-### Packet PE2-ANOMALY-1 — Explainable anomaly detector
-
-**State:** `COMPLETE`
-
-**Prerequisite:** PE2-FORECAST-1 complete.
-
-**Goal:** Detect bounded cost, token, retry, latency, context-growth, and model-mix anomalies with explicit thresholds, confidence, coverage, evidence, and reason codes.
-
-**Allowed changes:** Deterministic/statistical rules over the versioned contract and existing evidence.
-
-**Forbidden changes:** No hidden adaptive threshold, provider/model substitution, pause, termination, budget/policy mutation, persistence/API/Dashboard work, or opaque score.
-
-**Acceptance:** Normal, spike, gradual drift, mixed workloads, sparse history, false-positive boundaries, duplicated evidence, out-of-order evidence, deterministic recomputation, exact coverage metadata, invalid-evidence preservation, and `insufficient_evidence` tests.
-
-### Packet PE2-READ-1 — Persistence, API, SDK, and Dashboard read surfaces
-
-**State:** `COMPLETE`
-
-**Prerequisite:** PE2-ANOMALY-1 complete.
-
-**Goal:** Expose bounded forecasts and anomaly evidence through existing store/API/SDK/Dashboard owners.
-
-**Allowed changes:** Additive `LocalProductStore` schema only if persistence is required by the accepted contract; read-only HTTP/OpenAPI; Python/TypeScript readers; current Dashboard components; SQLite/PostgreSQL migrations/tests.
-
-**Forbidden changes:** No pause action, policy mutation, provider call, business-fact conversion, or second state model.
-
-**Acceptance:** Idempotent persistence if used, bounded pagination, permissions, OpenAPI/router parity, encoded SDK paths, empty/error/sparse UI states, evidence links, migration/backward compatibility, and full stack verification.
-
-**Stop triggers:** Persistence semantics were not fixed by PE2-CONTRACT-1 or require rewriting existing budget history. The agent may define the smallest additive persistence contract in this file or `docs/ARCHITECTURE_BOOK.md` before implementation when current store conventions make the answer clear.
-
-### Packet PE2-PAUSE-1 — Policy-gated high-confidence auto-pause
-
-**State:** `COMPLETE`
-
-**Prerequisite:** PE2-READ-1 complete.
-
-**Goal:** Invoke the existing pause mechanism only for policy-enabled, high-confidence supported findings, with complete audit and idempotent recovery behavior.
-
-**Owning paths:** Existing scheduler/workflow pause controls, policy gates, audit, operator evidence, API controls, and focused integration tests.
-
-**Allowed changes:** A narrow decision adapter from validated anomaly evidence to the existing pause path; explicit default-off enablement; audit; resume/override evidence.
-
-**Forbidden changes:** No auto-kill, silent budget edit, provider/model substitution, new pause state machine, default enablement, implicit resume, or resume without operator evidence.
-
-**Contract:** Fail closed on missing/disabled policy, incomplete pricing, low confidence, stale evidence, unsupported anomaly, missing coverage, audit failure, concurrent duplicate triggers, or unavailable pause owner. Repeated triggers are idempotent. Resume and override preserve cause and evidence.
-
-**Acceptance:** False positives, concurrency, duplicate trigger, audit failure, pause failure compensation, disabled policy, sparse data, incomplete pricing, resume, override, permission, restart, and rollback tests.
-
-**Stop triggers:** Existing pause semantics cannot guarantee idempotency/compensation, policy ownership is ambiguous, or audit cannot precede/atomically bind the authority decision. The agent may first implement a separate evidence-backed contract or compatibility repair PR; it must not silently create a second pause authority.
-
-### Packet PE2-CLOSE-1 — PE-2 acceptance seal
-
-**State:** `COMPLETE`
-
-**Prerequisite:** PE2-PAUSE-1 complete.
-
-**Goal:** Audit the entire PE-2 chain, repair bounded defects, mark PE-2 complete, and activate PE3-CONTRACT-1 without beginning PE-3.
-
-**Acceptance:** Forecast/anomaly evidence is explainable, deterministic, versioned, bounded, and explicitly insufficient when unsupported; read surfaces are compatible; auto-pause is default-off, explicitly enabled, high-confidence, audited, idempotent, fail-closed, reversible, and recoverable; full CI and SQLite/PostgreSQL checks are green.
-
-## PE-3 — Operator Decision Center
-
-PE-3 is complete and acceptance-sealed. PE3-REPAIR-1 corrected observation-time ordering by comparing parsed instants, and PE3-CLOSE-1 independently re-audited the contract, derived queue, read surfaces, action adapters, existing owners, compatibility, and rollback boundaries.
-
-### Packet PE3-CONTRACT-1 — Decision item and source contract
-
-**State:** `COMPLETE`
-
-**Prerequisite:** PE2-CLOSE-1 complete.
-
-**Goal:** Define bounded versioned action-item/source contracts and deterministic source precedence over existing approvals, workflow/scheduler, budget, benchmark, policy, rollback, and recovery evidence. No queue persistence, action execution, new authority, or Dashboard work is authorized by this packet.
-
-**Contract:** `operator_decision_source.v1` and `operator_decision_item.v1` are derived-evidence contracts. Sources carry bounded source/resource/conflict IDs, source state, requested action, severity, confidence, observation/expiry times, reason codes, evidence references, and a canonical hash. Items carry an explicit `ready`, `conflict`, `expired`, `insufficient_evidence`, or `resolved` outcome. Only `ready` may contain a recommended action.
-
-**Deterministic resolution:** Critical before warning before info; then source precedence `approval > recovery > rollback > budget > policy > workflow > scheduler > benchmark`; then confidence, newest observation, and lexical source ID. Exact source duplicates collapse. Equal severity, precedence, and confidence with incompatible actions fails closed as `conflict`. Expired, stale, low-confidence, informational, resolved, and insufficient sources never become executable recommendations.
-
-**Compatibility and authority:** Additive Rust contracts and pure resolution semantics only. No persisted rows, API/SDK/Dashboard changes, source mutation, action dispatch, approval decision, pause/resume/retry/rollback call, provider call, or target write.
-
-**Rollback:** Revert the packet PR; no data migration or cleanup.
-
-### Packet PE3-QUEUE-1 — Deterministic derived decision queue
-
-**State:** `COMPLETE`
-
-**Prerequisite:** PE3-CONTRACT-1 complete.
-
-**Goal:** Adapt existing approval, workflow, scheduler, budget, benchmark, policy, rollback, and recovery evidence into the contract and derive one bounded, deterministic, mutation-free queue.
-
-**Owning paths:** Existing `LocalProductStore` readers, operator-evidence handler, and `operator_decision.rs`. The queue is recomputed from existing truth owners; it is not a new persisted source of truth.
-
-**Acceptance:** Empty, duplicate, conflict, expiry, stale, sparse, cross-run, source failure, precedence, deterministic ordering, bounded pagination, restart, SQLite, and PostgreSQL evidence tests. No action execution or Dashboard work.
-
-**Implementation:** `operator_decision_queue.v1` is recomputed from existing LocalProductStore readers for approvals, workflow state, scheduler heartbeat, budget anomalies, benchmark reports, policy proposals, and rollback/recovery audit evidence. It is bounded to 100 source rows per owner and 100 returned items, hash-bound, deterministically ordered, and fail-closed when an owner cannot be read. Queue reads create no rows or audit events. SQLite tests cover empty, deterministic, read-only, cross-run, pagination, restart, and source-failure behavior; the PostgreSQL integration test covers equivalent requested-approval derivation.
-
-**Compatibility and rollback:** No table, migration, HTTP, SDK, Dashboard, action, or authority change. SQLite and PostgreSQL use their existing readers. Revert the packet PR; no cleanup is required because the queue is never persisted.
-
-### Packet PE3-READ-1 — API, SDK, and Dashboard decision center
-
-**State:** `COMPLETE`
-
-**Prerequisite:** PE3-QUEUE-1 complete.
-
-**Goal:** Expose the derived queue through bounded `dispatch:read` HTTP/OpenAPI, Python SDK, TypeScript SDK, and the existing Dashboard navigation/state owner with explicit empty, insufficient, conflict, expired, resolved, and error states.
-
-**Acceptance:** Encoded paths, pagination, permission, compatibility, redaction, evidence links, deterministic UI ordering, and no hidden mutation controls.
-
-**Implementation:** `GET /api/v1/operator/decisions` exposes the derived `operator_decision_queue.v1` under existing `dispatch:read`. It validates bounded freshness and uses a caller-supplied timestamp when deterministic replay is needed. The route, OpenAPI, Python SDK, TypeScript SDK, and Dashboard Decision Center share the same read-only envelope. The Dashboard renders ready, conflict, expired, insufficient-evidence, and resolved items with bounded source references but no execution controls.
-
-**Compatibility and rollback:** Additive route and SDK methods only; no migration, queue persistence, permission, audit, or action-owner change. Revert the packet PR to remove the route and UI; existing rows and clients remain unchanged.
-
-### Packet PE3-ACTIONS-1 — Existing-control action adapters
-
-**State:** `COMPLETE`
-
-**Prerequisite:** PE3-READ-1 complete.
-
-**Goal:** Map only explicitly allowlisted ready decisions to existing approval, pause, resume, retry, rollback, acknowledge, and inspect owners. Preserve each owner's permission, confirmation, audit, idempotency, compensation, restart, and rollback gates.
-
-**Forbidden:** No generic action executor, new authority table, implicit confirmation, cross-resource action, automatic execution, or bypass of existing control endpoints.
-
-**Contract decision:** `POST /api/v1/operator/decisions/{decision_id}/actions` is an allowlisted adapter, not an execution authority. Every request must carry explicit confirmation, the exact derived queue hash, generation timestamp, freshness bound, limit, and offset from its read response. The adapter recomputes that exact queue page, rejects hash/source/ready/action mismatch, and invokes an existing owner only. `approve`/`reject` require an approval source and record a new decision through the existing approval owner; `resume` and `retry` require a workflow source; `pause` requires a budget anomaly source, `dispatch:execute`, and the existing enabled budget auto-pause policy. `rollback`, `inspect`, and `acknowledge` fail closed until a compatible existing owner is explicitly available. The Python and TypeScript SDKs expose this explicit request shape; no Dashboard action control is added by this packet.
-
-**Rollback:** Revert the adapter route and module. No migration or new stored state exists; existing owner audit and compensation records remain authoritative.
-
-### Packet PE3-REPAIR-1 — Independent merged-chain repair
-
-**State:** `COMPLETE`
-
-**Prerequisite:** PE3-ACTIONS-1 complete.
-
-**Goal:** Repair independently demonstrated PE-3 defects without creating a generic action executor or a second approval, pause, workflow, scheduler, audit, or rollback authority.
-
-**Contract:** Read-only deterministic replay may retain a caller-supplied time. Mutation validates that time against the store clock, rejects stale/future reads, re-derives the exact bound page and exact current page, and binds decision ID, conflict key, resource, action, source kind, source ID, source hash, page, and freshness before owner invocation. Derived sources preserve bounded original evidence IDs and trustworthy hashes without fabricating absent hashes. Retry is ready only for blocked runs with a ready node. Approval resolution is atomic in the existing workflow owner across SQLite/PostgreSQL. Unsupported rollback, inspect, and acknowledge remain explicit fail-closed actions.
-
-**Acceptance:** Focused freshness, tamper, source-change/resolution, page/order, hash/decision replay, cross-kind identity, approve/reject, retry terminal/no-ready/repeat/concurrency, resume compensation, permission, audit, restart, SQLite/PostgreSQL, unsupported-action, and observation-instant ordering tests; full exact-head CI; no temporary workflow or repair file in the final diff.
-
-**Completion evidence:** PR #195 merged as `8efe09b5fd2346b7e12ff3fc7cd897d6177c7eae` from exact head `fc547fd5c42d1ace86c58fd6a291aadeaad60272`; exact-head CI run `29180711721` passed all seven required jobs.
-
-**Rollback:** Revert the repair PR. No migration or queue cleanup; existing owner audit records remain authoritative.
-
-### Packet PE3-CLOSE-1 — PE-3 acceptance seal
-
-**State:** `COMPLETE`
-
-**Prerequisite:** PE3-REPAIR-1 complete.
-
-**Goal:** Independently audit contracts, source adapters, derived queue, API/OpenAPI, SDKs, Dashboard, permitted actions, permissions, audit, recovery, SQLite/PostgreSQL compatibility, and rollback; repair bounded defects and activate PE4-CONTRACT-1 without beginning replay implementation.
-
-**Acceptance:** Recheck deterministic precedence/deduplication/conflict/expiry behavior, source-owner completeness and source-read failure, queue immutability/pagination/restart across SQLite and PostgreSQL, read API/OpenAPI/SDK/Dashboard compatibility, and adapter confirmation, exact-page hash binding, permission order, audit ownership, unsupported-action fail-closed behavior, and rollback. Closeout may repair only independently demonstrated PE-3 defects. It must leave no new queue store, action authority, scheduler, approval system, or Dashboard mutation control.
-
-**Completion evidence:** Independent review of the merged PE-3 chain, focused action authorization regression, existing queue/read/Dashboard/PostgreSQL evidence, the full repository verification baseline, exact-head green CI, and synchronized authoritative documents. PE4-CONTRACT-REPAIR-1 is ready for execution; rollback remains a revert of the individual PE-3 PRs and no migration cleanup is required.
-
-## PE-4 — Trace-backed Policy Replay
-
-### Packet PE4-CONTRACT-1 — Calibration and coverage contract
-
-**State:** `COMPLETE`
-
-**Prerequisite:** PE3 closeout and sufficient versioned trace evidence.
-
-**Goal:** Define a versioned, deterministic replay eligibility contract over existing `feedback_trace.v1` and offline-evaluation owners before adding replay persistence, live routing, or promotion behavior.
-
-**Historical/pre-repair note:** This v2/v1 contract is retained for merged-history context only. `PE4-POST-CLOSE-REPAIR-1` supersedes it with the active v3/v2 owner-bound contract; this historical text is not current acceptance evidence.
-
-**Contract decision:** The original `policy_replay_contract.v1` design boundary accepts only bounded, non-secret `feedback_trace.v1` observations with a parseable timestamp, stable trace/dispatch identity, task class, selected candidate identity, terminal outcome, measured cost/latency, and a compatible quality measurement. A replay cohort is comparable only when its task class, objective, candidate definition, measurement schema, and time window match; duplicate identities, inconsistent candidate definitions, missing measurements, stale traces, and mixed incompatible schemas are rejected with sorted reason codes. Eligibility requires at least 30 accepted observations per compared candidate, at least 3 paired judge/reference samples per judge, no more than 10% rejected or uncovered observations, and a configurable maximum trace age no greater than 30 days. A candidate outside the observed task-class, objective, endpoint/member set, complexity bucket, or cost/latency envelope is `out_of_distribution`; any insufficient, stale, incomparable, uncovered, or OOD cohort produces a hash-bound refusal, never a recommendation. PE4-CONTRACT-REPAIR-1 implements this boundary as the stricter normalized `policy_replay_contract.v2`/`trace_replay_evidence.v1` contract below.
-
-**Authority and progression:** Offline reports remain derived evidence, `shadow_only`, and non-mutating. PE4-REPLAY-1 may reuse `RunTraceRecorder` and `OfflineEvaluationEngine` only after this contract is implemented and tested. Shadow, bounded canary, promotion, pause, and rollback must call their existing owners; no offline or shadow result changes live policy. Existing `ContextualPolicyPromotion` retains its confirmation, evidence, rollout, pause, and rollback gates.
-
-**Acceptance and rollback:** The durable contract text merged in PR #192. PR #193 added only an initial caller-asserted eligibility prototype; its booleans and manually supplied candidate data are not accepted as trace, coverage, calibration, comparability, or OOD evidence and are superseded by PE4-CONTRACT-REPAIR-1. Rollback is a revert with no migration or cleanup.
-
-### Packet PE4-CONTRACT-REPAIR-1 — Real trace-backed replay evidence
-
-**State:** `COMPLETE`
-
-**Prerequisite:** PE3-CLOSE-1 complete and sufficient versioned trace evidence available from existing owners.
-
-**Goal:** Replace or subordinate the #193 prototype with deterministic normalized replay observations derived from existing RunTrace, persisted feedback/attribution evidence, offline evaluation, policy simulation, and compatible quality evidence.
-
-**Contract:** `policy_replay_contract.v2` and `trace_replay_evidence.v1` normalize only fields derived from `RunTrace` and persisted trace sections. They bind trace/dispatch identity, observation time, task class/domain/intent/objective, candidate identity/version/definition hash, endpoint/member set when present, routing/policy binding, measurement schema, complexity bucket, terminal outcome, latency, tokens, measured or posted cost, retries, quality meaning, judge/reference pairing, bounded source references, and canonical content hashes. Caller booleans, caller candidate definitions, caller coverage claims, and sample-count-only calibration are not inputs to trust. Accepted and rejected observations, malformed/stale/duplicate/tampered evidence, incompatible cohorts, missing measurements, incomplete pricing, unmeasured/unpriced values, sparse and incomplete paired coverage, actual judge calibration, cost/latency/token/retry envelopes, and scope-based OOD reasons are explicit deterministic outputs. Any refusal remains `shadow_only` and hash-bound.
-
-**Forbidden:** No live policy mutation, provider call, hidden threshold, opaque authoritative score, automatic substitution, budget mutation, new experiment/pause/promotion/rollback owner, target-repository write, or PE-5/PE-6 work.
-
-**Owning paths:** `engine/src/feedback/replay_eligibility.rs`, `engine/src/feedback/run_trace_recorder.rs`, `engine/src/feedback/outcome_attributor.rs`, `engine/src/feedback/offline_evaluation.rs`, `engine/src/feedback/mod.rs`, and focused feedback tests. No persistence or wire surface is added by this packet.
-
-**Acceptance:** Versioned normalized-observation, cohort, coverage, calibration, eligibility, and refusal contracts; trace-hash and contradictory-section tests; a safe adapter into the existing offline evaluator; no silent serialization fallback; no fabricated evidence hash; no live mutation; exact-head full CI. Rollback is a code revert with no migration or cleanup.
-
-**Completion evidence:** PR #197 merged as `d38d31bf17824e1587003268f5d6f58c6ba4afdd` from exact head `0af41d2b26f26f81fc9c7ae95066bfe3d3183cf7`; exact-head CI `29182261087` and post-merge `main` CI `29182505029` passed all seven required jobs. The merged contract derives all eligibility from trace-owner input and keeps the compatibility constructor non-authoritative.
-
-### Packet PE4-OFFLINE-1 — Deterministic comparable-cohort replay
-
-**State:** `COMPLETE`
-
-**Prerequisite:** PE4-CONTRACT-REPAIR-1 merged with post-merge `main` CI green (`d38d31bf17824e1587003268f5d6f58c6ba4afdd`, CI `29182505029`).
-
-**Goal:** Evaluate accepted trace-derived cohorts against explicit current and candidate policy descriptions without changing production state.
-
-**Historical/pre-repair note:** This merged PE4-REPLAY-1 contract is retained for context only. Its v2/v1 semantics are superseded by `PE4-POST-CLOSE-REPAIR-1` and cannot authorize current acceptance, shadow, canary, or promotion.
-
-**Owning paths:** `engine/src/feedback/offline_evaluation.rs`, `engine/src/feedback/policy_simulator.rs`, and focused offline replay tests.
-
-**Contract:** Consume raw `ReplayEligibilityRequest` trace-owner input and derive accepted `trace_replay_evidence.v1` observations inside the existing eligibility owner; callers cannot establish `eligible`, coverage, calibration, or accepted evidence by supplying a result. Compare explicit versioned current and candidate policy definitions while keeping observed facts separate from counterfactual estimates. Bind every report to trace/evidence hashes and candidate/policy versions, and return deterministic `insufficient_evidence`, `incompatible_cohort`, `stale`, `tampered`, `uncalibrated`, and `out_of_distribution` outcomes. No provider call, substitution, live routing, opaque authority score, or mutation.
-
-**Acceptance and rollback:** Comparable task/objective/measurement/policy/member/complexity cohorts, paired coverage, calibrated judge evidence, cost/latency/token/retry envelopes, deterministic ordering, and non-mutation tests pass. Revert the packet; no migration or cleanup.
-
-**Completion evidence:** PR #198 merged as `5a4a3e049574f54500dfdf4dc312f68ac5b6d78d` from exact head `0ab7f8c8274ba2fce2c90aaaf7d6d3a04d4560dd`; exact-head CI `29183389219` and post-merge `main` CI `29183843076` passed all seven required jobs. The merged implementation derives eligibility internally from raw trace-owner input, keeps observed facts separate from estimates, and remains shadow-only/non-mutating.
-
-### Packet PE4-READ-1 — Read-only replay evidence surfaces
-
-**State:** `COMPLETE`
-
-**Prerequisite:** PE4-OFFLINE-1 merged with post-merge `main` CI green (`5a4a3e049574f54500dfdf4dc312f68ac5b6d78d`; post-merge CI `29183843076` passed all seven jobs).
-
-**Goal:** Expose bounded accepted replay and comparison evidence through existing read owners only.
-
-**Owning paths:** `engine/src/storage/local_product_store/offline_replay_artifacts.rs` and the historical additive schema v20 migration, plus the existing scorecard HTTP/OpenAPI handlers/routes, Python/TypeScript SDK readers, and `DynamicRegulator` Dashboard surface; the post-close repair adds aligned schema v21 dispatch provenance.
-
-**Contract:** Persist only validated `offline_replay_artifact.v1` envelopes whose report, policy hashes, eligibility hash, source evidence hashes, schema version, and shadow-only flags verify. Writes are idempotent and audit metadata-only; reads use deterministic bounded ordering/pagination and validate stored JSON on every read. HTTP/OpenAPI/SDK/Dashboard readers expose empty, insufficient, invalid, stale, tampered, OOD, and error states. Historical SQLite/PostgreSQL v20 remains aligned and readable; current v2 reports and v21 dispatch provenance are governed by `PE4-POST-CLOSE-REPAIR-1`, and no live policy mutation or new evidence authority is added.
-
-**Acceptance and rollback:** PR #199 merged as `92ade400174ee49d1efa3d1447830d936aa3e4b6` from exact head `5c78ca1d5aa1b93516f15822991f3edcfa3072f2`; exact-head CI `29184325125` passed all seven jobs after repairing the integrity owner, and post-merge main CI `29184652464` passed all seven jobs. HTTP/OpenAPI parity, encoded SDK paths, migration compatibility, SQLite/PostgreSQL, Dashboard states, idempotent hash-bound recording, tamper rejection, integrity-table coverage, and read-only permission tests pass. Revert the additive route/storage changes; preserve existing data.
-
-### Packet PE4-SHADOW-1 — Shadow comparison only
-
-**State:** `COMPLETE`
-
-**Prerequisite:** PE4-READ-1 merged as PR #199 with exact-head CI green; post-merge main CI `29184652464` passed all seven required jobs.
-
-**Goal:** Compare predicted and observed quality, cost, latency, retry, and coverage using the existing shadow-routing/evaluation owners.
-
-**Owning paths:** `engine/src/feedback/shadow_router.rs`, existing evaluation/attribution owners, audit and provider-adapter gates.
-
-**Contract:** Shadow only; bind policy/candidate/trace versions and hashes; record drift, insufficiency, stale, tampered, uncalibrated, and OOD evidence; provider adapters may be used only through existing authorization, cost, audit, timeout, and kill gates.
-
-**Acceptance and rollback:** Shadow non-mutation, version binding, drift, insufficiency, permission, audit, timeout, kill, and restart tests pass. Revert the packet; no live route or policy changes remain.
-
-**Completion evidence:** PR #200 merged as `54b3d46192f1de9b0bbaf1a1d83a7abaafff0201` from exact head `51a4b3a8b89ad1f65d74767b452e2546cf2526d7`; exact-head CI `29184759873` passed all seven required jobs, and post-merge `main` CI `29185040397` passed all seven jobs. The merged owner remains derived and shadow-only.
-
-### Packet PE4-CANARY-1 — Bounded canary through the existing experiment owner
-
-**State:** `COMPLETE`
-
-**Prerequisite:** PE4-SHADOW-1 merged as PR #200 with exact-head CI and post-merge `main` CI green; the existing `AdaptiveExperimentController` is the verified canary authority.
-
-**Goal:** Add default-off, explicitly confirmed, permissioned, bounded, reversible canary execution through the existing experiment owner.
-
-**Owning paths:** `adaptive_experiment.rs`, `adaptive_auto_promotion.rs`, existing pause/audit/workflow owners, and restart/fault tests.
-
-**Contract:** Require exact policy/candidate versions, minimum compatible evidence, bounded scope and duration, explicit confirmation and permission, existing audit/idempotency, automatic pause through the existing pause authority, compensation, restart safety, and rollback. No direct full rollout or second canary state machine.
-
-**Acceptance and rollback:** Default-off, scope/duration, minimum evidence, pause, compensation, restart, audit, idempotency, and rollback tests pass. Revert the packet and leave prior experiment state untouched.
-
-**Implementation boundary:** This packet adds only a deterministic, hash-bound decision envelope and focused owner tests. It does not add a persistence table, HTTP mutation route, provider call, live routing/policy mutation, or parallel experiment state machine. Audit and actual activation remain with the existing experiment/operator owners.
-
-**Completion evidence:** PR #201 merged as `4e5bdbb2a80a6c791e2fb508b60a8d44bd2b1c3d` from exact head `3dfd5f6af73c27601724f6cf7d6a6f6e68a6b1bd`; exact-head CI `29185418126` and post-merge `main` CI `29185710538` passed all seven required jobs.
-
-### Packet PE4-PROMOTION-1 — Authoritative guarded promotion
-
-**State:** `COMPLETE`
-
-**Prerequisite:** PE4-CANARY-1 merged as PR #201 with exact-head CI green and post-merge `main` CI `29185710538` passed all seven jobs; the existing `AdaptiveAutoPromotionController` and `LocalProductStore` promotion path are the verified authority.
-
-**Goal:** Extend the existing promotion owner so promotion requires the complete compatible evidence chain.
-
-**Owning paths:** `contextual_policy.rs`, `adaptive_auto_promotion.rs`, existing policy snapshot, permission, confirmation, audit, pause/resume, compensation, restart, and rollback owners.
-
-**Contract:** Require compatible offline, shadow, and bounded canary evidence; coverage; actual calibration where applicable; non-OOD evidence; quality/cost/latency guardrails; exact policy versions; source hashes; rollout scope; and rollback target. Offline or shadow evidence alone never authorizes promotion.
-
-**Acceptance and rollback:** Confirmation, permission, audit, idempotency, pause, resume, rollback, restart, compensation, version/hash binding, and fail-closed negative-path tests pass. Revert the packet through the existing promotion owner; no parallel authority is created.
-
-**Implementation boundary:** The caller-only promotion path is fail-closed. The new chain path re-derives shadow from offline evidence, validates canary and judge calibration bindings, records the chain hash in the promoted policy, and delegates application, audit, snapshot, pause, compensation, and rollback to existing owners. No new migration, provider path, full-rollout shortcut, or second promotion authority is added.
-
-**Completion evidence:** PR #202 merged as `92b53e9abf2bebd51bddc6c0f7db880edabd396b` from exact head `230dba873365657db9881d7f661fd44a93164b45`; exact-head CI `29185784794` and post-merge main CI `29186024415` passed all seven required jobs.
-
-### Packet PE4-CLOSE-1 — Independent PE-4 acceptance seal
-
-**State:** `COMPLETE`
-
-**Prerequisite:** PE4-PROMOTION-1 merged as PR #202 with exact-head and post-merge `main` CI green.
-
-**Goal:** Independently audit and acceptance-seal the complete PE-4 chain.
-
-**Audit:** Trace grounding, comparability, coverage, calibration, OOD, offline non-mutation, read/API/OpenAPI/SDK/Dashboard compatibility, SQLite/PostgreSQL parity, shadow non-mutation, canary safety, promotion authority, permissions, confirmation, audit, pause, resume, compensation, rollback, restart, active-document consistency, and residual risks.
-
-**Acceptance and rollback:** Repair any discovered defect in a separate coherent implementation PR before closeout; merge only with exact-head 7/7 CI and green post-merge `main` CI. Revert the individual implementation PRs; preserve existing owner data and recovery paths.
-
-**Completion evidence:** Historical pre-repair closeout evidence only: independent audit reported no remaining defect; focused closeout checks passed for canary (3), promotion (5), offline replay (14), bounded read HTTP, and clean SQLite integrity; existing merged tests and CI covered trace contract, API/OpenAPI/SDK/Dashboard, migration, PostgreSQL, concurrency, restart, permissions, confirmation, audit, pause, compensation, and rollback. PR #203 merged as `008bc8c8879d6e7c9641fec57aa974f98af1c6b5` from exact head `2110676667dd1b57a36bc6f3744016599a02860a`; exact-head CI `29186113263` and final post-merge `main` CI `29186372526` passed all seven required jobs. Its acceptance claim is superseded by `PE4-POST-CLOSE-REPAIR-1`.
-
-### Packet PE4-POST-CLOSE-REPAIR-1 — PE-4 semantic, provenance, boundedness, and calibration repair
-
-**State:** `COMPLETE`
-
-**Prerequisite:** PR #203/PE4-CLOSE-1 is merged, PR #205 documentation governance is merged separately, local `main` equals `origin/main`, and the repair branch starts at `0f92dadc6cf1cb712231dbb917bf9904f8346d86`.
-
-**Goal:** Repair the merged PE-4 correctness defects without adding a product stage, PE-5/PE-6 work, or a second replay/experiment/canary/promotion/pause/policy/audit/rollback owner.
-
-**Contract:** Use `policy_replay_contract.v3`, `trace_replay_evidence.v2`, `offline_policy_replay.v2`, `dispatch_history_trace_owner.v1`, and `judge_calibration.v1`. The accepted boundary is exactly inclusive at 90%. A central severity taxonomy distinguishes observation-local coverage failures, cohort-fatal evidence failures, and request-fatal contract failures. Trusted evidence must be derived from the existing persisted `dispatch_history` owner through `RunTraceRecorder`; raw imports and public request deserialization cannot authorize replay. Recorder-derived execution terminality, execution outcome, evaluation completion/outcome, overall dispatch success, quality, and tool-success remain distinct. Judge calibration requires at least 3 paired values and is within tolerance only when absolute signed bias is at most 0.10 and MAE is at most 0.15. Caller scope constrains replay but never supplies empirical support; unsupported candidate/cohort/metric evidence is explicit OOD or insufficient evidence.
-
-**Compatibility and migration:** Additive SQLite/PostgreSQL schema v21 stores nullable owner trace schema/hash columns on `dispatch_history`; old rows remain readable but without an immutable binding they fail closed as `untrusted_trace_source`. Current replay/report hashes are versioned and never reinterpret old hashes. Offline artifact rows with `offline_policy_replay.v1` remain readable as historical-only and cannot authorize shadow, canary, or promotion. All canonical bytes, raw sections, identifiers, arrays, report cardinalities, references, depths, result size, and numeric sums are bounded; serialization and overflow failures fail closed without runtime panics.
-
-**Owning paths:** Existing replay eligibility/recorder/offline/shadow/experiment/promotion/contextual-policy/storage migration/HTTP/OpenAPI/SDK/Dashboard paths and their focused tests. Reuse existing permission, confirmation, audit, pause, compensation, snapshot, and rollback owners.
-
-**Forbidden:** No caller boolean or self-computed hash as authority, provider call in CI, live routing/policy mutation from offline/shadow, weaker coverage or calibration gates, new product stage, parallel owner, raw sensitive payload, or PE-5/PE-6 activation.
-
-**Acceptance:** Focused replay eligibility, outcome, calibration, OOD, boundedness, owner tamper/restart/idempotency, artifact historical-row, SQLite/PostgreSQL/migration, HTTP/OpenAPI, SDK, Dashboard, shadow, canary, promotion, pause, rollback, and restart tests pass. The complete repository verification baseline passed locally, the single implementation PR is #206, and exact implementation-head CI run `29190133210` passed all seven required jobs: `docker-build`, `native-runtime`, `pg-integration-tests`, `python-tests`, `rust-tests`, `rust-typescript-cutover`, and `typescript-tests`. The final documentation head must pass the identical exact-head 7/7 matrix before merge, followed by post-merge `main` CI verification. Rollback is a code revert; v21 nullable columns and historical v1 rows remain inert/readable.
-
-**Completion evidence:** PE-4 remains acceptance-sealed with `PE4-POST-CLOSE-REPAIR-1` included in its evidence; weaker pre-repair semantics are superseded; PR #206 records the final documentation-head SHA, exact final-head CI, merge, and post-merge `main` verification. PE-5 and PE-6 remain unstarted.
-
-## PE-5 — Release Provenance
-
-### Packet PE5-SBOM-1 — Deterministic SBOM generation
+## Packet PE5-SBOM-1 — Deterministic artifact and container SBOMs
 
 **State:** `BLOCKED_PREREQUISITE`
 
-**Prerequisite:** explicit independent-lane activation and no conflicting release PR.
+**Prerequisite:** PE5-CONTRACT-1 complete.
 
-PE-5 retains external/ephemeral signing identity, source/workflow/target/dependency/artifact binding, fail-closed installer verification, and atomic rollback. It is not active in this effort.
+**Goal:** Generate deterministic, bounded, target-correct SBOM evidence for every supported release package and container subject through existing build owners.
 
-## PE-6 — Fault Injection and Recovery Drills
+**Owning paths:** Existing release/package/container build scripts and workflow; Cargo/Bun/Python dependency locks; release fixtures and tests.
 
-### Packet PE6-INVARIANTS-1 — Recovery invariants contract
+**Allowed changes:** Deterministic SBOM generation, normalization, validation, artifact naming, digest binding, dry-run output, and CI/release workflow integration.
 
-**State:** `DECISION_REQUIRED`
+**Forbidden changes:** No signing, publication, installer enforcement, live deployment, dependency mutation solely to alter SBOM output, hidden network dependency in tests, or second packaging pipeline.
 
-The agent may define recovery invariants from existing subsystem contracts and tests before any injection work. Each affected subsystem must have explicit normal-state, failure-state, recovery-success, rollback-success, data-integrity, audit, timeout, and abort invariants. No destructive external testing is authorized.
+**Contract:**
+
+- choose one canonical machine-readable SBOM format and version; additional formats are optional and non-authoritative unless separately versioned;
+- bind SBOM to exact source commit, target tuple, package kind, artifact digest, dependency lock hashes, and generator version;
+- normalize timestamps and unstable fields or explicitly exclude them from the canonical digest;
+- fail closed on missing package subjects, duplicate components, invalid licenses/identifiers where required by the contract, target mismatch, oversized output, or digest mismatch;
+- never include secrets, environment tokens, source payloads, or absolute private paths.
+
+**Verification:** Determinism across repeated builds, changed-dependency sensitivity, target/package coverage, container/package parity where applicable, malformed/tampered SBOM, no-secret/path leakage, offline fixture behavior, and workflow dry run.
+
+**Rollback:** Revert SBOM integration; existing package build remains available only if the accepted contract explicitly permits a non-provenance development build. No accepted release may silently omit required SBOM evidence.
+
+**Completion:** Merge exact-head green CI, refresh `main`, mark PE5-ATTEST-1 ready.
+
+## Packet PE5-ATTEST-1 — External ephemeral signing and provenance attestations
+
+**State:** `BLOCKED_PREREQUISITE`
+
+**Prerequisite:** PE5-SBOM-1 complete.
+
+**Goal:** Produce and verify signed provenance/attestation evidence for release subjects using an external ephemeral production identity and isolated non-authorizing test fixtures.
+
+**Owning paths:** Existing release workflow, official pinned signing/attestation tooling selected from current supported platform capabilities, release contract implementation, and verification fixtures.
+
+**Allowed changes:** OIDC/workload-identity permissions when required, pinned official actions/tools, provenance predicates, signing/attestation generation, identity policy, certificate/transparency metadata validation, and offline fixture verification.
+
+**Forbidden changes:** No persistent private key, repository-stored signing key, exported identity token, signing on Vader, unsigned fallback presented as verified, unpinned third-party action, public release, or silent trust-on-first-use.
+
+**Contract:**
+
+- bind source commit, workflow identity/ref, run/job, builder, target, artifact and SBOM digests, predicate schema, and signing identity;
+- production acceptance requires the configured trusted issuer/subject/workflow policy and ephemeral identity;
+- fixture signatures are explicitly marked non-production and cannot pass production policy;
+- missing identity, wrong issuer/subject, wrong repository/ref/workflow, expired/not-yet-valid certificate, digest mismatch, malformed bundle, unavailable required transparency evidence, or unsupported predicate fails closed;
+- verification remains possible without exposing signing credentials.
+
+**Verification:** Valid fixture, wrong identity, wrong repository/ref/workflow, artifact/SBOM tamper, expired/invalid certificate metadata, malformed attestation, unsupported predicate, missing transparency/identity evidence, and deterministic policy tests. Exercise the production workflow in non-publishing dry-run form when external identity is available.
+
+**Rollback:** Revert attestation integration; revoke or disable external trust policy if necessary. No private-key cleanup should be required because production private keys are forbidden.
+
+**Completion:** Merge exact-head green CI, refresh `main`, mark PE5-VERIFY-1 ready.
+
+## Packet PE5-VERIFY-1 — Fail-closed installer and upgrader verification
+
+**State:** `BLOCKED_PREREQUISITE`
+
+**Prerequisite:** PE5-ATTEST-1 complete.
+
+**Goal:** Require complete accepted provenance before an existing installer or upgrader activates a release, while preserving atomic rollback.
+
+**Owning paths:** Existing install/upgrade/checksum/atomic-swap/rollback scripts, release bundle layout, verification CLI/helpers, and focused shell/Python/Rust tests as appropriate.
+
+**Allowed changes:** Pre-install verification, explicit development-mode bypass only when existing policy permits and clearly non-production, bounded evidence reporting, staged extraction, atomic activation, and rollback tests.
+
+**Forbidden changes:** No partial activation before verification, no warning-only production bypass, no network-fetched executable verifier without pinning, no mutation of the previous installation before the new release verifies, no deletion of rollback state, and no implicit trust based only on filename/tag/checksum.
+
+**Contract:**
+
+- verify exact artifact digest, SBOM, provenance/attestation, signer identity, source/workflow/target binding, package inventory, and bundle completeness before activation;
+- extract and validate in a staging location;
+- preserve the previous known-good installation until post-activation health succeeds;
+- rollback atomically on verification, extraction, activation, health-check, permission, or interruption failure;
+- record bounded non-secret verification and rollback evidence;
+- repeated install/upgrade attempts are deterministic and idempotent where existing semantics permit.
+
+**Verification:** Valid install, tampered artifact, tampered SBOM, wrong target, wrong signer/workflow, missing file, path traversal, permission failure, interrupted extraction, activation failure, failed health check, rollback failure handling, repeat upgrade, and cleanup tests.
+
+**Compatibility:** Existing development builds remain explicitly distinguishable. Existing accepted installations remain usable; upgrading them requires the new verified release contract rather than silently fabricating old provenance.
+
+**Rollback:** Revert enforcement and installer changes only through a reviewed rollback that does not label unverified releases as verified. Preserve prior known-good installations and evidence.
+
+**Completion:** Merge exact-head green CI, refresh `main`, mark PE5-PUBLISH-1 ready.
+
+## Packet PE5-PUBLISH-1 — Release workflow ordering and publish gate
+
+**State:** `BLOCKED_PREREQUISITE`
+
+**Prerequisite:** PE5-VERIFY-1 complete.
+
+**Goal:** Integrate build, SBOM, attestation, verification, packaging, and publication ordering into the existing release workflow so no release artifact is published before its complete evidence verifies.
+
+**Owning paths:** `.github/workflows/release.yml`, existing release scripts, artifact upload steps, release dry-run fixtures, action-pin/security checks, and release runbook.
+
+**Allowed changes:** Least-privilege workflow permissions, exact artifact handoff, deterministic manifest assembly, pre-publication verification, dry-run mode, bounded artifact retention, and release evidence summary.
+
+**Forbidden changes:** No automatic tag creation or public release without existing authority and explicit user authorization; no mutable latest-only identity; no unverified artifact upload; no broad token permissions; no persistent credential on self-hosted runners; no weakening of atomic installer rollback.
+
+**Contract:**
+
+- exact source/tag/ref and workflow identity are checked at every handoff;
+- build outputs are immutable by digest between SBOM, attestation, verification, and publish steps;
+- publication is downstream of successful verification and cannot reuse evidence from another head/run/target;
+- cancelled, retried, duplicate, or stale workflow runs cannot publish;
+- dry-run produces the complete bundle and verification evidence without external publication;
+- permissions are job-minimal and all actions are SHA-pinned.
+
+**Verification:** Workflow syntax/action pins, dry-run end to end, moved-head/tag mismatch, duplicate/stale run, artifact substitution, missing target, failed signing, failed verification, cancelled job, and retry behavior. No real release is required unless separately authorized.
+
+**Rollback:** Disable publication, retain verified bundles/evidence, revert workflow integration, and preserve the previous release path only for non-production development artifacts until repaired.
+
+**Completion:** Merge exact-head green CI, refresh `main`, mark PE5-CLOSE-1 ready.
+
+## Packet PE5-CLOSE-1 — Independent release-provenance acceptance seal
+
+**State:** `BLOCKED_PREREQUISITE`
+
+**Prerequisite:** PE5-PUBLISH-1 complete.
+
+**Goal:** Independently audit and acceptance-seal the full PE-5 chain without performing an unauthorized public release.
+
+**Audit:** Contract/versioning, deterministic SBOMs, source/workflow/builder/target/dependency/artifact binding, ephemeral identity, fixture non-authorization, attestation verification, installer fail-closed behavior, atomic activation/rollback, workflow ordering, permissions, action pins, secret handling, compatibility, dry-run evidence, cancellation/retry/stale-run behavior, and residual risk.
+
+**Acceptance:** Repair any demonstrated defect before closeout. Exact final-head full CI and post-merge `main` CI must pass. A complete non-publishing release dry run must produce a verified bundle for every supported target/package class. No production private key or real release action may be used merely to satisfy closeout.
+
+**Rollback:** Revert individual PE-5 PRs in reverse dependency order; disable publication first; preserve verified evidence and previous known-good installations.
+
+**Completion:** Mark all PE-5 packets complete, record exact PR/commit/CI evidence, activate PE6-INVARIANTS-1, and leave no stale routing.
+
+# PE-6 — Fault Injection and Recovery Drills
+
+## Stage Invariants
+
+PE-6 validates existing recovery behavior; it does not create a second scheduler, storage engine, provider authority, release owner, audit system, or rollback mechanism.
+
+All faults must run only against disposable local resources, temporary directories, isolated SQLite databases, ephemeral PostgreSQL containers, fake/stub providers, synthetic repositories/worktrees, and non-publishing release bundles.
+
+Every drill must define:
+
+- subsystem and owner;
+- normal-state invariant;
+- injected failure and exact injection point;
+- expected detection and bounded timeout;
+- recovery-success invariant;
+- rollback-success invariant;
+- data-integrity and audit invariant;
+- idempotency/restart/concurrency invariant where applicable;
+- abort/kill condition;
+- cleanup verification;
+- versioned bounded evidence and reason codes.
+
+No destructive external provider call, production database corruption, real target-repository damage, real release publication, credential revocation, or host-level fault outside an isolated approved sandbox is authorized.
+
+## Packet PE6-INVARIANTS-1 — Recovery invariant and drill contract
+
+**State:** `BLOCKED_PREREQUISITE`
+
+**Prerequisite:** PE5-CLOSE-1 complete.
+
+**Goal:** Define the versioned bounded fault-scenario, drill-result, recovery-evidence, and cleanup contracts across existing subsystem owners before injecting failures.
+
+**Owning paths:** Existing engine fault seams and tests; storage/provider/workflow/scheduler/executor/release recovery owners; backup/restore and upgrade rollback scripts; architecture/module docs; focused contract tests.
+
+**Allowed changes:** Scenario/result schemas, capability allowlists, deterministic seed semantics, fault-point registry, timeouts, evidence references/hashes, reason codes, fixtures, and pure validators.
+
+**Forbidden changes:** No fault execution against non-disposable resources, no production mutation, no new recovery authority, no provider call, no host reboot/process kill outside a controlled child process, no schema migration, and no Dashboard/API work.
+
+**Contract:**
+
+- define `fault_scenario`, `fault_drill_result`, and recovery/cleanup evidence versions;
+- require explicit disposable-resource identity and capability allowlist;
+- distinguish `passed`, `failed_recovery`, `failed_rollback`, `cleanup_failed`, `unsupported`, `invalid_scenario`, and `aborted`;
+- bind scenario, seed, subsystem, source head, test environment, injected fault, observations, recovery actions, integrity checks, audit evidence, and cleanup evidence;
+- bound duration, retries, processes, files, bytes, events, references, and output size;
+- fail closed on unknown fault point, non-disposable target, missing cleanup, evidence tamper, timeout, or invariant ambiguity.
+
+**Verification:** Contract/canonicalization, unsupported fault, non-disposable target, timeout, duplicate scenario, deterministic seed, evidence tamper, cleanup omission, oversized input/result, and no-panic tests.
+
+**Rollback:** Revert the contract PR; no live state or migration.
+
+**Completion:** Merge exact-head green CI, refresh `main`, mark PE6-HARNESS-1 ready.
+
+## Packet PE6-HARNESS-1 — Deterministic bounded fault-injection harness
+
+**State:** `BLOCKED_PREREQUISITE`
+
+**Prerequisite:** PE6-INVARIANTS-1 complete.
+
+**Goal:** Implement one reusable allowlisted harness that injects deterministic faults, observes existing recovery owners, always attempts bounded cleanup, and emits versioned evidence.
+
+**Owning paths:** Focused test/support modules under existing Rust/Python/shell test ownership; CI test tooling; no production runtime entrypoint unless an existing test-only seam requires one.
+
+**Allowed changes:** Test-only fault adapters, deterministic clock/random/IO seams, child-process control, disposable resource provisioning, cleanup guards, report generation, and harness tests.
+
+**Forbidden changes:** No generic arbitrary command execution, unrestricted file/network/process fault, production endpoint, persistent daemon, provider credential, main-branch mutation, or second orchestration framework.
+
+**Contract:**
+
+- only registered scenario IDs and injection points execute;
+- resources must be created by the harness or explicitly prove disposable ownership;
+- fault duration and retries are capped;
+- emergency abort and finally-style cleanup always run;
+- cleanup failure is a first-class failed outcome;
+- evidence is deterministic for equivalent scenario/seed/input;
+- concurrent drills cannot share mutable resource identity.
+
+**Verification:** Unknown scenario, traversal/command injection, timeout, process crash, interrupted harness, cleanup failure, concurrent isolation, deterministic replay, and artifact bounds.
+
+**Rollback:** Revert harness/test seams and remove disposable artifacts. No production data cleanup.
+
+**Completion:** Merge exact-head green CI, refresh `main`, mark PE6-STORAGE-1 ready.
+
+## Packet PE6-STORAGE-1 — SQLite/PostgreSQL integrity, interruption, backup, and restore drills
+
+**State:** `BLOCKED_PREREQUISITE`
+
+**Prerequisite:** PE6-HARNESS-1 complete.
+
+**Goal:** Prove existing storage transactions, migrations, integrity checks, backup/restore, idempotency, and rollback behavior under bounded failures.
+
+**Owning paths:** `LocalProductStore`, SQLite/PostgreSQL migrations and integration tests, backup/restore scripts, audit/integrity tables, temporary databases and ephemeral PostgreSQL containers.
+
+**Required drill classes:**
+
+- failure before commit, during multi-owner transaction, and after commit acknowledgement;
+- duplicate/replayed write and concurrent conflicting write;
+- migration interruption and restart;
+- integrity/hash tamper detection;
+- backup interruption, incomplete backup, restore into clean target, and restore verification;
+- connection loss/timeout/deadlock or equivalent PostgreSQL failure using controlled test facilities;
+- cleanup and container/database isolation.
+
+**Forbidden:** No corruption of a developer's real database, no deletion of non-harness paths, no down-migration invented solely for the drill, and no acceptance based only on absence of panic.
+
+**Acceptance:** Atomicity, no partial authority state, deterministic retry/idempotency, integrity refusal, restart behavior, backup completeness, restore equivalence, audit preservation, and cleanup all verify for SQLite and PostgreSQL where applicable.
+
+**Rollback:** Revert test seams and harness scenarios; preserve production storage behavior.
+
+**Completion:** Merge exact-head green CI, refresh `main`, mark PE6-WORKFLOW-1 ready.
+
+## Packet PE6-WORKFLOW-1 — Workflow, scheduler, executor, pause, and compensation drills
+
+**State:** `BLOCKED_PREREQUISITE`
+
+**Prerequisite:** PE6-STORAGE-1 complete.
+
+**Goal:** Exercise existing workflow/scheduler/executor recovery and compensation under crashes, stale state, duplication, timeout, concurrency, and restart.
+
+**Owning paths:** Existing workflow runs, scheduler, node executor, executor pool, approvals, operator actions, pause/resume/retry, audit, and compensation tests.
+
+**Required drill classes:**
+
+- crash before/after state transition and audit binding;
+- duplicate dispatch/tick/action and stale lease/head/state;
+- executor timeout, worker loss, unavailable capacity, and retry exhaustion;
+- concurrent approval/reject/resume/retry/pause attempts;
+- pause or audit failure requiring compensation;
+- restart with in-flight, blocked, failed, cancelled, or completed runs;
+- rollback or recovery owner unavailable;
+- cleanup of temporary worktrees/processes/resources.
+
+**Acceptance:** No duplicate authority, no impossible terminal transition, audit/state consistency, exact idempotency, bounded retries, fail-closed unavailable owners, tested compensation, restart recovery, and cleanup evidence.
+
+**Rollback:** Revert test seams/scenarios only; existing runtime owners remain unchanged unless a demonstrated defect requires a separate bounded repair in the same packet PR.
+
+**Completion:** Merge exact-head green CI, refresh `main`, mark PE6-PROVIDER-1 ready.
+
+## Packet PE6-PROVIDER-1 — Provider, budget, audit, timeout, and kill-control drills
+
+**State:** `BLOCKED_PREREQUISITE`
+
+**Prerequisite:** PE6-WORKFLOW-1 complete.
+
+**Goal:** Validate existing provider/budget/audit safety behavior with fake or stub providers under bounded failures and contradictory usage evidence.
+
+**Owning paths:** Existing provider adapters, `FakeProvider`, pricing/budget reservation, persistent redacted audit, local runner provider, timeout and kill controls, and focused tests.
+
+**Required drill classes:**
+
+- timeout, cancellation, malformed response, partial stream/result, and provider exception;
+- missing/invalid pricing, reservation failure, actual usage over/under reservation, and incomplete usage;
+- audit write failure before and after provider result;
+- redaction failure or sensitive-pattern detection;
+- kill switch before call, during bounded call, and before result acceptance;
+- retry with ambiguous provider outcome;
+- restart/reconciliation of reserved and posted cost evidence.
+
+**Forbidden:** No real provider call, no live credential, no unbounded sleep/network dependency, no silent model substitution, and no fabricated usage/pricing evidence.
+
+**Acceptance:** No unauthorized call, bounded timeout/cancellation, fail-closed pricing/audit/redaction, deterministic reservation reconciliation, no secret leakage, kill control effectiveness, explicit ambiguous outcome, and cleanup.
+
+**Rollback:** Revert test seams/scenarios; existing provider and budget authority remain unchanged.
+
+**Completion:** Merge exact-head green CI, refresh `main`, mark PE6-RELEASE-1 ready.
+
+## Packet PE6-RELEASE-1 — Provenance, installer, upgrade, and rollback drills
+
+**State:** `BLOCKED_PREREQUISITE`
+
+**Prerequisite:** PE6-PROVIDER-1 complete and PE-5 acceptance remains valid.
+
+**Goal:** Prove the accepted PE-5 release chain refuses invalid evidence and recovers atomically from bounded package, verification, activation, and health failures.
+
+**Owning paths:** PE-5 release contract, SBOM/attestation verifier, installer/upgrader, atomic swap/rollback, release dry-run workflow fixtures, and temporary installation roots.
+
+**Required drill classes:**
+
+- missing/tampered artifact, SBOM, attestation, or manifest;
+- wrong source/workflow/signer/target binding;
+- interrupted download/extraction/staging;
+- permission and disk-space simulation within a disposable root;
+- activation interruption and failed post-activation health check;
+- rollback interruption, repeated rollback, and previous-version preservation;
+- stale/duplicate/cancelled release workflow evidence;
+- cleanup of staged and failed artifacts.
+
+**Forbidden:** No public release, real tag, deployment, system installation outside a disposable root, real signing credential, or deletion of the host's current installation.
+
+**Acceptance:** Verification always precedes activation; invalid evidence cannot install; previous known-good state survives every failed path; rollback is deterministic/idempotent; incomplete cleanup is visible and fails the drill.
+
+**Rollback:** Revert drill scenarios/test seams; do not weaken PE-5 enforcement to make drills pass.
+
+**Completion:** Merge exact-head green CI, refresh `main`, mark PE6-EVIDENCE-1 ready.
+
+## Packet PE6-EVIDENCE-1 — Drill registry, reports, CI execution, and operator inspection
+
+**State:** `BLOCKED_PREREQUISITE`
+
+**Prerequisite:** PE6-RELEASE-1 complete.
+
+**Goal:** Provide one deterministic registry and bounded report path for running supported drill sets locally and in CI and inspecting results without adding runtime mutation authority.
+
+**Owning paths:** Existing test/CI tooling, harness registry/report implementation, CI artifacts, and `docs/RUNBOOK.md`. Add API/SDK/Dashboard surfaces only if repository evidence demonstrates a concrete operator need and the packet is updated before implementation.
+
+**Allowed changes:** Scenario registry, filtered local CLI, CI matrix/shards, bounded JSON report, human-readable summary, one-day or similarly bounded CI artifacts, and runbook procedures.
+
+**Forbidden changes:** No always-on daemon, scheduler, production API mutation, database truth source, automatic destructive drill, release publication, or arbitrary scenario input from untrusted callers.
+
+**Contract:**
+
+- registry entries bind exact scenario versions, owners, required capabilities, timeout, and supported environments;
+- CLI/CI accept allowlisted IDs or named suites only;
+- reports include all invariants, observations, recovery/rollback/cleanup results, evidence hashes, durations, and reason codes;
+- CI failures are attributable to exact scenarios and never silently retried into success;
+- unsupported environment/capability is explicit, not a pass;
+- reports are bounded, redacted, deterministic, and non-authoritative outside their exact source head/environment.
+
+**Verification:** Registry drift, unknown suite, filtering, sharding, deterministic report, failed/aborted/unsupported states, artifact bounds/redaction, CI wiring, and runbook command tests.
+
+**Rollback:** Revert registry/report/CI integration; subsystem recovery implementations remain intact.
+
+**Completion:** Merge exact-head green CI, refresh `main`, mark PE6-CLOSE-1 ready.
+
+## Packet PE6-CLOSE-1 — Independent recovery-drill acceptance seal
+
+**State:** `BLOCKED_PREREQUISITE`
+
+**Prerequisite:** PE6-EVIDENCE-1 complete.
+
+**Goal:** Independently audit and acceptance-seal PE-6 and the completed PE-5/PE-6 recovery chain.
+
+**Audit:** Invariant completeness, harness capability boundary, deterministic faults, disposable-resource enforcement, timeout/abort, cleanup, SQLite/PostgreSQL integrity, migration/backup/restore, workflow/scheduler/executor concurrency and compensation, provider/budget/audit/kill behavior, PE-5 provenance/install/rollback drills, registry/report/CI correctness, no external destructive action, compatibility, and residual risk.
+
+**Acceptance:**
+
+- every registered supported drill has a deterministic pass and focused negative-path evidence;
+- cleanup is proven, not assumed;
+- no test can target a non-disposable resource without failing closed;
+- all existing runtime/release authority remains with its original owner;
+- exact final-head full CI and post-merge `main` CI pass;
+- any demonstrated defect is repaired and re-tested before closeout;
+- no public release, deployment, real provider call, or host-level destructive action was used for acceptance.
+
+**Rollback:** Revert individual PE-6 PRs in reverse dependency order; disable drill CI entrypoints first; retain evidence and all existing production recovery behavior.
+
+**Completion:** Mark all PE-6 packets complete, record exact PR/commit/CI evidence, synchronize active documents, and report remaining product gaps without inventing PE-7.
 
 ## Active Routing
 
-1. `PE5-SBOM-1` remains blocked and is not activated; no later product packet is routed.
-2. Preserve the sealed PE-4 acceptance evidence; no stale pre-repair routing or evidence may authorize current shadow, canary, or promotion.
-3. Keep `PE6-INVARIANTS-1` at decision-required and inactive unless explicitly activated.
+1. Start `PE5-CONTRACT-1` from the latest `main` after inspecting open PR #207.
+2. Complete PE-5 packets in order: CONTRACT → SBOM → ATTEST → VERIFY → PUBLISH → CLOSE.
+3. After PE5-CLOSE-1 is merged and post-merge CI is green, complete PE-6 in order: INVARIANTS → HARNESS → STORAGE → WORKFLOW → PROVIDER → RELEASE → EVIDENCE → CLOSE.
+4. Refresh `main`, active documents, open PRs, and CI after every merge.
+5. Keep #207's orchestrator lane separate; reconcile shared CI/docs instead of overwriting either lane.
+6. Do not create PE-7, a second release owner, a second recovery owner, or a new runtime/control plane during this objective.
