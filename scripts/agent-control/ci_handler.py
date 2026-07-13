@@ -58,6 +58,15 @@ def _run_for_event(info):
         return None
     if info.get("workflow_path") and run.get("path") not in (None, info["workflow_path"]):
         return None
+    provider_identity = {"repository", "headRepository", "workflowId", "path"}
+    if provider_identity & run.keys() and not ci_verifier._candidate_matches(
+        run,
+        info["head_branch"],
+        info["head_sha"],
+        requirements,
+        info.get("pr_number"),
+    ):
+        return None
     return run
 
 

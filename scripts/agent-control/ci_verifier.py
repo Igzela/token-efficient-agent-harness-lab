@@ -349,6 +349,15 @@ def verify_exact_head_ci(
         raise CIVerificationError("workflow name does not match canonical tests workflow")
     if run.get("headSha") != expected_sha:
         raise CIVerificationError("CI head SHA does not match expected head")
+    provider_identity = {"repository", "headRepository", "workflowId", "path"}
+    if provider_identity & run.keys() and not _candidate_matches(
+        run,
+        str(run.get("headBranch", "")),
+        expected_sha,
+        requirements,
+        pr_number,
+    ):
+        raise CIVerificationError("CI run identity does not match the expected PR and repository")
     if run.get("status") != "completed" or run.get("conclusion") != "success":
         raise CIVerificationError("CI workflow is not completed successfully")
 

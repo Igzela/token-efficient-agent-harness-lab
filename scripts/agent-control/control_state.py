@@ -230,10 +230,19 @@ def setup(repo: str | None = None) -> dict[str, Any]:
     expected_remove = [ORCHESTRATOR_ENABLED_LABEL, AUTO_MERGE_ENABLED_LABEL]
     if EMERGENCY_STOP_LABEL not in state["labels"]:
         expected_add.append(EMERGENCY_STOP_LABEL)
+    mutation_error: ControlStateError | None = None
     if expected_add or any(label in state["labels"] for label in expected_remove):
-        _edit_issue_labels(target, int(state["number"]), expected_add, expected_remove)
+        try:
+            _edit_issue_labels(target, int(state["number"]), expected_add, expected_remove)
+        except ControlStateError as exc:
+            # A provider can report an error after applying the label edit.
+            # The final live read is authoritative when it has converged to
+            # the safe stopped state; otherwise preserve the failure.
+            mutation_error = exc
     final = read_control_state(target)
     if not final["emergency_stop"] or final["orchestrator_enabled"] or final["auto_merge_enabled"]:
+        if mutation_error is not None:
+            raise mutation_error
         raise ControlStateError("control setup did not leave the Issue disabled and emergency-stopped")
     return final
 
