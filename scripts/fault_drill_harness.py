@@ -19,7 +19,6 @@ import threading
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Mapping
-from urllib.parse import urlsplit
 
 from scripts.fault_drill_contract import (
     MAX_BYTES,
@@ -125,16 +124,7 @@ def _disposable_postgres_service_available() -> bool:
     if os.environ.get("GITHUB_ACTIONS", "").lower() != "true":
         return False
     configured = os.environ.get("ACP_TEST_DATABASE_URL")
-    if configured != _DISPOSABLE_POSTGRES_URL:
-        return False
-    parsed = urlsplit(configured)
-    return (
-        parsed.scheme == "postgres"
-        and parsed.hostname == "localhost"
-        and parsed.port == 5432
-        and parsed.username == "testuser"
-        and parsed.path == "/testdb"
-    )
+    return configured == _DISPOSABLE_POSTGRES_URL
 
 
 def _execute_fixed_command(command: tuple[str, ...], *, cwd: Path, env: Mapping[str, str], timeout_ms: int) -> CommandOutcome:
