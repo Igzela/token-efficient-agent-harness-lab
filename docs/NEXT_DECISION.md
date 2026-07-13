@@ -97,7 +97,7 @@ No internal milestone receives a separate PR, merge, or full CI wait. Final pack
 | PE-2 | P0/P1 | Budget Intelligence and Anomaly Auto-Pause | `COMPLETE` and acceptance-sealed |
 | PE-3 | P1 | Operator Decision Center | `COMPLETE` and independently acceptance-sealed |
 | PE-4 | P1/P2 | Trace-backed Policy Replay | `COMPLETE` and acceptance-sealed under PE4-POST-CLOSE-REPAIR-1 |
-| PE-5 | P1.5 | Release Provenance | `PE5-IMPLEMENT-1` in progress; internal milestones remain ordered |
+| PE-5 | P1.5 | Release Provenance | `PE5-CLOSE-1` in progress after merged `PE5-IMPLEMENT-1`; internal milestones are finalized and remain ordered |
 | PE-6 | P2 | Fault Injection and Recovery Drills | Packetized; blocked on PE5-CLOSE-1 |
 
 # PE-5 — Release Provenance
@@ -254,7 +254,7 @@ No packet in PE-5 authorizes an actual public release, tag creation, deployment,
 
 ## Packet PE5-PUBLISH-1 — Release workflow ordering and publish gate
 
-**State:** `IN_PROGRESS`
+**State:** `COMPLETE`
 
 **Prerequisite:** PE5-VERIFY-1 complete.
 
@@ -283,9 +283,9 @@ No packet in PE-5 authorizes an actual public release, tag creation, deployment,
 
 ## Packet PE5-CLOSE-1 — Independent release-provenance acceptance seal
 
-**State:** `BLOCKED_PREREQUISITE`
+**State:** `IN_PROGRESS`
 
-**Prerequisite:** PE5-PUBLISH-1 complete.
+**Prerequisite:** PE5-PUBLISH-1 complete in merged PR #210.
 
 **Goal:** Independently audit and acceptance-seal the full PE-5 chain without performing an unauthorized public release.
 
@@ -547,11 +547,10 @@ No destructive external provider call, production database corruption, real targ
 
 ## Active Routing
 
-1. Continue the active `PE5-PUBLISH-1` milestone on the grouped PE-5 implementation branch after inspecting open PR #207.
-2. Complete PE-5 internal milestones in order, then run one final grouped implementation validation/CI and merge it.
-3. Independently audit and merge `PE5-CLOSE-1`, then verify post-merge `main` CI before starting PE-6.
-4. Complete the grouped PE-6 implementation branch from `PE6-INVARIANTS-1` through `PE6-EVIDENCE-1`, then run one final validation/CI and merge it.
-5. Independently audit and merge `PE6-CLOSE-1`, then verify post-merge `main` CI.
-6. Refresh `main`, active documents, open PRs, and CI after every grouped merge.
-7. Keep #207's orchestrator lane separate; reconcile shared CI/docs instead of overwriting either lane.
-8. Do not create PE-7, a second release owner, a second recovery owner, or a new runtime/control plane during this objective.
+1. Complete the independent `PE5-CLOSE-1` audit/repair PR after inspecting open PR #207.
+2. Merge the closeout only after final exact-head and post-merge `main` CI are green; then activate `PE6-INVARIANTS-1`.
+3. Complete the grouped PE-6 implementation branch from `PE6-INVARIANTS-1` through `PE6-EVIDENCE-1`, then run one final validation/CI and merge it.
+4. Independently audit and merge `PE6-CLOSE-1`, then verify post-merge `main` CI.
+5. Refresh `main`, active documents, open PRs, and CI after every grouped merge.
+6. Keep #207's orchestrator lane separate; reconcile shared CI/docs instead of overwriting either lane.
+7. Do not create PE-7, a second release owner, a second recovery owner, or a new runtime/control plane during this objective.

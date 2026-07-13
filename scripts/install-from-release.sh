@@ -65,6 +65,10 @@ main() {
         echo "  VERSION=v0.1.0 bash $0"
         exit 1
     fi
+    if [[ ! "${version}" =~ ^v[0-9][0-9A-Za-z._-]*$ ]]; then
+        echo "Error: release version is not a safe signed tag: ${version}" >&2
+        exit 1
+    fi
     echo "  Version: ${version}"
 
     archive_name="agent-control-plane-${version}-${target}.tar.gz"
@@ -140,14 +144,41 @@ main() {
     python3 -c 'import json, sys; json.dump({"provenance": json.load(open(sys.argv[1], encoding="utf-8")), "sbom": json.load(open(sys.argv[2], encoding="utf-8"))}, open(sys.argv[3], "w", encoding="utf-8"), sort_keys=True, separators=(",", ":"))' \
         "${external_provenance}" "${external_sbom}" "${external_verification}"
 
+    echo "Checking archive members..."
+    python3 - "${tmp_dir}/${archive_name}" "agent-control-plane-${version}-${target}" "${tmp_dir}" <<'PY'
+import sys
+import tarfile
+from pathlib import Path, PurePosixPath
+
+archive = Path(sys.argv[1])
+expected_root = sys.argv[2]
+extract_root = Path(sys.argv[3]).resolve()
+
+with tarfile.open(archive, "r:gz") as bundle:
+    members = bundle.getmembers()
+    if not members:
+        raise SystemExit("release archive is empty")
+    for member in members:
+        name = PurePosixPath(member.name)
+        if (
+            not member.name
+            or member.name.startswith("/")
+            or "\\" in member.name
+            or ".." in name.parts
+            or not name.parts
+            or name.parts[0] != expected_root
+            or not (member.isdir() or member.isreg())
+        ):
+            raise SystemExit(f"unsafe release archive member: {member.name!r}")
+        destination = (extract_root.joinpath(*name.parts)).resolve()
+        if extract_root not in destination.parents:
+            raise SystemExit(f"release archive member escapes temporary root: {member.name!r}")
+PY
+    echo "  Archive member contract passed."
     echo "Extracting..."
     tar -xzf "${tmp_dir}/${archive_name}" -C "${tmp_dir}"
 
     local extracted_dir="${tmp_dir}/agent-control-plane-${version}-${target}"
-    if [[ ! -d "${extracted_dir}" ]]; then
-        # Try alternate naming
-        extracted_dir="$(find "${tmp_dir}" -maxdepth 1 -type d -name 'agent-control-plane-*' | head -1)"
-    fi
     if [[ ! -d "${extracted_dir}" ]]; then
         echo "Error: could not find extracted directory"
         exit 1

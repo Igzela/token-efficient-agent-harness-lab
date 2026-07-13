@@ -61,7 +61,7 @@ class ReleaseProvenanceTests(unittest.TestCase):
     def tearDown(self) -> None:
         self.temp.cleanup()
 
-    def make_bundle(self, *, fixture: bool = True) -> dict[str, Path]:
+    def make_bundle(self) -> dict[str, Path]:
         artifact_sha = MODULE.sha256_file(self.artifact)
         sbom = MODULE.build_spdx_sbom(
             metadata=self.metadata,
@@ -75,11 +75,7 @@ class ReleaseProvenanceTests(unittest.TestCase):
         sbom_path = self.root / "release.spdx.json"
         MODULE.write_canonical_json(sbom_path, sbom)
 
-        identity = (
-            MODULE.fixture_identity(self.metadata)
-            if fixture
-            else MODULE.production_identity(self.metadata)
-        )
+        identity = MODULE.fixture_identity(self.metadata)
         attestation = MODULE.build_attestation_fixture(
             metadata=self.metadata,
             artifact_sha256=artifact_sha,
@@ -163,13 +159,12 @@ class ReleaseProvenanceTests(unittest.TestCase):
             attestation_path=paths["attestation"],
             provenance_path=paths["provenance"],
             mode="production",
-            external_attestation_verified=True,
         )
         self.assertEqual(result["status"], "rejected")
         self.assertIn("UNTRUSTED_IDENTITY", result["reason_codes"])
 
     def test_production_policy_requires_external_attestation_verification(self) -> None:
-        paths = self.make_bundle(fixture=False)
+        paths = self.make_bundle()
         unverified = MODULE.verify_bundle(
             artifact_path=paths["artifact"],
             sbom_path=paths["sbom"],
@@ -178,21 +173,26 @@ class ReleaseProvenanceTests(unittest.TestCase):
             mode="production",
         )
         self.assertEqual(unverified["status"], "rejected")
+        self.assertIn("UNTRUSTED_IDENTITY", unverified["reason_codes"])
         self.assertIn("ATTESTATION_NOT_EXTERNALLY_VERIFIED", unverified["reason_codes"])
 
-        verified = MODULE.verify_bundle(
+    def test_unstructured_external_transcript_cannot_authorize_production(self) -> None:
+        paths = self.make_bundle()
+        external = self.root / "external.json"
+        MODULE.write_canonical_json(external, {"verificationResult": {"verified": True}})
+        result = MODULE.verify_bundle(
             artifact_path=paths["artifact"],
             sbom_path=paths["sbom"],
             attestation_path=paths["attestation"],
             provenance_path=paths["provenance"],
             mode="production",
-            external_attestation_verified=True,
+            external_verification_path=external,
         )
-        self.assertEqual(verified["status"], "verified")
-        self.assertEqual(verified["reason_codes"], ["VERIFIED_EXTERNAL_EPHEMERAL_IDENTITY"])
+        self.assertEqual(result["status"], "rejected")
+        self.assertIn("EXTERNAL_VERIFICATION_INVALID", result["reason_codes"])
 
     def test_production_policy_requires_a_real_rollback_target(self) -> None:
-        paths = self.make_bundle(fixture=False)
+        paths = self.make_bundle()
         provenance = json.loads(paths["provenance"].read_text())
         provenance["rollback"] = {
             "previous_known_good": "unknown",
@@ -205,7 +205,6 @@ class ReleaseProvenanceTests(unittest.TestCase):
             attestation_path=paths["attestation"],
             provenance_path=paths["provenance"],
             mode="production",
-            external_attestation_verified=True,
         )
         self.assertEqual(result["status"], "rejected")
         self.assertIn("ROLLBACK_TARGET_MISSING", result["reason_codes"])
@@ -237,6 +236,38 @@ class ReleaseProvenanceTests(unittest.TestCase):
         )
         self.assertEqual(result["status"], "rejected")
         self.assertIn("SBOM_DIGEST_MISMATCH", result["reason_codes"])
+
+    def test_media_type_and_predicate_bindings_are_fail_closed(self) -> None:
+        paths = self.make_bundle()
+        provenance = json.loads(paths["provenance"].read_text())
+        provenance["package"]["media_type"] = "application/octet-stream"
+        provenance["attestation"]["predicate_type"] = "https://example.invalid/predicate"
+        MODULE.write_canonical_json(paths["provenance"], provenance)
+        result = MODULE.verify_bundle(
+            artifact_path=paths["artifact"],
+            sbom_path=paths["sbom"],
+            attestation_path=paths["attestation"],
+            provenance_path=paths["provenance"],
+            mode="fixture",
+        )
+        self.assertEqual(result["status"], "rejected")
+        self.assertIn("ARTIFACT_MEDIA_TYPE_MISMATCH", result["reason_codes"])
+        self.assertIn("ATTESTATION_PREDICATE_MISMATCH", result["reason_codes"])
+
+    def test_verification_policy_cannot_enable_external_actions(self) -> None:
+        paths = self.make_bundle()
+        provenance = json.loads(paths["provenance"].read_text())
+        provenance["publication"]["external_action_authorized"] = True
+        MODULE.write_canonical_json(paths["provenance"], provenance)
+        result = MODULE.verify_bundle(
+            artifact_path=paths["artifact"],
+            sbom_path=paths["sbom"],
+            attestation_path=paths["attestation"],
+            provenance_path=paths["provenance"],
+            mode="fixture",
+        )
+        self.assertEqual(result["status"], "rejected")
+        self.assertIn("VERIFICATION_POLICY_MISMATCH", result["reason_codes"])
 
     def test_missing_attestation_is_unsupported_not_a_pass(self) -> None:
         paths = self.make_bundle()

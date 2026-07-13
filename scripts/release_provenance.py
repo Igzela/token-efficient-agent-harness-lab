@@ -43,6 +43,7 @@ REASON_CODES = frozenset(
         "ARTIFACT_EVIDENCE_MISSING",
         "ARTIFACT_DIGEST_MISMATCH",
         "ARTIFACT_SIZE_MISMATCH",
+        "ARTIFACT_MEDIA_TYPE_MISMATCH",
         "SBOM_EVIDENCE_MISSING",
         "SBOM_DIGEST_MISMATCH",
         "SBOM_SCHEMA_MISMATCH",
@@ -50,6 +51,7 @@ REASON_CODES = frozenset(
         "ATTESTATION_EVIDENCE_MISSING",
         "ATTESTATION_DIGEST_MISMATCH",
         "ATTESTATION_SUBJECT_MISMATCH",
+        "ATTESTATION_PREDICATE_MISMATCH",
         "ATTESTATION_NOT_EXTERNALLY_VERIFIED",
         "UNTRUSTED_IDENTITY",
         "SOURCE_BINDING_MISMATCH",
@@ -59,6 +61,7 @@ REASON_CODES = frozenset(
         "ROLLBACK_TARGET_MISSING",
         "EXTERNAL_VERIFICATION_INVALID",
         "EXTERNAL_VERIFICATION_UNAVAILABLE",
+        "VERIFICATION_POLICY_MISMATCH",
     }
 )
 
@@ -152,6 +155,37 @@ def _required_sha(mapping: Mapping[str, Any], key: str) -> str:
     if not SHA256_RE.fullmatch(value):
         raise ContractError(f"invalid SHA-256 field: {key}")
     return value
+
+
+def _safe_relative_path(value: Any) -> bool:
+    if not isinstance(value, str) or not value or "\\" in value:
+        return False
+    path = Path(value)
+    return not path.is_absolute() and ".." not in path.parts and path.name not in {"", "."}
+
+
+def _safe_artifact_name(value: Any) -> bool:
+    return (
+        isinstance(value, str)
+        and bool(value)
+        and "\\" not in value
+        and "/" not in value
+        and Path(value).name == value
+    )
+
+
+def _descriptor_list_valid(value: Any) -> bool:
+    if not isinstance(value, list) or not value:
+        return False
+    for item in value:
+        if not isinstance(item, dict):
+            return False
+        if not _safe_relative_path(item.get("path")):
+            return False
+        digest = item.get("sha256")
+        if not isinstance(digest, str) or not SHA256_RE.fullmatch(digest):
+            return False
+    return True
 
 
 def _metadata_identity(metadata: Mapping[str, Any], identity_class: str) -> dict[str, Any]:
@@ -456,21 +490,82 @@ def _invalid_result(reason_codes: list[str], inputs: Mapping[str, Any], status: 
     }
 
 
-def _external_verification_is_valid(path: Path | None) -> bool:
+def _external_verification_entries(value: Any) -> list[Mapping[str, Any]]:
+    if isinstance(value, list):
+        return [item for item in value if isinstance(item, dict)]
+    if isinstance(value, dict) and isinstance(value.get("verificationResult"), dict):
+        return [value]
+    if isinstance(value, dict):
+        entries: list[Mapping[str, Any]] = []
+        for key in ("provenance", "sbom"):
+            nested = value.get(key)
+            if isinstance(nested, list):
+                entries.extend(item for item in nested if isinstance(item, dict))
+            elif isinstance(nested, dict):
+                entries.append(nested)
+        return entries
+    return []
+
+
+def _external_verification_is_valid(
+    path: Path | None,
+    provenance: Mapping[str, Any],
+    artifact_sha256: str,
+) -> bool:
     if path is None or not path.is_file() or path.stat().st_size > MAX_JSON_BYTES:
         return False
     try:
         value = read_json(path)
     except ContractError:
         return False
-    # `gh attestation verify --format json` has changed its presentation over
-    # time. The command's zero exit status is authoritative; this file is only
-    # required to be a bounded, non-empty JSON transcript for audit binding.
-    if isinstance(value, list):
-        return bool(value)
-    if isinstance(value, dict):
-        return bool(value)
-    return False
+    entries = _external_verification_entries(value)
+    if not entries:
+        return False
+
+    repository = provenance.get("repository")
+    ref = provenance.get("source", {}).get("ref")
+    workflow = provenance.get("workflow", {}).get("path")
+    predicates: set[str] = set()
+    for entry in entries:
+        verification = entry.get("verificationResult")
+        if not isinstance(verification, dict):
+            return False
+        statement = verification.get("statement")
+        signature = verification.get("signature")
+        certificate = signature.get("certificate") if isinstance(signature, dict) else None
+        timestamps = verification.get("verifiedTimestamps")
+        if not isinstance(statement, dict) or not isinstance(certificate, dict):
+            return False
+        if not isinstance(timestamps, list) or not timestamps:
+            return False
+
+        predicate = statement.get("predicateType")
+        if not isinstance(predicate, str):
+            return False
+        predicates.add(predicate)
+        subjects = statement.get("subject")
+        if not isinstance(subjects, list) or not subjects:
+            return False
+        if not any(
+            isinstance(subject, dict)
+            and isinstance(subject.get("digest"), dict)
+            and subject["digest"].get("sha256") == artifact_sha256
+            for subject in subjects
+        ):
+            return False
+
+        if certificate.get("oidcIssuer") != PRODUCTION_ISSUER:
+            return False
+        if certificate.get("sourceRepository") != repository:
+            return False
+        if certificate.get("sourceRepositoryRef") != ref:
+            return False
+        san = certificate.get("subjectAlternativeName")
+        workflow_claim = certificate.get("sourceRepositoryWorkflow")
+        if workflow not in str(san) and workflow not in str(workflow_claim):
+            return False
+
+    return {SLSA_PREDICATE_TYPE, SPDX_PREDICATE_TYPE}.issubset(predicates)
 
 
 def _production_identity_valid(identity: Mapping[str, Any], provenance: Mapping[str, Any]) -> bool:
@@ -501,7 +596,6 @@ def verify_bundle(
     attestation_path: Path,
     provenance_path: Path,
     mode: str,
-    external_attestation_verified: bool = False,
     external_verification_path: Path | None = None,
 ) -> dict[str, Any]:
     """Verify all local bindings and return a machine-readable fail-closed result."""
@@ -545,6 +639,8 @@ def verify_bundle(
             attestation = {"opaque_production_bundle": True}
         else:
             return _invalid_result(["PROVENANCE_INVALID"], inputs)
+    if not isinstance(provenance, dict) or not isinstance(sbom, dict):
+        return _invalid_result(["PROVENANCE_INVALID"], inputs)
     if provenance.get("schema_version") != SCHEMA_VERSION:
         return _invalid_result(["SCHEMA_UNSUPPORTED"], inputs, "unsupported")
     if sbom.get("spdxVersion") != SBOM_SCHEMA_VERSION:
@@ -569,14 +665,91 @@ def verify_bundle(
         sbom_record = provenance["sbom"]
         attestation_record = provenance["attestation"]
         identity = attestation_record["identity"]
+        source = provenance["source"]
+        workflow = provenance["workflow"]
+        target = provenance["target"]
+        package = provenance["package"]
+        dependencies = provenance["dependencies"]
+        build_inputs = provenance["build_inputs"]
+        rollback = provenance["rollback"]
+        publication = provenance["publication"]
+        policy = provenance["verification_policy"]
     except (KeyError, IndexError, TypeError):
         return _invalid_result(["PROVENANCE_INVALID"], inputs)
+
+    if not all(
+        isinstance(value, dict)
+        for value in (artifact_record, sbom_record, attestation_record, identity, source, workflow, target, package, dependencies, rollback, publication, policy)
+    ):
+        return _invalid_result(["PROVENANCE_INVALID"], inputs)
+    if not isinstance(build_inputs, list):
+        return _invalid_result(["PROVENANCE_INVALID"], inputs)
+    if not isinstance(identity, dict):
+        return _invalid_result(["PROVENANCE_INVALID"], inputs)
+    if not _safe_artifact_name(expected_artifact_name):
+        reasons.append("PROVENANCE_INVALID")
+    if package.get("kind") not in {"package", "container"}:
+        reasons.append("PROVENANCE_INVALID")
+    if package.get("name") != expected_artifact_name:
+        reasons.append("SOURCE_BINDING_MISMATCH")
+    if not isinstance(package.get("media_type"), str) or not package.get("media_type"):
+        reasons.append("ARTIFACT_MEDIA_TYPE_MISMATCH")
+    if artifact_record.get("media_type") != package.get("media_type"):
+        reasons.append("ARTIFACT_MEDIA_TYPE_MISMATCH")
+    if not isinstance(expected_artifact_sha, str) or not SHA256_RE.fullmatch(expected_artifact_sha):
+        reasons.append("ARTIFACT_DIGEST_MISMATCH")
+    if not isinstance(expected_artifact_size, int) or isinstance(expected_artifact_size, bool):
+        reasons.append("ARTIFACT_SIZE_MISMATCH")
+    if not isinstance(sbom_record, dict) or sbom_record.get("predicate_type") != SPDX_PREDICATE_TYPE:
+        reasons.append("SBOM_SCHEMA_MISMATCH")
+    if sbom_record.get("media_type") != "application/spdx+json":
+        reasons.append("SBOM_SCHEMA_MISMATCH")
+    if not isinstance(attestation_record, dict) or attestation_record.get("predicate_type") not in {
+        SLSA_PREDICATE_TYPE,
+        SPDX_PREDICATE_TYPE,
+    }:
+        reasons.append("ATTESTATION_PREDICATE_MISMATCH")
+    if attestation_record.get("media_type") != "application/vnd.in-toto+json":
+        reasons.append("ATTESTATION_PREDICATE_MISMATCH")
+    if not isinstance(source, dict) or not COMMIT_RE.fullmatch(str(source.get("commit_sha", ""))):
+        reasons.append("SOURCE_BINDING_MISMATCH")
+    if not isinstance(source.get("ref"), str) or not source.get("ref"):
+        reasons.append("SOURCE_BINDING_MISMATCH")
+    if str(source.get("ref", "")).startswith("refs/tags/") and source.get("tag") != source.get("ref"):
+        reasons.append("SOURCE_BINDING_MISMATCH")
+    if not isinstance(workflow, dict) or not all(
+        isinstance(workflow.get(key), str) and workflow.get(key)
+        for key in ("path", "workflow_ref", "run_id", "job", "builder_id")
+    ):
+        reasons.append("WORKFLOW_BINDING_MISMATCH")
+    if not isinstance(workflow.get("run_attempt"), int) or isinstance(workflow.get("run_attempt"), bool) or workflow.get("run_attempt") < 1:
+        reasons.append("WORKFLOW_BINDING_MISMATCH")
+    if not isinstance(target, dict) or not all(
+        isinstance(target.get(key), str) and target.get(key)
+        for key in ("os", "architecture", "triple")
+    ):
+        reasons.append("TARGET_BINDING_MISMATCH")
+    if not isinstance(dependencies, dict) or not _descriptor_list_valid(dependencies.get("lockfiles")):
+        reasons.append("DEPENDENCY_BINDING_MISMATCH")
+    if not _descriptor_list_valid(build_inputs):
+        reasons.append("DEPENDENCY_BINDING_MISMATCH")
+    if not isinstance(publication, dict) or publication.get("external_action_authorized") is not False:
+        reasons.append("VERIFICATION_POLICY_MISMATCH")
+    if not isinstance(policy, dict) or policy != {
+        "production_identity_class": "production-ephemeral-oidc",
+        "issuer": PRODUCTION_ISSUER,
+        "repository": provenance.get("repository"),
+        "workflow": workflow.get("path"),
+        "tag_ref_required": True,
+        "unsigned_is_verified": False,
+    }:
+        reasons.append("VERIFICATION_POLICY_MISMATCH")
 
     if expected_artifact_sha != actual_artifact_sha:
         reasons.append("ARTIFACT_DIGEST_MISMATCH")
     if expected_artifact_name != artifact_path.name:
         reasons.append("SOURCE_BINDING_MISMATCH")
-    if expected_artifact_size != artifact_path.stat().st_size:
+    if isinstance(expected_artifact_size, int) and expected_artifact_size != artifact_path.stat().st_size:
         reasons.append("ARTIFACT_SIZE_MISMATCH")
     if sbom_record.get("digest", {}).get("sha256") != actual_sbom_sha:
         reasons.append("SBOM_DIGEST_MISMATCH")
@@ -645,11 +818,16 @@ def verify_bundle(
     else:
         if identity.get("class") == "fixture" or not _production_identity_valid(identity, provenance):
             reasons.append("UNTRUSTED_IDENTITY")
-        verified = external_attestation_verified or _external_verification_is_valid(
-            external_verification_path
-        )
-        if not verified:
-            reasons.append("ATTESTATION_NOT_EXTERNALLY_VERIFIED")
+        if external_verification_path is None or not external_verification_path.is_file():
+            reasons.extend(
+                ["ATTESTATION_NOT_EXTERNALLY_VERIFIED", "EXTERNAL_VERIFICATION_UNAVAILABLE"]
+            )
+        elif not _external_verification_is_valid(
+            external_verification_path, provenance, actual_artifact_sha
+        ):
+            reasons.extend(
+                ["ATTESTATION_NOT_EXTERNALLY_VERIFIED", "EXTERNAL_VERIFICATION_INVALID"]
+            )
 
     if reasons:
         status = "verified_fixture" if mode == "fixture" and reasons == ["FIXTURE_IDENTITY_NON_AUTHORITATIVE"] else "rejected"

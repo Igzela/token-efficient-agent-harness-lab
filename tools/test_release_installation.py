@@ -47,7 +47,7 @@ def metadata_for(artifact: Path) -> dict[str, Any]:
     }
 
 
-def build_evidence(root: Path, *, production_identity: bool) -> dict[str, Path]:
+def build_evidence(root: Path) -> dict[str, Path]:
     root.mkdir(parents=True, exist_ok=True)
     artifact = root / "agent-control-plane-v0.1.0-x86_64-unknown-linux-gnu.tar.gz"
     artifact.write_bytes(b"fixture archive bytes\n")
@@ -61,11 +61,7 @@ def build_evidence(root: Path, *, production_identity: bool) -> dict[str, Path]:
     )
     sbom_path = root / "release.spdx.json"
     MODULE.write_canonical_json(sbom_path, sbom)
-    identity = (
-        MODULE.production_identity(metadata)
-        if production_identity
-        else MODULE.fixture_identity(metadata)
-    )
+    identity = MODULE.fixture_identity(metadata)
     attestation = MODULE.build_attestation_fixture(
         metadata=metadata,
         artifact_sha256=artifact_sha,
@@ -137,7 +133,7 @@ class ReleaseInstallationTests(unittest.TestCase):
 
     def test_fixture_identity_cannot_upgrade_an_existing_installation(self) -> None:
         release = self.make_release_dir()
-        evidence = build_evidence(self.root / "fixture-evidence", production_identity=False)
+        evidence = build_evidence(self.root / "fixture-evidence")
         prefix = self.root / "prefix"
         data = self.root / "data"
         (prefix / "bin").mkdir(parents=True)
@@ -166,11 +162,8 @@ class ReleaseInstallationTests(unittest.TestCase):
         self.assertEqual(before, MODULE.sha256_file(old))
         self.assertFalse((prefix / "bin" / "agent-control-plane.bak").exists())
 
-    def test_verified_external_identity_upgrades_atomically_and_health_checks(self) -> None:
+    def test_development_upgrade_is_atomic_and_health_checked(self) -> None:
         release = self.make_release_dir()
-        evidence_root = self.root / "production-evidence"
-        evidence_root.mkdir()
-        evidence = build_evidence(evidence_root, production_identity=True)
         prefix = self.root / "prefix"
         data = self.root / "data"
         (prefix / "bin").mkdir(parents=True)
@@ -184,16 +177,7 @@ class ReleaseInstallationTests(unittest.TestCase):
             str(prefix),
             "--data-dir",
             str(data),
-            "--artifact",
-            str(evidence["artifact"]),
-            "--sbom",
-            str(evidence["sbom"]),
-            "--attestation",
-            str(evidence["attestation"]),
-            "--provenance",
-            str(evidence["provenance"]),
-            "--external-verification",
-            str(evidence["external"]),
+            "--development",
         )
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("new", old.read_text())
