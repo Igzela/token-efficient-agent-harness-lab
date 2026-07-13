@@ -97,8 +97,8 @@ No internal milestone receives a separate PR, merge, or full CI wait. Final pack
 | PE-2 | P0/P1 | Budget Intelligence and Anomaly Auto-Pause | `COMPLETE` and acceptance-sealed |
 | PE-3 | P1 | Operator Decision Center | `COMPLETE` and independently acceptance-sealed |
 | PE-4 | P1/P2 | Trace-backed Policy Replay | `COMPLETE` and acceptance-sealed under PE4-POST-CLOSE-REPAIR-1 |
-| PE-5 | P1.5 | Release Provenance | `PE5-CLOSE-1` in progress after merged `PE5-IMPLEMENT-1`; internal milestones are finalized and remain ordered |
-| PE-6 | P2 | Fault Injection and Recovery Drills | Packetized; blocked on PE5-CLOSE-1 |
+| PE-5 | P1.5 | Release Provenance | Complete and independently acceptance-sealed under grouped `PE5-IMPLEMENT-1` and `PE5-CLOSE-1`; internal milestones remain ordered and complete |
+| PE-6 | P2 | Fault Injection and Recovery Drills | Grouped `PE6-IMPLEMENT-1` implementation finished; independent `PE6-CLOSE-1` is ready for audit |
 
 # PE-5 — Release Provenance
 
@@ -283,7 +283,7 @@ No packet in PE-5 authorizes an actual public release, tag creation, deployment,
 
 ## Packet PE5-CLOSE-1 — Independent release-provenance acceptance seal
 
-**State:** `IN_PROGRESS`
+**State:** `COMPLETE`
 
 **Prerequisite:** PE5-PUBLISH-1 complete in merged PR #210.
 
@@ -295,7 +295,7 @@ No packet in PE-5 authorizes an actual public release, tag creation, deployment,
 
 **Rollback:** Revert individual PE-5 PRs in reverse dependency order; disable publication first; preserve verified evidence and previous known-good installations.
 
-**Completion:** Mark all PE-5 packets complete, record exact PR/commit/CI evidence, activate PE6-INVARIANTS-1, and leave no stale routing.
+**Completion:** Complete. PR #211 independently sealed PE-5 at merge `8f830f6772fce8f7cc7a67f38a8773ad3b0d1f56`; exact-head CI run `29228454008` and post-merge `main` CI run `29228989142` passed all seven required jobs. PE6-INVARIANTS-1 is activated without an external release action.
 
 # PE-6 — Fault Injection and Recovery Drills
 
@@ -323,7 +323,7 @@ No destructive external provider call, production database corruption, real targ
 
 ## Packet PE6-INVARIANTS-1 — Recovery invariant and drill contract
 
-**State:** `BLOCKED_PREREQUISITE`
+**State:** `COMPLETE`
 
 **Prerequisite:** PE5-CLOSE-1 complete.
 
@@ -352,7 +352,7 @@ No destructive external provider call, production database corruption, real targ
 
 ## Packet PE6-HARNESS-1 — Deterministic bounded fault-injection harness
 
-**State:** `BLOCKED_PREREQUISITE`
+**State:** `COMPLETE`
 
 **Prerequisite:** PE6-INVARIANTS-1 complete.
 
@@ -382,7 +382,7 @@ No destructive external provider call, production database corruption, real targ
 
 ## Packet PE6-STORAGE-1 — SQLite/PostgreSQL integrity, interruption, backup, and restore drills
 
-**State:** `BLOCKED_PREREQUISITE`
+**State:** `COMPLETE`
 
 **Prerequisite:** PE6-HARNESS-1 complete.
 
@@ -410,7 +410,7 @@ No destructive external provider call, production database corruption, real targ
 
 ## Packet PE6-WORKFLOW-1 — Workflow, scheduler, executor, pause, and compensation drills
 
-**State:** `BLOCKED_PREREQUISITE`
+**State:** `COMPLETE`
 
 **Prerequisite:** PE6-STORAGE-1 complete.
 
@@ -437,7 +437,7 @@ No destructive external provider call, production database corruption, real targ
 
 ## Packet PE6-PROVIDER-1 — Provider, budget, audit, timeout, and kill-control drills
 
-**State:** `BLOCKED_PREREQUISITE`
+**State:** `COMPLETE`
 
 **Prerequisite:** PE6-WORKFLOW-1 complete.
 
@@ -465,7 +465,7 @@ No destructive external provider call, production database corruption, real targ
 
 ## Packet PE6-RELEASE-1 — Provenance, installer, upgrade, and rollback drills
 
-**State:** `BLOCKED_PREREQUISITE`
+**State:** `COMPLETE`
 
 **Prerequisite:** PE6-PROVIDER-1 complete and PE-5 acceptance remains valid.
 
@@ -494,7 +494,7 @@ No destructive external provider call, production database corruption, real targ
 
 ## Packet PE6-EVIDENCE-1 — Drill registry, reports, CI execution, and operator inspection
 
-**State:** `BLOCKED_PREREQUISITE`
+**State:** `COMPLETE`
 
 **Prerequisite:** PE6-RELEASE-1 complete.
 
@@ -523,7 +523,7 @@ No destructive external provider call, production database corruption, real targ
 
 ## Packet PE6-CLOSE-1 — Independent recovery-drill acceptance seal
 
-**State:** `BLOCKED_PREREQUISITE`
+**State:** `READY_FOR_EXECUTION`
 
 **Prerequisite:** PE6-EVIDENCE-1 complete.
 
@@ -547,10 +547,8 @@ No destructive external provider call, production database corruption, real targ
 
 ## Active Routing
 
-1. Complete the independent `PE5-CLOSE-1` audit/repair PR after inspecting open PR #207.
-2. Merge the closeout only after final exact-head and post-merge `main` CI are green; then activate `PE6-INVARIANTS-1`.
-3. Complete the grouped PE-6 implementation branch from `PE6-INVARIANTS-1` through `PE6-EVIDENCE-1`, then run one final validation/CI and merge it.
-4. Independently audit and merge `PE6-CLOSE-1`, then verify post-merge `main` CI.
-5. Refresh `main`, active documents, open PRs, and CI after every grouped merge.
-6. Keep #207's orchestrator lane separate; reconcile shared CI/docs instead of overwriting either lane.
-7. Do not create PE-7, a second release owner, a second recovery owner, or a new runtime/control plane during this objective.
+1. Open the single grouped PE-6 implementation PR only after final local validation, then merge its exact green head and verify post-merge `main` CI.
+2. Independently audit and merge `PE6-CLOSE-1`, then verify post-merge `main` CI.
+3. Refresh `main`, active documents, open PRs, and CI after every grouped merge.
+4. Keep #207's orchestrator lane separate; reconcile shared CI/docs instead of overwriting either lane.
+5. Do not create PE-7, a second release owner, a second recovery owner, or a new runtime/control plane during this objective.
