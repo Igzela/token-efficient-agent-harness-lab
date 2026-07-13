@@ -43,11 +43,11 @@ PE-5 is active. Detailed packet contracts are in `docs/NEXT_DECISION.md`.
 
 | Capability | Primary owners | Boundary |
 |---|---|---|
-| Release provenance contract | existing release/build/install/upgrade scripts and workflow; architecture/module docs; focused validators/tests | one versioned release subject and verification-result contract; no publication or signing in contract packet |
-| Deterministic SBOM | existing package/container builders; Cargo/Bun/Python locks; release workflow and fixtures | target- and artifact-bound canonical SBOM; no second package pipeline |
-| Signed provenance/attestation | existing release workflow plus current official pinned workload-identity/OIDC signing or attestation tooling selected by the contract | external ephemeral production identity; no persistent private key or Vader signing credential |
-| Installer/upgrader verification | existing checksum, install, upgrade, staging, health-check, atomic swap, and rollback scripts | complete evidence verifies before activation; previous known-good state preserved |
-| Publish gate | `.github/workflows/release.yml`, existing artifact upload/release helpers, action-pin/security checks | build → SBOM → attest → verify → publish ordering; no unauthorized public release/tag/deploy |
+| Release provenance contract | `scripts/release_provenance.py`, `tools/test_release_provenance.py`, existing release/build/install/upgrade scripts and workflow | one versioned `release_provenance.v1` and `release_verification.v1` contract; no publication or signing in the contract helper |
+| Deterministic SBOM | `scripts/release_provenance.py`, existing package/container builders; Cargo/Bun/Python locks; `tools/test_release_provenance.py` | canonical SPDX 2.3 package/container subject; target/artifact/lockfile-bound; no second package pipeline |
+| Signed provenance/attestation | existing `.github/workflows/release.yml`, pinned `actions/attest` commit `a1948c3f048ba23858d222213b7c278aabede763`, `scripts/release_provenance.py`, fixture tests | external ephemeral production identity; no persistent private key or Vader signing credential |
+| Installer/upgrader verification | `scripts/install-from-release.sh`, `scripts/install.sh`, `scripts/upgrade.sh`, `tools/test_release_installation.py`, existing checksum/staging/health/atomic rollback owners | complete evidence verifies before activation; previous known-good state preserved through health success |
+| Publish gate | `.github/workflows/release.yml`, `scripts/check_release_contract.sh`, existing artifact upload/release helpers, action-pin/security checks | build → SBOM → attest → provenance → verify → publish ordering; no unauthorized public release/tag/deploy |
 | PE-5 closeout | release contract/tests/workflow dry run, installer rollback, active docs | independent acceptance without requiring a real public release |
 
 ## PE-6 Fault Injection and Recovery Ownership

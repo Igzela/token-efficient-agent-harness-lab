@@ -11,16 +11,25 @@ grep -Fq 'agent-control-plane-${version}-${target}.tar.gz' "${INSTALLER}"
 grep -Fq 'target="${arch}-${os}"' "${INSTALLER}"
 grep -Fq 'echo "unknown-linux-gnu"' "${INSTALLER}"
 grep -Fq 'echo "apple-darwin"' "${INSTALLER}"
-grep -Fq '"${extracted_dir}/engine"' "${INSTALLER}"
+grep -Fq 'verifier="${extracted_dir}/release_provenance.py"' "${INSTALLER}"
+grep -Fq 'bash "${extracted_dir}/install.sh"' "${INSTALLER}"
 grep -Fq 'checksum_url="${tarball_url}.sha256"' "${INSTALLER}"
 grep -Fq 'sha256sum -c "${archive_name}.sha256"' "${INSTALLER}"
 grep -Fq 'shasum -a 256 -c "${archive_name}.sha256"' "${INSTALLER}"
 grep -Fq 'shasum -a 256' "${WORKFLOW}"
 grep -Fq 'contents: read' "${WORKFLOW}"
+grep -Fq 'id-token: write' "${WORKFLOW}"
+grep -Fq 'attestations: write' "${WORKFLOW}"
+grep -Fq 'release_provenance.py' "${WORKFLOW}"
+grep -Fq 'actions/attest@a1948c3f048ba23858d222213b7c278aabede763' "${WORKFLOW}"
 grep -Fq 'needs: verify' "${WORKFLOW}"
 grep -Fq '      contents: write' "${WORKFLOW}"
 grep -Fq '88f49ff79e777bef6d3564531636ee4d3cc2f8d2' "${WORKFLOW}"
 grep -Fq 'target/${TARGET}/release/agent-control-plane' "${ROOT}/scripts/package-release.sh"
+grep -Fq 'release_provenance.py' "${ROOT}/scripts/package-release.sh"
+grep -Fq 'scripts/release_provenance.py "$PACKAGE_DIR/"' "${WORKFLOW}"
+grep -Fq 'Release provenance verified before activation.' "${UPGRADER}"
+grep -Fq 'Explicit development upgrade' "${UPGRADER}"
 
 TMP_DIR="$(mktemp -d)"
 trap 'rm -rf "${TMP_DIR}"' EXIT
@@ -35,7 +44,7 @@ printf 'stale-dashboard\n' > "${DATA_DIR}/dashboard/stale.js"
 chmod +x "${PREFIX}/bin/agent-control-plane" "${RELEASE_DIR}/engine"
 cp "${UPGRADER}" "${RELEASE_DIR}/upgrade.sh"
 
-"${RELEASE_DIR}/upgrade.sh" --prefix "${PREFIX}" --data-dir "${DATA_DIR}" >/dev/null
+"${RELEASE_DIR}/upgrade.sh" --prefix "${PREFIX}" --data-dir "${DATA_DIR}" --development >/dev/null
 grep -Fq 'echo new' "${PREFIX}/bin/agent-control-plane"
 grep -Fq 'echo old' "${PREFIX}/bin/agent-control-plane.bak"
 grep -Fq 'new-dashboard' "${DATA_DIR}/dashboard/index.html"
@@ -47,6 +56,7 @@ chmod +x "${RELEASE_DIR}/engine"
 if "${RELEASE_DIR}/upgrade.sh" \
     --prefix "${PREFIX}" \
     --data-dir "${DATA_DIR}" \
+    --development \
     --stop-command true \
     --restart-command false >/dev/null 2>&1; then
     echo "upgrade rollback test unexpectedly succeeded" >&2
@@ -63,6 +73,7 @@ chmod +x "${FRESH_PREFIX}/bin/agent-control-plane"
 if "${RELEASE_DIR}/upgrade.sh" \
     --prefix "${FRESH_PREFIX}" \
     --data-dir "${FRESH_DATA_DIR}" \
+    --development \
     --stop-command true \
     --restart-command false >/dev/null 2>&1; then
     echo "fresh-dashboard rollback test unexpectedly succeeded" >&2

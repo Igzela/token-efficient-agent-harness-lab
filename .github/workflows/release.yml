@@ -5,6 +5,10 @@ on:
     tags:
       - "v*"
 
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
 permissions:
   contents: read
 
@@ -12,6 +16,7 @@ env:
   CARGO_TERM_COLOR: always
   BINARY_NAME: agent-control-plane
   PACKAGE_PREFIX: agent-control-plane
+  ACP_PREVIOUS_KNOWN_GOOD: ${{ vars.ACP_PREVIOUS_KNOWN_GOOD }}
 
 jobs:
   verify:
@@ -64,6 +69,7 @@ jobs:
         run: |
           bash scripts/check_github_action_pins.sh
           bash scripts/check_release_contract.sh
+          PYTHONPATH=. uv run --no-project python -m unittest tools.test_release_provenance
           uv run --no-project python scripts/check_agent_handoff.py
 
   build:
@@ -86,6 +92,10 @@ jobs:
             cross: false
 
     runs-on: ${{ matrix.os }}
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
 
     steps:
       - name: Checkout
@@ -132,7 +142,7 @@ jobs:
           cp -r dashboard/out/. "$PACKAGE_DIR/dashboard/"
           cp .env.example "$PACKAGE_DIR/"
           cp README.md "$PACKAGE_DIR/"
-          cp scripts/install.sh scripts/upgrade.sh "$PACKAGE_DIR/"
+          cp scripts/install.sh scripts/upgrade.sh scripts/release_provenance.py "$PACKAGE_DIR/"
           chmod +x "$PACKAGE_DIR/engine" "$PACKAGE_DIR/install.sh" "$PACKAGE_DIR/upgrade.sh"
           tar -czf "$TARBALL" -C "$STAGING" "$PACKAGE"
 
@@ -143,7 +153,71 @@ jobs:
             shasum -a 256 "$TARBALL" > "${TARBALL}.sha256"
           fi
 
+          case "${{ matrix.target }}" in
+            *-unknown-linux-gnu) TARGET_OS="linux" ;;
+            *-apple-darwin) TARGET_OS="macos" ;;
+            *) echo "unsupported release target" >&2; exit 1 ;;
+          esac
+          TARGET_ARCH="${{ matrix.target }}"
+          TARGET_ARCH="${TARGET_ARCH%%-*}"
+          METADATA="${PACKAGE}.metadata.json"
+          SBOM="${TARBALL}.spdx.json"
+          ATTESTATION="${TARBALL}.attestation.json"
+          PROVENANCE="${TARBALL}.provenance.json"
+          python3 scripts/release_provenance.py write-metadata \
+            --root "$GITHUB_WORKSPACE" \
+            --output "$METADATA" \
+            --repository "$GITHUB_REPOSITORY" \
+            --source-commit "$GITHUB_SHA" \
+            --ref "$GITHUB_REF" \
+            --workflow ".github/workflows/release.yml" \
+            --workflow-ref "$GITHUB_WORKFLOW_REF" \
+            --run-id "$GITHUB_RUN_ID" \
+            --run-attempt "$GITHUB_RUN_ATTEMPT" \
+            --job "build-${{ matrix.target }}" \
+            --builder-id "github-hosted:${RUNNER_OS}" \
+            --target-os "$TARGET_OS" \
+            --target-architecture "$TARGET_ARCH" \
+            --target-triple "${{ matrix.target }}" \
+            --package-kind "package" \
+            --artifact-name "$TARBALL" \
+            --artifact-media-type "application/vnd.acp.release+tar" \
+            --previous-known-good "${ACP_PREVIOUS_KNOWN_GOOD:-unknown}" \
+            --rollback-target "${ACP_PREVIOUS_KNOWN_GOOD:-unknown}" \
+            --publication-mode "github-release" \
+            --lockfile "Cargo.lock" \
+            --lockfile "dashboard/bun.lock" \
+            --lockfile "sdk/typescript/bun.lock" \
+            --build-input "engine/Cargo.toml" \
+            --build-input ".env.example" \
+            --build-input "dashboard/package.json"
+          python3 scripts/release_provenance.py create-sbom \
+            --metadata "$METADATA" \
+            --artifact "$TARBALL" \
+            --output "$SBOM"
+
           echo "tarball=$TARBALL" >> "$GITHUB_OUTPUT"
+          echo "metadata=$METADATA" >> "$GITHUB_OUTPUT"
+          echo "sbom=$SBOM" >> "$GITHUB_OUTPUT"
+          echo "attestation=$ATTESTATION" >> "$GITHUB_OUTPUT"
+          echo "provenance=$PROVENANCE" >> "$GITHUB_OUTPUT"
+
+      - name: Generate external artifact and SBOM attestation
+        id: attest
+        uses: actions/attest@a1948c3f048ba23858d222213b7c278aabede763 # v4.1.1
+        with:
+          subject-path: ${{ steps.tarball.outputs.tarball }}
+          sbom-path: ${{ steps.tarball.outputs.sbom }}
+
+      - name: Bind attestation to release provenance
+        run: |
+          cp "${{ steps.attest.outputs.bundle-path }}" "${{ steps.tarball.outputs.attestation }}"
+          python3 scripts/release_provenance.py create-provenance \
+            --metadata "${{ steps.tarball.outputs.metadata }}" \
+            --artifact "${{ steps.tarball.outputs.tarball }}" \
+            --sbom "${{ steps.tarball.outputs.sbom }}" \
+            --attestation "${{ steps.tarball.outputs.attestation }}" \
+            --output "${{ steps.tarball.outputs.provenance }}"
 
       - name: Upload tarball artifact
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
@@ -152,6 +226,10 @@ jobs:
           path: |
             ${{ steps.tarball.outputs.tarball }}
             ${{ steps.tarball.outputs.tarball }}.sha256
+            ${{ steps.tarball.outputs.metadata }}
+            ${{ steps.tarball.outputs.sbom }}
+            ${{ steps.tarball.outputs.attestation }}
+            ${{ steps.tarball.outputs.provenance }}
           retention-days: 3
 
   publish:
@@ -159,8 +237,14 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write
+      attestations: read
 
     steps:
+      - name: Checkout exact release commit
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        with:
+          persist-credentials: false
+
       - name: Download all artifacts
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
@@ -169,9 +253,67 @@ jobs:
       - name: Collect release assets
         run: |
           mkdir -p release-assets
-          find artifacts -type f \( -name "*.tar.gz" -o -name "*.sha256" \) \
-            -exec cp {} release-assets/ \;
+          find artifacts -type f \( \
+            -name "*.tar.gz" -o -name "*.sha256" -o -name "*.metadata.json" \
+            -o -name "*.spdx.json" -o -name "*.attestation.json" \
+            -o -name "*.provenance.json" \
+          \) -exec cp {} release-assets/ \;
           ls -lh release-assets/
+
+      - name: Verify release identity, head, and attestations
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          test "${GITHUB_RUN_ATTEMPT}" = "1"
+          test "$(git rev-parse HEAD)" = "${GITHUB_SHA}"
+          test -z "$(git status --porcelain)"
+          shopt -s nullglob
+          provenances=(release-assets/*.provenance.json)
+          test "${#provenances[@]}" -gt 0
+          for provenance in "${provenances[@]}"; do
+            base="${provenance%.provenance.json}"
+            artifact="${base}"
+            sbom="${base}.spdx.json"
+            attestation="${base}.attestation.json"
+            external="${base}.external-verification.json"
+            external_provenance="${base}.external-provenance.json"
+            external_sbom="${base}.external-sbom.json"
+            verification="${base}.verification.json"
+            test -f "$artifact"
+            test -f "$sbom"
+            test -f "$attestation"
+            gh attestation verify "$artifact" \
+              --repo "${GITHUB_REPOSITORY}" \
+              --signer-repo "${GITHUB_REPOSITORY}" \
+              --signer-workflow "${GITHUB_REPOSITORY}/.github/workflows/release.yml" \
+              --source-ref "${GITHUB_REF}" \
+              --cert-oidc-issuer "https://token.actions.githubusercontent.com" \
+              --deny-self-hosted-runners \
+              --format json > "$external_provenance"
+            gh attestation verify "$artifact" \
+              --repo "${GITHUB_REPOSITORY}" \
+              --signer-repo "${GITHUB_REPOSITORY}" \
+              --signer-workflow "${GITHUB_REPOSITORY}/.github/workflows/release.yml" \
+              --source-ref "${GITHUB_REF}" \
+              --cert-oidc-issuer "https://token.actions.githubusercontent.com" \
+              --deny-self-hosted-runners \
+              --predicate-type "https://spdx.dev/Document/v2.3" \
+              --format json > "$external_sbom"
+            jq -s '{provenance: .[0], sbom: .[1]}' \
+              "$external_provenance" "$external_sbom" > "$external"
+            python3 scripts/release_provenance.py verify \
+              --artifact "$artifact" \
+              --sbom "$sbom" \
+              --attestation "$attestation" \
+              --provenance "$provenance" \
+              --mode production \
+              --external-verification "$external" \
+              --output "$verification" >/dev/null
+          done
+          if gh release view "${GITHUB_REF_NAME}" --repo "${GITHUB_REPOSITORY}" >/dev/null 2>&1; then
+            echo "release already exists; duplicate publication is refused" >&2
+            exit 1
+          fi
 
       - name: Generate release body
         id: body
@@ -182,36 +324,28 @@ jobs:
 
           ## Installation
 
-          Download the archive for your platform, extract, and run.
+          The production installer verifies the checksum, GitHub artifact
+          attestation, SPDX SBOM, and provenance before activation, then uses
+          the existing atomic installer/upgrader owners:
 
-          ### Linux x86_64
           ```bash
-          tar -xzf agent-control-plane-${VERSION}-x86_64-unknown-linux-gnu.tar.gz
-          agent-control-plane-${VERSION}-x86_64-unknown-linux-gnu/install.sh --prefix "$HOME/.local"
+          VERSION=${VERSION} bash -c 'curl -fsSL https://raw.githubusercontent.com/Igzela/token-efficient-agent-harness-lab/main/scripts/install-from-release.sh | bash'
           ```
 
-          ### Linux aarch64
-          ```bash
-          tar -xzf agent-control-plane-${VERSION}-aarch64-unknown-linux-gnu.tar.gz
-          agent-control-plane-${VERSION}-aarch64-unknown-linux-gnu/install.sh --prefix "$HOME/.local"
-          ```
-
-          ### macOS x86_64 (Intel)
-          ```bash
-          tar -xzf agent-control-plane-${VERSION}-x86_64-apple-darwin.tar.gz
-          agent-control-plane-${VERSION}-x86_64-apple-darwin/install.sh --prefix "$HOME/.local"
-          ```
-
-          ### macOS aarch64 (Apple Silicon)
-          ```bash
-          tar -xzf agent-control-plane-${VERSION}-aarch64-apple-darwin.tar.gz
-          agent-control-plane-${VERSION}-aarch64-apple-darwin/install.sh --prefix "$HOME/.local"
-          ```
+          Directly invoking `install.sh` requires passing the complete evidence
+          paths and external verification result. `--development` is only for
+          explicitly non-publishing local dry runs.
 
           ## Verify Checksums
           ```bash
           sha256sum -c agent-control-plane-${VERSION}-*.sha256
           ```
+
+          ## Verify Provenance
+          The release assets include an SPDX 2.3 SBOM, a provenance manifest,
+          and the attestation evidence used by the publish gate. Consumers
+          must verify the archive with GitHub's artifact-attestation verifier
+          before activation.
           HEADER
 
           # Replace version placeholder

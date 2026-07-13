@@ -33,7 +33,7 @@ main() {
     echo "Agent Control Plane — Installer"
     echo ""
 
-    local os arch target version archive_name tarball_url checksum_url tmp_dir
+    local os arch target version archive_name tarball_url checksum_url sbom_url attestation_url provenance_url tmp_dir
     os="$(detect_os)"
     arch="$(detect_arch)"
 
@@ -70,6 +70,9 @@ main() {
     archive_name="agent-control-plane-${version}-${target}.tar.gz"
     tarball_url="https://github.com/${REPO}/releases/download/${version}/${archive_name}"
     checksum_url="${tarball_url}.sha256"
+    sbom_url="${tarball_url}.spdx.json"
+    attestation_url="${tarball_url}.attestation.json"
+    provenance_url="${tarball_url}.provenance.json"
     echo "  URL: ${tarball_url}"
     echo ""
 
@@ -80,6 +83,9 @@ main() {
     echo "Downloading..."
     curl -fsSL "${tarball_url}" -o "${tmp_dir}/${archive_name}"
     curl -fsSL "${checksum_url}" -o "${tmp_dir}/${archive_name}.sha256"
+    curl -fsSL "${sbom_url}" -o "${tmp_dir}/${archive_name}.spdx.json"
+    curl -fsSL "${attestation_url}" -o "${tmp_dir}/${archive_name}.attestation.json"
+    curl -fsSL "${provenance_url}" -o "${tmp_dir}/${archive_name}.provenance.json"
 
     echo "Verifying checksum..."
     (
@@ -94,6 +100,46 @@ main() {
         fi
     )
 
+    # GitHub's verifier is the production attestation authority.  A missing
+    # CLI or failed verification is unsupported/failure, never a warning-only
+    # continuation.  This command is read-only and does not publish anything.
+    if ! command -v gh >/dev/null 2>&1; then
+        echo "Error: GitHub CLI with artifact-attestation support is required; refusing activation." >&2
+        exit 1
+    fi
+    if ! command -v python3 >/dev/null 2>&1; then
+        echo "Error: Python 3 is required to bind the verification transcript; refusing activation." >&2
+        exit 1
+    fi
+    external_verification="${tmp_dir}/${archive_name}.external-verification.json"
+    external_provenance="${tmp_dir}/${archive_name}.external-provenance.json"
+    external_sbom="${tmp_dir}/${archive_name}.external-sbom.json"
+    if ! gh attestation verify "${tmp_dir}/${archive_name}" \
+        --repo "${REPO}" \
+        --signer-repo "${REPO}" \
+        --signer-workflow "${REPO}/.github/workflows/release.yml" \
+        --source-ref "refs/tags/${version}" \
+        --cert-oidc-issuer "https://token.actions.githubusercontent.com" \
+        --deny-self-hosted-runners \
+        --format json > "${external_provenance}"; then
+        echo "Error: external artifact attestation verification failed; refusing activation." >&2
+        exit 1
+    fi
+    if ! gh attestation verify "${tmp_dir}/${archive_name}" \
+        --repo "${REPO}" \
+        --signer-repo "${REPO}" \
+        --signer-workflow "${REPO}/.github/workflows/release.yml" \
+        --source-ref "refs/tags/${version}" \
+        --cert-oidc-issuer "https://token.actions.githubusercontent.com" \
+        --deny-self-hosted-runners \
+        --predicate-type "https://spdx.dev/Document/v2.3" \
+        --format json > "${external_sbom}"; then
+        echo "Error: external SPDX SBOM attestation verification failed; refusing activation." >&2
+        exit 1
+    fi
+    python3 -c 'import json, sys; json.dump({"provenance": json.load(open(sys.argv[1], encoding="utf-8")), "sbom": json.load(open(sys.argv[2], encoding="utf-8"))}, open(sys.argv[3], "w", encoding="utf-8"), sort_keys=True, separators=(",", ":"))' \
+        "${external_provenance}" "${external_sbom}" "${external_verification}"
+
     echo "Extracting..."
     tar -xzf "${tmp_dir}/${archive_name}" -C "${tmp_dir}"
 
@@ -107,28 +153,44 @@ main() {
         exit 1
     fi
 
-    # Install binary
-    echo "Installing binary to ${INSTALL_DIR}/..."
-    sudo mkdir -p "${INSTALL_DIR}"
-    sudo cp "${extracted_dir}/engine" "${INSTALL_DIR}/agent-control-plane"
-    sudo chmod +x "${INSTALL_DIR}/agent-control-plane"
-    echo "  -> ${INSTALL_DIR}/agent-control-plane"
-
-    # Setup data directory
-    echo "Setting up data directory..."
-    mkdir -p "${DATA_DIR}/backups"
-
-    # Install dashboard assets
-    if [[ -d "${extracted_dir}/dashboard" ]]; then
-        mkdir -p "${DATA_DIR}/dashboard"
-        cp -a "${extracted_dir}/dashboard/." "${DATA_DIR}/dashboard/"
-        echo "  -> ${DATA_DIR}/dashboard/"
+    verifier="${extracted_dir}/release_provenance.py"
+    if [[ ! -f "${verifier}" ]]; then
+        echo "Error: release provenance verifier missing from the signed bundle; refusing activation." >&2
+        exit 1
     fi
+    verification="${tmp_dir}/${archive_name}.verification.json"
+    python3 "${verifier}" verify \
+        --artifact "${tmp_dir}/${archive_name}" \
+        --sbom "${tmp_dir}/${archive_name}.spdx.json" \
+        --attestation "${tmp_dir}/${archive_name}.attestation.json" \
+        --provenance "${tmp_dir}/${archive_name}.provenance.json" \
+        --mode production \
+        --external-verification "${external_verification}" \
+        --output "${verification}" >/dev/null
 
-    # Install .env.example
-    if [[ -f "${extracted_dir}/.env.example" ]] && [[ ! -f "${DATA_DIR}/.env.example" ]]; then
-        cp "${extracted_dir}/.env.example" "${DATA_DIR}/.env.example"
-        echo "  -> ${DATA_DIR}/.env.example"
+    # Route activation through the existing atomic owners.  An existing
+    # installation is never overwritten directly; upgrade.sh retains the
+    # prior binary/dashboard until health verification succeeds.
+    if [[ -e "${INSTALL_DIR}/agent-control-plane" ]]; then
+        echo "Upgrading existing installation through upgrade.sh..."
+        sudo env ACP_DATA_DIR="${DATA_DIR}" bash "${extracted_dir}/upgrade.sh" \
+            --prefix "${INSTALL_DIR}" \
+            --data-dir "${DATA_DIR}" \
+            --artifact "${tmp_dir}/${archive_name}" \
+            --sbom "${tmp_dir}/${archive_name}.spdx.json" \
+            --attestation "${tmp_dir}/${archive_name}.attestation.json" \
+            --provenance "${tmp_dir}/${archive_name}.provenance.json" \
+            --external-verification "${external_verification}"
+    else
+        echo "Installing new release through install.sh..."
+        ACP_DATA_DIR="${DATA_DIR}" bash "${extracted_dir}/install.sh" \
+            --prefix "${INSTALL_DIR}" \
+            --data-dir "${DATA_DIR}" \
+            --artifact "${tmp_dir}/${archive_name}" \
+            --sbom "${tmp_dir}/${archive_name}.spdx.json" \
+            --attestation "${tmp_dir}/${archive_name}.attestation.json" \
+            --provenance "${tmp_dir}/${archive_name}.provenance.json" \
+            --external-verification "${external_verification}"
     fi
 
     echo ""

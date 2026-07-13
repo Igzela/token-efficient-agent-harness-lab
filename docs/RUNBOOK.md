@@ -190,15 +190,38 @@ For normal local engine operation, use the existing dashboard build, engine star
 
 ## Release Upgrade and Rollback
 
-From an extracted release directory, upgrade a user-local installation atomically:
+Use the existing curl installer for a production release. It downloads the
+archive, checksum, SPDX SBOM, provenance, and attestation companion assets;
+requires `gh attestation verify` with the repository, release workflow, tag,
+GitHub OIDC issuer, and non-self-hosted policy; then invokes the existing
+installer/upgrader owners:
+
+```bash
+VERSION=v0.1.0 bash -c \
+  'curl -fsSL https://raw.githubusercontent.com/Igzela/token-efficient-agent-harness-lab/main/scripts/install-from-release.sh | bash'
+```
+
+From an extracted, verified release directory, upgrade a user-local installation atomically. The four evidence paths must refer to the exact archive and companion assets, and the external-verification file must be the successful `gh attestation verify --format json` result:
 
 ```bash
 ./upgrade.sh \
   --prefix "$HOME/.local" \
-  --data-dir "$HOME/.agent-control-plane"
+  --data-dir "$HOME/.agent-control-plane" \
+  --artifact "$ARCHIVE" \
+  --sbom "$ARCHIVE.spdx.json" \
+  --attestation "$ARCHIVE.attestation.json" \
+  --provenance "$ARCHIVE.provenance.json" \
+  --external-verification "$ARCHIVE.external-verification.json"
 ```
 
-The default upgrade replaces the binary and dashboard directory atomically, retains the prior binary as `agent-control-plane.bak`, removes stale dashboard assets, and does not guess how the service is managed. Restart it with the operator's process manager after success.
+The upgrade verifies provenance before stopping or mutating anything, replaces the binary and dashboard directory atomically, retains the prior binary as `agent-control-plane.bak`, removes stale dashboard assets, and requires the executable health check to pass before releasing the rollback state. Restart it with the operator's process manager after success. A missing or failed verification is a hard stop.
+
+For a source checkout or non-publishing local package dry run only, use the explicit development mode; it does not claim production provenance:
+
+```bash
+./install.sh --prefix "$HOME/.local" --development
+./upgrade.sh --prefix "$HOME/.local" --data-dir "$HOME/.agent-control-plane" --development
+```
 
 For a managed service, provide paired explicit hooks:
 
@@ -210,4 +233,4 @@ For a managed service, provide paired explicit hooks:
   --restart-command '<process-manager start command>'
 ```
 
-Both hooks are required together. If binary/dashboard replacement or restart fails, the script restores the prior binary and dashboard and attempts the old restart hook. Validate the packaged upgrade contract with `bash scripts/check_release_contract.sh` before publishing a release.
+Both hooks are required together. If binary/dashboard replacement, restart, or health verification fails, the script restores the prior binary and dashboard and attempts the old restart hook. Validate the packaged upgrade contract with `bash scripts/check_release_contract.sh` before publishing a release.
