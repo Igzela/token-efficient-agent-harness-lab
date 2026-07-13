@@ -878,6 +878,7 @@ class TestExactHeadCI(unittest.TestCase):
             "workflowName": "tests", "updatedAt": "2026-07-14T00:11:00Z",
         }
         with mock.patch.object(ci_handler.ci_verifier, "find_exact_runs", return_value=[older, newer]), \
+             mock.patch.object(ci_handler.sm, "read_ci_acquisition", return_value=None), \
              mock.patch.object(ci_handler.sm, "record_ci_acquisition", return_value=True) as record:
             self.assertTrue(
                 ci_handler._persist_canonical_acquisition(42, 207, sha, "agent/x", newer)
