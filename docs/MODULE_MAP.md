@@ -39,7 +39,7 @@ Full Agent Autonomy Mode is active for repository-scoped work that remains testa
 
 ## PE-5 Release Provenance Ownership
 
-PE-5 is complete and independently acceptance-sealed. Grouped `PE5-IMPLEMENT-1` completed internal `PE5-CONTRACT-1` through `PE5-PUBLISH-1`; detailed packet contracts and evidence remain in `docs/NEXT_DECISION.md`.
+PE-5's prior seal is under `PE56-POST-SEAL-REPAIR-1`. The grouped historical `PE5-CONTRACT-1` through `PE5-PUBLISH-1` milestones and PRs #210-#211 remain evidence, but their one-bundle/API-transcript, placeholder-SBOM, bootstrap, rollback, and archive semantics are non-authorizing until the repair is accepted.
 
 | Capability | Primary owners | Boundary |
 |---|---|---|
@@ -52,7 +52,7 @@ PE-5 is complete and independently acceptance-sealed. Grouped `PE5-IMPLEMENT-1` 
 
 ## PE-6 Fault Injection and Recovery Ownership
 
-PE-6 grouped implementation is merged after the PE-5 acceptance seal. Internal milestones completed in order within `PE6-IMPLEMENT-1`; `PE6-CLOSE-1` independently audited and sealed the chain.
+PE-6's prior seal is under `PE56-POST-SEAL-REPAIR-1`. PRs #212-#213 remain historical evidence, but harness-synthesized success and non-injected fault claims are non-authorizing until owner-emitted evidence and claim-aligned faults are accepted.
 
 | Capability | Primary owners | Boundary |
 |---|---|---|
@@ -79,8 +79,8 @@ It does not own PE-5 release-provenance semantics or PE-6 recovery semantics. Be
 ## Active Routing
 
 1. PE-1 through PE-4 remain acceptance-sealed; PE-4 is sealed under PR #206 and `PE4-POST-CLOSE-REPAIR-1`.
-2. PE-5 is acceptance-sealed under grouped `PE5-IMPLEMENT-1` and `PE5-CLOSE-1` (PRs #210 and #211).
-3. The PE-6 internal milestones are complete in order within grouped `PE6-IMPLEMENT-1`; `PE6-CLOSE-1` independently sealed the separate audit/repair boundary.
+2. PE-5 and PE-6 are under the single post-seal correctness repair `PE56-POST-SEAL-REPAIR-1`; earlier seals are superseded where their semantics are weaker.
+3. No later product stage is active.
 4. No later packet is activated by this objective. Extend existing owners; do not create another runtime, scheduler, storage layer, release pipeline, signing authority, recovery authority, artifact truth source, or Dashboard data model without an explicit replacement decision, migration, compatibility evidence, and rollback.
 
 ## Active Documents

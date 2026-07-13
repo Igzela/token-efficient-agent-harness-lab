@@ -14,12 +14,7 @@ PE-4 is sealed under `PE4-POST-CLOSE-REPAIR-1`. Its final accepted evidence is:
 
 Older PE-4 replay contracts, artifacts, and closeout claims remain historical only and cannot authorize current replay, shadow, canary, or promotion behavior.
 
-The active direction is now:
-
-1. complete PE-5 Release Provenance;
-2. independently acceptance-seal PE-5;
-3. complete PE-6 Fault Injection and Recovery Drills;
-4. independently acceptance-seal PE-6.
+The active direction is `PE56-POST-SEAL-REPAIR-1`: repair the independently discovered PE-5 release-integrity and PE-6 evidence-integrity defects in one implementation, review, documentation, and acceptance PR. This is not PE-7 and activates no later product stage. The weaker PR #210-#213 acceptance semantics are historical and non-authorizing until this repair is merged with its required CI evidence.
 
 Do not create another roadmap or product-evolution document. This file is the normative forward plan.
 
@@ -97,8 +92,8 @@ No internal milestone receives a separate PR, merge, or full CI wait. Final pack
 | PE-2 | P0/P1 | Budget Intelligence and Anomaly Auto-Pause | `COMPLETE` and acceptance-sealed |
 | PE-3 | P1 | Operator Decision Center | `COMPLETE` and independently acceptance-sealed |
 | PE-4 | P1/P2 | Trace-backed Policy Replay | `COMPLETE` and acceptance-sealed under PE4-POST-CLOSE-REPAIR-1 |
-| PE-5 | P1.5 | Release Provenance | Complete and independently acceptance-sealed under grouped `PE5-IMPLEMENT-1` and `PE5-CLOSE-1`; internal milestones remain ordered and complete |
-| PE-6 | P2 | Fault Injection and Recovery Drills | `COMPLETE` and independently acceptance-sealed under grouped `PE6-IMPLEMENT-1` and `PE6-CLOSE-1` |
+| PE-5 | P1.5 | Release Provenance | Prior seal under post-seal correctness repair in `PE56-POST-SEAL-REPAIR-1` |
+| PE-6 | P2 | Fault Injection and Recovery Drills | Prior seal under post-seal correctness repair in `PE56-POST-SEAL-REPAIR-1` |
 
 # PE-5 — Release Provenance
 

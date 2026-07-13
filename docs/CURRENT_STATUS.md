@@ -40,16 +40,16 @@ There is no pending PE-4 documentation-head or post-merge CI requirement. The ev
 
 | Stage | Priority | Capability | Current state |
 |---|---|---|---|
-| PE-5 | P1.5 | Release Provenance | Complete and independently acceptance-sealed under grouped `PE5-IMPLEMENT-1` and `PE5-CLOSE-1` (internal `PE5-CONTRACT-1` through `PE5-PUBLISH-1`; PRs #210 and #211) |
-| PE-6 | P2 | Fault Injection and Recovery Drills | Complete and independently acceptance-sealed under grouped `PE6-IMPLEMENT-1` and `PE6-CLOSE-1` |
+| PE-5 | P1.5 | Release Provenance | Prior seal under post-seal correctness repair in `PE56-POST-SEAL-REPAIR-1`; grouped `PE5-CONTRACT-1` through `PE5-PUBLISH-1` and PRs #210-#211 remain historical evidence only until the repair is accepted |
+| PE-6 | P2 | Fault Injection and Recovery Drills | Prior seal under post-seal correctness repair in `PE56-POST-SEAL-REPAIR-1`; PRs #212-#213 remain historical evidence only until the repair is accepted |
 
 The detailed contracts and normative order are in `docs/NEXT_DECISION.md`.
 
 ## Current Gaps
 
-- PE-5 is independently sealed. The accepted chain supplies the versioned contract, deterministic SPDX 2.3 package/container SBOM path, production OIDC attestation workflow, fail-closed installer/upgrader checks, publish gate, strict external-verification transcript policy, and bounded extraction boundary.
+- PE-5's prior acceptance is under repair. The current chain emits only an SBOM attestation, can accept API-fetched evidence instead of the distributed bundles, uses a placeholder dependency inventory, permits a mutable bootstrap, incompletely validates rollback identity/archive bounds, and overstates install/rollback restoration.
 - `policy_simulator.rs` still relies on fixed estimates rather than trace-calibrated replay; this remains outside PE-5/PE-6 unless a packet demonstrates a prerequisite impact.
-- PE-6 is independently sealed. The accepted chain supplies a versioned bounded fault contract, one fixed-command allowlisted harness, owner-backed SQLite/workflow/provider/release drills, deterministic local/CI report tooling, and report-level environment capability binding. Cleanup, unsupported PostgreSQL, and no-external-action limits remain explicit.
+- PE-6's prior acceptance is under repair. The current harness synthesizes six successful evidence categories from a zero owner-command exit code, records a fixed successful duration, and the PostgreSQL registry claims an interruption that its owner test does not inject. Cleanup, unsupported PostgreSQL, and no-external-action limits remain explicit.
 - External destructive testing, production provider calls, real target-repository corruption, and persistent signing secrets remain unauthorized.
 - The local PE-5 dry run uses a fixture identity and is explicitly `verified_fixture`, never production `verified`; no external production identity, real tag, or public release was exercised.
 - PostgreSQL owner drills are available only through the existing GitHub Actions `pg-tests` disposable service path; environments without that exact service identity report explicit `unsupported` evidence rather than pass, including arbitrary local `ACP_TEST_DATABASE_URL` values.

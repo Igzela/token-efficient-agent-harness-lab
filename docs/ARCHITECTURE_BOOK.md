@@ -1,6 +1,6 @@
 # Architecture Book
 
-Last updated: 2026-07-13 (PE-5 and PE-6 independently sealed)
+Last updated: 2026-07-13 (`PE56-POST-SEAL-REPAIR-1` in progress)
 
 This is the current architecture baseline for the Token-Efficient Agent Harness Lab. Historical phase plans, closeout reports, and long-form strategy docs are retained in release-tagged git history; `docs/archive/README.md` is the working-tree index.
 
@@ -241,7 +241,7 @@ PE-5 extends the existing release workflow, package/container builders, dependen
 
 PE-6 validates existing recovery owners using versioned allowlisted drills against disposable local/CI resources only. It may use temporary SQLite, ephemeral PostgreSQL, fake/stub providers, isolated worktrees, child processes, and non-publishing release bundles. It must not corrupt real databases, call real providers, damage registered repositories, publish releases, modify host installations, or create a second recovery authority. Every drill binds normal, failure, recovery, rollback, integrity, audit, timeout/abort, and cleanup invariants.
 
-### PE-5 accepted implementation boundary
+### PE-5 pre-repair historical boundary
 
 The existing release workflow and package/install/upgrade scripts remain the only release owners. `scripts/release_provenance.py` is a dependency-free contract helper, not a second pipeline: it emits canonical newline-delimited JSON for `release_provenance.v1` and `release_verification.v1`, with bounded inputs, deterministic ordering, SHA-256 bindings, and bounded reason codes. The canonical SBOM is SPDX 2.3 (`https://spdx.dev/Document/v2.3`); the same generator accepts `package` and `container` subjects, and its document namespace/comment bind the source commit, release ref, target, package kind, artifact digest, and lockfile hashes. Timestamps are fixed to the SPDX epoch value and non-authoritative fixture identities are explicit.
 
@@ -251,7 +251,7 @@ The workflow order is build → SBOM → external attestation → provenance bin
 
 The independent closeout guard requires the external `gh attestation verify --format=json` transcript to contain the signed statement subject digest, both SLSA and SPDX predicate results, OIDC issuer, source repository/ref, signer-workflow identity, and verified timestamp evidence. The local closeout matrix covers all four package targets plus Linux amd64/arm64 container subjects using fixture-only, non-authoritative evidence; it does not create a container publication path.
 
-### PE-6 grouped test-only recovery boundary
+### PE-6 pre-repair historical boundary
 
 The PE-6 implementation adds no runtime authority, schema migration, API, Dashboard, scheduler, storage, provider, release, or audit owner. `scripts/fault_drill_contract.py` defines bounded `fault_scenario.v1`, `fault_drill_result.v1`, recovery/cleanup evidence, and `fault_drill_report.v1` canonical JSON. `scripts/fault_drill_registry.py` is the only scenario registry; `scripts/fault_drill_harness.py` expands registry labels into fixed Rust or Python test commands, sanitizes provider-shaped environment inputs, enforces disposable worker identities, caps child duration/output, and always attempts cleanup. `tools/run_fault_drills.py` accepts only registered IDs or named suites and writes reports only to disposable temp/output roots.
 
@@ -407,8 +407,8 @@ These are accepted current limitations, not hidden TODOs:
 - Bounded multi-agent runtime semantics are implemented through Agent Runtime AR-0 through AR-6. The track is sealed; extending the AR phase ladder requires a new decision baseline.
 - The bounded LangGraph importer and same-scenario comparison are implemented, but no external runtime runner is embedded and no real LangGraph benchmark evidence is persisted automatically. Current architecture permits only importer-first, operator-supplied trace-summary normalization through existing evidence, artifact, audit, and storage boundaries.
 - Cloud SaaS, hosted/cloud deployment, multi-tenant service, and direct release/tag/deploy/apply controls are not implemented. PE-5 adds release evidence and verification, not app-runtime release authority.
-- Complete release SBOM/signing/attestation/verification is accepted under PE-5; no production identity or public release was exercised for acceptance.
-- PE-6 grouped implementation and independent recovery-drill closeout are accepted. Aggregate report environment capabilities cover every result capability; no runtime/release authority was added.
+- PE-5's earlier acceptance is under `PE56-POST-SEAL-REPAIR-1`; its one-bundle/API-transcript, placeholder dependency, mutable bootstrap, rollback, and archive semantics are historical and non-authorizing. No production identity or public release is authorized for the repair.
+- PE-6's earlier acceptance is under the same repair; exit-code-derived evidence and claims stronger than injected faults are historical and non-authorizing. No runtime/release authority is added.
 - Some routing, quality, and orchestration modules remain partially active rather than unified under one policy layer.
 
 The Adaptive Fusion Routing track extends `model_selector`, `feedback`, `provider`, storage, and existing HTTP/workflow/executor boundaries without creating a parallel routing, policy, workflow, or storage kernel. AF-0 through AF-6 add planning, endpoint metadata, offline evaluation, authenticated bounded execution, contextual policy, panel fusion, safe observations, controlled experiments, evidence-driven promotion, and guarded completions. Legacy independent gates remain supported.
