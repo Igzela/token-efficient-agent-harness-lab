@@ -1,86 +1,93 @@
 # Module Map
 
-Last updated: 2026-07-12.
+Last updated: 2026-07-13.
 
 This file maps current ownership. It is not a phase history.
 
-Full Agent Autonomy Mode is active for repo-scoped planning and execution that remains testable, observable, CI-gated, and rollbackable. Execution-ready packets are the default work units, not a model-specific restriction.
+Full Agent Autonomy Mode is active for repository-scoped work that remains testable, observable, reviewable, CI-gated, compatible, and rollbackable. Execution-ready packets in `docs/NEXT_DECISION.md` are the default work units.
 
 ## Core Ownership
 
-| Module | Stage | Purpose | Verification |
+| Module | State | Purpose | Verification |
 |---|---|---|---|
-| `AGENTS.md`, `docs/NEXT_DECISION.md`, `docs/REAL_WORLD_TESTING_PLAYBOOK.md`, `scripts/check_agent_handoff.py` | active | autonomous authority, packet routing, evidence discipline, and governance drift prevention | agent handoff check and CI |
-| `engine/src/main.rs`, `engine/src/http_server/` | active | Engine and API | HTTP and engine tests |
-| `engine/src/trusted_local.rs` | active | Local readiness policy | trusted-local tests |
-| `dispatch_engine.rs`, `task_analyzer/`, `model_selector.rs`, `budget_manager.rs` | active | Dispatch, routing, and bounded budget authority | dispatch and budget tests |
-| `engine/src/provider/`, `engine/src/provider/fake.rs` | active | Model adapters, persistent bounded audit/redaction, and FakeProvider for testing | focused adapter/audit tests, RustSec audit, full stack verification |
-| `engine/src/local_runner_provider.rs`, `engine/src/bin/local_runner_exec.rs` | active | Provider-backed stateful-vs-stateless runner (Stub/Fake/Live); Live requires gates, persistent audit, positive pricing, pre-call cost reservation, bounded usage, timeout, and kill control | local_runner_provider tests, local-runner-exec binary, provider audit store tests |
+| `AGENTS.md`, `CLAUDE.md`, `docs/NEXT_DECISION.md`, `docs/REAL_WORLD_TESTING_PLAYBOOK.md`, `scripts/check_agent_handoff.py` | active | autonomous authority, packet routing, evidence discipline, and governance-drift prevention | handoff guard, focused documentation checks, CI where required |
+| `engine/src/main.rs`, `engine/src/http_server/` | active | Rust engine and API | HTTP and engine tests |
+| `engine/src/trusted_local.rs` | active | trusted-local readiness policy | trusted-local tests |
+| `dispatch_engine.rs`, `task_analyzer/`, `model_selector.rs`, `budget_manager.rs` | active | dispatch, routing, and bounded budget authority | dispatch and budget tests |
+| `engine/src/provider/`, `engine/src/provider/fake.rs` | active | provider adapters, persistent bounded audit/redaction, and fake-provider testing | adapter/audit tests, dependency audit, full stack |
+| `engine/src/local_runner_provider.rs`, `engine/src/bin/local_runner_exec.rs` | active | bounded Stub/Fake/Live local runner | local runner/provider tests and binaries |
 | `engine/src/cli/` | active | CLI adapters | engine tests |
-| `engine/src/agent_memory.rs` | active | Bounded AgentState memory policy helpers; no storage/runtime ownership | agent_memory and agent-step/context-injection/operator-evidence tests |
-| `workflow/`, `scheduler.rs`, `node_executor.rs`, `executor_pool.rs` | active | Workflow, durable dynamic-controller limits, deterministic/pinned routing, and pool accounting | workflow and scheduler tests |
-| `storage/local_product_store/` | active | Storage | local store tests |
-| `target_repo_output.rs`, `target_repo_output/authority.rs` | active | Target output | target-output tests |
-| `dashboard/` | active | Local UI | dashboard tests, typecheck, lint, and build |
+| `engine/src/agent_memory.rs` | active | bounded AgentState memory-policy helpers | agent memory, context, workflow, operator-evidence tests |
+| `workflow/`, `scheduler.rs`, `node_executor.rs`, `executor_pool.rs` | active | workflow, scheduler, executor, routing, and pool accounting | workflow/scheduler/executor tests |
+| `engine/src/storage/local_product_store/` | active | SQLite/PostgreSQL-compatible application-owned storage | local store and PG integration tests |
+| `target_repo_output.rs`, `target_repo_output/authority.rs` | active | target-output authority | target-output tests |
+| `dashboard/` | active | local UI | tests, typecheck, lint, build |
 | `sdk/typescript/`, `sdk/python/` | active | SDKs | SDK tests |
-| `wire_contract/v1/`, `codegen/` | active | Wire contracts | `scripts/check_wire_codegen_drift.sh` |
-| `scripts/`, `tools/`, `.github/workflows/` | active | Scripts, pilots, CI, release packaging, dependency/action pin gates, and atomic upgrade rollback | script-specific tests, release contract, action pin guard, CI |
+| `wire_contract/v1/`, `codegen/` | active | wire contracts and generated types | `scripts/check_wire_codegen_drift.sh` |
+| `scripts/`, `tools/`, `.github/workflows/` | active | scripts, pilots, CI, release packaging, dependency/action-pin gates, backup/restore, install/upgrade, and atomic rollback | script-specific tests, workflow checks, security baseline, CI |
 
-## Token-Efficiency Ownership
+## Token-Efficiency and Product-Evolution Ownership
 
-| Capability | Owning paths |
+| Capability | Owning paths and boundary |
 |---|---|
-| Scorecard validation | `scripts/token_efficiency_scorecard.py` |
-| Scorecard comparison | `scripts/scorecard_comparison.py` |
-| PE-2 deterministic anomaly detection | `engine/src/budget_anomaly.rs`; additive contracts in `engine/src/budget_manager.rs` |
-| PE-2 budget evidence persistence/read surfaces | `engine/src/storage/local_product_store/budget_evidence_artifacts.rs`; scorecard HTTP handlers/routes/OpenAPI; Python/TypeScript SDK clients; `dashboard/src/components/BenchmarkScorecards.tsx` |
-| PE-2 policy-gated auto-pause | `engine/src/storage/local_product_store/budget_pause_decisions.rs`; existing `workflow_runs.pause_reason`; scorecard HTTP handlers/routes/OpenAPI; audit/operator evidence |
-| PE-3 operator decision contracts, queue, read surface, and bounded action adapter | `engine/src/operator_decision/mod.rs`; `engine/src/storage/local_product_store/operator_decision_queue/mod.rs`; `engine/src/http_server/handlers/operator_decisions.rs`; `engine/src/http_server/handlers/operator_decision_actions.rs`; routes/OpenAPI; Python/TypeScript SDKs; `dashboard/src/components/OperatorDecisionCenter.tsx`; existing approval/workflow/scheduler/budget/benchmark/policy/rollback/recovery owners |
-| PE-1 scenario registry, fixed evidence, reports/batches, persistence, and bounded trends | `scripts/token_efficiency_regression.py`, `tools/test_token_efficiency_regression.py`, `tests/fixtures/token_efficiency_regression/registry.json`, `tests/fixtures/token_efficiency_regression/*/*.artifact.json`, `engine/src/storage/local_product_store/regression_report_artifacts.rs`, `engine/tests/test_regression_report_artifacts.rs` |
-| Native scorecard export | `scripts/native_scorecard_export.py` |
-| Native deterministic stateful pilot | `scripts/native_stateful_experiment_pilot.py` |
-| Provider-gated real runner | `scripts/provider_gated_real_runner.py`, `tools/test_provider_gated_real_runner.py` |
-| Local runner validation | `scripts/validate_local_runner.py`, `tools/test_validate_local_runner.py` |
-| LangGraph offline capture, bounded import, and v2 artifact export | `tools/capture_langgraph_pilot.py`, `scripts/langgraph_trace_import.py`, `tests/fixtures/langgraph_pilot/` |
-| Native v1 and generic v2 artifact persistence/comparison | `engine/src/storage/local_product_store/native_scorecard_artifacts.rs` |
-| Local scorecard and PE-1 regression artifact import (legacy CLI name retained) | `engine/src/local_scorecard_import.rs`, `engine/src/bin/import_native_scorecard_artifacts.rs` |
-| Local runner validation executor | `engine/src/node_executor.rs` (`LocalRunnerValidationExecutor`), `engine/src/executor_pool.rs`; automatic native scorecard artifact recording via `workflow_runs.rs` tick path |
-| Local runner provider adapter | `engine/src/local_runner_provider.rs`, `engine/src/provider/fake.rs` |
-| CLI stateful-vs-stateless experiment | `engine/src/bin/local_runner_exec.rs` |
-| Scorecard comparison and PE-1 regression read-only API/SDK | `engine/src/http_server/handlers/scorecards.rs`, `sdk/python/src/agent_control_plane_sdk/client.py`, `sdk/typescript/src/index.ts`, `sdk/typescript/src/api-types.ts` |
-| PE-1 Dashboard regression evidence and history | `dashboard/src/components/BenchmarkScorecards.tsx`, `dashboard/src/lib/regression-evidence.ts`, `dashboard/src/lib/regression-evidence.test.ts` |
-| Operator scorecard evidence | `engine/src/http_server/handlers/operator_evidence.rs`, `dashboard/src/components/ScorecardEvidence.tsx` |
+| PE-1 regression lab | regression scripts/tests/fixtures; native and generic scorecard stores; scorecard HTTP/SDK/Dashboard read surfaces; report-only |
+| PE-2 budget intelligence and auto-pause | `budget_manager.rs`, `budget_anomaly.rs`, provider audit/cost evidence, budget evidence store, existing workflow pause/audit/resume owners; no auto-kill or second pause owner |
+| PE-3 operator decision center | `engine/src/operator_decision/mod.rs`, derived queue/store adapter, operator decision HTTP handlers, SDKs, read-only Dashboard, and allowlisted existing action owners; no generic executor |
+| PE-4 trace-backed policy replay | replay eligibility/recorder/offline/shadow/experiment/promotion/contextual-policy owners; schema v21 dispatch provenance; replay artifact store; read-only API/SDK/Dashboard; existing canary/pause/rollback authority reused |
+| Scorecard validation/comparison | `scripts/token_efficiency_scorecard.py`, `scripts/scorecard_comparison.py` |
+| Native/local/LangGraph evidence | native scorecard export, local runner, provider-gated runner, LangGraph capture/import, fixtures, and existing scorecard store/API |
 
-## Post-LGB Product Evolution Ownership
+## PE-5 Release Provenance Ownership
 
-The detailed execution-ready packet sequence is defined in `docs/NEXT_DECISION.md`. Packets extend existing owners rather than create parallel kernels or state sources. Material ownership changes require a documented replacement, compatibility path, tests, and rollback.
+PE-5 is active. Detailed packet contracts are in `docs/NEXT_DECISION.md`.
 
-| Stage | Primary owning paths | Boundary |
+| Capability | Primary owners | Boundary |
 |---|---|---|
-| PE-1 Token Efficiency Regression Lab | regression script/tests/fixtures; `native_scorecard_artifacts.rs`; `regression_report_artifacts.rs`; scorecard HTTP handlers; SDKs; benchmark Dashboard components | complete; reuse scorecard v1/v2 and existing LocalProductStore/API; report-only; no provider calls in CI |
-| PE-2 Budget Intelligence and Anomaly Auto-Pause | `budget_manager.rs`; provider audit/cost evidence; scheduler/workflow pause controls; HTTP/operator evidence; SDKs; Dashboard | forecasts/anomalies are derived evidence; auto-pause only through existing policy/audit; no auto-kill |
-| PE-3 Operator Decision Center | `operator_decision/mod.rs`; `operator_decision_queue/mod.rs`; operator decision HTTP handlers; existing approvals/workflow/scheduler/budget/benchmark/policy/rollback/recovery owners; SDKs; read-only Dashboard | derived queue with mutation-time current binding; no hidden generic executor or duplicate authority source |
-| PE-4 Trace-backed Policy Replay | `engine/src/feedback/replay_eligibility.rs`; `engine/src/feedback/run_trace_recorder.rs`; persisted dispatch/feedback/attribution owners; `engine/src/feedback/offline_evaluation.rs`; `engine/src/storage/local_product_store/{dispatch,offline_replay_artifacts,migrations,pg_backend/migrations,schema}.rs`; scorecard HTTP/OpenAPI handlers/routes; Python/TypeScript SDKs; `dashboard/src/components/DynamicRegulator.tsx`; `engine/src/feedback/policy_simulator.rs`; `engine/src/feedback/shadow_router.rs`; `engine/src/feedback/contextual_policy.rs`; existing experiment/canary, pause/resume, rollback, operator-evidence owners | `PE4-POST-CLOSE-REPAIR-1` owns the acceptance-sealed correction; trusted evidence is recorder-owned dispatch history, offline/read/shadow are non-mutating, replay artifacts are derived/hash-bound, and experiment/canary/promotion/pause/rollback authority is reused |
-| PE-5 Release Provenance | `.github/workflows/release.yml`; release/install/upgrade scripts; container build paths | add SBOM, signatures, attestations, and verification without weakening audits or atomic rollback |
-| PE-6 Fault Injection and Recovery Drills | focused engine integration tests; storage/provider/scheduler fault seams; backup/restore and upgrade rollback scripts; CI tooling | bounded deterministic drills; no destructive external testing; recovery invariants remain authoritative |
+| Release provenance contract | existing release/build/install/upgrade scripts and workflow; architecture/module docs; focused validators/tests | one versioned release subject and verification-result contract; no publication or signing in contract packet |
+| Deterministic SBOM | existing package/container builders; Cargo/Bun/Python locks; release workflow and fixtures | target- and artifact-bound canonical SBOM; no second package pipeline |
+| Signed provenance/attestation | existing release workflow plus current official pinned workload-identity/OIDC signing or attestation tooling selected by the contract | external ephemeral production identity; no persistent private key or Vader signing credential |
+| Installer/upgrader verification | existing checksum, install, upgrade, staging, health-check, atomic swap, and rollback scripts | complete evidence verifies before activation; previous known-good state preserved |
+| Publish gate | `.github/workflows/release.yml`, existing artifact upload/release helpers, action-pin/security checks | build → SBOM → attest → verify → publish ordering; no unauthorized public release/tag/deploy |
+| PE-5 closeout | release contract/tests/workflow dry run, installer rollback, active docs | independent acceptance without requiring a real public release |
 
-## Planned Evolution Routing
+## PE-6 Fault Injection and Recovery Ownership
 
-1. Prefer the earliest `READY_FOR_EXECUTION` packet whose prerequisites are complete.
-2. Repair bounded prerequisite defects, stale contracts, or documentation drift before dependent work when necessary.
-3. PE-1 through PE-4 remain acceptance-sealed, with PE-4 sealed under `PE4-POST-CLOSE-REPAIR-1`; PE-5 and PE-6 remain inactive and unstarted.
-4. Treat PE-3 as a derived read model plus allowlisted existing-owner adapter; mutation binds current evidence and never becomes a generic executor.
-5. Preserve PE-4's existing owners and acceptance evidence; do not begin PE-5 or PE-6 without explicit lane activation.
-6. PE-5 may run independently only after explicit lane activation.
-7. Define PE-6 recovery invariants before fault injection.
+PE-6 is packetized and starts only after PE5-CLOSE-1.
 
-Do not create another runtime, scheduler, graph kernel, mailbox, storage layer, policy authority, artifact truth source, or Dashboard data model without an explicit replacement decision, migration plan, compatibility evidence, and rollback.
+| Capability | Primary owners | Boundary |
+|---|---|---|
+| Recovery invariants and fault contract | existing subsystem contracts/tests; architecture/module docs | versioned allowlisted scenarios/results; no fault execution yet |
+| Fault-injection harness | test-only Rust/Python/shell support and CI tooling | deterministic registered faults against disposable resources only; no arbitrary command/runtime service |
+| Storage drills | `LocalProductStore`, migrations, integrity/audit tables, backup/restore scripts, temporary SQLite and ephemeral PostgreSQL | atomicity, restart, migration, backup/restore, tamper, concurrency; no real DB corruption |
+| Workflow/executor drills | workflow runs, scheduler, node executor, executor pool, approvals, operator actions, pause/resume/retry, compensation | crash/timeout/duplicate/stale/concurrent/restart behavior through existing owners |
+| Provider/budget/audit drills | provider adapters, `FakeProvider`, pricing/reservation, redacted audit, timeout/kill controls | fake/stub only; no live provider or credentials |
+| Release/rollback drills | accepted PE-5 contract, verifier, installer/upgrader, atomic rollback, temporary install roots | invalid provenance and interrupted activation/rollback; no public release or host installation damage |
+| Drill registry/evidence | existing test/CI tooling, bounded report artifacts, `docs/RUNBOOK.md` | allowlisted local/CI execution and inspection; no new runtime state model or mutation API |
+| PE-6 closeout | all drill owners and evidence | independent audit of recovery, cleanup, isolation, compatibility, and residual risk |
 
-## Active Docs
+## Open PR Coordination
 
-Keep direction and routing inside active surfaces only:
+PR #207 owns a disabled-by-default repository-maintenance orchestrator under:
+
+- `scripts/agent-control/`;
+- `.github/workflows/agent-*.yml`;
+- orchestrator tests and CI wiring;
+- related additions to architecture/status/module/runbook documents.
+
+It does not own PE-5 release-provenance semantics or PE-6 recovery semantics. Because it touches shared CI and active documents, it must refresh from current `main` before merge and preserve this ownership map. PE-5/PE-6 work must not overwrite its orchestrator paths; shared `.github/workflows/tests.yml` changes require explicit reconciliation.
+
+## Active Routing
+
+1. PE-1 through PE-4 remain acceptance-sealed; PE-4 is sealed under PR #206 and `PE4-POST-CLOSE-REPAIR-1`.
+2. Begin `PE5-CONTRACT-1`, then complete PE-5 in the order defined by `docs/NEXT_DECISION.md`.
+3. Begin PE-6 only after PE5-CLOSE-1; define invariants before implementing the harness or subsystem drills.
+4. Refresh `main`, open PRs, CI, and active documents after every merge.
+5. Extend existing owners. Do not create another runtime, scheduler, storage layer, release pipeline, signing authority, recovery authority, artifact truth source, or Dashboard data model without an explicit replacement decision, migration, compatibility evidence, and rollback.
+
+## Active Documents
 
 - `AGENTS.md`
+- `CLAUDE.md`
 - `docs/ARCHITECTURE_BOOK.md`
 - `docs/CURRENT_STATUS.md`
 - `docs/NEXT_DECISION.md`
@@ -88,4 +95,4 @@ Keep direction and routing inside active surfaces only:
 - `docs/REAL_WORLD_TESTING_PLAYBOOK.md`
 - `docs/RUNBOOK.md`
 
-Do not add new policy/status/roadmap docs by default.
+Prefer editing, shortening, and reconciling these surfaces over adding another policy, roadmap, status, packet, or closeout document.
