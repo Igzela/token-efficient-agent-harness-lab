@@ -80,7 +80,10 @@ class TestDryRunAndVaderTrustBoundary(unittest.TestCase):
 
     def test_codex_wrapper_strips_github_credentials_and_uses_read_only_review(self):
         source = (CONTROL / "codex_wrapper.sh").read_text()
-        self.assertIn("env -u GH_TOKEN -u GITHUB_TOKEN -u AGENT_PUSH_TOKEN", source)
+        self.assertIn('env -i "${SANITIZED_ENV[@]}"', source)
+        self.assertIn("SANITIZED_ENV=", source)
+        self.assertNotIn("GH_TOKEN=", source)
+        self.assertNotIn("OPENAI_API_KEY=", source)
         self.assertIn('SANDBOX_MODE="read-only"', source)
         self.assertIn('SANDBOX_MODE="workspace-write"', source)
 

@@ -353,7 +353,8 @@ def record_ci_acquisition(
 ):
     metadata = metadata or {}
     state = CIAcquisitionState(
-        int(pr_number), head_sha, int(run_id), source, "bound",
+        int(pr_number), head_sha, int(run_id), source,
+        str(metadata.get("status", "bound")),
         [int(value) for value in (duplicate_run_ids or [])],
         [int(value) for value in metadata.get("observed_run_ids", [])],
         str(metadata.get("selection_reason", "")),

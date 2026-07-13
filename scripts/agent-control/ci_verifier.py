@@ -6,7 +6,7 @@ import json
 import os
 import subprocess
 import time
-from datetime import datetime, timezone
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -84,7 +84,7 @@ def verify_failed_run(run_id: int | str, expected_sha: str) -> dict[str, Any]:
     expected_repo = os.environ.get("AGENT_REPO") or os.environ.get("GITHUB_REPOSITORY")
     if expected_repo and run.get("repository") not in (None, expected_repo):
         raise CIVerificationError("CI repository does not match expected repository")
-    if expected_repo and run.get("headRepository") not in (None, expected_repo):
+    if expected_repo and run.get("headRepository") != expected_repo:
         raise CIVerificationError("CI head repository is not trusted")
     workflow_id = requirements.get("workflow_id")
     if workflow_id is not None and run.get("workflowDatabaseId") not in (None, workflow_id):
@@ -151,7 +151,7 @@ def _candidate_matches(run: dict[str, Any], branch: str, head_sha: str, requirem
     if run.get("workflowName") != requirements["workflow_name"]:
         return False
     expected_repo = os.environ.get("AGENT_REPO") or os.environ.get("GITHUB_REPOSITORY")
-    if expected_repo and run.get("headRepository") not in (None, expected_repo):
+    if expected_repo and run.get("headRepository") != expected_repo:
         return False
     workflow_id = requirements.get("workflow_id")
     if workflow_id is not None and run.get("workflowDatabaseId") not in (None, workflow_id):

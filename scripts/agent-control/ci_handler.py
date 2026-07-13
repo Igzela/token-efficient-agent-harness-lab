@@ -165,6 +165,62 @@ def _is_duplicate_exact_head_run(issue, pr, sha, run_id, branch):
     return False
 
 
+def _persist_canonical_acquisition(issue, pr, sha, branch, event_run):
+    """Persist the current exact-head candidate set before acting on an event.
+
+    Completion events can arrive out of order.  Re-reading the candidate set
+    here makes the durable acquisition record reflect the same canonical run
+    that gates repair/review decisions, including unsupported terminal runs.
+    """
+
+    requirements = ci_verifier.load_requirements()
+    candidates = [
+        run for run in ci_verifier.find_exact_runs(branch, sha)
+        if ci_verifier._candidate_matches(run, branch, sha, requirements)
+    ]
+    acquirable = ci_verifier._acquirable_runs(candidates)
+    selected = ci_verifier.select_canonical_run(acquirable)
+    unsupported_ids = [
+        run.get("databaseId") for run in candidates
+        if run.get("databaseId") is not None and run not in acquirable
+    ]
+    if selected is None:
+        selected = event_run
+        status = "unsupported"
+    else:
+        status = "bound"
+    if not selected or selected.get("databaseId") is None:
+        return False
+    selected_id = selected.get("databaseId")
+    observed_ids = [
+        run.get("databaseId") for run in candidates
+        if run.get("databaseId") is not None
+    ]
+    if selected_id not in observed_ids:
+        observed_ids.append(selected_id)
+    superseded_ids = [
+        run_id for run_id in observed_ids
+        if run_id != selected_id and run_id not in unsupported_ids
+    ]
+    source = "workflow_dispatch" if selected.get("event") == "workflow_dispatch" else "pull_request"
+    metadata = {
+        "status": status,
+        "observed_run_ids": observed_ids,
+        "selection_reason": (
+            ci_verifier._selection_reason(selected, acquirable)
+            if status == "bound" else "unsupported_terminal_observed"
+        ),
+        "superseded_run_ids": superseded_ids,
+        "unsupported_run_ids": unsupported_ids,
+        "fallback_dispatched": False,
+    }
+    if not sm.record_ci_acquisition(
+        issue, pr, sha, selected_id, source, superseded_ids, metadata=metadata
+    ):
+        raise RuntimeError("unable to persist canonical exact-head acquisition")
+    return True
+
+
 def _state_unavailable_result(issue, pr, sha, run_id, detail):
     return {
         "action": "blocked",
@@ -222,6 +278,15 @@ def process_ci_completion(event_path):
         )
     if duplicate:
         return {"action": "noop", "reason": "duplicate_exact_head_run"}
+
+    try:
+        _persist_canonical_acquisition(
+            issue_number, pr_number, current_head, info["head_branch"], run
+        )
+    except (RuntimeError, sm.StateUnavailableError) as exc:
+        return _state_unavailable_result(
+            issue_number, pr_number, current_head, info["run_id"], str(exc)
+        )
 
     if info["conclusion"] in TERMINAL_UNSUPPORTED_CONCLUSIONS:
         conclusion = info["conclusion"]

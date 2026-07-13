@@ -97,6 +97,8 @@ The current PR body claims the previously identified defects are repaired and it
 - control Issue remains labeled `agent-emergency-stop` and activation remains disabled;
 - no merge without separate user authorization.
 
+The repaired control contract requires stop to remove both enable labels, resume to leave both absent, and explicit separate reauthorization for orchestration and auto-merge. `setup-controls` is the sole complete setup entry point (the legacy `setup_labels.py` command is only a compatibility delegate). Exact-head CI uses completed-result ranking with natural-run tie preference and one bounded fallback, while persisting observed, selected, superseded, unsupported, and fallback state. Codex workers use the documented environment allowlist. Stage B runner/service-account validation remains incomplete.
+
 **Completion:** refresh from current `main`; reconcile the active documents without deleting current integration-repair state; run fresh exact-head seven-job CI and prove orchestrator regression tests ran; independently review the complete final diff; report remaining Stage B runner/service-account prerequisites. Code-level blockers must be zero before reporting `MERGE_READY_DISABLED_ONLY`.
 
 ## Packet PE2-RUNTIME-PRODUCER-1 — Connect budget evidence production

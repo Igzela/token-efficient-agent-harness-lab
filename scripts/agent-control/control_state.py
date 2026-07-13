@@ -263,6 +263,19 @@ def _compensate_labels(repo: str, number: int, before: dict[str, Any], after: di
     _edit_issue_labels(repo, number, before_labels - after_labels, after_labels - before_labels)
 
 
+def _force_emergency_stop(repo: str, number: int) -> dict[str, Any]:
+    """Converge to the safe stop state after a partial provider mutation."""
+
+    _edit_issue_labels(
+        repo, number, [EMERGENCY_STOP_LABEL],
+        [ORCHESTRATOR_ENABLED_LABEL, AUTO_MERGE_ENABLED_LABEL],
+    )
+    observed = read_control_state(repo)
+    if not _transition_is_valid("emergency-stop", observed):
+        raise ControlStateError("emergency-stop compensation did not converge to a safe state")
+    return observed
+
+
 def mutate_control_labels(command: str, repo: str | None = None) -> dict[str, Any]:
     target = repo or _repo()
     state = read_control_state(target)
@@ -301,9 +314,13 @@ def mutate_control_labels(command: str, repo: str | None = None) -> dict[str, An
             raise mutation_error
         if _transition_is_valid(command, observed):
             return observed
+        if command == "emergency-stop":
+            return _force_emergency_stop(target, int(number))
         raise mutation_error
     observed = read_control_state(target)
     if not _transition_is_valid(command, observed):
+        if command == "emergency-stop":
+            return _force_emergency_stop(target, int(number))
         try:
             _compensate_labels(target, int(number), state, observed)
         except ControlStateError as compensation_error:

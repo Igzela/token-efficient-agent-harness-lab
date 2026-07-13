@@ -73,7 +73,11 @@ jobs:
         run: |
           set -euo pipefail
           case "$INPUT_COMMAND" in
-            setup-controls|status|enable-orchestrator|disable-orchestrator|enable-auto-merge|disable-auto-merge|emergency-stop|emergency-resume)
+            setup-controls)
+              # The compatibility CLI delegates to the single complete setup owner.
+              python3 scripts/agent-control/control_state.py setup-controls
+              ;;
+            status|enable-orchestrator|disable-orchestrator|enable-auto-merge|disable-auto-merge|emergency-stop|emergency-resume)
               python3 scripts/agent-control/control_state.py "$INPUT_COMMAND"
               ;;
             retry-review)

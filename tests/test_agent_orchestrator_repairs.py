@@ -813,6 +813,32 @@ class TestExactHeadCI(unittest.TestCase):
         self.assertEqual(result["action"], "noop")
         self.assertEqual(result["reason"], "duplicate_exact_head_run")
 
+    def test_completion_persists_canonical_supersession_metadata(self):
+        sha = "6" * 40
+        older = {
+            "databaseId": 1000, "event": "pull_request", "status": "completed",
+            "conclusion": "failure", "headSha": sha, "headBranch": "agent/x",
+            "workflowName": "tests", "updatedAt": "2026-07-14T00:10:00Z",
+        }
+        newer = {
+            "databaseId": 1001, "event": "workflow_dispatch", "status": "completed",
+            "conclusion": "success", "headSha": sha, "headBranch": "agent/x",
+            "workflowName": "tests", "updatedAt": "2026-07-14T00:11:00Z",
+        }
+        with mock.patch.object(ci_handler.ci_verifier, "find_exact_runs", return_value=[older, newer]), \
+             mock.patch.object(ci_handler.sm, "record_ci_acquisition", return_value=True) as record:
+            self.assertTrue(
+                ci_handler._persist_canonical_acquisition(42, 207, sha, "agent/x", newer)
+            )
+        record.assert_called_once()
+        args = record.call_args.args
+        self.assertEqual(args[:6], (42, 207, sha, 1001, "workflow_dispatch", [1000]))
+        metadata = record.call_args.kwargs["metadata"]
+        self.assertEqual(metadata["observed_run_ids"], [1000, 1001])
+        self.assertEqual(metadata["superseded_run_ids"], [1000])
+        self.assertEqual(metadata["unsupported_run_ids"], [])
+        self.assertEqual(metadata["status"], "bound")
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
