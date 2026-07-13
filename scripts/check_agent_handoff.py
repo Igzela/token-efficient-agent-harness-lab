@@ -53,37 +53,35 @@ REQUIRED_FILES = {
         "Full Agent Autonomy Mode",
     ],
     "docs/CURRENT_STATUS.md": [
-        "Branch:",
-        "Tests:",
-        "Phase 4",
-        "Full Agent Autonomy Mode",
-        "Model selection",
-        "READY_FOR_EXECUTION",
-        "Autonomous decision authority",
-        "Post-R7 Wire/Type Governance Hardening",
+        "# Current Status",
+        "Last updated:",
+        "Complete and Acceptance-Sealed Tracks",
+        "PE-4 Final Acceptance Evidence",
+        "PE-5",
+        "PE5-CONTRACT-1",
+        "Open Work Coordination",
+        "Post-R7 wire/type governance",
         "scripts/check_wire_codegen_drift.sh",
     ],
     "docs/NEXT_DECISION.md": [
-        "Full Agent Autonomy Mode",
-        "Autonomously maintain and evolve",
-        "Model Selection",
-        "Execution-Ready Packet Protocol",
+        "# Next Decision",
+        "## Current Direction",
+        "## Execution Protocol",
         "READY_FOR_EXECUTION",
         "DECISION_REQUIRED",
         "Hard Stops",
-        "repo-scoped, testable, observable, CI-gated, and rollbackable",
-        "Packet PE1-UI-1",
-        "Packet PE2-CONTRACT-1",
-        "Packet PE3-CONTRACT-1",
-        "Packet PE4-CONTRACT-1",
+        "PE5-CONTRACT-1",
         "Packet PE5-SBOM-1",
         "Packet PE6-INVARIANTS-1",
+        "## Active Routing",
     ],
     "docs/MODULE_MAP.md": [
         "# Module Map",
-        "| Module | Stage | Purpose |",
+        "## Core Ownership",
+        "## PE-5 Release Provenance Ownership",
+        "## PE-6 Fault Injection and Recovery Ownership",
         "Full Agent Autonomy Mode",
-        "READY_FOR_EXECUTION",
+        "PE5-CONTRACT-1",
         "`scripts/check_wire_codegen_drift.sh`",
     ],
     "docs/REAL_WORLD_TESTING_PLAYBOOK.md": [
@@ -218,7 +216,7 @@ def check_phase_handoff(failures: list[str]) -> None:
 
 
 PACKET_HEADING_RE = re.compile(
-    r"^### Packet (?P<packet>PE\d+-[A-Z0-9-]+)\b.*$", re.MULTILINE
+    r"^#{2,3} Packet (?P<packet>PE\d+-[A-Z0-9-]+)\b.*$", re.MULTILINE
 )
 PACKET_STATE_RE = re.compile(
     r"^\*\*State:\*\* `(?P<state>[A-Z_]+)`\s*$", re.MULTILINE
