@@ -195,6 +195,98 @@ class TestControlIssueLabels(unittest.TestCase):
         self.assertFalse(result["orchestrator_enabled"])
         self.assertFalse(result["auto_merge_enabled"])
 
+    def test_control_commands_enforce_explicit_reauthorization_and_verify_live_state(self):
+        with tempfile.TemporaryDirectory() as temp:
+            temp_path = pathlib.Path(temp)
+            state_path = temp_path / "state.json"
+            gh_path = temp_path / "gh"
+            gh_path.write_text(
+                "#!/usr/bin/env python3\n"
+                "import json, os, sys\n"
+                "path = os.environ['CONTROL_STUB_STATE']\n"
+                "state = json.load(open(path))\n"
+                "args = sys.argv[1:]\n"
+                "if args[:2] == ['api', '--paginate']:\n"
+                "    issue = {'number': 208, 'state': 'open', 'title': '[agent-control] Orchestrator controls', 'body': '<!-- agent-orchestrator-control:v1 -->', 'labels': [{'name': name} for name in state['labels']]}\n"
+                "    print(json.dumps([issue]))\n"
+                "elif args[:2] == ['issue', 'edit']:\n"
+                "    if os.environ.get('CONTROL_STUB_FAIL_EDIT') == '1': raise SystemExit('mutation failed')\n"
+                "    if os.environ.get('CONTROL_STUB_MISMATCH') == '1': raise SystemExit(0)\n"
+                "    labels = set(state['labels'])\n"
+                "    if '--add-label' in args: labels.update(args[args.index('--add-label') + 1].split(','))\n"
+                "    if '--remove-label' in args: labels.difference_update(args[args.index('--remove-label') + 1].split(','))\n"
+                "    state['labels'] = sorted(labels); json.dump(state, open(path, 'w'))\n"
+                "else: raise SystemExit('unexpected gh args: ' + repr(args))\n"
+            )
+            gh_path.chmod(gh_path.stat().st_mode | stat.S_IXUSR)
+            state_path.write_text(json.dumps({"labels": [
+                "agent-control", "agent-orchestrator-enabled", "agent-auto-merge-enabled"
+            ]}))
+            env = {**os.environ, "PATH": f"{temp}:{os.environ['PATH']}", "CONTROL_STUB_STATE": str(state_path)}
+            script = pathlib.Path(__file__).parents[1] / "scripts/agent-control/control_state.py"
+
+            def run(command, extra=None):
+                child_env = {**env, **(extra or {})}
+                return subprocess.run(
+                    [sys.executable, str(script), command, "--repo", "acme/repo"],
+                    cwd=pathlib.Path(__file__).parents[1], env=child_env,
+                    capture_output=True, text=True,
+                )
+
+            def labels():
+                return json.loads(state_path.read_text())["labels"]
+
+            stopped = run("emergency-stop")
+            self.assertEqual(stopped.returncode, 0, stopped.stderr)
+            self.assertEqual(labels(), ["agent-control", "agent-emergency-stop"])
+            self.assertNotEqual(run("enable-orchestrator").returncode, 0)
+            self.assertNotEqual(run("enable-auto-merge").returncode, 0)
+            resumed = run("emergency-resume")
+            self.assertEqual(resumed.returncode, 0, resumed.stderr)
+            self.assertEqual(labels(), ["agent-control"])
+            enabled = run("enable-orchestrator")
+            self.assertEqual(enabled.returncode, 0, enabled.stderr)
+            self.assertEqual(labels(), ["agent-control", "agent-orchestrator-enabled"])
+            auto = run("enable-auto-merge")
+            self.assertEqual(auto.returncode, 0, auto.stderr)
+            self.assertEqual(labels(), [
+                "agent-auto-merge-enabled", "agent-control", "agent-orchestrator-enabled"
+            ])
+            disabled = run("disable-orchestrator")
+            self.assertEqual(disabled.returncode, 0, disabled.stderr)
+            self.assertEqual(labels(), ["agent-control"])
+            self.assertNotEqual(run("enable-auto-merge").returncode, 0)
+            self.assertEqual(run("disable-auto-merge").returncode, 0)
+            self.assertEqual(run("emergency-stop").returncode, 0)
+            self.assertEqual(run("emergency-stop").returncode, 0)
+            self.assertEqual(labels(), ["agent-control", "agent-emergency-stop"])
+            self.assertEqual(run("emergency-resume").returncode, 0)
+            self.assertEqual(run("emergency-resume").returncode, 0)
+            self.assertEqual(labels(), ["agent-control"])
+
+            failed = run("enable-orchestrator", {"CONTROL_STUB_FAIL_EDIT": "1"})
+            self.assertNotEqual(failed.returncode, 0)
+            self.assertEqual(labels(), ["agent-control"])
+            mismatch = run("enable-orchestrator", {"CONTROL_STUB_MISMATCH": "1"})
+            self.assertNotEqual(mismatch.returncode, 0)
+            self.assertEqual(labels(), ["agent-control"])
+
+    def test_setup_requires_complete_required_label_set_without_overwriting_unrelated_metadata(self):
+        self.assertEqual(len(control_state.REQUIRED_LABELS), 15)
+        self.assertIn("agent-draft", control_state.REQUIRED_LABELS)
+        self.assertIn("agent-generated", control_state.REQUIRED_LABELS)
+        self.assertIn(control_state.EMERGENCY_STOP_LABEL, control_state.REQUIRED_LABELS)
+
+    def test_setup_label_listing_failure_and_malformed_control_issue_fail_closed(self):
+        with mock.patch.object(control_state, "_run_gh", side_effect=RuntimeError("unavailable")):
+            with self.assertRaises(control_state.ControlStateError):
+                control_state.setup("acme/repo")
+        with self.assertRaises(control_state.ControlStateError):
+            control_state.resolve_control_issue([
+                {"number": 208, "state": "closed", "title": control_state.CONTROL_ISSUE_TITLE,
+                 "body": control_state.CONTROL_MARKER, "labels": [{"name": control_state.CONTROL_LABEL}]}
+            ])
+
 
 class TestWorkerStateStructure(unittest.TestCase):
     """Test worker and CI state structures."""
