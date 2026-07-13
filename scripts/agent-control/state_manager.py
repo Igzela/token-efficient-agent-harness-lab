@@ -980,7 +980,7 @@ def _graphql_review_page(owner, name, pr_number, cursor=None):
         "query($owner:String!,$name:String!,$number:Int!,$after:String){"
         "repository(owner:$owner,name:$name){pullRequest(number:$number){"
         "headRefOid reviewDecision reviews(first:100,after:$after){"
-        "nodes{id state submittedAt author{id login __typename} commit{oid}}"
+        "nodes{id state submittedAt author{login __typename ... on User{id}} commit{oid}}"
         "pageInfo{hasNextPage endCursor}}}}}"
     )
     args = [

@@ -308,6 +308,13 @@ def thread_page(nodes, has_next=False, cursor=None, include_page_info=True, head
 
 
 class TestCurrentEffectiveReviews(unittest.TestCase):
+    def test_review_query_requests_stable_user_id_through_actor_fragment(self):
+        with mock.patch.object(sm, "_gh", return_value="{}") as gh:
+            sm._graphql_review_page("acme", "repo", 207)
+        query = next(value.split("=", 1)[1] for value in gh.call_args.args if value.startswith("query="))
+        self.assertIn("author{login __typename ... on User{id}}", query)
+        self.assertNotIn("author{id", query)
+
     def _effective(self, nodes, decision=None):
         with mock.patch.object(sm, "_gh", return_value=review_page(nodes, decision)):
             return sm.current_effective_reviews(207, HEAD, "acme/repo")
