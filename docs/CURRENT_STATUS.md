@@ -40,14 +40,14 @@ There is no pending PE-4 documentation-head or post-merge CI requirement. The ev
 
 | Stage | Priority | Capability | Current state |
 |---|---|---|---|
-| PE-5 | P1.5 | Release Provenance | Grouped `PE5-IMPLEMENT-1` in progress; internal milestones `PE5-CONTRACT-1` through `PE5-PUBLISH-1` remain ordered and PE-5 is not yet acceptance-sealed |
+| PE-5 | P1.5 | Release Provenance | `PE5-IMPLEMENT-1` is merged with internal milestones `PE5-CONTRACT-1` through `PE5-PUBLISH-1` finalized; independent `PE5-CLOSE-1` audit/repair is in progress and PE-5 is not yet acceptance-sealed |
 | PE-6 | P2 | Fault Injection and Recovery Drills | Packetized; blocked until PE5-CLOSE-1 and then begins with `PE6-INVARIANTS-1` |
 
 The detailed contracts and normative order are in `docs/NEXT_DECISION.md`.
 
 ## Current Gaps
 
-- The grouped PE-5 implementation now supplies the versioned contract, deterministic SPDX 2.3 package/container SBOM path, production OIDC attestation workflow, fail-closed installer/upgrader checks, and publish gate on its review branch; independent PE5-CLOSE-1 acceptance evidence is still pending.
+- The merged PE-5 implementation supplies the versioned contract, deterministic SPDX 2.3 package/container SBOM path, production OIDC attestation workflow, fail-closed installer/upgrader checks, and publish gate; closeout is independently validating the target/package matrix, transcript policy, and extraction boundary.
 - `policy_simulator.rs` still relies on fixed estimates rather than trace-calibrated replay; this remains outside PE-5/PE-6 unless a packet demonstrates a prerequisite impact.
 - There is no systematic bounded fault-injection registry and recovery-drill harness across storage, workflow/scheduler/executor, provider/budget/audit, and release upgrade/rollback seams.
 - External destructive testing, production provider calls, real target-repository corruption, and persistent signing secrets remain unauthorized.
