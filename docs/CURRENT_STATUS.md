@@ -10,11 +10,11 @@ The repository has broad feature coverage, but a 2026-07-13 call-site and owner-
 
 ## Verified Repository State
 
-- current observed `main` merge commit: `0d8127e3d779e54c58caf5d93e7589dd1a6df616`;
-- PR #214 (`PE56-POST-SEAL-REPAIR-1`) is merged;
-- exact final PR head: `ed5e033a5206d2ddfea2d48381217d0a04b4ceb3`;
-- exact-head CI run `29250861586` completed successfully;
-- the available GitHub connector did not expose a separate post-merge `main` workflow run for the merge commit, so no additional post-merge CI claim is made here.
+- PR #214 (`PE56-POST-SEAL-REPAIR-1`) is merged at `0d8127e3d779e54c58caf5d93e7589dd1a6df616`;
+- PR #214 exact final head: `ed5e033a5206d2ddfea2d48381217d0a04b4ceb3`;
+- PR #214 exact-head CI run `29250861586` completed successfully;
+- the available GitHub connector did not expose a separate post-merge `main` workflow run for that merge commit, so no additional post-merge CI claim is made here;
+- subsequent direct, explicitly authorized documentation-only commits recorded the integration audit and execution packets on `main`.
 
 ## Capability Status
 
@@ -89,13 +89,23 @@ The workflow-owned `LocalRunnerValidationExecutor` intentionally uses the Stub p
 
 ## Open Work Coordination
 
-PR #207 is an independent, disabled-by-default GitHub Actions/Codex repository-maintenance orchestrator. It remains open and must not merge in its currently audited state. Known code-level blockers include invalid PR-number extraction, CI-repair import/path failure, old-head verification after a repair push, a `setup-controls` command mismatch, review-state capacity leaks, a missing Issue scope marker/pre-dispatch validation, and duplicate exact-head CI dispatch after PAT pushes.
+PR #207 is an independent, disabled-by-default GitHub Actions/Codex repository-maintenance orchestrator.
 
-PR #207 must remain emergency-stopped and inactive. Its repair must preserve the current PE-4, PE-5, PE-6, integration-gap, and ownership documentation when refreshing from `main`.
+Current verified PR state:
+
+- open and unmerged;
+- branch `codex/agent-orchestrator-v1`;
+- current head `06933e0e84f5c92956e9139608b2bfe354fcbeb2`;
+- exact-head canonical CI run `29223404792` completed successfully with all seven required jobs green;
+- the Python job explicitly ran the canonical orchestrator regression suite, parsed the agent workflow YAML, and ran the orchestrator regression tests;
+- the PR body claims the previously identified runtime/state defects are repaired;
+- it is currently reported non-mergeable and is based on an older `main`, so it must refresh from current `main` and reconcile the active documents before any final review or merge decision.
+
+The eight items in `PR207-REPAIR-1` are now an independent acceptance checklist, not an assertion that every defect remains present. Review the actual final diff and executable paths; repair any remaining defect found. PR #207 must remain emergency-stopped and inactive, and it must not merge without separate user authorization.
 
 ## Active Execution Order
 
-1. Repair PR #207 on its existing branch and obtain fresh exact-head CI and independent review. Do not merge without separate user authorization.
+1. Refresh and independently validate PR #207 against current `main`; repair any remaining acceptance-checklist defect, obtain fresh exact-head CI, and report. Do not merge without separate user authorization.
 2. Implement `PE2-RUNTIME-PRODUCER-1` on a new focused branch/PR after refreshing from the then-current `main`.
 3. Implement `PE4-EVIDENCE-ENTRY-1` on a separate focused branch/PR.
 4. Implement `TOOL-DISCOVERY-BENCH-1` on a separate focused branch/PR.
