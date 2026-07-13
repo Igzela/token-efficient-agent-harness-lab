@@ -32,15 +32,19 @@ Inspect a human summary or the canonical JSON directly:
 
 ```bash
 PYTHONPATH=. uv run --no-project python tools/run_fault_drills.py \
-  --scenario-id pe6.release.provenance_rollback.v1 --format human
+  --scenario-id pe6.release.provenance_rollback.v2 --format human
 PYTHONPATH=. uv run --no-project python tools/run_fault_drills.py \
-  --scenario-id pe6.release.provenance_rollback.v1 --format json
+  --scenario-id pe6.release.provenance_rollback.v2 --format json
 ```
 
 Use `--require-supported` only when the named environment capability is a
 prerequisite for the operator's run. A failed, aborted, invalid, or cleanup
-failed result always returns non-zero. Reports are non-authoritative evidence
-bound to the exact source head, registry, seed, worker, and environment.
+failed result always returns non-zero. Reports use the v2 owner-evidence
+boundary and bind the source head, scenario/version/hash, fault and injection
+point, owner/resources, scenario-specific checks, exact owner-evidence hash,
+registry, seed, worker, configured timeout, monotonic observed duration, and
+independent cleanup. Exit zero without valid owner evidence fails. A category
+without a scenario-specific owner check remains `unsupported`, never passed.
 
 ## Local Token-Efficiency Runner
 
@@ -228,18 +232,41 @@ For normal local engine operation, use the existing dashboard build, engine star
 
 ## Release Upgrade and Rollback
 
-Use the existing curl installer for a production release. It downloads the
-archive, checksum, SPDX SBOM, provenance, and attestation companion assets;
-requires `gh attestation verify` with the repository, release workflow, tag,
-GitHub OIDC issuer, and non-self-hosted policy; then invokes the existing
-installer/upgrader owners:
+Never execute a mutable branch script or an unverified pipe. Download the exact
+tagged bootstrap asset and its SLSA bundle, verify the local bytes against the
+exact repository, release workflow, tag ref, source commit, GitHub OIDC issuer,
+and predicate type, then execute that immutable local file. Replace the example
+tag and 40-character commit with the release's published immutable identity:
 
 ```bash
-VERSION=v0.1.0 bash -c \
-  'curl -fsSL https://raw.githubusercontent.com/Igzela/token-efficient-agent-harness-lab/main/scripts/install-from-release.sh | bash'
+VERSION=v0.1.0
+SOURCE_COMMIT=0123456789abcdef0123456789abcdef01234567
+BASE="https://github.com/Igzela/token-efficient-agent-harness-lab/releases/download/${VERSION}"
+curl --fail --location --output install-from-release.sh "${BASE}/install-from-release.sh"
+curl --fail --location --output install-from-release.sh.slsa.bundle.json \
+  "${BASE}/install-from-release.sh.slsa.bundle.json"
+gh attestation verify install-from-release.sh \
+  --bundle install-from-release.sh.slsa.bundle.json \
+  --predicate-type https://slsa.dev/provenance/v1 \
+  --repo Igzela/token-efficient-agent-harness-lab \
+  --signer-workflow Igzela/token-efficient-agent-harness-lab/.github/workflows/release.yml \
+  --source-ref "refs/tags/${VERSION}" --source-digest "${SOURCE_COMMIT}" \
+  --cert-oidc-issuer https://token.actions.githubusercontent.com \
+  --deny-self-hosted-runners
+bash ./install-from-release.sh --version "${VERSION}" \
+  --source-commit "${SOURCE_COMMIT}" \
+  --bootstrap-bundle ./install-from-release.sh.slsa.bundle.json
 ```
 
-From an extracted, verified release directory, upgrade a user-local installation atomically. The four evidence paths must refer to the exact archive and companion assets, and the external-verification file must be the successful `gh attestation verify --format json` result:
+The bootstrap re-verifies itself before any download, verifies the separately
+attested verifier asset, downloads the archive and exact local SLSA, SPDX, and
+`release_provenance.v2` manifest bundles, compares signed predicates with the
+canonical local SBOM/manifest, then enforces archive bounds before extraction.
+API-fetched attestations are not installation evidence.
+
+From an already verified and extracted release directory, upgrade a user-local
+installation atomically. All six evidence paths must name the exact archive,
+canonical documents, and distributed bundles:
 
 ```bash
 ./upgrade.sh \
@@ -247,12 +274,19 @@ From an extracted, verified release directory, upgrade a user-local installation
   --data-dir "$HOME/.agent-control-plane" \
   --artifact "$ARCHIVE" \
   --sbom "$ARCHIVE.spdx.json" \
-  --attestation "$ARCHIVE.attestation.json" \
-  --provenance "$ARCHIVE.provenance.json" \
-  --external-verification "$ARCHIVE.external-verification.json"
+  --manifest "$ARCHIVE.release-manifest.json" \
+  --slsa-bundle "$ARCHIVE.slsa.bundle.json" \
+  --spdx-bundle "$ARCHIVE.spdx.bundle.json" \
+  --manifest-bundle "$ARCHIVE.release-manifest.bundle.json"
 ```
 
-The upgrade verifies provenance before stopping or mutating anything, replaces the binary and dashboard directory atomically, retains the prior binary as `agent-control-plane.bak`, removes stale dashboard assets, and requires the executable health check to pass before releasing the rollback state. Restart it with the operator's process manager after success. A missing or failed verification is a hard stop.
+The upgrade verifies release evidence before stopping or mutating anything,
+stages binary and Dashboard, retains verified backups, and requires restart and
+health checks. It prints `UPGRADE_FAILED_ROLLBACK_SUCCEEDED` only after the old
+binary digest, Dashboard state when present, previous process/restart hook, and
+health all verify. Otherwise it prints `UPGRADE_FAILED_ROLLBACK_FAILED`, exits
+with a distinct status, and preserves backup evidence. After repairing the
+operator environment, repeated `./upgrade.sh ... --recover` is idempotent.
 
 For a source checkout or non-publishing local package dry run only, use the explicit development mode; it does not claim production provenance:
 
@@ -271,4 +305,7 @@ For a managed service, provide paired explicit hooks:
   --restart-command '<process-manager start command>'
 ```
 
-Both hooks are required together. If binary/dashboard replacement, restart, or health verification fails, the script restores the prior binary and dashboard and attempts the old restart hook. Validate the packaged upgrade contract with `bash scripts/check_release_contract.sh` before publishing a release.
+Both hooks are required together. A managed service should also supply
+`--health-command` so recovery proves the restored process, not merely the
+binary's help output. Validate the packaged upgrade contract with
+`bash scripts/check_release_contract.sh` before publishing a release.

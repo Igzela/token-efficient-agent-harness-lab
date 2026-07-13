@@ -167,9 +167,11 @@ class ReleaseCloseoutTests(unittest.TestCase):
                 provenance_path=paths["provenance"],
                 mode="production",
             )
-            self.assertEqual(result["status"], "rejected")
-            self.assertIn("UNTRUSTED_IDENTITY", result["reason_codes"])
-            self.assertIn("EXTERNAL_VERIFICATION_UNAVAILABLE", result["reason_codes"])
+            self.assertEqual(result["status"], "unsupported")
+            self.assertEqual(
+                result["reason_codes"],
+                ["LEGACY_PRODUCTION_VERIFICATION_UNSUPPORTED"],
+            )
 
     def test_release_workflow_and_installer_guards_are_present(self) -> None:
         workflow = (ROOT / ".github/workflows/release.yml").read_text()
@@ -189,10 +191,18 @@ class ReleaseCloseoutTests(unittest.TestCase):
             (ROOT / "scripts/release_provenance.py").read_text().replace(" ", ""),
         )
         self.assertIn("source-ref", installer)
+        self.assertIn("--source-digest", installer)
+        self.assertIn("--bundle", installer)
         self.assertIn("--deny-self-hosted-runners", installer)
         self.assertIn("--predicate-type", installer)
-        self.assertIn("unsafe release archive member", installer)
-        self.assertIn("signed tag", installer)
+        self.assertIn("MAX_ARCHIVE_BYTES", installer)
+        self.assertIn("extract-archive", installer)
+        self.assertLess(installer.index("verify-release"), installer.index("extract-archive"))
+        self.assertIn("exact immutable version tag", installer)
+        self.assertIn("artifact-metadata: write", workflow)
+        self.assertEqual(workflow.count("id: attest-slsa"), 1)
+        self.assertEqual(workflow.count("id: attest-spdx"), 1)
+        self.assertEqual(workflow.count("id: attest-manifest"), 1)
         self.assertNotRegex(workflow, r"BEGIN (RSA|OPENSSH|EC|PRIVATE) KEY")
 
     def test_closeout_evidence_is_hash_bound_and_bounded(self) -> None:

@@ -39,31 +39,31 @@ Full Agent Autonomy Mode is active for repository-scoped work that remains testa
 
 ## PE-5 Release Provenance Ownership
 
-PE-5 is complete and independently acceptance-sealed. Grouped `PE5-IMPLEMENT-1` completed internal `PE5-CONTRACT-1` through `PE5-PUBLISH-1`; detailed packet contracts and evidence remain in `docs/NEXT_DECISION.md`.
+PE-5's prior seal is under `PE56-POST-SEAL-REPAIR-1`. The grouped historical `PE5-CONTRACT-1` through `PE5-PUBLISH-1` milestones and PRs #210-#211 remain evidence, but their one-bundle/API-transcript, placeholder-SBOM, bootstrap, rollback, and archive semantics are non-authorizing until the repair is accepted.
 
 | Capability | Primary owners | Boundary |
 |---|---|---|
-| Release provenance contract | `scripts/release_provenance.py`, `tools/test_release_provenance.py`, `tools/test_release_closeout.py`, existing release/build/install/upgrade scripts and workflow | one versioned `release_provenance.v1` and `release_verification.v1` contract; strict media/predicate/policy/transcript bindings; no publication or signing in the contract helper |
-| Deterministic SBOM | `scripts/release_provenance.py`, existing package/container builders; Cargo/Bun/Python locks; `tools/test_release_provenance.py` | canonical SPDX 2.3 package/container subject; target/artifact/lockfile-bound; no second package pipeline |
-| Signed provenance/attestation | existing `.github/workflows/release.yml`, pinned `actions/attest` commit `a1948c3f048ba23858d222213b7c278aabede763`, `scripts/release_provenance.py`, fixture tests | external ephemeral production identity; no persistent private key or Vader signing credential |
-| Installer/upgrader verification | `scripts/install-from-release.sh`, `scripts/install.sh`, `scripts/upgrade.sh`, `tools/test_release_installation.py`, `tools/test_release_closeout.py`, existing checksum/staging/health/atomic rollback owners | complete evidence verifies before extraction/activation; safe archive members; previous known-good state preserved through health success |
-| Publish gate | `.github/workflows/release.yml`, `scripts/check_release_contract.sh`, existing artifact upload/release helpers, action-pin/security checks | build → SBOM → attest → provenance → verify → publish ordering; no unauthorized public release/tag/deploy |
-| PE-5 closeout | release contract/tests/workflow dry run, installer rollback, `tools/test_release_closeout.py`, active docs | independent acceptance without requiring a real public release; sealed under PR #211 |
+| Release provenance contract | `scripts/release_provenance.py`, `tools/test_release_provenance.py`, `tools/test_release_provenance_v2.py`, `tools/test_release_closeout.py`, existing release/build/install/upgrade scripts and workflow | active `release_provenance.v2` canonical manifest and exact three-role local-bundle verification; v1 remains fixture-readable and production-non-authorizing |
+| Deterministic SBOM | `scripts/release_provenance.py`, `Cargo.lock`, `dashboard/bun.lock`, `sdk/typescript/bun.lock`, existing package/container builders, focused tests | canonical SPDX 2.3 artifact subject plus exact Cargo/npm inventory, purls, source locks, deterministic relationships, explicit package/container modes; no network resolution or second package pipeline |
+| Signed provenance/attestation | existing `.github/workflows/release.yml`, pinned `actions/attest` commit `a1948c3f048ba23858d222213b7c278aabede763`, `scripts/release_provenance.py`, fixture tests | distinct SLSA, SPDX, and custom-manifest bundles plus separate SLSA bootstrap-asset bundles; external ephemeral production identity; no persistent private key |
+| Installer/upgrader verification | `scripts/install-from-release.sh`, `scripts/install.sh`, `scripts/upgrade.sh`, `tools/test_release_installation.py`, `tools/test_release_provenance_v2.py`, existing staging/health/rollback owners | exact distributed bundles and predicates verify before bounded extraction/activation; immutable verified bootstrap; previous binary, Dashboard, process, and health restoration must all pass before success is claimed |
+| Publish gate | `.github/workflows/release.yml`, `scripts/check_release_contract.sh`, `tools/release_workflow_contract.py`, action-pin/security checks | semantic build → inventory → distinct attestations → exact local verification → previous-target verification → publish ordering; no unauthorized public release/tag/deploy |
+| PE-5 repair acceptance | release contract/tests/workflow dry run, installer rollback, `tools/test_release_closeout.py`, active docs | #211 remains historical; current acceptance requires the same-diff review, exact-head CI, merge, and post-merge CI for `PE56-POST-SEAL-REPAIR-1` without a real public release |
 
 ## PE-6 Fault Injection and Recovery Ownership
 
-PE-6 grouped implementation is merged after the PE-5 acceptance seal. Internal milestones completed in order within `PE6-IMPLEMENT-1`; `PE6-CLOSE-1` independently audited and sealed the chain.
+PE-6's prior seal is under `PE56-POST-SEAL-REPAIR-1`. PRs #212-#213 remain historical evidence, but harness-synthesized success and non-injected fault claims are non-authorizing until owner-emitted evidence and claim-aligned faults are accepted.
 
 | Capability | Primary owners | Boundary |
 |---|---|---|
-| Recovery invariants and fault contract | `scripts/fault_drill_contract.py`, `tools/test_fault_drill_contract.py` | `fault_scenario.v1`, `fault_drill_result.v1`, recovery/cleanup evidence, bounded reason codes; no runtime schema or mutation |
-| Fault-injection harness | `scripts/fault_drill_harness.py`, `scripts/fault_drill_registry.py`, `tools/test_pe6_harness_drill.py` | fixed registered child commands, deterministic worker/resource identities, timeout and finally cleanup; no arbitrary command/runtime service |
-| Storage drills | `engine/tests/test_pe6_fault_drills.rs`, `LocalProductStore`, migrations, integrity/audit tables, `BackupManager` | SQLite atomicity/replay/restart, integrity, backup/restore/tamper, PG service-gated owner check; no real DB corruption |
+| Recovery invariants and fault contract | `scripts/fault_drill_contract.py`, `tools/test_fault_drill_contract.py` | active `fault_scenario.v2`, `fault_owner_evidence.v2`, `fault_drill_result.v2`, and `fault_drill_report.v2`; v1 is not reinterpreted; bounded reason/check/category contracts |
+| Fault-injection harness | `scripts/fault_drill_harness.py`, `scripts/fault_drill_registry.py`, `scripts/fault_drill_owner.py`, `tools/test_pe6_harness_drill.py` | fixed registered child commands receive disposable scenario/output paths; exact owner bytes are validated and hashed; monotonic duration, timeout, identity, and independent cleanup; no arbitrary command/runtime service |
+| Storage drills | `engine/tests/test_pe6_fault_drills.rs`, `LocalProductStore`, migrations, integrity/audit tables, `BackupManager` | SQLite duplicate-write refusal/replay/restart, backup/restore tamper, and real PG pre-commit interruption with no partial state/audit, safe retry, and cleanup; no real DB corruption |
 | Workflow/executor drills | `engine/tests/test_pe6_fault_drills.rs`, workflow runs, scheduler, node executor | timeout/retry/concurrent tick/stale lease/restart behavior through existing owners |
-| Provider/budget/audit drills | `engine/tests/test_pe6_fault_drills.rs`, provider adapters, `FakeProvider`, pricing/cost gate, redacted audit | fake/stub only; bounded kill/timeout/cost/audit evidence; no live provider or credentials |
+| Provider/budget/audit drills | `engine/tests/test_pe6_fault_drills.rs`, provider adapters, `FakeProvider`, pricing/cost gate, redacted audit | fake/stub only; actual timeout/retry/budget/audit/redaction evidence; unsupported kill remains explicit; no live provider or credentials |
 | Release/rollback drills | `tools/test_pe6_release_drill.py`, accepted PE-5 verifier/installer/upgrader | invalid evidence before activation and previous-install preservation in temporary roots; no public release or host installation damage |
 | Drill registry/evidence | `tools/run_fault_drills.py`, `tools/test_fault_drill_registry.py`, `tools/test_pe6_evidence.py`, `docs/RUNBOOK.md` | allowlisted suites/IDs, bounded deterministic JSON/human reports, explicit unsupported state, existing CI discovery; no new runtime state model or mutation API |
-| PE-6 closeout | all drill owners and evidence | independent audit of recovery, cleanup, isolation, compatibility, report binding, and residual risk; sealed under the grouped closeout boundary |
+| PE-6 repair acceptance | all drill owners and evidence | #213 remains historical; current acceptance uses the same `PE56-POST-SEAL-REPAIR-1` diff and CI boundary as PE-5, with no second closeout PR |
 
 ## Open PR Coordination
 
@@ -79,8 +79,8 @@ It does not own PE-5 release-provenance semantics or PE-6 recovery semantics. Be
 ## Active Routing
 
 1. PE-1 through PE-4 remain acceptance-sealed; PE-4 is sealed under PR #206 and `PE4-POST-CLOSE-REPAIR-1`.
-2. PE-5 is acceptance-sealed under grouped `PE5-IMPLEMENT-1` and `PE5-CLOSE-1` (PRs #210 and #211).
-3. The PE-6 internal milestones are complete in order within grouped `PE6-IMPLEMENT-1`; `PE6-CLOSE-1` independently sealed the separate audit/repair boundary.
+2. PE-5 and PE-6 are under the single post-seal correctness repair `PE56-POST-SEAL-REPAIR-1`; earlier seals are superseded where their semantics are weaker.
+3. No later product stage is active.
 4. No later packet is activated by this objective. Extend existing owners; do not create another runtime, scheduler, storage layer, release pipeline, signing authority, recovery authority, artifact truth source, or Dashboard data model without an explicit replacement decision, migration, compatibility evidence, and rollback.
 
 ## Active Documents

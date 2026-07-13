@@ -14,12 +14,7 @@ PE-4 is sealed under `PE4-POST-CLOSE-REPAIR-1`. Its final accepted evidence is:
 
 Older PE-4 replay contracts, artifacts, and closeout claims remain historical only and cannot authorize current replay, shadow, canary, or promotion behavior.
 
-The active direction is now:
-
-1. complete PE-5 Release Provenance;
-2. independently acceptance-seal PE-5;
-3. complete PE-6 Fault Injection and Recovery Drills;
-4. independently acceptance-seal PE-6.
+The active direction is `PE56-POST-SEAL-REPAIR-1`: the independently discovered PE-5 release-integrity and PE-6 evidence-integrity repairs are implemented locally on one branch, with acceptance pending review, exact-head CI, merge, and post-merge `main` CI. This is not PE-7 and activates no later product stage. The weaker PR #210-#213 acceptance semantics are historical and non-authorizing until this repair is accepted with its required evidence.
 
 Do not create another roadmap or product-evolution document. This file is the normative forward plan.
 
@@ -80,12 +75,35 @@ It does touch CI workflows/scripts/tests and several active documents. Therefore
 
 ## Grouped PR Execution Boundaries
 
-The packet definitions below remain required internal milestones and acceptance coverage. They are grouped into the following review boundaries to reduce serial CI and PR overhead without changing their normative order:
+The packet definitions below retain the historical requirements and evidence that led to PRs #210-#213. They no longer authorize additional implementation or closeout PRs for the active repair. `PE56-POST-SEAL-REPAIR-1` owns every PE-5/PE-6 post-seal defect, documentation update, independent same-diff review, acceptance decision, and any exact-head CI repair on exactly one branch and PR.
 
-- `PE5-IMPLEMENT-1` owns `PE5-CONTRACT-1` through `PE5-PUBLISH-1` on one branch and one PR. The milestones are completed in order with focused local checks; full repository validation and exact-head CI run only on the complete grouped head.
-- `PE5-CLOSE-1` remains a separate independent audit/repair/acceptance PR for the merged PE-5 chain.
-- `PE6-IMPLEMENT-1` owns `PE6-INVARIANTS-1` through `PE6-EVIDENCE-1` on one branch and one PR, with the same local-milestone and final-head CI rule.
-- `PE6-CLOSE-1` remains a separate independent audit/repair/acceptance PR for the merged PE-6 chain.
+- no PE-5, PE-6, prerequisite, documentation, or closeout sub-PR may be created;
+- focused tests run while implementing, and the full local and GitHub matrices run on the complete reviewed head;
+- standards and specification reviews are independent passes over that same complete diff;
+- any repair after review or CI invalidates the affected review result and receives a new same-diff review and exact-head CI;
+- final active-document seals may be restored only after the repaired head and post-merge `main` are green.
+
+## Packet PE56-POST-SEAL-REPAIR-1 — PE-5/PE-6 post-seal integrity repair
+
+**State:** `IN_PROGRESS`
+
+**Goal:** Restore the real release-provenance chain and replace synthesized PE-6 success with owner-emitted, claim-aligned fault evidence, then acceptance-seal both repaired stages on one reviewed exact head.
+
+**Prerequisites and owners:** Start from `main` at or after `03d8164a9f3f3a6b9cf48c051fff74c1478f634a`; PRs #209-#213 are merged; PR #207 remains a separate read-only coordination lane. Existing release workflow, packaging, provenance, install/upgrade, storage, fault-owner, harness, test, CI, and authoritative-document paths remain the sole owners.
+
+**Allowed changes:** Distinct pinned SLSA/SPDX/custom-manifest attestations and bundles; `release_provenance.v2`; exact local-bundle verification; immutable attested bootstrap; deterministic offline Cargo/Bun SBOM inventory; explicit first/previous-release state; bounded archive validation/extraction; transactional install/upgrade/recovery; v2 owner evidence; real or narrowed fault semantics; focused/adversarial tests; the smallest required existing-document updates.
+
+**Forbidden changes:** No PE-7 or later product stage, second release/recovery authority, second PR, real tag/release/publication/installation/OIDC exercise, provider call, production resource mutation, persistent signing secret, mutable bootstrap, or action on PR #207.
+
+**Failure states:** Missing/swapped/duplicated/mismatched bundles, unsigned authority, invalid bootstrap/source/workflow/tag, arbitrary or nonexistent rollback target, malformed/non-deterministic inventory, unsafe archive, partial activation, incomplete restoration, missing/invalid owner evidence, unsupported claim, timeout, failed check, or failed cleanup all fail closed without an acceptance seal.
+
+**Verification:** Focused release, archive, installer, rollback, evidence-contract, harness, and real disposable PostgreSQL fault suites; the full local repository baseline; two independent review passes over the same final diff; complete exact-head GitHub CI before merge; complete post-merge `main` CI.
+
+**Compatibility:** Historical `release_provenance.v1` fixtures remain readable only as `verified_fixture`; `fault_drill_result.v1` is not reinterpreted; existing runtime/API/SDK/schema behavior and original authority owners remain compatible. Production installation requires v2 evidence and the immutable bootstrap.
+
+**Rollback:** Revert the single repair merge. Disable the repaired release workflow before reverting if publication could otherwise run; retain failed upgrade backups/state and evidence. Reversion restores historical code for diagnosis but does not restore the superseded #210-#213 acceptance claims.
+
+**Completion:** Merge only after the final reviewed head and all required jobs pass; verify post-merge `main`; then PE-5 and PE-6 are sealed only with this packet included in their evidence.
 
 No internal milestone receives a separate PR, merge, or full CI wait. Final packet-state documentation for a grouped implementation is included in that implementation's reviewed head before exact-head CI.
 
@@ -97,8 +115,8 @@ No internal milestone receives a separate PR, merge, or full CI wait. Final pack
 | PE-2 | P0/P1 | Budget Intelligence and Anomaly Auto-Pause | `COMPLETE` and acceptance-sealed |
 | PE-3 | P1 | Operator Decision Center | `COMPLETE` and independently acceptance-sealed |
 | PE-4 | P1/P2 | Trace-backed Policy Replay | `COMPLETE` and acceptance-sealed under PE4-POST-CLOSE-REPAIR-1 |
-| PE-5 | P1.5 | Release Provenance | Complete and independently acceptance-sealed under grouped `PE5-IMPLEMENT-1` and `PE5-CLOSE-1`; internal milestones remain ordered and complete |
-| PE-6 | P2 | Fault Injection and Recovery Drills | `COMPLETE` and independently acceptance-sealed under grouped `PE6-IMPLEMENT-1` and `PE6-CLOSE-1` |
+| PE-5 | P1.5 | Release Provenance | Repair implemented; prior seal remains under `PE56-POST-SEAL-REPAIR-1` pending required CI |
+| PE-6 | P2 | Fault Injection and Recovery Drills | Repair implemented; prior seal remains under `PE56-POST-SEAL-REPAIR-1` pending required CI |
 
 # PE-5 — Release Provenance
 
@@ -547,6 +565,6 @@ No destructive external provider call, production database corruption, real targ
 
 ## Active Routing
 
-1. Terminal objective: PE-1 through PE-6 are complete and independently acceptance-sealed; completed `PE6-CLOSE-1` is the final packet for this objective, and exact grouped PR, commit, exact-head CI, and post-merge `main` CI evidence is in the final acceptance handoff. No later packet is activated.
+1. Active repair objective: complete `PE56-POST-SEAL-REPAIR-1` on exactly one repair PR. PE-5 and PE-6 remain under post-seal correctness repair until its same-diff review, exact-head CI, merge, and post-merge `main` CI pass; their historical acceptance seals do not authorize the weaker repaired semantics.
 2. Keep #207's orchestrator lane separate; reconcile shared CI/docs instead of overwriting either lane.
 3. Do not create PE-7, a second release owner, a second recovery owner, or a new runtime/control plane during this objective.

@@ -12,10 +12,9 @@ from typing import Mapping
 
 from scripts.fault_drill_contract import (
     CAPABILITIES,
-    REGISTRY_SCHEMA_VERSION,
-    SCENARIO_SCHEMA_VERSION,
+    SCENARIO_SCHEMA_VERSION_V2,
     ContractError,
-    validate_scenario,
+    validate_scenario_v2,
 )
 
 
@@ -38,26 +37,26 @@ class ScenarioSpec:
 
 REGISTRY: tuple[ScenarioSpec, ...] = (
     ScenarioSpec(
-        "pe6.harness.timeout_cleanup.v1",
+        "pe6.harness.timeout_cleanup.v2",
         "harness",
         "scripts/fault_drill_harness.py",
-        "pe6.fault.harness.timeout_cleanup.v1",
-        "cleanup_failure",
-        "error",
+        "pe6.fault.harness.timeout_cleanup.v2",
+        "executor_timeout",
+        "timeout",
         ("filesystem", "process"),
         "linux-sqlite",
         (("temp_dir", "filesystem"), ("controlled_process", "process")),
         ("core",),
         "python_test",
-        ("tools.test_pe6_harness_drill.HarnessOwnerDrillTests.test_registered_timeout_and_cleanup",),
+        ("tools.test_pe6_harness_drill.HarnessOwnerDrillTests.test_owner_timeout_and_cleanup_evidence",),
         30_000,
     ),
     ScenarioSpec(
-        "pe6.storage.sqlite.atomicity.v1",
+        "pe6.storage.sqlite.atomicity.v2",
         "storage",
         "engine::storage::local_product_store::workflow_runs",
-        "pe6.fault.storage.sqlite.atomicity.v1",
-        "after_commit_ack",
+        "pe6.fault.storage.sqlite.duplicate_replay.v2",
+        "duplicate_write",
         "duplicate",
         ("filesystem", "sqlite", "rust_engine"),
         "linux-sqlite",
@@ -68,11 +67,11 @@ REGISTRY: tuple[ScenarioSpec, ...] = (
         90_000,
     ),
     ScenarioSpec(
-        "pe6.storage.sqlite.backup_restore.v1",
+        "pe6.storage.sqlite.backup_restore.v2",
         "storage",
         "engine::storage::backup_manager",
-        "pe6.fault.storage.sqlite.backup_restore.v1",
-        "restore_tamper",
+        "pe6.fault.storage.sqlite.backup_restore.v2",
+        "integrity_tamper",
         "tamper",
         ("filesystem", "sqlite", "rust_engine"),
         "linux-sqlite",
@@ -83,10 +82,10 @@ REGISTRY: tuple[ScenarioSpec, ...] = (
         90_000,
     ),
     ScenarioSpec(
-        "pe6.storage.postgres.atomicity.v1",
+        "pe6.storage.postgres.atomicity.v2",
         "storage",
         "engine::storage::local_product_store::pg_backend",
-        "pe6.fault.storage.postgres.atomicity.v1",
+        "pe6.fault.storage.postgres.atomicity.v2",
         "during_transaction",
         "interrupt",
         ("filesystem", "postgres", "rust_engine"),
@@ -98,10 +97,10 @@ REGISTRY: tuple[ScenarioSpec, ...] = (
         120_000,
     ),
     ScenarioSpec(
-        "pe6.workflow.recovery.v1",
+        "pe6.workflow.recovery.v2",
         "workflow",
         "engine::storage::local_product_store::workflow_runs + engine::scheduler",
-        "pe6.fault.workflow.recovery.v1",
+        "pe6.fault.workflow.recovery.v2",
         "concurrent_conflict",
         "race",
         ("filesystem", "sqlite", "rust_engine", "process"),
@@ -113,27 +112,27 @@ REGISTRY: tuple[ScenarioSpec, ...] = (
         90_000,
     ),
     ScenarioSpec(
-        "pe6.provider.safety.v1",
+        "pe6.provider.safety.v2",
         "provider",
         "engine::provider::executor + engine::provider::audit + engine::provider::cost_gate",
-        "pe6.fault.provider.safety.v1",
-        "provider_kill",
-        "kill",
-        ("fake_provider", "sqlite", "rust_engine", "process"),
+        "pe6.fault.provider.timeout.v2",
+        "provider_timeout",
+        "timeout",
+        ("fake_provider", "rust_engine", "process"),
         "linux-sqlite",
-        (("fake_provider", "fake_provider"), ("sqlite_db", "sqlite")),
+        (("fake_provider", "fake_provider"), ("controlled_process", "process")),
         ("core", "provider"),
         "cargo_test",
-        ("pe6_provider_timeout_kill_budget_audit_and_redaction",),
+        ("pe6_provider_timeout_retry_budget_audit_and_redaction",),
         90_000,
     ),
     ScenarioSpec(
-        "pe6.release.provenance_rollback.v1",
+        "pe6.release.provenance_rollback.v2",
         "release",
         "scripts/release_provenance.py + scripts/install-from-release.sh + scripts/upgrade.sh",
-        "pe6.fault.release.provenance_rollback.v1",
+        "pe6.fault.release.provenance_rollback.v2",
         "release_activation_failure",
-        "tamper",
+        "error",
         ("filesystem", "release", "process"),
         "linux-sqlite",
         (("temp_dir", "filesystem"), ("release_bundle", "release")),
@@ -195,9 +194,9 @@ def scenario_for(spec: ScenarioSpec, *, source_head: str, seed: int, worker_id: 
         for index, (kind, capability) in enumerate(spec.resource_kinds, start=1)
     ]
     scenario = {
-        "schema_version": SCENARIO_SCHEMA_VERSION,
+        "schema_version": SCENARIO_SCHEMA_VERSION_V2,
         "scenario_id": spec.scenario_id,
-        "scenario_version": "v1",
+        "scenario_version": "v2",
         "seed": seed,
         "worker_id": worker_id,
         "source_head": source_head,
@@ -232,7 +231,7 @@ def scenario_for(spec: ScenarioSpec, *, source_head: str, seed: int, worker_id: 
         "max_events": 128,
         "max_evidence_refs": 16,
     }
-    return validate_scenario(scenario)
+    return validate_scenario_v2(scenario)
 
 
 def validate_registry() -> None:
