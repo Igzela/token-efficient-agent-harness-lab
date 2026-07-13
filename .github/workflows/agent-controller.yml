@@ -1,0 +1,109 @@
+name: agent-controller
+
+on:
+  workflow_dispatch:
+    inputs:
+      command:
+        required: true
+        type: choice
+        options:
+          - setup-controls
+          - status
+          - enable-orchestrator
+          - disable-orchestrator
+          - enable-auto-merge
+          - disable-auto-merge
+          - emergency-stop
+          - emergency-resume
+          - dispatch-ready
+          - dispatch-repair
+          - dispatch-review
+          - dispatch-merge
+          - dispatch-next
+          - retry-review
+      issue:
+        required: false
+        type: number
+      pr_number:
+        required: false
+        type: number
+      head_sha:
+        required: false
+        type: string
+      ci_run_id:
+        required: false
+        type: number
+      repair_count:
+        required: false
+        type: number
+      source_issue:
+        required: false
+        type: number
+      dispatch_id:
+        required: false
+        type: string
+
+permissions:
+  actions: write
+  contents: read
+  issues: write
+  pull-requests: read
+
+concurrency:
+  group: agent-dispatch-global
+  cancel-in-progress: false
+
+jobs:
+  control:
+    runs-on: ubuntu-latest
+    env:
+      AGENT_REPO: ${{ github.repository }}
+      GH_TOKEN: ${{ github.token }}
+      INPUT_COMMAND: ${{ inputs.command }}
+      INPUT_DISPATCH_ID: ${{ inputs.dispatch_id }}
+      INPUT_HEAD_SHA: ${{ inputs.head_sha }}
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@8d9ed9ac5c53483de85588cdf95a591a75ab9f55 # v5
+        with:
+          python-version: "3.11"
+      - name: Execute gated controller command
+        run: |
+          set -euo pipefail
+          case "$INPUT_COMMAND" in
+            setup-controls)
+              # The compatibility CLI delegates to the single complete setup owner.
+              python3 scripts/agent-control/control_state.py setup-controls
+              ;;
+            status|enable-orchestrator|disable-orchestrator|enable-auto-merge|disable-auto-merge|emergency-stop|emergency-resume)
+              python3 scripts/agent-control/control_state.py "$INPUT_COMMAND"
+              ;;
+            retry-review)
+              python3 scripts/agent-control/control_state.py require-live >/dev/null
+              python3 scripts/agent-control/dispatcher.py retry-review "${{ inputs.issue }}"
+              ;;
+            dispatch-ready)
+              python3 scripts/agent-control/control_state.py require-live >/dev/null
+              python3 scripts/agent-control/dispatcher.py dispatch-ready "${{ inputs.issue }}" "$INPUT_DISPATCH_ID"
+              ;;
+            dispatch-repair)
+              python3 scripts/agent-control/control_state.py require-live >/dev/null
+              python3 scripts/agent-control/dispatcher.py dispatch-repair "${{ inputs.pr_number }}" "${{ inputs.issue }}" \
+                "$INPUT_HEAD_SHA" "${{ inputs.ci_run_id }}" "${{ inputs.repair_count }}"
+              ;;
+            dispatch-review)
+              python3 scripts/agent-control/control_state.py require-live >/dev/null
+              python3 scripts/agent-control/dispatcher.py dispatch-review "${{ inputs.pr_number }}" "${{ inputs.issue }}" "$INPUT_HEAD_SHA"
+              ;;
+            dispatch-merge)
+              python3 scripts/agent-control/control_state.py require-auto-merge >/dev/null
+              python3 scripts/agent-control/dispatcher.py dispatch-merge "${{ inputs.pr_number }}" "${{ inputs.issue }}" "$INPUT_HEAD_SHA"
+              ;;
+            dispatch-next)
+              python3 scripts/agent-control/control_state.py require-live >/dev/null
+              python3 scripts/agent-control/dispatcher.py dispatch-next "${{ inputs.source_issue }}"
+              ;;
+            *) echo "unknown command" >&2; exit 2 ;;
+          esac

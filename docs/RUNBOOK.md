@@ -230,6 +230,40 @@ Rollback requires no schema down migration. Revert the implementation commit; v2
 
 For normal local engine operation, use the existing dashboard build, engine start, health check, metrics, backup, restore, release, and incident-triage scripts in `scripts/` and the CI workflow as the source of truth.
 
+## Event-Driven Agent Orchestrator Push Credential
+
+The implementation and CI-repair finalizers require the repository secret `AGENT_PUSH_TOKEN`: a fine-grained repository PAT with **Contents: Read and write** only. It is used only by the GitHub-hosted finalizer's `Push branch with isolated temporary credentials` step. PR creation/update, labels, comments, dispatch, control reads, review, and merge use the workflow `${{ github.token }}` with explicit least-privilege permissions.
+
+The PAT is never copied to Vader, artifacts, or remote URLs. The push step fails closed if it is missing and uses a temporary `GIT_ASKPASS` directory below `RUNNER_TEMP`; cleanup removes only that directory. It never calls `gh auth setup-git` and never changes the runner user's global Git credential helper. Rotate or revoke the PAT immediately after any suspected exposure.
+
+Create the disabled control surface once with `python3 scripts/agent-control/control_state.py setup-controls --repo OWNER/REPO` (the `setup` spelling remains an explicit compatibility alias; `setup_labels.py` delegates to the same owner). This is the single complete, idempotent setup command: it paginates and verifies all fifteen required operational/control labels, preserves unrelated labels and metadata, and ensures exactly one open Issue titled `[agent-control] Orchestrator controls` with marker `<!-- agent-orchestrator-control:v1 -->`. A newly created or repaired control Issue has `agent-control` and `agent-emergency-stop`, but neither enable label. Setup never enables orchestration, removes the stop, or silently accepts an ambiguous/malformed Issue. Operators change only that Issue's labels:
+
+```bash
+uv run --no-project python scripts/agent-control/control_state.py status --repo OWNER/REPO
+uv run --no-project python scripts/agent-control/control_state.py enable-orchestrator --repo OWNER/REPO
+uv run --no-project python scripts/agent-control/control_state.py disable-orchestrator --repo OWNER/REPO
+uv run --no-project python scripts/agent-control/control_state.py enable-auto-merge --repo OWNER/REPO
+uv run --no-project python scripts/agent-control/control_state.py disable-auto-merge --repo OWNER/REPO
+uv run --no-project python scripts/agent-control/control_state.py emergency-stop --repo OWNER/REPO
+uv run --no-project python scripts/agent-control/control_state.py emergency-resume --repo OWNER/REPO
+```
+
+Emergency stop always wins. It atomically (or with verified compensation) adds `agent-emergency-stop` and removes both enable labels. Resume removes only the stop; it never restores prior authorization. Re-enable is explicit: `enable-orchestrator` requires one valid open control Issue and no stop, while `enable-auto-merge` additionally requires the live orchestrator label and never enables orchestration itself. Every command rereads and verifies live state after mutation; a provider success with a mismatched resulting state is failure-closed. A workflow that was already active may perform only its idempotent failure cleanup: the state owner removes that workflow's one active-capacity label and records a non-running blocked label, with exact-head validation for review and repair. This cleanup cannot dispatch or authorize work. Keep orchestration and auto-merge disabled, with emergency stop present, until exact-head CI, Issue↔PR binding, independent review, and Vader service-user validation have all been independently revalidated.
+
+Canonical CI acquisition binds repository, trusted head repository, workflow identity/path, branch, exact head SHA, and PR. Completed supported evidence outranks active runs; the newest authoritative completed result wins, with a natural `pull_request` run breaking otherwise equal ties. Unsupported terminal runs are reselected around, and a pending natural run receives at most one bounded `workflow_dispatch` fallback. Observed, selected, superseded, unsupported, and fallback state is persisted so stale or duplicate events cannot dispatch duplicate repairs/reviews.
+
+The Codex wrapper constructs an allowlisted child environment for version, login-status, help, implementation, repair, and review calls. It preserves only the documented runtime/login variables (`HOME`, optional `CODEX_HOME`, `PATH`, locale/temp/terminal and service-user identity variables) and excludes GitHub, provider, cloud, and unknown secret-shaped variables. It does not fall back to API-key billing, mutate login files, print the environment, or retain raw failure output.
+
+Every task Issue intended for implementation must also declare its permitted change scope. The finalizer rejects an artifact unless every changed path is exact or under an allowed directory prefix:
+
+```html
+<!-- agent-orchestrator-scope:v1 {"allowed_paths":["scripts/agent-control/","tests/test_agent_orchestrator_artifacts.py"]} -->
+```
+
+Before commit, the finalizer performs bounded structural validation only: it validates the artifact schema, hashes and exact bindings, rechecks Issue scope, recomputes the staged path set, and runs `git diff --cached --check`. It does not claim arbitrary task-specific behavioral validation at that point. Behavioral acceptance comes from the canonical exact-head seven-job CI run acquired after the validated commit is pushed.
+
+Review terminal states are explicit. The validator accepts only schema-valid exact-head artifacts. Exact `PASS` additionally requires the complete bounded diff, no blockers, and affirmative exact-head CI, security, and rollback gates; it removes `review-running`, adds `review-passed` and `agent-merge-ready`, and waits without consuming capacity when auto-merge is disabled. Schema-valid `PASS_WITH_NOTES`, `BLOCKED`, and `FAIL` are normal non-authorizing business outcomes: their bounded verdict, summary, notes, blockers, digest, and reviewed head are recorded, active review capacity is released, and `agent-review-blocked` is set. Malformed, unavailable, oversized, or head-mismatched output exits nonzero, is never recorded as a verdict, and records only a bounded malformed/infrastructure reason before the matching failure cleanup. Merge additionally requires GitHub's current review decision and latest effective human review per reviewer (not a raw historical `CHANGES_REQUESTED` scan), plus complete cursor-paginated review-thread evidence with no unresolved thread; unavailable, contradictory, partial, malformed, or bounded-out review data fails closed. After operator inspection, use the live-gated controller command `retry-review`; it derives the current PR and exact head from trusted state, revalidates their binding, and dispatches a fresh read-only review without returning the Issue to implementation-ready state. Stage B remains incomplete; keep the orchestrator disabled and emergency-stopped.
+
 ## Release Upgrade and Rollback
 
 Never execute a mutable branch script or an unverified pipe. Download the exact

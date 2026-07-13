@@ -24,6 +24,7 @@ Full Agent Autonomy Mode is active for repository-scoped work that remains testa
 | `sdk/typescript/`, `sdk/python/` | active | SDKs | SDK tests |
 | `wire_contract/v1/`, `codegen/` | active | wire contracts and generated types | `scripts/check_wire_codegen_drift.sh` |
 | `scripts/`, `tools/`, `.github/workflows/` | active | scripts, pilots, CI, release packaging, action/dependency gates, backup/restore, install/upgrade, and drills | script-specific tests, workflow checks, security baseline, CI |
+| `scripts/agent-control/`, `.github/workflows/agent-*.yml`, `tests/test_agent_control_*.py`, `tests/test_agent_orchestrator_*.py` | active | disabled-by-default GitHub Issue-controlled maintenance orchestration, isolated Vader Codex workers, artifact finalizers, exact-head CI repair, independent review, and merge gating | explicit orchestrator suite in canonical `python-tests`, YAML/action-pin/security/handoff checks |
 
 ## Product-Evolution Ownership and Connection State
 
@@ -54,6 +55,8 @@ Owned by existing PR #207:
 - orchestrator-specific additions to architecture/status/module/runbook documents.
 
 The orchestrator must remain disabled and emergency-stopped. GitHub-hosted finalizers own mutations; Vader remains artifact-only. No replacement orchestrator, GitHub App, OpenAI API key, or Actions Variable control plane is authorized.
+
+`control_state.py` is the authoritative setup and transition owner: `setup_labels.py` is a compatibility delegate, stop/resume never implicitly reauthorize, and every label mutation is followed by a live-state verification. `ci_verifier.py`, `ci_handler.py`, and the Issue-backed acquisition state own deterministic exact-head ranking, bounded natural-run observation/fallback, and supersession persistence. `validate_review.py`, `state_manager.py`, and `agent-review.yml` own bounded review validation, exact-head verdict persistence, non-authorizing review outcomes, and separate malformed-result evidence; `state_manager.py` also owns current-effective GitHub review evaluation and complete bounded review-thread pagination for merge gating. `codex_wrapper.sh` owns the shared allowlisted environment for implementation, repair, and review workers. Stage B activation remains out of scope and disabled.
 
 ### `PE2-RUNTIME-PRODUCER-1`
 

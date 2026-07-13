@@ -19,9 +19,9 @@ Do not create another roadmap, phase, status, policy, or closeout document. This
 
 - PR #214 merged at `0d8127e3d779e54c58caf5d93e7589dd1a6df616`;
 - PR #214 exact head `ed5e033a5206d2ddfea2d48381217d0a04b4ceb3` passed exact-head CI run `29250861586`;
-- PR #207 is open and unmerged on `codex/agent-orchestrator-v1` at `06933e0e84f5c92956e9139608b2bfe354fcbeb2`;
-- PR #207 exact-head CI run `29223404792` passed all seven required jobs and explicitly ran the orchestrator regression suite;
-- PR #207 is currently reported non-mergeable and is based on an older `main`; it must refresh from current `main`, preserve the active documents, and receive an independent final-diff review;
+- PR #207 is open and unmerged on `codex/agent-orchestrator-v1`; its pre-refresh head `06933e0e84f5c92956e9139608b2bfe354fcbeb2` and CI run `29223404792` are historical evidence only;
+- the repair branch refreshed from starting `main` `d5354e6866e69cc2ce7c4d12258bfd3c828ce7c4` and preserves the active integration-repair documents;
+- its final repaired head requires fresh exact-head seven-job CI, proof that the orchestrator suite and workflow parser ran, and an independent final-diff review; current operational evidence belongs in PR #207;
 - PR #207 remains disabled and emergency-stopped.
 
 Every implementation session must refresh actual GitHub and local state before relying on these identifiers.
@@ -96,6 +96,8 @@ The current PR body claims the previously identified defects are repaired and it
 - no OpenAI API key, GitHub App, Actions Variable control plane, or broad self-hosted credential is added;
 - control Issue remains labeled `agent-emergency-stop` and activation remains disabled;
 - no merge without separate user authorization.
+
+The repaired control contract requires stop to remove both enable labels, resume to leave both absent, and explicit separate reauthorization for orchestration and auto-merge. `setup-controls` is the sole complete setup entry point (the legacy `setup_labels.py` command is only a compatibility delegate). Exact-head CI uses completed-result ranking with natural-run tie preference and one bounded fallback, while persisting observed, selected, superseded, unsupported, and fallback state. Review finalization records schema-valid exact-head `PASS_WITH_NOTES`, `BLOCKED`, and `FAIL` as non-authorizing evidence, while malformed output remains a bounded infrastructure failure. Merge uses GitHub's current review decision plus latest effective human review evidence and complete bounded thread pagination, never a partial or historical raw-node scan. Codex workers use the documented environment allowlist. Stage B runner/service-account validation remains incomplete.
 
 **Completion:** refresh from current `main`; reconcile the active documents without deleting current integration-repair state; run fresh exact-head seven-job CI and prove orchestrator regression tests ran; independently review the complete final diff; report remaining Stage B runner/service-account prerequisites. Code-level blockers must be zero before reporting `MERGE_READY_DISABLED_ONLY`.
 

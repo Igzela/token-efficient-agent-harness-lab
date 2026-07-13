@@ -1,0 +1,13 @@
+{
+  "workflow_name": "tests",
+  "workflow_path": ".github/workflows/tests.yml",
+  "required_jobs": [
+    "docker-build",
+    "native-runtime",
+    "pg-integration-tests",
+    "python-tests",
+    "rust-tests",
+    "rust-typescript-cutover",
+    "typescript-tests"
+  ]
+}
