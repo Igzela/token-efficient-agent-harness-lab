@@ -232,6 +232,10 @@ class ReleaseProvenanceV2Tests(unittest.TestCase):
         self.assertTrue(all(item["source_lockfile"] for item in packages))
         self.assertTrue(all(item["purl"].startswith("pkg:") for item in packages))
         self.assertTrue(inventory["relationships"])
+        self.assertEqual(
+            MODULE._purl("npm", "@scope/example", "1.2.3+build"),
+            "pkg:npm/%40scope/example@1.2.3%2Bbuild",
+        )
 
         files = self.build_files()
         sbom = MODULE.read_json(files["sbom"])

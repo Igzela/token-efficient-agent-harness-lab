@@ -19,7 +19,6 @@ import tarfile
 from pathlib import Path
 import tomllib
 from typing import Any, Callable, Iterable, Mapping, NamedTuple
-from urllib.parse import quote
 
 
 SCHEMA_VERSION = "release_provenance.v1"
@@ -347,9 +346,18 @@ def _strip_json_comments_and_trailing_commas(text: str) -> str:
     return "".join(output)
 
 
+def _percent_encode(value: str, *, safe: str = "") -> str:
+    allowed = set(b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-._~")
+    allowed.update(safe.encode("ascii"))
+    return "".join(
+        chr(byte) if byte in allowed else f"%{byte:02X}"
+        for byte in value.encode("utf-8")
+    )
+
+
 def _purl(ecosystem: str, name: str, version: str) -> str:
-    encoded_name = quote(name, safe="/")
-    return f"pkg:{ecosystem}/{encoded_name}@{quote(version, safe='')}"
+    encoded_name = _percent_encode(name, safe="/")
+    return f"pkg:{ecosystem}/{encoded_name}@{_percent_encode(version)}"
 
 
 def _package_identity(package: Mapping[str, Any]) -> tuple[str, str, str, str]:
