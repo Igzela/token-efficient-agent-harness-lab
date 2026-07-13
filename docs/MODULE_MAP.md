@@ -52,7 +52,7 @@ PE-5 is complete and independently acceptance-sealed. Grouped `PE5-IMPLEMENT-1` 
 
 ## PE-6 Fault Injection and Recovery Ownership
 
-PE-6 grouped implementation is active after the PE-5 acceptance seal. Internal milestones remain normative and execute in order within `PE6-IMPLEMENT-1`; closeout remains a separate boundary.
+PE-6 grouped implementation is merged after the PE-5 acceptance seal. Internal milestones completed in order within `PE6-IMPLEMENT-1`; `PE6-CLOSE-1` independently audited and sealed the chain.
 
 | Capability | Primary owners | Boundary |
 |---|---|---|
@@ -63,7 +63,7 @@ PE-6 grouped implementation is active after the PE-5 acceptance seal. Internal m
 | Provider/budget/audit drills | `engine/tests/test_pe6_fault_drills.rs`, provider adapters, `FakeProvider`, pricing/cost gate, redacted audit | fake/stub only; bounded kill/timeout/cost/audit evidence; no live provider or credentials |
 | Release/rollback drills | `tools/test_pe6_release_drill.py`, accepted PE-5 verifier/installer/upgrader | invalid evidence before activation and previous-install preservation in temporary roots; no public release or host installation damage |
 | Drill registry/evidence | `tools/run_fault_drills.py`, `tools/test_fault_drill_registry.py`, `tools/test_pe6_evidence.py`, `docs/RUNBOOK.md` | allowlisted suites/IDs, bounded deterministic JSON/human reports, explicit unsupported state, existing CI discovery; no new runtime state model or mutation API |
-| PE-6 closeout | all drill owners and evidence | independent audit of recovery, cleanup, isolation, compatibility, and residual risk |
+| PE-6 closeout | all drill owners and evidence | independent audit of recovery, cleanup, isolation, compatibility, report binding, and residual risk; sealed under the grouped closeout boundary |
 
 ## Open PR Coordination
 
@@ -80,9 +80,8 @@ It does not own PE-5 release-provenance semantics or PE-6 recovery semantics. Be
 
 1. PE-1 through PE-4 remain acceptance-sealed; PE-4 is sealed under PR #206 and `PE4-POST-CLOSE-REPAIR-1`.
 2. PE-5 is acceptance-sealed under grouped `PE5-IMPLEMENT-1` and `PE5-CLOSE-1` (PRs #210 and #211).
-3. The PE-6 internal milestones are complete in order within grouped `PE6-IMPLEMENT-1`; independently audit `PE6-CLOSE-1` as the next separate boundary.
-4. Refresh `main`, open PRs, CI, and active documents after every merge.
-5. Extend existing owners. Do not create another runtime, scheduler, storage layer, release pipeline, signing authority, recovery authority, artifact truth source, or Dashboard data model without an explicit replacement decision, migration, compatibility evidence, and rollback.
+3. The PE-6 internal milestones are complete in order within grouped `PE6-IMPLEMENT-1`; `PE6-CLOSE-1` independently sealed the separate audit/repair boundary.
+4. No later packet is activated by this objective. Extend existing owners; do not create another runtime, scheduler, storage layer, release pipeline, signing authority, recovery authority, artifact truth source, or Dashboard data model without an explicit replacement decision, migration, compatibility evidence, and rollback.
 
 ## Active Documents
 

@@ -98,7 +98,7 @@ No internal milestone receives a separate PR, merge, or full CI wait. Final pack
 | PE-3 | P1 | Operator Decision Center | `COMPLETE` and independently acceptance-sealed |
 | PE-4 | P1/P2 | Trace-backed Policy Replay | `COMPLETE` and acceptance-sealed under PE4-POST-CLOSE-REPAIR-1 |
 | PE-5 | P1.5 | Release Provenance | Complete and independently acceptance-sealed under grouped `PE5-IMPLEMENT-1` and `PE5-CLOSE-1`; internal milestones remain ordered and complete |
-| PE-6 | P2 | Fault Injection and Recovery Drills | Grouped `PE6-IMPLEMENT-1` implementation finished; independent `PE6-CLOSE-1` is ready for audit |
+| PE-6 | P2 | Fault Injection and Recovery Drills | `COMPLETE` and independently acceptance-sealed under grouped `PE6-IMPLEMENT-1` and `PE6-CLOSE-1` |
 
 # PE-5 — Release Provenance
 
@@ -523,7 +523,7 @@ No destructive external provider call, production database corruption, real targ
 
 ## Packet PE6-CLOSE-1 — Independent recovery-drill acceptance seal
 
-**State:** `READY_FOR_EXECUTION`
+**State:** `COMPLETE`
 
 **Prerequisite:** PE6-EVIDENCE-1 complete.
 
@@ -543,12 +543,10 @@ No destructive external provider call, production database corruption, real targ
 
 **Rollback:** Revert individual PE-6 PRs in reverse dependency order; disable drill CI entrypoints first; retain evidence and all existing production recovery behavior.
 
-**Completion:** Mark all PE-6 packets complete, record exact PR/commit/CI evidence, synchronize active documents, and report remaining product gaps without inventing PE-7.
+**Completion:** Complete. The closeout audit verified report-level environment capabilities cover every result capability, repaired that binding and scenario evidence-reference enforcement, and recorded exact PR/commit/CI evidence in the final acceptance handoff without inventing PE-7.
 
 ## Active Routing
 
-1. Open the single grouped PE-6 implementation PR only after final local validation, then merge its exact green head and verify post-merge `main` CI.
-2. Independently audit and merge `PE6-CLOSE-1`, then verify post-merge `main` CI.
-3. Refresh `main`, active documents, open PRs, and CI after every grouped merge.
-4. Keep #207's orchestrator lane separate; reconcile shared CI/docs instead of overwriting either lane.
-5. Do not create PE-7, a second release owner, a second recovery owner, or a new runtime/control plane during this objective.
+1. Terminal objective: PE-1 through PE-6 are complete and independently acceptance-sealed; completed `PE6-CLOSE-1` is the final packet for this objective, and exact grouped PR, commit, exact-head CI, and post-merge `main` CI evidence is in the final acceptance handoff. No later packet is activated.
+2. Keep #207's orchestrator lane separate; reconcile shared CI/docs instead of overwriting either lane.
+3. Do not create PE-7, a second release owner, a second recovery owner, or a new runtime/control plane during this objective.
