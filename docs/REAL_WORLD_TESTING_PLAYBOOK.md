@@ -164,7 +164,9 @@ Add browser, Docker, migration, release, signing, backup/restore, concurrency, c
 
 ## PR and Merge Policy
 
-Agents may autonomously create and merge scoped PRs when the classifier or documentation-only exception passes. Do not combine unrelated packets or risk surfaces merely to reduce PR count.
+Agents may autonomously create and merge scoped PRs when the classifier or documentation-only exception passes. Do not combine unrelated packets or risk surfaces merely to reduce PR count. When `docs/NEXT_DECISION.md` declares a grouped boundary, its ordered internal packets are one coherent risk surface and may share one branch and PR.
+
+The historical PE-5/PE-6 implementation and closeout boundaries remain in repository history. `PE56-POST-SEAL-REPAIR-1` is one coherent post-seal implementation, independent standards/spec review, documentation, and acceptance PR; it must not be split into PE-5, PE-6, prerequisite, or closeout PRs. Its independent reviews are separate review passes over the same final diff, not separate branches or PRs. Full repository validation and exact-head GitHub CI run only on the complete reviewed head. If a CI repair changes that head, the complete diff is reviewed again and the exact new head receives the full matrix. The final acceptance state is recorded only after those results and post-merge `main` verification exist.
 
 A bounded objective may span multiple PRs in one session. After each merge, refresh `main`, reconcile active docs and open work, and continue only from the new repository state.
 

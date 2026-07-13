@@ -5,6 +5,10 @@ on:
     tags:
       - "v*"
 
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
 permissions:
   contents: read
 
@@ -12,6 +16,8 @@ env:
   CARGO_TERM_COLOR: always
   BINARY_NAME: agent-control-plane
   PACKAGE_PREFIX: agent-control-plane
+  ACP_PREVIOUS_RELEASE_TAG: ${{ vars.ACP_PREVIOUS_RELEASE_TAG }}
+  ACP_FIRST_RELEASE: ${{ vars.ACP_FIRST_RELEASE }}
 
 jobs:
   verify:
@@ -64,10 +70,49 @@ jobs:
         run: |
           bash scripts/check_github_action_pins.sh
           bash scripts/check_release_contract.sh
+          PYTHONPATH=. uv run --no-project python -m unittest tools.test_release_provenance tools.test_release_provenance_v2 tools.test_release_installation
           uv run --no-project python scripts/check_agent_handoff.py
 
-  build:
+  bootstrap:
     needs: verify
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+      artifact-metadata: write
+    steps:
+      - name: Checkout exact release source
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        with:
+          persist-credentials: false
+      - name: Stage immutable bootstrap assets
+        run: |
+          mkdir bootstrap-assets
+          cp scripts/install-from-release.sh scripts/release_provenance.py bootstrap-assets/
+      - name: Attest installer SLSA provenance
+        id: attest-installer
+        uses: actions/attest@a1948c3f048ba23858d222213b7c278aabede763 # v4.1.1
+        with:
+          subject-path: bootstrap-assets/install-from-release.sh
+      - name: Preserve installer SLSA bundle
+        run: cp "${{ steps.attest-installer.outputs.bundle-path }}" bootstrap-assets/install-from-release.sh.slsa.bundle.json
+      - name: Attest verifier SLSA provenance
+        id: attest-verifier
+        uses: actions/attest@a1948c3f048ba23858d222213b7c278aabede763 # v4.1.1
+        with:
+          subject-path: bootstrap-assets/release_provenance.py
+      - name: Preserve verifier SLSA bundle
+        run: cp "${{ steps.attest-verifier.outputs.bundle-path }}" bootstrap-assets/release_provenance.py.slsa.bundle.json
+      - name: Upload immutable bootstrap assets
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: bootstrap
+          path: bootstrap-assets/*
+          retention-days: 3
+
+  build:
+    needs: [verify, bootstrap]
     strategy:
       fail-fast: false
       matrix:
@@ -84,140 +129,277 @@ jobs:
           - target: aarch64-apple-darwin
             os: macos-latest
             cross: false
-
     runs-on: ${{ matrix.os }}
-
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+      artifact-metadata: write
     steps:
-      - name: Checkout
+      - name: Checkout exact release source
         uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
         with:
           persist-credentials: false
-
       - name: Install Rust stable
         uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable 2026-07-10
         with:
           targets: ${{ matrix.target }}
-
-      - name: Install cross (aarch64-linux only)
+      - name: Install cross for aarch64 Linux
         if: matrix.cross
         run: cargo install cross --git https://github.com/cross-rs/cross --rev 88f49ff79e777bef6d3564531636ee4d3cc2f8d2 --locked
-
       - name: Install Bun
         uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
-
       - name: Build static dashboard
         run: |
           cd dashboard
           bun install --frozen-lockfile
           bun run build:static
-
       - name: Build release binary
         run: |
           if [ "${{ matrix.cross }}" = "true" ]; then
-            cross build --release -p engine --target ${{ matrix.target }}
+            cross build --release -p engine --target "${{ matrix.target }}"
           else
-            cargo build --release -p engine --target ${{ matrix.target }}
+            cargo build --release -p engine --target "${{ matrix.target }}"
           fi
-
-      - name: Assemble tarball
-        id: tarball
+      - name: Resolve explicit rollback state
+        id: rollback
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
-          PACKAGE="${{ env.PACKAGE_PREFIX }}-${GITHUB_REF_NAME}-${{ matrix.target }}"
-          TARBALL="${PACKAGE}.tar.gz"
-          STAGING=$(mktemp -d)
-          PACKAGE_DIR="$STAGING/$PACKAGE"
-          mkdir -p "$PACKAGE_DIR/dashboard"
-
-          cp "target/${{ matrix.target }}/release/${{ env.BINARY_NAME }}" "$PACKAGE_DIR/engine"
-          cp -r dashboard/out/. "$PACKAGE_DIR/dashboard/"
-          cp .env.example "$PACKAGE_DIR/"
-          cp README.md "$PACKAGE_DIR/"
-          cp scripts/install.sh scripts/upgrade.sh "$PACKAGE_DIR/"
-          chmod +x "$PACKAGE_DIR/engine" "$PACKAGE_DIR/install.sh" "$PACKAGE_DIR/upgrade.sh"
-          tar -czf "$TARBALL" -C "$STAGING" "$PACKAGE"
-
-          # Generate checksum
-          if command -v sha256sum >/dev/null 2>&1; then
-            sha256sum "$TARBALL" > "${TARBALL}.sha256"
+          if [[ "${ACP_FIRST_RELEASE}" == "true" && -z "${ACP_PREVIOUS_RELEASE_TAG}" ]]; then
+            printf '{"previous":null,"state":"first_release"}\n' > rollback.json
+          elif [[ "${ACP_FIRST_RELEASE}" != "true" && "${ACP_PREVIOUS_RELEASE_TAG}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+([+-][0-9A-Za-z.-]+)?$ ]]; then
+            previous_manifest="agent-control-plane-${ACP_PREVIOUS_RELEASE_TAG}-${{ matrix.target }}.tar.gz.release-manifest.json"
+            mkdir previous
+            gh release download "${ACP_PREVIOUS_RELEASE_TAG}" --repo "${GITHUB_REPOSITORY}" \
+              --pattern "${previous_manifest}" --dir previous
+            python3 - "previous/${previous_manifest}" "${{ matrix.target }}" rollback.json <<'PY'
+          import json, pathlib, re, sys
+          manifest = json.loads(pathlib.Path(sys.argv[1]).read_text(encoding="utf-8"))
+          target = sys.argv[2]
+          if manifest.get("schema_version") != "release_provenance.v2":
+              raise SystemExit("previous release is not a v2 verified rollback target")
+          if manifest.get("target", {}).get("triple") != target or manifest.get("target", {}).get("package_kind") != "package":
+              raise SystemExit("previous release target is incompatible")
+          source = manifest["source"]
+          artifact = manifest["artifact"]
+          if not re.fullmatch(r"[0-9a-f]{40}", source["commit_sha"]):
+              raise SystemExit("previous source commit is invalid")
+          rollback = {"state": "previous_release", "previous": {
+              "tag": source["tag"], "source_commit": source["commit_sha"],
+              "artifact": {"filename": artifact["filename"], "sha256": artifact["sha256"]},
+              "target_triple": target, "package_kind": "package"}}
+          pathlib.Path(sys.argv[3]).write_text(json.dumps(rollback, sort_keys=True, separators=(",", ":")) + "\n", encoding="utf-8")
+          PY
           else
-            shasum -a 256 "$TARBALL" > "${TARBALL}.sha256"
+            echo "set exactly one of ACP_FIRST_RELEASE=true or an exact ACP_PREVIOUS_RELEASE_TAG" >&2
+            exit 1
           fi
-
-          echo "tarball=$TARBALL" >> "$GITHUB_OUTPUT"
-
-      - name: Upload tarball artifact
+          echo "path=rollback.json" >> "${GITHUB_OUTPUT}"
+      - name: Assemble archive and canonical predicates
+        id: package
+        run: |
+          package="${PACKAGE_PREFIX}-${GITHUB_REF_NAME}-${{ matrix.target }}"
+          archive="${package}.tar.gz"
+          staging="$(mktemp -d)"
+          package_dir="${staging}/${package}"
+          mkdir -p "${package_dir}/dashboard"
+          cp "target/${{ matrix.target }}/release/${BINARY_NAME}" "${package_dir}/engine"
+          cp -r dashboard/out/. "${package_dir}/dashboard/"
+          cp .env.example README.md "${package_dir}/"
+          cp scripts/install.sh scripts/upgrade.sh scripts/release_provenance.py "${package_dir}/"
+          chmod +x "${package_dir}/engine" "${package_dir}/install.sh" "${package_dir}/upgrade.sh"
+          tar -czf "${archive}" -C "${staging}" "${package}"
+          if command -v sha256sum >/dev/null 2>&1; then sha256sum "${archive}" > "${archive}.sha256"
+          else shasum -a 256 "${archive}" > "${archive}.sha256"; fi
+          case "${{ matrix.target }}" in *-unknown-linux-gnu) target_os=linux ;; *-apple-darwin) target_os=macos ;; *) exit 1 ;; esac
+          target_arch="${{ matrix.target }}"; target_arch="${target_arch%%-*}"
+          metadata="${package}.metadata.json"
+          sbom="${archive}.spdx.json"
+          manifest="${archive}.release-manifest.json"
+          slsa_bundle="${archive}.slsa.bundle.json"
+          spdx_bundle="${archive}.spdx.bundle.json"
+          manifest_bundle="${archive}.release-manifest.bundle.json"
+          python3 scripts/release_provenance.py write-metadata \
+            --root "${GITHUB_WORKSPACE}" --output "${metadata}" \
+            --repository "${GITHUB_REPOSITORY}" --source-commit "${GITHUB_SHA}" --ref "${GITHUB_REF}" \
+            --workflow ".github/workflows/release.yml" --workflow-ref "${GITHUB_WORKFLOW_REF}" \
+            --run-id "${GITHUB_RUN_ID}" --run-attempt "${GITHUB_RUN_ATTEMPT}" \
+            --job "build-${{ matrix.target }}" --builder-id "github-hosted:${RUNNER_OS}" \
+            --target-os "${target_os}" --target-architecture "${target_arch}" \
+            --target-triple "${{ matrix.target }}" --package-kind package \
+            --artifact-name "${archive}" --artifact-media-type application/vnd.acp.release+tar \
+            --rollback-file "${{ steps.rollback.outputs.path }}" --publication-mode github-release \
+            --lockfile Cargo.lock --lockfile dashboard/bun.lock --lockfile sdk/typescript/bun.lock \
+            --build-input engine/Cargo.toml --build-input .env.example --build-input dashboard/package.json
+          python3 scripts/release_provenance.py create-sbom --root "${GITHUB_WORKSPACE}" \
+            --metadata "${metadata}" --artifact "${archive}" --output "${sbom}"
+          python3 - bootstrap.json "${GITHUB_SHA}" <<'PY'
+          import hashlib, json, pathlib, sys
+          records = []
+          for name in ("install-from-release.sh", "release_provenance.py"):
+              path = pathlib.Path("scripts") / name
+              records.append({"filename": name, "sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
+                              "source_commit": sys.argv[2], "predicate_type": "https://slsa.dev/provenance/v1"})
+          pathlib.Path(sys.argv[1]).write_text(json.dumps(records, sort_keys=True, separators=(",", ":")) + "\n", encoding="utf-8")
+          PY
+          python3 scripts/release_provenance.py create-manifest --metadata "${metadata}" \
+            --artifact "${archive}" --sbom "${sbom}" --bootstrap bootstrap.json --output "${manifest}"
+          echo "archive=${archive}" >> "${GITHUB_OUTPUT}"
+          echo "sbom=${sbom}" >> "${GITHUB_OUTPUT}"
+          echo "manifest=${manifest}" >> "${GITHUB_OUTPUT}"
+          echo "slsa_bundle=${slsa_bundle}" >> "${GITHUB_OUTPUT}"
+          echo "spdx_bundle=${spdx_bundle}" >> "${GITHUB_OUTPUT}"
+          echo "manifest_bundle=${manifest_bundle}" >> "${GITHUB_OUTPUT}"
+      - name: Attest SLSA build provenance
+        id: attest-slsa
+        uses: actions/attest@a1948c3f048ba23858d222213b7c278aabede763 # v4.1.1
+        with:
+          subject-path: ${{ steps.package.outputs.archive }}
+      - name: Preserve SLSA bundle
+        run: cp "${{ steps.attest-slsa.outputs.bundle-path }}" "${{ steps.package.outputs.slsa_bundle }}"
+      - name: Attest SPDX SBOM
+        id: attest-spdx
+        uses: actions/attest@a1948c3f048ba23858d222213b7c278aabede763 # v4.1.1
+        with:
+          subject-path: ${{ steps.package.outputs.archive }}
+          sbom-path: ${{ steps.package.outputs.sbom }}
+      - name: Preserve SPDX bundle
+        run: cp "${{ steps.attest-spdx.outputs.bundle-path }}" "${{ steps.package.outputs.spdx_bundle }}"
+      - name: Attest ACP release manifest
+        id: attest-manifest
+        uses: actions/attest@a1948c3f048ba23858d222213b7c278aabede763 # v4.1.1
+        with:
+          subject-path: ${{ steps.package.outputs.archive }}
+          predicate-type: https://github.com/Igzela/token-efficient-agent-harness-lab/attestations/release-manifest/v2
+          predicate-path: ${{ steps.package.outputs.manifest }}
+      - name: Preserve release-manifest bundle
+        run: cp "${{ steps.attest-manifest.outputs.bundle-path }}" "${{ steps.package.outputs.manifest_bundle }}"
+      - name: Upload platform release evidence
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: ${{ matrix.target }}
           path: |
-            ${{ steps.tarball.outputs.tarball }}
-            ${{ steps.tarball.outputs.tarball }}.sha256
+            ${{ steps.package.outputs.archive }}
+            ${{ steps.package.outputs.archive }}.sha256
+            ${{ steps.package.outputs.sbom }}
+            ${{ steps.package.outputs.manifest }}
+            ${{ steps.package.outputs.slsa_bundle }}
+            ${{ steps.package.outputs.spdx_bundle }}
+            ${{ steps.package.outputs.manifest_bundle }}
           retention-days: 3
 
   publish:
-    needs: build
+    needs: [bootstrap, build]
     runs-on: ubuntu-latest
     permissions:
       contents: write
-
+      attestations: read
     steps:
-      - name: Download all artifacts
+      - name: Checkout exact release commit
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        with:
+          persist-credentials: false
+      - name: Download all exact build outputs
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
           path: artifacts
-
-      - name: Collect release assets
+      - name: Collect bounded release assets
         run: |
-          mkdir -p release-assets
-          find artifacts -type f \( -name "*.tar.gz" -o -name "*.sha256" \) \
-            -exec cp {} release-assets/ \;
-          ls -lh release-assets/
-
-      - name: Generate release body
-        id: body
+          mkdir release-assets
+          find artifacts -type f \( -name '*.tar.gz' -o -name '*.sha256' -o -name '*.spdx.json' \
+            -o -name '*.release-manifest.json' -o -name '*.bundle.json' \
+            -o -name 'install-from-release.sh' -o -name 'release_provenance.py' \) \
+            -exec cp '{}' release-assets/ \;
+      - name: Verify bootstrap, current release, and rollback target
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
-          VERSION="${GITHUB_REF_NAME}"
-          cat > release-body.md << 'HEADER'
-          # Agent Control Plane ${VERSION}
+          test "${GITHUB_RUN_ATTEMPT}" = "1"
+          test "$(git rev-parse HEAD)" = "${GITHUB_SHA}"
+          test -z "$(git status --porcelain)"
+          for asset in install-from-release.sh release_provenance.py; do
+            gh attestation verify "release-assets/${asset}" \
+              --bundle "release-assets/${asset}.slsa.bundle.json" \
+              --predicate-type https://slsa.dev/provenance/v1 --repo "${GITHUB_REPOSITORY}" \
+              --signer-workflow "${GITHUB_REPOSITORY}/.github/workflows/release.yml" \
+              --source-ref "${GITHUB_REF}" --source-digest "${GITHUB_SHA}" \
+              --cert-oidc-issuer https://token.actions.githubusercontent.com \
+              --deny-self-hosted-runners >/dev/null
+          done
+          shopt -s nullglob
+          manifests=(release-assets/*.tar.gz.release-manifest.json)
+          test "${#manifests[@]}" -eq 4
+          existing_release_count="$(gh release list --repo "${GITHUB_REPOSITORY}" \
+            --limit 1 --json tagName --jq 'length')"
+          for manifest in "${manifests[@]}"; do
+            artifact="${manifest%.release-manifest.json}"
+            python3 scripts/release_provenance.py verify-release \
+              --artifact "${artifact}" --sbom "${artifact}.spdx.json" --manifest "${manifest}" \
+              --slsa-bundle "${artifact}.slsa.bundle.json" --spdx-bundle "${artifact}.spdx.bundle.json" \
+              --manifest-bundle "${artifact}.release-manifest.bundle.json" --mode production >/dev/null
+            state="$(jq -r '.rollback.state' "${manifest}")"
+            if [[ "${state}" == previous_release ]]; then
+              previous_tag="$(jq -r '.rollback.previous.tag' "${manifest}")"
+              previous_name="$(jq -r '.rollback.previous.artifact.filename' "${manifest}")"
+              previous_dir="$(mktemp -d)"
+              for suffix in '' .spdx.json .release-manifest.json .slsa.bundle.json \
+                .spdx.bundle.json .release-manifest.bundle.json; do
+                gh release download "${previous_tag}" --repo "${GITHUB_REPOSITORY}" \
+                  --pattern "${previous_name}${suffix}" --dir "${previous_dir}"
+              done
+              python3 scripts/release_provenance.py verify-release \
+                --artifact "${previous_dir}/${previous_name}" \
+                --sbom "${previous_dir}/${previous_name}.spdx.json" \
+                --manifest "${previous_dir}/${previous_name}.release-manifest.json" \
+                --slsa-bundle "${previous_dir}/${previous_name}.slsa.bundle.json" \
+                --spdx-bundle "${previous_dir}/${previous_name}.spdx.bundle.json" \
+                --manifest-bundle "${previous_dir}/${previous_name}.release-manifest.bundle.json" \
+                --mode production >/dev/null
+              python3 scripts/release_provenance.py validate-previous-release \
+                --current-manifest "${manifest}" \
+                --previous-manifest "${previous_dir}/${previous_name}.release-manifest.json" \
+                --previous-artifact "${previous_dir}/${previous_name}"
+            elif [[ "${state}" == first_release ]]; then
+              if [[ "${existing_release_count}" != 0 ]]; then
+                echo "first_release refused because a previous GitHub release exists" >&2
+                exit 1
+              fi
+            else
+              echo "invalid rollback state" >&2
+              exit 1
+            fi
+          done
+          if gh release view "${GITHUB_REF_NAME}" --repo "${GITHUB_REPOSITORY}" >/dev/null 2>&1; then
+            echo "duplicate publication refused" >&2
+            exit 1
+          fi
+      - name: Generate immutable installation instructions
+        run: |
+          cat > release-body.md <<EOF
+          # Agent Control Plane ${GITHUB_REF_NAME}
 
-          ## Installation
+          Download, verify, then execute the immutable bootstrap asset. Never pipe a branch URL to a shell.
 
-          Download the archive for your platform, extract, and run.
+          \`\`\`bash
+          VERSION=${GITHUB_REF_NAME}
+          SOURCE_COMMIT=${GITHUB_SHA}
+          BASE=https://github.com/${GITHUB_REPOSITORY}/releases/download/\${VERSION}
+          curl -fL -o install-from-release.sh \${BASE}/install-from-release.sh
+          curl -fL -o install-from-release.sh.slsa.bundle.json \${BASE}/install-from-release.sh.slsa.bundle.json
+          gh attestation verify ./install-from-release.sh --bundle ./install-from-release.sh.slsa.bundle.json \\
+            --predicate-type https://slsa.dev/provenance/v1 --repo ${GITHUB_REPOSITORY} \\
+            --source-ref refs/tags/\${VERSION} --source-digest \${SOURCE_COMMIT} \\
+            --signer-workflow ${GITHUB_REPOSITORY}/.github/workflows/release.yml \\
+            --cert-oidc-issuer https://token.actions.githubusercontent.com \\
+            --deny-self-hosted-runners
+          bash ./install-from-release.sh --version \${VERSION} --source-commit \${SOURCE_COMMIT} \\
+            --bootstrap-bundle ./install-from-release.sh.slsa.bundle.json
+          \`\`\`
 
-          ### Linux x86_64
-          ```bash
-          tar -xzf agent-control-plane-${VERSION}-x86_64-unknown-linux-gnu.tar.gz
-          agent-control-plane-${VERSION}-x86_64-unknown-linux-gnu/install.sh --prefix "$HOME/.local"
-          ```
-
-          ### Linux aarch64
-          ```bash
-          tar -xzf agent-control-plane-${VERSION}-aarch64-unknown-linux-gnu.tar.gz
-          agent-control-plane-${VERSION}-aarch64-unknown-linux-gnu/install.sh --prefix "$HOME/.local"
-          ```
-
-          ### macOS x86_64 (Intel)
-          ```bash
-          tar -xzf agent-control-plane-${VERSION}-x86_64-apple-darwin.tar.gz
-          agent-control-plane-${VERSION}-x86_64-apple-darwin/install.sh --prefix "$HOME/.local"
-          ```
-
-          ### macOS aarch64 (Apple Silicon)
-          ```bash
-          tar -xzf agent-control-plane-${VERSION}-aarch64-apple-darwin.tar.gz
-          agent-control-plane-${VERSION}-aarch64-apple-darwin/install.sh --prefix "$HOME/.local"
-          ```
-
-          ## Verify Checksums
-          ```bash
-          sha256sum -c agent-control-plane-${VERSION}-*.sha256
-          ```
-          HEADER
-
-          # Replace version placeholder
-          sed -i "s/\${VERSION}/${VERSION}/g" release-body.md
-
-      - name: Create GitHub Release
+          Each platform archive has distinct SLSA, SPDX, and ACP release-manifest v2 bundles. The installer verifies those exact local bundles before bounded extraction or activation.
+          EOF
+      - name: Create GitHub Release after all verification
         uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2
         with:
           body_path: release-body.md

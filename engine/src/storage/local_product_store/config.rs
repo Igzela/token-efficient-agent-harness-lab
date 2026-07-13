@@ -66,30 +66,32 @@ impl LocalProductStore {
                 Ok(json!({"key": key, "value": value, "updated_at": now, "updated_by": actor}))
             }),
             #[cfg(feature = "pg")]
-            DatabaseConnection::Pg(_) => {
-                self.with_pg_conn(|client| {
-                    let value_json = value.to_string();
-                    let now = self.now();
-                    client
-                        .execute(
-                            "INSERT INTO local_config (key, value_json, updated_at, updated_by)
+            DatabaseConnection::Pg(_) => self.with_pg_conn(|client| {
+                let mut transaction = client.transaction().map_err(|error| error.to_string())?;
+                let value_json = value.to_string();
+                let now = self.now();
+                transaction
+                    .execute(
+                        "INSERT INTO local_config (key, value_json, updated_at, updated_by)
                      VALUES ($1, $2, $3, $4)
                      ON CONFLICT(key) DO UPDATE SET
                         value_json = excluded.value_json,
                         updated_at = excluded.updated_at,
                         updated_by = excluded.updated_by",
-                            &[&key, &value_json, &now, &actor],
-                        )
-                        .map_err(|e| e.to_string())?;
-                    let details = json!({"key": key}).to_string();
-                    client.execute(
-                    "INSERT INTO audit_log (created_at, actor, action, resource, details_json)
-                     VALUES ($1, $2, $3, $4, $5)",
-                    &[&now, &actor, &"config.update", &key, &details],
-                ).map_err(|e| e.to_string())?;
-                    Ok(json!({"key": key, "value": value, "updated_at": now, "updated_by": actor}))
-                })
-            }
+                        &[&key, &value_json, &now, &actor],
+                    )
+                    .map_err(|e| e.to_string())?;
+                let details = json!({"key": key}).to_string();
+                transaction
+                    .execute(
+                        "INSERT INTO audit_log (created_at, actor, action, resource, details_json)
+                             VALUES ($1, $2, $3, $4, $5)",
+                        &[&now, &actor, &"config.update", &key, &details],
+                    )
+                    .map_err(|e| e.to_string())?;
+                transaction.commit().map_err(|error| error.to_string())?;
+                Ok(json!({"key": key, "value": value, "updated_at": now, "updated_by": actor}))
+            }),
         }
     }
 

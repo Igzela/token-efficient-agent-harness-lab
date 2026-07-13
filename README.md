@@ -57,36 +57,51 @@ Uses an authenticated local Claude CLI, runs each repo’s tests, records approv
 
 ## Installation
 
-### Option 1: Pre-built Binary (easiest)
+### Option 1: Verified pre-built binary
 
-Download the latest release for your platform from [GitHub Releases](https://github.com/Igzela/token-efficient-agent-harness-lab/releases):
-
-```bash
-# Linux x86_64
-curl -fLO https://github.com/Igzela/token-efficient-agent-harness-lab/releases/download/v0.1.0/agent-control-plane-v0.1.0-x86_64-unknown-linux-gnu.tar.gz
-tar -xzf agent-control-plane-v0.1.0-x86_64-unknown-linux-gnu.tar.gz
-sudo ./agent-control-plane-v0.1.0-x86_64-unknown-linux-gnu/install.sh
-```
-
-Or use the one-line installer:
+Choose an exact release tag and its 40-hex source commit from
+[GitHub Releases](https://github.com/Igzela/token-efficient-agent-harness-lab/releases).
+Download the installer and its release-distributed SLSA bundle, verify those
+exact local bytes, and only then execute the installer:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/Igzela/token-efficient-agent-harness-lab/main/scripts/install-from-release.sh | bash
+VERSION='<EXACT_VERSION_TAG>'
+SOURCE_COMMIT='<40_HEX_RELEASE_COMMIT>'
+BASE="https://github.com/Igzela/token-efficient-agent-harness-lab/releases/download/${VERSION}"
+curl -fLO "${BASE}/install-from-release.sh"
+curl -fLO "${BASE}/install-from-release.sh.slsa.bundle.json"
+gh attestation verify ./install-from-release.sh \
+  --bundle ./install-from-release.sh.slsa.bundle.json \
+  --predicate-type https://slsa.dev/provenance/v1 \
+  --repo Igzela/token-efficient-agent-harness-lab \
+  --signer-workflow Igzela/token-efficient-agent-harness-lab/.github/workflows/release.yml \
+  --source-ref "refs/tags/${VERSION}" \
+  --source-digest "${SOURCE_COMMIT}" \
+  --cert-oidc-issuer https://token.actions.githubusercontent.com \
+  --deny-self-hosted-runners
+bash ./install-from-release.sh \
+  --version "${VERSION}" \
+  --source-commit "${SOURCE_COMMIT}" \
+  --bootstrap-bundle ./install-from-release.sh.slsa.bundle.json
 ```
+
+The bootstrap verifies the separately attested verifier and all three exact
+archive bundles before bounded extraction. It does not support `latest`, a
+branch URL, stdin, or `curl | bash`. See [the runbook](docs/RUNBOOK.md#release-upgrade-and-rollback)
+for the trust boundary and rollback procedure.
 
 Available targets: `x86_64-unknown-linux-gnu`, `aarch64-unknown-linux-gnu`, `x86_64-apple-darwin`, `aarch64-apple-darwin`.
 
-### Option 2: Docker
+### Option 2: Local development container
 
 ```bash
-# One command — engine + dashboard in a single container
-docker run -d -p 8080:8080 -v acp-data:/data igzela/agent-control-plane:latest
-
-# Or with docker compose
 git clone https://github.com/Igzela/token-efficient-agent-harness-lab.git
 cd token-efficient-agent-harness-lab
-docker compose --profile combined up -d
+docker compose --profile combined up --build -d
 ```
+
+This source-built container path is for local development and does not claim
+the production release-attestation boundary above.
 
 ### Option 3: From Source
 

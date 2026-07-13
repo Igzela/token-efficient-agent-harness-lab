@@ -73,6 +73,18 @@ class CheckAgentHandoffTests(unittest.TestCase):
         failures = checker.active_state_failures(next_text, next_text)
         self.assertIn("Active Routing points to completed packet PE3-A-1", failures)
 
+    def test_structural_guard_accepts_terminal_objective_routing(self) -> None:
+        checker = load_handoff_checker()
+        text = """| Stage | Priority | Goal | Status |
+|---|---|---|---|
+| PE-3 | P1 | x | Complete |
+### Packet PE3-A-1 — a
+**State:** `COMPLETE`
+## Active Routing
+1. Terminal objective: PE3-A-1 is complete; no later packet is activated.
+"""
+        self.assertEqual(checker.active_state_failures(text, text), [])
+
     def test_structural_guard_rejects_duplicate_packet_state(self) -> None:
         checker = load_handoff_checker()
         next_text = """### Packet PE3-A-1 — a
@@ -140,6 +152,27 @@ class CheckAgentHandoffTests(unittest.TestCase):
 ## Active Routing
 1. Execute PE3-B-1.
 """
+        self.assertEqual(checker.active_state_failures(text, text), [])
+
+    def test_structural_guard_parses_current_level_packet_headings(self) -> None:
+        checker = load_handoff_checker()
+        text = """| Stage | Priority | Goal | Status |
+|---|---|---|---|
+| PE-5 | P1.5 | Release Provenance | Activated; first packet ready |
+## Packet PE5-CONTRACT-1 — contract
+**State:** `READY_FOR_EXECUTION`
+## Packet PE5-SBOM-1 — sbom
+**State:** `BLOCKED_PREREQUISITE`
+**Prerequisite:** PE5-CONTRACT-1 complete.
+## Active Routing
+1. Start PE5-CONTRACT-1.
+"""
+
+        packets = checker.parse_packet_contracts(text, [])
+        self.assertEqual(packets["PE5-CONTRACT-1"]["state"], "READY_FOR_EXECUTION")
+        self.assertEqual(
+            packets["PE5-SBOM-1"]["prerequisites"], ["PE5-CONTRACT-1"]
+        )
         self.assertEqual(checker.active_state_failures(text, text), [])
 
 

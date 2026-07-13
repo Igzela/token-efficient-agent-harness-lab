@@ -1,147 +1,140 @@
 #!/usr/bin/env bash
-set -euo pipefail
+set -Eeuo pipefail
 
-# Agent Control Plane — Curl Installer
-# Detects OS/arch, downloads the latest release from GitHub, and installs.
-# Usage: curl -fsSL https://raw.githubusercontent.com/Igzela/token-efficient-agent-harness-lab/main/scripts/install-from-release.sh | bash
+# Immutable release bootstrap. Download and verify this exact release asset and
+# its .slsa.bundle.json before execution; mutable branch URLs are unsupported.
 
 REPO="Igzela/token-efficient-agent-harness-lab"
-INSTALL_DIR="${INSTALL_DIR:-/usr/local/bin}"
-DATA_DIR="${HOME}/.agent-control-plane"
+PREFIX="${PREFIX:-/usr/local}"
+DATA_DIR="${ACP_DATA_DIR:-${HOME}/.agent-control-plane}"
+VERSION="${VERSION:-}"
+RELEASE_SOURCE_COMMIT="${RELEASE_SOURCE_COMMIT:-}"
+BOOTSTRAP_BUNDLE="${BOOTSTRAP_BUNDLE:-}"
+MAX_ARCHIVE_BYTES=$((256 * 1024 * 1024))
+MAX_SIDECAR_BYTES=$((16 * 1024 * 1024))
 
-detect_os() {
-    local os
-    os="$(uname -s)"
-    case "${os}" in
-        Linux*)  echo "unknown-linux-gnu" ;;
-        Darwin*) echo "apple-darwin" ;;
-        *)       echo "unsupported" ;;
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --version) [[ $# -ge 2 ]] || exit 2; VERSION="$2"; shift 2 ;;
+        --source-commit) [[ $# -ge 2 ]] || exit 2; RELEASE_SOURCE_COMMIT="$2"; shift 2 ;;
+        --bootstrap-bundle) [[ $# -ge 2 ]] || exit 2; BOOTSTRAP_BUNDLE="$2"; shift 2 ;;
+        --prefix) [[ $# -ge 2 ]] || exit 2; PREFIX="$2"; shift 2 ;;
+        --data-dir) [[ $# -ge 2 ]] || exit 2; DATA_DIR="$2"; shift 2 ;;
+        *) echo "Unknown option: $1" >&2; exit 2 ;;
     esac
+done
+
+[[ "${VERSION}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+([+-][0-9A-Za-z.-]+)?$ ]] || {
+    echo "Error: --version must be an exact immutable version tag" >&2
+    exit 1
+}
+[[ "${RELEASE_SOURCE_COMMIT}" =~ ^[0-9a-f]{40}$ ]] || {
+    echo "Error: --source-commit must be the exact release commit" >&2
+    exit 1
+}
+[[ -f "${BOOTSTRAP_BUNDLE}" ]] || {
+    echo "Error: --bootstrap-bundle must name the exact downloaded installer bundle" >&2
+    exit 1
+}
+for command in curl gh python3; do
+    command -v "${command}" >/dev/null 2>&1 || {
+        echo "Error: ${command} is required before immutable bootstrap" >&2
+        exit 1
+    }
+done
+
+SCRIPT_PATH="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/$(basename "${BASH_SOURCE[0]}")"
+[[ -f "${SCRIPT_PATH}" && "${SCRIPT_PATH}" != /dev/fd/* ]] || {
+    echo "Error: installer must be a downloaded local file, never a pipe" >&2
+    exit 1
 }
 
-detect_arch() {
-    local arch
-    arch="$(uname -m)"
-    case "${arch}" in
-        x86_64|amd64)   echo "x86_64" ;;
-        aarch64|arm64)   echo "aarch64" ;;
-        *)               echo "unsupported" ;;
-    esac
+verify_slsa_asset() {
+    local asset="$1" bundle="$2"
+    gh attestation verify "${asset}" \
+        --bundle "${bundle}" \
+        --predicate-type "https://slsa.dev/provenance/v1" \
+        --repo "${REPO}" \
+        --signer-workflow "${REPO}/.github/workflows/release.yml" \
+        --source-ref "refs/tags/${VERSION}" \
+        --source-digest "${RELEASE_SOURCE_COMMIT}" \
+        --cert-oidc-issuer "https://token.actions.githubusercontent.com" \
+        --deny-self-hosted-runners >/dev/null
 }
 
-main() {
-    echo "Agent Control Plane — Installer"
-    echo ""
+# This is deliberately the first external action: reverify the exact local
+# installer bytes that the operator verified before choosing to execute them.
+verify_slsa_asset "${SCRIPT_PATH}" "${BOOTSTRAP_BUNDLE}"
 
-    local os arch target version archive_name tarball_url checksum_url tmp_dir
-    os="$(detect_os)"
-    arch="$(detect_arch)"
-
-    if [[ "${os}" == "unsupported" ]]; then
-        echo "Error: unsupported OS '$(uname -s)'"
-        echo "Supported: Linux, macOS"
-        exit 1
-    fi
-    if [[ "${arch}" == "unsupported" ]]; then
-        echo "Error: unsupported architecture '$(uname -m)'"
-        echo "Supported: x86_64, aarch64"
-        exit 1
-    fi
-
-    target="${arch}-${os}"
-    echo "  OS:   ${os}"
-    echo "  Arch: ${arch}"
-    echo "  Target: ${target}"
-    echo ""
-
-    version="${VERSION:-}"
-    if [[ -z "${version}" ]]; then
-        echo "Fetching latest release..."
-        version="$(curl -fsSL "https://api.github.com/repos/${REPO}/releases/latest" | grep '"tag_name"' | head -1 | sed 's/.*"tag_name": *"//;s/".*//')"
-    fi
-    if [[ -z "${version}" ]]; then
-        echo "Error: could not determine latest release"
-        echo "Tip: you can set VERSION manually:"
-        echo "  VERSION=v0.1.0 bash $0"
-        exit 1
-    fi
-    echo "  Version: ${version}"
-
-    archive_name="agent-control-plane-${version}-${target}.tar.gz"
-    tarball_url="https://github.com/${REPO}/releases/download/${version}/${archive_name}"
-    checksum_url="${tarball_url}.sha256"
-    echo "  URL: ${tarball_url}"
-    echo ""
-
-    # Download and extract
-    tmp_dir="$(mktemp -d)"
-    trap "rm -rf '${tmp_dir}'" EXIT
-
-    echo "Downloading..."
-    curl -fsSL "${tarball_url}" -o "${tmp_dir}/${archive_name}"
-    curl -fsSL "${checksum_url}" -o "${tmp_dir}/${archive_name}.sha256"
-
-    echo "Verifying checksum..."
-    (
-        cd "${tmp_dir}"
-        if command -v sha256sum >/dev/null 2>&1; then
-            sha256sum -c "${archive_name}.sha256"
-        elif command -v shasum >/dev/null 2>&1; then
-            shasum -a 256 -c "${archive_name}.sha256"
-        else
-            echo "Error: sha256sum or shasum is required to verify the release"
-            exit 1
-        fi
-    )
-
-    echo "Extracting..."
-    tar -xzf "${tmp_dir}/${archive_name}" -C "${tmp_dir}"
-
-    local extracted_dir="${tmp_dir}/agent-control-plane-${version}-${target}"
-    if [[ ! -d "${extracted_dir}" ]]; then
-        # Try alternate naming
-        extracted_dir="$(find "${tmp_dir}" -maxdepth 1 -type d -name 'agent-control-plane-*' | head -1)"
-    fi
-    if [[ ! -d "${extracted_dir}" ]]; then
-        echo "Error: could not find extracted directory"
-        exit 1
-    fi
-
-    # Install binary
-    echo "Installing binary to ${INSTALL_DIR}/..."
-    sudo mkdir -p "${INSTALL_DIR}"
-    sudo cp "${extracted_dir}/engine" "${INSTALL_DIR}/agent-control-plane"
-    sudo chmod +x "${INSTALL_DIR}/agent-control-plane"
-    echo "  -> ${INSTALL_DIR}/agent-control-plane"
-
-    # Setup data directory
-    echo "Setting up data directory..."
-    mkdir -p "${DATA_DIR}/backups"
-
-    # Install dashboard assets
-    if [[ -d "${extracted_dir}/dashboard" ]]; then
-        mkdir -p "${DATA_DIR}/dashboard"
-        cp -a "${extracted_dir}/dashboard/." "${DATA_DIR}/dashboard/"
-        echo "  -> ${DATA_DIR}/dashboard/"
-    fi
-
-    # Install .env.example
-    if [[ -f "${extracted_dir}/.env.example" ]] && [[ ! -f "${DATA_DIR}/.env.example" ]]; then
-        cp "${extracted_dir}/.env.example" "${DATA_DIR}/.env.example"
-        echo "  -> ${DATA_DIR}/.env.example"
-    fi
-
-    echo ""
-    echo "Installation complete."
-    echo ""
-    echo "Quick start:"
-    echo "  agent-control-plane"
-    echo ""
-    echo "With dashboard:"
-    echo "  ACP_DASHBOARD_DIR=${DATA_DIR}/dashboard agent-control-plane"
-    echo ""
-    echo "With auth:"
-    echo "  ACP_REQUIRE_AUTH=1 ACP_ADMIN_API_KEY=<your-key> agent-control-plane"
+download() {
+    local url="$1" output="$2" maximum="$3"
+    curl --fail --location --silent --show-error --max-filesize "${maximum}" \
+        "${url}" --output "${output}"
+    [[ -f "${output}" && "$(wc -c < "${output}")" -le "${maximum}" ]]
 }
 
-main "$@"
+tmp_dir="$(mktemp -d)"
+trap 'rm -rf "${tmp_dir}"' EXIT
+base_url="https://github.com/${REPO}/releases/download/${VERSION}"
+verifier="${tmp_dir}/release_provenance.py"
+verifier_bundle="${tmp_dir}/release_provenance.py.slsa.bundle.json"
+download "${base_url}/release_provenance.py" "${verifier}" "${MAX_SIDECAR_BYTES}"
+download "${base_url}/release_provenance.py.slsa.bundle.json" "${verifier_bundle}" "${MAX_SIDECAR_BYTES}"
+verify_slsa_asset "${verifier}" "${verifier_bundle}"
+
+os="$(uname -s)"
+case "${os}" in Linux*) os="unknown-linux-gnu" ;; Darwin*) os="apple-darwin" ;; *) echo "unsupported OS" >&2; exit 1 ;; esac
+arch="$(uname -m)"
+case "${arch}" in x86_64|amd64) arch="x86_64" ;; aarch64|arm64) arch="aarch64" ;; *) echo "unsupported architecture" >&2; exit 1 ;; esac
+target="${arch}-${os}"
+archive_name="agent-control-plane-${VERSION}-${target}.tar.gz"
+artifact="${tmp_dir}/${archive_name}"
+sbom="${artifact}.spdx.json"
+manifest="${artifact}.release-manifest.json"
+slsa_bundle="${artifact}.slsa.bundle.json"
+spdx_bundle="${artifact}.spdx.bundle.json"
+manifest_bundle="${artifact}.release-manifest.bundle.json"
+checksum="${artifact}.sha256"
+
+download "${base_url}/${archive_name}" "${artifact}" "${MAX_ARCHIVE_BYTES}"
+for suffix in .sha256 .spdx.json .release-manifest.json .slsa.bundle.json \
+    .spdx.bundle.json .release-manifest.bundle.json; do
+    download "${base_url}/${archive_name}${suffix}" "${artifact}${suffix}" "${MAX_SIDECAR_BYTES}"
+done
+
+(
+    cd "${tmp_dir}"
+    if command -v sha256sum >/dev/null 2>&1; then sha256sum -c "${archive_name}.sha256"
+    else shasum -a 256 -c "${archive_name}.sha256"
+    fi
+)
+
+python3 "${verifier}" verify-release \
+    --artifact "${artifact}" --sbom "${sbom}" --manifest "${manifest}" \
+    --slsa-bundle "${slsa_bundle}" --spdx-bundle "${spdx_bundle}" \
+    --manifest-bundle "${manifest_bundle}" --mode production >/dev/null
+python3 "${verifier}" verify-bootstrap \
+    --manifest "${manifest}" --source-commit "${RELEASE_SOURCE_COMMIT}" \
+    --asset "install-from-release.sh=${SCRIPT_PATH}" \
+    --asset "release_provenance.py=${verifier}"
+
+# No archive header or byte is extracted until all exact local bundles and
+# canonical signed predicates have passed verification.
+expected_root="agent-control-plane-${VERSION}-${target}"
+python3 "${verifier}" extract-archive \
+    --archive "${artifact}" --destination "${tmp_dir}/extract" \
+    --expected-top-level "${expected_root}" >/dev/null
+release_dir="${tmp_dir}/extract/${expected_root}"
+
+evidence_args=(
+    --artifact "${artifact}" --sbom "${sbom}" --manifest "${manifest}"
+    --slsa-bundle "${slsa_bundle}" --spdx-bundle "${spdx_bundle}"
+    --manifest-bundle "${manifest_bundle}"
+)
+if [[ -e "${PREFIX}/bin/agent-control-plane" ]]; then
+    bash "${release_dir}/upgrade.sh" --prefix "${PREFIX}" --data-dir "${DATA_DIR}" \
+        "${evidence_args[@]}"
+else
+    bash "${release_dir}/install.sh" --prefix "${PREFIX}" --data-dir "${DATA_DIR}" \
+        "${evidence_args[@]}"
+fi
