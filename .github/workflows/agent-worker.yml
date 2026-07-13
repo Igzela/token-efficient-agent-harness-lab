@@ -333,8 +333,9 @@ jobs:
           if [ "$EXISTING" = "null" ]; then
             SOURCE=$(jq -er '.source' <<<"$CI")
             DUPLICATES=$(jq -c '.duplicate_run_ids // []' <<<"$CI")
+            METADATA=$(jq -c '{observed_run_ids,selection_reason,superseded_run_ids,unsupported_run_ids,fallback_dispatched}' <<<"$CI")
             python3 scripts/agent-control/state_manager.py record-ci-acquisition "${{ inputs.issue }}" \
-              "${{ steps.pr.outputs.pr_number }}" "${{ steps.commit.outputs.head_sha }}" "$RUN_ID" "$SOURCE" "$DUPLICATES"
+              "${{ steps.pr.outputs.pr_number }}" "${{ steps.commit.outputs.head_sha }}" "$RUN_ID" "$SOURCE" "$DUPLICATES" "$METADATA"
           fi
           EXTRA=$(jq -c --argjson id "$RUN_ID" '{workflow_name,required_jobs,successful_jobs:[],workflow_run_id:$id}' scripts/agent-control/ci_requirements.json)
           python3 scripts/agent-control/state_manager.py record-ci "${{ inputs.issue }}" "${{ steps.pr.outputs.pr_number }}" \

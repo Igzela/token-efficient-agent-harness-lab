@@ -40,6 +40,8 @@ def parse_workflow_run_event(event_path):
         "pr_head_sha": pr_data.get("head", {}).get("sha") if isinstance(pr_data, dict) else None,
         "repository": (event.get("repository") or {}).get("full_name", ""),
         "head_repository": (workflow_run.get("head_repository") or {}).get("full_name", ""),
+        "workflow_id": workflow_run.get("workflow_id"),
+        "workflow_path": workflow_run.get("path"),
     }
 
 
@@ -51,6 +53,10 @@ def _run_for_event(info):
     if run.get("workflowName") != requirements["workflow_name"]:
         return None
     if run.get("headSha") != info["head_sha"] or run.get("status") != "completed":
+        return None
+    if info.get("workflow_id") is not None and run.get("workflowId") not in (None, info["workflow_id"]):
+        return None
+    if info.get("workflow_path") and run.get("path") not in (None, info["workflow_path"]):
         return None
     return run
 
@@ -128,11 +134,20 @@ def _is_duplicate_exact_head_run(issue, pr, sha, run_id, branch):
     except (TypeError, ValueError):
         return True
     acquisition = sm.read_ci_acquisition(issue, pr, sha)
+    exact_runs = ci_verifier._acquirable_runs(ci_verifier.find_exact_runs(branch, sha))
+    selected = ci_verifier.select_canonical_run(exact_runs)
+    if selected is not None:
+        try:
+            selected_number = int(selected.get("databaseId", 0))
+        except (TypeError, ValueError):
+            return True
+        if selected_number != run_number:
+            return True
     try:
         acquired_number = int(acquisition.get("workflow_run_id", 0)) if acquisition else None
     except (TypeError, ValueError):
         return True
-    if acquired_number is not None and acquired_number != run_number:
+    if selected is None and acquired_number is not None and acquired_number != run_number:
         return True
     state = sm.read_ci_state(issue)
     if state and state.get("pr_number") == int(pr) and state.get("head_sha") == sha:
@@ -147,14 +162,6 @@ def _is_duplicate_exact_head_run(issue, pr, sha, run_id, branch):
             return True
     if acquired_number == run_number:
         return False
-    exact_runs = ci_verifier._acquirable_runs(ci_verifier.find_exact_runs(branch, sha))
-    if len(exact_runs) > 1:
-        try:
-            canonical_number = int(exact_runs[0].get("databaseId", 0))
-        except (TypeError, ValueError):
-            return True
-        if canonical_number != run_number:
-            return True
     return False
 
 

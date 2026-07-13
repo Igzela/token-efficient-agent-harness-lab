@@ -183,17 +183,20 @@ class TestControlIssueLabels(unittest.TestCase):
                 "else: raise SystemExit('unexpected gh args: ' + repr(args))\n"
             )
             gh_path.chmod(gh_path.stat().st_mode | stat.S_IXUSR)
-            state_path.write_text(json.dumps({"labels": [], "issue": False}))
+            state_path.write_text(json.dumps({"labels": ["unrelated-label"], "issue": False}))
             env = {**os.environ, "PATH": f"{temp}:{os.environ['PATH']}", "CONTROL_STUB_STATE": str(state_path)}
             command = [sys.executable, str(pathlib.Path(__file__).parents[1] / "scripts/agent-control/control_state.py"), "setup-controls", "--repo", "acme/repo"]
             first = subprocess.run(command, cwd=pathlib.Path(__file__).parents[1], env=env, capture_output=True, text=True)
             second = subprocess.run(command, cwd=pathlib.Path(__file__).parents[1], env=env, capture_output=True, text=True)
+            final_state = json.loads(state_path.read_text())
         self.assertEqual(first.returncode, 0, first.stderr)
         self.assertEqual(second.returncode, 0, second.stderr)
         result = json.loads(second.stdout)
         self.assertEqual(result["labels"], ["agent-control", "agent-emergency-stop"])
         self.assertFalse(result["orchestrator_enabled"])
         self.assertFalse(result["auto_merge_enabled"])
+        self.assertIn("unrelated-label", final_state["labels"])
+        self.assertTrue(set(control_state.REQUIRED_LABELS).issubset(final_state["labels"]))
 
     def test_control_commands_enforce_explicit_reauthorization_and_verify_live_state(self):
         with tempfile.TemporaryDirectory() as temp:
@@ -286,6 +289,27 @@ class TestControlIssueLabels(unittest.TestCase):
                 {"number": 208, "state": "closed", "title": control_state.CONTROL_ISSUE_TITLE,
                  "body": control_state.CONTROL_MARKER, "labels": [{"name": control_state.CONTROL_LABEL}]}
             ])
+
+    def test_ci_acquisition_metadata_is_persisted_for_reselection_audit(self):
+        import state_manager
+
+        with mock.patch.object(state_manager, "comment_on_issue", return_value=True) as comment:
+            self.assertTrue(state_manager.record_ci_acquisition(
+                208, 207, "a" * 40, 101, "workflow_dispatch", [100], "acme/repo",
+                {
+                    "observed_run_ids": [100, 101, 102],
+                    "selection_reason": "newest_completed_supported",
+                    "superseded_run_ids": [100],
+                    "unsupported_run_ids": [102],
+                    "fallback_dispatched": True,
+                },
+            ))
+        payload = json.loads(comment.call_args.args[1])
+        self.assertEqual(payload["version"], 2)
+        self.assertEqual(payload["observed_run_ids"], [100, 101, 102])
+        self.assertEqual(payload["superseded_run_ids"], [100])
+        self.assertEqual(payload["unsupported_run_ids"], [102])
+        self.assertTrue(payload["fallback_dispatched"])
 
 
 class TestWorkerStateStructure(unittest.TestCase):

@@ -9,7 +9,7 @@ import os
 import re
 import subprocess
 import sys
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
 
@@ -78,9 +78,14 @@ class CIAcquisitionState:
     source: str
     status: str
     duplicate_run_ids: list[int]
+    observed_run_ids: list[int] = field(default_factory=list)
+    selection_reason: str = ""
+    superseded_run_ids: list[int] = field(default_factory=list)
+    unsupported_run_ids: list[int] = field(default_factory=list)
+    fallback_dispatched: bool = False
 
     def to_wire(self):
-        return _state_wire("agent-orchestrator-ci-acquisition", 1, self)
+        return _state_wire("agent-orchestrator-ci-acquisition", 2, self)
 
 
 @dataclass(frozen=True)
@@ -342,10 +347,19 @@ def record_ci_state(issue_number, pr_number, head_sha, ci_run_id, status, extra=
     return comment_on_issue(issue_number, json.dumps(state), repo)
 
 
-def record_ci_acquisition(issue_number, pr_number, head_sha, run_id, source, duplicate_run_ids=None, repo=""):
+def record_ci_acquisition(
+    issue_number, pr_number, head_sha, run_id, source, duplicate_run_ids=None,
+    repo="", metadata=None,
+):
+    metadata = metadata or {}
     state = CIAcquisitionState(
         int(pr_number), head_sha, int(run_id), source, "bound",
         [int(value) for value in (duplicate_run_ids or [])],
+        [int(value) for value in metadata.get("observed_run_ids", [])],
+        str(metadata.get("selection_reason", "")),
+        [int(value) for value in metadata.get("superseded_run_ids", [])],
+        [int(value) for value in metadata.get("unsupported_run_ids", [])],
+        bool(metadata.get("fallback_dispatched", False)),
     ).to_wire()
     return comment_on_issue(issue_number, json.dumps(state, sort_keys=True), repo)
 
@@ -888,8 +902,9 @@ def main():
         run_id = sys.argv[5]
         source = sys.argv[6]
         duplicate_ids = json.loads(sys.argv[7]) if len(sys.argv) > 7 else []
+        metadata = json.loads(sys.argv[8]) if len(sys.argv) > 8 else {}
         if not record_ci_acquisition(
-            issue_number, pr_number, head_sha, run_id, source, duplicate_ids, repo,
+            issue_number, pr_number, head_sha, run_id, source, duplicate_ids, repo, metadata,
         ):
             print("FATAL: unable to persist CI acquisition", file=sys.stderr)
             sys.exit(1)

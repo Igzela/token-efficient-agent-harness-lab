@@ -513,7 +513,7 @@ class TestExactHeadCI(unittest.TestCase):
                 ci_verifier.verify_exact_head_ci(2, "a" * 40, 1, {"headRefOid": "b" * 40})
 
     def test_existing_natural_exact_head_run_is_reused_without_dispatch(self):
-        run = {"databaseId": 11, "event": "pull_request", "status": "queued", "conclusion": "", "headSha": "c" * 40, "headBranch": "agent/issue-7", "workflowName": "tests"}
+        run = {"databaseId": 11, "event": "pull_request", "status": "completed", "conclusion": "success", "headSha": "c" * 40, "headBranch": "agent/issue-7", "workflowName": "tests"}
         with mock.patch.object(ci_verifier, "find_exact_runs", return_value=[run]), \
              mock.patch.object(ci_verifier.subprocess, "run") as dispatch:
             result = ci_verifier.acquire_exact_ci(7, "agent/issue-7", "c" * 40, observe_seconds=1)
@@ -522,7 +522,7 @@ class TestExactHeadCI(unittest.TestCase):
         self.assertEqual(result["source"], "pull_request")
 
     def test_missing_exact_head_run_dispatches_once_then_binds_one(self):
-        run = {"databaseId": 12, "event": "workflow_dispatch", "status": "queued", "conclusion": "", "headSha": "d" * 40, "headBranch": "agent/issue-8", "workflowName": "tests"}
+        run = {"databaseId": 12, "event": "workflow_dispatch", "status": "completed", "conclusion": "success", "headSha": "d" * 40, "headBranch": "agent/issue-8", "workflowName": "tests"}
         with mock.patch.object(ci_verifier, "find_exact_runs", side_effect=[[], [run]]), \
              mock.patch.object(ci_verifier.subprocess, "run", return_value=mock.Mock(returncode=0)) as dispatch:
             result = ci_verifier.acquire_exact_ci(8, "agent/issue-8", "d" * 40, observe_seconds=0)
@@ -532,8 +532,8 @@ class TestExactHeadCI(unittest.TestCase):
 
     def test_two_exact_head_runs_select_one_and_mark_duplicate(self):
         runs = [
-            {"databaseId": 21, "event": "pull_request", "status": "queued", "conclusion": "", "headSha": "e" * 40, "headBranch": "agent/issue-9", "workflowName": "tests"},
-            {"databaseId": 22, "event": "workflow_dispatch", "status": "queued", "conclusion": "", "headSha": "e" * 40, "headBranch": "agent/issue-9", "workflowName": "tests"},
+            {"databaseId": 21, "event": "pull_request", "status": "completed", "conclusion": "success", "headSha": "e" * 40, "headBranch": "agent/issue-9", "workflowName": "tests"},
+            {"databaseId": 22, "event": "workflow_dispatch", "status": "completed", "conclusion": "success", "headSha": "e" * 40, "headBranch": "agent/issue-9", "workflowName": "tests"},
         ]
         with mock.patch.object(ci_verifier, "find_exact_runs", return_value=runs):
             result = ci_verifier.acquire_exact_ci(9, "agent/issue-9", "e" * 40, observe_seconds=1)
@@ -556,7 +556,7 @@ class TestExactHeadCI(unittest.TestCase):
             "headSha": "f" * 40, "headBranch": "agent/issue-42", "workflowName": "tests",
         }
         fallback = {
-            "databaseId": 42, "event": "workflow_dispatch", "status": "queued", "conclusion": "",
+            "databaseId": 42, "event": "workflow_dispatch", "status": "completed", "conclusion": "success",
             "headSha": "f" * 40, "headBranch": "agent/issue-42", "workflowName": "tests",
         }
         with mock.patch.object(ci_verifier, "find_exact_runs", side_effect=[[cancelled], [cancelled, fallback]]), \
@@ -636,6 +636,182 @@ class TestExactHeadCI(unittest.TestCase):
         record.assert_called_once()
         self.assertEqual(unavailable["action"], "blocked")
         self.assertIn("ci_state_unavailable", unavailable["reason"])
+
+    def test_canonical_selection_prefers_newer_completed_result_over_run_id(self):
+        sha = "a" * 40
+        runs = [
+            {"databaseId": 900, "event": "pull_request", "status": "completed", "conclusion": "failure",
+             "headSha": sha, "headBranch": "agent/x", "workflowName": "tests",
+             "createdAt": "2026-07-14T00:00:00Z", "updatedAt": "2026-07-14T00:01:00Z"},
+            {"databaseId": 901, "event": "pull_request", "status": "completed", "conclusion": "success",
+             "headSha": sha, "headBranch": "agent/x", "workflowName": "tests",
+             "createdAt": "2026-07-14T00:02:00Z", "updatedAt": "2026-07-14T00:03:00Z"},
+        ]
+        with mock.patch.object(ci_verifier, "find_exact_runs", return_value=runs):
+            result = ci_verifier.acquire_exact_ci(1, "agent/x", sha, observe_seconds=0)
+        self.assertEqual(result["workflow_run_id"], 901)
+        self.assertEqual(result["selection_reason"], "newest_completed_supported")
+        self.assertEqual(result["superseded_run_ids"], [900])
+
+    def test_newer_failure_supersedes_older_success(self):
+        sha = "b" * 40
+        runs = [
+            {"databaseId": 910, "event": "pull_request", "status": "completed", "conclusion": "success",
+             "headSha": sha, "headBranch": "agent/x", "workflowName": "tests",
+             "updatedAt": "2026-07-14T00:01:00Z"},
+            {"databaseId": 911, "event": "pull_request", "status": "completed", "conclusion": "failure",
+             "headSha": sha, "headBranch": "agent/x", "workflowName": "tests",
+             "updatedAt": "2026-07-14T00:02:00Z"},
+        ]
+        with mock.patch.object(ci_verifier, "find_exact_runs", return_value=runs):
+            result = ci_verifier.acquire_exact_ci(1, "agent/x", sha, observe_seconds=0)
+        self.assertEqual(result["workflow_run_id"], 911)
+
+    def test_completed_fallback_success_supersedes_pending_natural_run(self):
+        sha = "c" * 40
+        runs = [
+            {"databaseId": 920, "event": "pull_request", "status": "in_progress", "conclusion": "",
+             "headSha": sha, "headBranch": "agent/x", "workflowName": "tests",
+             "updatedAt": "2026-07-14T00:03:00Z"},
+            {"databaseId": 921, "event": "workflow_dispatch", "status": "completed", "conclusion": "success",
+             "headSha": sha, "headBranch": "agent/x", "workflowName": "tests",
+             "updatedAt": "2026-07-14T00:02:00Z"},
+        ]
+        with mock.patch.object(ci_verifier, "find_exact_runs", return_value=runs), \
+             mock.patch.object(ci_verifier.subprocess, "run") as dispatch:
+            result = ci_verifier.acquire_exact_ci(1, "agent/x", sha, observe_seconds=0)
+        dispatch.assert_not_called()
+        self.assertEqual(result["workflow_run_id"], 921)
+        self.assertEqual(result["source"], "workflow_dispatch")
+
+    def test_natural_pending_timeout_dispatches_at_most_one_fallback(self):
+        sha = "d" * 40
+        natural = {"databaseId": 930, "event": "pull_request", "status": "queued", "conclusion": "",
+                   "headSha": sha, "headBranch": "agent/x", "workflowName": "tests",
+                   "updatedAt": "2026-07-14T00:00:00Z"}
+        fallback = {"databaseId": 931, "event": "workflow_dispatch", "status": "completed", "conclusion": "success",
+                    "headSha": sha, "headBranch": "agent/x", "workflowName": "tests",
+                    "updatedAt": "2026-07-14T00:01:00Z"}
+        with mock.patch.object(ci_verifier, "find_exact_runs", side_effect=[[natural], [natural], [natural, fallback]]), \
+             mock.patch.object(ci_verifier.subprocess, "run", return_value=mock.Mock(returncode=0)) as dispatch:
+            result = ci_verifier.acquire_exact_ci(1, "agent/x", sha, observe_seconds=0)
+        dispatch.assert_called_once()
+        self.assertEqual(result["workflow_run_id"], 931)
+        self.assertTrue(result["fallback_dispatched"])
+
+    def test_selection_records_unsupported_and_observed_candidates(self):
+        sha = "e" * 40
+        unsupported = {"databaseId": 940, "event": "pull_request", "status": "completed", "conclusion": "cancelled",
+                       "headSha": sha, "headBranch": "agent/x", "workflowName": "tests", "updatedAt": "2026-07-14T00:00:00Z"}
+        with mock.patch.object(ci_verifier, "find_exact_runs", side_effect=[[unsupported], [unsupported]]), \
+             mock.patch.object(ci_verifier.subprocess, "run", return_value=mock.Mock(returncode=0)) as dispatch:
+            with self.assertRaises(ci_verifier.CIVerificationError):
+                ci_verifier.acquire_exact_ci(1, "agent/x", sha, observe_seconds=0, dispatch_timeout_seconds=0)
+        dispatch.assert_called_once()
+
+    def test_timed_out_natural_run_is_reselected_when_later_natural_success_exists(self):
+        sha = "2" * 40
+        runs = [
+            {"databaseId": 970, "event": "pull_request", "status": "completed", "conclusion": "timed_out",
+             "headSha": sha, "headBranch": "agent/x", "workflowName": "tests",
+             "updatedAt": "2026-07-14T00:01:00Z"},
+            {"databaseId": 971, "event": "pull_request", "status": "completed", "conclusion": "success",
+             "headSha": sha, "headBranch": "agent/x", "workflowName": "tests",
+             "updatedAt": "2026-07-14T00:02:00Z"},
+        ]
+        with mock.patch.object(ci_verifier, "find_exact_runs", return_value=runs), \
+             mock.patch.object(ci_verifier.subprocess, "run") as dispatch:
+            result = ci_verifier.acquire_exact_ci(1, "agent/x", sha, observe_seconds=0)
+        dispatch.assert_not_called()
+        self.assertEqual(result["workflow_run_id"], 971)
+        self.assertEqual(result["unsupported_run_ids"], [970])
+
+    def test_equal_completed_natural_and_fallback_prefers_natural(self):
+        sha = "3" * 40
+        runs = [
+            {"databaseId": 980, "event": "pull_request", "status": "completed", "conclusion": "success",
+             "headSha": sha, "headBranch": "agent/x", "workflowName": "tests",
+             "updatedAt": "2026-07-14T00:04:00Z"},
+            {"databaseId": 981, "event": "workflow_dispatch", "status": "completed", "conclusion": "success",
+             "headSha": sha, "headBranch": "agent/x", "workflowName": "tests",
+             "updatedAt": "2026-07-14T00:04:00Z"},
+        ]
+        with mock.patch.object(ci_verifier, "find_exact_runs", return_value=runs):
+            result = ci_verifier.acquire_exact_ci(1, "agent/x", sha, observe_seconds=0)
+        self.assertEqual(result["workflow_run_id"], 980)
+        self.assertEqual(result["source"], "pull_request")
+
+    def test_two_completed_failures_select_newest_and_preserve_repair_metadata(self):
+        sha = "4" * 40
+        runs = [
+            {"databaseId": 990, "event": "pull_request", "status": "completed", "conclusion": "failure",
+             "headSha": sha, "headBranch": "agent/x", "workflowName": "tests",
+             "updatedAt": "2026-07-14T00:05:00Z"},
+            {"databaseId": 991, "event": "workflow_dispatch", "status": "completed", "conclusion": "failure",
+             "headSha": sha, "headBranch": "agent/x", "workflowName": "tests",
+             "updatedAt": "2026-07-14T00:06:00Z"},
+        ]
+        with mock.patch.object(ci_verifier, "find_exact_runs", return_value=runs):
+            result = ci_verifier.acquire_exact_ci(1, "agent/x", sha, observe_seconds=0)
+        self.assertEqual(result["workflow_run_id"], 991)
+        self.assertEqual(result["superseded_run_ids"], [990])
+        self.assertEqual(result["observed_run_ids"], [990, 991])
+
+    def test_state_store_outage_during_reselection_fails_closed(self):
+        with mock.patch.object(ci_handler.sm, "read_ci_acquisition", side_effect=ci_handler.sm.StateUnavailableError("outage")):
+            with self.assertRaises(ci_handler.sm.StateUnavailableError):
+                ci_handler._is_duplicate_exact_head_run(42, 207, "5" * 40, 1000, "agent/x")
+
+    def test_candidate_identity_rejects_wrong_branch_workflow_or_head_repository(self):
+        sha = "f" * 40
+        candidates = [
+            {"databaseId": 950, "event": "pull_request", "status": "completed", "conclusion": "success",
+             "headSha": sha, "headBranch": "other", "workflowName": "tests", "headRepository": "trusted/repo"},
+            {"databaseId": 951, "event": "pull_request", "status": "completed", "conclusion": "success",
+             "headSha": sha, "headBranch": "agent/x", "workflowName": "other", "headRepository": "trusted/repo"},
+            {"databaseId": 952, "event": "pull_request", "status": "completed", "conclusion": "success",
+             "headSha": sha, "headBranch": "agent/x", "workflowName": "tests", "headRepository": "fork/repo"},
+        ]
+        with mock.patch.dict(os.environ, {"AGENT_REPO": "trusted/repo"}, clear=False), \
+             mock.patch.object(ci_verifier, "find_exact_runs", return_value=candidates), \
+             mock.patch.object(ci_verifier.subprocess, "run", return_value=mock.Mock(returncode=1)) as dispatch:
+            with self.assertRaises(ci_verifier.CIVerificationError):
+                ci_verifier.acquire_exact_ci(1, "agent/x", sha, observe_seconds=0, dispatch_timeout_seconds=0)
+        dispatch.assert_called_once()
+
+    def test_reselection_keeps_repair_count_and_ignores_stale_failure_after_success(self):
+        sha = "1" * 40
+        body = 'Closes #42\n\n<!-- agent-orchestrator-binding: {"issue_number": 42, "branch": "agent/x"} -->'
+        event_path = tempfile.NamedTemporaryFile(mode="w", delete=False)
+        json.dump({
+            "repository": {"full_name": "trusted/repo"},
+            "workflow_run": {
+                "name": "tests", "status": "completed", "conclusion": "failure",
+                "head_branch": "agent/x", "head_sha": sha, "id": 960,
+                "head_repository": {"full_name": "trusted/repo"},
+                "pull_requests": [{"number": 207, "head": {"sha": sha}}],
+            },
+        }, event_path)
+        event_path.close()
+        run = {"databaseId": 960, "workflowName": "tests", "status": "completed", "conclusion": "failure",
+               "headSha": sha, "headBranch": "agent/x", "jobs": []}
+        newer_success = {"databaseId": 961, "event": "pull_request", "status": "completed", "conclusion": "success",
+                         "headSha": sha, "headBranch": "agent/x", "workflowName": "tests",
+                         "updatedAt": "2026-07-14T00:02:00Z"}
+        try:
+            with mock.patch.dict(os.environ, {"AGENT_REPO": "trusted/repo"}, clear=False), \
+                 mock.patch.object(ci_handler.ci_verifier, "run_info", return_value=run), \
+                 mock.patch.object(ci_handler.ci_verifier, "find_exact_runs", return_value=[run, newer_success]), \
+                 mock.patch.object(ci_handler.sm, "get_pr_info", return_value={"state": "OPEN", "headRefName": "agent/x", "headRefOid": sha, "body": body}), \
+                 mock.patch.object(ci_handler, "_find_issue_for_pr", return_value=42), \
+                 mock.patch.object(ci_handler.sm, "verify_issue_pr_binding", return_value=(True, "ok")), \
+                 mock.patch.object(ci_handler.sm, "read_ci_acquisition", return_value={"workflow_run_id": 960}), \
+                 mock.patch.object(ci_handler.sm, "read_ci_state", return_value={"pr_number": 207, "head_sha": sha, "workflow_run_id": 961, "status": "success", "extra": {"repair_count": 1}}):
+                result = ci_handler.process_ci_completion(event_path.name)
+        finally:
+            os.unlink(event_path.name)
+        self.assertEqual(result["action"], "noop")
+        self.assertEqual(result["reason"], "duplicate_exact_head_run")
 
 
 if __name__ == "__main__":

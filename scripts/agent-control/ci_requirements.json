@@ -1,5 +1,6 @@
 {
   "workflow_name": "tests",
+  "workflow_path": ".github/workflows/tests.yml",
   "required_jobs": [
     "docker-build",
     "native-runtime",

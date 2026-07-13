@@ -405,11 +405,94 @@ class TestWorkflowTrustBoundaries(unittest.TestCase):
 
     def test_controller_setup_alias_and_review_waiting_labels_are_declared(self):
         controller = self.workflow("agent-controller.yml")
-        labels = (CONTROL / "setup_labels.py").read_text()
+        labels = (CONTROL / "control_state.py").read_text()
         self.assertIn("setup-controls", controller)
         self.assertIn("agent-review-blocked", labels)
         self.assertIn("agent-merge-ready", labels)
         self.assertIn("retry-review", controller)
+
+
+class TestCodexWrapperEnvironment(unittest.TestCase):
+    def test_all_wrapper_modes_use_allowlisted_environment_and_suppress_failure_output(self):
+        wrapper = CONTROL / "codex_wrapper.sh"
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            record = root / "records.jsonl"
+            fake = root / "codex"
+            fake.write_text(
+                "#!/usr/bin/env python3\n"
+                "import json, os, sys\n"
+                f"record = {str(record)!r}\n"
+                "with open(record, 'a', encoding='utf-8') as handle:\n"
+                "    json.dump({'args': sys.argv[1:], 'env': dict(os.environ)}, handle, sort_keys=True); handle.write('\\n')\n"
+                "if sys.argv[1:3] == ['--version']:\n"
+                "    print('codex 1.0'); raise SystemExit(0)\n"
+                "if sys.argv[1:3] == ['login', 'status']:\n"
+                "    raise SystemExit(0)\n"
+                "if sys.argv[1:3] == ['exec', '--help']:\n"
+                "    print('--cd --sandbox --ephemeral --json --output-last-message'); raise SystemExit(0)\n"
+                "if sys.argv and sys.argv[1] == 'exec':\n"
+                "    out = sys.argv[sys.argv.index('--output-last-message') + 1]\n"
+                "    if 'FAIL_CODEX' in sys.stdin.read():\n"
+                "        print('super-secret-value-from-failing-provider', file=sys.stderr); raise SystemExit(7)\n"
+                "    json.dump({'ok': True}, open(out, 'w', encoding='utf-8'))\n"
+                "    raise SystemExit(0)\n"
+                "raise SystemExit(2)\n"
+            )
+            fake.chmod(fake.stat().st_mode | 0o111)
+            prompt = root / "prompt.txt"
+            prompt.write_text("hello")
+            home = root / "home"
+            home.mkdir()
+            codex_home = root / "codex-home"
+            codex_home.mkdir()
+            for worker in ("implement", "ci-repair", "review"):
+                output = root / worker
+                env = {
+                    **os.environ,
+                    "PATH": f"{root}:{os.environ['PATH']}",
+                    "HOME": str(home),
+                    "CODEX_HOME": str(codex_home),
+                    "OPENAI_API_KEY": "super-secret-value-from-parent",
+                    "GH_TOKEN": "github-secret",
+                    "UNKNOWN_SECRET_TOKEN": "unknown-secret",
+                }
+                result = subprocess.run(
+                    [str(wrapper), worker, str(prompt), str(output), str(root)],
+                    cwd=ROOT, env=env, text=True, capture_output=True,
+                )
+                self.assertEqual(result.returncode, 0, result.stderr)
+            records = [json.loads(line) for line in record.read_text().splitlines()]
+            self.assertGreaterEqual(len(records), 12)
+            allowed = {
+                "HOME", "CODEX_HOME", "PATH", "LANG", "LC_ALL", "LC_CTYPE",
+                "TMPDIR", "TMP", "TEMP", "TERM", "USER", "LOGNAME", "SHELL",
+                "PWD",
+            }
+            for item in records:
+                self.assertTrue(set(item["env"]).issubset(allowed), set(item["env"]) - allowed)
+                self.assertEqual(item["env"].get("HOME"), str(home))
+                self.assertEqual(item["env"].get("CODEX_HOME"), str(codex_home))
+                self.assertNotIn("OPENAI_API_KEY", item["env"])
+                self.assertNotIn("GH_TOKEN", item["env"])
+                self.assertNotIn("UNKNOWN_SECRET_TOKEN", item["env"])
+
+            failed_output = root / "failed"
+            failed_prompt = root / "failed-prompt.txt"
+            failed_prompt.write_text("FAIL_CODEX")
+            failed_env = {
+                **env,
+                "OPENAI_API_KEY": "super-secret-value-from-parent",
+            }
+            failed = subprocess.run(
+                [str(wrapper), "review", str(failed_prompt), str(failed_output), str(root)],
+                cwd=ROOT, env=failed_env, text=True, capture_output=True,
+            )
+            self.assertNotEqual(failed.returncode, 0)
+            self.assertNotIn("super-secret-value-from-failing-provider", failed.stderr)
+            self.assertNotIn("super-secret-value-from-failing-provider", "".join(
+                path.read_text(errors="replace") for path in failed_output.glob("*")
+            ))
 
 
 if __name__ == "__main__":
