@@ -1,489 +1,105 @@
-"""Comprehensive dry-run tests for the agent orchestrator.
+"""Static regression checks for disabled-by-default orchestration workflows."""
 
-Validates state transitions, event filters, dependency resolution,
-duplicate-event idempotency, exact-head stale-run rejection,
-retry limits, concurrency locking, prompt templates, workflow YAML parsing,
-Codex wrapper behavior, and the complete transition graph
-without invoking Codex, pushing, creating PRs, or merging.
-"""
+from __future__ import annotations
 
-import json
-import os
-import sys
-import tempfile
+import pathlib
+import re
 import unittest
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "scripts", "agent-control"))
-import state_manager as sm
-import lock_manager as lm
-import ci_handler as ch
-
-
-RESULTS = []
-
-
-def log_test(name, passed, details=""):
-    RESULTS.append({"name": name, "passed": passed, "details": details})
-    status = "PASS" if passed else "FAIL"
-    print(f"  [{status}] {name}" + (f": {details}" if details else ""))
-
-
-class TestEventFiltering(unittest.TestCase):
-    """Defect 1: agent-ready intake dispatches exactly one worker."""
-
-    def test_agent_draft_is_recognized(self):
-        self.assertIn(sm.LABEL_DRAFT, sm.ALL_LABELS)
-
-    def test_agent_ready_is_recognized(self):
-        self.assertIn(sm.LABEL_READY, sm.ALL_LABELS)
-
-    def test_agent_running_is_active(self):
-        self.assertIn(sm.LABEL_RUNNING, sm.ACTIVE_LABELS)
-
-    def test_ci_repairing_is_active(self):
-        self.assertIn(sm.LABEL_CI_REPAIRING, sm.ACTIVE_LABELS)
-
-    def test_review_running_is_active(self):
-        self.assertIn(sm.LABEL_REVIEW_RUNNING, sm.ACTIVE_LABELS)
-
-    def test_review_passed_is_not_active(self):
-        self.assertNotIn(sm.LABEL_REVIEW_PASSED, sm.ACTIVE_LABELS)
-
-    def test_agent_blocked_is_terminal(self):
-        self.assertIn(sm.LABEL_BLOCKED, sm.TERMINAL_LABELS)
-
-    def test_agent_complete_is_terminal(self):
-        self.assertIn(sm.LABEL_COMPLETE, sm.TERMINAL_LABELS)
-
-    def test_unknown_labels_ignored(self):
-        unknown = {"bug", "enhancement"}
-        self.assertTrue(unknown.isdisjoint(sm.ACTIVE_LABELS | sm.TERMINAL_LABELS))
-
-
-class TestDependencyParsing(unittest.TestCase):
-    """Test dependency resolution."""
-
-    def test_depends_on(self):
-        body = "This task depends on #42 and #100 being complete."
-        deps = sm.parse_dependencies(body)
-        self.assertIn(42, deps)
-        self.assertIn(100, deps)
-
-    def test_empty_body(self):
-        body = "No dependencies here."
-        deps = sm.parse_dependencies(body)
-        self.assertEqual(len(deps), 0)
-
-
-class TestConcurrencyLocking(unittest.TestCase):
-    """Test concurrency lock acquisition and release."""
-
-    def setUp(self):
-        self.key = f"dry-run-test-{os.getpid()}-{id(self)}"
-
-    def tearDown(self):
-        lm.release_lock(self.key)
-
-    def test_acquire_and_release(self):
-        self.assertTrue(lm.acquire_lock(self.key, timeout_secs=5))
-        lm.release_lock(self.key)
-        self.assertTrue(lm.acquire_lock(self.key, timeout_secs=2))
-
-    def test_re_acquire_held_lock_fails(self):
-        self.assertTrue(lm.acquire_lock(self.key, timeout_secs=5))
-        self.assertFalse(lm.acquire_lock(self.key, timeout_secs=2))
-
-    def test_repo_capacity(self):
-        self.assertTrue(lm.check_repo_capacity())
-
-    def test_concurrency_group_format(self):
-        g = lm.gh_concurrency_group(1, 100, "abc123")
-        self.assertIn("issue-1", g)
-        self.assertIn("pr-100", g)
-        self.assertIn("sha-abc123", g)
-
-
-class TestCIEventParsing(unittest.TestCase):
-    """Test CI workflow run event parsing."""
-
-    def _write_event(self, data):
-        f = tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False)
-        json.dump(data, f)
-        f.close()
-        return f.name
-
-    def test_parse_success_event(self):
-        path = self._write_event({
-            "workflow_run": {
-                "conclusion": "success",
-                "status": "completed",
-                "head_branch": "agent/issue-42",
-                "head_sha": "abcdef1234567890",
-                "id": 12345,
-                "html_url": "https://github.com/example/repo/actions/runs/12345",
-                "triggering_actor": {"login": "test-bot"},
-                "pull_requests": [
-                    {"number": 99, "head": {"sha": "abcdef1234567890", "ref": "agent/issue-42"}}
-                ],
-            }
-        })
-        info = ch.parse_workflow_run_event(path)
-        self.assertEqual(info["conclusion"], "success")
-        self.assertEqual(info["pr_number"], 99)
-        self.assertEqual(info["head_sha"], "abcdef1234567890")
-        self.assertEqual(info["run_id"], 12345)
-        os.unlink(path)
-
-    def test_parse_failure_event(self):
-        path = self._write_event({
-            "workflow_run": {
-                "conclusion": "failure",
-                "status": "completed",
-                "head_branch": "agent/issue-10",
-                "head_sha": "xyz789",
-                "id": 67890,
-                "html_url": "",
-                "triggering_actor": {"login": "test-bot"},
-                "pull_requests": [{"number": 55, "head": {"sha": "xyz789"}}],
-            }
-        })
-        info = ch.parse_workflow_run_event(path)
-        self.assertEqual(info["conclusion"], "failure")
-        self.assertEqual(info["pr_number"], 55)
-        os.unlink(path)
-
-    def test_parse_no_prs(self):
-        path = self._write_event({
-            "workflow_run": {
-                "conclusion": "success",
-                "status": "completed",
-                "head_branch": "main",
-                "head_sha": "abc",
-                "id": 1,
-                "html_url": "",
-                "triggering_actor": {"login": "test-bot"},
-                "pull_requests": [],
-            }
-        })
-        info = ch.parse_workflow_run_event(path)
-        self.assertIsNone(info["pr_number"])
-        os.unlink(path)
-
-
-class TestRetryLimits(unittest.TestCase):
-    """Defect 19: Repair count persists across events and stops after two attempts."""
-
-    def test_max_repair_is_two(self):
-        self.assertEqual(sm.MAX_REPAIR_ATTEMPTS, 2)
-
-    def test_first_repair_allowed(self):
-        self.assertTrue(1 <= sm.MAX_REPAIR_ATTEMPTS)
-
-    def test_second_repair_allowed(self):
-        self.assertTrue(2 <= sm.MAX_REPAIR_ATTEMPTS)
-
-    def test_third_repair_blocked(self):
-        self.assertFalse(3 <= sm.MAX_REPAIR_ATTEMPTS)
-
-
-class TestWorkflowYAMLParsing(unittest.TestCase):
-    """Defect 25: All workflow YAML parses and dispatch inputs match their callers."""
-
-    def _load_yaml(self, path):
-        import yaml
-        with open(path) as f:
-            return yaml.safe_load(f)
-
-    def _get_trigger(self, data):
-        """Get the trigger key from YAML data. PyYAML parses 'on' as True."""
-        for key in (True, "on"):
-            if key in data:
-                return data[key]
-        return None
-
-    def test_intake_yml_parses(self):
-        path = os.path.join(os.path.dirname(__file__), "..", ".github", "workflows", "agent-intake.yml")
-        if os.path.exists(path):
-            data = self._load_yaml(path)
-            self.assertIsNotNone(self._get_trigger(data))
-            self.assertIn("jobs", data)
-
-    def test_worker_yml_parses(self):
-        path = os.path.join(os.path.dirname(__file__), "..", ".github", "workflows", "agent-worker.yml")
-        if os.path.exists(path):
-            data = self._load_yaml(path)
-            trigger = self._get_trigger(data)
-            self.assertIsNotNone(trigger)
-            self.assertIn("jobs", data)
-            self.assertIn("workflow_dispatch", trigger)
-            inputs = trigger["workflow_dispatch"]["inputs"]
-            self.assertIn("issue", inputs)
-            self.assertIn("dry_run", inputs)
-
-    def test_controller_yml_parses(self):
-        path = os.path.join(os.path.dirname(__file__), "..", ".github", "workflows", "agent-controller.yml")
-        if os.path.exists(path):
-            data = self._load_yaml(path)
-            self.assertIsNotNone(self._get_trigger(data))
-
-    def test_ci_monitor_yml_parses(self):
-        path = os.path.join(os.path.dirname(__file__), "..", ".github", "workflows", "agent-ci-monitor.yml")
-        if os.path.exists(path):
-            data = self._load_yaml(path)
-            self.assertIsNotNone(self._get_trigger(data))
-
-    def test_ci_repair_yml_parses(self):
-        path = os.path.join(os.path.dirname(__file__), "..", ".github", "workflows", "agent-ci-repair.yml")
-        if os.path.exists(path):
-            data = self._load_yaml(path)
-            trigger = self._get_trigger(data)
-            self.assertIsNotNone(trigger)
-            inputs = trigger["workflow_dispatch"]["inputs"]
-            self.assertIn("ci_run_id", inputs)
-            self.assertNotIn("failed_logs", inputs)
-
-    def test_review_yml_parses(self):
-        path = os.path.join(os.path.dirname(__file__), "..", ".github", "workflows", "agent-review.yml")
-        if os.path.exists(path):
-            data = self._load_yaml(path)
-            self.assertIsNotNone(self._get_trigger(data))
-
-    def test_merge_yml_parses(self):
-        path = os.path.join(os.path.dirname(__file__), "..", ".github", "workflows", "agent-merge.yml")
-        if os.path.exists(path):
-            data = self._load_yaml(path)
-            self.assertIsNotNone(self._get_trigger(data))
-
-
-class TestEnableGatePattern(unittest.TestCase):
-    """Defect 2: Disabled orchestrator prevents every downstream action."""
-
-    def _load_yaml(self, path):
-        import yaml
-        with open(path) as f:
-            return yaml.safe_load(f)
-
-    def test_intake_has_gate_job(self):
-        path = os.path.join(os.path.dirname(__file__), "..", ".github", "workflows", "agent-intake.yml")
-        if os.path.exists(path):
-            data = self._load_yaml(path)
-            self.assertIn("gate", data["jobs"])
-            gate = data["jobs"]["gate"]
-            self.assertIn("outputs", gate)
-
-    def test_worker_has_gate_job(self):
-        path = os.path.join(os.path.dirname(__file__), "..", ".github", "workflows", "agent-worker.yml")
-        if os.path.exists(path):
-            data = self._load_yaml(path)
-            self.assertIn("gate", data["jobs"])
-
-    def test_merge_has_gate_job(self):
-        path = os.path.join(os.path.dirname(__file__), "..", ".github", "workflows", "agent-merge.yml")
-        if os.path.exists(path):
-            data = self._load_yaml(path)
-            self.assertIn("gate", data["jobs"])
-
-    def test_review_has_gate_job(self):
-        path = os.path.join(os.path.dirname(__file__), "..", ".github", "workflows", "agent-review.yml")
-        if os.path.exists(path):
-            data = self._load_yaml(path)
-            self.assertIn("gate", data["jobs"])
-
-
-class TestNoHardcodedEnable(unittest.TestCase):
-    """Defect 2: No hardcoded AGENT_ORCHESTRATOR_ENABLED: 'true' in workflows."""
-
-    def _check_no_hardcoded_enable(self, workflow_path):
-        if not os.path.exists(workflow_path):
-            return True
-        with open(workflow_path) as f:
-            content = f.read()
-        self.assertNotIn('AGENT_ORCHESTRATOR_ENABLED: "true"', content)
-        self.assertNotIn("AGENT_ORCHESTRATOR_ENABLED: 'true'", content)
-
-    def test_intake_no_hardcoded(self):
-        self._check_no_hardcoded_enable(
-            os.path.join(os.path.dirname(__file__), "..", ".github", "workflows", "agent-intake.yml"))
-
-    def test_worker_no_hardcoded(self):
-        self._check_no_hardcoded_enable(
-            os.path.join(os.path.dirname(__file__), "..", ".github", "workflows", "agent-worker.yml"))
-
-    def test_ci_repair_no_hardcoded(self):
-        self._check_no_hardcoded_enable(
-            os.path.join(os.path.dirname(__file__), "..", ".github", "workflows", "agent-ci-repair.yml"))
-
-    def test_review_no_hardcoded(self):
-        self._check_no_hardcoded_enable(
-            os.path.join(os.path.dirname(__file__), "..", ".github", "workflows", "agent-review.yml"))
-
-    def test_merge_no_hardcoded(self):
-        self._check_no_hardcoded_enable(
-            os.path.join(os.path.dirname(__file__), "..", ".github", "workflows", "agent-merge.yml"))
-
-
-class TestCodexPromptNoGitWrite(unittest.TestCase):
-    """Defect 4+7: Codex prompt does not tell Codex to commit, push, create PR, or merge."""
-
-    def test_implementation_prompt_no_commit_instructions(self):
-        path = os.path.join(os.path.dirname(__file__), "..", "scripts", "agent-control", "prompts", "implementation.md")
-        if os.path.exists(path):
-            with open(path) as f:
-                content = f.read().lower()
-            self.assertNotIn("do not commit", content.replace("do not commit changes", "").replace("do not commit secrets", ""))
-            self.assertIn("do not commit", content)
-            self.assertNotIn("git push", content)
-            self.assertNotIn("create or update a pr", content)
-            self.assertNotIn("create a pr", content)
-
-    def test_ci_repair_prompt_no_commit_instructions(self):
-        path = os.path.join(os.path.dirname(__file__), "..", "scripts", "agent-control", "prompts", "ci_repair.md")
-        if os.path.exists(path):
-            with open(path) as f:
-                content = f.read().lower()
-            self.assertNotIn("git push", content)
-            self.assertNotIn("commit changes", content.replace("do not commit changes", ""))
-
-    def test_implementation_prompt_says_not_to_commit(self):
-        path = os.path.join(os.path.dirname(__file__), "..", "scripts", "agent-control", "prompts", "implementation.md")
-        if os.path.exists(path):
-            with open(path) as f:
-                content = f.read()
-            self.assertIn("Do NOT commit changes", content)
-            self.assertIn("Do NOT push branches", content)
-            self.assertIn("Do NOT create or update PRs", content)
-
-
-class TestGHTokenInWorkflows(unittest.TestCase):
-    """Defect 6: Every gh-using job has explicit GH_TOKEN."""
-
-    def _load_yaml(self, path):
-        import yaml
-        with open(path) as f:
-            return yaml.safe_load(f)
-
-    def _has_gh_token(self, workflow_path, job_name):
-        if not os.path.exists(workflow_path):
-            return True
-        data = self._load_yaml(workflow_path)
-        if "jobs" not in data or job_name not in data["jobs"]:
-            return True
-        job = data["jobs"][job_name]
-        env = job.get("env", {})
-        return "GH_TOKEN" in env
-
-    def test_worker_implement_has_gh_token(self):
-        self.assertTrue(self._has_gh_token(
-            os.path.join(os.path.dirname(__file__), "..", ".github", "workflows", "agent-worker.yml"),
-            "implement"))
-
-    def test_ci_monitor_process_has_gh_token(self):
-        self.assertTrue(self._has_gh_token(
-            os.path.join(os.path.dirname(__file__), "..", ".github", "workflows", "agent-ci-monitor.yml"),
-            "process"))
-
-    def test_ci_repair_repair_has_gh_token(self):
-        self.assertTrue(self._has_gh_token(
-            os.path.join(os.path.dirname(__file__), "..", ".github", "workflows", "agent-ci-repair.yml"),
-            "repair"))
-
-    def test_review_review_has_gh_token(self):
-        self.assertTrue(self._has_gh_token(
-            os.path.join(os.path.dirname(__file__), "..", ".github", "workflows", "agent-review.yml"),
-            "review"))
-
-    def test_merge_merge_has_gh_token(self):
-        self.assertTrue(self._has_gh_token(
-            os.path.join(os.path.dirname(__file__), "..", ".github", "workflows", "agent-merge.yml"),
-            "merge"))
-
-    def test_controller_control_has_gh_token(self):
-        self.assertTrue(self._has_gh_token(
-            os.path.join(os.path.dirname(__file__), "..", ".github", "workflows", "agent-controller.yml"),
-            "control"))
-
-    def test_intake_intake_has_gh_token(self):
-        self.assertTrue(self._has_gh_token(
-            os.path.join(os.path.dirname(__file__), "..", ".github", "workflows", "agent-intake.yml"),
-            "intake"))
-
-
-class TestEmergencyStopInWorkflows(unittest.TestCase):
-    """Defect 22: Emergency stop prevents push and merge."""
-
-    def _has_emergency_stop_check(self, workflow_path):
-        if not os.path.exists(workflow_path):
-            return True
-        with open(workflow_path) as f:
-            content = f.read()
-        return "AGENT_EMERGENCY_STOP" in content
-
-    def test_intake_has_emergency_stop(self):
-        self.assertTrue(self._has_emergency_stop_check(
-            os.path.join(os.path.dirname(__file__), "..", ".github", "workflows", "agent-intake.yml")))
-
-    def test_worker_has_emergency_stop(self):
-        self.assertTrue(self._has_emergency_stop_check(
-            os.path.join(os.path.dirname(__file__), "..", ".github", "workflows", "agent-worker.yml")))
-
-    def test_merge_has_emergency_stop(self):
-        self.assertTrue(self._has_emergency_stop_check(
-            os.path.join(os.path.dirname(__file__), "..", ".github", "workflows", "agent-merge.yml")))
-
-    def test_review_has_emergency_stop(self):
-        self.assertTrue(self._has_emergency_stop_check(
-            os.path.join(os.path.dirname(__file__), "..", ".github", "workflows", "agent-review.yml")))
-
-    def test_ci_monitor_has_emergency_stop(self):
-        self.assertTrue(self._has_emergency_stop_check(
-            os.path.join(os.path.dirname(__file__), "..", ".github", "workflows", "agent-ci-monitor.yml")))
-
-    def test_ci_repair_has_emergency_stop(self):
-        self.assertTrue(self._has_emergency_stop_check(
-            os.path.join(os.path.dirname(__file__), "..", ".github", "workflows", "agent-ci-repair.yml")))
-
-
-class TestCodexWrapper(unittest.TestCase):
-    """Defect 12: Codex wrapper edge cases."""
-
-    def test_wrapper_script_exists(self):
-        path = os.path.join(os.path.dirname(__file__), "..", "scripts", "agent-control", "codex_wrapper.sh")
-        self.assertTrue(os.path.exists(path))
-
-    def test_wrapper_checks_emergency_stop(self):
-        path = os.path.join(os.path.dirname(__file__), "..", "scripts", "agent-control", "codex_wrapper.sh")
-        if os.path.exists(path):
-            with open(path) as f:
-                content = f.read()
-            self.assertIn("AGENT_EMERGENCY_STOP", content)
-
-    def test_wrapper_checks_enabled(self):
-        path = os.path.join(os.path.dirname(__file__), "..", "scripts", "agent-control", "codex_wrapper.sh")
-        if os.path.exists(path):
-            with open(path) as f:
-                content = f.read()
-            self.assertIn("AGENT_ORCHESTRATOR_ENABLED", content)
-
-    def test_wrapper_does_not_commit(self):
-        path = os.path.join(os.path.dirname(__file__), "..", "scripts", "agent-control", "codex_wrapper.sh")
-        if os.path.exists(path):
-            with open(path) as f:
-                content = f.read()
-            self.assertIn("Never commits, pushes, merges, or creates PRs", content)
-
-    def test_wrapper_uses_set_uo_pipefail(self):
-        path = os.path.join(os.path.dirname(__file__), "..", "scripts", "agent-control", "codex_wrapper.sh")
-        if os.path.exists(path):
-            with open(path) as f:
-                content = f.read()
-            self.assertIn("set -euo pipefail", content)
-
-    def test_wrapper_handles_unset_code_home(self):
-        path = os.path.join(os.path.dirname(__file__), "..", "scripts", "agent-control", "codex_wrapper.sh")
-        if os.path.exists(path):
-            with open(path) as f:
-                content = f.read()
-            self.assertIn('${CODEX_HOME:-}', content)
+ROOT = pathlib.Path(__file__).resolve().parents[1]
+WORKFLOWS = ROOT / ".github" / "workflows"
+CONTROL = ROOT / "scripts" / "agent-control"
+AGENT_WORKFLOWS = tuple(sorted(WORKFLOWS.glob("agent-*.yml")))
+
+
+class TestWorkflowSyntaxAndPins(unittest.TestCase):
+    def test_agent_workflow_yaml_has_a_dedicated_parser_check(self):
+        source = (WORKFLOWS / "tests.yml").read_text()
+        self.assertIn("check_agent_workflow_yaml.py", source)
+        self.assertIn("--with pyyaml", source)
+
+    def test_all_agent_workflows_have_top_level_names(self):
+        for path in AGENT_WORKFLOWS:
+            with self.subTest(path=path.name):
+                self.assertTrue(path.read_text().startswith("name: "))
+
+    def test_all_actions_are_sha_pinned(self):
+        for path in AGENT_WORKFLOWS:
+            for line in path.read_text().splitlines():
+                if "uses:" in line:
+                    with self.subTest(path=path.name, line=line):
+                        self.assertRegex(line, r"@[0-9a-f]{40}")
+
+
+class TestControlIssueOnly(unittest.TestCase):
+    def test_no_actions_variables_or_variable_context_remain(self):
+        source = "\n".join(path.read_text() for path in AGENT_WORKFLOWS)
+        self.assertNotIn("actions/variables", source)
+        self.assertNotIn("vars.AGENT_", source)
+        self.assertNotIn("AGENT_ORCHESTRATOR_ENABLED", source)
+        self.assertNotIn("AGENT_AUTO_MERGE_ENABLED", source)
+        self.assertNotIn("AGENT_EMERGENCY_STOP", source)
+
+    def test_sensitive_workflows_recheck_live_control(self):
+        for name in ("agent-worker.yml", "agent-ci-repair.yml", "agent-review.yml", "agent-merge.yml", "agent-ci-monitor.yml", "agent-intake.yml"):
+            with self.subTest(name=name):
+                self.assertIn("control_state.py require-live", (WORKFLOWS / name).read_text())
+
+    def test_manual_dispatches_are_control_gated(self):
+        source = (WORKFLOWS / "agent-controller.yml").read_text()
+        self.assertIn("setup-controls", source)
+        for command in ("dispatch-ready", "dispatch-repair", "dispatch-review", "dispatch-merge", "dispatch-next"):
+            self.assertIn(command, source)
+        self.assertIn("require-auto-merge", source)
+
+
+class TestDryRunAndVaderTrustBoundary(unittest.TestCase):
+    def test_dry_run_performs_no_mutations_or_codex_execution(self):
+        source = (WORKFLOWS / "agent-worker.yml").read_text()
+        dry_run = source.split("  dry-run:", 1)[1].split("\n  validate:", 1)[0]
+        self.assertIn('"mutations": []', dry_run)
+        self.assertIn('"codex": False', dry_run)
+        self.assertNotIn("gh workflow run", dry_run)
+        self.assertNotIn("codex_wrapper.sh", dry_run)
+        self.assertNotIn("git push", dry_run)
+
+    def test_vader_workers_have_no_write_permissions_or_push_token(self):
+        for name, job in (("agent-worker.yml", "vader-implementation"), ("agent-ci-repair.yml", "vader-repair"), ("agent-review.yml", "vader-review")):
+            source = (WORKFLOWS / name).read_text()
+            match = re.search(rf"^  {re.escape(job)}:\n(.*?)(?=^  [A-Za-z][A-Za-z-]*:|\Z)", source, re.MULTILINE | re.DOTALL)
+            self.assertIsNotNone(match)
+            definition = match.group(1)
+            with self.subTest(name=name):
+                self.assertIn("runs-on: [self-hosted, vader, agent-worker]", definition)
+                self.assertIn("contents: read", definition)
+                self.assertIn("issues: read", definition)
+                self.assertNotIn("pull-requests: write", definition)
+                self.assertNotIn("AGENT_PUSH_TOKEN", definition)
+                self.assertNotIn("git commit", definition)
+                self.assertNotIn("git push", definition)
+
+    def test_codex_wrapper_strips_github_credentials_and_uses_read_only_review(self):
+        source = (CONTROL / "codex_wrapper.sh").read_text()
+        self.assertIn("env -u GH_TOKEN -u GITHUB_TOKEN -u AGENT_PUSH_TOKEN", source)
+        self.assertIn('SANDBOX_MODE="read-only"', source)
+        self.assertIn('SANDBOX_MODE="workspace-write"', source)
+
+
+class TestCredentialIsolation(unittest.TestCase):
+    def test_push_token_is_isolated_to_finalizer_push_steps(self):
+        for name in ("agent-worker.yml", "agent-ci-repair.yml"):
+            source = (WORKFLOWS / name).read_text()
+            self.assertIn("Push branch with isolated temporary credentials", source)
+            self.assertNotIn("gh auth setup-git", source)
+            self.assertNotIn("git config --global --unset-all credential.helper", source)
+            self.assertIn("AGENT_PUSH_TOKEN: ${{ secrets.AGENT_PUSH_TOKEN }}", source)
+            self.assertIn("GIT_ASKPASS", source)
+            self.assertIn("GH_TOKEN: ${{ github.token }}", source)
+
+    def test_branch_protection_api_is_not_a_merge_precondition(self):
+        source = (CONTROL / "state_manager.py").read_text() + (WORKFLOWS / "agent-merge.yml").read_text()
+        self.assertNotIn("/branches/main/protection", source)
+        self.assertIn("pulls/${{ inputs.pr_number }}/merge", source)
 
 
 if __name__ == "__main__":

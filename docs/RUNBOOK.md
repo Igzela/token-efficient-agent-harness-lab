@@ -190,9 +190,29 @@ For normal local engine operation, use the existing dashboard build, engine star
 
 ## Event-Driven Agent Orchestrator Push Credential
 
-The implementation and CI-repair workflows require the repository secret `AGENT_PUSH_TOKEN`. It must be a narrowly scoped GitHub App installation token or fine-grained repository token with only the minimum contents permission needed to push the agent branch; workflow dispatch, Issue, PR, and checks permissions remain on the workflow's separate `GITHUB_TOKEN` where applicable. The secret is exposed only to the credential-check and commit/push step, Git credentials are configured explicitly with `gh auth setup-git`, and the helper is removed after the push/PR operation.
+The implementation and CI-repair finalizers require the repository secret `AGENT_PUSH_TOKEN`: a fine-grained repository PAT with **Contents: Read and write** only. It is used only by the GitHub-hosted finalizer's `Push branch with isolated temporary credentials` step. PR creation/update, labels, comments, dispatch, control reads, review, and merge use the workflow `${{ github.token }}` with explicit least-privilege permissions.
 
-Rotate the token on a short operational schedule and immediately after runner, operator, or repository-access changes. Revoke it through the GitHub App installation or fine-grained-token settings when it is no longer required or if exposure is suspected. A missing, invalid, or unqueryable token fails the worker before Codex or before commit; no cached Vader `gh` login is an accepted fallback. Keep the orchestrator and auto-merge repository variables disabled, and set `AGENT_EMERGENCY_STOP=true` for rollback or incident response. Re-enable only after the exact-head CI, binding, review, and merge gates have been independently revalidated.
+The PAT is never copied to Vader, artifacts, or remote URLs. The push step fails closed if it is missing and uses a temporary `GIT_ASKPASS` directory below `RUNNER_TEMP`; cleanup removes only that directory. It never calls `gh auth setup-git` and never changes the runner user's global Git credential helper. Rotate or revoke the PAT immediately after any suspected exposure.
+
+Create the disabled control Issue once with `python3 scripts/agent-control/control_state.py setup --repo OWNER/REPO`. The command creates the four control labels and one open Issue titled `[agent-control] Orchestrator controls` with marker `<!-- agent-orchestrator-control:v1 -->`. A newly created control Issue has `agent-control` and `agent-emergency-stop`, but neither enable label. Operators change only that Issue's labels:
+
+```bash
+uv run --no-project python scripts/agent-control/control_state.py status --repo OWNER/REPO
+uv run --no-project python scripts/agent-control/control_state.py enable-orchestrator --repo OWNER/REPO
+uv run --no-project python scripts/agent-control/control_state.py disable-orchestrator --repo OWNER/REPO
+uv run --no-project python scripts/agent-control/control_state.py enable-auto-merge --repo OWNER/REPO
+uv run --no-project python scripts/agent-control/control_state.py disable-auto-merge --repo OWNER/REPO
+uv run --no-project python scripts/agent-control/control_state.py emergency-stop --repo OWNER/REPO
+uv run --no-project python scripts/agent-control/control_state.py emergency-resume --repo OWNER/REPO
+```
+
+Emergency stop always wins. Keep orchestration and auto-merge disabled, with emergency stop present, until exact-head CI, Issue↔PR binding, independent review, and Vader service-user validation have all been independently revalidated.
+
+Every task Issue intended for implementation must also declare its permitted change scope. The finalizer rejects an artifact unless every changed path is exact or under an allowed directory prefix:
+
+```html
+<!-- agent-orchestrator-scope:v1 {"allowed_paths":["scripts/agent-control/","tests/test_agent_orchestrator_artifacts.py"]} -->
+```
 
 ## Release Upgrade and Rollback
 

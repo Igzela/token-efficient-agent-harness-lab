@@ -394,6 +394,14 @@ IAE-3 does not add another control kernel. The dashboard snapshot derives effect
 
 Full Agent Autonomy Mode permits boundary expansion beyond V2, Adaptive Fusion Routing, and IAE when the change has a documented plan, threat-model update where relevant, focused tests, observable evidence, CI review, and a rollback path.
 
+## Event-Driven Agent Orchestrator
+
+The GitHub Actions orchestrator is a separate repository-maintenance control plane, not an engine runtime replacement. It is disabled by default and is governed by exactly one open control Issue with identity label `agent-control`, title `[agent-control] Orchestrator controls`, and marker `<!-- agent-orchestrator-control:v1 -->`. `agent-orchestrator-enabled` permits work only when `agent-emergency-stop` is absent; `agent-auto-merge-enabled` additionally permits merge. Missing, duplicate, malformed, closed, or unreadable control state fails closed.
+
+Vader runs short-lived Codex CLI processes using its cached interactive login. Codex gets an isolated worktree and no workflow GitHub or push credential. It must leave the recorded worktree HEAD unchanged, stage only local changes, and return an untrusted binary `agent.patch` plus schema-versioned `agent-result.json`. A task Issue must declare `<!-- agent-orchestrator-scope:v1 {"allowed_paths":[...]} -->`; the GitHub-hosted finalizer independently validates that scope together with the manifest/bindings/checksum/size/path list, rejects forbidden paths or a moved remote head, applies the patch to a clean exact checkout, recomputes changed paths, rechecks live controls, then owns the commit, branch push, PR update, state write, and exact-head CI dispatch.
+
+`AGENT_PUSH_TOKEN` is a fine-grained PAT with only Contents read/write. It exists only in each finalizer's isolated push step; all other GitHub actions use `${{ github.token }}` with explicit permissions. The push step uses a temporary `GIT_ASKPASS` directory and does not alter Vader's global Git or GitHub CLI configuration. CI failure repair starts from the exact failed canonical run ID and head, fetches bounded redacted evidence in a GitHub-hosted preparation job, and reuses the artifact finalizer. A fresh read-only Vader review may authorize only exact `PASS`; merge revalidates exact head, binding, seven canonical jobs, review/objections, and current mergeability, then relies on the GitHub merge API to enforce any server-side rulesets.
+
 ## Active Verification
 
 Primary local verification:

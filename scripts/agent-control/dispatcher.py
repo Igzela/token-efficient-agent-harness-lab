@@ -7,6 +7,7 @@ import os
 import sys
 import uuid
 
+import control_state
 import state_manager as sm
 
 
@@ -66,6 +67,10 @@ def _rollback(issue: int, dispatch_id: str, previous_labels: list[str], reason: 
 
 
 def _run_workflow(workflow: str, fields: dict[str, object]) -> bool:
+    try:
+        control_state.require_live(_repo() or None)
+    except control_state.ControlStateError:
+        return False
     args = ["workflow", "run", workflow, "--ref", "main"]
     for key, value in fields.items():
         args.extend(["-f", f"{key}={value}"])
@@ -74,6 +79,10 @@ def _run_workflow(workflow: str, fields: dict[str, object]) -> bool:
 
 def dispatch_ready(issue: int, dispatch_id: str | None = None) -> dict[str, object]:
     dispatch_id = dispatch_id or _dispatch_id("worker", issue)
+    try:
+        control_state.require_live(_repo() or None)
+    except control_state.ControlStateError:
+        return {"dispatched": False, "issue": issue, "reason": "disabled_or_emergency_stopped"}
     claimed, previous, reason = _claim(issue, sm.LABEL_RUNNING, dispatch_id, "worker")
     if not claimed:
         return {"dispatched": reason == "already_dispatched", "issue": issue, "reason": reason}
@@ -84,10 +93,12 @@ def dispatch_ready(issue: int, dispatch_id: str | None = None) -> dict[str, obje
     return {"dispatched": True, "issue": issue, "dispatch_id": dispatch_id}
 
 
-def dispatch_repair(
-    pr: int, issue: int, sha: str, run_id: str, repair_count: str, failed_jobs: str
-) -> dict[str, object]:
+def dispatch_repair(pr: int, issue: int, sha: str, run_id: str, repair_count: str) -> dict[str, object]:
     dispatch_id = _dispatch_id("repair", pr, sha, run_id, repair_count)
+    try:
+        control_state.require_live(_repo() or None)
+    except control_state.ControlStateError:
+        return {"dispatched": False, "reason": "disabled_or_emergency_stopped"}
     claimed, previous, reason = _claim(issue, sm.LABEL_CI_REPAIRING, dispatch_id, "repair")
     if not claimed:
         return {"dispatched": reason == "already_dispatched", "reason": reason}
@@ -95,7 +106,6 @@ def dispatch_repair(
         "pr_number": pr,
         "issue_number": issue,
         "head_sha": sha,
-        "failed_jobs": failed_jobs,
         "repair_count": repair_count,
         "ci_run_id": run_id,
     }
@@ -108,6 +118,10 @@ def dispatch_repair(
 
 def dispatch_review(pr: int, issue: int, sha: str) -> dict[str, object]:
     dispatch_id = _dispatch_id("review", pr, sha)
+    try:
+        control_state.require_live(_repo() or None)
+    except control_state.ControlStateError:
+        return {"dispatched": False, "reason": "disabled_or_emergency_stopped"}
     claimed, previous, reason = _claim(issue, sm.LABEL_REVIEW_RUNNING, dispatch_id, "review")
     if not claimed:
         return {"dispatched": reason == "already_dispatched", "reason": reason}
@@ -121,6 +135,10 @@ def dispatch_review(pr: int, issue: int, sha: str) -> dict[str, object]:
 
 def dispatch_merge(pr: int, issue: int, sha: str) -> dict[str, object]:
     dispatch_id = _dispatch_id("merge", pr, sha)
+    try:
+        control_state.require_auto_merge(_repo() or None)
+    except control_state.ControlStateError:
+        return {"dispatched": False, "reason": "disabled_or_emergency_stopped"}
     existing = sm.read_dispatch_state(issue, dispatch_id, _repo())
     if existing and existing.get("status") == "dispatched":
         return {"dispatched": True, "already_dispatched": True, "dispatch_id": dispatch_id}
@@ -136,9 +154,15 @@ def dispatch_merge(pr: int, issue: int, sha: str) -> dict[str, object]:
 
 def dispatch_next(source_issue: str | None = None) -> dict[str, object]:
     repo = _repo()
+    try:
+        control_state.require_live(repo or None)
+    except control_state.ControlStateError:
+        return {"dispatched": False, "reason": "disabled_or_emergency_stopped"}
     active = sm.get_active_issue_numbers(repo)
-    if active is None or len(active) >= MAX_ACTIVE:
-        return {"dispatched": False, "reason": "capacity_state_unavailable_or_full"}
+    if active is None:
+        return {"dispatched": False, "reason": "capacity-state-unavailable"}
+    if len(active) >= MAX_ACTIVE:
+        return {"dispatched": False, "reason": "capacity-full"}
     args = ["issue", "list", "--label", sm.LABEL_READY, "--state", "open", "--limit", "100", "--json", "number"]
     if repo:
         args.extend(["--repo", repo])
@@ -167,8 +191,8 @@ def main() -> None:
     command = sys.argv[1]
     if command == "dispatch-ready" and len(sys.argv) in {3, 4}:
         result = dispatch_ready(int(sys.argv[2]), sys.argv[3] if len(sys.argv) == 4 else None)
-    elif command == "dispatch-repair" and len(sys.argv) == 8:
-        result = dispatch_repair(int(sys.argv[2]), int(sys.argv[3]), sys.argv[4], sys.argv[5], sys.argv[6], sys.argv[7])
+    elif command == "dispatch-repair" and len(sys.argv) == 7:
+        result = dispatch_repair(int(sys.argv[2]), int(sys.argv[3]), sys.argv[4], sys.argv[5], sys.argv[6])
     elif command == "dispatch-review" and len(sys.argv) == 5:
         result = dispatch_review(int(sys.argv[2]), int(sys.argv[3]), sys.argv[4])
     elif command == "dispatch-merge" and len(sys.argv) == 5:

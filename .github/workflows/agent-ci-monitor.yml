@@ -7,135 +7,83 @@ on:
 
 permissions:
   actions: write
-  checks: read
   contents: read
   issues: write
-  pull-requests: write
+  pull-requests: read
+
+concurrency:
+  group: agent-ci-monitor-${{ github.event.workflow_run.id }}
+  cancel-in-progress: false
 
 jobs:
-  gate:
-    runs-on: ubuntu-latest
-    outputs:
-      enabled: ${{ steps.check.outputs.enabled }}
-    steps:
-      - name: Check orchestrator gate and emergency stop
-        id: check
-        env:
-          AGENT_ORCHESTRATOR_ENABLED: ${{ vars.AGENT_ORCHESTRATOR_ENABLED }}
-          AGENT_EMERGENCY_STOP: ${{ vars.AGENT_EMERGENCY_STOP }}
-        run: |
-          if [ "${AGENT_ORCHESTRATOR_ENABLED:-false}" != "true" ]; then
-            echo "enabled=false" >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
-          if [ "${AGENT_EMERGENCY_STOP:-false}" = "true" ]; then
-            echo "enabled=false" >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
-          echo "enabled=true" >> "$GITHUB_OUTPUT"
-
   process:
-    needs: gate
-    if: needs.gate.outputs.enabled == 'true'
     runs-on: ubuntu-latest
     env:
       AGENT_REPO: ${{ github.repository }}
       GH_TOKEN: ${{ github.token }}
     steps:
-      - name: Check out repository
-        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
         with:
+          ref: main
           persist-credentials: false
-      - name: Set up Python
-        uses: actions/setup-python@8d9ed9ac5c53483de85588cdf95a591a75ab9f55 # v5
+      - uses: actions/setup-python@8d9ed9ac5c53483de85588cdf95a591a75ab9f55 # v5
         with:
           python-version: "3.11"
-
-      - name: Process exact CI completion
-        id: ci
-        env:
-          GITHUB_EVENT_PATH: ${{ github.event_path }}
+      - name: Exit without mutation when controls are disabled or emergency-stopped
+        id: gate
+        run: |
+          if python3 scripts/agent-control/control_state.py require-live >/dev/null; then
+            echo "enabled=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "enabled=false" >> "$GITHUB_OUTPUT"
+          fi
+      - name: Process exact canonical workflow_run evidence
+        id: decision
+        if: steps.gate.outputs.enabled == 'true'
         run: |
           set -euo pipefail
-          RESULT=$(python3 scripts/agent-control/ci_handler.py)
-          echo "$RESULT"
-          {
-            echo "result<<REOF"
-            echo "$RESULT"
-            echo "REOF"
-          } >> "$GITHUB_OUTPUT"
-
-      - name: Handle blocked repair limit
-        if: fromJson(steps.ci.outputs.result).action == 'blocked'
+          python3 scripts/agent-control/control_state.py require-live >/dev/null
+          python3 scripts/agent-control/ci_handler.py > "$RUNNER_TEMP/ci-decision.json"
+          cat "$RUNNER_TEMP/ci-decision.json"
+          echo "action=$(jq -er '.action' "$RUNNER_TEMP/ci-decision.json")" >> "$GITHUB_OUTPUT"
+          for key in pr_number issue_number head_sha ci_run_id repair_count; do
+            value=$(jq -r --arg key "$key" '.[$key] // empty' "$RUNNER_TEMP/ci-decision.json")
+            echo "$key=$value" >> "$GITHUB_OUTPUT"
+          done
+      - name: Dispatch bounded CI repair by exact failed run ID
+        if: steps.decision.outputs.action == 'trigger_repair'
         run: |
-          RESULT='${{ steps.ci.outputs.result }}'
-          ISSUE=$(python3 -c 'import json,sys; print(json.loads(sys.argv[1])["issue_number"])' "$RESULT")
-          PR=$(python3 -c 'import json,sys; print(json.loads(sys.argv[1])["pr_number"])' "$RESULT")
-          python3 scripts/agent-control/state_manager.py set-labels "$ISSUE" agent-blocked
-          python3 scripts/agent-control/state_manager.py comment "$ISSUE" \
-            "## Agent Orchestrator: CI Repair Limit Exceeded\nPR: #$PR\nNo further automatic repair is allowed."
-
-      - name: Dispatch CI repair through global controller
-        if: fromJson(steps.ci.outputs.result).action == 'trigger_repair'
-        run: |
-          set -euo pipefail
-          RESULT='${{ steps.ci.outputs.result }}'
-          readarray -t VALUES < <(python3 - "$RESULT" <<'PY'
-          import json, sys
-          value = json.loads(sys.argv[1])
-          print(value["pr_number"])
-          print(value["issue_number"])
-          print(value["head_sha"])
-          print(value["ci_run_id"])
-          print(value["repair_count"])
-          print(json.dumps(value["failed_jobs"], separators=(",", ":")))
-          PY
-          )
+          python3 scripts/agent-control/control_state.py require-live >/dev/null
           gh workflow run agent-controller.yml --ref main \
             -f command=dispatch-repair \
-            -f pr_number="${VALUES[0]}" \
-            -f issue="${VALUES[1]}" \
-            -f head_sha="${VALUES[2]}" \
-            -f ci_run_id="${VALUES[3]}" \
-            -f repair_count="${VALUES[4]}" \
-            -f failed_jobs="${VALUES[5]}"
-
-      - name: Dispatch review through global controller
-        if: fromJson(steps.ci.outputs.result).action == 'trigger_review'
+            -f pr_number="${{ steps.decision.outputs.pr_number }}" \
+            -f issue="${{ steps.decision.outputs.issue_number }}" \
+            -f head_sha="${{ steps.decision.outputs.head_sha }}" \
+            -f ci_run_id="${{ steps.decision.outputs.ci_run_id }}" \
+            -f repair_count="${{ steps.decision.outputs.repair_count }}"
+      - name: Dispatch independent exact-head review
+        if: steps.decision.outputs.action == 'trigger_review'
         run: |
-          RESULT='${{ steps.ci.outputs.result }}'
-          readarray -t VALUES < <(python3 - "$RESULT" <<'PY'
-          import json, sys
-          value = json.loads(sys.argv[1])
-          print(value["pr_number"])
-          print(value["issue_number"])
-          print(value["head_sha"])
-          PY
-          )
+          python3 scripts/agent-control/control_state.py require-live >/dev/null
           gh workflow run agent-controller.yml --ref main \
             -f command=dispatch-review \
-            -f pr_number="${VALUES[0]}" \
-            -f issue="${VALUES[1]}" \
-            -f head_sha="${VALUES[2]}"
-
-      - name: Dispatch merge through global controller
-        if: fromJson(steps.ci.outputs.result).action == 'merge_ready'
+            -f pr_number="${{ steps.decision.outputs.pr_number }}" \
+            -f issue="${{ steps.decision.outputs.issue_number }}" \
+            -f head_sha="${{ steps.decision.outputs.head_sha }}"
+      - name: Dispatch merge only through the auto-merge control gate
+        if: steps.decision.outputs.action == 'merge_ready'
         run: |
-          RESULT='${{ steps.ci.outputs.result }}'
-          readarray -t VALUES < <(python3 - "$RESULT" <<'PY'
-          import json, sys
-          value = json.loads(sys.argv[1])
-          print(value["pr_number"])
-          print(value["issue_number"])
-          print(value["head_sha"])
-          PY
-          )
-          if [ "${{ vars.AGENT_AUTO_MERGE_ENABLED }}" != "true" ]; then
-            echo "AGENT_AUTO_MERGE_ENABLED is not true; merge remains disabled."
-            exit 0
+          if python3 scripts/agent-control/control_state.py require-auto-merge >/dev/null; then
+            gh workflow run agent-controller.yml --ref main \
+              -f command=dispatch-merge \
+              -f pr_number="${{ steps.decision.outputs.pr_number }}" \
+              -f issue="${{ steps.decision.outputs.issue_number }}" \
+              -f head_sha="${{ steps.decision.outputs.head_sha }}"
           fi
-          gh workflow run agent-controller.yml --ref main \
-            -f command=dispatch-merge \
-            -f pr_number="${VALUES[0]}" \
-            -f issue="${VALUES[1]}" \
-            -f head_sha="${VALUES[2]}"
+      - name: Block only exhausted real repair attempts
+        if: steps.decision.outputs.action == 'blocked'
+        run: |
+          python3 scripts/agent-control/control_state.py require-live >/dev/null
+          python3 scripts/agent-control/state_manager.py verify-binding "${{ steps.decision.outputs.issue_number }}" \
+            "${{ steps.decision.outputs.pr_number }}" "${{ steps.decision.outputs.head_sha }}"
+          python3 scripts/agent-control/state_manager.py set-labels "${{ steps.decision.outputs.issue_number }}" agent-blocked

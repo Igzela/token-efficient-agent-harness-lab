@@ -4,140 +4,100 @@ on:
   workflow_dispatch:
     inputs:
       pr_number:
-        description: PR number to merge
         required: true
         type: number
       issue_number:
-        description: Associated Issue number
         required: true
         type: number
       head_sha:
-        description: Expected exact PR head SHA
         required: true
         type: string
 
 permissions:
   actions: write
-  checks: read
   contents: write
   issues: write
   pull-requests: write
 
 concurrency:
-  group: agent-merge-${{ inputs.pr_number }}
+  group: agent-merge-${{ inputs.pr_number }}-${{ inputs.head_sha }}
   cancel-in-progress: false
 
 jobs:
-  gate:
-    runs-on: ubuntu-latest
-    outputs:
-      enabled: ${{ steps.check.outputs.enabled }}
-    steps:
-      - name: Check orchestrator and auto-merge gates
-        id: check
-        env:
-          AGENT_ORCHESTRATOR_ENABLED: ${{ vars.AGENT_ORCHESTRATOR_ENABLED }}
-          AGENT_AUTO_MERGE_ENABLED: ${{ vars.AGENT_AUTO_MERGE_ENABLED }}
-          AGENT_EMERGENCY_STOP: ${{ vars.AGENT_EMERGENCY_STOP }}
-        run: |
-          if [ "${AGENT_ORCHESTRATOR_ENABLED:-false}" != "true" ] || [ "${AGENT_AUTO_MERGE_ENABLED:-false}" != "true" ] || [ "${AGENT_EMERGENCY_STOP:-false}" = "true" ]; then
-            echo "enabled=false" >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
-          echo "enabled=true" >> "$GITHUB_OUTPUT"
-
   merge:
-    needs: gate
-    if: needs.gate.outputs.enabled == 'true'
     runs-on: ubuntu-latest
-    env:
-      AGENT_REPO: ${{ github.repository }}
-      GH_TOKEN: ${{ github.token }}
     steps:
-      - name: Check out repository
-        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
         with:
           persist-credentials: false
-      - name: Set up Python
-        uses: actions/setup-python@8d9ed9ac5c53483de85588cdf95a591a75ab9f55 # v5
+      - uses: actions/setup-python@8d9ed9ac5c53483de85588cdf95a591a75ab9f55 # v5
         with:
           python-version: "3.11"
-
-      - name: Verify all merge conditions independently
+      - name: Recheck all exact-head merge requirements
+        env:
+          AGENT_REPO: ${{ github.repository }}
+          GH_TOKEN: ${{ github.token }}
         run: |
-          python3 scripts/agent-control/control_state.py require-auto-merge
-          python3 scripts/agent-control/state_manager.py verify-merge \
-            "${{ inputs.pr_number }}" "${{ inputs.issue_number }}" "${{ inputs.head_sha }}"
-
-      - name: Merge through expected-head GitHub API operation
+          python3 scripts/agent-control/control_state.py require-auto-merge >/dev/null
+          python3 scripts/agent-control/state_manager.py verify-merge "${{ inputs.pr_number }}" "${{ inputs.issue_number }}" "${{ inputs.head_sha }}"
+      - name: Recheck control immediately before expected-head GitHub merge API call
         id: merge_api
+        env:
+          AGENT_REPO: ${{ github.repository }}
+          GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          python3 scripts/agent-control/control_state.py require-auto-merge
-          RESULT=$(gh api --method PUT \
-            "repos/$AGENT_REPO/pulls/${{ inputs.pr_number }}/merge" \
-            -f sha="${{ inputs.head_sha }}" \
-            -f merge_method=rebase)
-          python3 - "$RESULT" <<'PY'
-          import json, sys
-          result = json.loads(sys.argv[1])
-          if result.get("merged") is not True:
-              raise SystemExit("merge API did not confirm merged=true")
-          PY
-          CURRENT=$(gh pr view "${{ inputs.pr_number }}" --json state,headRefOid,mergedAt,mergeCommit)
-          MERGE_COMMIT=$(python3 - "$CURRENT" "${{ inputs.head_sha }}" <<'PY'
-          import json, sys
-          value = json.loads(sys.argv[1])
-          if value.get("state") != "MERGED" or value.get("headRefOid") != sys.argv[2] or not value.get("mergedAt"):
-              raise SystemExit("merged PR confirmation did not match expected head")
-          commit = value.get("mergeCommit") or {}
-          if not commit.get("oid"):
-              raise SystemExit("merged PR has no merge commit")
-          print(commit["oid"])
-          PY
-          )
+          python3 scripts/agent-control/control_state.py require-auto-merge >/dev/null
+          RESULT=$(gh api --method PUT "repos/${GITHUB_REPOSITORY}/pulls/${{ inputs.pr_number }}/merge" \
+            -f sha="${{ inputs.head_sha }}" -f merge_method=squash)
+          test "$(jq -r '.merged' <<<"$RESULT")" = true
+          echo "merge_sha=$(jq -er '.sha' <<<"$RESULT")" >> "$GITHUB_OUTPUT"
+      - name: Re-read merged PR and require durable merge confirmation
+        id: confirm
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          PR=$(gh pr view "${{ inputs.pr_number }}" --json state,headRefOid,mergeCommit)
+          test "$(jq -r '.state' <<<"$PR")" = MERGED
+          test "$(jq -r '.headRefOid' <<<"$PR")" = "${{ inputs.head_sha }}"
+          MERGE_COMMIT=$(jq -er '.mergeCommit.oid' <<<"$PR")
+          test -n "$MERGE_COMMIT"
           echo "merge_commit_sha=$MERGE_COMMIT" >> "$GITHUB_OUTPUT"
-
-      - name: Record confirmed merge state
+      - name: Recheck control before recording completion and closing Issue
+        env:
+          AGENT_REPO: ${{ github.repository }}
+          GH_TOKEN: ${{ github.token }}
         run: |
-          python3 scripts/agent-control/state_manager.py record-merge \
-            "${{ inputs.issue_number }}" "${{ inputs.pr_number }}" "${{ inputs.head_sha }}" \
-            "${{ steps.merge_api.outputs.merge_commit_sha }}"
-
-      - name: Mark Issue complete after confirmed merge
-        run: |
+          set -euo pipefail
+          python3 scripts/agent-control/control_state.py require-auto-merge >/dev/null
+          python3 scripts/agent-control/state_manager.py record-merge "${{ inputs.issue_number }}" "${{ inputs.pr_number }}" \
+            "${{ inputs.head_sha }}" "${{ steps.confirm.outputs.merge_commit_sha }}"
           python3 scripts/agent-control/state_manager.py set-labels "${{ inputs.issue_number }}" agent-complete
-
-      - name: Close Issue after completion recording
+          gh issue close "${{ inputs.issue_number }}"
+      - name: Recheck control before dispatching one next dependency-ready task
+        env:
+          AGENT_REPO: ${{ github.repository }}
+          GH_TOKEN: ${{ github.token }}
         run: |
-          gh issue close "${{ inputs.issue_number }}" \
-            --comment "Confirmed merge of PR #${{ inputs.pr_number }} at expected head ${{ inputs.head_sha }}."
-
-      - name: Dispatch exactly one next dependency-ready task
-        run: |
-          python3 scripts/agent-control/control_state.py require-live
-          gh workflow run agent-controller.yml --ref main \
-            -f command=dispatch-next \
-            -f source_issue="${{ inputs.issue_number }}"
+          python3 scripts/agent-control/control_state.py require-live >/dev/null
+          python3 scripts/agent-control/dispatcher.py dispatch-next "${{ inputs.issue_number }}"
 
   failure-handler:
     needs: merge
     if: failure()
     runs-on: ubuntu-latest
-    env:
-      AGENT_REPO: ${{ github.repository }}
-      GH_TOKEN: ${{ github.token }}
+    permissions:
+      contents: read
+      issues: write
     steps:
-      - name: Check out repository
-        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
         with:
           persist-credentials: false
-      - name: Set up Python
-        uses: actions/setup-python@8d9ed9ac5c53483de85588cdf95a591a75ab9f55 # v5
-        with:
-          python-version: "3.11"
-      - name: Mark blocked on merge failure
+      - name: Preserve disabled, emergency, and stale merge states
+        env:
+          AGENT_REPO: ${{ github.repository }}
+          GH_TOKEN: ${{ github.token }}
         run: |
-          python3 scripts/agent-control/state_manager.py set-labels "${{ inputs.issue_number }}" agent-blocked
-          python3 scripts/agent-control/state_manager.py comment "${{ inputs.issue_number }}" \
-            "## Agent Orchestrator: Merge Failed\nPR: #${{ inputs.pr_number }}\nNo completion state was recorded."
+          if ! python3 scripts/agent-control/control_state.py require-live >/dev/null; then exit 0; fi
+          echo "merge failure leaves current Issue state unchanged for operator inspection"

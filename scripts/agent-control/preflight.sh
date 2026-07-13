@@ -95,18 +95,17 @@ else
 fi
 
 echo ""
-echo "--- Environment ---"
-check "AGENT_ORCHESTRATOR_ENABLED is set" test -n "${AGENT_ORCHESTRATOR_ENABLED:-}"
-if [ "${AGENT_ORCHESTRATOR_ENABLED:-false}" = "true" ]; then
-  echo "  Orchestrator: ENABLED"
+echo "--- Control Issue ---"
+if [ -n "${AGENT_REPO:-${GITHUB_REPOSITORY:-}}" ]; then
+  if AGENT_REPO="${AGENT_REPO:-${GITHUB_REPOSITORY:-}}" python3 "$(dirname "$0")/control_state.py" status >/dev/null; then
+    echo "  [PASS] one readable control Issue"
+    PASS=$((PASS + 1))
+  else
+    echo "  [FAIL] control Issue is unavailable, malformed, or ambiguous"
+    FAIL=$((FAIL + 1))
+  fi
 else
-  echo "  Orchestrator: DISABLED (default)"
-fi
-check "AGENT_AUTO_MERGE_ENABLED is set" test -n "${AGENT_AUTO_MERGE_ENABLED:-}"
-if [ "${AGENT_AUTO_MERGE_ENABLED:-false}" = "true" ]; then
-  echo "  Auto-merge: ENABLED"
-else
-  echo "  Auto-merge: DISABLED (default)"
+  echo "  [INFO] AGENT_REPO/GITHUB_REPOSITORY is unavailable; control status was not queried"
 fi
 
 echo ""

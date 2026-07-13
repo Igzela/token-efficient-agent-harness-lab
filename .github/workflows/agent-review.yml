@@ -4,165 +4,177 @@ on:
   workflow_dispatch:
     inputs:
       pr_number:
-        description: PR number to review
         required: true
         type: number
       issue_number:
-        description: Associated Issue number
         required: true
         type: number
       head_sha:
-        description: Expected exact PR head SHA
         required: true
         type: string
 
 permissions:
   actions: write
-  checks: read
   contents: read
   issues: write
-  pull-requests: write
+  pull-requests: read
 
 concurrency:
-  group: agent-review-${{ inputs.pr_number }}
+  group: agent-review-${{ inputs.pr_number }}-${{ inputs.head_sha }}
   cancel-in-progress: false
 
 jobs:
-  gate:
+  prepare:
     runs-on: ubuntu-latest
-    outputs:
-      enabled: ${{ steps.check.outputs.enabled }}
+    permissions:
+      actions: write
+      contents: read
+      issues: write
+      pull-requests: read
     steps:
-      - name: Check orchestrator gate and emergency stop
-        id: check
-        env:
-          AGENT_ORCHESTRATOR_ENABLED: ${{ vars.AGENT_ORCHESTRATOR_ENABLED }}
-          AGENT_EMERGENCY_STOP: ${{ vars.AGENT_EMERGENCY_STOP }}
-        run: |
-          if [ "${AGENT_ORCHESTRATOR_ENABLED:-false}" != "true" ] || [ "${AGENT_EMERGENCY_STOP:-false}" = "true" ]; then
-            echo "enabled=false" >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
-          echo "enabled=true" >> "$GITHUB_OUTPUT"
-
-  review:
-    needs: gate
-    if: needs.gate.outputs.enabled == 'true'
-    runs-on: [self-hosted, vader, review]
-    env:
-      AGENT_REPO: ${{ github.repository }}
-      GH_TOKEN: ${{ github.token }}
-    steps:
-      - name: Check out repository
-        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
         with:
           persist-credentials: false
-      - name: Set up Python
-        uses: actions/setup-python@8d9ed9ac5c53483de85588cdf95a591a75ab9f55 # v5
+      - uses: actions/setup-python@8d9ed9ac5c53483de85588cdf95a591a75ab9f55 # v5
         with:
           python-version: "3.11"
-
-      - name: Verify Issue and PR binding before review
+      - name: Verify control, exact head, and Issue-to-PR binding
+        env:
+          AGENT_REPO: ${{ github.repository }}
+          GH_TOKEN: ${{ github.token }}
         run: |
-          python3 scripts/agent-control/state_manager.py verify-binding \
-            "${{ inputs.issue_number }}" "${{ inputs.pr_number }}" "${{ inputs.head_sha }}"
-
-      - name: Verify exact head before review
+          python3 scripts/agent-control/control_state.py require-live >/dev/null
+          python3 scripts/agent-control/state_manager.py verify-binding "${{ inputs.issue_number }}" "${{ inputs.pr_number }}" "${{ inputs.head_sha }}"
+      - name: Recheck control immediately before recording review-running
+        env:
+          AGENT_REPO: ${{ github.repository }}
+          GH_TOKEN: ${{ github.token }}
         run: |
-          CURRENT=$(gh pr view "${{ inputs.pr_number }}" --json headRefOid --jq '.headRefOid')
-          test "$CURRENT" = "${{ inputs.head_sha }}"
+          python3 scripts/agent-control/control_state.py require-live >/dev/null
+          python3 scripts/agent-control/state_manager.py set-labels "${{ inputs.issue_number }}" review-running
+      - name: Build trusted review prompt
+        env:
+          AGENT_REPO: ${{ github.repository }}
+          GH_TOKEN: ${{ github.token }}
+        run: python3 scripts/agent-control/prompt_builder.py review "${{ inputs.pr_number }}" "${{ inputs.head_sha }}" > "$RUNNER_TEMP/review-prompt.txt"
+      - name: Upload trusted review input
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: review-input-${{ github.run_id }}-${{ inputs.pr_number }}
+          path: ${{ runner.temp }}/review-prompt.txt
+          retention-days: 1
+          if-no-files-found: error
 
-      - name: Mark review-running
-        run: python3 scripts/agent-control/state_manager.py set-labels "${{ inputs.issue_number }}" review-running
-
-      - name: Build review prompt
+  vader-review:
+    needs: prepare
+    runs-on: [self-hosted, vader, agent-worker]
+    permissions:
+      actions: write
+      contents: read
+      issues: read
+      pull-requests: read
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        with:
+          ref: ${{ inputs.head_sha }}
+          persist-credentials: false
+          fetch-depth: 1
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: review-input-${{ github.run_id }}-${{ inputs.pr_number }}
+          path: ${{ runner.temp }}/review-input
+      - name: Recheck control immediately before read-only Codex review
+        env:
+          AGENT_REPO: ${{ github.repository }}
+          GH_TOKEN: ${{ github.token }}
+        run: python3 scripts/agent-control/control_state.py require-live >/dev/null
+      - name: Run Codex review in read-only sandbox with no GitHub credentials
         run: |
-          mkdir -p /tmp/agent-prompt
-          python3 scripts/agent-control/prompt_builder.py review \
-            "${{ inputs.pr_number }}" "${{ inputs.head_sha }}" \
-            > /tmp/agent-prompt/review-${{ inputs.pr_number }}.txt
+          bash scripts/agent-control/codex_wrapper.sh review "$RUNNER_TEMP/review-input/review-prompt.txt" \
+            "$RUNNER_TEMP/codex-output" "$GITHUB_WORKSPACE"
+          mkdir -p "$RUNNER_TEMP/review-artifact"
+          cp "$RUNNER_TEMP/codex-output/codex-last-message.json" "$RUNNER_TEMP/review-artifact/review-result.json"
+      - name: Recheck control immediately before review artifact upload
+        env:
+          AGENT_REPO: ${{ github.repository }}
+          GH_TOKEN: ${{ github.token }}
+        run: python3 scripts/agent-control/control_state.py require-live >/dev/null
+      - name: Upload untrusted structured review artifact
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: review-result-${{ github.run_id }}-${{ inputs.pr_number }}
+          path: ${{ runner.temp }}/review-artifact/review-result.json
+          retention-days: 1
+          if-no-files-found: error
 
-      - name: Runtime gate before Codex
-        run: python3 scripts/agent-control/control_state.py require-live
-
-      - name: Run Codex review worker
-        run: |
-          bash scripts/agent-control/codex_wrapper.sh \
-            review \
-            /tmp/agent-prompt/review-${{ inputs.pr_number }}.txt \
-            /tmp/agent-output/review-${{ inputs.pr_number }} \
-            "$PWD"
-
-      - name: Runtime gate after Codex
-        run: python3 scripts/agent-control/control_state.py require-live
-
-      - name: Validate review output against canonical JSON Schema
+  finalize:
+    needs: vader-review
+    if: needs.vader-review.result == 'success'
+    runs-on: ubuntu-latest
+    permissions:
+      actions: write
+      contents: read
+      issues: write
+      pull-requests: read
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b # v8.1.0
+        with:
+          python-version: "3.11"
+          enable-cache: false
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: review-result-${{ github.run_id }}-${{ inputs.pr_number }}
+          path: ${{ runner.temp }}/review-artifact
+      - name: Validate full review schema and exact reviewed head
         id: verdict
+        run: uv run --no-project --with jsonschema python scripts/agent-control/validate_review.py "$RUNNER_TEMP/review-artifact/review-result.json" "${{ inputs.pr_number }}" "${{ inputs.head_sha }}"
+      - name: Recheck live control and binding before recording verdict
+        env:
+          AGENT_REPO: ${{ github.repository }}
+          GH_TOKEN: ${{ github.token }}
         run: |
-          uv run --no-project --with jsonschema python scripts/agent-control/validate_review.py \
-            /tmp/agent-output/review-${{ inputs.pr_number }}/codex-last-message.json \
-            "${{ inputs.pr_number }}" "${{ inputs.head_sha }}"
-
-      - name: Recheck head, association, and emergency stop before recording review
-        id: recheck
+          python3 scripts/agent-control/control_state.py require-live >/dev/null
+          python3 scripts/agent-control/state_manager.py verify-binding "${{ inputs.issue_number }}" "${{ inputs.pr_number }}" "${{ inputs.head_sha }}"
+          python3 scripts/agent-control/state_manager.py record-review "${{ inputs.issue_number }}" "${{ inputs.pr_number }}" "${{ inputs.head_sha }}" "${{ steps.verdict.outputs.verdict }}" "${{ steps.verdict.outputs.summary }}"
+      - name: Authorize only exact PASS
+        if: steps.verdict.outputs.verdict == 'PASS'
+        env:
+          AGENT_REPO: ${{ github.repository }}
+          GH_TOKEN: ${{ github.token }}
         run: |
-          python3 scripts/agent-control/control_state.py require-live
-          python3 scripts/agent-control/state_manager.py verify-binding \
-            "${{ inputs.issue_number }}" "${{ inputs.pr_number }}" "${{ inputs.head_sha }}"
-          CURRENT=$(gh pr view "${{ inputs.pr_number }}" --json headRefOid --jq '.headRefOid')
-          test "$CURRENT" = "${{ inputs.head_sha }}"
-
-      - name: Record review result
-        run: |
-          python3 scripts/agent-control/control_state.py require-live
-          python3 scripts/agent-control/state_manager.py record-review \
-            "${{ inputs.issue_number }}" "${{ inputs.pr_number }}" "${{ inputs.head_sha }}" \
-            "${{ steps.verdict.outputs.verdict }}" "${{ steps.verdict.outputs.summary }}"
-
-      - name: Post review result and handle verdict
-        run: |
-          python3 scripts/agent-control/control_state.py require-live
-          VERDICT="${{ steps.verdict.outputs.verdict }}"
-          SUMMARY="${{ steps.verdict.outputs.summary }}"
-          gh pr comment "${{ inputs.pr_number }}" --body "## Agent Orchestrator: Final Review
-
-          **Verdict:** `$VERDICT`
-          **Summary:** $SUMMARY
-          **Reviewed head:** `${{ inputs.head_sha }}`"
-          if [ "$VERDICT" = "PASS" ]; then
-            python3 scripts/agent-control/control_state.py require-live
-            python3 scripts/agent-control/state_manager.py set-labels "${{ inputs.issue_number }}" review-passed
-            if [ "${{ vars.AGENT_AUTO_MERGE_ENABLED }}" = "true" ]; then
-              python3 scripts/agent-control/control_state.py require-live
-              gh workflow run agent-controller.yml --ref main \
-                -f command=dispatch-merge \
-                -f pr_number="${{ inputs.pr_number }}" \
-                -f issue="${{ inputs.issue_number }}" \
-                -f head_sha="${{ inputs.head_sha }}"
-            else
-              echo "Auto-merge remains disabled."
-            fi
-          else
-            python3 scripts/agent-control/state_manager.py set-labels "${{ inputs.issue_number }}" agent-blocked
-            exit 1
+          set -euo pipefail
+          python3 scripts/agent-control/control_state.py require-live >/dev/null
+          python3 scripts/agent-control/state_manager.py set-labels "${{ inputs.issue_number }}" agent-running review-passed
+          if python3 scripts/agent-control/control_state.py require-auto-merge >/dev/null; then
+            python3 scripts/agent-control/dispatcher.py dispatch-merge "${{ inputs.pr_number }}" "${{ inputs.issue_number }}" "${{ inputs.head_sha }}"
           fi
+      - name: Keep non-PASS verdict non-authorizing
+        if: steps.verdict.outputs.verdict != 'PASS'
+        env:
+          AGENT_REPO: ${{ github.repository }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          python3 scripts/agent-control/control_state.py require-live >/dev/null
+          python3 scripts/agent-control/state_manager.py set-labels "${{ inputs.issue_number }}" agent-running
 
   failure-handler:
-    needs: review
+    needs: [prepare, vader-review, finalize]
     if: failure()
     runs-on: ubuntu-latest
-    env:
-      AGENT_REPO: ${{ github.repository }}
-      GH_TOKEN: ${{ github.token }}
+    permissions:
+      contents: read
+      issues: write
     steps:
-      - name: Check out repository
-        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
         with:
           persist-credentials: false
-      - name: Set up Python
-        uses: actions/setup-python@8d9ed9ac5c53483de85588cdf95a591a75ab9f55 # v5
-        with:
-          python-version: "3.11"
-      - name: Mark blocked on review failure
+      - name: Leave disabled, emergency, malformed, and moved-head states nonterminal
+        env:
+          AGENT_REPO: ${{ github.repository }}
+          GH_TOKEN: ${{ github.token }}
         run: |
-          python3 scripts/agent-control/state_manager.py set-labels "${{ inputs.issue_number }}" agent-blocked
+          if ! python3 scripts/agent-control/control_state.py require-live >/dev/null; then exit 0; fi
+          echo "review failure requires operator inspection without overwriting current state"

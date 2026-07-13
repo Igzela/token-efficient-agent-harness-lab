@@ -25,6 +25,7 @@ Full Agent Autonomy Mode is active for repo-scoped planning and execution that r
 | `sdk/typescript/`, `sdk/python/` | active | SDKs | SDK tests |
 | `wire_contract/v1/`, `codegen/` | active | Wire contracts | `scripts/check_wire_codegen_drift.sh` |
 | `scripts/`, `tools/`, `.github/workflows/` | active | Scripts, pilots, CI, release packaging, dependency/action pin gates, and atomic upgrade rollback | script-specific tests, release contract, action pin guard, CI |
+| `scripts/agent-control/`, `.github/workflows/agent-*.yml`, `tests/test_agent_control_*.py`, `tests/test_agent_orchestrator_*.py` | active | Disabled-by-default GitHub Issue-controlled maintenance orchestration, isolated Vader Codex workers, artifact finalizers, exact-head CI repair, independent review, and merge gating | explicit orchestrator suite in canonical `python-tests`, YAML/action-pin/security/handoff checks |
 
 ## Token-Efficiency Ownership
 

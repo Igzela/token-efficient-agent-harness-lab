@@ -4,218 +4,269 @@ on:
   workflow_dispatch:
     inputs:
       pr_number:
-        description: PR number to repair
         required: true
         type: number
       issue_number:
-        description: Associated Issue number
         required: true
         type: number
       head_sha:
-        description: Expected exact head SHA
         required: true
         type: string
-      failed_jobs:
-        description: JSON array of failed job summaries
-        required: true
-        type: string
-      repair_count:
-        description: Current repair attempt number
+      ci_run_id:
         required: true
         type: number
-      ci_run_id:
-        description: Failed tests workflow run ID
+      repair_count:
         required: true
         type: number
 
 permissions:
   actions: write
-  contents: write
-  issues: write
-  pull-requests: write
+  contents: read
+  issues: read
+  pull-requests: read
 
 concurrency:
   group: agent-ci-repair-${{ inputs.pr_number }}
   cancel-in-progress: false
 
 jobs:
-  gate:
+  prepare:
     runs-on: ubuntu-latest
-    outputs:
-      enabled: ${{ steps.check.outputs.enabled }}
+    permissions:
+      actions: write
+      contents: read
+      issues: read
+      pull-requests: read
     steps:
-      - name: Check orchestrator gate and emergency stop
-        id: check
-        env:
-          AGENT_ORCHESTRATOR_ENABLED: ${{ vars.AGENT_ORCHESTRATOR_ENABLED }}
-          AGENT_EMERGENCY_STOP: ${{ vars.AGENT_EMERGENCY_STOP }}
-        run: |
-          if [ "${AGENT_ORCHESTRATOR_ENABLED:-false}" != "true" ] || [ "${AGENT_EMERGENCY_STOP:-false}" = "true" ]; then
-            echo "enabled=false" >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
-          echo "enabled=true" >> "$GITHUB_OUTPUT"
-
-  repair:
-    needs: gate
-    if: needs.gate.outputs.enabled == 'true'
-    runs-on: [self-hosted, vader, ci-repair]
-    env:
-      AGENT_REPO: ${{ github.repository }}
-      GH_TOKEN: ${{ github.token }}
-    steps:
-      - name: Check out repository
-        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
         with:
           persist-credentials: false
-          fetch-depth: 0
-
-      - name: Set up Python
-        uses: actions/setup-python@8d9ed9ac5c53483de85588cdf95a591a75ab9f55 # v5
+      - uses: actions/setup-python@8d9ed9ac5c53483de85588cdf95a591a75ab9f55 # v5
         with:
           python-version: "3.11"
-
-      - name: Configure git and capture original remote SHA
-        id: source
+      - name: Verify live control, run identity, and exact Issue-to-PR binding
+        env:
+          AGENT_REPO: ${{ github.repository }}
+          GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          git config user.name "agent-orchestrator[bot]"
-          git config user.email "agent-orchestrator[bot]@users.noreply.github.com"
-          PR_BRANCH=$(gh pr view "${{ inputs.pr_number }}" --json headRefName --jq '.headRefName')
-          git fetch origin "$PR_BRANCH"
-          ORIGINAL_REMOTE_SHA=$(git rev-parse "origin/$PR_BRANCH")
-          test "$ORIGINAL_REMOTE_SHA" = "${{ inputs.head_sha }}"
-          {
-            echo "branch=$PR_BRANCH"
-            echo "original_remote_sha=$ORIGINAL_REMOTE_SHA"
-          } >> "$GITHUB_OUTPUT"
+          python3 scripts/agent-control/control_state.py require-live >/dev/null
+          python3 scripts/agent-control/state_manager.py verify-binding "${{ inputs.issue_number }}" "${{ inputs.pr_number }}" "${{ inputs.head_sha }}"
+          python3 - <<'PY'
+          import ci_verifier
+          run = ci_verifier.run_info("${{ inputs.ci_run_id }}")
+          assert run and run.get("workflowName") == "tests"
+          assert run.get("headSha") == "${{ inputs.head_sha }}"
+          assert run.get("conclusion") == "failure"
+          PY
+      - name: Fetch bounded failed jobs, steps, and redacted logs by run ID
+        env:
+          AGENT_REPO: ${{ github.repository }}
+          GH_TOKEN: ${{ github.token }}
+        run: python3 scripts/agent-control/ci_evidence.py "${{ inputs.ci_run_id }}" > "$RUNNER_TEMP/repair-evidence.json"
+      - name: Upload bounded repair evidence
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: repair-evidence-${{ github.run_id }}-${{ inputs.pr_number }}
+          path: ${{ runner.temp }}/repair-evidence.json
+          retention-days: 1
+          if-no-files-found: error
 
-      - name: Verify repair count
-        run: |
-          COUNT="${{ inputs.repair_count }}"
-          test "$COUNT" -ge 1
-          test "$COUNT" -le 2
-
-      - name: Create exact-head repair worktree
+  vader-repair:
+    needs: prepare
+    runs-on: [self-hosted, vader, agent-worker]
+    permissions:
+      actions: write
+      contents: read
+      issues: read
+    outputs:
+      branch: ${{ steps.worktree.outputs.branch }}
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        with:
+          ref: ${{ inputs.head_sha }}
+          persist-credentials: false
+          fetch-depth: 0
+      - uses: actions/setup-python@8d9ed9ac5c53483de85588cdf95a591a75ab9f55 # v5
+        with:
+          python-version: "3.11"
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: repair-evidence-${{ github.run_id }}-${{ inputs.pr_number }}
+          path: ${{ runner.temp }}/repair-input
+      - name: Create repair worktree from exact failed head
         id: worktree
         run: |
-          set -euo pipefail
-          RESULT=$(python3 scripts/agent-control/worktree_manager.py create \
-            "${{ inputs.issue_number }}" "${{ steps.source.outputs.branch }}" "${{ inputs.head_sha }}")
-          WORKTREE_PATH=$(jq -er '.worktree_path' <<<"$RESULT")
-          test -d "$WORKTREE_PATH"
-          git worktree list --porcelain | grep -Fxq "worktree $WORKTREE_PATH"
-          test "$(git -C "$WORKTREE_PATH" symbolic-ref --short HEAD)" = "${{ steps.source.outputs.branch }}"
-          echo "worktree_path=$WORKTREE_PATH" >> "$GITHUB_OUTPUT"
-
-      - name: Build bounded repair prompt from run ID
+          RESULT=$(python3 scripts/agent-control/worktree_manager.py create "${{ inputs.issue_number }}" "agent/issue-${{ inputs.issue_number }}" "${{ inputs.head_sha }}")
+          WORKTREE=$(jq -er '.worktree_path' <<<"$RESULT")
+          test -d "$WORKTREE"
+          {
+            echo "worktree_path=$WORKTREE"
+            echo "branch=$(jq -er '.branch' <<<"$RESULT")"
+          } >> "$GITHUB_OUTPUT"
+      - name: Build repair prompt from trusted checkout and bounded evidence
         env:
           AGENT_REPAIR_COUNT: ${{ inputs.repair_count }}
         run: |
-          mkdir -p /tmp/agent-prompt
-          python3 scripts/agent-control/prompt_builder.py ci-repair \
-            "${{ inputs.pr_number }}" \
-            "${{ inputs.head_sha }}" \
-            '${{ inputs.failed_jobs }}' \
-            "${{ inputs.ci_run_id }}" \
-            > /tmp/agent-prompt/repair-${{ inputs.pr_number }}.txt
-
-      - name: Verify push credential before Codex
+          python3 scripts/agent-control/prompt_builder.py ci-repair "${{ inputs.pr_number }}" "${{ inputs.head_sha }}" \
+            "$RUNNER_TEMP/repair-input/repair-evidence.json" > "$RUNNER_TEMP/repair-prompt.txt"
+      - name: Recheck control immediately before Codex repair
         env:
-          AGENT_PUSH_TOKEN: ${{ secrets.AGENT_PUSH_TOKEN }}
-        run: test -n "${AGENT_PUSH_TOKEN:-}"
-
-      - name: Runtime gate before Codex
-        run: python3 scripts/agent-control/control_state.py require-live
-
-      - name: Run Codex CI repair in isolated worktree
+          AGENT_REPO: ${{ github.repository }}
+          GH_TOKEN: ${{ github.token }}
+        run: python3 scripts/agent-control/control_state.py require-live >/dev/null
+      - name: Run Codex repair with no GitHub credentials
         run: |
-          bash scripts/agent-control/codex_wrapper.sh \
-            ci-repair \
-            /tmp/agent-prompt/repair-${{ inputs.pr_number }}.txt \
-            /tmp/agent-output/repair-${{ inputs.pr_number }} \
-            "${{ steps.worktree.outputs.worktree_path }}"
-
-      - name: Runtime gate after Codex
-        run: python3 scripts/agent-control/control_state.py require-live
-
-      - name: Verify repair changes
-        id: changes
+          bash scripts/agent-control/codex_wrapper.sh ci-repair "$RUNNER_TEMP/repair-prompt.txt" \
+            "$RUNNER_TEMP/codex-output" "${{ steps.worktree.outputs.worktree_path }}"
+      - name: Recheck control before accepting repair artifact
+        env:
+          AGENT_REPO: ${{ github.repository }}
+          GH_TOKEN: ${{ github.token }}
         run: |
+          set -euo pipefail
+          python3 scripts/agent-control/control_state.py require-live >/dev/null
           cd "${{ steps.worktree.outputs.worktree_path }}"
-          if git diff --quiet && git diff --cached --quiet; then
-            echo "has_changes=false" >> "$GITHUB_OUTPUT"
-          else
-            echo "has_changes=true" >> "$GITHUB_OUTPUT"
-          fi
+          git diff --check
+          python3 "$GITHUB_WORKSPACE/scripts/agent-control/artifact_contract.py" create ci-repair \
+            "${{ inputs.issue_number }}" "${{ inputs.pr_number }}" "${{ inputs.head_sha }}" "${{ inputs.head_sha }}" \
+            "${{ steps.worktree.outputs.branch }}" "$(cat "$RUNNER_TEMP/codex-output/codex-exit-code.txt")" \
+            '[{"command":"git diff --check","exit_code":0}]' "$RUNNER_TEMP/agent-artifact" \
+            "${{ inputs.ci_run_id }}" "${{ inputs.repair_count }}"
+      - name: Recheck control immediately before repair artifact upload
+        env:
+          AGENT_REPO: ${{ github.repository }}
+          GH_TOKEN: ${{ github.token }}
+        run: python3 scripts/agent-control/control_state.py require-live >/dev/null
+      - name: Upload untrusted repair artifact
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: repair-${{ github.run_id }}-${{ inputs.pr_number }}
+          path: ${{ runner.temp }}/agent-artifact
+          retention-days: 1
+          if-no-files-found: error
+      - name: Remove repair worktree
+        if: always()
+        run: python3 scripts/agent-control/worktree_manager.py remove "${{ inputs.issue_number }}" "agent/issue-${{ inputs.issue_number }}" || true
 
-      - name: Commit and push repair with explicit credential
-        if: steps.changes.outputs.has_changes == 'true'
+  finalize:
+    needs: vader-repair
+    if: needs.vader-repair.result == 'success'
+    runs-on: ubuntu-latest
+    permissions:
+      actions: write
+      contents: write
+      issues: write
+      pull-requests: write
+    env:
+      AGENT_REPO: ${{ github.repository }}
+      BRANCH: ${{ needs.vader-repair.outputs.branch }}
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - uses: actions/setup-python@8d9ed9ac5c53483de85588cdf95a591a75ab9f55 # v5
+        with:
+          python-version: "3.11"
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: repair-${{ github.run_id }}-${{ inputs.pr_number }}
+          path: ${{ runner.temp }}/agent-artifact
+      - name: Validate artifact, binding, and unmoved remote head
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          python3 scripts/agent-control/control_state.py require-live >/dev/null
+          python3 scripts/agent-control/state_manager.py verify-binding "${{ inputs.issue_number }}" "${{ inputs.pr_number }}" "${{ inputs.head_sha }}"
+          git fetch origin "$BRANCH"
+          test "$(git rev-parse "origin/$BRANCH")" = "${{ inputs.head_sha }}"
+          python3 scripts/agent-control/artifact_contract.py validate ci-repair "${{ inputs.issue_number }}" \
+            "${{ inputs.pr_number }}" "${{ inputs.head_sha }}" "${{ inputs.head_sha }}" "$BRANCH" "$RUNNER_TEMP/agent-artifact"
+          gh issue view "${{ inputs.issue_number }}" --json body --jq .body > "$RUNNER_TEMP/task-issue-body.md"
+          python3 scripts/agent-control/artifact_contract.py validate-scope "$RUNNER_TEMP/task-issue-body.md" \
+            "$RUNNER_TEMP/agent-artifact/agent-result.json"
+      - name: Apply repair patch to clean exact failed head
+        run: |
+          set -euo pipefail
+          git checkout --detach "${{ inputs.head_sha }}"
+          git apply --index --binary "$RUNNER_TEMP/agent-artifact/agent.patch"
+          python3 scripts/agent-control/artifact_contract.py validate-index "$RUNNER_TEMP/agent-artifact/agent-result.json"
+          git diff --cached --check
+      - name: Recheck control immediately before repair commit
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python3 scripts/agent-control/control_state.py require-live >/dev/null
+      - name: Commit validated repair
+        id: commit
+        run: |
+          git config user.name "agent-orchestrator[bot]"
+          git config user.email "agent-orchestrator[bot]@users.noreply.github.com"
+          git commit -m "agent: repair CI for #${{ inputs.issue_number }}"
+          echo "head_sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+      - name: Recheck control immediately before repair push
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python3 scripts/agent-control/control_state.py require-live >/dev/null
+      - name: Push branch with isolated temporary credentials
         env:
           AGENT_PUSH_TOKEN: ${{ secrets.AGENT_PUSH_TOKEN }}
         run: |
           set -euo pipefail
           test -n "${AGENT_PUSH_TOKEN:-}" || { echo "FATAL: AGENT_PUSH_TOKEN is missing" >&2; exit 1; }
-          python3 scripts/agent-control/control_state.py require-live
-          WORKTREE_PATH="${{ steps.worktree.outputs.worktree_path }}"
-          BRANCH="${{ steps.source.outputs.branch }}"
-          cd "$WORKTREE_PATH"
-          git fetch origin "$BRANCH"
-          REMOTE_SHA=$(git rev-parse "origin/$BRANCH")
-          test "$REMOTE_SHA" = "${{ steps.source.outputs.original_remote_sha }}"
-          git add -A
-          python3 "$GITHUB_WORKSPACE/scripts/agent-control/control_state.py" require-live
-          git diff --cached --quiet || git commit -m "ci-repair: attempt ${{ inputs.repair_count }} for #${{ inputs.issue_number }}"
-          python3 "$GITHUB_WORKSPACE/scripts/agent-control/control_state.py" require-live
-          cleanup_git_auth() {
-            git config --global --unset-all credential.helper || true
-            unset GH_TOKEN AGENT_PUSH_TOKEN
-          }
-          trap cleanup_git_auth EXIT
-          export GH_TOKEN="$AGENT_PUSH_TOKEN"
-          gh auth setup-git
-          python3 "$GITHUB_WORKSPACE/scripts/agent-control/worktree_manager.py" push "$BRANCH"
-          cleanup_git_auth
-          trap - EXIT
-          HEAD_SHA=$(git rev-parse HEAD)
-          CI_INFO=$(GH_TOKEN="${{ github.token }}" python3 "$GITHUB_WORKSPACE/scripts/agent-control/ci_verifier.py" dispatch "$BRANCH" "$HEAD_SHA")
-          CI_RUN_ID=$(jq -er '.workflow_run_id' <<<"$CI_INFO")
-          WORKFLOW_NAME=$(jq -er '.workflow_name' "$GITHUB_WORKSPACE/scripts/agent-control/ci_requirements.json")
-          REQUIRED_JOBS=$(jq -c '.required_jobs' "$GITHUB_WORKSPACE/scripts/agent-control/ci_requirements.json")
-          CI_EXTRA=$(jq -cn \
-            --arg workflow_name "$WORKFLOW_NAME" \
-            --argjson required_jobs "$REQUIRED_JOBS" \
-            --argjson run_id "$CI_RUN_ID" \
-            --argjson repair_count "${{ inputs.repair_count }}" \
-            --arg original_remote_sha "${{ steps.source.outputs.original_remote_sha }}" \
-            --arg branch "$BRANCH" \
-            '{workflow_name:$workflow_name,required_jobs:$required_jobs,successful_jobs:[],workflow_run_id:$run_id,repair_count:$repair_count,original_remote_sha:$original_remote_sha,branch:$branch}')
-          AGENT_REPO="$GITHUB_REPOSITORY" GH_TOKEN="${{ github.token }}" python3 "$GITHUB_WORKSPACE/scripts/agent-control/state_manager.py" record-ci \
-            "${{ inputs.issue_number }}" "${{ inputs.pr_number }}" "$HEAD_SHA" "$CI_RUN_ID" \
-            "failure_repair_${{ inputs.repair_count }}" "$CI_EXTRA"
-
-      - name: Remove repair worktree safely
-        if: always() && steps.worktree.outputs.worktree_path != ''
-        run: python3 scripts/agent-control/worktree_manager.py remove "${{ inputs.issue_number }}" "${{ steps.source.outputs.branch }}"
+          AUTH_DIR="$RUNNER_TEMP/agent-push-auth"
+          mkdir -p "$AUTH_DIR"
+          trap 'rm -rf "$AUTH_DIR"' EXIT
+          cat > "$AUTH_DIR/askpass" <<'EOF'
+          #!/usr/bin/env sh
+          case "$1" in *Username*) printf '%s' x-access-token ;; *) printf '%s' "$AGENT_PUSH_TOKEN" ;; esac
+          EOF
+          chmod 700 "$AUTH_DIR/askpass"
+          GIT_ASKPASS="$AUTH_DIR/askpass" GIT_TERMINAL_PROMPT=0 \
+            git -c credential.helper= -c credential.useHttpPath=true \
+            push --force-with-lease="refs/heads/$BRANCH:${{ inputs.head_sha }}" \
+            "https://github.com/${GITHUB_REPOSITORY}.git" "HEAD:refs/heads/$BRANCH"
+      - name: Recheck control immediately before PR update and CI dispatch
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          python3 scripts/agent-control/control_state.py require-live >/dev/null
+          python3 scripts/agent-control/state_manager.py verify-binding "${{ inputs.issue_number }}" "${{ inputs.pr_number }}" "${{ inputs.head_sha }}"
+          BODY="Closes #${{ inputs.issue_number }}\n\n<!-- agent-orchestrator-binding: {\"issue_number\": ${{ inputs.issue_number }}, \"branch\": \"$BRANCH\"} -->"
+          gh pr edit "${{ inputs.pr_number }}" --body "$BODY"
+      - name: Persist new exact head and dispatch fresh canonical CI
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          python3 scripts/agent-control/control_state.py require-live >/dev/null
+          HEAD="${{ steps.commit.outputs.head_sha }}"
+          python3 scripts/agent-control/state_manager.py record-worker "${{ inputs.issue_number }}" "${{ inputs.pr_number }}" "$HEAD" ci-repair "{\"branch\":\"$BRANCH\",\"failed_run_id\":${{ inputs.ci_run_id }},\"repair_attempt\":${{ inputs.repair_count }}}"
+          CI=$(python3 scripts/agent-control/ci_verifier.py dispatch "$BRANCH" "$HEAD")
+          RUN_ID=$(jq -er '.workflow_run_id' <<<"$CI")
+          EXTRA=$(jq -c --argjson id "$RUN_ID" --argjson repairs "${{ inputs.repair_count }}" '{workflow_name,required_jobs,successful_jobs:[],workflow_run_id:$id,repair_count:$repairs}' scripts/agent-control/ci_requirements.json)
+          python3 scripts/agent-control/state_manager.py record-ci "${{ inputs.issue_number }}" "${{ inputs.pr_number }}" "$HEAD" "$RUN_ID" dispatched "$EXTRA"
 
   failure-handler:
-    needs: repair
+    needs: [prepare, vader-repair, finalize]
     if: failure()
     runs-on: ubuntu-latest
-    env:
-      AGENT_REPO: ${{ github.repository }}
-      GH_TOKEN: ${{ github.token }}
+    permissions:
+      contents: read
+      issues: write
     steps:
-      - name: Check out repository
-        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
         with:
           persist-credentials: false
-      - name: Set up Python
-        uses: actions/setup-python@8d9ed9ac5c53483de85588cdf95a591a75ab9f55 # v5
-        with:
-          python-version: "3.11"
-      - name: Mark blocked on repair failure
+      - name: Preserve disabled, emergency, stale, and duplicate outcomes
+        env:
+          AGENT_REPO: ${{ github.repository }}
+          GH_TOKEN: ${{ github.token }}
         run: |
-          python3 scripts/agent-control/state_manager.py set-labels "${{ inputs.issue_number }}" agent-blocked
-          python3 scripts/agent-control/state_manager.py comment "${{ inputs.issue_number }}" \
-            "## Agent Orchestrator: CI Repair Failed\nPR: #${{ inputs.pr_number }}\nManual inspection is required."
+          if ! python3 scripts/agent-control/control_state.py require-live >/dev/null; then exit 0; fi
+          LABELS=$(python3 scripts/agent-control/state_manager.py get-labels "${{ inputs.issue_number }}")
+          if echo "$LABELS" | grep -qw ci-repairing; then
+            python3 scripts/agent-control/state_manager.py set-labels "${{ inputs.issue_number }}" agent-blocked
+          fi

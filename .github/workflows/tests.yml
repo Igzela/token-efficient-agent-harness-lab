@@ -45,6 +45,20 @@ jobs:
         run: uv run --no-project python tools/check_security_baseline.py
       - name: Run relocated utility tests
         run: uv run --no-project python -m unittest discover -s tools -p "test_*.py"
+      - name: Verify canonical orchestrator regression suite is wired
+        run: uv run --no-project python scripts/verify_orchestrator_test_suite.py
+      - name: Parse agent workflow YAML
+        run: uv run --no-project --with pyyaml python scripts/check_agent_workflow_yaml.py
+      - name: Run orchestrator regression tests
+        run: |
+          PYTHONPATH=scripts/agent-control uv run --no-project python -m unittest \
+            tests/test_agent_control_ci.py \
+            tests/test_agent_control_dry_run.py \
+            tests/test_agent_control_lock.py \
+            tests/test_agent_control_state.py \
+            tests/test_agent_control_worktree.py \
+            tests/test_agent_orchestrator_repairs.py \
+            tests/test_agent_orchestrator_artifacts.py
       - name: Run Python SDK tests
         run: cd sdk/python && PYTHONPATH=src uv run --no-project python -m unittest discover -s tests
 

@@ -4,56 +4,41 @@ on:
   workflow_dispatch:
     inputs:
       command:
-        description: Dispatcher command
         required: true
         type: choice
         options:
+          - setup-controls
+          - status
+          - enable-orchestrator
+          - disable-orchestrator
+          - enable-auto-merge
+          - disable-auto-merge
+          - emergency-stop
+          - emergency-resume
           - dispatch-ready
           - dispatch-repair
           - dispatch-review
           - dispatch-merge
           - dispatch-next
-          - select-task
-          - next-task
-          - retry-task
-          - block-task
-          - status
-          - emergency-stop
       issue:
-        description: Issue number
         required: false
         type: number
       pr_number:
-        description: PR number
         required: false
         type: number
       head_sha:
-        description: Exact PR head SHA
         required: false
         type: string
       ci_run_id:
-        description: Failed CI workflow run ID
         required: false
         type: number
       repair_count:
-        description: Repair attempt number
         required: false
         type: number
-      failed_jobs:
-        description: JSON failed-job summary
-        required: false
-        default: "[]"
-        type: string
       source_issue:
-        description: Completed source Issue for next-task dispatch
         required: false
         type: number
       dispatch_id:
-        description: Idempotent dispatch decision identifier
-        required: false
-        type: string
-      reason:
-        description: Operator reason
         required: false
         type: string
 
@@ -68,97 +53,45 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  gate:
-    runs-on: ubuntu-latest
-    outputs:
-      enabled: ${{ steps.check.outputs.enabled }}
-    steps:
-      - name: Check orchestrator gate
-        id: check
-        env:
-          AGENT_ORCHESTRATOR_ENABLED: ${{ vars.AGENT_ORCHESTRATOR_ENABLED }}
-          AGENT_EMERGENCY_STOP: ${{ vars.AGENT_EMERGENCY_STOP }}
-        run: |
-          if [ "${AGENT_ORCHESTRATOR_ENABLED:-false}" != "true" ]; then
-            echo "AGENT_ORCHESTRATOR_ENABLED is not true. Controller disabled."
-            echo "enabled=false" >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
-          if [ "${AGENT_EMERGENCY_STOP:-false}" = "true" ]; then
-            echo "AGENT_EMERGENCY_STOP is true. Controller disabled."
-            echo "enabled=false" >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
-          echo "enabled=true" >> "$GITHUB_OUTPUT"
-
   control:
-    needs: gate
-    if: needs.gate.outputs.enabled == 'true'
     runs-on: ubuntu-latest
     env:
       AGENT_REPO: ${{ github.repository }}
       GH_TOKEN: ${{ github.token }}
     steps:
-      - name: Check out repository
-        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
         with:
           persist-credentials: false
-
-      - name: Set up Python
-        uses: actions/setup-python@8d9ed9ac5c53483de85588cdf95a591a75ab9f55 # v5
+      - uses: actions/setup-python@8d9ed9ac5c53483de85588cdf95a591a75ab9f55 # v5
         with:
           python-version: "3.11"
-
-      - name: Dispatch or execute control command
+      - name: Execute gated controller command
         run: |
           set -euo pipefail
-          COMMAND="${{ inputs.command }}"
-          ISSUE="${{ inputs.issue }}"
-          PR="${{ inputs.pr_number }}"
-          SHA="${{ inputs.head_sha }}"
-          case "$COMMAND" in
+          case "${{ inputs.command }}" in
+            setup-controls|status|enable-orchestrator|disable-orchestrator|enable-auto-merge|disable-auto-merge|emergency-stop|emergency-resume)
+              python3 scripts/agent-control/control_state.py "${{ inputs.command }}"
+              ;;
             dispatch-ready)
-              python3 scripts/agent-control/control_state.py require-live
-              python3 scripts/agent-control/dispatcher.py dispatch-ready "$ISSUE" "${{ inputs.dispatch_id }}"
+              python3 scripts/agent-control/control_state.py require-live >/dev/null
+              python3 scripts/agent-control/dispatcher.py dispatch-ready "${{ inputs.issue }}" "${{ inputs.dispatch_id }}"
               ;;
             dispatch-repair)
-              python3 scripts/agent-control/control_state.py require-live
-              python3 scripts/agent-control/dispatcher.py dispatch-repair "$PR" "$ISSUE" "$SHA" "${{ inputs.ci_run_id }}" "${{ inputs.repair_count }}" '${{ inputs.failed_jobs }}'
+              python3 scripts/agent-control/control_state.py require-live >/dev/null
+              python3 scripts/agent-control/dispatcher.py dispatch-repair "${{ inputs.pr_number }}" "${{ inputs.issue }}" \
+                "${{ inputs.head_sha }}" "${{ inputs.ci_run_id }}" "${{ inputs.repair_count }}"
               ;;
             dispatch-review)
-              python3 scripts/agent-control/control_state.py require-live
-              python3 scripts/agent-control/dispatcher.py dispatch-review "$PR" "$ISSUE" "$SHA"
+              python3 scripts/agent-control/control_state.py require-live >/dev/null
+              python3 scripts/agent-control/dispatcher.py dispatch-review "${{ inputs.pr_number }}" "${{ inputs.issue }}" "${{ inputs.head_sha }}"
               ;;
             dispatch-merge)
-              python3 scripts/agent-control/control_state.py require-auto-merge
-              python3 scripts/agent-control/dispatcher.py dispatch-merge "$PR" "$ISSUE" "$SHA"
+              python3 scripts/agent-control/control_state.py require-auto-merge >/dev/null
+              python3 scripts/agent-control/dispatcher.py dispatch-merge "${{ inputs.pr_number }}" "${{ inputs.issue }}" "${{ inputs.head_sha }}"
               ;;
             dispatch-next)
-              python3 scripts/agent-control/control_state.py require-live
+              python3 scripts/agent-control/control_state.py require-live >/dev/null
               python3 scripts/agent-control/dispatcher.py dispatch-next "${{ inputs.source_issue }}"
               ;;
-            select-task)
-              python3 scripts/agent-control/state_manager.py select-task "$ISSUE"
-              ;;
-            next-task)
-              python3 scripts/agent-control/control_state.py require-live
-              python3 scripts/agent-control/dispatcher.py dispatch-next "${{ inputs.source_issue }}"
-              ;;
-            retry-task)
-              python3 scripts/agent-control/state_manager.py retry-task "$ISSUE"
-              python3 scripts/agent-control/dispatcher.py dispatch-ready "$ISSUE"
-              ;;
-            block-task)
-              python3 scripts/agent-control/state_manager.py block-task "$ISSUE" "${{ inputs.reason }}"
-              ;;
-            status)
-              python3 scripts/agent-control/state_manager.py status
-              ;;
-            emergency-stop)
-              echo "Emergency stop is controlled only by the AGENT_EMERGENCY_STOP repository variable."
-              ;;
-            *)
-              echo "Unknown command: $COMMAND" >&2
-              exit 2
-              ;;
+            *) echo "unknown command" >&2; exit 2 ;;
           esac

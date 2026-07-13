@@ -29,6 +29,8 @@ def parse_workflow_run_event(event_path):
         "run_url": workflow_run.get("html_url", ""),
         "pr_number": pr_data.get("number"),
         "pr_head_sha": pr_data.get("head", {}).get("sha") if isinstance(pr_data, dict) else None,
+        "repository": (event.get("repository") or {}).get("full_name", ""),
+        "head_repository": (workflow_run.get("head_repository") or {}).get("full_name", ""),
     }
 
 
@@ -111,6 +113,11 @@ def _record_ci(issue, pr, sha, run_id, status, run, repair_count=0):
 
 def process_ci_completion(event_path):
     info = parse_workflow_run_event(event_path)
+    expected_repo = os.environ.get("AGENT_REPO") or os.environ.get("GITHUB_REPOSITORY", "")
+    if not expected_repo or info["repository"] != expected_repo:
+        return {"action": "noop", "reason": "foreign_or_untrusted_repository"}
+    if info["head_repository"] and info["head_repository"] != expected_repo:
+        return {"action": "noop", "reason": "fork_or_foreign_head_repository"}
     if info["status"] != "completed" or info["conclusion"] not in {"success", "failure"}:
         return {"action": "noop", "reason": "non_terminal_or_unsupported_conclusion"}
     pr_number = info["pr_number"] or _find_pr_for_run(info)
@@ -157,7 +164,6 @@ def process_ci_completion(event_path):
     state = sm.read_ci_state(issue_number)
     repair_count = int((state or {}).get("extra", {}).get("repair_count", 0))
     next_count = repair_count + 1
-    failed_jobs = get_failed_jobs(info["run_id"])
     _record_ci(issue_number, pr_number, current_head, info["run_id"], f"failure_repair_{repair_count}", run, repair_count)
     if next_count > MAX_REPAIR_ATTEMPTS:
         return {
@@ -174,7 +180,6 @@ def process_ci_completion(event_path):
         "issue_number": issue_number,
         "head_sha": current_head,
         "ci_run_id": info["run_id"],
-        "failed_jobs": failed_jobs,
         "repair_count": next_count,
         "reason": "ci_failure",
     }

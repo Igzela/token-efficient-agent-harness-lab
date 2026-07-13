@@ -134,6 +134,20 @@ def build_ci_repair_prompt(pr_number, head_sha, failed_jobs_json, logs, repair_c
     return prompt
 
 
+def build_ci_repair_prompt_from_evidence(pr_number, head_sha, evidence_path, repair_count):
+    """Use only the GitHub-hosted preparation artifact on Vader."""
+    try:
+        evidence = json.loads(pathlib.Path(evidence_path).read_text())
+    except (OSError, json.JSONDecodeError) as exc:
+        raise ValueError("repair evidence artifact is invalid") from exc
+    if evidence.get("schema_version") != 1 or not isinstance(evidence.get("failed_jobs"), list):
+        raise ValueError("repair evidence artifact has an invalid schema")
+    logs = evidence.get("logs", "")
+    if not isinstance(logs, str):
+        raise ValueError("repair evidence logs are invalid")
+    return build_ci_repair_prompt(pr_number, head_sha, evidence["failed_jobs"], logs[:50000], repair_count)
+
+
 def build_review_prompt(pr_number, head_sha, template="review.md"):
     ctx = build_context(0)
     ctx["pr_number"] = pr_number
@@ -193,11 +207,14 @@ def main():
 
     elif command == "ci-repair":
         sha = sys.argv[3] if len(sys.argv) > 3 else ""
-        failed_jobs = sys.argv[4] if len(sys.argv) > 4 else "[]"
-        run_id = sys.argv[5] if len(sys.argv) > 5 else ""
         repair_count = int(os.environ.get("AGENT_REPAIR_COUNT", "0"))
-        logs = fetch_bounded_failed_logs(run_id)
-        prompt = build_ci_repair_prompt(number, sha, failed_jobs, logs, repair_count)
+        if len(sys.argv) == 5 and pathlib.Path(sys.argv[4]).is_file():
+            prompt = build_ci_repair_prompt_from_evidence(number, sha, sys.argv[4], repair_count)
+        else:
+            failed_jobs = sys.argv[4] if len(sys.argv) > 4 else "[]"
+            run_id = sys.argv[5] if len(sys.argv) > 5 else ""
+            logs = fetch_bounded_failed_logs(run_id)
+            prompt = build_ci_repair_prompt(number, sha, failed_jobs, logs, repair_count)
         if prompt:
             print(prompt)
         else:

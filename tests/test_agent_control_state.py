@@ -16,9 +16,13 @@ import json
 import os
 import sys
 import unittest
+from unittest import mock
+from contextlib import redirect_stdout
+from io import StringIO
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "scripts", "agent-control"))
 import state_manager as sm
+import control_state
 
 
 class TestLabelDefinitions(unittest.TestCase):
@@ -111,32 +115,33 @@ class TestDependencyParsing(unittest.TestCase):
         self.assertIn(88, deps)
 
 
-class TestEmergencyStop(unittest.TestCase):
-    """Test emergency stop detection."""
+class TestControlIssueLabels(unittest.TestCase):
+    """Emergency stop is an Issue label and overrides every enable label."""
 
-    def test_emergency_stop_not_set(self):
-        os.environ.pop(sm.EMERGENCY_STOP_VAR, None)
-        self.assertFalse(sm.is_emergency_stopped())
+    def test_emergency_stop_label_overrides_enable_labels(self):
+        issue = {
+            "number": 42,
+            "title": control_state.CONTROL_ISSUE_TITLE,
+            "state": "open",
+            "body": control_state.CONTROL_MARKER,
+            "labels": [
+                {"name": control_state.CONTROL_LABEL},
+                {"name": control_state.ORCHESTRATOR_ENABLED_LABEL},
+                {"name": control_state.AUTO_MERGE_ENABLED_LABEL},
+                {"name": control_state.EMERGENCY_STOP_LABEL},
+            ],
+        }
+        state = control_state.resolve_control_issue([issue])
+        self.assertTrue(state["emergency_stop"])
+        self.assertFalse(state["orchestrator_enabled"])
+        self.assertFalse(state["auto_merge_enabled"])
 
-    def test_emergency_stop_true(self):
-        os.environ[sm.EMERGENCY_STOP_VAR] = "true"
-        self.assertTrue(sm.is_emergency_stopped())
-        del os.environ[sm.EMERGENCY_STOP_VAR]
-
-    def test_emergency_stop_false(self):
-        os.environ[sm.EMERGENCY_STOP_VAR] = "false"
-        self.assertFalse(sm.is_emergency_stopped())
-        del os.environ[sm.EMERGENCY_STOP_VAR]
-
-    def test_emergency_stop_case_insensitive(self):
-        os.environ[sm.EMERGENCY_STOP_VAR] = "TRUE"
-        self.assertTrue(sm.is_emergency_stopped())
-        del os.environ[sm.EMERGENCY_STOP_VAR]
-
-    def test_emergency_stop_other_value(self):
-        os.environ[sm.EMERGENCY_STOP_VAR] = "yes"
-        self.assertFalse(sm.is_emergency_stopped())
-        del os.environ[sm.EMERGENCY_STOP_VAR]
+    def test_control_cli_accepts_standard_repo_flag(self):
+        with mock.patch.object(control_state, "read_control_state", return_value={"number": 42}) as read, \
+             mock.patch.object(sys, "argv", ["control_state.py", "status", "--repo", "owner/repo"]), \
+             redirect_stdout(StringIO()):
+            control_state.main()
+        read.assert_called_once_with("owner/repo")
 
 
 class TestWorkerStateStructure(unittest.TestCase):

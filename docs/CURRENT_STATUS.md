@@ -41,15 +41,15 @@ This repo is a local/small-team self-hosted agent workflow control plane. Rust `
 ## Event-Driven Agent Orchestrator
 
 The event-driven GitHub Actions orchestrator is implemented and awaiting production validation. It uses:
-- Short-lived Codex workers invoked on Vader-hosted self-hosted runners.
-- State persisted in GitHub Issues, labels, PR comments, and workflow artifacts.
-- Concurrency: one active worker per issue, maximum two repository-wide.
-- Dry-run mode for validation without Codex invocation or branch pushes.
-- Emergency-stop, cleanup, and manual controller workflows.
+- One dedicated open control Issue, identified by `agent-control`, title `[agent-control] Orchestrator controls`, and `<!-- agent-orchestrator-control:v1 -->`; emergency stop is present by default and overrides both enable labels.
+- Short-lived Codex workers on Vader-hosted self-hosted runners that only edit an isolated worktree and upload a binary `agent.patch` plus `agent-result.json` artifact.
+- GitHub-hosted deterministic finalizers that validate the artifact, recheck the live control Issue, apply it to a clean exact base, commit, push, create/update the PR, persist state, and dispatch exact-head CI.
+- State persisted in GitHub Issues, labels, PR comments, and short-retention workflow artifacts; one active worker per Issue and at most two repository-wide under `agent-dispatch-global`.
+- Failed canonical CI identified by exact run ID, bounded/redacted failure evidence, at most two repairs, a fresh independent read-only review, and expected-SHA merge confirmation.
 
 Labels: `agent-draft`, `agent-ready`, `agent-running`, `ci-repairing`, `review-running`, `review-passed`, `agent-blocked`, `agent-complete`.
 
-The orchestrator is activation-safe: workflows are present but do not auto-start until the PR is merged and the CI monitor is validated. Codex invocation wrappers are inactive until Vader runner labels, Codex authentication, and the dedicated `AGENT_PUSH_TOKEN` secret are configured.
+The orchestrator is activation-safe: workflows are present but inactive until the control Issue enables them. `agent-control` and `agent-emergency-stop` are present; `agent-orchestrator-enabled` and `agent-auto-merge-enabled` are absent. Codex invocation requires Vader runner labels and the runner service account's cached interactive login. `AGENT_PUSH_TOKEN` remains a GitHub-hosted finalizer-only, Contents-read/write PAT for branch pushes; Stage B service-user validation remains outstanding.
 
 ## Planned Product Evolution Stages
 

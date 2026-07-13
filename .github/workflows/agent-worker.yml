@@ -8,16 +8,15 @@ on:
         required: true
         type: number
       dry_run:
-        description: Read-only validation plan
+        description: Read-only validation plan; never invokes Codex or mutates GitHub state
         required: false
         default: false
         type: boolean
 
 permissions:
   actions: write
-  contents: write
-  issues: write
-  pull-requests: write
+  contents: read
+  issues: read
 
 concurrency:
   group: agent-worker-${{ inputs.issue }}
@@ -27,293 +26,320 @@ jobs:
   gate:
     runs-on: ubuntu-latest
     outputs:
-      enabled: ${{ steps.check.outputs.enabled }}
-      dry_run: ${{ steps.check.outputs.dry_run }}
+      enabled: ${{ steps.control.outputs.enabled }}
+      dry_run: ${{ steps.control.outputs.dry_run }}
     steps:
-      - name: Check orchestrator gate
-        id: check
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@8d9ed9ac5c53483de85588cdf95a591a75ab9f55 # v5
+        with:
+          python-version: "3.11"
+      - name: Read live control Issue
+        id: control
         env:
-          AGENT_ORCHESTRATOR_ENABLED: ${{ vars.AGENT_ORCHESTRATOR_ENABLED }}
-          AGENT_EMERGENCY_STOP: ${{ vars.AGENT_EMERGENCY_STOP }}
+          AGENT_REPO: ${{ github.repository }}
+          GH_TOKEN: ${{ github.token }}
         run: |
           echo "dry_run=${{ inputs.dry_run }}" >> "$GITHUB_OUTPUT"
           if [ "${{ inputs.dry_run }}" = "true" ]; then
             echo "enabled=true" >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
-          if [ "${AGENT_ORCHESTRATOR_ENABLED:-false}" != "true" ]; then
-            echo "AGENT_ORCHESTRATOR_ENABLED is not true. Worker disabled."
+          elif python3 scripts/agent-control/control_state.py require-live >/dev/null; then
+            echo "enabled=true" >> "$GITHUB_OUTPUT"
+          else
             echo "enabled=false" >> "$GITHUB_OUTPUT"
-            exit 0
           fi
-          if [ "${AGENT_EMERGENCY_STOP:-false}" = "true" ]; then
-            echo "AGENT_EMERGENCY_STOP is true. Worker disabled."
-            echo "enabled=false" >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
-          echo "enabled=true" >> "$GITHUB_OUTPUT"
 
   dry-run:
     needs: gate
     if: needs.gate.outputs.enabled == 'true' && needs.gate.outputs.dry_run == 'true'
     runs-on: ubuntu-latest
-    env:
-      AGENT_REPO: ${{ github.repository }}
-      GH_TOKEN: ${{ github.token }}
+    permissions:
+      contents: read
+      issues: read
     steps:
-      - name: Check out repository
-        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
         with:
           persist-credentials: false
-
-      - name: Set up Python
-        uses: actions/setup-python@8d9ed9ac5c53483de85588cdf95a591a75ab9f55 # v5
-        with:
-          python-version: "3.11"
-
-      - name: Build read-only dry-run plan
+      - name: Emit mutation-free dry-run plan
+        env:
+          AGENT_REPO: ${{ github.repository }}
+          GH_TOKEN: ${{ github.token }}
         run: |
-          set -euo pipefail
-          ISSUE="${{ inputs.issue }}"
-          LABELS=$(python3 scripts/agent-control/state_manager.py get-labels "$ISSUE")
-          DEPENDENCIES="ready"
-          if ! python3 scripts/agent-control/state_manager.py check-deps "$ISSUE" >/dev/null; then
-            DEPENDENCIES="blocked"
-          fi
-          python3 - "$ISSUE" "$LABELS" "$DEPENDENCIES" <<'PY'
-          import json, sys
-          print(json.dumps({
-              "mode": "dry-run",
-              "issue": int(sys.argv[1]),
-              "labels": sys.argv[2].split(),
-              "dependencies": sys.argv[3],
-              "mutations": [],
-              "codex": False,
-              "worktree": False,
-              "dispatch": None,
-          }, sort_keys=True))
+          python3 - <<'PY'
+          import json
+          print(json.dumps({"mode": "dry-run", "mutations": [], "codex": False, "artifact": False}, sort_keys=True))
           PY
 
   validate:
     needs: gate
     if: needs.gate.outputs.enabled == 'true' && needs.gate.outputs.dry_run != 'true'
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      issues: read
     outputs:
-      can_start: ${{ steps.check.outputs.can_start }}
-    env:
-      AGENT_REPO: ${{ github.repository }}
-      GH_TOKEN: ${{ github.token }}
+      can_start: ${{ steps.claim.outputs.can_start }}
     steps:
-      - name: Check out repository
-        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
         with:
           persist-credentials: false
-
-      - name: Set up Python
-        uses: actions/setup-python@8d9ed9ac5c53483de85588cdf95a591a75ab9f55 # v5
+      - uses: actions/setup-python@8d9ed9ac5c53483de85588cdf95a591a75ab9f55 # v5
         with:
           python-version: "3.11"
-
-      - name: Validate dispatcher claim
-        id: check
+      - name: Verify live control and dispatcher claim
+        id: claim
+        env:
+          AGENT_REPO: ${{ github.repository }}
+          GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          ISSUE="${{ inputs.issue }}"
-          LABELS=$(python3 scripts/agent-control/state_manager.py get-labels "$ISSUE")
-          if ! echo "$LABELS" | grep -qw "agent-running"; then
-            echo "Issue #$ISSUE is not claimed by the global dispatcher."
+          if ! python3 scripts/agent-control/control_state.py require-live >/dev/null; then
             echo "can_start=false" >> "$GITHUB_OUTPUT"
             exit 0
           fi
-          if echo "$LABELS" | grep -Eq "(ci-repairing|review-running|agent-complete|agent-blocked)"; then
-            echo "Issue #$ISSUE has conflicting state ($LABELS)."
+          LABELS=$(python3 scripts/agent-control/state_manager.py get-labels "${{ inputs.issue }}")
+          if echo "$LABELS" | grep -qw agent-running && ! echo "$LABELS" | grep -Eq '(ci-repairing|review-running|agent-complete|agent-blocked)'; then
+            echo "can_start=true" >> "$GITHUB_OUTPUT"
+          else
             echo "can_start=false" >> "$GITHUB_OUTPUT"
-            exit 0
           fi
-          if ! python3 scripts/agent-control/state_manager.py check-deps "$ISSUE" >/dev/null; then
-            echo "Issue #$ISSUE has unresolved dependencies."
-            echo "can_start=false" >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
-          echo "can_start=true" >> "$GITHUB_OUTPUT"
 
-  implement:
-    needs: [gate, validate]
+  vader-implementation:
+    needs: validate
     if: needs.validate.outputs.can_start == 'true'
     runs-on: [self-hosted, vader, agent-worker]
+    permissions:
+      actions: write
+      contents: read
+      issues: read
     outputs:
-      pr_number: ${{ steps.push.outputs.pr_number }}
-      head_sha: ${{ steps.push.outputs.head_sha }}
+      base_sha: ${{ steps.worktree.outputs.base_sha }}
+      expected_remote_sha: ${{ steps.worktree.outputs.expected_remote_sha }}
       branch: ${{ steps.worktree.outputs.branch }}
-      worktree_path: ${{ steps.worktree.outputs.worktree_path }}
-    env:
-      AGENT_REPO: ${{ github.repository }}
-      GH_TOKEN: ${{ github.token }}
     steps:
-      - name: Check out repository
-        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
         with:
           persist-credentials: false
           fetch-depth: 0
-
-      - name: Set up Python
-        uses: actions/setup-python@8d9ed9ac5c53483de85588cdf95a591a75ab9f55 # v5
+      - uses: actions/setup-python@8d9ed9ac5c53483de85588cdf95a591a75ab9f55 # v5
         with:
           python-version: "3.11"
-
-      - name: Configure git
-        run: |
-          git config user.name "agent-orchestrator[bot]"
-          git config user.email "agent-orchestrator[bot]@users.noreply.github.com"
-
-      - name: Acquire same-host secondary lock
-        run: python3 scripts/agent-control/lock_manager.py acquire "implementation:issue-${{ inputs.issue }}" 60
-
-      - name: Create and verify isolated worktree exactly once
+      - name: Create isolated worktree
         id: worktree
         run: |
           set -euo pipefail
-          ISSUE="${{ inputs.issue }}"
-          BRANCH="agent/issue-$ISSUE"
-          RESULT=$(python3 scripts/agent-control/worktree_manager.py create "$ISSUE" "$BRANCH")
-          WORKTREE_PATH=$(jq -er '.worktree_path' <<<"$RESULT")
-          BASE_SHA=$(jq -er '.base_sha' <<<"$RESULT")
-          PREVIOUS_REMOTE_SHA=$(jq -r '.previous_remote_sha // empty' <<<"$RESULT")
-          test -d "$WORKTREE_PATH"
-          git worktree list --porcelain | grep -Fxq "worktree $WORKTREE_PATH"
-          test "$(git -C "$WORKTREE_PATH" symbolic-ref --short HEAD)" = "$BRANCH"
+          RESULT=$(python3 scripts/agent-control/worktree_manager.py create "${{ inputs.issue }}" "agent/issue-${{ inputs.issue }}")
+          WORKTREE=$(jq -er '.worktree_path' <<<"$RESULT")
+          BASE=$(jq -er '.base_sha' <<<"$RESULT")
+          REMOTE=$(jq -r '.previous_remote_sha // ""' <<<"$RESULT")
+          test -d "$WORKTREE"
           {
-            echo "worktree_path=$WORKTREE_PATH"
-            echo "branch=$BRANCH"
-            echo "base_sha=$BASE_SHA"
-            echo "previous_remote_sha=$PREVIOUS_REMOTE_SHA"
+            echo "worktree_path=$WORKTREE"
+            echo "base_sha=$BASE"
+            echo "expected_remote_sha=$REMOTE"
+            echo "branch=agent/issue-${{ inputs.issue }}"
           } >> "$GITHUB_OUTPUT"
-
-      - name: Build implementation prompt
-        run: |
-          mkdir -p /tmp/agent-prompt
-          python3 scripts/agent-control/prompt_builder.py implementation "${{ inputs.issue }}" \
-            > /tmp/agent-prompt/issue-${{ inputs.issue }}.txt
-
-      - name: Verify push credential before Codex
+      - name: Build trusted implementation prompt
         env:
-          AGENT_PUSH_TOKEN: ${{ secrets.AGENT_PUSH_TOKEN }}
-        run: test -n "${AGENT_PUSH_TOKEN:-}"
-
-      - name: Runtime gate before Codex
-        run: python3 scripts/agent-control/control_state.py require-live
-
-      - name: Run Codex implementation worker
+          AGENT_REPO: ${{ github.repository }}
+          GH_TOKEN: ${{ github.token }}
+        run: python3 scripts/agent-control/prompt_builder.py implementation "${{ inputs.issue }}" > "$RUNNER_TEMP/implementation-prompt.txt"
+      - name: Recheck control immediately before Codex
+        env:
+          AGENT_REPO: ${{ github.repository }}
+          GH_TOKEN: ${{ github.token }}
+        run: python3 scripts/agent-control/control_state.py require-live >/dev/null
+      - name: Run Codex in worktree with no GitHub credentials
         run: |
-          bash scripts/agent-control/codex_wrapper.sh \
-            implement \
-            /tmp/agent-prompt/issue-${{ inputs.issue }}.txt \
-            /tmp/agent-output/${{ inputs.issue }} \
-            "${{ steps.worktree.outputs.worktree_path }}"
-
-      - name: Runtime gate after Codex
-        run: python3 scripts/agent-control/control_state.py require-live
-
-      - name: Verify Codex produced changes
-        id: changes
+          bash scripts/agent-control/codex_wrapper.sh implement "$RUNNER_TEMP/implementation-prompt.txt" \
+            "$RUNNER_TEMP/codex-output" "${{ steps.worktree.outputs.worktree_path }}"
+      - name: Recheck control before accepting Codex output and creating artifact
+        env:
+          AGENT_REPO: ${{ github.repository }}
+          GH_TOKEN: ${{ github.token }}
         run: |
+          set -euo pipefail
+          python3 scripts/agent-control/control_state.py require-live >/dev/null
           cd "${{ steps.worktree.outputs.worktree_path }}"
-          if git diff --quiet && git diff --cached --quiet; then
-            echo "has_changes=false" >> "$GITHUB_OUTPUT"
-          else
-            echo "has_changes=true" >> "$GITHUB_OUTPUT"
-          fi
+          git diff --check
+          python3 "$GITHUB_WORKSPACE/scripts/agent-control/artifact_contract.py" create implementation \
+            "${{ inputs.issue }}" 0 "${{ steps.worktree.outputs.base_sha }}" \
+            "${{ steps.worktree.outputs.expected_remote_sha }}" "${{ steps.worktree.outputs.branch }}" \
+            "$(cat "$RUNNER_TEMP/codex-output/codex-exit-code.txt")" \
+            '[{"command":"git diff --check","exit_code":0}]' "$RUNNER_TEMP/agent-artifact"
+      - name: Recheck control immediately before artifact upload
+        env:
+          AGENT_REPO: ${{ github.repository }}
+          GH_TOKEN: ${{ github.token }}
+        run: python3 scripts/agent-control/control_state.py require-live >/dev/null
+      - name: Upload untrusted implementation artifact
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: implementation-${{ github.run_id }}-${{ inputs.issue }}
+          path: ${{ runner.temp }}/agent-artifact
+          if-no-files-found: error
+          retention-days: 1
+      - name: Release secondary worktree lock and remove worktree
+        if: always()
+        run: python3 scripts/agent-control/worktree_manager.py remove "${{ inputs.issue }}" "agent/issue-${{ inputs.issue }}" || true
 
-      - name: Commit and push implementation with explicit credential
-        if: steps.changes.outputs.has_changes == 'true'
-        id: push
+  finalize:
+    needs: vader-implementation
+    if: needs.vader-implementation.result == 'success'
+    runs-on: ubuntu-latest
+    permissions:
+      actions: write
+      contents: write
+      issues: write
+      pull-requests: write
+    outputs:
+      pr_number: ${{ steps.pr.outputs.pr_number }}
+      head_sha: ${{ steps.commit.outputs.head_sha }}
+    env:
+      AGENT_REPO: ${{ github.repository }}
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - uses: actions/setup-python@8d9ed9ac5c53483de85588cdf95a591a75ab9f55 # v5
+        with:
+          python-version: "3.11"
+      - name: Download untrusted implementation artifact
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: implementation-${{ github.run_id }}-${{ inputs.issue }}
+          path: ${{ runner.temp }}/agent-artifact
+      - name: Validate bindings, remote head, and untrusted artifact
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BASE_SHA: ${{ needs.vader-implementation.outputs.base_sha }}
+          EXPECTED_REMOTE_SHA: ${{ needs.vader-implementation.outputs.expected_remote_sha }}
+          BRANCH: ${{ needs.vader-implementation.outputs.branch }}
+        run: |
+          set -euo pipefail
+          python3 scripts/agent-control/control_state.py require-live >/dev/null
+          git fetch origin main
+          test "$(git rev-parse origin/main)" = "$BASE_SHA"
+          ACTUAL_REMOTE=$(git ls-remote origin "refs/heads/$BRANCH" | awk '{print $1}')
+          test "$ACTUAL_REMOTE" = "$EXPECTED_REMOTE_SHA"
+          python3 scripts/agent-control/artifact_contract.py validate implementation "${{ inputs.issue }}" 0 \
+            "$BASE_SHA" "$EXPECTED_REMOTE_SHA" "$BRANCH" "$RUNNER_TEMP/agent-artifact"
+          gh issue view "${{ inputs.issue }}" --json body --jq .body > "$RUNNER_TEMP/task-issue-body.md"
+          python3 scripts/agent-control/artifact_contract.py validate-scope "$RUNNER_TEMP/task-issue-body.md" \
+            "$RUNNER_TEMP/agent-artifact/agent-result.json"
+      - name: Apply patch to clean exact base checkout and recompute paths
+        env:
+          BASE_SHA: ${{ needs.vader-implementation.outputs.base_sha }}
+        run: |
+          set -euo pipefail
+          git checkout --detach "$BASE_SHA"
+          git apply --index --binary "$RUNNER_TEMP/agent-artifact/agent.patch"
+          python3 scripts/agent-control/artifact_contract.py validate-index "$RUNNER_TEMP/agent-artifact/agent-result.json"
+          git diff --cached --check
+      - name: Recheck control immediately before commit
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python3 scripts/agent-control/control_state.py require-live >/dev/null
+      - name: Commit validated patch
+        id: commit
+        run: |
+          git config user.name "agent-orchestrator[bot]"
+          git config user.email "agent-orchestrator[bot]@users.noreply.github.com"
+          git commit -m "agent: implement #${{ inputs.issue }}"
+          echo "head_sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+      - name: Recheck control immediately before push
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python3 scripts/agent-control/control_state.py require-live >/dev/null
+      - name: Push branch with isolated temporary credentials
         env:
           AGENT_PUSH_TOKEN: ${{ secrets.AGENT_PUSH_TOKEN }}
+          BRANCH: ${{ needs.vader-implementation.outputs.branch }}
+          EXPECTED_REMOTE_SHA: ${{ needs.vader-implementation.outputs.expected_remote_sha }}
         run: |
           set -euo pipefail
           test -n "${AGENT_PUSH_TOKEN:-}" || { echo "FATAL: AGENT_PUSH_TOKEN is missing" >&2; exit 1; }
-          python3 scripts/agent-control/control_state.py require-live
-          ISSUE="${{ inputs.issue }}"
-          WORKTREE_PATH="${{ steps.worktree.outputs.worktree_path }}"
-          BRANCH="${{ steps.worktree.outputs.branch }}"
-          cd "$WORKTREE_PATH"
-          python3 "$GITHUB_WORKSPACE/scripts/agent-control/control_state.py" require-live
-          git add -A
-          python3 "$GITHUB_WORKSPACE/scripts/agent-control/control_state.py" require-live
-          git diff --cached --quiet || git commit -m "agent: implement #${{ inputs.issue }}"
-          git fetch origin "$BRANCH" || true
-          EXPECTED_REMOTE="${{ steps.worktree.outputs.previous_remote_sha }}"
-          ACTUAL_REMOTE=$(git rev-parse "origin/$BRANCH" 2>/dev/null || true)
-          if [ -n "$EXPECTED_REMOTE" ] && [ "$ACTUAL_REMOTE" != "$EXPECTED_REMOTE" ]; then
-            echo "FATAL: remote branch moved independently" >&2
-            exit 1
+          AUTH_DIR="$RUNNER_TEMP/agent-push-auth"
+          mkdir -p "$AUTH_DIR"
+          trap 'rm -rf "$AUTH_DIR"' EXIT
+          cat > "$AUTH_DIR/askpass" <<'EOF'
+          #!/usr/bin/env sh
+          case "$1" in
+            *Username*) printf '%s' x-access-token ;;
+            *) printf '%s' "$AGENT_PUSH_TOKEN" ;;
+          esac
+          EOF
+          chmod 700 "$AUTH_DIR/askpass"
+          GIT_ASKPASS="$AUTH_DIR/askpass" GIT_TERMINAL_PROMPT=0 \
+            git -c credential.helper= -c credential.useHttpPath=true \
+            push --force-with-lease="refs/heads/$BRANCH:$EXPECTED_REMOTE_SHA" \
+            "https://github.com/${GITHUB_REPOSITORY}.git" "HEAD:refs/heads/$BRANCH"
+      - name: Recheck control immediately before PR creation or update
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python3 scripts/agent-control/control_state.py require-live >/dev/null
+      - name: Create or update Issue-bound PR using github.token
+        id: pr
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BRANCH: ${{ needs.vader-implementation.outputs.branch }}
+        run: |
+          set -euo pipefail
+          BODY="Closes #${{ inputs.issue }}\n\n<!-- agent-orchestrator-binding: {\"issue_number\": ${{ inputs.issue }}, \"branch\": \"$BRANCH\"} -->"
+          PR_NUMBER=$(gh pr list --head "$BRANCH" --state open --json number --jq '.[0].number // empty')
+          if [ -z "$PR_NUMBER" ]; then
+            PR_NUMBER=$(gh pr create --base main --head "$BRANCH" --title "agent: implement #${{ inputs.issue }}" --body "$BODY" --json number --jq .number)
+          else
+            gh pr edit "$PR_NUMBER" --body "$BODY"
           fi
-          python3 "$GITHUB_WORKSPACE/scripts/agent-control/control_state.py" require-live
-          cleanup_git_auth() {
-            git config --global --unset-all credential.helper || true
-            unset GH_TOKEN AGENT_PUSH_TOKEN
-          }
-          trap cleanup_git_auth EXIT
-          export GH_TOKEN="$AGENT_PUSH_TOKEN"
-          gh auth setup-git
-          python3 "$GITHUB_WORKSPACE/scripts/agent-control/worktree_manager.py" push "$BRANCH"
-
-          HEAD_SHA=$(git rev-parse HEAD)
-          echo "head_sha=$HEAD_SHA" >> "$GITHUB_OUTPUT"
-          BODY=$(python3 - "$ISSUE" "$BRANCH" <<'PY'
-          import json, sys
-          issue = int(sys.argv[1])
-          branch = sys.argv[2]
-          print(f"Closes #{issue}\n\n<!-- agent-orchestrator-binding: {json.dumps({'issue_number': issue, 'branch': branch}, sort_keys=True)} -->")
-          PY
-          )
-          PR_INFO=$(python3 "$GITHUB_WORKSPACE/scripts/agent-control/worktree_manager.py" create-pr \
-            "$ISSUE" "$BRANCH" "agent: implement #$ISSUE" "$BODY")
-          cleanup_git_auth
-          trap - EXIT
-          PR_NUMBER=$(jq -er '.pr_number' <<<"$PR_INFO")
           echo "pr_number=$PR_NUMBER" >> "$GITHUB_OUTPUT"
-          WORKER_EXTRA=$(jq -cn \
-            --arg branch "$BRANCH" \
-            --arg base_sha "${{ steps.worktree.outputs.base_sha }}" \
-            --arg previous_remote_sha "${{ steps.worktree.outputs.previous_remote_sha }}" \
-            '{branch:$branch,base_sha:$base_sha,previous_remote_sha:$previous_remote_sha}')
-          GH_TOKEN="${{ github.token }}" python3 "$GITHUB_WORKSPACE/scripts/agent-control/state_manager.py" record-worker \
-            "$ISSUE" "$PR_NUMBER" "$HEAD_SHA" implementation "$WORKER_EXTRA"
-          CI_INFO=$(GH_TOKEN="${{ github.token }}" python3 "$GITHUB_WORKSPACE/scripts/agent-control/ci_verifier.py" dispatch "$BRANCH" "$HEAD_SHA")
-          CI_RUN_ID=$(jq -er '.workflow_run_id' <<<"$CI_INFO")
-          CI_EXTRA=$(cat "$GITHUB_WORKSPACE/scripts/agent-control/ci_requirements.json" | jq -c \
-            --argjson run_id "$CI_RUN_ID" \
-            '{workflow_name,required_jobs,successful_jobs:[],workflow_run_id:$run_id}')
-          GH_TOKEN="${{ github.token }}" python3 "$GITHUB_WORKSPACE/scripts/agent-control/state_manager.py" record-ci \
-            "$ISSUE" "$PR_NUMBER" "$HEAD_SHA" "$CI_RUN_ID" dispatched "$CI_EXTRA"
-
-      - name: Release secondary lock
-        if: always()
-        run: python3 scripts/agent-control/lock_manager.py release "implementation:issue-${{ inputs.issue }}" || true
-
-      - name: Remove isolated worktree safely
-        if: always() && steps.worktree.outputs.worktree_path != ''
-        run: python3 scripts/agent-control/worktree_manager.py remove "${{ inputs.issue }}" "${{ steps.worktree.outputs.branch }}"
+      - name: Persist worker state with github.token
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BRANCH: ${{ needs.vader-implementation.outputs.branch }}
+        run: |
+          python3 scripts/agent-control/control_state.py require-live >/dev/null
+          python3 scripts/agent-control/state_manager.py record-worker "${{ inputs.issue }}" "${{ steps.pr.outputs.pr_number }}" \
+            "${{ steps.commit.outputs.head_sha }}" implementation "{\"branch\":\"$BRANCH\"}"
+      - name: Recheck control immediately before exact-head CI dispatch
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BRANCH: ${{ needs.vader-implementation.outputs.branch }}
+        run: |
+          set -euo pipefail
+          python3 scripts/agent-control/control_state.py require-live >/dev/null
+          CI=$(python3 scripts/agent-control/ci_verifier.py dispatch "$BRANCH" "${{ steps.commit.outputs.head_sha }}")
+          RUN_ID=$(jq -er '.workflow_run_id' <<<"$CI")
+          EXTRA=$(jq -c --argjson id "$RUN_ID" '{workflow_name,required_jobs,successful_jobs:[],workflow_run_id:$id}' scripts/agent-control/ci_requirements.json)
+          python3 scripts/agent-control/state_manager.py record-ci "${{ inputs.issue }}" "${{ steps.pr.outputs.pr_number }}" \
+            "${{ steps.commit.outputs.head_sha }}" "$RUN_ID" dispatched "$EXTRA"
 
   failure-handler:
-    needs: implement
+    needs: [validate, vader-implementation, finalize]
     if: failure()
     runs-on: ubuntu-latest
-    env:
-      AGENT_REPO: ${{ github.repository }}
-      GH_TOKEN: ${{ github.token }}
+    permissions:
+      contents: read
+      issues: write
     steps:
-      - name: Check out repository
-        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
         with:
           persist-credentials: false
-      - name: Set up Python
-        uses: actions/setup-python@8d9ed9ac5c53483de85588cdf95a591a75ab9f55 # v5
-        with:
-          python-version: "3.11"
-      - name: Mark blocked on failure
+      - name: Mark only current live implementation failures blocked
+        env:
+          AGENT_REPO: ${{ github.repository }}
+          GH_TOKEN: ${{ github.token }}
         run: |
-          python3 scripts/agent-control/state_manager.py set-labels "${{ inputs.issue }}" agent-blocked
-          python3 scripts/agent-control/state_manager.py comment "${{ inputs.issue }}" \
-            "## Agent Orchestrator: Worker Failed\nThe implementation worker failed closed; manual inspection is required."
+          set -euo pipefail
+          if ! python3 scripts/agent-control/control_state.py require-live >/dev/null; then
+            echo "nonterminal disabled or emergency-stopped outcome"
+            exit 0
+          fi
+          LABELS=$(python3 scripts/agent-control/state_manager.py get-labels "${{ inputs.issue }}")
+          if echo "$LABELS" | grep -qw agent-running && ! echo "$LABELS" | grep -Eq '(agent-complete|review-running|review-passed)'; then
+            python3 scripts/agent-control/state_manager.py set-labels "${{ inputs.issue }}" agent-blocked
+          else
+            echo "stale or superseded outcome; state unchanged"
+          fi

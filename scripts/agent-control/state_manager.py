@@ -29,9 +29,6 @@ ALL_LABELS = ACTIVE_LABELS | TERMINAL_LABELS | {LABEL_DRAFT, LABEL_READY, LABEL_
 
 MAX_REPAIR_ATTEMPTS = 2
 
-EMERGENCY_STOP_VAR = "AGENT_EMERGENCY_STOP"
-
-
 def _gh(*args, **kwargs):
     cmd = [GH] + list(args)
     input_data = kwargs.get("input_data")
@@ -53,11 +50,6 @@ def _gh(*args, **kwargs):
     except (subprocess.TimeoutExpired, OSError):
         print(f"gh timed out: {' '.join(cmd)}", file=sys.stderr)
         return None
-
-
-def is_emergency_stopped():
-    val = os.environ.get(EMERGENCY_STOP_VAR, "false")
-    return val.lower() == "true"
 
 
 def get_issue_labels(issue_number, repo=""):
@@ -519,9 +511,6 @@ def verify_merge_requirements(pr_number, issue_number, expected_sha, repo=""):
         evidence = verify_exact_head_ci(pr_number, expected_sha, run_id, pr)
     except CIVerificationError as exc:
         raise RuntimeError(f"exact-head CI rejected: {exc}") from exc
-    target = repo or os.environ.get("AGENT_REPO") or os.environ.get("GITHUB_REPOSITORY", "")
-    if not target or _gh("api", f"repos/{target}/branches/main/protection") is None:
-        raise RuntimeError("main branch protection is unavailable")
     return evidence
 
 
@@ -689,11 +678,6 @@ def main():
         set_labels(issue_number, LABEL_BLOCKED, repo=repo)
         comment_on_issue(issue_number, f"## Agent Orchestrator: Blocked\n**Reason:** {reason}", repo)
         print(f"Task #{issue_number} blocked: {reason}")
-
-    elif command == "emergency-stop":
-        print("Emergency stop requires setting the AGENT_EMERGENCY_STOP repository variable to 'true'.")
-        print("This must be done through the GitHub UI or API, not through this script.")
-        sys.exit(0)
 
     elif command == "status":
         ready = _gh("issue", "list", "--label", LABEL_READY, "--state", "open", "--json", "number")

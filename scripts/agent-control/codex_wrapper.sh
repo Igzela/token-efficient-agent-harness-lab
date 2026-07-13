@@ -49,27 +49,6 @@ fail_closed() {
 
 mkdir -p "$OUTPUT_DIR"
 
-# Query current GitHub Actions variables. A failed query is distinct from a
-# deliberate disabled gate, but both are non-zero write-operation failures.
-CONTROL_STATE=""
-if ! CONTROL_STATE=$(python3 "$SCRIPT_DIR/control_state.py" read 2>/dev/null); then
-  fail_closed "control_state_unavailable" "authoritative control state could not be queried"
-fi
-if [ "$(python3 - "$CONTROL_STATE" <<'PY'
-import json, sys
-print("true" if json.loads(sys.argv[1])["emergency_stop"] else "false")
-PY
-)" = "true" ]; then
-  fail_closed "emergency_stop" "AGENT_EMERGENCY_STOP is true"
-fi
-if [ "$(python3 - "$CONTROL_STATE" <<'PY'
-import json, sys
-print("true" if json.loads(sys.argv[1])["orchestrator_enabled"] else "false")
-PY
-)" != "true" ]; then
-  fail_closed "control_disabled" "AGENT_ORCHESTRATOR_ENABLED is not true"
-fi
-
 command -v codex >/dev/null 2>&1 || fail_closed "cli_missing" "codex CLI not found in PATH"
 [ -n "${HOME:-}" ] || fail_closed "environment_invalid" "HOME is not set"
 [ -f "$PROMPT_FILE" ] || fail_closed "prompt_missing" "prompt file not found"
@@ -98,7 +77,7 @@ LAST_MESSAGE_OUTPUT="$OUTPUT_DIR/codex-last-message.json"
 EXIT_CODE_OUTPUT="$OUTPUT_DIR/codex-exit-code.txt"
 
 set +e
-codex exec \
+env -u GH_TOKEN -u GITHUB_TOKEN -u AGENT_PUSH_TOKEN -u GITHUB_PAT codex exec \
   --cd "$WORKSPACE" \
   --sandbox "$SANDBOX_MODE" \
   --ephemeral \
