@@ -14,6 +14,7 @@ import os
 import sys
 import tempfile
 import unittest
+from unittest import mock
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "scripts", "agent-control"))
 import ci_handler as ch
@@ -191,6 +192,27 @@ class TestFindIssueForPR(unittest.TestCase):
         self.assertIsNone(match)
 
 
+class TestWorkflowDispatchPRCorrelation(unittest.TestCase):
+
+    def test_find_pr_by_exact_branch_and_sha(self):
+        info = {"head_branch": "agent/issue-12", "head_sha": "abc123"}
+        with mock.patch.object(
+            ch.sm,
+            "_gh",
+            return_value='[{"number": 207, "headRefName": "agent/issue-12", "headRefOid": "abc123"}]',
+        ):
+            self.assertEqual(ch._find_pr_for_run(info), 207)
+
+    def test_find_pr_rejects_stale_sha(self):
+        info = {"head_branch": "agent/issue-12", "head_sha": "abc123"}
+        with mock.patch.object(
+            ch.sm,
+            "_gh",
+            return_value='[{"number": 207, "headRefName": "agent/issue-12", "headRefOid": "old"}]',
+        ):
+            self.assertIsNone(ch._find_pr_for_run(info))
+
+
 class TestReviewPassedLogic(unittest.TestCase):
     """Defect 13: Review-running is not review-passed."""
 
@@ -201,7 +223,7 @@ class TestReviewPassedLogic(unittest.TestCase):
         self.assertIn(sm.LABEL_REVIEW_PASSED, sm.ALL_LABELS)
 
     def test_ci_handler_uses_review_passed(self):
-        """Verify ci_handler checks for review-passed, not final-review."""
+        """Verify ci_handler checks for review-passed, not another state name."""
         import inspect
         source = inspect.getsource(ch.process_ci_completion)
         self.assertIn("LABEL_REVIEW_PASSED", source)

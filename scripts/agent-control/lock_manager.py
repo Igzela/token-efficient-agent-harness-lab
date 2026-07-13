@@ -1,8 +1,8 @@
 """Concurrency locking for the agent orchestrator.
 
-Uses GitHub concurrency groups (primary) and a simple lock-file mechanism
-on the runner (secondary) to prevent concurrent Codex workers for the same
-issue/PR/branch or exceeding the repository-wide maximum.
+Uses a simple lock-file mechanism only as a same-host secondary safeguard.
+Repository-wide capacity is authoritative in the serialized GitHub dispatcher;
+the diagnostic capacity command must never be used for dispatch decisions.
 """
 
 import hashlib
@@ -85,6 +85,7 @@ def count_active_locks(prefix=""):
 
 
 def check_repo_capacity():
+    """Legacy same-host diagnostic; not a repository-wide capacity authority."""
     return count_active_locks() < MAX_WORKERS
 
 
@@ -98,15 +99,22 @@ def gh_concurrency_group(issue_number, pr_number=None, head_sha=None):
 
 
 def main():
-    if len(sys.argv) < 3:
-        print("Usage: lock_manager.py <acquire|release|check|count|capacity> <lock_key> [timeout]", file=sys.stderr)
-        sys.exit(1)
-
-    command = sys.argv[1]
-    lock_key = sys.argv[2]
+    command = sys.argv[1] if len(sys.argv) > 1 else ""
+    usage = (
+        "Usage: lock_manager.py acquire <key> [timeout] | release <key> | "
+        "check <key> | count [prefix] | capacity"
+    )
 
     if command == "acquire":
-        timeout = int(sys.argv[3]) if len(sys.argv) > 3 else 30
+        if len(sys.argv) not in (3, 4):
+            print(usage, file=sys.stderr)
+            sys.exit(1)
+        lock_key = sys.argv[2]
+        try:
+            timeout = int(sys.argv[3]) if len(sys.argv) == 4 else 30
+        except ValueError:
+            print("timeout must be an integer", file=sys.stderr)
+            sys.exit(1)
         if acquire_lock(lock_key, timeout):
             print("acquired")
         else:
@@ -114,10 +122,18 @@ def main():
             sys.exit(1)
 
     elif command == "release":
+        if len(sys.argv) != 3:
+            print(usage, file=sys.stderr)
+            sys.exit(1)
+        lock_key = sys.argv[2]
         release_lock(lock_key)
         print("released")
 
     elif command == "check":
+        if len(sys.argv) != 3:
+            print(usage, file=sys.stderr)
+            sys.exit(1)
+        lock_key = sys.argv[2]
         lock_file = _lock_path(lock_key)
         if lock_file.exists() and not _check_stale(lock_file):
             print("locked")
@@ -125,10 +141,16 @@ def main():
             print("free")
 
     elif command == "count":
-        prefix = sys.argv[3] if len(sys.argv) > 3 else ""
+        if len(sys.argv) not in (2, 3):
+            print(usage, file=sys.stderr)
+            sys.exit(1)
+        prefix = sys.argv[2] if len(sys.argv) == 3 else ""
         print(count_active_locks(prefix))
 
     elif command == "capacity":
+        if len(sys.argv) != 2:
+            print(usage, file=sys.stderr)
+            sys.exit(1)
         if check_repo_capacity():
             print("available")
         else:
@@ -136,7 +158,7 @@ def main():
             sys.exit(1)
 
     else:
-        print(f"Unknown command: {command}", file=sys.stderr)
+        print(usage, file=sys.stderr)
         sys.exit(1)
 
 

@@ -6,21 +6,23 @@ on:
   workflow_dispatch:
     inputs:
       issue:
-        description: Issue number to force-intake
+        description: Issue number to inspect
         required: false
         type: number
       dry_run:
-        description: Validate without side effects
+        description: Read-only validation plan
         required: false
         default: false
         type: boolean
 
 permissions:
+  actions: write
+  contents: read
   issues: write
   pull-requests: read
 
 concurrency:
-  group: agent-intake-${{ github.event.inputs.issue || github.event.issue.number || 'none' }}
+  group: agent-intake-${{ inputs.issue || github.event.issue.number || 'none' }}
   cancel-in-progress: false
 
 jobs:
@@ -28,28 +30,32 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       enabled: ${{ steps.check.outputs.enabled }}
-      emergency_stopped: ${{ steps.check.outputs.emergency_stopped }}
+      dry_run: ${{ steps.check.outputs.dry_run }}
       issue_number: ${{ steps.vars.outputs.issue }}
     steps:
-      - name: Determine issue number
+      - name: Determine issue number and mode
         id: vars
         run: |
           if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-            echo "issue=${{ github.event.inputs.issue }}" >> "$GITHUB_OUTPUT"
+            echo "issue=${{ inputs.issue }}" >> "$GITHUB_OUTPUT"
           else
             echo "issue=${{ github.event.issue.number }}" >> "$GITHUB_OUTPUT"
           fi
 
-      - name: Check orchestrator gate and emergency stop
+      - name: Check orchestrator gate
         id: check
         env:
           AGENT_ORCHESTRATOR_ENABLED: ${{ vars.AGENT_ORCHESTRATOR_ENABLED }}
-          AGENT_EMERGENCY_STOP: ${{ vars.Agent_EMERGENCY_STOP }}
+          AGENT_EMERGENCY_STOP: ${{ vars.AGENT_EMERGENCY_STOP }}
         run: |
+          echo "dry_run=${{ inputs.dry_run }}" >> "$GITHUB_OUTPUT"
           ISSUE="${{ steps.vars.outputs.issue }}"
           if [ -z "$ISSUE" ] || [ "$ISSUE" = "0" ]; then
-            echo "No valid issue number. Skipping."
             echo "enabled=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          if [ "${{ inputs.dry_run }}" = "true" ]; then
+            echo "enabled=true" >> "$GITHUB_OUTPUT"
             exit 0
           fi
           if [ "${AGENT_ORCHESTRATOR_ENABLED:-false}" != "true" ]; then
@@ -58,17 +64,15 @@ jobs:
             exit 0
           fi
           if [ "${AGENT_EMERGENCY_STOP:-false}" = "true" ]; then
-            echo "Emergency stop is active. Intake disabled."
+            echo "AGENT_EMERGENCY_STOP is true. Intake disabled."
             echo "enabled=false" >> "$GITHUB_OUTPUT"
-            echo "emergency_stopped=true" >> "$GITHUB_OUTPUT"
             exit 0
           fi
           echo "enabled=true" >> "$GITHUB_OUTPUT"
-          echo "emergency_stopped=false" >> "$GITHUB_OUTPUT"
 
-  intake:
+  dry-run:
     needs: gate
-    if: needs.gate.outputs.enabled == 'true'
+    if: needs.gate.outputs.enabled == 'true' && needs.gate.outputs.dry_run == 'true'
     runs-on: ubuntu-latest
     env:
       AGENT_REPO: ${{ github.repository }}
@@ -84,93 +88,65 @@ jobs:
         with:
           python-version: "3.11"
 
-      - name: Validate labels and state
-        id: labels
+      - name: Build read-only dry-run plan
         run: |
-          ISSUE=${{ needs.gate.outputs.issue_number }}
+          set -euo pipefail
+          ISSUE="${{ needs.gate.outputs.issue_number }}"
           LABELS=$(python3 scripts/agent-control/state_manager.py get-labels "$ISSUE")
-          echo "current_labels=$LABELS" >> "$GITHUB_OUTPUT"
-
-          if echo "$LABELS" | grep -qE "(agent-running|ci-repairing|review-running|agent-complete|agent-blocked)"; then
-            echo "skip=true" >> "$GITHUB_OUTPUT"
-            echo "Issue #$ISSUE is already active or terminal ($LABELS). Skipping intake."
-          else
-            echo "skip=false" >> "$GITHUB_OUTPUT"
+          DEPENDENCIES="ready"
+          if ! python3 scripts/agent-control/state_manager.py check-deps "$ISSUE" >/dev/null; then
+            DEPENDENCIES="blocked"
           fi
+          python3 - "$ISSUE" "$LABELS" "$DEPENDENCIES" <<'PY'
+          import json, sys
+          print(json.dumps({
+              "mode": "dry-run",
+              "issue": int(sys.argv[1]),
+              "labels": sys.argv[2].split(),
+              "dependencies": sys.argv[3],
+              "mutations": [],
+              "dispatch": None,
+              "codex": False,
+              "worktree": False,
+          }, sort_keys=True))
+          PY
 
-      - name: Handle agent-draft
-        if: >
-          steps.labels.outputs.skip != 'true' &&
-          contains(steps.labels.outputs.current_labels, 'agent-draft') &&
-          !contains(steps.labels.outputs.current_labels, 'agent-ready')
+  live-intake:
+    needs: gate
+    if: needs.gate.outputs.enabled == 'true' && needs.gate.outputs.dry_run != 'true'
+    runs-on: ubuntu-latest
+    env:
+      AGENT_REPO: ${{ github.repository }}
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        with:
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@8d9ed9ac5c53483de85588cdf95a591a75ab9f55 # v5
+        with:
+          python-version: "3.11"
+
+      - name: Inspect issue and dispatch serialized controller
         run: |
-          ISSUE=${{ needs.gate.outputs.issue_number }}
-          python3 scripts/agent-control/state_manager.py comment "$ISSUE" \
-            "## Agent Orchestrator Intake
-          Task registered as **draft** (\`agent-draft\`).
-          Change label to \`agent-ready\` when dependencies are resolved to start execution."
-
-      - name: Check dependencies
-        id: deps
-        if: >
-          steps.labels.outputs.skip != 'true' &&
-          contains(steps.labels.outputs.current_labels, 'agent-ready')
-        run: |
-          ISSUE=${{ needs.gate.outputs.issue_number }}
-          if python3 scripts/agent-control/state_manager.py check-deps "$ISSUE"; then
-            echo "status=ready" >> "$GITHUB_OUTPUT"
-          else
-            echo "status=blocked" >> "$GITHUB_OUTPUT"
-          fi
-
-      - name: Mark ready and dispatch worker
-        id: dispatch
-        if: steps.deps.outputs.status == 'ready'
-        env:
-          AGENT_ORCHESTRATOR_ENABLED: ${{ vars.AGENT_ORCHESTRATOR_ENABLED }}
-        run: |
-          ISSUE=${{ needs.gate.outputs.issue_number }}
-          python3 scripts/agent-control/state_manager.py add-labels "$ISSUE" agent-ready
-          python3 scripts/agent-control/state_manager.py remove-labels "$ISSUE" agent-draft
-
-          if [ "${AGENT_ORCHESTRATOR_ENABLED:-false}" != "true" ]; then
-            echo "Orchestrator disabled. Issue labeled agent-ready but worker will not start."
-            echo "dispatched=false" >> "$GITHUB_OUTPUT"
+          set -euo pipefail
+          ISSUE="${{ needs.gate.outputs.issue_number }}"
+          LABELS=$(python3 scripts/agent-control/state_manager.py get-labels "$ISSUE")
+          if echo "$LABELS" | grep -Eq "(agent-running|ci-repairing|review-running|agent-complete|agent-blocked)"; then
+            echo "Issue #$ISSUE is already active or terminal; no dispatch."
             exit 0
           fi
-
-          echo "Dispatching implementation worker for issue #$ISSUE"
-          gh workflow run agent-worker.yml \
-            --ref "${{ github.ref_name }}" \
+          if ! echo "$LABELS" | grep -qw "agent-ready"; then
+            echo "Issue #$ISSUE is not agent-ready; no dispatch."
+            exit 0
+          fi
+          if ! python3 scripts/agent-control/state_manager.py check-deps "$ISSUE" >/dev/null; then
+            echo "Issue #$ISSUE has unresolved dependencies; no dispatch."
+            exit 0
+          fi
+          gh workflow run agent-controller.yml --ref main \
+            -f command=dispatch-ready \
             -f issue="$ISSUE" \
-            -f dry_run=false
-          echo "dispatched=true" >> "$GITHUB_OUTPUT"
-
-      - name: Mark blocked on dependencies
-        if: steps.deps.outputs.status == 'blocked'
-        run: |
-          ISSUE=${{ needs.gate.outputs.issue_number }}
-          python3 scripts/agent-control/state_manager.py add-labels "$ISSUE" agent-blocked
-          python3 scripts/agent-control/state_manager.py comment "$ISSUE" \
-            "## Agent Orchestrator: Dependencies Not Met
-          This task has unresolved dependencies and has been labeled \`agent-blocked\`.
-          Resolve dependencies and add \`agent-ready\` to start execution."
-
-      - name: Dry-run report
-        if: github.event.inputs.dry_run == 'true'
-        run: |
-          echo "=== Dry-Run Intake Report ==="
-          echo "Issue: ${{ needs.gate.outputs.issue_number }}"
-          echo "Labels: ${{ steps.labels.outputs.current_labels }}"
-          echo "Side effects would have been: update labels, post comments, dispatch worker"
-
-  dry-run-report:
-    needs: gate
-    if: needs.gate.outputs.enabled == 'false' && github.event.inputs.dry_run == 'true'
-    runs-on: ubuntu-latest
-    steps:
-      - name: Report dry-run
-        run: |
-          echo "=== Dry-Run Intake Report ==="
-          echo "Issue: ${{ needs.gate.outputs.issue_number }}"
-          echo "Orchestrator disabled. No side effects performed."
+            -f dispatch_id="worker:$ISSUE"

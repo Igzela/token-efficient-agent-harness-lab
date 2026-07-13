@@ -239,7 +239,8 @@ class TestWorkflowYAMLParsing(unittest.TestCase):
             trigger = self._get_trigger(data)
             self.assertIsNotNone(trigger)
             inputs = trigger["workflow_dispatch"]["inputs"]
-            self.assertIn("failed_logs", inputs)
+            self.assertIn("ci_run_id", inputs)
+            self.assertNotIn("failed_logs", inputs)
 
     def test_review_yml_parses(self):
         path = os.path.join(os.path.dirname(__file__), "..", ".github", "workflows", "agent-review.yml")

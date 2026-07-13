@@ -6,6 +6,7 @@ This module never stores state locally -- it reads/writes via the `gh` CLI.
 
 import json
 import os
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -49,7 +50,7 @@ def _gh(*args, **kwargs):
             print(f"gh error (exit {result.returncode}): {result.stderr.strip()}", file=sys.stderr)
             return None
         return result.stdout.strip()
-    except subprocess.TimeoutExpired:
+    except (subprocess.TimeoutExpired, OSError):
         print(f"gh timed out: {' '.join(cmd)}", file=sys.stderr)
         return None
 
@@ -91,16 +92,18 @@ def add_labels(issue_number, *labels, repo=""):
     if repo:
         args.extend(["--repo", repo])
     args.extend(["--add-label", ",".join(labels)])
-    _gh(*args)
+    return _gh(*args) is not None
 
 
 def remove_labels(issue_number, *labels, repo=""):
+    ok = True
     for label in labels:
         args = ["issue", "edit", str(issue_number)]
         if repo:
             args.extend(["--repo", repo])
         args.extend(["--remove-label", label])
-        _gh(*args)
+        ok = _gh(*args) is not None and ok
+    return ok
 
 
 def set_labels(issue_number, *labels, repo=""):
@@ -111,7 +114,7 @@ def set_labels(issue_number, *labels, repo=""):
     for label in ALL_LABELS:
         if label not in labels:
             args.extend(["--remove-label", label])
-    _gh(*args)
+    return _gh(*args) is not None
 
 
 def comment_on_issue(issue_number, body, repo=""):
@@ -119,7 +122,7 @@ def comment_on_issue(issue_number, body, repo=""):
     if repo:
         args.extend(["--repo", repo])
     args.extend(["--body", body])
-    _gh(*args)
+    return _gh(*args) is not None
 
 
 def get_issue_comments(issue_number, repo=""):
@@ -149,7 +152,10 @@ def get_issue_comment_bodies(issue_number, search_text, repo=""):
 
 
 def get_pr_info(pr_number, repo=""):
-    args = ["pr", "view", str(pr_number), "--json", "headRefName,headRefOid,state,mergeable,labels,baseRefName"]
+    args = [
+        "pr", "view", str(pr_number), "--json",
+        "headRefName,headRefOid,state,mergeable,mergeStateStatus,labels,baseRefName,body,reviews,reviewDecision,mergeCommit,mergedAt",
+    ]
     if repo:
         args.extend(["--repo", repo])
     result = _gh(*args)
@@ -198,7 +204,7 @@ def record_worker_state(issue_number, pr_number, head_sha, worker_type, extra=No
         "extra": extra or {},
     }
     body = json.dumps(state)
-    comment_on_issue(issue_number, body, repo)
+    return comment_on_issue(issue_number, body, repo)
 
 
 def read_worker_state(issue_number, repo=""):
@@ -213,16 +219,20 @@ def read_worker_state(issue_number, repo=""):
 
 
 def record_ci_state(issue_number, pr_number, head_sha, ci_run_id, status, extra=None, repo=""):
+    extra = extra or {}
     state = {
         "kind": "agent-orchestrator-ci-state",
-        "version": 1,
+        "version": 2,
         "pr_number": pr_number,
         "head_sha": head_sha,
-        "ci_run_id": ci_run_id,
+        "workflow_run_id": int(ci_run_id) if str(ci_run_id).isdigit() else ci_run_id,
+        "workflow_name": extra.get("workflow_name", "tests"),
+        "required_jobs": extra.get("required_jobs", []),
+        "successful_jobs": extra.get("successful_jobs", []),
         "status": status,
-        "extra": extra or {},
+        "extra": extra,
     }
-    comment_on_issue(issue_number, json.dumps(state), repo)
+    return comment_on_issue(issue_number, json.dumps(state), repo)
 
 
 def read_ci_state(issue_number, repo=""):
@@ -245,7 +255,20 @@ def record_review_state(issue_number, pr_number, head_sha, verdict, summary, rep
         "verdict": verdict,
         "summary": summary,
     }
-    comment_on_issue(issue_number, json.dumps(state), repo)
+    return comment_on_issue(issue_number, json.dumps(state), repo)
+
+
+def record_merge_state(issue_number, pr_number, expected_head_sha, merge_commit_sha, repo=""):
+    state = {
+        "kind": "agent-orchestrator-merge-state",
+        "version": 1,
+        "issue_number": int(issue_number),
+        "pr_number": int(pr_number),
+        "expected_head_sha": expected_head_sha,
+        "merge_commit_sha": merge_commit_sha,
+        "status": "confirmed",
+    }
+    return comment_on_issue(issue_number, json.dumps(state, sort_keys=True), repo)
 
 
 def read_review_state(issue_number, repo=""):
@@ -260,7 +283,10 @@ def read_review_state(issue_number, repo=""):
 
 
 def get_active_workers(repo=""):
-    result = _gh("issue", "list", "--label", LABEL_RUNNING, "--state", "open", "--json", "number")
+    args = ["issue", "list", "--label", LABEL_RUNNING, "--state", "open", "--json", "number", "--limit", "100"]
+    if repo:
+        args.extend(["--repo", repo])
+    result = _gh(*args)
     if not result:
         return []
     try:
@@ -270,7 +296,10 @@ def get_active_workers(repo=""):
 
 
 def get_ci_repairing_issues(repo=""):
-    result = _gh("issue", "list", "--label", LABEL_CI_REPAIRING, "--state", "open", "--json", "number")
+    args = ["issue", "list", "--label", LABEL_CI_REPAIRING, "--state", "open", "--json", "number", "--limit", "100"]
+    if repo:
+        args.extend(["--repo", repo])
+    result = _gh(*args)
     if not result:
         return []
     try:
@@ -280,13 +309,220 @@ def get_ci_repairing_issues(repo=""):
 
 
 def get_review_running_issues(repo=""):
-    result = _gh("issue", "list", "--label", LABEL_REVIEW_RUNNING, "--state", "open", "--json", "number")
+    args = ["issue", "list", "--label", LABEL_REVIEW_RUNNING, "--state", "open", "--json", "number", "--limit", "100"]
+    if repo:
+        args.extend(["--repo", repo])
+    result = _gh(*args)
     if not result:
         return []
     try:
         return [item["number"] for item in json.loads(result)]
     except (json.JSONDecodeError, KeyError):
         return []
+
+
+def get_active_issue_numbers(repo=""):
+    """Return the authoritative union of active Issue labels, or None on API failure."""
+    result = set()
+    for label in (LABEL_RUNNING, LABEL_CI_REPAIRING, LABEL_REVIEW_RUNNING):
+        args = ["issue", "list", "--label", label, "--state", "open", "--json", "number", "--limit", "100"]
+        if repo:
+            args.extend(["--repo", repo])
+        raw = _gh(*args)
+        if raw is None:
+            return None
+        try:
+            result.update(int(item["number"]) for item in json.loads(raw))
+        except (json.JSONDecodeError, KeyError, TypeError, ValueError):
+            return None
+    return result
+
+
+def has_open_issue_pr(issue_number, repo=""):
+    """Return whether the canonical Issue branch already has an open PR.
+
+    ``None`` means the query failed; callers must not treat that as proof that
+    the Issue is unassociated.
+    """
+    args = [
+        "pr", "list", "--state", "open", "--head", f"agent/issue-{int(issue_number)}",
+        "--limit", "100", "--json", "number,headRefName",
+    ]
+    if repo:
+        args.extend(["--repo", repo])
+    raw = _gh(*args)
+    if raw is None:
+        return None
+    try:
+        candidates = json.loads(raw)
+    except (json.JSONDecodeError, TypeError):
+        return None
+    return any(item.get("headRefName") == f"agent/issue-{int(issue_number)}" for item in candidates)
+
+
+def record_dispatch_state(issue_number, dispatch_id, action, status, details=None, repo=""):
+    state = {
+        "kind": "agent-orchestrator-dispatch-state",
+        "version": 1,
+        "issue_number": int(issue_number),
+        "dispatch_id": dispatch_id,
+        "action": action,
+        "status": status,
+        "details": details or {},
+    }
+    return comment_on_issue(issue_number, json.dumps(state, sort_keys=True), repo)
+
+
+def read_dispatch_state(issue_number, dispatch_id=None, repo=""):
+    comments = get_issue_comments(issue_number, repo)
+    for comment in comments:
+        body = comment.get("body", "")
+        if "agent-orchestrator-dispatch-state" not in body:
+            continue
+        try:
+            state = json.loads(body)
+        except json.JSONDecodeError:
+            continue
+        if dispatch_id is None or state.get("dispatch_id") == dispatch_id:
+            return state
+    return None
+
+
+def parse_binding_marker(body):
+    match = re.search(r"<!-- agent-orchestrator-binding:\s*(\{.*?\})\s*-->", body or "", re.DOTALL)
+    if not match:
+        return None
+    try:
+        value = json.loads(match.group(1))
+    except json.JSONDecodeError:
+        return None
+    return value if isinstance(value, dict) else None
+
+
+def verify_issue_pr_binding(issue_number, pr_number, expected_sha, repo=""):
+    """Verify the durable worker binding and reject ambiguous open PR associations."""
+    pr = get_pr_info(pr_number, repo)
+    if not pr:
+        return False, "pr_not_found"
+    expected_branch = f"agent/issue-{issue_number}"
+    if pr.get("headRefName") != expected_branch:
+        return False, "branch_mismatch"
+    if pr.get("headRefOid") != expected_sha:
+        return False, "head_mismatch"
+    body = pr.get("body", "")
+    marker = parse_binding_marker(body)
+    if not marker or marker.get("issue_number") != int(issue_number) or marker.get("branch") != expected_branch:
+        return False, "binding_marker_mismatch"
+    if not re.search(rf"(?:Closes|Fixes|Resolves|Implements)\s+#?{int(issue_number)}\b", body, re.IGNORECASE):
+        return False, "missing_issue_link"
+    linked_issues = {
+        int(match.group(1))
+        for match in re.finditer(
+            r"(?:Closes|Fixes|Resolves|Implements)\s+#?(\d+)\b", body, re.IGNORECASE
+        )
+    }
+    for linked_issue in linked_issues - {int(issue_number)}:
+        linked_labels = get_issue_labels(linked_issue, repo)
+        if linked_labels & ACTIVE_LABELS:
+            return False, "pr_has_another_active_issue"
+    worker = read_worker_state(issue_number, repo)
+    if not worker or worker.get("pr_number") != int(pr_number) or worker.get("head_sha") != expected_sha:
+        return False, "worker_state_mismatch"
+    if worker.get("extra", {}).get("branch") not in (None, expected_branch):
+        return False, "worker_branch_history_mismatch"
+
+    args = ["pr", "list", "--state", "open", "--limit", "100", "--json", "number,headRefName,body,headRefOid"]
+    if repo:
+        args.extend(["--repo", repo])
+    raw = _gh(*args)
+    if raw is None:
+        return False, "open_pr_query_failed"
+    try:
+        prs = json.loads(raw)
+    except json.JSONDecodeError:
+        return False, "open_pr_query_invalid"
+    for candidate in prs:
+        number = int(candidate.get("number", 0))
+        if number == int(pr_number):
+            continue
+        candidate_marker = parse_binding_marker(candidate.get("body", ""))
+        if (
+            candidate.get("headRefName") == expected_branch
+            or (candidate_marker and candidate_marker.get("issue_number") == int(issue_number))
+        ):
+            return False, "issue_has_another_active_pr"
+    return True, "ok"
+
+
+def unresolved_review_threads(pr_number, repo=""):
+    target = repo or os.environ.get("AGENT_REPO") or os.environ.get("GITHUB_REPOSITORY", "")
+    if "/" not in target:
+        return None
+    owner, name = target.split("/", 1)
+    query = (
+        "query($owner:String!, $name:String!, $number:Int!) {"
+        "repository(owner:$owner,name:$name){pullRequest(number:$number){"
+        "reviewThreads(first:100){nodes{isResolved}}}}}"
+    )
+    raw = _gh(
+        "api", "graphql", "-f", f"query={query}", "-F", f"owner={owner}",
+        "-F", f"name={name}", "-F", f"number={int(pr_number)}",
+    )
+    if raw is None:
+        return None
+    try:
+        data = json.loads(raw)
+        nodes = data["data"]["repository"]["pullRequest"]["reviewThreads"]["nodes"]
+        return [node for node in nodes if not node.get("isResolved", False)]
+    except (json.JSONDecodeError, KeyError, TypeError):
+        return None
+
+
+def verify_merge_requirements(pr_number, issue_number, expected_sha, repo=""):
+    from ci_verifier import verify_exact_head_ci, CIVerificationError
+    import control_state
+
+    try:
+        control_state.require_auto_merge(repo or None)
+    except (RuntimeError, ValueError) as exc:
+        raise RuntimeError(f"control state rejected merge: {exc}") from exc
+    labels = get_issue_labels(issue_number, repo)
+    if LABEL_REVIEW_PASSED not in labels:
+        raise RuntimeError("review-passed label is absent")
+    if LABEL_REVIEW_RUNNING in labels:
+        raise RuntimeError("review-running label remains")
+    pr = get_pr_info(pr_number, repo)
+    if not pr or pr.get("state") != "OPEN":
+        raise RuntimeError("PR is not open")
+    if pr.get("baseRefName") != "main" or pr.get("headRefOid") != expected_sha:
+        raise RuntimeError("PR target or exact head is invalid")
+    if pr.get("mergeable") != "MERGEABLE" or pr.get("mergeStateStatus") != "CLEAN":
+        raise RuntimeError("PR is not mergeable under current governance")
+    binding_ok, binding_reason = verify_issue_pr_binding(issue_number, pr_number, expected_sha, repo)
+    if not binding_ok:
+        raise RuntimeError(f"Issue/PR binding rejected: {binding_reason}")
+    review = read_review_state(issue_number, repo)
+    if not review or review.get("pr_number") != int(pr_number) or review.get("verdict") != "PASS" or review.get("head_sha") != expected_sha:
+        raise RuntimeError("review state is missing, mismatched, or not PASS")
+    if any(item.get("state") == "CHANGES_REQUESTED" for item in pr.get("reviews", [])):
+        raise RuntimeError("active requested-changes review exists")
+    threads = unresolved_review_threads(pr_number, repo)
+    if threads is None:
+        raise RuntimeError("review thread state is unavailable")
+    if threads:
+        raise RuntimeError("unresolved review thread exists")
+    ci_state = read_ci_state(issue_number, repo)
+    if not ci_state or ci_state.get("pr_number") != int(pr_number) or ci_state.get("head_sha") != expected_sha:
+        raise RuntimeError("stored CI state is missing or mismatched")
+    run_id = ci_state.get("workflow_run_id") or ci_state.get("ci_run_id")
+    try:
+        evidence = verify_exact_head_ci(pr_number, expected_sha, run_id, pr)
+    except CIVerificationError as exc:
+        raise RuntimeError(f"exact-head CI rejected: {exc}") from exc
+    target = repo or os.environ.get("AGENT_REPO") or os.environ.get("GITHUB_REPOSITORY", "")
+    if not target or _gh("api", f"repos/{target}/branches/main/protection") is None:
+        raise RuntimeError("main branch protection is unavailable")
+    return evidence
 
 
 def main():
@@ -313,20 +549,28 @@ def main():
 
     elif command == "set-labels":
         issue_number = int(sys.argv[2])
-        set_labels(issue_number, *sys.argv[3:], repo=repo)
+        if not set_labels(issue_number, *sys.argv[3:], repo=repo):
+            print("FATAL: unable to set Issue labels", file=sys.stderr)
+            sys.exit(1)
 
     elif command == "add-labels":
         issue_number = int(sys.argv[2])
-        add_labels(issue_number, *sys.argv[3:], repo=repo)
+        if not add_labels(issue_number, *sys.argv[3:], repo=repo):
+            print("FATAL: unable to add Issue labels", file=sys.stderr)
+            sys.exit(1)
 
     elif command == "remove-labels":
         issue_number = int(sys.argv[2])
-        remove_labels(issue_number, *sys.argv[3:], repo=repo)
+        if not remove_labels(issue_number, *sys.argv[3:], repo=repo):
+            print("FATAL: unable to remove Issue labels", file=sys.stderr)
+            sys.exit(1)
 
     elif command == "comment":
         issue_number = int(sys.argv[2])
         body = " ".join(sys.argv[3:])
-        comment_on_issue(issue_number, body, repo)
+        if not comment_on_issue(issue_number, body, repo):
+            print("FATAL: unable to comment on Issue", file=sys.stderr)
+            sys.exit(1)
 
     elif command == "active-workers":
         workers = get_active_workers(repo)
@@ -342,7 +586,10 @@ def main():
         pr_number = int(sys.argv[3])
         head_sha = sys.argv[4]
         worker_type = sys.argv[5]
-        record_worker_state(issue_number, pr_number, head_sha, worker_type, repo=repo)
+        extra = json.loads(sys.argv[6]) if len(sys.argv) > 6 else None
+        if not record_worker_state(issue_number, pr_number, head_sha, worker_type, extra=extra, repo=repo):
+            print("FATAL: unable to persist worker state", file=sys.stderr)
+            sys.exit(1)
 
     elif command == "read-worker":
         issue_number = int(sys.argv[2])
@@ -358,7 +605,10 @@ def main():
         head_sha = sys.argv[4]
         ci_run_id = sys.argv[5]
         status = sys.argv[6]
-        record_ci_state(issue_number, pr_number, head_sha, ci_run_id, status, repo=repo)
+        extra = json.loads(sys.argv[7]) if len(sys.argv) > 7 else None
+        if not record_ci_state(issue_number, pr_number, head_sha, ci_run_id, status, extra=extra, repo=repo):
+            print("FATAL: unable to persist CI state", file=sys.stderr)
+            sys.exit(1)
 
     elif command == "record-review":
         issue_number = int(sys.argv[2])
@@ -366,7 +616,9 @@ def main():
         head_sha = sys.argv[4]
         verdict = sys.argv[5]
         summary = " ".join(sys.argv[6:]) if len(sys.argv) > 6 else ""
-        record_review_state(issue_number, pr_number, head_sha, verdict, summary, repo=repo)
+        if not record_review_state(issue_number, pr_number, head_sha, verdict, summary, repo=repo):
+            print("FATAL: unable to persist review state", file=sys.stderr)
+            sys.exit(1)
 
     elif command == "read-review":
         issue_number = int(sys.argv[2])
@@ -376,58 +628,36 @@ def main():
         else:
             print("null")
 
+    elif command == "verify-binding":
+        issue_number = int(sys.argv[2])
+        pr_number = int(sys.argv[3])
+        expected_sha = sys.argv[4]
+        ok, reason = verify_issue_pr_binding(issue_number, pr_number, expected_sha, repo)
+        if not ok:
+            print(f"FATAL: Issue/PR binding rejected: {reason}", file=sys.stderr)
+            sys.exit(1)
+        print("binding-ok")
+
     elif command == "record-merge":
         issue_number = int(sys.argv[2])
         pr_number = int(sys.argv[3])
         head_sha = sys.argv[4]
-        record_worker_state(issue_number, pr_number, head_sha, "merge",
-                            extra={"status": "merged"}, repo=repo)
+        merge_commit_sha = sys.argv[5] if len(sys.argv) > 5 else ""
+        if not record_merge_state(issue_number, pr_number, head_sha, merge_commit_sha, repo=repo):
+            print("FATAL: unable to persist merge state", file=sys.stderr)
+            sys.exit(1)
 
     elif command == "verify-merge":
         pr_number = int(sys.argv[2])
         issue_number = int(sys.argv[3])
         expected_sha = sys.argv[4]
 
-        if is_emergency_stopped():
-            print("FATAL: Emergency stop is active. Merge blocked.", file=sys.stderr)
+        try:
+            evidence = verify_merge_requirements(pr_number, issue_number, expected_sha, repo)
+        except RuntimeError as exc:
+            print(f"FATAL: {exc}", file=sys.stderr)
             sys.exit(1)
-
-        labels = get_issue_labels(issue_number, repo)
-        if TERMINAL_LABELS & labels:
-            print(f"FATAL: Issue #{issue_number} is in terminal state ({labels})", file=sys.stderr)
-            sys.exit(1)
-
-        pr = get_pr_info(pr_number, repo)
-        if not pr:
-            print(f"FATAL: PR #{pr_number} not found", file=sys.stderr)
-            sys.exit(1)
-        if pr.get("state") != "OPEN":
-            print(f"FATAL: PR #{pr_number} is not open (state={pr.get('state')})", file=sys.stderr)
-            sys.exit(1)
-        if pr.get("baseRefName") != "main":
-            print(f"FATAL: PR #{pr_number} does not target main (targets {pr.get('baseRefName')})", file=sys.stderr)
-            sys.exit(1)
-        actual_sha = pr.get("headRefOid")
-        if actual_sha != expected_sha:
-            print(f"FATAL: PR head SHA mismatch: expected {expected_sha}, got {actual_sha}", file=sys.stderr)
-            sys.exit(1)
-
-        if LABEL_REVIEW_PASSED not in labels:
-            print(f"FATAL: Issue #{issue_number} does not have {LABEL_REVIEW_PASSED} label", file=sys.stderr)
-            sys.exit(1)
-
-        review_state = read_review_state(issue_number, repo)
-        if not review_state:
-            print(f"FATAL: No review state found for issue #{issue_number}", file=sys.stderr)
-            sys.exit(1)
-        if review_state.get("verdict") != "PASS":
-            print(f"FATAL: Review verdict is {review_state.get('verdict')}, expected PASS", file=sys.stderr)
-            sys.exit(1)
-        if review_state.get("head_sha") != expected_sha:
-            print(f"FATAL: Review SHA {review_state.get('head_sha')} does not match expected {expected_sha}", file=sys.stderr)
-            sys.exit(1)
-
-        print(f"Merge conditions verified: PR #{pr_number} @ {actual_sha}")
+        print(json.dumps(evidence, sort_keys=True))
 
     elif command == "select-task":
         issue_number = int(sys.argv[2])

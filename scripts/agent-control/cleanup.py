@@ -1,106 +1,38 @@
-"""Cleanup script for abandoned worktrees, stale locks, and orphaned branches.
+"""Fail-closed cleanup entry point for orchestrator worktrees.
 
-Can be run manually or on a schedule.
+Worktree ownership is proven by Git's registered metadata and the current
+GitHub Issue/workflow state in ``worktree_manager``. This wrapper never force
+deletes branches or directories and reports anything that needs manual action.
 """
+
+from __future__ import annotations
 
 import json
 import os
-import pathlib
-import subprocess
 import sys
 
-
-LOCK_DIR = pathlib.Path("/tmp/agent-orchestrator-locks")
-WORKTREE_BASE = pathlib.Path(os.environ.get("AGENT_WORKTREE_BASE", "/tmp/agent-worktrees"))
+import worktree_manager
 
 
-def _git(*args, cwd=None):
-    cmd = ["git"] + list(args)
-    try:
-        result = subprocess.run(cmd, capture_output=True, text=True, timeout=60, cwd=cwd)
-        return result.stdout.strip() if result.returncode == 0 else None
-    except (subprocess.TimeoutExpired, OSError):
-        return None
+def cleanup_orphaned_worktrees(repo_path: str, max_age_hours: int = 24) -> int:
+    return worktree_manager.cleanup_stale_worktrees(repo_path, max_age_hours)
 
 
-def _gh(*args):
-    cmd = ["gh"] + list(args)
-    try:
-        result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
-        return result.stdout.strip() if result.returncode == 0 else None
-    except (subprocess.TimeoutExpired, OSError):
-        return None
-
-
-def cleanup_locks():
-    count = 0
-    if not LOCK_DIR.exists():
-        return 0
-    for lock_file in LOCK_DIR.iterdir():
-        if not lock_file.name.endswith(".lock"):
-            continue
-        try:
-            pid = int(lock_file.read_text().split("\n")[0].strip())
-            try:
-                os.kill(pid, 0)
-            except ProcessLookupError:
-                lock_file.unlink()
-                count += 1
-        except (ValueError, IndexError, OSError):
-            lock_file.unlink(missing_ok=True)
-            count += 1
-    return count
-
-
-def cleanup_orphaned_branches(repo_path, prefix="agent/"):
-    branches = _git("branch", "--list", f"{prefix}*", cwd=repo_path)
-    if not branches:
-        return 0
-    count = 0
-    for branch in branches.split("\n"):
-        branch = branch.strip().replace("* ", "")
-        if not branch:
-            continue
-        has_pr = _gh("pr", "list", "--head", branch, "--state", "open", "--json", "number")
-        if has_pr and has_pr != "[]":
-            continue
-        _git("branch", "-D", branch, cwd=repo_path)
-        count += 1
-    return count
-
-
-def cleanup_orphaned_worktrees(repo_path):
-    wt_list = _git("worktree", "list", cwd=repo_path)
-    if not wt_list:
-        return 0
-    count = 0
-    repo_path_resolved = pathlib.Path(repo_path).resolve()
-    for line in wt_list.split("\n"):
-        parts = line.strip().split()
-        if not parts:
-            continue
-        wt_path = pathlib.Path(parts[0])
-        if wt_path.resolve() == repo_path_resolved:
-            continue
-        if not wt_path.exists():
-            _git("worktree", "prune", cwd=repo_path)
-            count += 1
-    return count
-
-
-def main():
+def main() -> None:
     repo_path = os.environ.get("AGENT_REPO_PATH", os.getcwd())
-
-    locks_cleaned = cleanup_locks()
-    branches_cleaned = cleanup_orphaned_branches(repo_path)
-    worktrees_cleaned = cleanup_orphaned_worktrees(repo_path)
-
-    result = {
-        "locks_cleaned": locks_cleaned,
-        "branches_cleaned": branches_cleaned,
-        "worktrees_cleaned": worktrees_cleaned,
-    }
-    print(json.dumps(result))
+    try:
+        max_age_hours = int(os.environ.get("AGENT_WORKTREE_MAX_AGE_HOURS", "24"))
+    except ValueError as exc:
+        print(f"ERROR: invalid worktree age: {exc}", file=sys.stderr)
+        raise SystemExit(1) from exc
+    if max_age_hours < 0:
+        print("ERROR: worktree age must be non-negative", file=sys.stderr)
+        raise SystemExit(1)
+    cleaned = cleanup_orphaned_worktrees(repo_path, max_age_hours)
+    print(json.dumps({
+        "worktrees_cleaned": cleaned,
+        "manual_cleanup": worktree_manager.LAST_CLEANUP_REPORT,
+    }, sort_keys=True))
 
 
 if __name__ == "__main__":

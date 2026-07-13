@@ -4,10 +4,15 @@ on:
   workflow_dispatch:
     inputs:
       command:
-        description: Command to execute (select-task | next-task | retry-task | block-task | status | emergency-stop)
+        description: Dispatcher command
         required: true
         type: choice
         options:
+          - dispatch-ready
+          - dispatch-repair
+          - dispatch-review
+          - dispatch-merge
+          - dispatch-next
           - select-task
           - next-task
           - retry-task
@@ -15,11 +20,40 @@ on:
           - status
           - emergency-stop
       issue:
-        description: Issue number (required for select-task, retry-task, block-task)
+        description: Issue number
         required: false
         type: number
+      pr_number:
+        description: PR number
+        required: false
+        type: number
+      head_sha:
+        description: Exact PR head SHA
+        required: false
+        type: string
+      ci_run_id:
+        description: Failed CI workflow run ID
+        required: false
+        type: number
+      repair_count:
+        description: Repair attempt number
+        required: false
+        type: number
+      failed_jobs:
+        description: JSON failed-job summary
+        required: false
+        default: "[]"
+        type: string
+      source_issue:
+        description: Completed source Issue for next-task dispatch
+        required: false
+        type: number
+      dispatch_id:
+        description: Idempotent dispatch decision identifier
+        required: false
+        type: string
       reason:
-        description: Reason (required for block-task)
+        description: Operator reason
         required: false
         type: string
 
@@ -30,7 +64,7 @@ permissions:
   pull-requests: read
 
 concurrency:
-  group: agent-controller
+  group: agent-dispatch-global
   cancel-in-progress: false
 
 jobs:
@@ -43,19 +77,26 @@ jobs:
         id: check
         env:
           AGENT_ORCHESTRATOR_ENABLED: ${{ vars.AGENT_ORCHESTRATOR_ENABLED }}
+          AGENT_EMERGENCY_STOP: ${{ vars.AGENT_EMERGENCY_STOP }}
         run: |
           if [ "${AGENT_ORCHESTRATOR_ENABLED:-false}" != "true" ]; then
             echo "AGENT_ORCHESTRATOR_ENABLED is not true. Controller disabled."
             echo "enabled=false" >> "$GITHUB_OUTPUT"
-          else
-            echo "enabled=true" >> "$GITHUB_OUTPUT"
+            exit 0
           fi
+          if [ "${AGENT_EMERGENCY_STOP:-false}" = "true" ]; then
+            echo "AGENT_EMERGENCY_STOP is true. Controller disabled."
+            echo "enabled=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          echo "enabled=true" >> "$GITHUB_OUTPUT"
 
   control:
     needs: gate
     if: needs.gate.outputs.enabled == 'true'
     runs-on: ubuntu-latest
     env:
+      AGENT_REPO: ${{ github.repository }}
       GH_TOKEN: ${{ github.token }}
     steps:
       - name: Check out repository
@@ -68,59 +109,56 @@ jobs:
         with:
           python-version: "3.11"
 
-      - name: Execute controller command
-        id: command
+      - name: Dispatch or execute control command
         run: |
-          COMMAND=${{ github.event.inputs.command }}
-
+          set -euo pipefail
+          COMMAND="${{ inputs.command }}"
+          ISSUE="${{ inputs.issue }}"
+          PR="${{ inputs.pr_number }}"
+          SHA="${{ inputs.head_sha }}"
           case "$COMMAND" in
+            dispatch-ready)
+              python3 scripts/agent-control/control_state.py require-live
+              python3 scripts/agent-control/dispatcher.py dispatch-ready "$ISSUE" "${{ inputs.dispatch_id }}"
+              ;;
+            dispatch-repair)
+              python3 scripts/agent-control/control_state.py require-live
+              python3 scripts/agent-control/dispatcher.py dispatch-repair "$PR" "$ISSUE" "$SHA" "${{ inputs.ci_run_id }}" "${{ inputs.repair_count }}" '${{ inputs.failed_jobs }}'
+              ;;
+            dispatch-review)
+              python3 scripts/agent-control/control_state.py require-live
+              python3 scripts/agent-control/dispatcher.py dispatch-review "$PR" "$ISSUE" "$SHA"
+              ;;
+            dispatch-merge)
+              python3 scripts/agent-control/control_state.py require-auto-merge
+              python3 scripts/agent-control/dispatcher.py dispatch-merge "$PR" "$ISSUE" "$SHA"
+              ;;
+            dispatch-next)
+              python3 scripts/agent-control/control_state.py require-live
+              python3 scripts/agent-control/dispatcher.py dispatch-next "${{ inputs.source_issue }}"
+              ;;
             select-task)
-              python3 scripts/agent-control/state_manager.py select-task \
-                ${{ github.event.inputs.issue }}
-              echo "Dispatching worker for issue #${{ github.event.inputs.issue }}"
-              gh workflow run agent-worker.yml \
-                --ref main \
-                -f issue="${{ github.event.inputs.issue }}" \
-                -f dry_run=false
+              python3 scripts/agent-control/state_manager.py select-task "$ISSUE"
               ;;
             next-task)
-              ISSUE=$(python3 scripts/agent-control/state_manager.py next-task)
-              echo "selected_issue=$ISSUE" >> "$GITHUB_OUTPUT"
-              if [ -n "$ISSUE" ] && [ "$ISSUE" != "None" ]; then
-                echo "Dispatching worker for issue #$ISSUE"
-                gh workflow run agent-worker.yml \
-                  --ref main \
-                  -f issue="$ISSUE" \
-                  -f dry_run=false
-              fi
+              python3 scripts/agent-control/control_state.py require-live
+              python3 scripts/agent-control/dispatcher.py dispatch-next "${{ inputs.source_issue }}"
               ;;
             retry-task)
-              python3 scripts/agent-control/state_manager.py retry-task \
-                ${{ github.event.inputs.issue }}
-              echo "Dispatching worker for retry of issue #${{ github.event.inputs.issue }}"
-              gh workflow run agent-worker.yml \
-                --ref main \
-                -f issue="${{ github.event.inputs.issue }}" \
-                -f dry_run=false
+              python3 scripts/agent-control/state_manager.py retry-task "$ISSUE"
+              python3 scripts/agent-control/dispatcher.py dispatch-ready "$ISSUE"
               ;;
             block-task)
-              python3 scripts/agent-control/state_manager.py block-task \
-                ${{ github.event.inputs.issue }} \
-                "${{ github.event.inputs.reason }}"
+              python3 scripts/agent-control/state_manager.py block-task "$ISSUE" "${{ inputs.reason }}"
               ;;
             status)
               python3 scripts/agent-control/state_manager.py status
               ;;
             emergency-stop)
-              echo "To activate emergency stop, set the AGENT_EMERGENCY_STOP"
-              echo "repository variable to 'true' via GitHub UI or API."
-              python3 scripts/agent-control/state_manager.py emergency-stop
+              echo "Emergency stop is controlled only by the AGENT_EMERGENCY_STOP repository variable."
+              ;;
+            *)
+              echo "Unknown command: $COMMAND" >&2
+              exit 2
               ;;
           esac
-
-      - name: Report result
-        run: |
-          ISSUE="${{ steps.command.outputs.selected_issue }}"
-          if [ -n "$ISSUE" ] && [ "$ISSUE" != "None" ]; then
-            echo "Dispatched agent-worker for issue #$ISSUE"
-          fi

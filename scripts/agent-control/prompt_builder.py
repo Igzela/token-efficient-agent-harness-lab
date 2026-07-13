@@ -23,6 +23,13 @@ def _gh(*args):
         return None
 
 
+def fetch_bounded_failed_logs(run_id, max_chars=50000):
+    if not run_id:
+        return ""
+    result = _gh("run", "view", str(run_id), "--log-failed")
+    return (result or "")[:max_chars]
+
+
 def _read_repo_file(path):
     result = _gh("repo", "view", "--json", "files", "--jq", f'.files[] | select(.path=="{path}") | .text')
     if result:
@@ -187,8 +194,9 @@ def main():
     elif command == "ci-repair":
         sha = sys.argv[3] if len(sys.argv) > 3 else ""
         failed_jobs = sys.argv[4] if len(sys.argv) > 4 else "[]"
+        run_id = sys.argv[5] if len(sys.argv) > 5 else ""
         repair_count = int(os.environ.get("AGENT_REPAIR_COUNT", "0"))
-        logs = os.environ.get("AGENT_FAILED_LOGS", "")
+        logs = fetch_bounded_failed_logs(run_id)
         prompt = build_ci_repair_prompt(number, sha, failed_jobs, logs, repair_count)
         if prompt:
             print(prompt)

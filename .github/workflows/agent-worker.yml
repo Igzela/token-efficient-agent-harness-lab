@@ -8,55 +8,57 @@ on:
         required: true
         type: number
       dry_run:
-        description: Validate without invoking Codex or pushing
+        description: Read-only validation plan
         required: false
         default: false
         type: boolean
 
 permissions:
+  actions: write
   contents: write
   issues: write
   pull-requests: write
 
 concurrency:
-  group: agent-worker-${{ github.event.inputs.issue }}
+  group: agent-worker-${{ inputs.issue }}
   cancel-in-progress: false
 
 jobs:
   gate:
     runs-on: ubuntu-latest
     outputs:
-      enabled: ${{ steps.check.outputs.can_start }}
-      emergency_stopped: ${{ steps.check.outputs.emergency_stopped }}
+      enabled: ${{ steps.check.outputs.enabled }}
+      dry_run: ${{ steps.check.outputs.dry_run }}
     steps:
-      - name: Check orchestrator gate and emergency stop
+      - name: Check orchestrator gate
         id: check
         env:
           AGENT_ORCHESTRATOR_ENABLED: ${{ vars.AGENT_ORCHESTRATOR_ENABLED }}
           AGENT_EMERGENCY_STOP: ${{ vars.AGENT_EMERGENCY_STOP }}
         run: |
+          echo "dry_run=${{ inputs.dry_run }}" >> "$GITHUB_OUTPUT"
+          if [ "${{ inputs.dry_run }}" = "true" ]; then
+            echo "enabled=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
           if [ "${AGENT_ORCHESTRATOR_ENABLED:-false}" != "true" ]; then
             echo "AGENT_ORCHESTRATOR_ENABLED is not true. Worker disabled."
-            echo "can_start=false" >> "$GITHUB_OUTPUT"
+            echo "enabled=false" >> "$GITHUB_OUTPUT"
             exit 0
           fi
           if [ "${AGENT_EMERGENCY_STOP:-false}" = "true" ]; then
-            echo "Emergency stop is active. Worker disabled."
-            echo "can_start=false" >> "$GITHUB_OUTPUT"
-            echo "emergency_stopped=true" >> "$GITHUB_OUTPUT"
+            echo "AGENT_EMERGENCY_STOP is true. Worker disabled."
+            echo "enabled=false" >> "$GITHUB_OUTPUT"
             exit 0
           fi
-          echo "can_start=true" >> "$GITHUB_OUTPUT"
-          echo "emergency_stopped=false" >> "$GITHUB_OUTPUT"
+          echo "enabled=true" >> "$GITHUB_OUTPUT"
 
-  validate:
+  dry-run:
     needs: gate
-    if: needs.gate.outputs.enabled == 'true'
+    if: needs.gate.outputs.enabled == 'true' && needs.gate.outputs.dry_run == 'true'
     runs-on: ubuntu-latest
-    outputs:
-      can_start: ${{ steps.check.outputs.can_start }}
-      worker_count: ${{ steps.check.outputs.worker_count }}
     env:
+      AGENT_REPO: ${{ github.repository }}
       GH_TOKEN: ${{ github.token }}
     steps:
       - name: Check out repository
@@ -69,37 +71,71 @@ jobs:
         with:
           python-version: "3.11"
 
-      - name: Validate issue state and capacity
+      - name: Build read-only dry-run plan
+        run: |
+          set -euo pipefail
+          ISSUE="${{ inputs.issue }}"
+          LABELS=$(python3 scripts/agent-control/state_manager.py get-labels "$ISSUE")
+          DEPENDENCIES="ready"
+          if ! python3 scripts/agent-control/state_manager.py check-deps "$ISSUE" >/dev/null; then
+            DEPENDENCIES="blocked"
+          fi
+          python3 - "$ISSUE" "$LABELS" "$DEPENDENCIES" <<'PY'
+          import json, sys
+          print(json.dumps({
+              "mode": "dry-run",
+              "issue": int(sys.argv[1]),
+              "labels": sys.argv[2].split(),
+              "dependencies": sys.argv[3],
+              "mutations": [],
+              "codex": False,
+              "worktree": False,
+              "dispatch": None,
+          }, sort_keys=True))
+          PY
+
+  validate:
+    needs: gate
+    if: needs.gate.outputs.enabled == 'true' && needs.gate.outputs.dry_run != 'true'
+    runs-on: ubuntu-latest
+    outputs:
+      can_start: ${{ steps.check.outputs.can_start }}
+    env:
+      AGENT_REPO: ${{ github.repository }}
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        with:
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@8d9ed9ac5c53483de85588cdf95a591a75ab9f55 # v5
+        with:
+          python-version: "3.11"
+
+      - name: Validate dispatcher claim
         id: check
         run: |
-          ISSUE=${{ github.event.inputs.issue }}
-
+          set -euo pipefail
+          ISSUE="${{ inputs.issue }}"
           LABELS=$(python3 scripts/agent-control/state_manager.py get-labels "$ISSUE")
-          if echo "$LABELS" | grep -qv "agent-ready"; then
-            echo "Issue #$ISSUE does not have agent-ready label."
+          if ! echo "$LABELS" | grep -qw "agent-running"; then
+            echo "Issue #$ISSUE is not claimed by the global dispatcher."
             echo "can_start=false" >> "$GITHUB_OUTPUT"
             exit 0
           fi
-          if echo "$LABELS" | grep -Eq "(agent-running|ci-repairing|review-running|agent-complete|agent-blocked)"; then
-            echo "Issue #$ISSUE is already active or terminal ($LABELS)."
+          if echo "$LABELS" | grep -Eq "(ci-repairing|review-running|agent-complete|agent-blocked)"; then
+            echo "Issue #$ISSUE has conflicting state ($LABELS)."
             echo "can_start=false" >> "$GITHUB_OUTPUT"
             exit 0
           fi
-          if ! python3 scripts/agent-control/state_manager.py check-deps "$ISSUE"; then
+          if ! python3 scripts/agent-control/state_manager.py check-deps "$ISSUE" >/dev/null; then
             echo "Issue #$ISSUE has unresolved dependencies."
             echo "can_start=false" >> "$GITHUB_OUTPUT"
             exit 0
           fi
-          CAPACITY=$(python3 scripts/agent-control/lock_manager.py capacity 2>&1 || echo "full")
-          WORKERS=$(python3 scripts/agent-control/lock_manager.py count)
-          if [ "$CAPACITY" = "full" ]; then
-            echo "Repository capacity full ($WORKERS active workers)."
-            echo "can_start=false" >> "$GITHUB_OUTPUT"
-            echo "worker_count=$WORKERS" >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
           echo "can_start=true" >> "$GITHUB_OUTPUT"
-          echo "worker_count=$WORKERS" >> "$GITHUB_OUTPUT"
 
   implement:
     needs: [gate, validate]
@@ -130,149 +166,154 @@ jobs:
           git config user.name "agent-orchestrator[bot]"
           git config user.email "agent-orchestrator[bot]@users.noreply.github.com"
 
-      - name: Acquire lock
-        id: lock
-        run: |
-          python3 scripts/agent-control/lock_manager.py acquire "implementation:issue-${{ github.event.inputs.issue }}" 60
-          echo "lock_key=implementation:issue-${{ github.event.inputs.issue }}" >> "$GITHUB_OUTPUT"
+      - name: Acquire same-host secondary lock
+        run: python3 scripts/agent-control/lock_manager.py acquire "implementation:issue-${{ inputs.issue }}" 60
 
-      - name: Mark agent-running
-        run: |
-          python3 scripts/agent-control/state_manager.py set-labels \
-            ${{ github.event.inputs.issue }} agent-running
-
-      - name: Create isolated worktree
+      - name: Create and verify isolated worktree exactly once
         id: worktree
         run: |
-          ISSUE=${{ github.event.inputs.issue }}
+          set -euo pipefail
+          ISSUE="${{ inputs.issue }}"
           BRANCH="agent/issue-$ISSUE"
-
-          python3 scripts/agent-control/state_manager.py comment "$ISSUE" \
-            "## Agent Orchestrator: Worker Starting
-          Branch: \`$BRANCH\`
-          Creating isolated worktree for implementation."
-
-          python3 scripts/agent-control/worktree_manager.py create "$ISSUE" "$BRANCH"
-          WORKTREE_PATH=$(python3 scripts/agent-control/worktree_manager.py create "$ISSUE" "$BRANCH" 2>/dev/null | grep "worktree=" | cut -d= -f2)
-
-          if [ -z "$WORKTREE_PATH" ]; then
-            echo "ERROR: Failed to create worktree"
-            exit 1
-          fi
-
-          echo "worktree_path=$WORKTREE_PATH" >> "$GITHUB_OUTPUT"
-          echo "branch=$BRANCH" >> "$GITHUB_OUTPUT"
+          RESULT=$(python3 scripts/agent-control/worktree_manager.py create "$ISSUE" "$BRANCH")
+          WORKTREE_PATH=$(jq -er '.worktree_path' <<<"$RESULT")
+          BASE_SHA=$(jq -er '.base_sha' <<<"$RESULT")
+          PREVIOUS_REMOTE_SHA=$(jq -r '.previous_remote_sha // empty' <<<"$RESULT")
+          test -d "$WORKTREE_PATH"
+          git worktree list --porcelain | grep -Fxq "worktree $WORKTREE_PATH"
+          test "$(git -C "$WORKTREE_PATH" symbolic-ref --short HEAD)" = "$BRANCH"
+          {
+            echo "worktree_path=$WORKTREE_PATH"
+            echo "branch=$BRANCH"
+            echo "base_sha=$BASE_SHA"
+            echo "previous_remote_sha=$PREVIOUS_REMOTE_SHA"
+          } >> "$GITHUB_OUTPUT"
 
       - name: Build implementation prompt
-        id: prompt
         run: |
           mkdir -p /tmp/agent-prompt
-          python3 scripts/agent-control/prompt_builder.py implementation \
-            ${{ github.event.inputs.issue }} > /tmp/agent-prompt/issue-${{ github.event.inputs.issue }}.txt
+          python3 scripts/agent-control/prompt_builder.py implementation "${{ inputs.issue }}" \
+            > /tmp/agent-prompt/issue-${{ inputs.issue }}.txt
 
-      - name: Run Codex (implementation worker)
-        if: github.event.inputs.dry_run != 'true'
-        id: codex
+      - name: Verify push credential before Codex
+        env:
+          AGENT_PUSH_TOKEN: ${{ secrets.AGENT_PUSH_TOKEN }}
+        run: test -n "${AGENT_PUSH_TOKEN:-}"
+
+      - name: Runtime gate before Codex
+        run: python3 scripts/agent-control/control_state.py require-live
+
+      - name: Run Codex implementation worker
         run: |
           bash scripts/agent-control/codex_wrapper.sh \
             implement \
-            /tmp/agent-prompt/issue-${{ github.event.inputs.issue }}.txt \
-            /tmp/agent-output/${{ github.event.inputs.issue }} \
+            /tmp/agent-prompt/issue-${{ inputs.issue }}.txt \
+            /tmp/agent-output/${{ inputs.issue }} \
             "${{ steps.worktree.outputs.worktree_path }}"
-        env:
-          AGENT_ORCHESTRATOR_ENABLED: ${{ vars.AGENT_ORCHESTRATOR_ENABLED }}
-          AGENT_EMERGENCY_STOP: ${{ vars.AGENT_EMERGENCY_STOP }}
+
+      - name: Runtime gate after Codex
+        run: python3 scripts/agent-control/control_state.py require-live
 
       - name: Verify Codex produced changes
-        if: github.event.inputs.dry_run != 'true'
         id: changes
         run: |
           cd "${{ steps.worktree.outputs.worktree_path }}"
           if git diff --quiet && git diff --cached --quiet; then
-            echo "Codex produced no changes."
             echo "has_changes=false" >> "$GITHUB_OUTPUT"
           else
             echo "has_changes=true" >> "$GITHUB_OUTPUT"
           fi
 
-      - name: Create branch and commit (orchestrator-owned)
-        if: github.event.inputs.dry_run != 'true' && steps.changes.outputs.has_changes == 'true'
-        run: |
-          cd "${{ steps.worktree.outputs.worktree_path }}"
-          git add -A
-          git diff --cached --quiet || git commit -m "agent: implement #${{ github.event.inputs.issue }}"
-          echo "Committed changes in worktree"
-
-      - name: Push branch
-        if: github.event.inputs.dry_run != 'true' && steps.changes.outputs.has_changes == 'true'
+      - name: Commit and push implementation with explicit credential
+        if: steps.changes.outputs.has_changes == 'true'
         id: push
+        env:
+          AGENT_PUSH_TOKEN: ${{ secrets.AGENT_PUSH_TOKEN }}
         run: |
-          ISSUE=${{ github.event.inputs.issue }}
+          set -euo pipefail
+          test -n "${AGENT_PUSH_TOKEN:-}" || { echo "FATAL: AGENT_PUSH_TOKEN is missing" >&2; exit 1; }
+          python3 scripts/agent-control/control_state.py require-live
+          ISSUE="${{ inputs.issue }}"
+          WORKTREE_PATH="${{ steps.worktree.outputs.worktree_path }}"
           BRANCH="${{ steps.worktree.outputs.branch }}"
-          cd "${{ steps.worktree.outputs.worktree_path }}"
+          cd "$WORKTREE_PATH"
+          python3 "$GITHUB_WORKSPACE/scripts/agent-control/control_state.py" require-live
+          git add -A
+          python3 "$GITHUB_WORKSPACE/scripts/agent-control/control_state.py" require-live
+          git diff --cached --quiet || git commit -m "agent: implement #${{ inputs.issue }}"
+          git fetch origin "$BRANCH" || true
+          EXPECTED_REMOTE="${{ steps.worktree.outputs.previous_remote_sha }}"
+          ACTUAL_REMOTE=$(git rev-parse "origin/$BRANCH" 2>/dev/null || true)
+          if [ -n "$EXPECTED_REMOTE" ] && [ "$ACTUAL_REMOTE" != "$EXPECTED_REMOTE" ]; then
+            echo "FATAL: remote branch moved independently" >&2
+            exit 1
+          fi
+          python3 "$GITHUB_WORKSPACE/scripts/agent-control/control_state.py" require-live
+          cleanup_git_auth() {
+            git config --global --unset-all credential.helper || true
+            unset GH_TOKEN AGENT_PUSH_TOKEN
+          }
+          trap cleanup_git_auth EXIT
+          export GH_TOKEN="$AGENT_PUSH_TOKEN"
+          gh auth setup-git
+          python3 "$GITHUB_WORKSPACE/scripts/agent-control/worktree_manager.py" push "$BRANCH"
 
-          python3 scripts/agent-control/worktree_manager.py push "$BRANCH"
-
-          PR_INFO=$(python3 scripts/agent-control/worktree_manager.py create-pr "$ISSUE" "$BRANCH" \
-            "agent: implement #$ISSUE" \
-            "Implements #$ISSUE" 2>&1)
-
-          PR_NUMBER=$(echo "$PR_INFO" | grep "pr_number=" | cut -d= -f2)
           HEAD_SHA=$(git rev-parse HEAD)
-
-          echo "pr_number=$PR_NUMBER" >> "$GITHUB_OUTPUT"
           echo "head_sha=$HEAD_SHA" >> "$GITHUB_OUTPUT"
+          BODY=$(python3 - "$ISSUE" "$BRANCH" <<'PY'
+          import json, sys
+          issue = int(sys.argv[1])
+          branch = sys.argv[2]
+          print(f"Closes #{issue}\n\n<!-- agent-orchestrator-binding: {json.dumps({'issue_number': issue, 'branch': branch}, sort_keys=True)} -->")
+          PY
+          )
+          PR_INFO=$(python3 "$GITHUB_WORKSPACE/scripts/agent-control/worktree_manager.py" create-pr \
+            "$ISSUE" "$BRANCH" "agent: implement #$ISSUE" "$BODY")
+          cleanup_git_auth
+          trap - EXIT
+          PR_NUMBER=$(jq -er '.pr_number' <<<"$PR_INFO")
+          echo "pr_number=$PR_NUMBER" >> "$GITHUB_OUTPUT"
+          WORKER_EXTRA=$(jq -cn \
+            --arg branch "$BRANCH" \
+            --arg base_sha "${{ steps.worktree.outputs.base_sha }}" \
+            --arg previous_remote_sha "${{ steps.worktree.outputs.previous_remote_sha }}" \
+            '{branch:$branch,base_sha:$base_sha,previous_remote_sha:$previous_remote_sha}')
+          GH_TOKEN="${{ github.token }}" python3 "$GITHUB_WORKSPACE/scripts/agent-control/state_manager.py" record-worker \
+            "$ISSUE" "$PR_NUMBER" "$HEAD_SHA" implementation "$WORKER_EXTRA"
+          CI_INFO=$(GH_TOKEN="${{ github.token }}" python3 "$GITHUB_WORKSPACE/scripts/agent-control/ci_verifier.py" dispatch "$BRANCH" "$HEAD_SHA")
+          CI_RUN_ID=$(jq -er '.workflow_run_id' <<<"$CI_INFO")
+          CI_EXTRA=$(cat "$GITHUB_WORKSPACE/scripts/agent-control/ci_requirements.json" | jq -c \
+            --argjson run_id "$CI_RUN_ID" \
+            '{workflow_name,required_jobs,successful_jobs:[],workflow_run_id:$run_id}')
+          GH_TOKEN="${{ github.token }}" python3 "$GITHUB_WORKSPACE/scripts/agent-control/state_manager.py" record-ci \
+            "$ISSUE" "$PR_NUMBER" "$HEAD_SHA" "$CI_RUN_ID" dispatched "$CI_EXTRA"
 
-          python3 scripts/agent-control/state_manager.py record-worker \
-            "$ISSUE" "$PR_NUMBER" "$HEAD_SHA" "implementation"
-
-          python3 scripts/agent-control/state_manager.py comment "$ISSUE" \
-            "## Agent Orchestrator: Implementation Complete
-          PR: #$PR_NUMBER
-          Branch: \`$BRANCH\`
-          Head SHA: \`$HEAD_SHA\`
-          Waiting for CI to complete before final review."
-
-      - name: Dry-run report
-        if: github.event.inputs.dry_run == 'true'
-        run: |
-          echo "=== Dry-Run Worker Report ==="
-          echo "Issue: ${{ github.event.inputs.issue }}"
-          echo "Worktree: ${{ steps.worktree.outputs.worktree_path }}"
-          echo "Branch: ${{ steps.worktree.outputs.branch }}"
-          echo "Codex invocation: SKIPPED"
-          echo "Branch push: SKIPPED"
-          echo "PR creation: SKIPPED"
-
-      - name: Release lock
+      - name: Release secondary lock
         if: always()
-        run: |
-          python3 scripts/agent-control/lock_manager.py release \
-            "implementation:issue-${{ github.event.inputs.issue }}" || true
+        run: python3 scripts/agent-control/lock_manager.py release "implementation:issue-${{ inputs.issue }}" || true
+
+      - name: Remove isolated worktree safely
+        if: always() && steps.worktree.outputs.worktree_path != ''
+        run: python3 scripts/agent-control/worktree_manager.py remove "${{ inputs.issue }}" "${{ steps.worktree.outputs.branch }}"
 
   failure-handler:
     needs: implement
     if: failure()
     runs-on: ubuntu-latest
     env:
+      AGENT_REPO: ${{ github.repository }}
       GH_TOKEN: ${{ github.token }}
     steps:
       - name: Check out repository
         uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
         with:
           persist-credentials: false
-
       - name: Set up Python
         uses: actions/setup-python@8d9ed9ac5c53483de85588cdf95a591a75ab9f55 # v5
         with:
           python-version: "3.11"
-
       - name: Mark blocked on failure
         run: |
-          python3 scripts/agent-control/state_manager.py set-labels \
-            ${{ github.event.inputs.issue }} agent-blocked
-          python3 scripts/agent-control/state_manager.py comment \
-            ${{ github.event.inputs.issue }} \
-            "## Agent Orchestrator: Worker Failed
-          The implementation worker encountered an error.
-          This task has been marked \`agent-blocked\`."
+          python3 scripts/agent-control/state_manager.py set-labels "${{ inputs.issue }}" agent-blocked
+          python3 scripts/agent-control/state_manager.py comment "${{ inputs.issue }}" \
+            "## Agent Orchestrator: Worker Failed\nThe implementation worker failed closed; manual inspection is required."

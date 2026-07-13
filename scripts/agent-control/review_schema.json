@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "title": "AgentOrchestratorReviewVerdict",
-  "description": "Structured final-review output from the Codex review worker",
+  "description": "Structured review output from the Codex review worker",
   "type": "object",
   "required": [
     "verdict",

@@ -188,6 +188,12 @@ Rollback requires no schema down migration. Revert the implementation commit; v2
 
 For normal local engine operation, use the existing dashboard build, engine start, health check, metrics, backup, restore, release, and incident-triage scripts in `scripts/` and the CI workflow as the source of truth.
 
+## Event-Driven Agent Orchestrator Push Credential
+
+The implementation and CI-repair workflows require the repository secret `AGENT_PUSH_TOKEN`. It must be a narrowly scoped GitHub App installation token or fine-grained repository token with only the minimum contents permission needed to push the agent branch; workflow dispatch, Issue, PR, and checks permissions remain on the workflow's separate `GITHUB_TOKEN` where applicable. The secret is exposed only to the credential-check and commit/push step, Git credentials are configured explicitly with `gh auth setup-git`, and the helper is removed after the push/PR operation.
+
+Rotate the token on a short operational schedule and immediately after runner, operator, or repository-access changes. Revoke it through the GitHub App installation or fine-grained-token settings when it is no longer required or if exposure is suspected. A missing, invalid, or unqueryable token fails the worker before Codex or before commit; no cached Vader `gh` login is an accepted fallback. Keep the orchestrator and auto-merge repository variables disabled, and set `AGENT_EMERGENCY_STOP=true` for rollback or incident response. Re-enable only after the exact-head CI, binding, review, and merge gates have been independently revalidated.
+
 ## Release Upgrade and Rollback
 
 From an extracted release directory, upgrade a user-local installation atomically:

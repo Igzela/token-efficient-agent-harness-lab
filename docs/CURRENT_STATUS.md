@@ -47,9 +47,9 @@ The event-driven GitHub Actions orchestrator is implemented and awaiting product
 - Dry-run mode for validation without Codex invocation or branch pushes.
 - Emergency-stop, cleanup, and manual controller workflows.
 
-Labels: `agent-draft`, `agent-ready`, `agent-running`, `ci-repairing`, `final-review`, `agent-blocked`, `agent-complete`.
+Labels: `agent-draft`, `agent-ready`, `agent-running`, `ci-repairing`, `review-running`, `review-passed`, `agent-blocked`, `agent-complete`.
 
-The orchestrator is activation-safe: workflows are present but do not auto-start until the PR is merged and the CI monitor is validated. Codex invocation wrappers are inactive until `CODEX_AUTH_TOKEN` and self-hosted runner labels are configured.
+The orchestrator is activation-safe: workflows are present but do not auto-start until the PR is merged and the CI monitor is validated. Codex invocation wrappers are inactive until Vader runner labels, Codex authentication, and the dedicated `AGENT_PUSH_TOKEN` secret are configured.
 
 ## Planned Product Evolution Stages
 

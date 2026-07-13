@@ -1,31 +1,9 @@
 #!/usr/bin/env bash
-#
-# Centralized Codex CLI invocation wrapper for the agent orchestrator.
-#
-# Usage:
-#   codex_wrapper.sh <worker-type> <prompt-file> <output-dir> [workspace]
-#
-# Worker types:
-#   implement   -- workspace-write sandbox, edits files
-#   ci-repair   -- workspace-write sandbox, bounded CI fixes
-#   review      -- read-only sandbox, structured JSON verdict
-#
-# The wrapper:
-#   1. Validates the environment (Codex CLI, auth, HOME).
-#   2. Checks the orchestrator gate (AGENT_ORCHESTRATOR_ENABLED) and emergency stop.
-#   3. Runs codex exec with supported flags only.
-#   4. Captures exit code, JSONL output, and last message.
-#   5. For review workers, validates the output against the JSON schema.
-#   6. Returns structured results.
-#
-# Security:
-#   - Never uses --no-sandbox or --dangerously-bypass-approvals-and-sandbox.
-#   - Uses the narrowest sandbox for each worker type.
-#   - Never prints or uploads authentication material.
-#   - Fails closed on any unexpected condition.
-#   - Never commits, pushes, merges, or creates PRs.
-
 set -euo pipefail
+
+# Never commits, pushes, merges, or creates PRs. The surrounding workflow owns
+# every GitHub and Git write and performs its own runtime stop checks.
+CODEX_HOME="${CODEX_HOME:-}"
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 WORKER_TYPE="${1:?Usage: codex_wrapper.sh <worker-type> <prompt-file> <output-dir> [workspace]}"
@@ -33,78 +11,91 @@ PROMPT_FILE="${2:?Missing prompt file}"
 OUTPUT_DIR="${3:?Missing output dir}"
 WORKSPACE="${4:-$PWD}"
 
-# ---- Gates ----
-if [ "${AGENT_ORCHESTRATOR_ENABLED:-false}" != "true" ]; then
-  echo "AGENT_ORCHESTRATOR_ENABLED is not true. Aborting Codex invocation."
-  exit 0
-fi
-
-if [ "${AGENT_EMERGENCY_STOP:-false}" = "true" ]; then
-  echo "Emergency stop is active. Aborting Codex invocation."
-  exit 1
-fi
-
-# ---- Preflight ----
-if ! command -v codex &>/dev/null; then
-  echo "FATAL: codex CLI not found in PATH" >&2
-  exit 1
-fi
-
-CODEX_VERSION=$(codex --version 2>/dev/null || echo "unknown")
-echo "codex_version=${CODEX_VERSION}"
-
-if ! codex login status &>/dev/null; then
-  echo "FATAL: codex is not authenticated. Run 'codex login' first." >&2
-  exit 1
-fi
-
-echo "codex_auth=ok"
-
-# Validate HOME is set (required for set -u safety)
-if [ -z "${HOME:-}" ]; then
-  echo "FATAL: HOME is not set" >&2
-  exit 1
-fi
-
-# Validate CODEX_HOME only if set; do not reference unset variable
-if [ -n "${CODEX_HOME:-}" ] && [ ! -d "$CODEX_HOME" ]; then
-  echo "WARNING: CODEX_HOME ($CODEX_HOME) does not exist; defaulting to ~/.codex" >&2
-fi
-
-if [ ! -f "$PROMPT_FILE" ]; then
-  echo "FATAL: prompt file not found: $PROMPT_FILE" >&2
-  exit 1
-fi
-
-if [ ! -d "$WORKSPACE" ]; then
-  echo "FATAL: workspace directory not found: $WORKSPACE" >&2
-  exit 1
-fi
-
-mkdir -p "$OUTPUT_DIR"
-
-# ---- Select sandbox mode ----
-SANDBOX_MODE="read-only"
 case "$WORKER_TYPE" in
-  implement|ci-repair)
-    SANDBOX_MODE="workspace-write"
-    ;;
-  review)
-    SANDBOX_MODE="read-only"
-    ;;
+  implement|ci-repair|review) ;;
   *)
-    echo "FATAL: unknown worker type: $WORKER_TYPE" >&2
-    exit 1
+    mkdir -p "$OUTPUT_DIR"
+    printf '%s\n' '{"kind":"agent-orchestrator-failure","reason":"unsupported_worker_type"}' > "$OUTPUT_DIR/failure_reason.json"
+    echo "FATAL: unsupported worker type" >&2
+    exit 2
     ;;
 esac
 
-# ---- Output files ----
+record_failure() {
+  local reason="$1"
+  local detail="${2:-}"
+  mkdir -p "$OUTPUT_DIR"
+  python3 - "$OUTPUT_DIR/failure_reason.json" "$reason" "$detail" <<'PY'
+import json
+import sys
+path, reason, detail = sys.argv[1:]
+with open(path, "w", encoding="utf-8") as handle:
+    json.dump({
+        "kind": "agent-orchestrator-failure",
+        "reason": reason,
+        "detail": detail[:240],
+    }, handle, sort_keys=True)
+    handle.write("\n")
+PY
+}
+
+fail_closed() {
+  local reason="$1"
+  local message="$2"
+  record_failure "$reason" "$message"
+  echo "FATAL: $message" >&2
+  exit 1
+}
+
+mkdir -p "$OUTPUT_DIR"
+
+# Query current GitHub Actions variables. A failed query is distinct from a
+# deliberate disabled gate, but both are non-zero write-operation failures.
+CONTROL_STATE=""
+if ! CONTROL_STATE=$(python3 "$SCRIPT_DIR/control_state.py" read 2>/dev/null); then
+  fail_closed "control_state_unavailable" "authoritative control state could not be queried"
+fi
+if [ "$(python3 - "$CONTROL_STATE" <<'PY'
+import json, sys
+print("true" if json.loads(sys.argv[1])["emergency_stop"] else "false")
+PY
+)" = "true" ]; then
+  fail_closed "emergency_stop" "AGENT_EMERGENCY_STOP is true"
+fi
+if [ "$(python3 - "$CONTROL_STATE" <<'PY'
+import json, sys
+print("true" if json.loads(sys.argv[1])["orchestrator_enabled"] else "false")
+PY
+)" != "true" ]; then
+  fail_closed "control_disabled" "AGENT_ORCHESTRATOR_ENABLED is not true"
+fi
+
+command -v codex >/dev/null 2>&1 || fail_closed "cli_missing" "codex CLI not found in PATH"
+[ -n "${HOME:-}" ] || fail_closed "environment_invalid" "HOME is not set"
+[ -f "$PROMPT_FILE" ] || fail_closed "prompt_missing" "prompt file not found"
+[ -d "$WORKSPACE" ] || fail_closed "workspace_invalid" "workspace directory not found"
+
+if ! CODEX_VERSION=$(codex --version 2>/dev/null); then
+  fail_closed "cli_missing" "codex version query failed"
+fi
+echo "codex_version=$CODEX_VERSION"
+if ! codex login status >/dev/null 2>&1; then
+  fail_closed "authentication_failure" "codex authentication is unavailable"
+fi
+if ! codex exec --help >"$OUTPUT_DIR/codex-exec-help.txt" 2>/dev/null; then
+  fail_closed "unsupported_flags" "codex exec help is unavailable"
+fi
+for flag in --cd --sandbox --ephemeral --json --output-last-message; do
+  grep -Fq -- "$flag" "$OUTPUT_DIR/codex-exec-help.txt" || fail_closed "unsupported_flags" "codex exec does not advertise required flags"
+done
+
+SANDBOX_MODE="read-only"
+if [ "$WORKER_TYPE" = "implement" ] || [ "$WORKER_TYPE" = "ci-repair" ]; then
+  SANDBOX_MODE="workspace-write"
+fi
 JSONL_OUTPUT="$OUTPUT_DIR/codex-events.jsonl"
 LAST_MESSAGE_OUTPUT="$OUTPUT_DIR/codex-last-message.json"
 EXIT_CODE_OUTPUT="$OUTPUT_DIR/codex-exit-code.txt"
-
-# ---- Run Codex ----
-echo "Running: codex exec --cd \"$WORKSPACE\" --sandbox $SANDBOX_MODE --ephemeral --json --output-last-message \"$LAST_MESSAGE_OUTPUT\" - < \"$PROMPT_FILE\""
 
 set +e
 codex exec \
@@ -115,58 +106,36 @@ codex exec \
   --output-last-message "$LAST_MESSAGE_OUTPUT" \
   - < "$PROMPT_FILE" \
   > "$JSONL_OUTPUT" 2>&1
-
 CODEX_EXIT=$?
 set -e
-
 echo "$CODEX_EXIT" > "$EXIT_CODE_OUTPUT"
-echo "codex_exit=$CODEX_EXIT"
 
 if [ "$CODEX_EXIT" -ne 0 ]; then
-  echo "ERROR: codex exec failed with exit code $CODEX_EXIT" >&2
-  tail -20 "$JSONL_OUTPUT" >&2
-  exit "$CODEX_EXIT"
+  LOWER_OUTPUT=$(tr '[:upper:]' '[:lower:]' < "$JSONL_OUTPUT" | tail -40 || true)
+  if grep -Eq 'credit|usage|quota|rate limit' <<<"$LOWER_OUTPUT"; then
+    fail_closed "usage_or_credit_exhaustion" "Codex usage or credit limit rejected execution"
+  fi
+  if grep -Eq 'auth|login|unauthorized|forbidden' <<<"$LOWER_OUTPUT"; then
+    fail_closed "authentication_failure" "Codex authentication rejected execution"
+  fi
+  fail_closed "model_execution_failure" "Codex execution failed"
+fi
+
+if [ ! -s "$LAST_MESSAGE_OUTPUT" ]; then
+  fail_closed "malformed_output" "Codex produced no structured last-message output"
+fi
+if ! python3 - "$LAST_MESSAGE_OUTPUT" <<'PY'
+import json, sys
+with open(sys.argv[1], encoding="utf-8") as handle:
+    value = json.load(handle)
+if not isinstance(value, dict):
+    raise ValueError("last message is not a JSON object")
+PY
+then
+  fail_closed "malformed_output" "Codex last-message output is not valid JSON"
 fi
 
 echo "codex_output_file=$LAST_MESSAGE_OUTPUT"
 echo "codex_events=$JSONL_OUTPUT"
-
-# ---- Check last message exists ----
-if [ ! -f "$LAST_MESSAGE_OUTPUT" ] || [ ! -s "$LAST_MESSAGE_OUTPUT" ]; then
-  echo "ERROR: codex produced no last-message output" >&2
-  exit 1
-fi
-
-# ---- For review workers, validate against JSON schema ----
-if [ "$WORKER_TYPE" = "review" ]; then
-  SCHEMA_FILE="$SCRIPT_DIR/review_schema.json"
-  if python3 -c "
-import json, sys
-with open('$LAST_MESSAGE_OUTPUT') as f:
-    data = json.load(f)
-with open('$SCHEMA_FILE') as f:
-    schema = json.load(f)
-
-required = schema.get('required', [])
-for field in required:
-    if field not in data:
-        print(f'Missing required field: {field}')
-        sys.exit(1)
-
-verdict = data.get('verdict', '')
-if verdict not in ('PASS', 'PASS_WITH_NOTES', 'BLOCKED', 'FAIL'):
-    print(f'Invalid verdict: {verdict}')
-    sys.exit(1)
-
-print('Review output valid')
-" 2>&1; then
-    echo "review_validation=ok"
-    echo "review_verdict=$(python3 -c "import json; print(json.load(open('$LAST_MESSAGE_OUTPUT'))['verdict'])")"
-  else
-    echo "FATAL: review output validation failed" >&2
-    exit 1
-  fi
-fi
-
+echo "codex_exit=0"
 echo "codex_wrapper=ok"
-exit 0

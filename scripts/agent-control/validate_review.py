@@ -6,6 +6,8 @@ import os
 import sys
 import pathlib
 
+from jsonschema import Draft202012Validator
+
 
 SCHEMA_PATH = pathlib.Path(__file__).resolve().parent / "review_schema.json"
 
@@ -16,31 +18,8 @@ def load_schema():
 
 
 def validate(data, schema):
-    errors = []
-    required = schema.get("required", [])
-    for field in required:
-        if field not in data:
-            errors.append(f"Missing required field: {field}")
-
-    verdict = data.get("verdict", "")
-    valid_verdicts = ("PASS", "PASS_WITH_NOTES", "BLOCKED", "FAIL")
-    if verdict not in valid_verdicts:
-        errors.append(f"Invalid verdict '{verdict}'. Must be one of {valid_verdicts}")
-
-    props = schema.get("properties", {})
-    for key, value in data.items():
-        if key not in props:
-            errors.append(f"Unknown field: {key}")
-            continue
-        prop_type = props[key].get("type", "")
-        if prop_type == "array" and not isinstance(value, list):
-            errors.append(f"Field '{key}' must be an array")
-        elif prop_type == "string" and not isinstance(value, str):
-            errors.append(f"Field '{key}' must be a string")
-        elif prop_type == "boolean" and not isinstance(value, bool):
-            errors.append(f"Field '{key}' must be a boolean")
-
-    return errors
+    validator = Draft202012Validator(schema)
+    return [error.message for error in sorted(validator.iter_errors(data), key=str)]
 
 
 def write_output(verdict, summary, reviewed_sha, verdict_details):

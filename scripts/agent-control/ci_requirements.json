@@ -1,0 +1,12 @@
+{
+  "workflow_name": "tests",
+  "required_jobs": [
+    "docker-build",
+    "native-runtime",
+    "pg-integration-tests",
+    "python-tests",
+    "rust-tests",
+    "rust-typescript-cutover",
+    "typescript-tests"
+  ]
+}

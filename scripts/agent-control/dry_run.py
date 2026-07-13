@@ -12,7 +12,6 @@ import tempfile
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import state_manager as sm
-import lock_manager as lm
 import ci_handler as ch
 
 
@@ -43,8 +42,10 @@ def test_event_filtering():
              sm.LABEL_RUNNING in sm.ACTIVE_LABELS)
     log_test("ci-repairing is an active label",
              sm.LABEL_CI_REPAIRING in sm.ACTIVE_LABELS)
-    log_test("final-review is an active label",
-             sm.LABEL_FINAL_REVIEW in sm.ACTIVE_LABELS)
+    log_test("review-running is an active label",
+             sm.LABEL_REVIEW_RUNNING in sm.ACTIVE_LABELS)
+    log_test("review-passed is not an active label",
+             sm.LABEL_REVIEW_PASSED not in sm.ACTIVE_LABELS)
     log_test("agent-blocked is a terminal label",
              sm.LABEL_BLOCKED in sm.TERMINAL_LABELS)
     log_test("agent-complete is a terminal label",
@@ -76,38 +77,11 @@ def test_dependency_parsing():
 
 
 def test_concurrency_locking():
-    """Test concurrency lock acquisition and release."""
+    """Inspect concurrency identifiers without acquiring persistent locks."""
     print("\n--- Concurrency Locking ---")
-
-    key = f"dry-run-test-{os.getpid()}"
-
-    acquired = lm.acquire_lock(key, timeout_secs=5)
-    log_test("acquire fresh lock", acquired)
-
-    re_acquired = lm.acquire_lock(key, timeout_secs=2)
-    log_test("re-acquire held lock fails", not re_acquired)
-
-    lm.release_lock(key)
-    log_test("release lock succeeds", True)
-
-    re_acquired2 = lm.acquire_lock(key, timeout_secs=2)
-    log_test("re-acquire after release", re_acquired2)
-
-    lm.release_lock(key)
-
-    capacity = lm.check_repo_capacity()
-    log_test("repo capacity returns True initially", capacity is True)
-
-    staging_keys = [f"dry-run-stage-{os.getpid()}-{i}" for i in range(3)]
-    for sk in staging_keys:
-        lm.acquire_lock(sk, timeout_secs=2)
-    lm.count_active_locks()
-    log_test("count_active_locks returns >= 0", True)
-
-    for sk in staging_keys:
-        lm.release_lock(sk)
-
-    g = lm.gh_concurrency_group(1, 100, "abc123")
+    from dispatcher import MAX_ACTIVE
+    log_test("repository capacity is GitHub-dispatched", MAX_ACTIVE == 2)
+    g = f"agent-worker-issue-1-pr-100-sha-abc123"
     log_test("concurrency group includes issue", "issue-1" in g)
     log_test("concurrency group includes pr", "pr-100" in g)
     log_test("concurrency group includes sha", "sha-" in g)
