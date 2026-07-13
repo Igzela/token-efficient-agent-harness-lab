@@ -288,6 +288,7 @@ class TestDispatcher(unittest.TestCase):
             )
             gh_path.chmod(gh_path.stat().st_mode | stat.S_IXUSR)
             env = {**os.environ, "PATH": f"{temp}:{os.environ['PATH']}"}
+            env.update({"AGENT_REPO": "", "GITHUB_REPOSITORY": ""})
             result = subprocess.run(
                 [sys.executable, str(CONTROL / "ci_verifier.py"), "verify-failed-run", "456", sha],
                 cwd=ROOT, env=env, capture_output=True, text=True,
@@ -490,6 +491,18 @@ class TestRepairHeadTransition(unittest.TestCase):
 
 
 class TestExactHeadCI(unittest.TestCase):
+    def setUp(self):
+        # Synthetic run fixtures intentionally omit provider API identity
+        # fields.  Production calls populate and require these fields; keep
+        # the unit fixtures independent of the runner's repository environment.
+        self._clear_repo_env = mock.patch.dict(
+            os.environ, {"AGENT_REPO": "", "GITHUB_REPOSITORY": ""}, clear=False
+        )
+        self._clear_repo_env.start()
+
+    def tearDown(self):
+        self._clear_repo_env.stop()
+
     def test_all_seven_required_jobs_must_succeed_on_exact_head(self):
         required = ci_verifier.load_requirements()["required_jobs"]
         run = {
@@ -619,6 +632,7 @@ class TestExactHeadCI(unittest.TestCase):
                  mock.patch.object(ci_handler, "_find_issue_for_pr", return_value=42), \
                  mock.patch.object(ci_handler, "_is_duplicate_exact_head_run", return_value=False), \
                  mock.patch.object(ci_handler.sm, "verify_issue_pr_binding", return_value=(True, "ok")), \
+                 mock.patch.object(ci_handler.sm, "record_ci_acquisition", return_value=True), \
                  mock.patch.object(ci_handler, "_record_ci") as record:
                 result = ci_handler.process_ci_completion(event_path.name)
             with mock.patch.dict(os.environ, {"AGENT_REPO": "trusted/repo"}, clear=False), \
@@ -627,6 +641,7 @@ class TestExactHeadCI(unittest.TestCase):
                  mock.patch.object(ci_handler, "_find_issue_for_pr", return_value=42), \
                  mock.patch.object(ci_handler, "_is_duplicate_exact_head_run", return_value=False), \
                  mock.patch.object(ci_handler.sm, "verify_issue_pr_binding", return_value=(True, "ok")), \
+                 mock.patch.object(ci_handler.sm, "record_ci_acquisition", return_value=True), \
                  mock.patch.object(ci_handler, "_record_ci", side_effect=RuntimeError("write failed")):
                 unavailable = ci_handler.process_ci_completion(event_path.name)
         finally:
