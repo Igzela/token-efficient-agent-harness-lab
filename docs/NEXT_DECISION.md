@@ -129,7 +129,7 @@ No packet in PE-5 authorizes an actual public release, tag creation, deployment,
 
 ## Packet PE5-CONTRACT-1 — Release subject, evidence, and trust contract
 
-**State:** `IN_PROGRESS`
+**State:** `COMPLETE`
 
 **Prerequisite:** PE-4 final acceptance above; no conflicting release-provenance PR; inspect PR #207 and refresh from current `main`.
 
@@ -167,7 +167,7 @@ No packet in PE-5 authorizes an actual public release, tag creation, deployment,
 
 ## Packet PE5-SBOM-1 — Deterministic artifact and container SBOMs
 
-**State:** `BLOCKED_PREREQUISITE`
+**State:** `COMPLETE`
 
 **Prerequisite:** PE5-CONTRACT-1 complete.
 
@@ -195,7 +195,7 @@ No packet in PE-5 authorizes an actual public release, tag creation, deployment,
 
 ## Packet PE5-ATTEST-1 — External ephemeral signing and provenance attestations
 
-**State:** `BLOCKED_PREREQUISITE`
+**State:** `COMPLETE`
 
 **Prerequisite:** PE5-SBOM-1 complete.
 
@@ -223,7 +223,7 @@ No packet in PE-5 authorizes an actual public release, tag creation, deployment,
 
 ## Packet PE5-VERIFY-1 — Fail-closed installer and upgrader verification
 
-**State:** `BLOCKED_PREREQUISITE`
+**State:** `COMPLETE`
 
 **Prerequisite:** PE5-ATTEST-1 complete.
 
@@ -254,7 +254,7 @@ No packet in PE-5 authorizes an actual public release, tag creation, deployment,
 
 ## Packet PE5-PUBLISH-1 — Release workflow ordering and publish gate
 
-**State:** `BLOCKED_PREREQUISITE`
+**State:** `IN_PROGRESS`
 
 **Prerequisite:** PE5-VERIFY-1 complete.
 
@@ -547,7 +547,7 @@ No destructive external provider call, production database corruption, real targ
 
 ## Active Routing
 
-1. Continue the active `PE5-CONTRACT-1` milestone on the grouped PE-5 implementation branch after inspecting open PR #207.
+1. Continue the active `PE5-PUBLISH-1` milestone on the grouped PE-5 implementation branch after inspecting open PR #207.
 2. Complete PE-5 internal milestones in order, then run one final grouped implementation validation/CI and merge it.
 3. Independently audit and merge `PE5-CLOSE-1`, then verify post-merge `main` CI before starting PE-6.
 4. Complete the grouped PE-6 implementation branch from `PE6-INVARIANTS-1` through `PE6-EVIDENCE-1`, then run one final validation/CI and merge it.
