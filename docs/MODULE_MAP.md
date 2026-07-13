@@ -39,7 +39,7 @@ Full Agent Autonomy Mode is active for repository-scoped work that remains testa
 
 ## PE-5 Release Provenance Ownership
 
-PE-5 is active. Detailed packet contracts are in `docs/NEXT_DECISION.md`.
+PE-5 is complete and independently acceptance-sealed. Grouped `PE5-IMPLEMENT-1` completed internal `PE5-CONTRACT-1` through `PE5-PUBLISH-1`; detailed packet contracts and evidence remain in `docs/NEXT_DECISION.md`.
 
 | Capability | Primary owners | Boundary |
 |---|---|---|
@@ -48,21 +48,21 @@ PE-5 is active. Detailed packet contracts are in `docs/NEXT_DECISION.md`.
 | Signed provenance/attestation | existing `.github/workflows/release.yml`, pinned `actions/attest` commit `a1948c3f048ba23858d222213b7c278aabede763`, `scripts/release_provenance.py`, fixture tests | external ephemeral production identity; no persistent private key or Vader signing credential |
 | Installer/upgrader verification | `scripts/install-from-release.sh`, `scripts/install.sh`, `scripts/upgrade.sh`, `tools/test_release_installation.py`, `tools/test_release_closeout.py`, existing checksum/staging/health/atomic rollback owners | complete evidence verifies before extraction/activation; safe archive members; previous known-good state preserved through health success |
 | Publish gate | `.github/workflows/release.yml`, `scripts/check_release_contract.sh`, existing artifact upload/release helpers, action-pin/security checks | build → SBOM → attest → provenance → verify → publish ordering; no unauthorized public release/tag/deploy |
-| PE-5 closeout | release contract/tests/workflow dry run, installer rollback, active docs | independent acceptance without requiring a real public release |
+| PE-5 closeout | release contract/tests/workflow dry run, installer rollback, `tools/test_release_closeout.py`, active docs | independent acceptance without requiring a real public release; sealed under PR #211 |
 
 ## PE-6 Fault Injection and Recovery Ownership
 
-PE-6 is packetized and starts only after PE5-CLOSE-1.
+PE-6 grouped implementation is active after the PE-5 acceptance seal. Internal milestones remain normative and execute in order within `PE6-IMPLEMENT-1`; closeout remains a separate boundary.
 
 | Capability | Primary owners | Boundary |
 |---|---|---|
-| Recovery invariants and fault contract | existing subsystem contracts/tests; architecture/module docs | versioned allowlisted scenarios/results; no fault execution yet |
-| Fault-injection harness | test-only Rust/Python/shell support and CI tooling | deterministic registered faults against disposable resources only; no arbitrary command/runtime service |
-| Storage drills | `LocalProductStore`, migrations, integrity/audit tables, backup/restore scripts, temporary SQLite and ephemeral PostgreSQL | atomicity, restart, migration, backup/restore, tamper, concurrency; no real DB corruption |
-| Workflow/executor drills | workflow runs, scheduler, node executor, executor pool, approvals, operator actions, pause/resume/retry, compensation | crash/timeout/duplicate/stale/concurrent/restart behavior through existing owners |
-| Provider/budget/audit drills | provider adapters, `FakeProvider`, pricing/reservation, redacted audit, timeout/kill controls | fake/stub only; no live provider or credentials |
-| Release/rollback drills | accepted PE-5 contract, verifier, installer/upgrader, atomic rollback, temporary install roots | invalid provenance and interrupted activation/rollback; no public release or host installation damage |
-| Drill registry/evidence | existing test/CI tooling, bounded report artifacts, `docs/RUNBOOK.md` | allowlisted local/CI execution and inspection; no new runtime state model or mutation API |
+| Recovery invariants and fault contract | `scripts/fault_drill_contract.py`, `tools/test_fault_drill_contract.py` | `fault_scenario.v1`, `fault_drill_result.v1`, recovery/cleanup evidence, bounded reason codes; no runtime schema or mutation |
+| Fault-injection harness | `scripts/fault_drill_harness.py`, `scripts/fault_drill_registry.py`, `tools/test_pe6_harness_drill.py` | fixed registered child commands, deterministic worker/resource identities, timeout and finally cleanup; no arbitrary command/runtime service |
+| Storage drills | `engine/tests/test_pe6_fault_drills.rs`, `LocalProductStore`, migrations, integrity/audit tables, `BackupManager` | SQLite atomicity/replay/restart, integrity, backup/restore/tamper, PG service-gated owner check; no real DB corruption |
+| Workflow/executor drills | `engine/tests/test_pe6_fault_drills.rs`, workflow runs, scheduler, node executor | timeout/retry/concurrent tick/stale lease/restart behavior through existing owners |
+| Provider/budget/audit drills | `engine/tests/test_pe6_fault_drills.rs`, provider adapters, `FakeProvider`, pricing/cost gate, redacted audit | fake/stub only; bounded kill/timeout/cost/audit evidence; no live provider or credentials |
+| Release/rollback drills | `tools/test_pe6_release_drill.py`, accepted PE-5 verifier/installer/upgrader | invalid evidence before activation and previous-install preservation in temporary roots; no public release or host installation damage |
+| Drill registry/evidence | `tools/run_fault_drills.py`, `tools/test_fault_drill_registry.py`, `tools/test_pe6_evidence.py`, `docs/RUNBOOK.md` | allowlisted suites/IDs, bounded deterministic JSON/human reports, explicit unsupported state, existing CI discovery; no new runtime state model or mutation API |
 | PE-6 closeout | all drill owners and evidence | independent audit of recovery, cleanup, isolation, compatibility, and residual risk |
 
 ## Open PR Coordination
@@ -79,8 +79,8 @@ It does not own PE-5 release-provenance semantics or PE-6 recovery semantics. Be
 ## Active Routing
 
 1. PE-1 through PE-4 remain acceptance-sealed; PE-4 is sealed under PR #206 and `PE4-POST-CLOSE-REPAIR-1`.
-2. Begin `PE5-CONTRACT-1`, then complete PE-5 in the order defined by `docs/NEXT_DECISION.md`.
-3. Begin PE-6 only after PE5-CLOSE-1; define invariants before implementing the harness or subsystem drills.
+2. PE-5 is acceptance-sealed under grouped `PE5-IMPLEMENT-1` and `PE5-CLOSE-1` (PRs #210 and #211).
+3. The PE-6 internal milestones are complete in order within grouped `PE6-IMPLEMENT-1`; independently audit `PE6-CLOSE-1` as the next separate boundary.
 4. Refresh `main`, open PRs, CI, and active documents after every merge.
 5. Extend existing owners. Do not create another runtime, scheduler, storage layer, release pipeline, signing authority, recovery authority, artifact truth source, or Dashboard data model without an explicit replacement decision, migration, compatibility evidence, and rollback.
 

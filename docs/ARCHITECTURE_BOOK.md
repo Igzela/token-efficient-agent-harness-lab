@@ -251,6 +251,12 @@ The workflow order is build → SBOM → external attestation → provenance bin
 
 The independent closeout guard requires the external `gh attestation verify --format=json` transcript to contain the signed statement subject digest, both SLSA and SPDX predicate results, OIDC issuer, source repository/ref, signer-workflow identity, and verified timestamp evidence. The local closeout matrix covers all four package targets plus Linux amd64/arm64 container subjects using fixture-only, non-authoritative evidence; it does not create a container publication path.
 
+### PE-6 grouped test-only recovery boundary
+
+The PE-6 implementation adds no runtime authority, schema migration, API, Dashboard, scheduler, storage, provider, release, or audit owner. `scripts/fault_drill_contract.py` defines bounded `fault_scenario.v1`, `fault_drill_result.v1`, recovery/cleanup evidence, and `fault_drill_report.v1` canonical JSON. `scripts/fault_drill_registry.py` is the only scenario registry; `scripts/fault_drill_harness.py` expands registry labels into fixed Rust or Python test commands, sanitizes provider-shaped environment inputs, enforces disposable worker identities, caps child duration/output, and always attempts cleanup. `tools/run_fault_drills.py` accepts only registered IDs or named suites and writes reports only to disposable temp/output roots.
+
+The Rust and Python owner drills use temporary SQLite/databases, the existing PostgreSQL service gate, fake providers, controlled child processes, and non-publishing release bundles. The PostgreSQL drill accepts only the exact GitHub Actions disposable service identity; an arbitrary local `ACP_TEST_DATABASE_URL` is `unsupported`, never a pass. Evidence is deterministic for the same source head, seed, worker, registry, and owner-test result; wall-clock/process paths and raw test output are excluded. Existing `LocalProductStore`, `BackupManager`, workflow/scheduler/executor, provider/cost/audit, PE-5 verifier/installer/upgrader, and CI test discovery remain authoritative. Cleanup failure, non-disposable resources, unknown IDs/fault points, timeout, tamper, and ambiguous evidence fail closed.
+
 ## Execution Modes
 
 `ACP_EXECUTION_MODE` controls dispatch execution:
@@ -401,8 +407,8 @@ These are accepted current limitations, not hidden TODOs:
 - Bounded multi-agent runtime semantics are implemented through Agent Runtime AR-0 through AR-6. The track is sealed; extending the AR phase ladder requires a new decision baseline.
 - The bounded LangGraph importer and same-scenario comparison are implemented, but no external runtime runner is embedded and no real LangGraph benchmark evidence is persisted automatically. Current architecture permits only importer-first, operator-supplied trace-summary normalization through existing evidence, artifact, audit, and storage boundaries.
 - Cloud SaaS, hosted/cloud deployment, multi-tenant service, and direct release/tag/deploy/apply controls are not implemented. PE-5 adds release evidence and verification, not app-runtime release authority.
-- Complete release SBOM/signing/attestation/verification is active work under PE-5.
-- Systematic bounded recovery drills are planned under PE-6 after PE-5 closeout.
+- Complete release SBOM/signing/attestation/verification is accepted under PE-5; no production identity or public release was exercised for acceptance.
+- PE-6 grouped implementation is active; independent recovery-drill closeout remains pending and must audit the merged chain.
 - Some routing, quality, and orchestration modules remain partially active rather than unified under one policy layer.
 
 The Adaptive Fusion Routing track extends `model_selector`, `feedback`, `provider`, storage, and existing HTTP/workflow/executor boundaries without creating a parallel routing, policy, workflow, or storage kernel. AF-0 through AF-6 add planning, endpoint metadata, offline evaluation, authenticated bounded execution, contextual policy, panel fusion, safe observations, controlled experiments, evidence-driven promotion, and guarded completions. Legacy independent gates remain supported.

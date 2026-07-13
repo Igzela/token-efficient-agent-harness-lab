@@ -2,7 +2,45 @@
 
 Operator procedures for the local Agent Control Plane.
 
-Last updated: 2026-07-10.
+Last updated: 2026-07-13.
+
+## Bounded PE-6 Recovery Drills
+
+The drill CLI accepts only registered scenario IDs or named suites. It uses
+temporary resources and fixed owner-test commands; it does not call providers,
+publish releases, modify host installations, or target a real database.
+
+Run the supported local suite and save its bounded report under `/tmp`:
+
+```bash
+PYTHONPATH=. uv run --no-project python tools/run_fault_drills.py \
+  --suite core --seed 0 --worker 0 --output /tmp/acp-pe6-core.json
+```
+
+Run storage drills. Without the GitHub Actions PostgreSQL service, the
+PostgreSQL entry is reported as `unsupported`; it is not counted as a pass.
+The existing `pg-integration-tests` job supplies the exact disposable
+`ACP_TEST_DATABASE_URL` and service identity for that owner path; arbitrary
+local database URLs remain unsupported.
+
+```bash
+PYTHONPATH=. uv run --no-project python tools/run_fault_drills.py \
+  --suite storage --seed 0 --worker 0 --output /tmp/acp-pe6-storage.json
+```
+
+Inspect a human summary or the canonical JSON directly:
+
+```bash
+PYTHONPATH=. uv run --no-project python tools/run_fault_drills.py \
+  --scenario-id pe6.release.provenance_rollback.v1 --format human
+PYTHONPATH=. uv run --no-project python tools/run_fault_drills.py \
+  --scenario-id pe6.release.provenance_rollback.v1 --format json
+```
+
+Use `--require-supported` only when the named environment capability is a
+prerequisite for the operator's run. A failed, aborted, invalid, or cleanup
+failed result always returns non-zero. Reports are non-authoritative evidence
+bound to the exact source head, registry, seed, worker, and environment.
 
 ## Local Token-Efficiency Runner
 
