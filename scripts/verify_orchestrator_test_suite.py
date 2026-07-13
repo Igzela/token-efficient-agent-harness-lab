@@ -13,6 +13,7 @@ REQUIRED = (
     "tests/test_agent_control_worktree.py",
     "tests/test_agent_orchestrator_repairs.py",
     "tests/test_agent_orchestrator_artifacts.py",
+    "tests/test_agent_review_finalization.py",
 )
 
 

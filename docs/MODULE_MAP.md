@@ -56,7 +56,7 @@ Owned by existing PR #207:
 
 The orchestrator must remain disabled and emergency-stopped. GitHub-hosted finalizers own mutations; Vader remains artifact-only. No replacement orchestrator, GitHub App, OpenAI API key, or Actions Variable control plane is authorized.
 
-`control_state.py` is the authoritative setup and transition owner: `setup_labels.py` is a compatibility delegate, stop/resume never implicitly reauthorize, and every label mutation is followed by a live-state verification. `ci_verifier.py`, `ci_handler.py`, and the Issue-backed acquisition state own deterministic exact-head ranking, bounded natural-run observation/fallback, and supersession persistence. `codex_wrapper.sh` owns the shared allowlisted environment for implementation, repair, and review workers. Stage B activation remains out of scope and disabled.
+`control_state.py` is the authoritative setup and transition owner: `setup_labels.py` is a compatibility delegate, stop/resume never implicitly reauthorize, and every label mutation is followed by a live-state verification. `ci_verifier.py`, `ci_handler.py`, and the Issue-backed acquisition state own deterministic exact-head ranking, bounded natural-run observation/fallback, and supersession persistence. `validate_review.py`, `state_manager.py`, and `agent-review.yml` own bounded review validation, exact-head verdict persistence, non-authorizing review outcomes, and separate malformed-result evidence; `state_manager.py` also owns current-effective GitHub review evaluation and complete bounded review-thread pagination for merge gating. `codex_wrapper.sh` owns the shared allowlisted environment for implementation, repair, and review workers. Stage B activation remains out of scope and disabled.
 
 ### `PE2-RUNTIME-PRODUCER-1`
 

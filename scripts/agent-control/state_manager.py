@@ -9,6 +9,7 @@ import os
 import re
 import subprocess
 import sys
+from datetime import datetime
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
@@ -34,6 +35,12 @@ ALL_LABELS = ACTIVE_LABELS | TERMINAL_LABELS | {
 }
 
 MAX_REPAIR_ATTEMPTS = 2
+MAX_REVIEW_EVIDENCE_BYTES = 64 * 1024
+MAX_REVIEW_API_PAGES = 20
+MAX_REVIEW_API_NODES = 1000
+MAX_REVIEW_THREAD_PAGES = 20
+MAX_REVIEW_THREADS = 2000
+REVIEW_VERDICTS = frozenset({"PASS", "PASS_WITH_NOTES", "BLOCKED", "FAIL"})
 
 
 class StateUnavailableError(RuntimeError):
@@ -90,13 +97,32 @@ class CIAcquisitionState:
 
 @dataclass(frozen=True)
 class ReviewState:
+    issue_number: int
     pr_number: int
     head_sha: str
     verdict: str
     summary: str
+    blockers: list[str] = field(default_factory=list)
+    major_notes: list[str] = field(default_factory=list)
+    minor_notes: list[str] = field(default_factory=list)
+    artifact_sha256: str = ""
+    review_workflow_run_id: int | None = None
 
     def to_wire(self):
-        return _state_wire("agent-orchestrator-review-state", 1, self)
+        return _state_wire("agent-orchestrator-review-state", 2, self)
+
+
+@dataclass(frozen=True)
+class ReviewValidationFailureState:
+    issue_number: int
+    pr_number: int
+    head_sha: str
+    failure_code: str
+    artifact_sha256: str | None
+    review_workflow_run_id: int | None
+
+    def to_wire(self):
+        return _state_wire("agent-orchestrator-review-validation-failure", 1, self)
 
 
 @dataclass(frozen=True)
@@ -126,15 +152,32 @@ class DispatchState:
 def labels_for_review_verdict(verdict):
     """Return the non-active state labels for a finalized review verdict."""
 
+    if verdict not in REVIEW_VERDICTS:
+        raise ValueError("unsupported review verdict")
     if verdict == "PASS":
         return {LABEL_REVIEW_PASSED, LABEL_MERGE_READY}
     return {LABEL_REVIEW_BLOCKED}
 
 
 def finalize_review_labels(issue_number, verdict, repo=""):
-    """Release review capacity into the verdict's non-active state."""
+    """Release review capacity into a verified, non-active verdict state."""
 
-    return set_labels(issue_number, *sorted(labels_for_review_verdict(verdict)), repo=repo)
+    try:
+        expected = labels_for_review_verdict(verdict)
+    except ValueError:
+        return False
+    if get_issue_labels_checked(issue_number, repo) is None:
+        return False
+    if not set_labels(issue_number, *sorted(expected), repo=repo):
+        return False
+    resulting = get_issue_labels_checked(issue_number, repo)
+    if resulting is None or not expected.issubset(resulting):
+        return False
+    if resulting & ACTIVE_LABELS:
+        return False
+    if verdict == "PASS":
+        return LABEL_REVIEW_BLOCKED not in resulting
+    return not ({LABEL_REVIEW_PASSED, LABEL_MERGE_READY} & resulting)
 
 
 def _gh(*args, **kwargs):
@@ -268,7 +311,7 @@ def get_issue_comment_bodies(issue_number, search_text, repo=""):
 def get_pr_info(pr_number, repo=""):
     args = [
         "pr", "view", str(pr_number), "--json",
-        "headRefName,headRefOid,state,mergeable,mergeStateStatus,labels,baseRefName,body,reviews,reviewDecision,mergeCommit,mergedAt",
+        "headRefName,headRefOid,state,mergeable,mergeStateStatus,labels,baseRefName,body,mergeCommit,mergedAt",
     ]
     if repo:
         args.extend(["--repo", repo])
@@ -410,9 +453,236 @@ def validate_task_scope(issue_number, repo=""):
         return False, str(exc)
 
 
-def record_review_state(issue_number, pr_number, head_sha, verdict, summary, repo=""):
-    state = ReviewState(pr_number, head_sha, verdict, summary).to_wire()
-    return comment_on_issue(issue_number, json.dumps(state), repo)
+def record_review_state(
+    issue_number,
+    pr_number,
+    head_sha,
+    verdict,
+    summary,
+    repo="",
+    blockers=None,
+    major_notes=None,
+    minor_notes=None,
+    artifact_sha256="",
+    review_workflow_run_id=None,
+):
+    """Persist only bounded review evidence already accepted by the validator."""
+
+    state = ReviewState(
+        int(issue_number),
+        int(pr_number),
+        head_sha,
+        verdict,
+        summary,
+        list(blockers or []),
+        list(major_notes or []),
+        list(minor_notes or []),
+        artifact_sha256,
+        review_workflow_run_id,
+    ).to_wire()
+    return comment_on_issue(issue_number, json.dumps(state, sort_keys=True), repo)
+
+
+def _bounded_review_strings(value, field_name):
+    if not isinstance(value, list) or len(value) > 50:
+        raise ValueError(f"{field_name} is invalid")
+    if not all(isinstance(item, str) and len(item) <= 2000 and "\0" not in item and "\r" not in item for item in value):
+        raise ValueError(f"{field_name} is invalid")
+    return list(value)
+
+
+def _load_review_validation_sidecar(path, expected_classification):
+    """Read the validator's fixed-size JSON handoff, never raw model output."""
+
+    try:
+        raw = Path(path).read_bytes()
+    except (OSError, TypeError):
+        raise ValueError("validation sidecar is unavailable")
+    if not raw or len(raw) > MAX_REVIEW_EVIDENCE_BYTES:
+        raise ValueError("validation sidecar exceeds bounds")
+    try:
+        value = json.loads(raw)
+    except (json.JSONDecodeError, UnicodeDecodeError):
+        raise ValueError("validation sidecar is invalid")
+    if not isinstance(value, dict):
+        raise ValueError("validation sidecar is invalid")
+    if value.get("kind") != "agent-orchestrator-review-validation" or value.get("version") != 1:
+        raise ValueError("validation sidecar identity is invalid")
+    if value.get("classification") != expected_classification:
+        raise ValueError("validation sidecar classification is invalid")
+    return value
+
+
+def _validated_review_evidence(path, pr_number, head_sha):
+    value = _load_review_validation_sidecar(path, "valid_verdict")
+    required = {
+        "kind", "version", "classification", "pr_number", "reviewed_head_sha",
+        "verdict", "summary", "blockers", "major_notes", "minor_notes",
+        "artifact_sha256", "review_workflow_run_id",
+    }
+    if set(value) != required:
+        raise ValueError("review validation sidecar fields are invalid")
+    if value.get("pr_number") != int(pr_number) or value.get("reviewed_head_sha") != head_sha:
+        raise ValueError("review validation sidecar binding is invalid")
+    if value.get("verdict") not in REVIEW_VERDICTS:
+        raise ValueError("review validation verdict is invalid")
+    summary = value.get("summary")
+    if not isinstance(summary, str) or not (1 <= len(summary) <= 2000) or "\0" in summary or "\r" in summary:
+        raise ValueError("review validation summary is invalid")
+    digest = value.get("artifact_sha256")
+    if not isinstance(digest, str) or re.fullmatch(r"[0-9a-f]{64}", digest) is None:
+        raise ValueError("review validation digest is invalid")
+    run_id = value.get("review_workflow_run_id")
+    if run_id is not None and (type(run_id) is not int or run_id < 1):
+        raise ValueError("review workflow identity is invalid")
+    return {
+        "verdict": value["verdict"],
+        "summary": summary,
+        "blockers": _bounded_review_strings(value["blockers"], "blockers"),
+        "major_notes": _bounded_review_strings(value["major_notes"], "major_notes"),
+        "minor_notes": _bounded_review_strings(value["minor_notes"], "minor_notes"),
+        "artifact_sha256": digest,
+        "review_workflow_run_id": run_id,
+    }
+
+
+def record_validated_review(issue_number, pr_number, head_sha, sidecar_path, repo=""):
+    """Exact-head bind and durably record one schema-valid review verdict."""
+
+    try:
+        evidence = _validated_review_evidence(sidecar_path, pr_number, head_sha)
+    except ValueError as exc:
+        return False, str(exc)
+    binding_ok, binding_reason = verify_issue_pr_binding(issue_number, pr_number, head_sha, repo)
+    if not binding_ok:
+        return False, f"binding_rejected:{binding_reason}"
+    try:
+        previous = read_review_state(issue_number, repo)
+    except StateUnavailableError:
+        return False, "review_state_unavailable"
+    if previous:
+        same = (
+            previous.get("issue_number", int(issue_number)) == int(issue_number)
+            and previous.get("pr_number") == int(pr_number)
+            and previous.get("head_sha") == head_sha
+            and previous.get("verdict") == evidence["verdict"]
+            and previous.get("summary") == evidence["summary"]
+            and previous.get("blockers", []) == evidence["blockers"]
+            and previous.get("major_notes", []) == evidence["major_notes"]
+            and previous.get("minor_notes", []) == evidence["minor_notes"]
+            and previous.get("artifact_sha256", "") == evidence["artifact_sha256"]
+        )
+        if same:
+            return True, "already_recorded"
+        if previous.get("head_sha") == head_sha and previous.get("verdict") != "INVALIDATED":
+            return False, "conflicting_review_state_exists"
+    if not record_review_state(
+        issue_number,
+        pr_number,
+        head_sha,
+        evidence["verdict"],
+        evidence["summary"],
+        repo,
+        evidence["blockers"],
+        evidence["major_notes"],
+        evidence["minor_notes"],
+        evidence["artifact_sha256"],
+        evidence["review_workflow_run_id"],
+    ):
+        return False, "review_state_write_failed"
+    return True, "recorded"
+
+
+def record_review_validation_failure(issue_number, pr_number, head_sha, sidecar_path, repo=""):
+    """Record a bounded malformed/infrastructure reason without altering a verdict."""
+
+    try:
+        value = _load_review_validation_sidecar(sidecar_path, "invalid_artifact")
+    except ValueError as exc:
+        return False, str(exc)
+    required = {
+        "kind", "version", "classification", "pr_number", "reviewed_head_sha",
+        "failure_code", "artifact_sha256", "review_workflow_run_id",
+    }
+    if set(value) != required or value.get("pr_number") != int(pr_number) or value.get("reviewed_head_sha") != head_sha:
+        return False, "review validation failure binding is invalid"
+    failure_code = value.get("failure_code")
+    if not isinstance(failure_code, str) or not re.fullmatch(r"[a-z_]+", failure_code):
+        return False, "review validation failure code is invalid"
+    digest = value.get("artifact_sha256")
+    if digest is not None and (not isinstance(digest, str) or re.fullmatch(r"[0-9a-f]{64}", digest) is None):
+        return False, "review validation failure digest is invalid"
+    run_id = value.get("review_workflow_run_id")
+    if run_id is not None and (type(run_id) is not int or run_id < 1):
+        return False, "review validation failure workflow identity is invalid"
+    binding_ok, binding_reason = verify_issue_pr_binding(issue_number, pr_number, head_sha, repo)
+    if not binding_ok:
+        return False, f"binding_rejected:{binding_reason}"
+    try:
+        previous = read_review_state(issue_number, repo)
+    except StateUnavailableError:
+        return False, "review_state_unavailable"
+    if previous and previous.get("pr_number") == int(pr_number) and previous.get("head_sha") == head_sha:
+        return True, "newer_or_current_review_state_exists"
+    return _record_review_validation_failure(
+        issue_number, pr_number, head_sha, failure_code, digest, run_id, repo
+    )
+
+
+def _latest_review_validation_failure(issue_number, pr_number, head_sha, repo=""):
+    comments = get_issue_comments(issue_number, repo)
+    for comment in comments:
+        if (comment.get("author") or {}).get("login") not in TRUSTED_STATE_AUTHORS:
+            continue
+        try:
+            state = json.loads(comment.get("body", ""))
+        except (json.JSONDecodeError, TypeError):
+            continue
+        if (
+            state.get("kind") == "agent-orchestrator-review-validation-failure"
+            and state.get("pr_number") == int(pr_number)
+            and state.get("head_sha") == head_sha
+        ):
+            return state
+    return None
+
+
+def _record_review_validation_failure(
+    issue_number, pr_number, head_sha, failure_code, digest, run_id, repo=""
+):
+    try:
+        previous_failure = _latest_review_validation_failure(
+            issue_number, pr_number, head_sha, repo
+        )
+    except StateUnavailableError:
+        return False, "review_state_unavailable"
+    if previous_failure:
+        return True, "already_recorded"
+    state = ReviewValidationFailureState(
+        int(issue_number), int(pr_number), head_sha, failure_code, digest, run_id
+    ).to_wire()
+    if not comment_on_issue(issue_number, json.dumps(state, sort_keys=True), repo):
+        return False, "review_validation_failure_write_failed"
+    return True, "recorded"
+
+
+def record_review_infrastructure_failure(issue_number, pr_number, head_sha, repo=""):
+    """Record a fixed workflow-failure reason when no validator sidecar exists."""
+
+    binding_ok, binding_reason = verify_issue_pr_binding(issue_number, pr_number, head_sha, repo)
+    if not binding_ok:
+        return False, f"binding_rejected:{binding_reason}"
+    try:
+        previous = read_review_state(issue_number, repo)
+    except StateUnavailableError:
+        return False, "review_state_unavailable"
+    if previous and previous.get("pr_number") == int(pr_number) and previous.get("head_sha") == head_sha:
+        return True, "newer_or_current_review_state_exists"
+    run_value = os.environ.get("GITHUB_RUN_ID", "")
+    run_id = int(run_value) if run_value.isdigit() else None
+    return _record_review_validation_failure(
+        issue_number, pr_number, head_sha, "workflow_infrastructure_failure", None, run_id, repo
+    )
 
 
 def invalidate_evidence(issue_number, pr_number, new_head_sha, old_head_sha, repo=""):
@@ -695,28 +965,271 @@ def release_rejected_worker(
     )
 
 
-def unresolved_review_threads(pr_number, repo=""):
+def _repo_parts(repo):
     target = repo or os.environ.get("AGENT_REPO") or os.environ.get("GITHUB_REPOSITORY", "")
-    if "/" not in target:
-        return None
+    if target.count("/") != 1:
+        raise StateUnavailableError("repository identity is unavailable")
     owner, name = target.split("/", 1)
+    if not owner or not name:
+        raise StateUnavailableError("repository identity is unavailable")
+    return owner, name
+
+
+def _graphql_review_page(owner, name, pr_number, cursor=None):
     query = (
-        "query($owner:String!, $name:String!, $number:Int!) {"
+        "query($owner:String!,$name:String!,$number:Int!,$after:String){"
         "repository(owner:$owner,name:$name){pullRequest(number:$number){"
-        "reviewThreads(first:100){nodes{isResolved}}}}}"
+        "headRefOid reviewDecision reviews(first:100,after:$after){"
+        "nodes{id state submittedAt author{id login __typename} commit{oid}}"
+        "pageInfo{hasNextPage endCursor}}}}}"
     )
-    raw = _gh(
+    args = [
         "api", "graphql", "-f", f"query={query}", "-F", f"owner={owner}",
         "-F", f"name={name}", "-F", f"number={int(pr_number)}",
-    )
-    if raw is None:
-        return None
+    ]
+    if cursor is not None:
+        args.extend(["-f", f"after={cursor}"])
+    return _gh(*args)
+
+
+def _parse_review_timestamp(value):
+    if not isinstance(value, str) or not value:
+        raise StateUnavailableError("review submission time is unavailable")
     try:
-        data = json.loads(raw)
-        nodes = data["data"]["repository"]["pullRequest"]["reviewThreads"]["nodes"]
-        return [node for node in nodes if not node.get("isResolved", False)]
-    except (json.JSONDecodeError, KeyError, TypeError):
+        return datetime.fromisoformat(value.replace("Z", "+00:00")).timestamp()
+    except ValueError as exc:
+        raise StateUnavailableError("review submission time is malformed") from exc
+
+
+def _validated_review_node(node, current_head):
+    if not isinstance(node, dict):
+        raise StateUnavailableError("review node is malformed")
+    review_id = node.get("id")
+    state = node.get("state")
+    if not isinstance(review_id, str) or not review_id:
+        raise StateUnavailableError("review identity is unavailable")
+    if state not in {"APPROVED", "CHANGES_REQUESTED", "COMMENTED", "DISMISSED", "PENDING"}:
+        raise StateUnavailableError("review state is malformed")
+    author = node.get("author")
+    if not isinstance(author, dict) or author.get("__typename") != "User":
+        raise StateUnavailableError("review author is unavailable or non-human")
+    author_id = author.get("id")
+    login = author.get("login")
+    if not isinstance(author_id, str) or not author_id or not isinstance(login, str) or not login:
+        raise StateUnavailableError("review author identity is malformed")
+    commit = node.get("commit")
+    if state == "PENDING":
+        submitted_at = None
+        commit_oid = None
+    else:
+        submitted_at = _parse_review_timestamp(node.get("submittedAt"))
+        if not isinstance(commit, dict) or not isinstance(commit.get("oid"), str):
+            raise StateUnavailableError("review commit binding is unavailable")
+        commit_oid = commit["oid"]
+    return {
+        "id": review_id,
+        "state": state,
+        "submitted_at": submitted_at,
+        "author_id": author_id,
+        "author_login": login,
+        "commit_oid": commit_oid,
+        "is_current_head": commit_oid == current_head,
+    }
+
+
+def fetch_pr_reviews(pr_number, expected_head_sha, repo=""):
+    """Fetch every PR review page with strict identity and pagination checks."""
+
+    owner, name = _repo_parts(repo)
+    cursor = None
+    seen_cursors = set()
+    seen_reviews = {}
+    pages = 0
+    review_decision = None
+    while True:
+        if pages >= MAX_REVIEW_API_PAGES:
+            raise StateUnavailableError("review page bound exceeded")
+        raw = _graphql_review_page(owner, name, pr_number, cursor)
+        if raw is None:
+            raise StateUnavailableError("review API is unavailable")
+        try:
+            payload = json.loads(raw)
+            if not isinstance(payload, dict) or payload.get("errors"):
+                raise ValueError
+            pr = payload["data"]["repository"]["pullRequest"]
+            connection = pr["reviews"]
+            page_info = connection["pageInfo"]
+        except (json.JSONDecodeError, KeyError, TypeError, ValueError) as exc:
+            raise StateUnavailableError("review API response is malformed") from exc
+        if not isinstance(pr, dict) or pr.get("headRefOid") != expected_head_sha:
+            raise StateUnavailableError("review API head binding is stale or unavailable")
+        decision = pr.get("reviewDecision")
+        if decision not in (None, "APPROVED", "CHANGES_REQUESTED", "REVIEW_REQUIRED"):
+            raise StateUnavailableError("review decision is malformed")
+        if pages and decision != review_decision:
+            raise StateUnavailableError("review decision changed during pagination")
+        review_decision = decision
+        if not isinstance(connection, dict) or not isinstance(connection.get("nodes"), list):
+            raise StateUnavailableError("review connection is malformed")
+        if not isinstance(page_info, dict) or type(page_info.get("hasNextPage")) is not bool:
+            raise StateUnavailableError("review pagination metadata is malformed")
+        for raw_node in connection["nodes"]:
+            node = _validated_review_node(raw_node, expected_head_sha)
+            previous = seen_reviews.get(node["id"])
+            if previous is not None:
+                if previous != node:
+                    raise StateUnavailableError("duplicate review identity is inconsistent")
+                continue
+            seen_reviews[node["id"]] = node
+            if len(seen_reviews) > MAX_REVIEW_API_NODES:
+                raise StateUnavailableError("review node bound exceeded")
+        pages += 1
+        if not page_info["hasNextPage"]:
+            end_cursor = page_info.get("endCursor")
+            if end_cursor is not None and not isinstance(end_cursor, str):
+                raise StateUnavailableError("review pagination cursor is malformed")
+            break
+        next_cursor = page_info.get("endCursor")
+        if not isinstance(next_cursor, str) or not next_cursor or next_cursor in seen_cursors:
+            raise StateUnavailableError("review pagination is incomplete")
+        seen_cursors.add(next_cursor)
+        cursor = next_cursor
+    return {
+        "complete": True,
+        "review_decision": review_decision,
+        "reviews": list(seen_reviews.values()),
+        "pages": pages,
+        "total_reviews": len(seen_reviews),
+    }
+
+
+def current_effective_reviews(pr_number, expected_head_sha, repo=""):
+    """Evaluate latest effective human review per reviewer, not raw history."""
+
+    fetched = fetch_pr_reviews(pr_number, expected_head_sha, repo)
+    by_reviewer = {}
+    for review in fetched["reviews"]:
+        if review["state"] == "PENDING":
+            continue
+        by_reviewer.setdefault(review["author_id"], []).append(review)
+    effective = []
+    for reviews in by_reviewer.values():
+        latest = None
+        for review in sorted(reviews, key=lambda item: (item["submitted_at"], item["id"])):
+            if review["state"] == "DISMISSED":
+                latest = None
+            elif review["state"] in {"APPROVED", "CHANGES_REQUESTED"}:
+                latest = review
+        if latest is not None:
+            effective.append(latest)
+    effective.sort(key=lambda item: (item["author_id"], item["submitted_at"], item["id"]))
+    requested_changes = [item for item in effective if item["state"] == "CHANGES_REQUESTED"]
+    decision = fetched["review_decision"]
+    if decision == "APPROVED" and requested_changes:
+        raise StateUnavailableError("review decision contradicts effective review nodes")
+    if decision == "CHANGES_REQUESTED" and not requested_changes:
+        raise StateUnavailableError("review decision contradicts effective review nodes")
+    if decision == "REVIEW_REQUIRED" and requested_changes:
+        raise StateUnavailableError("review decision contradicts effective review nodes")
+    return {
+        **fetched,
+        "effective_reviews": effective,
+        "requested_changes": requested_changes,
+        "requested_change_review_ids": [item["id"] for item in requested_changes],
+        "obsolete_head_requested_change_review_ids": [
+            item["id"] for item in requested_changes if not item["is_current_head"]
+        ],
+        "current_head_requested_change_review_ids": [
+            item["id"] for item in requested_changes if item["is_current_head"]
+        ],
+    }
+
+
+def review_threads_status(pr_number, expected_head_sha=None, repo=""):
+    """Fetch every review-thread page; partial results never authorize merge."""
+
+    # Preserve the former ``review_threads_status(pr, repo)`` call shape for
+    # read-only compatibility helpers.  Merge authorization always supplies
+    # an exact expected head and therefore cannot use this compatibility path.
+    if repo == "" and isinstance(expected_head_sha, str) and "/" in expected_head_sha:
+        repo = expected_head_sha
+        expected_head_sha = None
+    owner, name = _repo_parts(repo)
+    query = (
+        "query($owner:String!,$name:String!,$number:Int!,$after:String){"
+        "repository(owner:$owner,name:$name){pullRequest(number:$number){"
+        "headRefOid reviewThreads(first:100,after:$after){nodes{id isResolved}"
+        "pageInfo{hasNextPage endCursor}}}}}"
+    )
+    cursor = None
+    seen_cursors = set()
+    seen_thread_ids = set()
+    unresolved = []
+    pages = 0
+    while True:
+        if pages >= MAX_REVIEW_THREAD_PAGES:
+            raise StateUnavailableError("review thread page bound exceeded")
+        args = [
+            "api", "graphql", "-f", f"query={query}", "-F", f"owner={owner}",
+            "-F", f"name={name}", "-F", f"number={int(pr_number)}",
+        ]
+        if cursor is not None:
+            args.extend(["-f", f"after={cursor}"])
+        raw = _gh(*args)
+        if raw is None:
+            raise StateUnavailableError("review thread API is unavailable")
+        try:
+            payload = json.loads(raw)
+            if not isinstance(payload, dict) or payload.get("errors"):
+                raise ValueError
+            pull_request = payload["data"]["repository"]["pullRequest"]
+            connection = pull_request["reviewThreads"]
+            nodes = connection["nodes"]
+            page_info = connection["pageInfo"]
+        except (json.JSONDecodeError, KeyError, TypeError, ValueError) as exc:
+            raise StateUnavailableError("review thread API response is malformed") from exc
+        if not isinstance(pull_request, dict):
+            raise StateUnavailableError("review thread pull request is malformed")
+        if expected_head_sha is not None and pull_request.get("headRefOid") != expected_head_sha:
+            raise StateUnavailableError("review thread API head binding is stale or unavailable")
+        if not isinstance(nodes, list) or not isinstance(page_info, dict) or type(page_info.get("hasNextPage")) is not bool:
+            raise StateUnavailableError("review thread pagination metadata is malformed")
+        for node in nodes:
+            if not isinstance(node, dict) or not isinstance(node.get("id"), str) or not node["id"] or type(node.get("isResolved")) is not bool:
+                raise StateUnavailableError("review thread node is malformed")
+            if node["id"] in seen_thread_ids:
+                raise StateUnavailableError("duplicate review thread identity")
+            seen_thread_ids.add(node["id"])
+            if len(seen_thread_ids) > MAX_REVIEW_THREADS:
+                raise StateUnavailableError("review thread bound exceeded")
+            if not node["isResolved"]:
+                unresolved.append(node["id"])
+        pages += 1
+        if not page_info["hasNextPage"]:
+            end_cursor = page_info.get("endCursor")
+            if end_cursor is not None and not isinstance(end_cursor, str):
+                raise StateUnavailableError("review thread cursor is malformed")
+            return {
+                "complete": True,
+                "total_threads": len(seen_thread_ids),
+                "unresolved_thread_ids": unresolved,
+                "pages": pages,
+            }
+        next_cursor = page_info.get("endCursor")
+        if not isinstance(next_cursor, str) or not next_cursor or next_cursor in seen_cursors:
+            raise StateUnavailableError("review thread pagination is incomplete")
+        seen_cursors.add(next_cursor)
+        cursor = next_cursor
+
+
+def unresolved_review_threads(pr_number, repo=""):
+    """Compatibility helper; callers needing authorization use review_threads_status."""
+
+    try:
+        status = review_threads_status(pr_number, repo=repo)
+    except StateUnavailableError:
         return None
+    return status["unresolved_thread_ids"]
 
 
 def verify_merge_requirements(pr_number, issue_number, expected_sha, repo=""):
@@ -747,12 +1260,21 @@ def verify_merge_requirements(pr_number, issue_number, expected_sha, repo=""):
     review = read_review_state(issue_number, repo)
     if not review or review.get("pr_number") != int(pr_number) or review.get("verdict") != "PASS" or review.get("head_sha") != expected_sha:
         raise RuntimeError("review state is missing, mismatched, or not PASS")
-    if any(item.get("state") == "CHANGES_REQUESTED" for item in pr.get("reviews", [])):
-        raise RuntimeError("active requested-changes review exists")
-    threads = unresolved_review_threads(pr_number, repo)
-    if threads is None:
-        raise RuntimeError("review thread state is unavailable")
-    if threads:
+    try:
+        reviews = current_effective_reviews(pr_number, expected_sha, repo)
+    except StateUnavailableError as exc:
+        raise RuntimeError(f"current review state is unavailable: {exc}") from exc
+    if reviews["review_decision"] == "REVIEW_REQUIRED":
+        raise RuntimeError("current GitHub review decision requires review")
+    if reviews["requested_changes"]:
+        raise RuntimeError("current effective requested-changes review exists")
+    try:
+        threads = review_threads_status(pr_number, expected_sha, repo)
+    except StateUnavailableError as exc:
+        raise RuntimeError(f"review thread state is unavailable: {exc}") from exc
+    if not threads.get("complete"):
+        raise RuntimeError("review thread pagination is incomplete")
+    if threads["unresolved_thread_ids"]:
         raise RuntimeError("unresolved review thread exists")
     ci_state = read_ci_state(issue_number, repo)
     if not ci_state or ci_state.get("pr_number") != int(pr_number) or ci_state.get("head_sha") != expected_sha:
@@ -931,11 +1453,55 @@ def main():
         issue_number = int(sys.argv[2])
         pr_number = int(sys.argv[3])
         head_sha = sys.argv[4]
-        verdict = sys.argv[5]
-        summary = " ".join(sys.argv[6:]) if len(sys.argv) > 6 else ""
-        if not record_review_state(issue_number, pr_number, head_sha, verdict, summary, repo=repo):
-            print("FATAL: unable to persist review state", file=sys.stderr)
+        if len(sys.argv) != 7 or sys.argv[5] != "--evidence-file":
+            print(
+                "Usage: state_manager.py record-review <issue> <pr> <head> --evidence-file <validated-json>",
+                file=sys.stderr,
+            )
             sys.exit(1)
+        ok, reason = record_validated_review(
+            issue_number, pr_number, head_sha, sys.argv[6], repo=repo
+        )
+        if not ok:
+            print(f"FATAL: unable to persist validated review state: {reason}", file=sys.stderr)
+            sys.exit(1)
+        print(reason)
+
+    elif command == "record-review-failure":
+        issue_number = int(sys.argv[2])
+        pr_number = int(sys.argv[3])
+        head_sha = sys.argv[4]
+        if len(sys.argv) != 7 or sys.argv[5] != "--evidence-file":
+            print(
+                "Usage: state_manager.py record-review-failure <issue> <pr> <head> --evidence-file <validation-json>",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+        ok, reason = record_review_validation_failure(
+            issue_number, pr_number, head_sha, sys.argv[6], repo=repo
+        )
+        if not ok:
+            print(f"FATAL: unable to persist review validation failure: {reason}", file=sys.stderr)
+            sys.exit(1)
+        print(reason)
+
+    elif command == "record-review-infrastructure-failure":
+        issue_number = int(sys.argv[2])
+        pr_number = int(sys.argv[3])
+        head_sha = sys.argv[4]
+        if len(sys.argv) != 5:
+            print(
+                "Usage: state_manager.py record-review-infrastructure-failure <issue> <pr> <head>",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+        ok, reason = record_review_infrastructure_failure(
+            issue_number, pr_number, head_sha, repo=repo
+        )
+        if not ok:
+            print(f"FATAL: unable to persist review infrastructure failure: {reason}", file=sys.stderr)
+            sys.exit(1)
+        print(reason)
 
     elif command == "invalidate-evidence":
         issue_number = int(sys.argv[2])

@@ -139,10 +139,11 @@ class TestWorkflowContracts(unittest.TestCase):
         )
         self.assertIn("retry-review", self.read("agent-controller.yml"))
 
-    def test_review_summary_is_passed_through_environment_not_shell_expression(self):
+    def test_review_evidence_uses_a_sidecar_not_shell_or_workflow_output_text(self):
         source = self.read("agent-review.yml")
-        self.assertIn("REVIEW_SUMMARY: ${{ steps.verdict.outputs.summary }}", source)
-        self.assertIn('"$REVIEW_SUMMARY"', source)
+        self.assertIn("--evidence-file \"$RUNNER_TEMP/review-validation.json\"", source)
+        self.assertIn("record-review-failure", source)
+        self.assertNotIn("steps.verdict.outputs.summary", source)
 
     def test_string_workflow_inputs_are_not_interpolated_into_shell_scripts(self):
         forbidden = {

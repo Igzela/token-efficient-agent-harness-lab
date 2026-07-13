@@ -483,7 +483,11 @@ class TestCapacityRelease(unittest.TestCase):
             )
         self.assertTrue(ok, reason)
         transition.assert_called_once_with(42, sm.LABEL_BLOCKED, repo="acme/repo")
-        with mock.patch.object(sm, "set_labels", return_value=True) as transition:
+        with mock.patch.object(
+            sm,
+            "get_issue_labels_checked",
+            side_effect=[{sm.LABEL_REVIEW_RUNNING}, {sm.LABEL_REVIEW_BLOCKED}],
+        ), mock.patch.object(sm, "set_labels", return_value=True) as transition:
             self.assertTrue(sm.finalize_review_labels(42, "PASS_WITH_NOTES", "acme/repo"))
         transition.assert_called_once_with(42, sm.LABEL_REVIEW_BLOCKED, repo="acme/repo")
 

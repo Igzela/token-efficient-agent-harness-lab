@@ -138,16 +138,31 @@ jobs:
           path: ${{ runner.temp }}/review-artifact
       - name: Validate full review schema and exact reviewed head
         id: verdict
-        run: python3 scripts/agent-control/validate_review.py "$RUNNER_TEMP/review-artifact/review-result.json" "${{ inputs.pr_number }}" "$INPUT_HEAD_SHA"
-      - name: Recheck live control and binding before recording verdict
+        run: >-
+          python3 scripts/agent-control/validate_review.py
+          "$RUNNER_TEMP/review-artifact/review-result.json"
+          "${{ inputs.pr_number }}" "$INPUT_HEAD_SHA"
+          "$RUNNER_TEMP/review-validation.json"
+      - name: Record malformed or infrastructure review result without trusting it as a verdict
+        if: always() && steps.verdict.outcome == 'failure'
         env:
           AGENT_REPO: ${{ github.repository }}
           GH_TOKEN: ${{ github.token }}
-          REVIEW_SUMMARY: ${{ steps.verdict.outputs.summary }}
+        run: >-
+          python3 scripts/agent-control/state_manager.py record-review-failure
+          "${{ inputs.issue_number }}" "${{ inputs.pr_number }}" "$INPUT_HEAD_SHA"
+          --evidence-file "$RUNNER_TEMP/review-validation.json"
+      - name: Recheck live control and binding before recording verdict
+        if: steps.verdict.outcome == 'success'
+        env:
+          AGENT_REPO: ${{ github.repository }}
+          GH_TOKEN: ${{ github.token }}
         run: |
           python3 scripts/agent-control/control_state.py require-live >/dev/null
           python3 scripts/agent-control/state_manager.py verify-binding "${{ inputs.issue_number }}" "${{ inputs.pr_number }}" "$INPUT_HEAD_SHA"
-          python3 scripts/agent-control/state_manager.py record-review "${{ inputs.issue_number }}" "${{ inputs.pr_number }}" "$INPUT_HEAD_SHA" "${{ steps.verdict.outputs.verdict }}" "$REVIEW_SUMMARY"
+          python3 scripts/agent-control/state_manager.py record-review \
+            "${{ inputs.issue_number }}" "${{ inputs.pr_number }}" "$INPUT_HEAD_SHA" \
+            --evidence-file "$RUNNER_TEMP/review-validation.json"
       - name: Authorize only exact PASS
         if: steps.verdict.outputs.verdict == 'PASS'
         env:
@@ -186,5 +201,7 @@ jobs:
           AGENT_REPO: ${{ github.repository }}
           GH_TOKEN: ${{ github.token }}
         run: |
+          python3 scripts/agent-control/state_manager.py record-review-infrastructure-failure \
+            "${{ inputs.issue_number }}" "${{ inputs.pr_number }}" "$INPUT_HEAD_SHA"
           python3 scripts/agent-control/state_manager.py release-failed \
             "${{ inputs.issue_number }}" review-running agent-review-blocked "$INPUT_HEAD_SHA"
