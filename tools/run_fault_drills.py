@@ -15,7 +15,7 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from scripts.fault_drill_contract import ContractError, validate_report, write_canonical_json
+from scripts.fault_drill_contract import ContractError, validate_report_v2, write_canonical_json
 from scripts.fault_drill_harness import report_for, run_selected
 from scripts.fault_drill_registry import SUITE_NAMES, get_scenario, scenario_ids_for, validate_registry
 
@@ -89,7 +89,7 @@ def main(argv: list[str] | None = None) -> int:
             worker_id=args.worker,
             results=results,
         )
-        validate_report(report)
+        validate_report_v2(report)
         if args.output:
             write_canonical_json(_safe_output(Path(args.output)), report)
 
@@ -99,8 +99,9 @@ def main(argv: list[str] | None = None) -> int:
             for result in report["results"]:
                 print(
                     f"{result['scenario_id']} status={result['status']} "
-                    f"duration_ms={result['duration_ms']} "
-                    f"cleanup={result['cleanup_evidence']['outcome']}"
+                    f"observed_duration_ms={result['observed_duration_ms']} "
+                    f"configured_timeout_ms={result['configured_timeout_ms']} "
+                    f"cleanup={result['harness_cleanup']['outcome']}"
                 )
             print(f"report_sha256={report['report_sha256']}")
 

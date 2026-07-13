@@ -16,6 +16,8 @@ class FaultDrillEvidenceTests(unittest.TestCase):
         self.assertIn('python -m unittest discover -s tools -p "test_*.py"', workflow)
         self.assertIn("cargo test -p engine", workflow)
         self.assertIn("cargo test -p engine --features pg-tests -- --test-threads=1", workflow)
+        self.assertIn("tools/run_fault_drills.py --suite storage", workflow)
+        self.assertIn("--require-supported", workflow)
         self.assertNotIn("fault_drill_harness.py --arbitrary-command", workflow)
 
     def test_only_named_suites_or_registered_ids_are_selectable(self) -> None:
@@ -23,7 +25,7 @@ class FaultDrillEvidenceTests(unittest.TestCase):
         with self.assertRaises(ContractError):
             scenario_ids_for(suite="all; rm -rf /")
         with self.assertRaises(ContractError):
-            scenario_ids_for(scenario_id="pe6.storage.sqlite.atomicity.v1 --shell")
+            scenario_ids_for(scenario_id="pe6.storage.sqlite.atomicity.v2 --shell")
 
 
 if __name__ == "__main__":

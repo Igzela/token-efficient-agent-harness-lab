@@ -35,8 +35,8 @@ class FaultDrillRegistryTests(unittest.TestCase):
     def test_allowlisted_suites_and_filters_have_no_arbitrary_input(self) -> None:
         self.assertEqual(set(scenario_ids_for(suite="all")), set(SCENARIOS_BY_ID))
         self.assertEqual(
-            scenario_ids_for(scenario_id="pe6.release.provenance_rollback.v1"),
-            ("pe6.release.provenance_rollback.v1",),
+            scenario_ids_for(scenario_id="pe6.release.provenance_rollback.v2"),
+            ("pe6.release.provenance_rollback.v2",),
         )
         for suite, ids in SUITES.items():
             self.assertTrue(suite)
@@ -49,7 +49,7 @@ class FaultDrillRegistryTests(unittest.TestCase):
             scenario_ids_for(suite="not-registered")
 
     def test_worker_identity_is_deterministic_but_isolated(self) -> None:
-        spec = get_scenario("pe6.storage.sqlite.atomicity.v1")
+        spec = get_scenario("pe6.storage.sqlite.atomicity.v2")
         first = scenario_for(spec, source_head="a" * 40, seed=4, worker_id=1)
         repeated = scenario_for(spec, source_head="a" * 40, seed=4, worker_id=1)
         other_worker = scenario_for(spec, source_head="a" * 40, seed=4, worker_id=2)

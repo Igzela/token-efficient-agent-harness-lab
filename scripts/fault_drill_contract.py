@@ -23,6 +23,20 @@ CLEANUP_EVIDENCE_SCHEMA_VERSION = "fault_cleanup_evidence.v1"
 REPORT_SCHEMA_VERSION = "fault_drill_report.v1"
 REGISTRY_SCHEMA_VERSION = "fault_registry.v1"
 
+SCENARIO_SCHEMA_VERSION_V2 = "fault_scenario.v2"
+OWNER_EVIDENCE_SCHEMA_VERSION_V2 = "fault_owner_evidence.v2"
+RESULT_SCHEMA_VERSION_V2 = "fault_drill_result.v2"
+REPORT_SCHEMA_VERSION_V2 = "fault_drill_report.v2"
+REGISTRY_SCHEMA_VERSION_V2 = "fault_registry.v2"
+EVIDENCE_CATEGORIES_V2 = (
+    "recovery",
+    "rollback",
+    "integrity",
+    "audit",
+    "restart",
+    "cleanup",
+)
+
 MAX_JSON_BYTES = 1024 * 1024
 MAX_STRING_BYTES = 2048
 MAX_ARRAY_ITEMS = 256
@@ -30,6 +44,7 @@ MAX_OBJECT_FIELDS = 64
 MAX_JSON_DEPTH = 12
 MAX_EVIDENCE_REFS = 64
 MAX_DURATION_MS = 120_000
+MAX_OBSERVED_DURATION_MS = 150_000
 MAX_RETRIES = 3
 MAX_PROCESSES = 4
 MAX_FILES = 256
@@ -777,4 +792,339 @@ def validate_report(report: Mapping[str, Any]) -> dict[str, Any]:
     _check_bounds(report)
     if len(canonical_json_bytes(report)) > MAX_JSON_BYTES:
         raise ContractError("report exceeds PE-6 bound")
+    return dict(report)
+
+
+def validate_scenario_v2(scenario: Mapping[str, Any]) -> dict[str, Any]:
+    """Validate the v2 scenario explicitly without reinterpreting v1 evidence."""
+
+    if not isinstance(scenario, dict) or scenario.get("schema_version") != SCENARIO_SCHEMA_VERSION_V2:
+        raise ContractError("unsupported v2 fault scenario schema")
+    legacy_shape = dict(scenario)
+    legacy_shape["schema_version"] = SCENARIO_SCHEMA_VERSION
+    validate_scenario(legacy_shape)
+    if scenario.get("scenario_version") != "v2":
+        raise ContractError("v2 scenario must declare scenario_version v2")
+    return dict(scenario)
+
+
+def scenario_sha256_v2(scenario: Mapping[str, Any]) -> str:
+    return sha256_value(validate_scenario_v2(scenario))
+
+
+def validate_owner_evidence_v2(
+    evidence: Mapping[str, Any], scenario: Mapping[str, Any]
+) -> dict[str, Any]:
+    validated_scenario = validate_scenario_v2(scenario)
+    if not isinstance(evidence, dict):
+        raise ContractError("owner evidence must be an object")
+    _require_fields(
+        evidence,
+        {
+            "schema_version",
+            "scenario_id",
+            "scenario_version",
+            "scenario_sha256",
+            "source_head",
+            "fault",
+            "owner",
+            "observed_state_before_fault",
+            "observed_fault",
+            "observed_recovery_or_refusal",
+            "checks",
+            "cleanup",
+        },
+        "owner evidence v2",
+    )
+    if evidence["schema_version"] != OWNER_EVIDENCE_SCHEMA_VERSION_V2:
+        raise ContractError("unsupported owner evidence schema")
+    for field in ("scenario_id", "scenario_version", "source_head"):
+        if evidence[field] != validated_scenario[field]:
+            raise ContractError(f"owner evidence {field} binding mismatch")
+    if evidence["scenario_sha256"] != scenario_sha256_v2(validated_scenario):
+        raise ContractError("owner evidence scenario hash mismatch")
+    fault = evidence["fault"]
+    if not isinstance(fault, dict):
+        raise ContractError("owner evidence fault must be an object")
+    _require_fields(fault, {"fault_id", "injection_point"}, "owner evidence fault")
+    if fault != {
+        "fault_id": validated_scenario["fault"]["fault_id"],
+        "injection_point": validated_scenario["fault"]["injection_point"],
+    }:
+        raise ContractError("owner evidence fault binding mismatch")
+    owner = evidence["owner"]
+    if not isinstance(owner, dict):
+        raise ContractError("owner evidence owner must be an object")
+    _require_fields(owner, {"identity", "resource_ids"}, "owner evidence owner")
+    if owner["identity"] != validated_scenario["owner"]:
+        raise ContractError("owner evidence identity mismatch")
+    resource_ids = _bounded_string_list(owner["resource_ids"], "owner resource_ids", allow_empty=False)
+    expected_resources = [resource["resource_id"] for resource in validated_scenario["resources"]]
+    if sorted(resource_ids) != sorted(expected_resources) or len(set(resource_ids)) != len(resource_ids):
+        raise ContractError("owner evidence resource identity mismatch")
+    for field in (
+        "observed_state_before_fault",
+        "observed_fault",
+        "observed_recovery_or_refusal",
+    ):
+        value = _required_string(evidence, field)
+        if value in {
+            "fixed owner test completed successfully",
+            "existing recovery owner was observed through the fixed test seam",
+            "previous known-good state remained bounded by the owner test",
+        }:
+            raise ContractError("generic canned owner observation is forbidden")
+    checks = evidence["checks"]
+    if not isinstance(checks, list) or not checks or len(checks) > MAX_EVENTS:
+        raise ContractError("owner evidence checks are missing or oversized")
+    seen_names: set[str] = set()
+    scenario_markers: set[str] = set()
+    for segment in validated_scenario["scenario_id"].split(".")[1:-1]:
+        scenario_markers.add(segment)
+        scenario_markers.update(part for part in segment.split("_") if part)
+    categories: dict[str, set[str]] = {category: set() for category in EVIDENCE_CATEGORIES_V2}
+    for check in checks:
+        if not isinstance(check, dict):
+            raise ContractError("owner check must be an object")
+        _require_fields(check, {"name", "category", "outcome", "observation"}, "owner check")
+        name = _required_string(check, "name")
+        if name in seen_names or not name.startswith("pe6.") or name.endswith("_invariant"):
+            raise ContractError("owner check name is duplicate or generic")
+        if not any(marker and marker in name.split(".") for marker in scenario_markers):
+            raise ContractError("owner check name is not scenario-specific")
+        seen_names.add(name)
+        category = check["category"]
+        outcome = check["outcome"]
+        if category not in categories or outcome not in {"passed", "failed", "unsupported"}:
+            raise ContractError("owner check category or outcome is invalid")
+        _required_string(check, "observation")
+        categories[category].add(outcome)
+    for outcomes in categories.values():
+        if "passed" in outcomes and "unsupported" in outcomes:
+            raise ContractError("one evidence category cannot be both passed and unsupported")
+    cleanup = evidence["cleanup"]
+    if not isinstance(cleanup, dict):
+        raise ContractError("owner cleanup evidence must be an object")
+    _require_fields(cleanup, {"outcome", "observation"}, "owner cleanup")
+    if cleanup["outcome"] not in {"passed", "failed"}:
+        raise ContractError("owner cleanup outcome is invalid")
+    _required_string(cleanup, "observation")
+    rendered = canonical_json_bytes(evidence).decode("utf-8").lower()
+    if any(fragment in rendered for fragment in _FORBIDDEN_EVIDENCE_FRAGMENTS):
+        raise ContractError("owner evidence contains forbidden raw or secret-shaped data")
+    _check_bounds(evidence)
+    return dict(evidence)
+
+
+def category_outcomes_v2(evidence: Mapping[str, Any]) -> dict[str, str]:
+    outcomes: dict[str, str] = {}
+    checks = evidence.get("checks", []) if isinstance(evidence, dict) else []
+    for category in EVIDENCE_CATEGORIES_V2:
+        values = [
+            check["outcome"]
+            for check in checks
+            if isinstance(check, dict) and check.get("category") == category
+        ]
+        if "failed" in values:
+            outcomes[category] = "failed"
+        elif "passed" in values:
+            outcomes[category] = "passed"
+        else:
+            outcomes[category] = "unsupported"
+    return outcomes
+
+
+def build_result_v2(
+    *,
+    scenario: Mapping[str, Any],
+    configured_timeout_ms: int,
+    observed_duration_ms: int,
+    owner_exit_code: int | None,
+    owner_evidence: Mapping[str, Any] | None,
+    owner_evidence_sha256: str | None,
+    status: str,
+    reason_codes: list[str],
+    harness_cleanup: Mapping[str, Any],
+) -> dict[str, Any]:
+    validated_scenario = validate_scenario_v2(scenario)
+    categories = (
+        category_outcomes_v2(owner_evidence)
+        if owner_evidence is not None
+        else {category: "unsupported" for category in EVIDENCE_CATEGORIES_V2}
+    )
+    result = {
+        "schema_version": RESULT_SCHEMA_VERSION_V2,
+        "scenario_id": validated_scenario["scenario_id"],
+        "scenario_version": validated_scenario["scenario_version"],
+        "scenario_sha256": scenario_sha256_v2(validated_scenario),
+        "source_head": validated_scenario["source_head"],
+        "owner": validated_scenario["owner"],
+        "resources": validated_scenario["resources"],
+        "fault": validated_scenario["fault"],
+        "configured_timeout_ms": configured_timeout_ms,
+        "observed_duration_ms": observed_duration_ms,
+        "owner_exit_code": owner_exit_code,
+        "owner_evidence_sha256": owner_evidence_sha256,
+        "owner_evidence": dict(owner_evidence) if owner_evidence is not None else None,
+        "category_outcomes": categories,
+        "harness_cleanup": dict(harness_cleanup),
+        "status": status,
+        "reason_codes": list(dict.fromkeys(reason_codes)),
+    }
+    return validate_result_v2(result, validated_scenario)
+
+
+def validate_result_v2(
+    result: Mapping[str, Any], scenario: Mapping[str, Any] | None = None
+) -> dict[str, Any]:
+    if not isinstance(result, dict):
+        raise ContractError("v2 drill result must be an object")
+    required = {
+        "schema_version", "scenario_id", "scenario_version", "scenario_sha256",
+        "source_head", "owner", "resources", "fault", "configured_timeout_ms",
+        "observed_duration_ms", "owner_exit_code", "owner_evidence_sha256",
+        "owner_evidence", "category_outcomes", "harness_cleanup", "status", "reason_codes",
+    }
+    _require_fields(result, required, "drill result v2")
+    if result["schema_version"] != RESULT_SCHEMA_VERSION_V2:
+        raise ContractError("unsupported v2 drill result schema")
+    if not SOURCE_HEAD_RE.fullmatch(str(result["source_head"])):
+        raise ContractError("v2 result source head is invalid")
+    configured_timeout = result["configured_timeout_ms"]
+    if (
+        not isinstance(configured_timeout, int)
+        or isinstance(configured_timeout, bool)
+        or not 1 <= configured_timeout <= MAX_DURATION_MS
+    ):
+        raise ContractError("v2 configured timeout is outside bounds")
+    observed_duration = result["observed_duration_ms"]
+    if (
+        not isinstance(observed_duration, int)
+        or isinstance(observed_duration, bool)
+        or not 0 <= observed_duration <= MAX_OBSERVED_DURATION_MS
+    ):
+        raise ContractError("v2 observed duration is outside bounds")
+    if result["owner_exit_code"] is not None and not isinstance(result["owner_exit_code"], int):
+        raise ContractError("owner exit code must be integer or null")
+    evidence = result["owner_evidence"]
+    if evidence is None:
+        if result["owner_evidence_sha256"] is not None:
+            raise ContractError("missing owner evidence cannot have a hash")
+    else:
+        if scenario is None:
+            if not isinstance(evidence, dict):
+                raise ContractError("embedded owner evidence must be an object")
+            for field in ("scenario_id", "scenario_version", "scenario_sha256", "source_head"):
+                if evidence.get(field) != result[field]:
+                    raise ContractError("embedded owner evidence result binding mismatch")
+            owner = evidence.get("owner")
+            if not isinstance(owner, dict) or owner.get("identity") != result["owner"]:
+                raise ContractError("embedded owner identity differs from result")
+            expected_resource_ids = [item["resource_id"] for item in result["resources"]]
+            if sorted(owner.get("resource_ids", [])) != sorted(expected_resource_ids):
+                raise ContractError("embedded owner resources differ from result")
+            if evidence.get("fault") != {
+                "fault_id": result["fault"]["fault_id"],
+                "injection_point": result["fault"]["injection_point"],
+            }:
+                raise ContractError("embedded owner fault differs from result")
+        else:
+            validate_owner_evidence_v2(evidence, scenario)
+        evidence_sha = _required_sha(
+            result["owner_evidence_sha256"], "owner evidence sha256"
+        )
+        if evidence_sha != hashlib.sha256(canonical_json_bytes(evidence)).hexdigest():
+            raise ContractError("owner evidence hash differs from emitted canonical evidence")
+    categories = result["category_outcomes"]
+    if not isinstance(categories, dict) or set(categories) != set(EVIDENCE_CATEGORIES_V2):
+        raise ContractError("v2 category outcomes are incomplete")
+    if any(value not in {"passed", "failed", "unsupported"} for value in categories.values()):
+        raise ContractError("v2 category outcome is invalid")
+    if evidence is not None and categories != category_outcomes_v2(evidence):
+        raise ContractError("v2 category outcomes were not derived from owner checks")
+    cleanup = result["harness_cleanup"]
+    if not isinstance(cleanup, dict) or set(cleanup) != {"outcome", "observation"}:
+        raise ContractError("harness cleanup evidence is invalid")
+    if cleanup["outcome"] not in {"passed", "failed"}:
+        raise ContractError("harness cleanup outcome is invalid")
+    _required_string(cleanup, "observation")
+    if result["status"] not in STATUSES:
+        raise ContractError("v2 result status is invalid")
+    reasons = _bounded_string_list(result["reason_codes"], "v2 reason_codes")
+    if len(set(reasons)) != len(reasons):
+        raise ContractError("v2 reason codes must be unique")
+    if result["status"] == "passed":
+        if evidence is None or result["owner_exit_code"] != 0:
+            raise ContractError("zero exit plus valid owner evidence is required to pass")
+        if cleanup["outcome"] != "passed" or categories["cleanup"] != "passed":
+            raise ContractError("passed drill must prove owner and harness cleanup")
+        if categories["recovery"] != "passed":
+            raise ContractError("passed drill must prove scenario-specific recovery or refusal")
+        if "failed" in categories.values():
+            raise ContractError("failed owner check cannot produce a passed drill")
+    if result["status"] == "cleanup_failed":
+        owner_cleanup_failed = (
+            isinstance(evidence, dict)
+            and isinstance(evidence.get("cleanup"), dict)
+            and evidence["cleanup"].get("outcome") == "failed"
+        )
+        if cleanup["outcome"] != "failed" and not owner_cleanup_failed:
+            raise ContractError("cleanup_failed must bind owner or harness cleanup failure")
+    if scenario is not None:
+        validated_scenario = validate_scenario_v2(scenario)
+        for field in ("scenario_id", "scenario_version", "source_head", "owner", "resources", "fault"):
+            if result[field] != validated_scenario[field]:
+                raise ContractError(f"v2 result {field} binding mismatch")
+        if result["scenario_sha256"] != scenario_sha256_v2(validated_scenario):
+            raise ContractError("v2 result scenario hash mismatch")
+        if result["configured_timeout_ms"] != validated_scenario["timeout_ms"]:
+            raise ContractError("configured timeout differs from scenario")
+    _check_bounds(result)
+    return dict(result)
+
+
+def build_report_v2(
+    *, suite: str, source_head: str, results: list[Mapping[str, Any]],
+) -> dict[str, Any]:
+    if not suite or not SOURCE_HEAD_RE.fullmatch(source_head) or not results:
+        raise ContractError("v2 report identity or results are invalid")
+    normalized = sorted((dict(result) for result in results), key=lambda item: item["scenario_id"])
+    counts = {status: 0 for status in sorted(STATUSES)}
+    for result in normalized:
+        validated_result = validate_result_v2(result)
+        if validated_result.get("source_head") != source_head:
+            raise ContractError("v2 report result binding mismatch")
+        counts[validated_result["status"]] += 1
+    report = {
+        "schema_version": REPORT_SCHEMA_VERSION_V2,
+        "registry_schema_version": REGISTRY_SCHEMA_VERSION_V2,
+        "suite": suite,
+        "source_head": source_head,
+        "results": normalized,
+        "summary": {"counts": counts, "total": len(normalized)},
+    }
+    report["report_sha256"] = sha256_value(report)
+    _check_bounds(report)
+    return report
+
+
+def validate_report_v2(report: Mapping[str, Any]) -> dict[str, Any]:
+    if not isinstance(report, dict):
+        raise ContractError("v2 report must be an object")
+    _require_fields(
+        report,
+        {"schema_version", "registry_schema_version", "suite", "source_head", "results", "summary", "report_sha256"},
+        "report v2",
+    )
+    if report["schema_version"] != REPORT_SCHEMA_VERSION_V2 or report["registry_schema_version"] != REGISTRY_SCHEMA_VERSION_V2:
+        raise ContractError("unsupported v2 report schema")
+    if report["report_sha256"] != sha256_value({key: value for key, value in report.items() if key != "report_sha256"}):
+        raise ContractError("v2 report hash mismatch")
+    rebuilt = build_report_v2(
+        suite=_required_string(report, "suite"),
+        source_head=_required_string(report, "source_head"),
+        results=report["results"],
+    )
+    if rebuilt != report:
+        raise ContractError("v2 report content or summary mismatch")
     return dict(report)

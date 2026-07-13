@@ -40,18 +40,18 @@ There is no pending PE-4 documentation-head or post-merge CI requirement. The ev
 
 | Stage | Priority | Capability | Current state |
 |---|---|---|---|
-| PE-5 | P1.5 | Release Provenance | Prior seal under post-seal correctness repair in `PE56-POST-SEAL-REPAIR-1`; grouped `PE5-CONTRACT-1` through `PE5-PUBLISH-1` and PRs #210-#211 remain historical evidence only until the repair is accepted |
-| PE-6 | P2 | Fault Injection and Recovery Drills | Prior seal under post-seal correctness repair in `PE56-POST-SEAL-REPAIR-1`; PRs #212-#213 remain historical evidence only until the repair is accepted |
+| PE-5 | P1.5 | Release Provenance | `PE56-POST-SEAL-REPAIR-1` is implemented locally; the prior seal remains under repair until the reviewed exact head and post-merge `main` pass required CI |
+| PE-6 | P2 | Fault Injection and Recovery Drills | `PE56-POST-SEAL-REPAIR-1` is implemented locally; the prior seal remains under repair until the reviewed exact head and post-merge `main` pass required CI |
 
 The detailed contracts and normative order are in `docs/NEXT_DECISION.md`.
 
 ## Current Gaps
 
-- PE-5's prior acceptance is under repair. The current chain emits only an SBOM attestation, can accept API-fetched evidence instead of the distributed bundles, uses a placeholder dependency inventory, permits a mutable bootstrap, incompletely validates rollback identity/archive bounds, and overstates install/rollback restoration.
+- PE-5's prior acceptance remains under repair pending required CI. The repair implements separate exact-local SLSA, SPDX, and `release_provenance.v2` manifest bundles; immutable attested bootstrap assets; real Cargo/Bun dependency inventory; explicit first/previous-release state; bounded archive validation; and verified transactional install/rollback outcomes. The grouped `PE5-CONTRACT-1` through `PE5-PUBLISH-1` milestones and PRs #210-#211 remain historical only where their semantics are weaker.
 - `policy_simulator.rs` still relies on fixed estimates rather than trace-calibrated replay; this remains outside PE-5/PE-6 unless a packet demonstrates a prerequisite impact.
-- PE-6's prior acceptance is under repair. The current harness synthesizes six successful evidence categories from a zero owner-command exit code, records a fixed successful duration, and the PostgreSQL registry claims an interruption that its owner test does not inject. Cleanup, unsupported PostgreSQL, and no-external-action limits remain explicit.
+- PE-6's prior acceptance remains under repair pending required CI. The repair implements versioned owner-emitted evidence, monotonic observed duration, category outcomes derived only from scenario-specific checks, and a real PostgreSQL pre-commit interruption with atomic state/audit retry and cleanup. Stronger historical registry claims were either implemented or narrowed. PRs #212-#213 remain historical only where their semantics are weaker.
 - External destructive testing, production provider calls, real target-repository corruption, and persistent signing secrets remain unauthorized.
-- The local PE-5 dry run uses a fixture identity and is explicitly `verified_fixture`, never production `verified`; no external production identity, real tag, or public release was exercised.
+- Historical v1 release fixtures remain readable for compatibility tests but are structurally limited to `verified_fixture`, never production `verified`. No external production identity, real tag, public release, or production installation was exercised by this repair.
 - PostgreSQL owner drills are available only through the existing GitHub Actions `pg-tests` disposable service path; environments without that exact service identity report explicit `unsupported` evidence rather than pass, including arbitrary local `ACP_TEST_DATABASE_URL` values.
 - Remote adapter support for the local runner and new external runtime frameworks remain deferred.
 

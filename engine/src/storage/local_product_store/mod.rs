@@ -226,6 +226,51 @@ impl LocalProductStore {
         }
     }
 
+    #[cfg(feature = "pg-tests")]
+    pub fn inject_pg_config_transaction_failure_for_test(
+        &self,
+        key: &str,
+        value: &Value,
+    ) -> Result<(), String> {
+        if !key.starts_with("pe6-drill-") {
+            return Err("PE-6 PostgreSQL fault keys must use the disposable prefix".into());
+        }
+        self.with_pg_conn(|client| {
+            let mut transaction = client.transaction().map_err(|error| error.to_string())?;
+            let now = self.now();
+            let value_json = value.to_string();
+            transaction
+                .execute(
+                    "INSERT INTO local_config (key, value_json, updated_at, updated_by)
+                     VALUES ($1, $2, $3, $4)
+                     ON CONFLICT(key) DO UPDATE SET
+                        value_json = excluded.value_json,
+                        updated_at = excluded.updated_at,
+                        updated_by = excluded.updated_by",
+                    &[&key, &value_json, &now, &"pe6-test"],
+                )
+                .map_err(|error| error.to_string())?;
+            Err("PE-6 injected interruption before audit and commit".into())
+        })
+    }
+
+    #[cfg(feature = "pg-tests")]
+    pub fn cleanup_pg_fault_drill_for_test(&self, key: &str) -> Result<(), String> {
+        if !key.starts_with("pe6-drill-") {
+            return Err("PE-6 PostgreSQL cleanup key is outside the disposable prefix".into());
+        }
+        self.with_pg_conn(|client| {
+            let mut transaction = client.transaction().map_err(|error| error.to_string())?;
+            transaction
+                .execute("DELETE FROM audit_log WHERE resource = $1", &[&key])
+                .map_err(|error| error.to_string())?;
+            transaction
+                .execute("DELETE FROM local_config WHERE key = $1", &[&key])
+                .map_err(|error| error.to_string())?;
+            transaction.commit().map_err(|error| error.to_string())
+        })
+    }
+
     #[cfg(feature = "pg")]
     fn run_pg_migrations(&self) -> Result<(), String> {
         self.run_pg_migrations_internal()

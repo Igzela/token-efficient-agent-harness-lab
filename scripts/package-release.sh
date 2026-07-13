@@ -127,20 +127,35 @@ printf '%s  %s\n' "${SHA256}" "$(basename "${TARBALL}")" > "${CHECKSUM_FILE}"
 
 METADATA_FILE="${DIST_DIR}/${ARTIFACT_NAME}.metadata.json"
 SBOM_FILE="${TARBALL}.spdx.json"
-ATTESTATION_FILE="${TARBALL}.attestation.json"
-PROVENANCE_FILE="${TARBALL}.provenance.json"
+MANIFEST_FILE="${TARBALL}.release-manifest.json"
+SLSA_BUNDLE_FILE="${TARBALL}.slsa.bundle.json"
+SPDX_BUNDLE_FILE="${TARBALL}.spdx.bundle.json"
+MANIFEST_BUNDLE_FILE="${TARBALL}.release-manifest.bundle.json"
 VERIFICATION_FILE="${TARBALL}.verification.json"
+ROLLBACK_FILE="${DIST_DIR}/${ARTIFACT_NAME}.rollback.json"
+BOOTSTRAP_FILE="${DIST_DIR}/${ARTIFACT_NAME}.bootstrap.json"
 SOURCE_COMMIT="$(git -C "${REPO_ROOT}" rev-parse HEAD)"
+REPOSITORY="$(git -C "${REPO_ROOT}" config --get remote.origin.url | sed -E 's#.*github.com[:/]##; s#\.git$##')"
+printf '{"previous":null,"state":"first_release"}\n' > "${ROLLBACK_FILE}"
+python3 - "${BOOTSTRAP_FILE}" "${SOURCE_COMMIT}" "${REPO_ROOT}" <<'PY'
+import hashlib, json, pathlib, sys
+records = []
+for name in ("install-from-release.sh", "release_provenance.py"):
+    path = pathlib.Path(sys.argv[3]) / "scripts" / name
+    records.append({"filename": name, "sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
+                    "source_commit": sys.argv[2], "predicate_type": "https://slsa.dev/provenance/v1"})
+pathlib.Path(sys.argv[1]).write_text(json.dumps(records, sort_keys=True, separators=(",", ":")) + "\n", encoding="utf-8")
+PY
 
 echo "Generating deterministic dry-run release evidence..."
 python3 "${REPO_ROOT}/scripts/release_provenance.py" write-metadata \
     --root "${REPO_ROOT}" \
     --output "${METADATA_FILE}" \
-    --repository "$(git -C "${REPO_ROOT}" config --get remote.origin.url | sed -E 's#.*github.com[:/]##; s#\.git$##')" \
+    --repository "${REPOSITORY}" \
     --source-commit "${SOURCE_COMMIT}" \
     --ref "refs/tags/${TAG}" \
     --workflow ".github/workflows/release.yml" \
-    --workflow-ref "local-dry-run/.github/workflows/release.yml@refs/tags/${TAG}" \
+    --workflow-ref "${REPOSITORY}/.github/workflows/release.yml@refs/tags/${TAG}" \
     --run-id "local-dry-run" \
     --job "local-package" \
     --builder-id "local-dry-run" \
@@ -149,8 +164,7 @@ python3 "${REPO_ROOT}/scripts/release_provenance.py" write-metadata \
     --target-triple "${TARGET}" \
     --package-kind "package" \
     --artifact-name "$(basename "${TARBALL}")" \
-    --previous-known-good "${ACP_PREVIOUS_KNOWN_GOOD:-not-published-dry-run}" \
-    --rollback-target "${ACP_PREVIOUS_KNOWN_GOOD:-not-published-dry-run}" \
+    --rollback-file "${ROLLBACK_FILE}" \
     --publication-mode "dry-run" \
     --lockfile "Cargo.lock" \
     --lockfile "dashboard/bun.lock" \
@@ -159,26 +173,32 @@ python3 "${REPO_ROOT}/scripts/release_provenance.py" write-metadata \
     --build-input ".env.example" \
     --build-input "dashboard/package.json"
 python3 "${REPO_ROOT}/scripts/release_provenance.py" create-sbom \
+    --root "${REPO_ROOT}" \
     --metadata "${METADATA_FILE}" \
     --artifact "${TARBALL}" \
     --output "${SBOM_FILE}"
-python3 "${REPO_ROOT}/scripts/release_provenance.py" create-attestation \
+python3 "${REPO_ROOT}/scripts/release_provenance.py" create-manifest \
     --metadata "${METADATA_FILE}" \
     --artifact "${TARBALL}" \
     --sbom "${SBOM_FILE}" \
-    --output "${ATTESTATION_FILE}" \
-    --identity fixture
-python3 "${REPO_ROOT}/scripts/release_provenance.py" create-provenance \
-    --metadata "${METADATA_FILE}" \
+    --bootstrap "${BOOTSTRAP_FILE}" \
+    --output "${MANIFEST_FILE}"
+python3 "${REPO_ROOT}/scripts/release_provenance.py" create-fixture-bundle \
+    --metadata "${METADATA_FILE}" --artifact "${TARBALL}" --role slsa \
+    --output "${SLSA_BUNDLE_FILE}"
+python3 "${REPO_ROOT}/scripts/release_provenance.py" create-fixture-bundle \
+    --metadata "${METADATA_FILE}" --artifact "${TARBALL}" --role spdx \
+    --predicate "${SBOM_FILE}" --output "${SPDX_BUNDLE_FILE}"
+python3 "${REPO_ROOT}/scripts/release_provenance.py" create-fixture-bundle \
+    --metadata "${METADATA_FILE}" --artifact "${TARBALL}" --role release_manifest \
+    --predicate "${MANIFEST_FILE}" --output "${MANIFEST_BUNDLE_FILE}"
+python3 "${REPO_ROOT}/scripts/release_provenance.py" verify-release \
     --artifact "${TARBALL}" \
     --sbom "${SBOM_FILE}" \
-    --attestation "${ATTESTATION_FILE}" \
-    --output "${PROVENANCE_FILE}"
-python3 "${REPO_ROOT}/scripts/release_provenance.py" verify \
-    --artifact "${TARBALL}" \
-    --sbom "${SBOM_FILE}" \
-    --attestation "${ATTESTATION_FILE}" \
-    --provenance "${PROVENANCE_FILE}" \
+    --manifest "${MANIFEST_FILE}" \
+    --slsa-bundle "${SLSA_BUNDLE_FILE}" \
+    --spdx-bundle "${SPDX_BUNDLE_FILE}" \
+    --manifest-bundle "${MANIFEST_BUNDLE_FILE}" \
     --mode fixture \
     --output "${VERIFICATION_FILE}" >/dev/null
 
@@ -188,7 +208,10 @@ echo "  Path:    ${TARBALL}"
 echo "  Size:    ${TARBALL_SIZE} bytes"
 echo "  SHA256:  ${SHA256}"
 echo "  SBOM:    ${SBOM_FILE}"
-echo "  Provenance: ${PROVENANCE_FILE}"
+echo "  Release manifest: ${MANIFEST_FILE}"
+echo "  SLSA bundle: ${SLSA_BUNDLE_FILE}"
+echo "  SPDX bundle: ${SPDX_BUNDLE_FILE}"
+echo "  Manifest bundle: ${MANIFEST_BUNDLE_FILE}"
 echo "  Verification: ${VERIFICATION_FILE} (fixture; non-authoritative)"
 echo ""
 echo "Contents:"
