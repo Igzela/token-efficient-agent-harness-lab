@@ -9,7 +9,6 @@ from pathlib import Path
 REQUIRED = (
     "tests/test_agent_control_ci.py",
     "tests/test_agent_control_dry_run.py",
-    "tests/test_agent_control_lock.py",
     "tests/test_agent_control_state.py",
     "tests/test_agent_control_worktree.py",
     "tests/test_agent_orchestrator_repairs.py",

@@ -9,6 +9,7 @@ import os
 import re
 import subprocess
 import sys
+from dataclasses import asdict, dataclass
 from pathlib import Path
 
 
@@ -27,11 +28,94 @@ LABEL_COMPLETE = "agent-complete"
 
 ACTIVE_LABELS = {LABEL_RUNNING, LABEL_CI_REPAIRING, LABEL_REVIEW_RUNNING}
 TERMINAL_LABELS = {LABEL_COMPLETE, LABEL_BLOCKED, LABEL_REVIEW_BLOCKED}
+TRUSTED_STATE_AUTHORS = frozenset({"github-actions", "github-actions[bot]"})
 ALL_LABELS = ACTIVE_LABELS | TERMINAL_LABELS | {
     LABEL_DRAFT, LABEL_READY, LABEL_REVIEW_PASSED, LABEL_MERGE_READY,
 }
 
 MAX_REPAIR_ATTEMPTS = 2
+
+
+class StateUnavailableError(RuntimeError):
+    """Raised when durable GitHub-hosted state cannot be read unambiguously."""
+
+
+def _state_wire(kind, version, state):
+    return {"kind": kind, "version": version, **asdict(state)}
+
+
+@dataclass(frozen=True)
+class WorkerState:
+    pr_number: int
+    head_sha: str
+    worker_type: str
+    extra: dict
+
+    def to_wire(self):
+        return _state_wire("agent-orchestrator-state", 1, self)
+
+
+@dataclass(frozen=True)
+class CIState:
+    pr_number: int
+    head_sha: str
+    workflow_run_id: object
+    workflow_name: str
+    required_jobs: list
+    successful_jobs: list
+    status: str
+    extra: dict
+
+    def to_wire(self):
+        return _state_wire("agent-orchestrator-ci-state", 2, self)
+
+
+@dataclass(frozen=True)
+class CIAcquisitionState:
+    pr_number: int
+    head_sha: str
+    workflow_run_id: int
+    source: str
+    status: str
+    duplicate_run_ids: list[int]
+
+    def to_wire(self):
+        return _state_wire("agent-orchestrator-ci-acquisition", 1, self)
+
+
+@dataclass(frozen=True)
+class ReviewState:
+    pr_number: int
+    head_sha: str
+    verdict: str
+    summary: str
+
+    def to_wire(self):
+        return _state_wire("agent-orchestrator-review-state", 1, self)
+
+
+@dataclass(frozen=True)
+class MergeState:
+    issue_number: int
+    pr_number: int
+    expected_head_sha: str
+    merge_commit_sha: str
+    status: str
+
+    def to_wire(self):
+        return _state_wire("agent-orchestrator-merge-state", 1, self)
+
+
+@dataclass(frozen=True)
+class DispatchState:
+    issue_number: int
+    dispatch_id: str
+    action: str
+    status: str
+    details: dict
+
+    def to_wire(self):
+        return _state_wire("agent-orchestrator-dispatch-state", 1, self)
 
 
 def labels_for_review_verdict(verdict):
@@ -40,6 +124,13 @@ def labels_for_review_verdict(verdict):
     if verdict == "PASS":
         return {LABEL_REVIEW_PASSED, LABEL_MERGE_READY}
     return {LABEL_REVIEW_BLOCKED}
+
+
+def finalize_review_labels(issue_number, verdict, repo=""):
+    """Release review capacity into the verdict's non-active state."""
+
+    return set_labels(issue_number, *sorted(labels_for_review_verdict(verdict)), repo=repo)
+
 
 def _gh(*args, **kwargs):
     cmd = [GH] + list(args)
@@ -65,17 +156,26 @@ def _gh(*args, **kwargs):
 
 
 def get_issue_labels(issue_number, repo=""):
+    labels = get_issue_labels_checked(issue_number, repo)
+    return labels if labels is not None else set()
+
+
+def get_issue_labels_checked(issue_number, repo=""):
+    """Return Issue labels, preserving API/parse failure as ``None``."""
+
     if repo:
         labels = _gh("issue", "view", str(issue_number), "--repo", repo, "--json", "labels")
     else:
         labels = _gh("issue", "view", str(issue_number), "--json", "labels")
-    if not labels:
-        return set()
+    if labels is None:
+        return None
     try:
         parsed = json.loads(labels)
+        if not isinstance(parsed, dict):
+            return None
         return {lbl["name"] for lbl in parsed.get("labels", [])}
-    except (json.JSONDecodeError, KeyError):
-        return set()
+    except (json.JSONDecodeError, KeyError, TypeError):
+        return None
 
 
 def get_issue_body(issue_number, repo=""):
@@ -84,11 +184,12 @@ def get_issue_body(issue_number, repo=""):
     else:
         body = _gh("issue", "view", str(issue_number), "--json", "body")
     if not body:
-        return ""
+        return None
     try:
-        return json.loads(body).get("body", "")
+        parsed = json.loads(body)
+        return parsed.get("body", "") if isinstance(parsed, dict) else None
     except json.JSONDecodeError:
-        return ""
+        return None
 
 
 def add_labels(issue_number, *labels, repo=""):
@@ -135,20 +236,24 @@ def get_issue_comments(issue_number, repo=""):
     if repo:
         args.extend(["--repo", repo])
     result = _gh(*args)
-    if not result:
-        return []
+    if result is None:
+        raise StateUnavailableError("Issue comment state is unavailable")
     try:
         data = json.loads(result)
         comments = data.get("comments", [])
+        if not isinstance(comments, list) or not all(isinstance(item, dict) for item in comments):
+            raise StateUnavailableError("Issue comment state is invalid")
         return list(reversed(comments))
-    except json.JSONDecodeError:
-        return []
+    except json.JSONDecodeError as exc:
+        raise StateUnavailableError("Issue comment state is invalid") from exc
 
 
 def get_issue_comment_bodies(issue_number, search_text, repo=""):
     """Search Issue comments (not PR comments) for matching text, newest first."""
     comments = get_issue_comments(issue_number, repo)
     for comment in comments:
+        if (comment.get("author") or {}).get("login") not in TRUSTED_STATE_AUTHORS:
+            continue
         body = comment.get("body", "")
         if search_text in body:
             return body
@@ -166,7 +271,8 @@ def get_pr_info(pr_number, repo=""):
     if not result:
         return None
     try:
-        return json.loads(result)
+        parsed = json.loads(result)
+        return parsed if isinstance(parsed, dict) else None
     except json.JSONDecodeError:
         return None
 
@@ -190,23 +296,21 @@ def parse_dependencies(body):
 
 
 def check_dependencies_complete(issue_number, repo=""):
-    deps = parse_dependencies(get_issue_body(issue_number, repo))
+    body = get_issue_body(issue_number, repo)
+    if body is None:
+        return False, "dependency_state_unavailable"
+    deps = parse_dependencies(body)
     for dep in deps:
-        labels = get_issue_labels(dep, repo)
+        labels = get_issue_labels_checked(dep, repo)
+        if labels is None:
+            return False, "dependency_state_unavailable"
         if LABEL_COMPLETE not in labels:
             return False, dep
     return True, None
 
 
 def record_worker_state(issue_number, pr_number, head_sha, worker_type, extra=None, repo=""):
-    state = {
-        "kind": "agent-orchestrator-state",
-        "version": 1,
-        "pr_number": pr_number,
-        "head_sha": head_sha,
-        "worker_type": worker_type,
-        "extra": extra or {},
-    }
+    state = WorkerState(pr_number, head_sha, worker_type, extra or {}).to_wire()
     body = json.dumps(state)
     return comment_on_issue(issue_number, body, repo)
 
@@ -217,51 +321,48 @@ def read_worker_state(issue_number, repo=""):
     if not body:
         return None
     try:
-        return json.loads(body)
+        state = json.loads(body)
     except json.JSONDecodeError:
         return None
+    return state if isinstance(state, dict) and state.get("kind") == "agent-orchestrator-state" else None
 
 
 def record_ci_state(issue_number, pr_number, head_sha, ci_run_id, status, extra=None, repo=""):
     extra = extra or {}
-    state = {
-        "kind": "agent-orchestrator-ci-state",
-        "version": 2,
-        "pr_number": pr_number,
-        "head_sha": head_sha,
-        "workflow_run_id": int(ci_run_id) if str(ci_run_id).isdigit() else ci_run_id,
-        "workflow_name": extra.get("workflow_name", "tests"),
-        "required_jobs": extra.get("required_jobs", []),
-        "successful_jobs": extra.get("successful_jobs", []),
-        "status": status,
-        "extra": extra,
-    }
+    state = CIState(
+        pr_number,
+        head_sha,
+        int(ci_run_id) if str(ci_run_id).isdigit() else ci_run_id,
+        extra.get("workflow_name", "tests"),
+        extra.get("required_jobs", []),
+        extra.get("successful_jobs", []),
+        status,
+        extra,
+    ).to_wire()
     return comment_on_issue(issue_number, json.dumps(state), repo)
 
 
 def record_ci_acquisition(issue_number, pr_number, head_sha, run_id, source, duplicate_run_ids=None, repo=""):
-    state = {
-        "kind": "agent-orchestrator-ci-acquisition",
-        "version": 1,
-        "pr_number": int(pr_number),
-        "head_sha": head_sha,
-        "workflow_run_id": int(run_id),
-        "source": source,
-        "status": "bound",
-        "duplicate_run_ids": [int(value) for value in (duplicate_run_ids or [])],
-    }
+    state = CIAcquisitionState(
+        int(pr_number), head_sha, int(run_id), source, "bound",
+        [int(value) for value in (duplicate_run_ids or [])],
+    ).to_wire()
     return comment_on_issue(issue_number, json.dumps(state, sort_keys=True), repo)
 
 
 def read_ci_acquisition(issue_number, pr_number=None, head_sha=None, repo=""):
     comments = get_issue_comments(issue_number, repo)
     for comment in comments:
+        if (comment.get("author") or {}).get("login") not in TRUSTED_STATE_AUTHORS:
+            continue
         body = comment.get("body", "")
         if "agent-orchestrator-ci-acquisition" not in body:
             continue
         try:
             state = json.loads(body)
         except json.JSONDecodeError:
+            continue
+        if state.get("kind") != "agent-orchestrator-ci-acquisition":
             continue
         if pr_number is not None and state.get("pr_number") != int(pr_number):
             continue
@@ -277,9 +378,10 @@ def read_ci_state(issue_number, repo=""):
     if not body:
         return None
     try:
-        return json.loads(body)
+        state = json.loads(body)
     except json.JSONDecodeError:
         return None
+    return state if isinstance(state, dict) and state.get("kind") == "agent-orchestrator-ci-state" else None
 
 
 def validate_task_scope(issue_number, repo=""):
@@ -291,15 +393,10 @@ def validate_task_scope(issue_number, repo=""):
         return True, scope
     except (RuntimeError, ValueError, TypeError, json.JSONDecodeError) as exc:
         return False, str(exc)
+
+
 def record_review_state(issue_number, pr_number, head_sha, verdict, summary, repo=""):
-    state = {
-        "kind": "agent-orchestrator-review-state",
-        "version": 1,
-        "pr_number": pr_number,
-        "head_sha": head_sha,
-        "verdict": verdict,
-        "summary": summary,
-    }
+    state = ReviewState(pr_number, head_sha, verdict, summary).to_wire()
     return comment_on_issue(issue_number, json.dumps(state), repo)
 
 
@@ -320,15 +417,9 @@ def invalidate_evidence(issue_number, pr_number, new_head_sha, old_head_sha, rep
 
 
 def record_merge_state(issue_number, pr_number, expected_head_sha, merge_commit_sha, repo=""):
-    state = {
-        "kind": "agent-orchestrator-merge-state",
-        "version": 1,
-        "issue_number": int(issue_number),
-        "pr_number": int(pr_number),
-        "expected_head_sha": expected_head_sha,
-        "merge_commit_sha": merge_commit_sha,
-        "status": "confirmed",
-    }
+    state = MergeState(
+        int(issue_number), int(pr_number), expected_head_sha, merge_commit_sha, "confirmed"
+    ).to_wire()
     return comment_on_issue(issue_number, json.dumps(state, sort_keys=True), repo)
 
 
@@ -338,9 +429,10 @@ def read_review_state(issue_number, repo=""):
     if not body:
         return None
     try:
-        return json.loads(body)
+        state = json.loads(body)
     except json.JSONDecodeError:
         return None
+    return state if isinstance(state, dict) and state.get("kind") == "agent-orchestrator-review-state" else None
 
 
 def get_active_workers(repo=""):
@@ -422,30 +514,31 @@ def has_open_issue_pr(issue_number, repo=""):
 
 
 def record_dispatch_state(issue_number, dispatch_id, action, status, details=None, repo=""):
-    existing = read_dispatch_state(issue_number, dispatch_id, repo)
+    try:
+        existing = read_dispatch_state(issue_number, dispatch_id, repo)
+    except StateUnavailableError:
+        return False
     if existing and existing.get("status") == status and existing.get("action") == action:
         return True
-    state = {
-        "kind": "agent-orchestrator-dispatch-state",
-        "version": 1,
-        "issue_number": int(issue_number),
-        "dispatch_id": dispatch_id,
-        "action": action,
-        "status": status,
-        "details": details or {},
-    }
+    state = DispatchState(
+        int(issue_number), dispatch_id, action, status, details or {}
+    ).to_wire()
     return comment_on_issue(issue_number, json.dumps(state, sort_keys=True), repo)
 
 
 def read_dispatch_state(issue_number, dispatch_id=None, repo=""):
     comments = get_issue_comments(issue_number, repo)
     for comment in comments:
+        if (comment.get("author") or {}).get("login") not in TRUSTED_STATE_AUTHORS:
+            continue
         body = comment.get("body", "")
         if "agent-orchestrator-dispatch-state" not in body:
             continue
         try:
             state = json.loads(body)
         except json.JSONDecodeError:
+            continue
+        if state.get("kind") != "agent-orchestrator-dispatch-state":
             continue
         if dispatch_id is None or state.get("dispatch_id") == dispatch_id:
             return state
@@ -486,10 +579,15 @@ def verify_issue_pr_binding(issue_number, pr_number, expected_sha, repo=""):
         )
     }
     for linked_issue in linked_issues - {int(issue_number)}:
-        linked_labels = get_issue_labels(linked_issue, repo)
+        linked_labels = get_issue_labels_checked(linked_issue, repo)
+        if linked_labels is None:
+            return False, "linked_issue_state_unavailable"
         if linked_labels & ACTIVE_LABELS:
             return False, "pr_has_another_active_issue"
-    worker = read_worker_state(issue_number, repo)
+    try:
+        worker = read_worker_state(issue_number, repo)
+    except StateUnavailableError:
+        return False, "worker_state_unavailable"
     if not worker or worker.get("pr_number") != int(pr_number) or worker.get("head_sha") != expected_sha:
         return False, "worker_state_mismatch"
     if worker.get("extra", {}).get("branch") not in (None, expected_branch):
@@ -516,6 +614,70 @@ def verify_issue_pr_binding(issue_number, pr_number, expected_sha, repo=""):
         ):
             return False, "issue_has_another_active_pr"
     return True, "ok"
+
+
+def release_failed_capacity(
+    issue_number,
+    expected_active,
+    terminal_label,
+    expected_sha=None,
+    repo="",
+    failed_run_id=None,
+    repair_attempt=None,
+):
+    """Idempotently release only the current failed workflow's active capacity."""
+
+    if expected_active != "any" and expected_active not in ACTIVE_LABELS:
+        return False, "invalid_expected_active"
+    if terminal_label not in {LABEL_BLOCKED, LABEL_REVIEW_BLOCKED}:
+        return False, "invalid_terminal_label"
+    labels = get_issue_labels_checked(issue_number, repo)
+    if labels is None:
+        return False, "label_state_unavailable"
+    active = labels & ACTIVE_LABELS
+    if expected_active == "any":
+        if len(active) != 1:
+            return False, "active_state_mismatch"
+    elif active != {expected_active}:
+        if terminal_label in labels and not active:
+            return True, "already_released"
+        return False, "active_state_mismatch"
+    if labels & (TERMINAL_LABELS | {LABEL_REVIEW_PASSED, LABEL_MERGE_READY}):
+        return False, "newer_terminal_state_exists"
+    if expected_sha:
+        try:
+            worker = read_worker_state(issue_number, repo)
+        except StateUnavailableError:
+            return False, "worker_state_unavailable"
+        same_head = worker and worker.get("head_sha") == expected_sha
+        extra = (worker or {}).get("extra", {})
+        same_repair = (
+            expected_active == LABEL_CI_REPAIRING
+            and failed_run_id is not None
+            and repair_attempt is not None
+            and str(extra.get("failed_run_id")) == str(failed_run_id)
+            and str(extra.get("repair_attempt")) == str(repair_attempt)
+        )
+        if not same_head and not same_repair:
+            return False, "worker_head_mismatch"
+    if not set_labels(issue_number, terminal_label, repo=repo):
+        return False, "label_transition_failed"
+    return True, "released"
+
+
+def release_rejected_worker(
+    issue_number, gate_enabled, validate_result, can_start, repo=""
+):
+    """Release a dispatcher claim when a worker safely rejects before Vader."""
+
+    rejected = gate_enabled != "true" or (
+        validate_result == "success" and can_start != "true"
+    )
+    if not rejected:
+        return True, "worker_not_rejected"
+    return release_failed_capacity(
+        issue_number, LABEL_RUNNING, LABEL_BLOCKED, repo=repo
+    )
 
 
 def unresolved_review_threads(pr_number, repo=""):
@@ -615,6 +777,44 @@ def main():
         if not set_labels(issue_number, *sys.argv[3:], repo=repo):
             print("FATAL: unable to set Issue labels", file=sys.stderr)
             sys.exit(1)
+
+    elif command == "finalize-review-labels":
+        issue_number = int(sys.argv[2])
+        verdict = sys.argv[3]
+        if not finalize_review_labels(issue_number, verdict, repo):
+            print("FATAL: unable to finalize review labels", file=sys.stderr)
+            sys.exit(1)
+
+    elif command == "release-failed":
+        issue_number = int(sys.argv[2])
+        expected_active = sys.argv[3]
+        terminal_label = sys.argv[4]
+        expected_sha = sys.argv[5] if len(sys.argv) > 5 else None
+        failed_run_id = sys.argv[6] if len(sys.argv) > 6 else None
+        repair_attempt = sys.argv[7] if len(sys.argv) > 7 else None
+        ok, reason = release_failed_capacity(
+            issue_number,
+            expected_active,
+            terminal_label,
+            expected_sha,
+            repo,
+            failed_run_id,
+            repair_attempt,
+        )
+        if not ok:
+            print(f"FATAL: unable to release failed capacity: {reason}", file=sys.stderr)
+            sys.exit(1)
+        print(reason)
+
+    elif command == "release-rejected-worker":
+        issue_number = int(sys.argv[2])
+        ok, reason = release_rejected_worker(
+            issue_number, sys.argv[3], sys.argv[4], sys.argv[5], repo
+        )
+        if not ok:
+            print(f"FATAL: unable to release rejected worker: {reason}", file=sys.stderr)
+            sys.exit(1)
+        print(reason)
 
     elif command == "validate-scope":
         issue_number = int(sys.argv[2])
@@ -768,58 +968,6 @@ def main():
             print(f"FATAL: {exc}", file=sys.stderr)
             sys.exit(1)
         print(json.dumps(evidence, sort_keys=True))
-
-    elif command == "select-task":
-        issue_number = int(sys.argv[2])
-        labels = get_issue_labels(issue_number, repo)
-        if TERMINAL_LABELS & labels:
-            print(f"Task #{issue_number} is already in terminal state", file=sys.stderr)
-            sys.exit(1)
-        if ACTIVE_LABELS & labels:
-            print(f"Task #{issue_number} is already active ({labels})", file=sys.stderr)
-            sys.exit(1)
-        set_labels(issue_number, LABEL_READY, repo=repo)
-        print(f"Task #{issue_number} selected as agent-ready")
-
-    elif command == "next-task":
-        result = _gh("issue", "list", "--label", LABEL_READY, "--state", "open", "--json", "number", "--jq", ".[0].number")
-        if result:
-            print(result)
-        else:
-            print("None")
-
-    elif command in {"retry-task", "retry-review"}:
-        issue_number = int(sys.argv[2])
-        set_labels(issue_number, LABEL_READY, repo=repo)
-        print(f"Task #{issue_number} reset to {LABEL_READY} for retry")
-
-    elif command == "block-task":
-        issue_number = int(sys.argv[2])
-        reason = " ".join(sys.argv[3:]) if len(sys.argv) > 3 else "Blocked by operator"
-        set_labels(issue_number, LABEL_BLOCKED, repo=repo)
-        comment_on_issue(issue_number, f"## Agent Orchestrator: Blocked\n**Reason:** {reason}", repo)
-        print(f"Task #{issue_number} blocked: {reason}")
-
-    elif command == "status":
-        ready = _gh("issue", "list", "--label", LABEL_READY, "--state", "open", "--json", "number")
-        running = _gh("issue", "list", "--label", LABEL_RUNNING, "--state", "open", "--json", "number")
-        repairing = _gh("issue", "list", "--label", LABEL_CI_REPAIRING, "--state", "open", "--json", "number")
-        review_running = _gh("issue", "list", "--label", LABEL_REVIEW_RUNNING, "--state", "open", "--json", "number")
-        review_blocked = _gh("issue", "list", "--label", LABEL_REVIEW_BLOCKED, "--state", "open", "--json", "number")
-        merge_ready = _gh("issue", "list", "--label", LABEL_MERGE_READY, "--state", "open", "--json", "number")
-        blocked = _gh("issue", "list", "--label", LABEL_BLOCKED, "--state", "open", "--json", "number")
-        complete = _gh("issue", "list", "--label", LABEL_COMPLETE, "--state", "all", "--json", "number")
-        try:
-            print(f"ready: {len(json.loads(ready))}" if ready else "ready: 0")
-            print(f"running: {len(json.loads(running))}" if running else "running: 0")
-            print(f"ci-repairing: {len(json.loads(repairing))}" if repairing else "ci-repairing: 0")
-            print(f"review-running: {len(json.loads(review_running))}" if review_running else "review-running: 0")
-            print(f"review-blocked: {len(json.loads(review_blocked))}" if review_blocked else "review-blocked: 0")
-            print(f"merge-ready: {len(json.loads(merge_ready))}" if merge_ready else "merge-ready: 0")
-            print(f"blocked: {len(json.loads(blocked))}" if blocked else "blocked: 0")
-            print(f"complete: {len(json.loads(complete))}" if complete else "complete: 0")
-        except (json.JSONDecodeError, TypeError):
-            pass
 
     else:
         print(f"Unknown command: {command}", file=sys.stderr)

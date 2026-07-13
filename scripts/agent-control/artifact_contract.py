@@ -8,6 +8,7 @@ import re
 import shlex
 import subprocess
 import sys
+from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
 
@@ -18,10 +19,44 @@ MANIFEST_NAME = "agent-result.json"
 WORKER_TYPES = frozenset({"implementation", "ci-repair"})
 FORBIDDEN_PREFIXES = (".git/", ".codex/", ".github/workflows/", ".github/actions/")
 ISSUE_SCOPE_PATTERN = re.compile(r"<!--\s*agent-orchestrator-scope:v1\s*(\{.*?\})\s*-->", re.DOTALL)
+MAX_PATCH_BYTES = 10 * 1024 * 1024
+MAX_MANIFEST_BYTES = 256 * 1024
+MAX_CHANGED_FILES = 100
+MAX_PATH_CHARS = 1024
+MAX_LOCAL_CHECKS = 50
+MAX_CHECK_COMMAND_CHARS = 1000
+MAX_ALLOWED_PATHS = 100
 
 
 class ArtifactContractError(RuntimeError):
     """Raised when an untrusted artifact fails deterministic validation."""
+
+
+@dataclass(frozen=True)
+class ArtifactManifest:
+    """Versioned wire schema emitted by an untrusted patch worker."""
+
+    worker_type: str
+    issue_number: int
+    pr_number: int
+    base_sha: str
+    expected_remote_sha: str | None
+    branch: str
+    changed_files: list[str]
+    file_count: int
+    patch_sha256: str
+    patch_size_bytes: int
+    codex_exit_code: int
+    local_checks: list[dict[str, Any]]
+    failed_run_id: int | None = None
+    repair_attempt: int | None = None
+
+    def to_wire(self) -> dict[str, Any]:
+        wire = {"schema_version": SCHEMA_VERSION, **asdict(self)}
+        if self.worker_type != "ci-repair":
+            wire.pop("failed_run_id")
+            wire.pop("repair_attempt")
+        return wire
 
 
 def _git(repo: Path, *args: str) -> bytes:
@@ -32,7 +67,14 @@ def _git(repo: Path, *args: str) -> bytes:
 
 
 def _safe_path(path: str) -> bool:
-    return bool(path) and not path.startswith("/") and "\\" not in path and ".." not in Path(path).parts and not path.startswith(FORBIDDEN_PREFIXES)
+    return (
+        bool(path)
+        and len(path) <= MAX_PATH_CHARS
+        and not path.startswith("/")
+        and "\\" not in path
+        and ".." not in Path(path).parts
+        and not path.startswith(FORBIDDEN_PREFIXES)
+    )
 
 
 def _changed_files(repo: Path) -> list[str]:
@@ -44,6 +86,8 @@ def _changed_files(repo: Path) -> list[str]:
 
 
 def _patch_paths(patch: bytes) -> list[str]:
+    if not patch or len(patch) > MAX_PATCH_BYTES:
+        raise ArtifactContractError("patch size is outside the bounded contract")
     paths: set[str] = set()
     for line in patch.decode("utf-8", errors="surrogateescape").splitlines():
         if not line.startswith("diff --git "):
@@ -56,13 +100,35 @@ def _patch_paths(patch: bytes) -> list[str]:
             if candidate.startswith(("a/", "b/")):
                 paths.add(candidate[2:])
     result = sorted(paths)
-    if not result or not all(_safe_path(path) for path in result):
+    if (
+        not result
+        or len(result) > MAX_CHANGED_FILES
+        or not all(_safe_path(path) for path in result)
+    ):
         raise ArtifactContractError("patch changes forbidden or invalid paths")
     return result
 
 
 def _sha256(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
+
+
+def _validate_local_checks(value: Any) -> list[dict[str, Any]]:
+    if not isinstance(value, list) or len(value) > MAX_LOCAL_CHECKS:
+        raise ArtifactContractError("artifact local checks exceed the bounded contract")
+    for check in value:
+        if not isinstance(check, dict) or set(check) != {"command", "exit_code"}:
+            raise ArtifactContractError("artifact local check is malformed")
+        command = check.get("command")
+        exit_code = check.get("exit_code")
+        if (
+            not isinstance(command, str)
+            or not command
+            or len(command) > MAX_CHECK_COMMAND_CHARS
+            or type(exit_code) is not int
+        ):
+            raise ArtifactContractError("artifact local check is malformed")
+    return value
 
 
 def create_artifact(
@@ -86,6 +152,7 @@ def create_artifact(
         raise ArtifactContractError("worktree HEAD moved after the trusted base was recorded")
     if branch != f"agent/issue-{issue_number}":
         raise ArtifactContractError("artifact branch is not canonical for its Issue")
+    _validate_local_checks(local_checks)
     _git(repo, "add", "-A")
     patch = _git(repo, "diff", "--cached", "--binary", "--full-index")
     changed_files = _changed_files(repo)
@@ -95,25 +162,25 @@ def create_artifact(
         raise ArtifactContractError("staged file list does not match binary patch")
     artifact_dir.mkdir(parents=True, exist_ok=True)
     (artifact_dir / PATCH_NAME).write_bytes(patch)
-    manifest: dict[str, Any] = {
-        "schema_version": SCHEMA_VERSION,
-        "worker_type": worker_type,
-        "issue_number": issue_number,
-        "pr_number": pr_number,
-        "base_sha": base_sha,
-        "expected_remote_sha": expected_remote_sha,
-        "branch": branch,
-        "changed_files": changed_files,
-        "file_count": len(changed_files),
-        "patch_sha256": _sha256(patch),
-        "patch_size_bytes": len(patch),
-        "codex_exit_code": codex_exit_code,
-        "local_checks": local_checks,
-    }
     if worker_type == "ci-repair":
         if failed_run_id is None or repair_attempt is None:
             raise ArtifactContractError("CI repair artifact lacks failed-run binding")
-        manifest.update({"failed_run_id": failed_run_id, "repair_attempt": repair_attempt})
+    manifest = ArtifactManifest(
+        worker_type=worker_type,
+        issue_number=issue_number,
+        pr_number=pr_number,
+        base_sha=base_sha,
+        expected_remote_sha=expected_remote_sha,
+        branch=branch,
+        changed_files=changed_files,
+        file_count=len(changed_files),
+        patch_sha256=_sha256(patch),
+        patch_size_bytes=len(patch),
+        codex_exit_code=codex_exit_code,
+        local_checks=local_checks,
+        failed_run_id=failed_run_id,
+        repair_attempt=repair_attempt,
+    ).to_wire()
     (artifact_dir / MANIFEST_NAME).write_text(json.dumps(manifest, sort_keys=True) + "\n")
     return manifest
 
@@ -127,31 +194,49 @@ def _validate_manifest(manifest: Any) -> dict[str, Any]:
     }
     if not required <= set(manifest):
         raise ArtifactContractError("artifact manifest misses required fields")
+    allowed = required | {"failed_run_id", "repair_attempt"}
+    if set(manifest) - allowed:
+        raise ArtifactContractError("artifact manifest has unsupported fields")
     if manifest["schema_version"] != SCHEMA_VERSION or manifest["worker_type"] not in WORKER_TYPES:
         raise ArtifactContractError("artifact schema version or worker type is invalid")
-    if not all(isinstance(manifest[key], int) for key in ("issue_number", "pr_number", "file_count", "patch_size_bytes", "codex_exit_code")):
+    if not all(type(manifest[key]) is int for key in ("issue_number", "pr_number", "file_count", "patch_size_bytes", "codex_exit_code")):
         raise ArtifactContractError("artifact numeric fields are invalid")
     if not isinstance(manifest["base_sha"], str) or not re.fullmatch(r"[0-9a-f]{40}", manifest["base_sha"]):
         raise ArtifactContractError("artifact base SHA is invalid")
-    if manifest["expected_remote_sha"] is not None and not isinstance(manifest["expected_remote_sha"], str):
+    if manifest["expected_remote_sha"] is not None and (
+        not isinstance(manifest["expected_remote_sha"], str)
+        or not re.fullmatch(r"[0-9a-f]{40}", manifest["expected_remote_sha"])
+    ):
         raise ArtifactContractError("artifact expected remote SHA is invalid")
     if not isinstance(manifest["branch"], str) or not isinstance(manifest["changed_files"], list):
         raise ArtifactContractError("artifact branch or changed files are invalid")
     if manifest["branch"] != f"agent/issue-{manifest['issue_number']}":
         raise ArtifactContractError("artifact branch is not canonical for its Issue")
     paths = manifest["changed_files"]
-    if paths != sorted(set(paths)) or not all(isinstance(path, str) and _safe_path(path) for path in paths):
+    if (
+        len(paths) > MAX_CHANGED_FILES
+        or paths != sorted(set(paths))
+        or not all(isinstance(path, str) and _safe_path(path) for path in paths)
+    ):
         raise ArtifactContractError("artifact changed paths are invalid")
-    if manifest["file_count"] != len(paths) or manifest["patch_size_bytes"] < 1:
+    if (
+        manifest["file_count"] != len(paths)
+        or manifest["patch_size_bytes"] < 1
+        or manifest["patch_size_bytes"] > MAX_PATCH_BYTES
+    ):
         raise ArtifactContractError("artifact file count or patch size is invalid")
     if not isinstance(manifest["patch_sha256"], str) or not re.fullmatch(r"[0-9a-f]{64}", manifest["patch_sha256"]):
         raise ArtifactContractError("artifact checksum is invalid")
-    if not isinstance(manifest["local_checks"], list):
-        raise ArtifactContractError("artifact local checks are invalid")
+    _validate_local_checks(manifest["local_checks"])
     if manifest["worker_type"] == "ci-repair" and not {
         "failed_run_id", "repair_attempt"
     } <= set(manifest):
         raise ArtifactContractError("CI repair artifact misses repair binding")
+    if manifest["worker_type"] == "ci-repair" and not all(
+        type(manifest[key]) is int and manifest[key] >= 0
+        for key in ("failed_run_id", "repair_attempt")
+    ):
+        raise ArtifactContractError("CI repair binding is invalid")
     return manifest
 
 
@@ -168,6 +253,10 @@ def validate_artifact(
     patch_path, manifest_path = artifact_dir / PATCH_NAME, artifact_dir / MANIFEST_NAME
     if not patch_path.is_file() or not manifest_path.is_file():
         raise ArtifactContractError("agent.patch and agent-result.json are both required")
+    if manifest_path.stat().st_size > MAX_MANIFEST_BYTES:
+        raise ArtifactContractError("artifact manifest exceeds the bounded contract")
+    if patch_path.stat().st_size > MAX_PATCH_BYTES:
+        raise ArtifactContractError("artifact patch exceeds the bounded contract")
     try:
         manifest = _validate_manifest(json.loads(manifest_path.read_text()))
     except json.JSONDecodeError as exc:
@@ -215,15 +304,15 @@ def _scope_path_safe(path: str) -> bool:
 def parse_issue_scope(issue_body: str) -> list[str]:
     """Parse and validate the one canonical editable Issue scope marker."""
 
-    match = ISSUE_SCOPE_PATTERN.search(issue_body or "")
-    if not match:
-        raise ArtifactContractError("task Issue lacks an agent-orchestrator scope marker")
+    matches = ISSUE_SCOPE_PATTERN.findall(issue_body or "")
+    if len(matches) != 1:
+        raise ArtifactContractError("task Issue must contain exactly one agent-orchestrator scope marker")
     try:
-        scope = json.loads(match.group(1))
+        scope = json.loads(matches[0])
     except json.JSONDecodeError as exc:
         raise ArtifactContractError("task Issue scope marker is invalid JSON") from exc
     allowed = scope.get("allowed_paths") if isinstance(scope, dict) else None
-    if not isinstance(allowed, list) or not allowed or not all(
+    if not isinstance(allowed, list) or not allowed or len(allowed) > MAX_ALLOWED_PATHS or not all(
         isinstance(path, str) and _scope_path_safe(path) for path in allowed
     ):
         raise ArtifactContractError("task Issue scope has no valid allowed_paths")
@@ -283,7 +372,7 @@ def main() -> None:
             print(json.dumps({"allowed_paths": parse_issue_scope(Path(sys.argv[2]).read_text())}, sort_keys=True))
         else:
             raise ArtifactContractError(f"unknown artifact command: {command}")
-    except (ArtifactContractError, ValueError, json.JSONDecodeError) as exc:
+    except (ArtifactContractError, OSError, ValueError, json.JSONDecodeError) as exc:
         print(f"ARTIFACT_CONTRACT_ERROR: {exc}", file=sys.stderr)
         raise SystemExit(1) from exc
 

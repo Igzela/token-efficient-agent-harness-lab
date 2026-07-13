@@ -22,12 +22,36 @@ import ci_verifier
 import control_state
 import dispatcher
 import pr_binding
+import prompt_builder
 import state_manager
 
 
 class TestWorkflowContracts(unittest.TestCase):
     def read(self, name: str) -> str:
         return (WORKFLOWS / name).read_text()
+
+    def shell_scripts(self, name: str) -> str:
+        lines = self.read(name).splitlines()
+        scripts = []
+        index = 0
+        while index < len(lines):
+            line = lines[index]
+            stripped = line.lstrip()
+            if not stripped.startswith("run:"):
+                index += 1
+                continue
+            indentation = len(line) - len(stripped)
+            inline = stripped.removeprefix("run:").strip()
+            if inline and inline != "|":
+                scripts.append(inline)
+            index += 1
+            while index < len(lines):
+                candidate = lines[index]
+                if candidate.strip() and len(candidate) - len(candidate.lstrip()) <= indentation:
+                    break
+                scripts.append(candidate)
+                index += 1
+        return "\n".join(scripts)
 
     def test_all_workflow_dispatch_callers_and_inputs_match(self):
         expected = {
@@ -43,6 +67,11 @@ class TestWorkflowContracts(unittest.TestCase):
             for field in fields:
                 with self.subTest(name=name, field=field):
                     self.assertIn(f"      {field}:\n", source, name)
+
+    def test_canonical_workflow_has_one_top_level_environment_mapping(self):
+        source = self.read("tests.yml")
+        self.assertEqual(source.count("\nenv:\n"), 1)
+        self.assertIn("  EXPECTED_SHA: ${{ inputs.expected_sha }}", source)
 
     def test_repair_dispatch_carries_run_id_not_unbounded_logs(self):
         controller = self.read("agent-controller.yml")
@@ -92,7 +121,7 @@ class TestWorkflowContracts(unittest.TestCase):
         self.assertIn("steps.verdict.outputs.verdict != 'PASS'", source)
         self.assertIn("require-auto-merge", source)
         self.assertIn("agent-review-blocked", source)
-        self.assertIn("agent-merge-ready", source)
+        self.assertIn("agent-merge-ready", source + (CONTROL / "state_manager.py").read_text())
         self.assertNotIn('set-labels "${{ inputs.issue_number }}" agent-running', source)
 
     def test_review_terminal_states_release_capacity_and_retry_is_explicit(self):
@@ -110,6 +139,29 @@ class TestWorkflowContracts(unittest.TestCase):
         )
         self.assertIn("retry-review", self.read("agent-controller.yml"))
 
+    def test_review_summary_is_passed_through_environment_not_shell_expression(self):
+        source = self.read("agent-review.yml")
+        self.assertIn("REVIEW_SUMMARY: ${{ steps.verdict.outputs.summary }}", source)
+        self.assertIn('"$REVIEW_SUMMARY"', source)
+
+    def test_string_workflow_inputs_are_not_interpolated_into_shell_scripts(self):
+        forbidden = {
+            "agent-controller.yml": (
+                "${{ inputs.command }}",
+                "${{ inputs.dispatch_id }}",
+                "${{ inputs.head_sha }}",
+            ),
+            "agent-ci-repair.yml": ("${{ inputs.head_sha }}",),
+            "agent-review.yml": ("${{ inputs.head_sha }}",),
+            "agent-merge.yml": ("${{ inputs.head_sha }}",),
+            "tests.yml": ("${{ inputs.expected_sha }}",),
+        }
+        for name, expressions in forbidden.items():
+            scripts = self.shell_scripts(name)
+            for expression in expressions:
+                with self.subTest(name=name, expression=expression):
+                    self.assertNotIn(expression, scripts)
+
     def test_merge_requires_exact_head_ci_pass_review_and_objections_without_admin_api(self):
         source = self.read("agent-merge.yml") + (CONTROL / "state_manager.py").read_text()
         for requirement in ("verify-merge", "require-auto-merge", "pulls/${{ inputs.pr_number }}/merge", "mergeCommit", "review-passed"):
@@ -122,6 +174,17 @@ class TestWorkflowContracts(unittest.TestCase):
         self.assertIn("stale", source)
         self.assertIn("agent-blocked", source)
         self.assertIn("max_repairs_exceeded", (CONTROL / "ci_handler.py").read_text())
+
+    def test_worker_has_post_claim_nonstart_capacity_release(self):
+        source = self.read("agent-worker.yml")
+        self.assertIn("rejected-before-vader:", source)
+        self.assertIn("release-rejected-worker", source)
+        self.assertIn("needs: [gate, validate, vader-implementation, finalize]", source)
+
+    def test_legacy_generic_issue_mutators_are_not_exposed(self):
+        source = (CONTROL / "state_manager.py").read_text()
+        for command in ("select-task", "next-task", "retry-task", "block-task"):
+            self.assertNotIn(f'command == "{command}"', source)
 
 
 class TestDispatcher(unittest.TestCase):
@@ -142,7 +205,8 @@ class TestDispatcher(unittest.TestCase):
         with mock.patch.object(dispatcher.control_state, "require_live", return_value={}), \
              mock.patch.object(dispatcher, "_repo", return_value="repo"), \
              mock.patch.object(dispatcher.sm, "read_dispatch_state", side_effect=lambda _i, key, _r: recorded.get(key)), \
-             mock.patch.object(dispatcher.sm, "get_issue_labels", return_value=labels), \
+             mock.patch.object(dispatcher.sm, "get_issue_labels_checked", return_value=labels), \
+             mock.patch.object(dispatcher.sm, "check_dependencies_complete", return_value=(True, None)), \
              mock.patch.object(dispatcher.sm, "has_open_issue_pr", return_value=False), \
              mock.patch.object(dispatcher.sm, "validate_task_scope", return_value=(True, ["src/"])), \
              mock.patch.object(dispatcher.sm, "get_active_issue_numbers", return_value=set()), \
@@ -154,6 +218,16 @@ class TestDispatcher(unittest.TestCase):
         self.assertTrue(first["dispatched"])
         self.assertTrue(second["dispatched"])
         self.assertEqual(len(workflow_calls), 1)
+
+    def test_claimed_dispatch_is_not_reissued_when_final_audit_write_failed(self):
+        with mock.patch.object(dispatcher.control_state, "require_live", return_value={}), \
+             mock.patch.object(dispatcher, "_repo", return_value="repo"), \
+             mock.patch.object(dispatcher.sm, "read_dispatch_state", return_value={"status": "claimed"}), \
+             mock.patch.object(dispatcher, "_run_workflow") as workflow:
+            result = dispatcher.dispatch_ready(12, "worker:12")
+        self.assertFalse(result["dispatched"])
+        self.assertEqual(result["reason"], "dispatch_in_flight")
+        workflow.assert_not_called()
 
     def test_initial_pr_creation_cli_parses_supported_rest_response_and_reuses_pr(self):
         sha = "a" * 40
@@ -221,6 +295,38 @@ class TestDispatcher(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(json.loads(result.stdout)["workflow_run_id"], 456)
 
+    def test_ci_repair_prompt_cli_works_from_repository_root_with_artifact(self):
+        sha = "c" * 40
+        with tempfile.TemporaryDirectory() as temp:
+            temp_path = pathlib.Path(temp)
+            gh_path = temp_path / "gh"
+            gh_path.write_text("#!/bin/sh\nexit 1\n")
+            gh_path.chmod(gh_path.stat().st_mode | stat.S_IXUSR)
+            evidence = temp_path / "evidence.json"
+            evidence.write_text(json.dumps({
+                "schema_version": 1,
+                "failed_jobs": [{"name": "Python", "failed_steps": ["tests"]}],
+                "logs": "bounded failure",
+            }))
+            env = {
+                **os.environ,
+                "PATH": f"{temp}:{os.environ['PATH']}",
+                "AGENT_REPAIR_COUNT": "1",
+            }
+            result = subprocess.run(
+                [sys.executable, str(CONTROL / "prompt_builder.py"), "ci-repair", "207", sha, str(evidence)],
+                cwd=ROOT, env=env, capture_output=True, text=True,
+            )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn(sha, result.stdout)
+        self.assertIn("bounded failure", result.stdout)
+
+    def test_review_prompt_rejects_an_incomplete_truncated_diff(self):
+        with mock.patch.object(prompt_builder, "build_context", return_value={"AGENTS_md": ""}), \
+             mock.patch.object(prompt_builder, "_gh", return_value="x" * (prompt_builder.MAX_REVIEW_DIFF_CHARS + 1)):
+            with self.assertRaisesRegex(ValueError, "complete PR diff exceeds"):
+                prompt_builder.build_review_prompt(207, "a" * 40)
+
     def test_capacity_full_is_nonterminal(self):
         with mock.patch.object(dispatcher.control_state, "require_live", return_value={}), \
              mock.patch.object(dispatcher, "_repo", return_value="repo"), \
@@ -239,7 +345,7 @@ class TestDispatcher(unittest.TestCase):
         with mock.patch.object(dispatcher.control_state, "require_live", return_value={}), \
              mock.patch.object(dispatcher, "_repo", return_value="acme/repo"), \
              mock.patch.object(dispatcher.sm, "read_dispatch_state", return_value=None), \
-             mock.patch.object(dispatcher.sm, "get_issue_labels", return_value={state_manager.LABEL_READY}), \
+             mock.patch.object(dispatcher.sm, "get_issue_labels_checked", return_value={state_manager.LABEL_READY}), \
              mock.patch.object(dispatcher.sm, "validate_task_scope", return_value=(False, "wildcard")), \
              mock.patch.object(dispatcher.sm, "record_dispatch_state", return_value=True) as record, \
              mock.patch.object(dispatcher, "_run_workflow") as workflow:
@@ -248,6 +354,51 @@ class TestDispatcher(unittest.TestCase):
         self.assertIn("invalid_scope", result["reason"])
         record.assert_called_once()
         workflow.assert_not_called()
+
+    def test_dependency_is_rechecked_by_the_serialized_claim(self):
+        with mock.patch.object(dispatcher.control_state, "require_live", return_value={}), \
+             mock.patch.object(dispatcher, "_repo", return_value="acme/repo"), \
+             mock.patch.object(dispatcher.sm, "read_dispatch_state", return_value=None), \
+             mock.patch.object(dispatcher.sm, "get_issue_labels_checked", return_value={state_manager.LABEL_READY}), \
+             mock.patch.object(dispatcher.sm, "validate_task_scope", return_value=(True, ["src/"])), \
+             mock.patch.object(dispatcher.sm, "check_dependencies_complete", return_value=(False, 41)), \
+             mock.patch.object(dispatcher, "_run_workflow") as workflow:
+            result = dispatcher.dispatch_ready(77, "worker:77")
+        self.assertFalse(result["dispatched"])
+        self.assertEqual(result["reason"], "dependencies_not_ready:41")
+        workflow.assert_not_called()
+
+    def test_failed_dispatch_reports_failed_rollback(self):
+        with mock.patch.object(dispatcher.control_state, "require_live", return_value={}), \
+             mock.patch.object(dispatcher, "_claim", return_value=(True, [state_manager.LABEL_READY], "claimed")), \
+             mock.patch.object(dispatcher, "_run_workflow", return_value=False), \
+             mock.patch.object(dispatcher, "_rollback", return_value=False):
+            result = dispatcher.dispatch_ready(77, "worker:77")
+        self.assertEqual(result["reason"], "workflow_dispatch_failed_rollback_failed")
+
+    def test_retry_review_derives_and_revalidates_the_current_binding(self):
+        worker = {
+            "pr_number": 207,
+            "head_sha": "a" * 40,
+            "extra": {"branch": "agent/issue-42"},
+        }
+        with mock.patch.object(dispatcher.control_state, "require_live", return_value={}), \
+             mock.patch.object(dispatcher, "_repo", return_value="acme/repo"), \
+             mock.patch.object(dispatcher.sm, "get_issue_labels_checked", return_value={state_manager.LABEL_REVIEW_BLOCKED}), \
+             mock.patch.object(dispatcher.sm, "read_worker_state", return_value=worker), \
+             mock.patch.object(dispatcher.sm, "verify_issue_pr_binding", return_value=(True, "ok")), \
+             mock.patch.object(dispatcher.sm, "read_dispatch_state", return_value=None), \
+             mock.patch.object(dispatcher.sm, "get_active_issue_numbers", return_value=set()), \
+             mock.patch.object(dispatcher.sm, "set_labels", return_value=True) as set_labels, \
+             mock.patch.object(dispatcher.sm, "record_dispatch_state", return_value=True), \
+             mock.patch.object(dispatcher, "_run_workflow", return_value=True) as workflow:
+            result = dispatcher.retry_review(42)
+        self.assertTrue(result["dispatched"])
+        set_labels.assert_any_call(42, state_manager.LABEL_REVIEW_RUNNING, repo="acme/repo")
+        workflow.assert_called_once_with(
+            "agent-review.yml",
+            {"pr_number": 207, "issue_number": 42, "head_sha": "a" * 40},
+        )
 
 
 class TestCIEventTrust(unittest.TestCase):
@@ -362,7 +513,7 @@ class TestExactHeadCI(unittest.TestCase):
                 ci_verifier.verify_exact_head_ci(2, "a" * 40, 1, {"headRefOid": "b" * 40})
 
     def test_existing_natural_exact_head_run_is_reused_without_dispatch(self):
-        run = {"databaseId": 11, "event": "pull_request", "headSha": "c" * 40, "headBranch": "agent/issue-7", "workflowName": "tests"}
+        run = {"databaseId": 11, "event": "pull_request", "status": "queued", "conclusion": "", "headSha": "c" * 40, "headBranch": "agent/issue-7", "workflowName": "tests"}
         with mock.patch.object(ci_verifier, "find_exact_runs", return_value=[run]), \
              mock.patch.object(ci_verifier.subprocess, "run") as dispatch:
             result = ci_verifier.acquire_exact_ci(7, "agent/issue-7", "c" * 40, observe_seconds=1)
@@ -371,7 +522,7 @@ class TestExactHeadCI(unittest.TestCase):
         self.assertEqual(result["source"], "pull_request")
 
     def test_missing_exact_head_run_dispatches_once_then_binds_one(self):
-        run = {"databaseId": 12, "event": "workflow_dispatch", "headSha": "d" * 40, "headBranch": "agent/issue-8", "workflowName": "tests"}
+        run = {"databaseId": 12, "event": "workflow_dispatch", "status": "queued", "conclusion": "", "headSha": "d" * 40, "headBranch": "agent/issue-8", "workflowName": "tests"}
         with mock.patch.object(ci_verifier, "find_exact_runs", side_effect=[[], [run]]), \
              mock.patch.object(ci_verifier.subprocess, "run", return_value=mock.Mock(returncode=0)) as dispatch:
             result = ci_verifier.acquire_exact_ci(8, "agent/issue-8", "d" * 40, observe_seconds=0)
@@ -381,8 +532,8 @@ class TestExactHeadCI(unittest.TestCase):
 
     def test_two_exact_head_runs_select_one_and_mark_duplicate(self):
         runs = [
-            {"databaseId": 21, "event": "pull_request", "headSha": "e" * 40, "headBranch": "agent/issue-9", "workflowName": "tests"},
-            {"databaseId": 22, "event": "workflow_dispatch", "headSha": "e" * 40, "headBranch": "agent/issue-9", "workflowName": "tests"},
+            {"databaseId": 21, "event": "pull_request", "status": "queued", "conclusion": "", "headSha": "e" * 40, "headBranch": "agent/issue-9", "workflowName": "tests"},
+            {"databaseId": 22, "event": "workflow_dispatch", "status": "queued", "conclusion": "", "headSha": "e" * 40, "headBranch": "agent/issue-9", "workflowName": "tests"},
         ]
         with mock.patch.object(ci_verifier, "find_exact_runs", return_value=runs):
             result = ci_verifier.acquire_exact_ci(9, "agent/issue-9", "e" * 40, observe_seconds=1)
@@ -398,6 +549,93 @@ class TestExactHeadCI(unittest.TestCase):
              mock.patch.object(ci_handler.sm, "read_ci_state", return_value={"pr_number": 207, "head_sha": "f" * 40, "workflow_run_id": 33, "status": "failure_repair_0"}), \
              mock.patch.object(ci_handler.ci_verifier, "find_exact_runs", return_value=[]):
             self.assertTrue(ci_handler._is_duplicate_exact_head_run(42, 207, "f" * 40, 33, "agent/issue-42"))
+
+    def test_cancelled_run_is_not_acquired_when_fallback_becomes_available(self):
+        cancelled = {
+            "databaseId": 41, "event": "pull_request", "status": "completed", "conclusion": "cancelled",
+            "headSha": "f" * 40, "headBranch": "agent/issue-42", "workflowName": "tests",
+        }
+        fallback = {
+            "databaseId": 42, "event": "workflow_dispatch", "status": "queued", "conclusion": "",
+            "headSha": "f" * 40, "headBranch": "agent/issue-42", "workflowName": "tests",
+        }
+        with mock.patch.object(ci_verifier, "find_exact_runs", side_effect=[[cancelled], [cancelled, fallback]]), \
+             mock.patch.object(ci_verifier.subprocess, "run", return_value=mock.Mock(returncode=0)) as dispatch:
+            result = ci_verifier.acquire_exact_ci(207, "agent/issue-42", "f" * 40, observe_seconds=0)
+        dispatch.assert_called_once()
+        self.assertEqual(result["workflow_run_id"], 42)
+
+    def test_bound_fallback_is_not_shadowed_by_older_cancelled_run(self):
+        sha = "f" * 40
+        runs = [
+            {
+                "databaseId": 41,
+                "status": "completed",
+                "conclusion": "cancelled",
+            },
+            {
+                "databaseId": 42,
+                "status": "completed",
+                "conclusion": "success",
+            },
+        ]
+        with mock.patch.object(
+            ci_handler.sm,
+            "read_ci_acquisition",
+            return_value={"workflow_run_id": 42},
+        ), mock.patch.object(
+            ci_handler.sm, "read_ci_state", return_value=None
+        ), mock.patch.object(
+            ci_handler.ci_verifier, "find_exact_runs", return_value=runs
+        ):
+            duplicate = ci_handler._is_duplicate_exact_head_run(
+                42, 207, sha, 42, "agent/issue-42"
+            )
+        self.assertFalse(duplicate)
+
+    def test_cancelled_authoritative_run_blocks_and_releases_capacity(self):
+        sha = "f" * 40
+        body = 'Closes #42\n\n<!-- agent-orchestrator-binding: {"issue_number": 42, "branch": "agent/issue-42"} -->'
+        event_path = tempfile.NamedTemporaryFile(mode="w", delete=False)
+        json.dump({
+            "repository": {"full_name": "trusted/repo"},
+            "workflow_run": {
+                "name": "tests", "status": "completed", "conclusion": "cancelled",
+                "head_branch": "agent/issue-42", "head_sha": sha, "id": 41,
+                "head_repository": {"full_name": "trusted/repo"},
+                "pull_requests": [{"number": 207, "head": {"sha": sha}}],
+            },
+        }, event_path)
+        event_path.close()
+        run = {
+            "databaseId": 41, "workflowName": "tests", "status": "completed", "conclusion": "cancelled",
+            "headSha": sha, "headBranch": "agent/issue-42", "jobs": [],
+        }
+        pr = {"state": "OPEN", "headRefName": "agent/issue-42", "headRefOid": sha, "body": body}
+        try:
+            with mock.patch.dict(os.environ, {"AGENT_REPO": "trusted/repo"}, clear=False), \
+                 mock.patch.object(ci_handler.ci_verifier, "run_info", return_value=run), \
+                 mock.patch.object(ci_handler.sm, "get_pr_info", return_value=pr), \
+                 mock.patch.object(ci_handler, "_find_issue_for_pr", return_value=42), \
+                 mock.patch.object(ci_handler, "_is_duplicate_exact_head_run", return_value=False), \
+                 mock.patch.object(ci_handler.sm, "verify_issue_pr_binding", return_value=(True, "ok")), \
+                 mock.patch.object(ci_handler, "_record_ci") as record:
+                result = ci_handler.process_ci_completion(event_path.name)
+            with mock.patch.dict(os.environ, {"AGENT_REPO": "trusted/repo"}, clear=False), \
+                 mock.patch.object(ci_handler.ci_verifier, "run_info", return_value=run), \
+                 mock.patch.object(ci_handler.sm, "get_pr_info", return_value=pr), \
+                 mock.patch.object(ci_handler, "_find_issue_for_pr", return_value=42), \
+                 mock.patch.object(ci_handler, "_is_duplicate_exact_head_run", return_value=False), \
+                 mock.patch.object(ci_handler.sm, "verify_issue_pr_binding", return_value=(True, "ok")), \
+                 mock.patch.object(ci_handler, "_record_ci", side_effect=RuntimeError("write failed")):
+                unavailable = ci_handler.process_ci_completion(event_path.name)
+        finally:
+            os.unlink(event_path.name)
+        self.assertEqual(result["action"], "blocked")
+        self.assertEqual(result["reason"], "ci_terminal_cancelled")
+        record.assert_called_once()
+        self.assertEqual(unavailable["action"], "blocked")
+        self.assertIn("ci_state_unavailable", unavailable["reason"])
 
 
 if __name__ == "__main__":

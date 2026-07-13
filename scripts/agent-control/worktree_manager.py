@@ -290,56 +290,6 @@ def cleanup_stale_worktrees(repo_path: str, max_age_hours: int = 24) -> int:
     return count
 
 
-def push_branch(branch: str, repo_path: str, force: bool = False) -> bool:
-    args = ["push", "origin", branch]
-    if force:
-        args.append("--force")
-    return _git(*args, cwd=repo_path) is not None
-
-
-def create_pr(
-    issue_number: int,
-    branch: str,
-    repo_path: str,
-    title: str | None = None,
-    body: str | None = None,
-) -> dict[str, Any] | None:
-    pr_body = body or f"Closes #{issue_number}"
-    pr_title = title or f"agent: implement #{issue_number}"
-    if _gh(
-        "pr",
-        "create",
-        "--base",
-        "main",
-        "--head",
-        branch,
-        "--title",
-        pr_title,
-        "--body",
-        pr_body,
-        cwd=repo_path,
-    ) is None:
-        return None
-    return _gh_json(
-        "pr",
-        "view",
-        "--json",
-        "number,headRefOid,url",
-        cwd=repo_path,
-    )
-
-
-def get_pr_info(pr_number: int, repo_path: str | None = None) -> dict[str, Any] | None:
-    return _gh_json(
-        "pr",
-        "view",
-        str(pr_number),
-        "--json",
-        "headRefOid,headRefName,state,url",
-        cwd=repo_path,
-    )
-
-
 def main() -> None:
     if len(sys.argv) < 2:
         print("Usage: worktree_manager.py <command> [args...]", file=sys.stderr)
@@ -370,38 +320,11 @@ def main() -> None:
             if not remove_worktree(int(sys.argv[2]), repo_path, sys.argv[3] if len(sys.argv) == 4 else None):
                 raise RuntimeError("worktree removal refused or failed")
             print(json.dumps({"removed": True}))
-        elif command == "push":
-            if len(sys.argv) not in {3, 4}:
-                raise ValueError("push requires branch and optional --force")
-            if not push_branch(sys.argv[2], repo_path, len(sys.argv) == 4 and sys.argv[3] == "--force"):
-                raise RuntimeError("push failed")
-            print(json.dumps({"pushed": True}))
-        elif command == "create-pr":
-            if len(sys.argv) not in {4, 5, 6}:
-                raise ValueError("create-pr requires issue and branch, optional title/body")
-            pr = create_pr(
-                int(sys.argv[2]),
-                sys.argv[3],
-                repo_path,
-                sys.argv[4] if len(sys.argv) >= 5 else None,
-                sys.argv[5] if len(sys.argv) == 6 else None,
-            )
-            if not pr:
-                raise RuntimeError("PR creation or lookup failed")
-            print(json.dumps({
-                "pr_number": pr["number"],
-                "url": pr["url"],
-                "head_sha": pr["headRefOid"],
-            }, sort_keys=True))
         elif command == "cleanup-stale":
             if len(sys.argv) not in {2, 3}:
                 raise ValueError("cleanup-stale accepts optional max age")
             count = cleanup_stale_worktrees(repo_path, int(sys.argv[2]) if len(sys.argv) == 3 else 24)
             print(json.dumps({"cleaned": count, "manual_cleanup": LAST_CLEANUP_REPORT}, sort_keys=True))
-        elif command == "get-pr-info":
-            if len(sys.argv) != 3:
-                raise ValueError("get-pr-info requires PR number")
-            print(json.dumps(get_pr_info(int(sys.argv[2]), repo_path) or {}, sort_keys=True))
         else:
             raise ValueError(f"Unknown command: {command}")
     except (ValueError, RuntimeError) as exc:

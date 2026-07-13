@@ -1,5 +1,8 @@
 name: agent-merge
 
+env:
+  INPUT_HEAD_SHA: ${{ inputs.head_sha }}
+
 on:
   workflow_dispatch:
     inputs:
@@ -39,7 +42,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           python3 scripts/agent-control/control_state.py require-auto-merge >/dev/null
-          python3 scripts/agent-control/state_manager.py verify-merge "${{ inputs.pr_number }}" "${{ inputs.issue_number }}" "${{ inputs.head_sha }}"
+          python3 scripts/agent-control/state_manager.py verify-merge "${{ inputs.pr_number }}" "${{ inputs.issue_number }}" "$INPUT_HEAD_SHA"
       - name: Recheck control immediately before expected-head GitHub merge API call
         id: merge_api
         env:
@@ -49,7 +52,7 @@ jobs:
           set -euo pipefail
           python3 scripts/agent-control/control_state.py require-auto-merge >/dev/null
           RESULT=$(gh api --method PUT "repos/${GITHUB_REPOSITORY}/pulls/${{ inputs.pr_number }}/merge" \
-            -f sha="${{ inputs.head_sha }}" -f merge_method=squash)
+            -f sha="$INPUT_HEAD_SHA" -f merge_method=squash)
           test "$(jq -r '.merged' <<<"$RESULT")" = true
           echo "merge_sha=$(jq -er '.sha' <<<"$RESULT")" >> "$GITHUB_OUTPUT"
       - name: Re-read merged PR and require durable merge confirmation
@@ -60,7 +63,7 @@ jobs:
           set -euo pipefail
           PR=$(gh pr view "${{ inputs.pr_number }}" --json state,headRefOid,mergeCommit)
           test "$(jq -r '.state' <<<"$PR")" = MERGED
-          test "$(jq -r '.headRefOid' <<<"$PR")" = "${{ inputs.head_sha }}"
+          test "$(jq -r '.headRefOid' <<<"$PR")" = "$INPUT_HEAD_SHA"
           MERGE_COMMIT=$(jq -er '.mergeCommit.oid' <<<"$PR")
           test -n "$MERGE_COMMIT"
           echo "merge_commit_sha=$MERGE_COMMIT" >> "$GITHUB_OUTPUT"
@@ -72,7 +75,7 @@ jobs:
           set -euo pipefail
           python3 scripts/agent-control/control_state.py require-auto-merge >/dev/null
           python3 scripts/agent-control/state_manager.py record-merge "${{ inputs.issue_number }}" "${{ inputs.pr_number }}" \
-            "${{ inputs.head_sha }}" "${{ steps.confirm.outputs.merge_commit_sha }}"
+            "$INPUT_HEAD_SHA" "${{ steps.confirm.outputs.merge_commit_sha }}"
           python3 scripts/agent-control/state_manager.py set-labels "${{ inputs.issue_number }}" agent-complete
           gh issue close "${{ inputs.issue_number }}"
       - name: Recheck control before dispatching one next dependency-ready task

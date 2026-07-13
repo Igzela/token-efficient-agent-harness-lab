@@ -12,6 +12,7 @@ PROMPT_DIR = pathlib.Path(__file__).resolve().parent / "prompts"
 
 REPO_OWNER = os.environ.get("AGENT_REPO_OWNER", "Igzela")
 REPO_NAME = os.environ.get("AGENT_REPO_NAME", "token-efficient-agent-harness-lab")
+MAX_REVIEW_DIFF_CHARS = 100_000
 
 
 def _gh(*args):
@@ -154,7 +155,13 @@ def build_review_prompt(pr_number, head_sha, template="review.md"):
     ctx["head_sha"] = head_sha
 
     diff = _gh("pr", "diff", str(pr_number))
-    ctx["diff"] = diff or ""
+    if diff is None:
+        raise ValueError("complete PR diff is unavailable")
+    if len(diff) > MAX_REVIEW_DIFF_CHARS:
+        raise ValueError(
+            f"complete PR diff exceeds the {MAX_REVIEW_DIFF_CHARS}-character review bound"
+        )
+    ctx["diff"] = diff
 
     pr_json = _gh("pr", "view", str(pr_number), "--json", "title,body,files,reviews,comments")
     if pr_json:
@@ -179,7 +186,7 @@ def build_review_prompt(pr_number, head_sha, template="review.md"):
     prompt = template_text
     prompt = prompt.replace("{{PR_NUMBER}}", str(pr_number))
     prompt = prompt.replace("{{HEAD_SHA}}", head_sha)
-    prompt = prompt.replace("{{DIFF}}", ctx["diff"][:100000])
+    prompt = prompt.replace("{{DIFF}}", ctx["diff"])
     prompt = prompt.replace("{{REPO_NAME}}", f"{REPO_OWNER}/{REPO_NAME}")
     prompt = prompt.replace("{{AGENTS_MD}}", ctx.get("AGENTS_md", ""))
 

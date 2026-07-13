@@ -6,7 +6,10 @@
   "required": [
     "verdict",
     "summary",
-    "reviewed_head_sha"
+    "reviewed_head_sha",
+    "ci_green",
+    "security_ok",
+    "rollback_ok"
   ],
   "properties": {
     "verdict": {
@@ -16,25 +19,31 @@
     },
     "summary": {
       "type": "string",
+      "minLength": 1,
+      "maxLength": 2000,
       "description": "One-line summary of the review"
     },
     "reviewed_head_sha": {
       "type": "string",
+      "pattern": "^[0-9a-f]{40}$",
       "description": "The exact PR head SHA that was reviewed"
     },
     "blockers": {
       "type": "array",
-      "items": { "type": "string" },
+      "maxItems": 50,
+      "items": { "type": "string", "maxLength": 2000 },
       "description": "Issues that must be resolved before merge (verdict BLOCKED or FAIL only)"
     },
     "major_notes": {
       "type": "array",
-      "items": { "type": "string" },
+      "maxItems": 50,
+      "items": { "type": "string", "maxLength": 2000 },
       "description": "Significant observations that should be addressed"
     },
     "minor_notes": {
       "type": "array",
-      "items": { "type": "string" },
+      "maxItems": 50,
+      "items": { "type": "string", "maxLength": 2000 },
       "description": "Minor suggestions"
     },
     "ci_green": {

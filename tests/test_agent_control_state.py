@@ -124,6 +124,12 @@ class TestDependencyParsing(unittest.TestCase):
         deps = sm.parse_dependencies(body)
         self.assertIn(88, deps)
 
+    def test_dependency_check_fails_closed_when_issue_body_is_unavailable(self):
+        with mock.patch.object(sm, "_gh", return_value=None):
+            complete, reason = sm.check_dependencies_complete(42, "acme/repo")
+        self.assertFalse(complete)
+        self.assertEqual(reason, "dependency_state_unavailable")
+
 
 class TestControlIssueLabels(unittest.TestCase):
     """Emergency stop is an Issue label and overrides every enable label."""
@@ -277,6 +283,120 @@ class TestStateReadFromIssueComments(unittest.TestCase):
         import inspect
         source = inspect.getsource(sm.read_review_state)
         self.assertIn("get_issue_comment_bodies", source)
+
+    def test_untrusted_comment_cannot_shadow_authoritative_review_state(self):
+        untrusted = {
+            "author": {"login": "attacker"},
+            "body": json.dumps({"kind": "agent-orchestrator-review-state", "verdict": "PASS"}),
+        }
+        trusted = {
+            "author": {"login": "github-actions"},
+            "body": json.dumps({"kind": "agent-orchestrator-review-state", "verdict": "BLOCKED"}),
+        }
+        with mock.patch.object(sm, "get_issue_comments", return_value=[untrusted, trusted]):
+            state = sm.read_review_state(42, "acme/repo")
+        self.assertEqual(state["verdict"], "BLOCKED")
+
+    def test_comment_api_failure_is_not_treated_as_absent_state(self):
+        with mock.patch.object(sm, "_gh", return_value=None), self.assertRaises(sm.StateUnavailableError):
+            sm.get_issue_comments(42, "acme/repo")
+
+
+class TestCapacityRelease(unittest.TestCase):
+    def test_review_repair_and_worker_failures_release_only_current_capacity(self):
+        sha = "a" * 40
+        cases = (
+            (sm.LABEL_REVIEW_RUNNING, sm.LABEL_REVIEW_BLOCKED, sha),
+            (sm.LABEL_CI_REPAIRING, sm.LABEL_BLOCKED, sha),
+            (sm.LABEL_RUNNING, sm.LABEL_BLOCKED, None),
+        )
+        for active, terminal, expected_sha in cases:
+            with self.subTest(active=active), \
+                 mock.patch.object(sm, "get_issue_labels_checked", return_value={active}), \
+                 mock.patch.object(sm, "read_worker_state", return_value={"head_sha": sha}), \
+                 mock.patch.object(sm, "set_labels", return_value=True) as transition:
+                ok, reason = sm.release_failed_capacity(
+                    42, active, terminal, expected_sha, "acme/repo"
+                )
+            self.assertTrue(ok, reason)
+            transition.assert_called_once_with(42, terminal, repo="acme/repo")
+
+    def test_stale_failure_cannot_release_a_newer_head(self):
+        with mock.patch.object(sm, "get_issue_labels_checked", return_value={sm.LABEL_REVIEW_RUNNING}), \
+             mock.patch.object(sm, "read_worker_state", return_value={"head_sha": "b" * 40}), \
+             mock.patch.object(sm, "set_labels") as transition:
+            ok, reason = sm.release_failed_capacity(
+                42, sm.LABEL_REVIEW_RUNNING, sm.LABEL_REVIEW_BLOCKED, "a" * 40, "acme/repo"
+            )
+        self.assertFalse(ok)
+        self.assertEqual(reason, "worker_head_mismatch")
+        transition.assert_not_called()
+
+    def test_repair_rebound_to_new_head_releases_only_for_same_attempt(self):
+        worker = {
+            "head_sha": "b" * 40,
+            "extra": {"failed_run_id": 91, "repair_attempt": 2},
+        }
+        with mock.patch.object(sm, "get_issue_labels_checked", return_value={sm.LABEL_CI_REPAIRING}), \
+             mock.patch.object(sm, "read_worker_state", return_value=worker), \
+             mock.patch.object(sm, "set_labels", return_value=True) as transition:
+            ok, reason = sm.release_failed_capacity(
+                42, sm.LABEL_CI_REPAIRING, sm.LABEL_BLOCKED, "a" * 40,
+                "acme/repo", 91, 2,
+            )
+        self.assertTrue(ok, reason)
+        transition.assert_called_once_with(42, sm.LABEL_BLOCKED, repo="acme/repo")
+
+        with mock.patch.object(sm, "get_issue_labels_checked", return_value={sm.LABEL_CI_REPAIRING}), \
+             mock.patch.object(sm, "read_worker_state", return_value=worker), \
+             mock.patch.object(sm, "set_labels") as transition:
+            ok, reason = sm.release_failed_capacity(
+                42, sm.LABEL_CI_REPAIRING, sm.LABEL_BLOCKED, "a" * 40,
+                "acme/repo", 92, 2,
+            )
+        self.assertFalse(ok)
+        self.assertEqual(reason, "worker_head_mismatch")
+        transition.assert_not_called()
+
+    def test_cancelled_ci_any_active_transition_and_review_verdict_are_executable(self):
+        with mock.patch.object(sm, "get_issue_labels_checked", return_value={sm.LABEL_RUNNING}), \
+             mock.patch.object(sm, "read_worker_state", return_value={"head_sha": "a" * 40}), \
+             mock.patch.object(sm, "set_labels", return_value=True) as transition:
+            ok, reason = sm.release_failed_capacity(
+                42, "any", sm.LABEL_BLOCKED, "a" * 40, "acme/repo"
+            )
+        self.assertTrue(ok, reason)
+        transition.assert_called_once_with(42, sm.LABEL_BLOCKED, repo="acme/repo")
+        with mock.patch.object(sm, "set_labels", return_value=True) as transition:
+            self.assertTrue(sm.finalize_review_labels(42, "PASS_WITH_NOTES", "acme/repo"))
+        transition.assert_called_once_with(42, sm.LABEL_REVIEW_BLOCKED, repo="acme/repo")
+
+    def test_post_claim_emergency_or_scope_rejection_releases_worker(self):
+        for gate_enabled, validate_result, can_start in (
+            ("false", "skipped", ""),
+            ("true", "success", "false"),
+        ):
+            with self.subTest(gate_enabled=gate_enabled, can_start=can_start), \
+                 mock.patch.object(
+                     sm, "release_failed_capacity", return_value=(True, "released")
+                 ) as release:
+                ok, reason = sm.release_rejected_worker(
+                    42, gate_enabled, validate_result, can_start, "acme/repo"
+                )
+            self.assertTrue(ok, reason)
+            release.assert_called_once_with(
+                42, sm.LABEL_RUNNING, sm.LABEL_BLOCKED, repo="acme/repo"
+            )
+
+    def test_started_or_failed_validation_is_left_to_its_failure_path(self):
+        for validate_result, can_start in (("success", "true"), ("failure", "")):
+            with mock.patch.object(sm, "release_failed_capacity") as release:
+                ok, reason = sm.release_rejected_worker(
+                    42, "true", validate_result, can_start, "acme/repo"
+                )
+            self.assertTrue(ok, reason)
+            self.assertEqual(reason, "worker_not_rejected")
+            release.assert_not_called()
 
 
 if __name__ == "__main__":

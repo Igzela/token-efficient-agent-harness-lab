@@ -11,6 +11,15 @@ import state_manager as sm
 
 
 MAX_REPAIR_ATTEMPTS = int(os.environ.get("AGENT_MAX_REPAIR_ATTEMPTS", "2"))
+TERMINAL_UNSUPPORTED_CONCLUSIONS = {
+    "action_required",
+    "cancelled",
+    "neutral",
+    "skipped",
+    "stale",
+    "startup_failure",
+    "timed_out",
+}
 
 
 def parse_workflow_run_event(event_path):
@@ -128,11 +137,17 @@ def _is_duplicate_exact_head_run(issue, pr, sha, run_id, branch):
     state = sm.read_ci_state(issue)
     if state and state.get("pr_number") == int(pr) and state.get("head_sha") == sha:
         previous_run = state.get("workflow_run_id") or state.get("ci_run_id")
-        if str(previous_run) == str(run_number) and state.get("status") in {"success", "invalidated"}:
+        status = str(state.get("status", ""))
+        if str(previous_run) == str(run_number) and (
+            status in {"success", "invalidated"}
+            or status.startswith("terminal_")
+        ):
             return True
-        if str(previous_run) == str(run_number) and str(state.get("status", "")).startswith("failure_repair_"):
+        if str(previous_run) == str(run_number) and status.startswith("failure_repair_"):
             return True
-    exact_runs = ci_verifier.find_exact_runs(branch, sha)
+    if acquired_number == run_number:
+        return False
+    exact_runs = ci_verifier._acquirable_runs(ci_verifier.find_exact_runs(branch, sha))
     if len(exact_runs) > 1:
         try:
             canonical_number = int(exact_runs[0].get("databaseId", 0))
@@ -143,6 +158,17 @@ def _is_duplicate_exact_head_run(issue, pr, sha, run_id, branch):
     return False
 
 
+def _state_unavailable_result(issue, pr, sha, run_id, detail):
+    return {
+        "action": "blocked",
+        "pr_number": pr,
+        "issue_number": issue,
+        "head_sha": sha,
+        "ci_run_id": run_id,
+        "reason": f"ci_state_unavailable:{detail}",
+    }
+
+
 def process_ci_completion(event_path):
     info = parse_workflow_run_event(event_path)
     expected_repo = os.environ.get("AGENT_REPO") or os.environ.get("GITHUB_REPOSITORY", "")
@@ -150,7 +176,8 @@ def process_ci_completion(event_path):
         return {"action": "noop", "reason": "foreign_or_untrusted_repository"}
     if info["head_repository"] and info["head_repository"] != expected_repo:
         return {"action": "noop", "reason": "fork_or_foreign_head_repository"}
-    if info["status"] != "completed" or info["conclusion"] not in {"success", "failure"}:
+    supported_conclusions = {"success", "failure"} | TERMINAL_UNSUPPORTED_CONCLUSIONS
+    if info["status"] != "completed" or info["conclusion"] not in supported_conclusions:
         return {"action": "noop", "reason": "non_terminal_or_unsupported_conclusion"}
     pr_number = info["pr_number"] or _find_pr_for_run(info)
     if not pr_number:
@@ -175,21 +202,70 @@ def process_ci_completion(event_path):
     issue_number = _find_issue_for_pr(pr_number)
     if not issue_number:
         return {"action": "noop", "reason": "no_canonical_issue_binding"}
-    if _is_duplicate_exact_head_run(issue_number, pr_number, current_head, info["run_id"], info["head_branch"]):
-        return {"action": "noop", "reason": "duplicate_exact_head_run"}
     binding_ok, binding_reason = sm.verify_issue_pr_binding(issue_number, pr_number, current_head)
     if not binding_ok:
         return {"action": "noop", "reason": f"binding_rejected:{binding_reason}"}
+    try:
+        duplicate = _is_duplicate_exact_head_run(
+            issue_number, pr_number, current_head, info["run_id"], info["head_branch"]
+        )
+    except sm.StateUnavailableError as exc:
+        return _state_unavailable_result(
+            issue_number, pr_number, current_head, info["run_id"], str(exc)
+        )
+    if duplicate:
+        return {"action": "noop", "reason": "duplicate_exact_head_run"}
+
+    if info["conclusion"] in TERMINAL_UNSUPPORTED_CONCLUSIONS:
+        conclusion = info["conclusion"]
+        try:
+            _record_ci(
+                issue_number,
+                pr_number,
+                current_head,
+                info["run_id"],
+                f"terminal_{conclusion}",
+                run,
+            )
+        except RuntimeError as exc:
+            return _state_unavailable_result(
+                issue_number, pr_number, current_head, info["run_id"], str(exc)
+            )
+        return {
+            "action": "blocked",
+            "pr_number": pr_number,
+            "issue_number": issue_number,
+            "head_sha": current_head,
+            "ci_run_id": info["run_id"],
+            "reason": f"ci_terminal_{conclusion}",
+        }
 
     if info["conclusion"] == "success":
         try:
             evidence = ci_verifier.verify_exact_head_ci(pr_number, current_head, info["run_id"], pr_info)
         except ci_verifier.CIVerificationError as exc:
             return {"action": "stale", "reason": f"exact_head_ci_rejected:{exc}"}
-        previous_state = sm.read_ci_state(issue_number)
+        try:
+            previous_state = sm.read_ci_state(issue_number)
+        except sm.StateUnavailableError as exc:
+            return _state_unavailable_result(
+                issue_number, pr_number, current_head, info["run_id"], str(exc)
+            )
         repair_count = int((previous_state or {}).get("extra", {}).get("repair_count", 0))
-        _record_ci(issue_number, pr_number, current_head, info["run_id"], "success", run, repair_count)
-        labels = sm.get_issue_labels(issue_number)
+        try:
+            _record_ci(
+                issue_number, pr_number, current_head, info["run_id"],
+                "success", run, repair_count,
+            )
+        except RuntimeError as exc:
+            return _state_unavailable_result(
+                issue_number, pr_number, current_head, info["run_id"], str(exc)
+            )
+        labels = sm.get_issue_labels_checked(issue_number)
+        if labels is None:
+            return _state_unavailable_result(
+                issue_number, pr_number, current_head, info["run_id"], "Issue label state is unavailable"
+            )
         action = "merge_ready" if sm.LABEL_REVIEW_PASSED in labels else "trigger_review"
         return {
             "action": action,
@@ -201,10 +277,23 @@ def process_ci_completion(event_path):
             "reason": "ci_green",
         }
 
-    state = sm.read_ci_state(issue_number)
+    try:
+        state = sm.read_ci_state(issue_number)
+    except sm.StateUnavailableError as exc:
+        return _state_unavailable_result(
+            issue_number, pr_number, current_head, info["run_id"], str(exc)
+        )
     repair_count = int((state or {}).get("extra", {}).get("repair_count", 0))
     next_count = repair_count + 1
-    _record_ci(issue_number, pr_number, current_head, info["run_id"], f"failure_repair_{repair_count}", run, repair_count)
+    try:
+        _record_ci(
+            issue_number, pr_number, current_head, info["run_id"],
+            f"failure_repair_{repair_count}", run, repair_count,
+        )
+    except RuntimeError as exc:
+        return _state_unavailable_result(
+            issue_number, pr_number, current_head, info["run_id"], str(exc)
+        )
     if next_count > MAX_REPAIR_ATTEMPTS:
         return {
             "action": "blocked",

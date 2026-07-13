@@ -55,10 +55,11 @@ REQUIRED_FILES = {
     "docs/CURRENT_STATUS.md": [
         "# Current Status",
         "Last updated:",
-        "Complete and Acceptance-Sealed Tracks",
-        "PE-4 Final Acceptance Evidence",
-        "PE-5",
-        "PE5-CONTRACT-1",
+        "## Verified Repository State",
+        "## Capability Status",
+        "## Confirmed Integration Gaps",
+        "PE-5 Release Provenance",
+        "PE-6 Fault Injection and Recovery Drills",
         "Open Work Coordination",
         "Post-R7 wire/type governance",
         "scripts/check_wire_codegen_drift.sh",
@@ -66,14 +67,14 @@ REQUIRED_FILES = {
     "docs/NEXT_DECISION.md": [
         "# Next Decision",
         "## Current Direction",
-        "## Execution Protocol",
+        "## Common Execution Protocol",
         "READY_FOR_EXECUTION",
         "DECISION_REQUIRED",
         "Hard Stops",
-        "PE5-CONTRACT-1",
-        "Packet PE5-SBOM-1",
-        "Packet PE6-INVARIANTS-1",
-        "## Active Routing",
+        "Packet PR207-REPAIR-1",
+        "Packet PE2-RUNTIME-PRODUCER-1",
+        "Packet PE4-EVIDENCE-ENTRY-1",
+        "Packet TOOL-DISCOVERY-BENCH-1",
     ],
     "docs/MODULE_MAP.md": [
         "# Module Map",
@@ -81,7 +82,6 @@ REQUIRED_FILES = {
         "## PE-5 Release Provenance Ownership",
         "## PE-6 Fault Injection and Recovery Ownership",
         "Full Agent Autonomy Mode",
-        "PE5-CONTRACT-1",
         "`scripts/check_wire_codegen_drift.sh`",
     ],
     "docs/REAL_WORLD_TESTING_PLAYBOOK.md": [
@@ -215,11 +215,12 @@ def check_phase_handoff(failures: list[str]) -> None:
 
 
 
+PACKET_ID_PATTERN = r"(?:PE\d+|PR\d+|TOOL)(?:-[A-Z0-9]+)+"
 PACKET_HEADING_RE = re.compile(
-    r"^#{2,3} Packet (?P<packet>PE\d+-[A-Z0-9-]+)\b.*$", re.MULTILINE
+    rf"^#{{2,3}} Packet (?P<packet>{PACKET_ID_PATTERN})\b.*$", re.MULTILINE
 )
 PACKET_STATE_RE = re.compile(
-    r"^\*\*State:\*\* `(?P<state>[A-Z_]+)`\s*$", re.MULTILINE
+    r"^\*\*State:\*\* `(?P<state>[A-Z_]+)`(?:\s+.*)?$", re.MULTILINE
 )
 STAGE_ROW_RE = re.compile(
     r"^\|\s*(?P<stage>PE-\d+)\s*\|[^|]*\|[^|]*\|\s*(?P<summary>[^|]+?)\s*\|$",
@@ -272,7 +273,7 @@ def parse_packet_contracts(
             r"^\*\*Prerequisite:\*\* (?P<value>.+)$", block, re.MULTILINE
         )
         prerequisites = (
-            re.findall(r"PE\d+-[A-Z0-9-]+", prerequisite_match.group("value"))
+            re.findall(PACKET_ID_PATTERN, prerequisite_match.group("value"))
             if prerequisite_match
             else []
         )
@@ -303,8 +304,10 @@ def active_state_failures(status_text: str, next_text: str) -> list[str]:
                     f"{packet_id} is {state} while prerequisites are not complete: {incomplete}"
                 )
 
-    routing = _section(next_text, "## Active Routing")
-    routed_packets = re.findall(r"PE\d+-[A-Z0-9-]+", routing)
+    routing = _section(next_text, "## Active Routing") or _section(
+        next_text, "## Current Direction"
+    )
+    routed_packets = re.findall(PACKET_ID_PATTERN, routing)
     terminal_routing = bool(re.search(r"\bterminal objective\b", routing, re.IGNORECASE))
     if not routed_packets:
         if not terminal_routing:

@@ -110,13 +110,9 @@ class TestFunctionSignatures(unittest.TestCase):
         self.assertTrue(hasattr(wtm, "cleanup_stale_worktrees"))
         self.assertTrue(callable(wtm.cleanup_stale_worktrees))
 
-    def test_push_branch_exists(self):
-        self.assertTrue(hasattr(wtm, "push_branch"))
-        self.assertTrue(callable(wtm.push_branch))
-
-    def test_create_pr_exists(self):
-        self.assertTrue(hasattr(wtm, "create_pr"))
-        self.assertTrue(callable(wtm.create_pr))
+    def test_generic_git_and_pr_mutation_helpers_are_absent(self):
+        self.assertFalse(hasattr(wtm, "push_branch"))
+        self.assertFalse(hasattr(wtm, "create_pr"))
 
     def test_create_worktree_exists(self):
         self.assertTrue(hasattr(wtm, "create_worktree"))

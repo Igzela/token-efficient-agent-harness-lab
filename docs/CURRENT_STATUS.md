@@ -95,11 +95,10 @@ Current verified PR state:
 
 - open and unmerged;
 - branch `codex/agent-orchestrator-v1`;
-- current head `06933e0e84f5c92956e9139608b2bfe354fcbeb2`;
-- exact-head canonical CI run `29223404792` completed successfully with all seven required jobs green;
-- the Python job explicitly ran the canonical orchestrator regression suite, parsed the agent workflow YAML, and ran the orchestrator regression tests;
-- the PR body claims the previously identified runtime/state defects are repaired;
-- it is currently reported non-mergeable and is based on an older `main`, so it must refresh from current `main` and reconcile the active documents before any final review or merge decision.
+- repair work refreshed the branch from starting `main` `d5354e6866e69cc2ce7c4d12258bfd3c828ce7c4` and reconciled the current integration-repair documents;
+- pre-refresh head `06933e0e84f5c92956e9139608b2bfe354fcbeb2` and canonical CI run `29223404792` are historical evidence only;
+- every repaired head still requires fresh exact-head canonical CI with all seven required jobs, including explicit orchestrator suite wiring, workflow YAML parsing, and orchestrator regression execution;
+- the PR body is the operational source for its current head, final file/test inventory, fresh CI run, remaining Stage B prerequisites, and rollback evidence.
 
 The eight items in `PR207-REPAIR-1` are now an independent acceptance checklist, not an assertion that every defect remains present. Review the actual final diff and executable paths; repair any remaining defect found. PR #207 must remain emergency-stopped and inactive, and it must not merge without separate user authorization.
 

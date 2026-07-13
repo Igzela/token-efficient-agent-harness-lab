@@ -42,9 +42,12 @@ Output ONLY a JSON object on the last line of your response. The JSON must match
 | `blockers` | array | no | List of blocking issues |
 | `major_notes` | array | no | List of major (non-blocking) observations |
 | `minor_notes` | array | no | List of minor suggestions |
-| `ci_green` | boolean | no | All required CI green |
-| `security_ok` | boolean | no | No security concerns |
-| `rollback_ok` | boolean | no | Clear rollback path (if applicable) |
+| `ci_green` | boolean | yes | All required exact-head CI is green |
+| `security_ok` | boolean | yes | No security concerns |
+| `rollback_ok` | boolean | yes | Clear rollback path (if applicable) |
+
+`PASS` is authorizing only when `blockers` is empty and all three required
+boolean gates are `true`. Otherwise choose `BLOCKED` or `FAIL`.
 
 Verdict meanings:
 - `PASS`: Ready to merge with no blocking issues.

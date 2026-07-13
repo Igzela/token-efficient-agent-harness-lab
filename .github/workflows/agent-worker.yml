@@ -187,7 +187,7 @@ jobs:
           retention-days: 1
       - name: Release secondary worktree lock and remove worktree
         if: always()
-        run: python3 scripts/agent-control/worktree_manager.py remove "${{ inputs.issue }}" "agent/issue-${{ inputs.issue }}" || true
+        run: python3 scripts/agent-control/worktree_manager.py remove "${{ inputs.issue }}" "agent/issue-${{ inputs.issue }}"
 
   finalize:
     needs: vader-implementation
@@ -340,8 +340,30 @@ jobs:
           python3 scripts/agent-control/state_manager.py record-ci "${{ inputs.issue }}" "${{ steps.pr.outputs.pr_number }}" \
             "${{ steps.commit.outputs.head_sha }}" "$RUN_ID" dispatched "$EXTRA"
 
+  rejected-before-vader:
+    needs: [gate, validate]
+    if: always() && needs.gate.result == 'success' && needs.gate.outputs.dry_run != 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      issues: write
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        with:
+          persist-credentials: false
+      - name: Release a successfully rejected dispatcher claim
+        env:
+          AGENT_REPO: ${{ github.repository }}
+          GH_TOKEN: ${{ github.token }}
+          GATE_ENABLED: ${{ needs.gate.outputs.enabled }}
+          VALIDATE_RESULT: ${{ needs.validate.result }}
+          CAN_START: ${{ needs.validate.outputs.can_start }}
+        run: |
+          python3 scripts/agent-control/state_manager.py release-rejected-worker \
+            "${{ inputs.issue }}" "$GATE_ENABLED" "$VALIDATE_RESULT" "$CAN_START"
+
   failure-handler:
-    needs: [validate, vader-implementation, finalize]
+    needs: [gate, validate, vader-implementation, finalize]
     if: failure()
     runs-on: ubuntu-latest
     permissions:
@@ -351,19 +373,11 @@ jobs:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
         with:
           persist-credentials: false
-      - name: Mark only current live implementation failures blocked
+      - name: Release only the failed worker's active capacity
         env:
           AGENT_REPO: ${{ github.repository }}
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          if ! python3 scripts/agent-control/control_state.py require-live >/dev/null; then
-            echo "nonterminal disabled or emergency-stopped outcome"
-            exit 0
-          fi
-          LABELS=$(python3 scripts/agent-control/state_manager.py get-labels "${{ inputs.issue }}")
-          if echo "$LABELS" | grep -qw agent-running && ! echo "$LABELS" | grep -Eq '(agent-complete|agent-blocked|agent-review-blocked|agent-merge-ready|review-running|review-passed)'; then
-            python3 scripts/agent-control/state_manager.py set-labels "${{ inputs.issue }}" agent-blocked
-          else
-            echo "stale or superseded outcome; state unchanged"
-          fi
+          python3 scripts/agent-control/state_manager.py release-failed \
+            "${{ inputs.issue }}" agent-running agent-blocked

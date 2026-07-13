@@ -36,13 +36,19 @@ check() {
   fi
 }
 
+check_tmp_writable() {
+  local probe
+  probe=$(mktemp /tmp/agent-preflight-test.XXXXXX) || return 1
+  rm -f -- "$probe"
+}
+
 echo "=== Agent Orchestrator Preflight ==="
 echo ""
 
 echo "--- System ---"
 check "whoami" whoami
 check "HOME is set" test -n "${HOME:-}"
-check "TMPDIR writable" touch /tmp/agent-preflight-test && rm -f /tmp/agent-preflight-test
+check "temporary directory writable" check_tmp_writable
 
 echo ""
 echo "--- Git ---"
@@ -113,7 +119,7 @@ echo "--- Runner Labels ---"
 if [ -n "${RUNNER_NAME:-}" ]; then
   echo "  Runner: $RUNNER_NAME"
 else
-  echo "  Runner: not running as GitHub Actions runner (stdalone mode)"
+  echo "  Runner: not running as GitHub Actions runner (standalone mode)"
 fi
 if [ -n "${RUNNER_LABELS:-}" ]; then
   echo "  Labels: $RUNNER_LABELS"

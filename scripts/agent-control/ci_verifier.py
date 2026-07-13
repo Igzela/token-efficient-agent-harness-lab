@@ -11,6 +11,8 @@ from typing import Any
 
 
 REQUIREMENTS_PATH = Path(__file__).with_name("ci_requirements.json")
+ACTIVE_RUN_STATUSES = {"queued", "in_progress", "requested", "waiting", "pending"}
+SUPPORTED_COMPLETED_CONCLUSIONS = {"success", "failure"}
 
 
 class CIVerificationError(RuntimeError):
@@ -112,6 +114,20 @@ def find_exact_run(branch: str, head_sha: str) -> dict[str, Any] | None:
     return runs[0] if runs else None
 
 
+def _acquirable_runs(runs: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Exclude terminal runs that can never provide supported CI evidence."""
+
+    return [
+        run
+        for run in runs
+        if run.get("status") in ACTIVE_RUN_STATUSES
+        or (
+            run.get("status") == "completed"
+            and run.get("conclusion") in SUPPORTED_COMPLETED_CONCLUSIONS
+        )
+    ]
+
+
 def acquire_exact_ci(
     pr_number: int,
     branch: str,
@@ -123,12 +139,12 @@ def acquire_exact_ci(
 
     requirements = load_requirements()
     deadline = time.monotonic() + observe_seconds
-    runs: list[dict[str, Any]] = []
-    while time.monotonic() < deadline:
-        runs = find_exact_runs(branch, head_sha)
-        if runs:
-            break
+    all_runs = find_exact_runs(branch, head_sha)
+    runs = _acquirable_runs(all_runs)
+    while not runs and time.monotonic() < deadline:
         time.sleep(2)
+        all_runs = find_exact_runs(branch, head_sha)
+        runs = _acquirable_runs(all_runs)
 
     source = "pull_request"
     if not runs:
@@ -143,7 +159,8 @@ def acquire_exact_ci(
         source = "workflow_dispatch"
         deadline = time.monotonic() + dispatch_timeout_seconds
         while time.monotonic() < deadline:
-            runs = find_exact_runs(branch, head_sha)
+            all_runs = find_exact_runs(branch, head_sha)
+            runs = _acquirable_runs(all_runs)
             if runs:
                 break
             time.sleep(2)
@@ -155,7 +172,12 @@ def acquire_exact_ci(
         source = "workflow_dispatch"
     elif event == "pull_request":
         source = "pull_request"
-    duplicate_ids = [run.get("databaseId") for run in runs[1:] if run.get("databaseId") is not None]
+    selected_id = selected.get("databaseId")
+    duplicate_ids = [
+        run.get("databaseId")
+        for run in all_runs
+        if run.get("databaseId") is not None and run.get("databaseId") != selected_id
+    ]
     return {
         "kind": "agent-orchestrator-ci-acquisition",
         "pr_number": int(pr_number),

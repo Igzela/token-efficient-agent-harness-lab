@@ -248,7 +248,7 @@ uv run --no-project python scripts/agent-control/control_state.py emergency-stop
 uv run --no-project python scripts/agent-control/control_state.py emergency-resume --repo OWNER/REPO
 ```
 
-Emergency stop always wins. Keep orchestration and auto-merge disabled, with emergency stop present, until exact-head CI, Issue↔PR binding, independent review, and Vader service-user validation have all been independently revalidated.
+Emergency stop always wins. It prevents new work, review, repair, and merge dispatch. A workflow that was already active may perform only its idempotent failure cleanup: the state owner removes that workflow's one active-capacity label and records a non-running blocked label, with exact-head validation for review and repair. This cleanup cannot dispatch or authorize work. Keep orchestration and auto-merge disabled, with emergency stop present, until exact-head CI, Issue↔PR binding, independent review, and Vader service-user validation have all been independently revalidated.
 
 Every task Issue intended for implementation must also declare its permitted change scope. The finalizer rejects an artifact unless every changed path is exact or under an allowed directory prefix:
 
@@ -256,7 +256,9 @@ Every task Issue intended for implementation must also declare its permitted cha
 <!-- agent-orchestrator-scope:v1 {"allowed_paths":["scripts/agent-control/","tests/test_agent_orchestrator_artifacts.py"]} -->
 ```
 
-Review terminal states are explicit: exact `PASS` removes `review-running`, adds `review-passed` and `agent-merge-ready`, and waits without consuming capacity when auto-merge is disabled; `PASS_WITH_NOTES`, `BLOCKED`, `FAIL`, malformed output, or a moved head add `agent-review-blocked` and do not authorize merge. Use `python3 scripts/agent-control/state_manager.py retry-review ISSUE` only after operator inspection; it returns the Issue to `agent-ready` for a fresh exact-head run.
+Before commit, the finalizer performs bounded structural validation only: it validates the artifact schema, hashes and exact bindings, rechecks Issue scope, recomputes the staged path set, and runs `git diff --cached --check`. It does not claim arbitrary task-specific behavioral validation at that point. Behavioral acceptance comes from the canonical exact-head seven-job CI run acquired after the validated commit is pushed.
+
+Review terminal states are explicit: exact `PASS` requires the complete bounded diff, no blockers, and affirmative exact-head CI, security, and rollback gates; it removes `review-running`, adds `review-passed` and `agent-merge-ready`, and waits without consuming capacity when auto-merge is disabled. `PASS_WITH_NOTES`, `BLOCKED`, `FAIL`, malformed output, or an unavailable/oversized complete diff add `agent-review-blocked` and do not authorize merge. After operator inspection, use the live-gated controller command `retry-review`; it derives the current PR and exact head from trusted state, revalidates their binding, and dispatches a fresh read-only review without returning the Issue to implementation-ready state.
 
 ## Release Upgrade and Rollback
 

@@ -80,10 +80,9 @@ jobs:
               -f issue="${{ steps.decision.outputs.issue_number }}" \
               -f head_sha="${{ steps.decision.outputs.head_sha }}"
           fi
-      - name: Block only exhausted real repair attempts
+      - name: Release the exact-head CI failure's active capacity
         if: steps.decision.outputs.action == 'blocked'
         run: |
-          python3 scripts/agent-control/control_state.py require-live >/dev/null
-          python3 scripts/agent-control/state_manager.py verify-binding "${{ steps.decision.outputs.issue_number }}" \
-            "${{ steps.decision.outputs.pr_number }}" "${{ steps.decision.outputs.head_sha }}"
-          python3 scripts/agent-control/state_manager.py set-labels "${{ steps.decision.outputs.issue_number }}" agent-blocked
+          python3 scripts/agent-control/state_manager.py release-failed \
+            "${{ steps.decision.outputs.issue_number }}" any agent-blocked \
+            "${{ steps.decision.outputs.head_sha }}"

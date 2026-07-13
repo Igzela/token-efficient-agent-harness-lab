@@ -1,5 +1,8 @@
 name: agent-review
 
+env:
+  INPUT_HEAD_SHA: ${{ inputs.head_sha }}
+
 on:
   workflow_dispatch:
     inputs:
@@ -44,7 +47,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           python3 scripts/agent-control/control_state.py require-live >/dev/null
-          python3 scripts/agent-control/state_manager.py verify-binding "${{ inputs.issue_number }}" "${{ inputs.pr_number }}" "${{ inputs.head_sha }}"
+          python3 scripts/agent-control/state_manager.py verify-binding "${{ inputs.issue_number }}" "${{ inputs.pr_number }}" "$INPUT_HEAD_SHA"
       - name: Recheck control immediately before recording review-running
         env:
           AGENT_REPO: ${{ github.repository }}
@@ -56,7 +59,7 @@ jobs:
         env:
           AGENT_REPO: ${{ github.repository }}
           GH_TOKEN: ${{ github.token }}
-        run: python3 scripts/agent-control/prompt_builder.py review "${{ inputs.pr_number }}" "${{ inputs.head_sha }}" > "$RUNNER_TEMP/review-prompt.txt"
+        run: python3 scripts/agent-control/prompt_builder.py review "${{ inputs.pr_number }}" "$INPUT_HEAD_SHA" > "$RUNNER_TEMP/review-prompt.txt"
       - name: Upload trusted review input
         env:
           AGENT_REPO: ${{ github.repository }}
@@ -135,15 +138,16 @@ jobs:
           path: ${{ runner.temp }}/review-artifact
       - name: Validate full review schema and exact reviewed head
         id: verdict
-        run: uv run --no-project --with jsonschema python scripts/agent-control/validate_review.py "$RUNNER_TEMP/review-artifact/review-result.json" "${{ inputs.pr_number }}" "${{ inputs.head_sha }}"
+        run: python3 scripts/agent-control/validate_review.py "$RUNNER_TEMP/review-artifact/review-result.json" "${{ inputs.pr_number }}" "$INPUT_HEAD_SHA"
       - name: Recheck live control and binding before recording verdict
         env:
           AGENT_REPO: ${{ github.repository }}
           GH_TOKEN: ${{ github.token }}
+          REVIEW_SUMMARY: ${{ steps.verdict.outputs.summary }}
         run: |
           python3 scripts/agent-control/control_state.py require-live >/dev/null
-          python3 scripts/agent-control/state_manager.py verify-binding "${{ inputs.issue_number }}" "${{ inputs.pr_number }}" "${{ inputs.head_sha }}"
-          python3 scripts/agent-control/state_manager.py record-review "${{ inputs.issue_number }}" "${{ inputs.pr_number }}" "${{ inputs.head_sha }}" "${{ steps.verdict.outputs.verdict }}" "${{ steps.verdict.outputs.summary }}"
+          python3 scripts/agent-control/state_manager.py verify-binding "${{ inputs.issue_number }}" "${{ inputs.pr_number }}" "$INPUT_HEAD_SHA"
+          python3 scripts/agent-control/state_manager.py record-review "${{ inputs.issue_number }}" "${{ inputs.pr_number }}" "$INPUT_HEAD_SHA" "${{ steps.verdict.outputs.verdict }}" "$REVIEW_SUMMARY"
       - name: Authorize only exact PASS
         if: steps.verdict.outputs.verdict == 'PASS'
         env:
@@ -152,18 +156,19 @@ jobs:
         run: |
           set -euo pipefail
           python3 scripts/agent-control/control_state.py require-live >/dev/null
-          python3 scripts/agent-control/state_manager.py set-labels "${{ inputs.issue_number }}" review-passed agent-merge-ready
+          python3 scripts/agent-control/state_manager.py finalize-review-labels "${{ inputs.issue_number }}" PASS
           if python3 scripts/agent-control/control_state.py require-auto-merge >/dev/null; then
-            python3 scripts/agent-control/dispatcher.py dispatch-merge "${{ inputs.pr_number }}" "${{ inputs.issue_number }}" "${{ inputs.head_sha }}"
+            python3 scripts/agent-control/dispatcher.py dispatch-merge "${{ inputs.pr_number }}" "${{ inputs.issue_number }}" "$INPUT_HEAD_SHA"
           fi
       - name: Move non-PASS verdict to operator-review state
         if: steps.verdict.outputs.verdict != 'PASS'
         env:
           AGENT_REPO: ${{ github.repository }}
           GH_TOKEN: ${{ github.token }}
+          REVIEW_VERDICT: ${{ steps.verdict.outputs.verdict }}
         run: |
           python3 scripts/agent-control/control_state.py require-live >/dev/null
-          python3 scripts/agent-control/state_manager.py set-labels "${{ inputs.issue_number }}" agent-review-blocked
+          python3 scripts/agent-control/state_manager.py finalize-review-labels "${{ inputs.issue_number }}" "$REVIEW_VERDICT"
 
   failure-handler:
     needs: [prepare, vader-review, finalize]
@@ -181,18 +186,5 @@ jobs:
           AGENT_REPO: ${{ github.repository }}
           GH_TOKEN: ${{ github.token }}
         run: |
-          if ! python3 scripts/agent-control/control_state.py require-live >/dev/null; then
-            echo "disabled or emergency-stopped; review state unchanged"
-            exit 0
-          fi
-          if ! python3 scripts/agent-control/state_manager.py verify-binding \
-            "${{ inputs.issue_number }}" "${{ inputs.pr_number }}" "${{ inputs.head_sha }}"; then
-            echo "stale review failure; a newer exact head owns the Issue state"
-            exit 0
-          fi
-          LABELS=$(python3 scripts/agent-control/state_manager.py get-labels "${{ inputs.issue_number }}")
-          if echo "$LABELS" | grep -qw review-running && ! echo "$LABELS" | grep -Eq '(review-passed|agent-review-blocked|agent-merge-ready|agent-complete|agent-blocked)'; then
-            python3 scripts/agent-control/state_manager.py set-labels "${{ inputs.issue_number }}" agent-review-blocked
-          else
-            echo "newer review state exists; state unchanged"
-          fi
+          python3 scripts/agent-control/state_manager.py release-failed \
+            "${{ inputs.issue_number }}" review-running agent-review-blocked "$INPUT_HEAD_SHA"
