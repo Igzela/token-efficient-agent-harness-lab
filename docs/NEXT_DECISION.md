@@ -8,7 +8,7 @@ The next objective is to close confirmed integration gaps in existing owners. It
 
 The execution order is:
 
-1. `PR207-REPAIR-1` — repair the existing disabled repository-maintenance orchestrator;
+1. `PR207-REPAIR-1` — refresh and independently validate the existing disabled repository-maintenance orchestrator, repairing any remaining defect;
 2. `PE2-RUNTIME-PRODUCER-1` — connect owner-backed usage evidence to forecast/anomaly artifacts;
 3. `PE4-EVIDENCE-ENTRY-1` — connect trace-backed replay to the safe evidence-chain promotion owner;
 4. `TOOL-DISCOVERY-BENCH-1` — add a deterministic static-all versus retrieve-Top-K tool benchmark through PE-1 evidence owners.
@@ -17,11 +17,12 @@ Do not create another roadmap, phase, status, policy, or closeout document. This
 
 ## Verified Baseline
 
-- observed `main` after PR #214: `0d8127e3d779e54c58caf5d93e7589dd1a6df616`;
-- PR #214 exact head: `ed5e033a5206d2ddfea2d48381217d0a04b4ceb3`;
-- exact-head CI run `29250861586`: successful;
-- no separate post-merge `main` CI run is claimed because the available connector did not expose one;
-- PR #207 remains separate, open, disabled, and emergency-stopped.
+- PR #214 merged at `0d8127e3d779e54c58caf5d93e7589dd1a6df616`;
+- PR #214 exact head `ed5e033a5206d2ddfea2d48381217d0a04b4ceb3` passed exact-head CI run `29250861586`;
+- PR #207 is open and unmerged on `codex/agent-orchestrator-v1` at `06933e0e84f5c92956e9139608b2bfe354fcbeb2`;
+- PR #207 exact-head CI run `29223404792` passed all seven required jobs and explicitly ran the orchestrator regression suite;
+- PR #207 is currently reported non-mergeable and is based on an older `main`; it must refresh from current `main`, preserve the active documents, and receive an independent final-diff review;
+- PR #207 remains disabled and emergency-stopped.
 
 Every implementation session must refresh actual GitHub and local state before relying on these identifiers.
 
@@ -66,26 +67,26 @@ Stop and report `BLOCKED` rather than improvising when:
 
 A stale document, a failed first implementation, or a bounded missing design detail is not itself a hard stop. Audit, repair, test, and continue when the result remains explicit, compatible, observable, and rollbackable.
 
-## Packet PR207-REPAIR-1 — Existing repository-maintenance orchestrator repair
+## Packet PR207-REPAIR-1 — Existing repository-maintenance orchestrator acceptance repair
 
 **State:** `IN_PROGRESS`
 
 **Owner:** existing PR #207 and its current branch. Do not create a replacement orchestrator or a second PR for this packet.
 
-**Goal:** Make the disabled GitHub Issues/Actions → Vader self-hosted Codex → GitHub-hosted finalizer flow executable, deterministic, capacity-safe, and exact-head bound while preserving its emergency stop.
+**Goal:** Refresh the branch from current `main`, independently verify that the disabled GitHub Issues/Actions → Vader self-hosted Codex → GitHub-hosted finalizer flow is executable, deterministic, capacity-safe, and exact-head bound, and repair any defect still present while preserving the emergency stop.
 
-**Required repairs:**
+The current PR body claims the previously identified defects are repaired and its current exact-head CI is green. The following items are an acceptance checklist, not an assumption that each remains broken:
 
-1. Replace unsupported `gh pr create --json/--jq` usage with valid PR URL/number resolution.
-2. Make the CI-repair Python import path executable from the workflow working directory.
-3. Validate the failed old head before pushing a repair; after push, bind and verify the new head rather than rechecking the old head.
-4. Make `setup-controls` map to an implemented control-state command.
-5. Remove active-capacity leaks: PASS with auto-merge disabled must become a non-active merge-ready/review-passed state; FAIL/BLOCKED/PASS_WITH_NOTES must become explicit non-running states.
-6. Add the required Issue scope marker to the official template and reject invalid scope before dispatching Vader work.
-7. After a PAT push, reuse an existing exact-head canonical CI run and dispatch manually only when no run appears within a bounded wait; one exact head must have one authoritative CI binding.
-8. Make the GitHub-hosted finalizer run a bounded deterministic post-patch validation before commit, or narrow any documentation claim that says it does.
+1. PR creation uses supported GitHub CLI/API behavior and resolves the exact PR number deterministically.
+2. CI-repair Python invocation works from the actual workflow working directory.
+3. Repair validates the failed old head before push and binds/verifies the new head after push.
+4. `setup-controls` maps to a real idempotent control-state command.
+5. PASS with auto-merge disabled and all non-PASS outcomes release active capacity into explicit non-running states.
+6. The official Issue template contains a valid editable scope marker and invalid scope is rejected before Vader dispatch and at finalization.
+7. PAT pushes reuse a naturally triggered exact-head canonical CI run; manual dispatch is a bounded fallback, with one authoritative CI binding per exact head.
+8. The GitHub-hosted finalizer performs bounded deterministic post-patch validation before commit, or the documentation truthfully narrows the claim.
 
-**Required tests:** execute or faithfully fake the actual shell/CLI and state-machine paths for all eight repairs. Static substring checks are insufficient.
+**Required tests:** execute or faithfully fake the actual shell/CLI and state-machine paths for all eight checklist items. Static substring checks are insufficient.
 
 **Boundaries:**
 
@@ -96,7 +97,7 @@ A stale document, a failed first implementation, or a bounded missing design det
 - control Issue remains labeled `agent-emergency-stop` and activation remains disabled;
 - no merge without separate user authorization.
 
-**Completion:** fresh exact-head seven-job CI, proof that orchestrator regression tests actually ran, independent final-diff review, and a report of remaining Stage B runner/service-account prerequisites. Code-level blockers must be zero before reporting `MERGE_READY_DISABLED_ONLY`.
+**Completion:** refresh from current `main`; reconcile the active documents without deleting current integration-repair state; run fresh exact-head seven-job CI and prove orchestrator regression tests ran; independently review the complete final diff; report remaining Stage B runner/service-account prerequisites. Code-level blockers must be zero before reporting `MERGE_READY_DISABLED_ONLY`.
 
 ## Packet PE2-RUNTIME-PRODUCER-1 — Connect budget evidence production
 
