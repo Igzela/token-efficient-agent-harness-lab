@@ -53,7 +53,7 @@ Each packet must:
 - keep auto-merge disabled unless separately and explicitly authorized;
 - not merge without separate explicit user authorization.
 
-Documentation-only factual corrections may use the targeted merge exception in `docs/REAL_WORLD_TESTING_PLAYBOOK.md`. Code, workflow, schema, configuration, dependency, release, or external-state changes require a branch, PR, and complete required CI.
+Documentation-only factual corrections have standing user authorization to be committed directly to `main` when the final diff is limited to Markdown or plain-text documentation and changes no code, tests, scripts, workflows, configuration, schema, migration, generated artifact, dependency file, executable file, runtime behavior, release state, credential, or external state. They still require final diff review, `git diff --check`, `uv run --no-project python scripts/check_agent_handoff.py`, any applicable documentation or link check, and a clear rollback. A branch or PR is optional for such changes. All other changes require a branch, PR, and complete required CI.
 
 ## Hard Stops
 
