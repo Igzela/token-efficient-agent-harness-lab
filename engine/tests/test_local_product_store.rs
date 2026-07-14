@@ -4,6 +4,7 @@ use engine::provider::audit::{
 };
 use engine::read_only_planner::ReadOnlyPlanner;
 use engine::storage::local_product_store::LocalProductStore;
+use engine::tool_policy_executor::ToolPolicyNodeExecutor;
 use serde_json::{json, Value};
 use std::sync::{Arc, Barrier, Mutex};
 use std::thread;
@@ -36,6 +37,18 @@ impl NodeExecutor for ContextEchoExecutor {
 
     fn executor_type_name(&self) -> &str {
         "context_echo"
+    }
+}
+
+struct AgentContextEchoExecutor;
+
+impl NodeExecutor for AgentContextEchoExecutor {
+    fn execute_node(&self, input: &NodeExecutionInput) -> NodeExecutionOutput {
+        ContextEchoExecutor.execute_node(input)
+    }
+
+    fn executor_type_name(&self) -> &str {
+        "agent_step"
     }
 }
 
@@ -949,6 +962,12 @@ fn make_agent_step_memory_plan(
                     "task_type": "agent_step",
                     "agent_id": "agent-memory",
                     "assigned_agent_id": "agent-memory",
+                    "agent_role": "implementer",
+                    "agent_objective": "bounded memory context fixture",
+                    "profile_id": "bounded",
+                    "capability_profile": ["code"],
+                    "decision_source": "fixture",
+                    "max_actions": 1,
                     "status": "pending",
                     "input_refs": [],
                     "output_ref": null,
@@ -966,9 +985,10 @@ fn make_agent_step_memory_plan(
             "result": null
         },
         "boundaries": {
-            "execution": "disabled",
+            "execution_authority": "rust_scheduler_only",
+            "provider_calls": "default_off",
             "target_repository_writes": "disabled",
-            "runtime_workers": "disabled",
+            "runtime_workers": "env_gated_supervised",
         },
     })
 }
@@ -1865,6 +1885,811 @@ fn get_dispatch_returns_latest_when_duplicate_ids() {
 // --- SQLite contention / concurrent-write tests ---
 
 #[test]
+fn concurrent_provider_cost_reservations_do_not_exceed_daily_cap() {
+    let dir = tempdir().unwrap();
+    let db_path = dir.path().join("provider-budget.db");
+    let store_a = Arc::new(LocalProductStore::new(&db_path).unwrap());
+    let store_b = Arc::new(LocalProductStore::new(&db_path).unwrap());
+    let barrier = Arc::new(Barrier::new(2));
+    let handles: Vec<_> = [
+        ("reservation-a", Arc::clone(&store_a)),
+        ("reservation-b", Arc::clone(&store_b)),
+    ]
+    .into_iter()
+    .map(|(event_id, store)| {
+        let barrier = Arc::clone(&barrier);
+        thread::spawn(move || {
+            let mut event = make_event(event_id, event_id, "request_reserved");
+            event.cost = Some(0.6);
+            event.created_at = "2026-05-29T12:00:00Z".to_string();
+            barrier.wait();
+            store.reserve_provider_audit_cost(&event, 1.0, 1.0)
+        })
+    })
+    .collect();
+    let results: Vec<_> = handles
+        .into_iter()
+        .map(|handle| handle.join().unwrap())
+        .collect();
+
+    assert_eq!(results.iter().filter(|result| result.is_ok()).count(), 1);
+    assert_eq!(results.iter().filter(|result| result.is_err()).count(), 1);
+    assert!(results
+        .iter()
+        .filter_map(|result| result.as_ref().err())
+        .all(|error| error.contains("daily cost cap exceeded")));
+    let reservations = store_a.provider_audit_events(10).unwrap();
+    assert_eq!(
+        reservations
+            .iter()
+            .filter(|event| event["event_type"] == "request_reserved")
+            .count(),
+        1
+    );
+}
+
+#[test]
+fn provider_cost_reservation_retry_is_idempotent_and_conflicts_fail_closed() {
+    let dir = tempdir().unwrap();
+    let store = LocalProductStore::new(dir.path().join("provider-budget-retry.db")).unwrap();
+    let mut event = make_event("stable-reservation", "stable-dispatch", "request_reserved");
+    event.cost = Some(0.25);
+    event.created_at = "2026-05-29T12:00:00Z".to_string();
+
+    store.reserve_provider_audit_cost(&event, 0.5, 1.0).unwrap();
+    store.reserve_provider_audit_cost(&event, 0.5, 1.0).unwrap();
+    assert_eq!(store.provider_audit_events(10).unwrap().len(), 1);
+
+    let mut conflicting = event.clone();
+    conflicting.cost = Some(0.3);
+    assert!(store
+        .reserve_provider_audit_cost(&conflicting, 0.5, 1.0)
+        .unwrap_err()
+        .contains("identity conflicts"));
+    assert_eq!(store.provider_audit_events(10).unwrap().len(), 1);
+}
+
+#[test]
+fn concurrent_tool_policy_updates_require_current_hash() {
+    let dir = tempdir().unwrap();
+    let store = Arc::new(LocalProductStore::new(dir.path().join("tool-policy.db")).unwrap());
+    let initial = store
+        .configure_tool_capability("setup", "echo", "initial", None, None, false, "low", None)
+        .unwrap();
+    let expected = initial["resource_sha256"].as_str().unwrap().to_string();
+    let barrier = Arc::new(Barrier::new(2));
+    let handles: Vec<_> = ["first", "second"]
+        .into_iter()
+        .map(|description| {
+            let store = store.clone();
+            let barrier = barrier.clone();
+            let expected = expected.clone();
+            thread::spawn(move || {
+                barrier.wait();
+                store.configure_tool_capability(
+                    description,
+                    "echo",
+                    description,
+                    None,
+                    None,
+                    true,
+                    "medium",
+                    Some(&expected),
+                )
+            })
+        })
+        .collect();
+    let results: Vec<_> = handles
+        .into_iter()
+        .map(|handle| handle.join().unwrap())
+        .collect();
+    assert_eq!(results.iter().filter(|result| result.is_ok()).count(), 1);
+    assert_eq!(results.iter().filter(|result| result.is_err()).count(), 1);
+    assert!(results
+        .iter()
+        .filter_map(|result| result.as_ref().err())
+        .all(|error| error.contains("changed concurrently")));
+
+    let current = store.read_tool_capability_policy("echo").unwrap().unwrap();
+    let winner = results
+        .iter()
+        .find_map(|result| result.as_ref().ok())
+        .unwrap();
+    assert_eq!(current["resource_sha256"], winner["resource_sha256"]);
+}
+
+#[test]
+fn sqlite_implicit_tool_receipt_is_atomic_across_connections() {
+    struct CountingEffectExecutor(Arc<std::sync::atomic::AtomicUsize>);
+
+    impl NodeExecutor for CountingEffectExecutor {
+        fn execute_node(&self, _input: &NodeExecutionInput) -> NodeExecutionOutput {
+            self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            NodeExecutionOutput {
+                status: "completed".to_string(),
+                executor_type: "command".to_string(),
+                output: Some("bounded effect".to_string()),
+                error_domain: None,
+                error_message: None,
+                input_tokens: None,
+                output_tokens: None,
+                estimated_cost: None,
+                latency_ms: Some(1),
+            }
+        }
+
+        fn executor_type_name(&self) -> &str {
+            "command"
+        }
+    }
+
+    let dir = tempdir().unwrap();
+    let path = dir.path().join("implicit-tool-receipt.db");
+    let setup = LocalProductStore::new(&path).unwrap();
+    let plan = setup
+        .create_workflow_plan("implicit tool receipt", "test", "test", |ids, _| {
+            Ok(json!({
+                "status": "planned_read_only",
+                "workflow_id": ids.workflow_id,
+                "dispatch_id": ids.dispatch_id,
+                "graph": {
+                    "workflow_id": ids.workflow_id,
+                    "dispatch_id": ids.dispatch_id,
+                    "nodes": [{
+                        "node_id": "tool-node",
+                        "task_type": "command",
+                        "status": "pending",
+                        "profile_id": "tool-profile",
+                        "command": "fixture-tool bounded"
+                    }],
+                    "edges": []
+                },
+                "analysis": {},
+                "boundaries": {"execution_authority": "bounded_trusted_local"}
+            }))
+        })
+        .unwrap();
+    let run = setup
+        .create_workflow_run_from_plan(plan["plan_id"].as_str().unwrap(), "test")
+        .unwrap();
+    let run_id = run["run_id"].as_str().unwrap().to_string();
+    let workflow_id = plan["workflow_id"].as_str().unwrap().to_string();
+    setup
+        .configure_tool_capability(
+            "test",
+            "fixture-tool",
+            "bounded fixture",
+            None,
+            None,
+            false,
+            "low",
+            None,
+        )
+        .unwrap();
+    setup
+        .configure_tool_allowlist("test", "tool-profile", &["fixture-tool".to_string()], None)
+        .unwrap();
+    drop(setup);
+
+    let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let inner: Arc<dyn NodeExecutor> = Arc::new(CountingEffectExecutor(calls.clone()));
+    let store_a = Arc::new(LocalProductStore::new(&path).unwrap());
+    let store_b = Arc::new(LocalProductStore::new(&path).unwrap());
+    let barrier = Arc::new(Barrier::new(2));
+    let input = NodeExecutionInput {
+        node_id: "tool-node".to_string(),
+        task_type: "command".to_string(),
+        run_id: run_id.clone(),
+        workflow_id,
+        node_metadata: json!({
+            "profile_id": "tool-profile",
+            "command": "fixture-tool bounded"
+        }),
+    };
+    let handles = [store_a.clone(), store_b.clone()]
+        .into_iter()
+        .map(|store| {
+            let barrier = barrier.clone();
+            let inner = inner.clone();
+            let input = input.clone();
+            thread::spawn(move || {
+                let executor = ToolPolicyNodeExecutor::command(inner, store);
+                barrier.wait();
+                executor.execute_node(&input)
+            })
+        })
+        .collect::<Vec<_>>();
+    let results = handles
+        .into_iter()
+        .map(|handle| handle.join().unwrap())
+        .collect::<Vec<_>>();
+
+    assert_eq!(
+        results
+            .iter()
+            .filter(|result| result.status == "completed")
+            .count(),
+        1
+    );
+    assert_eq!(
+        results
+            .iter()
+            .filter(|result| {
+                result.error_domain.as_deref() == Some("tool_execution_outcome_unknown")
+            })
+            .count(),
+        1
+    );
+    assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 1);
+    let receipt = store_a
+        .inspect_tool_execution_authorization(&run_id, "tool-node")
+        .unwrap()
+        .unwrap();
+    assert_eq!(receipt["status"], "consumed");
+    assert_eq!(receipt["resolved_by"], "tool-policy:implicit");
+    let implicit_claims = store_a
+        .audit_events(100)
+        .unwrap()
+        .into_iter()
+        .filter(|event| {
+            event["action"] == "tool_execution.implicit_receipt_claimed"
+                && event["resource"] == run_id
+        })
+        .count();
+    assert_eq!(implicit_claims, 1);
+}
+
+#[test]
+fn tool_policy_hook_limit_rolls_back_rejected_hook() {
+    let dir = tempdir().unwrap();
+    let store = LocalProductStore::new(dir.path().join("tool-hook-limit.db")).unwrap();
+    for index in 0..32 {
+        store
+            .configure_tool_hook(
+                "setup",
+                &format!("hook-{index:02}"),
+                "pre_execution",
+                None,
+                None,
+                "log",
+                None,
+                true,
+                None,
+            )
+            .unwrap();
+    }
+
+    let error = store
+        .configure_tool_hook(
+            "setup",
+            "hook-over-limit",
+            "pre_execution",
+            None,
+            None,
+            "log",
+            None,
+            true,
+            None,
+        )
+        .expect_err("the thirty-third enabled hook must fail closed");
+    assert!(error.contains("enabled tool hook count exceeds"));
+    assert!(store
+        .read_tool_hook_policy("hook-over-limit")
+        .unwrap()
+        .is_none());
+}
+
+#[test]
+fn workflow_run_reuses_consistent_agent_state_and_rejects_conflicting_identity() {
+    let dir = tempdir().unwrap();
+    let store = LocalProductStore::new(dir.path().join("agent-state-reuse.db")).unwrap();
+    let make_plan = |role: &str, request: &str| {
+        store
+            .create_workflow_plan(request, "test", "test", |ids, _| {
+                Ok(json!({
+                    "status": "planned_read_only",
+                    "workflow_id": ids.workflow_id,
+                    "dispatch_id": ids.dispatch_id,
+                    "graph": {
+                        "workflow_id": ids.workflow_id,
+                        "dispatch_id": ids.dispatch_id,
+                        "nodes": [
+                            {
+                                "node_id": "agent-step-1",
+                                "task_type": "agent_step",
+                                "status": "pending",
+                                "agent_id": "agent-shared",
+                                "agent_role": "implementer",
+                                "agent_objective": "shared objective",
+                                "profile_id": "bounded",
+                                "capability_profile": ["code"]
+                            },
+                            {
+                                "node_id": "agent-step-2",
+                                "task_type": "agent_step",
+                                "status": "pending",
+                                "agent_id": "agent-shared",
+                                "agent_role": role,
+                                "agent_objective": "shared objective",
+                                "profile_id": "bounded",
+                                "capability_profile": ["code"]
+                            }
+                        ],
+                        "edges": []
+                    },
+                    "analysis": {},
+                    "boundaries": {"execution_authority": "rust_scheduler_only"}
+                }))
+            })
+            .unwrap()
+    };
+
+    let consistent = make_plan("implementer", "consistent shared agent");
+    let run = store
+        .create_workflow_run_from_plan(consistent["plan_id"].as_str().unwrap(), "test")
+        .unwrap();
+    let run_id = run["run_id"].as_str().unwrap();
+    assert_eq!(store.list_agent_state_by_run(run_id).unwrap().len(), 1);
+
+    let conflicting = make_plan("reviewer", "conflicting shared agent");
+    let runs_before = store.list_workflow_runs_with_offset(100, 0).unwrap().len();
+    let error = store
+        .create_workflow_run_from_plan(conflicting["plan_id"].as_str().unwrap(), "test")
+        .expect_err("conflicting agent identity must roll back run creation");
+    assert!(error.contains("conflicting state identity"));
+    assert_eq!(
+        store.list_workflow_runs_with_offset(100, 0).unwrap().len(),
+        runs_before
+    );
+}
+
+#[test]
+fn sqlite_agent_global_cap_is_atomic_across_store_connections() {
+    struct HoldingAgentExecutor {
+        entered: std::sync::mpsc::Sender<()>,
+        release: Arc<(std::sync::Mutex<bool>, std::sync::Condvar)>,
+    }
+    impl engine::node_executor::NodeExecutor for HoldingAgentExecutor {
+        fn executor_type_name(&self) -> &str {
+            "agent_step"
+        }
+
+        fn execute_node(
+            &self,
+            _input: &engine::node_executor::NodeExecutionInput,
+        ) -> engine::node_executor::NodeExecutionOutput {
+            self.entered.send(()).unwrap();
+            let (lock, condition) = &*self.release;
+            let mut released = lock.lock().unwrap();
+            while !*released {
+                released = condition.wait(released).unwrap();
+            }
+            engine::node_executor::NodeExecutionOutput {
+                status: "completed".to_string(),
+                executor_type: "agent_step".to_string(),
+                output: Some("held fixture completed".to_string()),
+                error_domain: None,
+                error_message: None,
+                input_tokens: None,
+                output_tokens: None,
+                estimated_cost: None,
+                latency_ms: Some(1),
+            }
+        }
+    }
+    struct CountingAgentExecutor(Arc<std::sync::atomic::AtomicUsize>);
+    impl engine::node_executor::NodeExecutor for CountingAgentExecutor {
+        fn executor_type_name(&self) -> &str {
+            "agent_step"
+        }
+
+        fn execute_node(
+            &self,
+            _input: &engine::node_executor::NodeExecutionInput,
+        ) -> engine::node_executor::NodeExecutionOutput {
+            self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            engine::node_executor::NodeExecutionOutput {
+                status: "completed".to_string(),
+                executor_type: "agent_step".to_string(),
+                output: Some("unexpected second execution".to_string()),
+                error_domain: None,
+                error_message: None,
+                input_tokens: None,
+                output_tokens: None,
+                estimated_cost: None,
+                latency_ms: Some(1),
+            }
+        }
+    }
+
+    let dir = tempdir().unwrap();
+    let path = dir.path().join("agent-global-cap.db");
+    let setup = LocalProductStore::new(&path).unwrap();
+    let create_run = |agent_id: &str| {
+        let plan = setup
+            .create_workflow_plan(agent_id, "test", "test", |ids, _| {
+                Ok(json!({
+                    "status": "planned_read_only",
+                    "workflow_id": ids.workflow_id,
+                    "dispatch_id": ids.dispatch_id,
+                    "graph": {
+                        "workflow_id": ids.workflow_id,
+                        "dispatch_id": ids.dispatch_id,
+                        "nodes": [{
+                            "node_id": format!("node-{agent_id}"),
+                            "task_type": "agent_step",
+                            "status": "pending",
+                            "agent_id": agent_id,
+                            "agent_role": "worker",
+                            "agent_objective": "bounded concurrency",
+                            "profile_id": "bounded",
+                            "capability_profile": ["work"]
+                        }],
+                        "edges": []
+                    },
+                    "analysis": {},
+                    "boundaries": {"execution_authority": "rust_scheduler_only"}
+                }))
+            })
+            .unwrap();
+        setup
+            .create_workflow_run_from_plan(plan["plan_id"].as_str().unwrap(), "test")
+            .unwrap()["run_id"]
+            .as_str()
+            .unwrap()
+            .to_string()
+    };
+    let run_a = create_run("agent-cap-a");
+    let run_b = create_run("agent-cap-b");
+    drop(setup);
+
+    let store_a = LocalProductStore::new(&path).unwrap();
+    let store_b = LocalProductStore::new(&path).unwrap();
+    let (entered_tx, entered_rx) = std::sync::mpsc::channel();
+    let release = Arc::new((std::sync::Mutex::new(false), std::sync::Condvar::new()));
+    let release_for_thread = release.clone();
+    let first = thread::spawn(move || {
+        store_a.tick_with_executor_with_agent_caps(
+            &run_a,
+            "test",
+            0,
+            &HoldingAgentExecutor {
+                entered: entered_tx,
+                release: release_for_thread,
+            },
+            1,
+            1,
+        )
+    });
+    entered_rx.recv().unwrap();
+
+    let second_calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let second = store_b
+        .tick_with_executor_with_agent_caps(
+            &run_b,
+            "test",
+            0,
+            &CountingAgentExecutor(second_calls.clone()),
+            1,
+            1,
+        )
+        .unwrap();
+    assert_eq!(second["action"], "no_ready_node");
+    assert_eq!(second_calls.load(std::sync::atomic::Ordering::SeqCst), 0);
+
+    let (lock, condition) = &*release;
+    *lock.lock().unwrap() = true;
+    condition.notify_all();
+    assert_eq!(
+        first.join().unwrap().unwrap()["result"]["status"],
+        "completed"
+    );
+}
+
+#[test]
+fn sqlite_stale_worker_cannot_overwrite_reclaimed_attempt() {
+    struct HoldingCommandExecutor {
+        entered: std::sync::mpsc::Sender<()>,
+        release: Arc<(std::sync::Mutex<bool>, std::sync::Condvar)>,
+    }
+
+    impl NodeExecutor for HoldingCommandExecutor {
+        fn execute_node(&self, _input: &NodeExecutionInput) -> NodeExecutionOutput {
+            self.entered.send(()).unwrap();
+            let (lock, condition) = &*self.release;
+            let mut released = lock.lock().unwrap();
+            while !*released {
+                released = condition.wait(released).unwrap();
+            }
+            NodeExecutionOutput {
+                status: "completed".to_string(),
+                executor_type: "command".to_string(),
+                output: Some("stale attempt output".to_string()),
+                error_domain: None,
+                error_message: None,
+                input_tokens: None,
+                output_tokens: None,
+                estimated_cost: None,
+                latency_ms: Some(1),
+            }
+        }
+
+        fn executor_type_name(&self) -> &str {
+            "command"
+        }
+    }
+
+    struct ReclaimedCommandExecutor;
+
+    impl NodeExecutor for ReclaimedCommandExecutor {
+        fn execute_node(&self, _input: &NodeExecutionInput) -> NodeExecutionOutput {
+            NodeExecutionOutput {
+                status: "completed".to_string(),
+                executor_type: "command".to_string(),
+                output: Some("reclaimed attempt output".to_string()),
+                error_domain: None,
+                error_message: None,
+                input_tokens: None,
+                output_tokens: None,
+                estimated_cost: None,
+                latency_ms: Some(1),
+            }
+        }
+
+        fn executor_type_name(&self) -> &str {
+            "command"
+        }
+    }
+
+    let dir = tempdir().unwrap();
+    let path = dir.path().join("stale-worker-cas.db");
+    let clock = Arc::new(std::sync::Mutex::new("2026-07-14T00:00:00Z".to_string()));
+    let setup_clock = clock.clone();
+    let setup =
+        LocalProductStore::new_with_clock(&path, move || setup_clock.lock().unwrap().clone())
+            .unwrap();
+    let plan = setup
+        .create_workflow_plan("stale worker CAS", "test", "test", |ids, _| {
+            Ok(json!({
+                "status": "planned_read_only",
+                "workflow_id": ids.workflow_id,
+                "dispatch_id": ids.dispatch_id,
+                "graph": {
+                    "workflow_id": ids.workflow_id,
+                    "dispatch_id": ids.dispatch_id,
+                    "nodes": [{
+                        "node_id": "command-node",
+                        "task_type": "command",
+                        "status": "pending",
+                        "command": "true"
+                    }],
+                    "edges": []
+                },
+                "analysis": {},
+                "boundaries": {"execution_authority": "bounded_trusted_local"}
+            }))
+        })
+        .unwrap();
+    let run_id = setup
+        .create_workflow_run_from_plan(plan["plan_id"].as_str().unwrap(), "test")
+        .unwrap()["run_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    drop(setup);
+
+    let first_clock = clock.clone();
+    let first_store =
+        LocalProductStore::new_with_clock(&path, move || first_clock.lock().unwrap().clone())
+            .unwrap();
+    let second_clock = clock.clone();
+    let second_store = Arc::new(
+        LocalProductStore::new_with_clock(&path, move || second_clock.lock().unwrap().clone())
+            .unwrap(),
+    );
+    let recovery_clock = clock.clone();
+    let recovery_store = Arc::new(
+        LocalProductStore::new_with_clock(&path, move || recovery_clock.lock().unwrap().clone())
+            .unwrap(),
+    );
+    let (entered_tx, entered_rx) = std::sync::mpsc::channel();
+    let release = Arc::new((std::sync::Mutex::new(false), std::sync::Condvar::new()));
+    let first_release = release.clone();
+    let first_run_id = run_id.clone();
+    let first = thread::spawn(move || {
+        first_store.tick_with_executor(
+            &first_run_id,
+            "old-worker",
+            0,
+            &HoldingCommandExecutor {
+                entered: entered_tx,
+                release: first_release,
+            },
+        )
+    });
+    entered_rx.recv().unwrap();
+
+    *clock.lock().unwrap() = "2026-07-14T00:00:02Z".to_string();
+    let recovery_barrier = Arc::new(Barrier::new(2));
+    let recoveries = [second_store.clone(), recovery_store]
+        .into_iter()
+        .map(|store| {
+            let barrier = recovery_barrier.clone();
+            thread::spawn(move || {
+                barrier.wait();
+                store.recover_stale_leases(1_000).unwrap()
+            })
+        })
+        .collect::<Vec<_>>()
+        .into_iter()
+        .map(|handle| handle.join().unwrap())
+        .collect::<Vec<_>>();
+    assert_eq!(recoveries.iter().sum::<i64>(), 1);
+    assert!(recoveries.iter().all(|count| *count <= 1));
+    let reclaimed = second_store
+        .tick_with_executor(&run_id, "new-worker", 0, &ReclaimedCommandExecutor)
+        .unwrap();
+    assert_eq!(reclaimed["action"], "node_executed");
+    assert_eq!(reclaimed["attempt"], 2);
+    assert_eq!(reclaimed["result"]["output"], "reclaimed attempt output");
+
+    let (lock, condition) = &*release;
+    *lock.lock().unwrap() = true;
+    condition.notify_all();
+    let stale = first.join().unwrap().unwrap();
+    assert_eq!(stale["action"], "stale_completion_ignored");
+    assert_eq!(stale["attempt"], 1);
+
+    let persisted = second_store.get_workflow_run(&run_id).unwrap().unwrap();
+    let node = persisted["nodes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|node| node["node_id"] == "command-node")
+        .unwrap();
+    assert_eq!(node["attempt_count"], 2);
+    assert_eq!(node["status"], "completed");
+    assert_eq!(node["result"]["output"], "reclaimed attempt output");
+    let audit = second_store.audit_events(100).unwrap();
+    assert_eq!(
+        audit
+            .iter()
+            .filter(|event| {
+                event["action"] == "workflow_node.stale_completion_ignored"
+                    && event["resource"] == "command-node"
+            })
+            .count(),
+        1
+    );
+    let terminal = audit
+        .iter()
+        .find(|event| event["action"] == "workflow_run.completed" && event["resource"] == run_id)
+        .expect("executable run terminal audit");
+    assert_eq!(terminal["details"]["metadata_only"], false);
+    assert_eq!(
+        terminal["details"]["execution_authority"],
+        "bounded_trusted_local"
+    );
+}
+
+#[test]
+fn sqlite_stale_lease_recovery_rolls_back_when_audit_fails() {
+    let dir = tempdir().unwrap();
+    let path = dir.path().join("stale-recovery-audit-rollback.db");
+    let store =
+        LocalProductStore::new_with_clock(&path, || "2026-07-14T00:00:02Z".to_string()).unwrap();
+    let plan = store
+        .create_workflow_plan("stale audit rollback", "test", "test", |ids, _| {
+            Ok(json!({
+                "status": "planned_read_only",
+                "workflow_id": ids.workflow_id,
+                "dispatch_id": ids.dispatch_id,
+                "graph": {
+                    "workflow_id": ids.workflow_id,
+                    "dispatch_id": ids.dispatch_id,
+                    "nodes": [{
+                        "node_id": "audit-rollback-node",
+                        "task_type": "agent_step",
+                        "status": "pending",
+                        "agent_id": "audit-rollback-agent",
+                        "assigned_agent_id": "audit-rollback-agent",
+                        "agent_role": "worker",
+                        "agent_objective": "prove atomic stale recovery audit",
+                        "profile_id": "bounded",
+                        "capability_profile": ["work"],
+                        "decision_source": "fixture",
+                        "max_actions": 1
+                    }],
+                    "edges": []
+                },
+                "analysis": {},
+                "boundaries": {"execution_authority": "rust_scheduler_only"}
+            }))
+        })
+        .unwrap();
+    let run_id = store
+        .create_workflow_run_from_plan(plan["plan_id"].as_str().unwrap(), "test")
+        .unwrap()["run_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    assert_eq!(
+        store
+            .set_pending_node_to_running_for_test("2026-07-14T00:00:00Z")
+            .unwrap(),
+        1
+    );
+
+    let fault = rusqlite::Connection::open(&path).unwrap();
+    fault
+        .execute_batch(
+            "CREATE TRIGGER fail_stale_recovery_audit
+             BEFORE INSERT ON audit_log
+             WHEN NEW.action = 'agent_step.lease_expired'
+                  AND NEW.resource = 'audit-rollback-node'
+             BEGIN
+                 SELECT RAISE(ABORT, 'fixture agent lease audit failure');
+             END;",
+        )
+        .unwrap();
+    let error = store
+        .recover_stale_leases(1_000)
+        .expect_err("audit failure must roll back recovery");
+    assert!(error.contains("fixture agent lease audit failure"));
+    let after_failure = store.get_workflow_run(&run_id).unwrap().unwrap();
+    let failed_node = after_failure["nodes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|node| node["node_id"] == "audit-rollback-node")
+        .unwrap();
+    assert_eq!(failed_node["db_status"], "running");
+    assert_eq!(failed_node["leased_at"], "2026-07-14T00:00:00Z");
+    assert!(store.audit_events(100).unwrap().iter().all(|event| {
+        event["action"] != "workflow_node.stale_lease_recovered"
+            && event["action"] != "agent_step.lease_expired"
+    }));
+
+    fault
+        .execute_batch("DROP TRIGGER fail_stale_recovery_audit;")
+        .unwrap();
+    assert_eq!(store.recover_stale_leases(1_000).unwrap(), 1);
+    let recovered = store.get_workflow_run(&run_id).unwrap().unwrap();
+    let recovered_node = recovered["nodes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|node| node["node_id"] == "audit-rollback-node")
+        .unwrap();
+    assert_eq!(recovered_node["db_status"], "pending");
+    assert!(recovered_node.get("leased_at").is_none());
+    assert_eq!(
+        store
+            .audit_events(100)
+            .unwrap()
+            .iter()
+            .filter(|event| {
+                event["action"] == "workflow_node.stale_lease_recovered"
+                    && event["resource"] == "audit-rollback-node"
+            })
+            .count(),
+        1
+    );
+    assert_eq!(
+        store
+            .audit_events(100)
+            .unwrap()
+            .iter()
+            .filter(|event| {
+                event["action"] == "agent_step.lease_expired"
+                    && event["resource"] == "audit-rollback-node"
+            })
+            .count(),
+        1
+    );
+}
+
+#[test]
 fn concurrent_dispatch_writes_from_multiple_threads() {
     let dir = tempdir().unwrap();
     let store = Arc::new(LocalProductStore::new(dir.path().join("test.db")).unwrap());
@@ -2747,14 +3572,13 @@ fn context_assembly_injects_agent_memory_for_agent_step_metadata_only() {
         .create_workflow_run_from_plan(plan["plan_id"].as_str().unwrap(), "actor")
         .unwrap();
     store
-        .create_agent_state(
+        .update_agent_state(
             "agent-memory",
             "run-0001",
-            "implementer",
-            &["code".to_string()],
+            Some("idle"),
+            None,
             Some("raw objective must not leak"),
-            "idle",
-            &json!({
+            Some(&json!({
                 "memory_digest": {
                     "source_refs": [
                         "agent_state:run-0001:agent-memory:scratchpad_summary",
@@ -2764,12 +3588,12 @@ fn context_assembly_injects_agent_memory_for_agent_step_metadata_only() {
                     "conflict_resolution": "append_raw",
                     "summary": "remember bounded progress with sk-test-secret-token"
                 }
-            }),
+            })),
         )
         .unwrap();
 
     let tick = store
-        .tick_with_executor("run-0001", "actor", 0, &ContextEchoExecutor)
+        .tick_with_executor("run-0001", "actor", 0, &AgentContextEchoExecutor)
         .unwrap();
     assert_eq!(tick["node_id"], "agent-node-memory");
     let output = tick["result"]["output"].as_str().unwrap();
@@ -2798,6 +3622,32 @@ fn context_assembly_injects_agent_memory_for_agent_step_metadata_only() {
 }
 
 #[test]
+fn agent_step_rejects_non_agent_executor_at_store_tick_boundary() {
+    let dir = tempdir().unwrap();
+    let store = LocalProductStore::new(dir.path().join("agent_executor_guard.db")).unwrap();
+    let plan = store
+        .create_workflow_plan("agent executor guard", "api", "actor", |ids, _| {
+            Ok(make_agent_step_memory_plan(ids))
+        })
+        .unwrap();
+    store
+        .create_workflow_run_from_plan(plan["plan_id"].as_str().unwrap(), "actor")
+        .unwrap();
+
+    let tick = store
+        .tick_with_executor(
+            "run-0001",
+            "actor",
+            0,
+            &engine::node_executor::NoopNodeExecutor,
+        )
+        .unwrap();
+
+    assert_eq!(tick["result"]["status"], "failed");
+    assert_eq!(tick["result"]["error_domain"], "reserved_executor_mismatch");
+}
+
+#[test]
 fn context_assembly_shares_budget_between_predecessors_and_agent_memory() {
     let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     std::env::set_var("ACP_CONTEXT_ASSEMBLY_ENABLED", "1");
@@ -2818,6 +3668,21 @@ fn context_assembly_shares_budget_between_predecessors_and_agent_memory() {
             node.insert("task_type".to_string(), json!("agent_step"));
             node.insert("agent_id".to_string(), json!("agent-memory"));
             node.insert("assigned_agent_id".to_string(), json!("agent-memory"));
+            node.insert("agent_role".to_string(), json!("implementer"));
+            node.insert(
+                "agent_objective".to_string(),
+                json!("bounded shared context fixture"),
+            );
+            node.insert("profile_id".to_string(), json!("bounded"));
+            node.insert("capability_profile".to_string(), json!(["code"]));
+            node.insert("decision_source".to_string(), json!("fixture"));
+            node.insert("max_actions".to_string(), json!(1));
+            plan["boundaries"] = json!({
+                "execution_authority": "rust_scheduler_only",
+                "provider_calls": "default_off",
+                "target_repository_writes": "disabled",
+                "runtime_workers": "env_gated_supervised"
+            });
             Ok(plan)
         })
         .unwrap();
@@ -2825,19 +3690,18 @@ fn context_assembly_shares_budget_between_predecessors_and_agent_memory() {
         .create_workflow_run_from_plan(plan["plan_id"].as_str().unwrap(), "actor")
         .unwrap();
     store
-        .create_agent_state(
+        .update_agent_state(
             "agent-memory",
             "run-0001",
-            "implementer",
-            &["code".to_string()],
+            Some("idle"),
             None,
-            "idle",
-            &json!({
+            None,
+            Some(&json!({
                 "memory_digest": {
                     "source_refs": ["agent_state:run-0001:agent-memory:scratchpad_summary"],
                     "summary": "0123456789abcdef0123456789abcdef"
                 }
-            }),
+            })),
         )
         .unwrap();
 
@@ -2845,7 +3709,7 @@ fn context_assembly_shares_budget_between_predecessors_and_agent_memory() {
         .tick_with_executor("run-0001", "actor", 0, &LargeOutputExecutor)
         .unwrap();
     let tick = store
-        .tick_with_executor("run-0001", "actor", 0, &ContextEchoExecutor)
+        .tick_with_executor("run-0001", "actor", 0, &AgentContextEchoExecutor)
         .unwrap();
     let injection: Value =
         serde_json::from_str(tick["result"]["output"].as_str().unwrap()).unwrap();

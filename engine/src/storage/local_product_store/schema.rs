@@ -6,8 +6,8 @@ pub(super) enum Dialect {
     Postgres,
 }
 
-pub(super) const CURRENT_SQLITE_SCHEMA_VERSION: i64 = 21;
-pub(super) const CURRENT_POSTGRES_SCHEMA_VERSION: i64 = 21;
+pub(super) const CURRENT_SQLITE_SCHEMA_VERSION: i64 = 22;
+pub(super) const CURRENT_POSTGRES_SCHEMA_VERSION: i64 = 22;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) struct SchemaMigration {
@@ -99,6 +99,10 @@ pub(super) const SQLITE_MIGRATIONS: &[SchemaMigration] = &[
     SchemaMigration {
         version: 21,
         description: "bind dispatch history to immutable recorder-owned trace hashes",
+    },
+    SchemaMigration {
+        version: 22,
+        description: "add agent action receipts and authoritative tool policy state",
     },
 ];
 
@@ -578,6 +582,40 @@ CREATE INDEX IF NOT EXISTS idx_agent_proposals_run ON agent_proposals(run_id);
 CREATE INDEX IF NOT EXISTS idx_agent_proposals_correlation ON agent_proposals(correlation_id);
 CREATE INDEX IF NOT EXISTS idx_agent_proposals_status ON agent_proposals(status);
 CREATE INDEX IF NOT EXISTS idx_agent_proposals_agent ON agent_proposals(agent_id);
+
+CREATE TABLE IF NOT EXISTS agent_action_receipts (
+    run_id TEXT NOT NULL,
+    node_id TEXT NOT NULL,
+    agent_id TEXT NOT NULL,
+    action_sha256 TEXT NOT NULL CHECK (length(action_sha256) = 64),
+    action_type TEXT NOT NULL,
+    result_json TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    PRIMARY KEY (run_id, node_id)
+);
+CREATE INDEX IF NOT EXISTS idx_agent_action_receipts_agent
+    ON agent_action_receipts(agent_id, run_id);
+
+CREATE TABLE IF NOT EXISTS tool_allowlist_profiles (
+    profile_id TEXT PRIMARY KEY,
+    configured_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS tool_execution_authorizations (
+    run_id TEXT NOT NULL,
+    node_id TEXT NOT NULL,
+    action_sha256 TEXT NOT NULL CHECK (length(action_sha256) = 64),
+    tool_name TEXT NOT NULL,
+    profile_id TEXT NOT NULL,
+    status TEXT NOT NULL CHECK (status IN ('requested', 'approved', 'rejected', 'consumed')),
+    requested_approval_id TEXT NOT NULL UNIQUE,
+    resolved_by TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    PRIMARY KEY (run_id, node_id)
+);
+CREATE INDEX IF NOT EXISTS idx_tool_execution_authorizations_status
+    ON tool_execution_authorizations(status, run_id);
 ";
 
 pub(crate) const POSTGRES_DDL: &str = "
@@ -1082,6 +1120,40 @@ CREATE INDEX IF NOT EXISTS idx_agent_proposals_run ON agent_proposals(run_id);
 CREATE INDEX IF NOT EXISTS idx_agent_proposals_correlation ON agent_proposals(correlation_id);
 CREATE INDEX IF NOT EXISTS idx_agent_proposals_status ON agent_proposals(status);
 CREATE INDEX IF NOT EXISTS idx_agent_proposals_agent ON agent_proposals(agent_id);
+
+CREATE TABLE IF NOT EXISTS agent_action_receipts (
+    run_id TEXT NOT NULL,
+    node_id TEXT NOT NULL,
+    agent_id TEXT NOT NULL,
+    action_sha256 TEXT NOT NULL CHECK (length(action_sha256) = 64),
+    action_type TEXT NOT NULL,
+    result_json TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    PRIMARY KEY (run_id, node_id)
+);
+CREATE INDEX IF NOT EXISTS idx_agent_action_receipts_agent
+    ON agent_action_receipts(agent_id, run_id);
+
+CREATE TABLE IF NOT EXISTS tool_allowlist_profiles (
+    profile_id TEXT PRIMARY KEY,
+    configured_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS tool_execution_authorizations (
+    run_id TEXT NOT NULL,
+    node_id TEXT NOT NULL,
+    action_sha256 TEXT NOT NULL CHECK (length(action_sha256) = 64),
+    tool_name TEXT NOT NULL,
+    profile_id TEXT NOT NULL,
+    status TEXT NOT NULL CHECK (status IN ('requested', 'approved', 'rejected', 'consumed')),
+    requested_approval_id TEXT NOT NULL UNIQUE,
+    resolved_by TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    PRIMARY KEY (run_id, node_id)
+);
+CREATE INDEX IF NOT EXISTS idx_tool_execution_authorizations_status
+    ON tool_execution_authorizations(status, run_id);
 ";
 
 #[cfg(test)]
@@ -1146,6 +1218,44 @@ mod tests {
     fn ddl_renderer_routes_to_catalog_owned_sql() {
         assert_eq!(ddl_for(Dialect::Sqlite), SQLITE_DDL);
         assert_eq!(ddl_for(Dialect::Postgres), POSTGRES_DDL);
+    }
+
+    #[test]
+    fn action_receipt_and_tool_authorization_constraints_fail_closed() {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        conn.execute_batch(SQLITE_DDL).unwrap();
+
+        let short_hash = conn.execute(
+            "INSERT INTO agent_action_receipts
+             (run_id, node_id, agent_id, action_sha256, action_type, result_json, created_at)
+             VALUES ('run-1', 'node-1', 'agent-1', 'short', 'wait', '{}', 'now')",
+            [],
+        );
+        assert!(short_hash.is_err());
+
+        let invalid_status = conn.execute(
+            "INSERT INTO tool_execution_authorizations
+             (run_id, node_id, action_sha256, tool_name, profile_id, status,
+              requested_approval_id, created_at, updated_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, 'unexpected', ?6, ?7, ?7)",
+            rusqlite::params![
+                "run-1",
+                "node-1",
+                "a".repeat(64),
+                "echo",
+                "bounded",
+                "approval-1",
+                "now",
+            ],
+        );
+        assert!(invalid_status.is_err());
+
+        for ddl in [SQLITE_DDL, POSTGRES_DDL] {
+            assert!(ddl.contains("CHECK (length(action_sha256) = 64)"));
+            assert!(
+                ddl.contains("CHECK (status IN ('requested', 'approved', 'rejected', 'consumed'))")
+            );
+        }
     }
 
     fn assert_catalog(catalog: &[SchemaMigration]) {

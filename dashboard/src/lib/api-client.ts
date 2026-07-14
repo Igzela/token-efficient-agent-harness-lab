@@ -61,6 +61,7 @@ import type {
   WorkflowRunEventListResponse,
   WorkflowRunListResponse,
   WorkflowRunTickResponse,
+  ToolPolicyResourceResponse,
 } from "./types";
 
 const BASE = "";
@@ -148,6 +149,19 @@ export async function fetchHealth(): Promise<ApiStatus> {
 
 export async function fetchReady(): Promise<ApiStatus> {
   return fetchJson<ApiStatus>(`${BASE}/api/v1/ready`);
+}
+
+export async function fetchToolPolicyResource(
+  kind: "capability" | "allowlist" | "hook",
+  resourceId: string,
+): Promise<ToolPolicyResourceResponse> {
+  const encoded = encodeURIComponent(resourceId);
+  const path = kind === "capability"
+    ? `/api/v1/tool-policy/capabilities/${encoded}`
+    : kind === "allowlist"
+      ? `/api/v1/tool-policy/profiles/${encoded}/allowlist`
+      : `/api/v1/tool-policy/hooks/${encoded}`;
+  return fetchJson<ToolPolicyResourceResponse>(`${BASE}${path}`);
 }
 
 export async function createAdaptiveCompletion(
@@ -660,6 +674,14 @@ export async function fetchWorkflowRunApprovals(runId: string, params: {
 export async function createWorkflowPlan(request: {
   raw_request: string;
   request_source?: string;
+  agent_steps?: Array<{
+    agent_id: string;
+    role: string;
+    capability_profile: string[];
+    profile_id: string;
+    model?: string;
+  }>;
+  confirm_agent_runtime_plan?: boolean;
 }): Promise<WorkflowPlanCreateResponse> {
   return fetchJson<WorkflowPlanCreateResponse>(`${BASE}/api/v1/plans`, {
     method: "POST",
@@ -668,11 +690,17 @@ export async function createWorkflowPlan(request: {
   });
 }
 
-export async function createWorkflowRun(planId: string): Promise<WorkflowRunActionResponse> {
+export async function createWorkflowRun(
+  planId: string,
+  confirmExecution?: boolean,
+): Promise<WorkflowRunActionResponse> {
   return fetchJson<WorkflowRunActionResponse>(`${BASE}/api/v1/workflow-runs`, {
     method: "POST",
     headers: { "content-type": "application/json" },
-    body: JSON.stringify({ plan_id: planId }),
+    body: JSON.stringify({
+      plan_id: planId,
+      ...(confirmExecution === undefined ? {} : { confirm_execution: confirmExecution }),
+    }),
   });
 }
 

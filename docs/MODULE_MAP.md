@@ -1,6 +1,6 @@
 # Module Map
 
-Last updated: 2026-07-13.
+Last updated: 2026-07-14.
 
 This file maps current ownership and known connection points. It is not a phase history.
 
@@ -14,10 +14,10 @@ Full Agent Autonomy Mode is active for repository-scoped work that remains testa
 | `engine/src/main.rs`, `engine/src/http_server/` | active | sole Rust runtime and API | HTTP and engine tests |
 | `engine/src/trusted_local.rs` | active | trusted-local readiness and execution gates | trusted-local tests |
 | `dispatch_engine.rs`, `task_analyzer/`, `model_selector.rs`, `budget_manager.rs` | active | dispatch, routing, and bounded budget authority | dispatch and budget tests |
-| `engine/src/provider/`, `engine/src/provider/fake.rs` | active | provider adapters, bounded audit/redaction, cost evidence, and fake-provider testing | adapter/audit tests, dependency audit, full stack |
+| `engine/src/provider/`, `engine/src/provider/fake.rs` | active | provider adapters, bounded audit/redaction, cost evidence, strict typed Agent Runtime decisions, and fake-provider testing | adapter/audit tests, dependency audit, full stack |
 | `engine/src/local_runner_provider.rs`, `engine/src/bin/local_runner_exec.rs` | active/manual-live | bounded Stub/Fake/Live local runner; live remains explicit local operator/CLI only | local runner/provider tests and binaries |
 | `engine/src/agent_memory.rs` | active | bounded AgentState memory-policy helpers | memory, context, workflow, and operator-evidence tests |
-| `workflow/`, `scheduler.rs`, `node_executor.rs`, `executor_pool.rs` | active | workflow, scheduler, executor, routing, and pool accounting | workflow/scheduler/executor tests |
+| `workflow/`, `scheduler.rs`, `node_executor.rs`, `executor_pool.rs`, `tool_policy_executor.rs` | active | workflow, sole scheduler, executor routing/pool accounting, bounded Agent Runtime, and real Command/CLI tool-policy enforcement | workflow/scheduler/executor/tool-policy tests |
 | `engine/src/storage/local_product_store/` | active | sole application-owned SQLite/PostgreSQL-compatible storage | local store and PG integration tests |
 | `target_repo_output.rs`, `target_repo_output/authority.rs` | active | target-output authority | target-output tests |
 | `dashboard/` | active/read-mostly | local operator UI; mutation remains in explicit backend owners | tests, typecheck, lint, build |
@@ -30,6 +30,8 @@ Full Agent Autonomy Mode is active for repository-scoped work that remains testa
 
 | Capability | Primary owners | Connection state and boundary |
 |---|---|---|
+| Agent Runtime execution | typed plan/run HTTP handlers; `AgentStepExecutor`; scheduler/executor pool; `agent_action_receipts`; provider `agent_action.v1` decision source | connected end to end; one leased node produces at most one typed action; default-off provider and runtime gates; atomic restart/concurrency replay |
+| Command/CLI tool policy | tool capability/allowlist/hook stores; `ToolPolicyNodeExecutor`; workflow approvals/operator actions; scheduler, pool, tick, supervised-patch callers | connected on production Command/CLI paths; configured allowlists authoritative; exact-action approval consumed once; hooks bounded and audited |
 | PE-1 regression lab | scorecard import/export/comparison scripts; native/generic scorecard stores; regression report/batch/trend owners; HTTP/SDK/Dashboard reads | connected end to end; report-only and non-mutating |
 | PE-2 forecast/anomaly derivation | `engine/src/budget_forecast.rs`, `engine/src/budget_anomaly.rs`, `budget_manager.rs`, provider audit and workflow usage evidence | implemented but no production runtime/API/CLI/scheduler caller currently derives evidence |
 | PE-2 evidence persistence/read | `engine/src/storage/local_product_store/budget_evidence_artifacts.rs`, scorecard HTTP handlers, SDK/Dashboard reads | connected for already-created artifacts |
@@ -40,10 +42,23 @@ Full Agent Autonomy Mode is active for repository-scoped work that remains testa
 | PE-4 shadow/canary/promotion validation | `shadow_router.rs`, adaptive experiment/canary owners, `adaptive_auto_promotion.rs`, `adaptive_policy.rs` | validators and atomic policy/snapshot/rollback owner exist |
 | PE-4 safe promotion entry | `record_offline_replay`, `promote_adaptive_fusion_policy_with_evidence_chain` | disconnected from production HTTP/operator/CLI/runtime entry; legacy observation path remains intentionally blocked |
 | Native/local/LangGraph evidence | native scorecard export, local runner, provider-gated runner, LangGraph capture/import, fixtures, existing scorecard store/API | connected for importer/manual/local paths; ordinary workflow local runner remains Stub/Fake-only |
-| Tool registry | existing tool capability/descriptor registry and allowlist owners | active corpus owner; no deterministic Top-K discovery benchmark yet |
+| Tool registry | existing tool capability/descriptor registry, configured-profile allowlist owner, hook owner, and execution authorization owner | active production policy owner; no deterministic Top-K discovery benchmark yet |
 | Tool discovery benchmark | future `TOOL-DISCOVERY-BENCH-1` under existing benchmark and PE-1 owners | not connected; benchmark only, no production dynamic-tool authority |
 
 ## Integration Repair Ownership
+
+### `AR-RUNTIME-INTEGRATION-1`
+
+Primary owners:
+
+- typed `agent_step` plan and run creation in the existing HTTP/store owners;
+- `AgentStepExecutor` for one-step observe → decide → act → persist;
+- the existing scheduler and executor pool for admission, lease, retry, cooldown, pause/resume, restart, and global/per-run concurrency;
+- `provider/agent_decision.rs` for a single gated provider decision returning `agent_action.v1`;
+- `agent_action_receipts` for atomic exactly-once action application;
+- `ToolPolicyNodeExecutor`, configured allowlists, hooks, workflow approvals, and operator decisions for Command/CLI policy.
+
+The engine is the sole runtime and state authority. The GitHub/Vader repository-maintenance orchestrator remains a separate disabled external control plane and receives no Agent Runtime scheduling or provider authority from this slice.
 
 ### `PR207-REPAIR-1`
 
@@ -118,24 +133,19 @@ PR #214 merged the owner-evidence and claim-alignment repair. Historical PRs #21
 | Release/rollback drills | release drill tests and accepted PE-5 owners | temporary-root invalid-evidence and previous-install preservation; no public release or host damage |
 | Registry/evidence/CI | `run_fault_drills.py`, registry/evidence tests, runbook, canonical CI | bounded deterministic reports and explicit unsupported state |
 
-## Open PR Coordination
+## Program Coordination
 
-PR #207 touches shared CI and active documents. Before any implementation packet starts:
+PR #207 and its compatibility repair are merged history. Issue #217 demonstrated a separate live-smoke failure, so the repository orchestrator remains emergency-stopped while local control-plane integration proceeds. `PR3-EXTERNAL-RUNTIME-LIVE-SEAL-1` owns the diagnosis, repair, and replacement bounded smoke; no earlier slice may enable or dispatch it.
 
-1. inspect its actual head, merge state, review state, and exact-head CI;
-2. repair it only on its existing branch;
-3. refresh it from current `main` and preserve the integration-gap and PE-5/PE-6 ownership recorded here;
-4. reconcile shared `.github/workflows/tests.yml` changes explicitly;
-5. do not merge without separate user authorization.
+Every implementation PR refreshes actual `main`, open PRs, CI, and overlapping paths before push. A PR may merge only when the current user authority covers it and the exact final head satisfies the full playbook gates.
 
 ## Active Routing
 
-1. `PR207-REPAIR-1` is the active packet.
-2. `PE2-RUNTIME-PRODUCER-1` follows after PR #207 is resolved or its shared conflicts are explicitly separated.
-3. `PE4-EVIDENCE-ENTRY-1` follows as a separate PR.
-4. `TOOL-DISCOVERY-BENCH-1` follows as a separate benchmark/evidence PR.
-5. No new product phase is active.
-6. Extend existing owners; do not create another runtime, scheduler, storage layer, release pipeline, signing authority, recovery authority, artifact truth source, tool registry, or Dashboard mutation model without an explicit replacement decision, compatibility evidence, and rollback.
+1. `PR1-AR-RUNTIME-INTEGRATION-1` is the active packet.
+2. `PR2-MEMORY-BUDGET-POLICY-LOOP-1` follows only after PR 1 is merged and refreshed.
+3. `PR3-EXTERNAL-RUNTIME-LIVE-SEAL-1` follows only after PR 2 is merged and refreshed.
+4. The original durable-memory, PE-2, PE-4, LangGraph, efficiency-benchmark, tool-discovery, and live-seal component requirements remain normative inside those three vertical slices.
+5. Extend existing owners; do not create another runtime, scheduler, storage layer, release pipeline, signing authority, recovery authority, artifact truth source, tool registry, or Dashboard mutation model without an explicit replacement decision, compatibility evidence, and rollback.
 
 ## Active Documents
 

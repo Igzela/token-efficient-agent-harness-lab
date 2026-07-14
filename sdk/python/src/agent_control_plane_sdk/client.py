@@ -27,6 +27,88 @@ class AgentControlPlaneClient:
     def openapi(self) -> dict[str, Any]:
         return self._get("/api/v1/openapi.json")
 
+    def tool_capability_policy(self, tool_name: str) -> dict[str, Any]:
+        return self._get(
+            f"/api/v1/tool-policy/capabilities/{_quote_path_segment(tool_name)}"
+        )
+
+    def configure_tool_capability_policy(
+        self,
+        tool_name: str,
+        *,
+        description: str,
+        requires_approval: bool,
+        risk_level: str,
+        confirm_tool_policy: bool,
+        input_schema: dict[str, Any] | None = None,
+        output_schema: dict[str, Any] | None = None,
+        expected_current_sha256: str | None = None,
+    ) -> dict[str, Any]:
+        return self._put(
+            f"/api/v1/tool-policy/capabilities/{_quote_path_segment(tool_name)}",
+            {
+                "description": description,
+                "input_schema": input_schema,
+                "output_schema": output_schema,
+                "requires_approval": requires_approval,
+                "risk_level": risk_level,
+                "expected_current_sha256": expected_current_sha256,
+                "confirm_tool_policy": confirm_tool_policy,
+            },
+        )
+
+    def tool_allowlist_policy(self, profile_id: str) -> dict[str, Any]:
+        return self._get(
+            f"/api/v1/tool-policy/profiles/{_quote_path_segment(profile_id)}/allowlist"
+        )
+
+    def configure_tool_allowlist_policy(
+        self,
+        profile_id: str,
+        *,
+        tool_names: list[str],
+        confirm_tool_policy: bool,
+        expected_current_sha256: str | None = None,
+    ) -> dict[str, Any]:
+        return self._put(
+            f"/api/v1/tool-policy/profiles/{_quote_path_segment(profile_id)}/allowlist",
+            {
+                "tool_names": tool_names,
+                "expected_current_sha256": expected_current_sha256,
+                "confirm_tool_policy": confirm_tool_policy,
+            },
+        )
+
+    def tool_hook_policy(self, hook_id: str) -> dict[str, Any]:
+        return self._get(f"/api/v1/tool-policy/hooks/{_quote_path_segment(hook_id)}")
+
+    def configure_tool_hook_policy(
+        self,
+        hook_id: str,
+        *,
+        hook_type: str,
+        action: str,
+        enabled: bool,
+        confirm_tool_policy: bool,
+        tool_name: str | None = None,
+        condition: dict[str, Any] | None = None,
+        action_config: dict[str, Any] | None = None,
+        expected_current_sha256: str | None = None,
+    ) -> dict[str, Any]:
+        return self._put(
+            f"/api/v1/tool-policy/hooks/{_quote_path_segment(hook_id)}",
+            {
+                "hook_type": hook_type,
+                "tool_name": tool_name,
+                "condition": condition,
+                "action": action,
+                "action_config": action_config,
+                "enabled": enabled,
+                "expected_current_sha256": expected_current_sha256,
+                "confirm_tool_policy": confirm_tool_policy,
+            },
+        )
+
     def dashboard(self) -> dict[str, Any]:
         return self._get("/api/v1/dashboard")
 
@@ -366,10 +448,20 @@ class AgentControlPlaneClient:
         self,
         raw_request: str,
         request_source: RequestSource = "api",
+        agent_steps: list[dict[str, Any]] | None = None,
+        confirm_agent_runtime_plan: bool | None = None,
     ) -> dict[str, Any]:
+        payload: dict[str, Any] = {
+            "raw_request": raw_request,
+            "request_source": request_source,
+        }
+        if agent_steps is not None:
+            payload["agent_steps"] = agent_steps
+        if confirm_agent_runtime_plan is not None:
+            payload["confirm_agent_runtime_plan"] = confirm_agent_runtime_plan
         return self._post(
             "/api/v1/plans",
-            {"raw_request": raw_request, "request_source": request_source},
+            payload,
         )
 
     def plan(self, plan_id: str) -> dict[str, Any]:
@@ -390,8 +482,13 @@ class AgentControlPlaneClient:
             params["search"] = search
         return self._get(_query_path("/api/v1/workflow-runs", params))
 
-    def create_workflow_run(self, plan_id: str) -> dict[str, Any]:
-        return self._post("/api/v1/workflow-runs", {"plan_id": plan_id})
+    def create_workflow_run(
+        self, plan_id: str, confirm_execution: bool | None = None
+    ) -> dict[str, Any]:
+        payload: dict[str, Any] = {"plan_id": plan_id}
+        if confirm_execution is not None:
+            payload["confirm_execution"] = confirm_execution
+        return self._post("/api/v1/workflow-runs", payload)
 
     def workflow_run(self, run_id: str) -> dict[str, Any]:
         return self._get(f"/api/v1/workflow-runs/{_quote_path_segment(run_id)}")

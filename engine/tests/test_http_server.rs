@@ -2,7 +2,7 @@ use std::collections::HashSet;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use std::sync::OnceLock;
+use std::sync::{Arc, OnceLock};
 
 use axum::body::{to_bytes, Body};
 use axum::http::{header, Method, Request, StatusCode};
@@ -983,6 +983,532 @@ async fn axum_create_read_only_plan_persists_workflow_graph_without_execution() 
 }
 
 #[tokio::test]
+async fn axum_agent_step_plan_creates_typed_node_and_run_scoped_agent_state() {
+    let dir = tempdir().unwrap();
+    let store = Arc::new(LocalProductStore::new(dir.path().join("agent-plan.db")).unwrap());
+    let app = build_axum_router(AxumApiState::new().with_local_store_arc(store.clone()));
+
+    let created_plan = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(Method::POST)
+                .uri("/api/v1/plans")
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(
+                    json!({
+                        "raw_request": "Review the bounded mailbox and complete one step",
+                        "request_source": "api",
+                        "agent_steps": [{
+                            "agent_id": "agent-runtime-1",
+                            "role": "implementer",
+                            "capability_profile": ["mailbox", "memory", "review"],
+                            "profile_id": "profile-runtime-1",
+                            "model": "fixture-agent-model"
+                        }],
+                        "confirm_agent_runtime_plan": true
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(created_plan.status(), StatusCode::OK);
+    let plan_body = response_json(created_plan).await;
+    let node = &plan_body["plan"]["graph"]["nodes"][0];
+    assert_eq!(node["task_type"], "agent_step");
+    assert_eq!(node["agent_id"], "agent-runtime-1");
+    assert_eq!(node["profile_id"], "profile-runtime-1");
+    assert_eq!(node["decision_source"], "provider_typed_action");
+    assert_eq!(
+        plan_body["plan"]["advisory"]["requires_executor"],
+        "agent_step"
+    );
+
+    let created_run = app
+        .oneshot(
+            Request::builder()
+                .method(Method::POST)
+                .uri("/api/v1/workflow-runs")
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(
+                    json!({"plan_id": "plan-0001", "confirm_execution": true}).to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(created_run.status(), StatusCode::OK);
+    let run_body = response_json(created_run).await;
+    assert_eq!(
+        run_body["run"]["boundaries"]["execution_authority"],
+        "rust_scheduler_only"
+    );
+    assert_eq!(
+        run_body["run"]["boundaries"]["provider_execution"],
+        "default_off_fail_closed"
+    );
+    let states = store
+        .list_agent_state_by_run("run-0001")
+        .expect("list initialized agent state");
+    assert_eq!(states.len(), 1);
+    assert_eq!(states[0].agent_id, "agent-runtime-1");
+    assert_eq!(states[0].role, "implementer");
+    assert_eq!(
+        states[0].objective.as_deref(),
+        Some("Review the bounded mailbox and complete one step")
+    );
+}
+
+#[tokio::test]
+async fn axum_agent_step_plan_rejects_duplicate_capabilities_without_persisting() {
+    let dir = tempdir().unwrap();
+    let store = Arc::new(LocalProductStore::new(dir.path().join("agent-plan-invalid.db")).unwrap());
+    let app = build_axum_router(AxumApiState::new().with_local_store_arc(store.clone()));
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method(Method::POST)
+                .uri("/api/v1/plans")
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(
+                    json!({
+                        "raw_request": "Reject ambiguous capability authorization",
+                        "agent_steps": [{
+                            "agent_id": "agent-runtime-invalid",
+                            "role": "reviewer",
+                            "capability_profile": ["mailbox", "mailbox"],
+                            "profile_id": "profile-runtime-invalid"
+                        }],
+                        "confirm_agent_runtime_plan": true
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    assert_eq!(
+        response_json(response).await["code"],
+        "invalid_agent_capability_profile"
+    );
+    assert!(store
+        .list_workflow_plans_with_offset(10, 0)
+        .unwrap()
+        .is_empty());
+}
+
+#[tokio::test]
+async fn axum_agent_step_plan_rejects_secret_shaped_or_oversized_objective() {
+    let store = Arc::new(LocalProductStore::new(":memory:").unwrap());
+    let app = build_axum_router(AxumApiState::new().with_local_store_arc(store.clone()));
+    for (raw_request, expected_code) in [
+        (
+            "Use api_key=sk-secret-shaped-value for the task".to_string(),
+            "agent_runtime_objective_sensitive",
+        ),
+        ("x".repeat(4097), "agent_runtime_objective_too_large"),
+    ] {
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method(Method::POST)
+                    .uri("/api/v1/plans")
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(
+                        json!({
+                            "raw_request": raw_request,
+                            "agent_steps": [{
+                                "agent_id": "agent-runtime-sensitive",
+                                "role": "reviewer",
+                                "capability_profile": ["mailbox"],
+                                "profile_id": "profile-runtime-sensitive"
+                            }],
+                            "confirm_agent_runtime_plan": true
+                        })
+                        .to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        assert_eq!(response_json(response).await["code"], expected_code);
+    }
+    assert!(store
+        .list_workflow_plans_with_offset(10, 0)
+        .unwrap()
+        .is_empty());
+}
+
+#[tokio::test]
+async fn axum_executable_agent_run_rechecks_execute_scope_at_activation() {
+    let store = Arc::new(LocalProductStore::new(":memory:").unwrap());
+    let mut resolver = TenantResolver::new();
+    let tenant_scopes =
+        HashSet::from(["dispatch:read".to_string(), "dispatch:execute".to_string()]);
+    resolver.add_tenant(Tenant {
+        tenant_id: "local".to_string(),
+        name: "Local".to_string(),
+        scopes: tenant_scopes.clone(),
+        rate_limit: Some(100),
+    });
+    let (_, execute_key) = resolver
+        .create_api_key("local", Some(tenant_scopes), None, 1.0)
+        .unwrap();
+    let (_, read_key) = resolver
+        .create_api_key(
+            "local",
+            Some(HashSet::from(["dispatch:read".to_string()])),
+            None,
+            1.0,
+        )
+        .unwrap();
+    let app = build_axum_router(AxumApiState::new().with_local_store_arc(store).with_auth(
+        resolver,
+        RateLimiter::new(60.0, 100),
+        Some(100),
+        1.0,
+    ));
+    let plan = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(Method::POST)
+                .uri("/api/v1/plans")
+                .header(header::AUTHORIZATION, format!("Bearer {execute_key}"))
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(
+                    json!({
+                        "raw_request": "Execute one bounded agent step",
+                        "agent_steps": [{
+                            "agent_id": "agent-auth",
+                            "role": "reviewer",
+                            "capability_profile": ["mailbox"],
+                            "profile_id": "profile-auth"
+                        }],
+                        "confirm_agent_runtime_plan": true
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(plan.status(), StatusCode::OK);
+    let plan_id = response_json(plan).await["plan"]["plan_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let denied = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(Method::POST)
+                .uri("/api/v1/workflow-runs")
+                .header(header::AUTHORIZATION, format!("Bearer {read_key}"))
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(
+                    json!({"plan_id": plan_id, "confirm_execution": true}).to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(denied.status(), StatusCode::FORBIDDEN);
+
+    let allowed = app
+        .oneshot(
+            Request::builder()
+                .method(Method::POST)
+                .uri("/api/v1/workflow-runs")
+                .header(header::AUTHORIZATION, format!("Bearer {execute_key}"))
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(
+                    json!({"plan_id": plan_id, "confirm_execution": true}).to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(allowed.status(), StatusCode::OK);
+}
+
+#[tokio::test]
+async fn axum_normal_workflow_executes_one_bounded_agent_step() {
+    struct AgentRuntimeEnvGuard;
+    impl Drop for AgentRuntimeEnvGuard {
+        fn drop(&mut self) {
+            std::env::remove_var("ACP_ENABLE_AGENT_RUNTIME");
+            std::env::remove_var("ACP_AGENT_RUNTIME_KILL_SWITCH");
+        }
+    }
+
+    let _lock = provider_cli_env_lock().lock().await;
+    let _env = AgentRuntimeEnvGuard;
+    std::env::set_var("ACP_ENABLE_AGENT_RUNTIME", "1");
+    std::env::remove_var("ACP_AGENT_RUNTIME_KILL_SWITCH");
+    let store = Arc::new(LocalProductStore::new(":memory:").unwrap());
+    let executor = engine::node_executor::AgentStepExecutor::new(
+        store.clone(),
+        Box::new(|_| Ok(engine::node_executor::AgentAction::Wait)),
+    );
+    let app = build_axum_router(
+        AxumApiState::new()
+            .with_local_store_arc(store)
+            .with_agent_step_executor(Arc::new(executor)),
+    );
+    let plan = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(Method::POST)
+                .uri("/api/v1/plans")
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(
+                    json!({
+                        "raw_request": "Read one bounded mailbox snapshot",
+                        "request_source": "test",
+                        "confirm_agent_runtime_plan": true,
+                        "agent_steps": [{
+                            "agent_id": "agent-http-step",
+                            "role": "reviewer",
+                            "capability_profile": ["mailbox"],
+                            "profile_id": "reviewer-profile",
+                            "model": "fixture"
+                        }]
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(plan.status(), StatusCode::OK);
+    let plan_id = response_json(plan).await["plan"]["plan_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let unconfirmed_run = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(Method::POST)
+                .uri("/api/v1/workflow-runs")
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(json!({"plan_id": plan_id}).to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(unconfirmed_run.status(), StatusCode::BAD_REQUEST);
+    assert_eq!(
+        response_json(unconfirmed_run).await["code"],
+        "workflow_run_execution_confirmation_required"
+    );
+    let run = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(Method::POST)
+                .uri("/api/v1/workflow-runs")
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(
+                    json!({"plan_id": plan_id, "confirm_execution": true}).to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(run.status(), StatusCode::OK);
+    let run_id = response_json(run).await["run"]["run_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let tick = app
+        .oneshot(
+            Request::builder()
+                .method(Method::POST)
+                .uri(format!("/api/v1/workflow-runs/{run_id}/tick"))
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(json!({"executor": "agent_step"}).to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(tick.status(), StatusCode::OK);
+    let body = response_json(tick).await;
+    assert_eq!(body["tick"]["executor_type"], "agent_step");
+    assert_eq!(body["tick"]["result"]["status"], "completed");
+    let output: Value =
+        serde_json::from_str(body["tick"]["result"]["output"].as_str().unwrap()).unwrap();
+    assert_eq!(output["action"], "wait");
+    assert!(output["state_read_bytes"].as_i64().unwrap() >= 0);
+    assert_eq!(output["state_write_bytes"], 0);
+}
+
+#[tokio::test]
+async fn axum_normal_agent_steps_execute_hash_bound_handoff_chain() {
+    struct AgentRuntimeEnvGuard;
+    impl Drop for AgentRuntimeEnvGuard {
+        fn drop(&mut self) {
+            std::env::remove_var("ACP_ENABLE_AGENT_RUNTIME");
+            std::env::remove_var("ACP_AGENT_RUNTIME_KILL_SWITCH");
+        }
+    }
+
+    let _lock = provider_cli_env_lock().lock().await;
+    let _env = AgentRuntimeEnvGuard;
+    std::env::set_var("ACP_ENABLE_AGENT_RUNTIME", "1");
+    std::env::remove_var("ACP_AGENT_RUNTIME_KILL_SWITCH");
+    let store = Arc::new(LocalProductStore::new(":memory:").unwrap());
+    let executor = engine::node_executor::AgentStepExecutor::new(
+        store.clone(),
+        Box::new(|context| {
+            if context.agent_id == "agent-handoff-source" {
+                Ok(engine::node_executor::AgentAction::RequestHandoff(
+                    engine::orchestration::schemas::HandoffRequest {
+                        schema_version: "handoff_request.v1".to_string(),
+                        correlation_id: "corr-http-handoff".to_string(),
+                        objective: "accept the bounded handoff".to_string(),
+                        context_summary: "fixture context".to_string(),
+                        target_agent_id: "agent-handoff-target".to_string(),
+                        source_agent_id: context.agent_id.clone(),
+                        run_id: context.run_id.clone(),
+                        node_id: context.node_id.clone(),
+                    },
+                ))
+            } else {
+                Ok(engine::node_executor::AgentAction::AcceptHandoff(
+                    "corr-http-handoff".to_string(),
+                ))
+            }
+        }),
+    );
+    let app = build_axum_router(
+        AxumApiState::new()
+            .with_local_store_arc(store.clone())
+            .with_agent_step_executor(Arc::new(executor)),
+    );
+    let plan = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(Method::POST)
+                .uri("/api/v1/plans")
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(
+                    json!({
+                        "raw_request": "Complete one bounded handoff",
+                        "request_source": "test",
+                        "confirm_agent_runtime_plan": true,
+                        "agent_steps": [
+                            {
+                                "agent_id": "agent-handoff-source",
+                                "role": "implementer",
+                                "capability_profile": ["handoff"],
+                                "profile_id": "handoff-source",
+                                "model": "fixture"
+                            },
+                            {
+                                "agent_id": "agent-handoff-target",
+                                "role": "reviewer",
+                                "capability_profile": ["handoff"],
+                                "profile_id": "handoff-target",
+                                "model": "fixture"
+                            }
+                        ]
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(plan.status(), StatusCode::OK);
+    let plan_body = response_json(plan).await;
+    assert_eq!(
+        plan_body["plan"]["graph"]["nodes"]
+            .as_array()
+            .unwrap()
+            .len(),
+        2
+    );
+    assert_eq!(
+        plan_body["plan"]["graph"]["edges"]
+            .as_array()
+            .unwrap()
+            .len(),
+        1
+    );
+    let plan_id = plan_body["plan"]["plan_id"].as_str().unwrap();
+    let run = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(Method::POST)
+                .uri("/api/v1/workflow-runs")
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(
+                    json!({"plan_id": plan_id, "confirm_execution": true}).to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(run.status(), StatusCode::OK);
+    let run_id = response_json(run).await["run"]["run_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    for expected_node in ["agent-node-001", "agent-node-002"] {
+        let tick = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method(Method::POST)
+                    .uri(format!("/api/v1/workflow-runs/{run_id}/tick"))
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(json!({"executor": "agent_step"}).to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(tick.status(), StatusCode::OK);
+        let tick_body = response_json(tick).await;
+        assert_eq!(tick_body["tick"]["node_id"], expected_node);
+        assert_eq!(tick_body["tick"]["result"]["status"], "completed");
+    }
+
+    let proposals = store.list_proposals_by_run(&run_id, 10, 0).unwrap();
+    assert_eq!(proposals.len(), 1);
+    assert_eq!(proposals[0]["proposal_type"], "handoff");
+    assert_eq!(proposals[0]["status"], "accepted");
+    assert_eq!(
+        store
+            .list_mailbox(
+                Some("agent-handoff-target"),
+                Some(&run_id),
+                None,
+                None,
+                10,
+                0,
+            )
+            .unwrap()
+            .len(),
+        1
+    );
+}
+
+#[tokio::test]
 async fn axum_create_explicit_adaptive_plan_can_tick_fusion_node() {
     let _guard = provider_cli_env_lock().lock().await;
     let _operator_guard = adaptive_operator_env_lock().lock().await;
@@ -1113,6 +1639,14 @@ async fn axum_create_explicit_adaptive_plan_can_tick_fusion_node() {
         "explicit_adaptive_execution_plan"
     );
     assert_eq!(
+        plan_body["plan"]["graph"]["nodes"][0]["task_type"],
+        "adaptive_provider"
+    );
+    assert_eq!(
+        plan_body["plan"]["boundaries"]["execution_authority"],
+        "rust_scheduler_only"
+    );
+    assert_eq!(
         plan_body["plan"]["graph"]["nodes"][0]["adaptive_execution"]["plan"]["mode"],
         "fusion"
     );
@@ -1126,7 +1660,9 @@ async fn axum_create_explicit_adaptive_plan_can_tick_fusion_node() {
                 .uri("/api/v1/workflow-runs")
                 .header(header::AUTHORIZATION, format!("Bearer {raw_key}"))
                 .header(header::CONTENT_TYPE, "application/json")
-                .body(Body::from(json!({"plan_id": plan_id}).to_string()))
+                .body(Body::from(
+                    json!({"plan_id": plan_id, "confirm_execution": true}).to_string(),
+                ))
                 .unwrap(),
         )
         .await
@@ -1753,6 +2289,476 @@ async fn axum_supervised_patch_verification_runs_allowlisted_command_and_records
 }
 
 #[tokio::test]
+async fn axum_supervised_patch_rejects_unsafe_command_and_cli_lease_before_effect() {
+    use engine::scheduler::{SchedulerConfig, WorkflowScheduler};
+
+    let _env_guard = provider_cli_env_lock().lock().await;
+    let prior_cli_timeout = std::env::var_os("ACP_CLI_TIMEOUT_MS");
+    std::env::set_var("ACP_CLI_TIMEOUT_MS", "300000");
+
+    let target_dir = tempdir().unwrap();
+    let workspace_root = tempdir().unwrap();
+    let workspace_path = workspace_root.path().join("workspace");
+    fs::create_dir_all(&workspace_path).unwrap();
+    fs::write(
+        workspace_path.join("create_effect.py"),
+        "from pathlib import Path\nPath('effect.txt').write_text('executed')\n",
+    )
+    .unwrap();
+    let dir = tempdir().unwrap();
+    let store = Arc::new(LocalProductStore::new(dir.path().join("patch.db")).unwrap());
+    store
+        .record_supervised_patch_workspace(
+            &json!({
+                "run_id": "run-unsafe-lease",
+                "target_id": "target-unsafe-lease",
+                "target_repo_path": target_dir.path().to_string_lossy(),
+                "workspace_path": workspace_path.to_string_lossy(),
+                "source_revision": "abc123",
+                "status": "workspace_created",
+            }),
+            "operator",
+        )
+        .unwrap();
+    let scheduler = Arc::new(std::sync::Mutex::new(WorkflowScheduler::new(
+        store.clone(),
+        SchedulerConfig {
+            interval_ms: 2_000,
+            lease_timeout_ms: 60_000,
+            ..Default::default()
+        },
+    )));
+    let app = build_axum_router(
+        AxumApiState::new()
+            .with_local_store_arc(store.clone())
+            .with_scheduler(scheduler),
+    );
+
+    let unsafe_command = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(Method::POST)
+                .uri("/api/v1/supervised-patch/workspaces/patch-workspace-0001/verify")
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(
+                    json!({
+                        "command": "python3 create_effect.py",
+                        "confirm_verification": true,
+                        "timeout_ms": 60_000,
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(unsafe_command.status(), StatusCode::CONFLICT);
+    assert_eq!(
+        response_json(unsafe_command).await["code"],
+        "unsafe_managed_execution_lease"
+    );
+
+    let unsafe_cli = app
+        .oneshot(
+            Request::builder()
+                .method(Method::POST)
+                .uri("/api/v1/supervised-patch/workspaces/patch-workspace-0001/verify")
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(
+                    json!({
+                        "command": "python3 create_effect.py",
+                        "confirm_verification": true,
+                        "timeout_ms": 1_000,
+                        "repair_executor": "codex_cli",
+                        "max_repair_attempts": 1,
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(unsafe_cli.status(), StatusCode::CONFLICT);
+    assert_eq!(
+        response_json(unsafe_cli).await["code"],
+        "unsafe_managed_execution_lease"
+    );
+    assert!(!workspace_path.join("effect.txt").exists());
+    assert!(!store
+        .list_workflow_runs_with_offset(100, 0)
+        .unwrap()
+        .iter()
+        .any(|run| run["run_id"]
+            .as_str()
+            .is_some_and(|run_id| run_id.starts_with("managed-run-"))));
+
+    if let Some(value) = prior_cli_timeout {
+        std::env::set_var("ACP_CLI_TIMEOUT_MS", value);
+    } else {
+        std::env::remove_var("ACP_CLI_TIMEOUT_MS");
+    }
+}
+
+#[tokio::test]
+async fn axum_supervised_patch_verification_is_idempotent_across_restart_and_rejects_changed_binding(
+) {
+    let target_dir = tempdir().unwrap();
+    let workspace_root = tempdir().unwrap();
+    let workspace_path = workspace_root.path().join("workspace");
+    fs::create_dir_all(&workspace_path).unwrap();
+    fs::write(
+        workspace_path.join("verify_once.py"),
+        "from pathlib import Path\np = Path('verify-count.txt')\nn = int(p.read_text()) if p.exists() else 0\np.write_text(str(n + 1))\n",
+    )
+    .unwrap();
+    fs::write(
+        workspace_path.join("verify_changed.py"),
+        "raise SystemExit(0)\n",
+    )
+    .unwrap();
+    let dir = tempdir().unwrap();
+    let db_path = dir.path().join("patch-restart.db");
+    let store = LocalProductStore::new(&db_path).unwrap();
+    store
+        .record_supervised_patch_workspace(
+            &json!({
+                "run_id": "source-run-restart",
+                "target_id": "target-restart",
+                "target_repo_path": target_dir.path().to_string_lossy(),
+                "workspace_path": workspace_path.to_string_lossy(),
+                "source_revision": "abc123",
+                "status": "workspace_created",
+            }),
+            "operator",
+        )
+        .unwrap();
+    let app = build_axum_router(AxumApiState::new().with_local_store(store));
+    let first = app
+        .oneshot(
+            Request::builder()
+                .method(Method::POST)
+                .uri("/api/v1/supervised-patch/workspaces/patch-workspace-0001/verify")
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(
+                    json!({
+                        "command": "python3 verify_once.py",
+                        "confirm_verification": true,
+                        "attempt": 1,
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(first.status(), StatusCode::OK);
+    let first = response_json(first).await;
+    let canonical_run_id = first["verification"]["managed_run_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    let restarted_store = LocalProductStore::new(&db_path).unwrap();
+    let restarted_app =
+        build_axum_router(AxumApiState::new().with_local_store_arc(Arc::new(restarted_store)));
+    let retried = restarted_app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(Method::POST)
+                .uri("/api/v1/supervised-patch/workspaces/patch-workspace-0001/verify")
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(
+                    json!({
+                        "command": "python3 verify_once.py",
+                        "confirm_verification": true,
+                        "attempt": 1,
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(retried.status(), StatusCode::OK);
+    let retried = response_json(retried).await;
+    assert_eq!(retried["verification"]["managed_run_id"], canonical_run_id);
+    assert_eq!(
+        fs::read_to_string(workspace_path.join("verify-count.txt")).unwrap(),
+        "1"
+    );
+
+    let changed = restarted_app
+        .oneshot(
+            Request::builder()
+                .method(Method::POST)
+                .uri("/api/v1/supervised-patch/workspaces/patch-workspace-0001/verify")
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(
+                    json!({
+                        "command": "python3 verify_changed.py",
+                        "confirm_verification": true,
+                        "attempt": 1,
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(changed.status(), StatusCode::CONFLICT);
+    assert_eq!(
+        response_json(changed).await["code"],
+        "verification_binding_changed"
+    );
+}
+
+#[tokio::test]
+async fn axum_supervised_patch_concurrent_verification_executes_canonical_binding_once() {
+    let target_dir = tempdir().unwrap();
+    let workspace_root = tempdir().unwrap();
+    let workspace_path = workspace_root.path().join("workspace");
+    fs::create_dir_all(&workspace_path).unwrap();
+    fs::write(
+        workspace_path.join("verify_concurrent.py"),
+        "from pathlib import Path\nimport time\np = Path('verify-count.txt')\nn = int(p.read_text()) if p.exists() else 0\np.write_text(str(n + 1))\ntime.sleep(0.25)\n",
+    )
+    .unwrap();
+    let dir = tempdir().unwrap();
+    let db_path = dir.path().join("patch-concurrent.db");
+    let store = LocalProductStore::new(&db_path).unwrap();
+    store
+        .record_supervised_patch_workspace(
+            &json!({
+                "run_id": "source-run-concurrent",
+                "target_id": "target-concurrent",
+                "target_repo_path": target_dir.path().to_string_lossy(),
+                "workspace_path": workspace_path.to_string_lossy(),
+                "source_revision": "abc123",
+                "status": "workspace_created",
+            }),
+            "operator",
+        )
+        .unwrap();
+    let app = build_axum_router(AxumApiState::new().with_local_store(store));
+    let second_app = build_axum_router(
+        AxumApiState::new().with_local_store(LocalProductStore::new(&db_path).unwrap()),
+    );
+    let request_body = json!({
+        "command": "python3 verify_concurrent.py",
+        "confirm_verification": true,
+        "attempt": 1,
+    })
+    .to_string();
+    let first = app.clone().oneshot(
+        Request::builder()
+            .method(Method::POST)
+            .uri("/api/v1/supervised-patch/workspaces/patch-workspace-0001/verify")
+            .header(header::CONTENT_TYPE, "application/json")
+            .body(Body::from(request_body.clone()))
+            .unwrap(),
+    );
+    let second = second_app.oneshot(
+        Request::builder()
+            .method(Method::POST)
+            .uri("/api/v1/supervised-patch/workspaces/patch-workspace-0001/verify")
+            .header(header::CONTENT_TYPE, "application/json")
+            .body(Body::from(request_body))
+            .unwrap(),
+    );
+    let (first, second) = tokio::join!(first, second);
+    let first = first.unwrap();
+    let second = second.unwrap();
+    assert!(matches!(
+        first.status(),
+        StatusCode::OK | StatusCode::CONFLICT
+    ));
+    assert!(matches!(
+        second.status(),
+        StatusCode::OK | StatusCode::CONFLICT
+    ));
+    assert!(first.status() == StatusCode::OK || second.status() == StatusCode::OK);
+    assert_eq!(
+        fs::read_to_string(workspace_path.join("verify-count.txt")).unwrap(),
+        "1"
+    );
+    let persisted = LocalProductStore::new(&db_path).unwrap();
+    let managed_runs = persisted
+        .list_workflow_runs_with_offset(100, 0)
+        .unwrap()
+        .into_iter()
+        .filter(|run| {
+            run.get("run_id")
+                .and_then(Value::as_str)
+                .is_some_and(|run_id| run_id.starts_with("managed-run-"))
+        })
+        .count();
+    assert_eq!(managed_runs, 1);
+}
+
+#[tokio::test]
+async fn axum_supervised_patch_verification_uses_persisted_workflow_approval_and_resume() {
+    let target_dir = tempdir().unwrap();
+    let workspace_root = tempdir().unwrap();
+    let workspace_path = workspace_root.path().join("workspace");
+    fs::create_dir_all(&workspace_path).unwrap();
+    let dir = tempdir().unwrap();
+    let db_path = dir.path().join("patch-approval.db");
+    let store = LocalProductStore::new(&db_path).unwrap();
+    store
+        .record_supervised_patch_workspace(
+            &json!({
+                "run_id": "source-run-verify-approval",
+                "target_id": "target-verify-approval",
+                "target_repo_path": target_dir.path().to_string_lossy(),
+                "workspace_path": workspace_path.to_string_lossy(),
+                "source_revision": "abc123",
+                "status": "workspace_created",
+            }),
+            "operator",
+        )
+        .unwrap();
+    store
+        .configure_tool_capability(
+            "operator",
+            "python3",
+            "bounded verification fixture",
+            None,
+            None,
+            true,
+            "medium",
+            None,
+        )
+        .unwrap();
+    store
+        .configure_tool_allowlist(
+            "operator",
+            "supervised_patch_verification",
+            &["python3".to_string()],
+            None,
+        )
+        .unwrap();
+    let app = build_axum_router(AxumApiState::new().with_local_store(store));
+
+    let requested = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(Method::POST)
+                .uri("/api/v1/supervised-patch/workspaces/patch-workspace-0001/verify")
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(
+                    json!({
+                        "command": "python3 --version",
+                        "confirm_verification": true,
+                        "attempt": 1,
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(requested.status(), StatusCode::OK);
+    let requested = response_json(requested).await;
+    assert_eq!(requested["verification"]["status"], "approval_required");
+    assert_eq!(
+        requested["verification"]["result_status"],
+        "awaiting_approval"
+    );
+    let managed_run_id = requested["verification"]["managed_run_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let managed_node_id = requested["verification"]["managed_node_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    let persisted = LocalProductStore::new(&db_path).unwrap();
+    let run = persisted
+        .get_workflow_run(&managed_run_id)
+        .unwrap()
+        .unwrap();
+    assert_eq!(run["nodes"][0]["node_id"], managed_node_id);
+    assert_eq!(run["nodes"][0]["status"], "awaiting_approval");
+    assert_eq!(
+        run["nodes"][0]["managed_supervised_patch"]["workspace_id"],
+        "patch-workspace-0001"
+    );
+    let mismatched_resume = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(Method::POST)
+                .uri("/api/v1/supervised-patch/workspaces/patch-workspace-0001/verify")
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(
+                    json!({
+                        "command": "python3 --version",
+                        "confirm_verification": true,
+                        "attempt": 2,
+                        "resume_run_id": managed_run_id,
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(mismatched_resume.status(), StatusCode::BAD_REQUEST);
+    assert_eq!(
+        response_json(mismatched_resume).await["code"],
+        "invalid_verification_resume"
+    );
+    let authorization = persisted
+        .inspect_tool_execution_authorization(&managed_run_id, &managed_node_id)
+        .unwrap()
+        .unwrap();
+    persisted
+        .resolve_requested_workflow_run_approval(
+            &managed_run_id,
+            authorization["requested_approval_id"].as_str().unwrap(),
+            "approved",
+            "operator",
+            Some("approve exact managed verification"),
+        )
+        .unwrap();
+
+    let resumed = app
+        .oneshot(
+            Request::builder()
+                .method(Method::POST)
+                .uri("/api/v1/supervised-patch/workspaces/patch-workspace-0001/verify")
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(
+                    json!({
+                        "command": "python3 --version",
+                        "confirm_verification": true,
+                        "attempt": 1,
+                        "resume_run_id": managed_run_id,
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resumed.status(), StatusCode::OK);
+    let resumed = response_json(resumed).await;
+    assert_eq!(resumed["verification"]["status"], "evidence_recorded");
+    assert_eq!(resumed["verification"]["result_status"], "completed");
+    assert_eq!(
+        persisted
+            .inspect_tool_execution_authorization(&managed_run_id, &managed_node_id)
+            .unwrap()
+            .unwrap()["status"],
+        "consumed"
+    );
+}
+
+#[tokio::test]
 async fn axum_supervised_patch_verification_can_repair_and_retry_with_cli() {
     let _env_guard = provider_cli_env_lock().lock().await;
     let target_dir = tempdir().unwrap();
@@ -1791,7 +2797,8 @@ async fn axum_supervised_patch_verification_can_repair_and_retry_with_cli() {
     std::env::remove_var("ACP_CLAUDE_CODE_BIN");
 
     let dir = tempdir().unwrap();
-    let store = LocalProductStore::new(dir.path().join("patch.db")).unwrap();
+    let db_path = dir.path().join("patch.db");
+    let store = LocalProductStore::new(&db_path).unwrap();
     store
         .record_supervised_patch_workspace(
             &json!({
@@ -1805,7 +2812,124 @@ async fn axum_supervised_patch_verification_can_repair_and_retry_with_cli() {
             "operator",
         )
         .unwrap();
+    store
+        .configure_tool_capability(
+            "operator",
+            "python3",
+            "bounded verification fixture",
+            None,
+            None,
+            false,
+            "low",
+            None,
+        )
+        .unwrap();
+    store
+        .configure_tool_capability(
+            "operator",
+            "codex_cli",
+            "bounded repair fixture",
+            None,
+            None,
+            true,
+            "medium",
+            None,
+        )
+        .unwrap();
+    store
+        .configure_tool_allowlist(
+            "operator",
+            "supervised_patch_verification",
+            &["python3".to_string()],
+            None,
+        )
+        .unwrap();
+    store
+        .configure_tool_allowlist(
+            "operator",
+            "supervised_patch_repair",
+            &["codex_cli".to_string()],
+            None,
+        )
+        .unwrap();
     let app = build_axum_router(AxumApiState::new().with_local_store(store));
+    let requested = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(Method::POST)
+                .uri("/api/v1/supervised-patch/workspaces/patch-workspace-0001/verify")
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(
+                    json!({
+                        "command": "python3 verify.py",
+                        "confirm_verification": true,
+                        "repair_executor": "codex_cli",
+                        "max_repair_attempts": 2,
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(requested.status(), StatusCode::OK);
+    let requested = response_json(requested).await;
+    assert_eq!(requested["verification"]["status"], "approval_required");
+    assert_eq!(
+        requested["verification"]["result_status"],
+        "awaiting_approval"
+    );
+    assert!(!workspace_path.join("fixed.txt").exists());
+    let managed_run_id = requested["verification"]["managed_run_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let managed_node_id = requested["verification"]["managed_node_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let persisted = LocalProductStore::new(&db_path).unwrap();
+    let authorization = persisted
+        .inspect_tool_execution_authorization(&managed_run_id, &managed_node_id)
+        .unwrap()
+        .unwrap();
+    let changed_repair_binding = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(Method::POST)
+                .uri("/api/v1/supervised-patch/workspaces/patch-workspace-0001/verify")
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(
+                    json!({
+                        "command": "python3 changed.py",
+                        "confirm_verification": true,
+                        "repair_executor": "codex_cli",
+                        "max_repair_attempts": 2,
+                        "resume_run_id": managed_run_id,
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(changed_repair_binding.status(), StatusCode::CONFLICT);
+    assert_eq!(
+        response_json(changed_repair_binding).await["code"],
+        "verification_resume_binding_changed"
+    );
+    persisted
+        .resolve_requested_workflow_run_approval(
+            &managed_run_id,
+            authorization["requested_approval_id"].as_str().unwrap(),
+            "approved",
+            "operator",
+            Some("approve exact managed repair"),
+        )
+        .unwrap();
+
     let response = app
         .oneshot(
             Request::builder()
@@ -1818,6 +2942,7 @@ async fn axum_supervised_patch_verification_can_repair_and_retry_with_cli() {
                         "confirm_verification": true,
                         "repair_executor": "codex_cli",
                         "max_repair_attempts": 2,
+                        "resume_run_id": managed_run_id,
                     })
                     .to_string(),
                 ))
@@ -1844,6 +2969,10 @@ async fn axum_supervised_patch_verification_can_repair_and_retry_with_cli() {
             .unwrap()
             .len(),
         1
+    );
+    assert_eq!(
+        body["verification"]["repair_attempts"][0]["executor_type"],
+        "codex_cli"
     );
     assert!(workspace_path.join("fixed.txt").exists());
 }
@@ -2955,29 +4084,6 @@ async fn axum_dashboard_does_not_mask_unknown_api_routes() {
 #[tokio::test]
 async fn axum_provider_health_noop_when_no_provider() {
     let app = build_axum_router(AxumApiState::new());
-    let response = app
-        .oneshot(
-            Request::builder()
-                .method(Method::GET)
-                .uri("/api/v1/provider/health")
-                .body(Body::empty())
-                .unwrap(),
-        )
-        .await
-        .unwrap();
-
-    assert_eq!(response.status(), StatusCode::OK);
-    let body = response_json(response).await;
-    assert_eq!(body["status"], "noop");
-    assert_eq!(body["message"], "no provider configured");
-}
-
-#[tokio::test]
-async fn axum_provider_health_noop_with_multi_executor_and_no_provider() {
-    let engine = engine::dispatch_engine::DispatchEngine::with_multi_executor(
-        engine::cli::MultiExecutor::new(std::collections::HashMap::new()),
-    );
-    let app = build_axum_router(AxumApiState::new().with_engine(engine));
     let response = app
         .oneshot(
             Request::builder()
@@ -5378,8 +6484,139 @@ async fn axum_tick_with_command_executor_uses_command_node_executor() {
     );
 }
 
+fn create_tool_policy_command_run(store: &LocalProductStore, profile_id: &str) -> String {
+    let plan = store
+        .create_workflow_plan("tool policy API", "test", "actor", |ids, _| {
+            Ok(json!({
+                "schema_version": "read_only_plan.v1",
+                "plan_id": ids.plan_id,
+                "status": "planned_read_only",
+                "workflow_id": ids.workflow_id,
+                "dispatch_id": ids.dispatch_id,
+                "analysis": {"analysis_id": "tool-policy", "task_domain": "test"},
+                "graph": {
+                    "schema_version": "workflow_graph.v1",
+                    "workflow_id": ids.workflow_id,
+                    "dispatch_id": ids.dispatch_id,
+                    "status": "decomposed",
+                    "created_at": "2026-07-14T00:00:00Z",
+                    "updated_at": "2026-07-14T00:00:00Z",
+                    "nodes": [{
+                        "node_id": "node-tool-policy",
+                        "task_type": "command",
+                        "status": "pending",
+                        "profile_id": profile_id,
+                        "command": "echo bounded"
+                    }],
+                    "edges": []
+                },
+                "boundaries": {"execution_authority": "bounded_trusted_local"}
+            }))
+        })
+        .unwrap();
+    store
+        .create_workflow_run_from_plan(plan["plan_id"].as_str().unwrap(), "actor")
+        .unwrap()["run_id"]
+        .as_str()
+        .unwrap()
+        .to_string()
+}
+
 #[tokio::test]
-async fn axum_tick_with_unknown_executor_falls_back_to_noop() {
+async fn axum_command_tick_enforces_explicit_empty_tool_allowlist() {
+    let store = Arc::new(LocalProductStore::new(":memory:").unwrap());
+    let run_id = create_tool_policy_command_run(&store, "locked-api");
+    store
+        .configure_tool_allowlist("test", "locked-api", &[], None)
+        .unwrap();
+    let app = build_axum_router(AxumApiState::new().with_local_store_arc(store));
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method(Method::POST)
+                .uri(format!("/api/v1/workflow-runs/{run_id}/tick"))
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(json!({"executor": "command"}).to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = response_json(response).await;
+    assert_eq!(body["tick"]["result"]["status"], "failed");
+    assert_eq!(body["tick"]["result"]["error_domain"], "tool_not_allowed");
+}
+
+#[tokio::test]
+async fn axum_command_tick_creates_hash_bound_tool_approval_without_execution() {
+    let store = Arc::new(LocalProductStore::new(":memory:").unwrap());
+    let run_id = create_tool_policy_command_run(&store, "approval-api");
+    store
+        .configure_tool_capability(
+            "test",
+            "echo",
+            "bounded fixture",
+            None,
+            None,
+            true,
+            "medium",
+            None,
+        )
+        .unwrap();
+    store
+        .configure_tool_allowlist("test", "approval-api", &["echo".to_string()], None)
+        .unwrap();
+    let app = build_axum_router(AxumApiState::new().with_local_store_arc(store));
+    let tick = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(Method::POST)
+                .uri(format!("/api/v1/workflow-runs/{run_id}/tick"))
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(json!({"executor": "command"}).to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(tick.status(), StatusCode::OK);
+    let tick_body = response_json(tick).await;
+    assert_eq!(tick_body["tick"]["result"]["status"], "awaiting_approval");
+    assert_eq!(
+        tick_body["tick"]["result"]["error_domain"],
+        "tool_approval_required"
+    );
+
+    let approvals = app
+        .oneshot(
+            Request::builder()
+                .method(Method::GET)
+                .uri(format!("/api/v1/workflow-runs/{run_id}/approvals"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(approvals.status(), StatusCode::OK);
+    let body = response_json(approvals).await;
+    assert_eq!(body["approvals"].as_array().unwrap().len(), 1);
+    assert_eq!(body["approvals"][0]["approval_kind"], "tool_execution");
+    assert_eq!(body["approvals"][0]["tool_name"], "echo");
+    assert_eq!(
+        body["approvals"][0]["execution_authority"],
+        "single_tool_invocation"
+    );
+    assert_eq!(
+        body["approvals"][0]["action_sha256"]
+            .as_str()
+            .unwrap()
+            .len(),
+        64
+    );
+}
+
+#[tokio::test]
+async fn axum_tick_with_unknown_executor_fails_closed() {
     let dir = tempdir().unwrap();
     let store = LocalProductStore::new(dir.path().join("tick-unknown.db")).unwrap();
     let app = build_axum_router(AxumApiState::new().with_local_store(store));
@@ -5431,16 +6668,9 @@ async fn axum_tick_with_unknown_executor_falls_back_to_noop() {
         )
         .await
         .unwrap();
-    assert_eq!(tick_resp.status(), StatusCode::OK);
+    assert_eq!(tick_resp.status(), StatusCode::BAD_REQUEST);
     let tick_body = response_json(tick_resp).await;
-    let action = tick_body["tick"]["action"].as_str().unwrap_or("");
-    assert!(
-        action == "node_executed" || action == "completed",
-        "tick should still work with unknown executor, got: {action}"
-    );
-    if action == "node_executed" {
-        assert_eq!(tick_body["tick"]["executor_type"], "noop");
-    }
+    assert_eq!(tick_body["code"], "unknown_executor");
 }
 
 #[tokio::test]
@@ -6136,7 +7366,7 @@ async fn axum_tick_with_adaptive_provider_requires_adaptive_gate_and_auth() {
                 "status": "planned_read_only",
                 "workflow_id": ids.workflow_id,
                 "dispatch_id": ids.dispatch_id,
-                "analysis": {"analysis_id": "a-1", "task_domain": "test"},
+                "analysis": {"analysis_id": "a-1", "task_domain": "adaptive"},
                 "graph": {
                     "schema_version": "workflow_graph.v1",
                     "workflow_id": ids.workflow_id,
@@ -6146,7 +7376,7 @@ async fn axum_tick_with_adaptive_provider_requires_adaptive_gate_and_auth() {
                     "updated_at": "2026-06-21T00:00:00Z",
                     "nodes": [{
                         "node_id": "node-a",
-                        "task_type": "implementation",
+                        "task_type": "adaptive_provider",
                         "status": "pending",
                         "adaptive_execution": {
                             "plan": {
@@ -6168,9 +7398,15 @@ async fn axum_tick_with_adaptive_provider_requires_adaptive_gate_and_auth() {
                     "edges": []
                 },
                 "boundaries": {
-                    "execution_authority": "disabled",
+                    "execution": "explicit_tick_or_scheduler_lease",
+                    "execution_authority": "rust_scheduler_only",
                     "target_repository_writes": "disabled",
-                    "runtime_workers": "disabled"
+                    "runtime_workers": "env_gated_supervised"
+                },
+                "advisory": {
+                    "schema_version": "plan_advisory.v1",
+                    "mode": "explicit_adaptive_execution_plan",
+                    "requires_executor": "adaptive_provider"
                 }
             }))
         })
@@ -6246,7 +7482,7 @@ async fn axum_tick_with_adaptive_provider_executes_explicit_node_plan() {
                 "status": "planned_read_only",
                 "workflow_id": ids.workflow_id,
                 "dispatch_id": ids.dispatch_id,
-                "analysis": {"analysis_id": "a-1", "task_domain": "test"},
+                "analysis": {"analysis_id": "a-1", "task_domain": "adaptive"},
                 "graph": {
                     "schema_version": "workflow_graph.v1",
                     "workflow_id": ids.workflow_id,
@@ -6256,7 +7492,7 @@ async fn axum_tick_with_adaptive_provider_executes_explicit_node_plan() {
                     "updated_at": "2026-06-21T00:00:00Z",
                     "nodes": [{
                         "node_id": "node-a",
-                        "task_type": "implementation",
+                        "task_type": "adaptive_provider",
                         "status": "pending",
                         "adaptive_execution": {
                             "observation_context": {
@@ -6303,9 +7539,15 @@ async fn axum_tick_with_adaptive_provider_executes_explicit_node_plan() {
                     "edges": []
                 },
                 "boundaries": {
-                    "execution_authority": "disabled",
+                    "execution": "explicit_tick_or_scheduler_lease",
+                    "execution_authority": "rust_scheduler_only",
                     "target_repository_writes": "disabled",
-                    "runtime_workers": "disabled"
+                    "runtime_workers": "env_gated_supervised"
+                },
+                "advisory": {
+                    "schema_version": "plan_advisory.v1",
+                    "mode": "explicit_adaptive_execution_plan",
+                    "requires_executor": "adaptive_provider"
                 }
             }))
         })
@@ -8624,6 +9866,7 @@ async fn test_dispatch_metrics_empty_store() {
 
 #[tokio::test]
 async fn test_dispatch_metrics_with_data() {
+    let _guard = provider_cli_env_lock().lock().await;
     let dir = tempdir().unwrap();
     let db_path = dir.path().join("metrics-data.db");
 
@@ -11472,4 +12715,438 @@ async fn axum_target_repo_output_exports_and_pushes_only_after_approval() {
             event["action"] == "supervised_patch.target_output_success"
                 && event["resource"] == artifact_id
         }));
+}
+
+#[tokio::test]
+async fn axum_tool_policy_management_is_confirmed_hash_bound_and_idempotent() {
+    let directory = tempdir().unwrap();
+    let store = Arc::new(LocalProductStore::new(directory.path().join("tool-policy.db")).unwrap());
+    let app = build_axum_router(AxumApiState::new().with_local_store_arc(store.clone()));
+
+    let capability_uri = "/api/v1/tool-policy/capabilities/echo";
+    let capability = json!({
+        "description": "bounded echo command",
+        "requires_approval": true,
+        "risk_level": "medium",
+        "confirm_tool_policy": true
+    });
+    let missing_confirmation = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(Method::PUT)
+                .uri(capability_uri)
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(
+                    json!({
+                        "description": "bounded echo command",
+                        "requires_approval": true,
+                        "risk_level": "medium"
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(missing_confirmation.status(), StatusCode::BAD_REQUEST);
+
+    let created = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(Method::PUT)
+                .uri(capability_uri)
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(capability.to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(created.status(), StatusCode::OK);
+    let created = response_json(created).await;
+    assert_eq!(created["resource"]["changed"], true);
+    let capability_hash = created["resource"]["resource_sha256"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    let retried = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(Method::PUT)
+                .uri(capability_uri)
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(capability.to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(retried.status(), StatusCode::OK);
+    assert_eq!(response_json(retried).await["resource"]["changed"], false);
+
+    let stale_update = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(Method::PUT)
+                .uri(capability_uri)
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(
+                    json!({
+                        "description": "updated bounded echo command",
+                        "requires_approval": true,
+                        "risk_level": "high",
+                        "confirm_tool_policy": true
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(stale_update.status(), StatusCode::CONFLICT);
+
+    let updated = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(Method::PUT)
+                .uri(capability_uri)
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(
+                    json!({
+                        "description": "updated bounded echo command",
+                        "requires_approval": true,
+                        "risk_level": "high",
+                        "expected_current_sha256": capability_hash,
+                        "confirm_tool_policy": true
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(updated.status(), StatusCode::OK);
+
+    let unknown_allowlist = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(Method::PUT)
+                .uri("/api/v1/tool-policy/profiles/unknown/allowlist")
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(
+                    json!({
+                        "tool_names": ["not-registered"],
+                        "confirm_tool_policy": true
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(unknown_allowlist.status(), StatusCode::BAD_REQUEST);
+
+    let empty_allowlist = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(Method::PUT)
+                .uri("/api/v1/tool-policy/profiles/locked/allowlist")
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(
+                    json!({"tool_names": [], "confirm_tool_policy": true}).to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(empty_allowlist.status(), StatusCode::OK);
+    assert!(!store.check_tool_allowed("locked", "echo").unwrap());
+
+    let invalid_hook = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(Method::PUT)
+                .uri("/api/v1/tool-policy/hooks/invalid-enrich")
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(
+                    json!({
+                        "hook_type": "pre_execution",
+                        "tool_name": "echo",
+                        "condition": {"unsupported": true},
+                        "action": "enrich",
+                        "action_config": {},
+                        "enabled": true,
+                        "confirm_tool_policy": true
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(invalid_hook.status(), StatusCode::BAD_REQUEST);
+    assert_eq!(
+        response_json(invalid_hook).await["code"],
+        "invalid_tool_hook_policy"
+    );
+    let invalid_read = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(Method::GET)
+                .uri("/api/v1/tool-policy/hooks/invalid-enrich")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(invalid_read.status(), StatusCode::NOT_FOUND);
+
+    let hook = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(Method::PUT)
+                .uri("/api/v1/tool-policy/hooks/echo-approval")
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(
+                    json!({
+                        "hook_type": "pre_execution",
+                        "tool_name": "echo",
+                        "action": "request_approval",
+                        "action_config": {"reason": "operator approval required"},
+                        "enabled": true,
+                        "confirm_tool_policy": true
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(hook.status(), StatusCode::OK);
+
+    let read = app
+        .oneshot(
+            Request::builder()
+                .method(Method::GET)
+                .uri("/api/v1/tool-policy/hooks/echo-approval")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(read.status(), StatusCode::OK);
+    let read = response_json(read).await;
+    assert_eq!(read["resource"]["value"]["action"], "request_approval");
+
+    let audit = store.audit_events(100).unwrap();
+    assert!(audit
+        .iter()
+        .any(|event| event["action"] == "tool_policy.capability_configured"));
+    assert!(audit
+        .iter()
+        .any(|event| event["action"] == "tool_policy.allowlist_configured"));
+    assert!(audit
+        .iter()
+        .any(|event| event["action"] == "tool_policy.hook_configured"));
+}
+
+#[tokio::test]
+async fn axum_tool_policy_mutation_requires_dispatch_execute_scope() {
+    let directory = tempdir().unwrap();
+    let store =
+        Arc::new(LocalProductStore::new(directory.path().join("tool-policy-auth.db")).unwrap());
+    store
+        .configure_tool_capability(
+            "setup",
+            "echo",
+            "bounded echo command",
+            None,
+            None,
+            true,
+            "medium",
+            None,
+        )
+        .unwrap();
+
+    let mut resolver = TenantResolver::new();
+    resolver.add_tenant(Tenant {
+        tenant_id: "tenant-tool-policy".to_string(),
+        name: "Tool policy tenant".to_string(),
+        scopes: HashSet::from(["dispatch:read".to_string(), "dispatch:execute".to_string()]),
+        rate_limit: Some(100),
+    });
+    let (_key, raw_key) = resolver
+        .create_api_key(
+            "tenant-tool-policy",
+            Some(HashSet::from(["dispatch:read".to_string()])),
+            None,
+            1.0,
+        )
+        .unwrap();
+    let app = build_axum_router(AxumApiState::new().with_local_store_arc(store).with_auth(
+        resolver,
+        RateLimiter::new(60.0, 100),
+        Some(100),
+        1.0,
+    ));
+
+    let read = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(Method::GET)
+                .uri("/api/v1/tool-policy/capabilities/echo")
+                .header(header::AUTHORIZATION, format!("Bearer {raw_key}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(read.status(), StatusCode::OK);
+
+    let mutation = app
+        .oneshot(
+            Request::builder()
+                .method(Method::PUT)
+                .uri("/api/v1/tool-policy/profiles/locked/allowlist")
+                .header(header::AUTHORIZATION, format!("Bearer {raw_key}"))
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(
+                    json!({"tool_names": [], "confirm_tool_policy": true}).to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(mutation.status(), StatusCode::FORBIDDEN);
+}
+
+#[tokio::test]
+async fn axum_managed_supervised_patch_run_rejects_authenticated_generic_mutations() {
+    let target_dir = tempdir().unwrap();
+    let workspace_root = tempdir().unwrap();
+    let workspace_path = workspace_root.path().join("workspace");
+    fs::create_dir_all(&workspace_path).unwrap();
+    let dir = tempdir().unwrap();
+    let store = Arc::new(LocalProductStore::new(dir.path().join("managed-owner.db")).unwrap());
+    store
+        .record_supervised_patch_workspace(
+            &json!({
+                "run_id": "source-run-managed-owner-http",
+                "target_id": "target-managed-owner-http",
+                "target_repo_path": target_dir.path().to_string_lossy(),
+                "workspace_path": workspace_path.to_string_lossy(),
+                "source_revision": "abc123",
+                "status": "workspace_created",
+            }),
+            "operator",
+        )
+        .unwrap();
+
+    let scopes = HashSet::from([
+        "dispatch:read".to_string(),
+        "dispatch:write".to_string(),
+        "dispatch:execute".to_string(),
+    ]);
+    let mut resolver = TenantResolver::new();
+    resolver.add_tenant(Tenant {
+        tenant_id: "managed-owner-tenant".to_string(),
+        name: "Managed owner tenant".to_string(),
+        scopes: scopes.clone(),
+        rate_limit: Some(100),
+    });
+    let (_key, raw_key) = resolver
+        .create_api_key("managed-owner-tenant", Some(scopes), None, 1.0)
+        .unwrap();
+    let app = build_axum_router(
+        AxumApiState::new()
+            .with_local_store_arc(store.clone())
+            .with_auth(resolver, RateLimiter::new(60.0, 100), Some(100), 1.0),
+    );
+
+    let verified = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(Method::POST)
+                .uri("/api/v1/supervised-patch/workspaces/patch-workspace-0001/verify")
+                .header(header::AUTHORIZATION, format!("Bearer {raw_key}"))
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(
+                    json!({
+                        "command": "python3 --version",
+                        "confirm_verification": true,
+                        "attempt": 1,
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(verified.status(), StatusCode::OK);
+    let verified = response_json(verified).await;
+    let run_id = verified["verification"]["managed_run_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let run = store.get_workflow_run(&run_id).unwrap().unwrap();
+    assert_eq!(run["pause_reason"], "api_owned_supervised_patch");
+    assert_eq!(store.count_active_workflow_runs().unwrap(), 0);
+    assert_eq!(store.get_queue_status().unwrap()["total_paused"], 0);
+
+    let generic_mutations = [
+        (
+            Method::PUT,
+            format!("/api/v1/queue/runs/{run_id}/pause"),
+            json!({"reason": "operator hold"}),
+        ),
+        (
+            Method::POST,
+            format!("/api/v1/workflow-runs/{run_id}/resume"),
+            json!({"reason": "operator resume"}),
+        ),
+        (
+            Method::POST,
+            format!("/api/v1/workflow-runs/{run_id}/cancel"),
+            json!({"reason": "operator cancel"}),
+        ),
+        (
+            Method::POST,
+            format!("/api/v1/workflow-runs/{run_id}/tick"),
+            json!({"executor": "noop"}),
+        ),
+    ];
+    for (method, uri, body) in generic_mutations {
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method(method)
+                    .uri(uri)
+                    .header(header::AUTHORIZATION, format!("Bearer {raw_key}"))
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(body.to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::CONFLICT);
+        assert_eq!(
+            response_json(response).await["code"],
+            "run_execution_owner_conflict"
+        );
+    }
+
+    let preserved = store.get_workflow_run(&run_id).unwrap().unwrap();
+    assert_eq!(preserved["pause_reason"], "api_owned_supervised_patch");
 }

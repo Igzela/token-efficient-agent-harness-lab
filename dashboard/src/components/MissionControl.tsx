@@ -1024,7 +1024,11 @@ export function MissionControl() {
                         <div className="mission-signal" key={approval.approval_id}>
                           <span className={`pill ${statusPill(approval.decision)}`}>{approval.decision}</span>
                           <span>{nodesById.get(approval.node_id)?.task_type ?? short(approval.node_id)}</span>
-                          <span className="mono muted">{short(approval.bound_patch_hash, 16)}</span>
+                          <span className="mono muted">
+                            {approval.tool_name
+                              ? `${approval.tool_name}/${short(approval.action_sha256, 12)}`
+                              : short(approval.bound_patch_hash, 16)}
+                          </span>
                         </div>
                       ))}
                     </div>

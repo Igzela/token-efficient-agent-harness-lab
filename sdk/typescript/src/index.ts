@@ -103,6 +103,13 @@ import type {
   OperatorDecisionQueueResponse,
   OperatorDecisionActionRequest,
   OperatorDecisionActionResponse,
+  ToolAllowlistPolicyRequest,
+  ToolAllowlistPolicyValue,
+  ToolCapabilityPolicyRequest,
+  ToolCapabilityPolicyValue,
+  ToolHookPolicyRequest,
+  ToolHookPolicyValue,
+  ToolPolicyResponse,
 } from "./wire-types.js";
 
 export interface AgentControlPlaneClientOptions {
@@ -478,11 +485,65 @@ export class AgentControlPlaneClient {
     return this.postJson<PlanResponse>("/api/v1/plans", {
       raw_request: request.raw_request,
       request_source: request.request_source,
+      agent_steps: request.agent_steps,
+      confirm_agent_runtime_plan: request.confirm_agent_runtime_plan,
     });
   }
 
   plan(planId: string): Promise<PlanResponse> {
     return this.getJson<PlanResponse>(`/api/v1/plans/${encodeURIComponent(planId)}`);
+  }
+
+  toolCapabilityPolicy(
+    toolName: string,
+  ): Promise<ToolPolicyResponse<ToolCapabilityPolicyValue>> {
+    return this.getJson<ToolPolicyResponse<ToolCapabilityPolicyValue>>(
+      `/api/v1/tool-policy/capabilities/${encodeURIComponent(toolName)}`,
+    );
+  }
+
+  configureToolCapabilityPolicy(
+    toolName: string,
+    request: ToolCapabilityPolicyRequest,
+  ): Promise<ToolPolicyResponse<ToolCapabilityPolicyValue>> {
+    return this.putJson<ToolPolicyResponse<ToolCapabilityPolicyValue>>(
+      `/api/v1/tool-policy/capabilities/${encodeURIComponent(toolName)}`,
+      request,
+    );
+  }
+
+  toolAllowlistPolicy(
+    profileId: string,
+  ): Promise<ToolPolicyResponse<ToolAllowlistPolicyValue>> {
+    return this.getJson<ToolPolicyResponse<ToolAllowlistPolicyValue>>(
+      `/api/v1/tool-policy/profiles/${encodeURIComponent(profileId)}/allowlist`,
+    );
+  }
+
+  configureToolAllowlistPolicy(
+    profileId: string,
+    request: ToolAllowlistPolicyRequest,
+  ): Promise<ToolPolicyResponse<ToolAllowlistPolicyValue>> {
+    return this.putJson<ToolPolicyResponse<ToolAllowlistPolicyValue>>(
+      `/api/v1/tool-policy/profiles/${encodeURIComponent(profileId)}/allowlist`,
+      request,
+    );
+  }
+
+  toolHookPolicy(hookId: string): Promise<ToolPolicyResponse<ToolHookPolicyValue>> {
+    return this.getJson<ToolPolicyResponse<ToolHookPolicyValue>>(
+      `/api/v1/tool-policy/hooks/${encodeURIComponent(hookId)}`,
+    );
+  }
+
+  configureToolHookPolicy(
+    hookId: string,
+    request: ToolHookPolicyRequest,
+  ): Promise<ToolPolicyResponse<ToolHookPolicyValue>> {
+    return this.putJson<ToolPolicyResponse<ToolHookPolicyValue>>(
+      `/api/v1/tool-policy/hooks/${encodeURIComponent(hookId)}`,
+      request,
+    );
   }
 
   workflowRuns(options: WorkflowRunListOptions = {}): Promise<WorkflowRunListResponse> {
@@ -496,6 +557,9 @@ export class AgentControlPlaneClient {
   createWorkflowRun(request: WorkflowRunCreateRequest): Promise<WorkflowRunResponse> {
     return this.postJson<WorkflowRunResponse>("/api/v1/workflow-runs", {
       plan_id: request.plan_id,
+      ...(request.confirm_execution === undefined
+        ? {}
+        : { confirm_execution: request.confirm_execution }),
     });
   }
 

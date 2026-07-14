@@ -13,6 +13,7 @@ pub const SAFE_POLICY_OVERRIDE_TIERS: &[&str] = &[
     "verifier",
     "advisor",
 ];
+pub const DEFAULT_MODEL_TIER_COMPLEXITY_THRESHOLD: f64 = 0.7;
 
 static DEFAULT_TIER_MAP: LazyLock<HashMap<&'static str, &'static str>> = LazyLock::new(|| {
     let mut m = HashMap::new();
@@ -125,7 +126,7 @@ impl ModelSelector {
             analysis.task_domain, analysis.task_intent
         )];
 
-        if analysis.complexity_score >= crate::cli::config::DEFAULT_COMPLEXITY_THRESHOLD
+        if analysis.complexity_score >= DEFAULT_MODEL_TIER_COMPLEXITY_THRESHOLD
             && (selected_tier == "cheap_executor"
                 || selected_tier == "balanced_worker"
                 || selected_tier == "strong_planner")
@@ -135,8 +136,7 @@ impl ModelSelector {
                 profile_id: None,
                 reason: format!(
                     "complexity_score {:.2} >= {:.2} threshold",
-                    analysis.complexity_score,
-                    crate::cli::config::DEFAULT_COMPLEXITY_THRESHOLD
+                    analysis.complexity_score, DEFAULT_MODEL_TIER_COMPLEXITY_THRESHOLD
                 ),
                 constraint_failed: Some("complexity_threshold".to_string()),
                 estimated_cost: None,

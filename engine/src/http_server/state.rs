@@ -8,6 +8,7 @@ use crate::infrastructure::auth::TenantResolver;
 use crate::infrastructure::circuit_breaker::CircuitBreakerRegistry;
 use crate::infrastructure::observability::{MetricsCollector, RequestTracer};
 use crate::infrastructure::rate_limiter::RateLimiter;
+use crate::node_executor::NodeExecutor;
 use crate::provider::adaptive_execution::{
     persisted_adaptive_provider_endpoint_configs, AdaptiveExecutionExecutor,
     AdaptiveExecutionKillSwitch,
@@ -70,6 +71,7 @@ pub struct AxumApiState {
     pub(crate) backup_dir: Option<Arc<PathBuf>>,
     pub(crate) provider: Option<Arc<dyn Provider>>,
     pub(crate) adaptive_provider_executor: Option<Arc<AdaptiveExecutionExecutor>>,
+    pub(crate) agent_step_executor: Option<Arc<dyn NodeExecutor>>,
     pub(crate) adaptive_registry_snapshot: Option<Arc<ModelEndpointRegistrySnapshot>>,
     pub(crate) adaptive_local_config_runtime: Arc<Mutex<Option<AdaptiveProviderRuntime>>>,
     pub(crate) scheduler: Option<Arc<Mutex<WorkflowScheduler>>>,
@@ -98,6 +100,7 @@ impl AxumApiState {
             backup_dir: None,
             provider: None,
             adaptive_provider_executor: None,
+            agent_step_executor: None,
             adaptive_registry_snapshot: None,
             adaptive_local_config_runtime: Arc::new(Mutex::new(None)),
             scheduler: None,
@@ -199,11 +202,33 @@ impl AxumApiState {
         self
     }
 
+    pub fn with_provider_capability_and_audit(
+        mut self,
+        provider: Arc<dyn Provider>,
+        recorder: Arc<crate::provider::ProviderAuditRecorder>,
+    ) -> Self {
+        self.adaptive_provider_executor = Some(Arc::new(AdaptiveExecutionExecutor::new(
+            std::collections::BTreeMap::from([(
+                provider.provider_id().to_string(),
+                provider.clone(),
+            )]),
+            recorder,
+            AdaptiveExecutionKillSwitch::new(),
+        )));
+        self.provider = Some(provider);
+        self
+    }
+
     pub fn with_adaptive_provider_executor(
         mut self,
         executor: Arc<AdaptiveExecutionExecutor>,
     ) -> Self {
         self.adaptive_provider_executor = Some(executor);
+        self
+    }
+
+    pub fn with_agent_step_executor(mut self, executor: Arc<dyn NodeExecutor>) -> Self {
+        self.agent_step_executor = Some(executor);
         self
     }
 
@@ -298,5 +323,9 @@ impl AxumApiState {
 
     pub fn provider_enabled(&self) -> bool {
         self.provider.as_ref().map_or(false, |p| p.is_enabled())
+    }
+
+    pub fn configured_provider(&self) -> Option<Arc<dyn Provider>> {
+        self.provider.clone()
     }
 }

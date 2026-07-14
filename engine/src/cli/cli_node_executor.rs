@@ -1,3 +1,4 @@
+use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
 use serde_json::Value;
@@ -6,11 +7,11 @@ use crate::cli::spawn_with_timeout;
 use crate::node_executor::{NodeExecutionInput, NodeExecutionOutput, NodeExecutor};
 use crate::provider::redaction::redact_sensitive_patterns;
 
-/// CLI-backed NodeExecutor that spawns real Claude Code or Codex CLI processes.
+/// CLI-backed NodeExecutor for the managed Codex CLI process.
 ///
 /// Gated behind `ACP_ENABLE_CLI_EXECUTION=1`. Reads `node_metadata` for:
 /// - `prompt` or `command`: the task text to send to the CLI
-/// - `executor`: `"claude_code_cli"` or `"codex_cli"` (default: config default)
+/// - `executor`: `"codex_cli"`
 /// - `model`: optional model override
 /// - `workspace_path`: cwd for the subprocess
 pub struct CliNodeExecutor {
@@ -37,19 +38,17 @@ impl CliNodeExecutor {
         }
     }
 
-    pub fn from_config(config: &super::config::CliConfig) -> Option<Self> {
+    pub fn from_config_for(config: &super::config::CliConfig, executor_type: &str) -> Option<Self> {
         if !config.enabled {
             return None;
         }
-        let has_any = config.claude_code_enabled || config.codex_enabled;
-        if !has_any {
-            return None;
+        match executor_type {
+            "codex_cli" if config.codex_enabled => config
+                .codex_bin
+                .clone()
+                .map(|binary| Self::new(None, Some(binary), config.timeout_ms)),
+            _ => None,
         }
-        Some(Self::new(
-            config.claude_code_bin.clone(),
-            config.codex_bin.clone(),
-            config.timeout_ms,
-        ))
     }
 
     pub fn resolve_executor(&self, input: &NodeExecutionInput) -> String {
@@ -79,13 +78,38 @@ impl CliNodeExecutor {
             .map(String::from)
     }
 
-    pub fn resolve_cwd(&self, input: &NodeExecutionInput) -> String {
-        input
+    pub fn resolve_cwd(&self, input: &NodeExecutionInput) -> Result<PathBuf, String> {
+        let raw = input
             .node_metadata
             .get("workspace_path")
             .and_then(|v| v.as_str())
-            .unwrap_or(".")
-            .to_string()
+            .filter(|value| !value.trim().is_empty())
+            .ok_or_else(|| "CLI execution requires a bound workspace_path".to_string())?;
+        let path = Path::new(raw);
+        if !path.is_absolute()
+            || path
+                .components()
+                .any(|part| matches!(part, std::path::Component::ParentDir))
+        {
+            return Err("workspace_path must be an absolute clean path".to_string());
+        }
+        let canonical = std::fs::canonicalize(path)
+            .map_err(|error| format!("workspace_path is unavailable: {error}"))?;
+        if !canonical.is_dir() {
+            return Err("workspace_path must be a directory".to_string());
+        }
+        if let Some(root) = input
+            .node_metadata
+            .get("workspace_root")
+            .and_then(Value::as_str)
+        {
+            let root = std::fs::canonicalize(root)
+                .map_err(|error| format!("workspace_root is unavailable: {error}"))?;
+            if !canonical.starts_with(&root) {
+                return Err("workspace_path escapes workspace_root".to_string());
+            }
+        }
+        Ok(canonical)
     }
 }
 
@@ -96,27 +120,41 @@ impl NodeExecutor for CliNodeExecutor {
     fn execute_node(&self, input: &NodeExecutionInput) -> NodeExecutionOutput {
         let start = std::time::Instant::now();
         let executor_type = self.resolve_executor(input);
+        if executor_type == "claude_code_cli" {
+            return NodeExecutionOutput {
+                status: "failed".to_string(),
+                executor_type,
+                output: None,
+                error_domain: Some("cli_executor_unsupported".to_string()),
+                error_message: Some(
+                    "claude_code_cli is unavailable because nested tool calls cannot be mediated by the app-owned workspace and tool-policy boundary"
+                        .to_string(),
+                ),
+                input_tokens: None,
+                output_tokens: None,
+                estimated_cost: None,
+                latency_ms: Some(start.elapsed().as_millis() as i64),
+            };
+        }
         let prompt = self.resolve_prompt(input);
-        let model = self.resolve_model(input);
-        let cwd = self.resolve_cwd(input);
+        let cwd = match self.resolve_cwd(input) {
+            Ok(cwd) => cwd,
+            Err(error) => {
+                return NodeExecutionOutput {
+                    status: "failed".to_string(),
+                    executor_type: self.resolve_executor(input),
+                    output: None,
+                    error_domain: Some("cli_workspace_required".to_string()),
+                    error_message: Some(error),
+                    input_tokens: None,
+                    output_tokens: None,
+                    estimated_cost: None,
+                    latency_ms: Some(start.elapsed().as_millis() as i64),
+                };
+            }
+        };
 
         let (bin_path, effective_type) = match executor_type.as_str() {
-            "claude_code_cli" => match &self.claude_bin {
-                Some(bin) => (bin.clone(), "claude_code_cli"),
-                None => {
-                    return NodeExecutionOutput {
-                        status: "failed".to_string(),
-                        executor_type: "claude_code_cli".to_string(),
-                        output: None,
-                        error_domain: Some("cli_not_found".to_string()),
-                        error_message: Some("claude binary not configured".to_string()),
-                        input_tokens: None,
-                        output_tokens: None,
-                        estimated_cost: None,
-                        latency_ms: Some(start.elapsed().as_millis() as i64),
-                    };
-                }
-            },
             "codex_cli" => match &self.codex_bin {
                 Some(bin) => (bin.clone(), "codex_cli"),
                 None => {
@@ -150,17 +188,6 @@ impl NodeExecutor for CliNodeExecutor {
 
         let mut cmd = Command::new(&bin_path);
         match effective_type {
-            "claude_code_cli" => {
-                cmd.arg("-p")
-                    .arg(&prompt)
-                    .arg("--output-format")
-                    .arg("json")
-                    .arg("--allowedTools")
-                    .arg("Edit,Write,Bash");
-                if let Some(ref m) = model {
-                    cmd.arg("--model").arg(m);
-                }
-            }
             "codex_cli" => {
                 cmd.arg("exec")
                     .arg("--json")
@@ -303,12 +330,6 @@ fn parse_cli_output(raw: &str, executor_type: &str, latency_ms: i64) -> NodeExec
         })
         .and_then(|v| v.as_i64());
 
-    let estimated_cost = super::claude_code::compute_cli_cost(
-        executor_type,
-        input_tokens.unwrap_or(0),
-        output_tokens.unwrap_or(0),
-    );
-
     NodeExecutionOutput {
         status: "completed".to_string(),
         executor_type: executor_type.to_string(),
@@ -317,7 +338,10 @@ fn parse_cli_output(raw: &str, executor_type: &str, latency_ms: i64) -> NodeExec
         error_message: None,
         input_tokens,
         output_tokens,
-        estimated_cost: Some(estimated_cost),
+        // The installed CLI adapter has no exact app-bound model, pricing source,
+        // or pricing effective date. Preserve unavailable cost instead of
+        // fabricating zero or a hard-coded harness estimate.
+        estimated_cost: None,
         latency_ms: Some(latency_ms),
     }
 }
@@ -416,11 +440,6 @@ fn parse_codex_jsonl(raw: &str, latency_ms: i64) -> NodeExecutionOutput {
         };
     }
 
-    let estimated_cost = super::claude_code::compute_cli_cost(
-        "codex_cli",
-        input_tokens.unwrap_or(0),
-        output_tokens.unwrap_or(0),
-    );
     NodeExecutionOutput {
         status: "completed".to_string(),
         executor_type: "codex_cli".to_string(),
@@ -429,7 +448,7 @@ fn parse_codex_jsonl(raw: &str, latency_ms: i64) -> NodeExecutionOutput {
         error_message: None,
         input_tokens,
         output_tokens,
-        estimated_cost: Some(estimated_cost),
+        estimated_cost: None,
         latency_ms: Some(latency_ms),
     }
 }
@@ -450,21 +469,45 @@ mod tests {
     }
 
     #[test]
-    fn test_cli_node_executor_no_binary_returns_failure() {
+    fn claude_cli_is_rejected_before_binary_or_process_access() {
+        let workspace = tempfile::tempdir().unwrap();
         let executor = CliNodeExecutor::new(None, None, 5000);
-        let input = make_input(json!({"prompt": "hello"}));
+        let input = make_input(json!({
+            "prompt": "hello",
+            "workspace_path": workspace.path(),
+        }));
         let output = executor.execute_node(&input);
         assert_eq!(output.status, "failed");
-        assert_eq!(output.error_domain.as_deref(), Some("cli_not_found"));
+        assert_eq!(
+            output.error_domain.as_deref(),
+            Some("cli_executor_unsupported")
+        );
     }
 
     #[test]
     fn test_cli_node_executor_unknown_executor_type() {
-        let executor = CliNodeExecutor::new(Some("/bin/claude".into()), None, 5000);
-        let input = make_input(json!({"prompt": "hello", "executor": "unknown_type"}));
+        let workspace = tempfile::tempdir().unwrap();
+        let executor = CliNodeExecutor::new(None, Some("/bin/codex".into()), 5000);
+        let input = make_input(json!({
+            "prompt": "hello",
+            "executor": "unknown_type",
+            "workspace_path": workspace.path(),
+        }));
         let output = executor.execute_node(&input);
         assert_eq!(output.status, "failed");
         assert_eq!(output.error_domain.as_deref(), Some("unknown_cli_executor"));
+    }
+
+    #[test]
+    fn cli_executor_never_defaults_to_control_plane_working_directory() {
+        let executor = CliNodeExecutor::new(None, Some("/bin/codex".into()), 5000);
+        let output = executor.execute_node(&make_input(json!({"prompt": "hello"})));
+
+        assert_eq!(output.status, "failed");
+        assert_eq!(
+            output.error_domain.as_deref(),
+            Some("cli_workspace_required")
+        );
     }
 
     #[test]
@@ -532,7 +575,7 @@ mod tests {
         assert_eq!(output.output.as_deref(), Some("hello world"));
         assert_eq!(output.input_tokens, Some(100));
         assert_eq!(output.output_tokens, Some(50));
-        assert!(output.estimated_cost.unwrap() > 0.0);
+        assert_eq!(output.estimated_cost, None);
     }
 
     #[test]
@@ -580,9 +623,8 @@ mod tests {
             codex_bin: None,
             codex_enabled: false,
             timeout_ms: 5000,
-            complexity_threshold: 0.7,
         };
-        assert!(CliNodeExecutor::from_config(&config).is_none());
+        assert!(CliNodeExecutor::from_config_for(&config, "claude_code_cli").is_none());
     }
 
     #[test]
@@ -594,13 +636,12 @@ mod tests {
             codex_bin: None,
             codex_enabled: false,
             timeout_ms: 5000,
-            complexity_threshold: 0.7,
         };
-        assert!(CliNodeExecutor::from_config(&config).is_none());
+        assert!(CliNodeExecutor::from_config_for(&config, "codex_cli").is_none());
     }
 
     #[test]
-    fn test_from_config_with_claude() {
+    fn from_config_rejects_unsandboxed_claude_even_when_supplied() {
         let config = super::super::config::CliConfig {
             enabled: true,
             claude_code_bin: Some("/bin/claude".into()),
@@ -608,9 +649,38 @@ mod tests {
             codex_bin: None,
             codex_enabled: false,
             timeout_ms: 5000,
-            complexity_threshold: 0.7,
         };
-        let executor = CliNodeExecutor::from_config(&config).unwrap();
-        assert_eq!(executor.default_executor, "claude_code_cli");
+        assert!(CliNodeExecutor::from_config_for(&config, "claude_code_cli").is_none());
+    }
+
+    #[test]
+    fn from_config_for_registers_only_exact_sandboxed_codex_identity() {
+        let config = super::super::config::CliConfig {
+            enabled: true,
+            claude_code_bin: Some("/bin/claude".into()),
+            claude_code_enabled: true,
+            codex_bin: Some("/bin/codex".into()),
+            codex_enabled: true,
+            timeout_ms: 5000,
+        };
+
+        assert!(CliNodeExecutor::from_config_for(&config, "claude_code_cli").is_none());
+
+        let codex = CliNodeExecutor::from_config_for(&config, "codex_cli").unwrap();
+        assert_eq!(codex.default_executor, "codex_cli");
+        assert_eq!(codex.codex_bin.as_deref(), Some("/bin/codex"));
+        assert!(codex.claude_bin.is_none());
+    }
+
+    #[test]
+    fn missing_exact_cli_pricing_never_fabricates_zero_cost() {
+        let output = parse_cli_output(
+            "{\"type\":\"turn.completed\",\"usage\":{\"input_tokens\":100,\"output_tokens\":50}}\n",
+            "codex_cli",
+            1,
+        );
+        assert_eq!(output.input_tokens, Some(100));
+        assert_eq!(output.output_tokens, Some(50));
+        assert_eq!(output.estimated_cost, None);
     }
 }

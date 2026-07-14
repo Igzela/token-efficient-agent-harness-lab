@@ -123,6 +123,12 @@ pub enum HookResult {
     RequestApproval(String),
 }
 
+#[derive(Clone, Debug)]
+pub struct HookEvaluation {
+    pub result: HookResult,
+    pub matched_hook_ids: Vec<String>,
+}
+
 // ---------------------------------------------------------------------------
 // ToolHook
 // ---------------------------------------------------------------------------
@@ -137,6 +143,90 @@ pub struct ToolHook {
     pub action_config: Option<Value>,
     pub enabled: bool,
     pub created_at: String,
+}
+
+pub(crate) fn validate_tool_hook_contract(
+    hook_type: &str,
+    condition: Option<&Value>,
+    action: &str,
+    action_config: Option<&Value>,
+) -> Result<(), String> {
+    if !matches!(hook_type, "pre_execution" | "post_execution")
+        || !matches!(action, "log" | "block" | "enrich" | "request_approval")
+        || (hook_type == "post_execution" && action == "request_approval")
+    {
+        return Err("invalid tool hook type or action".to_string());
+    }
+    if let Some(condition) = condition {
+        let object = condition
+            .as_object()
+            .ok_or_else(|| "tool hook condition must be an object".to_string())?;
+        let path = object
+            .get("path")
+            .and_then(Value::as_str)
+            .ok_or_else(|| "tool hook condition requires a path string".to_string())?;
+        if object.len() != 2
+            || !object.contains_key("equals")
+            || path.is_empty()
+            || path.len() > 256
+            || path.split('.').any(|part| {
+                part.is_empty()
+                    || !part
+                        .bytes()
+                        .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-'))
+            })
+        {
+            return Err(
+                "tool hook condition must contain only bounded path and equals fields".to_string(),
+            );
+        }
+    }
+
+    match action {
+        "enrich" => {
+            let object = action_config
+                .and_then(Value::as_object)
+                .ok_or_else(|| "enrich hook requires an action_config object".to_string())?;
+            let enrichment = object
+                .get("enrichment")
+                .and_then(Value::as_object)
+                .ok_or_else(|| "enrich hook requires an enrichment object".to_string())?;
+            if object.len() != 1 || enrichment.is_empty() {
+                return Err(
+                    "enrich hook action_config must contain only a non-empty enrichment object"
+                        .to_string(),
+                );
+            }
+        }
+        "block" | "request_approval" => {
+            if let Some(config) = action_config {
+                let object = config.as_object().ok_or_else(|| {
+                    "block or approval hook action_config must be an object".to_string()
+                })?;
+                let reason = object
+                    .get("reason")
+                    .and_then(Value::as_str)
+                    .ok_or_else(|| "hook action_config reason must be a string".to_string())?;
+                if object.len() != 1 || reason.trim().is_empty() || reason.len() > 512 {
+                    return Err(
+                        "hook action_config must contain only a bounded non-empty reason"
+                            .to_string(),
+                    );
+                }
+            }
+        }
+        "log" => {
+            if action_config
+                .and_then(Value::as_object)
+                .is_some_and(|object| !object.is_empty())
+                || action_config.is_some_and(|config| !config.is_object())
+            {
+                return Err("log hook action_config must be absent or empty".to_string());
+            }
+        }
+        _ => unreachable!("validated action"),
+    }
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------

@@ -254,6 +254,7 @@ impl AgentRole {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ChildTaskProposal {
     pub schema_version: String,
     pub correlation_id: String,
@@ -267,6 +268,7 @@ pub struct ChildTaskProposal {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct HandoffRequest {
     pub schema_version: String,
     pub correlation_id: String,
@@ -288,6 +290,7 @@ pub const REVIEW_VERDICTS: &[&str] = &["accepted", "rejected"];
 pub const DEBATE_POSITION_STATUSES: &[&str] = &["pending", "accepted", "rejected"];
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ReviewRequest {
     pub schema_version: String,
     pub correlation_id: String,
@@ -300,6 +303,7 @@ pub struct ReviewRequest {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ReviewVerdict {
     pub schema_version: String,
     pub correlation_id: String,
@@ -312,6 +316,7 @@ pub struct ReviewVerdict {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct DebateRequest {
     pub schema_version: String,
     pub correlation_id: String,
@@ -323,6 +328,7 @@ pub struct DebateRequest {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct DebatePosition {
     pub schema_version: String,
     pub correlation_id: String,
@@ -334,6 +340,7 @@ pub struct DebatePosition {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct DebateResolution {
     pub schema_version: String,
     pub correlation_id: String,

@@ -47,7 +47,7 @@ fn schema_version_returns_current_version() {
     let dir = tempdir().unwrap();
     let store = LocalProductStore::new(dir.path().join("test.db")).unwrap();
     let version = store.schema_version().unwrap();
-    assert_eq!(version, 21);
+    assert_eq!(version, 22);
 }
 
 #[test]
@@ -56,7 +56,7 @@ fn migration_runs_only_once() {
     let path = dir.path().join("test.db");
     let _store1 = LocalProductStore::new(&path).unwrap();
     let store2 = LocalProductStore::new(&path).unwrap();
-    assert_eq!(store2.schema_version().unwrap(), 21);
+    assert_eq!(store2.schema_version().unwrap(), 22);
 }
 
 #[test]
@@ -96,8 +96,54 @@ fn fresh_database_starts_at_version_0_before_migrations() {
         let version: i64 = conn
             .query_row("PRAGMA user_version", [], |row| row.get(0))
             .unwrap();
-        assert_eq!(version, 21);
+        assert_eq!(version, 22);
     }
+}
+
+#[test]
+fn migration_v22_preserves_existing_allowlist_authority() {
+    let dir = tempdir().unwrap();
+    let db_path = dir.path().join("v21-allowlist.db");
+    {
+        let store = LocalProductStore::new(&db_path).unwrap();
+        store
+            .configure_tool_capability(
+                "setup",
+                "echo",
+                "legacy bounded fixture",
+                None,
+                None,
+                false,
+                "low",
+                None,
+            )
+            .unwrap();
+        store
+            .configure_tool_allowlist("setup", "legacy-locked", &["echo".to_string()], None)
+            .unwrap();
+    }
+    {
+        let conn = rusqlite::Connection::open(&db_path).unwrap();
+        conn.execute("DELETE FROM tool_allowlist_profiles", [])
+            .unwrap();
+        conn.execute_batch("PRAGMA user_version = 21;").unwrap();
+    }
+
+    let upgraded = LocalProductStore::new(&db_path).unwrap();
+    assert_eq!(upgraded.schema_version().unwrap(), 22);
+    assert!(upgraded
+        .check_tool_allowed("legacy-locked", "echo")
+        .unwrap());
+    assert!(!upgraded
+        .check_tool_allowed("legacy-locked", "bash")
+        .unwrap());
+    assert_eq!(
+        upgraded
+            .read_tool_allowlist_policy("legacy-locked")
+            .unwrap()
+            .unwrap()["value"]["tool_names"],
+        json!(["echo"])
+    );
 }
 
 #[test]
@@ -137,8 +183,8 @@ fn check_integrity_on_clean_database() {
     let store = LocalProductStore::new(dir.path().join("test.db")).unwrap();
     let report = store.check_integrity().unwrap();
     assert_eq!(report.status, "ok");
-    assert_eq!(report.schema_version, 21);
-    assert_eq!(report.tables.len(), 32);
+    assert_eq!(report.schema_version, 22);
+    assert_eq!(report.tables.len(), 35);
     for table in &report.tables {
         assert_eq!(table.status, "ok");
         assert!(table.row_count >= 0);

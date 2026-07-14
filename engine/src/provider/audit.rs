@@ -1,5 +1,6 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use sha2::{Digest, Sha256};
 use std::sync::{Arc, Mutex};
 
 use crate::storage::local_product_store::LocalProductStore;
@@ -182,6 +183,38 @@ impl ProviderAuditRecorder {
     ) -> Result<ProviderAuditEvent, String> {
         let event = self.create_event(dispatch_id, provider_id, event_type, extra);
         self.try_record(event.clone())?;
+        Ok(event)
+    }
+
+    pub fn try_reserve_cost(
+        &self,
+        dispatch_id: &str,
+        provider_id: &str,
+        reserved_cost_usd: f64,
+        per_call_cap_usd: f64,
+        daily_cap_usd: f64,
+    ) -> Result<ProviderAuditEvent, String> {
+        let store = self.store.as_ref().ok_or_else(|| {
+            "persistent provider audit store is required for cost reservation".to_string()
+        })?;
+        let mut event = self.create_event(
+            dispatch_id,
+            provider_id,
+            "request_reserved",
+            Some(&serde_json::json!({
+                "cost": reserved_cost_usd,
+                "currency": "USD",
+                "redaction_status": "redacted",
+            })),
+        );
+        event.event_id = format!(
+            "paudit-reservation-{}",
+            hex::encode(Sha256::digest(format!(
+                "{dispatch_id}\0{provider_id}\0request_reserved"
+            )))
+        );
+        store.reserve_provider_audit_cost(&event, per_call_cap_usd, daily_cap_usd)?;
+        self.events.lock().unwrap().push(event.clone());
         Ok(event)
     }
 

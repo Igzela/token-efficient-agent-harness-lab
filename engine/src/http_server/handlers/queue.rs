@@ -10,6 +10,7 @@ use crate::http_server::middleware::{
 };
 use crate::http_server::state::AxumApiState;
 use crate::http_server::AXUM_API_SCHEMA_VERSION;
+use crate::storage::local_product_store::is_execution_owner_conflict;
 
 fn not_found() -> ApiError {
     ApiError::with_code(StatusCode::NOT_FOUND, "not_found", "workflow run not found")
@@ -220,6 +221,13 @@ pub(crate) async fn api_update_run_pause(
     match store.update_run_pause_reason(&run_id, request.reason.as_deref()) {
         Ok(()) => {}
         Err(e) if e.starts_with("workflow run not found:") => return Err(not_found()),
+        Err(e) if is_execution_owner_conflict(&e) => {
+            return Err(ApiError::with_code(
+                StatusCode::CONFLICT,
+                "run_execution_owner_conflict",
+                &e,
+            ))
+        }
         Err(e) => return Err(internal_error(e)),
     }
 

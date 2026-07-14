@@ -3,6 +3,7 @@ use axum::http::{HeaderMap, StatusCode, Uri};
 use axum::response::IntoResponse;
 use axum::Json;
 use serde_json::json;
+use sha2::{Digest, Sha256};
 use std::path::Path;
 
 use crate::http_server::middleware::{
@@ -13,13 +14,15 @@ use crate::http_server::{
     SupervisedPatchWorkspaceCreateRequest, SupervisedPatchWorkspaceVerifyRequest,
     TargetRepoOutputRequest, AXUM_API_SCHEMA_VERSION,
 };
-use crate::node_executor::{CommandNodeExecutor, NodeExecutionInput, NodeExecutor};
+use crate::node_executor::CommandNodeExecutor;
 use crate::provider::redaction::redact_sensitive_patterns;
+use crate::storage::local_product_store::LocalProductStore;
 use crate::target_repo_output::{
     create_or_reuse_github_pull_request, export_patch, github_repository_for_remote,
     prepare_git_worktree, push_approved_branch, remove_git_worktree, BranchPublishRequest,
     GitHubPullRequestConfig, GitHubPullRequestRequest, TargetRepoOutputConfig,
 };
+use crate::tool_policy_executor::ToolPolicyNodeExecutor;
 
 pub(crate) async fn api_supervised_patch_workspaces(
     State(state): State<AxumApiState>,
@@ -899,16 +902,6 @@ pub(crate) async fn api_verify_supervised_patch_workspace(
         .and_then(|value| value.as_str())
         .unwrap_or("")
         .to_string();
-    let run_id = workspace
-        .get("run_id")
-        .and_then(|value| value.as_str())
-        .unwrap_or("")
-        .to_string();
-    let workflow_id = workspace
-        .get("plan_id")
-        .and_then(|value| value.as_str())
-        .unwrap_or("workspace_verification")
-        .to_string();
     let repair_executor = request.repair_executor.as_deref();
     if let Some(executor) = repair_executor {
         if !matches!(executor, "codex_cli" | "claude_code_cli") {
@@ -924,59 +917,188 @@ pub(crate) async fn api_verify_supervised_patch_workspace(
     } else {
         0
     };
-    let mut verification_attempts = Vec::new();
-    let mut repair_attempts = Vec::new();
-    let mut output = run_workspace_verification(
-        command.clone(),
-        workspace_path.clone(),
-        run_id.clone(),
-        workflow_id.clone(),
-        timeout_ms,
-        attempt,
-    )
-    .await?;
-    verification_attempts.push(verification_attempt_value(attempt, &output));
+    let max_executor_timeout_ms = repair_executor
+        .map(|_| crate::cli::CliConfig::from_env().timeout_ms)
+        .unwrap_or(0)
+        .max(timeout_ms);
+    validate_managed_scheduler_lease(&state, max_executor_timeout_ms)?;
+    let resume = request
+        .resume_run_id
+        .as_deref()
+        .map(|run_id| managed_resume_binding(&store, run_id, &workspace_id))
+        .transpose()?;
+    let prior_verification = workspace.get("verification");
+    let mut verification_attempts = if resume.is_some() {
+        prior_verification
+            .and_then(|value| value.get("verification_attempts"))
+            .and_then(serde_json::Value::as_array)
+            .cloned()
+            .unwrap_or_default()
+    } else {
+        Vec::new()
+    };
+    let mut repair_attempts = if resume.is_some() {
+        prior_verification
+            .and_then(|value| value.get("repair_attempts"))
+            .and_then(serde_json::Value::as_array)
+            .cloned()
+            .unwrap_or_default()
+    } else {
+        Vec::new()
+    };
+    let mut next_repair_attempt = 1;
+    let mut execution = match resume.as_ref() {
+        Some(binding) if binding.operation == "verify" => {
+            if binding.attempt < attempt || binding.attempt > attempt + max_repair_attempts {
+                return Err(ApiError::with_code(
+                    StatusCode::BAD_REQUEST,
+                    "invalid_verification_resume",
+                    "managed verification attempt is not reachable with the requested repair bounds",
+                ));
+            }
+            next_repair_attempt = binding.attempt.saturating_sub(attempt) + 1;
+            let execution = run_workspace_verification(
+                store.clone(),
+                &context.api_key_id,
+                workspace_id.clone(),
+                command.clone(),
+                workspace_path.clone(),
+                timeout_ms,
+                binding.attempt,
+                Some(&binding.run_id),
+            )
+            .await?;
+            upsert_verification_attempt(&mut verification_attempts, binding.attempt, &execution);
+            execution
+        }
+        Some(binding) if binding.operation == "repair" => {
+            if repair_executor.is_none()
+                || binding.attempt == 0
+                || binding.attempt > max_repair_attempts
+            {
+                return Err(ApiError::with_code(
+                    StatusCode::BAD_REQUEST,
+                    "invalid_verification_resume",
+                    "managed repair attempt is not enabled by the requested repair configuration",
+                ));
+            }
+            next_repair_attempt = binding.attempt + 1;
+            let repair_execution = run_cli_repair(
+                store.clone(),
+                &context.api_key_id,
+                workspace_id.clone(),
+                repair_executor.unwrap_or_default().to_string(),
+                command.clone(),
+                "resume exact managed repair".to_string(),
+                workspace_path.clone(),
+                binding.attempt,
+                Some(&binding.node),
+                Some(&binding.run_id),
+            )
+            .await?;
+            upsert_verification_attempt(&mut repair_attempts, binding.attempt, &repair_execution);
+            if repair_execution.output.status == "completed" {
+                let verification_attempt = attempt + binding.attempt;
+                let verification = run_workspace_verification(
+                    store.clone(),
+                    &context.api_key_id,
+                    workspace_id.clone(),
+                    command.clone(),
+                    workspace_path.clone(),
+                    timeout_ms,
+                    verification_attempt,
+                    None,
+                )
+                .await?;
+                upsert_verification_attempt(
+                    &mut verification_attempts,
+                    verification_attempt,
+                    &verification,
+                );
+                verification
+            } else {
+                repair_execution
+            }
+        }
+        Some(_) => {
+            return Err(ApiError::with_code(
+                StatusCode::BAD_REQUEST,
+                "invalid_verification_resume",
+                "managed run has an unsupported supervised-patch operation",
+            ));
+        }
+        None => {
+            let execution = run_workspace_verification(
+                store.clone(),
+                &context.api_key_id,
+                workspace_id.clone(),
+                command.clone(),
+                workspace_path.clone(),
+                timeout_ms,
+                attempt,
+                None,
+            )
+            .await?;
+            upsert_verification_attempt(&mut verification_attempts, attempt, &execution);
+            execution
+        }
+    };
+    let mut approval_required = execution.output.status == "awaiting_approval";
 
-    for repair_attempt in 1..=max_repair_attempts {
-        if output.status == "completed" {
+    for repair_attempt in next_repair_attempt..=max_repair_attempts {
+        if execution.output.status == "completed" || approval_required {
             break;
         }
-        let failure_summary = output
+        let failure_summary = execution
+            .output
             .error_message
             .as_deref()
-            .or(output.output.as_deref())
+            .or(execution.output.output.as_deref())
             .unwrap_or("verification command failed");
-        let repair_output = run_cli_repair(
+        let repair_execution = run_cli_repair(
+            store.clone(),
+            &context.api_key_id,
+            workspace_id.clone(),
             repair_executor.unwrap_or_default().to_string(),
             command.clone(),
             redact_sensitive_patterns(failure_summary),
             workspace_path.clone(),
-            run_id.clone(),
-            workflow_id.clone(),
             repair_attempt,
+            None,
+            None,
         )
         .await?;
-        repair_attempts.push(verification_attempt_value(repair_attempt, &repair_output));
-        if repair_output.status != "completed" {
+        upsert_verification_attempt(&mut repair_attempts, repair_attempt, &repair_execution);
+        if repair_execution.output.status == "awaiting_approval" {
+            execution = repair_execution;
+            approval_required = true;
+            break;
+        }
+        if repair_execution.output.status != "completed" {
+            execution = repair_execution;
             break;
         }
         let verification_attempt = attempt + repair_attempt;
-        output = run_workspace_verification(
+        execution = run_workspace_verification(
+            store.clone(),
+            &context.api_key_id,
+            workspace_id.clone(),
             command.clone(),
             workspace_path.clone(),
-            run_id.clone(),
-            workflow_id.clone(),
             timeout_ms,
             verification_attempt,
+            None,
         )
         .await?;
-        verification_attempts.push(verification_attempt_value(verification_attempt, &output));
+        upsert_verification_attempt(&mut verification_attempts, verification_attempt, &execution);
+        approval_required = execution.output.status == "awaiting_approval";
     }
 
+    let output = &execution.output;
     let passed = output.status == "completed";
     let verification = json!({
         "schema_version": "workspace_verification.v1",
-        "status": if passed { "evidence_recorded" } else { "verification_failed" },
+        "status": if approval_required { "approval_required" } else if passed { "evidence_recorded" } else { "verification_failed" },
         "command": command_argv,
         "result_status": output.status,
         "executor_type": output.executor_type,
@@ -988,6 +1110,8 @@ pub(crate) async fn api_verify_supervised_patch_workspace(
         "attempt": attempt,
         "verification_attempts": verification_attempts,
         "repair_attempts": repair_attempts,
+        "managed_run_id": execution.run_id,
+        "managed_node_id": execution.node_id,
         "recorded_at": chrono::Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string(),
     });
     store
@@ -1004,24 +1128,22 @@ pub(crate) async fn api_verify_supervised_patch_workspace(
 }
 
 async fn run_workspace_verification(
+    store: std::sync::Arc<LocalProductStore>,
+    actor: &str,
+    workspace_id: String,
     command: String,
     workspace_path: String,
-    run_id: String,
-    workflow_id: String,
     timeout_ms: u64,
     attempt: u64,
-) -> Result<crate::node_executor::NodeExecutionOutput, ApiError> {
-    let input = NodeExecutionInput {
-        node_id: format!("verify-{run_id}-{attempt}"),
-        task_type: "workspace_verification".to_string(),
-        run_id,
-        workflow_id,
-        node_metadata: json!({
-            "command": command,
-            "workspace_path": workspace_path,
-            "workspace_root": workspace_path,
-        }),
-    };
+    resume_run_id: Option<&str>,
+) -> Result<ManagedToolExecution, ApiError> {
+    let node_metadata = json!({
+        "profile_id": "supervised_patch_verification",
+        "command": command,
+        "workspace_path": workspace_path,
+        "workspace_root": workspace_path,
+        "executor_timeout_ms": timeout_ms,
+    });
     let executor = CommandNodeExecutor {
         timeout_ms,
         allowed_commands: Vec::new(),
@@ -1033,54 +1155,449 @@ async fn run_workspace_verification(
         .collect(),
         env_vars: Vec::new(),
     };
-    tokio::task::spawn_blocking(move || executor.execute_node(&input))
-        .await
-        .map_err(|error| internal_error(error.to_string()))
+    let executor = ToolPolicyNodeExecutor::command(std::sync::Arc::new(executor), store.clone());
+    run_managed_tool_node(
+        store,
+        executor,
+        actor,
+        workspace_id,
+        "verify",
+        attempt,
+        node_metadata,
+        resume_run_id,
+    )
+    .await
 }
 
 async fn run_cli_repair(
+    store: std::sync::Arc<LocalProductStore>,
+    actor: &str,
+    workspace_id: String,
     executor_type: String,
     command: String,
     failure_summary: String,
     workspace_path: String,
-    run_id: String,
-    workflow_id: String,
     attempt: u64,
-) -> Result<crate::node_executor::NodeExecutionOutput, ApiError> {
+    resume_node: Option<&serde_json::Value>,
+    resume_run_id: Option<&str>,
+) -> Result<ManagedToolExecution, ApiError> {
     let cli_config = crate::cli::CliConfig::from_env();
-    let executor = crate::cli::CliNodeExecutor::from_config(&cli_config).ok_or_else(|| {
-        ApiError::with_code(
-            StatusCode::BAD_REQUEST,
-            "cli_not_available",
-            "CLI repair requires ACP_ENABLE_CLI_EXECUTION=1 and an available CLI binary",
-        )
-    })?;
-    let prompt = format!(
+    let inner = crate::cli::CliNodeExecutor::from_config_for(&cli_config, &executor_type)
+        .ok_or_else(|| {
+            ApiError::with_code(
+                StatusCode::BAD_REQUEST,
+                "cli_not_available",
+                "CLI repair requires ACP_ENABLE_CLI_EXECUTION=1 and an available CLI binary",
+            )
+        })?;
+    let redacted_failure = redact_sensitive_patterns(&failure_summary);
+    let default_prompt = format!(
         "Fix the repository in the current workspace so this verification command passes.\n\
          Command: {command}\n\
-         Failure: {failure_summary}\n\
+         Failure: {redacted_failure}\n\
          Make the smallest correct change. Do not commit, push, or modify files outside the workspace."
     );
-    let input = NodeExecutionInput {
-        node_id: format!("repair-{run_id}-{attempt}"),
-        task_type: "workspace_repair".to_string(),
-        run_id,
-        workflow_id,
-        node_metadata: json!({
-            "executor": executor_type,
-            "prompt": prompt,
-            "workspace_path": workspace_path,
-        }),
-    };
-    tokio::task::spawn_blocking(move || executor.execute_node(&input))
-        .await
-        .map_err(|error| internal_error(error.to_string()))
+    let prompt = resume_node
+        .and_then(|node| node.get("prompt"))
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or(&default_prompt)
+        .to_string();
+    let failure_summary_sha256 = resume_node
+        .and_then(|node| node.get("failure_summary_sha256"))
+        .and_then(serde_json::Value::as_str)
+        .map(str::to_string)
+        .unwrap_or_else(|| hex::encode(Sha256::digest(redacted_failure.as_bytes())));
+    let tool_name = executor_type.clone();
+    let node_metadata = json!({
+        "profile_id": "supervised_patch_repair",
+        "executor": executor_type,
+        "prompt": prompt,
+        "verification_command": command,
+        "failure_summary_sha256": failure_summary_sha256,
+        "workspace_path": workspace_path,
+        "workspace_root": workspace_path,
+        "executor_timeout_ms": cli_config.timeout_ms,
+    });
+    let executor =
+        ToolPolicyNodeExecutor::cli(std::sync::Arc::new(inner), store.clone(), tool_name);
+    run_managed_tool_node(
+        store,
+        executor,
+        actor,
+        workspace_id,
+        "repair",
+        attempt,
+        node_metadata,
+        resume_run_id,
+    )
+    .await
 }
 
-fn verification_attempt_value(
+#[derive(Debug)]
+struct ManagedToolExecution {
+    output: crate::node_executor::NodeExecutionOutput,
+    run_id: String,
+    node_id: String,
+}
+
+#[derive(Debug)]
+struct ManagedResumeBinding {
+    run_id: String,
+    operation: String,
     attempt: u64,
-    output: &crate::node_executor::NodeExecutionOutput,
-) -> serde_json::Value {
+    node: serde_json::Value,
+}
+
+fn managed_resume_binding(
+    store: &LocalProductStore,
+    run_id: &str,
+    workspace_id: &str,
+) -> Result<ManagedResumeBinding, ApiError> {
+    let run = store
+        .get_workflow_run(run_id)
+        .map_err(internal_error)?
+        .ok_or_else(|| {
+            ApiError::with_code(
+                StatusCode::BAD_REQUEST,
+                "invalid_verification_resume",
+                "managed verification run was not found",
+            )
+        })?;
+    let nodes = run
+        .get("nodes")
+        .and_then(serde_json::Value::as_array)
+        .ok_or_else(|| internal_error("managed verification run has no nodes".to_string()))?;
+    if nodes.len() != 1 {
+        return Err(ApiError::with_code(
+            StatusCode::BAD_REQUEST,
+            "invalid_verification_resume",
+            "managed verification run must contain exactly one node",
+        ));
+    }
+    let binding = nodes[0]
+        .get("managed_supervised_patch")
+        .and_then(serde_json::Value::as_object)
+        .ok_or_else(|| {
+            ApiError::with_code(
+                StatusCode::BAD_REQUEST,
+                "invalid_verification_resume",
+                "run is not a managed supervised-patch execution",
+            )
+        })?;
+    if binding
+        .get("workspace_id")
+        .and_then(serde_json::Value::as_str)
+        != Some(workspace_id)
+    {
+        return Err(ApiError::with_code(
+            StatusCode::BAD_REQUEST,
+            "invalid_verification_resume",
+            "managed verification run belongs to another workspace",
+        ));
+    }
+    let operation = binding
+        .get("operation")
+        .and_then(serde_json::Value::as_str)
+        .ok_or_else(|| internal_error("managed verification operation is missing".to_string()))?;
+    let attempt = binding
+        .get("attempt")
+        .and_then(serde_json::Value::as_u64)
+        .ok_or_else(|| internal_error("managed verification attempt is missing".to_string()))?;
+    Ok(ManagedResumeBinding {
+        run_id: run_id.to_string(),
+        operation: operation.to_string(),
+        attempt,
+        node: nodes[0].clone(),
+    })
+}
+
+async fn run_managed_tool_node(
+    store: std::sync::Arc<LocalProductStore>,
+    executor: ToolPolicyNodeExecutor,
+    actor: &str,
+    workspace_id: String,
+    operation: &str,
+    attempt: u64,
+    mut node_metadata: serde_json::Value,
+    resume_run_id: Option<&str>,
+) -> Result<ManagedToolExecution, ApiError> {
+    let binding_sha256 = crate::tool_policy_executor::managed_tool_binding_sha256(
+        &workspace_id,
+        operation,
+        attempt,
+        &node_metadata,
+    )
+    .map_err(internal_error)?;
+    let binding = json!({
+        "schema_version": "managed_supervised_patch.v1",
+        "workspace_id": workspace_id,
+        "operation": operation,
+        "attempt": attempt,
+        "binding_sha256": binding_sha256,
+        "content_excluded": true,
+    });
+    node_metadata
+        .as_object_mut()
+        .ok_or_else(|| internal_error("managed tool metadata must be an object".to_string()))?
+        .insert("managed_supervised_patch".to_string(), binding.clone());
+    let node_id = format!("supervised-{operation}-{attempt}");
+
+    let run_id = if let Some(resume_run_id) = resume_run_id {
+        let run = store
+            .get_workflow_run(resume_run_id)
+            .map_err(internal_error)?
+            .ok_or_else(|| internal_error("managed verification run disappeared".to_string()))?;
+        let node = run
+            .get("nodes")
+            .and_then(serde_json::Value::as_array)
+            .and_then(|nodes| nodes.first())
+            .ok_or_else(|| internal_error("managed verification node disappeared".to_string()))?;
+        let stored_binding = node
+            .get("managed_supervised_patch")
+            .and_then(serde_json::Value::as_object);
+        let stored_binding_sha256 = crate::tool_policy_executor::managed_tool_binding_sha256(
+            &workspace_id,
+            operation,
+            attempt,
+            node,
+        )
+        .map_err(internal_error)?;
+        if node.get("node_id").and_then(serde_json::Value::as_str) != Some(node_id.as_str())
+            || stored_binding
+                .and_then(|value| value.get("schema_version"))
+                .and_then(serde_json::Value::as_str)
+                != Some("managed_supervised_patch.v1")
+            || stored_binding
+                .and_then(|value| value.get("workspace_id"))
+                .and_then(serde_json::Value::as_str)
+                != Some(workspace_id.as_str())
+            || stored_binding
+                .and_then(|value| value.get("operation"))
+                .and_then(serde_json::Value::as_str)
+                != Some(operation)
+            || stored_binding
+                .and_then(|value| value.get("attempt"))
+                .and_then(serde_json::Value::as_u64)
+                != Some(attempt)
+            || stored_binding
+                .and_then(|value| value.get("binding_sha256"))
+                .and_then(serde_json::Value::as_str)
+                != Some(binding_sha256.as_str())
+            || stored_binding_sha256 != binding_sha256
+        {
+            return Err(ApiError::with_code(
+                StatusCode::CONFLICT,
+                "verification_resume_binding_changed",
+                "managed verification input no longer matches its approved binding",
+            ));
+        }
+        if matches!(
+            node.get("status").and_then(serde_json::Value::as_str),
+            Some("completed" | "failed" | "awaiting_approval")
+        ) {
+            let output = node
+                .get("result")
+                .map(node_output_from_value)
+                .transpose()?
+                .ok_or_else(|| {
+                    internal_error("managed verification result is missing".to_string())
+                })?;
+            return Ok(ManagedToolExecution {
+                output,
+                run_id: resume_run_id.to_string(),
+                node_id,
+            });
+        }
+        resume_run_id.to_string()
+    } else {
+        store
+            .ensure_managed_supervised_patch_run(
+                &workspace_id,
+                operation,
+                attempt,
+                &binding_sha256,
+                &node_metadata,
+                actor,
+            )
+            .map_err(managed_run_error)?
+    };
+
+    if let Some(execution) = persisted_managed_tool_execution(&store, &run_id, &node_id)? {
+        return Ok(execution);
+    }
+
+    let actor = actor.to_string();
+    let tick_store = store.clone();
+    let tick_run_id = run_id.clone();
+    let tick = tokio::task::spawn_blocking(move || {
+        tick_store.tick_managed_supervised_patch_with_executor(&tick_run_id, &actor, &executor)
+    })
+    .await
+    .map_err(|error| internal_error(error.to_string()))?
+    .map_err(internal_error)?;
+    if tick.get("node_id").and_then(serde_json::Value::as_str) != Some(node_id.as_str()) {
+        if let Some(execution) = persisted_managed_tool_execution(&store, &run_id, &node_id)? {
+            return Ok(execution);
+        }
+        return Err(ApiError::with_code(
+            StatusCode::CONFLICT,
+            "verification_in_progress",
+            "the canonical managed verification is pending or executing",
+        ));
+    }
+    let output = tick
+        .get("result")
+        .map(node_output_from_value)
+        .transpose()?
+        .ok_or_else(|| internal_error("managed verification tick result is missing".to_string()))?;
+    let run_id = tick
+        .get("run")
+        .and_then(|run| run.get("run_id"))
+        .and_then(serde_json::Value::as_str)
+        .ok_or_else(|| internal_error("managed verification tick run id is missing".to_string()))?
+        .to_string();
+    Ok(ManagedToolExecution {
+        output,
+        run_id,
+        node_id,
+    })
+}
+
+fn managed_run_error(error: String) -> ApiError {
+    if error.contains("binding changed") {
+        ApiError::with_code(
+            StatusCode::CONFLICT,
+            "verification_binding_changed",
+            "the canonical managed verification is bound to different inputs",
+        )
+    } else {
+        internal_error(error)
+    }
+}
+
+fn persisted_managed_tool_execution(
+    store: &LocalProductStore,
+    run_id: &str,
+    node_id: &str,
+) -> Result<Option<ManagedToolExecution>, ApiError> {
+    let run = store
+        .get_workflow_run(run_id)
+        .map_err(internal_error)?
+        .ok_or_else(|| internal_error("managed verification run disappeared".to_string()))?;
+    let node = run
+        .get("nodes")
+        .and_then(serde_json::Value::as_array)
+        .and_then(|nodes| nodes.first())
+        .filter(|node| node.get("node_id").and_then(serde_json::Value::as_str) == Some(node_id))
+        .ok_or_else(|| internal_error("managed verification node disappeared".to_string()))?;
+    match node.get("status").and_then(serde_json::Value::as_str) {
+        Some("completed" | "failed" | "awaiting_approval") => {
+            let output = node
+                .get("result")
+                .map(node_output_from_value)
+                .transpose()?
+                .ok_or_else(|| {
+                    internal_error("managed verification result is missing".to_string())
+                })?;
+            Ok(Some(ManagedToolExecution {
+                output,
+                run_id: run_id.to_string(),
+                node_id: node_id.to_string(),
+            }))
+        }
+        Some("running") => Err(ApiError::with_code(
+            StatusCode::CONFLICT,
+            "verification_in_progress",
+            "the canonical managed verification is already executing",
+        )),
+        Some("pending") => Ok(None),
+        Some(status) => Err(internal_error(format!(
+            "managed verification has unsupported persisted status: {status}"
+        ))),
+        None => Err(internal_error(
+            "managed verification node status is missing".to_string(),
+        )),
+    }
+}
+
+fn validate_managed_scheduler_lease(
+    state: &AxumApiState,
+    max_execution_timeout_ms: u64,
+) -> Result<(), ApiError> {
+    let Some(scheduler) = state.scheduler.as_ref() else {
+        return Ok(());
+    };
+    let status = scheduler
+        .lock()
+        .map_err(|_| internal_error("scheduler state lock is poisoned".to_string()))?
+        .status();
+    let config = status
+        .get("config")
+        .and_then(serde_json::Value::as_object)
+        .ok_or_else(|| internal_error("scheduler status is missing config".to_string()))?;
+    let lease_timeout_ms = config
+        .get("lease_timeout_ms")
+        .and_then(serde_json::Value::as_u64)
+        .ok_or_else(|| {
+            internal_error("scheduler status is missing lease_timeout_ms".to_string())
+        })?;
+    let interval_ms = config
+        .get("interval_ms")
+        .and_then(serde_json::Value::as_u64)
+        .ok_or_else(|| internal_error("scheduler status is missing interval_ms".to_string()))?;
+    let required_lease_ms = max_execution_timeout_ms.saturating_add(interval_ms.max(1_000));
+    if lease_timeout_ms < required_lease_ms {
+        return Err(ApiError::with_code(
+            StatusCode::CONFLICT,
+            "unsafe_managed_execution_lease",
+            format!(
+                "scheduler lease timeout {lease_timeout_ms}ms must be at least {required_lease_ms}ms for the bounded managed execution timeout"
+            ),
+        ));
+    }
+    Ok(())
+}
+
+fn node_output_from_value(
+    value: &serde_json::Value,
+) -> Result<crate::node_executor::NodeExecutionOutput, ApiError> {
+    let required = |field: &str| {
+        value
+            .get(field)
+            .and_then(serde_json::Value::as_str)
+            .map(str::to_string)
+            .ok_or_else(|| internal_error(format!("managed execution result missing {field}")))
+    };
+    Ok(crate::node_executor::NodeExecutionOutput {
+        status: required("status")?,
+        executor_type: required("executor_type")?,
+        output: value
+            .get("output")
+            .and_then(serde_json::Value::as_str)
+            .map(str::to_string),
+        error_domain: value
+            .get("error_domain")
+            .and_then(serde_json::Value::as_str)
+            .map(str::to_string),
+        error_message: value
+            .get("error_message")
+            .and_then(serde_json::Value::as_str)
+            .map(str::to_string),
+        input_tokens: value
+            .get("input_tokens")
+            .and_then(serde_json::Value::as_i64),
+        output_tokens: value
+            .get("output_tokens")
+            .and_then(serde_json::Value::as_i64),
+        estimated_cost: value
+            .get("estimated_cost")
+            .and_then(serde_json::Value::as_f64),
+        latency_ms: value.get("latency_ms").and_then(serde_json::Value::as_i64),
+    })
+}
+
+fn verification_attempt_value(attempt: u64, execution: &ManagedToolExecution) -> serde_json::Value {
+    let output = &execution.output;
     json!({
         "attempt": attempt,
         "status": output.status,
@@ -1089,7 +1606,27 @@ fn verification_attempt_value(
         "error_domain": output.error_domain,
         "error_message": output.error_message.as_deref().map(redact_sensitive_patterns),
         "latency_ms": output.latency_ms,
+        "managed_run_id": execution.run_id,
+        "managed_node_id": execution.node_id,
     })
+}
+
+fn upsert_verification_attempt(
+    attempts: &mut Vec<serde_json::Value>,
+    attempt: u64,
+    execution: &ManagedToolExecution,
+) {
+    let value = verification_attempt_value(attempt, execution);
+    if let Some(existing) = attempts.iter_mut().find(|candidate| {
+        candidate
+            .get("managed_run_id")
+            .and_then(serde_json::Value::as_str)
+            == Some(execution.run_id.as_str())
+    }) {
+        *existing = value;
+    } else {
+        attempts.push(value);
+    }
 }
 
 pub(crate) async fn api_capture_supervised_patch(

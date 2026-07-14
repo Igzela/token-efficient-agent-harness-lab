@@ -11,6 +11,8 @@ pub const PROVIDER_TYPES: &[&str] = &["openai_compatible", "anthropic", "local"]
 pub const CREDENTIAL_STORAGE_BACKENDS: &[&str] = &["env", "file", "keyring", "vault"];
 pub const BACKOFF_STRATEGIES: &[&str] = &["linear", "exponential", "none"];
 pub const PROVIDER_AUDIT_EVENT_TYPES: &[&str] = &[
+    "request_reserved",
+    "reservation_reconciled",
     "request_sent",
     "response_received",
     "error",

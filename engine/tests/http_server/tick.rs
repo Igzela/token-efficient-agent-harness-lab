@@ -397,7 +397,7 @@ async fn axum_tick_with_command_executor_uses_command_node_executor() {
 }
 
 #[tokio::test]
-async fn axum_tick_with_unknown_executor_falls_back_to_noop() {
+async fn axum_tick_with_unknown_executor_fails_closed() {
     let dir = tempdir().unwrap();
     let store = LocalProductStore::new(dir.path().join("tick-unknown.db")).unwrap();
     let app = build_axum_router(AxumApiState::new().with_local_store(store));
@@ -449,16 +449,9 @@ async fn axum_tick_with_unknown_executor_falls_back_to_noop() {
         )
         .await
         .unwrap();
-    assert_eq!(tick_resp.status(), StatusCode::OK);
+    assert_eq!(tick_resp.status(), StatusCode::BAD_REQUEST);
     let tick_body = response_json(tick_resp).await;
-    let action = tick_body["tick"]["action"].as_str().unwrap_or("");
-    assert!(
-        action == "node_executed" || action == "completed",
-        "tick should still work with unknown executor, got: {action}"
-    );
-    if action == "node_executed" {
-        assert_eq!(tick_body["tick"]["executor_type"], "noop");
-    }
+    assert_eq!(tick_body["code"], "unknown_executor");
 }
 
 #[tokio::test]

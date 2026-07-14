@@ -8,17 +8,22 @@ use std::time::{Duration, Instant};
 
 use crate::cli::CliNodeExecutor;
 use crate::executor_pool::{self, ExecutorPool};
-use crate::node_executor::{NodeExecutor, NoopNodeExecutor};
+use crate::node_executor::{FailNodeExecutor, NodeExecutor, NoopNodeExecutor};
 use crate::storage::backup_manager::BackupManager;
 use crate::storage::local_product_store::LocalProductStore;
+use crate::tool_policy_executor::ToolPolicyNodeExecutor;
 
 mod runtime;
 use runtime::{dynamic_workflow_enabled, SchedulerRuntime};
+
+const MAX_SCHEDULER_RETRIES: i64 = 10;
 
 #[derive(Debug, Clone)]
 pub struct SchedulerConfig {
     pub interval_ms: u64,
     pub max_concurrent: usize,
+    /// Maximum retries after the initial node execution attempt.
+    pub max_retries: i64,
     pub lease_timeout_ms: u64,
     pub executor_type: String,
     pub queue_enabled: bool,
@@ -40,6 +45,7 @@ impl Default for SchedulerConfig {
         Self {
             interval_ms: 2000,
             max_concurrent: 4,
+            max_retries: 0,
             lease_timeout_ms: 300_000,
             executor_type: "noop".to_string(),
             queue_enabled: true,
@@ -71,6 +77,23 @@ impl SchedulerConfig {
             .ok()
             .and_then(|v| v.parse().ok())
             .unwrap_or(4);
+        let max_retries = match std::env::var("ACP_SCHEDULER_MAX_RETRIES") {
+            Ok(value) => {
+                let parsed = value.parse::<i64>().map_err(|error| {
+                    format!("invalid ACP_SCHEDULER_MAX_RETRIES '{value}': {error}")
+                })?;
+                if !(0..=MAX_SCHEDULER_RETRIES).contains(&parsed) {
+                    return Err(format!(
+                        "ACP_SCHEDULER_MAX_RETRIES must be between 0 and {MAX_SCHEDULER_RETRIES}"
+                    ));
+                }
+                parsed
+            }
+            Err(std::env::VarError::NotPresent) => 0,
+            Err(std::env::VarError::NotUnicode(_)) => {
+                return Err("ACP_SCHEDULER_MAX_RETRIES must be valid UTF-8".to_string())
+            }
+        };
         let lease_timeout_ms = std::env::var("ACP_SCHEDULER_LEASE_TIMEOUT_MS")
             .ok()
             .and_then(|v| v.parse().ok())
@@ -128,6 +151,7 @@ impl SchedulerConfig {
         Ok(Self {
             interval_ms,
             max_concurrent,
+            max_retries,
             lease_timeout_ms,
             executor_type,
             queue_enabled,
@@ -143,6 +167,11 @@ impl SchedulerConfig {
     }
 
     pub fn validate_for_start(&self) -> Result<(), String> {
+        if !(0..=MAX_SCHEDULER_RETRIES).contains(&self.max_retries) {
+            return Err(format!(
+                "ACP_SCHEDULER_MAX_RETRIES must be between 0 and {MAX_SCHEDULER_RETRIES}"
+            ));
+        }
         if !self.supervised_workers_enabled {
             return Err(
                 "supervised workers not enabled (ACP_ENABLE_SUPERVISED_WORKERS=1 required)"
@@ -167,6 +196,44 @@ impl SchedulerConfig {
                     .to_string(),
             );
         }
+        if !matches!(
+            self.executor_type.as_str(),
+            "noop"
+                | "stub"
+                | "fail"
+                | "command"
+                | "local_runner_validation"
+                | "claude_code_cli"
+                | "codex_cli"
+                | "adaptive_provider"
+                | "dynamic"
+                | "dynamic_noop"
+                | "dynamic_workflow"
+                | "auto"
+                | "pool"
+        ) {
+            return Err(format!(
+                "unsupported ACP_SCHEDULER_EXECUTOR: {}",
+                self.executor_type
+            ));
+        }
+        Ok(())
+    }
+
+    fn validate_lease_exceeds_execution_timeout(
+        &self,
+        max_execution_timeout_ms: u64,
+    ) -> Result<(), String> {
+        if max_execution_timeout_ms == 0 {
+            return Ok(());
+        }
+        let required = max_execution_timeout_ms.saturating_add(self.interval_ms.max(1_000));
+        if self.lease_timeout_ms < required {
+            return Err(format!(
+                "ACP_SCHEDULER_LEASE_TIMEOUT_MS={} must be at least {required} so a bounded execution with timeout {max_execution_timeout_ms}ms cannot be reclaimed while its worker is still active",
+                self.lease_timeout_ms
+            ));
+        }
         Ok(())
     }
 }
@@ -180,23 +247,46 @@ struct WorkerRuntimeState {
     error_count: u64,
 }
 
-fn create_scheduler_executor(executor_type: &str) -> Arc<dyn NodeExecutor> {
+fn create_scheduler_executor(
+    executor_type: &str,
+    store: Arc<LocalProductStore>,
+) -> Arc<dyn NodeExecutor> {
+    let unavailable = |reason: String| -> Arc<dyn NodeExecutor> {
+        Arc::new(FailNodeExecutor {
+            error_domain: "scheduler_executor_unavailable".to_string(),
+            error_message: reason,
+        })
+    };
     match executor_type {
-        "command" => Arc::new(crate::node_executor::CommandNodeExecutor::default()),
+        "noop" => Arc::new(NoopNodeExecutor),
+        "stub" => Arc::new(crate::node_executor::StubNodeExecutor::default()),
+        "fail" => Arc::new(FailNodeExecutor::default()),
+        "command" => Arc::new(ToolPolicyNodeExecutor::command(
+            Arc::new(crate::node_executor::CommandNodeExecutor::default()),
+            store,
+        )),
         "claude_code_cli" | "codex_cli" => {
             let config = crate::cli::CliConfig::from_env();
-            match CliNodeExecutor::from_config(&config) {
-                Some(exec) => Arc::new(exec),
+            match CliNodeExecutor::from_config_for(&config, executor_type) {
+                Some(exec) => Arc::new(ToolPolicyNodeExecutor::cli(
+                    Arc::new(exec),
+                    store,
+                    executor_type,
+                )),
                 None => {
                     eprintln!(
-                        "[scheduler] CLI executor '{}' not available, falling back to noop",
+                        "[scheduler] CLI executor '{}' is unavailable; execution will fail closed",
                         executor_type
                     );
-                    Arc::new(NoopNodeExecutor)
+                    unavailable(format!(
+                        "configured CLI executor is unavailable: {executor_type}"
+                    ))
                 }
             }
         }
-        _ => Arc::new(NoopNodeExecutor),
+        other => unavailable(format!(
+            "configured scheduler executor is unavailable: {other}"
+        )),
     }
 }
 
@@ -226,6 +316,7 @@ pub struct WorkflowScheduler {
     backup_retain_count: usize,
     backup_db_path: Option<String>,
     worker_executor: Option<Arc<dyn NodeExecutor>>,
+    agent_step_executor: Option<Arc<dyn NodeExecutor>>,
 }
 
 impl WorkflowScheduler {
@@ -256,6 +347,7 @@ impl WorkflowScheduler {
             backup_retain_count: 5,
             backup_db_path: None,
             worker_executor: None,
+            agent_step_executor: None,
         }
     }
 
@@ -286,6 +378,11 @@ impl WorkflowScheduler {
         self
     }
 
+    pub fn with_agent_step_executor(mut self, executor: Arc<dyn NodeExecutor>) -> Self {
+        self.agent_step_executor = Some(executor);
+        self
+    }
+
     pub fn start(&mut self) -> Result<(), String> {
         if self.running.load(Ordering::SeqCst) {
             return Err("scheduler already running".to_string());
@@ -296,15 +393,51 @@ impl WorkflowScheduler {
             );
         }
         self.config.validate_for_start()?;
+        if self.config.executor_type == "adaptive_provider" && self.worker_executor.is_none() {
+            return Err(
+                "adaptive provider scheduler requires an injected worker executor".to_string(),
+            );
+        }
+        if self
+            .worker_executor
+            .as_ref()
+            .is_some_and(|executor| executor.executor_type_name() != "adaptive_provider")
+        {
+            return Err(
+                "injected scheduler worker executor must identify as adaptive_provider".to_string(),
+            );
+        }
+        let cli_config = crate::cli::CliConfig::from_env();
+        let configured_execution_timeout_ms = match self.config.executor_type.as_str() {
+            "command" => 30_000,
+            "claude_code_cli" | "codex_cli" => cli_config.timeout_ms,
+            "adaptive_provider" => 300_000,
+            "dynamic" | "dynamic_noop" | "dynamic_workflow" | "auto" | "pool" => {
+                let cli_timeout = if cli_config.enabled {
+                    cli_config.timeout_ms
+                } else {
+                    0
+                };
+                let provider_timeout = if self.worker_executor.is_some() {
+                    300_000
+                } else {
+                    0
+                };
+                30_000u64.max(cli_timeout).max(provider_timeout)
+            }
+            _ => 0,
+        };
+        let max_execution_timeout_ms = if self.agent_step_executor.is_some() {
+            configured_execution_timeout_ms.max(300_000)
+        } else {
+            configured_execution_timeout_ms
+        };
+        self.config
+            .validate_lease_exceeds_execution_timeout(max_execution_timeout_ms)?;
         if env_flag_enabled("ACP_SUPERVISED_WORKERS_KILL_SWITCH") {
             return Err(
                 "supervised worker kill switch is active (ACP_SUPERVISED_WORKERS_KILL_SWITCH=1)"
                     .to_string(),
-            );
-        }
-        if self.config.executor_type == "adaptive_provider" && self.worker_executor.is_none() {
-            return Err(
-                "adaptive provider scheduler requires an injected worker executor".to_string(),
             );
         }
 
@@ -312,7 +445,25 @@ impl WorkflowScheduler {
         self.running.store(true, Ordering::SeqCst);
 
         let cli_enabled = crate::cli::CliConfig::from_env().enabled;
-        executor_pool::register_default_executors(&self.executor_pool, cli_enabled);
+        executor_pool::register_default_executors(
+            &self.executor_pool,
+            cli_enabled,
+            self.store.clone(),
+        );
+        if let Some(executor) = self.worker_executor.clone() {
+            executor_pool::register_adaptive_provider_executor(
+                &self.executor_pool,
+                executor,
+                self.config.max_concurrent,
+            );
+        }
+        if let Some(executor) = self.agent_step_executor.clone() {
+            executor_pool::register_agent_step_executor(
+                &self.executor_pool,
+                executor,
+                self.config.agent_max_concurrent_global,
+            );
+        }
         let worker_count = if self.config.supervised_workers_enabled {
             self.config.worker_count
         } else {
@@ -423,6 +574,7 @@ impl WorkflowScheduler {
             "config": {
                 "interval_ms": self.config.interval_ms,
                 "max_concurrent": self.config.max_concurrent,
+                "max_retries": self.config.max_retries,
                 "max_queued": self.config.max_queued,
                 "lease_timeout_ms": self.config.lease_timeout_ms,
                 "executor_type": self.config.executor_type,
@@ -512,10 +664,9 @@ fn run_scheduler_worker(context: SchedulerWorkerContext) {
     let mut consecutive_panics = 0u64;
     let mut worker_ticks = 0u64;
     let mut worker_errors = 0u64;
-    let executor = context
-        .executor
-        .clone()
-        .unwrap_or_else(|| create_scheduler_executor(&context.config.executor_type));
+    let executor = context.executor.clone().unwrap_or_else(|| {
+        create_scheduler_executor(&context.config.executor_type, context.store.clone())
+    });
     update_worker_state(&context, "starting", worker_ticks, worker_errors);
 
     while context.running.load(Ordering::SeqCst) {
@@ -798,7 +949,7 @@ mod tests {
 
     fn test_pool() -> Arc<ExecutorPool> {
         let pool = ExecutorPool::new();
-        executor_pool::register_default_executors(&pool, false);
+        executor_pool::register_default_executors(&pool, false, test_store());
         Arc::new(pool)
     }
 
@@ -899,9 +1050,95 @@ mod tests {
         let config = SchedulerConfig::default();
         assert_eq!(config.interval_ms, 2000);
         assert_eq!(config.max_concurrent, 4);
+        assert_eq!(config.max_retries, 0);
         assert_eq!(config.lease_timeout_ms, 300_000);
         assert!(!config.supervised_workers_enabled);
         assert_eq!(config.worker_count, 1);
+    }
+
+    #[test]
+    fn scheduler_start_registers_injected_agent_step_executor() {
+        let config = SchedulerConfig {
+            interval_ms: 5,
+            max_concurrent: 3,
+            worker_count: 1,
+            supervised_workers_enabled: true,
+            executor_type: "auto".to_string(),
+            agent_max_concurrent_global: 3,
+            agent_max_concurrent_per_run: 1,
+            lease_timeout_ms: 301_000,
+            ..Default::default()
+        };
+        let mut scheduler = WorkflowScheduler::new(test_store(), config)
+            .with_agent_step_executor(Arc::new(crate::node_executor::NoopNodeExecutor));
+
+        scheduler.start().expect("scheduler start");
+        let entry = scheduler
+            .executor_pool()
+            .snapshot()
+            .into_iter()
+            .find(|entry| entry.executor_type == "agent_step")
+            .expect("agent_step registration");
+        scheduler.stop().expect("scheduler stop");
+
+        assert_eq!(entry.capabilities.supported_task_types, ["agent_step"]);
+        assert_eq!(entry.status.concurrency_limit, 3);
+    }
+
+    #[test]
+    fn scheduler_auto_registers_only_explicit_adaptive_provider_worker() {
+        let config = SchedulerConfig {
+            interval_ms: 5,
+            max_concurrent: 2,
+            worker_count: 1,
+            supervised_workers_enabled: true,
+            executor_type: "auto".to_string(),
+            lease_timeout_ms: 301_000,
+            ..Default::default()
+        };
+        let calls = Arc::new(AtomicUsize::new(0));
+        let mut scheduler = WorkflowScheduler::new(test_store(), config).with_worker_executor(
+            Arc::new(TrackingExecutor {
+                calls: calls.clone(),
+            }),
+        );
+
+        scheduler.start().expect("scheduler start");
+        let entry = scheduler
+            .executor_pool()
+            .snapshot()
+            .into_iter()
+            .find(|entry| entry.executor_type == "adaptive_provider")
+            .expect("adaptive provider registration");
+        scheduler.stop().expect("scheduler stop");
+
+        assert_eq!(
+            entry.capabilities.supported_task_types,
+            ["adaptive_provider"]
+        );
+        assert_eq!(entry.status.concurrency_limit, 2);
+        assert_eq!(calls.load(AtomicOrdering::SeqCst), 0);
+    }
+
+    #[test]
+    fn scheduler_rejects_untyped_injected_worker_instead_of_pooling_it() {
+        let config = SchedulerConfig {
+            max_concurrent: 1,
+            worker_count: 1,
+            supervised_workers_enabled: true,
+            executor_type: "auto".to_string(),
+            lease_timeout_ms: 301_000,
+            ..Default::default()
+        };
+        let mut scheduler = WorkflowScheduler::new(test_store(), config)
+            .with_worker_executor(Arc::new(NoopNodeExecutor));
+
+        assert_eq!(
+            scheduler
+                .start()
+                .expect_err("untyped worker must fail closed"),
+            "injected scheduler worker executor must identify as adaptive_provider"
+        );
     }
 
     #[test]
@@ -925,6 +1162,48 @@ mod tests {
             ..Default::default()
         };
         assert!(zero_workers.validate_for_start().is_err());
+
+        let lease_too_short = SchedulerConfig {
+            interval_ms: 2_000,
+            lease_timeout_ms: 300_000,
+            ..Default::default()
+        };
+        assert!(lease_too_short
+            .validate_lease_exceeds_execution_timeout(300_000)
+            .expect_err("lease must exceed execution timeout")
+            .contains("cannot be reclaimed"));
+    }
+
+    #[test]
+    fn supervised_worker_config_rejects_unknown_executor_instead_of_noop_fallback() {
+        let config = SchedulerConfig {
+            supervised_workers_enabled: true,
+            executor_type: "unknown_executor".to_string(),
+            ..Default::default()
+        };
+
+        let error = config
+            .validate_for_start()
+            .expect_err("unknown scheduler executor must fail closed");
+        assert!(error.contains("unsupported ACP_SCHEDULER_EXECUTOR"));
+    }
+
+    #[test]
+    fn unavailable_scheduler_executor_fails_instead_of_running_noop() {
+        let executor = create_scheduler_executor("unknown_executor", test_store());
+        let output = executor.execute_node(&NodeExecutionInput {
+            node_id: "node-unknown".to_string(),
+            task_type: "unknown".to_string(),
+            run_id: "run-unknown".to_string(),
+            workflow_id: "workflow-unknown".to_string(),
+            node_metadata: json!({}),
+        });
+
+        assert_eq!(output.status, "failed");
+        assert_eq!(
+            output.error_domain.as_deref(),
+            Some("scheduler_executor_unavailable")
+        );
     }
 
     #[test]
@@ -932,6 +1211,7 @@ mod tests {
         let config = SchedulerConfig {
             supervised_workers_enabled: true,
             executor_type: "adaptive_provider".to_string(),
+            lease_timeout_ms: 302_000,
             ..Default::default()
         };
         let mut scheduler = WorkflowScheduler::new(test_store(), config);
@@ -953,6 +1233,7 @@ mod tests {
             worker_count: 1,
             supervised_workers_enabled: true,
             executor_type: "adaptive_provider".to_string(),
+            lease_timeout_ms: 302_000,
             ..Default::default()
         };
         let executor = Arc::new(TrackingExecutor {
@@ -1064,6 +1345,7 @@ mod tests {
         let config = SchedulerConfig {
             interval_ms: 50,
             max_concurrent: 2,
+            max_retries: 2,
             lease_timeout_ms: 60_000,
             executor_type: "noop".to_string(),
             supervised_workers_enabled: true,
@@ -1075,6 +1357,7 @@ mod tests {
         assert_eq!(status["running"], false);
         assert_eq!(status["tick_count"], 0);
         assert_eq!(status["config"]["interval_ms"], 50);
+        assert_eq!(status["config"]["max_retries"], 2);
         assert_eq!(status["config"]["dynamic_workflow_enabled"], false);
 
         scheduler.start().unwrap();
@@ -1393,6 +1676,43 @@ mod tests {
     }
 
     #[test]
+    fn dynamic_scheduler_honors_bounded_retry_before_recovery() {
+        let store = test_store();
+        let run_id = create_plan_and_run(&store);
+
+        let config = SchedulerConfig {
+            max_concurrent: 1,
+            max_retries: 1,
+            executor_type: "dynamic".to_string(),
+            queue_enabled: false,
+            backpressure_enabled: false,
+            ..Default::default()
+        };
+        let executor = crate::node_executor::FailNodeExecutor::default();
+        let pool = empty_pool();
+
+        let first = scheduler_tick(&store, &config, Arc::new(executor), &pool).unwrap();
+        assert_eq!(first.ticks, 1);
+        assert_eq!(first.retries, 1);
+
+        let run = store.get_workflow_run(&run_id).unwrap().unwrap();
+        assert_eq!(run["status"], "running");
+        assert!(run["nodes"].as_array().unwrap().iter().any(|node| {
+            node["node_id"] == "node-a"
+                && node["db_status"] == "pending"
+                && node["attempt_count"] == 1
+        }));
+        assert!(
+            !run["nodes"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|node| node["node_id"] == "fix-node-a"),
+            "dynamic recovery must wait until the configured retry is exhausted"
+        );
+    }
+
+    #[test]
     fn scheduler_dynamic_mode_recovers_terminal_failed_run() {
         let store = test_store();
         let run_id = create_plan_and_run(&store);
@@ -1573,6 +1893,7 @@ mod tests {
         let config = SchedulerConfig {
             interval_ms: 50,
             max_concurrent: 2,
+            max_retries: 0,
             lease_timeout_ms: 300_000,
             executor_type: "noop".to_string(),
             ..Default::default()
@@ -1643,6 +1964,7 @@ mod tests {
         let config = SchedulerConfig {
             interval_ms: 50,
             max_concurrent: 1,
+            max_retries: 1,
             lease_timeout_ms: 300_000,
             executor_type: "fail".to_string(),
             supervised_workers_enabled: true,
@@ -1651,10 +1973,20 @@ mod tests {
         let executor = crate::node_executor::FailNodeExecutor::default();
         let pool = test_pool();
 
-        // Tick with fail executor and max_retries=0 — no retries tracked since we pass max_retries=0 to scheduler_tick
-        let result = scheduler_tick(&store, &config, Arc::new(executor.clone()), &pool).unwrap();
-        assert_eq!(result.ticks, 1, "should tick once");
-        assert_eq!(result.retries, 0, "no retries with default max_retries=0");
+        let first = scheduler_tick(&store, &config, Arc::new(executor.clone()), &pool).unwrap();
+        assert_eq!(first.ticks, 1, "should tick once");
+        assert_eq!(first.retries, 1, "configured retry should be tracked");
+
+        let run = store.get_workflow_run("run-0001").unwrap().unwrap();
+        assert_eq!(run["status"], "running");
+        assert_eq!(run["nodes"][0]["db_status"], "pending");
+        assert_eq!(run["nodes"][0]["attempt_count"], 1);
+
+        let second = scheduler_tick(&store, &config, Arc::new(executor), &pool).unwrap();
+        assert_eq!(second.ticks, 1);
+        assert_eq!(second.retries, 0, "retry budget should now be exhausted");
+        let run = store.get_workflow_run("run-0001").unwrap().unwrap();
+        assert_eq!(run["status"], "failed");
     }
 
     #[test]
@@ -1961,6 +2293,7 @@ mod tests {
         let config = SchedulerConfig {
             interval_ms: 50,
             max_concurrent: 2,
+            max_retries: 0,
             lease_timeout_ms: 300_000,
             executor_type: "noop".to_string(),
             queue_enabled: true,
@@ -1998,6 +2331,7 @@ mod tests {
         let config = SchedulerConfig {
             interval_ms: 50,
             max_concurrent: 2,
+            max_retries: 0,
             lease_timeout_ms: 300_000,
             executor_type: "noop".to_string(),
             queue_enabled: true,
@@ -2030,6 +2364,7 @@ mod tests {
         let config = SchedulerConfig {
             interval_ms: 50,
             max_concurrent: 2,
+            max_retries: 0,
             lease_timeout_ms: 300_000,
             executor_type: "noop".to_string(),
             queue_enabled: false,
@@ -2062,6 +2397,7 @@ mod tests {
         let config = SchedulerConfig {
             interval_ms: 50,
             max_concurrent: 1,
+            max_retries: 0,
             lease_timeout_ms: 300_000,
             executor_type: "noop".to_string(),
             queue_enabled: true,
@@ -2090,6 +2426,7 @@ mod tests {
         let config = SchedulerConfig {
             interval_ms: 50,
             max_concurrent: 1,
+            max_retries: 0,
             lease_timeout_ms: 300_000,
             executor_type: "noop".to_string(),
             queue_enabled: true,
@@ -2160,17 +2497,27 @@ mod tests {
 
     // ── AR-4: Bounded concurrent multi-agent scheduling ──
 
+    fn agent_step_fixture_node(node_id: &str) -> Value {
+        json!({
+            "node_id": node_id,
+            "task_type": "agent_step",
+            "status": "pending",
+            "agent_id": format!("agent-{node_id}"),
+            "assigned_agent_id": format!("agent-{node_id}"),
+            "agent_role": "fixture-agent",
+            "agent_objective": "test bounded agent concurrency",
+            "capability_profile": ["fixture"],
+            "profile_id": "fixture-profile",
+            "decision_source": "fixture",
+            "max_actions": 1,
+        })
+    }
+
     fn create_agent_step_run(store: &LocalProductStore, num_agent_steps: usize) -> String {
         let plan = store
             .create_workflow_plan("test agent caps", "test", "actor", |ids, _| {
                 let nodes: Vec<Value> = (0..num_agent_steps)
-                    .map(|i| {
-                        json!({
-                            "node_id": format!("agent-node-{:03}", i),
-                            "task_type": "agent_step",
-                            "status": "pending",
-                        })
-                    })
+                    .map(|i| agent_step_fixture_node(&format!("agent-node-{i:03}")))
                     .collect();
 
                 Ok(json!({
@@ -2253,6 +2600,16 @@ mod tests {
     ) -> String {
         let plan = store
             .create_workflow_plan("test mixed", "test", "actor", |ids, _| {
+                let first_node = if first_task_type == "agent_step" {
+                    agent_step_fixture_node(first_node_id)
+                } else {
+                    json!({"node_id": first_node_id, "task_type": first_task_type, "status": "pending"})
+                };
+                let second_node = if second_task_type == "agent_step" {
+                    agent_step_fixture_node(second_node_id)
+                } else {
+                    json!({"node_id": second_node_id, "task_type": second_task_type, "status": "pending"})
+                };
                 Ok(json!({
                     "schema_version": "read_only_plan.v1",
                     "plan_id": ids.plan_id,
@@ -2267,10 +2624,7 @@ mod tests {
                         "status": "decomposed",
                         "created_at": "2026-06-25T00:00:00Z",
                         "updated_at": "2026-06-25T00:00:00Z",
-                        "nodes": [
-                            {"node_id": first_node_id, "task_type": first_task_type, "status": "pending"},
-                            {"node_id": second_node_id, "task_type": second_task_type, "status": "pending"},
-                        ],
+                        "nodes": [first_node, second_node],
                         "edges": [],
                     },
                     "boundaries": {
@@ -2297,13 +2651,13 @@ mod tests {
 
     impl NodeExecutor for BlockingExecutor {
         fn executor_type_name(&self) -> &str {
-            "blocking"
+            "agent_step"
         }
         fn execute_node(&self, _input: &NodeExecutionInput) -> NodeExecutionOutput {
             self.barrier.wait();
             NodeExecutionOutput {
                 status: "completed".to_string(),
-                executor_type: "blocking".to_string(),
+                executor_type: "agent_step".to_string(),
                 output: None,
                 error_domain: None,
                 error_message: None,
@@ -2311,6 +2665,28 @@ mod tests {
                 output_tokens: None,
                 estimated_cost: None,
                 latency_ms: None,
+            }
+        }
+    }
+
+    struct AgentNoopExecutor;
+
+    impl NodeExecutor for AgentNoopExecutor {
+        fn executor_type_name(&self) -> &str {
+            "agent_step"
+        }
+
+        fn execute_node(&self, _input: &NodeExecutionInput) -> NodeExecutionOutput {
+            NodeExecutionOutput {
+                status: "completed".to_string(),
+                executor_type: "agent_step".to_string(),
+                output: Some("fixture agent step completed".to_string()),
+                error_domain: None,
+                error_message: None,
+                input_tokens: None,
+                output_tokens: None,
+                estimated_cost: None,
+                latency_ms: Some(0),
             }
         }
     }
@@ -2334,7 +2710,7 @@ mod tests {
         thread::sleep(Duration::from_millis(100));
 
         let result_2 = store
-            .tick_with_executor_with_agent_caps(&run_2, "test", 0, &NoopNodeExecutor, 1, 1)
+            .tick_with_executor_with_agent_caps(&run_2, "test", 0, &AgentNoopExecutor, 1, 1)
             .unwrap();
         assert_eq!(
             result_2["action"], "no_ready_node",
@@ -2364,7 +2740,7 @@ mod tests {
         );
 
         let result_2b = store
-            .tick_with_executor_with_agent_caps(&run_2, "test", 0, &NoopNodeExecutor, 1, 1)
+            .tick_with_executor_with_agent_caps(&run_2, "test", 0, &AgentNoopExecutor, 1, 1)
             .unwrap();
         assert_eq!(
             result_2b["action"], "node_executed",
@@ -2391,7 +2767,7 @@ mod tests {
         thread::sleep(Duration::from_millis(100));
 
         let result_2 = store
-            .tick_with_executor_with_agent_caps(&run_id, "test", 0, &NoopNodeExecutor, 3, 1)
+            .tick_with_executor_with_agent_caps(&run_id, "test", 0, &AgentNoopExecutor, 3, 1)
             .unwrap();
         assert_eq!(
             result_2["action"], "no_ready_node",
@@ -2417,7 +2793,7 @@ mod tests {
         handle.join().unwrap().unwrap();
 
         let result_2b = store
-            .tick_with_executor_with_agent_caps(&run_id, "test", 0, &NoopNodeExecutor, 3, 1)
+            .tick_with_executor_with_agent_caps(&run_id, "test", 0, &AgentNoopExecutor, 3, 1)
             .unwrap();
         assert_eq!(
             result_2b["action"], "node_executed",
@@ -2431,7 +2807,7 @@ mod tests {
         let run_id = create_agent_step_run(&store, 1);
 
         let result = store
-            .tick_with_executor_with_agent_caps(&run_id, "test", 0, &NoopNodeExecutor, 2, 1)
+            .tick_with_executor_with_agent_caps(&run_id, "test", 0, &AgentNoopExecutor, 2, 1)
             .unwrap();
         assert_eq!(
             result["action"], "node_executed",
@@ -2459,7 +2835,7 @@ mod tests {
         let run_id = create_agent_step_run(&store, 1);
 
         store
-            .tick_with_executor_with_agent_caps(&run_id, "test", 0, &NoopNodeExecutor, 2, 1)
+            .tick_with_executor_with_agent_caps(&run_id, "test", 0, &AgentNoopExecutor, 2, 1)
             .unwrap();
 
         let events = store.audit_events(50).unwrap();
@@ -2497,12 +2873,12 @@ mod tests {
         let run_id = create_agent_step_run(&store, 2);
 
         let result_1 = store
-            .tick_with_executor_with_agent_caps(&run_id, "test", 0, &NoopNodeExecutor, 2, 1)
+            .tick_with_executor_with_agent_caps(&run_id, "test", 0, &AgentNoopExecutor, 2, 1)
             .unwrap();
         assert_eq!(result_1["action"], "node_executed");
 
         let result_2 = store
-            .tick_with_executor_with_agent_caps(&run_id, "test", 0, &NoopNodeExecutor, 2, 1)
+            .tick_with_executor_with_agent_caps(&run_id, "test", 0, &AgentNoopExecutor, 2, 1)
             .unwrap();
         assert_eq!(
             result_2["action"], "node_executed",
@@ -2515,6 +2891,57 @@ mod tests {
         let config = SchedulerConfig::default();
         assert_eq!(config.agent_max_concurrent_global, 2);
         assert_eq!(config.agent_max_concurrent_per_run, 1);
+    }
+
+    #[test]
+    fn scheduler_retry_env_is_bounded_and_fail_closed() {
+        struct RetryEnvGuard;
+        impl Drop for RetryEnvGuard {
+            fn drop(&mut self) {
+                std::env::remove_var("ACP_SCHEDULER_MAX_RETRIES");
+            }
+        }
+
+        let _guard = RetryEnvGuard;
+        let gates = dummy_gates();
+
+        std::env::remove_var("ACP_SCHEDULER_MAX_RETRIES");
+        assert_eq!(
+            SchedulerConfig::from_env_with_gates(&gates)
+                .unwrap()
+                .max_retries,
+            0
+        );
+
+        std::env::set_var("ACP_SCHEDULER_MAX_RETRIES", "3");
+        assert_eq!(
+            SchedulerConfig::from_env_with_gates(&gates)
+                .unwrap()
+                .max_retries,
+            3
+        );
+
+        for invalid in ["not_a_number", "-1", "11"] {
+            std::env::set_var("ACP_SCHEDULER_MAX_RETRIES", invalid);
+            let error = SchedulerConfig::from_env_with_gates(&gates).unwrap_err();
+            assert!(
+                error.contains("ACP_SCHEDULER_MAX_RETRIES"),
+                "error should name the invalid setting: {error}"
+            );
+        }
+    }
+
+    #[test]
+    fn scheduler_retry_config_rejects_manual_out_of_range_values() {
+        for max_retries in [-1, 11] {
+            let config = SchedulerConfig {
+                supervised_workers_enabled: true,
+                max_retries,
+                ..Default::default()
+            };
+            let error = config.validate_for_start().unwrap_err();
+            assert!(error.contains("ACP_SCHEDULER_MAX_RETRIES"));
+        }
     }
 
     fn dummy_gates() -> crate::trusted_local::EffectiveExecutionGates {
@@ -2609,7 +3036,7 @@ mod tests {
         let run_id = create_agent_step_run(&store, 1);
 
         let result = store
-            .tick_with_executor_with_agent_caps(&run_id, "test", 0, &NoopNodeExecutor, 0, 0)
+            .tick_with_executor_with_agent_caps(&run_id, "test", 0, &AgentNoopExecutor, 0, 0)
             .unwrap();
         assert_eq!(
             result["action"], "no_ready_node",
@@ -2689,20 +3116,8 @@ mod tests {
             "analysis-001 should be the executed node"
         );
 
-        // Verify claim_conflict was emitted for the capped agent_step
-        let events = store.audit_events(50).unwrap();
-        let conflicts: Vec<_> = events
-            .iter()
-            .filter(|e| {
-                e.get("action").and_then(|a| a.as_str()) == Some("agent_step.claim_conflict")
-                    && e.pointer("/details/node_id").and_then(|v| v.as_str())
-                        == Some("agent-node-000")
-            })
-            .collect();
-        assert!(
-            !conflicts.is_empty(),
-            "expected claim_conflict for agent-node-000"
-        );
+        let current = store.get_workflow_run(&run_id).unwrap().unwrap();
+        assert_eq!(current["nodes"][0]["db_status"], "pending");
     }
 
     #[test]
@@ -2764,7 +3179,7 @@ mod tests {
         let run_id = create_agent_step_run(&store, 2);
 
         let result = store
-            .tick_with_executor_with_agent_caps(&run_id, "test", 0, &NoopNodeExecutor, 0, 0)
+            .tick_with_executor_with_agent_caps(&run_id, "test", 0, &AgentNoopExecutor, 0, 0)
             .unwrap();
         assert_eq!(
             result["action"], "no_ready_node",

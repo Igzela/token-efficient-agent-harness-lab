@@ -188,6 +188,8 @@ function ApprovalList({ approvals }: { approvals: WorkflowRunApproval[] }) {
             <th>Node</th>
             <th>Decision</th>
             <th>Decided by</th>
+            <th>Authority</th>
+            <th>Tool binding</th>
             <th>Reason</th>
             <th>Patch hash</th>
             <th>Created</th>
@@ -198,7 +200,11 @@ function ApprovalList({ approvals }: { approvals: WorkflowRunApproval[] }) {
             <tr key={ap.approval_id}>
               <td className="mono" style={{ fontSize: "0.8rem" }}>{ap.node_id.slice(0, 12)}</td>
               <td><span className={`pill ${statusPill(ap.decision)}`}>{ap.decision}</span></td>
-              <td>{ap.decided_by}</td>
+              <td>{ap.actor ?? ap.decided_by ?? "—"}</td>
+              <td>{ap.execution_authority ?? "disabled"}</td>
+              <td className="mono" style={{ fontSize: "0.8rem" }}>
+                {ap.tool_name ? `${ap.tool_name} / ${ap.action_sha256?.slice(0, 12) ?? "—"}` : "—"}
+              </td>
               <td>{ap.reason ?? "—"}</td>
               <td className="mono" style={{ fontSize: "0.8rem" }}>{ap.bound_patch_hash?.slice(0, 12) ?? "—"}</td>
               <td>{ap.created_at}</td>

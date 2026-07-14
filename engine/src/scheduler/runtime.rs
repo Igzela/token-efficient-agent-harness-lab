@@ -1,7 +1,9 @@
 use std::sync::Arc;
 
 use crate::executor_pool::ExecutorPool;
-use crate::node_executor::{NodeExecutor, NoopNodeExecutor};
+#[cfg(test)]
+use crate::node_executor::NoopNodeExecutor;
+use crate::node_executor::{FailNodeExecutor, NodeExecutor};
 use crate::orchestration::{
     ConflictResolver, HumanApprovalGate, ResultAggregator, TaskDecomposer, WorkQueue,
     WorkflowEngine,
@@ -278,8 +280,9 @@ fn scheduler_tick_with_limit(
             }
         }
 
+        let route = scheduler_route_for_run(store, run_id, config);
         let Some((acquired_type, pool_executor_arc)) =
-            select_scheduler_executor(config, pool, &executor_arc, None)
+            select_scheduler_executor(config, pool, &executor_arc, route.as_ref())
         else {
             continue;
         };
@@ -287,7 +290,7 @@ fn scheduler_tick_with_limit(
         match store.tick_with_executor_with_agent_caps(
             run_id,
             "scheduler",
-            0,
+            config.max_retries,
             &*pool_executor_arc,
             config.agent_max_concurrent_global,
             config.agent_max_concurrent_per_run,
@@ -545,15 +548,20 @@ fn dynamic_scheduler_tick(
     let mut aggregations = 0u64;
 
     for run_id in active_runs.iter().take(tick_limit) {
-        let suggested_executor = suggested_executor_for_run(store, run_id);
+        let route = scheduler_route_for_run(store, run_id, config);
         let Some((acquired_type, pool_executor_arc)) =
-            select_scheduler_executor(config, pool, &executor_arc, suggested_executor.as_deref())
+            select_scheduler_executor(config, pool, &executor_arc, route.as_ref())
         else {
             continue;
         };
 
         let mut controller = DynamicWorkflowController::new(DynamicControllerConfig {
             executor_pool_accounting_enabled: false,
+            max_retries: config.max_retries,
+            agent_concurrency_caps: Some((
+                config.agent_max_concurrent_global,
+                config.agent_max_concurrent_per_run,
+            )),
             ..DynamicControllerConfig::default()
         })
         .with_executor_pool(Arc::clone(pool));
@@ -595,7 +603,9 @@ fn dynamic_scheduler_tick(
                         let success = execution_statuses
                             .iter()
                             .all(|status| *status == "completed");
-                        pool.release(executor_type, success, 0, None);
+                        let (latency_ms, estimated_cost) =
+                            dynamic_execution_metrics(store, run_id, &result.actions);
+                        pool.release(executor_type, success, latency_ms, estimated_cost);
                     }
                 }
             }
@@ -622,6 +632,46 @@ fn dynamic_scheduler_tick(
     })
 }
 
+fn dynamic_execution_metrics(
+    store: &LocalProductStore,
+    run_id: &str,
+    actions: &[ControllerAction],
+) -> (u64, Option<f64>) {
+    let node_id = actions.iter().find_map(|action| match action {
+        ControllerAction::NodeExecuted { node_id, .. }
+        | ControllerAction::NodeRetried { node_id, .. } => Some(node_id.as_str()),
+        _ => None,
+    });
+    let Some(node_id) = node_id else {
+        return (0, None);
+    };
+    let Some(run) = store.get_workflow_run(run_id).ok().flatten() else {
+        return (0, None);
+    };
+    let Some(result) = run
+        .get("nodes")
+        .and_then(Value::as_array)
+        .and_then(|nodes| {
+            nodes
+                .iter()
+                .find(|node| node.get("node_id").and_then(Value::as_str) == Some(node_id))
+        })
+        .and_then(|node| node.get("result"))
+    else {
+        return (0, None);
+    };
+    let latency_ms = result
+        .get("latency_ms")
+        .and_then(Value::as_i64)
+        .filter(|value| *value >= 0)
+        .unwrap_or(0) as u64;
+    let estimated_cost = result
+        .get("estimated_cost")
+        .and_then(Value::as_f64)
+        .filter(|value| value.is_finite() && *value >= 0.0);
+    (latency_ms, estimated_cost)
+}
+
 pub(super) fn dynamic_workflow_enabled(config: &SchedulerConfig) -> bool {
     env_flag_enabled("ACP_ENABLE_DYNAMIC_WORKFLOW")
         || std::env::var("ACP_SCHEDULER_MODE")
@@ -637,11 +687,21 @@ fn select_scheduler_executor(
     config: &SchedulerConfig,
     pool: &Arc<ExecutorPool>,
     configured: &Arc<dyn NodeExecutor>,
-    suggested_executor: Option<&str>,
+    route: Option<&SchedulerExecutorRoute>,
 ) -> Option<(Option<String>, Arc<dyn NodeExecutor>)> {
+    if route.and_then(|route| route.suggested_executor.as_deref()) == Some("agent_step") {
+        return pool.get("agent_step").and_then(|executor| {
+            pool.acquire("agent_step")
+                .then_some((Some("agent_step".to_string()), executor))
+        });
+    }
     if config.executor_type == "adaptive_provider" {
         return Some((None, Arc::clone(configured)));
     }
+    let legacy_dynamic = matches!(
+        config.executor_type.as_str(),
+        "dynamic" | "dynamic_noop" | "dynamic_workflow"
+    );
     let pool_routed = matches!(
         config.executor_type.as_str(),
         "dynamic" | "dynamic_noop" | "dynamic_workflow" | "auto" | "pool"
@@ -655,46 +715,242 @@ fn select_scheduler_executor(
             None => Some((None, Arc::clone(configured))),
         };
     }
-    if let Some(executor_type) = suggested_executor {
-        if let Some(executor) = pool.get(executor_type) {
-            if pool.acquire(executor_type) {
-                return Some((Some(executor_type.to_string()), executor));
+    let unavailable = |message: String| {
+        Some((
+            None,
+            Arc::new(FailNodeExecutor {
+                error_domain: "scheduler_executor_unavailable".to_string(),
+                error_message: message,
+            }) as Arc<dyn NodeExecutor>,
+        ))
+    };
+    let Some(route) = route else {
+        if legacy_dynamic {
+            let best_executor = pool.best_for_task("scheduler", "auto");
+            return match best_executor {
+                Some(ref executor_type) if pool.acquire(executor_type) => {
+                    let Some(executor) = pool.get(executor_type) else {
+                        pool.release_without_recording(executor_type);
+                        return None;
+                    };
+                    Some((Some(executor_type.clone()), executor))
+                }
+                _ if pool.snapshot().is_empty() => Some((None, Arc::clone(configured))),
+                _ => None,
+            };
+        }
+        return unavailable("no ready workflow node has a compatible executor".to_string());
+    };
+    let allow_cli_domain_route = route.cli_workspace_bound
+        && matches!(route.task_domain.as_str(), "code" | "architecture")
+        && !matches!(
+            route.task_type.as_str(),
+            "agent_step" | "adaptive_provider" | "command" | "claude_code_cli" | "codex_cli"
+        );
+    if let Some(executor_type) = route.suggested_executor.as_deref() {
+        let fixture_executor_mismatch =
+            matches!(executor_type, "noop" | "stub" | "fail") && route.task_type != executor_type;
+        if matches!(executor_type, "claude_code_cli" | "codex_cli") && !route.cli_workspace_bound {
+            return unavailable(
+                "CLI scheduler route requires an app-owned workspace bound to the run".to_string(),
+            );
+        }
+        if !fixture_executor_mismatch
+            && pool.supports_task(
+                executor_type,
+                &route.task_type,
+                &route.task_domain,
+                allow_cli_domain_route,
+            )
+        {
+            if let Some(executor) = pool.get(executor_type) {
+                if pool.acquire(executor_type) {
+                    return Some((Some(executor_type.to_string()), executor));
+                }
+                return None;
             }
         }
+        if route.required {
+            return unavailable(format!(
+                "required scheduler executor is unavailable or incompatible: {executor_type}"
+            ));
+        }
     }
-    let best_executor = pool.best_for_task("scheduler", "auto");
+    let best_executor = if allow_cli_domain_route {
+        pool.best_cli_for_domain(&route.task_domain)
+    } else if legacy_dynamic
+        || matches!(
+            route.task_type.as_str(),
+            "command" | "local_runner_validation"
+        )
+    {
+        pool.best_for_task(&route.task_type, &route.task_domain)
+    } else {
+        None
+    };
     match best_executor {
         Some(ref executor_type) if pool.acquire(executor_type) => {
-            let executor = pool
-                .get(executor_type)
-                .unwrap_or_else(|| Arc::new(NoopNodeExecutor));
+            let Some(executor) = pool.get(executor_type) else {
+                pool.release_without_recording(executor_type);
+                return unavailable(format!(
+                    "selected scheduler executor disappeared before dispatch: {executor_type}"
+                ));
+            };
             Some((Some(executor_type.clone()), executor))
         }
-        _ if pool.snapshot().is_empty() => Some((None, Arc::clone(configured))),
-        _ => None,
+        _ if allow_cli_domain_route && pool.has_cli_for_domain(&route.task_domain) => None,
+        _ if legacy_dynamic && pool.snapshot().is_empty() => Some((None, Arc::clone(configured))),
+        _ if legacy_dynamic => None,
+        _ => unavailable(format!(
+            "no compatible scheduler executor for task_type={} task_domain={}",
+            route.task_type, route.task_domain
+        )),
     }
 }
 
-fn suggested_executor_for_run(store: &LocalProductStore, run_id: &str) -> Option<String> {
-    let run = store.get_workflow_run(run_id).ok().flatten()?;
-    let task_type = run
-        .get("nodes")
-        .and_then(Value::as_array)
-        .and_then(|nodes| {
-            nodes
-                .iter()
-                .find(|node| {
-                    matches!(
-                        node.get("db_status").and_then(Value::as_str),
-                        Some("pending" | "running" | "failed")
-                    )
-                })
-                .or_else(|| nodes.first())
+#[derive(Debug, Clone)]
+struct SchedulerExecutorRoute {
+    task_type: String,
+    task_domain: String,
+    suggested_executor: Option<String>,
+    required: bool,
+    cli_workspace_bound: bool,
+}
+
+fn scheduler_route_for_run(
+    store: &LocalProductStore,
+    run_id: &str,
+    config: &SchedulerConfig,
+) -> Option<SchedulerExecutorRoute> {
+    let task_type = store
+        .next_ready_workflow_node_task_type_with_agent_caps(
+            run_id,
+            Some((
+                config.agent_max_concurrent_global,
+                config.agent_max_concurrent_per_run,
+            )),
+        )
+        .ok()
+        .flatten()?;
+    let run = store.get_workflow_run(run_id).ok().flatten();
+    let task_domain = run
+        .as_ref()
+        .and_then(|run| run.get("plan_id"))
+        .and_then(Value::as_str)
+        .and_then(|plan_id| store.get_workflow_plan(plan_id).ok().flatten())
+        .and_then(|plan| {
+            plan.pointer("/analysis/task_domain")
+                .and_then(Value::as_str)
+                .map(str::to_string)
         })
-        .and_then(|node| node.get("task_type"))
-        .and_then(Value::as_str)?;
-    let task_group = crate::routing::schemas::make_task_group(task_type, "execute");
-    store.suggest_executor_type(&task_group)
+        .unwrap_or_else(|| task_type.clone());
+    let cli_workspace_bound = run
+        .as_ref()
+        .and_then(|run| ready_node_for_task_type(run, &task_type))
+        .and_then(|node| node.get("workspace_path"))
+        .and_then(Value::as_str)
+        .zip(
+            store
+                .get_supervised_patch_workspace_for_run(run_id)
+                .ok()
+                .flatten()
+                .and_then(|workspace| {
+                    workspace
+                        .get("workspace_path")
+                        .and_then(Value::as_str)
+                        .map(str::to_string)
+                }),
+        )
+        .is_some_and(|(requested, bound)| requested == bound);
+    let mut required = false;
+    let suggested_executor = if task_type == "agent_step" {
+        required = true;
+        Some("agent_step".to_string())
+    } else if matches!(
+        task_type.as_str(),
+        "adaptive_provider" | "claude_code_cli" | "codex_cli"
+    ) {
+        required = true;
+        Some(task_type.clone())
+    } else if let Some(node) = run
+        .as_ref()
+        .and_then(|run| ready_node_for_task_type(run, &task_type))
+    {
+        if task_type == "command" {
+            if let Some(executor_type @ ("claude_code_cli" | "codex_cli")) =
+                node.get("executor").and_then(Value::as_str)
+            {
+                required = true;
+                Some(executor_type.to_string())
+            } else {
+                let task_group = crate::routing::schemas::make_task_group(&task_type, "execute");
+                store.suggest_executor_type(&task_group)
+            }
+        } else {
+            let task_group = crate::routing::schemas::make_task_group(&task_type, "execute");
+            store.suggest_executor_type(&task_group)
+        }
+    } else {
+        let task_group = crate::routing::schemas::make_task_group(&task_type, "execute");
+        store.suggest_executor_type(&task_group)
+    };
+    Some(SchedulerExecutorRoute {
+        task_type,
+        task_domain,
+        suggested_executor,
+        required,
+        cli_workspace_bound,
+    })
+}
+
+#[cfg(test)]
+fn suggested_executor_for_run(
+    store: &LocalProductStore,
+    run_id: &str,
+    config: &SchedulerConfig,
+) -> Option<String> {
+    scheduler_route_for_run(store, run_id, config)?.suggested_executor
+}
+
+fn ready_node_for_task_type<'a>(run: &'a Value, task_type: &str) -> Option<&'a Value> {
+    let nodes = run.get("nodes")?.as_array()?;
+    let edges = run.get("edges").and_then(Value::as_array);
+    let mut candidates = nodes
+        .iter()
+        .filter(|node| {
+            node.get("db_status").and_then(Value::as_str) == Some("pending")
+                && node.get("task_type").and_then(Value::as_str) == Some(task_type)
+        })
+        .collect::<Vec<_>>();
+    candidates.sort_by(|left, right| {
+        left.get("node_id")
+            .and_then(Value::as_str)
+            .cmp(&right.get("node_id").and_then(Value::as_str))
+    });
+    candidates.into_iter().find(|candidate| {
+        let Some(node_id) = candidate.get("node_id").and_then(Value::as_str) else {
+            return false;
+        };
+        edges.is_none_or(|edges| {
+            edges
+                .iter()
+                .filter(|edge| edge.get("to_node_id").and_then(Value::as_str) == Some(node_id))
+                .all(|edge| {
+                    let predecessor = edge.get("from_node_id").and_then(Value::as_str);
+                    let predecessor_status = nodes
+                        .iter()
+                        .find(|node| node.get("node_id").and_then(Value::as_str) == predecessor)
+                        .and_then(|node| {
+                            node.get("db_status")
+                                .or_else(|| node.get("status"))
+                                .and_then(Value::as_str)
+                        });
+                    predecessor_status == Some("completed")
+                        || (task_type == "fix"
+                            && matches!(predecessor_status, Some("failed" | "recovered")))
+                })
+        })
+    })
 }
 
 fn build_graph_from_run(run_data: &Value, run_id: &str) -> crate::orchestration::WorkflowGraph {
@@ -763,6 +1019,25 @@ mod tests {
     use crate::executor_pool::{
         CostProfile, ExecutorCapabilities, ExecutorEntry, ExecutorMetrics, ExecutorStatus,
     };
+    use crate::node_executor::{NodeExecutionInput, NodeExecutionOutput};
+    use serde_json::json;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    fn route(
+        task_type: &str,
+        task_domain: &str,
+        suggested_executor: Option<&str>,
+        required: bool,
+    ) -> SchedulerExecutorRoute {
+        SchedulerExecutorRoute {
+            task_type: task_type.to_string(),
+            task_domain: task_domain.to_string(),
+            suggested_executor: suggested_executor.map(str::to_string),
+            required,
+            cli_workspace_bound: matches!(task_domain, "code" | "architecture")
+                || matches!(suggested_executor, Some("claude_code_cli" | "codex_cli")),
+        }
+    }
 
     #[test]
     fn dynamic_routing_prefers_available_feedback_suggestion() {
@@ -782,15 +1057,643 @@ mod tests {
             ..Default::default()
         };
 
+        let route = route("analysis", "test", Some("preferred"), false);
         let selected = select_scheduler_executor(
             &config,
             &pool,
             &(Arc::new(NoopNodeExecutor) as Arc<dyn NodeExecutor>),
-            Some("preferred"),
+            Some(&route),
         )
         .expect("suggested executor should be selected");
 
         assert_eq!(selected.0.as_deref(), Some("preferred"));
         pool.release_without_recording("preferred");
+    }
+
+    #[test]
+    fn reserved_agent_step_suggestion_overrides_wildcard_or_configured_noop() {
+        let pool = Arc::new(ExecutorPool::new());
+        crate::executor_pool::register_default_executors(
+            &pool,
+            false,
+            Arc::new(LocalProductStore::new(":memory:").unwrap()),
+        );
+        crate::executor_pool::register_agent_step_executor(&pool, Arc::new(NoopNodeExecutor), 1);
+        let config = SchedulerConfig {
+            executor_type: "noop".to_string(),
+            ..Default::default()
+        };
+
+        let route = route("agent_step", "agent_runtime", Some("agent_step"), true);
+        let selected = select_scheduler_executor(
+            &config,
+            &pool,
+            &(Arc::new(NoopNodeExecutor) as Arc<dyn NodeExecutor>),
+            Some(&route),
+        )
+        .expect("reserved agent executor should be selected");
+
+        assert_eq!(selected.0.as_deref(), Some("agent_step"));
+        pool.release_without_recording("agent_step");
+    }
+
+    #[test]
+    fn reserved_agent_step_suggestion_has_no_wildcard_fallback() {
+        let pool = Arc::new(ExecutorPool::new());
+        crate::executor_pool::register_default_executors(
+            &pool,
+            false,
+            Arc::new(LocalProductStore::new(":memory:").unwrap()),
+        );
+        let config = SchedulerConfig {
+            executor_type: "noop".to_string(),
+            ..Default::default()
+        };
+
+        let route = route("agent_step", "agent_runtime", Some("agent_step"), true);
+        assert!(select_scheduler_executor(
+            &config,
+            &pool,
+            &(Arc::new(NoopNodeExecutor) as Arc<dyn NodeExecutor>),
+            Some(&route),
+        )
+        .is_none());
+    }
+
+    #[test]
+    fn auto_pool_selects_explicit_provider_and_policy_wrapped_cli_deterministically() {
+        let pool = Arc::new(ExecutorPool::new());
+        let store = Arc::new(LocalProductStore::new(":memory:").unwrap());
+        crate::executor_pool::register_adaptive_provider_executor(
+            &pool,
+            Arc::new(NoopNodeExecutor),
+            2,
+        );
+        crate::executor_pool::register_cli_executors(
+            &pool,
+            &crate::cli::CliConfig {
+                enabled: true,
+                claude_code_bin: None,
+                claude_code_enabled: false,
+                codex_bin: Some("/definitely/not/executed".to_string()),
+                codex_enabled: true,
+                timeout_ms: 1_000,
+            },
+            store,
+        );
+        let config = SchedulerConfig {
+            executor_type: "auto".to_string(),
+            ..Default::default()
+        };
+        let configured = Arc::new(NoopNodeExecutor) as Arc<dyn NodeExecutor>;
+
+        for expected in ["adaptive_provider", "codex_cli"] {
+            let route = route(
+                expected,
+                if expected == "adaptive_provider" {
+                    "adaptive"
+                } else {
+                    "code"
+                },
+                Some(expected),
+                true,
+            );
+            let selected = select_scheduler_executor(&config, &pool, &configured, Some(&route))
+                .expect("explicit executor should be schedulable");
+            assert_eq!(selected.0.as_deref(), Some(expected));
+            pool.release_without_recording(expected);
+        }
+    }
+
+    #[test]
+    fn required_provider_or_cli_route_never_falls_back_when_unavailable() {
+        let pool = Arc::new(ExecutorPool::new());
+        crate::executor_pool::register_default_executors(
+            &pool,
+            false,
+            Arc::new(LocalProductStore::new(":memory:").unwrap()),
+        );
+        let config = SchedulerConfig {
+            executor_type: "pool".to_string(),
+            ..Default::default()
+        };
+        let configured = Arc::new(NoopNodeExecutor) as Arc<dyn NodeExecutor>;
+
+        let provider_route = route(
+            "adaptive_provider",
+            "adaptive",
+            Some("adaptive_provider"),
+            true,
+        );
+        let provider =
+            select_scheduler_executor(&config, &pool, &configured, Some(&provider_route))
+                .expect("unavailable provider should produce explicit failure");
+        assert_eq!(provider.1.executor_type_name(), "fail");
+        let cli_route = route("codex_cli", "code", Some("codex_cli"), true);
+        let cli = select_scheduler_executor(&config, &pool, &configured, Some(&cli_route))
+            .expect("unavailable CLI should produce explicit failure");
+        assert_eq!(cli.1.executor_type_name(), "fail");
+    }
+
+    #[test]
+    fn auto_routes_ordinary_code_work_to_available_cli_not_noop() {
+        let pool = Arc::new(ExecutorPool::new());
+        crate::executor_pool::register_default_executors(
+            &pool,
+            false,
+            Arc::new(LocalProductStore::new(":memory:").unwrap()),
+        );
+        crate::executor_pool::register_cli_executors(
+            &pool,
+            &crate::cli::CliConfig {
+                enabled: true,
+                claude_code_bin: Some("/definitely/not/executed-claude".to_string()),
+                claude_code_enabled: true,
+                codex_bin: Some("/definitely/not/executed-codex".to_string()),
+                codex_enabled: true,
+                timeout_ms: 1_000,
+            },
+            Arc::new(LocalProductStore::new(":memory:").unwrap()),
+        );
+        let config = SchedulerConfig {
+            executor_type: "auto".to_string(),
+            ..Default::default()
+        };
+        let route = route("implementation", "code", None, false);
+        let selected = select_scheduler_executor(
+            &config,
+            &pool,
+            &(Arc::new(NoopNodeExecutor) as Arc<dyn NodeExecutor>),
+            Some(&route),
+        )
+        .expect("code work should select a CLI");
+
+        assert_eq!(selected.0.as_deref(), Some("codex_cli"));
+        pool.release_without_recording("codex_cli");
+    }
+
+    #[test]
+    fn auto_no_compatible_executor_returns_explicit_failure_not_noop() {
+        let pool = Arc::new(ExecutorPool::new());
+        crate::executor_pool::register_default_executors(
+            &pool,
+            false,
+            Arc::new(LocalProductStore::new(":memory:").unwrap()),
+        );
+        let config = SchedulerConfig {
+            executor_type: "auto".to_string(),
+            ..Default::default()
+        };
+        let route = route("summarize", "docs", None, false);
+        let selected = select_scheduler_executor(
+            &config,
+            &pool,
+            &(Arc::new(NoopNodeExecutor) as Arc<dyn NodeExecutor>),
+            Some(&route),
+        )
+        .expect("unsupported work should produce bounded failure evidence");
+
+        assert!(selected.0.is_none());
+        let output = selected.1.execute_node(&NodeExecutionInput {
+            node_id: "unsupported-node".to_string(),
+            task_type: "summarize".to_string(),
+            run_id: "unsupported-run".to_string(),
+            workflow_id: "unsupported-workflow".to_string(),
+            node_metadata: json!({}),
+        });
+        assert_eq!(output.status, "failed");
+        assert_eq!(
+            output.error_domain.as_deref(),
+            Some("scheduler_executor_unavailable")
+        );
+    }
+
+    #[test]
+    fn auto_ignores_stale_feedback_that_suggests_fixture_noop() {
+        let pool = Arc::new(ExecutorPool::new());
+        crate::executor_pool::register_default_executors(
+            &pool,
+            false,
+            Arc::new(LocalProductStore::new(":memory:").unwrap()),
+        );
+        let config = SchedulerConfig {
+            executor_type: "auto".to_string(),
+            ..Default::default()
+        };
+        let route = route("summarize", "docs", Some("noop"), false);
+        let selected = select_scheduler_executor(
+            &config,
+            &pool,
+            &(Arc::new(NoopNodeExecutor) as Arc<dyn NodeExecutor>),
+            Some(&route),
+        )
+        .expect("stale fixture feedback should produce bounded failure evidence");
+
+        assert!(selected.0.is_none());
+        assert_eq!(selected.1.executor_type_name(), "fail");
+    }
+
+    #[test]
+    fn auto_never_routes_code_to_cli_without_an_app_owned_workspace_binding() {
+        let pool = Arc::new(ExecutorPool::new());
+        crate::executor_pool::register_cli_executors(
+            &pool,
+            &crate::cli::CliConfig {
+                enabled: true,
+                claude_code_bin: Some("/definitely/not/executed-claude".to_string()),
+                claude_code_enabled: true,
+                codex_bin: Some("/definitely/not/executed-codex".to_string()),
+                codex_enabled: true,
+                timeout_ms: 1_000,
+            },
+            Arc::new(LocalProductStore::new(":memory:").unwrap()),
+        );
+        let config = SchedulerConfig {
+            executor_type: "auto".to_string(),
+            ..Default::default()
+        };
+        let mut route = route("implementation", "code", None, false);
+        route.cli_workspace_bound = false;
+        let selected = select_scheduler_executor(
+            &config,
+            &pool,
+            &(Arc::new(NoopNodeExecutor) as Arc<dyn NodeExecutor>),
+            Some(&route),
+        )
+        .expect("unbound code work should produce bounded failure evidence");
+
+        assert!(selected.0.is_none());
+        assert_eq!(selected.1.executor_type_name(), "fail");
+    }
+
+    #[test]
+    fn arbitrary_implementation_node_is_not_reinterpreted_as_provider_work() {
+        let store = LocalProductStore::new(":memory:").unwrap();
+        let plan = store
+            .create_workflow_plan("ordinary implementation", "test", "test", |ids, _| {
+                Ok(json!({
+                    "status": "planned_read_only",
+                    "workflow_id": ids.workflow_id,
+                    "dispatch_id": ids.dispatch_id,
+                    "graph": {
+                        "workflow_id": ids.workflow_id,
+                        "dispatch_id": ids.dispatch_id,
+                        "nodes": [{
+                            "node_id": "implementation-node",
+                            "task_type": "implementation",
+                            "status": "pending"
+                        }],
+                        "edges": []
+                    },
+                    "analysis": {},
+                    "boundaries": {"execution_authority": "bounded_trusted_local"}
+                }))
+            })
+            .unwrap();
+        let run = store
+            .create_workflow_run_from_plan(plan["plan_id"].as_str().unwrap(), "test")
+            .unwrap();
+
+        assert_ne!(
+            suggested_executor_for_run(
+                &store,
+                run["run_id"].as_str().unwrap(),
+                &SchedulerConfig::default()
+            )
+            .as_deref(),
+            Some("adaptive_provider")
+        );
+    }
+
+    #[test]
+    fn legacy_command_metadata_selects_exact_cli_under_scheduler_authority() {
+        let store = LocalProductStore::new(":memory:").unwrap();
+        let plan = store
+            .create_workflow_plan("CLI node", "test", "test", |ids, _| {
+                Ok(json!({
+                    "status": "planned_read_only",
+                    "workflow_id": ids.workflow_id,
+                    "dispatch_id": ids.dispatch_id,
+                    "graph": {
+                        "workflow_id": ids.workflow_id,
+                        "dispatch_id": ids.dispatch_id,
+                        "nodes": [{
+                            "node_id": "cli-node",
+                            "task_type": "command",
+                            "status": "pending",
+                            "executor": "codex_cli",
+                            "prompt": "bounded fixture"
+                        }],
+                        "edges": []
+                    },
+                    "analysis": {},
+                    "boundaries": {"execution_authority": "bounded_trusted_local"}
+                }))
+            })
+            .unwrap();
+        let run = store
+            .create_workflow_run_from_plan(plan["plan_id"].as_str().unwrap(), "test")
+            .unwrap();
+
+        assert_eq!(
+            suggested_executor_for_run(
+                &store,
+                run["run_id"].as_str().unwrap(),
+                &SchedulerConfig::default()
+            )
+            .as_deref(),
+            Some("codex_cli")
+        );
+    }
+
+    #[test]
+    fn scheduler_suggestion_uses_ready_dependency_order_for_mixed_agent_run() {
+        let store = LocalProductStore::new(":memory:").unwrap();
+        let plan = store
+            .create_workflow_plan("mixed agent routing", "test", "test", |ids, _| {
+                Ok(json!({
+                    "status": "planned_read_only",
+                    "workflow_id": ids.workflow_id,
+                    "dispatch_id": ids.dispatch_id,
+                    "graph": {
+                        "workflow_id": ids.workflow_id,
+                        "dispatch_id": ids.dispatch_id,
+                        "nodes": [
+                            {
+                                "node_id": "a-agent-blocked",
+                                "task_type": "agent_step",
+                                "status": "pending",
+                                "agent_id": "agent-mixed",
+                                "agent_role": "reviewer",
+                                "profile_id": "bounded",
+                                "agent_objective": "review after command",
+                                "capability_profile": ["review"],
+                                "model": "fixture"
+                            },
+                            {
+                                "node_id": "z-command-ready",
+                                "task_type": "command",
+                                "status": "pending",
+                                "command": "echo ready"
+                            }
+                        ],
+                        "edges": [{
+                            "edge_id": "edge-command-agent",
+                            "from_node_id": "z-command-ready",
+                            "to_node_id": "a-agent-blocked"
+                        }]
+                    },
+                    "analysis": {},
+                    "boundaries": {"execution_authority": "bounded_trusted_local"}
+                }))
+            })
+            .unwrap();
+        let run = store
+            .create_workflow_run_from_plan(plan["plan_id"].as_str().unwrap(), "test")
+            .unwrap();
+        let run_id = run["run_id"].as_str().unwrap();
+
+        assert_eq!(
+            store
+                .next_ready_workflow_node_task_type_with_agent_caps(run_id, None)
+                .unwrap(),
+            Some("command".to_string())
+        );
+        assert_ne!(
+            suggested_executor_for_run(&store, run_id, &SchedulerConfig::default()).as_deref(),
+            Some("agent_step")
+        );
+
+        let command_tick = store
+            .tick_with_executor(run_id, "test", 0, &crate::node_executor::NoopNodeExecutor)
+            .unwrap();
+        assert_eq!(command_tick["node_id"], "z-command-ready");
+        assert_eq!(
+            store
+                .next_ready_workflow_node_task_type_with_agent_caps(run_id, None)
+                .unwrap(),
+            Some("agent_step".to_string())
+        );
+        let wrong_executor_tick = store
+            .tick_with_executor(run_id, "test", 0, &crate::node_executor::NoopNodeExecutor)
+            .unwrap();
+        assert_eq!(wrong_executor_tick["action"], "node_executed");
+        assert_eq!(wrong_executor_tick["node_id"], "a-agent-blocked");
+        assert_eq!(wrong_executor_tick["result"]["status"], "failed");
+        assert_eq!(
+            wrong_executor_tick["result"]["error_domain"],
+            "reserved_executor_mismatch"
+        );
+        let current = store.get_workflow_run(run_id).unwrap().unwrap();
+        assert_eq!(current["nodes"][0]["db_status"], "failed");
+    }
+
+    #[test]
+    fn scheduler_suggestion_skips_capped_agent_when_normal_node_is_ready() {
+        let store = LocalProductStore::new(":memory:").unwrap();
+        let plan = store
+            .create_workflow_plan("cap-aware mixed routing", "test", "test", |ids, _| {
+                Ok(json!({
+                    "status": "planned_read_only",
+                    "workflow_id": ids.workflow_id,
+                    "dispatch_id": ids.dispatch_id,
+                    "graph": {
+                        "workflow_id": ids.workflow_id,
+                        "dispatch_id": ids.dispatch_id,
+                        "nodes": [
+                            {
+                                "node_id": "a-agent-capped",
+                                "task_type": "agent_step",
+                                "status": "pending",
+                                "agent_id": "agent-capped",
+                                "assigned_agent_id": "agent-capped",
+                                "agent_role": "reviewer",
+                                "profile_id": "bounded",
+                                "agent_objective": "bounded review",
+                                "capability_profile": ["review"],
+                                "decision_source": "fixture",
+                                "max_actions": 1
+                            },
+                            {
+                                "node_id": "z-command-ready",
+                                "task_type": "command",
+                                "status": "pending",
+                                "command": "echo ready"
+                            }
+                        ],
+                        "edges": []
+                    },
+                    "analysis": {},
+                    "boundaries": {"execution_authority": "bounded_trusted_local"}
+                }))
+            })
+            .unwrap();
+        let run = store
+            .create_workflow_run_from_plan(plan["plan_id"].as_str().unwrap(), "test")
+            .unwrap();
+        let run_id = run["run_id"].as_str().unwrap();
+        let config = SchedulerConfig {
+            agent_max_concurrent_global: 0,
+            agent_max_concurrent_per_run: 0,
+            ..Default::default()
+        };
+
+        assert_eq!(
+            store
+                .next_ready_workflow_node_task_type_with_agent_caps(run_id, None)
+                .unwrap(),
+            Some("agent_step".to_string())
+        );
+        assert_eq!(
+            store
+                .next_ready_workflow_node_task_type_with_agent_caps(run_id, Some((0, 0)))
+                .unwrap(),
+            Some("command".to_string())
+        );
+        assert_ne!(
+            suggested_executor_for_run(&store, run_id, &config).as_deref(),
+            Some("agent_step")
+        );
+    }
+
+    struct DynamicBlockingAgentExecutor {
+        started: std::sync::mpsc::Sender<()>,
+        release: Arc<std::sync::Barrier>,
+    }
+
+    impl NodeExecutor for DynamicBlockingAgentExecutor {
+        fn executor_type_name(&self) -> &str {
+            "agent_step"
+        }
+
+        fn execute_node(&self, _input: &NodeExecutionInput) -> NodeExecutionOutput {
+            self.started.send(()).unwrap();
+            self.release.wait();
+            NodeExecutionOutput {
+                status: "completed".to_string(),
+                executor_type: "agent_step".to_string(),
+                output: Some("first agent step completed".to_string()),
+                error_domain: None,
+                error_message: None,
+                input_tokens: Some(3),
+                output_tokens: Some(2),
+                estimated_cost: Some(0.01),
+                latency_ms: Some(5),
+            }
+        }
+    }
+
+    struct DynamicCountingAgentExecutor {
+        calls: Arc<AtomicUsize>,
+    }
+
+    impl NodeExecutor for DynamicCountingAgentExecutor {
+        fn executor_type_name(&self) -> &str {
+            "agent_step"
+        }
+
+        fn execute_node(&self, _input: &NodeExecutionInput) -> NodeExecutionOutput {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            NodeExecutionOutput {
+                status: "completed".to_string(),
+                executor_type: "agent_step".to_string(),
+                output: Some("unexpected second agent step".to_string()),
+                error_domain: None,
+                error_message: None,
+                input_tokens: None,
+                output_tokens: None,
+                estimated_cost: None,
+                latency_ms: Some(0),
+            }
+        }
+    }
+
+    #[test]
+    fn dynamic_scheduler_respects_active_agent_per_run_cap() {
+        let store = Arc::new(LocalProductStore::new(":memory:").unwrap());
+        let plan = store
+            .create_workflow_plan("dynamic agent cap", "test", "test", |ids, _| {
+                let agent_node = |node_id: &str| {
+                    json!({
+                        "node_id": node_id,
+                        "task_type": "agent_step",
+                        "status": "pending",
+                        "agent_id": format!("agent-{node_id}"),
+                        "assigned_agent_id": format!("agent-{node_id}"),
+                        "agent_role": "fixture-agent",
+                        "profile_id": "bounded",
+                        "agent_objective": "verify dynamic scheduler concurrency",
+                        "capability_profile": ["fixture"],
+                        "decision_source": "fixture",
+                        "max_actions": 1
+                    })
+                };
+                Ok(json!({
+                    "status": "planned_read_only",
+                    "workflow_id": ids.workflow_id,
+                    "dispatch_id": ids.dispatch_id,
+                    "graph": {
+                        "workflow_id": ids.workflow_id,
+                        "dispatch_id": ids.dispatch_id,
+                        "nodes": [agent_node("agent-a"), agent_node("agent-b")],
+                        "edges": []
+                    },
+                    "analysis": {},
+                    "boundaries": {"execution_authority": "bounded_trusted_local"}
+                }))
+            })
+            .unwrap();
+        let run = store
+            .create_workflow_run_from_plan(plan["plan_id"].as_str().unwrap(), "test")
+            .unwrap();
+        let run_id = run["run_id"].as_str().unwrap().to_string();
+
+        let (started_tx, started_rx) = std::sync::mpsc::channel();
+        let release = Arc::new(std::sync::Barrier::new(2));
+        let blocking = DynamicBlockingAgentExecutor {
+            started: started_tx,
+            release: Arc::clone(&release),
+        };
+        let blocking_store = Arc::clone(&store);
+        let blocking_run_id = run_id.clone();
+        let blocking_thread = std::thread::spawn(move || {
+            blocking_store.tick_with_executor_with_agent_caps(
+                &blocking_run_id,
+                "test",
+                0,
+                &blocking,
+                2,
+                1,
+            )
+        });
+        started_rx
+            .recv_timeout(std::time::Duration::from_secs(2))
+            .expect("first agent lease should reach its executor");
+
+        let calls = Arc::new(AtomicUsize::new(0));
+        let counting: Arc<dyn NodeExecutor> = Arc::new(DynamicCountingAgentExecutor {
+            calls: Arc::clone(&calls),
+        });
+        let pool = Arc::new(ExecutorPool::new());
+        crate::executor_pool::register_agent_step_executor(&pool, Arc::clone(&counting), 2);
+        let config = SchedulerConfig {
+            executor_type: "dynamic".to_string(),
+            agent_max_concurrent_global: 2,
+            agent_max_concurrent_per_run: 1,
+            ..Default::default()
+        };
+
+        let tick = dynamic_scheduler_tick(&store, &config, counting, &pool, 1).unwrap();
+        assert_eq!(tick.ticks, 0);
+        assert_eq!(calls.load(Ordering::SeqCst), 0);
+        let during = store.get_workflow_run(&run_id).unwrap().unwrap();
+        assert_eq!(during["nodes"][0]["db_status"], "running");
+        assert_eq!(during["nodes"][1]["db_status"], "pending");
+
+        release.wait();
+        assert_eq!(
+            blocking_thread.join().unwrap().unwrap()["action"],
+            "node_executed"
+        );
     }
 }

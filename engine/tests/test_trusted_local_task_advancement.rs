@@ -29,7 +29,7 @@ fn adaptive_plan(ids: &engine::read_only_planner::WorkflowPlanIds, candidate_id:
             "updated_at": "2026-06-22T00:00:00Z",
             "nodes": [{
                 "node_id": "node-a",
-                "task_type": "implementation",
+                "task_type": "adaptive_provider",
                 "status": "pending",
                 "adaptive_execution": {
                     "observation_context": {
@@ -60,9 +60,15 @@ fn adaptive_plan(ids: &engine::read_only_planner::WorkflowPlanIds, candidate_id:
             "edges": []
         },
         "boundaries": {
-            "execution_authority": "trusted_local_bounded",
+            "execution": "explicit_tick_or_scheduler_lease",
+            "execution_authority": "rust_scheduler_only",
             "target_repository_writes": "disabled",
-            "runtime_workers": "bounded"
+            "runtime_workers": "env_gated_supervised"
+        },
+        "advisory": {
+            "schema_version": "plan_advisory.v1",
+            "mode": "explicit_adaptive_execution_plan",
+            "requires_executor": "adaptive_provider"
         }
     })
 }
@@ -97,7 +103,7 @@ fn trusted_worker_advances_explicit_adaptive_plan_and_persists_safe_observation(
     let config = SchedulerConfig {
         interval_ms: 20,
         max_concurrent: 1,
-        lease_timeout_ms: 60_000,
+        lease_timeout_ms: 301_000,
         executor_type: "adaptive_provider".to_string(),
         worker_count: 1,
         supervised_workers_enabled: true,

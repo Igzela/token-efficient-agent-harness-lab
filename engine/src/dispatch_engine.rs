@@ -1,4 +1,3 @@
-use std::collections::HashSet;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use serde_json::{json, Value};
@@ -26,7 +25,6 @@ pub struct DispatchEngine {
     advisor: Option<AdvisorBroker>,
     ledger: DispatchLedger,
     executor_type_name: String,
-    available_executor_tiers: HashSet<String>,
     dispatch_counter: AtomicUsize,
 }
 
@@ -41,7 +39,6 @@ impl Default for DispatchEngine {
             advisor: None,
             ledger: DispatchLedger::new(),
             executor_type_name: "noop".to_string(),
-            available_executor_tiers: HashSet::new(),
             dispatch_counter: AtomicUsize::new(0),
         }
     }
@@ -94,33 +91,8 @@ impl DispatchEngine {
         }
     }
 
-    pub fn with_multi_executor(multi: crate::cli::MultiExecutor) -> Self {
-        let available_executor_tiers = ["claude_code_cli", "codex_cli"]
-            .into_iter()
-            .filter(|tier| multi.has_executor_for_tier(tier))
-            .map(String::from)
-            .collect();
-        Self {
-            executor: Box::new(multi),
-            executor_type_name: "multi".to_string(),
-            available_executor_tiers,
-            ..Self::default()
-        }
-    }
-
     pub fn executor_type(&self) -> &str {
         &self.executor_type_name
-    }
-
-    fn effective_executor_type(&self, tier: &str) -> String {
-        if self.executor_type_name == "multi" {
-            if self.available_executor_tiers.contains(tier) {
-                return tier.to_string();
-            }
-            "noop".to_string()
-        } else {
-            self.executor_type_name.clone()
-        }
     }
 
     pub fn preflight_reserved_cost(&self, raw_request: &str, request_source: &str) -> f64 {
@@ -214,7 +186,7 @@ impl DispatchEngine {
             "",
             &dispatch_id,
             &selection.selected_tier,
-            &self.effective_executor_type(&selection.selected_tier),
+            &self.executor_type_name,
         );
 
         let budget_reservation = self.budget_manager.create_reservation(
@@ -223,7 +195,7 @@ impl DispatchEngine {
             &selection.selected_tier,
             &mut runtime,
         );
-        let effective_executor_type = self.effective_executor_type(&selection.selected_tier);
+        let effective_executor_type = self.executor_type_name.clone();
         let mut execution_policy = build_execution_policy(&analysis, &effective_executor_type);
 
         // Phase 3: Activate advisor as dispatch advisory layer
@@ -300,7 +272,7 @@ impl DispatchEngine {
             &runtime,
         );
 
-        let effective_type = self.effective_executor_type(&decision.selected_tier);
+        let effective_type = self.executor_type_name.clone();
         let is_provider = effective_type == "provider";
         let provider_blocked = is_provider
             && (decision.decision_status != "decided"
@@ -348,7 +320,7 @@ impl DispatchEngine {
             let upgraded_tier = upgrade_tier(&decision.selected_tier);
             if upgraded_tier != decision.selected_tier {
                 // Ensure upgraded tier does not itself violate no_provider_call
-                let upgraded_type = self.effective_executor_type(&upgraded_tier);
+                let upgraded_type = self.executor_type_name.clone();
                 let upgraded_blocked = upgraded_type == "provider"
                     && decision
                         .hard_constraints

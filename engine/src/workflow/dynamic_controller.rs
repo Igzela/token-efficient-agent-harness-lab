@@ -23,12 +23,14 @@ use crate::workflow::orchestration_decision::{
 pub struct DynamicControllerConfig {
     pub max_ticks_per_run: u64,
     pub max_mutations_per_run: u64,
+    pub max_retries: i64,
     pub approval_required_for_mutation: bool,
     pub auto_fix_on_failure: bool,
     pub record_feedback: bool,
     pub admission_check_enabled: bool,
     pub respect_priority: bool,
     pub executor_pool_accounting_enabled: bool,
+    pub agent_concurrency_caps: Option<(usize, usize)>,
 }
 
 impl Default for DynamicControllerConfig {
@@ -36,12 +38,14 @@ impl Default for DynamicControllerConfig {
         Self {
             max_ticks_per_run: 100,
             max_mutations_per_run: 20,
+            max_retries: 0,
             approval_required_for_mutation: false,
             auto_fix_on_failure: true,
             record_feedback: true,
             admission_check_enabled: true,
             respect_priority: true,
             executor_pool_accounting_enabled: true,
+            agent_concurrency_caps: None,
         }
     }
 }
@@ -624,7 +628,25 @@ impl DynamicWorkflowController {
             });
         }
 
-        let tick_result = store.tick_with_executor_and_command(run_id, actor, 0, executor, None)?;
+        let tick_result =
+            if let Some((global_cap, per_run_cap)) = self.config.agent_concurrency_caps {
+                store.tick_with_executor_with_agent_caps(
+                    run_id,
+                    actor,
+                    self.config.max_retries,
+                    executor,
+                    global_cap,
+                    per_run_cap,
+                )?
+            } else {
+                store.tick_with_executor_and_command(
+                    run_id,
+                    actor,
+                    self.config.max_retries,
+                    executor,
+                    None,
+                )?
+            };
 
         // Extract latency from tick result for pool release
         let tick_latency_ms = tick_result

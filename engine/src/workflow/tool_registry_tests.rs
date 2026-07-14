@@ -153,6 +153,22 @@ fn test_no_allowlist_permits_all() {
         .expect("check"));
 }
 
+#[test]
+fn test_explicit_empty_allowlist_blocks_every_tool() {
+    let store = new_store();
+
+    store
+        .set_tool_allowlist("locked-down", &[])
+        .expect("set explicit empty allowlist");
+
+    assert!(!store
+        .check_tool_allowed("locked-down", "read")
+        .expect("check"));
+    assert!(!store
+        .check_tool_allowed("locked-down", "bash")
+        .expect("check"));
+}
+
 // ---------------------------------------------------------------------------
 // Test 6: test_hook_blocks_execution
 // ---------------------------------------------------------------------------
@@ -345,6 +361,59 @@ fn test_hooks_evaluated_in_order() {
         HookResult::Block(reason) => assert_eq!(reason, "blocked first"),
         other => panic!("expected Block, got {:?}", other),
     }
+}
+
+#[test]
+fn test_block_hook_precedes_approval_and_records_all_matching_provenance() {
+    let store = new_store();
+    store
+        .add_tool_hook(
+            "a-approval",
+            "pre_execution",
+            Some("bash"),
+            None,
+            "request_approval",
+            Some(&json!({"reason": "approval alone is insufficient"})),
+        )
+        .unwrap();
+    store
+        .add_tool_hook(
+            "z-block",
+            "pre_execution",
+            Some("bash"),
+            None,
+            "block",
+            Some(&json!({"reason": "authoritative block"})),
+        )
+        .unwrap();
+
+    let evaluation = store
+        .evaluate_hooks_with_provenance(&HookType::PreExecution, "bash", &json!({}))
+        .unwrap();
+
+    match evaluation.result {
+        HookResult::Block(reason) => assert_eq!(reason, "authoritative block"),
+        other => panic!("expected Block, got {other:?}"),
+    }
+    assert_eq!(evaluation.matched_hook_ids, ["a-approval", "z-block"]);
+}
+
+#[test]
+fn test_hook_contract_rejects_noop_enrichment_and_unknown_condition() {
+    assert!(validate_tool_hook_contract(
+        "pre_execution",
+        None,
+        "enrich",
+        Some(&json!({"enrichment": {}})),
+    )
+    .is_err());
+    assert!(validate_tool_hook_contract(
+        "pre_execution",
+        Some(&json!({"unsupported": true})),
+        "block",
+        None,
+    )
+    .is_err());
 }
 
 // ---------------------------------------------------------------------------

@@ -193,6 +193,24 @@ fn axum_routes() -> Router<AxumApiState> {
             post(workflow_runs::api_tick_workflow_run).options(cors_preflight),
         )
         .route(
+            "/api/v1/tool-policy/capabilities/:tool_name",
+            get(tool_policy::api_tool_capability_policy)
+                .put(tool_policy::api_configure_tool_capability)
+                .options(cors_preflight),
+        )
+        .route(
+            "/api/v1/tool-policy/profiles/:profile_id/allowlist",
+            get(tool_policy::api_tool_allowlist_policy)
+                .put(tool_policy::api_configure_tool_allowlist)
+                .options(cors_preflight),
+        )
+        .route(
+            "/api/v1/tool-policy/hooks/:hook_id",
+            get(tool_policy::api_tool_hook_policy)
+                .put(tool_policy::api_configure_tool_hook)
+                .options(cors_preflight),
+        )
+        .route(
             "/api/v1/supervised-patch/workspaces",
             get(supervised_patch::api_supervised_patch_workspaces)
                 .post(supervised_patch::api_create_supervised_patch_workspace)

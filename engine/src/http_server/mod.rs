@@ -39,16 +39,30 @@ pub struct ProviderEndpointConfigApiRequest {
 }
 
 #[derive(Debug, Clone, PartialEq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AgentStepPlanApiRequest {
+    pub agent_id: String,
+    pub role: String,
+    pub capability_profile: Vec<String>,
+    pub profile_id: String,
+    pub model: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ReadOnlyPlanApiRequest {
     pub raw_request: String,
     pub request_source: Option<String>,
     pub adaptive_execution: Option<Value>,
     pub confirm_adaptive_execution_plan: Option<bool>,
+    pub agent_steps: Option<Vec<AgentStepPlanApiRequest>>,
+    pub confirm_agent_runtime_plan: Option<bool>,
 }
 
 #[derive(Debug, Clone, PartialEq, Deserialize)]
 pub struct WorkflowRunCreateApiRequest {
     pub plan_id: String,
+    pub confirm_execution: Option<bool>,
 }
 
 #[derive(Debug, Clone, PartialEq, Deserialize)]
@@ -83,6 +97,39 @@ pub struct WorkflowRunTickApiRequest {
     pub command: Option<String>,
 }
 
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct ToolCapabilityPolicyApiRequest {
+    pub description: String,
+    pub input_schema: Option<Value>,
+    pub output_schema: Option<Value>,
+    pub requires_approval: bool,
+    pub risk_level: String,
+    pub expected_current_sha256: Option<String>,
+    pub confirm_tool_policy: Option<bool>,
+}
+
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct ToolAllowlistPolicyApiRequest {
+    pub tool_names: Vec<String>,
+    pub expected_current_sha256: Option<String>,
+    pub confirm_tool_policy: Option<bool>,
+}
+
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct ToolHookPolicyApiRequest {
+    pub hook_type: String,
+    pub tool_name: Option<String>,
+    pub condition: Option<Value>,
+    pub action: String,
+    pub action_config: Option<Value>,
+    pub enabled: bool,
+    pub expected_current_sha256: Option<String>,
+    pub confirm_tool_policy: Option<bool>,
+}
+
 #[derive(Debug, Clone, PartialEq, Deserialize)]
 pub struct SupervisedPatchWorkspaceCreateRequest {
     pub run_id: String,
@@ -102,6 +149,7 @@ pub struct SupervisedPatchWorkspaceVerifyRequest {
     pub attempt: Option<u64>,
     pub repair_executor: Option<String>,
     pub max_repair_attempts: Option<u64>,
+    pub resume_run_id: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Deserialize)]
@@ -534,12 +582,30 @@ pub fn openapi_document() -> serde_json::Value {
                 },
                 "post": {
                     "summary": "Create a read-only workflow plan",
-                    "description": "Generates a canonical WorkflowGraph plan with recommendation-only quality/routing/retry/observability advisory metadata. Optional adaptive_execution creates one explicit adaptive_provider node and requires dispatch:execute plus confirmation. No execution, provider call, worker spawn, sandbox/process execution, target write, deploy, merge, or approval control is performed.",
+                    "description": "Generates a canonical WorkflowGraph plan. Optional adaptive_execution or agent_steps creates an explicit bounded executable graph and requires dispatch:execute plus its matching confirmation. Each agent_steps entry is one leased action, and entries are dependency-ordered. When a provider is configured, every agent step must name that provider's exact default model; fixture-only states may omit it. Creating a plan does not execute a provider, worker, target write, deploy, merge, or approval action.",
                     "requestBody": json_request_body(&["raw_request"], json!({
                         "raw_request": {"type": "string"},
                         "request_source": {"type": "string", "default": "api"},
                         "adaptive_execution": {"type": "object", "description": "Optional explicit AdaptiveNodeExecutionConfig for one adaptive_provider node."},
-                        "confirm_adaptive_execution_plan": {"type": "boolean"}
+                        "confirm_adaptive_execution_plan": {"type": "boolean"},
+                        "agent_steps": {
+                            "type": "array",
+                            "minItems": 1,
+                            "maxItems": 16,
+                            "items": {
+                                "type": "object",
+                                "additionalProperties": false,
+                                "required": ["agent_id", "role", "capability_profile", "profile_id"],
+                                "properties": {
+                                    "agent_id": {"type": "string", "maxLength": 256},
+                                    "role": {"type": "string", "maxLength": 256},
+                                    "capability_profile": {"type": "array", "minItems": 1, "maxItems": 16, "items": {"type": "string", "maxLength": 256}},
+                                    "profile_id": {"type": "string", "maxLength": 256},
+                                    "model": {"type": "string", "maxLength": 256, "description": "Required for provider-backed agent runtime plans and must exactly match the configured provider default model; optional only for deterministic fixture execution."}
+                                }
+                            }
+                        },
+                        "confirm_agent_runtime_plan": {"type": "boolean"}
                     })),
                     "responses": {
                         "200": {"description": "Read-only workflow plan"},
@@ -572,10 +638,11 @@ pub fn openapi_document() -> serde_json::Value {
                     "responses": {"200": {"description": "Workflow run metadata list"}}
                 },
                 "post": {
-                    "summary": "Create inert workflow run metadata from a read-only plan",
-                    "description": "Persists run/node/edge/event metadata only. It does not execute, resume execution, spawn workers, call providers, or write target repositories.",
+                    "summary": "Create workflow run metadata from a plan",
+                    "description": "Persists run/node/edge/event metadata. Plans containing agent_step or adaptive provider execution require dispatch:execute and confirm_execution=true because scheduler admission begins at run creation. No target-repository write authority is granted.",
                     "requestBody": json_request_body(&["plan_id"], json!({
-                        "plan_id": {"type": "string"}
+                        "plan_id": {"type": "string"},
+                        "confirm_execution": {"type": "boolean"}
                     })),
                     "responses": {
                         "200": {"description": "Workflow run metadata"},
@@ -651,7 +718,7 @@ pub fn openapi_document() -> serde_json::Value {
             "/api/v1/workflow-runs/{run_id}/tick": {
                 "post": {
                     "summary": "Advance workflow run by one tick",
-                    "description": "Finds a ready node (all predecessors completed), leases it, executes via noop/stub, and records the result. Returns the tick result with node execution details. Returns 409 if the run is already terminal.",
+                    "description": "Finds a ready node, leases it through the existing workflow owner, executes through the explicitly selected bounded executor, and records the result. agent_step, Command, CLI, and provider paths retain their separate execution scopes and safety gates. Returns 409 if the run is already terminal.",
                     "parameters": [path_parameter("run_id")],
                     "requestBody": json_request_body(&[], json!({"actor": {"type": "string"}})),
                     "responses": {
@@ -736,7 +803,8 @@ pub fn openapi_document() -> serde_json::Value {
                         "timeout_ms": {"type": "integer", "minimum": 1000, "maximum": 600000},
                         "attempt": {"type": "integer", "minimum": 1, "maximum": 3},
                         "repair_executor": {"type": "string", "enum": ["codex_cli", "claude_code_cli"]},
-                        "max_repair_attempts": {"type": "integer", "minimum": 1, "maximum": 2}
+                        "max_repair_attempts": {"type": "integer", "minimum": 1, "maximum": 2},
+                        "resume_run_id": {"type": "string", "description": "Exact managed workflow run returned by an approval_required response"}
                     })),
                     "responses": {
                         "200": {"description": "Verification evidence recorded"},
@@ -1227,6 +1295,7 @@ pub fn openapi_document() -> serde_json::Value {
     append_operator_decision_openapi_paths(&mut doc);
     append_operator_decision_action_openapi_paths(&mut doc);
     append_scorecard_openapi_paths(&mut doc);
+    append_tool_policy_openapi_paths(&mut doc);
     doc
 }
 
@@ -1520,6 +1589,87 @@ fn append_scorecard_openapi_paths(doc: &mut Value) {
     );
 }
 
+fn append_tool_policy_openapi_paths(doc: &mut Value) {
+    let Some(paths) = doc.get_mut("paths").and_then(Value::as_object_mut) else {
+        return;
+    };
+    paths.insert(
+        "/api/v1/tool-policy/capabilities/{tool_name}".to_string(),
+        json!({
+            "get": {
+                "summary": "Inspect one hash-bound tool capability policy",
+                "description": "Requires dispatch:read scope. Returns bounded policy metadata and its canonical SHA-256.",
+                "parameters": [path_parameter("tool_name")],
+                "responses": {"200": {"description": "Tool capability policy"}, "404": {"description": "Not found"}}
+            },
+            "put": {
+                "summary": "Create or replace one tool capability policy",
+                "description": "Requires dispatch:execute, explicit confirmation, and the current SHA-256 when replacing an existing resource. Mutation and audit commit atomically.",
+                "parameters": [path_parameter("tool_name")],
+                "requestBody": json_request_body(&["description", "requires_approval", "risk_level", "confirm_tool_policy"], json!({
+                    "description": {"type": "string", "maxLength": 4096},
+                    "input_schema": {"type": "object"},
+                    "output_schema": {"type": "object"},
+                    "requires_approval": {"type": "boolean"},
+                    "risk_level": {"type": "string", "enum": ["low", "medium", "high"]},
+                    "expected_current_sha256": {"type": "string", "minLength": 64, "maxLength": 64},
+                    "confirm_tool_policy": {"type": "boolean", "const": true}
+                })),
+                "responses": {"200": {"description": "Hash-bound policy resource"}, "400": {"description": "Invalid or unconfirmed policy"}, "409": {"description": "Stale policy binding"}}
+            }
+        }),
+    );
+    paths.insert(
+        "/api/v1/tool-policy/profiles/{profile_id}/allowlist".to_string(),
+        json!({
+            "get": {
+                "summary": "Inspect one configured tool allowlist",
+                "description": "Requires dispatch:read scope. An absent resource means legacy unconfigured behavior; a present empty list is an authoritative deny-all policy.",
+                "parameters": [path_parameter("profile_id")],
+                "responses": {"200": {"description": "Tool allowlist policy"}, "404": {"description": "Profile is unconfigured"}}
+            },
+            "put": {
+                "summary": "Create or replace one authoritative tool allowlist",
+                "description": "Requires dispatch:execute, explicit confirmation, registered capabilities, and the current SHA-256 when replacing an existing resource.",
+                "parameters": [path_parameter("profile_id")],
+                "requestBody": json_request_body(&["tool_names", "confirm_tool_policy"], json!({
+                    "tool_names": {"type": "array", "maxItems": 128, "uniqueItems": true, "items": {"type": "string", "maxLength": 256}},
+                    "expected_current_sha256": {"type": "string", "minLength": 64, "maxLength": 64},
+                    "confirm_tool_policy": {"type": "boolean", "const": true}
+                })),
+                "responses": {"200": {"description": "Hash-bound policy resource"}, "400": {"description": "Invalid or unconfirmed policy"}, "409": {"description": "Stale policy binding"}}
+            }
+        }),
+    );
+    paths.insert(
+        "/api/v1/tool-policy/hooks/{hook_id}".to_string(),
+        json!({
+            "get": {
+                "summary": "Inspect one hash-bound tool hook",
+                "description": "Requires dispatch:read scope.",
+                "parameters": [path_parameter("hook_id")],
+                "responses": {"200": {"description": "Tool hook policy"}, "404": {"description": "Not found"}}
+            },
+            "put": {
+                "summary": "Create or replace one bounded tool hook",
+                "description": "Requires dispatch:execute, explicit confirmation, bounded non-sensitive metadata, and the current SHA-256 when replacing an existing resource. Post-execution approval requests are rejected.",
+                "parameters": [path_parameter("hook_id")],
+                "requestBody": json_request_body(&["hook_type", "action", "enabled", "confirm_tool_policy"], json!({
+                    "hook_type": {"type": "string", "enum": ["pre_execution", "post_execution"]},
+                    "tool_name": {"type": "string", "maxLength": 256},
+                    "condition": {"type": "object"},
+                    "action": {"type": "string", "enum": ["log", "block", "enrich", "request_approval"]},
+                    "action_config": {"type": "object"},
+                    "enabled": {"type": "boolean"},
+                    "expected_current_sha256": {"type": "string", "minLength": 64, "maxLength": 64},
+                    "confirm_tool_policy": {"type": "boolean", "const": true}
+                })),
+                "responses": {"200": {"description": "Hash-bound policy resource"}, "400": {"description": "Invalid or unconfirmed policy"}, "409": {"description": "Stale policy binding"}}
+            }
+        }),
+    );
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1550,6 +1700,9 @@ mod tests {
             "/api/v1/regressions",
             "/api/v1/regressions/{artifact_id}",
             "/api/v1/regressions/trends/{scenario_id}",
+            "/api/v1/tool-policy/capabilities/{tool_name}",
+            "/api/v1/tool-policy/profiles/{profile_id}/allowlist",
+            "/api/v1/tool-policy/hooks/{hook_id}",
         ] {
             assert!(
                 paths.contains_key(path),
@@ -1630,6 +1783,24 @@ mod tests {
             "backup_id",
         );
         assert_path_parameter(&doc, "/api/v1/operator/evidence/{run_id}", "get", "run_id");
+        assert_path_parameter(
+            &doc,
+            "/api/v1/tool-policy/capabilities/{tool_name}",
+            "put",
+            "tool_name",
+        );
+        assert_path_parameter(
+            &doc,
+            "/api/v1/tool-policy/profiles/{profile_id}/allowlist",
+            "put",
+            "profile_id",
+        );
+        assert_path_parameter(
+            &doc,
+            "/api/v1/tool-policy/hooks/{hook_id}",
+            "put",
+            "hook_id",
+        );
     }
 
     #[test]

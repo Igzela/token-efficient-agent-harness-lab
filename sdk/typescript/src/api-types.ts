@@ -213,9 +213,84 @@ export interface PlanAdvisory {
   decision: Record<string, unknown>;
 }
 
+export interface AgentStepPlanRequest {
+  agent_id: string;
+  role: string;
+  capability_profile: string[];
+  profile_id: string;
+  model?: string;
+}
+
 export interface PlanCreateRequest {
   raw_request: string;
   request_source?: RequestSource;
+  agent_steps?: AgentStepPlanRequest[];
+  confirm_agent_runtime_plan?: boolean;
+}
+
+export interface ToolCapabilityPolicyValue {
+  tool_name: string;
+  description: string;
+  input_schema: Record<string, unknown> | null;
+  output_schema: Record<string, unknown> | null;
+  requires_approval: boolean;
+  risk_level: "low" | "medium" | "high";
+}
+
+export interface ToolAllowlistPolicyValue {
+  profile_id: string;
+  tool_names: string[];
+}
+
+export interface ToolHookPolicyValue {
+  hook_id: string;
+  hook_type: "pre_execution" | "post_execution";
+  tool_name: string | null;
+  condition: Record<string, unknown> | null;
+  action: "log" | "block" | "enrich" | "request_approval";
+  action_config: Record<string, unknown> | null;
+  enabled: boolean;
+}
+
+export interface ToolPolicyResource<T> {
+  schema_version: "tool_policy_resource.v1";
+  resource_kind: "capability" | "allowlist" | "hook";
+  resource_id: string;
+  resource_sha256: string;
+  changed: boolean;
+  value: T;
+}
+
+export interface ToolPolicyResponse<T> {
+  schema_version: "axum_api.v1";
+  resource: ToolPolicyResource<T>;
+}
+
+export interface ToolCapabilityPolicyRequest {
+  description: string;
+  input_schema?: Record<string, unknown>;
+  output_schema?: Record<string, unknown>;
+  requires_approval: boolean;
+  risk_level: "low" | "medium" | "high";
+  expected_current_sha256?: string;
+  confirm_tool_policy: true;
+}
+
+export interface ToolAllowlistPolicyRequest {
+  tool_names: string[];
+  expected_current_sha256?: string;
+  confirm_tool_policy: true;
+}
+
+export interface ToolHookPolicyRequest {
+  hook_type: "pre_execution" | "post_execution";
+  tool_name?: string;
+  condition?: Record<string, unknown>;
+  action: "log" | "block" | "enrich" | "request_approval";
+  action_config?: Record<string, unknown>;
+  enabled: boolean;
+  expected_current_sha256?: string;
+  confirm_tool_policy: true;
 }
 
 export interface WorkflowRun {
@@ -262,10 +337,16 @@ export interface WorkflowRunApproval {
   created_at: string;
   metadata_only?: boolean;
   execution_authority?: string;
+  approval_kind?: "tool_execution";
+  tool_name?: string;
+  profile_id?: string;
+  action_sha256?: string;
+  resolved_request_id?: string;
 }
 
 export interface WorkflowRunCreateRequest {
   plan_id: string;
+  confirm_execution?: boolean;
 }
 
 export interface WorkflowRunEventRequest {

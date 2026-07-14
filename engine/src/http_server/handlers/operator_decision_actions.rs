@@ -12,7 +12,7 @@ use crate::operator_decision::{
     OperatorDecisionAction, OperatorDecisionEvidenceReference, OperatorDecisionItem,
     OperatorDecisionOutcome,
 };
-use crate::storage::local_product_store::BudgetAutoPausePolicy;
+use crate::storage::local_product_store::{is_execution_owner_conflict, BudgetAutoPausePolicy};
 
 const MAX_MUTATION_QUEUE_AGE_SECONDS: u64 = 300;
 
@@ -143,6 +143,21 @@ pub(crate) async fn api_apply_operator_decision_action(
             } else {
                 "rejected"
             };
+            if store
+                .tool_execution_approval_requires_execute_scope(
+                    &current_item.resource_id,
+                    &approval_id,
+                )
+                .map_err(internal)?
+            {
+                authorize(
+                    &state,
+                    &headers,
+                    "dispatch:execute",
+                    uri.path(),
+                    &request_id.0,
+                )?;
+            }
             store
                 .resolve_requested_workflow_run_approval(
                     &current_item.resource_id,
@@ -201,7 +216,7 @@ pub(crate) async fn api_apply_operator_decision_action(
                 require_source_kind(&current_source, "workflow", "workflow source is required")?;
                 store
                     .update_run_pause_reason(&current_item.resource_id, None)
-                    .map_err(internal)?;
+                    .map_err(operator_owner_conflict)?;
                 match store.request_workflow_run_resume(
                     &current_item.resource_id,
                     &actor,
@@ -239,11 +254,15 @@ pub(crate) async fn api_apply_operator_decision_action(
             store
                 .tick_with_retry(&current_item.resource_id, &actor, 0)
                 .map_err(|error| {
-                    ApiError::with_code(
-                        StatusCode::CONFLICT,
-                        "operator_decision_action_rejected",
-                        error,
-                    )
+                    if is_execution_owner_conflict(&error) {
+                        operator_owner_conflict(error)
+                    } else {
+                        ApiError::with_code(
+                            StatusCode::CONFLICT,
+                            "operator_decision_action_rejected",
+                            error,
+                        )
+                    }
                 })?
         }
         OperatorDecisionAction::Pause => {
@@ -474,4 +493,17 @@ fn internal(error: impl ToString) -> ApiError {
         "operator_decision_action_rejected",
         error.to_string(),
     )
+}
+
+fn operator_owner_conflict(error: impl ToString) -> ApiError {
+    let error = error.to_string();
+    if is_execution_owner_conflict(&error) {
+        ApiError::with_code(
+            StatusCode::CONFLICT,
+            "operator_decision_execution_owner_conflict",
+            error,
+        )
+    } else {
+        internal(error)
+    }
 }
