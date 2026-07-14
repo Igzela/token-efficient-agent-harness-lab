@@ -101,7 +101,7 @@ jobs:
           bash scripts/agent-control/codex_wrapper.sh review "$RUNNER_TEMP/review-input/review-prompt.txt" \
             "$RUNNER_TEMP/codex-output" "$GITHUB_WORKSPACE"
           mkdir -p "$RUNNER_TEMP/review-artifact"
-          cp "$RUNNER_TEMP/codex-output/codex-last-message.json" "$RUNNER_TEMP/review-artifact/review-result.json"
+          cp "$RUNNER_TEMP/codex-output/codex-last-message.txt" "$RUNNER_TEMP/review-artifact/review-result.txt"
       - name: Recheck control immediately before review artifact upload
         env:
           AGENT_REPO: ${{ github.repository }}
@@ -111,7 +111,7 @@ jobs:
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: review-result-${{ github.run_id }}-${{ inputs.pr_number }}
-          path: ${{ runner.temp }}/review-artifact/review-result.json
+          path: ${{ runner.temp }}/review-artifact/review-result.txt
           retention-days: 1
           if-no-files-found: error
 
@@ -140,7 +140,7 @@ jobs:
         id: verdict
         run: >-
           python3 scripts/agent-control/validate_review.py
-          "$RUNNER_TEMP/review-artifact/review-result.json"
+          "$RUNNER_TEMP/review-artifact/review-result.txt"
           "${{ inputs.pr_number }}" "$INPUT_HEAD_SHA"
           "$RUNNER_TEMP/review-validation.json"
       - name: Record malformed or infrastructure review result without trusting it as a verdict

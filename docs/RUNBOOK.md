@@ -254,6 +254,27 @@ Canonical CI acquisition binds repository, trusted head repository, workflow ide
 
 The Codex wrapper constructs an allowlisted child environment for version, login-status, help, implementation, repair, and review calls. It preserves only the documented runtime/login variables (`HOME`, optional `CODEX_HOME`, `PATH`, locale/temp/terminal and service-user identity variables) and excludes GitHub, provider, cloud, and unknown secret-shaped variables. It does not fall back to API-key billing, mutate login files, print the environment, or retain raw failure output.
 
+### Self-hosted runner readiness
+
+Use the repository-owned bounded readiness checker for the Actions runner. It verifies the local runner files by metadata only, checks the listener version, resolves exactly one systemd service layout, and uses fully paginated GitHub runner status. The default check requires the runner to be online and idle; `--allow-busy` is only for a check deliberately executed from inside the active runner job.
+
+```bash
+export AGENT_REPO=OWNER/REPO
+export AGENT_RUNNER_ROOT=/path/to/actions-runner
+export AGENT_RUNNER_NAME=Vader
+uv run --no-project python scripts/agent-control/runner_readiness.py \
+  --repo "$AGENT_REPO" \
+  --runner-root "$AGENT_RUNNER_ROOT" \
+  --runner-name "$AGENT_RUNNER_NAME"
+
+AGENT_REPO="$AGENT_REPO" \
+AGENT_RUNNER_ROOT="$AGENT_RUNNER_ROOT" \
+AGENT_RUNNER_NAME="$AGENT_RUNNER_NAME" \
+bash scripts/agent-control/preflight.sh --verbose --require-runner
+```
+
+The official GitHub Actions runner `config.sh` is an installation/registration command, not a health-check interface. `config.sh --check` is not a supported readiness check and must not be used; use `runner_readiness.py` instead. The checker never reads or prints `.credentials` or `.credentials_rsaparams` contents.
+
 Every task Issue intended for implementation must also declare its permitted change scope. The finalizer rejects an artifact unless every changed path is exact or under an allowed directory prefix:
 
 ```html
