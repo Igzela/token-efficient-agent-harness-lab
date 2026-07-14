@@ -38,8 +38,8 @@ Operational consequence:
 
 - do not dispatch a production repository task through this orchestrator yet;
 - keep Issue #208 emergency-stopped;
-- repair timeout/failure observability and the demonstrated worker failure through `AGENT-SMOKE-REPAIR-1`;
-- run a replacement bounded smoke through PR creation, exact-head CI, and independent review before declaring the GPT Web path operational.
+- repair timeout/failure observability and the demonstrated worker failure through `PR207-SMOKE-REPAIR-1`;
+- run `PR207-SMOKE-VERIFY-1` through PR creation, exact-head CI, and independent review before declaring the GPT Web path operational.
 
 The intended user interface remains natural language in GPT Web. The assistant, not the user, owns creation of the bounded Issue and the internal workflow parameters. This contract is documented in `README.md` and `AGENTS.md`, but activation remains blocked by the failed smoke.
 
@@ -132,10 +132,14 @@ This is a benchmark and evidence feature first. It does not authorize dynamic pr
 
 The workflow-owned `LocalRunnerValidationExecutor` intentionally uses the Stub provider and persists bounded scorecards. Live provider execution remains an explicit local CLI/operator path. This separation is a current safety boundary, not a defect. Do not connect ordinary workflow execution directly to a live provider without a separate authority decision, explicit confirmation, budget binding, and kill path.
 
+## Open Work Coordination
+
+The repository-agent repair has priority because GPT Web must not dispatch real work through a path whose first live task stopped before branch/PR creation. One focused implementation PR should own `PR207-SMOKE-REPAIR-1`; a separate live verification task owns `PR207-SMOKE-VERIFY-1`. Neither packet authorizes auto-merge.
+
 ## Active Execution Order
 
-1. Execute `AGENT-SMOKE-REPAIR-1`: diagnose the actual #217 worker failure, add bounded timeout and durable failure/run evidence where missing, repair the root cause, and obtain full exact-head CI on one focused PR. Keep the orchestrator stopped throughout repair.
-2. Execute `AGENT-SMOKE-VERIFY-1`: repeat the one-file smoke and require branch/PR creation, in-scope diff, exact-head seven-job CI, and independent review with auto-merge disabled.
+1. Execute `PR207-SMOKE-REPAIR-1`: diagnose the actual #217 worker failure, add bounded timeout and durable failure/run evidence where missing, repair the root cause, and obtain full exact-head CI on one focused PR. Keep the orchestrator stopped throughout repair.
+2. Execute `PR207-SMOKE-VERIFY-1`: repeat the one-file smoke and require branch/PR creation, in-scope diff, exact-head seven-job CI, and independent review with auto-merge disabled.
 3. Implement `PE2-RUNTIME-PRODUCER-1` on a new focused branch/PR.
 4. Implement `PE4-EVIDENCE-ENTRY-1` on a separate focused branch/PR.
 5. Implement `TOOL-DISCOVERY-BENCH-1` on a separate focused branch/PR.
