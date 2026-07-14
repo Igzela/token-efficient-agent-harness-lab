@@ -136,6 +136,8 @@ The workflow-owned `LocalRunnerValidationExecutor` intentionally uses the Stub p
 
 The repository-agent repair has priority because GPT Web must not dispatch real work through a path whose first live task stopped before branch/PR creation. One focused implementation PR should own `PR207-SMOKE-REPAIR-1`; a separate live verification task owns `PR207-SMOKE-VERIFY-1`. Neither packet authorizes auto-merge.
 
+Operator pause: this repair is intentionally parked. Keep Issue #208 emergency-stopped, keep smoke Issue #217 labeled `agent-blocked`, leave the parking PR open, and do not dispatch, repair, merge, or otherwise advance the repository-agent path until the user explicitly resumes it.
+
 ## Active Execution Order
 
 1. Execute `PR207-SMOKE-REPAIR-1`: diagnose the actual #217 worker failure, add bounded timeout and durable failure/run evidence where missing, repair the root cause, and obtain full exact-head CI on one focused PR. Keep the orchestrator stopped throughout repair.
