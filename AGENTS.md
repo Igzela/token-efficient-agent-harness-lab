@@ -119,17 +119,13 @@ Stop rather than work around any of these:
 
 A difficult implementation, failed first attempt, or missing bounded design detail is not by itself a hard stop. Diagnose, revise the plan, and continue while each repair cycle is evidence-driven and remains inside repository safety boundaries.
 
-## Documentation-Only Merge Exception
+## Documentation-Only Direct-Main Rule
 
-A PR may merge without waiting for the repository's full CI matrix only when the final diff is strictly documentation-only:
+Standing user authorization permits a change to be committed directly to `main` when its final diff is limited to Markdown or plain-text documentation and changes no code, tests, scripts, workflows, configuration, schema, migration, generated artifact, dependency manifest or lockfile, executable file, release artifact, runtime behavior, credential, tag, deployment, provider call, target-repository write, or other external state. A branch and PR are optional for such a change, not mandatory.
 
-- only Markdown or plain-text documentation entrypoints and files are changed, such as `README.md`, `AGENTS.md`, `CLAUDE.md`, and `docs/**/*.md`;
-- no code, tests, scripts, workflows, configuration, schema, migration, generated artifact, dependency manifest/lockfile, release artifact, or executable file changes;
-- no tag, release, deployment, provider call, target-repository write, or other external action is performed;
-- the final diff is reviewed and `git diff --check` plus `uv run --no-project python scripts/check_agent_handoff.py` pass, together with any applicable documentation/link check;
-- there is no unresolved human objection and branch-protection rules permit the merge.
+A qualifying direct-main documentation change still requires final diff review, `git diff --check`, `uv run --no-project python scripts/check_agent_handoff.py`, any applicable documentation or link check, a clear rollback, and no fabricated implementation or CI claim. If the scope is mixed, generated, executable, security-sensitive outside prose, or uncertain, use the normal branch, PR, and complete required CI path.
 
-This exception permits fast factual synchronization, clarification, pruning, and documentation-governance edits. It does not allow documentation to claim that code, a migration, a release, CI, or runtime behavior is complete without already verified underlying evidence. If the diff is mixed, generated, executable, security-sensitive outside prose, or uncertain, use the normal complete-green-CI gate. A later docs-specific CI failure must be repaired promptly, but the merge is not retroactively treated as implementation evidence.
+When a qualifying documentation-only change is already on a PR, it may use the targeted merge exception without waiting for the full CI matrix, subject to the same checks and branch-protection rules. A later docs-specific CI failure must be repaired promptly, but the documentation change is not implementation evidence.
 
 ## Autonomous Advancement Loop
 
@@ -147,7 +143,7 @@ For every autonomous session:
 10. Repair failures at the root cause; do not weaken tests or guards to obtain green CI.
 11. Update only the smallest necessary active docs.
 12. Run `uv run --no-project python scripts/check_agent_handoff.py`.
-13. Commit in English, push, and open a PR. Wait for complete green CI unless the final diff qualifies for the documentation-only merge exception.
+13. Commit in English. Qualifying documentation-only changes may be committed directly to `main`; all other changes require a branch and PR, and must wait for complete required CI.
 14. Merge only when the playbook classifier or its documentation-only exception permits it and no unresolved human objection exists.
 15. Refresh `main`, update packet states, and continue when the bounded objective includes later packets.
 16. Report packet/slice, decisions, files, tests, CI run or documentation-only targeted checks, compatibility, residual risk, rollback, and next state.
@@ -169,7 +165,7 @@ uv run --no-project python scripts/check_agent_handoff.py
 git diff --check
 ```
 
-Add release, browser, Docker, migration, backup/restore, concurrency, compensation, or fault-specific checks when the change touches those surfaces. Strictly documentation-only PRs use the targeted checks specified above rather than the full baseline unless their content requires an additional check.
+Add release, browser, Docker, migration, backup/restore, concurrency, compensation, or fault-specific checks when the change touches those surfaces. Strictly documentation-only changes use the targeted checks specified above rather than the full baseline unless their content requires an additional check.
 
 ## Documentation Maintenance Rule
 
