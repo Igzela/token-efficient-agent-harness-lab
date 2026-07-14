@@ -31,6 +31,27 @@ Most agent demos optimize the first happy path. This lab optimizes the **evidenc
 
 Architecture, data flows, API surface, and safety boundaries: [`docs/ARCHITECTURE_BOOK.md`](docs/ARCHITECTURE_BOOK.md) · product roadmap packets: [`docs/NEXT_DECISION.md`](docs/NEXT_DECISION.md).
 
+## GPT Web Repository Agent
+
+The intended user interface is ordinary language in GPT Web. The user should not need to remember workflow names or manually provide Issue numbers, dispatch IDs, PR numbers, head SHAs, CI run IDs, or retry counters.
+
+A normal request can be:
+
+> Use the repository agent to implement this task. Keep the scope narrow and auto-merge off, review the resulting PR, and ask before merging.
+
+The GPT Web assistant owns the internal translation:
+
+1. refresh actual repository, CI, runner, and control state;
+2. create one bounded Agent Task Issue with measurable acceptance criteria and an exact `agent-orchestrator-scope:v1` allowed-path list;
+3. activate only the orchestrator authority required for the task while leaving auto-merge disabled by default;
+4. observe Vader Codex execution, validated artifact finalization, branch/PR binding, exact-head CI, and independent review;
+5. inspect the final diff and evidence and merge only under the user's explicit authority;
+6. restore emergency stop on scope drift, credential exposure, contradictory state, duplicate dispatch, stale binding, or unexpected mutation.
+
+**Current restriction:** this interface is documented but not yet accepted for production repository tasks. Live smoke Issue #217 reached intake, dispatcher claim, and the Vader worker, then ended `agent-blocked` before creating a branch or PR. Issue #208 is emergency-stopped and both enable labels are absent. `PR207-SMOKE-REPAIR-1` must diagnose and repair the worker failure, and `PR207-SMOKE-VERIFY-1` must complete a replacement smoke through PR creation, exact-head CI, and independent review before normal use resumes.
+
+Machine-facing behavior is normative in [`AGENTS.md`](AGENTS.md); current evidence and restrictions are in [`docs/CURRENT_STATUS.md`](docs/CURRENT_STATUS.md); the repair sequence is in [`docs/NEXT_DECISION.md`](docs/NEXT_DECISION.md); operator recovery details remain in [`docs/RUNBOOK.md`](docs/RUNBOOK.md).
+
 ## Quick Start
 
 ```bash
