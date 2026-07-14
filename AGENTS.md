@@ -4,11 +4,11 @@ This repository is the Token-Efficient Agent Harness Lab: a local deterministic 
 
 ## Current State
 
-The Rust `engine/` is the sole runtime, API, and storage implementation. The dispatch kernel, V2 output track, Adaptive Fusion through AF-7, Agent Runtime through AR-6, Trusted Local Autonomous Execution through IAE-3, the importer-first benchmark path, and PE-1 through PE-6 are implemented. PR #207 merged the disabled-by-default GitHub Issues/Actions → Vader Codex repository-maintenance orchestrator, and PR #216 repaired its Codex output and runner-readiness compatibility boundaries.
+The Rust `engine/` is the sole runtime, API, and storage implementation. The dispatch kernel, V2 output track, Adaptive Fusion through AF-7, Agent Runtime through AR-6, Trusted Local Autonomous Execution through IAE-3, the importer-first benchmark path, and major PE-1 through PE-6 implementation are present. Confirmed PE-2 and PE-4 integration gaps remain active. PR #207 merged the disabled-by-default GitHub Issues/Actions → Vader Codex repository-maintenance orchestrator, and PR #216 repaired its Codex output and runner-readiness compatibility boundaries.
 
 The first live GPT Web smoke, Issue #217, proved intake, claim, controller dispatch, and transition into the Vader worker, but ended `agent-blocked` before creating a branch or PR. Issue #208 is therefore emergency-stopped and both enable labels are absent. Do not claim the repository-agent path is operational or dispatch another production task until the worker failure is diagnosed, repaired through a reviewed PR, and a new bounded smoke completes through PR creation, exact-head CI, and independent review.
 
-Post-R7 wire/type governance hardening is implemented through `scripts/check_wire_codegen_drift.sh`. Later work remains governed by `docs/NEXT_DECISION.md`.
+Post-R7 wire/type governance hardening implemented: `scripts/check_wire_codegen_drift.sh`. Later work remains governed by `docs/NEXT_DECISION.md`.
 
 ## Autonomous Operating Model
 
@@ -35,7 +35,7 @@ When the repository-agent path is operational, the GPT Web assistant owns the co
 
 Do not ask the user to manually pass internal workflow parameters when the GitHub connector exposes enough state to derive them. Do not manufacture success from an `agent-running` or `dispatched` label. The path is successful only when the expected PR exists, its changed files remain in scope, exact-head CI and review evidence are verified, and auto-merge/merge behavior matches the user's authority.
 
-Current temporary restriction: because Issue #217 ended blocked before PR creation, keep the orchestrator emergency-stopped until `AGENT-SMOKE-REPAIR-1` is complete and a replacement smoke passes.
+Current temporary restriction: because Issue #217 ended blocked before PR creation, keep the orchestrator emergency-stopped until `PR207-SMOKE-REPAIR-1` and `PR207-SMOKE-VERIFY-1` are complete.
 
 ## Model Selection
 
