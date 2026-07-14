@@ -8,7 +8,7 @@
 # Reports only non-secret status information.
 #
 # Usage:
-#   preflight.sh [--verbose]
+#   preflight.sh [--verbose] [--require-runner]
 #
 # Exit code:
 #   0 = all checks pass
@@ -17,9 +17,14 @@
 set -euo pipefail
 
 VERBOSE=false
-if [ "${1:-}" = "--verbose" ]; then
-  VERBOSE=true
-fi
+REQUIRE_RUNNER=false
+for argument in "$@"; do
+  case "$argument" in
+    --verbose) VERBOSE=true ;;
+    --require-runner) REQUIRE_RUNNER=true ;;
+    *) echo "Unknown option: $argument" >&2; exit 2 ;;
+  esac
+done
 
 PASS=0
 FAIL=0
@@ -123,6 +128,22 @@ else
 fi
 if [ -n "${RUNNER_LABELS:-}" ]; then
   echo "  Labels: $RUNNER_LABELS"
+fi
+
+if [ "$REQUIRE_RUNNER" = true ]; then
+  echo ""
+  echo "--- Runner Readiness ---"
+  check_runner_readiness() {
+    local repository="${AGENT_REPO:-${GITHUB_REPOSITORY:-}}"
+    [ -n "$repository" ] || return 1
+    [ -n "${AGENT_RUNNER_ROOT:-}" ] || return 1
+    [ -n "${AGENT_RUNNER_NAME:-}" ] || return 1
+    python3 "$(dirname "$0")/runner_readiness.py" \
+      --repo "$repository" \
+      --runner-root "$AGENT_RUNNER_ROOT" \
+      --runner-name "$AGENT_RUNNER_NAME"
+  }
+  check "repository runner is online, idle, labeled, and service-backed" check_runner_readiness
 fi
 
 echo ""

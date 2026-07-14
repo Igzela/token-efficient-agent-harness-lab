@@ -108,10 +108,11 @@ if [ "$WORKER_TYPE" = "implement" ] || [ "$WORKER_TYPE" = "ci-repair" ]; then
   SANDBOX_MODE="workspace-write"
 fi
 JSONL_OUTPUT="$OUTPUT_DIR/codex-events.jsonl"
-LAST_MESSAGE_OUTPUT="$OUTPUT_DIR/codex-last-message.json"
+LAST_MESSAGE_OUTPUT="$OUTPUT_DIR/codex-last-message.txt"
+LAST_MESSAGE_METADATA="$OUTPUT_DIR/codex-last-message.metadata.json"
 EXIT_CODE_OUTPUT="$OUTPUT_DIR/codex-exit-code.txt"
-RAW_OUTPUT="$(mktemp "$TMPDIR/agent-codex-output.XXXXXX")"
-trap 'rm -f "$RAW_OUTPUT"' EXIT
+STDERR_OUTPUT="$(mktemp "$TMPDIR/agent-codex-stderr.XXXXXX")"
+trap 'rm -f "$STDERR_OUTPUT"' EXIT
 
 set +e
 run_codex exec \
@@ -121,13 +122,18 @@ run_codex exec \
   --json \
   --output-last-message "$LAST_MESSAGE_OUTPUT" \
   - < "$PROMPT_FILE" \
-  > "$RAW_OUTPUT" 2>&1
+  > "$JSONL_OUTPUT" 2> "$STDERR_OUTPUT"
 CODEX_EXIT=$?
 set -e
 echo "$CODEX_EXIT" > "$EXIT_CODE_OUTPUT"
 
 if [ "$CODEX_EXIT" -ne 0 ]; then
-  LOWER_OUTPUT=$(tr '[:upper:]' '[:lower:]' < "$RAW_OUTPUT" | tail -40 || true)
+  LOWER_OUTPUT=$(
+    {
+      tail -40 "$STDERR_OUTPUT"
+      tail -40 "$JSONL_OUTPUT"
+    } | tr '[:upper:]' '[:lower:]' | head -c 16384 || true
+  )
   # Never upload arbitrary provider/model stderr.  It may contain a secret,
   # prompt content, or an access token even though the child environment is
   # sanitized.
@@ -141,23 +147,52 @@ if [ "$CODEX_EXIT" -ne 0 ]; then
   fail_closed "model_execution_failure" "Codex execution failed"
 fi
 
-cat "$RAW_OUTPUT" > "$JSONL_OUTPUT"
+if ! python3 - "$LAST_MESSAGE_OUTPUT" "$LAST_MESSAGE_METADATA" "$WORKER_TYPE" <<'PY'
+import hashlib
+import json
+import pathlib
+import sys
 
-if [ ! -s "$LAST_MESSAGE_OUTPUT" ]; then
-  fail_closed "malformed_output" "Codex produced no structured last-message output"
-fi
-if ! python3 - "$LAST_MESSAGE_OUTPUT" <<'PY'
-import json, sys
-with open(sys.argv[1], encoding="utf-8") as handle:
-    value = json.load(handle)
-if not isinstance(value, dict):
-    raise ValueError("last message is not a JSON object")
+last_message_path = pathlib.Path(sys.argv[1])
+metadata_path = pathlib.Path(sys.argv[2])
+worker_type = sys.argv[3]
+max_bytes = 64 * 1024
+
+if last_message_path.is_symlink() or not last_message_path.is_file():
+    raise ValueError("last message is not a regular file")
+size = last_message_path.stat().st_size
+if size <= 0 or size > max_bytes:
+    raise ValueError("last message size is outside the bounded range")
+raw = last_message_path.read_bytes()
+if len(raw) != size:
+    raise ValueError("last message changed while being read")
+try:
+    raw.decode("utf-8")
+except UnicodeDecodeError as error:
+    raise ValueError("last message is not UTF-8") from error
+
+metadata = {
+    "worker_type": worker_type,
+    "format": "text",
+    "byte_count": len(raw),
+    "sha256": hashlib.sha256(raw).hexdigest(),
+}
+temporary = metadata_path.with_name(f".{metadata_path.name}.tmp")
+with temporary.open("w", encoding="utf-8") as handle:
+    json.dump(metadata, handle, sort_keys=True, separators=(",", ":"))
+    handle.write("\n")
+temporary.replace(metadata_path)
 PY
 then
-  fail_closed "malformed_output" "Codex last-message output is not valid JSON"
+  fail_closed "malformed_output" "Codex produced an invalid bounded UTF-8 last message"
 fi
 
-echo "codex_output_file=$LAST_MESSAGE_OUTPUT"
+if [ "$WORKER_TYPE" != "review" ]; then
+  rm -f -- "$LAST_MESSAGE_OUTPUT"
+else
+  echo "codex_output_file=$LAST_MESSAGE_OUTPUT"
+fi
+echo "codex_output_metadata=$LAST_MESSAGE_METADATA"
 echo "codex_events=$JSONL_OUTPUT"
 echo "codex_exit=0"
 echo "codex_wrapper=ok"

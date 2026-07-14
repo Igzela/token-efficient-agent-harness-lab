@@ -23,6 +23,7 @@ import control_state
 import dispatcher
 import pr_binding
 import prompt_builder
+import runner_readiness
 import state_manager
 
 
@@ -118,6 +119,9 @@ class TestWorkflowContracts(unittest.TestCase):
         self.assertNotIn("git push", vader)
         self.assertIn("validate_review.py", source)
         self.assertIn("steps.verdict.outputs.verdict == 'PASS'", source)
+        self.assertIn("codex-last-message.txt", vader)
+        self.assertNotIn("codex-last-message.json", vader)
+        self.assertIn("review-result.txt", vader)
         self.assertIn("steps.verdict.outputs.verdict != 'PASS'", source)
         self.assertIn("require-auto-merge", source)
         self.assertIn("agent-review-blocked", source)
@@ -892,6 +896,136 @@ class TestExactHeadCI(unittest.TestCase):
         self.assertEqual(metadata["superseded_run_ids"], [1000])
         self.assertEqual(metadata["unsupported_run_ids"], [])
         self.assertEqual(metadata["status"], "bound")
+
+
+class TestRunnerReadiness(unittest.TestCase):
+    def setUp(self):
+        self.directory = tempfile.TemporaryDirectory()
+        self.root = pathlib.Path(self.directory.name) / "runner"
+        (self.root / "bin").mkdir(parents=True)
+        for name in (".runner", ".credentials", ".credentials_rsaparams"):
+            (self.root / name).write_bytes(b"credential-content-must-not-escape")
+        listener = self.root / "bin" / "Runner.Listener"
+        listener.write_text("placeholder")
+        listener.chmod(listener.stat().st_mode | stat.S_IXUSR)
+
+    def tearDown(self):
+        self.directory.cleanup()
+
+    def command(self, *, runners, service_scope="user", service_active=True, api_error=None):
+        def fake(argv, **kwargs):
+            if argv[:2] == ["gh", "api"]:
+                if api_error == "failed":
+                    raise runner_readiness.ReadinessError("command_failed")
+                if api_error == "malformed":
+                    return "not-json"
+                return json.dumps(runners)
+            if argv and argv[0] == str(self.root / "bin" / "Runner.Listener"):
+                return "Runner.Listener 3.0\n"
+            if argv and argv[0] == "systemctl":
+                scope = "user" if "--user" in argv else "system"
+                if scope != service_scope:
+                    return "LoadState=not-found\nActiveState=inactive\nSubState=dead\n"
+                active = "active" if service_active else "inactive"
+                substate = "running" if service_active else "dead"
+                return f"LoadState=loaded\nActiveState={active}\nSubState={substate}\n"
+            raise AssertionError(argv)
+
+        return fake
+
+    def runner(self, *, busy=False, labels=None, status="online", runners=None,
+               service_scope="user", service_active=True, api_error=None, allow_busy=False):
+        entry = {
+            "id": 17,
+            "name": "Vader",
+            "status": status,
+            "busy": busy,
+            "labels": [{"name": value} for value in (labels or ["self-hosted", "vader", "agent-worker"])],
+        }
+        pages = runners if runners is not None else [{"total_count": 1, "runners": [entry]}]
+        with mock.patch.object(
+            runner_readiness, "_run_command",
+            side_effect=self.command(
+                runners=pages,
+                service_scope=service_scope,
+                service_active=service_active,
+                api_error=api_error,
+            ),
+        ):
+            return runner_readiness.check_readiness(
+                repo="Igzela/token-efficient-agent-harness-lab",
+                runner_root=self.root,
+                runner_name="Vader",
+                allow_busy=allow_busy,
+            )
+
+    def test_online_idle_runner_passes_and_paginates_all_pages(self):
+        first = {"total_count": 2, "runners": [{
+            "id": 4, "name": "Other", "status": "online", "busy": False,
+            "labels": [{"name": "self-hosted"}],
+        }]}
+        second = {"total_count": 2, "runners": [{
+            "id": 17, "name": "Vader", "status": "online", "busy": False,
+            "labels": [{"name": "self-hosted"}, {"name": "vader"}, {"name": "agent-worker"}],
+        }]}
+        result = self.runner(runners=[first, second])
+        self.assertTrue(result["ready"])
+        self.assertEqual(result["service_layout"], "user")
+        self.assertFalse(result["busy"])
+
+    def test_allowed_busy_runner_passes_only_with_explicit_option(self):
+        self.assertFalse(self.runner(busy=True)["ready"])
+        self.assertTrue(self.runner(busy=True, allow_busy=True)["ready"])
+
+    def test_offline_runner_fails_closed(self):
+        result = self.runner(status="offline")
+        self.assertFalse(result["ready"])
+        self.assertEqual(result["reason"], "runner_offline")
+
+    def test_missing_labels_fails_closed(self):
+        result = self.runner(labels=["self-hosted", "vader"])
+        self.assertFalse(result["ready"])
+        self.assertEqual(result["reason"], "runner_labels_invalid")
+
+    def test_duplicate_identity_fails_closed(self):
+        duplicate = [{"total_count": 2, "runners": [
+            {"id": 17, "name": "Vader", "status": "online", "busy": False,
+             "labels": [{"name": "self-hosted"}, {"name": "vader"}, {"name": "agent-worker"}]},
+            {"id": 18, "name": "Vader", "status": "online", "busy": False,
+             "labels": [{"name": "self-hosted"}, {"name": "vader"}, {"name": "agent-worker"}]},
+        ]}]
+        result = self.runner(runners=duplicate)
+        self.assertFalse(result["ready"])
+        self.assertEqual(result["reason"], "runner_identity_ambiguous")
+
+    def test_inactive_service_fails_closed(self):
+        result = self.runner(service_active=False)
+        self.assertFalse(result["ready"])
+        self.assertEqual(result["reason"], "service_not_active")
+
+    def test_system_service_layout_is_supported(self):
+        result = self.runner(service_scope="system")
+        self.assertTrue(result["ready"])
+        self.assertEqual(result["service_layout"], "system")
+
+    def test_missing_local_configuration_fails_without_reading_contents(self):
+        (self.root / ".credentials").unlink()
+        result = self.runner()
+        self.assertFalse(result["ready"])
+        self.assertEqual(result["reason"], "runner_configuration_missing")
+
+    def test_malformed_or_failed_api_response_fails_closed(self):
+        for api_error in ("malformed", "failed"):
+            with self.subTest(api_error=api_error):
+                result = self.runner(api_error=api_error)
+                self.assertFalse(result["ready"])
+                self.assertEqual(result["reason"], "github_api_unavailable")
+
+    def test_credential_contents_never_appear_in_bounded_status(self):
+        result = self.runner()
+        serialized = json.dumps(result, sort_keys=True)
+        self.assertNotIn("credential-content-must-not-escape", serialized)
+        self.assertLess(len(serialized.encode("utf-8")), 4096)
 
 
 if __name__ == "__main__":

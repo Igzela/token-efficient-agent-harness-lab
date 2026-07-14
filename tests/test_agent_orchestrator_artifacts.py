@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import os
 import subprocess
 import sys
@@ -500,6 +501,135 @@ class TestCodexWrapperEnvironment(unittest.TestCase):
             self.assertNotIn("super-secret-value-from-failing-provider", "".join(
                 path.read_text(errors="replace") for path in failed_output.glob("*")
             ))
+
+
+class TestCodexLastMessageBoundary(unittest.TestCase):
+    VALID_REVIEW = json.dumps({
+        "verdict": "BLOCKED",
+        "summary": "bounded review result",
+        "reviewed_head_sha": "a" * 40,
+        "ci_green": True,
+        "security_ok": True,
+        "rollback_ok": True,
+        "blockers": ["operator review required"],
+    })
+
+    def run_wrapper(self, marker: str, worker: str = "review"):
+        directory = tempfile.TemporaryDirectory()
+        root = Path(directory.name)
+        fake = root / "codex"
+        fake.write_text(
+            "#!/usr/bin/env python3\n"
+            "import sys\n"
+            "if sys.argv[1:3] == ['--version']:\n"
+            "    print('codex 1.0'); raise SystemExit(0)\n"
+            "if sys.argv[1:3] == ['login', 'status']:\n"
+            "    raise SystemExit(0)\n"
+            "if sys.argv[1:3] == ['exec', '--help']:\n"
+            "    print('--cd --sandbox --ephemeral --json --output-last-message'); raise SystemExit(0)\n"
+            "if sys.argv and sys.argv[1] == 'exec':\n"
+            "    output = sys.argv[sys.argv.index('--output-last-message') + 1]\n"
+            "    prompt = sys.stdin.read()\n"
+            "    if 'FAIL_CODEX' in prompt:\n"
+            "        print('provider-secret-must-not-escape', file=sys.stderr); raise SystemExit(7)\n"
+            "    if 'EMPTY' in prompt: payload = b''\n"
+            "    elif 'OVERSIZED' in prompt: payload = b'x' * (64 * 1024 + 1)\n"
+            "    elif 'INVALID_UTF8' in prompt: payload = b'\\xff'\n"
+            "    elif 'INVALID_REVIEW' in prompt: payload = b'plain review text'\n"
+            f"    elif 'VALID_REVIEW' in prompt: payload = {self.VALID_REVIEW.encode()!r}\n"
+            "    else: payload = b'plain non-json model message'\n"
+            "    with open(output, 'wb') as handle: handle.write(payload)\n"
+            "    print('{\"type\":\"completed\"}')\n"
+            "    raise SystemExit(0)\n"
+            "raise SystemExit(2)\n"
+        )
+        fake.chmod(fake.stat().st_mode | 0o111)
+        prompt = root / "prompt.txt"
+        prompt.write_text(marker)
+        output = root / "output"
+        home = root / "home"
+        home.mkdir()
+        result = subprocess.run(
+            [str(CONTROL / "codex_wrapper.sh"), worker, str(prompt), str(output), str(root)],
+            cwd=ROOT,
+            env={**os.environ, "PATH": f"{root}:{os.environ['PATH']}", "HOME": str(home)},
+            text=True,
+            capture_output=True,
+            timeout=30,
+        )
+        return directory, root, output, result
+
+    def test_plain_text_and_non_json_text_succeed_without_json_parsing(self):
+        directory, _, output, result = self.run_wrapper("plain")
+        try:
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual((output / "codex-last-message.txt").read_text(), "plain non-json model message")
+            metadata = json.loads((output / "codex-last-message.metadata.json").read_text())
+            self.assertEqual(set(metadata), {"worker_type", "format", "byte_count", "sha256"})
+            self.assertEqual(metadata["format"], "text")
+            self.assertEqual(metadata["worker_type"], "review")
+            raw = (output / "codex-last-message.txt").read_bytes()
+            self.assertEqual(metadata["byte_count"], len(raw))
+            self.assertEqual(metadata["sha256"], hashlib.sha256(raw).hexdigest())
+            self.assertEqual((output / "codex-events.jsonl").read_text(), '{"type":"completed"}\n')
+        finally:
+            directory.cleanup()
+
+    def test_empty_oversized_and_invalid_utf8_outputs_fail_closed(self):
+        for marker, reason in (("EMPTY", "malformed_output"), ("OVERSIZED", "malformed_output"), ("INVALID_UTF8", "malformed_output")):
+            with self.subTest(marker=marker):
+                directory, _, output, result = self.run_wrapper(marker)
+                try:
+                    self.assertNotEqual(result.returncode, 0)
+                    failure = json.loads((output / "failure_reason.json").read_text())
+                    self.assertEqual(failure["reason"], reason)
+                finally:
+                    directory.cleanup()
+
+    def test_nonzero_codex_exit_does_not_expose_provider_output(self):
+        directory, _, output, result = self.run_wrapper("FAIL_CODEX")
+        try:
+            self.assertNotEqual(result.returncode, 0)
+            self.assertNotIn("provider-secret-must-not-escape", result.stderr)
+            self.assertNotIn("provider-secret-must-not-escape", "".join(
+                path.read_text(errors="replace") for path in output.glob("*")
+            ))
+        finally:
+            directory.cleanup()
+
+    def test_implementation_and_repair_modes_remove_raw_final_message(self):
+        for worker in ("implement", "ci-repair"):
+            with self.subTest(worker=worker):
+                directory, _, output, result = self.run_wrapper("plain", worker)
+                try:
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                    self.assertFalse((output / "codex-last-message.txt").exists())
+                    self.assertTrue((output / "codex-last-message.metadata.json").exists())
+                finally:
+                    directory.cleanup()
+
+    def test_review_text_reaches_validator_as_valid_or_invalid_artifact(self):
+        for marker, expected_code, expected_returncode in (
+            ("VALID_REVIEW", None, 0),
+            ("INVALID_REVIEW", "artifact_invalid_json", 1),
+        ):
+            with self.subTest(marker=marker):
+                directory, _, output, wrapper_result = self.run_wrapper(marker)
+                try:
+                    self.assertEqual(wrapper_result.returncode, 0, wrapper_result.stderr)
+                    sidecar = output / "validation.json"
+                    validator = subprocess.run(
+                        [sys.executable, str(CONTROL / "validate_review.py"),
+                         str(output / "codex-last-message.txt"), "207", "a" * 40, str(sidecar)],
+                        cwd=ROOT, text=True, capture_output=True, timeout=30,
+                    )
+                    self.assertEqual(validator.returncode, expected_returncode, validator.stderr)
+                    result = json.loads(sidecar.read_text())
+                    self.assertEqual(result["classification"], "valid_verdict" if expected_returncode == 0 else "invalid_artifact")
+                    if expected_code:
+                        self.assertEqual(result["failure_code"], expected_code)
+                finally:
+                    directory.cleanup()
 
 
 if __name__ == "__main__":
