@@ -1036,13 +1036,21 @@ export interface WorkflowRunApproval {
   run_id: string;
   node_id: string;
   decision: string;
-  decided_by: string;
+  decided_by?: string;
+  actor?: string;
   reason: string | null;
   bound_patch_hash: string | null;
   bound_source_revision: string | null;
   bound_changed_files: string[] | null;
   expires_at: string | null;
   created_at: string;
+  metadata_only?: boolean;
+  execution_authority?: string;
+  approval_kind?: "tool_execution";
+  tool_name?: string;
+  profile_id?: string;
+  action_sha256?: string;
+  resolved_request_id?: string;
 }
 
 export interface WorkflowRunListResponse {
@@ -1532,6 +1540,18 @@ export interface StorageIntegrityResponse {
     status: string;
     schema_version: number;
     tables: TableIntegrity[];
+  };
+}
+
+export interface ToolPolicyResourceResponse {
+  schema_version: "axum_api.v1";
+  resource: {
+    schema_version: "tool_policy_resource.v1";
+    resource_kind: "capability" | "allowlist" | "hook";
+    resource_id: string;
+    resource_sha256: string;
+    changed: boolean;
+    value: Record<string, unknown>;
   };
 }
 

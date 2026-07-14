@@ -3,8 +3,9 @@
 use rusqlite::Row;
 use serde_json::{json, Value};
 
-pub(super) const ACTIVE_RUN_IDS_SQL: &str =
-    "SELECT run_id FROM workflow_runs WHERE status IN ('running', 'created') ORDER BY run_sequence";
+pub(super) const ACTIVE_RUN_IDS_SQL: &str = "SELECT run_id FROM workflow_runs
+     WHERE status IN ('running', 'created') AND pause_reason IS NULL
+     ORDER BY run_sequence";
 
 pub(super) const ACTIVE_RUNS_PRIORITIZED_SQL: &str =
     "SELECT run_id, run_sequence, workflow_id, status, priority, deadline_at,
@@ -12,17 +13,20 @@ pub(super) const ACTIVE_RUNS_PRIORITIZED_SQL: &str =
                                 created_at, started_at
                          FROM workflow_runs
                          WHERE status IN ('running', 'created')
+                           AND COALESCE(pause_reason, '') <> 'api_owned_supervised_patch'
                          ORDER BY CASE WHEN pause_reason IS NOT NULL THEN 1 ELSE 0 END,
                                   priority ASC, created_at ASC";
 pub(super) const ACTIVE_RUN_COUNT_SQL: &str =
-    "SELECT COUNT(*) FROM workflow_runs WHERE status IN ('running', 'created')";
+    "SELECT COUNT(*) FROM workflow_runs WHERE status IN ('running', 'created')
+     AND COALESCE(pause_reason, '') <> 'api_owned_supervised_patch'";
 
 pub(super) const QUEUED_COUNT_SQL: &str =
     "SELECT COUNT(*) FROM workflow_runs WHERE status IN ('created') AND pause_reason IS NULL";
 pub(super) const RUNNING_COUNT_SQL: &str =
     "SELECT COUNT(*) FROM workflow_runs WHERE status = 'running'";
 pub(super) const PAUSED_COUNT_SQL: &str =
-    "SELECT COUNT(*) FROM workflow_runs WHERE pause_reason IS NOT NULL";
+    "SELECT COUNT(*) FROM workflow_runs WHERE status IN ('running', 'created')
+     AND pause_reason IS NOT NULL AND pause_reason <> 'api_owned_supervised_patch'";
 pub(super) const COMPLETED_COUNT_SQL: &str =
     "SELECT COUNT(*) FROM workflow_runs WHERE status = 'completed'";
 pub(super) const FAILED_COUNT_SQL: &str =
@@ -50,8 +54,8 @@ pub(super) const PG_SET_PENDING_NODE_RUNNING_SQL: &str =
     "UPDATE workflow_run_nodes SET status = 'running', leased_at = $1 WHERE node_id = $2";
 
 pub(super) const STALE_LEASE_SELECT_SQL: &str = "SELECT run_id, node_id, leased_at FROM workflow_run_nodes WHERE status = 'running' AND leased_at IS NOT NULL";
-pub(super) const SQLITE_RECOVER_STALE_LEASE_SQL: &str = "UPDATE workflow_run_nodes SET status = 'pending', leased_at = NULL WHERE run_id = ?1 AND node_id = ?2 AND status = 'running'";
-pub(super) const PG_RECOVER_STALE_LEASE_SQL: &str = "UPDATE workflow_run_nodes SET status = 'pending', leased_at = NULL WHERE run_id = $1 AND node_id = $2 AND status = 'running'";
+pub(super) const SQLITE_RECOVER_STALE_LEASE_SQL: &str = "UPDATE workflow_run_nodes SET status = 'pending', leased_at = NULL WHERE run_id = ?1 AND node_id = ?2 AND status = 'running' AND leased_at = ?3";
+pub(super) const PG_RECOVER_STALE_LEASE_SQL: &str = "UPDATE workflow_run_nodes SET status = 'pending', leased_at = NULL WHERE run_id = $1 AND node_id = $2 AND status = 'running' AND leased_at = $3";
 
 pub(super) fn prioritized_sqlite_row(row: &Row<'_>) -> rusqlite::Result<Value> {
     Ok(json!({

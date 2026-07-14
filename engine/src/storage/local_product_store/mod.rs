@@ -1,5 +1,6 @@
 mod adaptive_observation;
 mod adaptive_policy;
+mod agent_action_receipts;
 mod agent_profiles;
 mod agent_runtime;
 mod audit;
@@ -30,6 +31,8 @@ mod regression_report_artifacts;
 mod schema;
 mod supervised_patch;
 mod team;
+mod tool_execution_policy;
+mod tool_policy_management;
 mod tool_registry;
 mod workflow_runs;
 
@@ -52,10 +55,13 @@ pub use crate::read_only_planner::WorkflowPlanIds;
 pub use adaptive_observation::{
     AdaptiveObservationInput, AdaptiveObservationSummary, ADAPTIVE_OBSERVATION_SCHEMA_VERSION,
 };
+pub(crate) use agent_action_receipts::{AgentActionMutation, AgentMutationOp};
 pub use boundaries::local_boundaries;
 pub use budget_pause_decisions::{BudgetAutoPausePolicy, BUDGET_AUTO_PAUSE_POLICY_SCHEMA_VERSION};
 pub use export_import::{ImportCounts, ImportResult, LOCAL_IMPORT_SCHEMA_VERSION};
 pub use integrity::{IntegrityReport, TableIntegrity};
+pub(crate) use tool_execution_policy::ToolExecutionGate;
+pub(crate) use workflow_runs::is_execution_owner_conflict;
 
 pub const LOCAL_PRODUCT_STORE_SCHEMA_VERSION: &str = "local_product_store.v1";
 pub const LOCAL_TEAM_EXPORT_SCHEMA_VERSION: &str = "local_team_export.v1";

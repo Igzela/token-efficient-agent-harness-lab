@@ -2,7 +2,92 @@
 
 Operator procedures for the local Agent Control Plane.
 
-Last updated: 2026-07-13.
+Last updated: 2026-07-14.
+
+## Agent Runtime and Tool Policy Operations
+
+Agent Runtime is an engine workflow executor, not the GitHub/Vader repository-maintenance orchestrator. The Rust scheduler remains the sole owner of admission, leases, retries, cooldown, concurrency, pause/resume, and run state. A provider decision performs one call and returns one typed action; there is no hidden agent loop.
+
+Keep live execution default-off. For an authenticated trusted-local provider-backed run, configure the existing symbolic provider credential boundary and cost gates, then require all of:
+
+```bash
+export ACP_REQUIRE_AUTH=1
+export ACP_ADMIN_API_KEY="$SYMBOLIC_LOCAL_ADMIN_KEY"
+export ACP_ENABLE_PROVIDER_EXECUTION=1
+export ACP_ENABLE_AGENT_RUNTIME=1
+export ACP_AGENT_RUNTIME_KILL_SWITCH=0
+export ACP_AGENT_MAX_CONCURRENT_GLOBAL=2
+export ACP_AGENT_MAX_CONCURRENT_PER_RUN=1
+export ACP_SCHEDULER_MAX_RETRIES=1
+export ACP_SCHEDULER_LEASE_TIMEOUT_MS=302000
+```
+
+`ACP_PROVIDER_TYPE`, model, credential environment reference, timeout, pricing, per-dispatch cost, and daily cost must satisfy the existing provider runbook. The `agent_step.model` must exactly equal the configured provider's default model; a mismatch fails before reservation or invocation so model-specific pricing cannot be bypassed. `ACP_SCHEDULER_MAX_RETRIES` controls retryable node failures in both normal and dynamic scheduler modes, defaults to `0` for compatibility, and fails startup unless it is in `0..=10`; it does not make outcome-unknown tool effects retryable or weaken provider cost, timeout, or circuit-breaker gates. The scheduler lease must be at least the maximum bounded executor timeout plus `max(interval, 1000 ms)`; the example uses 302 seconds for the 300-second Agent Runtime bound and a two-second interval. Do not put a raw credential in a plan, policy, audit record, command, or evidence artifact. Startup fails if a real provider-backed Agent Runtime is available without `ACP_REQUIRE_AUTH=1`. CI uses deterministic fixtures and must not set live credentials.
+
+Create one or more confirmed, dependency-ordered typed nodes, then create and advance the run. Each node still performs exactly one action. Repeated entries for one agent must carry the same role, profile, and unique capability set so the run-scoped agent state has one stable identity. Replace the symbolic URL/key and carry the returned `plan_id` and `run_id`; do not copy raw provider content into operator records.
+
+```bash
+curl -sS -X POST "$ACP_API_URL/api/v1/plans" \
+  -H "authorization: Bearer $ACP_ADMIN_API_KEY" \
+  -H "content-type: application/json" \
+  -d '{
+    "raw_request":"Perform one bounded agent decision",
+    "request_source":"operator",
+    "agent_steps":[{
+      "agent_id":"agent-operator-1",
+      "role":"operator",
+      "capability_profile":["memory","mailbox","child_task","handoff","review","debate"],
+      "profile_id":"operator-bounded",
+      "model":"configured-model"
+    }],
+    "confirm_agent_runtime_plan":true
+  }'
+
+curl -sS -X POST "$ACP_API_URL/api/v1/workflow-runs" \
+  -H "authorization: Bearer $ACP_ADMIN_API_KEY" \
+  -H "content-type: application/json" \
+  -d '{"plan_id":"REPLACE_WITH_PLAN_ID","confirm_execution":true}'
+
+curl -sS -X POST "$ACP_API_URL/api/v1/workflow-runs/REPLACE_WITH_RUN_ID/tick" \
+  -H "authorization: Bearer $ACP_ADMIN_API_KEY" \
+  -H "content-type: application/json" \
+  -d '{"executor":"agent_step","max_retries":0}'
+```
+
+Capabilities are authoritative, not prompt hints: `memory` permits digest/note/observation updates; `mailbox` permits read/acknowledge; `child_task` permits child proposals; `handoff`, `review`, and `debate` permit only their corresponding typed actions. `cancel_proposal` requires at least one coordination capability. `wait` and `complete` are always available. Unknown or omitted capabilities grant nothing. Mailbox observations expose only bounded immutable IDs needed for later review/debate/handoff actions and never include raw bodies.
+
+Configure tool policy through the authenticated hash-bound resources. First PUT a capability with `confirm_tool_policy=true`; then PUT a profile allowlist or hook. A first create omits `expected_current_sha256`. Before replacing an existing resource, GET it and copy its `resource.resource_sha256` into `expected_current_sha256`. A stale hash returns `409 tool_policy_stale`. Repeating an already-applied identical document returns `changed=false`. An explicit empty allowlist is deny-all.
+
+```bash
+curl -sS -X PUT "$ACP_API_URL/api/v1/tool-policy/capabilities/echo" \
+  -H "authorization: Bearer $ACP_ADMIN_API_KEY" \
+  -H "content-type: application/json" \
+  -d '{
+    "description":"bounded echo command",
+    "requires_approval":true,
+    "risk_level":"medium",
+    "confirm_tool_policy":true
+  }'
+
+curl -sS -X PUT "$ACP_API_URL/api/v1/tool-policy/profiles/operator-bounded/allowlist" \
+  -H "authorization: Bearer $ACP_ADMIN_API_KEY" \
+  -H "content-type: application/json" \
+  -d '{"tool_names":["echo"],"confirm_tool_policy":true}'
+```
+
+Capability, allowlist, and hook mutation plus audit commit atomically. Configuration rejects unknown tools, duplicate IDs, oversized or secret-shaped metadata, stale hashes, invalid hook actions, and more than 32 enabled hooks. Dashboard Settings provides a read-only resource/hash inspector. Approval-required execution enters `awaiting_approval`; resolve the corresponding typed operator decision with its current queue hash and `dispatch:execute`. Do not use the metadata-only workflow-approval POST as execution authority. An approved authorization is bound to exact run, node, tool, profile, action hash, and request, and is consumed before one subprocess invocation. Non-approval tools claim an atomic implicit receipt before invocation. A retry cannot repeat the effect; if execution or a post hook fails after that claim, the node records an explicit non-retryable outcome-unknown failure for operator reconciliation.
+
+Use only a documented scheduler executor value. Startup rejects unknown `ACP_SCHEDULER_EXECUTOR` and `ACP_EXECUTION_MODE` values, and an unavailable configured CLI executor produces an explicit failed result rather than a noop. Direct `ACP_EXECUTION_MODE=cli`, `ACP_EXECUTION_MODE=auto`, and `/api/v1/dispatch` multi/CLI execution are retired. Use `ACP_SCHEDULER_EXECUTOR=auto` or `pool` for provider/CLI hybrid workflows; CLI tools then execute only as confirmed leased nodes with policy and receipt enforcement. Bind every CLI node to the exact app-owned supervised-patch workspace for its run; a missing or different path fails with no subprocess and no cwd fallback. Repeating a supervised-patch verification request reuses the canonical workspace/operation/attempt run when the exact binding matches, returns its terminal result, or reports `verification_in_progress`; a changed binding returns conflict. The run is marked `api_owned_supervised_patch`, so scheduler workers skip it in queue-enabled and queue-disabled modes. If the engine also mounts a scheduler, configure its lease timeout to exceed the larger of the verification-command timeout and CLI timeout by `max(interval, 1000 ms)`; otherwise the handler returns `unsafe_managed_execution_lease` before creating a run or subprocess effect. Treat a policy read error caused by corrupt stored JSON as an integrity incident; do not overwrite it through a guessed hash. Stop execution, back up the store, run the integrity procedure, and restore from verified app-owned evidence.
+
+Emergency disable and rollback:
+
+1. Set `ACP_AGENT_RUNTIME_KILL_SWITCH=1` and pause the existing scheduler.
+2. Inspect active leases and `awaiting_approval` nodes; do not drop policy/receipt tables while one is active.
+3. Restore a prior tool resource by PUTting the previous bounded snapshot recorded in `tool_policy.*_configured` audit details with the current hash.
+4. The default removal path is to revert the integration merge after leases are safe and leave migration v22 inert so it preserves restart evidence.
+5. If destructive local cleanup is required, perform it before reverting the code: after a verified backup and stopped v22 writers, invoke `LocalProductStore::rollback_v22_to_v21` with explicit destructive-local confirmation, then revert the integration merge. The transaction refuses any non-empty v22 authority table, audits a successful empty-table rollback, drops only the three v22 tables, and moves the backend version marker to v21 atomically. Do not bypass refusal by manually dropping receipt, authorization, or configured-allowlist evidence.
+
+Post-execution hooks run after the external effect. A post block marks the node result failed, preserves inner usage fields, and is non-retryable because the effect may already have occurred; it cannot undo the external effect. Use pre-execution block/approval hooks when execution itself must be prevented.
 
 ## Bounded PE-6 Recovery Drills
 

@@ -3,6 +3,7 @@ use serde_json::{json, Value};
 
 use super::{append_audit_locked, collect_values, DatabaseConnection, LocalProductStore};
 use crate::agent_memory::build_memory_context_for_node;
+use crate::provider::redaction::contains_sensitive_patterns;
 use crate::workflow::context_pack::{
     assemble_context_injection_with_bridge, ContextAssemblyConfig, ContextSource,
 };
@@ -15,6 +16,30 @@ use dag_mutations::{insert_workflow_run_edge_locked, insert_workflow_run_node_lo
 use dag_mutations::{pg_insert_workflow_run_edge, pg_insert_workflow_run_node};
 
 pub const WORKFLOW_RUN_SCHEMA_VERSION: &str = "workflow_run.v1";
+pub(crate) const API_OWNED_SUPERVISED_PATCH: &str = "api_owned_supervised_patch";
+const EXECUTION_OWNER_CONFLICT_PREFIX: &str = "workflow run execution owner conflict";
+const MAX_AGENT_OBJECTIVE_BYTES: usize = 4096;
+
+pub(crate) fn require_run_execution_owner(
+    run_id: &str,
+    current_owner: Option<&str>,
+    expected_owner: Option<&str>,
+) -> Result<(), String> {
+    match (current_owner, expected_owner) {
+        (Some(API_OWNED_SUPERVISED_PATCH), Some(API_OWNED_SUPERVISED_PATCH)) => Ok(()),
+        (Some(API_OWNED_SUPERVISED_PATCH), _) => Err(format!(
+            "{EXECUTION_OWNER_CONFLICT_PREFIX}: {run_id} is owned by the supervised-patch API"
+        )),
+        (_, Some(API_OWNED_SUPERVISED_PATCH)) => Err(format!(
+            "{EXECUTION_OWNER_CONFLICT_PREFIX}: {run_id} is no longer owned by the supervised-patch API"
+        )),
+        _ => Ok(()),
+    }
+}
+
+pub(crate) fn is_execution_owner_conflict(error: &str) -> bool {
+    error.starts_with(EXECUTION_OWNER_CONFLICT_PREFIX)
+}
 
 enum LeaseResult {
     Terminal {
@@ -61,13 +86,23 @@ impl LocalProductStore {
             .get("edges")
             .and_then(Value::as_array)
             .ok_or_else(|| format!("plan {plan_id} graph missing edges"))?;
+        let executable = workflow_plan_has_execution_authority(&plan);
+        let run_boundaries = workflow_run_boundaries_for_plan(&plan)?;
+        let execution_authority = run_boundaries
+            .get("execution_authority")
+            .and_then(Value::as_str)
+            .unwrap_or("disabled")
+            .to_string();
 
         let run_id = match &self.db {
             DatabaseConnection::Sqlite(_) => self.with_conn(|conn| {
-                let sequence = next_sequence(conn, "workflow_runs", "run_sequence")?;
+                let tx = conn
+                    .unchecked_transaction()
+                    .map_err(|error| error.to_string())?;
+                let sequence = next_sequence(&tx, "workflow_runs", "run_sequence")?;
                 let run_id = format!("run-{sequence:04}");
                 let created_at = self.now();
-                let boundaries = workflow_run_boundaries();
+                let boundaries = run_boundaries.clone();
                 let run = json!({
                     "schema_version": WORKFLOW_RUN_SCHEMA_VERSION,
                     "run_sequence": sequence,
@@ -84,7 +119,7 @@ impl LocalProductStore {
                     "graph": graph,
                     "boundaries": boundaries,
                 });
-                conn.execute(
+                tx.execute(
                     "INSERT INTO workflow_runs
                      (run_sequence, run_id, plan_id, created_at, updated_at, status, workflow_id,
                       dispatch_id, started_at, completed_at, result_json, boundaries_json, run_json,
@@ -107,13 +142,14 @@ impl LocalProductStore {
                 .map_err(|e| e.to_string())?;
 
                 for node in nodes {
-                    insert_workflow_run_node_locked(conn, &run_id, node)?;
+                    insert_workflow_run_node_locked(&tx, &run_id, node)?;
+                    insert_agent_state_for_node_sqlite(&tx, &run_id, node, &created_at, actor)?;
                 }
                 for edge in edges {
-                    insert_workflow_run_edge_locked(conn, &run_id, edge)?;
+                    insert_workflow_run_edge_locked(&tx, &run_id, edge)?;
                 }
                 insert_workflow_run_event_locked(
-                    conn,
+                    &tx,
                     &run_id,
                     None,
                     "workflow_run.created",
@@ -122,12 +158,13 @@ impl LocalProductStore {
                         "plan_id": plan_id,
                         "workflow_id": workflow_id,
                         "dispatch_id": dispatch_id,
-                        "metadata_only": true,
+                        "metadata_only": !executable,
+                        "execution_authority": execution_authority,
                     }),
                     &created_at,
                 )?;
                 append_audit_locked(
-                    conn,
+                    &tx,
                     &created_at,
                     actor,
                     "workflow_run.create",
@@ -136,9 +173,11 @@ impl LocalProductStore {
                         "plan_id": plan_id,
                         "workflow_id": workflow_id,
                         "dispatch_id": dispatch_id,
-                        "metadata_only": true,
+                        "metadata_only": !executable,
+                        "execution_authority": execution_authority,
                     }),
                 )?;
+                tx.commit().map_err(|error| error.to_string())?;
                 Ok(run_id)
             }),
             #[cfg(feature = "pg")]
@@ -147,7 +186,7 @@ impl LocalProductStore {
                 let sequence: i64 = pg_next_sequence(&mut tx, "workflow_runs", "run_sequence")?;
                 let run_id = format!("run-{sequence:04}");
                 let created_at = self.now();
-                let boundaries = workflow_run_boundaries();
+                let boundaries = run_boundaries.clone();
                 let run = json!({
                     "schema_version": WORKFLOW_RUN_SCHEMA_VERSION,
                     "run_sequence": sequence,
@@ -196,6 +235,13 @@ impl LocalProductStore {
 
                 for node in nodes {
                     pg_insert_workflow_run_node(&mut tx, &run_id, node)?;
+                    insert_agent_state_for_node_pg(
+                        &mut tx,
+                        &run_id,
+                        node,
+                        &created_at,
+                        actor,
+                    )?;
                 }
                 for edge in edges {
                     pg_insert_workflow_run_edge(&mut tx, &run_id, edge)?;
@@ -210,7 +256,8 @@ impl LocalProductStore {
                         "plan_id": plan_id,
                         "workflow_id": workflow_id,
                         "dispatch_id": dispatch_id,
-                        "metadata_only": true,
+                        "metadata_only": !executable,
+                        "execution_authority": execution_authority,
                     }),
                     &created_at,
                 )?;
@@ -224,7 +271,8 @@ impl LocalProductStore {
                         "plan_id": plan_id,
                         "workflow_id": workflow_id,
                         "dispatch_id": dispatch_id,
-                        "metadata_only": true,
+                        "metadata_only": !executable,
+                        "execution_authority": execution_authority,
                     }),
                 )?;
                 tx.commit().map_err(|e| e.to_string())?;
@@ -690,6 +738,23 @@ impl LocalProductStore {
         self.tick_with_executor_and_command_inner(run_id, actor, max_retries, executor, None, None)
     }
 
+    pub(crate) fn tick_managed_supervised_patch_with_executor(
+        &self,
+        run_id: &str,
+        actor: &str,
+        executor: &dyn crate::node_executor::NodeExecutor,
+    ) -> Result<Value, String> {
+        self.tick_with_executor_and_command_inner_for_owner(
+            run_id,
+            actor,
+            0,
+            executor,
+            None,
+            None,
+            Some(API_OWNED_SUPERVISED_PATCH),
+        )
+    }
+
     /// Like tick_with_executor, but enforces agent concurrency caps inside the lease lock.
     pub fn tick_with_executor_with_agent_caps(
         &self,
@@ -741,18 +806,47 @@ impl LocalProductStore {
         command_override: Option<&str>,
         agent_concurrency_caps: Option<(usize, usize)>,
     ) -> Result<Value, String> {
+        self.tick_with_executor_and_command_inner_for_owner(
+            run_id,
+            actor,
+            max_retries,
+            executor,
+            command_override,
+            agent_concurrency_caps,
+            None,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn tick_with_executor_and_command_inner_for_owner(
+        &self,
+        run_id: &str,
+        actor: &str,
+        max_retries: i64,
+        executor: &dyn crate::node_executor::NodeExecutor,
+        command_override: Option<&str>,
+        agent_concurrency_caps: Option<(usize, usize)>,
+        expected_execution_owner: Option<&str>,
+    ) -> Result<Value, String> {
+        let agent_executor = executor.executor_type_name() == "agent_step";
         // Phase 1: Lease a ready node (inside lock)
         let leased = match &self.db {
             DatabaseConnection::Sqlite(_) => self.with_conn(|conn| {
                 ensure_run_exists_locked(conn, run_id)?;
 
-                let run_status: String = conn
+                let (run_status, execution_owner): (String, Option<String>) = conn
                     .query_row(
-                        "SELECT status FROM workflow_runs WHERE run_id = ?1",
+                        "SELECT status, pause_reason FROM workflow_runs WHERE run_id = ?1",
                         params![run_id],
-                        |row| row.get(0),
+                        |row| Ok((row.get(0)?, row.get(1)?)),
                     )
                     .map_err(|e| e.to_string())?;
+
+                require_run_execution_owner(
+                    run_id,
+                    execution_owner.as_deref(),
+                    expected_execution_owner,
+                )?;
 
                 if is_run_terminal(&run_status) {
                     return Err(format!("workflow run {run_id} is terminal: {run_status}"));
@@ -776,7 +870,22 @@ impl LocalProductStore {
                 let mut capped_skip: Vec<String> = Vec::new();
                 let mut found_is_agent_step = false;
                 let node_id = loop {
-                    let Some(nid) = find_ready_node_locked(conn, run_id, &capped_skip.iter().map(|s| s.as_str()).collect::<Vec<_>>())? else {
+                    let capped_skip_refs = capped_skip
+                        .iter()
+                        .map(String::as_str)
+                        .collect::<Vec<_>>();
+                    let matching_node = find_ready_node_locked(
+                        conn,
+                        run_id,
+                        &capped_skip_refs,
+                        Some(agent_executor),
+                    )?;
+                    let candidate = if matching_node.is_none() && capped_skip.is_empty() {
+                        find_ready_node_locked(conn, run_id, &capped_skip_refs, None)?
+                    } else {
+                        matching_node
+                    };
+                    let Some(nid) = candidate else {
                         let (all_done, has_failure) = check_run_completion_locked(conn, run_id)?;
                         if all_done {
                             let terminal_status = if has_failure { "failed" } else { "completed" };
@@ -791,13 +900,15 @@ impl LocalProductStore {
                                 &json!({"reason": if has_failure { "node_failure" } else { "all_nodes_completed" }}),
                                 &now,
                             )?;
+                            let terminal_audit_details =
+                                workflow_run_terminal_audit_details_locked(conn, run_id)?;
                             append_audit_locked(
                                 conn,
                                 &now,
                                 actor,
                                 &format!("workflow_run.{terminal_status}"),
                                 run_id,
-                                &json!({"metadata_only": true}),
+                                &terminal_audit_details,
                             )?;
                             let run = get_run_row(conn, run_id)?;
                             return Ok(LeaseResult::Terminal { action: terminal_status.to_string(), run });
@@ -877,11 +988,29 @@ impl LocalProductStore {
                 };
 
                 let now = self.now();
-                let updated = conn.execute(
-                    "UPDATE workflow_run_nodes SET status = 'running', started_at = ?1, leased_at = ?1, attempt_count = attempt_count + 1
-                     WHERE run_id = ?2 AND node_id = ?3 AND status = 'pending'",
-                    params![now, run_id, node_id],
-                ).map_err(|e| e.to_string())?;
+                let updated = if found_is_agent_step {
+                    let (global_cap, per_run_cap) = agent_concurrency_caps
+                        .ok_or_else(|| "agent concurrency caps are required".to_string())?;
+                    conn.execute(
+                        "UPDATE workflow_run_nodes
+                         SET status = 'running', started_at = ?1, leased_at = ?1,
+                             attempt_count = attempt_count + 1
+                         WHERE run_id = ?2 AND node_id = ?3 AND status = 'pending'
+                           AND (SELECT COUNT(*) FROM workflow_run_nodes
+                                WHERE task_type='agent_step' AND status='running') < ?4
+                           AND (SELECT COUNT(*) FROM workflow_run_nodes
+                                WHERE run_id=?2 AND task_type='agent_step' AND status='running') < ?5",
+                        params![now, run_id, node_id, global_cap as i64, per_run_cap as i64],
+                    )
+                    .map_err(|e| e.to_string())?
+                } else {
+                    conn.execute(
+                        "UPDATE workflow_run_nodes SET status = 'running', started_at = ?1, leased_at = ?1, attempt_count = attempt_count + 1
+                         WHERE run_id = ?2 AND node_id = ?3 AND status = 'pending'",
+                        params![now, run_id, node_id],
+                    )
+                    .map_err(|e| e.to_string())?
+                };
                 if updated == 0 {
                     if found_is_agent_step {
                         append_audit_locked(
@@ -977,13 +1106,20 @@ impl LocalProductStore {
 
                 pg_ensure_run_exists(&mut tx, run_id)?;
 
-                let run_status: String = tx
+                let run_row = tx
                     .query_one(
-                        "SELECT status FROM workflow_runs WHERE run_id = $1",
+                        "SELECT status, pause_reason FROM workflow_runs WHERE run_id = $1 FOR UPDATE",
                         &[&run_id],
                     )
-                    .map_err(|e| e.to_string())?
-                    .get(0);
+                    .map_err(|e| e.to_string())?;
+                let run_status: String = run_row.get(0);
+                let execution_owner: Option<String> = run_row.get(1);
+
+                require_run_execution_owner(
+                    run_id,
+                    execution_owner.as_deref(),
+                    expected_execution_owner,
+                )?;
 
                 if is_run_terminal(&run_status) {
                     return Err(format!("workflow run {run_id} is terminal: {run_status}"));
@@ -1007,7 +1143,22 @@ impl LocalProductStore {
                 let mut capped_skip: Vec<String> = Vec::new();
                 let mut found_is_agent_step = false;
                 let node_id = loop {
-                    let Some(nid) = pg_find_ready_node(&mut tx, run_id, &capped_skip.iter().map(|s| s.as_str()).collect::<Vec<_>>())? else {
+                    let capped_skip_refs = capped_skip
+                        .iter()
+                        .map(String::as_str)
+                        .collect::<Vec<_>>();
+                    let matching_node = pg_find_ready_node(
+                        &mut tx,
+                        run_id,
+                        &capped_skip_refs,
+                        Some(agent_executor),
+                    )?;
+                    let candidate = if matching_node.is_none() && capped_skip.is_empty() {
+                        pg_find_ready_node(&mut tx, run_id, &capped_skip_refs, None)?
+                    } else {
+                        matching_node
+                    };
+                    let Some(nid) = candidate else {
                         let (all_done, has_failure) = pg_check_run_completion(&mut tx, run_id)?;
                         if all_done {
                             let terminal_status = if has_failure { "failed" } else { "completed" };
@@ -1022,13 +1173,15 @@ impl LocalProductStore {
                                 &json!({"reason": if has_failure { "node_failure" } else { "all_nodes_completed" }}),
                                 &now,
                             )?;
+                            let terminal_audit_details =
+                                pg_workflow_run_terminal_audit_details(&mut tx, run_id)?;
                             pg_append_audit(
                                 &mut tx,
                                 &now,
                                 actor,
                                 &format!("workflow_run.{terminal_status}"),
                                 run_id,
-                                &json!({"metadata_only": true}),
+                                &terminal_audit_details,
                             )?;
                             let run = pg_get_run_row(&mut tx, run_id)?;
                             tx.commit().map_err(|e| e.to_string())?;
@@ -1049,6 +1202,10 @@ impl LocalProductStore {
                             .map(|r| r.get(0))
                             .unwrap_or_default();
                         if node_task_type == "agent_step" {
+                            tx.batch_execute(
+                                "SELECT pg_advisory_xact_lock(734775128237)",
+                            )
+                            .map_err(|error| error.to_string())?;
                             let global_running = pg_count_running_agent_steps(&mut tx)?;
                             let per_run_running = pg_count_running_agent_steps_for_run(&mut tx, run_id)?;
                             if global_running >= global_cap as i64 {
@@ -1136,7 +1293,7 @@ impl LocalProductStore {
                         "SELECT attempt_count FROM workflow_run_nodes WHERE run_id = $1 AND node_id = $2",
                         &[&run_id, &node_id],
                     )
-                    .map(|r| r.get(0))
+                    .map(|r| i64::from(r.get::<_, i32>(0)))
                     .unwrap_or(1);
 
                 let task_type: String = tx
@@ -1218,6 +1375,12 @@ impl LocalProductStore {
                 attempt,
                 mut node_metadata,
             } => {
+                if !node_metadata.is_object() {
+                    node_metadata = json!({});
+                }
+                if let Some(obj) = node_metadata.as_object_mut() {
+                    obj.insert("execution_attempt".to_string(), json!(attempt));
+                }
                 if command_override.is_none()
                     && node_metadata.get("prompt").is_none()
                     && node_metadata.get("command").is_none()
@@ -1282,22 +1445,79 @@ impl LocalProductStore {
                         }),
                     );
                 }
-                let output = executor.execute_node(&input);
+                let output = if (task_type == "agent_step") != agent_executor {
+                    crate::node_executor::NodeExecutionOutput {
+                        status: "failed".to_string(),
+                        executor_type: executor.executor_type_name().to_string(),
+                        output: None,
+                        error_domain: Some("reserved_executor_mismatch".to_string()),
+                        error_message: Some(format!(
+                            "task_type {task_type} is incompatible with executor_type {}",
+                            executor.executor_type_name(),
+                        )),
+                        input_tokens: None,
+                        output_tokens: None,
+                        estimated_cost: None,
+                        latency_ms: Some(0),
+                    }
+                } else {
+                    executor.execute_node(&input)
+                };
 
                 // Phase 3: Record result (inside lock)
                 let tick_result = match &self.db {
                     DatabaseConnection::Sqlite(_) => self.with_conn(|conn| {
+                        let tx = rusqlite::Transaction::new_unchecked(
+                            conn,
+                            rusqlite::TransactionBehavior::Immediate,
+                        )
+                        .map_err(|error| error.to_string())?;
+                        let conn: &rusqlite::Connection = &tx;
                         let now = self.now();
                         let final_status = &output.status;
-                        let should_retry = final_status == "failed"
+                        let should_retry = retryable_node_failure(&output)
                             && attempt <= max_retries;
 
                         let actual_status = if should_retry { "pending" } else { final_status };
+                        let completed_at = if matches!(actual_status, "completed" | "failed" | "cancelled" | "recovered") {
+                            Some(now.as_str())
+                        } else {
+                            None
+                        };
 
-                        conn.execute(
-                            "UPDATE workflow_run_nodes SET status = ?1, completed_at = ?2 WHERE run_id = ?3 AND node_id = ?4",
-                            params![actual_status, now, run_id, node_id],
+                        let finalized = conn.execute(
+                            "UPDATE workflow_run_nodes
+                             SET status = ?1, completed_at = ?2, leased_at = NULL
+                             WHERE run_id = ?3 AND node_id = ?4
+                               AND status = 'running' AND attempt_count = ?5",
+                            params![actual_status, completed_at, run_id, node_id, attempt],
                         ).map_err(|e| e.to_string())?;
+                        if finalized != 1 {
+                            append_audit_locked(
+                                conn,
+                                &now,
+                                actor,
+                                "workflow_node.stale_completion_ignored",
+                                &node_id,
+                                &json!({
+                                    "run_id": run_id,
+                                    "node_id": node_id,
+                                    "attempt": attempt,
+                                    "executor_type": output.executor_type,
+                                    "result_excluded": true,
+                                }),
+                            )?;
+                            let run = get_run_row(conn, run_id)?;
+                            tx.commit().map_err(|error| error.to_string())?;
+                            return Ok(json!({
+                                "action": "stale_completion_ignored",
+                                "node_id": node_id,
+                                "executor_type": output.executor_type,
+                                "attempt": attempt,
+                                "result": output.to_value(),
+                                "run": run,
+                            }));
+                        }
 
                         let node_json_text: String = conn
                             .query_row(
@@ -1366,7 +1586,11 @@ impl LocalProductStore {
                                 )?;
                             }
                         } else {
-                            let event_type = if final_status == "completed" { "node.completed" } else { "node.failed" };
+                            let event_type = match final_status.as_str() {
+                                "completed" => "node.completed",
+                                "awaiting_approval" => "node.awaiting_approval",
+                                _ => "node.failed",
+                            };
                             insert_workflow_run_event_locked(
                                 conn,
                                 run_id,
@@ -1427,25 +1651,29 @@ impl LocalProductStore {
                                 &json!({"reason": if has_failure { "node_failure" } else { "all_nodes_completed" }}),
                                 &now,
                             )?;
+                            let terminal_audit_details =
+                                workflow_run_terminal_audit_details_locked(conn, run_id)?;
                             append_audit_locked(
                                 conn,
                                 &now,
                                 actor,
                                 &format!("workflow_run.{terminal_status}"),
                                 run_id,
-                                &json!({"metadata_only": true}),
+                                &terminal_audit_details,
                             )?;
                         }
 
                         let run = get_run_row(conn, run_id)?;
-                        Ok(json!({
+                        let result = json!({
                             "action": if should_retry { "node_retry" } else { "node_executed" },
                             "node_id": node_id,
                             "executor_type": output.executor_type,
                             "attempt": attempt,
                             "result": output.to_value(),
                             "run": run,
-                        }))
+                        });
+                        tx.commit().map_err(|error| error.to_string())?;
+                        Ok(result)
                     }),
                     #[cfg(feature = "pg")]
                     DatabaseConnection::Pg(_) => self.with_pg_conn(|client| {
@@ -1453,15 +1681,51 @@ impl LocalProductStore {
 
                         let now = self.now();
                         let final_status = &output.status;
-                        let should_retry = final_status == "failed"
+                        let should_retry = retryable_node_failure(&output)
                             && attempt <= max_retries;
 
                         let actual_status = if should_retry { "pending" } else { final_status };
+                        let completed_at = if matches!(actual_status, "completed" | "failed" | "cancelled" | "recovered") {
+                            Some(now.as_str())
+                        } else {
+                            None
+                        };
+                        let expected_attempt = i32::try_from(attempt)
+                            .map_err(|_| "workflow node attempt exceeds PostgreSQL INTEGER range".to_string())?;
 
-                        tx.execute(
-                            "UPDATE workflow_run_nodes SET status = $1, completed_at = $2 WHERE run_id = $3 AND node_id = $4",
-                            &[&actual_status, &now, &run_id, &node_id],
+                        let finalized = tx.execute(
+                            "UPDATE workflow_run_nodes
+                             SET status = $1, completed_at = $2, leased_at = NULL
+                             WHERE run_id = $3 AND node_id = $4
+                               AND status = 'running' AND attempt_count = $5",
+                            &[&actual_status, &completed_at, &run_id, &node_id, &expected_attempt],
                         ).map_err(|e| e.to_string())?;
+                        if finalized != 1 {
+                            pg_append_audit(
+                                &mut tx,
+                                &now,
+                                actor,
+                                "workflow_node.stale_completion_ignored",
+                                &node_id,
+                                &json!({
+                                    "run_id": run_id,
+                                    "node_id": node_id,
+                                    "attempt": attempt,
+                                    "executor_type": output.executor_type,
+                                    "result_excluded": true,
+                                }),
+                            )?;
+                            let run = pg_get_run_row(&mut tx, run_id)?;
+                            tx.commit().map_err(|error| error.to_string())?;
+                            return Ok(json!({
+                                "action": "stale_completion_ignored",
+                                "node_id": node_id,
+                                "executor_type": output.executor_type,
+                                "attempt": attempt,
+                                "result": output.to_value(),
+                                "run": run,
+                            }));
+                        }
 
                         let node_json_text: String = tx
                             .query_one(
@@ -1530,7 +1794,11 @@ impl LocalProductStore {
                                 )?;
                             }
                         } else {
-                            let event_type = if final_status == "completed" { "node.completed" } else { "node.failed" };
+                            let event_type = match final_status.as_str() {
+                                "completed" => "node.completed",
+                                "awaiting_approval" => "node.awaiting_approval",
+                                _ => "node.failed",
+                            };
                             pg_insert_workflow_run_event(
                                 &mut tx,
                                 run_id,
@@ -1591,13 +1859,15 @@ impl LocalProductStore {
                                 &json!({"reason": if has_failure { "node_failure" } else { "all_nodes_completed" }}),
                                 &now,
                             )?;
+                            let terminal_audit_details =
+                                pg_workflow_run_terminal_audit_details(&mut tx, run_id)?;
                             pg_append_audit(
                                 &mut tx,
                                 &now,
                                 actor,
                                 &format!("workflow_run.{terminal_status}"),
                                 run_id,
-                                &json!({"metadata_only": true}),
+                                &terminal_audit_details,
                             )?;
                         }
 
@@ -1647,6 +1917,24 @@ impl LocalProductStore {
 
                 Ok(tick_result)
             }
+        }
+    }
+
+    pub(crate) fn next_ready_workflow_node_task_type_with_agent_caps(
+        &self,
+        run_id: &str,
+        agent_concurrency_caps: Option<(usize, usize)>,
+    ) -> Result<Option<String>, String> {
+        match &self.db {
+            DatabaseConnection::Sqlite(_) => self.with_conn(|conn| {
+                ensure_run_exists_locked(conn, run_id)?;
+                next_ready_task_type_sqlite(conn, run_id, agent_concurrency_caps)
+            }),
+            #[cfg(feature = "pg")]
+            DatabaseConnection::Pg(_) => self.with_pg_conn(|client| {
+                pg_ensure_run_exists(client, run_id)?;
+                pg_next_ready_task_type(client, run_id, agent_concurrency_caps)
+            }),
         }
     }
 
@@ -2268,13 +2556,31 @@ impl LocalProductStore {
         run_id: &str,
         pause_reason: Option<&str>,
     ) -> Result<(), String> {
+        if pause_reason == Some(API_OWNED_SUPERVISED_PATCH) {
+            return Err(format!(
+                "{EXECUTION_OWNER_CONFLICT_PREFIX}: the supervised-patch API owner is reserved"
+            ));
+        }
         match &self.db {
             DatabaseConnection::Sqlite(_) => self.with_conn(|conn| {
-                ensure_run_exists_locked(conn, run_id)?;
-                let budget_pause_active: bool = conn.query_row("SELECT EXISTS(SELECT 1 FROM budget_pause_decisions WHERE run_id = ?1 AND state = 'paused')", params![run_id], |row| row.get(0)).map_err(|e| e.to_string())?;
+                let tx = rusqlite::Transaction::new_unchecked(
+                    conn,
+                    rusqlite::TransactionBehavior::Immediate,
+                )
+                .map_err(|error| error.to_string())?;
+                ensure_run_exists_locked(&tx, run_id)?;
+                let current_owner: Option<String> = tx
+                    .query_row(
+                        "SELECT pause_reason FROM workflow_runs WHERE run_id = ?1",
+                        params![run_id],
+                        |row| row.get(0),
+                    )
+                    .map_err(|error| error.to_string())?;
+                require_run_execution_owner(run_id, current_owner.as_deref(), None)?;
+                let budget_pause_active: bool = tx.query_row("SELECT EXISTS(SELECT 1 FROM budget_pause_decisions WHERE run_id = ?1 AND state = 'paused')", params![run_id], |row| row.get(0)).map_err(|e| e.to_string())?;
                 if budget_pause_active { return Err("active budget auto-pause requires explicit audited recovery".to_string()); }
                 let updated = self.now();
-                let rows = conn
+                let rows = tx
                     .execute(
                         "UPDATE workflow_runs SET pause_reason = ?1, updated_at = ?2 WHERE run_id = ?3",
                         params![pause_reason, updated, run_id],
@@ -2283,15 +2589,25 @@ impl LocalProductStore {
                 if rows == 0 {
                     return Err(format!("workflow run not found: {run_id}"));
                 }
+                tx.commit().map_err(|error| error.to_string())?;
                 Ok(())
             }),
             #[cfg(feature = "pg")]
             DatabaseConnection::Pg(_) => self.with_pg_conn(|client| {
-                pg_ensure_run_exists(client, run_id)?;
-                let budget_pause_active: bool = client.query_one("SELECT EXISTS(SELECT 1 FROM budget_pause_decisions WHERE run_id = $1 AND state = 'paused')", &[&run_id]).map_err(|e| e.to_string())?.get(0);
+                let mut tx = client.transaction().map_err(|error| error.to_string())?;
+                pg_ensure_run_exists(&mut tx, run_id)?;
+                let current_owner: Option<String> = tx
+                    .query_one(
+                        "SELECT pause_reason FROM workflow_runs WHERE run_id = $1 FOR UPDATE",
+                        &[&run_id],
+                    )
+                    .map_err(|error| error.to_string())?
+                    .get(0);
+                require_run_execution_owner(run_id, current_owner.as_deref(), None)?;
+                let budget_pause_active: bool = tx.query_one("SELECT EXISTS(SELECT 1 FROM budget_pause_decisions WHERE run_id = $1 AND state = 'paused')", &[&run_id]).map_err(|e| e.to_string())?.get(0);
                 if budget_pause_active { return Err("active budget auto-pause requires explicit audited recovery".to_string()); }
                 let updated = self.now();
-                let rows = client
+                let rows = tx
                     .execute(
                         "UPDATE workflow_runs SET pause_reason = $1, updated_at = $2 WHERE run_id = $3",
                         &[&pause_reason, &updated, &run_id],
@@ -2300,6 +2616,7 @@ impl LocalProductStore {
                 if rows == 0 {
                     return Err(format!("workflow run not found: {run_id}"));
                 }
+                tx.commit().map_err(|error| error.to_string())?;
                 Ok(())
             }),
         }
@@ -2754,35 +3071,44 @@ impl LocalProductStore {
     pub fn recover_stale_leases(&self, lease_timeout_ms: u64) -> Result<i64, String> {
         match &self.db {
             DatabaseConnection::Sqlite(_) => self.with_conn(|conn| {
+                let tx = rusqlite::Transaction::new_unchecked(
+                    conn,
+                    rusqlite::TransactionBehavior::Immediate,
+                )
+                .map_err(|error| error.to_string())?;
                 let now = self.now();
-                let mut stmt = conn
-                    .prepare(queue_lease::STALE_LEASE_SELECT_SQL)
-                    .map_err(|e| e.to_string())?;
-                let stale_nodes: Vec<(String, String, String)> = stmt
-                    .query_map([], |row| {
-                        Ok((
-                            row.get::<_, String>(0)?,
-                            row.get::<_, String>(1)?,
-                            row.get::<_, String>(2)?,
-                        ))
-                    })
-                    .map_err(|e| e.to_string())?
-                    .filter_map(|r| r.ok())
-                    .filter(|(_, _, leased_at)| {
-                        queue_lease::stale_lease_is_expired(leased_at, &now, lease_timeout_ms)
-                    })
-                    .collect();
-                let count = stale_nodes.len() as i64;
+                let stale_nodes: Vec<(String, String, String)> = {
+                    let mut stmt = tx
+                        .prepare(queue_lease::STALE_LEASE_SELECT_SQL)
+                        .map_err(|e| e.to_string())?;
+                    let nodes = stmt
+                        .query_map([], |row| {
+                            Ok((
+                                row.get::<_, String>(0)?,
+                                row.get::<_, String>(1)?,
+                                row.get::<_, String>(2)?,
+                            ))
+                        })
+                        .map_err(|e| e.to_string())?
+                        .filter_map(|r| r.ok())
+                        .filter(|(_, _, leased_at)| {
+                            queue_lease::stale_lease_is_expired(leased_at, &now, lease_timeout_ms)
+                        })
+                        .collect();
+                    nodes
+                };
+                let mut count = 0_i64;
                 for (run_id, node_id, leased_at) in &stale_nodes {
-                    let updated = conn
+                    let updated = tx
                         .execute(
                             queue_lease::SQLITE_RECOVER_STALE_LEASE_SQL,
-                            params![run_id, node_id],
+                            params![run_id, node_id, leased_at],
                         )
                         .map_err(|e| e.to_string())?;
                     if updated > 0 {
+                        count += updated as i64;
                         append_audit_locked(
-                            conn,
+                            &tx,
                             &now,
                             "scheduler",
                             "workflow_node.stale_lease_recovered",
@@ -2794,7 +3120,7 @@ impl LocalProductStore {
                             ),
                         )?;
                         // Emit agent_step-specific lease_expired audit
-                        let task_type: Option<String> = conn
+                        let task_type: Option<String> = tx
                             .query_row(
                                 "SELECT task_type FROM workflow_run_nodes WHERE run_id = ?1 AND node_id = ?2",
                                 params![run_id, node_id],
@@ -2803,7 +3129,7 @@ impl LocalProductStore {
                             .ok();
                         if task_type.as_deref() == Some("agent_step") {
                             append_audit_locked(
-                                conn,
+                                &tx,
                                 &now,
                                 "scheduler",
                                 "agent_step.lease_expired",
@@ -2818,12 +3144,14 @@ impl LocalProductStore {
                         }
                     }
                 }
+                tx.commit().map_err(|error| error.to_string())?;
                 Ok(count)
             }),
             #[cfg(feature = "pg")]
             DatabaseConnection::Pg(_) => self.with_pg_conn(|client| {
+                let mut tx = client.transaction().map_err(|error| error.to_string())?;
                 let now = self.now();
-                let rows = client
+                let rows = tx
                     .query(queue_lease::STALE_LEASE_SELECT_SQL, &[])
                     .map_err(|e| e.to_string())?;
                 let stale_nodes: Vec<(String, String, String)> = rows
@@ -2833,14 +3161,18 @@ impl LocalProductStore {
                         queue_lease::stale_lease_is_expired(leased_at, &now, lease_timeout_ms)
                     })
                     .collect();
-                let count = stale_nodes.len() as i64;
+                let mut count = 0_i64;
                 for (run_id, node_id, leased_at) in &stale_nodes {
-                    let updated = client
-                        .execute(queue_lease::PG_RECOVER_STALE_LEASE_SQL, &[run_id, node_id])
+                    let updated = tx
+                        .execute(
+                            queue_lease::PG_RECOVER_STALE_LEASE_SQL,
+                            &[run_id, node_id, leased_at],
+                        )
                         .map_err(|e| e.to_string())?;
                     if updated > 0 {
+                        count += updated as i64;
                         pg_append_audit(
-                            client,
+                            &mut tx,
                             &now,
                             "scheduler",
                             "workflow_node.stale_lease_recovered",
@@ -2852,7 +3184,7 @@ impl LocalProductStore {
                             ),
                         )?;
                         // Emit agent_step-specific lease_expired audit
-                        let task_type_rows = client
+                        let task_type_rows = tx
                             .query(
                                 "SELECT task_type FROM workflow_run_nodes WHERE run_id = $1 AND node_id = $2",
                                 &[run_id, node_id],
@@ -2862,7 +3194,7 @@ impl LocalProductStore {
                             let task_type: String = task_type_row.get(0);
                             if task_type == "agent_step" {
                                 pg_append_audit(
-                                    client,
+                                    &mut tx,
                                     &now,
                                     "scheduler",
                                     "agent_step.lease_expired",
@@ -2878,6 +3210,7 @@ impl LocalProductStore {
                         }
                     }
                 }
+                tx.commit().map_err(|error| error.to_string())?;
                 Ok(count)
             }),
         }
@@ -2913,11 +3246,24 @@ impl LocalProductStore {
     ) -> Result<Value, String> {
         match &self.db {
             DatabaseConnection::Sqlite(_) => self.with_conn(|conn| {
-                ensure_run_exists_locked(conn, run_id)?;
-                let updated_at = self.now();
-                update_workflow_run_status_locked(conn, run_id, status, &updated_at)?;
-                insert_workflow_run_event_locked(
+                let tx = rusqlite::Transaction::new_unchecked(
                     conn,
+                    rusqlite::TransactionBehavior::Immediate,
+                )
+                .map_err(|error| error.to_string())?;
+                ensure_run_exists_locked(&tx, run_id)?;
+                let current_owner: Option<String> = tx
+                    .query_row(
+                        "SELECT pause_reason FROM workflow_runs WHERE run_id = ?1",
+                        params![run_id],
+                        |row| row.get(0),
+                    )
+                    .map_err(|error| error.to_string())?;
+                require_run_execution_owner(run_id, current_owner.as_deref(), None)?;
+                let updated_at = self.now();
+                update_workflow_run_status_locked(&tx, run_id, status, &updated_at)?;
+                insert_workflow_run_event_locked(
+                    &tx,
                     run_id,
                     None,
                     event_type,
@@ -2926,22 +3272,31 @@ impl LocalProductStore {
                     &updated_at,
                 )?;
                 append_audit_locked(
-                    conn,
+                    &tx,
                     &updated_at,
                     actor,
                     event_type,
                     run_id,
                     &json!({"reason": reason, "metadata_only": true, "execution_authority": "disabled"}),
                 )?;
-                Ok(())
+                tx.commit().map_err(|error| error.to_string())
             }),
             #[cfg(feature = "pg")]
             DatabaseConnection::Pg(_) => self.with_pg_conn(|client| {
-                pg_ensure_run_exists(client, run_id)?;
+                let mut tx = client.transaction().map_err(|error| error.to_string())?;
+                pg_ensure_run_exists(&mut tx, run_id)?;
+                let current_owner: Option<String> = tx
+                    .query_one(
+                        "SELECT pause_reason FROM workflow_runs WHERE run_id = $1 FOR UPDATE",
+                        &[&run_id],
+                    )
+                    .map_err(|error| error.to_string())?
+                    .get(0);
+                require_run_execution_owner(run_id, current_owner.as_deref(), None)?;
                 let updated_at = self.now();
-                pg_update_workflow_run_status(client, run_id, status, &updated_at)?;
+                pg_update_workflow_run_status(&mut tx, run_id, status, &updated_at)?;
                 pg_insert_workflow_run_event(
-                    client,
+                    &mut tx,
                     run_id,
                     None,
                     event_type,
@@ -2950,14 +3305,14 @@ impl LocalProductStore {
                     &updated_at,
                 )?;
                 pg_append_audit(
-                    client,
+                    &mut tx,
                     &updated_at,
                     actor,
                     event_type,
                     run_id,
                     &json!({"reason": reason, "metadata_only": true, "execution_authority": "disabled"}),
                 )?;
-                Ok(())
+                tx.commit().map_err(|error| error.to_string())
             }),
         }?;
         if is_run_terminal(status) || matches!(status, "blocked" | "error") {
@@ -3490,6 +3845,243 @@ fn next_sequence(conn: &rusqlite::Connection, table: &str, column: &str) -> Resu
         .map_err(|e| e.to_string())
 }
 
+fn insert_agent_state_for_node_sqlite(
+    conn: &rusqlite::Connection,
+    run_id: &str,
+    node: &Value,
+    created_at: &str,
+    actor: &str,
+) -> Result<(), String> {
+    if node.get("task_type").and_then(Value::as_str) != Some("agent_step") {
+        return Ok(());
+    }
+    let agent_id = required_node_string(node, "agent_id")?;
+    let role = required_node_string(node, "agent_role")?;
+    let node_id = required_node_string(node, "node_id")?;
+    let profile_id = required_node_string(node, "profile_id")?;
+    let objective = validated_agent_objective(node)?;
+    let capabilities = node
+        .get("capability_profile")
+        .and_then(Value::as_array)
+        .ok_or_else(|| "agent_step node missing capability_profile".to_string())?;
+    if capabilities.iter().any(|value| value.as_str().is_none()) {
+        return Err("agent_step capability_profile must contain strings".to_string());
+    }
+    let caps_json = Value::Array(capabilities.clone()).to_string();
+    let metadata_json = json!({
+        "profile_id": profile_id,
+        "initial_node_id": node_id,
+        "decision_source": "provider_typed_action",
+    })
+    .to_string();
+    let existing_count: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM agent_state WHERE agent_id=?1 AND run_id=?2",
+            params![agent_id, run_id],
+            |row| row.get(0),
+        )
+        .map_err(|error| error.to_string())?;
+    if existing_count == 1 {
+        let (existing_role, existing_caps, existing_objective, existing_metadata): (
+            String,
+            String,
+            Option<String>,
+            String,
+        ) = conn
+            .query_row(
+                "SELECT role, capability_profile_json, objective, metadata_json
+                 FROM agent_state WHERE agent_id=?1 AND run_id=?2",
+                params![agent_id, run_id],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+            )
+            .map_err(|error| error.to_string())?;
+        let existing_profile = serde_json::from_str::<Value>(&existing_metadata)
+            .ok()
+            .and_then(|value| value.get("profile_id").cloned())
+            .and_then(|value| value.as_str().map(str::to_string));
+        if existing_role != role
+            || existing_caps != caps_json
+            || existing_objective.as_deref() != Some(objective)
+            || existing_profile.as_deref() != Some(profile_id)
+        {
+            return Err(format!(
+                "agent_step nodes for {agent_id}/{run_id} have conflicting state identity"
+            ));
+        }
+        append_audit_locked(
+            conn,
+            created_at,
+            actor,
+            "agent_state.reuse",
+            &format!("agent_state/{agent_id}/{run_id}"),
+            &json!({
+                "agent_id": agent_id,
+                "run_id": run_id,
+                "node_id": node_id,
+                "profile_id": profile_id,
+                "source": "workflow_run.create",
+            }),
+        )?;
+        return Ok(());
+    }
+    conn.execute(
+        "INSERT INTO agent_state
+         (agent_id, run_id, role, capability_profile_json, objective, status,
+          scratchpad_summary, redaction_filter, metadata_json, created_at, updated_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, 'idle', NULL, NULL, ?6, ?7, ?8)",
+        params![
+            agent_id,
+            run_id,
+            role,
+            caps_json,
+            objective,
+            metadata_json,
+            created_at,
+            created_at
+        ],
+    )
+    .map_err(|error| error.to_string())?;
+    append_audit_locked(
+        conn,
+        created_at,
+        actor,
+        "agent_state.create",
+        &format!("agent_state/{agent_id}/{run_id}"),
+        &json!({
+            "agent_id": agent_id,
+            "run_id": run_id,
+            "node_id": node_id,
+            "profile_id": profile_id,
+            "source": "workflow_run.create",
+        }),
+    )
+    .map(|_| ())
+}
+
+#[cfg(feature = "pg")]
+fn insert_agent_state_for_node_pg(
+    client: &mut impl postgres::GenericClient,
+    run_id: &str,
+    node: &Value,
+    created_at: &str,
+    actor: &str,
+) -> Result<(), String> {
+    if node.get("task_type").and_then(Value::as_str) != Some("agent_step") {
+        return Ok(());
+    }
+    let agent_id = required_node_string(node, "agent_id")?;
+    let role = required_node_string(node, "agent_role")?;
+    let node_id = required_node_string(node, "node_id")?;
+    let profile_id = required_node_string(node, "profile_id")?;
+    let objective = validated_agent_objective(node)?;
+    let capabilities = node
+        .get("capability_profile")
+        .and_then(Value::as_array)
+        .ok_or_else(|| "agent_step node missing capability_profile".to_string())?;
+    if capabilities.iter().any(|value| value.as_str().is_none()) {
+        return Err("agent_step capability_profile must contain strings".to_string());
+    }
+    let caps_json = Value::Array(capabilities.clone()).to_string();
+    let metadata_json = json!({
+        "profile_id": profile_id,
+        "initial_node_id": node_id,
+        "decision_source": "provider_typed_action",
+    })
+    .to_string();
+    let existing = client
+        .query_opt(
+            "SELECT role, capability_profile_json, objective, metadata_json
+             FROM agent_state WHERE agent_id=$1 AND run_id=$2",
+            &[&agent_id, &run_id],
+        )
+        .map_err(|error| error.to_string())?;
+    if let Some(row) = existing {
+        let existing_role: String = row.get(0);
+        let existing_caps: String = row.get(1);
+        let existing_objective: Option<String> = row.get(2);
+        let existing_metadata: String = row.get(3);
+        let existing_profile = serde_json::from_str::<Value>(&existing_metadata)
+            .ok()
+            .and_then(|value| value.get("profile_id").cloned())
+            .and_then(|value| value.as_str().map(str::to_string));
+        if existing_role != role
+            || existing_caps != caps_json
+            || existing_objective.as_deref() != Some(objective)
+            || existing_profile.as_deref() != Some(profile_id)
+        {
+            return Err(format!(
+                "agent_step nodes for {agent_id}/{run_id} have conflicting state identity"
+            ));
+        }
+        return pg_append_audit(
+            client,
+            created_at,
+            actor,
+            "agent_state.reuse",
+            &format!("agent_state/{agent_id}/{run_id}"),
+            &json!({
+                "agent_id": agent_id,
+                "run_id": run_id,
+                "node_id": node_id,
+                "profile_id": profile_id,
+                "source": "workflow_run.create",
+            }),
+        );
+    }
+    client
+        .execute(
+            "INSERT INTO agent_state
+             (agent_id, run_id, role, capability_profile_json, objective, status,
+              scratchpad_summary, redaction_filter, metadata_json, created_at, updated_at)
+             VALUES ($1, $2, $3, $4, $5, 'idle', NULL, NULL, $6, $7, $8)",
+            &[
+                &agent_id,
+                &run_id,
+                &role,
+                &caps_json,
+                &objective,
+                &metadata_json,
+                &created_at,
+                &created_at,
+            ],
+        )
+        .map_err(|error| error.to_string())?;
+    pg_append_audit(
+        client,
+        created_at,
+        actor,
+        "agent_state.create",
+        &format!("agent_state/{agent_id}/{run_id}"),
+        &json!({
+            "agent_id": agent_id,
+            "run_id": run_id,
+            "node_id": node_id,
+            "profile_id": profile_id,
+            "source": "workflow_run.create",
+        }),
+    )
+}
+
+fn required_node_string<'a>(node: &'a Value, field: &str) -> Result<&'a str, String> {
+    node.get(field)
+        .and_then(Value::as_str)
+        .filter(|value| !value.trim().is_empty())
+        .ok_or_else(|| format!("agent_step node missing {field}"))
+}
+
+fn validated_agent_objective(node: &Value) -> Result<&str, String> {
+    let objective = required_node_string(node, "agent_objective")?;
+    if objective.len() > MAX_AGENT_OBJECTIVE_BYTES {
+        return Err(format!(
+            "agent_step objective exceeds {MAX_AGENT_OBJECTIVE_BYTES} byte cap"
+        ));
+    }
+    if contains_sensitive_patterns(objective) {
+        return Err("agent_step objective contains secret-shaped content".to_string());
+    }
+    Ok(objective)
+}
+
 fn required_object<'a>(value: &'a Value, field: &str) -> Result<&'a Value, String> {
     let value = value.get(field).ok_or_else(|| format!("missing {field}"))?;
     if value.is_object() {
@@ -3577,6 +4169,7 @@ fn find_ready_node_locked(
     conn: &rusqlite::Connection,
     run_id: &str,
     skip: &[&str],
+    agent_executor: Option<bool>,
 ) -> Result<Option<String>, String> {
     let mut stmt = conn
         .prepare("SELECT node_id FROM workflow_run_nodes WHERE run_id = ?1 AND status = 'pending' ORDER BY node_id")
@@ -3601,6 +4194,11 @@ fn find_ready_node_locked(
                 |row| row.get(0),
             )
             .map_err(|e| e.to_string())?;
+        if agent_executor.is_some_and(|is_agent_executor| {
+            (target_task_type == "agent_step") != is_agent_executor
+        }) {
+            continue;
+        }
         let mut edge_stmt = conn
             .prepare(
                 "SELECT wrn.status FROM workflow_run_edges wre
@@ -3622,6 +4220,40 @@ fn find_ready_node_locked(
         }
     }
     Ok(None)
+}
+
+fn next_ready_task_type_sqlite(
+    conn: &rusqlite::Connection,
+    run_id: &str,
+    agent_concurrency_caps: Option<(usize, usize)>,
+) -> Result<Option<String>, String> {
+    let mut skip = Vec::<String>::new();
+    let mut saw_capped_agent = false;
+    loop {
+        let skip_refs = skip.iter().map(String::as_str).collect::<Vec<_>>();
+        let Some(node_id) = find_ready_node_locked(conn, run_id, &skip_refs, None)? else {
+            return Ok(saw_capped_agent.then(|| "agent_step".to_string()));
+        };
+        let task_type: String = conn
+            .query_row(
+                "SELECT task_type FROM workflow_run_nodes WHERE run_id=?1 AND node_id=?2",
+                params![run_id, node_id],
+                |row| row.get(0),
+            )
+            .map_err(|error| error.to_string())?;
+        if task_type == "agent_step" {
+            if let Some((global_cap, per_run_cap)) = agent_concurrency_caps {
+                let global_running = count_running_agent_steps_locked(conn)?;
+                let per_run_running = count_running_agent_steps_for_run_locked(conn, run_id)?;
+                if global_running >= global_cap as i64 || per_run_running >= per_run_cap as i64 {
+                    saw_capped_agent = true;
+                    skip.push(node_id);
+                    continue;
+                }
+            }
+        }
+        return Ok(Some(task_type));
+    }
 }
 
 fn check_run_completion_locked(
@@ -3654,6 +4286,22 @@ fn is_run_terminal(status: &str) -> bool {
     matches!(status, "completed" | "failed" | "cancelled")
 }
 
+fn retryable_node_failure(output: &crate::node_executor::NodeExecutionOutput) -> bool {
+    if output.status != "failed" {
+        return false;
+    }
+    !matches!(
+        output.error_domain.as_deref(),
+        Some(
+            "tool_effect_outcome_unknown"
+                | "tool_effect_rejected_after_execution"
+                | "tool_execution_outcome_unknown"
+                | "tool_execution_receipt_invalid"
+                | "tool_execution_receipt_error"
+        )
+    )
+}
+
 fn get_run_row(conn: &rusqlite::Connection, run_id: &str) -> Result<Value, String> {
     let mut stmt = conn
         .prepare(
@@ -3674,6 +4322,33 @@ fn get_run_row(conn: &rusqlite::Connection, run_id: &str) -> Result<Value, Strin
     row.map_err(|e| e.to_string())
 }
 
+fn workflow_run_terminal_audit_details_locked(
+    conn: &rusqlite::Connection,
+    run_id: &str,
+) -> Result<Value, String> {
+    let boundaries_json: String = conn
+        .query_row(
+            "SELECT boundaries_json FROM workflow_runs WHERE run_id = ?1",
+            params![run_id],
+            |row| row.get(0),
+        )
+        .map_err(|error| error.to_string())?;
+    let boundaries: Value = serde_json::from_str(&boundaries_json)
+        .map_err(|error| format!("invalid workflow run boundaries: {error}"))?;
+    Ok(workflow_run_terminal_audit_details(&boundaries))
+}
+
+fn workflow_run_terminal_audit_details(boundaries: &Value) -> Value {
+    let execution_authority = boundaries
+        .get("execution_authority")
+        .and_then(Value::as_str)
+        .unwrap_or("disabled");
+    json!({
+        "metadata_only": execution_authority == "disabled",
+        "execution_authority": execution_authority,
+    })
+}
+
 pub fn workflow_run_boundaries() -> Value {
     json!({
         "execution_authority": "disabled",
@@ -3688,9 +4363,67 @@ pub fn workflow_run_boundaries() -> Value {
     })
 }
 
+fn workflow_plan_has_execution_authority(plan: &Value) -> bool {
+    let declared = plan
+        .pointer("/boundaries/execution_authority")
+        .and_then(Value::as_str)
+        .is_some_and(|authority| authority != "disabled");
+    let routed_executor = matches!(
+        plan.pointer("/advisory/requires_executor")
+            .and_then(Value::as_str),
+        Some("agent_step" | "adaptive_provider")
+    );
+    let executable_node = plan
+        .pointer("/graph/nodes")
+        .and_then(Value::as_array)
+        .is_some_and(|nodes| {
+            nodes.iter().any(|node| {
+                node.get("task_type").and_then(Value::as_str) == Some("agent_step")
+                    || node.get("adaptive_execution").is_some()
+                    || node.get("managed_supervised_patch").is_some()
+            })
+        });
+    declared || routed_executor || executable_node
+}
+
+fn workflow_run_boundaries_for_plan(plan: &Value) -> Result<Value, String> {
+    if !workflow_plan_has_execution_authority(plan) {
+        return Ok(workflow_run_boundaries());
+    }
+    let boundaries = plan
+        .get("boundaries")
+        .and_then(Value::as_object)
+        .ok_or_else(|| "executable workflow plan is missing authority boundaries".to_string())?;
+    let authority = boundaries
+        .get("execution_authority")
+        .and_then(Value::as_str)
+        .ok_or_else(|| "executable workflow plan is missing execution_authority".to_string())?;
+    if authority == "disabled" {
+        return Err("executable workflow plan declares disabled execution authority".to_string());
+    }
+    Ok(Value::Object(boundaries.clone()))
+}
+
 // ---------------------------------------------------------------------------
 // PostgreSQL helper functions
 // ---------------------------------------------------------------------------
+
+#[cfg(feature = "pg")]
+fn pg_workflow_run_terminal_audit_details(
+    client: &mut impl postgres::GenericClient,
+    run_id: &str,
+) -> Result<Value, String> {
+    let boundaries_json: String = client
+        .query_one(
+            "SELECT boundaries_json FROM workflow_runs WHERE run_id = $1",
+            &[&run_id],
+        )
+        .map_err(|error| error.to_string())?
+        .get(0);
+    let boundaries: Value = serde_json::from_str(&boundaries_json)
+        .map_err(|error| format!("invalid workflow run boundaries: {error}"))?;
+    Ok(workflow_run_terminal_audit_details(&boundaries))
+}
 
 #[cfg(feature = "pg")]
 fn pg_next_sequence(
@@ -3924,6 +4657,7 @@ fn pg_find_ready_node(
     client: &mut impl postgres::GenericClient,
     run_id: &str,
     skip: &[&str],
+    agent_executor: Option<bool>,
 ) -> Result<Option<String>, String> {
     let rows = client
         .query(
@@ -3944,6 +4678,11 @@ fn pg_find_ready_node(
             )
             .map_err(|e| e.to_string())?
             .get(0);
+        if agent_executor.is_some_and(|is_agent_executor| {
+            (target_task_type == "agent_step") != is_agent_executor
+        }) {
+            continue;
+        }
         let edge_rows = client
             .query(
                 "SELECT wrn.status FROM workflow_run_edges wre
@@ -3962,6 +4701,41 @@ fn pg_find_ready_node(
         }
     }
     Ok(None)
+}
+
+#[cfg(feature = "pg")]
+fn pg_next_ready_task_type(
+    client: &mut impl postgres::GenericClient,
+    run_id: &str,
+    agent_concurrency_caps: Option<(usize, usize)>,
+) -> Result<Option<String>, String> {
+    let mut skip = Vec::<String>::new();
+    let mut saw_capped_agent = false;
+    loop {
+        let skip_refs = skip.iter().map(String::as_str).collect::<Vec<_>>();
+        let Some(node_id) = pg_find_ready_node(client, run_id, &skip_refs, None)? else {
+            return Ok(saw_capped_agent.then(|| "agent_step".to_string()));
+        };
+        let task_type: String = client
+            .query_one(
+                "SELECT task_type FROM workflow_run_nodes WHERE run_id=$1 AND node_id=$2",
+                &[&run_id, &node_id],
+            )
+            .map_err(|error| error.to_string())?
+            .get(0);
+        if task_type == "agent_step" {
+            if let Some((global_cap, per_run_cap)) = agent_concurrency_caps {
+                let global_running = pg_count_running_agent_steps(client)?;
+                let per_run_running = pg_count_running_agent_steps_for_run(client, run_id)?;
+                if global_running >= global_cap as i64 || per_run_running >= per_run_cap as i64 {
+                    saw_capped_agent = true;
+                    skip.push(node_id);
+                    continue;
+                }
+            }
+        }
+        return Ok(Some(task_type));
+    }
 }
 
 #[cfg(feature = "pg")]

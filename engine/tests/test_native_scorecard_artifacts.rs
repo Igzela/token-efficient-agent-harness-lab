@@ -313,6 +313,49 @@ fn create_single_node_run(store: &LocalProductStore, raw_request: &str) -> Strin
     run["run_id"].as_str().unwrap().to_string()
 }
 
+fn create_agent_state_metrics_run(store: &LocalProductStore) -> String {
+    let plan = store
+        .create_workflow_plan(
+            "state metric output regression",
+            "test",
+            "tester",
+            |ids, _| {
+                let mut plan = single_node_plan(ids);
+                let node = plan["graph"]["nodes"][0].as_object_mut().unwrap();
+                node.insert("task_type".to_string(), json!("agent_step"));
+                node.insert("agent_id".to_string(), json!("scorecard-agent"));
+                node.insert("assigned_agent_id".to_string(), json!("scorecard-agent"));
+                node.insert("agent_role".to_string(), json!("implementer"));
+                node.insert(
+                    "agent_objective".to_string(),
+                    json!("emit bounded state metrics"),
+                );
+                node.insert("profile_id".to_string(), json!("bounded"));
+                node.insert("capability_profile".to_string(), json!(["memory"]));
+                node.insert("decision_source".to_string(), json!("fixture"));
+                node.insert("max_actions".to_string(), json!(1));
+                plan["boundaries"] = json!({
+                    "execution": "explicit_tick_or_scheduler_lease",
+                    "execution_authority": "rust_scheduler_only",
+                    "provider_execution": "default_off_fail_closed",
+                    "target_repository_writes": "disabled",
+                    "runtime_workers": "bounded_one_step_executor"
+                });
+                plan["advisory"] = json!({
+                    "schema_version": "plan_advisory.v1",
+                    "mode": "explicit_agent_runtime_plan",
+                    "requires_executor": "agent_step"
+                });
+                Ok(plan)
+            },
+        )
+        .unwrap();
+    let run = store
+        .create_workflow_run_from_plan(plan["plan_id"].as_str().unwrap(), "tester")
+        .unwrap();
+    run["run_id"].as_str().unwrap().to_string()
+}
+
 #[test]
 fn native_scorecard_artifact_persists_and_reads_by_run_and_dispatch() {
     let (store, _dir) = make_store();
@@ -1058,7 +1101,7 @@ fn automatic_scorecard_uses_native_executor_metrics_when_available() {
 #[test]
 fn automatic_scorecard_extracts_bounded_state_metrics_from_executor_output() {
     let (store, _dir) = make_store();
-    let run_id = create_single_node_run(&store, "state metric output regression");
+    let run_id = create_agent_state_metrics_run(&store);
 
     store
         .tick_with_executor(&run_id, "tester", 0, &OutputStateMetricsExecutor)

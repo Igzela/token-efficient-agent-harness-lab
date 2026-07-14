@@ -20,13 +20,27 @@ use engine::feedback::{
     CONTEXTUAL_POLICY_PROMOTION_SCHEMA_VERSION,
 };
 #[cfg(feature = "pg-tests")]
+use engine::node_executor::{
+    AgentAction, AgentStepExecutor, NodeExecutionInput, NodeExecutionOutput, NodeExecutor,
+};
+#[cfg(feature = "pg-tests")]
+use engine::orchestration::schemas::{
+    DebatePosition, DebateRequest, DebateResolution, HandoffRequest, ReviewRequest, ReviewVerdict,
+};
+#[cfg(feature = "pg-tests")]
 use engine::storage::local_product_store::BudgetAutoPausePolicy;
 #[cfg(feature = "pg-tests")]
 use engine::storage::local_product_store::LocalProductStore;
 #[cfg(feature = "pg-tests")]
+use engine::tool_policy_executor::ToolPolicyNodeExecutor;
+#[cfg(feature = "pg-tests")]
 use serde_json::{json, Value};
 #[cfg(feature = "pg-tests")]
 use sha2::{Digest, Sha256};
+#[cfg(feature = "pg-tests")]
+use std::sync::atomic::{AtomicUsize, Ordering};
+#[cfg(feature = "pg-tests")]
+use std::sync::Arc;
 
 #[cfg(feature = "pg-tests")]
 fn utc_now_string() -> String {
@@ -52,6 +66,33 @@ fn test_store() -> Option<LocalProductStore> {
 #[cfg(feature = "pg-tests")]
 fn uuid_tag() -> String {
     uuid::Uuid::new_v4().to_string()
+}
+
+#[cfg(feature = "pg-tests")]
+struct PgCountingExecutor {
+    calls: Arc<AtomicUsize>,
+}
+
+#[cfg(feature = "pg-tests")]
+impl NodeExecutor for PgCountingExecutor {
+    fn execute_node(&self, _input: &NodeExecutionInput) -> NodeExecutionOutput {
+        self.calls.fetch_add(1, Ordering::SeqCst);
+        NodeExecutionOutput {
+            status: "completed".to_string(),
+            executor_type: "command".to_string(),
+            output: Some("fixture".to_string()),
+            error_domain: None,
+            error_message: None,
+            input_tokens: None,
+            output_tokens: None,
+            estimated_cost: None,
+            latency_ms: Some(1),
+        }
+    }
+
+    fn executor_type_name(&self) -> &str {
+        "command"
+    }
 }
 
 #[cfg(feature = "pg-tests")]
@@ -413,6 +454,1519 @@ fn pg_atomic_requested_approval_resolution_allows_one_winner() {
         .filter(|approval| matches!(approval["decision"].as_str(), Some("approved" | "rejected")))
         .count();
     assert_eq!(resolved, 1);
+}
+
+#[test]
+#[cfg(feature = "pg-tests")]
+fn pg_concurrent_tool_policy_updates_require_current_hash() {
+    use std::sync::{Arc, Barrier};
+
+    let Some(store) = test_store() else { return };
+    let tag = uuid_tag();
+    let tool_name = format!("tool-policy-race-{tag}");
+    let initial = store
+        .configure_tool_capability(
+            "pg-setup", &tool_name, "initial", None, None, false, "low", None,
+        )
+        .unwrap();
+    let expected = initial["resource_sha256"].as_str().unwrap().to_string();
+    let store = Arc::new(store);
+    let barrier = Arc::new(Barrier::new(3));
+    let mut handles = Vec::new();
+    for description in ["first", "second"] {
+        let store = Arc::clone(&store);
+        let barrier = Arc::clone(&barrier);
+        let tool_name = tool_name.clone();
+        let expected = expected.clone();
+        handles.push(std::thread::spawn(move || {
+            barrier.wait();
+            store.configure_tool_capability(
+                description,
+                &tool_name,
+                description,
+                None,
+                None,
+                true,
+                "medium",
+                Some(&expected),
+            )
+        }));
+    }
+    barrier.wait();
+    let results = handles
+        .into_iter()
+        .map(|handle| handle.join().unwrap())
+        .collect::<Vec<_>>();
+    assert_eq!(results.iter().filter(|result| result.is_ok()).count(), 1);
+    assert_eq!(results.iter().filter(|result| result.is_err()).count(), 1);
+    assert!(results
+        .iter()
+        .filter_map(|result| result.as_ref().err())
+        .all(|error| error.contains("changed concurrently")));
+    let current = store
+        .read_tool_capability_policy(&tool_name)
+        .unwrap()
+        .unwrap();
+    let winner = results
+        .iter()
+        .find_map(|result| result.as_ref().ok())
+        .unwrap();
+    assert_eq!(current["resource_sha256"], winner["resource_sha256"]);
+}
+
+#[test]
+#[cfg(feature = "pg-tests")]
+fn pg_corrupt_tool_capability_rows_fail_closed() {
+    let Some(store) = test_store() else { return };
+    let url = std::env::var("ACP_TEST_DATABASE_URL").expect("PG test URL");
+    let mut client = postgres::Client::connect(&url, postgres::NoTls).expect("raw PG client");
+    let tag = uuid_tag();
+
+    for (suffix, input, output, risk, expected) in [
+        ("input", "{not-json", "{}", "low", "input_schema"),
+        ("output", "{}", "{not-json", "low", "output_schema"),
+        ("risk", "{}", "{}", "unknown", "risk_level"),
+    ] {
+        let tool_name = format!("corrupt-capability-{suffix}-{tag}");
+        client
+            .execute(
+                "INSERT INTO tool_capabilities
+                 (tool_name, description, input_schema_json, output_schema_json,
+                  requires_approval, risk_level, created_at)
+                 VALUES ($1, 'corrupt fixture', $2, $3, 0, $4, 'now')",
+                &[&tool_name, &input, &output, &risk],
+            )
+            .expect("insert corrupt capability");
+
+        let error = store
+            .get_tool_capability(&tool_name)
+            .expect_err("corrupt capability must fail closed");
+        assert!(error.contains(expected), "unexpected error: {error}");
+
+        client
+            .execute(
+                "DELETE FROM tool_capabilities WHERE tool_name = $1",
+                &[&tool_name],
+            )
+            .expect("cleanup corrupt capability");
+    }
+}
+
+#[test]
+#[cfg(feature = "pg-tests")]
+fn pg_agent_global_cap_is_atomic_across_runs() {
+    struct HoldingAgentExecutor {
+        entered: std::sync::mpsc::Sender<()>,
+        release: Arc<(std::sync::Mutex<bool>, std::sync::Condvar)>,
+    }
+    impl NodeExecutor for HoldingAgentExecutor {
+        fn execute_node(&self, _input: &NodeExecutionInput) -> NodeExecutionOutput {
+            self.entered.send(()).unwrap();
+            let (lock, condition) = &*self.release;
+            let mut released = lock.lock().unwrap();
+            while !*released {
+                released = condition.wait(released).unwrap();
+            }
+            NodeExecutionOutput {
+                status: "completed".to_string(),
+                executor_type: "agent_step".to_string(),
+                output: Some("held fixture completed".to_string()),
+                error_domain: None,
+                error_message: None,
+                input_tokens: None,
+                output_tokens: None,
+                estimated_cost: None,
+                latency_ms: Some(1),
+            }
+        }
+
+        fn executor_type_name(&self) -> &str {
+            "agent_step"
+        }
+    }
+    struct CountingAgentExecutor(Arc<AtomicUsize>);
+    impl NodeExecutor for CountingAgentExecutor {
+        fn execute_node(&self, _input: &NodeExecutionInput) -> NodeExecutionOutput {
+            self.0.fetch_add(1, Ordering::SeqCst);
+            NodeExecutionOutput {
+                status: "completed".to_string(),
+                executor_type: "agent_step".to_string(),
+                output: Some("unexpected second execution".to_string()),
+                error_domain: None,
+                error_message: None,
+                input_tokens: None,
+                output_tokens: None,
+                estimated_cost: None,
+                latency_ms: Some(1),
+            }
+        }
+
+        fn executor_type_name(&self) -> &str {
+            "agent_step"
+        }
+    }
+
+    let Some(store) = test_store() else { return };
+    let tag = uuid_tag();
+    let create_run = |suffix: &str| {
+        let agent_id = format!("agent-cap-{suffix}-{tag}");
+        let node_id = format!("node-cap-{suffix}-{tag}");
+        let plan = store
+            .create_workflow_plan(&agent_id, "pg-test", "pg-test", |ids, _| {
+                Ok(json!({
+                    "status": "planned_read_only",
+                    "workflow_id": ids.workflow_id,
+                    "dispatch_id": ids.dispatch_id,
+                    "graph": {
+                        "workflow_id": ids.workflow_id,
+                        "dispatch_id": ids.dispatch_id,
+                        "nodes": [{
+                            "node_id": node_id,
+                            "task_type": "agent_step",
+                            "status": "pending",
+                            "agent_id": agent_id,
+                            "agent_role": "worker",
+                            "agent_objective": "bounded PG concurrency",
+                            "profile_id": "bounded",
+                            "capability_profile": ["work"]
+                        }],
+                        "edges": []
+                    },
+                    "analysis": {},
+                    "boundaries": {"execution_authority": "rust_scheduler_only"}
+                }))
+            })
+            .unwrap();
+        store
+            .create_workflow_run_from_plan(plan["plan_id"].as_str().unwrap(), "pg-test")
+            .unwrap()["run_id"]
+            .as_str()
+            .unwrap()
+            .to_string()
+    };
+    let run_a = create_run("a");
+    let run_b = create_run("b");
+    let store = Arc::new(store);
+    let (entered_tx, entered_rx) = std::sync::mpsc::channel();
+    let release = Arc::new((std::sync::Mutex::new(false), std::sync::Condvar::new()));
+    let first_store = store.clone();
+    let first_release = release.clone();
+    let first = std::thread::spawn(move || {
+        first_store.tick_with_executor_with_agent_caps(
+            &run_a,
+            "pg-test",
+            0,
+            &HoldingAgentExecutor {
+                entered: entered_tx,
+                release: first_release,
+            },
+            1,
+            1,
+        )
+    });
+    entered_rx.recv().unwrap();
+
+    let second_calls = Arc::new(AtomicUsize::new(0));
+    let second = store
+        .tick_with_executor_with_agent_caps(
+            &run_b,
+            "pg-test",
+            0,
+            &CountingAgentExecutor(second_calls.clone()),
+            1,
+            1,
+        )
+        .unwrap();
+    assert_eq!(second["action"], "no_ready_node");
+    assert_eq!(second_calls.load(Ordering::SeqCst), 0);
+
+    let (lock, condition) = &*release;
+    *lock.lock().unwrap() = true;
+    condition.notify_all();
+    assert_eq!(
+        first.join().unwrap().unwrap()["result"]["status"],
+        "completed"
+    );
+}
+
+#[test]
+#[cfg(feature = "pg-tests")]
+fn pg_stale_worker_cannot_overwrite_reclaimed_attempt() {
+    struct HoldingCommandExecutor {
+        entered: std::sync::mpsc::Sender<()>,
+        release: Arc<(std::sync::Mutex<bool>, std::sync::Condvar)>,
+    }
+
+    impl NodeExecutor for HoldingCommandExecutor {
+        fn execute_node(&self, _input: &NodeExecutionInput) -> NodeExecutionOutput {
+            self.entered.send(()).unwrap();
+            let (lock, condition) = &*self.release;
+            let mut released = lock.lock().unwrap();
+            while !*released {
+                released = condition.wait(released).unwrap();
+            }
+            NodeExecutionOutput {
+                status: "completed".to_string(),
+                executor_type: "command".to_string(),
+                output: Some("stale attempt output".to_string()),
+                error_domain: None,
+                error_message: None,
+                input_tokens: None,
+                output_tokens: None,
+                estimated_cost: None,
+                latency_ms: Some(1),
+            }
+        }
+
+        fn executor_type_name(&self) -> &str {
+            "command"
+        }
+    }
+
+    struct ReclaimedCommandExecutor;
+
+    impl NodeExecutor for ReclaimedCommandExecutor {
+        fn execute_node(&self, _input: &NodeExecutionInput) -> NodeExecutionOutput {
+            NodeExecutionOutput {
+                status: "completed".to_string(),
+                executor_type: "command".to_string(),
+                output: Some("reclaimed attempt output".to_string()),
+                error_domain: None,
+                error_message: None,
+                input_tokens: None,
+                output_tokens: None,
+                estimated_cost: None,
+                latency_ms: Some(1),
+            }
+        }
+
+        fn executor_type_name(&self) -> &str {
+            "command"
+        }
+    }
+
+    let url = match std::env::var("ACP_TEST_DATABASE_URL") {
+        Ok(url) => url,
+        Err(_) => {
+            eprintln!("ACP_TEST_DATABASE_URL not set; skipping pg-tests");
+            return;
+        }
+    };
+    let start = chrono::Utc::now();
+    let clock = Arc::new(std::sync::Mutex::new(
+        start.format("%Y-%m-%dT%H:%M:%SZ").to_string(),
+    ));
+    let store_clock = clock.clone();
+    let store = Arc::new(
+        LocalProductStore::new_postgres(&url, move || store_clock.lock().unwrap().clone()).unwrap(),
+    );
+    let tag = uuid_tag();
+    let node_id = format!("stale-command-node-{tag}");
+    let plan = store
+        .create_workflow_plan(
+            &format!("stale worker CAS {tag}"),
+            "pg-test",
+            "pg-test",
+            |ids, _| {
+                Ok(json!({
+                    "status": "planned_read_only",
+                    "workflow_id": ids.workflow_id,
+                    "dispatch_id": ids.dispatch_id,
+                    "graph": {
+                        "workflow_id": ids.workflow_id,
+                        "dispatch_id": ids.dispatch_id,
+                        "nodes": [{
+                            "node_id": node_id,
+                            "task_type": "command",
+                            "status": "pending",
+                            "command": "true"
+                        }],
+                        "edges": []
+                    },
+                    "analysis": {},
+                    "boundaries": {"execution_authority": "bounded_trusted_local"}
+                }))
+            },
+        )
+        .unwrap();
+    let run_id = store
+        .create_workflow_run_from_plan(plan["plan_id"].as_str().unwrap(), "pg-test")
+        .unwrap()["run_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let (entered_tx, entered_rx) = std::sync::mpsc::channel();
+    let release = Arc::new((std::sync::Mutex::new(false), std::sync::Condvar::new()));
+    let first_store = store.clone();
+    let first_release = release.clone();
+    let first_run_id = run_id.clone();
+    let first = std::thread::spawn(move || {
+        first_store.tick_with_executor(
+            &first_run_id,
+            "old-worker",
+            0,
+            &HoldingCommandExecutor {
+                entered: entered_tx,
+                release: first_release,
+            },
+        )
+    });
+    entered_rx.recv().unwrap();
+
+    *clock.lock().unwrap() = (start + chrono::Duration::seconds(2))
+        .format("%Y-%m-%dT%H:%M:%SZ")
+        .to_string();
+    let recovered_before = store
+        .audit_events(10_000)
+        .unwrap()
+        .into_iter()
+        .filter(|event| event["action"] == "workflow_node.stale_lease_recovered")
+        .count();
+    let recovery_barrier = Arc::new(std::sync::Barrier::new(2));
+    let recoveries = (0..2)
+        .map(|_| {
+            let barrier = recovery_barrier.clone();
+            let store = store.clone();
+            std::thread::spawn(move || {
+                barrier.wait();
+                store.recover_stale_leases(1_000).unwrap()
+            })
+        })
+        .collect::<Vec<_>>()
+        .into_iter()
+        .map(|handle| handle.join().unwrap())
+        .collect::<Vec<_>>();
+    let recovery_audit = store.audit_events(10_000).unwrap();
+    let recovered_after = recovery_audit
+        .iter()
+        .filter(|event| event["action"] == "workflow_node.stale_lease_recovered")
+        .count();
+    assert_eq!(
+        recoveries.iter().sum::<i64>(),
+        (recovered_after - recovered_before) as i64
+    );
+    assert_eq!(
+        recovery_audit
+            .iter()
+            .filter(|event| {
+                event["action"] == "workflow_node.stale_lease_recovered"
+                    && event["resource"] == node_id
+            })
+            .count(),
+        1
+    );
+    let reclaimed = store
+        .tick_with_executor(&run_id, "new-worker", 0, &ReclaimedCommandExecutor)
+        .unwrap();
+    assert_eq!(reclaimed["action"], "node_executed");
+    assert_eq!(reclaimed["attempt"], 2);
+    assert_eq!(reclaimed["result"]["output"], "reclaimed attempt output");
+
+    let (lock, condition) = &*release;
+    *lock.lock().unwrap() = true;
+    condition.notify_all();
+    let stale = first.join().unwrap().unwrap();
+    assert_eq!(stale["action"], "stale_completion_ignored");
+    assert_eq!(stale["attempt"], 1);
+
+    let persisted = store.get_workflow_run(&run_id).unwrap().unwrap();
+    let node = persisted["nodes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|node| node["node_id"] == node_id)
+        .unwrap();
+    assert_eq!(node["attempt_count"], 2);
+    assert_eq!(node["status"], "completed");
+    assert_eq!(node["result"]["output"], "reclaimed attempt output");
+    let audit = store.audit_events(200).unwrap();
+    assert_eq!(
+        audit
+            .iter()
+            .filter(|event| {
+                event["action"] == "workflow_node.stale_completion_ignored"
+                    && event["resource"] == node_id
+            })
+            .count(),
+        1
+    );
+    let terminal = audit
+        .iter()
+        .find(|event| event["action"] == "workflow_run.completed" && event["resource"] == run_id)
+        .expect("executable PG run terminal audit");
+    assert_eq!(terminal["details"]["metadata_only"], false);
+    assert_eq!(
+        terminal["details"]["execution_authority"],
+        "bounded_trusted_local"
+    );
+}
+
+#[test]
+#[cfg(feature = "pg-tests")]
+fn pg_stale_lease_recovery_rolls_back_when_audit_fails() {
+    let url = match std::env::var("ACP_TEST_DATABASE_URL") {
+        Ok(url) => url,
+        Err(_) => {
+            eprintln!("ACP_TEST_DATABASE_URL not set; skipping pg-tests");
+            return;
+        }
+    };
+    let store =
+        LocalProductStore::new_postgres(&url, || "2026-07-14T00:00:02Z".to_string()).unwrap();
+    let tag = uuid_tag();
+    let node_id = format!("audit-rollback-node-{tag}");
+    let plan = store
+        .create_workflow_plan(
+            &format!("stale audit rollback {tag}"),
+            "pg-test",
+            "pg-test",
+            |ids, _| {
+                Ok(json!({
+                    "status": "planned_read_only",
+                    "workflow_id": ids.workflow_id,
+                    "dispatch_id": ids.dispatch_id,
+                    "graph": {
+                        "workflow_id": ids.workflow_id,
+                        "dispatch_id": ids.dispatch_id,
+                        "nodes": [{
+                            "node_id": node_id,
+                            "task_type": "agent_step",
+                            "status": "pending",
+                            "agent_id": format!("audit-rollback-agent-{tag}"),
+                            "assigned_agent_id": format!("audit-rollback-agent-{tag}"),
+                            "agent_role": "worker",
+                            "agent_objective": "prove atomic PG stale recovery audit",
+                            "profile_id": "bounded",
+                            "capability_profile": ["work"],
+                            "decision_source": "fixture",
+                            "max_actions": 1
+                        }],
+                        "edges": []
+                    },
+                    "analysis": {},
+                    "boundaries": {"execution_authority": "rust_scheduler_only"}
+                }))
+            },
+        )
+        .unwrap();
+    let run_id = store
+        .create_workflow_run_from_plan(plan["plan_id"].as_str().unwrap(), "pg-test")
+        .unwrap()["run_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let mut client = postgres::Client::connect(&url, postgres::NoTls).unwrap();
+    assert_eq!(
+        client
+            .execute(
+                "UPDATE workflow_run_nodes
+                 SET status = 'running', leased_at = $1
+                 WHERE run_id = $2 AND node_id = $3 AND status = 'pending'",
+                &[&"2026-07-14T00:00:00Z", &run_id, &node_id],
+            )
+            .unwrap(),
+        1
+    );
+    let suffix = tag.replace('-', "_");
+    let function_name = format!("fail_stale_recovery_audit_{suffix}");
+    let trigger_name = format!("fail_stale_recovery_audit_trigger_{suffix}");
+    let escaped_node_id = node_id.replace('\'', "''");
+    client
+        .batch_execute(&format!(
+            "CREATE FUNCTION {function_name}() RETURNS trigger AS $fixture$
+             BEGIN
+                 IF NEW.action = 'agent_step.lease_expired'
+                    AND NEW.resource = '{escaped_node_id}' THEN
+                     RAISE EXCEPTION 'fixture agent lease audit failure';
+                 END IF;
+                 RETURN NEW;
+             END;
+             $fixture$ LANGUAGE plpgsql;
+             CREATE TRIGGER {trigger_name}
+             BEFORE INSERT ON audit_log
+             FOR EACH ROW EXECUTE FUNCTION {function_name}();"
+        ))
+        .unwrap();
+
+    let recovery = store.recover_stale_leases(1_000);
+    client
+        .batch_execute(&format!(
+            "DROP TRIGGER {trigger_name} ON audit_log;
+             DROP FUNCTION {function_name}();"
+        ))
+        .unwrap();
+    let _error = recovery.expect_err("audit failure must roll back PG recovery");
+    let row = client
+        .query_one(
+            "SELECT status, leased_at FROM workflow_run_nodes
+             WHERE run_id = $1 AND node_id = $2",
+            &[&run_id, &node_id],
+        )
+        .unwrap();
+    assert_eq!(row.get::<_, String>(0), "running");
+    assert_eq!(
+        row.get::<_, Option<String>>(1).as_deref(),
+        Some("2026-07-14T00:00:00Z")
+    );
+    assert_eq!(
+        store
+            .audit_events(10_000)
+            .unwrap()
+            .iter()
+            .filter(|event| {
+                event["action"] == "workflow_node.stale_lease_recovered"
+                    && event["resource"] == node_id
+            })
+            .count(),
+        0
+    );
+    assert_eq!(
+        store
+            .audit_events(10_000)
+            .unwrap()
+            .iter()
+            .filter(|event| {
+                event["action"] == "agent_step.lease_expired" && event["resource"] == node_id
+            })
+            .count(),
+        0
+    );
+
+    assert!(store.recover_stale_leases(1_000).unwrap() >= 1);
+    let recovered = client
+        .query_one(
+            "SELECT status, leased_at FROM workflow_run_nodes
+             WHERE run_id = $1 AND node_id = $2",
+            &[&run_id, &node_id],
+        )
+        .unwrap();
+    assert_eq!(recovered.get::<_, String>(0), "pending");
+    assert_eq!(recovered.get::<_, Option<String>>(1), None);
+    assert_eq!(
+        store
+            .audit_events(10_000)
+            .unwrap()
+            .iter()
+            .filter(|event| {
+                event["action"] == "workflow_node.stale_lease_recovered"
+                    && event["resource"] == node_id
+            })
+            .count(),
+        1
+    );
+    assert_eq!(
+        store
+            .audit_events(10_000)
+            .unwrap()
+            .iter()
+            .filter(|event| {
+                event["action"] == "agent_step.lease_expired" && event["resource"] == node_id
+            })
+            .count(),
+        1
+    );
+}
+
+#[test]
+#[cfg(feature = "pg-tests")]
+fn pg_capped_agent_does_not_block_ready_command_node() {
+    let Some(store) = test_store() else { return };
+    let tag = uuid_tag();
+    let agent_node_id = format!("a-agent-capped-{tag}");
+    let command_node_id = format!("z-command-ready-{tag}");
+    let agent_id = format!("agent-capped-{tag}");
+    let plan = store
+        .create_workflow_plan(
+            &format!("pg capped agent mixed routing {tag}"),
+            "pg-test",
+            "pg-test",
+            |ids, _| {
+                Ok(json!({
+                    "status": "planned_read_only",
+                    "workflow_id": ids.workflow_id,
+                    "dispatch_id": ids.dispatch_id,
+                    "graph": {
+                        "workflow_id": ids.workflow_id,
+                        "dispatch_id": ids.dispatch_id,
+                        "nodes": [
+                            {
+                                "node_id": agent_node_id,
+                                "task_type": "agent_step",
+                                "status": "pending",
+                                "agent_id": agent_id,
+                                "assigned_agent_id": agent_id,
+                                "agent_role": "reviewer",
+                                "profile_id": "bounded",
+                                "agent_objective": "bounded PG review",
+                                "capability_profile": ["review"],
+                                "decision_source": "fixture",
+                                "max_actions": 1
+                            },
+                            {
+                                "node_id": command_node_id,
+                                "task_type": "command",
+                                "status": "pending",
+                                "command": "echo ready"
+                            }
+                        ],
+                        "edges": []
+                    },
+                    "analysis": {},
+                    "boundaries": {"execution_authority": "bounded_trusted_local"}
+                }))
+            },
+        )
+        .unwrap();
+    let run = store
+        .create_workflow_run_from_plan(plan["plan_id"].as_str().unwrap(), "pg-test")
+        .unwrap();
+    let run_id = run["run_id"].as_str().unwrap();
+
+    let tick = store
+        .tick_with_executor_with_agent_caps(
+            run_id,
+            "pg-test",
+            0,
+            &PgCountingExecutor {
+                calls: Arc::new(AtomicUsize::new(0)),
+            },
+            0,
+            0,
+        )
+        .unwrap();
+    assert_eq!(tick["action"], "node_executed");
+    assert_eq!(tick["node_id"], command_node_id);
+
+    let current = store.get_workflow_run(run_id).unwrap().unwrap();
+    let agent_node = current["nodes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|node| node["node_id"] == agent_node_id)
+        .unwrap();
+    assert_eq!(agent_node["db_status"], "pending");
+}
+
+#[test]
+#[cfg(feature = "pg-tests")]
+fn pg_agent_action_receipt_prevents_duplicate_application() {
+    let Some(store) = test_store() else { return };
+    let tag = uuid_tag();
+    let agent_id = format!("agent-{tag}");
+    let node_id = format!("agent-node-{tag}");
+    let plan = store
+        .create_workflow_plan(
+            &format!("agent receipt {tag}"),
+            "pg-test",
+            "pg-test",
+            |ids, _| {
+                Ok(json!({
+                    "status": "planned_read_only",
+                    "workflow_id": ids.workflow_id,
+                    "dispatch_id": ids.dispatch_id,
+                    "graph": {
+                        "nodes": [{
+                            "node_id": node_id,
+                            "task_type": "agent_step",
+                            "status": "pending",
+                            "agent_id": agent_id,
+                            "agent_role": "implementer",
+                            "profile_id": "pg-agent-profile",
+                            "agent_objective": "bounded PG receipt test",
+                            "capability_profile": ["code"],
+                            "model": "fixture"
+                        }],
+                        "edges": [],
+                        "workflow_id": ids.workflow_id,
+                        "dispatch_id": ids.dispatch_id
+                    },
+                    "analysis": {},
+                    "boundaries": {"execution_authority": "bounded_trusted_local"}
+                }))
+            },
+        )
+        .unwrap();
+    let run = store
+        .create_workflow_run_from_plan(plan["plan_id"].as_str().unwrap(), "pg-test")
+        .unwrap();
+    let run_id = run["run_id"].as_str().unwrap().to_string();
+    let workflow_id = plan["workflow_id"].as_str().unwrap().to_string();
+    let store = Arc::new(store);
+    let executor = AgentStepExecutor::new(store.clone(), Box::new(|_| Ok(AgentAction::Complete)));
+    let input = NodeExecutionInput {
+        node_id: node_id.clone(),
+        task_type: "agent_step".to_string(),
+        run_id: run_id.clone(),
+        workflow_id,
+        node_metadata: json!({"agent_id": agent_id}),
+    };
+    std::env::set_var("ACP_ENABLE_AGENT_RUNTIME", "1");
+    std::env::remove_var("ACP_AGENT_RUNTIME_KILL_SWITCH");
+    let first = executor.execute_node(&input);
+    let repeated = executor.execute_node(&input);
+    std::env::remove_var("ACP_ENABLE_AGENT_RUNTIME");
+    assert_eq!(first.status, "completed");
+    assert_eq!(repeated.status, "completed");
+    assert_eq!(first.output, repeated.output);
+    assert_eq!(
+        store
+            .get_agent_state(&agent_id, &run_id)
+            .unwrap()
+            .unwrap()
+            .status,
+        "completed"
+    );
+}
+
+#[test]
+#[cfg(feature = "pg-tests")]
+fn pg_agent_handoff_receipt_is_concurrent_and_restart_idempotent() {
+    let Some(setup) = test_store() else { return };
+    let url = std::env::var("ACP_TEST_DATABASE_URL").expect("PG test URL");
+    let tag = uuid_tag();
+    let source_agent_id = format!("handoff-source-{tag}");
+    let target_agent_id = format!("handoff-target-{tag}");
+    let node_id = format!("handoff-node-{tag}");
+    let correlation_id = format!("handoff-correlation-{tag}");
+    let plan = setup
+        .create_workflow_plan(
+            &format!("concurrent PG handoff receipt {tag}"),
+            "pg-test",
+            "pg-test",
+            |ids, _| {
+                Ok(json!({
+                    "status": "planned_read_only",
+                    "workflow_id": ids.workflow_id,
+                    "dispatch_id": ids.dispatch_id,
+                    "graph": {
+                        "nodes": [{
+                            "node_id": node_id,
+                            "task_type": "agent_step",
+                            "status": "pending",
+                            "agent_id": source_agent_id,
+                            "agent_role": "implementer",
+                            "profile_id": "pg-handoff-profile",
+                            "agent_objective": "request one bounded handoff",
+                            "capability_profile": ["handoff"],
+                            "model": "fixture"
+                        }],
+                        "edges": [],
+                        "workflow_id": ids.workflow_id,
+                        "dispatch_id": ids.dispatch_id
+                    },
+                    "analysis": {},
+                    "boundaries": {"execution_authority": "bounded_trusted_local"}
+                }))
+            },
+        )
+        .expect("create concurrent handoff plan");
+    let workflow_id = plan["workflow_id"]
+        .as_str()
+        .expect("workflow id")
+        .to_string();
+    let run_id = setup
+        .create_workflow_run_from_plan(plan["plan_id"].as_str().unwrap(), "pg-test")
+        .expect("create concurrent handoff run")["run_id"]
+        .as_str()
+        .expect("run id")
+        .to_string();
+    setup
+        .create_agent_state(
+            &target_agent_id,
+            &run_id,
+            "reviewer",
+            &["handoff".to_string(), "mailbox".to_string()],
+            Some("receive one bounded handoff"),
+            "idle",
+            &json!({}),
+        )
+        .expect("create handoff target agent");
+    drop(setup);
+
+    let input = NodeExecutionInput {
+        node_id: node_id.clone(),
+        task_type: "agent_step".to_string(),
+        run_id: run_id.clone(),
+        workflow_id,
+        node_metadata: json!({"agent_id": source_agent_id}),
+    };
+    let action = HandoffRequest {
+        schema_version: "handoff_request.v1".to_string(),
+        correlation_id: correlation_id.clone(),
+        objective: "review the bounded PostgreSQL result".to_string(),
+        context_summary: "hash-bound fixture context".to_string(),
+        target_agent_id: target_agent_id.clone(),
+        source_agent_id: source_agent_id.clone(),
+        run_id: run_id.clone(),
+        node_id: node_id.clone(),
+    };
+    let decision_barrier = Arc::new(std::sync::Barrier::new(2));
+    let decision_calls = Arc::new(AtomicUsize::new(0));
+
+    std::env::set_var("ACP_ENABLE_AGENT_RUNTIME", "1");
+    std::env::remove_var("ACP_AGENT_RUNTIME_KILL_SWITCH");
+    let handles = (0..2)
+        .map(|_| {
+            let store = Arc::new(
+                LocalProductStore::new_postgres(&url, utc_now_string)
+                    .expect("open independent PG agent store"),
+            );
+            let request = action.clone();
+            let barrier = decision_barrier.clone();
+            let calls = decision_calls.clone();
+            let executor = AgentStepExecutor::new(
+                store,
+                Box::new(move |_| {
+                    calls.fetch_add(1, Ordering::SeqCst);
+                    barrier.wait();
+                    Ok(AgentAction::RequestHandoff(request.clone()))
+                }),
+            );
+            let input = input.clone();
+            std::thread::spawn(move || executor.execute_node(&input))
+        })
+        .collect::<Vec<_>>();
+    let concurrent = handles
+        .into_iter()
+        .map(|handle| handle.join().expect("join concurrent PG agent action"))
+        .collect::<Vec<_>>();
+    assert_eq!(decision_calls.load(Ordering::SeqCst), 2);
+    assert!(concurrent.iter().all(|output| output.status == "completed"));
+    assert_eq!(concurrent[0].output, concurrent[1].output);
+    let committed_result = concurrent[0]
+        .output
+        .clone()
+        .expect("committed handoff result");
+
+    let reopened = Arc::new(
+        LocalProductStore::new_postgres(&url, utc_now_string)
+            .expect("reopen PG store after commit"),
+    );
+    let replay_calls = decision_calls.clone();
+    let replay_executor = AgentStepExecutor::new(
+        reopened.clone(),
+        Box::new(move |_| {
+            replay_calls.fetch_add(1, Ordering::SeqCst);
+            Ok(AgentAction::Complete)
+        }),
+    );
+    let replay = replay_executor.execute_node(&input);
+    std::env::remove_var("ACP_ENABLE_AGENT_RUNTIME");
+    assert_eq!(replay.status, "completed");
+    assert_eq!(replay.output.as_deref(), Some(committed_result.as_str()));
+    assert_eq!(
+        decision_calls.load(Ordering::SeqCst),
+        2,
+        "restart replay must short-circuit before decision"
+    );
+
+    let proposals = reopened
+        .list_proposals_by_run(&run_id, 100, 0)
+        .expect("list committed handoff proposals");
+    assert_eq!(proposals.len(), 1);
+    assert_eq!(proposals[0]["proposal_type"], "handoff");
+    assert_eq!(proposals[0]["correlation_id"], correlation_id);
+    assert_eq!(proposals[0]["target_agent_id"], target_agent_id);
+    let messages = reopened
+        .list_mailbox(Some(&target_agent_id), Some(&run_id), None, None, 100, 0)
+        .expect("list committed handoff mailbox");
+    assert_eq!(messages.len(), 1);
+    assert_eq!(messages[0].message_type, "handoff_request");
+    assert_eq!(
+        messages[0].correlation_id.as_deref(),
+        Some(correlation_id.as_str())
+    );
+    assert_eq!(messages[0].from_agent_id, source_agent_id);
+    assert_eq!(messages[0].to_agent_id, target_agent_id);
+    assert_eq!(messages[0].run_id.as_deref(), Some(run_id.as_str()));
+
+    let committed_audits = reopened
+        .search_audit_events_by_run(&run_id, 1_000, 0)
+        .expect("list handoff receipt audits")
+        .into_iter()
+        .filter(|event| event["action"] == "agent_action.committed")
+        .collect::<Vec<_>>();
+    assert_eq!(committed_audits.len(), 1);
+    assert_eq!(
+        committed_audits[0]["details"]["action_type"],
+        "request_handoff"
+    );
+
+    let mut client = postgres::Client::connect(&url, postgres::NoTls).expect("raw PG client");
+    let receipt = client
+        .query_one(
+            "SELECT COUNT(*), MIN(result_json), MAX(result_json)
+             FROM agent_action_receipts WHERE run_id = $1 AND node_id = $2",
+            &[&run_id, &node_id],
+        )
+        .expect("query authoritative agent action receipt");
+    assert_eq!(receipt.get::<_, i64>(0), 1);
+    assert_eq!(
+        receipt.get::<_, Option<String>>(1).as_deref(),
+        Some(committed_result.as_str())
+    );
+    assert_eq!(
+        receipt.get::<_, Option<String>>(2).as_deref(),
+        Some(committed_result.as_str())
+    );
+}
+
+#[test]
+#[cfg(feature = "pg-tests")]
+fn pg_normal_workflow_executes_mailbox_memory_handoff_review_and_debate_chain() {
+    let Some(store) = test_store() else { return };
+    let tag = uuid_tag();
+    let source_agent_id = format!("chain-source-{tag}");
+    let target_agent_id = format!("chain-target-{tag}");
+    let message_id = format!("chain-message-{tag}");
+    let node_specs = [
+        ("memory", source_agent_id.as_str()),
+        ("mailbox-read", source_agent_id.as_str()),
+        ("mailbox-ack", source_agent_id.as_str()),
+        ("handoff-request-accept", source_agent_id.as_str()),
+        ("handoff-accept", target_agent_id.as_str()),
+        ("handoff-request-reject", source_agent_id.as_str()),
+        ("handoff-reject", target_agent_id.as_str()),
+        ("review-request", source_agent_id.as_str()),
+        ("review-verdict", target_agent_id.as_str()),
+        ("debate-open", source_agent_id.as_str()),
+        ("debate-position", target_agent_id.as_str()),
+        ("debate-resolve", source_agent_id.as_str()),
+    ];
+    let plan = store
+        .create_workflow_plan(
+            &format!("full PostgreSQL agent workflow {tag}"),
+            "pg-test",
+            "pg-test",
+            |ids, _| {
+                let nodes = node_specs
+                    .iter()
+                    .map(|(suffix, agent_id)| {
+                        let source = *agent_id == source_agent_id;
+                        json!({
+                            "node_id": format!("{suffix}-{tag}"),
+                            "task_type": "agent_step",
+                            "status": "pending",
+                            "agent_id": agent_id,
+                            "agent_role": if source { "implementer" } else { "reviewer" },
+                            "profile_id": if source { "chain-source-profile" } else { "chain-target-profile" },
+                            "agent_objective": "execute one bounded production-chain action",
+                            "capability_profile": ["memory", "mailbox", "handoff", "review", "debate"],
+                            "model": "fixture"
+                        })
+                    })
+                    .collect::<Vec<_>>();
+                let edges = node_specs
+                    .windows(2)
+                    .enumerate()
+                    .map(|(index, pair)| {
+                        json!({
+                            "edge_id": format!("chain-edge-{index}-{tag}"),
+                            "from_node_id": format!("{}-{tag}", pair[0].0),
+                            "to_node_id": format!("{}-{tag}", pair[1].0),
+                            "condition": "on_success"
+                        })
+                    })
+                    .collect::<Vec<_>>();
+                Ok(json!({
+                    "status": "planned_read_only",
+                    "workflow_id": ids.workflow_id,
+                    "dispatch_id": ids.dispatch_id,
+                    "graph": {
+                        "nodes": nodes,
+                        "edges": edges,
+                        "workflow_id": ids.workflow_id,
+                        "dispatch_id": ids.dispatch_id
+                    },
+                    "analysis": {"task_domain": "agent_runtime"},
+                    "boundaries": {
+                        "execution_authority": "rust_scheduler_only",
+                        "provider_execution": "default_off_fail_closed"
+                    }
+                }))
+            },
+        )
+        .expect("create full agent workflow plan");
+    let run = store
+        .create_workflow_run_from_plan(plan["plan_id"].as_str().unwrap(), "pg-test")
+        .expect("create full agent workflow run");
+    let run_id = run["run_id"].as_str().unwrap().to_string();
+    store
+        .send_message(
+            &message_id,
+            &target_agent_id,
+            &source_agent_id,
+            "note",
+            Some("bounded mailbox fixture"),
+            Some(&format!("mailbox-{tag}")),
+            Some(&run_id),
+            None,
+            None,
+            &json!({"content_excluded": true}),
+        )
+        .expect("seed source mailbox");
+
+    let store = Arc::new(store);
+    let decision_store = store.clone();
+    let decision_message_id = message_id.clone();
+    let decision_source_agent = source_agent_id.clone();
+    let decision_target_agent = target_agent_id.clone();
+    let expected_handoff_accept_correlation = format!("handoff-accept-{tag}");
+    let expected_handoff_reject_correlation = format!("handoff-reject-{tag}");
+    let expected_review_correlation = format!("review-{tag}");
+    let expected_debate_correlation = format!("debate-{tag}");
+    let handoff_accept_correlation = expected_handoff_accept_correlation.clone();
+    let handoff_reject_correlation = expected_handoff_reject_correlation.clone();
+    let review_correlation = expected_review_correlation.clone();
+    let debate_correlation = expected_debate_correlation.clone();
+    let decision_tag = tag.clone();
+    let executor = AgentStepExecutor::new(
+        store.clone(),
+        Box::new(move |context| {
+            let suffix = context
+                .node_id
+                .strip_suffix(&format!("-{decision_tag}"))
+                .ok_or_else(|| "unexpected chain node id".to_string())?;
+            match suffix {
+                "memory" => Ok(AgentAction::UpdateScratchpadSummary(
+                    "bounded durable working summary".to_string(),
+                )),
+                "mailbox-read" => Ok(AgentAction::ReadMailbox),
+                "mailbox-ack" => Ok(AgentAction::AckMessage(decision_message_id.clone())),
+                "handoff-request-accept" => Ok(AgentAction::RequestHandoff(HandoffRequest {
+                    schema_version: "handoff_request.v1".to_string(),
+                    correlation_id: handoff_accept_correlation.clone(),
+                    objective: "accept one bounded handoff".to_string(),
+                    context_summary: "hash-bound handoff context".to_string(),
+                    target_agent_id: decision_target_agent.clone(),
+                    source_agent_id: decision_source_agent.clone(),
+                    run_id: context.run_id.clone(),
+                    node_id: context.node_id.clone(),
+                })),
+                "handoff-accept" => Ok(AgentAction::AcceptHandoff(
+                    handoff_accept_correlation.clone(),
+                )),
+                "handoff-request-reject" => Ok(AgentAction::RequestHandoff(HandoffRequest {
+                    schema_version: "handoff_request.v1".to_string(),
+                    correlation_id: handoff_reject_correlation.clone(),
+                    objective: "reject one bounded handoff".to_string(),
+                    context_summary: "hash-bound rejection context".to_string(),
+                    target_agent_id: decision_target_agent.clone(),
+                    source_agent_id: decision_source_agent.clone(),
+                    run_id: context.run_id.clone(),
+                    node_id: context.node_id.clone(),
+                })),
+                "handoff-reject" => Ok(AgentAction::RejectHandoff(
+                    handoff_reject_correlation.clone(),
+                )),
+                "review-request" => Ok(AgentAction::RequestReview(ReviewRequest {
+                    schema_version: "review_request.v1".to_string(),
+                    correlation_id: review_correlation.clone(),
+                    subject_summary: "review the bounded chain".to_string(),
+                    rationale_summary: "production workflow evidence".to_string(),
+                    target_agent_id: decision_target_agent.clone(),
+                    run_id: context.run_id.clone(),
+                    node_id: context.node_id.clone(),
+                    blocking: true,
+                })),
+                "review-verdict" => {
+                    let review_id = decision_store
+                        .list_proposals_by_run(&context.run_id, 100, 0)?
+                        .into_iter()
+                        .find(|proposal| {
+                            proposal["correlation_id"] == review_correlation
+                                && proposal["proposal_type"] == "review_request"
+                        })
+                        .and_then(|proposal| proposal["proposal_id"].as_str().map(str::to_string))
+                        .ok_or_else(|| {
+                            "review request missing from production chain".to_string()
+                        })?;
+                    Ok(AgentAction::SubmitReviewVerdict(ReviewVerdict {
+                        schema_version: "review_verdict.v1".to_string(),
+                        correlation_id: review_correlation.clone(),
+                        review_request_id: review_id,
+                        verdict: "accepted".to_string(),
+                        rationale_summary: "bounded review accepted".to_string(),
+                        run_id: context.run_id.clone(),
+                        node_id: context.node_id.clone(),
+                        blocking: true,
+                    }))
+                }
+                "debate-open" => Ok(AgentAction::OpenDebate(DebateRequest {
+                    schema_version: "debate_request.v1".to_string(),
+                    correlation_id: debate_correlation.clone(),
+                    subject_summary: "choose the bounded resolution".to_string(),
+                    participant_agent_ids: vec![decision_target_agent.clone()],
+                    max_rounds: 1,
+                    run_id: context.run_id.clone(),
+                    node_id: context.node_id.clone(),
+                })),
+                "debate-position" => {
+                    let debate_id = decision_store
+                        .list_proposals_by_run(&context.run_id, 100, 0)?
+                        .into_iter()
+                        .find(|proposal| {
+                            proposal["correlation_id"] == debate_correlation
+                                && proposal["proposal_type"] == "debate_request"
+                        })
+                        .and_then(|proposal| proposal["proposal_id"].as_str().map(str::to_string))
+                        .ok_or_else(|| {
+                            "debate request missing from production chain".to_string()
+                        })?;
+                    Ok(AgentAction::SubmitDebatePosition(DebatePosition {
+                        schema_version: "debate_position.v1".to_string(),
+                        correlation_id: debate_correlation.clone(),
+                        debate_id,
+                        position: "use the bounded evidence".to_string(),
+                        rationale_summary: "one deterministic round".to_string(),
+                        run_id: context.run_id.clone(),
+                        node_id: context.node_id.clone(),
+                    }))
+                }
+                "debate-resolve" => {
+                    let debate_id = decision_store
+                        .list_proposals_by_run(&context.run_id, 100, 0)?
+                        .into_iter()
+                        .find(|proposal| {
+                            proposal["correlation_id"] == debate_correlation
+                                && proposal["proposal_type"] == "debate_request"
+                        })
+                        .and_then(|proposal| proposal["proposal_id"].as_str().map(str::to_string))
+                        .ok_or_else(|| {
+                            "debate request missing from production chain".to_string()
+                        })?;
+                    Ok(AgentAction::ResolveDebate(DebateResolution {
+                        schema_version: "debate_resolution.v1".to_string(),
+                        correlation_id: debate_correlation.clone(),
+                        debate_id,
+                        resolution: "retain the bounded production chain".to_string(),
+                        winning_position: Some("use the bounded evidence".to_string()),
+                        unresolved_risks: None,
+                        run_id: context.run_id.clone(),
+                        node_id: context.node_id.clone(),
+                    }))
+                }
+                other => Err(format!("unexpected chain action node: {other}")),
+            }
+        }),
+    );
+
+    std::env::set_var("ACP_ENABLE_AGENT_RUNTIME", "1");
+    std::env::remove_var("ACP_AGENT_RUNTIME_KILL_SWITCH");
+    for (expected_suffix, _) in node_specs {
+        let tick = store
+            .tick_with_executor_with_agent_caps(&run_id, "pg-test", 0, &executor, 4, 2)
+            .expect("execute full agent workflow node");
+        assert_eq!(tick["action"], "node_executed");
+        assert_eq!(tick["node_id"], format!("{expected_suffix}-{tag}"));
+        assert_eq!(tick["result"]["status"], "completed");
+    }
+    std::env::remove_var("ACP_ENABLE_AGENT_RUNTIME");
+
+    let source_state = store
+        .get_agent_state(&source_agent_id, &run_id)
+        .expect("read source state")
+        .expect("source state");
+    assert_eq!(
+        source_state.scratchpad_summary.as_deref(),
+        Some("bounded durable working summary")
+    );
+    assert_eq!(
+        store
+            .read_message(&message_id)
+            .expect("read seeded mailbox message")
+            .expect("seeded mailbox message")
+            .status,
+        "acked"
+    );
+    let proposals = store
+        .list_proposals_by_run(&run_id, 100, 0)
+        .expect("read full agent workflow proposals");
+    assert!(proposals.iter().any(|proposal| {
+        proposal["correlation_id"] == expected_handoff_accept_correlation
+            && proposal["proposal_type"] == "handoff"
+            && proposal["status"] == "accepted"
+    }));
+    assert!(proposals.iter().any(|proposal| {
+        proposal["correlation_id"] == expected_handoff_reject_correlation
+            && proposal["proposal_type"] == "handoff"
+            && proposal["status"] == "rejected"
+    }));
+    assert!(proposals.iter().any(|proposal| {
+        proposal["correlation_id"] == expected_review_correlation
+            && proposal["proposal_type"] == "review_request"
+            && proposal["status"] == "accepted"
+    }));
+    assert!(proposals.iter().any(|proposal| {
+        proposal["correlation_id"] == expected_review_correlation
+            && proposal["proposal_type"] == "review_verdict"
+    }));
+    assert!(proposals.iter().any(|proposal| {
+        proposal["correlation_id"] == expected_debate_correlation
+            && proposal["proposal_type"] == "debate_request"
+            && proposal["status"] == "accepted"
+    }));
+    assert!(proposals.iter().any(|proposal| {
+        proposal["correlation_id"] == expected_debate_correlation
+            && proposal["proposal_type"] == "debate_position"
+    }));
+    assert!(proposals.iter().any(|proposal| {
+        proposal["correlation_id"] == expected_debate_correlation
+            && proposal["proposal_type"] == "debate_resolution"
+    }));
+
+    let url = std::env::var("ACP_TEST_DATABASE_URL").expect("PG test URL");
+    let mut client = postgres::Client::connect(&url, postgres::NoTls).expect("raw PG client");
+    let receipt_count: i64 = client
+        .query_one(
+            "SELECT COUNT(*) FROM agent_action_receipts WHERE run_id = $1",
+            &[&run_id],
+        )
+        .expect("count full-chain receipts")
+        .get(0);
+    assert_eq!(receipt_count, node_specs.len() as i64);
+}
+
+#[test]
+#[cfg(feature = "pg-tests")]
+fn pg_tool_approval_is_bound_consumed_and_not_replayed() {
+    let Some(store) = test_store() else { return };
+    let tag = uuid_tag();
+    let node_id = format!("tool-node-{tag}");
+    let profile_id = format!("tool-profile-{tag}");
+    let tool_name = format!("tool-{tag}");
+    let plan = store
+        .create_workflow_plan(
+            &format!("tool approval {tag}"),
+            "pg-test",
+            "pg-test",
+            |ids, _| {
+                Ok(json!({
+                    "status": "planned_read_only",
+                    "workflow_id": ids.workflow_id,
+                    "dispatch_id": ids.dispatch_id,
+                    "graph": {
+                        "nodes": [{
+                            "node_id": node_id,
+                            "task_type": "command",
+                            "status": "pending",
+                            "profile_id": profile_id,
+                            "command": format!("{tool_name} pg-fixture")
+                        }],
+                        "edges": [],
+                        "workflow_id": ids.workflow_id,
+                        "dispatch_id": ids.dispatch_id
+                    },
+                    "analysis": {},
+                    "boundaries": {"execution_authority": "bounded_trusted_local"}
+                }))
+            },
+        )
+        .unwrap();
+    let run = store
+        .create_workflow_run_from_plan(plan["plan_id"].as_str().unwrap(), "pg-test")
+        .unwrap();
+    let run_id = run["run_id"].as_str().unwrap().to_string();
+    let capability = store
+        .configure_tool_capability(
+            "pg-operator",
+            &tool_name,
+            "PG fixture",
+            None,
+            None,
+            true,
+            "medium",
+            None,
+        )
+        .unwrap();
+    assert_eq!(capability["changed"], true);
+    let allowlist = store
+        .configure_tool_allowlist(
+            "pg-operator",
+            &profile_id,
+            std::slice::from_ref(&tool_name),
+            None,
+        )
+        .unwrap();
+    assert_eq!(allowlist["changed"], true);
+    assert_eq!(
+        store
+            .read_tool_allowlist_policy(&profile_id)
+            .unwrap()
+            .unwrap()["resource_sha256"],
+        allowlist["resource_sha256"]
+    );
+    let store = Arc::new(store);
+    let calls = Arc::new(AtomicUsize::new(0));
+    let executor = ToolPolicyNodeExecutor::command(
+        Arc::new(PgCountingExecutor {
+            calls: calls.clone(),
+        }),
+        store.clone(),
+    );
+
+    let first = store
+        .tick_with_executor(&run_id, "pg-test", 0, &executor)
+        .unwrap();
+    assert_eq!(first["result"]["status"], "awaiting_approval");
+    assert_eq!(calls.load(Ordering::SeqCst), 0);
+    let authorization = store
+        .inspect_tool_execution_authorization(&run_id, &node_id)
+        .unwrap()
+        .unwrap();
+    let approval_id = authorization["requested_approval_id"].as_str().unwrap();
+    store
+        .resolve_requested_workflow_run_approval(
+            &run_id,
+            approval_id,
+            "approved",
+            "pg-operator",
+            Some("bounded PG fixture"),
+        )
+        .unwrap();
+    let second = store
+        .tick_with_executor(&run_id, "pg-test", 0, &executor)
+        .unwrap();
+    assert_eq!(second["result"]["status"], "completed");
+    assert_eq!(calls.load(Ordering::SeqCst), 1);
+    assert_eq!(
+        store
+            .inspect_tool_execution_authorization(&run_id, &node_id)
+            .unwrap()
+            .unwrap()["status"],
+        "consumed"
+    );
+}
+
+#[test]
+#[cfg(feature = "pg-tests")]
+fn pg_implicit_tool_receipt_is_atomic_across_concurrent_callers() {
+    let Some(store) = test_store() else { return };
+    let tag = uuid_tag();
+    let node_id = format!("implicit-tool-node-{tag}");
+    let profile_id = format!("implicit-tool-profile-{tag}");
+    let tool_name = format!("implicit-tool-{tag}");
+    let plan = store
+        .create_workflow_plan(
+            &format!("implicit tool receipt {tag}"),
+            "pg-test",
+            "pg-test",
+            |ids, _| {
+                Ok(json!({
+                    "status": "planned_read_only",
+                    "workflow_id": ids.workflow_id,
+                    "dispatch_id": ids.dispatch_id,
+                    "graph": {
+                        "workflow_id": ids.workflow_id,
+                        "dispatch_id": ids.dispatch_id,
+                        "nodes": [{
+                            "node_id": node_id,
+                            "task_type": "command",
+                            "status": "pending",
+                            "profile_id": profile_id,
+                            "command": format!("{tool_name} bounded")
+                        }],
+                        "edges": []
+                    },
+                    "analysis": {},
+                    "boundaries": {"execution_authority": "bounded_trusted_local"}
+                }))
+            },
+        )
+        .unwrap();
+    let run = store
+        .create_workflow_run_from_plan(plan["plan_id"].as_str().unwrap(), "pg-test")
+        .unwrap();
+    let run_id = run["run_id"].as_str().unwrap().to_string();
+    let workflow_id = plan["workflow_id"].as_str().unwrap().to_string();
+    store
+        .configure_tool_capability(
+            "pg-test",
+            &tool_name,
+            "bounded fixture",
+            None,
+            None,
+            false,
+            "low",
+            None,
+        )
+        .unwrap();
+    store
+        .configure_tool_allowlist(
+            "pg-test",
+            &profile_id,
+            std::slice::from_ref(&tool_name),
+            None,
+        )
+        .unwrap();
+
+    let store = Arc::new(store);
+    let calls = Arc::new(AtomicUsize::new(0));
+    let inner: Arc<dyn NodeExecutor> = Arc::new(PgCountingExecutor {
+        calls: calls.clone(),
+    });
+    let barrier = Arc::new(std::sync::Barrier::new(2));
+    let input = NodeExecutionInput {
+        node_id: node_id.clone(),
+        task_type: "command".to_string(),
+        run_id: run_id.clone(),
+        workflow_id,
+        node_metadata: json!({
+            "profile_id": profile_id,
+            "command": format!("{tool_name} bounded")
+        }),
+    };
+    let handles = (0..2)
+        .map(|_| {
+            let barrier = barrier.clone();
+            let inner = inner.clone();
+            let input = input.clone();
+            let store = store.clone();
+            std::thread::spawn(move || {
+                let executor = ToolPolicyNodeExecutor::command(inner, store);
+                barrier.wait();
+                executor.execute_node(&input)
+            })
+        })
+        .collect::<Vec<_>>();
+    let results = handles
+        .into_iter()
+        .map(|handle| handle.join().unwrap())
+        .collect::<Vec<_>>();
+
+    assert_eq!(
+        results
+            .iter()
+            .filter(|result| result.status == "completed")
+            .count(),
+        1
+    );
+    assert_eq!(
+        results
+            .iter()
+            .filter(|result| {
+                result.error_domain.as_deref() == Some("tool_execution_outcome_unknown")
+            })
+            .count(),
+        1
+    );
+    assert_eq!(calls.load(Ordering::SeqCst), 1);
+    let receipt = store
+        .inspect_tool_execution_authorization(&run_id, &node_id)
+        .unwrap()
+        .unwrap();
+    assert_eq!(receipt["status"], "consumed");
+    assert_eq!(receipt["resolved_by"], "tool-policy:implicit");
+    let implicit_claims = store
+        .audit_events(200)
+        .unwrap()
+        .into_iter()
+        .filter(|event| {
+            event["action"] == "tool_execution.implicit_receipt_claimed"
+                && event["resource"] == run_id
+        })
+        .count();
+    assert_eq!(implicit_claims, 1);
 }
 
 #[test]

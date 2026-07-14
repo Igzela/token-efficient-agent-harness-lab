@@ -113,6 +113,43 @@ impl LocalProductStore {
                          ALTER TABLE dispatch_history
                          ADD COLUMN IF NOT EXISTS trace_content_sha256 TEXT;"
                     }
+                    22 => {
+                        "CREATE TABLE IF NOT EXISTS agent_action_receipts (
+                             run_id TEXT NOT NULL,
+                             node_id TEXT NOT NULL,
+                             agent_id TEXT NOT NULL,
+                             action_sha256 TEXT NOT NULL CHECK (length(action_sha256) = 64),
+                             action_type TEXT NOT NULL,
+                             result_json TEXT NOT NULL,
+                             created_at TEXT NOT NULL,
+                             PRIMARY KEY (run_id, node_id)
+                         );
+                         CREATE INDEX IF NOT EXISTS idx_agent_action_receipts_agent
+                             ON agent_action_receipts(agent_id, run_id);
+                         CREATE TABLE IF NOT EXISTS tool_allowlist_profiles (
+                             profile_id TEXT PRIMARY KEY,
+                             configured_at TEXT NOT NULL
+                         );
+                         INSERT INTO tool_allowlist_profiles (profile_id, configured_at)
+                             SELECT profile_id, COALESCE(MIN(created_at), 'migration-v22')
+                             FROM tool_allowlists GROUP BY profile_id
+                             ON CONFLICT(profile_id) DO NOTHING;
+                         CREATE TABLE IF NOT EXISTS tool_execution_authorizations (
+                             run_id TEXT NOT NULL,
+                             node_id TEXT NOT NULL,
+                             action_sha256 TEXT NOT NULL CHECK (length(action_sha256) = 64),
+                             tool_name TEXT NOT NULL,
+                             profile_id TEXT NOT NULL,
+                             status TEXT NOT NULL CHECK (status IN ('requested', 'approved', 'rejected', 'consumed')),
+                             requested_approval_id TEXT NOT NULL UNIQUE,
+                             resolved_by TEXT,
+                             created_at TEXT NOT NULL,
+                             updated_at TEXT NOT NULL,
+                             PRIMARY KEY (run_id, node_id)
+                         );
+                         CREATE INDEX IF NOT EXISTS idx_tool_execution_authorizations_status
+                             ON tool_execution_authorizations(status, run_id);"
+                    }
                     _ => {
                         return Err(format!(
                             "unknown pg migration version: {}",
@@ -146,11 +183,99 @@ impl LocalProductStore {
             Ok(())
         })
     }
+
+    pub(in crate::storage::local_product_store) fn rollback_pg_v22_to_v21_internal(
+        &self,
+        actor: &str,
+        now: &str,
+    ) -> Result<(), String> {
+        self.with_pg_conn(|client| {
+            let mut tx = client.transaction().map_err(|error| error.to_string())?;
+            tx.batch_execute(
+                "LOCK TABLE schema_migrations IN ACCESS EXCLUSIVE MODE;
+                 LOCK TABLE agent_action_receipts IN ACCESS EXCLUSIVE MODE;
+                 LOCK TABLE tool_allowlist_profiles IN ACCESS EXCLUSIVE MODE;
+                 LOCK TABLE tool_execution_authorizations IN ACCESS EXCLUSIVE MODE;",
+            )
+            .map_err(|error| error.to_string())?;
+            let current_version = tx
+                .query_one(
+                    "SELECT COALESCE(MAX(version), 0) FROM schema_migrations",
+                    &[],
+                )
+                .map(|row| row.get::<_, i64>(0))
+                .map_err(|error| error.to_string())?;
+            super::super::migrations::require_v22_rollback_source(current_version)?;
+
+            let mut occupied = Vec::new();
+            for table in super::super::migrations::V22_TABLES {
+                let sql = format!("SELECT EXISTS(SELECT 1 FROM {table} LIMIT 1)");
+                let contains_rows = tx
+                    .query_one(&sql, &[])
+                    .map(|row| row.get::<_, bool>(0))
+                    .map_err(|error| error.to_string())?;
+                if contains_rows {
+                    occupied.push(table.to_string());
+                }
+            }
+            super::super::migrations::require_empty_v22_tables(&occupied)?;
+
+            tx.batch_execute(
+                "DROP INDEX IF EXISTS idx_agent_action_receipts_agent;
+                 DROP INDEX IF EXISTS idx_tool_execution_authorizations_status;
+                 DROP TABLE agent_action_receipts;
+                 DROP TABLE tool_execution_authorizations;
+                 DROP TABLE tool_allowlist_profiles;",
+            )
+            .map_err(|error| error.to_string())?;
+            tx.execute(
+                "INSERT INTO audit_log (created_at, actor, action, resource, details_json)
+                 VALUES ($1, $2, 'schema.rollback.v22_to_v21', 'local_product_store', $3)",
+                &[
+                    &now,
+                    &actor,
+                    &super::super::migrations::v22_rollback_audit_details(),
+                ],
+            )
+            .map_err(|error| match error.as_db_error() {
+                Some(db_error) => {
+                    format!(
+                        "failed to record v22 rollback audit: {}",
+                        db_error.message()
+                    )
+                }
+                None => format!("failed to record v22 rollback audit: {error}"),
+            })?;
+            let removed = tx
+                .execute(
+                    "DELETE FROM schema_migrations WHERE version = $1",
+                    &[&super::super::migrations::V22_SCHEMA_VERSION],
+                )
+                .map_err(|error| error.to_string())?;
+            if removed != 1 {
+                return Err(format!(
+                    "v22 rollback expected one version marker, removed {removed}"
+                ));
+            }
+            tx.commit().map_err(|error| error.to_string())
+        })
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(feature = "pg-tests")]
+    use crate::storage::local_product_store::DatabaseConnection;
+    #[cfg(feature = "pg-tests")]
+    use postgres::NoTls;
+    #[cfg(feature = "pg-tests")]
+    use r2d2::Pool;
+    #[cfg(feature = "pg-tests")]
+    use r2d2_postgres::PostgresConnectionManager;
+    #[cfg(feature = "pg-tests")]
+    use std::path::PathBuf;
 
     #[test]
     fn pg_migration_list_is_sorted_and_contiguous() {
@@ -169,5 +294,332 @@ mod tests {
             CURRENT_PG_VERSION,
             schema::POSTGRES_MIGRATIONS.last().unwrap().version
         );
+    }
+
+    #[cfg(feature = "pg-tests")]
+    struct PgSchemaCleanup {
+        admin: postgres::Client,
+        schema_name: String,
+    }
+
+    #[cfg(feature = "pg-tests")]
+    impl Drop for PgSchemaCleanup {
+        fn drop(&mut self) {
+            let sql = format!("DROP SCHEMA IF EXISTS {} CASCADE", self.schema_name);
+            let _ = self.admin.batch_execute(&sql);
+        }
+    }
+
+    #[cfg(feature = "pg-tests")]
+    struct IsolatedPgStore {
+        store: LocalProductStore,
+        _cleanup: PgSchemaCleanup,
+    }
+
+    #[cfg(feature = "pg-tests")]
+    impl IsolatedPgStore {
+        fn from_environment() -> Option<Self> {
+            let url = match std::env::var("ACP_TEST_DATABASE_URL") {
+                Ok(url) => url,
+                Err(_) => {
+                    eprintln!("ACP_TEST_DATABASE_URL not set; skipping PG v22 rollback test");
+                    return None;
+                }
+            };
+            let schema_name = format!(
+                "acp_v22_{}",
+                uuid::Uuid::new_v4().simple().to_string().to_lowercase()
+            );
+            let mut admin = postgres::Client::connect(&url, NoTls)
+                .expect("connect to PostgreSQL test database");
+            admin
+                .batch_execute(&format!("CREATE SCHEMA {schema_name}"))
+                .expect("create isolated PostgreSQL test schema");
+            let cleanup = PgSchemaCleanup {
+                admin,
+                schema_name: schema_name.clone(),
+            };
+
+            let mut config: postgres::Config = url.parse().expect("parse PostgreSQL test URL");
+            config.options(&format!("-c search_path={schema_name}"));
+            let manager = PostgresConnectionManager::new(config, NoTls);
+            let pool = Pool::builder()
+                .max_size(2)
+                .build(manager)
+                .expect("create isolated PostgreSQL pool");
+            {
+                let mut client = pool.get().expect("get isolated PostgreSQL connection");
+                client
+                    .batch_execute(schema::ddl_for(schema::Dialect::Postgres))
+                    .expect("create isolated PostgreSQL schema");
+            }
+            let store = LocalProductStore {
+                db_path: PathBuf::from(format!("postgres-schema:{schema_name}")),
+                db: DatabaseConnection::Pg(pool),
+                clock: Box::new(|| "2026-07-14T00:00:00Z".to_string()),
+                encryption_active: false,
+            };
+            store
+                .run_pg_migrations_internal()
+                .expect("apply migrations in isolated PostgreSQL schema");
+            Some(Self {
+                store,
+                _cleanup: cleanup,
+            })
+        }
+    }
+
+    #[cfg(feature = "pg-tests")]
+    fn pg_table_exists(store: &LocalProductStore, table: &str) -> bool {
+        store
+            .with_pg_conn(|client| {
+                client
+                    .query_one(
+                        "SELECT EXISTS(
+                             SELECT 1 FROM information_schema.tables
+                             WHERE table_schema = current_schema() AND table_name = $1
+                         )",
+                        &[&table],
+                    )
+                    .map(|row| row.get(0))
+                    .map_err(|error| error.to_string())
+            })
+            .unwrap()
+    }
+
+    #[test]
+    #[cfg(feature = "pg-tests")]
+    fn pg_v22_rollback_is_atomic_and_can_be_migrated_forward_again() {
+        let Some(fixture) = IsolatedPgStore::from_environment() else {
+            return;
+        };
+        let store = &fixture.store;
+        assert_eq!(store.schema_version().unwrap(), 22);
+        store
+            .with_pg_conn(|client| {
+                client
+                    .execute(
+                        "INSERT INTO tool_allowlists (profile_id, tool_name, created_at)
+                         VALUES ($1, $2, $3)",
+                        &[&"legacy-locked", &"echo", &"2026-07-14T00:00:00Z"],
+                    )
+                    .map(|_| ())
+                    .map_err(|error| error.to_string())
+            })
+            .unwrap();
+
+        store.rollback_v22_to_v21("migration-test", true).unwrap();
+        assert_eq!(store.schema_version().unwrap(), 21);
+        for table in super::super::super::migrations::V22_TABLES {
+            assert!(!pg_table_exists(store, table), "{table} should be removed");
+        }
+        let rollback_audit = store
+            .with_pg_conn(|client| {
+                client
+                    .query_one(
+                        "SELECT actor, resource, details_json FROM audit_log
+                         WHERE action = 'schema.rollback.v22_to_v21'",
+                        &[],
+                    )
+                    .map(|row| {
+                        (
+                            row.get::<_, String>(0),
+                            row.get::<_, String>(1),
+                            row.get::<_, String>(2),
+                        )
+                    })
+                    .map_err(|error| error.to_string())
+            })
+            .unwrap();
+        assert_eq!(rollback_audit.0, "migration-test");
+        assert_eq!(rollback_audit.1, "local_product_store");
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(&rollback_audit.2).unwrap(),
+            serde_json::json!({
+                "from_version": 22,
+                "to_version": 21,
+                "dropped_empty_tables": [
+                    "agent_action_receipts",
+                    "tool_allowlist_profiles",
+                    "tool_execution_authorizations"
+                ]
+            })
+        );
+
+        store.run_pg_migrations_internal().unwrap();
+        assert_eq!(store.schema_version().unwrap(), 22);
+        for table in super::super::super::migrations::V22_TABLES {
+            assert!(pg_table_exists(store, table), "{table} should be restored");
+        }
+        assert_eq!(
+            store
+                .read_tool_allowlist_policy("legacy-locked")
+                .unwrap()
+                .unwrap()["value"]["tool_names"],
+            serde_json::json!(["echo"])
+        );
+    }
+
+    #[test]
+    #[cfg(feature = "pg-tests")]
+    fn pg_v22_rollback_refuses_authoritative_rows_without_moving_marker() {
+        let Some(fixture) = IsolatedPgStore::from_environment() else {
+            return;
+        };
+        let store = &fixture.store;
+        store
+            .configure_tool_allowlist("migration-test", "configured-empty", &[], None)
+            .unwrap();
+        store
+            .with_pg_conn(|client| {
+                client
+                    .batch_execute(
+                        "INSERT INTO agent_action_receipts
+                         (run_id, node_id, agent_id, action_sha256, action_type, result_json, created_at)
+                         VALUES
+                         ('occupied-run', 'occupied-agent-node', 'occupied-agent',
+                          'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+                          'complete', '{}', '2026-07-14T00:00:00Z');
+                         INSERT INTO tool_execution_authorizations
+                         (run_id, node_id, action_sha256, tool_name, profile_id, status,
+                          requested_approval_id, created_at, updated_at)
+                         VALUES
+                         ('occupied-run', 'occupied-tool-node',
+                          'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',
+                          'echo', 'configured-empty', 'requested', 'occupied-approval',
+                          '2026-07-14T00:00:00Z', '2026-07-14T00:00:00Z');",
+                    )
+                    .map_err(|error| error.to_string())
+            })
+            .unwrap();
+
+        let error = store
+            .rollback_v22_to_v21("migration-test", true)
+            .unwrap_err();
+        assert!(error.contains("authoritative v22 data exists"));
+        for table in super::super::super::migrations::V22_TABLES {
+            assert!(error.contains(table), "refusal must identify {table}");
+        }
+        assert_eq!(store.schema_version().unwrap(), 22);
+        for table in super::super::super::migrations::V22_TABLES {
+            assert!(
+                pg_table_exists(store, table),
+                "{table} must remain after refusal"
+            );
+        }
+        assert!(store
+            .read_tool_allowlist_policy("configured-empty")
+            .unwrap()
+            .is_some());
+    }
+
+    #[test]
+    #[cfg(feature = "pg-tests")]
+    fn pg_v22_rollback_audit_failure_rolls_back_tables_and_version_marker() {
+        let Some(fixture) = IsolatedPgStore::from_environment() else {
+            return;
+        };
+        let store = &fixture.store;
+        store
+            .with_pg_conn(|client| {
+                client
+                    .batch_execute(
+                        "CREATE FUNCTION reject_v22_rollback_audit() RETURNS trigger
+                         LANGUAGE plpgsql AS $$
+                         BEGIN
+                             IF NEW.action = 'schema.rollback.v22_to_v21' THEN
+                                 RAISE EXCEPTION 'injected v22 rollback audit failure';
+                             END IF;
+                             RETURN NEW;
+                         END;
+                         $$;
+                         CREATE TRIGGER reject_v22_rollback_audit
+                         BEFORE INSERT ON audit_log
+                         FOR EACH ROW EXECUTE FUNCTION reject_v22_rollback_audit();",
+                    )
+                    .map_err(|error| error.to_string())
+            })
+            .unwrap();
+
+        let error = store
+            .rollback_v22_to_v21("migration-test", true)
+            .unwrap_err();
+        assert!(
+            error.contains("injected v22 rollback audit failure"),
+            "unexpected rollback error: {error}"
+        );
+        assert_eq!(store.schema_version().unwrap(), 22);
+        for table in super::super::super::migrations::V22_TABLES {
+            assert!(
+                pg_table_exists(store, table),
+                "{table} must be restored when rollback audit fails"
+            );
+        }
+        let rollback_audits = store
+            .with_pg_conn(|client| {
+                client
+                    .query_one(
+                        "SELECT COUNT(*) FROM audit_log
+                         WHERE action = 'schema.rollback.v22_to_v21'",
+                        &[],
+                    )
+                    .map(|row| row.get::<_, i64>(0))
+                    .map_err(|error| error.to_string())
+            })
+            .unwrap();
+        assert_eq!(rollback_audits, 0);
+    }
+
+    #[test]
+    #[cfg(feature = "pg-tests")]
+    fn pg_v22_rollback_waits_for_writer_then_refuses_committed_authority() {
+        let Some(fixture) = IsolatedPgStore::from_environment() else {
+            return;
+        };
+        let store = &fixture.store;
+
+        store
+            .with_pg_conn(|client| {
+                let mut blocker = client.transaction().map_err(|error| error.to_string())?;
+                blocker
+                    .execute(
+                        "INSERT INTO tool_allowlist_profiles (profile_id, configured_at)
+                         VALUES ($1, $2)",
+                        &[&"concurrent-profile", &"2026-07-14T00:00:00Z"],
+                    )
+                    .map_err(|error| error.to_string())?;
+
+                std::thread::scope(|scope| -> Result<(), String> {
+                    let (result_sender, result_receiver) = std::sync::mpsc::channel();
+                    scope.spawn(move || {
+                        let _ =
+                            result_sender.send(store.rollback_v22_to_v21("migration-test", true));
+                    });
+
+                    assert!(
+                        result_receiver
+                            .recv_timeout(std::time::Duration::from_millis(200))
+                            .is_err(),
+                        "rollback must not pass the writer's table lock"
+                    );
+                    blocker.commit().map_err(|error| error.to_string())?;
+                    let error = result_receiver
+                        .recv_timeout(std::time::Duration::from_secs(5))
+                        .map_err(|error| error.to_string())?
+                        .expect_err("committed authority must block rollback");
+                    assert!(error.contains("authoritative v22 data exists"));
+                    assert!(error.contains("tool_allowlist_profiles"));
+                    Ok(())
+                })
+            })
+            .unwrap();
+
+        assert_eq!(store.schema_version().unwrap(), 22);
+        for table in super::super::super::migrations::V22_TABLES {
+            assert!(
+                pg_table_exists(store, table),
+                "{table} must remain after concurrent-authority refusal"
+            );
+        }
     }
 }

@@ -9,9 +9,9 @@ use crate::orchestration::schemas::{
 };
 use crate::provider::redaction::{contains_sensitive_patterns, redact_sensitive_patterns};
 
-const MAX_SCRATCHPAD_BYTES: usize = 16 * 1024;
-const MAX_BODY_BYTES: usize = 64 * 1024;
-const MAX_BODY_SUMMARY_BYTES: usize = 1024;
+pub(super) const MAX_SCRATCHPAD_BYTES: usize = 16 * 1024;
+pub(super) const MAX_BODY_BYTES: usize = 64 * 1024;
+pub(super) const MAX_BODY_SUMMARY_BYTES: usize = 1024;
 
 // ── AgentState CRUD ──────────────────────────────────────────────────────────
 
@@ -420,7 +420,7 @@ impl LocalProductStore {
                      (message_id, correlation_id, from_agent_id, to_agent_id,
                       run_id, node_id, message_type, status, body, body_summary,
                       redaction_status, created_at, reply_to_message_id, metadata_json)
-                     VALUES ($1,$2,$3,$4,$5,$6,$7,'pending',$8,$9,$10,$11,$12,$13,$14)",
+                     VALUES ($1,$2,$3,$4,$5,$6,$7,'pending',$8,$9,$10,$11,$12,$13)",
                         &[
                             &message_id,
                             &correlation_id,
@@ -806,8 +806,8 @@ impl LocalProductStore {
 
 // ── Agent Proposal CRUD (AR-3) ──────────────────────────────────────────────
 
-const MAX_PROPOSAL_OBJECTIVE_BYTES: usize = 4096;
-const MAX_PROPOSAL_CONTEXT_BYTES: usize = 16384;
+pub(super) const MAX_PROPOSAL_OBJECTIVE_BYTES: usize = 4096;
+pub(super) const MAX_PROPOSAL_CONTEXT_BYTES: usize = 16384;
 
 impl LocalProductStore {
     pub fn create_proposal(
@@ -918,7 +918,11 @@ impl LocalProductStore {
         }
     }
 
-    pub fn get_proposal(&self, proposal_id: &str) -> Result<Option<Value>, String> {
+    pub(crate) fn get_proposal_in_run(
+        &self,
+        proposal_id: &str,
+        run_id: &str,
+    ) -> Result<Option<Value>, String> {
         match &self.db {
             DatabaseConnection::Sqlite(_) => self.with_conn(|conn| {
                 let mut stmt = conn
@@ -927,11 +931,11 @@ impl LocalProductStore {
                                 target_agent_id, proposed_node_id, proposed_edge_id,
                                 proposal_type, objective, context_summary, status,
                                 created_at, updated_at
-                         FROM agent_proposals WHERE proposal_id=?1",
+                         FROM agent_proposals WHERE proposal_id=?1 AND run_id=?2",
                     )
                     .map_err(|e| e.to_string())?;
                 let mut rows = stmt
-                    .query_map(params![proposal_id], |row| {
+                    .query_map(params![proposal_id, run_id], |row| {
                         Ok(json!({
                             "proposal_id": row.get::<_, String>(0)?,
                             "correlation_id": row.get::<_, String>(1)?,
@@ -963,8 +967,8 @@ impl LocalProductStore {
                                 target_agent_id, proposed_node_id, proposed_edge_id,
                                 proposal_type, objective, context_summary, status,
                                 created_at, updated_at
-                         FROM agent_proposals WHERE proposal_id=$1",
-                        &[&proposal_id],
+                         FROM agent_proposals WHERE proposal_id=$1 AND run_id=$2",
+                        &[&proposal_id, &run_id],
                     )
                     .map_err(|e| e.to_string())?;
                 match rows.into_iter().next() {
@@ -1290,6 +1294,7 @@ impl LocalProductStore {
         &self,
         correlation_id: &str,
         agent_id: &str,
+        run_id: &str,
     ) -> Result<Option<Value>, String> {
         match &self.db {
             DatabaseConnection::Sqlite(_) => self.with_conn(|conn| {
@@ -1301,11 +1306,12 @@ impl LocalProductStore {
                                 created_at, updated_at
                          FROM agent_proposals
                          WHERE correlation_id=?1 AND (agent_id=?2 OR target_agent_id=?2)
+                           AND run_id=?3
                          ORDER BY created_at DESC LIMIT 1",
                     )
                     .map_err(|e| e.to_string())?;
                 let mut rows = stmt
-                    .query_map(params![correlation_id, agent_id], |row| {
+                    .query_map(params![correlation_id, agent_id, run_id], |row| {
                         Ok(json!({
                             "proposal_id": row.get::<_, String>(0)?,
                             "correlation_id": row.get::<_, String>(1)?,
@@ -1339,8 +1345,9 @@ impl LocalProductStore {
                                 created_at, updated_at
                          FROM agent_proposals
                          WHERE correlation_id=$1 AND (agent_id=$2 OR target_agent_id=$2)
+                           AND run_id=$3
                          ORDER BY created_at DESC LIMIT 1",
-                        &[&correlation_id, &agent_id],
+                        &[&correlation_id, &agent_id, &run_id],
                     )
                     .map_err(|e| e.to_string())?;
                 match rows.into_iter().next() {
@@ -1670,7 +1677,7 @@ fn pg_runtime_audit(
 
 // ── Redaction helpers ─────────────────────────────────────────────────────────
 
-fn redact_message_body(body: Option<&str>) -> (Option<String>, &'static str) {
+pub(super) fn redact_message_body(body: Option<&str>) -> (Option<String>, &'static str) {
     let body = match body {
         Some(b) => b,
         None => return (None, "none"),
@@ -1685,7 +1692,7 @@ fn redact_message_body(body: Option<&str>) -> (Option<String>, &'static str) {
     }
 }
 
-fn apply_size_cap(text: &str, max_bytes: usize) -> String {
+pub(super) fn apply_size_cap(text: &str, max_bytes: usize) -> String {
     if text.len() <= max_bytes {
         return text.to_string();
     }
@@ -1698,7 +1705,7 @@ fn apply_size_cap(text: &str, max_bytes: usize) -> String {
     result
 }
 
-fn apply_size_cap_and_redact(text: &str, max_bytes: usize) -> String {
+pub(super) fn apply_size_cap_and_redact(text: &str, max_bytes: usize) -> String {
     let redacted = redact_sensitive_patterns(text);
     apply_size_cap(&redacted, max_bytes)
 }

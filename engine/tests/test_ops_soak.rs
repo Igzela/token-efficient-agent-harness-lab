@@ -257,7 +257,11 @@ fn test_soak_backpressure_lifecycle() {
 #[test]
 fn test_soak_executor_pool_failure_tracking() {
     let pool = ExecutorPool::new();
-    register_default_executors(&pool, false);
+    register_default_executors(
+        &pool,
+        false,
+        Arc::new(LocalProductStore::new(":memory:").unwrap()),
+    );
 
     // Record failures via release(success=false)
     for _ in 0..5 {
@@ -844,9 +848,9 @@ fn test_soak_stale_lease_recovery() {
 fn test_e2e_ops_soak_drill() {
     let dir = tempdir().unwrap();
     let db_path = dir.path().join("e2e-soak.db");
-    let store = LocalProductStore::new(&db_path).unwrap();
+    let store = Arc::new(LocalProductStore::new(&db_path).unwrap());
     let pool = ExecutorPool::new();
-    register_default_executors(&pool, false);
+    register_default_executors(&pool, false, store.clone());
 
     let run_count = 10;
     let mut run_ids = Vec::new();

@@ -7,6 +7,7 @@ use crate::budget_manager::{
     BudgetAnomalyFinding, BudgetAnomalySeverity, BudgetConfidenceLevel, BudgetEvidenceOutcome,
 };
 
+use super::workflow_runs::require_run_execution_owner;
 use super::{append_audit_locked, DatabaseConnection, LocalProductStore};
 
 pub const BUDGET_AUTO_PAUSE_POLICY_SCHEMA_VERSION: &str = "budget_auto_pause_policy.v1";
@@ -89,16 +90,17 @@ impl LocalProductStore {
                     tx.commit().map_err(|error| error.to_string())?;
                     return Ok(existing);
                 }
-                let exists: bool = tx
+                let current_owner: Option<Option<String>> = tx
                     .query_row(
-                        "SELECT EXISTS(SELECT 1 FROM workflow_runs WHERE run_id = ?1)",
+                        "SELECT pause_reason FROM workflow_runs WHERE run_id = ?1",
                         params![run_id],
                         |row| row.get(0),
                     )
+                    .optional()
                     .map_err(|error| error.to_string())?;
-                if !exists {
-                    return Err(format!("workflow run not found: {run_id}"));
-                }
+                let current_owner = current_owner
+                    .ok_or_else(|| format!("workflow run not found: {run_id}"))?;
+                require_run_execution_owner(run_id, current_owner.as_deref(), None)?;
                 tx.execute(
                     "INSERT INTO budget_pause_decisions
                      (decision_id, run_id, artifact_id, evidence_sha256, state, cause, policy_json, actor, created_at, updated_at)
@@ -133,16 +135,15 @@ impl LocalProductStore {
                     tx.commit().map_err(|error| error.to_string())?;
                     return Ok(existing);
                 }
-                let exists: bool = tx
-                    .query_one(
-                        "SELECT EXISTS(SELECT 1 FROM workflow_runs WHERE run_id = $1)",
+                let current_owner = tx
+                    .query_opt(
+                        "SELECT pause_reason FROM workflow_runs WHERE run_id = $1 FOR UPDATE",
                         &[&run_id],
                     )
                     .map_err(|error| error.to_string())?
-                    .get(0);
-                if !exists {
-                    return Err(format!("workflow run not found: {run_id}"));
-                }
+                    .ok_or_else(|| format!("workflow run not found: {run_id}"))?;
+                let current_owner: Option<String> = current_owner.get(0);
+                require_run_execution_owner(run_id, current_owner.as_deref(), None)?;
                 let inserted = tx.execute(
                     "INSERT INTO budget_pause_decisions
                      (decision_id, run_id, artifact_id, evidence_sha256, state, cause, policy_json, actor, created_at, updated_at)
@@ -195,9 +196,30 @@ impl LocalProductStore {
         let now = self.now();
         match &self.db {
             DatabaseConnection::Sqlite(_) => self.with_conn(|conn| {
-                let tx = conn.unchecked_transaction().map_err(|error| error.to_string())?;
+                let tx = rusqlite::Transaction::new_unchecked(
+                    conn,
+                    rusqlite::TransactionBehavior::Immediate,
+                )
+                .map_err(|error| error.to_string())?;
                 let existing = sqlite_active_pause_decision(&tx, run_id)?
                     .ok_or_else(|| format!("active budget pause not found: {run_id}"))?;
+                let current_owner: Option<String> = tx
+                    .query_row(
+                        "SELECT pause_reason FROM workflow_runs WHERE run_id = ?1",
+                        params![run_id],
+                        |row| row.get(0),
+                    )
+                    .optional()
+                    .map_err(|error| error.to_string())?
+                    .ok_or_else(|| format!("workflow run not found: {run_id}"))?;
+                require_run_execution_owner(run_id, current_owner.as_deref(), None)?;
+                let expected_owner = format!(
+                    "budget_auto_pause:{}",
+                    existing["decision_id"].as_str().unwrap_or_default()
+                );
+                if current_owner.as_deref() != Some(expected_owner.as_str()) {
+                    return Err(format!("workflow run pause owner unavailable: {run_id}"));
+                }
                 append_audit_locked(&tx, &now, actor, &format!("budget.auto_pause.{recovery}"), run_id, &json!({"decision_id": existing["decision_id"], "run_id": run_id, "reason": reason, "preserved_cause": existing["cause"], "evidence_sha256": existing["evidence_sha256"]}))?;
                 let updated = tx.execute("UPDATE workflow_runs SET pause_reason = NULL, updated_at = ?1 WHERE run_id = ?2", params![now, run_id]).map_err(|error| error.to_string())?;
                 if updated != 1 { return Err(format!("workflow run pause owner unavailable: {run_id}")); }
@@ -210,6 +232,22 @@ impl LocalProductStore {
                 let mut tx = client.transaction().map_err(|error| error.to_string())?;
                 let existing = pg_active_pause_decision(&mut tx, run_id)?
                     .ok_or_else(|| format!("active budget pause not found: {run_id}"))?;
+                let current_owner = tx
+                    .query_opt(
+                        "SELECT pause_reason FROM workflow_runs WHERE run_id = $1 FOR UPDATE",
+                        &[&run_id],
+                    )
+                    .map_err(|error| error.to_string())?
+                    .ok_or_else(|| format!("workflow run not found: {run_id}"))?;
+                let current_owner: Option<String> = current_owner.get(0);
+                require_run_execution_owner(run_id, current_owner.as_deref(), None)?;
+                let expected_owner = format!(
+                    "budget_auto_pause:{}",
+                    existing["decision_id"].as_str().unwrap_or_default()
+                );
+                if current_owner.as_deref() != Some(expected_owner.as_str()) {
+                    return Err(format!("workflow run pause owner unavailable: {run_id}"));
+                }
                 let details = json!({"decision_id": existing["decision_id"], "run_id": run_id, "reason": reason, "preserved_cause": existing["cause"], "evidence_sha256": existing["evidence_sha256"]}).to_string();
                 let action = format!("budget.auto_pause.{recovery}");
                 tx.execute("INSERT INTO audit_log (created_at, actor, action, resource, details_json) VALUES ($1, $2, $3, $4, $5)", &[&now, &actor, &action, &run_id, &details]).map_err(|error| error.to_string())?;

@@ -1,8 +1,7 @@
 use std::process::Command;
 
 pub const DEFAULT_CLI_TIMEOUT_MS: u64 = 300_000;
-pub const DEFAULT_COMPLEXITY_THRESHOLD: f64 = 0.7;
-pub const DEFAULT_CLI_EXECUTION_ENABLED: bool = true;
+pub const DEFAULT_CLI_EXECUTION_ENABLED: bool = false;
 
 #[derive(Clone, Debug)]
 pub struct CliConfig {
@@ -12,15 +11,18 @@ pub struct CliConfig {
     pub codex_bin: Option<String>,
     pub codex_enabled: bool,
     pub timeout_ms: u64,
-    pub complexity_threshold: f64,
 }
 
 impl CliConfig {
     pub fn from_env() -> Self {
-        let enabled = env_bool("ACP_ENABLE_CLI_EXECUTION", DEFAULT_CLI_EXECUTION_ENABLED);
+        let requested = env_bool("ACP_ENABLE_CLI_EXECUTION", DEFAULT_CLI_EXECUTION_ENABLED);
+        let kill_switch = env_bool("ACP_CLI_EXECUTION_KILL_SWITCH", false);
+        let enabled = requested && !kill_switch;
         let timeout_ms = env_u64("ACP_CLI_TIMEOUT_MS", DEFAULT_CLI_TIMEOUT_MS);
-        let complexity_threshold =
-            env_f64("ACP_CLI_COMPLEXITY_THRESHOLD", DEFAULT_COMPLEXITY_THRESHOLD);
+
+        if requested && kill_switch {
+            eprintln!("[acp-cli] CLI execution kill switch is active");
+        }
 
         if !enabled {
             return Self {
@@ -30,19 +32,27 @@ impl CliConfig {
                 codex_bin: None,
                 codex_enabled: false,
                 timeout_ms,
-                complexity_threshold,
             };
         }
 
-        let claude_code_bin = env_opt("ACP_CLAUDE_CODE_BIN").or_else(|| detect_binary("claude"));
-        let claude_code_enabled = claude_code_bin.is_some();
+        // Claude Code exposes nested Edit/Write/Bash tools without an enforceable
+        // app-owned filesystem sandbox or per-tool mediation contract. Keep it
+        // unavailable until such a contract exists; Codex workspace-write is the
+        // only managed CLI adapter registered by this runtime.
+        let claude_code_bin = None;
+        let claude_code_enabled = false;
+        if env_opt("ACP_CLAUDE_CODE_BIN").is_some() {
+            eprintln!(
+                "[acp-cli] ACP_CLAUDE_CODE_BIN is ignored: claude_code_cli lacks the required managed workspace sandbox"
+            );
+        }
 
         let codex_bin = env_opt("ACP_CODEX_BIN").or_else(|| detect_binary("codex"));
         let codex_enabled = codex_bin.is_some();
 
-        if !claude_code_enabled {
-            eprintln!("[acp-cli] claude binary not found; claude_code_cli executor disabled");
-        }
+        eprintln!(
+            "[acp-cli] claude_code_cli is unavailable: nested tools lack app-owned mediation"
+        );
         if !codex_enabled {
             eprintln!("[acp-cli] codex binary not found; codex_cli executor disabled");
         }
@@ -54,7 +64,6 @@ impl CliConfig {
             codex_bin,
             codex_enabled,
             timeout_ms,
-            complexity_threshold,
         }
     }
 }
@@ -87,13 +96,6 @@ fn env_u64(key: &str, default: u64) -> u64 {
         .unwrap_or(default)
 }
 
-fn env_f64(key: &str, default: f64) -> f64 {
-    std::env::var(key)
-        .ok()
-        .and_then(|v| v.parse().ok())
-        .unwrap_or(default)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -102,15 +104,13 @@ mod tests {
     fn test_cli_config_defaults() {
         let config = CliConfig::from_env();
         assert!(config.timeout_ms > 0);
-        assert!(config.complexity_threshold > 0.0);
-        assert!(config.complexity_threshold <= 1.0);
     }
 
     #[test]
-    fn test_cli_execution_defaults_to_local_cli_discovery() {
-        const { assert!(DEFAULT_CLI_EXECUTION_ENABLED) };
-        assert!(env_bool(
-            "NONEXISTENT_KEY_DEFAULT_TRUE",
+    fn test_cli_execution_defaults_off() {
+        const { assert!(!DEFAULT_CLI_EXECUTION_ENABLED) };
+        assert!(!env_bool(
+            "NONEXISTENT_KEY_DEFAULT_FALSE",
             DEFAULT_CLI_EXECUTION_ENABLED
         ));
     }

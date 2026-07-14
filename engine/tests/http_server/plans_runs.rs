@@ -461,4 +461,3 @@ async fn axum_plans_require_dispatch_read_scope_when_auth_configured() {
 
     assert_eq!(response.status(), StatusCode::FORBIDDEN);
 }
-

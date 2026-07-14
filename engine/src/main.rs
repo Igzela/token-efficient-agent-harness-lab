@@ -1,7 +1,5 @@
-use engine::cli::{ClaudeCodeCliExecutor, CliConfig, CodexCliExecutor, MultiExecutor};
+use engine::cli::CliConfig;
 use engine::dispatch_engine::DispatchEngine;
-use engine::executor::HybridExecutor;
-use engine::executor_adapter::NoopExecutor;
 use engine::http_server::{
     build_axum_router, build_axum_router_with_dashboard, AxumApiState, CliCapability,
 };
@@ -10,7 +8,7 @@ use engine::infrastructure::auth::{
 };
 use engine::infrastructure::circuit_breaker::{CircuitBreaker, CircuitBreakerRegistry};
 use engine::infrastructure::rate_limiter::RateLimiter;
-use engine::node_executor::NodeExecutor;
+use engine::node_executor::{AgentStepExecutor, NodeExecutor};
 #[cfg(test)]
 use engine::provider::adaptive_execution::parse_adaptive_provider_endpoints_json;
 use engine::provider::adaptive_execution::{
@@ -33,7 +31,7 @@ use engine::provider::Provider;
 use engine::scheduler::{SchedulerConfig, WorkflowScheduler};
 use engine::storage::local_product_store::LocalProductStore;
 use engine::trusted_local::EffectiveExecutionGates;
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
@@ -122,40 +120,60 @@ async fn main() {
         .unwrap_or_else(|_| "off".to_string())
         .to_lowercase();
 
-    let (base_engine, _exec_type_label) = match execution_mode.as_str() {
+    match execution_mode.as_str() {
+        "cli" => panic!(
+            "ACP_EXECUTION_MODE=cli is retired: execute CLI tools only as confirmed workflow nodes so allowlists, hooks, approvals, leases, and receipts remain authoritative"
+        ),
+        "auto" => panic!(
+            "ACP_EXECUTION_MODE=auto is retired: use ACP_SCHEDULER_EXECUTOR=auto or pool for scheduler-owned Provider/CLI routing"
+        ),
+        "off" | "provider" => {}
+        unsupported => panic!(
+            "unsupported ACP_EXECUTION_MODE={unsupported}; expected off or provider (cli and auto are retired)"
+        ),
+    }
+
+    let configured_provider = if std::env::var("ACP_PROVIDER_TYPE")
+        .is_ok_and(|value| !value.trim().is_empty())
+    {
+        match build_provider_for_engine(&store_arc, &cb_registry) {
+            Ok(provider) => Some(provider),
+            Err(error) if execution_mode == "provider" => {
+                panic!("ACP_EXECUTION_MODE=provider requires a safe configured provider: {error}")
+            }
+            Err(error) => {
+                eprintln!("{error}; provider capability remains unavailable");
+                None
+            }
+        }
+    } else {
+        None
+    };
+    let provider_audit = Arc::new(ProviderAuditRecorder::with_store(store_arc.clone()));
+
+    let (base_engine, exec_type_label) = match execution_mode.as_str() {
         "provider" => {
-            let provider = build_provider_for_engine(&store_arc, &cb_registry)
-                .expect("ACP_EXECUTION_MODE=provider requires ACP_PROVIDER_TYPE plus ACP_ENABLE_PROVIDER_EXECUTION=1 or a ready ACP_TRUSTED_LOCAL_PROFILE=1");
-            let engine = DispatchEngine::with_provider_executor(provider);
+            let provider = configured_provider
+                .as_ref()
+                .expect("provider mode validated above")
+                .clone();
+            let engine =
+                DispatchEngine::with_provider_executor_and_audit(provider, provider_audit.clone());
             (engine, "provider".to_string())
         }
-        "cli" => {
-            let multi_executor = build_multi_executor(&cli_config);
-            let engine = DispatchEngine::with_multi_executor(multi_executor);
-            (engine, "cli".to_string())
+        "off" => {
+            // Direct dispatch execution is disabled. CLI tools remain
+            // available only through confirmed workflow nodes.
+            (DispatchEngine::new(), "noop".to_string())
         }
-        "auto" => {
-            let provider = build_provider_for_engine(&store_arc, &cb_registry).ok();
-            let cli_executors = build_cli_executor_map(&cli_config);
-            let threshold: f64 = std::env::var("ACP_HYBRID_COMPLEXITY_THRESHOLD")
-                .ok()
-                .and_then(|v| v.parse().ok())
-                .unwrap_or(0.5);
-            let hybrid =
-                HybridExecutor::new(provider, cli_executors, Box::new(NoopExecutor), threshold);
-            let engine = DispatchEngine::with_executor(Box::new(hybrid));
-            (engine, "auto".to_string())
-        }
-        _ => {
-            // "off" or unrecognized — default noop-fallback multi executor
-            let multi_executor = build_multi_executor(&cli_config);
-            let engine = DispatchEngine::with_multi_executor(multi_executor);
-            (engine, "noop".to_string())
-        }
+        _ => unreachable!("execution mode validated above"),
     };
 
     let adaptive_execution_enabled = execution_gates.adaptive_execution;
     let require_auth = env_enabled("ACP_REQUIRE_AUTH");
+    if cli_config.enabled && !require_auth {
+        panic!("ACP_REQUIRE_AUTH=1 is required when managed CLI execution is explicitly enabled");
+    }
     let has_single_provider =
         std::env::var("ACP_PROVIDER_TYPE").is_ok_and(|value| !value.trim().is_empty());
     let has_endpoint_config = std::env::var(ACP_ADAPTIVE_PROVIDER_ENDPOINTS_JSON)
@@ -179,11 +197,10 @@ async fn main() {
         });
     }
 
-    let mut state = build_state_with_provider(
-        AxumApiState::new().with_engine(base_engine),
-        &store_arc,
-        &cb_registry,
-    );
+    let mut state = AxumApiState::new().with_engine(base_engine);
+    if let Some(provider) = configured_provider.clone() {
+        state = state.with_provider_capability_and_audit(provider, provider_audit);
+    }
     let mut adaptive_executor_for_workers = None;
     if adaptive_execution_enabled {
         if let Some((executor, registry_snapshot)) = build_adaptive_provider_executor_from_sources(
@@ -199,18 +216,55 @@ async fn main() {
                 .with_adaptive_registry_snapshot(registry_snapshot);
         }
     }
-    let state = configure_auth(
+    let mut state = configure_auth(
         state
             .with_local_store_arc(store_arc.clone())
             .with_backup_dir(backup_dir)
             .with_circuit_breaker_registry(cb_registry.clone())
             .with_cli_capability(CliCapability::from(&cli_config)),
     );
+    let mut agent_step_executor_for_runtime: Option<Arc<dyn NodeExecutor>> = None;
+    if execution_gates.provider_execution
+        && std::env::var("ACP_ENABLE_AGENT_RUNTIME").as_deref() == Ok("1")
+    {
+        if let Some(provider) = state.configured_provider() {
+            let agent_pricing = provider_pricing_from_env();
+            let agent_cost_gates = engine::provider::CostGateConfig::from_env();
+            if !matches!(
+                (agent_pricing.input_cost_per_1k, agent_pricing.output_cost_per_1k),
+                (Some(input), Some(output)) if input > 0.0 && output > 0.0
+            ) {
+                panic!("Agent Runtime provider execution requires positive ACP_PROVIDER_INPUT_COST_PER_1K_USD and ACP_PROVIDER_OUTPUT_COST_PER_1K_USD");
+            }
+            if !matches!(
+                (agent_cost_gates.per_dispatch_cap_usd, agent_cost_gates.daily_cap_usd),
+                (Some(per_call), Some(daily)) if per_call > 0.0 && daily > 0.0 && per_call <= daily
+            ) {
+                panic!("Agent Runtime provider execution requires positive ACP_COST_PER_DISPATCH_USD and ACP_COST_DAILY_USD with per-call <= daily");
+            }
+            let recorder = Arc::new(ProviderAuditRecorder::with_store(store_arc.clone()));
+            let decision_source = engine::provider::agent_decision::provider_agent_decision_fn(
+                provider,
+                store_arc.clone(),
+                recorder,
+                agent_cost_gates,
+                agent_pricing,
+                true,
+            );
+            let executor: Arc<dyn NodeExecutor> = Arc::new(AgentStepExecutor::new_measured(
+                store_arc.clone(),
+                decision_source,
+            ));
+            state = state.with_agent_step_executor(executor.clone());
+            agent_step_executor_for_runtime = Some(executor);
+        }
+    }
 
-    let may_use_provider = state.executor_type() == "provider"
-        || (execution_mode == "auto"
-            && build_provider_for_engine(&store_arc, &cb_registry).is_ok())
-        || adaptive_execution_enabled;
+    let may_use_provider = provider_execution_requires_auth(
+        state.executor_type(),
+        adaptive_execution_enabled,
+        agent_step_executor_for_runtime.is_some(),
+    );
     if may_use_provider && !require_auth {
         panic!(
             "ACP_REQUIRE_AUTH=1 is required when provider execution is enabled and a real provider is configured"
@@ -218,10 +272,10 @@ async fn main() {
     }
 
     let exec_type = state.executor_type();
-    let exec_type_display = if execution_mode == "auto" {
-        "auto(hybrid)".to_string()
-    } else {
+    let exec_type_display = if exec_type_label == exec_type {
         exec_type.to_string()
+    } else {
+        exec_type_label
     };
     let _prov_enabled = state.provider_enabled();
     let lan = if host == "0.0.0.0" {
@@ -300,10 +354,10 @@ async fn main() {
         let interval = scheduler_config.interval_ms;
         let worker_count = scheduler_config.worker_count;
         let mut scheduler = WorkflowScheduler::new(store_for_scheduler, scheduler_config);
-        if execution_gates.task_advancement.ready {
-            let adaptive_executor = adaptive_executor_for_workers
-                .clone()
-                .expect("trusted task advancement requires adaptive provider executor");
+        if let Some(agent_step_executor) = agent_step_executor_for_runtime.clone() {
+            scheduler = scheduler.with_agent_step_executor(agent_step_executor);
+        }
+        if let Some(adaptive_executor) = adaptive_executor_for_workers.clone() {
             let worker_executor = build_trusted_adaptive_worker_executor(
                 adaptive_executor,
                 store_arc.clone(),
@@ -312,6 +366,8 @@ async fn main() {
             )
             .expect("failed to build trusted adaptive worker executor");
             scheduler = scheduler.with_worker_executor(worker_executor);
+        } else if execution_gates.task_advancement.ready {
+            panic!("trusted task advancement requires adaptive provider executor");
         }
         if backup_interval_sec > 0 {
             if std::env::var("ACP_DATABASE_URL").is_ok() {
@@ -518,6 +574,14 @@ fn adaptive_single_provider_validation_required(
     adaptive_enabled && has_single_provider && !has_endpoint_config
 }
 
+fn provider_execution_requires_auth(
+    executor_type: &str,
+    adaptive_execution_enabled: bool,
+    agent_provider_available: bool,
+) -> bool {
+    executor_type == "provider" || adaptive_execution_enabled || agent_provider_available
+}
+
 fn validate_adaptive_single_provider_from_env() -> Result<(), String> {
     let provider_type = std::env::var("ACP_PROVIDER_TYPE")
         .map_err(|_| "ACP_PROVIDER_TYPE is required".to_string())?;
@@ -662,36 +726,6 @@ fn configure_auth(state: AxumApiState) -> AxumApiState {
     state.with_auth_live(resolver, RateLimiter::new(60.0, 10_000), Some(10_000))
 }
 
-fn build_state_with_provider(
-    state: AxumApiState,
-    store: &Arc<LocalProductStore>,
-    cb_registry: &Arc<CircuitBreakerRegistry>,
-) -> AxumApiState {
-    let provider_type = match std::env::var("ACP_PROVIDER_TYPE") {
-        Ok(v) if !v.trim().is_empty() => v.trim().to_string(),
-        _ => return state,
-    };
-
-    let enable_execution = single_provider_execution_enabled();
-    if provider_type != "stub" && !enable_execution {
-        eprintln!(
-            "ACP_PROVIDER_TYPE={} requires ACP_ENABLE_PROVIDER_EXECUTION=1 or a ready ACP_TRUSTED_LOCAL_PROFILE=1; falling back to noop",
-            provider_type
-        );
-        return state;
-    }
-
-    let provider = match build_single_provider_from_env(cb_registry) {
-        Ok(provider) => provider,
-        Err(error) => {
-            eprintln!("{error}; falling back to noop");
-            return state;
-        }
-    };
-    let recorder = Arc::new(ProviderAuditRecorder::with_store(store.clone()));
-    state.with_provider_and_audit(provider, recorder)
-}
-
 fn build_adaptive_provider_executor_from_sources(
     store: &Arc<LocalProductStore>,
     cb_registry: &Arc<CircuitBreakerRegistry>,
@@ -778,7 +812,9 @@ fn build_single_provider_from_env(
     }
 
     if provider_type == "stub" {
-        return Ok(Arc::new(StubProvider::new("stub-env")));
+        return Ok(Arc::new(
+            StubProvider::new("stub-env").with_default_model(provider_model_from_env()),
+        ));
     }
 
     let api_key_env = std::env::var("ACP_API_KEY").unwrap_or_default();
@@ -875,65 +911,6 @@ fn build_provider_for_engine(
     build_single_provider_from_env(cb_registry)
 }
 
-/// Build a HashMap of CLI executors for HybridExecutor construction.
-fn build_cli_executor_map(
-    config: &CliConfig,
-) -> HashMap<String, Box<dyn engine::executor_adapter::Executor>> {
-    let mut executors: HashMap<String, Box<dyn engine::executor_adapter::Executor>> =
-        HashMap::new();
-
-    if config.claude_code_enabled {
-        if let Some(ref bin) = config.claude_code_bin {
-            executors.insert(
-                "claude_code_cli".to_string(),
-                Box::new(ClaudeCodeCliExecutor::new(bin.clone(), config.timeout_ms)),
-            );
-        }
-    }
-
-    if config.codex_enabled {
-        if let Some(ref bin) = config.codex_bin {
-            executors.insert(
-                "codex_cli".to_string(),
-                Box::new(CodexCliExecutor::new(bin.clone(), config.timeout_ms)),
-            );
-        }
-    }
-
-    executors
-}
-
-fn build_multi_executor(config: &CliConfig) -> MultiExecutor {
-    let mut executors: HashMap<String, Box<dyn engine::executor_adapter::Executor>> =
-        HashMap::new();
-
-    if config.claude_code_enabled {
-        if let Some(ref bin) = config.claude_code_bin {
-            println!("[acp-cli] claude_code_cli enabled: {}", bin);
-            executors.insert(
-                "claude_code_cli".to_string(),
-                Box::new(ClaudeCodeCliExecutor::new(bin.clone(), config.timeout_ms)),
-            );
-        }
-    }
-
-    if config.codex_enabled {
-        if let Some(ref bin) = config.codex_bin {
-            println!("[acp-cli] codex_cli enabled: {}", bin);
-            executors.insert(
-                "codex_cli".to_string(),
-                Box::new(CodexCliExecutor::new(bin.clone(), config.timeout_ms)),
-            );
-        }
-    }
-
-    if executors.is_empty() {
-        println!("[acp-cli] no CLI executors available; using noop default");
-    }
-
-    MultiExecutor::new(executors).with_default(Box::new(NoopExecutor))
-}
-
 /// Validates TLS env var consistency. Returns `Err` when exactly one of
 /// `ACP_TLS_CERT_PATH` / `ACP_TLS_KEY_PATH` is set, because both are
 /// required to enable TLS.
@@ -1021,6 +998,38 @@ mod tests {
         assert!(validate_adaptive_startup(true, false, true).is_err());
         assert!(validate_adaptive_startup(true, true, false).is_err());
         assert!(validate_adaptive_startup(true, true, true).is_ok());
+    }
+
+    #[test]
+    fn provider_backed_agent_runtime_requires_auth_even_with_noop_primary_executor() {
+        assert!(provider_execution_requires_auth("noop", false, true));
+        assert!(!provider_execution_requires_auth("noop", false, false));
+    }
+
+    #[test]
+    fn provider_capability_does_not_replace_selected_direct_dispatch_engine() {
+        let provider: Arc<dyn Provider> = Arc::new(StubProvider::new("shared-provider"));
+        let recorder = Arc::new(ProviderAuditRecorder::new());
+        let off = AxumApiState::new()
+            .with_engine(DispatchEngine::new())
+            .with_provider_capability_and_audit(provider.clone(), recorder.clone());
+        assert_eq!(off.executor_type(), "noop");
+        assert!(Arc::ptr_eq(
+            &off.configured_provider().expect("provider capability"),
+            &provider
+        ));
+
+        let direct = AxumApiState::new()
+            .with_engine(DispatchEngine::with_provider_executor_and_audit(
+                provider.clone(),
+                recorder.clone(),
+            ))
+            .with_provider_capability_and_audit(provider.clone(), recorder);
+        assert_eq!(direct.executor_type(), "provider");
+        assert!(Arc::ptr_eq(
+            &direct.configured_provider().expect("direct provider"),
+            &provider
+        ));
     }
 
     #[test]

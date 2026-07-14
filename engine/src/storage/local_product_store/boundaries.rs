@@ -23,9 +23,9 @@ mod tests {
     use super::local_boundaries;
 
     #[test]
-    fn adaptive_provider_availability_is_visible_for_multi_executor() {
+    fn provider_availability_is_visible_without_direct_provider_dispatch() {
         assert_eq!(
-            local_boundaries("multi", true)["provider_transport"],
+            local_boundaries("noop", true)["provider_transport"],
             "provider/enabled"
         );
     }

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-"""Live E2E Capability Validation — Claude Code CLI execution backend.
+"""Live E2E Capability Validation — workflow-owned Claude Code CLI execution.
 
-Starts a local engine with CLI execution enabled, exercises the full capability
+Starts a local engine with direct dispatch execution off and workflow CLI execution enabled, exercises the full capability
 matrix (auth, dispatch, workflow, supervised patch, audit, backup), and produces
 a validation report at the configured output path.
 
@@ -210,7 +210,7 @@ def main() -> int:
         "ACP_REQUIRE_AUTH": "1",
         "ACP_ADMIN_API_KEY": admin_key,
         "ACP_ENABLE_CLI_EXECUTION": "1",
-        "ACP_EXECUTION_MODE": "cli",
+        "ACP_EXECUTION_MODE": "off",
         "ACP_ENABLE_PROVIDER_EXECUTION": "0",
         "ACP_CLI_TIMEOUT_MS": str(int(args.timeout * 1000)),
     }
@@ -287,14 +287,10 @@ def main() -> int:
         else:
             results.fail("Observability endpoint", str(obs))
 
-        # Check CLI execution is logged as enabled
-        startup_lines = [l for l in engine_logs if "cli" in l.lower() or "execution" in l.lower()]
-        cli_enabled_log = any("cli" in l.lower() and ("enabled" in l.lower() or "mode" in l.lower())
-                             for l in startup_lines)
-        if cli_enabled_log:
-            results.ok("CLI execution logged at startup", startup_lines[0][:150] if startup_lines else "")
-        else:
-            results.ok("CLI execution env set", "ACP_ENABLE_CLI_EXECUTION=1, ACP_EXECUTION_MODE=cli")
+        results.ok(
+            "CLI workflow execution configured",
+            "ACP_ENABLE_CLI_EXECUTION=1; ACP_EXECUTION_MODE=off; no direct CLI dispatch fallback",
+        )
 
         # ==================================================================
         # Section B: Auth and Scopes

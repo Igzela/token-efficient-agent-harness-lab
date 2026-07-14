@@ -3,12 +3,14 @@ import {
   ApiError,
   fetchProviderEndpoints,
   fetchProviderHealth,
+  fetchToolPolicyResource,
   saveProviderEndpoints,
 } from "@/lib/api-client";
 import type {
   LocalDashboardState,
   ProviderEndpointConfig,
   ProviderEndpointConfigResponse,
+  ToolPolicyResourceResponse,
 } from "@/lib/types";
 import { EmptyState } from "./EmptyState";
 import { Metric } from "./Metric";
@@ -35,6 +37,11 @@ export function Settings({ dashboard }: { dashboard: LocalDashboardState }) {
   const [endpointMessage, setEndpointMessage] = useState<string | null>(null);
   const [endpointError, setEndpointError] = useState<string | null>(null);
   const [savingEndpoints, setSavingEndpoints] = useState(false);
+  const [toolPolicyKind, setToolPolicyKind] = useState<"capability" | "allowlist" | "hook">("capability");
+  const [toolPolicyId, setToolPolicyId] = useState("");
+  const [toolPolicy, setToolPolicy] = useState<ToolPolicyResourceResponse | null>(null);
+  const [toolPolicyError, setToolPolicyError] = useState<string | null>(null);
+  const [loadingToolPolicy, setLoadingToolPolicy] = useState(false);
 
   useEffect(() => {
     fetchProviderHealth()
@@ -92,6 +99,29 @@ export function Settings({ dashboard }: { dashboard: LocalDashboardState }) {
     }
   }
 
+  async function handleInspectToolPolicy() {
+    if (!toolPolicyId.trim()) {
+      setToolPolicyError("Enter a capability, profile, or hook ID.");
+      return;
+    }
+    setLoadingToolPolicy(true);
+    setToolPolicy(null);
+    setToolPolicyError(null);
+    try {
+      setToolPolicy(await fetchToolPolicyResource(toolPolicyKind, toolPolicyId.trim()));
+    } catch (error) {
+      setToolPolicyError(
+        error instanceof ApiError && error.code
+          ? `${error.code}: ${error.message}`
+          : error instanceof Error
+            ? error.message
+            : "Failed to inspect tool policy",
+      );
+    } finally {
+      setLoadingToolPolicy(false);
+    }
+  }
+
   return (
     <section className="card stack">
       <h2>Settings</h2>
@@ -131,6 +161,44 @@ export function Settings({ dashboard }: { dashboard: LocalDashboardState }) {
         onChange={setEndpointJson}
         onSave={handleSaveProviderEndpoints}
       />
+      <h3 className="section-subhead">Tool Policy Inspector</h3>
+      <div className="subcard stack">
+        <p className="muted">
+          Read one app-owned policy resource and its current hash. Mutations remain explicit API/SDK operations.
+        </p>
+        <div className="flex-row" style={{ gap: "0.5rem", flexWrap: "wrap" }}>
+          <select
+            aria-label="Tool policy resource kind"
+            value={toolPolicyKind}
+            onChange={(event) => setToolPolicyKind(event.target.value as "capability" | "allowlist" | "hook")}
+          >
+            <option value="capability">Capability</option>
+            <option value="allowlist">Allowlist profile</option>
+            <option value="hook">Hook</option>
+          </select>
+          <input
+            aria-label="Tool policy resource ID"
+            placeholder="Resource ID"
+            value={toolPolicyId}
+            onChange={(event) => setToolPolicyId(event.target.value)}
+          />
+          <button type="button" disabled={loadingToolPolicy} onClick={handleInspectToolPolicy}>
+            {loadingToolPolicy ? "Loading..." : "Inspect"}
+          </button>
+        </div>
+        {toolPolicyError ? (
+          <StateBanner title="Tool policy unavailable" tone="warn"><p>{toolPolicyError}</p></StateBanner>
+        ) : null}
+        {toolPolicy ? (
+          <div className="stack">
+            <div className="kv-row">
+              <span className="muted">SHA-256</span>
+              <code>{toolPolicy.resource.resource_sha256}</code>
+            </div>
+            <pre className="command-block">{JSON.stringify(toolPolicy.resource.value, null, 2)}</pre>
+          </div>
+        ) : null}
+      </div>
       <h3 className="section-subhead">Environment Variables</h3>
       <div className="stack readable-list">
         {envVars.map((v) => (

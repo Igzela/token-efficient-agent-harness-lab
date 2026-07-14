@@ -383,7 +383,7 @@ impl NodeExecutor for ProviderNodeExecutor {
     }
 }
 
-fn invoke_provider_blocking(
+pub(crate) fn invoke_provider_blocking(
     provider: Arc<dyn Provider>,
     request: &ProviderRequest,
 ) -> Result<super::ProviderResponse, ProviderError> {

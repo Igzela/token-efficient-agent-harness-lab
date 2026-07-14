@@ -1,4 +1,6 @@
 use crate::node_executor::{LocalRunnerValidationExecutor, NodeExecutor, NoopNodeExecutor};
+use crate::storage::local_product_store::LocalProductStore;
+use crate::tool_policy_executor::ToolPolicyNodeExecutor;
 use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
 
@@ -6,6 +8,13 @@ const DECAY_FACTOR: f64 = 0.95;
 const FAILURE_WEIGHT: f64 = 0.2;
 const COOLDOWN_THRESHOLD: f64 = 0.8;
 const BASE_COOLDOWN_MS: u64 = 10_000;
+
+fn task_type_requires_exact_capability(task_type: &str) -> bool {
+    matches!(
+        task_type,
+        "agent_step" | "adaptive_provider" | "command" | "claude_code_cli" | "codex_cli"
+    )
+}
 
 pub const EXECUTOR_POOL_SCHEMA_VERSION: &str = "executor_pool.v1";
 
@@ -142,10 +151,12 @@ impl ExecutorPool {
         let mut candidates: Vec<(&str, bool, bool, f64)> = entries
             .values()
             .filter(|e| {
+                let exact_capability_required = task_type_requires_exact_capability(task_type);
                 e.status.available
                     && e.status.active_count < e.status.concurrency_limit
                     && e.status.cooldown_until.is_none()
-                    && (e.capabilities.supported_task_types.is_empty()
+                    && ((!exact_capability_required
+                        && e.capabilities.supported_task_types.is_empty())
                         || e.capabilities
                             .supported_task_types
                             .iter()
@@ -181,6 +192,84 @@ impl ExecutorPool {
         candidates
             .first()
             .map(|(executor_type, ..)| executor_type.to_string())
+    }
+
+    pub fn supports_task(
+        &self,
+        executor_type: &str,
+        task_type: &str,
+        task_domain: &str,
+        allow_cli_domain_route: bool,
+    ) -> bool {
+        let entries = self.entries.read().expect("pool lock poisoned");
+        entries.get(executor_type).is_some_and(|entry| {
+            let task_matches = entry.capabilities.supported_task_types.is_empty()
+                || entry
+                    .capabilities
+                    .supported_task_types
+                    .iter()
+                    .any(|supported| supported == task_type)
+                || (allow_cli_domain_route && entry.capabilities.requires_cli);
+            let domain_matches = entry.capabilities.supported_task_domains.is_empty()
+                || entry
+                    .capabilities
+                    .supported_task_domains
+                    .iter()
+                    .any(|supported| supported == task_domain);
+            task_matches && domain_matches
+        })
+    }
+
+    pub fn best_cli_for_domain(&self, task_domain: &str) -> Option<String> {
+        let entries = self.entries.read().expect("pool lock poisoned");
+        let mut candidates = entries
+            .values()
+            .filter(|entry| {
+                entry.capabilities.requires_cli
+                    && entry
+                        .capabilities
+                        .supported_task_domains
+                        .iter()
+                        .any(|supported| supported == task_domain)
+                    && entry.status.available
+                    && entry.status.active_count < entry.status.concurrency_limit
+                    && entry.status.cooldown_until.is_none()
+            })
+            .map(|entry| {
+                let success_rate = if entry.metrics.total_executions > 0 {
+                    entry.metrics.successful_executions as f64
+                        / entry.metrics.total_executions as f64
+                } else {
+                    1.0
+                };
+                (
+                    entry.executor_type.as_str(),
+                    success_rate * (1.0 - entry.status.failure_score),
+                )
+            })
+            .collect::<Vec<_>>();
+        candidates.sort_by(|left, right| {
+            right
+                .1
+                .partial_cmp(&left.1)
+                .unwrap_or(std::cmp::Ordering::Equal)
+                .then_with(|| left.0.cmp(right.0))
+        });
+        candidates
+            .first()
+            .map(|(executor_type, _)| executor_type.to_string())
+    }
+
+    pub fn has_cli_for_domain(&self, task_domain: &str) -> bool {
+        let entries = self.entries.read().expect("pool lock poisoned");
+        entries.values().any(|entry| {
+            entry.capabilities.requires_cli
+                && entry
+                    .capabilities
+                    .supported_task_domains
+                    .iter()
+                    .any(|supported| supported == task_domain)
+        })
     }
 
     pub fn acquire(&self, executor_type: &str) -> bool {
@@ -297,7 +386,11 @@ impl ExecutorPool {
     }
 }
 
-pub fn register_default_executors(pool: &ExecutorPool, cli_enabled: bool) {
+pub fn register_default_executors(
+    pool: &ExecutorPool,
+    cli_enabled: bool,
+    store: Arc<LocalProductStore>,
+) {
     pool.register(ExecutorEntry {
         executor_type: "noop".to_string(),
         executor: Arc::new(NoopNodeExecutor),
@@ -354,13 +447,16 @@ pub fn register_default_executors(pool: &ExecutorPool, cli_enabled: bool) {
 
     pool.register(ExecutorEntry {
         executor_type: "command".to_string(),
-        executor: Arc::new(crate::node_executor::CommandNodeExecutor::default()),
+        executor: Arc::new(ToolPolicyNodeExecutor::command(
+            Arc::new(crate::node_executor::CommandNodeExecutor::default()),
+            store.clone(),
+        )),
         capabilities: ExecutorCapabilities {
-            supported_task_types: vec![],
+            supported_task_types: vec!["command".to_string()],
             supported_task_domains: vec![],
             requires_auth: false,
             requires_cli: false,
-            max_timeout_ms: 300_000,
+            max_timeout_ms: 30_000,
         },
         status: ExecutorStatus {
             concurrency_limit: 4,
@@ -371,65 +467,92 @@ pub fn register_default_executors(pool: &ExecutorPool, cli_enabled: bool) {
     });
 
     if cli_enabled {
-        let cli_config = crate::cli::CliConfig::from_env();
-        if let Some(cli_exec) = crate::cli::CliNodeExecutor::from_config(&cli_config) {
-            if cli_exec.claude_bin.is_some() {
-                pool.register(ExecutorEntry {
-                    executor_type: "claude_code_cli".to_string(),
-                    executor: Arc::new(crate::cli::CliNodeExecutor::new(
-                        cli_exec.claude_bin.clone(),
-                        None,
-                        cli_exec.timeout_ms,
-                    )),
-                    capabilities: ExecutorCapabilities {
-                        supported_task_types: vec![],
-                        supported_task_domains: vec![
-                            "code".to_string(),
-                            "architecture".to_string(),
-                        ],
-                        requires_auth: true,
-                        requires_cli: true,
-                        max_timeout_ms: 300_000,
-                    },
-                    status: ExecutorStatus {
-                        concurrency_limit: 2,
-                        ..Default::default()
-                    },
-                    cost_profile: CostProfile {
-                        cost_per_execution_usd: Some(0.01),
-                        ..Default::default()
-                    },
-                    metrics: ExecutorMetrics::default(),
-                });
-            }
-            if cli_exec.codex_bin.is_some() {
-                pool.register(ExecutorEntry {
-                    executor_type: "codex_cli".to_string(),
-                    executor: Arc::new(crate::cli::CliNodeExecutor::new(
-                        None,
-                        cli_exec.codex_bin.clone(),
-                        cli_exec.timeout_ms,
-                    )),
-                    capabilities: ExecutorCapabilities {
-                        supported_task_types: vec![],
-                        supported_task_domains: vec!["code".to_string()],
-                        requires_auth: true,
-                        requires_cli: true,
-                        max_timeout_ms: 300_000,
-                    },
-                    status: ExecutorStatus {
-                        concurrency_limit: 2,
-                        ..Default::default()
-                    },
-                    cost_profile: CostProfile {
-                        cost_per_execution_usd: Some(0.005),
-                        ..Default::default()
-                    },
-                    metrics: ExecutorMetrics::default(),
-                });
-            }
-        }
+        register_cli_executors(pool, &crate::cli::CliConfig::from_env(), store);
     }
+}
+
+pub fn register_cli_executors(
+    pool: &ExecutorPool,
+    config: &crate::cli::CliConfig,
+    store: Arc<LocalProductStore>,
+) {
+    if !config.enabled {
+        return;
+    }
+    if let Some(cli_exec) = crate::cli::CliNodeExecutor::from_config_for(config, "codex_cli") {
+        pool.register(ExecutorEntry {
+            executor_type: "codex_cli".to_string(),
+            executor: Arc::new(ToolPolicyNodeExecutor::cli(
+                Arc::new(cli_exec),
+                store,
+                "codex_cli",
+            )),
+            capabilities: ExecutorCapabilities {
+                supported_task_types: vec!["codex_cli".to_string()],
+                supported_task_domains: vec!["code".to_string()],
+                requires_auth: true,
+                requires_cli: true,
+                max_timeout_ms: config.timeout_ms,
+            },
+            status: ExecutorStatus {
+                concurrency_limit: 2,
+                ..Default::default()
+            },
+            cost_profile: CostProfile {
+                cost_per_execution_usd: Some(0.005),
+                ..Default::default()
+            },
+            metrics: ExecutorMetrics::default(),
+        });
+    }
+}
+
+pub fn register_adaptive_provider_executor(
+    pool: &ExecutorPool,
+    executor: Arc<dyn NodeExecutor>,
+    concurrency_limit: usize,
+) {
+    pool.register(ExecutorEntry {
+        executor_type: "adaptive_provider".to_string(),
+        executor,
+        capabilities: ExecutorCapabilities {
+            supported_task_types: vec!["adaptive_provider".to_string()],
+            supported_task_domains: vec!["adaptive".to_string()],
+            requires_auth: true,
+            requires_cli: false,
+            max_timeout_ms: 300_000,
+        },
+        status: ExecutorStatus {
+            concurrency_limit: concurrency_limit as u64,
+            ..Default::default()
+        },
+        cost_profile: CostProfile::default(),
+        metrics: ExecutorMetrics::default(),
+    });
+}
+
+pub fn register_agent_step_executor(
+    pool: &ExecutorPool,
+    executor: Arc<dyn NodeExecutor>,
+    concurrency_limit: usize,
+) {
+    pool.register(ExecutorEntry {
+        executor_type: "agent_step".to_string(),
+        executor,
+        capabilities: ExecutorCapabilities {
+            supported_task_types: vec!["agent_step".to_string()],
+            supported_task_domains: vec!["agent_runtime".to_string()],
+            requires_auth: true,
+            requires_cli: false,
+            max_timeout_ms: 300_000,
+        },
+        status: ExecutorStatus {
+            concurrency_limit: concurrency_limit as u64,
+            ..Default::default()
+        },
+        cost_profile: CostProfile::default(),
+        metrics: ExecutorMetrics::default(),
+    });
 }
 
 #[cfg(test)]
@@ -477,6 +600,195 @@ mod tests {
         register_noop(&pool, 10);
         assert!(pool.get("noop").is_some());
         assert!(pool.get("nonexistent").is_none());
+    }
+
+    #[test]
+    fn reserved_agent_step_task_requires_exact_executor_capability() {
+        let pool = test_pool();
+        register_noop(&pool, 10);
+
+        assert_eq!(pool.best_for_task("agent_step", "agent_runtime"), None);
+
+        pool.register(ExecutorEntry {
+            executor_type: "agent_step".to_string(),
+            executor: Arc::new(NoopNodeExecutor),
+            capabilities: ExecutorCapabilities {
+                supported_task_types: vec!["agent_step".to_string()],
+                supported_task_domains: vec!["agent_runtime".to_string()],
+                requires_auth: true,
+                requires_cli: false,
+                max_timeout_ms: 300_000,
+            },
+            status: ExecutorStatus {
+                concurrency_limit: 2,
+                ..Default::default()
+            },
+            cost_profile: CostProfile::default(),
+            metrics: ExecutorMetrics::default(),
+        });
+
+        assert_eq!(
+            pool.best_for_task("agent_step", "agent_runtime"),
+            Some("agent_step".to_string())
+        );
+    }
+
+    #[test]
+    fn agent_step_registration_declares_bounded_reserved_capability() {
+        let pool = test_pool();
+        register_agent_step_executor(&pool, Arc::new(NoopNodeExecutor), 3);
+
+        let entry = pool
+            .snapshot()
+            .into_iter()
+            .find(|entry| entry.executor_type == "agent_step")
+            .expect("agent_step executor should be registered");
+        assert_eq!(entry.capabilities.supported_task_types, ["agent_step"]);
+        assert_eq!(entry.capabilities.supported_task_domains, ["agent_runtime"]);
+        assert!(entry.capabilities.requires_auth);
+        assert_eq!(entry.status.concurrency_limit, 3);
+    }
+
+    #[test]
+    fn adaptive_provider_registration_is_explicit_bounded_and_authenticated() {
+        let pool = test_pool();
+        register_adaptive_provider_executor(&pool, Arc::new(NoopNodeExecutor), 2);
+
+        let entry = pool
+            .snapshot()
+            .into_iter()
+            .find(|entry| entry.executor_type == "adaptive_provider")
+            .expect("adaptive provider registration");
+        assert_eq!(
+            entry.capabilities.supported_task_types,
+            ["adaptive_provider"]
+        );
+        assert_eq!(entry.capabilities.supported_task_domains, ["adaptive"]);
+        assert!(entry.capabilities.requires_auth);
+        assert!(!entry.capabilities.requires_cli);
+        assert_eq!(entry.status.concurrency_limit, 2);
+        assert_eq!(
+            pool.best_for_task("adaptive_provider", "adaptive"),
+            Some("adaptive_provider".to_string())
+        );
+    }
+
+    #[test]
+    fn registered_cli_executor_is_policy_wrapped_and_cannot_spawn_when_denied() {
+        let pool = test_pool();
+        let store = Arc::new(LocalProductStore::new(":memory:").unwrap());
+        let config = crate::cli::CliConfig {
+            enabled: true,
+            claude_code_bin: None,
+            claude_code_enabled: false,
+            codex_bin: Some("/definitely/not/executed".to_string()),
+            codex_enabled: true,
+            timeout_ms: 1_000,
+        };
+        register_cli_executors(&pool, &config, store);
+
+        let entry = pool
+            .snapshot()
+            .into_iter()
+            .find(|entry| entry.executor_type == "codex_cli")
+            .expect("codex CLI registration");
+        assert_eq!(entry.capabilities.supported_task_types, ["codex_cli"]);
+        assert!(entry.capabilities.requires_auth);
+        assert!(entry.capabilities.requires_cli);
+
+        let output = pool
+            .get("codex_cli")
+            .expect("codex CLI executor")
+            .execute_node(&crate::node_executor::NodeExecutionInput {
+                node_id: "node-cli".to_string(),
+                task_type: "codex_cli".to_string(),
+                run_id: "run-cli".to_string(),
+                workflow_id: "workflow-cli".to_string(),
+                node_metadata: serde_json::json!({
+                    "executor": "codex_cli",
+                    "prompt": "bounded fixture prompt",
+                    "profile_id": "default",
+                }),
+            });
+        assert_eq!(output.status, "failed");
+        assert_eq!(
+            output.error_domain.as_deref(),
+            Some("cli_workspace_not_bound")
+        );
+    }
+
+    #[test]
+    fn policy_bound_cli_registers_only_sandboxed_codex_and_rejects_cross_identity() {
+        let pool = test_pool();
+        let store = Arc::new(LocalProductStore::new(":memory:").unwrap());
+        let config = crate::cli::CliConfig {
+            enabled: true,
+            claude_code_bin: Some("/definitely/not/executed-claude".to_string()),
+            claude_code_enabled: true,
+            codex_bin: Some("/definitely/not/executed-codex".to_string()),
+            codex_enabled: true,
+            timeout_ms: 1_000,
+        };
+        register_cli_executors(&pool, &config, store);
+
+        assert!(pool.get("claude_code_cli").is_none());
+        let output = pool
+            .get("codex_cli")
+            .expect("policy-bound Codex CLI")
+            .execute_node(&crate::node_executor::NodeExecutionInput {
+                node_id: "node-codex-cli".to_string(),
+                task_type: "codex_cli".to_string(),
+                run_id: "run-cli-identity".to_string(),
+                workflow_id: "workflow-cli-identity".to_string(),
+                node_metadata: serde_json::json!({
+                    "executor": "claude_code_cli",
+                    "prompt": "must not launch",
+                }),
+            });
+        assert_eq!(output.status, "failed");
+        assert_eq!(
+            output.error_domain.as_deref(),
+            Some("tool_policy_executor_mismatch")
+        );
+    }
+
+    #[test]
+    fn command_task_selects_policy_wrapped_command_never_noop() {
+        let pool = test_pool();
+        let store = Arc::new(LocalProductStore::new(":memory:").unwrap());
+        store
+            .configure_tool_allowlist("operator", "default", &[], None)
+            .expect("configure authoritative empty allowlist");
+        register_default_executors(&pool, false, store);
+
+        assert_eq!(
+            pool.best_for_task("command", "command"),
+            Some("command".to_string())
+        );
+        let output = pool.get("command").expect("command executor").execute_node(
+            &crate::node_executor::NodeExecutionInput {
+                node_id: "node-command".to_string(),
+                task_type: "command".to_string(),
+                run_id: "run-command".to_string(),
+                workflow_id: "workflow-command".to_string(),
+                node_metadata: serde_json::json!({
+                    "command": "echo bounded",
+                    "profile_id": "default",
+                }),
+            },
+        );
+        assert_eq!(output.executor_type, "command");
+        assert_eq!(output.error_domain.as_deref(), Some("tool_not_allowed"));
+    }
+
+    #[test]
+    fn exact_execution_task_does_not_fall_back_to_wildcard_executor() {
+        let pool = test_pool();
+        register_noop(&pool, 10);
+
+        assert_eq!(pool.best_for_task("adaptive_provider", "adaptive"), None);
+        assert_eq!(pool.best_for_task("codex_cli", "code"), None);
+        assert_eq!(pool.best_for_task("command", "command"), None);
     }
 
     #[test]

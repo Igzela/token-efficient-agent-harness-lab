@@ -1,6 +1,14 @@
-use rusqlite::Connection;
+use rusqlite::{Connection, Transaction, TransactionBehavior};
 
-use super::{schema, LocalProductStore};
+use super::{schema, DatabaseConnection, LocalProductStore};
+
+pub(super) const V22_SCHEMA_VERSION: i64 = 22;
+const V21_SCHEMA_VERSION: i64 = 21;
+pub(super) const V22_TABLES: [&str; 3] = [
+    "agent_action_receipts",
+    "tool_allowlist_profiles",
+    "tool_execution_authorizations",
+];
 
 #[allow(dead_code)]
 pub(super) const CURRENT_SCHEMA_VERSION: i64 = schema::CURRENT_SQLITE_SCHEMA_VERSION;
@@ -38,6 +46,7 @@ impl LocalProductStore {
                     19 => Self::migrate_v19_add_budget_pause_decisions(conn)?,
                     20 => Self::migrate_v20_add_offline_replay_artifacts(conn)?,
                     21 => Self::migrate_v21_add_dispatch_trace_provenance(conn)?,
+                    22 => Self::migrate_v22_add_agent_action_receipts_and_tool_profiles(conn)?,
                     _ => return Err(format!("unknown migration version: {}", migration.version)),
                 }
                 conn.execute_batch(&format!("PRAGMA user_version = {}", migration.version))
@@ -445,9 +454,91 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_policy_snapshots_active_policy_key
     }
 
     pub fn schema_version(&self) -> Result<i64, String> {
+        match &self.db {
+            DatabaseConnection::Sqlite(_) => self.with_conn(|conn| {
+                conn.query_row("PRAGMA user_version", [], |row| row.get(0))
+                    .map_err(|e| e.to_string())
+            }),
+            #[cfg(feature = "pg")]
+            DatabaseConnection::Pg(_) => self.with_pg_conn(|client| {
+                client
+                    .query_one(
+                        "SELECT COALESCE(MAX(version), 0) FROM schema_migrations",
+                        &[],
+                    )
+                    .map(|row| row.get::<_, i64>(0))
+                    .map_err(|error| error.to_string())
+            }),
+        }
+    }
+
+    /// Roll back the additive v22 schema to v21 only when no v22 authority rows exist.
+    ///
+    /// The caller must stop v22 runtime writers before invoking this operation. The method
+    /// locks the version marker and v22 tables, refuses to discard receipts or authorization
+    /// state, records the successful rollback in the v1 audit log, and changes the version
+    /// marker in the same transaction as the table removal.
+    pub fn rollback_v22_to_v21(
+        &self,
+        actor: &str,
+        confirm_destructive_rollback: bool,
+    ) -> Result<(), String> {
+        if !confirm_destructive_rollback {
+            return Err(
+                "v22 rollback requires explicit destructive rollback confirmation".to_string(),
+            );
+        }
+        let actor = actor.trim();
+        if actor.is_empty() || actor.len() > 128 {
+            return Err("v22 rollback actor must be between 1 and 128 bytes".to_string());
+        }
+        let now = self.now();
+        match &self.db {
+            DatabaseConnection::Sqlite(_) => self.rollback_sqlite_v22_to_v21(actor, &now),
+            #[cfg(feature = "pg")]
+            DatabaseConnection::Pg(_) => self.rollback_pg_v22_to_v21_internal(actor, &now),
+        }
+    }
+
+    fn rollback_sqlite_v22_to_v21(&self, actor: &str, now: &str) -> Result<(), String> {
         self.with_conn(|conn| {
-            conn.query_row("PRAGMA user_version", [], |row| row.get(0))
-                .map_err(|e| e.to_string())
+            let tx = Transaction::new_unchecked(conn, TransactionBehavior::Immediate)
+                .map_err(|error| error.to_string())?;
+            let current_version: i64 = tx
+                .query_row("PRAGMA user_version", [], |row| row.get(0))
+                .map_err(|error| error.to_string())?;
+            require_v22_rollback_source(current_version)?;
+
+            let occupied = V22_TABLES
+                .iter()
+                .filter_map(|table| {
+                    let sql = format!("SELECT EXISTS(SELECT 1 FROM {table} LIMIT 1)");
+                    match tx.query_row(&sql, [], |row| row.get::<_, bool>(0)) {
+                        Ok(true) => Some(Ok((*table).to_string())),
+                        Ok(false) => None,
+                        Err(error) => Some(Err(error.to_string())),
+                    }
+                })
+                .collect::<Result<Vec<_>, _>>()?;
+            require_empty_v22_tables(&occupied)?;
+
+            tx.execute_batch(
+                "DROP INDEX IF EXISTS idx_agent_action_receipts_agent;
+                 DROP INDEX IF EXISTS idx_tool_execution_authorizations_status;
+                 DROP TABLE agent_action_receipts;
+                 DROP TABLE tool_execution_authorizations;
+                 DROP TABLE tool_allowlist_profiles;",
+            )
+            .map_err(|error| error.to_string())?;
+            tx.execute(
+                "INSERT INTO audit_log (created_at, actor, action, resource, details_json)
+                 VALUES (?1, ?2, 'schema.rollback.v22_to_v21', 'local_product_store', ?3)",
+                rusqlite::params![now, actor, v22_rollback_audit_details()],
+            )
+            .map_err(|error| error.to_string())?;
+            tx.pragma_update(None, "user_version", V21_SCHEMA_VERSION)
+                .map_err(|error| error.to_string())?;
+            tx.commit().map_err(|error| error.to_string())
         })
     }
 
@@ -645,6 +736,73 @@ CREATE INDEX IF NOT EXISTS idx_budget_evidence_artifacts_created ON budget_evide
         }
         Ok(())
     }
+
+    fn migrate_v22_add_agent_action_receipts_and_tool_profiles(
+        conn: &Connection,
+    ) -> Result<(), String> {
+        conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS agent_action_receipts (
+                run_id TEXT NOT NULL,
+                node_id TEXT NOT NULL,
+                agent_id TEXT NOT NULL,
+                action_sha256 TEXT NOT NULL CHECK (length(action_sha256) = 64),
+                action_type TEXT NOT NULL,
+                result_json TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                PRIMARY KEY (run_id, node_id)
+            );
+            CREATE INDEX IF NOT EXISTS idx_agent_action_receipts_agent
+                ON agent_action_receipts(agent_id, run_id);
+            CREATE TABLE IF NOT EXISTS tool_allowlist_profiles (
+                profile_id TEXT PRIMARY KEY,
+                configured_at TEXT NOT NULL
+            );
+            INSERT OR IGNORE INTO tool_allowlist_profiles (profile_id, configured_at)
+                SELECT profile_id, COALESCE(MIN(created_at), 'migration-v22')
+                FROM tool_allowlists GROUP BY profile_id;
+            CREATE TABLE IF NOT EXISTS tool_execution_authorizations (
+                run_id TEXT NOT NULL,
+                node_id TEXT NOT NULL,
+                action_sha256 TEXT NOT NULL CHECK (length(action_sha256) = 64),
+                tool_name TEXT NOT NULL,
+                profile_id TEXT NOT NULL,
+                status TEXT NOT NULL CHECK (status IN ('requested', 'approved', 'rejected', 'consumed')),
+                requested_approval_id TEXT NOT NULL UNIQUE,
+                resolved_by TEXT,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                PRIMARY KEY (run_id, node_id)
+            );
+            CREATE INDEX IF NOT EXISTS idx_tool_execution_authorizations_status
+                ON tool_execution_authorizations(status, run_id);",
+        )
+        .map_err(|error| error.to_string())
+    }
+}
+
+pub(super) fn require_v22_rollback_source(current_version: i64) -> Result<(), String> {
+    if current_version == V22_SCHEMA_VERSION {
+        Ok(())
+    } else {
+        Err(format!(
+            "v22 rollback requires current schema version 22; found {current_version}"
+        ))
+    }
+}
+
+pub(super) fn require_empty_v22_tables(occupied: &[String]) -> Result<(), String> {
+    if occupied.is_empty() {
+        Ok(())
+    } else {
+        Err(format!(
+            "v22 rollback blocked: authoritative v22 data exists in {}",
+            occupied.join(", ")
+        ))
+    }
+}
+
+pub(super) fn v22_rollback_audit_details() -> &'static str {
+    r#"{"from_version":22,"to_version":21,"dropped_empty_tables":["agent_action_receipts","tool_allowlist_profiles","tool_execution_authorizations"]}"#
 }
 
 fn column_exists(conn: &Connection, table: &str, column: &str) -> Result<bool, String> {
@@ -656,4 +814,209 @@ fn column_exists(conn: &Connection, table: &str, column: &str) -> Result<bool, S
         .filter_map(|r| r.ok())
         .collect();
     Ok(columns.contains(&column.to_string()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::tempdir;
+
+    fn table_exists(store: &LocalProductStore, table: &str) -> bool {
+        store
+            .with_conn(|conn| {
+                conn.query_row(
+                    "SELECT EXISTS(
+                         SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?1
+                     )",
+                    [table],
+                    |row| row.get(0),
+                )
+                .map_err(|error| error.to_string())
+            })
+            .unwrap()
+    }
+
+    #[test]
+    fn sqlite_v22_rollback_is_atomic_and_can_be_migrated_forward_again() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("rollback.db");
+        let store = LocalProductStore::new(&path).unwrap();
+        assert_eq!(store.schema_version().unwrap(), V22_SCHEMA_VERSION);
+
+        store.rollback_v22_to_v21("migration-test", true).unwrap();
+        assert_eq!(store.schema_version().unwrap(), V21_SCHEMA_VERSION);
+        for table in V22_TABLES {
+            assert!(!table_exists(&store, table), "{table} should be removed");
+        }
+        let rollback_audit = store
+            .with_conn(|conn| {
+                conn.query_row(
+                    "SELECT actor, resource, details_json FROM audit_log
+                     WHERE action = 'schema.rollback.v22_to_v21'",
+                    [],
+                    |row| {
+                        Ok((
+                            row.get::<_, String>(0)?,
+                            row.get::<_, String>(1)?,
+                            row.get::<_, String>(2)?,
+                        ))
+                    },
+                )
+                .map_err(|error| error.to_string())
+            })
+            .unwrap();
+        assert_eq!(rollback_audit.0, "migration-test");
+        assert_eq!(rollback_audit.1, "local_product_store");
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(&rollback_audit.2).unwrap(),
+            serde_json::json!({
+                "from_version": 22,
+                "to_version": 21,
+                "dropped_empty_tables": [
+                    "agent_action_receipts",
+                    "tool_allowlist_profiles",
+                    "tool_execution_authorizations"
+                ]
+            })
+        );
+
+        drop(store);
+        let upgraded = LocalProductStore::new(&path).unwrap();
+        assert_eq!(upgraded.schema_version().unwrap(), V22_SCHEMA_VERSION);
+        for table in V22_TABLES {
+            assert!(table_exists(&upgraded, table), "{table} should be restored");
+        }
+    }
+
+    #[test]
+    fn sqlite_v22_rollback_refuses_authoritative_rows_without_moving_marker() {
+        let dir = tempdir().unwrap();
+        let store = LocalProductStore::new(dir.path().join("occupied.db")).unwrap();
+        store
+            .configure_tool_allowlist("migration-test", "configured-empty", &[], None)
+            .unwrap();
+        store
+            .with_conn(|conn| {
+                conn.execute_batch(
+                    "INSERT INTO agent_action_receipts
+                     (run_id, node_id, agent_id, action_sha256, action_type, result_json, created_at)
+                     VALUES
+                     ('occupied-run', 'occupied-agent-node', 'occupied-agent',
+                      'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+                      'complete', '{}', '2026-07-14T00:00:00Z');
+                     INSERT INTO tool_execution_authorizations
+                     (run_id, node_id, action_sha256, tool_name, profile_id, status,
+                      requested_approval_id, created_at, updated_at)
+                     VALUES
+                     ('occupied-run', 'occupied-tool-node',
+                      'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',
+                      'echo', 'configured-empty', 'requested', 'occupied-approval',
+                      '2026-07-14T00:00:00Z', '2026-07-14T00:00:00Z');",
+                )
+                .map_err(|error| error.to_string())
+            })
+            .unwrap();
+
+        let error = store
+            .rollback_v22_to_v21("migration-test", true)
+            .unwrap_err();
+        assert!(error.contains("authoritative v22 data exists"));
+        for table in V22_TABLES {
+            assert!(error.contains(table), "refusal must identify {table}");
+        }
+        assert_eq!(store.schema_version().unwrap(), V22_SCHEMA_VERSION);
+        for table in V22_TABLES {
+            assert!(
+                table_exists(&store, table),
+                "{table} must remain after refusal"
+            );
+        }
+        assert!(store
+            .read_tool_allowlist_policy("configured-empty")
+            .unwrap()
+            .is_some());
+    }
+
+    #[test]
+    fn sqlite_v22_rollback_requires_explicit_confirmation() {
+        let dir = tempdir().unwrap();
+        let store = LocalProductStore::new(dir.path().join("confirmation.db")).unwrap();
+        let error = store
+            .rollback_v22_to_v21("migration-test", false)
+            .unwrap_err();
+        assert!(error.contains("explicit destructive rollback confirmation"));
+        assert_eq!(store.schema_version().unwrap(), V22_SCHEMA_VERSION);
+    }
+
+    #[test]
+    fn sqlite_v22_rollback_audit_failure_rolls_back_tables_and_version_marker() {
+        let dir = tempdir().unwrap();
+        let store = LocalProductStore::new(dir.path().join("audit-failure.db")).unwrap();
+        store
+            .with_conn(|conn| {
+                conn.execute_batch(
+                    "CREATE TRIGGER reject_v22_rollback_audit
+                     BEFORE INSERT ON audit_log
+                     WHEN NEW.action = 'schema.rollback.v22_to_v21'
+                     BEGIN
+                         SELECT RAISE(ABORT, 'injected v22 rollback audit failure');
+                     END;",
+                )
+                .map_err(|error| error.to_string())
+            })
+            .unwrap();
+
+        let error = store
+            .rollback_v22_to_v21("migration-test", true)
+            .unwrap_err();
+        assert!(
+            error.contains("injected v22 rollback audit failure"),
+            "unexpected rollback error: {error}"
+        );
+        assert_eq!(store.schema_version().unwrap(), V22_SCHEMA_VERSION);
+        for table in V22_TABLES {
+            assert!(
+                table_exists(&store, table),
+                "{table} must be restored when rollback audit fails"
+            );
+        }
+        let rollback_audits = store
+            .with_conn(|conn| {
+                conn.query_row(
+                    "SELECT COUNT(*) FROM audit_log
+                     WHERE action = 'schema.rollback.v22_to_v21'",
+                    [],
+                    |row| row.get::<_, i64>(0),
+                )
+                .map_err(|error| error.to_string())
+            })
+            .unwrap();
+        assert_eq!(rollback_audits, 0);
+    }
+
+    #[test]
+    fn sqlite_v22_rollback_fails_closed_while_another_writer_holds_the_database() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("concurrent-writer.db");
+        let store = LocalProductStore::new(&path).unwrap();
+        let blocker = Connection::open(&path).unwrap();
+        blocker.execute_batch("BEGIN IMMEDIATE").unwrap();
+
+        let error = store
+            .rollback_v22_to_v21("migration-test", true)
+            .unwrap_err();
+        assert!(
+            error.contains("locked"),
+            "unexpected rollback error: {error}"
+        );
+        assert_eq!(store.schema_version().unwrap(), V22_SCHEMA_VERSION);
+        for table in V22_TABLES {
+            assert!(
+                table_exists(&store, table),
+                "{table} must remain after lock conflict"
+            );
+        }
+
+        blocker.execute_batch("ROLLBACK").unwrap();
+    }
 }

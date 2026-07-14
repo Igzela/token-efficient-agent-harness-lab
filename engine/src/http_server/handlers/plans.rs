@@ -3,14 +3,20 @@ use axum::http::{HeaderMap, StatusCode, Uri};
 use axum::response::IntoResponse;
 use axum::Json;
 use serde_json::json;
+use std::collections::{HashMap, HashSet};
 
 use crate::http_server::middleware::{
     authorize, cors_headers, internal_error, require_store, ApiError, RequestId,
 };
 use crate::http_server::state::AxumApiState;
-use crate::http_server::{ReadOnlyPlanApiRequest, AXUM_API_SCHEMA_VERSION};
+use crate::http_server::{
+    AgentStepPlanApiRequest, ReadOnlyPlanApiRequest, AXUM_API_SCHEMA_VERSION,
+};
 use crate::provider::adaptive_observation::AdaptiveNodeExecutionConfig;
+use crate::provider::redaction::contains_sensitive_patterns;
 use crate::read_only_planner::ReadOnlyPlanner;
+
+const MAX_AGENT_OBJECTIVE_BYTES: usize = 4096;
 
 pub(crate) async fn api_create_plan(
     State(state): State<AxumApiState>,
@@ -19,7 +25,7 @@ pub(crate) async fn api_create_plan(
     Extension(request_id): Extension<RequestId>,
     Json(request): Json<ReadOnlyPlanApiRequest>,
 ) -> Result<impl IntoResponse, ApiError> {
-    let required_scope = if request.adaptive_execution.is_some() {
+    let required_scope = if request.adaptive_execution.is_some() || request.agent_steps.is_some() {
         "dispatch:execute"
     } else {
         "dispatch:read"
@@ -40,6 +46,36 @@ pub(crate) async fn api_create_plan(
             "confirm_adaptive_execution_plan must be true",
         ));
     }
+    if request.agent_steps.is_some() && request.confirm_agent_runtime_plan != Some(true) {
+        return Err(ApiError::with_code(
+            StatusCode::BAD_REQUEST,
+            "agent_runtime_confirmation_required",
+            "confirm_agent_runtime_plan must be true",
+        ));
+    }
+    if request.agent_steps.is_some() {
+        if request.raw_request.len() > MAX_AGENT_OBJECTIVE_BYTES {
+            return Err(ApiError::with_code(
+                StatusCode::BAD_REQUEST,
+                "agent_runtime_objective_too_large",
+                format!("agent runtime objective exceeds {MAX_AGENT_OBJECTIVE_BYTES} byte cap"),
+            ));
+        }
+        if contains_sensitive_patterns(&request.raw_request) {
+            return Err(ApiError::with_code(
+                StatusCode::BAD_REQUEST,
+                "agent_runtime_objective_sensitive",
+                "agent runtime objective contains secret-shaped content",
+            ));
+        }
+    }
+    if request.adaptive_execution.is_some() && request.agent_steps.is_some() {
+        return Err(ApiError::with_code(
+            StatusCode::BAD_REQUEST,
+            "plan_executor_ambiguous",
+            "adaptive_execution and agent_steps are mutually exclusive",
+        ));
+    }
 
     let store = require_store(&state)?;
     let request_source = request.request_source.as_deref().unwrap_or("api");
@@ -55,6 +91,31 @@ pub(crate) async fn api_create_plan(
     } else {
         None
     };
+    let provider_agent_model = if request.agent_steps.is_some() {
+        state
+            .configured_provider()
+            .map(|provider| {
+                provider
+                    .default_model()
+                    .filter(|model| !model.is_empty())
+                    .map(str::to_string)
+                    .ok_or_else(|| {
+                        ApiError::with_code(
+                            StatusCode::SERVICE_UNAVAILABLE,
+                            "agent_runtime_provider_model_unavailable",
+                            "configured agent decision provider has no default model",
+                        )
+                    })
+            })
+            .transpose()?
+    } else {
+        None
+    };
+    let agent_steps = request
+        .agent_steps
+        .as_ref()
+        .map(|steps| validate_agent_step_plan_requests(steps, provider_agent_model.as_deref()))
+        .transpose()?;
     let planner = ReadOnlyPlanner::new();
     let plan = store
         .create_workflow_plan(
@@ -62,7 +123,15 @@ pub(crate) async fn api_create_plan(
             request_source,
             &context.api_key_id,
             |ids, created_at| {
-                if let Some(adaptive_execution) = adaptive_execution {
+                if let Some(agent_steps) = agent_steps {
+                    Ok(agent_steps_plan(
+                        ids,
+                        &request.raw_request,
+                        request_source,
+                        created_at,
+                        &agent_steps,
+                    ))
+                } else if let Some(adaptive_execution) = adaptive_execution {
                     Ok(adaptive_execution_plan(
                         ids,
                         &request.raw_request,
@@ -84,6 +153,191 @@ pub(crate) async fn api_create_plan(
             "plan": plan,
         })),
     ))
+}
+
+fn validate_agent_step_plan_request(
+    request: &AgentStepPlanApiRequest,
+    required_provider_model: Option<&str>,
+) -> Result<AgentStepPlanApiRequest, ApiError> {
+    fn bounded_identifier(value: &str) -> bool {
+        !value.is_empty()
+            && value.len() <= 256
+            && value.bytes().all(|byte| {
+                byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.' | b':')
+            })
+    }
+
+    if !bounded_identifier(&request.agent_id)
+        || !bounded_identifier(&request.profile_id)
+        || !bounded_identifier(&request.role)
+    {
+        return Err(ApiError::with_code(
+            StatusCode::BAD_REQUEST,
+            "invalid_agent_step_identity",
+            "agent_id, profile_id, and role must be bounded identifiers",
+        ));
+    }
+    if request.capability_profile.is_empty()
+        || request.capability_profile.len() > 16
+        || request
+            .capability_profile
+            .iter()
+            .any(|capability| !bounded_identifier(capability))
+        || request
+            .capability_profile
+            .iter()
+            .collect::<HashSet<_>>()
+            .len()
+            != request.capability_profile.len()
+    {
+        return Err(ApiError::with_code(
+            StatusCode::BAD_REQUEST,
+            "invalid_agent_capability_profile",
+            "capability_profile must contain 1..=16 unique bounded identifiers",
+        ));
+    }
+    if request
+        .model
+        .as_deref()
+        .is_some_and(|model| !bounded_identifier(model))
+    {
+        return Err(ApiError::with_code(
+            StatusCode::BAD_REQUEST,
+            "invalid_agent_model",
+            "model must be a bounded identifier",
+        ));
+    }
+    if let Some(required_model) = required_provider_model {
+        let Some(requested_model) = request.model.as_deref() else {
+            return Err(ApiError::with_code(
+                StatusCode::BAD_REQUEST,
+                "agent_runtime_model_required",
+                "provider-backed agent_steps require the configured provider model",
+            ));
+        };
+        if requested_model != required_model {
+            return Err(ApiError::with_code(
+                StatusCode::BAD_REQUEST,
+                "agent_runtime_model_mismatch",
+                "agent_steps model must exactly match the configured provider model",
+            ));
+        }
+    }
+    Ok(request.clone())
+}
+
+fn validate_agent_step_plan_requests(
+    requests: &[AgentStepPlanApiRequest],
+    required_provider_model: Option<&str>,
+) -> Result<Vec<AgentStepPlanApiRequest>, ApiError> {
+    if requests.is_empty() || requests.len() > 16 {
+        return Err(ApiError::with_code(
+            StatusCode::BAD_REQUEST,
+            "invalid_agent_step_count",
+            "agent_steps must contain 1..=16 entries",
+        ));
+    }
+    let mut identities: HashMap<String, (String, String, Vec<String>)> = HashMap::new();
+    let mut validated = Vec::with_capacity(requests.len());
+    for request in requests {
+        let request = validate_agent_step_plan_request(request, required_provider_model)?;
+        if let Some((role, profile_id, capabilities)) = identities.get(&request.agent_id) {
+            if *role != request.role
+                || *profile_id != request.profile_id
+                || *capabilities != request.capability_profile
+            {
+                return Err(ApiError::with_code(
+                    StatusCode::BAD_REQUEST,
+                    "conflicting_agent_step_identity",
+                    "repeated agent_steps entries must use identical role, profile_id, and capability_profile",
+                ));
+            }
+        } else {
+            identities.insert(
+                request.agent_id.clone(),
+                (
+                    request.role.clone(),
+                    request.profile_id.clone(),
+                    request.capability_profile.clone(),
+                ),
+            );
+        }
+        validated.push(request);
+    }
+    Ok(validated)
+}
+
+fn agent_steps_plan(
+    ids: &crate::read_only_planner::WorkflowPlanIds,
+    raw_request: &str,
+    request_source: &str,
+    created_at: &str,
+    agent_steps: &[AgentStepPlanApiRequest],
+) -> serde_json::Value {
+    let nodes = agent_steps
+        .iter()
+        .enumerate()
+        .map(|(index, agent_step)| {
+            json!({
+                "node_id": format!("agent-node-{:03}", index + 1),
+                "task_type": "agent_step",
+                "status": "pending",
+                "agent_id": agent_step.agent_id,
+                "assigned_agent_id": agent_step.agent_id,
+                "agent_role": agent_step.role,
+                "agent_objective": raw_request,
+                "capability_profile": agent_step.capability_profile,
+                "profile_id": agent_step.profile_id,
+                "model": agent_step.model,
+                "decision_source": "provider_typed_action",
+                "max_actions": 1,
+            })
+        })
+        .collect::<Vec<_>>();
+    let edges = (1..agent_steps.len())
+        .map(|index| {
+            json!({
+                "edge_id": format!("agent-edge-{:03}-{:03}", index, index + 1),
+                "from_node_id": format!("agent-node-{index:03}"),
+                "to_node_id": format!("agent-node-{:03}", index + 1),
+            })
+        })
+        .collect::<Vec<_>>();
+    json!({
+        "schema_version": "read_only_plan.v1",
+        "plan_id": ids.plan_id,
+        "status": "planned_read_only",
+        "workflow_id": ids.workflow_id,
+        "dispatch_id": ids.dispatch_id,
+        "analysis": {
+            "analysis_id": format!("analysis-{}", ids.dispatch_id),
+            "task_domain": "agent_runtime",
+            "request_source": request_source,
+            "raw_request_snapshot": raw_request,
+        },
+        "graph": {
+            "schema_version": "workflow_graph.v1",
+            "workflow_id": ids.workflow_id,
+            "dispatch_id": ids.dispatch_id,
+            "status": "decomposed",
+            "created_at": created_at,
+            "updated_at": created_at,
+            "nodes": nodes,
+            "edges": edges,
+        },
+        "boundaries": {
+            "execution": "explicit_tick_or_scheduler_lease",
+            "execution_authority": "rust_scheduler_only",
+            "provider_execution": "default_off_fail_closed",
+            "target_repository_writes": "disabled",
+            "runtime_workers": "bounded_one_step_executor",
+        },
+        "advisory": {
+            "schema_version": "plan_advisory.v1",
+            "mode": "explicit_agent_runtime_plan",
+            "requires_executor": "agent_step",
+        },
+    })
 }
 
 fn adaptive_execution_plan(
@@ -114,15 +368,15 @@ fn adaptive_execution_plan(
             "updated_at": created_at,
             "nodes": [{
                 "node_id": "adaptive-node-1",
-                "task_type": "implementation",
+                "task_type": "adaptive_provider",
                 "status": "pending",
                 "adaptive_execution": adaptive_execution,
             }],
             "edges": [],
         },
         "boundaries": {
-            "execution": "explicit_tick_only",
-            "execution_authority": "explicit_tick_only",
+            "execution": "explicit_tick_or_scheduler_lease",
+            "execution_authority": "rust_scheduler_only",
             "target_repository_writes": "disabled",
             "runtime_workers": "env_gated_supervised",
         },
@@ -185,5 +439,47 @@ pub(crate) async fn api_plan_detail(
             "plan_not_found",
             "plan not found",
         )),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn agent_step(model: Option<&str>) -> AgentStepPlanApiRequest {
+        AgentStepPlanApiRequest {
+            agent_id: "agent-model-admission".to_string(),
+            role: "reviewer".to_string(),
+            capability_profile: vec!["mailbox".to_string()],
+            profile_id: "bounded-reviewer".to_string(),
+            model: model.map(str::to_string),
+        }
+    }
+
+    #[test]
+    fn fixture_agent_plan_may_omit_model() {
+        let validated = validate_agent_step_plan_requests(&[agent_step(None)], None).unwrap();
+        assert_eq!(validated[0].model, None);
+    }
+
+    #[test]
+    fn provider_agent_plan_requires_exact_configured_model() {
+        let missing = validate_agent_step_plan_requests(&[agent_step(None)], Some("bounded-model"))
+            .unwrap_err();
+        assert_eq!(missing.code, "agent_runtime_model_required");
+
+        let mismatch = validate_agent_step_plan_requests(
+            &[agent_step(Some("other-model"))],
+            Some("bounded-model"),
+        )
+        .unwrap_err();
+        assert_eq!(mismatch.code, "agent_runtime_model_mismatch");
+
+        let validated = validate_agent_step_plan_requests(
+            &[agent_step(Some("bounded-model"))],
+            Some("bounded-model"),
+        )
+        .unwrap();
+        assert_eq!(validated[0].model.as_deref(), Some("bounded-model"));
     }
 }

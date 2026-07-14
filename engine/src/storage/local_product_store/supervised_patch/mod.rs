@@ -1,5 +1,6 @@
-use rusqlite::{params, Row};
+use rusqlite::{params, OptionalExtension, Row};
 use serde_json::{json, Value};
+use sha2::{Digest, Sha256};
 use std::ffi::OsString;
 use std::path::{Component, Path, PathBuf};
 
@@ -8,6 +9,9 @@ use crate::target_repo_output::{
     staged_changed_files, TargetRepoOutputConfig,
 };
 
+#[cfg(test)]
+use super::workflow_runs::is_execution_owner_conflict;
+use super::workflow_runs::API_OWNED_SUPERVISED_PATCH;
 use super::{append_audit_locked, collect_values, DatabaseConnection, LocalProductStore};
 
 pub(crate) mod fs_utils;
@@ -173,7 +177,7 @@ impl LocalProductStore {
         let verification_status = required_str(verification, "status")?;
         if !matches!(
             verification_status,
-            "evidence_recorded" | "verification_failed"
+            "evidence_recorded" | "verification_failed" | "approval_required"
         ) {
             return Err(format!(
                 "invalid workspace verification status: {verification_status}"
@@ -244,6 +248,452 @@ impl LocalProductStore {
 
         self.get_supervised_patch_workspace(workspace_id)?
             .ok_or_else(|| format!("workspace not found after verification: {workspace_id}"))
+    }
+
+    pub(crate) fn ensure_managed_supervised_patch_run(
+        &self,
+        workspace_id: &str,
+        operation: &str,
+        attempt: u64,
+        binding_sha256: &str,
+        node_metadata: &Value,
+        actor: &str,
+    ) -> Result<String, String> {
+        if !matches!(operation, "verify" | "repair") {
+            return Err(format!(
+                "unsupported managed supervised-patch operation: {operation}"
+            ));
+        }
+        if attempt == 0 || attempt > 5 {
+            return Err("managed supervised-patch attempt must be between 1 and 5".to_string());
+        }
+        if binding_sha256.len() != 64
+            || !binding_sha256.bytes().all(|byte| byte.is_ascii_hexdigit())
+        {
+            return Err(
+                "managed supervised-patch binding must be a SHA-256 hex digest".to_string(),
+            );
+        }
+        validate_managed_supervised_patch_metadata(
+            workspace_id,
+            operation,
+            attempt,
+            binding_sha256,
+            node_metadata,
+        )?;
+
+        let identity = managed_supervised_patch_identity(workspace_id, operation, attempt)?;
+        let node_id = format!("supervised-{operation}-{attempt}");
+        let run_id = format!("managed-run-{}", identity);
+        let workflow_id = format!("managed-workflow-{}", identity);
+        let dispatch_id = format!("managed-dispatch-{}", identity);
+
+        match &self.db {
+            DatabaseConnection::Sqlite(_) => self.with_conn(|conn| {
+                conn.execute_batch("BEGIN IMMEDIATE TRANSACTION")
+                    .map_err(|error| error.to_string())?;
+                let result = (|| {
+                    let workspace_exists: i64 = conn
+                        .query_row(
+                            "SELECT COUNT(*) FROM supervised_patch_workspaces WHERE workspace_id = ?1",
+                            params![workspace_id],
+                            |row| row.get(0),
+                        )
+                        .map_err(|error| error.to_string())?;
+                    if workspace_exists != 1 {
+                        return Err(format!("workspace not found: {workspace_id}"));
+                    }
+
+                    let existing_node: Option<(String, Option<String>)> = conn
+                        .query_row(
+                            "SELECT n.node_json, r.pause_reason
+                             FROM workflow_run_nodes n
+                             JOIN workflow_runs r ON r.run_id = n.run_id
+                             WHERE n.run_id = ?1 AND n.node_id = ?2",
+                            params![run_id, node_id],
+                            |row| Ok((row.get(0)?, row.get(1)?)),
+                        )
+                        .optional()
+                        .map_err(|error| error.to_string())?;
+                    if let Some((existing_node, pause_reason)) = existing_node {
+                        validate_existing_managed_supervised_patch_node(
+                            &existing_node,
+                            workspace_id,
+                            operation,
+                            attempt,
+                            binding_sha256,
+                            node_metadata,
+                        )?;
+                        match pause_reason.as_deref() {
+                            Some(API_OWNED_SUPERVISED_PATCH) => {}
+                            None => {
+                                let updated = conn
+                                    .execute(
+                                        "UPDATE workflow_runs
+                                         SET pause_reason = ?1
+                                         WHERE run_id = ?2 AND pause_reason IS NULL",
+                                        params![API_OWNED_SUPERVISED_PATCH, run_id],
+                                    )
+                                    .map_err(|error| error.to_string())?;
+                                if updated != 1 {
+                                    return Err(
+                                        "managed supervised-patch execution owner changed"
+                                            .to_string(),
+                                    );
+                                }
+                            }
+                            Some(_) => {
+                                return Err(
+                                    "managed supervised-patch execution owner changed".to_string()
+                                );
+                            }
+                        }
+                        let now = self.now();
+                        append_audit_locked(
+                            conn,
+                            &now,
+                            actor,
+                            "supervised_patch.managed_run_reused",
+                            &run_id,
+                            &json!({
+                                "workspace_id": workspace_id,
+                                "operation": operation,
+                                "attempt": attempt,
+                                "binding_sha256": binding_sha256,
+                                "canonical": true,
+                                "content_excluded": true,
+                            }),
+                        )?;
+                        return Ok(run_id.clone());
+                    }
+
+                    let conflicting_run_exists: i64 = conn
+                        .query_row(
+                            "SELECT COUNT(*) FROM workflow_runs WHERE run_id = ?1",
+                            params![run_id],
+                            |row| row.get(0),
+                        )
+                        .map_err(|error| error.to_string())?;
+                    if conflicting_run_exists != 0 {
+                        return Err(
+                            "managed supervised-patch canonical run is missing its bound node"
+                                .to_string(),
+                        );
+                    }
+
+                    let sequence = next_sequence(conn, "workflow_runs", "run_sequence")?;
+                    let event_sequence =
+                        next_sequence(conn, "workflow_run_events", "event_sequence")?;
+                    let created_at = self.now();
+                    let (node, graph, boundaries, run) = build_managed_supervised_patch_run(
+                        sequence,
+                        &run_id,
+                        &workflow_id,
+                        &dispatch_id,
+                        &node_id,
+                        operation,
+                        node_metadata,
+                        &created_at,
+                    )?;
+                    conn.execute(
+                        "INSERT INTO workflow_runs
+                         (run_sequence, run_id, plan_id, created_at, updated_at, status,
+                          workflow_id, dispatch_id, started_at, completed_at, result_json,
+                          boundaries_json, run_json, priority, deadline_at, sla_ms, tenant_id,
+                          queue_position, pause_reason, degrade_mode)
+                         VALUES (?1, ?2, NULL, ?3, ?3, 'created', ?4, ?5, NULL, NULL, NULL,
+                                 ?6, ?7, 5, NULL, NULL, NULL, NULL, ?8, NULL)",
+                        params![
+                            sequence,
+                            run_id,
+                            created_at,
+                            workflow_id,
+                            dispatch_id,
+                            boundaries.to_string(),
+                            run.to_string(),
+                            API_OWNED_SUPERVISED_PATCH,
+                        ],
+                    )
+                    .map_err(|error| error.to_string())?;
+                    conn.execute(
+                        "INSERT INTO workflow_run_nodes
+                         (run_id, node_id, task_type, status, node_json, started_at, completed_at,
+                          attempt_count, timeout_ms, blocked_reason, leased_at, profile_id)
+                         VALUES (?1, ?2, ?3, 'pending', ?4, NULL, NULL, 0, ?5, NULL, NULL, ?6)",
+                        params![
+                            run_id,
+                            node_id,
+                            format!("workspace_{operation}"),
+                            node.to_string(),
+                            node.get("executor_timeout_ms").and_then(Value::as_i64),
+                            node.get("profile_id").and_then(Value::as_str),
+                        ],
+                    )
+                    .map_err(|error| error.to_string())?;
+                    let event_id = format!("workflow-event-{event_sequence:04}");
+                    let event_details = json!({
+                        "workspace_id": workspace_id,
+                        "operation": operation,
+                        "attempt": attempt,
+                        "binding_sha256": binding_sha256,
+                        "canonical": true,
+                        "metadata_only": false,
+                        "execution_authority": "bounded_trusted_local",
+                        "content_excluded": true,
+                    });
+                    conn.execute(
+                        "INSERT INTO workflow_run_events
+                         (event_sequence, event_id, run_id, node_id, event_type, actor,
+                          created_at, details_json)
+                         VALUES (?1, ?2, ?3, NULL, 'workflow_run.created', ?4, ?5, ?6)",
+                        params![
+                            event_sequence,
+                            event_id,
+                            run_id,
+                            actor,
+                            created_at,
+                            event_details.to_string(),
+                        ],
+                    )
+                    .map_err(|error| error.to_string())?;
+                    append_audit_locked(
+                        conn,
+                        &created_at,
+                        actor,
+                        "supervised_patch.managed_run_created",
+                        &run_id,
+                        &json!({
+                            "workspace_id": workspace_id,
+                            "operation": operation,
+                            "attempt": attempt,
+                            "binding_sha256": binding_sha256,
+                            "workflow_id": workflow_id,
+                            "dispatch_id": dispatch_id,
+                            "graph_sha256": hex::encode(Sha256::digest(graph.to_string().as_bytes())),
+                            "canonical": true,
+                            "content_excluded": true,
+                        }),
+                    )?;
+                    Ok(run_id.clone())
+                })();
+                match result {
+                    Ok(run_id) => {
+                        conn.execute_batch("COMMIT")
+                            .map_err(|error| error.to_string())?;
+                        Ok(run_id)
+                    }
+                    Err(error) => {
+                        let _ = conn.execute_batch("ROLLBACK");
+                        Err(error)
+                    }
+                }
+            }),
+            #[cfg(feature = "pg")]
+            DatabaseConnection::Pg(_) => self.with_pg_conn(|client| {
+                let mut tx = client.transaction().map_err(|error| error.to_string())?;
+                tx.batch_execute(
+                    "LOCK TABLE workflow_runs IN SHARE ROW EXCLUSIVE MODE;
+                     LOCK TABLE workflow_run_events IN SHARE ROW EXCLUSIVE MODE;",
+                )
+                .map_err(|error| error.to_string())?;
+                if tx
+                    .query_opt(
+                        "SELECT workspace_id FROM supervised_patch_workspaces
+                         WHERE workspace_id = $1 FOR UPDATE",
+                        &[&workspace_id],
+                    )
+                    .map_err(|error| error.to_string())?
+                    .is_none()
+                {
+                    return Err(format!("workspace not found: {workspace_id}"));
+                }
+
+                let existing_node = tx
+                    .query_opt(
+                        "SELECT n.node_json, r.pause_reason
+                         FROM workflow_run_nodes n
+                         JOIN workflow_runs r ON r.run_id = n.run_id
+                         WHERE n.run_id = $1 AND n.node_id = $2
+                         FOR UPDATE OF n, r",
+                        &[&run_id, &node_id],
+                    )
+                    .map_err(|error| error.to_string())?;
+                if let Some(existing_row) = existing_node {
+                    let existing_node: String = existing_row.get(0);
+                    let pause_reason: Option<String> = existing_row.get(1);
+                    validate_existing_managed_supervised_patch_node(
+                        &existing_node,
+                        workspace_id,
+                        operation,
+                        attempt,
+                        binding_sha256,
+                        node_metadata,
+                    )?;
+                    match pause_reason.as_deref() {
+                        Some(API_OWNED_SUPERVISED_PATCH) => {}
+                        None => {
+                            let updated = tx
+                                .execute(
+                                    "UPDATE workflow_runs
+                                     SET pause_reason = $1
+                                     WHERE run_id = $2 AND pause_reason IS NULL",
+                                    &[&API_OWNED_SUPERVISED_PATCH, &run_id],
+                                )
+                                .map_err(|error| error.to_string())?;
+                            if updated != 1 {
+                                return Err(
+                                    "managed supervised-patch execution owner changed".to_string()
+                                );
+                            }
+                        }
+                        Some(_) => {
+                            return Err(
+                                "managed supervised-patch execution owner changed".to_string()
+                            );
+                        }
+                    }
+                    let now = self.now();
+                    let details = json!({
+                        "workspace_id": workspace_id,
+                        "operation": operation,
+                        "attempt": attempt,
+                        "binding_sha256": binding_sha256,
+                        "canonical": true,
+                        "content_excluded": true,
+                    })
+                    .to_string();
+                    pg_append_audit(
+                        &mut tx,
+                        &now,
+                        actor,
+                        "supervised_patch.managed_run_reused",
+                        &run_id,
+                        &details,
+                    )?;
+                    tx.commit().map_err(|error| error.to_string())?;
+                    return Ok(run_id);
+                }
+                if tx
+                    .query_opt(
+                        "SELECT run_id FROM workflow_runs WHERE run_id = $1 FOR UPDATE",
+                        &[&run_id],
+                    )
+                    .map_err(|error| error.to_string())?
+                    .is_some()
+                {
+                    return Err(
+                        "managed supervised-patch canonical run is missing its bound node"
+                            .to_string(),
+                    );
+                }
+
+                let sequence = pg_next_sequence(&mut tx, "workflow_runs", "run_sequence")?;
+                let event_sequence =
+                    pg_next_sequence(&mut tx, "workflow_run_events", "event_sequence")?;
+                let created_at = self.now();
+                let (node, graph, boundaries, run) = build_managed_supervised_patch_run(
+                    sequence,
+                    &run_id,
+                    &workflow_id,
+                    &dispatch_id,
+                    &node_id,
+                    operation,
+                    node_metadata,
+                    &created_at,
+                )?;
+                tx.execute(
+                    "INSERT INTO workflow_runs
+                     (run_sequence, run_id, plan_id, created_at, updated_at, status,
+                      workflow_id, dispatch_id, started_at, completed_at, result_json,
+                      boundaries_json, run_json, priority, deadline_at, sla_ms, tenant_id,
+                      queue_position, pause_reason, degrade_mode)
+                     VALUES ($1, $2, NULL, $3, $3, 'created', $4, $5, NULL, NULL, NULL,
+                             $6, $7, 5, NULL, NULL, NULL, NULL, $8, NULL)",
+                    &[
+                        &sequence,
+                        &run_id,
+                        &created_at,
+                        &workflow_id,
+                        &dispatch_id,
+                        &boundaries.to_string(),
+                        &run.to_string(),
+                        &API_OWNED_SUPERVISED_PATCH,
+                    ],
+                )
+                .map_err(|error| error.to_string())?;
+                let task_type = format!("workspace_{operation}");
+                let node_json = node.to_string();
+                let profile_id = node.get("profile_id").and_then(Value::as_str);
+                let executor_timeout_ms = node
+                    .get("executor_timeout_ms")
+                    .and_then(Value::as_u64)
+                    .and_then(|value| i32::try_from(value).ok());
+                tx.execute(
+                    "INSERT INTO workflow_run_nodes
+                     (run_id, node_id, task_type, status, node_json, started_at, completed_at,
+                      attempt_count, timeout_ms, blocked_reason, leased_at, profile_id)
+                     VALUES ($1, $2, $3, 'pending', $4, NULL, NULL, 0, $5, NULL, NULL, $6)",
+                    &[
+                        &run_id,
+                        &node_id,
+                        &task_type,
+                        &node_json,
+                        &executor_timeout_ms,
+                        &profile_id,
+                    ],
+                )
+                .map_err(|error| error.to_string())?;
+                let event_id = format!("workflow-event-{event_sequence:04}");
+                let event_details = json!({
+                    "workspace_id": workspace_id,
+                    "operation": operation,
+                    "attempt": attempt,
+                    "binding_sha256": binding_sha256,
+                    "canonical": true,
+                    "metadata_only": false,
+                    "execution_authority": "bounded_trusted_local",
+                    "content_excluded": true,
+                })
+                .to_string();
+                tx.execute(
+                    "INSERT INTO workflow_run_events
+                     (event_sequence, event_id, run_id, node_id, event_type, actor,
+                      created_at, details_json)
+                     VALUES ($1, $2, $3, NULL, 'workflow_run.created', $4, $5, $6)",
+                    &[
+                        &event_sequence,
+                        &event_id,
+                        &run_id,
+                        &actor,
+                        &created_at,
+                        &event_details,
+                    ],
+                )
+                .map_err(|error| error.to_string())?;
+                let audit_details = json!({
+                    "workspace_id": workspace_id,
+                    "operation": operation,
+                    "attempt": attempt,
+                    "binding_sha256": binding_sha256,
+                    "workflow_id": workflow_id,
+                    "dispatch_id": dispatch_id,
+                    "graph_sha256": hex::encode(Sha256::digest(graph.to_string().as_bytes())),
+                    "canonical": true,
+                    "content_excluded": true,
+                })
+                .to_string();
+                pg_append_audit(
+                    &mut tx,
+                    &created_at,
+                    actor,
+                    "supervised_patch.managed_run_created",
+                    &run_id,
+                    &audit_details,
+                )?;
+                tx.commit().map_err(|error| error.to_string())?;
+                Ok(run_id)
+            }),
+        }
     }
 
     pub fn capture_patch(&self, workspace_id: &str, actor: &str) -> Result<Value, String> {
@@ -1878,6 +2328,136 @@ fn ensure_optional_bool_field(value: &Value, field: &str, expected: bool) -> Res
     Ok(())
 }
 
+fn managed_supervised_patch_identity(
+    workspace_id: &str,
+    operation: &str,
+    attempt: u64,
+) -> Result<String, String> {
+    let encoded = serde_json::to_vec(&json!({
+        "schema_version": "managed_supervised_patch_identity.v1",
+        "workspace_id": workspace_id,
+        "operation": operation,
+        "attempt": attempt,
+    }))
+    .map_err(|error| error.to_string())?;
+    Ok(hex::encode(Sha256::digest(encoded)))
+}
+
+fn validate_managed_supervised_patch_metadata(
+    workspace_id: &str,
+    operation: &str,
+    attempt: u64,
+    binding_sha256: &str,
+    node_metadata: &Value,
+) -> Result<(), String> {
+    let binding = node_metadata
+        .get("managed_supervised_patch")
+        .and_then(Value::as_object)
+        .ok_or_else(|| "managed supervised-patch metadata is missing its binding".to_string())?;
+    if binding.get("schema_version").and_then(Value::as_str) != Some("managed_supervised_patch.v1")
+        || binding.get("workspace_id").and_then(Value::as_str) != Some(workspace_id)
+        || binding.get("operation").and_then(Value::as_str) != Some(operation)
+        || binding.get("attempt").and_then(Value::as_u64) != Some(attempt)
+        || binding.get("binding_sha256").and_then(Value::as_str) != Some(binding_sha256)
+    {
+        return Err("managed supervised-patch metadata binding changed".to_string());
+    }
+    Ok(())
+}
+
+fn validate_existing_managed_supervised_patch_node(
+    existing_node: &str,
+    workspace_id: &str,
+    operation: &str,
+    attempt: u64,
+    binding_sha256: &str,
+    requested_metadata: &Value,
+) -> Result<(), String> {
+    let existing_node: Value = serde_json::from_str(existing_node)
+        .map_err(|_| "managed supervised-patch canonical node is corrupt".to_string())?;
+    validate_managed_supervised_patch_metadata(
+        workspace_id,
+        operation,
+        attempt,
+        binding_sha256,
+        &existing_node,
+    )
+    .map_err(|_| {
+        "managed supervised-patch binding changed for canonical workspace operation attempt"
+            .to_string()
+    })?;
+    let requested = requested_metadata.as_object().ok_or_else(|| {
+        "managed supervised-patch requested metadata must be an object".to_string()
+    })?;
+    if requested
+        .iter()
+        .any(|(field, value)| existing_node.get(field) != Some(value))
+    {
+        return Err(
+            "managed supervised-patch binding changed for canonical workspace operation attempt"
+                .to_string(),
+        );
+    }
+    Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+fn build_managed_supervised_patch_run(
+    sequence: i64,
+    run_id: &str,
+    workflow_id: &str,
+    dispatch_id: &str,
+    node_id: &str,
+    operation: &str,
+    node_metadata: &Value,
+    created_at: &str,
+) -> Result<(Value, Value, Value, Value), String> {
+    let mut node = node_metadata.clone();
+    let object = node
+        .as_object_mut()
+        .ok_or_else(|| "managed supervised-patch node metadata must be an object".to_string())?;
+    object.insert("schema_version".to_string(), json!("workflow_node.v1"));
+    object.insert("node_id".to_string(), json!(node_id));
+    object.insert("workflow_id".to_string(), json!(workflow_id));
+    object.insert(
+        "task_type".to_string(),
+        json!(format!("workspace_{operation}")),
+    );
+    object.insert("status".to_string(), json!("pending"));
+    let graph = json!({
+        "schema_version": "workflow_graph.v1",
+        "workflow_id": workflow_id,
+        "dispatch_id": dispatch_id,
+        "status": "decomposed",
+        "created_at": created_at,
+        "updated_at": created_at,
+        "nodes": [node.clone()],
+        "edges": [],
+    });
+    let boundaries = json!({
+        "execution_authority": "bounded_trusted_local",
+        "scheduler_authority": "rust_engine",
+        "approval_authority": "workflow_run_approvals",
+    });
+    let run = json!({
+        "schema_version": "workflow_run.v1",
+        "run_sequence": sequence,
+        "run_id": run_id,
+        "plan_id": null,
+        "workflow_id": workflow_id,
+        "dispatch_id": dispatch_id,
+        "status": "created",
+        "created_at": created_at,
+        "updated_at": created_at,
+        "started_at": null,
+        "completed_at": null,
+        "result": null,
+        "graph": graph,
+        "boundaries": boundaries,
+    });
+    Ok((node, graph, boundaries, run))
+}
+
 fn required_str<'a>(value: &'a Value, field: &str) -> Result<&'a str, String> {
     value
         .get(field)
@@ -2134,4 +2714,345 @@ fn pg_supervised_patch_artifact_row(row: &postgres::Row) -> Value {
 fn pg_optional_row_string(row: &postgres::Row, index: usize) -> Value {
     let value: Option<String> = row.get(index);
     value.map(Value::String).unwrap_or(Value::Null)
+}
+
+#[cfg(test)]
+mod managed_owner_tests {
+    use super::*;
+    use crate::scheduler::{SchedulerConfig, WorkflowScheduler};
+    use std::sync::Arc;
+    use std::time::Duration;
+    use tempfile::tempdir;
+
+    struct HoldingExecutor {
+        entered: std::sync::mpsc::Sender<()>,
+        release: Arc<(std::sync::Mutex<bool>, std::sync::Condvar)>,
+    }
+
+    impl crate::node_executor::NodeExecutor for HoldingExecutor {
+        fn execute_node(
+            &self,
+            _input: &crate::node_executor::NodeExecutionInput,
+        ) -> crate::node_executor::NodeExecutionOutput {
+            self.entered.send(()).unwrap();
+            let (lock, condition) = &*self.release;
+            let mut released = lock.lock().unwrap();
+            while !*released {
+                released = condition.wait(released).unwrap();
+            }
+            crate::node_executor::NodeExecutionOutput {
+                status: "completed".to_string(),
+                executor_type: "holding_fixture".to_string(),
+                output: Some("held managed execution completed".to_string()),
+                error_domain: None,
+                error_message: None,
+                input_tokens: None,
+                output_tokens: None,
+                estimated_cost: None,
+                latency_ms: Some(1),
+            }
+        }
+
+        fn executor_type_name(&self) -> &str {
+            "holding_fixture"
+        }
+    }
+
+    #[test]
+    fn managed_run_is_api_owned_and_both_scheduler_queue_modes_cannot_claim_it() {
+        let dir = tempdir().unwrap();
+        let target_dir = tempdir().unwrap();
+        let workspace_dir = tempdir().unwrap();
+        let target_path = target_dir.path().to_string_lossy().to_string();
+        let workspace_path = workspace_dir.path().to_string_lossy().to_string();
+        let store = Arc::new(LocalProductStore::new(dir.path().join("managed.db")).unwrap());
+        store
+            .import_supervised_patch_workspace(&json!({
+                "schema_version": SUPERVISED_PATCH_WORKSPACE_SCHEMA_VERSION,
+                "workspace_id": "managed-owner-workspace",
+                "run_id": "source-run",
+                "target_id": "target",
+                "target_repo_path": target_path,
+                "target_repo_canonical_path": target_path,
+                "workspace_path": workspace_path,
+                "workspace_canonical_path": workspace_path,
+                "source_revision": "fixture",
+                "status": "requested",
+                "metadata_only": true,
+                "execution_authority": "disabled",
+            }))
+            .unwrap();
+        let binding_sha256 = "ab".repeat(32);
+        let metadata = json!({
+            "profile_id": "supervised_patch_verification",
+            "command": "python3 --version",
+            "workspace_path": workspace_path,
+            "workspace_root": workspace_path,
+            "executor_timeout_ms": 120_000,
+            "managed_supervised_patch": {
+                "schema_version": "managed_supervised_patch.v1",
+                "workspace_id": "managed-owner-workspace",
+                "operation": "verify",
+                "attempt": 1,
+                "binding_sha256": binding_sha256,
+                "content_excluded": true,
+            },
+        });
+        let run_id = store
+            .ensure_managed_supervised_patch_run(
+                "managed-owner-workspace",
+                "verify",
+                1,
+                &binding_sha256,
+                &metadata,
+                "test",
+            )
+            .unwrap();
+
+        let run = store.get_workflow_run(&run_id).unwrap().unwrap();
+        assert_eq!(run["pause_reason"], API_OWNED_SUPERVISED_PATCH);
+        assert!(!store
+            .list_active_workflow_run_ids()
+            .unwrap()
+            .contains(&run_id));
+        assert!(!store
+            .list_active_workflow_runs_prioritized()
+            .unwrap()
+            .iter()
+            .any(|run| run["run_id"] == run_id));
+        assert_eq!(store.count_active_workflow_runs().unwrap(), 0);
+        assert_eq!(store.get_queue_status().unwrap()["total_paused"], 0);
+
+        for result in [
+            store.update_run_pause_reason(&run_id, None),
+            store.update_run_pause_reason(&run_id, Some("operator_hold")),
+        ] {
+            let error = result.expect_err("generic pause mutation must preserve API ownership");
+            assert!(is_execution_owner_conflict(&error), "{error}");
+        }
+        for result in [
+            store
+                .request_workflow_run_resume(&run_id, "operator", Some("generic resume"))
+                .map(|_| ()),
+            store
+                .request_workflow_run_cancel(&run_id, "operator", Some("generic cancel"))
+                .map(|_| ()),
+        ] {
+            let error = result.expect_err("generic run mutation must preserve API ownership");
+            assert!(is_execution_owner_conflict(&error), "{error}");
+        }
+        let error = store
+            .tick_workflow_run(&run_id, "generic-tick")
+            .expect_err("generic tick must not claim API-owned run");
+        assert!(is_execution_owner_conflict(&error), "{error}");
+
+        for queue_enabled in [false, true] {
+            let config = SchedulerConfig {
+                interval_ms: 10,
+                max_concurrent: 1,
+                lease_timeout_ms: 300_000,
+                executor_type: "noop".to_string(),
+                queue_enabled,
+                supervised_workers_enabled: true,
+                worker_count: 1,
+                ..Default::default()
+            };
+            let mut scheduler = WorkflowScheduler::new(store.clone(), config);
+            scheduler.start().unwrap();
+            for _ in 0..20 {
+                if !scheduler.status()["last_tick_at"].is_null() {
+                    break;
+                }
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            assert!(!scheduler.status()["last_tick_at"].is_null());
+            scheduler.stop().unwrap();
+            let run = store.get_workflow_run(&run_id).unwrap().unwrap();
+            assert_eq!(run["status"], "created");
+            assert_eq!(run["nodes"][0]["status"], "pending");
+        }
+
+        let (entered_tx, entered_rx) = std::sync::mpsc::channel();
+        let release = Arc::new((std::sync::Mutex::new(false), std::sync::Condvar::new()));
+        let tick_store = store.clone();
+        let tick_run_id = run_id.clone();
+        let tick_release = release.clone();
+        let tick_thread = std::thread::spawn(move || {
+            tick_store.tick_managed_supervised_patch_with_executor(
+                &tick_run_id,
+                "api-owner",
+                &HoldingExecutor {
+                    entered: entered_tx,
+                    release: tick_release,
+                },
+            )
+        });
+        entered_rx.recv_timeout(Duration::from_secs(2)).unwrap();
+        for result in [
+            store.update_run_pause_reason(&run_id, Some("concurrent operator hold")),
+            store
+                .request_workflow_run_cancel(&run_id, "operator", Some("concurrent generic cancel"))
+                .map(|_| ()),
+            store
+                .tick_workflow_run(&run_id, "concurrent-generic-tick")
+                .map(|_| ()),
+        ] {
+            let error = result.expect_err("concurrent generic mutation must preserve API owner");
+            assert!(is_execution_owner_conflict(&error), "{error}");
+        }
+        let (lock, condition) = &*release;
+        *lock.lock().unwrap() = true;
+        condition.notify_all();
+        let tick = tick_thread.join().unwrap().unwrap();
+        assert_eq!(tick["node_id"], "supervised-verify-1");
+        assert_eq!(tick["result"]["executor_type"], "holding_fixture");
+        assert_eq!(store.get_queue_status().unwrap()["total_paused"], 0);
+    }
+}
+
+#[cfg(all(test, feature = "pg-tests"))]
+mod pg_tests {
+    use super::*;
+    use std::sync::Arc;
+
+    #[test]
+    fn managed_run_creation_is_atomic_and_binding_safe_on_postgres() {
+        let Ok(url) = std::env::var("ACP_TEST_DATABASE_URL") else {
+            eprintln!("ACP_TEST_DATABASE_URL not set; skipping pg-tests");
+            return;
+        };
+        let store = Arc::new(
+            LocalProductStore::new_postgres(&url, || {
+                chrono::Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string()
+            })
+            .unwrap(),
+        );
+        let tag = uuid::Uuid::new_v4().to_string();
+        let workspace_id = format!("managed-pg-workspace-{tag}");
+        let workspace_path = format!("/var/tmp/managed-pg-workspace-{tag}");
+        store
+            .import_supervised_patch_workspace(&json!({
+                "schema_version": SUPERVISED_PATCH_WORKSPACE_SCHEMA_VERSION,
+                "workspace_id": workspace_id,
+                "run_id": format!("source-run-{tag}"),
+                "target_id": format!("target-{tag}"),
+                "target_repo_path": "/tmp",
+                "target_repo_canonical_path": "/tmp",
+                "workspace_path": workspace_path,
+                "workspace_canonical_path": workspace_path,
+                "source_revision": "fixture",
+                "status": "requested",
+                "metadata_only": true,
+                "execution_authority": "disabled",
+            }))
+            .unwrap();
+        let binding_sha256 = "ab".repeat(32);
+        let metadata = json!({
+            "profile_id": "supervised_patch_verification",
+            "command": "python3 --version",
+            "workspace_path": workspace_path,
+            "workspace_root": workspace_path,
+            "executor_timeout_ms": 120_000,
+            "managed_supervised_patch": {
+                "schema_version": "managed_supervised_patch.v1",
+                "workspace_id": workspace_id,
+                "operation": "verify",
+                "attempt": 1,
+                "binding_sha256": binding_sha256,
+                "content_excluded": true,
+            },
+        });
+
+        let first_store = store.clone();
+        let first_workspace = workspace_id.clone();
+        let first_binding = binding_sha256.clone();
+        let first_metadata = metadata.clone();
+        let first = std::thread::spawn(move || {
+            first_store.ensure_managed_supervised_patch_run(
+                &first_workspace,
+                "verify",
+                1,
+                &first_binding,
+                &first_metadata,
+                "pg-test",
+            )
+        });
+        let second_store = store.clone();
+        let second_workspace = workspace_id.clone();
+        let second_binding = binding_sha256.clone();
+        let second_metadata = metadata.clone();
+        let second = std::thread::spawn(move || {
+            second_store.ensure_managed_supervised_patch_run(
+                &second_workspace,
+                "verify",
+                1,
+                &second_binding,
+                &second_metadata,
+                "pg-test",
+            )
+        });
+        let first_run = first.join().unwrap().unwrap();
+        let second_run = second.join().unwrap().unwrap();
+        assert_eq!(first_run, second_run);
+        let run = store.get_workflow_run(&first_run).unwrap().unwrap();
+        assert_eq!(run["nodes"].as_array().unwrap().len(), 1);
+        assert_eq!(run["pause_reason"], API_OWNED_SUPERVISED_PATCH);
+        assert!(!store
+            .list_active_workflow_run_ids()
+            .unwrap()
+            .contains(&first_run));
+        assert!(!store
+            .list_active_workflow_runs_prioritized()
+            .unwrap()
+            .iter()
+            .any(|run| run["run_id"] == first_run));
+        for result in [
+            store.update_run_pause_reason(&first_run, None),
+            store.update_run_pause_reason(&first_run, Some("operator_hold")),
+        ] {
+            let error = result.expect_err("generic pause mutation must preserve API ownership");
+            assert!(is_execution_owner_conflict(&error), "{error}");
+        }
+        for result in [
+            store
+                .request_workflow_run_resume(&first_run, "operator", Some("generic resume"))
+                .map(|_| ()),
+            store
+                .request_workflow_run_cancel(&first_run, "operator", Some("generic cancel"))
+                .map(|_| ()),
+        ] {
+            let error = result.expect_err("generic run mutation must preserve API ownership");
+            assert!(is_execution_owner_conflict(&error), "{error}");
+        }
+        let error = store
+            .tick_workflow_run(&first_run, "generic-tick")
+            .expect_err("generic tick must not claim API-owned run");
+        assert!(is_execution_owner_conflict(&error), "{error}");
+        let tick = store
+            .tick_managed_supervised_patch_with_executor(
+                &first_run,
+                "api-owner",
+                &crate::node_executor::NoopNodeExecutor,
+            )
+            .unwrap();
+        assert_eq!(tick["node_id"], "supervised-verify-1");
+
+        let changed_binding = "cd".repeat(32);
+        let mut changed_metadata = metadata;
+        changed_metadata["command"] = json!("python3 -V");
+        changed_metadata["managed_supervised_patch"]["binding_sha256"] = json!(changed_binding);
+        let error = store
+            .ensure_managed_supervised_patch_run(
+                &workspace_id,
+                "verify",
+                1,
+                changed_metadata["managed_supervised_patch"]["binding_sha256"]
+                    .as_str()
+                    .unwrap(),
+                &changed_metadata,
+                "pg-test",
+            )
+            .unwrap_err();
+        assert!(error.contains("binding changed"), "{error}");
+    }
 }

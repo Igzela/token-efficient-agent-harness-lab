@@ -4,19 +4,19 @@ Last updated: 2026-07-14.
 
 ## Current Direction
 
-The immediate objective is `PR207-SMOKE-REPAIR-1`, followed by `PR207-SMOKE-VERIFY-1`. The repository-maintenance orchestrator is merged, but the first live GPT Web smoke reached the Vader worker and ended blocked before branch or PR creation. Production repository tasks must not use this path until the demonstrated failure is repaired and a replacement smoke completes.
+The explicitly authorized bounded three-PR production-integration program is the current execution order. It consolidates the original seven capability packets without removing their acceptance requirements or weakening any authority or gate:
 
-After the repository-agent path is accepted, resume the existing integration-repair sequence:
+1. `PR1-AR-RUNTIME-INTEGRATION-1` — production Agent Runtime and tool-policy routing;
+2. `PR2-MEMORY-BUDGET-POLICY-LOOP-1` — durable memory plus the PE-2 usage/budget producer and PE-4 replay/promotion operator loop;
+3. `PR3-EXTERNAL-RUNTIME-LIVE-SEAL-1` — managed LangGraph adapter, native/LangGraph efficiency benchmark, and final live acceptance seal.
 
-1. `PR207-SMOKE-REPAIR-1` — diagnose and repair the blocked Vader worker path while preserving emergency stop;
-2. `PR207-SMOKE-VERIFY-1` — repeat a bounded one-file smoke through PR, exact-head CI, and independent review with auto-merge disabled;
-3. `PE2-RUNTIME-PRODUCER-1` — connect owner-backed usage evidence to forecast/anomaly artifacts;
-4. `PE4-EVIDENCE-ENTRY-1` — connect trace-backed replay to the safe evidence-chain promotion owner;
-5. `TOOL-DISCOVERY-BENCH-1` — add a deterministic static-all versus retrieve-Top-K tool benchmark through PE-1 evidence owners.
+The GitHub/Vader path remains disabled and emergency-stopped until PR 3 repairs and proves it. Local Rust control-plane integration does not authorize that orchestrator, auto-merge, protected-branch writes, or a public release.
 
 Do not create another roadmap, phase, status, policy, or closeout document. This file is the normative forward plan. Current facts belong in `docs/CURRENT_STATUS.md`; ownership belongs in `docs/MODULE_MAP.md`.
 
 ## Verified Baseline
+
+- the three-PR program starts from refreshed `main` `83480b23421892e3a5dd99a48e07b68776bcf802`; local and `origin/main` were identical when `AR-RUNTIME-INTEGRATION-1` branched;
 
 - PR #214 merged the PE-5/PE-6 post-seal repair at `0d8127e3d779e54c58caf5d93e7589dd1a6df616`;
 - PR #207 merged the event-driven repository-maintenance orchestrator at `23187bb83dc32165d8982c79be1a1f7f818380a0`;
@@ -51,7 +51,7 @@ Each packet must:
 - run focused tests, the full applicable local baseline, and fresh exact-head GitHub CI for code/workflow changes;
 - independently review the complete final diff after the last code change;
 - keep auto-merge disabled unless separately and explicitly authorized;
-- not merge without separate explicit user authorization.
+- merge only when the current user authority covers that PR and every exact-head gate is successful; this bounded three-PR program has implementation and merge authority, but no public-release authority.
 
 Documentation-only factual corrections have standing user authorization to be committed directly to `main` when the final diff is limited to Markdown or plain-text documentation and changes no code, tests, scripts, workflows, configuration, schema, migration, generated artifact, dependency file, executable file, runtime behavior, release state, credential, or external state. They still require final diff review, `git diff --check`, `uv run --no-project python scripts/check_agent_handoff.py`, any applicable documentation or link check, and a clear rollback. A branch or PR is optional for such changes. All other changes require a branch, PR, and complete required CI.
 
@@ -72,6 +72,48 @@ Stop and report `BLOCKED` rather than improvising when:
 
 A stale document, a failed first implementation, or a bounded missing design detail is not itself a hard stop. Audit, repair, test, and continue when the result remains explicit, compatible, observable, and rollbackable.
 
+## Packet PR1-AR-RUNTIME-INTEGRATION-1 — Production Agent Runtime and tool policy
+
+**State:** `IN_PROGRESS`
+
+**Observable result:** typed `agent_step` plans execute one leased action through the existing Rust scheduler/executor pool; provider decisions are strict/default-off; action application is atomic across retry/restart/concurrency; real Command/CLI callers enforce configured allowlists, bounded hooks, and exact-action workflow approval.
+
+**Owners:** existing plan/run HTTP and storage owners, scheduler, executor pool, `AgentStepExecutor`, provider gates/audit, migration v22 receipt/authorization/profile tables, operator decisions, SDKs, and Dashboard reads. No second runtime, queue, scheduler, permission system, target-output owner, or product store.
+
+**Rollback:** activate the Agent Runtime kill switch, pause scheduler admission, drain/inspect leases and approvals, restore tool policy from hash-bound audit snapshots when needed, and revert the merge. Migration v22 may remain inert; destructive local table cleanup requires a verified backup and no active lease/approval.
+
+## Packet PR2-MEMORY-BUDGET-POLICY-LOOP-1 — Durable memory and closed-loop evidence
+
+**State:** `BLOCKED_PREREQUISITE`
+
+**Prerequisite:** `PR1-AR-RUNTIME-INTEGRATION-1` merged with exact-head CI.
+
+**Component acceptance:** `DURABLE-MEMORY-RETRIEVAL-1`, `PE2-RUNTIME-PRODUCER-1`, and `PE4-PROMOTION-OPERATOR-1` form one production chain: scoped versioned memory and bounded semantic retrieval feed runtime context; normalized deduplicated usage automatically produces immutable forecast/anomaly evidence and operator decisions; eligible real traces automatically produce offline replay evidence; explicit authorized promotion and exact-snapshot rollback remain separate typed owners.
+
+**Authority and rollback:** the Rust scheduler and `LocalProductStore` remain sole runtime/state owners. Provider embedding is default-off, cost bounded, and absent from CI. Replay is shadow-only until explicit evidence-chain promotion. Rollback disables producers/retrieval gates and reverts code while additive evidence, memory tombstones, and policy snapshots remain auditable.
+
+## Packet PR3-EXTERNAL-RUNTIME-LIVE-SEAL-1 — Managed adapter, benchmark, and acceptance
+
+**State:** `BLOCKED_PREREQUISITE`
+
+**Prerequisite:** `PR2-MEMORY-BUDGET-POLICY-LOOP-1` merged with exact-head CI.
+
+**Component acceptance:** `LANGGRAPH-MANAGED-ADAPTER-1`, `EFFICIENCY-LIVE-BENCH-1`, and `LIVE-ACCEPTANCE-SEAL-1` form one final chain: one Rust-leased node launches one bounded external invocation with scoped checkpoints; native and LangGraph adapters run the same four-strategy and tool-discovery benchmark contract; guarded live acceptance verifies orchestrator, target-output, install/upgrade/rollback, backup/restore, restart/concurrency/idempotency/recovery, fault drills, provider controls, and the PE-2/PE-4 closed loop.
+
+**Authority and release:** no second scheduler, task queue, permission system, authoritative product store, direct protected-branch write, paid CI call, or cloud multi-tenant claim is permitted. Unsupported external environments are `BLOCKED`. Unless publication is explicitly authorized in-session after every gate passes, the terminal release state is `RELEASE_READY_NOT_PUBLISHED`.
+
+## Packet PR2-DURABLE-MEMORY-RETRIEVAL-1 — Cross-run durable memory
+
+**State:** `BLOCKED_PREREQUISITE`
+
+**Prerequisite:** `PR1-AR-RUNTIME-INTEGRATION-1` merged with exact-head CI.
+
+**Goal:** retain the bounded run-scoped digest while adding app-owned versioned memory, deterministic conflict/tombstone/expiry semantics, gated embeddings, bounded Top-K semantic retrieval with labeled lexical degradation, immutable source binding, and real scheduler context injection across runs.
+
+**Required owners:** existing Rust scheduler/runtime, provider/credential/cost/audit gates, SQLite/PostgreSQL store, API/SDK/Dashboard evidence, backup/integrity, and token/byte budget accounting. No vector SaaS, second runtime store, cloud multi-tenant claim, raw sensitive scorecard content, or CI provider call.
+
+**Verification:** cross-run and cross-scope behavior, restart, concurrent revise, prune, stale/superseded/conflict/tombstone exclusion, deterministic ranking/truncation, token/read/write costs, SQLite/PostgreSQL parity, and full exact-head CI.
+
 ## Packet PR207-REPAIR-1 — Repository-maintenance orchestrator implementation and compatibility repair
 
 **State:** `COMPLETE`
@@ -89,9 +131,9 @@ This packet establishes the implementation baseline only. Live end-to-end accept
 
 ## Packet PR207-SMOKE-REPAIR-1 — Diagnose and repair the blocked live worker path
 
-**State:** `READY_FOR_EXECUTION`
+**State:** `BLOCKED_PREREQUISITE`
 
-**Prerequisite:** PR207-REPAIR-1
+**Prerequisite:** `EFFICIENCY-LIVE-BENCH-1`; repair is owned by `LIVE-ACCEPTANCE-SEAL-1`
 
 **Goal:** Determine why smoke Issue #217 entered the Vader worker and then became `agent-blocked` before branch/PR creation, repair the actual root cause, and make future failures bounded, attributable, and capacity-safe.
 
@@ -169,7 +211,7 @@ GPT Web natural-language request
 
 **State:** `BLOCKED_PREREQUISITE`
 
-**Prerequisite:** PR207-SMOKE-VERIFY-1
+**Prerequisite:** `PR2-DURABLE-MEMORY-RETRIEVAL-1`
 
 **Goal:** Derive and persist forecast/anomaly evidence from existing posted owner data so the already-implemented read, Dashboard, operator-decision, auto-pause, and recovery paths receive real artifacts.
 

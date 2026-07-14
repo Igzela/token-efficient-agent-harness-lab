@@ -49,7 +49,7 @@ The intended user interface remains natural language in GPT Web. The assistant, 
 |---|---|
 | Dispatch kernel and V2 output authority | Complete |
 | Adaptive Fusion through AF-7 | Implemented; evidence-chain promotion entry remains disconnected as described below |
-| Agent Runtime through AR-6 | Complete and sealed |
+| Agent Runtime through AR-6 | Production-managed through typed `agent_step` plans, the Rust scheduler/executor pool, bounded provider decisions, atomic action receipts, and operator evidence |
 | Trusted Local Autonomous Execution through IAE-3 | Complete |
 | PE-1 Token Efficiency Regression Lab | Complete and connected through scorecard persistence, read APIs, Dashboard, reports, batches, and trends |
 | PE-2 Budget Intelligence and Anomaly Auto-Pause | Contracts, persistence, read surfaces, and pause consumers exist; runtime evidence production is not connected |
@@ -59,6 +59,16 @@ The intended user interface remains natural language in GPT Web. The assistant, 
 | PE-6 Fault Injection and Recovery Drills | Post-seal repair merged in PR #214; owner-emitted drills are wired into existing test/CI paths; no destructive external testing is authorized |
 | GitHub/Vader repository orchestrator | Code merged and runner path reached; first live smoke #217 blocked before branch/PR creation, so production use is disabled |
 | Post-R7 wire/type governance | Implemented through `scripts/check_wire_codegen_drift.sh` |
+
+## Connected Production Chains
+
+### Agent Runtime and tool execution policy
+
+An authenticated `dispatch:execute` caller can create a confirmed typed `agent_step` plan, create its workflow run, and advance exactly one leased step through either the existing scheduler or the explicit tick API. The Rust scheduler remains the sole admission, lease, retry, cooldown, pause/resume, restart, and concurrency owner. Its normal and dynamic background paths now share bounded `ACP_SCHEDULER_MAX_RETRIES` (`0..=10`, default `0`) instead of hard-coding no retries. Lease startup bounds and attempt-CAS completion prevent reclaim while a valid worker is still active and prevent a stale worker from overwriting a recovered attempt. Provider decisions are default-off, require the node model to equal the configured provider model before reservation, use existing provider/cost/audit gates, expose only capability-authorized typed actions, return only the bounded `agent_action.v1` union, and cannot create an internal loop. Atomic `(run_id, node_id)` action receipts make mailbox, memory-digest, child-task, handoff, review, and debate mutations idempotent across retries, process restart, and concurrent claims.
+
+Command and installed-CLI nodes now pass through the same app-owned tool-policy wrapper in scheduler, executor-pool, explicit tick, and supervised-patch verification paths. Direct `cli`, `auto`, and multi/CLI dispatch are retired; scheduler `auto`/`pool` owns hybrid provider/CLI workflow routing. A configured allowlist, including an explicitly empty one, is authoritative. Pre-hook block/error fails closed; bounded enrichment is hash- and audit-bound; approval-required tools enter the existing workflow/operator decision flow and receive only a single exact-action execution authorization; non-approval tools atomically claim an implicit consumed receipt before invocation; post hooks preserve authoritative usage fields. Failures after a claimed effect are explicit non-retryable outcome-unknown results, not automatic retries. Supervised-patch verification has one canonical exact-binding run per workspace/operation/attempt across restart and concurrent requests. Those runs are atomically marked as API-owned and excluded from both scheduler queue modes; the API-owned tick remains the only executor. When a background scheduler is mounted, the handler refuses command or CLI execution unless the durable lease exceeds the exact bound executor timeout by the scheduling margin. An absent allowlist profile preserves the previous unconfigured behavior and is not described as a configured deny policy.
+
+This Agent Runtime is an engine workflow capability. It is independent from the disabled GitHub Issues/Actions → Vader repository-maintenance orchestrator, which remains subject to its separate live-smoke restriction below.
 
 ## Confirmed Integration Gaps
 
@@ -130,20 +140,19 @@ This is a benchmark and evidence feature first. It does not authorize dynamic pr
 
 ### Local runner boundary
 
-The workflow-owned `LocalRunnerValidationExecutor` intentionally uses the Stub provider and persists bounded scorecards. Live provider execution remains an explicit local CLI/operator path. This separation is a current safety boundary, not a defect. Do not connect ordinary workflow execution directly to a live provider without a separate authority decision, explicit confirmation, budget binding, and kill path.
+The workflow-owned `LocalRunnerValidationExecutor` intentionally uses the Stub provider and persists bounded scorecards. Its live provider mode remains an explicit local CLI/operator path. The separate `agent_step` provider decision path is production-managed only when provider execution, Agent Runtime, authentication, pricing/cost gates, and kill-switch boundaries are all satisfied; it does not make the local benchmark runner live or authorize provider calls in CI.
 
 ## Open Work Coordination
 
-The repository-agent repair has priority because GPT Web must not dispatch real work through a path whose first live task stopped before branch/PR creation. One focused implementation PR should own `PR207-SMOKE-REPAIR-1`; a separate live verification task owns `PR207-SMOKE-VERIFY-1`. Neither packet authorizes auto-merge.
+The explicitly authorized bounded three-PR production-integration program consolidates the original seven capability packets without dropping any acceptance requirement or safety boundary. The GitHub/Vader repair and replacement smoke are owned by the final `PR3-EXTERNAL-RUNTIME-LIVE-SEAL-1` slice; they remain disabled until that slice and do not block the local Rust control-plane integration PRs.
 
 ## Active Execution Order
 
-1. Execute `PR207-SMOKE-REPAIR-1`: diagnose the actual #217 worker failure, add bounded timeout and durable failure/run evidence where missing, repair the root cause, and obtain full exact-head CI on one focused PR. Keep the orchestrator stopped throughout repair.
-2. Execute `PR207-SMOKE-VERIFY-1`: repeat the one-file smoke and require branch/PR creation, in-scope diff, exact-head seven-job CI, and independent review with auto-merge disabled.
-3. Implement `PE2-RUNTIME-PRODUCER-1` on a new focused branch/PR.
-4. Implement `PE4-EVIDENCE-ENTRY-1` on a separate focused branch/PR.
-5. Implement `TOOL-DISCOVERY-BENCH-1` on a separate focused branch/PR.
-6. Keep real release publication, production installation, destructive external fault injection, persistent signing secrets, and automatic live-provider workflow execution unauthorized unless explicitly approved later.
+1. `PR1-AR-RUNTIME-INTEGRATION-1` — production Agent Runtime and tool-policy routing (this slice).
+2. `PR2-MEMORY-BUDGET-POLICY-LOOP-1` — durable memory, automatic normalized usage/budget evidence, and trace-replay/evidence-chain policy operations.
+3. `PR3-EXTERNAL-RUNTIME-LIVE-SEAL-1` — managed LangGraph adapter, comparable native/LangGraph benchmark, orchestrator/target-output/recovery, and guarded live acceptance.
+
+Keep real release publication, destructive production faults, persistent signing secrets, and unguarded provider execution unauthorized. Without separate publication authority the terminal release state is `RELEASE_READY_NOT_PUBLISHED`, or `BLOCKED` when an external prerequisite cannot be verified.
 
 The normative packet definitions and acceptance gates are in `docs/NEXT_DECISION.md`.
 

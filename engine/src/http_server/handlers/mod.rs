@@ -20,4 +20,5 @@ pub(crate) mod scheduler;
 pub(crate) mod scorecards;
 pub(crate) mod supervised_patch;
 pub(crate) mod team;
+pub(crate) mod tool_policy;
 pub(crate) mod workflow_runs;

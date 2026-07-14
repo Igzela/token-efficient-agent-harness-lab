@@ -278,6 +278,38 @@ class ClientLocalStateTest(unittest.TestCase):
         self.assertIn("/api/v1/plans/plan%2F0001", calls[2].full_url)
 
     @patch("agent_control_plane_sdk.client.urlopen")
+    def test_create_agent_step_plan_sends_typed_request(self, mock_urlopen):
+        mock_urlopen.return_value = mock_response({
+            "schema_version": "axum_api.v1",
+            "plan": {"plan_id": "plan-agent-0001"},
+        })
+        client = AgentControlPlaneClient("http://localhost:8080")
+        client.create_plan(
+            "Review the bounded mailbox",
+            agent_steps=[{
+                "agent_id": "agent-1",
+                "role": "reviewer",
+                "capability_profile": ["mailbox", "review"],
+                "profile_id": "reviewer-profile",
+                "model": "fixture-model",
+            }],
+            confirm_agent_runtime_plan=True,
+        )
+        request = mock_urlopen.call_args.args[0]
+        self.assertEqual(json.loads(request.data), {
+            "raw_request": "Review the bounded mailbox",
+            "request_source": "api",
+            "agent_steps": [{
+                "agent_id": "agent-1",
+                "role": "reviewer",
+                "capability_profile": ["mailbox", "review"],
+                "profile_id": "reviewer-profile",
+                "model": "fixture-model",
+            }],
+            "confirm_agent_runtime_plan": True,
+        })
+
+    @patch("agent_control_plane_sdk.client.urlopen")
     def test_workflow_run_methods_call_inert_runtime_state_endpoints(self, mock_urlopen):
         mock_urlopen.return_value = mock_response({
             "schema_version": "axum_api.v1",
@@ -1126,6 +1158,38 @@ class ClientDecisionStatsTest(unittest.TestCase):
         req = args[0]
         self.assertEqual(req.method, "GET")
         self.assertEqual(req.full_url, "http://localhost:8080/api/v1/decisions/stats")
+
+
+class ClientToolPolicyTest(unittest.TestCase):
+    @patch("agent_control_plane_sdk.client.urlopen")
+    def test_configure_allowlist_preserves_confirmation_and_current_hash(self, mock_urlopen):
+        mock_urlopen.return_value = mock_response({
+            "schema_version": "axum_api.v1",
+            "resource": {
+                "schema_version": "tool_policy_resource.v1",
+                "resource_kind": "allowlist",
+                "resource_id": "review/profile",
+                "resource_sha256": "a" * 64,
+                "changed": True,
+                "value": {"profile_id": "review/profile", "tool_names": ["echo"]},
+            },
+        })
+        client = AgentControlPlaneClient("http://localhost:8080")
+        client.configure_tool_allowlist_policy(
+            "review/profile",
+            tool_names=["echo"],
+            expected_current_sha256="b" * 64,
+            confirm_tool_policy=True,
+        )
+        args, _ = mock_urlopen.call_args
+        request = args[0]
+        self.assertEqual(request.method, "PUT")
+        self.assertIn("/tool-policy/profiles/review%2Fprofile/allowlist", request.full_url)
+        self.assertEqual(json.loads(request.data), {
+            "tool_names": ["echo"],
+            "expected_current_sha256": "b" * 64,
+            "confirm_tool_policy": True,
+        })
 
 
 if __name__ == "__main__":

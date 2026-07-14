@@ -290,6 +290,38 @@ test("planner methods call read-only plan endpoints", async () => {
   assert.equal(calls[2].init.method, "GET");
 });
 
+test("createPlan sends typed bounded agent_steps", async () => {
+  const { calls, fetchImpl } = captureFetch({
+    schema_version: "axum_api.v1",
+    plan: { plan_id: "plan-agent-0001" },
+  });
+  const client = new AgentControlPlaneClient({ baseUrl: "http://127.0.0.1:8080", fetchImpl });
+  await client.createPlan({
+    raw_request: "Review the bounded mailbox",
+    request_source: "api",
+    agent_steps: [{
+      agent_id: "agent-1",
+      role: "reviewer",
+      capability_profile: ["mailbox", "review"],
+      profile_id: "reviewer-profile",
+      model: "fixture-model",
+    }],
+    confirm_agent_runtime_plan: true,
+  });
+  assert.deepEqual(JSON.parse(calls[0].init.body), {
+    raw_request: "Review the bounded mailbox",
+    request_source: "api",
+    agent_steps: [{
+      agent_id: "agent-1",
+      role: "reviewer",
+      capability_profile: ["mailbox", "review"],
+      profile_id: "reviewer-profile",
+      model: "fixture-model",
+    }],
+    confirm_agent_runtime_plan: true,
+  });
+});
+
 test("workflow run methods call inert runtime state endpoints", async () => {
   const { calls, fetchImpl } = captureFetch({
     schema_version: "axum_api.v1",
@@ -1113,4 +1145,36 @@ test("fetchExecutorPool sends GET to executor-pool endpoint", async () => {
   assert.equal(result.total_capacity, 4);
   assert.equal(calls[0].url, "http://127.0.0.1:8080/api/v1/executor-pool");
   assert.equal(calls[0].init.method, "GET");
+});
+
+test("tool policy methods preserve confirmation and current hash", async () => {
+  const { calls, fetchImpl } = captureFetch({
+    schema_version: "axum_api.v1",
+    resource: {
+      schema_version: "tool_policy_resource.v1",
+      resource_kind: "allowlist",
+      resource_id: "review/profile",
+      resource_sha256: "a".repeat(64),
+      changed: true,
+      value: { profile_id: "review/profile", tool_names: ["echo"] },
+    },
+  });
+  const client = new AgentControlPlaneClient({ baseUrl: "http://localhost:8080", fetchImpl });
+
+  await client.configureToolAllowlistPolicy("review/profile", {
+    tool_names: ["echo"],
+    expected_current_sha256: "b".repeat(64),
+    confirm_tool_policy: true,
+  });
+
+  assert.equal(
+    calls[0].url,
+    "http://localhost:8080/api/v1/tool-policy/profiles/review%2Fprofile/allowlist",
+  );
+  assert.equal(calls[0].init.method, "PUT");
+  assert.deepEqual(JSON.parse(calls[0].init.body), {
+    tool_names: ["echo"],
+    expected_current_sha256: "b".repeat(64),
+    confirm_tool_policy: true,
+  });
 });

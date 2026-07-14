@@ -12,6 +12,8 @@ use crate::http_server::{
     WorkflowRunActionApiRequest, WorkflowRunApprovalApiRequest, WorkflowRunCreateApiRequest,
     WorkflowRunEventApiRequest, WorkflowRunTickApiRequest, AXUM_API_SCHEMA_VERSION,
 };
+use crate::storage::local_product_store::is_execution_owner_conflict;
+use crate::tool_policy_executor::ToolPolicyNodeExecutor;
 use crate::workflow::dynamic_controller::{
     ControllerAction, ControllerTickResult, DynamicControllerConfig, DynamicWorkflowController,
 };
@@ -26,7 +28,7 @@ pub(crate) async fn api_create_workflow_run(
     Extension(request_id): Extension<RequestId>,
     Json(request): Json<WorkflowRunCreateApiRequest>,
 ) -> Result<impl IntoResponse, ApiError> {
-    let context = authorize(&state, &headers, "dispatch:read", uri.path(), &request_id.0)?;
+    let read_context = authorize(&state, &headers, "dispatch:read", uri.path(), &request_id.0)?;
     if request.plan_id.trim().is_empty() {
         return Err(ApiError::with_code(
             StatusCode::BAD_REQUEST,
@@ -35,7 +37,32 @@ pub(crate) async fn api_create_workflow_run(
         ));
     }
     let store = require_store(&state)?;
-    match store.create_workflow_run_from_plan(&request.plan_id, &context.api_key_id) {
+    let plan = store
+        .get_workflow_plan(&request.plan_id)
+        .map_err(internal_error)?
+        .ok_or_else(|| {
+            ApiError::with_code(StatusCode::NOT_FOUND, "plan_not_found", "plan not found")
+        })?;
+    let actor = if workflow_plan_requires_execution_authority(&plan) {
+        if request.confirm_execution != Some(true) {
+            return Err(ApiError::with_code(
+                StatusCode::BAD_REQUEST,
+                "workflow_run_execution_confirmation_required",
+                "confirm_execution must be true for an executable workflow plan",
+            ));
+        }
+        authorize(
+            &state,
+            &headers,
+            "dispatch:execute",
+            uri.path(),
+            &request_id.0,
+        )?
+        .api_key_id
+    } else {
+        read_context.api_key_id
+    };
+    match store.create_workflow_run_from_plan(&request.plan_id, &actor) {
         Ok(run) => Ok((cors_headers(), Json(json_response("run", run)))),
         Err(e) if e.starts_with("plan not found:") => Err(ApiError::with_code(
             StatusCode::NOT_FOUND,
@@ -44,6 +71,24 @@ pub(crate) async fn api_create_workflow_run(
         )),
         Err(e) => Err(internal_error(e)),
     }
+}
+
+fn workflow_plan_requires_execution_authority(plan: &serde_json::Value) -> bool {
+    if matches!(
+        plan.pointer("/advisory/requires_executor")
+            .and_then(serde_json::Value::as_str),
+        Some("agent_step" | "adaptive_provider")
+    ) {
+        return true;
+    }
+    plan.pointer("/graph/nodes")
+        .and_then(serde_json::Value::as_array)
+        .is_some_and(|nodes| {
+            nodes.iter().any(|node| {
+                node.get("task_type").and_then(serde_json::Value::as_str) == Some("agent_step")
+                    || node.get("adaptive_execution").is_some()
+            })
+        })
 }
 
 pub(crate) async fn api_workflow_runs(
@@ -213,6 +258,11 @@ pub(crate) async fn api_resume_workflow_run(
     {
         Ok(run) => Ok((cors_headers(), Json(json_response("run", run)))),
         Err(e) if e.starts_with("workflow run not found:") => Err(not_found()),
+        Err(e) if is_execution_owner_conflict(&e) => Err(ApiError::with_code(
+            StatusCode::CONFLICT,
+            "run_execution_owner_conflict",
+            &e,
+        )),
         Err(e) => Err(internal_error(e)),
     }
 }
@@ -231,6 +281,11 @@ pub(crate) async fn api_cancel_workflow_run(
     {
         Ok(run) => Ok((cors_headers(), Json(json_response("run", run)))),
         Err(e) if e.starts_with("workflow run not found:") => Err(not_found()),
+        Err(e) if is_execution_owner_conflict(&e) => Err(ApiError::with_code(
+            StatusCode::CONFLICT,
+            "run_execution_owner_conflict",
+            &e,
+        )),
         Err(e) => Err(internal_error(e)),
     }
 }
@@ -251,6 +306,53 @@ pub(crate) async fn api_tick_workflow_run(
     let timeout_ms = request.timeout_ms.unwrap_or(30_000).clamp(1000, 300_000);
 
     match executor_type {
+        "agent_step" => {
+            authorize(
+                &state,
+                &headers,
+                "dispatch:execute",
+                uri.path(),
+                &request_id.0,
+            )?;
+            let Some(executor) = state.agent_step_executor.clone() else {
+                return Err(ApiError::with_code(
+                    StatusCode::BAD_REQUEST,
+                    "agent_step_not_available",
+                    "agent step provider executor is not configured or provider execution is disabled",
+                ));
+            };
+            let scheduler_config = crate::scheduler::SchedulerConfig::from_env_with_gates(
+                &state.effective_execution_gates(),
+            )
+            .map_err(|error| {
+                ApiError::with_code(StatusCode::BAD_REQUEST, "agent_step_config_invalid", &error)
+            })?;
+            match store.tick_with_executor_with_agent_caps(
+                &run_id,
+                actor,
+                max_retries,
+                executor.as_ref(),
+                scheduler_config.agent_max_concurrent_global,
+                scheduler_config.agent_max_concurrent_per_run,
+            ) {
+                Ok(result) => {
+                    record_tick_decision(&store, &run_id, &result, "agent_step");
+                    Ok((cors_headers(), Json(json_response("tick", result))))
+                }
+                Err(e) if e.starts_with("workflow run not found:") => Err(not_found()),
+                Err(e) if is_execution_owner_conflict(&e) => Err(ApiError::with_code(
+                    StatusCode::CONFLICT,
+                    "run_execution_owner_conflict",
+                    &e,
+                )),
+                Err(e) if e.contains("terminal") => Err(ApiError::with_code(
+                    StatusCode::CONFLICT,
+                    "run_terminal",
+                    &e,
+                )),
+                Err(e) => Err(internal_error(e)),
+            }
+        }
         "command" => {
             authorize(
                 &state,
@@ -260,7 +362,10 @@ pub(crate) async fn api_tick_workflow_run(
                 &request_id.0,
             )?;
             use crate::node_executor::CommandNodeExecutor;
-            let executor = CommandNodeExecutor::default().with_timeout(timeout_ms);
+            let executor = ToolPolicyNodeExecutor::command(
+                std::sync::Arc::new(CommandNodeExecutor::default().with_timeout(timeout_ms)),
+                store.clone(),
+            );
             match store.tick_with_executor_and_command(
                 &run_id,
                 actor,
@@ -273,6 +378,11 @@ pub(crate) async fn api_tick_workflow_run(
                     Ok((cors_headers(), Json(json_response("tick", result))))
                 }
                 Err(e) if e.starts_with("workflow run not found:") => Err(not_found()),
+                Err(e) if is_execution_owner_conflict(&e) => Err(ApiError::with_code(
+                    StatusCode::CONFLICT,
+                    "run_execution_owner_conflict",
+                    &e,
+                )),
                 Err(e) if e.contains("terminal") => Err(ApiError::with_code(
                     StatusCode::CONFLICT,
                     "run_terminal",
@@ -296,6 +406,11 @@ pub(crate) async fn api_tick_workflow_run(
                     Ok((cors_headers(), Json(json_response("tick", result))))
                 }
                 Err(e) if e.starts_with("workflow run not found:") => Err(not_found()),
+                Err(e) if is_execution_owner_conflict(&e) => Err(ApiError::with_code(
+                    StatusCode::CONFLICT,
+                    "run_execution_owner_conflict",
+                    &e,
+                )),
                 Err(e) if e.contains("terminal") => Err(ApiError::with_code(
                     StatusCode::CONFLICT,
                     "run_terminal",
@@ -318,6 +433,11 @@ pub(crate) async fn api_tick_workflow_run(
                     Json(json_response("tick", controller_tick_to_value(&result))),
                 )),
                 Err(e) if e.starts_with("workflow run not found:") => Err(not_found()),
+                Err(e) if is_execution_owner_conflict(&e) => Err(ApiError::with_code(
+                    StatusCode::CONFLICT,
+                    "run_execution_owner_conflict",
+                    &e,
+                )),
                 Err(e) => Err(internal_error(e)),
             }
         }
@@ -330,8 +450,13 @@ pub(crate) async fn api_tick_workflow_run(
                 &request_id.0,
             )?;
             let cli_config = crate::cli::CliConfig::from_env();
-            match crate::cli::CliNodeExecutor::from_config(&cli_config) {
-                Some(executor) => {
+            match crate::cli::CliNodeExecutor::from_config_for(&cli_config, executor_type) {
+                Some(inner) => {
+                    let executor = ToolPolicyNodeExecutor::cli(
+                        std::sync::Arc::new(inner),
+                        store.clone(),
+                        executor_type,
+                    );
                     match store.tick_with_executor_and_command(
                         &run_id,
                         actor,
@@ -344,6 +469,11 @@ pub(crate) async fn api_tick_workflow_run(
                             Ok((cors_headers(), Json(json_response("tick", result))))
                         }
                         Err(e) if e.starts_with("workflow run not found:") => Err(not_found()),
+                        Err(e) if is_execution_owner_conflict(&e) => Err(ApiError::with_code(
+                            StatusCode::CONFLICT,
+                            "run_execution_owner_conflict",
+                            &e,
+                        )),
                         Err(e) if e.contains("terminal") => Err(ApiError::with_code(
                             StatusCode::CONFLICT,
                             "run_terminal",
@@ -420,6 +550,11 @@ pub(crate) async fn api_tick_workflow_run(
                     Ok((cors_headers(), Json(json_response("tick", result))))
                 }
                 Err(e) if e.starts_with("workflow run not found:") => Err(not_found()),
+                Err(e) if is_execution_owner_conflict(&e) => Err(ApiError::with_code(
+                    StatusCode::CONFLICT,
+                    "run_execution_owner_conflict",
+                    &e,
+                )),
                 Err(e) if e.contains("terminal") => Err(ApiError::with_code(
                     StatusCode::CONFLICT,
                     "run_terminal",
@@ -517,6 +652,11 @@ pub(crate) async fn api_tick_workflow_run(
                     Ok((cors_headers(), Json(json_response("tick", result))))
                 }
                 Err(e) if e.starts_with("workflow run not found:") => Err(not_found()),
+                Err(e) if is_execution_owner_conflict(&e) => Err(ApiError::with_code(
+                    StatusCode::CONFLICT,
+                    "run_execution_owner_conflict",
+                    &e,
+                )),
                 Err(e) if e.contains("terminal") => Err(ApiError::with_code(
                     StatusCode::CONFLICT,
                     "run_terminal",
@@ -525,12 +665,17 @@ pub(crate) async fn api_tick_workflow_run(
                 Err(e) => Err(internal_error(e)),
             }
         }
-        _ => match store.tick_with_retry(&run_id, actor, max_retries) {
+        "noop" => match store.tick_with_retry(&run_id, actor, max_retries) {
             Ok(result) => {
                 record_tick_decision(&store, &run_id, &result, "noop");
                 Ok((cors_headers(), Json(json_response("tick", result))))
             }
             Err(e) if e.starts_with("workflow run not found:") => Err(not_found()),
+            Err(e) if is_execution_owner_conflict(&e) => Err(ApiError::with_code(
+                StatusCode::CONFLICT,
+                "run_execution_owner_conflict",
+                &e,
+            )),
             Err(e) if e.contains("terminal") => Err(ApiError::with_code(
                 StatusCode::CONFLICT,
                 "run_terminal",
@@ -538,6 +683,11 @@ pub(crate) async fn api_tick_workflow_run(
             )),
             Err(e) => Err(internal_error(e)),
         },
+        other => Err(ApiError::with_code(
+            StatusCode::BAD_REQUEST,
+            "unknown_executor",
+            format!("unsupported workflow tick executor: {other}"),
+        )),
     }
 }
 
