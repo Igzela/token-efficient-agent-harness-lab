@@ -6,6 +6,18 @@ use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 
 use super::{append_audit_locked, DatabaseConnection, LocalProductStore};
+use crate::provider::embedding::{
+    normalized_content_sha256, pinned_free_embedding_contract_evidence, validate_inputs,
+    EmbeddingContractEvidence, ProviderEmbeddingConfig, ProviderEmbeddingMetadata,
+    OPENROUTER_EMBEDDING_DIMENSIONS, OPENROUTER_EMBEDDING_MODEL_ID,
+    OPENROUTER_EMBEDDING_PROVIDER_ID, OPENROUTER_EMBEDDING_RESOLVED_MODEL_ID,
+};
+use crate::provider::ProviderAuditEvent;
+
+use super::provider_audit::provider_embedding_operation_receipt_sha256;
+use super::provider_audit::{
+    ProviderEmbeddingErrorDomain, ProviderEmbeddingOperation, ProviderEmbeddingOperationClaim,
+};
 
 pub const DURABLE_MEMORY_SCHEMA_VERSION: &str = "durable_memory.v1";
 pub const MEMORY_RETRIEVAL_SCHEMA_VERSION: &str = "memory_retrieval_result.v1";
@@ -88,6 +100,7 @@ pub struct MemoryRetrievalResult {
     pub retrieval_id: String,
     pub mode: String,
     pub embedding_provenance: String,
+    pub embedding_provider: Option<Value>,
     pub candidate_count: usize,
     pub candidate_scores: Vec<Value>,
     pub candidate_scores_truncated: bool,
@@ -120,9 +133,49 @@ struct StoredMemory {
     content: Value,
     embedding: Option<Vec<f64>>,
     embedding_provenance: String,
+    embedding_metadata: Option<StoredEmbeddingMetadata>,
+    embedding_binding_sha256: Option<String>,
     record_sha256: String,
     created_at: String,
     created_by: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct StoredEmbeddingMetadata {
+    provider: ProviderEmbeddingMetadata,
+    tenant_id: String,
+    workspace_id: String,
+    agent_id: Option<String>,
+    run_id: Option<String>,
+    task_id: Option<String>,
+    memory_id: String,
+    memory_version: i64,
+    source_id: String,
+    source_sha256: String,
+}
+
+#[derive(Debug, Clone)]
+struct EmbeddingMaterial {
+    values: Vec<f64>,
+    provenance: String,
+    provider: Option<ProviderEmbeddingMetadata>,
+    pending_operation_id: Option<String>,
+}
+
+#[derive(Debug)]
+struct EmbeddingOperationBinding<'a> {
+    binding_sha256: &'a str,
+    operation_kind: &'a str,
+    memory_id: &'a str,
+    target_version: i64,
+    scope: &'a MemoryScope,
+    run_id: Option<&'a str>,
+    source_id: &'a str,
+    source_sha256: &'a str,
+    node_id: Option<&'a str>,
+    query_sha256: Option<&'a str>,
+    request_identity_sha256: &'a str,
 }
 
 #[derive(Debug)]
@@ -160,8 +213,38 @@ impl LocalProductStore {
     ) -> Result<Value, String> {
         validate_create(request)?;
         validate_identifier(actor, "actor")?;
-        let embedding = embedding_for_text(&request.content.to_string())?;
         let memory_id = memory_id(request)?;
+        if let Some(existing) = self.latest_memory_preflight(&memory_id)? {
+            validate_idempotent_create(&existing, request)?;
+            return memory_to_value(&existing);
+        }
+        let operation_binding = sha256_json(&json!({
+            "operation":"create",
+            "memory_id":memory_id,
+            "version":1,
+            "source_id":request.source_id,
+            "source_sha256":request.source_sha256,
+            "content_sha256":sha256_json(&request.content)?,
+        }))?;
+        let embedding = self.embedding_for_text(
+            &request.content.to_string(),
+            Some(&EmbeddingOperationBinding {
+                binding_sha256: &operation_binding,
+                operation_kind: "memory_version",
+                memory_id: &memory_id,
+                target_version: 1,
+                scope: &request.scope,
+                run_id: request.run_id.as_deref(),
+                source_id: &request.source_id,
+                source_sha256: &request.source_sha256,
+                node_id: None,
+                query_sha256: None,
+                request_identity_sha256: &operation_binding,
+            }),
+        )?;
+        let pending_operation_id = embedding
+            .as_ref()
+            .and_then(|material| material.pending_operation_id.clone());
         let now = self.now();
         match &self.db {
             DatabaseConnection::Sqlite(_) => self.with_conn(|conn| {
@@ -197,6 +280,9 @@ impl LocalProductStore {
                     actor.to_string(),
                 )?;
                 sqlite_insert_memory(&tx, &record)?;
+                if let Some(operation_id) = pending_operation_id.as_deref() {
+                    sqlite_finalize_provider_embedding_memory(&tx, operation_id, &record, &now)?;
+                }
                 append_audit_locked(
                     &tx,
                     &now,
@@ -246,6 +332,9 @@ impl LocalProductStore {
                     actor.to_string(),
                 )?;
                 pg_insert_memory(&mut tx, &record)?;
+                if let Some(operation_id) = pending_operation_id.as_deref() {
+                    pg_finalize_provider_embedding_memory(&mut tx, operation_id, &record, &now)?;
+                }
                 pg_append_audit(
                     &mut tx,
                     &now,
@@ -269,7 +358,36 @@ impl LocalProductStore {
         validate_identifier(memory_id, "memory_id")?;
         validate_identifier(actor, "actor")?;
         validate_revision(revision)?;
-        let embedding = embedding_for_text(&revision.content.to_string())?;
+        let prior = self
+            .latest_memory_preflight(memory_id)?
+            .ok_or_else(|| "durable memory not found".to_string())?;
+        require_version(&prior, revision.expected_version)?;
+        revisable_state(&prior)?;
+        let operation_binding = sha256_json(&json!({
+            "operation":"revise",
+            "memory_id":memory_id,
+            "expected_version":revision.expected_version,
+            "next_version":revision.expected_version + 1,
+            "source_id":revision.source_id,
+            "source_sha256":revision.source_sha256,
+            "content_sha256":sha256_json(&revision.content)?,
+        }))?;
+        let embedding = self.embedding_for_text(
+            &revision.content.to_string(),
+            Some(&EmbeddingOperationBinding {
+                binding_sha256: &operation_binding,
+                operation_kind: "memory_version",
+                memory_id,
+                target_version: revision.expected_version + 1,
+                scope: &prior.scope,
+                run_id: prior.run_id.as_deref(),
+                source_id: &revision.source_id,
+                source_sha256: &revision.source_sha256,
+                node_id: None,
+                query_sha256: None,
+                request_identity_sha256: &operation_binding,
+            }),
+        )?;
         self.append_memory_version(
             memory_id,
             revision.expected_version,
@@ -277,6 +395,71 @@ impl LocalProductStore {
             revision,
             embedding,
             actor,
+            "durable_memory.revise",
+        )
+    }
+
+    pub fn reembed_durable_memory(
+        &self,
+        memory_id: &str,
+        expected_version: i64,
+        actor: &str,
+    ) -> Result<Value, String> {
+        validate_identifier(memory_id, "memory_id")?;
+        validate_identifier(actor, "actor")?;
+        if std::env::var("ACP_DURABLE_MEMORY_EMBEDDING_MODE").as_deref() != Ok("provider") {
+            return Err("durable memory re-embedding requires provider mode".to_string());
+        }
+        let prior = self
+            .latest_memory_preflight(memory_id)?
+            .ok_or_else(|| "durable memory not found".to_string())?;
+        require_version(&prior, expected_version)?;
+        revisable_state(&prior)?;
+        let next_version = expected_version + 1;
+        let operation_binding = sha256_json(&json!({
+            "operation":"reembed",
+            "memory_id":memory_id,
+            "expected_version":expected_version,
+            "next_version":next_version,
+            "previous_record_sha256":prior.record_sha256,
+            "source_id":prior.source_id,
+            "source_sha256":prior.source_sha256,
+            "content_sha256":sha256_json(&prior.content)?,
+            "target_model_id":OPENROUTER_EMBEDDING_MODEL_ID,
+        }))?;
+        let embedding = self.embedding_for_text(
+            &prior.content.to_string(),
+            Some(&EmbeddingOperationBinding {
+                binding_sha256: &operation_binding,
+                operation_kind: "memory_version",
+                memory_id,
+                target_version: next_version,
+                scope: &prior.scope,
+                run_id: prior.run_id.as_deref(),
+                source_id: &prior.source_id,
+                source_sha256: &prior.source_sha256,
+                node_id: None,
+                query_sha256: None,
+                request_identity_sha256: &operation_binding,
+            }),
+        )?;
+        let revision = DurableMemoryRevision {
+            expected_version,
+            source_id: prior.source_id.clone(),
+            source_sha256: prior.source_sha256.clone(),
+            content: prior.content.clone(),
+            confidence: prior.confidence,
+            fresh_until: prior.fresh_until.clone(),
+            expires_at: prior.expires_at.clone(),
+        };
+        self.append_memory_version(
+            memory_id,
+            expected_version,
+            "current",
+            &revision,
+            embedding,
+            actor,
+            "durable_memory.reembed",
         )
     }
 
@@ -489,6 +672,9 @@ impl LocalProductStore {
                     .map_err(|error| error.to_string())?;
                 }
                 sqlite_insert_memory(&tx, &record)?;
+                if state == "tombstoned" {
+                    sqlite_erase_provider_embedding_memory_results(&tx, memory_id, &now)?;
+                }
                 let mut evidence = memory_audit(&record);
                 evidence["previous_record_sha256"] = json!(prior.record_sha256);
                 evidence["prior_versions_erased"] = json!(state == "tombstoned");
@@ -519,6 +705,9 @@ impl LocalProductStore {
                     .map_err(|error| error.to_string())?;
                 }
                 pg_insert_memory(&mut tx, &record)?;
+                if state == "tombstoned" {
+                    pg_erase_provider_embedding_memory_results(&mut tx, memory_id, &now)?;
+                }
                 let mut evidence = memory_audit(&record);
                 evidence["previous_record_sha256"] = json!(prior.record_sha256);
                 evidence["prior_versions_erased"] = json!(state == "tombstoned");
@@ -542,9 +731,13 @@ impl LocalProductStore {
         expected_version: i64,
         _state: &str,
         revision: &DurableMemoryRevision,
-        embedding: Option<(Vec<f64>, String)>,
+        embedding: Option<EmbeddingMaterial>,
         actor: &str,
+        audit_action: &str,
     ) -> Result<Value, String> {
+        let pending_operation_id = embedding
+            .as_ref()
+            .and_then(|material| material.pending_operation_id.clone());
         let now = self.now();
         match &self.db {
             DatabaseConnection::Sqlite(_) => self.with_conn(|conn| {
@@ -573,11 +766,14 @@ impl LocalProductStore {
                     actor.to_string(),
                 )?;
                 sqlite_insert_memory(&tx, &record)?;
+                if let Some(operation_id) = pending_operation_id.as_deref() {
+                    sqlite_finalize_provider_embedding_memory(&tx, operation_id, &record, &now)?;
+                }
                 append_audit_locked(
                     &tx,
                     &now,
                     actor,
-                    "durable_memory.revise",
+                    audit_action,
                     &format!("durable-memory/{memory_id}"),
                     &memory_audit(&record),
                 )?;
@@ -611,11 +807,14 @@ impl LocalProductStore {
                     actor.to_string(),
                 )?;
                 pg_insert_memory(&mut tx, &record)?;
+                if let Some(operation_id) = pending_operation_id.as_deref() {
+                    pg_finalize_provider_embedding_memory(&mut tx, operation_id, &record, &now)?;
+                }
                 pg_append_audit(
                     &mut tx,
                     &now,
                     actor,
-                    "durable_memory.revise",
+                    audit_action,
                     &format!("durable-memory/{memory_id}"),
                     &memory_audit(&record),
                 )?;
@@ -629,14 +828,14 @@ impl LocalProductStore {
         validate_identifier(memory_id, "memory_id")?;
         let rows = match &self.db {
             DatabaseConnection::Sqlite(_) => self.with_conn(|conn| {
-                let mut stmt = conn.prepare("SELECT memory_id, version, tenant_id, workspace_id, agent_id, run_id, task_id, source_id, source_sha256, conflict_key, state, confidence, fresh_until, expires_at, supersedes_memory_id, content_json, embedding_json, embedding_provenance, record_sha256, created_at, created_by FROM durable_memory_versions WHERE memory_id=?1 ORDER BY version")
+                let mut stmt = conn.prepare("SELECT memory_id, version, tenant_id, workspace_id, agent_id, run_id, task_id, source_id, source_sha256, conflict_key, state, confidence, fresh_until, expires_at, supersedes_memory_id, content_json, embedding_json, embedding_provenance, embedding_metadata_json, embedding_binding_sha256, record_sha256, created_at, created_by FROM durable_memory_versions WHERE memory_id=?1 ORDER BY version")
                     .map_err(|error| error.to_string())?;
                 let rows = stmt.query_map(params![memory_id], sqlite_memory_row).map_err(|error| error.to_string())?;
                 rows.map(|row| row.map_err(|error| error.to_string())).collect::<Result<Vec<_>, _>>()
             })?,
             #[cfg(feature = "pg")]
             DatabaseConnection::Pg(_) => self.with_pg_conn(|client| {
-                client.query("SELECT memory_id, version, tenant_id, workspace_id, agent_id, run_id, task_id, source_id, source_sha256, conflict_key, state, confidence::DOUBLE PRECISION, fresh_until, expires_at, supersedes_memory_id, content_json, embedding_json, embedding_provenance, record_sha256, created_at, created_by FROM durable_memory_versions WHERE memory_id=$1 ORDER BY version", &[&memory_id])
+                client.query("SELECT memory_id, version, tenant_id, workspace_id, agent_id, run_id, task_id, source_id, source_sha256, conflict_key, state, confidence::DOUBLE PRECISION, fresh_until, expires_at, supersedes_memory_id, content_json, embedding_json, embedding_provenance, embedding_metadata_json, embedding_binding_sha256, record_sha256, created_at, created_by FROM durable_memory_versions WHERE memory_id=$1 ORDER BY version", &[&memory_id])
                     .map_err(|error| error.to_string())?.iter().map(pg_memory_row).collect()
             })?,
         };
@@ -650,9 +849,39 @@ impl LocalProductStore {
     ) -> Result<MemoryRetrievalResult, String> {
         validate_retrieval(request)?;
         validate_identifier(actor, "actor")?;
-        let query_embedding = embedding_for_text(&request.query)?;
+        let query_sha256 = sha256_bytes(request.query.as_bytes());
+        let request_identity_sha256 = retrieval_request_identity_sha256(request)?;
+        let query_operation_binding_sha256 = sha256_json(&json!({
+            "operation_kind": "retrieval_query",
+            "tenant_id": request.scope.tenant_id,
+            "workspace_id": request.scope.workspace_id,
+            "run_id": request.run_id,
+            "node_id": request.node_id,
+            "query_sha256": query_sha256,
+            "provider_id": OPENROUTER_EMBEDDING_PROVIDER_ID,
+            "requested_model_id": OPENROUTER_EMBEDDING_MODEL_ID,
+            "resolved_model_id": OPENROUTER_EMBEDDING_RESOLVED_MODEL_ID,
+            "dimensions": OPENROUTER_EMBEDDING_DIMENSIONS,
+            "request_identity_sha256": request_identity_sha256,
+        }))?;
+        let query_target = format!("retrieval-query-{query_operation_binding_sha256}");
+        let query_source = format!("retrieval-query/{}", request.node_id);
+        let query_binding = EmbeddingOperationBinding {
+            binding_sha256: &query_operation_binding_sha256,
+            operation_kind: "retrieval_query",
+            memory_id: &query_target,
+            target_version: 1,
+            scope: &request.scope,
+            run_id: Some(&request.run_id),
+            source_id: &query_source,
+            source_sha256: &query_sha256,
+            node_id: Some(&request.node_id),
+            query_sha256: Some(&query_sha256),
+            request_identity_sha256: &request_identity_sha256,
+        };
+        let query_embedding = self.embedding_for_text(&request.query, Some(&query_binding))?;
         let (mode, provenance) = match &query_embedding {
-            Some((_, provenance)) => ("semantic_vector", provenance.clone()),
+            Some(material) => ("semantic_vector", material.provenance.clone()),
             None if request.allow_lexical_fallback => {
                 ("lexical_fallback", "unavailable".to_string())
             }
@@ -671,11 +900,12 @@ impl LocalProductStore {
                 stale_excluded += 1;
                 continue;
             }
-            let score = if let Some((query, _)) = &query_embedding {
+            let score = if let Some(query) = &query_embedding {
                 let Some(candidate_embedding) = candidate.embedding.as_ref() else {
                     continue;
                 };
-                cosine_similarity(query, candidate_embedding)?
+                require_compatible_embedding(query, &candidate)?;
+                cosine_similarity(&query.values, candidate_embedding)?
             } else {
                 lexical_similarity(&request.query, &candidate.content.to_string())
             };
@@ -727,6 +957,8 @@ impl LocalProductStore {
             "scope": request.scope, "run_id": request.run_id, "node_id": request.node_id,
             "query_sha256": sha256_bytes(request.query.as_bytes()), "top_k": request.top_k,
             "max_tokens": request.max_tokens, "max_bytes": request.max_bytes, "mode": mode,
+            "request_identity_sha256": request_identity_sha256,
+            "embedding_provider": query_embedding.as_ref().and_then(|material| material.provider.as_ref()).map(provider_retrieval_evidence),
         }))?;
         let evidence = retrieval_evidence(&selected);
         let result_sha256 = sha256_json(&json!({
@@ -739,6 +971,7 @@ impl LocalProductStore {
             "token_estimate_provenance": "harness_derived_bytes_div_4",
             "candidate_read_bytes": inventory.candidate_read_bytes,
             "read_bytes": used_bytes,
+            "embedding_provider": query_embedding.as_ref().and_then(|material| material.provider.as_ref()).map(provider_retrieval_evidence),
         }))?;
         let retrieval_id = format!("retrieval-{result_sha256}");
         let result = MemoryRetrievalResult {
@@ -746,6 +979,10 @@ impl LocalProductStore {
             retrieval_id: retrieval_id.clone(),
             mode: mode.to_string(),
             embedding_provenance: provenance,
+            embedding_provider: query_embedding
+                .as_ref()
+                .and_then(|material| material.provider.as_ref())
+                .map(provider_retrieval_evidence),
             candidate_count,
             candidate_scores,
             candidate_scores_truncated,
@@ -760,7 +997,7 @@ impl LocalProductStore {
             request_sha256,
             result_sha256,
         };
-        self.record_retrieval_event(request, &result, actor)?;
+        self.record_retrieval_event(request, &result, query_embedding.as_ref(), actor)?;
         Ok(result)
     }
 
@@ -772,7 +1009,7 @@ impl LocalProductStore {
             DatabaseConnection::Sqlite(_) => self.with_conn(|conn| {
                 let state_excluded = sqlite_state_excluded_count(conn, scope)?;
                 let mut stmt = conn.prepare(
-                    "SELECT m.memory_id, m.version, m.tenant_id, m.workspace_id, m.agent_id, m.run_id, m.task_id, m.source_id, m.source_sha256, m.conflict_key, m.state, m.confidence, m.fresh_until, m.expires_at, m.supersedes_memory_id, m.content_json, m.embedding_json, m.embedding_provenance, m.record_sha256, m.created_at, m.created_by
+                    "SELECT m.memory_id, m.version, m.tenant_id, m.workspace_id, m.agent_id, m.run_id, m.task_id, m.source_id, m.source_sha256, m.conflict_key, m.state, m.confidence, m.fresh_until, m.expires_at, m.supersedes_memory_id, m.content_json, m.embedding_json, m.embedding_provenance, m.embedding_metadata_json, m.embedding_binding_sha256, m.record_sha256, m.created_at, m.created_by
                      FROM durable_memory_versions m JOIN (SELECT memory_id, MAX(version) version FROM durable_memory_versions GROUP BY memory_id) latest ON latest.memory_id=m.memory_id AND latest.version=m.version
                      WHERE m.tenant_id=?1 AND m.workspace_id=?2 AND (m.agent_id IS NULL OR m.agent_id=?3) AND (m.task_id IS NULL OR m.task_id=?4)
                        AND m.state='current'
@@ -788,7 +1025,7 @@ impl LocalProductStore {
             DatabaseConnection::Pg(_) => self.with_pg_conn(|client| {
                 let state_excluded = pg_state_excluded_count(client, scope)?;
                 let candidates = client.query(
-                    "SELECT m.memory_id, m.version, m.tenant_id, m.workspace_id, m.agent_id, m.run_id, m.task_id, m.source_id, m.source_sha256, m.conflict_key, m.state, m.confidence::DOUBLE PRECISION, m.fresh_until, m.expires_at, m.supersedes_memory_id, m.content_json, m.embedding_json, m.embedding_provenance, m.record_sha256, m.created_at, m.created_by
+                    "SELECT m.memory_id, m.version, m.tenant_id, m.workspace_id, m.agent_id, m.run_id, m.task_id, m.source_id, m.source_sha256, m.conflict_key, m.state, m.confidence::DOUBLE PRECISION, m.fresh_until, m.expires_at, m.supersedes_memory_id, m.content_json, m.embedding_json, m.embedding_provenance, m.embedding_metadata_json, m.embedding_binding_sha256, m.record_sha256, m.created_at, m.created_by
                      FROM durable_memory_versions m JOIN (SELECT memory_id, MAX(version) version FROM durable_memory_versions GROUP BY memory_id) latest ON latest.memory_id=m.memory_id AND latest.version=m.version
                      WHERE m.tenant_id=$1 AND m.workspace_id=$2 AND (m.agent_id IS NULL OR m.agent_id=$3) AND (m.task_id IS NULL OR m.task_id=$4)
                        AND m.state='current'
@@ -803,15 +1040,19 @@ impl LocalProductStore {
         &self,
         request: &MemoryRetrievalRequest,
         result: &MemoryRetrievalResult,
+        query_embedding: Option<&EmbeddingMaterial>,
         actor: &str,
     ) -> Result<(), String> {
+        let request_identity_sha256 = retrieval_request_identity_sha256(request)?;
         let evidence = json!({
             "schema_version": MEMORY_RETRIEVAL_SCHEMA_VERSION,
             "retrieval_id": result.retrieval_id,
             "request_sha256": result.request_sha256,
+            "request_identity_sha256": request_identity_sha256,
             "result_sha256": result.result_sha256,
             "mode": result.mode,
             "embedding_provenance": result.embedding_provenance,
+            "embedding_provider": result.embedding_provider,
             "candidates": result.candidate_count,
             "candidate_scores": result.candidate_scores,
             "candidate_scores_truncated": result.candidate_scores_truncated,
@@ -836,18 +1077,45 @@ impl LocalProductStore {
             DatabaseConnection::Sqlite(_) => self.with_conn(|conn| {
                 let tx = conn.unchecked_transaction().map_err(|error| error.to_string())?;
                 let changed = tx.execute("INSERT OR IGNORE INTO memory_retrieval_events (retrieval_id, tenant_id, workspace_id, run_id, node_id, agent_id, request_sha256, result_sha256, mode, candidate_count, selected_count, estimated_tokens, read_bytes, truncated, evidence_json, created_at) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16)", params![result.retrieval_id, request.scope.tenant_id, request.scope.workspace_id, request.run_id, request.node_id, request.scope.agent_id, result.request_sha256, result.result_sha256, result.mode, candidate_count, selected_count, estimated_tokens, read_bytes, truncated, evidence_json, now]).map_err(|error| error.to_string())?;
-                if changed == 1 { append_audit_locked(&tx, &now, actor, "durable_memory.retrieve", &format!("memory-retrieval/{}", result.retrieval_id), &evidence)?; }
+                if changed == 1 {
+                    if let Some(material) = query_embedding.filter(|material| material.pending_operation_id.is_some()) {
+                        sqlite_finalize_provider_embedding_retrieval(
+                            &tx, request, result, material, &now,
+                        )?;
+                    }
+                    append_audit_locked(&tx, &now, actor, "durable_memory.retrieve", &format!("memory-retrieval/{}", result.retrieval_id), &evidence)?;
+                }
                 tx.commit().map_err(|error| error.to_string())
             }),
             #[cfg(feature = "pg")]
             DatabaseConnection::Pg(_) => self.with_pg_conn(|client| {
                 let mut tx = client.transaction().map_err(|error| error.to_string())?;
                 let changed = tx.execute("INSERT INTO memory_retrieval_events (retrieval_id, tenant_id, workspace_id, run_id, node_id, agent_id, request_sha256, result_sha256, mode, candidate_count, selected_count, estimated_tokens, read_bytes, truncated, evidence_json, created_at) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16) ON CONFLICT(retrieval_id) DO NOTHING", &[&result.retrieval_id, &request.scope.tenant_id, &request.scope.workspace_id, &request.run_id, &request.node_id, &request.scope.agent_id, &result.request_sha256, &result.result_sha256, &result.mode, &candidate_count, &selected_count, &estimated_tokens, &read_bytes, &truncated, &evidence_json, &now]).map_err(|error| error.to_string())?;
-                if changed == 1 { pg_append_audit(&mut tx, &now, actor, "durable_memory.retrieve", &format!("memory-retrieval/{}", result.retrieval_id), &evidence)?; }
+                if changed == 1 {
+                    if let Some(material) = query_embedding.filter(|material| material.pending_operation_id.is_some()) {
+                        pg_finalize_provider_embedding_retrieval(
+                            &mut tx, request, result, material, &now,
+                        )?;
+                    }
+                    pg_append_audit(&mut tx, &now, actor, "durable_memory.retrieve", &format!("memory-retrieval/{}", result.retrieval_id), &evidence)?;
+                }
                 tx.commit().map_err(|error| error.to_string())
             }),
         }
     }
+}
+
+fn retrieval_request_identity_sha256(request: &MemoryRetrievalRequest) -> Result<String, String> {
+    sha256_json(&json!({
+        "scope": request.scope,
+        "run_id": request.run_id,
+        "node_id": request.node_id,
+        "query_sha256": sha256_bytes(request.query.as_bytes()),
+        "top_k": request.top_k,
+        "max_tokens": request.max_tokens,
+        "max_bytes": request.max_bytes,
+        "allow_lexical_fallback": request.allow_lexical_fallback,
+    }))
 }
 
 fn validate_create(request: &DurableMemoryCreate) -> Result<(), String> {
@@ -964,30 +1232,355 @@ fn validate_time_bounds(fresh_until: Option<&str>, expires_at: Option<&str>) -> 
     Ok(())
 }
 
-fn embedding_for_text(text: &str) -> Result<Option<(Vec<f64>, String)>, String> {
-    let mode = std::env::var("ACP_DURABLE_MEMORY_EMBEDDING_MODE")
-        .unwrap_or_else(|_| "disabled".to_string());
-    match mode.as_str() {
-        "disabled" => Ok(None),
-        "fixture" if cfg!(test) => Ok(Some((
-            local_embedding(text),
-            "deterministic_fixture".to_string(),
-        ))),
-        "fixture" => Err("fixture embeddings are forbidden outside tests".to_string()),
-        "local_hash_v1" => {
-            if std::env::var("CI").is_ok() {
-                return Err("production embedding generation is disabled in CI".to_string());
-            }
-            if std::env::var("ACP_ENABLE_DURABLE_MEMORY_EMBEDDINGS").as_deref() != Ok("1") {
-                return Err("durable memory embedding gate is disabled".to_string());
-            }
-            Ok(Some((local_embedding(text), "harness_derived".to_string())))
+impl LocalProductStore {
+    fn latest_memory_preflight(&self, memory_id: &str) -> Result<Option<StoredMemory>, String> {
+        match &self.db {
+            DatabaseConnection::Sqlite(_) => self.with_conn(|conn| {
+                conn.query_row(
+                    "SELECT memory_id,version,tenant_id,workspace_id,agent_id,run_id,task_id,source_id,source_sha256,conflict_key,state,confidence,fresh_until,expires_at,supersedes_memory_id,content_json,embedding_json,embedding_provenance,embedding_metadata_json,embedding_binding_sha256,record_sha256,created_at,created_by FROM durable_memory_versions WHERE memory_id=?1 ORDER BY version DESC LIMIT 1",
+                    params![memory_id],
+                    sqlite_memory_row,
+                )
+                .optional()
+                .map_err(|error| error.to_string())
+            }),
+            #[cfg(feature = "pg")]
+            DatabaseConnection::Pg(_) => self.with_pg_conn(|client| {
+                client
+                    .query_opt(
+                        "SELECT memory_id,version,tenant_id,workspace_id,agent_id,run_id,task_id,source_id,source_sha256,conflict_key,state,confidence::DOUBLE PRECISION,fresh_until,expires_at,supersedes_memory_id,content_json,embedding_json,embedding_provenance,embedding_metadata_json,embedding_binding_sha256,record_sha256,created_at,created_by FROM durable_memory_versions WHERE memory_id=$1 ORDER BY version DESC LIMIT 1",
+                        &[&memory_id],
+                    )
+                    .map_err(|error| error.to_string())?
+                    .as_ref()
+                    .map(pg_memory_row)
+                    .transpose()
+            }),
         }
-        "provider" => Err(
-            "provider embedding mode is unavailable without the managed external-provider adapter"
+    }
+
+    fn embedding_for_text(
+        &self,
+        text: &str,
+        operation_binding: Option<&EmbeddingOperationBinding<'_>>,
+    ) -> Result<Option<EmbeddingMaterial>, String> {
+        let mode = std::env::var("ACP_DURABLE_MEMORY_EMBEDDING_MODE")
+            .unwrap_or_else(|_| "disabled".to_string());
+        match mode.as_str() {
+            "disabled" => Ok(None),
+            "fixture" if cfg!(test) => Ok(Some(EmbeddingMaterial {
+                values: local_embedding(text),
+                provenance: "deterministic_fixture".to_string(),
+                provider: None,
+                pending_operation_id: None,
+            })),
+            "fixture" => Err("fixture embeddings are forbidden outside tests".to_string()),
+            "local_hash_v1" => {
+                if std::env::var("CI").is_ok() {
+                    return Err("production embedding generation is disabled in CI".to_string());
+                }
+                if std::env::var("ACP_ENABLE_DURABLE_MEMORY_EMBEDDINGS").as_deref() != Ok("1") {
+                    return Err("durable memory embedding gate is disabled".to_string());
+                }
+                Ok(Some(EmbeddingMaterial {
+                    values: local_embedding(text),
+                    provenance: "harness_derived".to_string(),
+                    provider: None,
+                    pending_operation_id: None,
+                }))
+            }
+            "provider" => self
+                .provider_embedding_for_text(text, operation_binding)
+                .map(Some),
+            _ => Err("unsupported durable memory embedding mode".to_string()),
+        }
+    }
+
+    fn provider_embedding_for_text(
+        &self,
+        text: &str,
+        operation_binding: Option<&EmbeddingOperationBinding<'_>>,
+    ) -> Result<EmbeddingMaterial, String> {
+        let config = ProviderEmbeddingConfig::from_env()?;
+        let inputs = [text.to_string()];
+        validate_inputs(&inputs)?;
+        let binding = operation_binding.ok_or_else(|| {
+            "provider embedding requires a durable operation receipt binding".to_string()
+        })?;
+        let base_dispatch_suffix = binding.binding_sha256.to_string();
+        let now = self.now();
+        let contract_evidence = pinned_free_embedding_contract_evidence();
+        validate_contract_evidence(&contract_evidence)?;
+        let contract_json =
+            serde_json::to_string(&contract_evidence).map_err(|error| error.to_string())?;
+        let contract_sha256 = sha256_bytes(contract_json.as_bytes());
+        let mut operation = ProviderEmbeddingOperation {
+            operation_id: format!("embedding-operation-{}", binding.binding_sha256),
+            operation_kind: binding.operation_kind.to_string(),
+            target_memory_id: binding.memory_id.to_string(),
+            target_version: binding.target_version,
+            tenant_id: binding.scope.tenant_id.clone(),
+            workspace_id: binding.scope.workspace_id.clone(),
+            agent_id: binding.scope.agent_id.clone(),
+            run_id: binding.run_id.map(str::to_string),
+            task_id: binding.scope.task_id.clone(),
+            source_id: binding.source_id.to_string(),
+            source_sha256: binding.source_sha256.to_string(),
+            node_id: binding.node_id.map(str::to_string),
+            query_sha256: binding.query_sha256.map(str::to_string),
+            request_identity_sha256: binding.request_identity_sha256.to_string(),
+            operation_binding_sha256: binding.binding_sha256.to_string(),
+            content_sha256: normalized_content_sha256(text),
+            contract_json,
+            contract_sha256,
+            receipt_sha256: String::new(),
+            provider_id: OPENROUTER_EMBEDDING_PROVIDER_ID.to_string(),
+            requested_model_id: contract_evidence.requested_model_id.clone(),
+            resolved_model_id: contract_evidence.resolved_model_id.clone(),
+            dimensions: contract_evidence.dimensions as i64,
+            created_at: now.clone(),
+        };
+        operation.receipt_sha256 = provider_embedding_operation_receipt_sha256(&operation)?;
+        let preflight = ProviderAuditEvent {
+            schema_version: "provider_audit_event.v1".to_string(),
+            event_id: format!("paudit-preflight-{base_dispatch_suffix}"),
+            dispatch_id: format!("memory-embedding-{base_dispatch_suffix}"),
+            provider_id: OPENROUTER_EMBEDDING_PROVIDER_ID.to_string(),
+            event_type: "contract_check_reserved".to_string(),
+            input_token_count: None,
+            output_token_count: None,
+            cost: None,
+            currency: None,
+            latency_ms: None,
+            error_domain: None,
+            redaction_status: "redacted".to_string(),
+            created_at: now.clone(),
+        };
+        let attempt_count =
+            match self.reserve_provider_embedding_preflight(&operation, &preflight)? {
+                ProviderEmbeddingOperationClaim::PreflightReserved { attempt_count }
+                | ProviderEmbeddingOperationClaim::Claimed { attempt_count } => attempt_count,
+                ProviderEmbeddingOperationClaim::Completed {
+                    vector_json,
+                    metadata_json,
+                } => return completed_embedding_material(&operation, &vector_json, &metadata_json),
+                ProviderEmbeddingOperationClaim::RetryAuthorized { .. } => {
+                    return Err("provider embedding retry authorization was not claimed".to_string())
+                }
+            };
+        let dispatch_suffix = if attempt_count > 1 {
+            format!("{base_dispatch_suffix}-attempt-{attempt_count}")
+        } else {
+            base_dispatch_suffix
+        };
+        let dispatch_id = format!("memory-embedding-{dispatch_suffix}");
+        let contract = match self.embedding_client.verify_contract(&config) {
+            Ok(contract) if contract.evidence() == contract_evidence => contract,
+            Ok(_) => {
+                let error = "embedding catalog contract differs from the reserved public identity"
+                    .to_string();
+                let event =
+                    preflight_failure_event(&dispatch_suffix, &dispatch_id, &error, self.now());
+                self.fail_provider_embedding_preflight(&operation, &event)?;
+                return Err(error);
+            }
+            Err(error) => {
+                let event =
+                    preflight_failure_event(&dispatch_suffix, &dispatch_id, &error, self.now());
+                self.fail_provider_embedding_preflight(&operation, &event)?;
+                return Err(error);
+            }
+        };
+        let reservation = ProviderAuditEvent {
+            schema_version: "provider_audit_event.v1".to_string(),
+            event_id: format!("paudit-reservation-{dispatch_suffix}"),
+            dispatch_id: dispatch_id.clone(),
+            provider_id: OPENROUTER_EMBEDDING_PROVIDER_ID.to_string(),
+            event_type: "request_reserved".to_string(),
+            input_token_count: None,
+            output_token_count: None,
+            cost: Some(0.0),
+            currency: Some("USD".to_string()),
+            latency_ms: None,
+            error_domain: None,
+            redaction_status: "redacted".to_string(),
+            created_at: now.clone(),
+        };
+        let request_sent = ProviderAuditEvent {
+            schema_version: "provider_audit_event.v1".to_string(),
+            event_id: format!("paudit-request-{dispatch_suffix}"),
+            dispatch_id: dispatch_id.clone(),
+            provider_id: OPENROUTER_EMBEDDING_PROVIDER_ID.to_string(),
+            event_type: "request_sent".to_string(),
+            input_token_count: None,
+            output_token_count: None,
+            cost: Some(0.0),
+            currency: Some("USD".to_string()),
+            latency_ms: None,
+            error_domain: None,
+            redaction_status: "redacted".to_string(),
+            created_at: now.clone(),
+        };
+        match self.reserve_verified_free_embedding_operation(
+            &operation,
+            &reservation,
+            config.per_call_cap_usd,
+            config.daily_cap_usd,
+            &contract.pricing,
+        )? {
+            ProviderEmbeddingOperationClaim::Claimed { .. } => {}
+            ProviderEmbeddingOperationClaim::Completed {
+                vector_json,
+                metadata_json,
+            } => return completed_embedding_material(&operation, &vector_json, &metadata_json),
+            ProviderEmbeddingOperationClaim::PreflightReserved { .. }
+            | ProviderEmbeddingOperationClaim::RetryAuthorized { .. } => {
+                return Err("provider embedding verified reservation state conflict".to_string())
+            }
+        }
+        self.claim_verified_free_embedding_send(&operation, &request_sent)?;
+        let started = std::time::Instant::now();
+        let result = self
+            .embedding_client
+            .embed_verified(&inputs, &config, &contract);
+        match result {
+            Ok(mut output) => {
+                let values = output
+                    .vectors
+                    .pop()
+                    .ok_or_else(|| "embedding provider outcome has no vector".to_string())?;
+                let metadata = output
+                    .metadata
+                    .pop()
+                    .ok_or_else(|| "embedding provider outcome has no metadata".to_string())?;
+                let event = ProviderAuditEvent {
+                    schema_version: "provider_audit_event.v1".to_string(),
+                    event_id: format!("paudit-response-{dispatch_suffix}"),
+                    dispatch_id,
+                    provider_id: OPENROUTER_EMBEDDING_PROVIDER_ID.to_string(),
+                    event_type: "response_received".to_string(),
+                    input_token_count: metadata.input_tokens,
+                    output_token_count: None,
+                    cost: metadata.cost_usd,
+                    currency: Some(metadata.pricing.currency.clone()),
+                    latency_ms: Some(started.elapsed().as_millis().min(i64::MAX as u128) as i64),
+                    error_domain: None,
+                    redaction_status: "redacted".to_string(),
+                    created_at: self.now(),
+                };
+                let vector_json =
+                    serde_json::to_string(&values).map_err(|error| error.to_string())?;
+                let metadata_json =
+                    serde_json::to_string(&metadata).map_err(|error| error.to_string())?;
+                self.complete_provider_embedding_operation(
+                    &operation,
+                    &vector_json,
+                    &metadata_json,
+                    &event,
+                )?;
+                Ok(EmbeddingMaterial {
+                    values,
+                    provenance: "provider_reported".to_string(),
+                    provider: Some(metadata),
+                    pending_operation_id: Some(operation.operation_id.clone()),
+                })
+            }
+            Err(error) => {
+                let outcome_unknown = error.outcome_unknown();
+                let error = error.to_string();
+                let error_event = ProviderAuditEvent {
+                    schema_version: "provider_audit_event.v1".to_string(),
+                    event_id: format!("paudit-error-{dispatch_suffix}"),
+                    dispatch_id: dispatch_id.clone(),
+                    provider_id: OPENROUTER_EMBEDDING_PROVIDER_ID.to_string(),
+                    event_type: "error".to_string(),
+                    input_token_count: None,
+                    output_token_count: None,
+                    cost: None,
+                    currency: Some("USD".to_string()),
+                    latency_ms: Some(started.elapsed().as_millis().min(i64::MAX as u128) as i64),
+                    error_domain: Some(provider_error_domain(&error).as_str().to_string()),
+                    redaction_status: "redacted".to_string(),
+                    created_at: self.now(),
+                };
+                self.fail_provider_embedding_operation(&operation, outcome_unknown, &error_event)?;
+                Err(error)
+            }
+        }
+    }
+}
+
+fn completed_embedding_material(
+    operation: &ProviderEmbeddingOperation,
+    vector_json: &str,
+    metadata_json: &str,
+) -> Result<EmbeddingMaterial, String> {
+    let values = serde_json::from_str(vector_json)
+        .map_err(|_| "completed embedding vector receipt is malformed".to_string())?;
+    let metadata = serde_json::from_str(metadata_json)
+        .map_err(|_| "completed embedding metadata receipt is malformed".to_string())?;
+    Ok(EmbeddingMaterial {
+        values,
+        provenance: "provider_reported".to_string(),
+        provider: Some(metadata),
+        pending_operation_id: Some(operation.operation_id.clone()),
+    })
+}
+
+fn preflight_failure_event(
+    dispatch_suffix: &str,
+    dispatch_id: &str,
+    _error: &str,
+    created_at: String,
+) -> ProviderAuditEvent {
+    ProviderAuditEvent {
+        schema_version: "provider_audit_event.v1".to_string(),
+        event_id: format!("paudit-contract-error-{dispatch_suffix}"),
+        dispatch_id: dispatch_id.to_string(),
+        provider_id: OPENROUTER_EMBEDDING_PROVIDER_ID.to_string(),
+        event_type: "error".to_string(),
+        input_token_count: None,
+        output_token_count: None,
+        cost: None,
+        currency: Some("USD".to_string()),
+        latency_ms: None,
+        error_domain: Some(
+            ProviderEmbeddingErrorDomain::FailedBeforeSend
+                .as_str()
                 .to_string(),
         ),
-        _ => Err("unsupported durable memory embedding mode".to_string()),
+        redaction_status: "redacted".to_string(),
+        created_at,
+    }
+}
+
+fn provider_error_domain(error: &str) -> ProviderEmbeddingErrorDomain {
+    if error.contains("redirect refused") {
+        ProviderEmbeddingErrorDomain::OutcomeUnknownRedirect
+    } else if error.contains("oversized response") {
+        ProviderEmbeddingErrorDomain::OutcomeUnknownOversized
+    } else if error.contains("truncated response") {
+        ProviderEmbeddingErrorDomain::OutcomeUnknownTruncated
+    } else if error.contains("malformed response") || error.contains("response is malformed") {
+        ProviderEmbeddingErrorDomain::OutcomeUnknownMalformed
+    } else if error.contains("timeout after send") {
+        ProviderEmbeddingErrorDomain::OutcomeUnknownTimeout
+    } else if error.contains("connection lost after send") {
+        ProviderEmbeddingErrorDomain::OutcomeUnknownConnection
+    } else if error.contains("authentication") || error.contains("Credential") {
+        ProviderEmbeddingErrorDomain::Auth
+    } else if error.contains("timed out") {
+        ProviderEmbeddingErrorDomain::Timeout
+    } else if error.contains("outcome unknown") {
+        ProviderEmbeddingErrorDomain::OutcomeUnknown
+    } else if error.contains("circuit") {
+        ProviderEmbeddingErrorDomain::CircuitOpen
+    } else if error.contains("kill switch") {
+        ProviderEmbeddingErrorDomain::KillSwitch
+    } else if error.contains("pricing") {
+        ProviderEmbeddingErrorDomain::Pricing
+    } else {
+        ProviderEmbeddingErrorDomain::Error
     }
 }
 
@@ -1094,15 +1687,39 @@ fn build_record(
     expires_at: Option<String>,
     supersedes_memory_id: Option<String>,
     content: Value,
-    embedding: Option<(Vec<f64>, String)>,
+    embedding: Option<EmbeddingMaterial>,
     created_at: String,
     created_by: String,
 ) -> Result<StoredMemory, String> {
-    let (embedding, embedding_provenance) = embedding
-        .map_or((None, "unavailable".to_string()), |(values, provenance)| {
-            (Some(values), provenance)
-        });
-    let unsigned = json!({"schema_version":DURABLE_MEMORY_SCHEMA_VERSION,"memory_id":memory_id,"version":version,"scope":scope,"run_id":run_id,"source_id":source_id,"source_sha256":source_sha256,"conflict_key":conflict_key,"state":state,"confidence":confidence,"fresh_until":fresh_until,"expires_at":expires_at,"supersedes_memory_id":supersedes_memory_id,"content":content,"embedding":embedding,"embedding_provenance":embedding_provenance,"created_at":created_at,"created_by":created_by});
+    let (embedding, embedding_provenance, embedding_metadata, embedding_binding_sha256) =
+        if let Some(material) = embedding {
+            validate_embedding_material(&material, &content)?;
+            let metadata = material.provider.map(|provider| StoredEmbeddingMetadata {
+                provider,
+                tenant_id: scope.tenant_id.clone(),
+                workspace_id: scope.workspace_id.clone(),
+                agent_id: scope.agent_id.clone(),
+                run_id: run_id.clone(),
+                task_id: scope.task_id.clone(),
+                memory_id: memory_id.clone(),
+                memory_version: version,
+                source_id: source_id.clone(),
+                source_sha256: source_sha256.clone(),
+            });
+            let binding = metadata
+                .as_ref()
+                .map(embedding_binding_sha256)
+                .transpose()?;
+            (
+                Some(material.values),
+                material.provenance,
+                metadata,
+                binding,
+            )
+        } else {
+            (None, "unavailable".to_string(), None, None)
+        };
+    let unsigned = json!({"schema_version":DURABLE_MEMORY_SCHEMA_VERSION,"memory_id":memory_id,"version":version,"scope":scope,"run_id":run_id,"source_id":source_id,"source_sha256":source_sha256,"conflict_key":conflict_key,"state":state,"confidence":confidence,"fresh_until":fresh_until,"expires_at":expires_at,"supersedes_memory_id":supersedes_memory_id,"content":content,"embedding":embedding,"embedding_provenance":embedding_provenance,"embedding_metadata":embedding_metadata,"embedding_binding_sha256":embedding_binding_sha256,"created_at":created_at,"created_by":created_by});
     let record_sha256 = sha256_json(&unsigned)?;
     Ok(StoredMemory {
         memory_id,
@@ -1120,9 +1737,167 @@ fn build_record(
         content,
         embedding,
         embedding_provenance,
+        embedding_metadata,
+        embedding_binding_sha256,
         record_sha256,
         created_at,
         created_by,
+    })
+}
+
+fn stored_embedding_material(memory: &StoredMemory) -> Option<EmbeddingMaterial> {
+    memory.embedding.clone().map(|values| EmbeddingMaterial {
+        values,
+        provenance: memory.embedding_provenance.clone(),
+        provider: memory
+            .embedding_metadata
+            .as_ref()
+            .map(|metadata| metadata.provider.clone()),
+        pending_operation_id: None,
+    })
+}
+
+fn validate_embedding_material(
+    material: &EmbeddingMaterial,
+    content: &Value,
+) -> Result<(), String> {
+    if material.values.is_empty() || material.values.len() > MAX_VECTOR_DIMENSIONS {
+        return Err("embedding dimensions are invalid".to_string());
+    }
+    if material.values.iter().any(|value| !value.is_finite()) {
+        return Err("embedding contains non-finite values".to_string());
+    }
+    match (&material.provider, material.provenance.as_str()) {
+        (Some(provider), "provider_reported") => {
+            if !crate::provider::embedding::is_supported_durable_embedding_identity(provider) {
+                return Err("embedding provider identity mismatch".to_string());
+            }
+            if material.values.len() != provider.dimensions {
+                return Err("embedding provider metadata dimension mismatch".to_string());
+            }
+            let normalized_content = content
+                .to_string()
+                .split_whitespace()
+                .collect::<Vec<_>>()
+                .join(" ");
+            if provider.normalized_content_sha256 != sha256_bytes(normalized_content.as_bytes()) {
+                return Err("embedding normalized content binding mismatch".to_string());
+            }
+            if provider.vector_sha256
+                != sha256_json(
+                    &serde_json::to_value(&material.values).map_err(|error| error.to_string())?,
+                )?
+            {
+                return Err("embedding vector binding mismatch".to_string());
+            }
+            if provider.measurement_provenance != "provider_reported"
+                || provider.input_tokens.is_some_and(|value| value < 0)
+                || provider
+                    .cost_usd
+                    .is_some_and(|value| !value.is_finite() || value < 0.0)
+            {
+                return Err("embedding provider pricing binding is invalid".to_string());
+            }
+        }
+        (None, "deterministic_fixture" | "harness_derived") => {}
+        (Some(_), _) => return Err("provider embedding provenance is invalid".to_string()),
+        (None, _) => return Err("embedding provider metadata is missing".to_string()),
+    }
+    Ok(())
+}
+
+fn validate_contract_evidence(contract: &EmbeddingContractEvidence) -> Result<(), String> {
+    if !crate::provider::embedding::is_supported_durable_embedding_contract(contract) {
+        return Err("provider embedding contract evidence is invalid".to_string());
+    }
+    Ok(())
+}
+
+fn embedding_binding_sha256(metadata: &StoredEmbeddingMetadata) -> Result<String, String> {
+    sha256_json(&serde_json::to_value(metadata).map_err(|error| error.to_string())?)
+}
+
+fn validate_stored_embedding_binding(memory: &StoredMemory) -> Result<(), String> {
+    match (
+        &memory.embedding,
+        &memory.embedding_metadata,
+        &memory.embedding_binding_sha256,
+    ) {
+        (Some(values), Some(metadata), Some(binding)) => {
+            if metadata.tenant_id != memory.scope.tenant_id
+                || metadata.workspace_id != memory.scope.workspace_id
+                || metadata.agent_id != memory.scope.agent_id
+                || metadata.run_id != memory.run_id
+                || metadata.task_id != memory.scope.task_id
+                || metadata.memory_id != memory.memory_id
+                || metadata.memory_version != memory.version
+                || metadata.source_id != memory.source_id
+                || metadata.source_sha256 != memory.source_sha256
+            {
+                return Err(
+                    "stored provider embedding scope/source/version binding mismatch".to_string(),
+                );
+            }
+            let material = EmbeddingMaterial {
+                values: values.clone(),
+                provenance: memory.embedding_provenance.clone(),
+                provider: Some(metadata.provider.clone()),
+                pending_operation_id: None,
+            };
+            validate_embedding_material(&material, &memory.content)?;
+            if embedding_binding_sha256(metadata)? != *binding {
+                return Err("stored provider embedding identity hash mismatch".to_string());
+            }
+            Ok(())
+        }
+        (Some(_), None, None)
+            if matches!(
+                memory.embedding_provenance.as_str(),
+                "deterministic_fixture" | "harness_derived"
+            ) =>
+        {
+            Ok(())
+        }
+        (None, None, None) if memory.embedding_provenance == "unavailable" => Ok(()),
+        _ => Err("stored embedding metadata is incomplete".to_string()),
+    }
+}
+
+fn require_compatible_embedding(
+    query: &EmbeddingMaterial,
+    candidate: &StoredMemory,
+) -> Result<(), String> {
+    validate_stored_embedding_binding(candidate)?;
+    if query.provenance != candidate.embedding_provenance {
+        return Err("retrieval embedding provenance mismatch".to_string());
+    }
+    match (&query.provider, &candidate.embedding_metadata) {
+        (Some(query), Some(candidate))
+            if query.provider_id == candidate.provider.provider_id
+                && query.requested_model_id == candidate.provider.requested_model_id
+                && query.canonical_model_slug == candidate.provider.canonical_model_slug
+                && query.resolved_model_id == candidate.provider.resolved_model_id
+                && query.dimensions == candidate.provider.dimensions =>
+        {
+            Ok(())
+        }
+        (None, None) => Ok(()),
+        _ => Err("retrieval embedding model identity mismatch".to_string()),
+    }
+}
+
+fn provider_retrieval_evidence(metadata: &ProviderEmbeddingMetadata) -> Value {
+    json!({
+        "provider_id": metadata.provider_id,
+        "requested_model_id": metadata.requested_model_id,
+        "canonical_model_slug": metadata.canonical_model_slug,
+        "resolved_model_id": metadata.resolved_model_id,
+        "dimensions": metadata.dimensions,
+        "input_tokens": metadata.input_tokens,
+        "cost_usd": metadata.cost_usd,
+        "pricing": metadata.pricing,
+        "measurement_provenance": metadata.measurement_provenance,
+        "raw_content_stored": false,
     })
 }
 
@@ -1146,10 +1921,7 @@ fn clone_with_state(
         prior.expires_at.clone(),
         prior.supersedes_memory_id.clone(),
         prior.content.clone(),
-        prior
-            .embedding
-            .clone()
-            .map(|embedding| (embedding, prior.embedding_provenance.clone())),
+        stored_embedding_material(prior),
         now.to_string(),
         actor.to_string(),
     )
@@ -1225,10 +1997,7 @@ fn clone_with_state_and_supersedes(
         prior.expires_at.clone(),
         supersedes_memory_id,
         prior.content.clone(),
-        prior
-            .embedding
-            .clone()
-            .map(|embedding| (embedding, prior.embedding_provenance.clone())),
+        stored_embedding_material(prior),
         now.to_string(),
         actor.to_string(),
     )
@@ -1312,12 +2081,12 @@ fn validate_idempotent_create(
 
 fn memory_to_value(memory: &StoredMemory) -> Result<Value, String> {
     Ok(
-        json!({"schema_version":DURABLE_MEMORY_SCHEMA_VERSION,"memory_id":memory.memory_id,"version":memory.version,"scope":memory.scope,"run_id":memory.run_id,"source_id":memory.source_id,"source_sha256":memory.source_sha256,"conflict_key":memory.conflict_key,"state":memory.state,"confidence":memory.confidence,"fresh_until":memory.fresh_until,"expires_at":memory.expires_at,"supersedes_memory_id":memory.supersedes_memory_id,"content":memory.content,"embedding":{"present":memory.embedding.is_some(),"dimensions":memory.embedding.as_ref().map(Vec::len),"provenance":memory.embedding_provenance},"record_sha256":memory.record_sha256,"created_at":memory.created_at,"created_by":memory.created_by}),
+        json!({"schema_version":DURABLE_MEMORY_SCHEMA_VERSION,"memory_id":memory.memory_id,"version":memory.version,"scope":memory.scope,"run_id":memory.run_id,"source_id":memory.source_id,"source_sha256":memory.source_sha256,"conflict_key":memory.conflict_key,"state":memory.state,"confidence":memory.confidence,"fresh_until":memory.fresh_until,"expires_at":memory.expires_at,"supersedes_memory_id":memory.supersedes_memory_id,"content":memory.content,"embedding":{"present":memory.embedding.is_some(),"dimensions":memory.embedding.as_ref().map(Vec::len),"provenance":memory.embedding_provenance,"provider":memory.embedding_metadata.as_ref().map(|metadata| provider_retrieval_evidence(&metadata.provider)),"binding_sha256":memory.embedding_binding_sha256},"record_sha256":memory.record_sha256,"created_at":memory.created_at,"created_by":memory.created_by}),
     )
 }
 
 fn memory_audit(memory: &StoredMemory) -> Value {
-    json!({"memory_id":memory.memory_id,"version":memory.version,"tenant_id":memory.scope.tenant_id,"workspace_id":memory.scope.workspace_id,"agent_id":memory.scope.agent_id,"task_id":memory.scope.task_id,"source_id":memory.source_id,"source_sha256":memory.source_sha256,"record_sha256":memory.record_sha256,"state":memory.state,"confidence":memory.confidence,"embedding_provenance":memory.embedding_provenance,"content_stored_in_audit":false})
+    json!({"memory_id":memory.memory_id,"version":memory.version,"tenant_id":memory.scope.tenant_id,"workspace_id":memory.scope.workspace_id,"agent_id":memory.scope.agent_id,"task_id":memory.scope.task_id,"source_id":memory.source_id,"source_sha256":memory.source_sha256,"record_sha256":memory.record_sha256,"state":memory.state,"confidence":memory.confidence,"embedding_provenance":memory.embedding_provenance,"embedding_provider":memory.embedding_metadata.as_ref().map(|metadata| provider_retrieval_evidence(&metadata.provider)),"embedding_binding_sha256":memory.embedding_binding_sha256,"content_stored_in_audit":false})
 }
 
 fn memory_prune_reference(memory: &StoredMemory) -> Value {
@@ -1360,15 +2129,152 @@ fn sqlite_insert_memory(conn: &rusqlite::Connection, memory: &StoredMemory) -> R
         .embedding
         .as_ref()
         .map(|value| serde_json::to_string(value).unwrap());
-    conn.execute("INSERT INTO durable_memory_versions (memory_id,version,tenant_id,workspace_id,agent_id,run_id,task_id,source_id,source_sha256,conflict_key,state,confidence,fresh_until,expires_at,supersedes_memory_id,content_json,embedding_json,embedding_provenance,record_sha256,created_at,created_by) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,?21)", params![memory.memory_id,memory.version,memory.scope.tenant_id,memory.scope.workspace_id,memory.scope.agent_id,memory.run_id,memory.scope.task_id,memory.source_id,memory.source_sha256,memory.conflict_key,memory.state,memory.confidence,memory.fresh_until,memory.expires_at,memory.supersedes_memory_id,content_json,embedding_json,memory.embedding_provenance,memory.record_sha256,memory.created_at,memory.created_by]).map_err(|error| error.to_string())?;
+    let embedding_metadata_json = memory
+        .embedding_metadata
+        .as_ref()
+        .map(|value| serde_json::to_string(value).unwrap());
+    conn.execute("INSERT INTO durable_memory_versions (memory_id,version,tenant_id,workspace_id,agent_id,run_id,task_id,source_id,source_sha256,conflict_key,state,confidence,fresh_until,expires_at,supersedes_memory_id,content_json,embedding_json,embedding_provenance,embedding_metadata_json,embedding_binding_sha256,record_sha256,created_at,created_by) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,?21,?22,?23)", params![memory.memory_id,memory.version,memory.scope.tenant_id,memory.scope.workspace_id,memory.scope.agent_id,memory.run_id,memory.scope.task_id,memory.source_id,memory.source_sha256,memory.conflict_key,memory.state,memory.confidence,memory.fresh_until,memory.expires_at,memory.supersedes_memory_id,content_json,embedding_json,memory.embedding_provenance,embedding_metadata_json,memory.embedding_binding_sha256,memory.record_sha256,memory.created_at,memory.created_by]).map_err(|error| error.to_string())?;
     Ok(())
+}
+
+fn sqlite_finalize_provider_embedding_memory(
+    tx: &rusqlite::Transaction<'_>,
+    operation_id: &str,
+    memory: &StoredMemory,
+    updated_at: &str,
+) -> Result<(), String> {
+    let vector_json = serde_json::to_string(
+        memory
+            .embedding
+            .as_ref()
+            .ok_or_else(|| "provider embedding finalize is missing the vector".to_string())?,
+    )
+    .map_err(|error| error.to_string())?;
+    let provider = &memory
+        .embedding_metadata
+        .as_ref()
+        .ok_or_else(|| "provider embedding finalize is missing metadata".to_string())?
+        .provider;
+    let metadata_json = serde_json::to_string(provider).map_err(|error| error.to_string())?;
+    let changed = tx
+        .execute(
+            "UPDATE provider_embedding_operations
+             SET state='succeeded',result_kind='memory_version',result_id=?1,
+                 result_sha256=?2,updated_at=?3
+             WHERE operation_id=?4 AND target_memory_id=?5 AND target_version=?6
+               AND tenant_id=?7 AND workspace_id=?8 AND agent_id IS ?9 AND run_id IS ?10
+               AND task_id IS ?11 AND source_id=?12 AND source_sha256=?13
+               AND provider_id=?14 AND requested_model_id=?15 AND resolved_model_id=?16
+               AND dimensions=?17 AND state IN ('network_succeeded','succeeded')
+               AND vector_json=?18 AND metadata_json=?19",
+            params![
+                format!("{}:{}", memory.memory_id, memory.version),
+                memory.embedding_binding_sha256,
+                updated_at,
+                operation_id,
+                memory.memory_id,
+                memory.version,
+                memory.scope.tenant_id,
+                memory.scope.workspace_id,
+                memory.scope.agent_id,
+                memory.run_id,
+                memory.scope.task_id,
+                memory.source_id,
+                memory.source_sha256,
+                OPENROUTER_EMBEDDING_PROVIDER_ID,
+                provider.requested_model_id,
+                provider.resolved_model_id,
+                provider.dimensions as i64,
+                vector_json,
+                metadata_json
+            ],
+        )
+        .map_err(|error| error.to_string())?;
+    if changed == 1 {
+        Ok(())
+    } else {
+        Err("provider embedding memory finalize integrity binding mismatch".to_string())
+    }
+}
+
+fn sqlite_erase_provider_embedding_memory_results(
+    tx: &rusqlite::Transaction<'_>,
+    memory_id: &str,
+    updated_at: &str,
+) -> Result<(), String> {
+    tx.execute(
+        "UPDATE provider_embedding_operations
+         SET state='result_erased',vector_json=NULL,metadata_json=NULL,
+             result_kind=NULL,result_id=NULL,result_sha256=NULL,updated_at=?1
+         WHERE target_memory_id=?2 AND operation_kind='memory_version' AND state='succeeded'",
+        params![updated_at, memory_id],
+    )
+    .map(|_| ())
+    .map_err(|error| error.to_string())
+}
+
+fn sqlite_finalize_provider_embedding_retrieval(
+    tx: &rusqlite::Transaction<'_>,
+    request: &MemoryRetrievalRequest,
+    result: &MemoryRetrievalResult,
+    material: &EmbeddingMaterial,
+    updated_at: &str,
+) -> Result<(), String> {
+    let operation_id = material
+        .pending_operation_id
+        .as_deref()
+        .ok_or_else(|| "provider retrieval finalize is missing operation identity".to_string())?;
+    let provider = material
+        .provider
+        .as_ref()
+        .ok_or_else(|| "provider retrieval finalize is missing metadata".to_string())?;
+    let vector_json = serde_json::to_string(&material.values).map_err(|error| error.to_string())?;
+    let metadata_json = serde_json::to_string(provider).map_err(|error| error.to_string())?;
+    let source_id = format!("retrieval-query/{}", request.node_id);
+    let content_sha256 = normalized_content_sha256(&request.query);
+    let changed = tx
+        .execute(
+            "UPDATE provider_embedding_operations
+             SET state='succeeded',result_kind='retrieval_event',result_id=?1,
+                 result_sha256=?2,updated_at=?3
+             WHERE operation_id=?4 AND tenant_id=?5 AND workspace_id=?6 AND agent_id IS ?7
+               AND run_id=?8 AND task_id IS ?9 AND source_id=?10 AND content_sha256=?11
+               AND provider_id=?12 AND requested_model_id=?13 AND resolved_model_id=?14
+               AND dimensions=?15 AND state='network_succeeded'
+               AND vector_json=?16 AND metadata_json=?17",
+            params![
+                result.retrieval_id,
+                result.result_sha256,
+                updated_at,
+                operation_id,
+                request.scope.tenant_id,
+                request.scope.workspace_id,
+                request.scope.agent_id,
+                request.run_id,
+                request.scope.task_id,
+                source_id,
+                content_sha256,
+                OPENROUTER_EMBEDDING_PROVIDER_ID,
+                provider.requested_model_id,
+                provider.resolved_model_id,
+                provider.dimensions as i64,
+                vector_json,
+                metadata_json
+            ],
+        )
+        .map_err(|error| error.to_string())?;
+    if changed == 1 {
+        Ok(())
+    } else {
+        Err("provider embedding retrieval finalize integrity binding mismatch".to_string())
+    }
 }
 
 fn sqlite_latest_memory(
     conn: &rusqlite::Connection,
     memory_id: &str,
 ) -> Result<Option<StoredMemory>, String> {
-    conn.query_row("SELECT memory_id,version,tenant_id,workspace_id,agent_id,run_id,task_id,source_id,source_sha256,conflict_key,state,confidence,fresh_until,expires_at,supersedes_memory_id,content_json,embedding_json,embedding_provenance,record_sha256,created_at,created_by FROM durable_memory_versions WHERE memory_id=?1 ORDER BY version DESC LIMIT 1", params![memory_id], sqlite_memory_row).optional().map_err(|error| error.to_string())
+    conn.query_row("SELECT memory_id,version,tenant_id,workspace_id,agent_id,run_id,task_id,source_id,source_sha256,conflict_key,state,confidence,fresh_until,expires_at,supersedes_memory_id,content_json,embedding_json,embedding_provenance,embedding_metadata_json,embedding_binding_sha256,record_sha256,created_at,created_by FROM durable_memory_versions WHERE memory_id=?1 ORDER BY version DESC LIMIT 1", params![memory_id], sqlite_memory_row).optional().map_err(|error| error.to_string())
 }
 
 fn enforce_sqlite_workspace_retention(
@@ -1424,7 +2330,7 @@ fn sqlite_expired_memories(
     now: &str,
 ) -> Result<Vec<StoredMemory>, String> {
     let mut stmt = conn.prepare(
-        "SELECT m.memory_id,m.version,m.tenant_id,m.workspace_id,m.agent_id,m.run_id,m.task_id,m.source_id,m.source_sha256,m.conflict_key,m.state,m.confidence,m.fresh_until,m.expires_at,m.supersedes_memory_id,m.content_json,m.embedding_json,m.embedding_provenance,m.record_sha256,m.created_at,m.created_by
+        "SELECT m.memory_id,m.version,m.tenant_id,m.workspace_id,m.agent_id,m.run_id,m.task_id,m.source_id,m.source_sha256,m.conflict_key,m.state,m.confidence,m.fresh_until,m.expires_at,m.supersedes_memory_id,m.content_json,m.embedding_json,m.embedding_provenance,m.embedding_metadata_json,m.embedding_binding_sha256,m.record_sha256,m.created_at,m.created_by
          FROM durable_memory_versions m
          JOIN (SELECT memory_id,MAX(version) version FROM durable_memory_versions GROUP BY memory_id) latest
            ON latest.memory_id=m.memory_id AND latest.version=m.version
@@ -1462,6 +2368,7 @@ fn sqlite_expired_memories(
 fn sqlite_memory_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<StoredMemory> {
     let content: String = row.get(15)?;
     let embedding: Option<String> = row.get(16)?;
+    let embedding_metadata: Option<String> = row.get(18)?;
     let content = serde_json::from_str(&content).map_err(|error| {
         rusqlite::Error::FromSqlConversionFailure(15, rusqlite::types::Type::Text, Box::new(error))
     })?;
@@ -1476,7 +2383,18 @@ fn sqlite_memory_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<StoredMemory> 
             })
         })
         .transpose()?;
-    Ok(StoredMemory {
+    let embedding_metadata = embedding_metadata
+        .map(|value| {
+            serde_json::from_str(&value).map_err(|error| {
+                rusqlite::Error::FromSqlConversionFailure(
+                    18,
+                    rusqlite::types::Type::Text,
+                    Box::new(error),
+                )
+            })
+        })
+        .transpose()?;
+    let memory = StoredMemory {
         memory_id: row.get(0)?,
         version: row.get(1)?,
         scope: MemoryScope {
@@ -1497,10 +2415,20 @@ fn sqlite_memory_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<StoredMemory> 
         content,
         embedding,
         embedding_provenance: row.get(17)?,
-        record_sha256: row.get(18)?,
-        created_at: row.get(19)?,
-        created_by: row.get(20)?,
-    })
+        embedding_metadata,
+        embedding_binding_sha256: row.get(19)?,
+        record_sha256: row.get(20)?,
+        created_at: row.get(21)?,
+        created_by: row.get(22)?,
+    };
+    validate_stored_embedding_binding(&memory).map_err(|error| {
+        rusqlite::Error::FromSqlConversionFailure(
+            18,
+            rusqlite::types::Type::Text,
+            Box::new(std::io::Error::new(std::io::ErrorKind::InvalidData, error)),
+        )
+    })?;
+    Ok(memory)
 }
 
 fn sqlite_has_active_conflict(
@@ -1578,7 +2506,7 @@ fn sqlite_mark_conflicts(
     actor: &str,
     now: &str,
 ) -> Result<(), String> {
-    let mut stmt=conn.prepare("SELECT m.memory_id,m.version,m.tenant_id,m.workspace_id,m.agent_id,m.run_id,m.task_id,m.source_id,m.source_sha256,m.conflict_key,m.state,m.confidence,m.fresh_until,m.expires_at,m.supersedes_memory_id,m.content_json,m.embedding_json,m.embedding_provenance,m.record_sha256,m.created_at,m.created_by FROM durable_memory_versions m JOIN (SELECT memory_id,MAX(version) version FROM durable_memory_versions GROUP BY memory_id) latest ON latest.memory_id=m.memory_id AND latest.version=m.version WHERE m.tenant_id=?1 AND m.workspace_id=?2 AND m.agent_id IS ?3 AND m.task_id IS ?4 AND m.conflict_key=?5 AND m.state='current' AND m.source_sha256<>?6 ORDER BY m.memory_id").map_err(|error|error.to_string())?;
+    let mut stmt=conn.prepare("SELECT m.memory_id,m.version,m.tenant_id,m.workspace_id,m.agent_id,m.run_id,m.task_id,m.source_id,m.source_sha256,m.conflict_key,m.state,m.confidence,m.fresh_until,m.expires_at,m.supersedes_memory_id,m.content_json,m.embedding_json,m.embedding_provenance,m.embedding_metadata_json,m.embedding_binding_sha256,m.record_sha256,m.created_at,m.created_by FROM durable_memory_versions m JOIN (SELECT memory_id,MAX(version) version FROM durable_memory_versions GROUP BY memory_id) latest ON latest.memory_id=m.memory_id AND latest.version=m.version WHERE m.tenant_id=?1 AND m.workspace_id=?2 AND m.agent_id IS ?3 AND m.task_id IS ?4 AND m.conflict_key=?5 AND m.state='current' AND m.source_sha256<>?6 ORDER BY m.memory_id").map_err(|error|error.to_string())?;
     let rows = stmt
         .query_map(
             params![
@@ -1617,15 +2545,157 @@ fn pg_insert_memory(
         .embedding
         .as_ref()
         .map(|value| serde_json::to_string(value).unwrap());
-    tx.execute("INSERT INTO durable_memory_versions (memory_id,version,tenant_id,workspace_id,agent_id,run_id,task_id,source_id,source_sha256,conflict_key,state,confidence,fresh_until,expires_at,supersedes_memory_id,content_json,embedding_json,embedding_provenance,record_sha256,created_at,created_by) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21)",&[&memory.memory_id,&memory.version,&memory.scope.tenant_id,&memory.scope.workspace_id,&memory.scope.agent_id,&memory.run_id,&memory.scope.task_id,&memory.source_id,&memory.source_sha256,&memory.conflict_key,&memory.state,&memory.confidence,&memory.fresh_until,&memory.expires_at,&memory.supersedes_memory_id,&content,&embedding,&memory.embedding_provenance,&memory.record_sha256,&memory.created_at,&memory.created_by]).map_err(|error|error.to_string())?;
+    let embedding_metadata = memory
+        .embedding_metadata
+        .as_ref()
+        .map(|value| serde_json::to_string(value).unwrap());
+    tx.execute("INSERT INTO durable_memory_versions (memory_id,version,tenant_id,workspace_id,agent_id,run_id,task_id,source_id,source_sha256,conflict_key,state,confidence,fresh_until,expires_at,supersedes_memory_id,content_json,embedding_json,embedding_provenance,embedding_metadata_json,embedding_binding_sha256,record_sha256,created_at,created_by) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23)",&[&memory.memory_id,&memory.version,&memory.scope.tenant_id,&memory.scope.workspace_id,&memory.scope.agent_id,&memory.run_id,&memory.scope.task_id,&memory.source_id,&memory.source_sha256,&memory.conflict_key,&memory.state,&memory.confidence,&memory.fresh_until,&memory.expires_at,&memory.supersedes_memory_id,&content,&embedding,&memory.embedding_provenance,&embedding_metadata,&memory.embedding_binding_sha256,&memory.record_sha256,&memory.created_at,&memory.created_by]).map_err(|error|error.to_string())?;
     Ok(())
+}
+
+#[cfg(feature = "pg")]
+fn pg_finalize_provider_embedding_memory(
+    tx: &mut postgres::Transaction<'_>,
+    operation_id: &str,
+    memory: &StoredMemory,
+    updated_at: &str,
+) -> Result<(), String> {
+    let vector_json = serde_json::to_string(
+        memory
+            .embedding
+            .as_ref()
+            .ok_or_else(|| "provider embedding finalize is missing the vector".to_string())?,
+    )
+    .map_err(|error| error.to_string())?;
+    let provider = &memory
+        .embedding_metadata
+        .as_ref()
+        .ok_or_else(|| "provider embedding finalize is missing metadata".to_string())?
+        .provider;
+    let metadata_json = serde_json::to_string(provider).map_err(|error| error.to_string())?;
+    let changed = tx
+        .execute(
+            "UPDATE provider_embedding_operations
+             SET state='succeeded',result_kind='memory_version',result_id=$1,
+                 result_sha256=$2,updated_at=$3
+             WHERE operation_id=$4 AND target_memory_id=$5 AND target_version=$6
+               AND tenant_id=$7 AND workspace_id=$8 AND agent_id IS NOT DISTINCT FROM $9
+               AND run_id IS NOT DISTINCT FROM $10 AND task_id IS NOT DISTINCT FROM $11
+               AND source_id=$12 AND source_sha256=$13 AND provider_id=$14
+               AND requested_model_id=$15 AND resolved_model_id=$16 AND dimensions=$17
+               AND state IN ('network_succeeded','succeeded') AND vector_json=$18 AND metadata_json=$19",
+            &[
+                &format!("{}:{}", memory.memory_id, memory.version),
+                &memory.embedding_binding_sha256,
+                &updated_at,
+                &operation_id,
+                &memory.memory_id,
+                &memory.version,
+                &memory.scope.tenant_id,
+                &memory.scope.workspace_id,
+                &memory.scope.agent_id,
+                &memory.run_id,
+                &memory.scope.task_id,
+                &memory.source_id,
+                &memory.source_sha256,
+                &OPENROUTER_EMBEDDING_PROVIDER_ID,
+                &provider.requested_model_id,
+                &provider.resolved_model_id,
+                &(provider.dimensions as i64),
+                &vector_json,
+                &metadata_json,
+            ],
+        )
+        .map_err(|error| error.to_string())?;
+    if changed == 1 {
+        Ok(())
+    } else {
+        Err("provider embedding memory finalize integrity binding mismatch".to_string())
+    }
+}
+
+#[cfg(feature = "pg")]
+fn pg_erase_provider_embedding_memory_results(
+    tx: &mut postgres::Transaction<'_>,
+    memory_id: &str,
+    updated_at: &str,
+) -> Result<(), String> {
+    tx.execute(
+        "UPDATE provider_embedding_operations
+         SET state='result_erased',vector_json=NULL,metadata_json=NULL,
+             result_kind=NULL,result_id=NULL,result_sha256=NULL,updated_at=$1
+         WHERE target_memory_id=$2 AND operation_kind='memory_version' AND state='succeeded'",
+        &[&updated_at, &memory_id],
+    )
+    .map(|_| ())
+    .map_err(|error| error.to_string())
+}
+
+#[cfg(feature = "pg")]
+fn pg_finalize_provider_embedding_retrieval(
+    tx: &mut postgres::Transaction<'_>,
+    request: &MemoryRetrievalRequest,
+    result: &MemoryRetrievalResult,
+    material: &EmbeddingMaterial,
+    updated_at: &str,
+) -> Result<(), String> {
+    let operation_id = material
+        .pending_operation_id
+        .as_deref()
+        .ok_or_else(|| "provider retrieval finalize is missing operation identity".to_string())?;
+    let provider = material
+        .provider
+        .as_ref()
+        .ok_or_else(|| "provider retrieval finalize is missing metadata".to_string())?;
+    let vector_json = serde_json::to_string(&material.values).map_err(|error| error.to_string())?;
+    let metadata_json = serde_json::to_string(provider).map_err(|error| error.to_string())?;
+    let source_id = format!("retrieval-query/{}", request.node_id);
+    let content_sha256 = normalized_content_sha256(&request.query);
+    let changed = tx
+        .execute(
+            "UPDATE provider_embedding_operations
+             SET state='succeeded',result_kind='retrieval_event',result_id=$1,
+                 result_sha256=$2,updated_at=$3
+             WHERE operation_id=$4 AND tenant_id=$5 AND workspace_id=$6
+               AND agent_id IS NOT DISTINCT FROM $7 AND run_id=$8
+               AND task_id IS NOT DISTINCT FROM $9 AND source_id=$10 AND content_sha256=$11
+               AND provider_id=$12 AND requested_model_id=$13 AND resolved_model_id=$14
+               AND dimensions=$15 AND state='network_succeeded'
+               AND vector_json=$16 AND metadata_json=$17",
+            &[
+                &result.retrieval_id,
+                &result.result_sha256,
+                &updated_at,
+                &operation_id,
+                &request.scope.tenant_id,
+                &request.scope.workspace_id,
+                &request.scope.agent_id,
+                &request.run_id,
+                &request.scope.task_id,
+                &source_id,
+                &content_sha256,
+                &OPENROUTER_EMBEDDING_PROVIDER_ID,
+                &provider.requested_model_id,
+                &provider.resolved_model_id,
+                &(provider.dimensions as i64),
+                &vector_json,
+                &metadata_json,
+            ],
+        )
+        .map_err(|error| error.to_string())?;
+    if changed == 1 {
+        Ok(())
+    } else {
+        Err("provider embedding retrieval finalize integrity binding mismatch".to_string())
+    }
 }
 
 #[cfg(feature = "pg")]
 fn pg_memory_row(row: &postgres::Row) -> Result<StoredMemory, String> {
     let content: String = row.get(15);
     let embedding: Option<String> = row.get(16);
-    Ok(StoredMemory {
+    let embedding_metadata: Option<String> = row.get(18);
+    let memory = StoredMemory {
         memory_id: row.get(0),
         version: row.get(1),
         scope: MemoryScope {
@@ -1648,10 +2718,16 @@ fn pg_memory_row(row: &postgres::Row) -> Result<StoredMemory, String> {
             .map(|value| serde_json::from_str(&value).map_err(|error| error.to_string()))
             .transpose()?,
         embedding_provenance: row.get(17),
-        record_sha256: row.get(18),
-        created_at: row.get(19),
-        created_by: row.get(20),
-    })
+        embedding_metadata: embedding_metadata
+            .map(|value| serde_json::from_str(&value).map_err(|error| error.to_string()))
+            .transpose()?,
+        embedding_binding_sha256: row.get(19),
+        record_sha256: row.get(20),
+        created_at: row.get(21),
+        created_by: row.get(22),
+    };
+    validate_stored_embedding_binding(&memory)?;
+    Ok(memory)
 }
 
 #[cfg(feature = "pg")]
@@ -1659,7 +2735,7 @@ fn pg_latest_memory(
     tx: &mut postgres::Transaction<'_>,
     memory_id: &str,
 ) -> Result<Option<StoredMemory>, String> {
-    tx.query_opt("SELECT memory_id,version,tenant_id,workspace_id,agent_id,run_id,task_id,source_id,source_sha256,conflict_key,state,confidence::DOUBLE PRECISION,fresh_until,expires_at,supersedes_memory_id,content_json,embedding_json,embedding_provenance,record_sha256,created_at,created_by FROM durable_memory_versions WHERE memory_id=$1 ORDER BY version DESC LIMIT 1",&[&memory_id]).map_err(|error|error.to_string())?.as_ref().map(pg_memory_row).transpose()
+    tx.query_opt("SELECT memory_id,version,tenant_id,workspace_id,agent_id,run_id,task_id,source_id,source_sha256,conflict_key,state,confidence::DOUBLE PRECISION,fresh_until,expires_at,supersedes_memory_id,content_json,embedding_json,embedding_provenance,embedding_metadata_json,embedding_binding_sha256,record_sha256,created_at,created_by FROM durable_memory_versions WHERE memory_id=$1 ORDER BY version DESC LIMIT 1",&[&memory_id]).map_err(|error|error.to_string())?.as_ref().map(pg_memory_row).transpose()
 }
 
 #[cfg(feature = "pg")]
@@ -1667,7 +2743,7 @@ fn pg_latest_memory_for_update(
     tx: &mut postgres::Transaction<'_>,
     memory_id: &str,
 ) -> Result<Option<StoredMemory>, String> {
-    tx.query_opt("SELECT memory_id,version,tenant_id,workspace_id,agent_id,run_id,task_id,source_id,source_sha256,conflict_key,state,confidence::DOUBLE PRECISION,fresh_until,expires_at,supersedes_memory_id,content_json,embedding_json,embedding_provenance,record_sha256,created_at,created_by FROM durable_memory_versions WHERE memory_id=$1 ORDER BY version DESC LIMIT 1 FOR UPDATE",&[&memory_id]).map_err(|error|error.to_string())?.as_ref().map(pg_memory_row).transpose()
+    tx.query_opt("SELECT memory_id,version,tenant_id,workspace_id,agent_id,run_id,task_id,source_id,source_sha256,conflict_key,state,confidence::DOUBLE PRECISION,fresh_until,expires_at,supersedes_memory_id,content_json,embedding_json,embedding_provenance,embedding_metadata_json,embedding_binding_sha256,record_sha256,created_at,created_by FROM durable_memory_versions WHERE memory_id=$1 ORDER BY version DESC LIMIT 1 FOR UPDATE",&[&memory_id]).map_err(|error|error.to_string())?.as_ref().map(pg_memory_row).transpose()
 }
 
 #[cfg(feature = "pg")]
@@ -1726,7 +2802,7 @@ fn pg_expired_memories(
     now: &str,
 ) -> Result<Vec<StoredMemory>, String> {
     tx.query(
-        "SELECT m.memory_id,m.version,m.tenant_id,m.workspace_id,m.agent_id,m.run_id,m.task_id,m.source_id,m.source_sha256,m.conflict_key,m.state,m.confidence::DOUBLE PRECISION,m.fresh_until,m.expires_at,m.supersedes_memory_id,m.content_json,m.embedding_json,m.embedding_provenance,m.record_sha256,m.created_at,m.created_by
+        "SELECT m.memory_id,m.version,m.tenant_id,m.workspace_id,m.agent_id,m.run_id,m.task_id,m.source_id,m.source_sha256,m.conflict_key,m.state,m.confidence::DOUBLE PRECISION,m.fresh_until,m.expires_at,m.supersedes_memory_id,m.content_json,m.embedding_json,m.embedding_provenance,m.embedding_metadata_json,m.embedding_binding_sha256,m.record_sha256,m.created_at,m.created_by
          FROM durable_memory_versions m
          JOIN (SELECT memory_id,MAX(version) version FROM durable_memory_versions GROUP BY memory_id) latest
            ON latest.memory_id=m.memory_id AND latest.version=m.version
@@ -1824,7 +2900,7 @@ fn pg_mark_conflicts(
     actor: &str,
     now: &str,
 ) -> Result<(), String> {
-    let rows=tx.query("SELECT m.memory_id,m.version,m.tenant_id,m.workspace_id,m.agent_id,m.run_id,m.task_id,m.source_id,m.source_sha256,m.conflict_key,m.state,m.confidence::DOUBLE PRECISION,m.fresh_until,m.expires_at,m.supersedes_memory_id,m.content_json,m.embedding_json,m.embedding_provenance,m.record_sha256,m.created_at,m.created_by FROM durable_memory_versions m JOIN (SELECT memory_id,MAX(version) version FROM durable_memory_versions GROUP BY memory_id) latest ON latest.memory_id=m.memory_id AND latest.version=m.version WHERE m.tenant_id=$1 AND m.workspace_id=$2 AND m.agent_id IS NOT DISTINCT FROM $3 AND m.task_id IS NOT DISTINCT FROM $4 AND m.conflict_key=$5 AND m.state='current' AND m.source_sha256<>$6 ORDER BY m.memory_id FOR UPDATE OF m",&[&request.scope.tenant_id,&request.scope.workspace_id,&request.scope.agent_id,&request.scope.task_id,&request.conflict_key,&request.source_sha256]).map_err(|error|error.to_string())?;
+    let rows=tx.query("SELECT m.memory_id,m.version,m.tenant_id,m.workspace_id,m.agent_id,m.run_id,m.task_id,m.source_id,m.source_sha256,m.conflict_key,m.state,m.confidence::DOUBLE PRECISION,m.fresh_until,m.expires_at,m.supersedes_memory_id,m.content_json,m.embedding_json,m.embedding_provenance,m.embedding_metadata_json,m.embedding_binding_sha256,m.record_sha256,m.created_at,m.created_by FROM durable_memory_versions m JOIN (SELECT memory_id,MAX(version) version FROM durable_memory_versions GROUP BY memory_id) latest ON latest.memory_id=m.memory_id AND latest.version=m.version WHERE m.tenant_id=$1 AND m.workspace_id=$2 AND m.agent_id IS NOT DISTINCT FROM $3 AND m.task_id IS NOT DISTINCT FROM $4 AND m.conflict_key=$5 AND m.state='current' AND m.source_sha256<>$6 ORDER BY m.memory_id FOR UPDATE OF m",&[&request.scope.tenant_id,&request.scope.workspace_id,&request.scope.agent_id,&request.scope.task_id,&request.conflict_key,&request.source_sha256]).map_err(|error|error.to_string())?;
     for row in &rows {
         pg_insert_memory(
             tx,
@@ -1850,11 +2926,27 @@ fn pg_append_audit(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::{Mutex, MutexGuard, OnceLock};
+    use crate::provider::embedding::{
+        OPENROUTER_EMBEDDING_CANONICAL_SLUG, OPENROUTER_EMBEDDING_CONTEXT_LENGTH,
+        OPENROUTER_EMBEDDING_DIMENSIONS, OPENROUTER_EMBEDDING_MODEL_ID,
+        OPENROUTER_EMBEDDING_RESOLVED_MODEL_ID,
+    };
+    use crate::provider::transport::{
+        HttpError, HttpRequest, HttpResponse, HttpTransport, MockTransport,
+    };
+    use crate::storage::backup_manager::BackupManager;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Arc;
+    use std::sync::MutexGuard;
     use tempfile::TempDir;
 
     struct EmbeddingFixtureGuard {
         _lock: MutexGuard<'static, ()>,
+    }
+    fn embedding_env_lock() -> MutexGuard<'static, ()> {
+        crate::provider::embedding::EMBEDDING_TEST_ENV_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
     impl Drop for EmbeddingFixtureGuard {
         fn drop(&mut self) {
@@ -1862,10 +2954,115 @@ mod tests {
         }
     }
     fn embedding_fixture() -> EmbeddingFixtureGuard {
-        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
-        let lock = LOCK.get_or_init(|| Mutex::new(())).lock().unwrap();
+        let lock = embedding_env_lock();
         std::env::set_var("ACP_DURABLE_MEMORY_EMBEDDING_MODE", "fixture");
         EmbeddingFixtureGuard { _lock: lock }
+    }
+    fn embedding_disabled() -> EmbeddingFixtureGuard {
+        let lock = embedding_env_lock();
+        std::env::set_var("ACP_DURABLE_MEMORY_EMBEDDING_MODE", "disabled");
+        EmbeddingFixtureGuard { _lock: lock }
+    }
+
+    struct ProviderEnvGuard {
+        _lock: MutexGuard<'static, ()>,
+        prior: Vec<(&'static str, Option<String>)>,
+    }
+    impl ProviderEnvGuard {
+        fn enabled() -> Self {
+            let lock = embedding_env_lock();
+            let keys = [
+                "CI",
+                "OPENROUTER_API_KEY",
+                "ACP_DURABLE_MEMORY_EMBEDDING_MODE",
+                "ACP_ENABLE_DURABLE_MEMORY_EMBEDDINGS",
+                "ACP_DURABLE_MEMORY_EMBEDDING_KILL_SWITCH",
+                "ACP_ENABLE_PROVIDER_EXECUTION",
+                "ACP_REQUIRE_AUTH",
+            ];
+            let prior = keys
+                .into_iter()
+                .map(|key| (key, std::env::var(key).ok()))
+                .collect();
+            std::env::remove_var("CI");
+            std::env::set_var("OPENROUTER_API_KEY", "fixture-credential");
+            std::env::set_var("ACP_DURABLE_MEMORY_EMBEDDING_MODE", "provider");
+            std::env::set_var("ACP_ENABLE_DURABLE_MEMORY_EMBEDDINGS", "1");
+            std::env::set_var("ACP_ENABLE_PROVIDER_EXECUTION", "1");
+            std::env::set_var("ACP_REQUIRE_AUTH", "1");
+            std::env::remove_var("ACP_DURABLE_MEMORY_EMBEDDING_KILL_SWITCH");
+            Self { _lock: lock, prior }
+        }
+    }
+    impl Drop for ProviderEnvGuard {
+        fn drop(&mut self) {
+            for (key, value) in self.prior.drain(..) {
+                if let Some(value) = value {
+                    std::env::set_var(key, value);
+                } else {
+                    std::env::remove_var(key);
+                }
+            }
+        }
+    }
+
+    fn provider_catalog_response() -> HttpResponse {
+        HttpResponse {
+            status: 200,
+            body: serde_json::to_vec(&json!({"data":[{
+                "id":OPENROUTER_EMBEDDING_MODEL_ID,
+                "canonical_slug":OPENROUTER_EMBEDDING_CANONICAL_SLUG,
+                "context_length":OPENROUTER_EMBEDDING_CONTEXT_LENGTH,
+                "pricing":{"prompt":"0","completion":"0","request":"0","image":"0"},
+                "architecture":{"input_modalities":["text","image"],"output_modalities":["embeddings"]}
+            }]}))
+            .unwrap(),
+        }
+    }
+
+    fn provider_vector_response() -> HttpResponse {
+        HttpResponse {
+            status: 200,
+            body: serde_json::to_vec(&json!({
+                "model":OPENROUTER_EMBEDDING_RESOLVED_MODEL_ID,
+                "data":[{"index":0,"embedding":vec![0.125;OPENROUTER_EMBEDDING_DIMENSIONS]}],
+                "usage":{"prompt_tokens":5}
+            }))
+            .unwrap(),
+        }
+    }
+
+    fn provider_responses(
+        call_count: usize,
+    ) -> Vec<Result<HttpResponse, crate::provider::transport::HttpError>> {
+        (0..call_count)
+            .flat_map(|_| {
+                [
+                    Ok(provider_catalog_response()),
+                    Ok(provider_vector_response()),
+                ]
+            })
+            .collect()
+    }
+
+    struct CountingEmbeddingTransport {
+        posts: AtomicUsize,
+    }
+
+    #[async_trait::async_trait]
+    impl HttpTransport for CountingEmbeddingTransport {
+        async fn send(&self, request: &HttpRequest) -> Result<HttpResponse, HttpError> {
+            if request.url.ends_with("/embeddings/models") {
+                Ok(provider_catalog_response())
+            } else if request.url.ends_with("/embeddings") && request.method == "POST" {
+                self.posts.fetch_add(1, Ordering::SeqCst);
+                Ok(provider_vector_response())
+            } else {
+                Err(HttpError::Connection(
+                    "unexpected fixture endpoint".to_string(),
+                ))
+            }
+        }
     }
 
     fn store() -> (TempDir, LocalProductStore) {
@@ -2018,6 +3215,7 @@ mod tests {
 
     #[test]
     fn supersede_is_atomic_scope_bound_and_restart_safe() {
+        let _embedding = embedding_disabled();
         let (dir, store) = store();
         let first = store
             .create_durable_memory(&create("ws-a", "source-a", "value one"), "test")
@@ -2047,5 +3245,1231 @@ mod tests {
         let second_history = reopened.inspect_durable_memory(second_id).unwrap();
         assert_eq!(first_history.last().unwrap()["state"], "superseded");
         assert_eq!(second_history.last().unwrap()["state"], "current");
+    }
+
+    #[test]
+    fn provider_embedding_is_source_scope_version_and_restart_bound() {
+        let _env = ProviderEnvGuard::enabled();
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("provider-memory.db");
+        let store = LocalProductStore::new_with_embedding_transport(
+            &path,
+            || "2026-07-15T00:00:00Z".to_string(),
+            Arc::new(MockTransport::new(provider_responses(1))),
+        )
+        .unwrap();
+        let created = store
+            .create_durable_memory(
+                &create("ws-provider", "provider-source", "provider memory fact"),
+                "test",
+            )
+            .unwrap();
+        let memory_id = created["memory_id"].as_str().unwrap().to_string();
+        assert_eq!(created["embedding"]["provenance"], "provider_reported");
+        assert_eq!(created["embedding"]["dimensions"], 1536);
+        assert_eq!(
+            created["embedding"]["provider"]["provider_id"],
+            "openrouter"
+        );
+        assert!(created["embedding"]["provider"]["cost_usd"].is_null());
+        assert_eq!(
+            created["embedding"]["provider"]["pricing"]["source"],
+            crate::provider::embedding::OPENROUTER_EMBEDDING_PRICING_SOURCE
+        );
+        assert_eq!(
+            created["embedding"]["binding_sha256"]
+                .as_str()
+                .unwrap()
+                .len(),
+            64
+        );
+        let audit_contains_raw: bool = store
+            .with_conn(|conn| {
+                conn.query_row(
+                    "SELECT EXISTS(SELECT 1 FROM audit_log WHERE details_json LIKE '%provider memory fact%')",
+                    [],
+                    |row| row.get(0),
+                )
+                .map_err(|error| error.to_string())
+            })
+            .unwrap();
+        assert!(!audit_contains_raw);
+        assert_eq!(store.check_integrity().unwrap().status, "ok");
+        store.checkpoint_wal().unwrap();
+        let backup = BackupManager::new(&dir.path().join("backups")).unwrap();
+        let backup_record = backup
+            .create_backup(
+                &path,
+                "provider embedding metadata",
+                "provider-memory",
+                "2026-07-15T00:00:30Z",
+            )
+            .unwrap();
+        backup.save_metadata(&[backup_record]).unwrap();
+        let restored_path = dir.path().join("provider-memory-restored.db");
+        assert!(
+            backup
+                .restore_backup_with_verify("provider-memory", &restored_path, 1.0)
+                .unwrap()
+                .success
+        );
+        let restored = LocalProductStore::new(&restored_path).unwrap();
+        assert_eq!(
+            restored.inspect_durable_memory(&memory_id).unwrap()[0]["embedding"]["binding_sha256"],
+            created["embedding"]["binding_sha256"]
+        );
+        drop(restored);
+        let original_source_sha256 = created["source_sha256"].as_str().unwrap().to_string();
+        store
+            .with_conn(|conn| {
+                conn.execute(
+                    "UPDATE durable_memory_versions SET source_sha256=?1 WHERE memory_id=?2",
+                    params!["cc".repeat(32), memory_id],
+                )
+                .map(|_| ())
+                .map_err(|error| error.to_string())
+            })
+            .unwrap();
+        assert!(store
+            .inspect_durable_memory(&memory_id)
+            .unwrap_err()
+            .contains("scope/source/version binding mismatch"));
+        store
+            .with_conn(|conn| {
+                conn.execute(
+                    "UPDATE durable_memory_versions SET source_sha256=?1 WHERE memory_id=?2",
+                    params![original_source_sha256, memory_id],
+                )
+                .map(|_| ())
+                .map_err(|error| error.to_string())
+            })
+            .unwrap();
+        drop(store);
+
+        let reopened = LocalProductStore::new_with_embedding_transport(
+            &path,
+            || "2026-07-15T00:01:00Z".to_string(),
+            Arc::new(MockTransport::new(provider_responses(4))),
+        )
+        .unwrap();
+        let history = reopened.inspect_durable_memory(&memory_id).unwrap();
+        assert_eq!(history.len(), 1);
+        assert_eq!(
+            history[0]["embedding"]["binding_sha256"],
+            created["embedding"]["binding_sha256"]
+        );
+        let result = reopened
+            .retrieve_durable_memories(
+                &MemoryRetrievalRequest {
+                    scope: scope("ws-provider"),
+                    run_id: "run-retrieval".into(),
+                    node_id: "node-retrieval".into(),
+                    query: "provider fact".into(),
+                    top_k: 5,
+                    max_tokens: 100,
+                    max_bytes: 1000,
+                    allow_lexical_fallback: false,
+                },
+                "test",
+            )
+            .unwrap();
+        assert_eq!(result.selected.len(), 1);
+        assert_eq!(
+            result.embedding_provider.as_ref().unwrap()["provider_id"],
+            "openrouter"
+        );
+
+        let isolated = reopened
+            .retrieve_durable_memories(
+                &MemoryRetrievalRequest {
+                    scope: scope("other-workspace"),
+                    run_id: "run-isolated".into(),
+                    node_id: "node-isolated".into(),
+                    query: "provider fact".into(),
+                    top_k: 5,
+                    max_tokens: 100,
+                    max_bytes: 1000,
+                    allow_lexical_fallback: false,
+                },
+                "test",
+            )
+            .unwrap();
+        assert!(isolated.selected.is_empty());
+
+        let stale = reopened
+            .revise_durable_memory(
+                &memory_id,
+                &DurableMemoryRevision {
+                    expected_version: 2,
+                    source_id: "provider-source-v2".into(),
+                    source_sha256: sha256_bytes(b"provider memory v2"),
+                    content: json!({"text":"provider memory v2"}),
+                    confidence: 0.9,
+                    fresh_until: None,
+                    expires_at: None,
+                },
+                "test",
+            )
+            .unwrap_err();
+        assert!(stale.contains("version conflict"));
+        let revised = reopened
+            .revise_durable_memory(
+                &memory_id,
+                &DurableMemoryRevision {
+                    expected_version: 1,
+                    source_id: "provider-source-v2".into(),
+                    source_sha256: sha256_bytes(b"provider memory v2"),
+                    content: json!({"text":"provider memory v2"}),
+                    confidence: 0.95,
+                    fresh_until: None,
+                    expires_at: None,
+                },
+                "test",
+            )
+            .unwrap();
+        assert_eq!(revised["version"], 2);
+        assert_eq!(revised["source_id"], "provider-source-v2");
+        assert_ne!(
+            revised["embedding"]["binding_sha256"],
+            created["embedding"]["binding_sha256"]
+        );
+        assert_eq!(
+            reopened.inspect_durable_memory(&memory_id).unwrap().len(),
+            2
+        );
+    }
+
+    #[test]
+    fn provider_embedding_create_retry_and_concurrent_revision_call_once() {
+        let _env = ProviderEnvGuard::enabled();
+        let dir = TempDir::new().unwrap();
+        let transport = Arc::new(CountingEmbeddingTransport {
+            posts: AtomicUsize::new(0),
+        });
+        let store = Arc::new(
+            LocalProductStore::new_with_embedding_transport(
+                dir.path().join("provider-idempotency.db"),
+                || "2026-07-15T00:00:00Z".to_string(),
+                transport.clone(),
+            )
+            .unwrap(),
+        );
+        let request = create(
+            "ws-provider-idempotency",
+            "provider-source-idempotency",
+            "bounded provider memory",
+        );
+        let created = store.create_durable_memory(&request, "test").unwrap();
+        let memory_id = created["memory_id"].as_str().unwrap().to_string();
+        let duplicate = store.create_durable_memory(&request, "test").unwrap();
+        assert_eq!(duplicate["record_sha256"], created["record_sha256"]);
+        assert_eq!(transport.posts.load(Ordering::SeqCst), 1);
+
+        let revisions = [
+            "bounded provider memory v2-a",
+            "bounded provider memory v2-b",
+        ]
+        .map(|content| DurableMemoryRevision {
+            expected_version: 1,
+            source_id: format!("provider-source-{}", &sha256_bytes(content.as_bytes())[..8]),
+            source_sha256: sha256_bytes(content.as_bytes()),
+            content: json!({"text":content}),
+            confidence: 0.95,
+            fresh_until: None,
+            expires_at: None,
+        });
+        let barrier = Arc::new(std::sync::Barrier::new(2));
+        let results = std::thread::scope(|scope| {
+            let handles = revisions
+                .into_iter()
+                .map(|revision| {
+                    let store = Arc::clone(&store);
+                    let barrier = Arc::clone(&barrier);
+                    let memory_id = memory_id.clone();
+                    scope.spawn(move || {
+                        barrier.wait();
+                        store.revise_durable_memory(&memory_id, &revision, "test")
+                    })
+                })
+                .collect::<Vec<_>>();
+            handles
+                .into_iter()
+                .map(|handle| handle.join().unwrap())
+                .collect::<Vec<_>>()
+        });
+        assert_eq!(results.iter().filter(|result| result.is_ok()).count(), 1);
+        assert_eq!(results.iter().filter(|result| result.is_err()).count(), 1);
+        assert!(results
+            .iter()
+            .filter_map(|result| result.as_ref().err())
+            .all(|error| {
+                error.contains("outcome is unknown")
+                    || error.contains("version conflict")
+                    || error.contains("competing provider embedding mutation")
+            }));
+        assert_eq!(transport.posts.load(Ordering::SeqCst), 2);
+        assert_eq!(store.inspect_durable_memory(&memory_id).unwrap().len(), 2);
+        let request_events = store
+            .provider_audit_events(100)
+            .unwrap()
+            .into_iter()
+            .filter(|event| event["event_type"] == "request_sent")
+            .count();
+        assert_eq!(request_events, 2);
+    }
+
+    #[test]
+    fn completed_provider_embedding_receipt_recovers_after_restart_without_another_post() {
+        let _env = ProviderEnvGuard::enabled();
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("provider-recovery.db");
+        let transport = Arc::new(CountingEmbeddingTransport {
+            posts: AtomicUsize::new(0),
+        });
+        let request = create(
+            "ws-provider-recovery",
+            "provider-source-recovery",
+            "recover completed provider result",
+        );
+        let store = LocalProductStore::new_with_embedding_transport(
+            &path,
+            || "2026-07-15T00:00:00Z".to_string(),
+            transport.clone(),
+        )
+        .unwrap();
+        let created = store.create_durable_memory(&request, "test").unwrap();
+        assert_eq!(transport.posts.load(Ordering::SeqCst), 1);
+
+        // Simulate the only relevant crash window: the provider result receipt
+        // committed, but the durable-memory version did not.
+        store
+            .with_conn(|conn| {
+                conn.execute(
+                    "UPDATE provider_embedding_operations
+                     SET state='network_succeeded',result_kind=NULL,result_id=NULL,result_sha256=NULL
+                     WHERE target_memory_id=?1",
+                    [created["memory_id"].as_str().unwrap()],
+                )
+                .map_err(|error| error.to_string())?;
+                conn.execute(
+                    "DELETE FROM durable_memory_versions WHERE memory_id=?1",
+                    [created["memory_id"].as_str().unwrap()],
+                )
+                .map(|_| ())
+                .map_err(|error| error.to_string())
+            })
+            .unwrap();
+        drop(store);
+
+        let reopened = LocalProductStore::new_with_embedding_transport(
+            &path,
+            || "2026-07-16T00:00:00Z".to_string(),
+            transport.clone(),
+        )
+        .unwrap();
+        let recovered = reopened.create_durable_memory(&request, "test").unwrap();
+        assert_eq!(
+            recovered["embedding"]["binding_sha256"],
+            created["embedding"]["binding_sha256"]
+        );
+        assert_eq!(transport.posts.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn local_finalize_failure_reuses_network_result_without_another_post() {
+        let _env = ProviderEnvGuard::enabled();
+        let dir = TempDir::new().unwrap();
+        let transport = Arc::new(CountingEmbeddingTransport {
+            posts: AtomicUsize::new(0),
+        });
+        let store = LocalProductStore::new_with_embedding_transport(
+            dir.path().join("provider-local-finalize.db"),
+            || "2026-07-15T00:00:00Z".to_string(),
+            transport.clone(),
+        )
+        .unwrap();
+        let request = create(
+            "ws-provider-local-finalize",
+            "provider-source-local-finalize",
+            "reuse provider result after local finalize failure",
+        );
+        store
+            .with_conn(|conn| {
+                conn.execute_batch(
+                    "CREATE TRIGGER fail_memory_finalize BEFORE INSERT ON durable_memory_versions
+                     BEGIN SELECT RAISE(ABORT, 'fixture local finalize failure'); END;",
+                )
+                .map_err(|error| error.to_string())
+            })
+            .unwrap();
+
+        assert!(store
+            .create_durable_memory(&request, "test")
+            .unwrap_err()
+            .contains("fixture local finalize failure"));
+        assert_eq!(transport.posts.load(Ordering::SeqCst), 1);
+        let memory_id = memory_id(&request).unwrap();
+        let state = |store: &LocalProductStore| {
+            store
+                .with_conn(|conn| {
+                    conn.query_row(
+                        "SELECT state FROM provider_embedding_operations WHERE target_memory_id=?1",
+                        [&memory_id],
+                        |row| row.get::<_, String>(0),
+                    )
+                    .map_err(|error| error.to_string())
+                })
+                .unwrap()
+        };
+        assert_eq!(state(&store), "network_succeeded");
+
+        store
+            .with_conn(|conn| {
+                conn.execute_batch("DROP TRIGGER fail_memory_finalize;")
+                    .map_err(|error| error.to_string())
+            })
+            .unwrap();
+        let recovered = store.create_durable_memory(&request, "test").unwrap();
+        assert_eq!(recovered["version"], 1);
+        assert_eq!(state(&store), "succeeded");
+        assert_eq!(transport.posts.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn retrieval_query_embedding_receipt_reuses_success_across_duplicate_and_restart() {
+        let _env = ProviderEnvGuard::enabled();
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("provider-retrieval-reuse.db");
+        let transport = Arc::new(CountingEmbeddingTransport {
+            posts: AtomicUsize::new(0),
+        });
+        let request = MemoryRetrievalRequest {
+            scope: scope("ws-provider-retrieval-reuse"),
+            run_id: "run-provider-retrieval-reuse".into(),
+            node_id: "node-provider-retrieval-reuse".into(),
+            query: "bounded retrieval query".into(),
+            top_k: 5,
+            max_tokens: 100,
+            max_bytes: 1_000,
+            allow_lexical_fallback: false,
+        };
+        let store = LocalProductStore::new_with_embedding_transport(
+            &path,
+            || "2026-07-15T00:00:00Z".to_string(),
+            transport.clone(),
+        )
+        .unwrap();
+
+        let first = store.retrieve_durable_memories(&request, "test").unwrap();
+        let receipt_state: String = store
+            .with_conn(|conn| {
+                conn.query_row(
+                    "SELECT state FROM provider_embedding_operations WHERE run_id=?1 AND source_id=?2",
+                    params![request.run_id, format!("retrieval-query/{}", request.node_id)],
+                    |row| row.get(0),
+                )
+                .map_err(|error| error.to_string())
+            })
+            .unwrap();
+        assert_eq!(receipt_state, "succeeded");
+        let dashboard = store.dashboard_snapshot(20, "noop", false).unwrap();
+        let receipt = &dashboard["provider_embedding_receipts"][0];
+        assert_eq!(receipt["state"], "succeeded");
+        assert_eq!(receipt["operation_kind"], "retrieval_query");
+        assert_eq!(receipt["requested_model_id"], OPENROUTER_EMBEDDING_MODEL_ID);
+        assert_eq!(receipt["redacted"], true);
+        let dashboard_json = dashboard.to_string();
+        assert!(!dashboard_json.contains(&request.query));
+        for forbidden in [
+            "vector_json",
+            "metadata_json",
+            "contract_json",
+            "credential",
+        ] {
+            assert!(!dashboard_json.contains(forbidden));
+        }
+        let duplicate = store.retrieve_durable_memories(&request, "test").unwrap();
+        assert_eq!(duplicate.request_sha256, first.request_sha256);
+        assert_eq!(duplicate.result_sha256, first.result_sha256);
+        assert_eq!(transport.posts.load(Ordering::SeqCst), 1);
+        drop(store);
+
+        let reopened = LocalProductStore::new_with_embedding_transport(
+            &path,
+            || "2026-07-16T00:00:00Z".to_string(),
+            transport.clone(),
+        )
+        .unwrap();
+        let restarted = reopened
+            .retrieve_durable_memories(&request, "test")
+            .unwrap();
+        assert_eq!(restarted.request_sha256, first.request_sha256);
+        assert_eq!(restarted.result_sha256, first.result_sha256);
+        assert_eq!(transport.posts.load(Ordering::SeqCst), 1);
+        assert_eq!(reopened.check_integrity().unwrap().status, "ok");
+        reopened
+            .with_conn(|connection| {
+                connection
+                    .execute(
+                        "UPDATE memory_retrieval_events SET result_sha256=?1 WHERE retrieval_id=?2",
+                        params!["f".repeat(64), restarted.retrieval_id],
+                    )
+                    .map(|_| ())
+                    .map_err(|error| error.to_string())
+            })
+            .unwrap();
+        assert!(reopened
+            .check_integrity()
+            .unwrap_err()
+            .contains("retrieval result cross-owner binding is invalid"));
+        reopened
+            .with_conn(|connection| {
+                connection
+                    .execute(
+                        "UPDATE memory_retrieval_events SET result_sha256=?1 WHERE retrieval_id=?2",
+                        params![restarted.result_sha256, restarted.retrieval_id],
+                    )
+                    .map(|_| ())
+                    .map_err(|error| error.to_string())
+            })
+            .unwrap();
+        assert_eq!(reopened.check_integrity().unwrap().status, "ok");
+        let original_evidence: String = reopened
+            .with_conn(|connection| {
+                connection
+                    .query_row(
+                        "SELECT evidence_json FROM memory_retrieval_events WHERE retrieval_id=?1",
+                        [&restarted.retrieval_id],
+                        |row| row.get(0),
+                    )
+                    .map_err(|error| error.to_string())
+            })
+            .unwrap();
+        let mut corrupted_evidence: Value = serde_json::from_str(&original_evidence).unwrap();
+        corrupted_evidence["request_identity_sha256"] = json!("e".repeat(64));
+        reopened
+            .with_conn(|connection| {
+                connection
+                    .execute(
+                        "UPDATE memory_retrieval_events SET evidence_json=?1 WHERE retrieval_id=?2",
+                        params![corrupted_evidence.to_string(), restarted.retrieval_id],
+                    )
+                    .map(|_| ())
+                    .map_err(|error| error.to_string())
+            })
+            .unwrap();
+        assert!(reopened
+            .check_integrity()
+            .unwrap_err()
+            .contains("retrieval result cross-owner binding is invalid"));
+        reopened
+            .with_conn(|connection| {
+                connection
+                    .execute(
+                        "UPDATE memory_retrieval_events SET evidence_json=?1 WHERE retrieval_id=?2",
+                        params![original_evidence, restarted.retrieval_id],
+                    )
+                    .map(|_| ())
+                    .map_err(|error| error.to_string())
+            })
+            .unwrap();
+        assert_eq!(reopened.check_integrity().unwrap().status, "ok");
+    }
+
+    #[test]
+    fn retrieval_query_embedding_concurrent_duplicate_posts_once_and_identity_changes_are_distinct()
+    {
+        let _env = ProviderEnvGuard::enabled();
+        let dir = TempDir::new().unwrap();
+        let transport = Arc::new(CountingEmbeddingTransport {
+            posts: AtomicUsize::new(0),
+        });
+        let store = Arc::new(
+            LocalProductStore::new_with_embedding_transport(
+                dir.path().join("provider-retrieval-identity.db"),
+                || "2026-07-15T00:00:00Z".to_string(),
+                transport.clone(),
+            )
+            .unwrap(),
+        );
+        let request = MemoryRetrievalRequest {
+            scope: scope("ws-provider-retrieval-identity"),
+            run_id: "run-provider-retrieval-identity".into(),
+            node_id: "node-provider-retrieval-identity".into(),
+            query: "bounded concurrent retrieval query".into(),
+            top_k: 5,
+            max_tokens: 100,
+            max_bytes: 1_000,
+            allow_lexical_fallback: false,
+        };
+        let barrier = Arc::new(std::sync::Barrier::new(2));
+        let results = std::thread::scope(|scope| {
+            let handles = (0..2)
+                .map(|_| {
+                    let store = Arc::clone(&store);
+                    let barrier = Arc::clone(&barrier);
+                    let request = request.clone();
+                    scope.spawn(move || {
+                        barrier.wait();
+                        store.retrieve_durable_memories(&request, "test")
+                    })
+                })
+                .collect::<Vec<_>>();
+            handles
+                .into_iter()
+                .map(|handle| handle.join().unwrap())
+                .collect::<Vec<_>>()
+        });
+        assert_eq!(transport.posts.load(Ordering::SeqCst), 1, "{results:?}");
+        assert_eq!(results.iter().filter(|result| result.is_ok()).count(), 1);
+        assert!(
+            results
+                .iter()
+                .filter_map(|result| result.as_ref().err())
+                .all(
+                    |error| error.contains("competing provider embedding mutation")
+                        || error.contains("provider embedding outcome is unknown")
+                ),
+            "{results:?}"
+        );
+
+        let identity_variants = [
+            MemoryRetrievalRequest {
+                query: "changed retrieval query".into(),
+                ..request.clone()
+            },
+            MemoryRetrievalRequest {
+                scope: scope("ws-provider-retrieval-other"),
+                ..request.clone()
+            },
+            MemoryRetrievalRequest {
+                run_id: "run-provider-retrieval-other".into(),
+                ..request.clone()
+            },
+            MemoryRetrievalRequest {
+                node_id: "node-provider-retrieval-other".into(),
+                ..request
+            },
+        ];
+        for variant in &identity_variants {
+            store.retrieve_durable_memories(variant, "test").unwrap();
+        }
+        assert_eq!(transport.posts.load(Ordering::SeqCst), 5);
+        let receipt_count: i64 = store
+            .with_conn(|connection| {
+                connection
+                    .query_row(
+                        "SELECT COUNT(*) FROM provider_embedding_operations
+                         WHERE operation_kind='retrieval_query'",
+                        [],
+                        |row| row.get(0),
+                    )
+                    .map_err(|error| error.to_string())
+            })
+            .unwrap();
+        assert_eq!(receipt_count, 5);
+        assert_eq!(store.check_integrity().unwrap().status, "ok");
+        let (operation_id, original_reservation, foreign_reservation): (String, String, String) =
+            store
+                .with_conn(|connection| {
+                    let mut statement = connection
+                        .prepare(
+                            "SELECT operation_id,reservation_event_id
+                             FROM provider_embedding_operations
+                             WHERE operation_kind='retrieval_query'
+                             ORDER BY operation_id LIMIT 2",
+                        )
+                        .map_err(|error| error.to_string())?;
+                    let rows = statement
+                        .query_map([], |row| {
+                            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+                        })
+                        .map_err(|error| error.to_string())?
+                        .collect::<Result<Vec<_>, _>>()
+                        .map_err(|error| error.to_string())?;
+                    Ok((rows[0].0.clone(), rows[0].1.clone(), rows[1].1.clone()))
+                })
+                .unwrap();
+        store
+            .with_conn(|connection| {
+                connection
+                    .execute(
+                        "UPDATE provider_embedding_operations SET reservation_event_id=?1
+                         WHERE operation_id=?2",
+                        params![foreign_reservation, operation_id],
+                    )
+                    .map(|_| ())
+                    .map_err(|error| error.to_string())
+            })
+            .unwrap();
+        assert!(store
+            .check_integrity()
+            .unwrap_err()
+            .contains("audit cross-owner binding is invalid"));
+        store
+            .with_conn(|connection| {
+                connection
+                    .execute(
+                        "UPDATE provider_embedding_operations SET reservation_event_id=?1
+                         WHERE operation_id=?2",
+                        params![original_reservation, operation_id],
+                    )
+                    .map(|_| ())
+                    .map_err(|error| error.to_string())
+            })
+            .unwrap();
+        assert_eq!(store.check_integrity().unwrap().status, "ok");
+    }
+
+    #[test]
+    fn provider_embedding_gates_and_unknown_outcome_fail_closed() {
+        let _env = ProviderEnvGuard::enabled();
+        let dir = TempDir::new().unwrap();
+        std::env::remove_var("ACP_ENABLE_PROVIDER_EXECUTION");
+        let gated = LocalProductStore::new_with_embedding_transport(
+            dir.path().join("provider-gated.db"),
+            || "2026-07-15T00:00:00Z".to_string(),
+            Arc::new(MockTransport::empty()),
+        )
+        .unwrap();
+        assert!(gated
+            .create_durable_memory(
+                &create("ws-provider-gated", "source-gated", "bounded fact"),
+                "test",
+            )
+            .unwrap_err()
+            .contains("provider execution gate"));
+        std::env::set_var("ACP_ENABLE_PROVIDER_EXECUTION", "1");
+        std::env::remove_var("ACP_REQUIRE_AUTH");
+        assert!(gated
+            .create_durable_memory(
+                &create("ws-provider-auth", "source-auth", "bounded fact"),
+                "test",
+            )
+            .unwrap_err()
+            .contains("authenticated runtime"));
+        std::env::set_var("ACP_REQUIRE_AUTH", "1");
+
+        let unknown = LocalProductStore::new_with_embedding_transport(
+            dir.path().join("provider-unknown.db"),
+            || "2026-07-15T00:00:00Z".to_string(),
+            Arc::new(MockTransport::new(vec![
+                Ok(provider_catalog_response()),
+                Err(HttpError::Timeout("fixture timeout".to_string())),
+                Ok(provider_vector_response()),
+            ])),
+        )
+        .unwrap();
+        let error = unknown
+            .create_durable_memory(
+                &create("ws-provider-unknown", "source-unknown", "bounded fact"),
+                "test",
+            )
+            .unwrap_err();
+        assert!(error.contains("outcome unknown"));
+        let events = unknown.provider_audit_events(10).unwrap();
+        assert_eq!(
+            events
+                .iter()
+                .filter(|event| event["event_type"] == "request_sent")
+                .count(),
+            1
+        );
+        assert!(events.iter().any(|event| {
+            event["event_type"] == "error"
+                && event["error_domain"] == "provider_outcome_unknown_timeout"
+        }));
+
+        let capped = LocalProductStore::new_with_embedding_transport(
+            dir.path().join("provider-capped.db"),
+            || "2026-07-15T00:00:00Z".to_string(),
+            Arc::new(MockTransport::new(vec![Ok(provider_catalog_response())])),
+        )
+        .unwrap();
+        let prior_cost = ProviderAuditEvent {
+            schema_version: "provider_audit_event.v1".to_string(),
+            event_id: "fixture-prior-reservation".to_string(),
+            dispatch_id: "fixture-prior-dispatch".to_string(),
+            provider_id: "fixture-provider".to_string(),
+            event_type: "request_reserved".to_string(),
+            input_token_count: None,
+            output_token_count: None,
+            cost: Some(0.2),
+            currency: Some("USD".to_string()),
+            latency_ms: None,
+            error_domain: None,
+            redaction_status: "redacted".to_string(),
+            created_at: "2026-07-15T00:00:00Z".to_string(),
+        };
+        capped
+            .reserve_provider_audit_cost(&prior_cost, 1.0, 1.0)
+            .unwrap();
+        assert!(capped
+            .create_durable_memory(
+                &create("ws-provider-capped", "source-capped", "bounded fact"),
+                "test",
+            )
+            .unwrap_err()
+            .contains("daily cost cap exceeded"));
+        assert!(!capped
+            .provider_audit_events(10)
+            .unwrap()
+            .iter()
+            .any(|event| event["event_type"] == "request_sent"));
+    }
+
+    #[test]
+    fn provider_embedding_catalog_failures_require_explicit_retry_before_one_post() {
+        use super::super::provider_audit::{
+            ProviderEmbeddingResolutionAction, ProviderEmbeddingResolutionRequest,
+        };
+        let _env = ProviderEnvGuard::enabled();
+        let cases = vec![
+            Ok(HttpResponse {
+                status: 200,
+                body: b"not-json".to_vec(),
+            }),
+            Err(HttpError::Http {
+                status: 302,
+                reason: "redirect refused".into(),
+            }),
+            Err(HttpError::Parse(
+                "failed to read body: truncated body".into(),
+            )),
+            Err(HttpError::Parse("response body limit exceeded".into())),
+        ];
+        for (index, catalog_result) in cases.into_iter().enumerate() {
+            let dir = TempDir::new().unwrap();
+            let request = create(
+                &format!("ws-provider-preflight-{index}"),
+                &format!("source-provider-preflight-{index}"),
+                "bounded provider preflight failure",
+            );
+            let store = LocalProductStore::new_with_embedding_transport(
+                dir.path().join("provider-preflight-failure.db"),
+                || "2026-07-15T00:00:00Z".to_string(),
+                Arc::new(MockTransport::new(vec![
+                    catalog_result,
+                    Ok(provider_catalog_response()),
+                    Ok(provider_vector_response()),
+                ])),
+            )
+            .unwrap();
+            let first = store.create_durable_memory(&request, "test").unwrap_err();
+            assert!(!first.contains("outcome unknown"));
+            let memory_id = memory_id(&request).unwrap();
+            let state: String =
+                store
+                    .with_conn(|conn| {
+                        conn.query_row(
+                "SELECT state FROM provider_embedding_operations WHERE target_memory_id=?1",
+                [&memory_id], |row|row.get(0),
+            ).map_err(|error|error.to_string())
+                    })
+                    .unwrap();
+            assert_eq!(state, "failed_before_send");
+            let events = store.provider_audit_events(10).unwrap();
+            assert!(events
+                .iter()
+                .any(|event| event["event_type"] == "contract_check_reserved"));
+            assert!(events.iter().any(|event| event["event_type"] == "error"
+                && event["error_domain"] == "provider_failed_before_send"));
+            assert!(!events
+                .iter()
+                .any(|event| event["event_type"] == "request_sent"));
+            assert!(store
+                .create_durable_memory(&request, "test")
+                .unwrap_err()
+                .contains("explicit operator retry"));
+            assert!(!store
+                .provider_audit_events(20)
+                .unwrap()
+                .iter()
+                .any(|event| event["event_type"] == "request_sent"));
+            let resolution = ProviderEmbeddingResolutionRequest {
+                target_version: 1,
+                expected_attempt_count: 1,
+                scope: request.scope.clone(),
+                run_id: request.run_id.clone(),
+                action: ProviderEmbeddingResolutionAction::RetryFailed,
+                evidence_source_id: None,
+                evidence_sha256: None,
+                confirm_resolution: true,
+            };
+            let authorized = store
+                .reconcile_provider_embedding_operation(&memory_id, &resolution, "operator")
+                .unwrap();
+            assert_eq!(authorized["state"], "retry_authorized");
+            assert_eq!(authorized["attempt_count"], 2);
+            let authorized_again = store
+                .reconcile_provider_embedding_operation(&memory_id, &resolution, "operator")
+                .unwrap();
+            assert_eq!(authorized_again["state"], "retry_authorized");
+            assert_eq!(authorized_again["attempt_count"], 2);
+            assert_eq!(authorized_again["idempotent"], true);
+            assert_eq!(
+                store
+                    .with_conn(|connection| {
+                        connection
+                            .query_row(
+                                "SELECT COUNT(*) FROM audit_log
+                                 WHERE action='provider_embedding.retry_authorized'",
+                                [],
+                                |row| row.get::<_, i64>(0),
+                            )
+                            .map_err(|error| error.to_string())
+                    })
+                    .unwrap(),
+                1
+            );
+            store.create_durable_memory(&request, "test").unwrap();
+            assert_eq!(
+                store
+                    .provider_audit_events(20)
+                    .unwrap()
+                    .iter()
+                    .filter(|event| event["event_type"] == "request_sent")
+                    .count(),
+                1
+            );
+        }
+    }
+
+    #[test]
+    fn provider_embedding_failure_reconciliation_and_reembedding_are_owned() {
+        use super::super::provider_audit::{
+            ProviderEmbeddingResolutionAction, ProviderEmbeddingResolutionRequest,
+        };
+        let _env = ProviderEnvGuard::enabled();
+        let dir = TempDir::new().unwrap();
+        let failed_request = create(
+            "ws-provider-resolution",
+            "source-resolution",
+            "retry bounded fact",
+        );
+        let transport = Arc::new(MockTransport::new(vec![
+            Ok(provider_catalog_response()),
+            Ok(HttpResponse {
+                status: 401,
+                body: br#"{"error":"fixture refusal"}"#.to_vec(),
+            }),
+            Ok(provider_catalog_response()),
+            Ok(provider_vector_response()),
+            Ok(provider_catalog_response()),
+            Ok(provider_vector_response()),
+        ]));
+        let store = LocalProductStore::new_with_embedding_transport(
+            dir.path().join("provider-resolution.db"),
+            || "2026-07-15T00:00:00Z".to_string(),
+            transport,
+        )
+        .unwrap();
+        let failure = store
+            .create_durable_memory(&failed_request, "test")
+            .unwrap_err();
+        assert!(
+            !failure.contains("outcome unknown"),
+            "unexpected ambiguous failure: {failure}"
+        );
+        let memory_id = memory_id(&failed_request).unwrap();
+        let resolution = ProviderEmbeddingResolutionRequest {
+            target_version: 1,
+            expected_attempt_count: 1,
+            scope: failed_request.scope.clone(),
+            run_id: failed_request.run_id.clone(),
+            action: ProviderEmbeddingResolutionAction::RetryFailed,
+            evidence_source_id: None,
+            evidence_sha256: None,
+            confirm_resolution: true,
+        };
+        let authorized = store
+            .reconcile_provider_embedding_operation(&memory_id, &resolution, "operator")
+            .unwrap();
+        assert_eq!(authorized["state"], "retry_authorized");
+        assert_eq!(authorized["attempt_count"], 2);
+        assert_eq!(
+            store
+                .reconcile_provider_embedding_operation(&memory_id, &resolution, "operator")
+                .unwrap()["idempotent"],
+            true
+        );
+        let created = store
+            .create_durable_memory(&failed_request, "test")
+            .unwrap();
+        assert_eq!(created["version"], 1);
+        assert_eq!(
+            store
+                .provider_audit_events(20)
+                .unwrap()
+                .iter()
+                .filter(|event| event["event_type"] == "request_sent")
+                .count(),
+            2
+        );
+        let retry_audit = store
+            .with_conn(|conn| {
+                conn.query_row(
+            "SELECT COUNT(*) FROM audit_log WHERE action='provider_embedding.retry_authorized'",
+            [],|row|row.get::<_,i64>(0)).map_err(|error|error.to_string())
+            })
+            .unwrap();
+        assert_eq!(retry_audit, 1);
+
+        let reembedded = store
+            .reembed_durable_memory(&memory_id, 1, "operator")
+            .unwrap();
+        assert_eq!(reembedded["version"], 2);
+        assert_eq!(reembedded["source_id"], failed_request.source_id);
+        assert_ne!(
+            reembedded["embedding"]["binding_sha256"],
+            created["embedding"]["binding_sha256"]
+        );
+        assert!(store
+            .with_conn(|conn| conn
+                .query_row(
+                    "SELECT EXISTS(SELECT 1 FROM audit_log WHERE action='durable_memory.reembed')",
+                    [],
+                    |row| row.get::<_, bool>(0)
+                )
+                .map_err(|error| error.to_string()))
+            .unwrap());
+    }
+
+    #[test]
+    fn unknown_embedding_outcome_can_be_acknowledged_but_never_retried() {
+        use super::super::provider_audit::{
+            ProviderEmbeddingResolutionAction, ProviderEmbeddingResolutionRequest,
+        };
+        let _env = ProviderEnvGuard::enabled();
+        let dir = TempDir::new().unwrap();
+        let request = create(
+            "ws-provider-unknown-resolution",
+            "source-unknown",
+            "unknown bounded fact",
+        );
+        let store = LocalProductStore::new_with_embedding_transport(
+            dir.path().join("provider-unknown-resolution.db"),
+            || "2026-07-15T00:00:00Z".to_string(),
+            Arc::new(MockTransport::new(vec![
+                Ok(provider_catalog_response()),
+                Err(HttpError::Timeout("fixture timeout".into())),
+                Ok(provider_catalog_response()),
+            ])),
+        )
+        .unwrap();
+        assert!(store
+            .create_durable_memory(&request, "test")
+            .unwrap_err()
+            .contains("outcome unknown"));
+        let memory_id = memory_id(&request).unwrap();
+        let mut resolution = ProviderEmbeddingResolutionRequest {
+            target_version: 1,
+            expected_attempt_count: 1,
+            scope: request.scope.clone(),
+            run_id: request.run_id.clone(),
+            action: ProviderEmbeddingResolutionAction::AcknowledgeUnknown,
+            evidence_source_id: None,
+            evidence_sha256: None,
+            confirm_resolution: true,
+        };
+        assert!(store
+            .reconcile_provider_embedding_operation(&memory_id, &resolution, "operator")
+            .unwrap_err()
+            .contains("evidence source"));
+        resolution.evidence_source_id = Some("operator-incident-20260715".into());
+        resolution.evidence_sha256 = Some("e".repeat(64));
+        let acknowledged = store
+            .reconcile_provider_embedding_operation(&memory_id, &resolution, "operator")
+            .unwrap();
+        assert_eq!(acknowledged["state"], "outcome_unknown_acknowledged");
+        assert_eq!(acknowledged["attempt_count"], 1);
+        assert_eq!(
+            store
+                .reconcile_provider_embedding_operation(&memory_id, &resolution, "operator")
+                .unwrap()["idempotent"],
+            true
+        );
+        let mut competing = resolution.clone();
+        competing.evidence_sha256 = Some("d".repeat(64));
+        assert!(store
+            .reconcile_provider_embedding_operation(&memory_id, &competing, "operator")
+            .unwrap_err()
+            .contains("idempotency binding mismatch"));
+        assert!(store
+            .create_durable_memory(&request, "test")
+            .unwrap_err()
+            .contains("outcome is unknown"));
+    }
+
+    #[test]
+    fn post_send_non_authoritative_results_persist_as_outcome_unknown() {
+        use super::super::provider_audit::{
+            ProviderEmbeddingResolutionAction, ProviderEmbeddingResolutionRequest,
+        };
+        let _env = ProviderEnvGuard::enabled();
+        let cases = vec![
+            Ok(HttpResponse {
+                status: 200,
+                body: b"not-json".to_vec(),
+            }),
+            Err(HttpError::Http {
+                status: 500,
+                reason: "fixture server failure".into(),
+            }),
+            Err(HttpError::Http {
+                status: 408,
+                reason: "fixture request timeout".into(),
+            }),
+        ];
+        for (index, response) in cases.into_iter().enumerate() {
+            let dir = TempDir::new().unwrap();
+            let request = create(
+                &format!("ws-provider-unknown-{index}"),
+                &format!("source-unknown-{index}"),
+                "post send unknown fact",
+            );
+            let store = LocalProductStore::new_with_embedding_transport(
+                dir.path().join("provider-post-send-unknown.db"),
+                || "2026-07-15T00:00:00Z".to_string(),
+                Arc::new(MockTransport::new(vec![
+                    Ok(provider_catalog_response()),
+                    response,
+                ])),
+            )
+            .unwrap();
+            assert!(store
+                .create_durable_memory(&request, "test")
+                .unwrap_err()
+                .contains("outcome unknown"));
+            let memory_id = memory_id(&request).unwrap();
+            let state: String = store
+                .with_conn(|conn| {
+                    conn.query_row(
+                        "SELECT state FROM provider_embedding_operations WHERE target_memory_id=?1",
+                        [&memory_id],
+                        |row| row.get(0),
+                    )
+                    .map_err(|error| error.to_string())
+                })
+                .unwrap();
+            assert_eq!(state, "outcome_unknown");
+            if index == 0 {
+                assert!(store
+                    .provider_audit_events(20)
+                    .unwrap()
+                    .iter()
+                    .any(|event| event["error_domain"] == "provider_outcome_unknown_malformed"));
+            }
+            let retry = ProviderEmbeddingResolutionRequest {
+                target_version: 1,
+                expected_attempt_count: 1,
+                scope: request.scope.clone(),
+                run_id: request.run_id.clone(),
+                action: ProviderEmbeddingResolutionAction::RetryFailed,
+                evidence_source_id: None,
+                evidence_sha256: None,
+                confirm_resolution: true,
+            };
+            assert!(store
+                .reconcile_provider_embedding_operation(&memory_id, &retry, "operator")
+                .unwrap_err()
+                .contains("state/action conflict"));
+        }
+    }
+
+    #[test]
+    fn corrupted_completed_provider_receipt_is_rejected_before_memory_commit() {
+        let _env = ProviderEnvGuard::enabled();
+        let dir = TempDir::new().unwrap();
+        let request = create(
+            "ws-provider-corrupt-receipt",
+            "source-corrupt",
+            "corrupt receipt fact",
+        );
+        let store = LocalProductStore::new_with_embedding_transport(
+            dir.path().join("provider-corrupt-receipt.db"),
+            || "2026-07-15T00:00:00Z".to_string(),
+            Arc::new(MockTransport::new(provider_responses(2))),
+        )
+        .unwrap();
+        let created = store.create_durable_memory(&request, "test").unwrap();
+        let memory_id = created["memory_id"].as_str().unwrap();
+        store.with_conn(|conn| {
+            conn.execute("DELETE FROM durable_memory_versions WHERE memory_id=?1",[memory_id])
+                .map_err(|error|error.to_string())?;
+            let raw:String=conn.query_row(
+                "SELECT metadata_json FROM provider_embedding_operations WHERE target_memory_id=?1",
+                [memory_id],|row|row.get(0)).map_err(|error|error.to_string())?;
+            let mut metadata:Value=serde_json::from_str(&raw).map_err(|error|error.to_string())?;
+            metadata["measurement_provenance"]=json!("estimated");
+            conn.execute("UPDATE provider_embedding_operations SET metadata_json=?1 WHERE target_memory_id=?2",
+                params![metadata.to_string(),memory_id]).map_err(|error|error.to_string())?;
+            Ok(())
+        }).unwrap();
+        let error = store.create_durable_memory(&request, "test").unwrap_err();
+        assert!(
+            error.contains("pricing binding") || error.contains("provenance"),
+            "unexpected corrupted-receipt refusal: {error}"
+        );
+        assert!(store.inspect_durable_memory(memory_id).unwrap().is_empty());
+    }
+
+    #[test]
+    fn provider_embedded_lifecycle_preserves_explicit_state_semantics() {
+        let _env = ProviderEnvGuard::enabled();
+        let dir = TempDir::new().unwrap();
+        let transport = Arc::new(CountingEmbeddingTransport {
+            posts: AtomicUsize::new(0),
+        });
+        let store = LocalProductStore::new_with_embedding_transport(
+            dir.path().join("provider-lifecycle.db"),
+            || "2026-07-15T00:00:00Z".to_string(),
+            transport.clone(),
+        )
+        .unwrap();
+        let mut expiring = create(
+            "ws-provider-lifecycle",
+            "source-expiring",
+            "expiring provider fact",
+        );
+        expiring.expires_at = Some("2020-01-01T00:00:00Z".into());
+        let expiring = store.create_durable_memory(&expiring, "test").unwrap();
+        assert_eq!(
+            store
+                .prune_expired_durable_memories(&scope("ws-provider-lifecycle"), "test")
+                .unwrap()["pruned_count"],
+            1
+        );
+        let expiring_history = store
+            .inspect_durable_memory(expiring["memory_id"].as_str().unwrap())
+            .unwrap();
+        assert_eq!(expiring_history.last().unwrap()["state"], "expired");
+
+        let first = store
+            .create_durable_memory(
+                &create("ws-provider-conflict", "source-a", "provider value a"),
+                "test",
+            )
+            .unwrap();
+        let second = store
+            .create_durable_memory(
+                &create("ws-provider-conflict", "source-b", "provider value b"),
+                "test",
+            )
+            .unwrap();
+        let first_id = first["memory_id"].as_str().unwrap();
+        let second_id = second["memory_id"].as_str().unwrap();
+        assert_eq!(
+            store
+                .supersede_durable_memory(second_id, 1, first_id, 2, "test")
+                .unwrap()["winner"]["state"],
+            "current"
+        );
+        assert_eq!(store.check_integrity().unwrap().status, "ok");
+        let tombstoned = store.forget_durable_memory(second_id, 2, "test").unwrap();
+        assert_eq!(tombstoned["state"], "tombstoned");
+        assert_eq!(tombstoned["embedding"]["present"], false);
+        assert_eq!(transport.posts.load(Ordering::SeqCst), 3);
+        assert_eq!(store.check_integrity().unwrap().status, "ok");
     }
 }

@@ -11,6 +11,7 @@ use crate::http_server::middleware::{
 use crate::http_server::state::AxumApiState;
 use crate::storage::local_product_store::{
     DurableMemoryCreate, DurableMemoryRevision, MemoryRetrievalRequest, MemoryScope,
+    ProviderEmbeddingResolutionRequest,
 };
 
 #[derive(Debug, Deserialize)]
@@ -60,6 +61,15 @@ pub(crate) struct MemoryDetailQuery {
     run_id: String,
 }
 
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct MemoryReembedRequest {
+    expected_version: i64,
+    run_id: String,
+    scope: MemoryScope,
+    confirm_reembed: bool,
+}
+
 pub(crate) async fn api_create_memory(
     State(state): State<AxumApiState>,
     headers: HeaderMap,
@@ -83,8 +93,10 @@ pub(crate) async fn api_create_memory(
         )
     })?;
     require_run_scope(&state, run_id, &request.scope)?;
-    let memory = require_store(&state)?
-        .create_durable_memory(&request, &context.api_key_id)
+    let store = require_store(&state)?;
+    let actor = context.api_key_id;
+    let memory = run_store_blocking(move || store.create_durable_memory(&request, &actor))
+        .await?
         .map_err(bad_memory_request)?;
     Ok((
         StatusCode::CREATED,
@@ -220,10 +232,83 @@ pub(crate) async fn api_revise_memory(
         fresh_until: request.fresh_until,
         expires_at: request.expires_at,
     };
-    let memory = require_store(&state)?
-        .revise_durable_memory(&memory_id, &revision, &context.api_key_id)
-        .map_err(bad_memory_request)?;
+    let store = require_store(&state)?;
+    let actor = context.api_key_id;
+    let memory_id = memory_id.clone();
+    let memory =
+        run_store_blocking(move || store.revise_durable_memory(&memory_id, &revision, &actor))
+            .await?
+            .map_err(bad_memory_request)?;
     Ok((cors_headers(), Json(json!({"memory": memory}))))
+}
+
+pub(crate) async fn api_reembed_memory(
+    State(state): State<AxumApiState>,
+    headers: HeaderMap,
+    uri: Uri,
+    Extension(request_id): Extension<RequestId>,
+    AxumPath(memory_id): AxumPath<String>,
+    Json(request): Json<MemoryReembedRequest>,
+) -> Result<impl IntoResponse, ApiError> {
+    let context = authorize(
+        &state,
+        &headers,
+        "dispatch:execute",
+        uri.path(),
+        &request_id.0,
+    )?;
+    if !request.confirm_reembed {
+        return Err(ApiError::with_code(
+            StatusCode::BAD_REQUEST,
+            "durable_memory_reembed_confirmation_required",
+            "confirm_reembed must be true",
+        ));
+    }
+    require_run_scope(&state, &request.run_id, &request.scope)?;
+    require_memory_scope(&state, &memory_id, &request.scope, &context.tenant_id)?;
+    let store = require_store(&state)?;
+    let actor = context.api_key_id;
+    let expected_version = request.expected_version;
+    let memory = run_store_blocking(move || {
+        store.reembed_durable_memory(&memory_id, expected_version, &actor)
+    })
+    .await?
+    .map_err(bad_memory_request)?;
+    Ok((cors_headers(), Json(json!({"memory":memory}))))
+}
+
+pub(crate) async fn api_reconcile_memory_embedding(
+    State(state): State<AxumApiState>,
+    headers: HeaderMap,
+    uri: Uri,
+    Extension(request_id): Extension<RequestId>,
+    AxumPath(memory_id): AxumPath<String>,
+    Json(request): Json<ProviderEmbeddingResolutionRequest>,
+) -> Result<impl IntoResponse, ApiError> {
+    let context = authorize(
+        &state,
+        &headers,
+        "dispatch:execute",
+        uri.path(),
+        &request_id.0,
+    )?;
+    require_tenant(&context.tenant_id, &request.scope.tenant_id)?;
+    let run_id = request.run_id.as_deref().ok_or_else(|| {
+        ApiError::with_code(
+            StatusCode::BAD_REQUEST,
+            "provider_embedding_resolution_run_required",
+            "provider embedding reconciliation requires an authoritative run_id",
+        )
+    })?;
+    require_run_scope(&state, run_id, &request.scope)?;
+    let store = require_store(&state)?;
+    let actor = context.api_key_id;
+    let resolution = run_store_blocking(move || {
+        store.reconcile_provider_embedding_operation(&memory_id, &request, &actor)
+    })
+    .await?
+    .map_err(bad_memory_request)?;
+    Ok((cors_headers(), Json(json!({"resolution":resolution}))))
 }
 
 pub(crate) async fn api_invalidate_memory(
@@ -307,10 +392,22 @@ pub(crate) async fn api_retrieve_memory(
         ));
     }
     require_retrieval_node_scope(&run, &request)?;
-    let result = require_store(&state)?
-        .retrieve_durable_memories(&request, &context.api_key_id)
+    let store = require_store(&state)?;
+    let actor = context.api_key_id;
+    let result = run_store_blocking(move || store.retrieve_durable_memories(&request, &actor))
+        .await?
         .map_err(bad_memory_request)?;
     Ok((cors_headers(), Json(json!({"retrieval": result}))))
+}
+
+async fn run_store_blocking<T, F>(operation: F) -> Result<Result<T, String>, ApiError>
+where
+    T: Send + 'static,
+    F: FnOnce() -> Result<T, String> + Send + 'static,
+{
+    tokio::task::spawn_blocking(operation)
+        .await
+        .map_err(|error| internal_error(format!("memory store worker failed: {error}")))
 }
 
 fn require_memory_scope(
@@ -443,10 +540,47 @@ fn require_tenant(expected: &str, actual: &str) -> Result<(), ApiError> {
 fn bad_memory_request(error: String) -> ApiError {
     let status = if error.contains("not found") {
         StatusCode::NOT_FOUND
+    } else if error.contains("scope mismatch") {
+        StatusCode::FORBIDDEN
     } else if error.contains("version conflict") {
         StatusCode::CONFLICT
     } else {
         StatusCode::BAD_REQUEST
     };
     ApiError::with_code(status, "durable_memory_request_rejected", error)
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::Arc;
+
+    use super::run_store_blocking;
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn blocking_store_work_does_not_block_the_async_worker() {
+        let started = Arc::new(AtomicBool::new(false));
+        let (release_tx, release_rx) = std::sync::mpsc::channel();
+        let worker_started = Arc::clone(&started);
+        let blocking = tokio::spawn(async move {
+            run_store_blocking(move || {
+                worker_started.store(true, Ordering::SeqCst);
+                release_rx.recv().unwrap();
+                Ok::<usize, String>(7)
+            })
+            .await
+        });
+        while !started.load(Ordering::SeqCst) {
+            tokio::task::yield_now().await;
+        }
+        let progressed = tokio::time::timeout(std::time::Duration::from_millis(100), async {
+            tokio::task::yield_now().await;
+            11usize
+        })
+        .await
+        .unwrap();
+        assert_eq!(progressed, 11);
+        release_tx.send(()).unwrap();
+        assert_eq!(blocking.await.unwrap().unwrap().unwrap(), 7);
+    }
 }

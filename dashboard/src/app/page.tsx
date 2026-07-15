@@ -128,6 +128,7 @@ const emptyDashboard: LocalDashboardState = {
     team_members: 0,
   },
   dispatches: [],
+  provider_embedding_receipts: [],
   team: {
     api_keys: [],
     members: [],

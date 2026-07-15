@@ -1705,6 +1705,14 @@ fn append_memory_openapi_paths(doc: &mut Value) {
         );
     }
     paths.insert(
+        "/api/v1/memories/{memory_id}/reembed".to_string(),
+        json!({"post":{"summary":"Re-embed one current durable-memory version under the pinned provider contract","description":"Requires dispatch:execute, exact run/scope/version binding, provider mode, all provider safety gates, and explicit confirmation. Creates a new immutable version; no historical version is rewritten.","parameters":[path_parameter("memory_id")],"requestBody":json_request_body(&["run_id","scope","expected_version","confirm_reembed"],json!({"run_id":{"type":"string"},"scope":{"type":"object","required":["tenant_id","workspace_id"]},"expected_version":{"type":"integer","minimum":1},"confirm_reembed":{"type":"boolean","const":true}})),"responses":{"200":{"description":"New immutable provider-embedded memory version"},"400":{"description":"Confirmation, provider contract, or gate invalid"},"403":{"description":"Run or memory scope mismatch"},"409":{"description":"Version conflict"}}}}),
+    );
+    paths.insert(
+        "/api/v1/memories/{memory_id}/embedding/reconcile".to_string(),
+        json!({"post":{"summary":"Reconcile one provider-embedding failure receipt","description":"Requires dispatch:execute, exact run/scope/target/attempt binding, and explicit confirmation. Known failures may receive a bounded retry authorization. Unknown outcomes can only be acknowledged with a bounded source/hash audit reference and remain permanently blocked from another POST. Mutation and audit commit atomically; known-failure attempts are capped at four.","parameters":[path_parameter("memory_id")],"requestBody":json_request_body(&["run_id","scope","target_version","expected_attempt_count","action","confirm_resolution"],json!({"run_id":{"type":"string"},"scope":{"type":"object","required":["tenant_id","workspace_id"]},"target_version":{"type":"integer","minimum":1},"expected_attempt_count":{"type":"integer","minimum":1,"maximum":4},"action":{"type":"string","enum":["retry_failed","acknowledge_unknown"]},"evidence_source_id":{"type":["string","null"],"maxLength":256},"evidence_sha256":{"type":["string","null"],"pattern":"^[0-9a-f]{64}$"},"confirm_resolution":{"type":"boolean","const":true}})),"responses":{"200":{"description":"Hash-bound reconciliation result"},"400":{"description":"Evidence, state, attempt, or confirmation invalid"},"403":{"description":"Run or operation scope mismatch"}}}}),
+    );
+    paths.insert(
         "/api/v1/memories/{memory_id}/supersede".to_string(),
         json!({"post":{"summary":"Resolve exactly one conflicting fact pair atomically","description":"Requires dispatch:execute, exact run/scope ownership for both identities, exact versions, and explicit confirmation.","parameters":[path_parameter("memory_id")],"requestBody":json_request_body(&["run_id","scope","winner_expected_version","loser_memory_id","loser_expected_version","confirm_supersede"],json!({"run_id":{"type":"string"},"scope":{"type":"object","required":["tenant_id","workspace_id"]},"winner_expected_version":{"type":"integer","minimum":1},"loser_memory_id":{"type":"string"},"loser_expected_version":{"type":"integer","minimum":1},"confirm_supersede":{"type":"boolean","const":true}})),"responses":{"200":{"description":"Winner and superseded immutable versions"},"400":{"description":"Confirmation or conflict-pair validation failed"},"403":{"description":"Run or memory scope mismatch"},"409":{"description":"Version conflict"}}}}),
     );
@@ -1936,6 +1944,18 @@ mod tests {
             "post",
             "memory_id",
         );
+        assert_path_parameter(
+            &doc,
+            "/api/v1/memories/{memory_id}/reembed",
+            "post",
+            "memory_id",
+        );
+        assert_path_parameter(
+            &doc,
+            "/api/v1/memories/{memory_id}/embedding/reconcile",
+            "post",
+            "memory_id",
+        );
     }
 
     #[test]
@@ -1996,6 +2016,25 @@ mod tests {
                 "loser_memory_id",
                 "loser_expected_version",
                 "confirm_supersede",
+            ],
+        );
+        assert_required_body_fields(
+            &doc,
+            "/api/v1/memories/{memory_id}/reembed",
+            "post",
+            &["run_id", "scope", "expected_version", "confirm_reembed"],
+        );
+        assert_required_body_fields(
+            &doc,
+            "/api/v1/memories/{memory_id}/embedding/reconcile",
+            "post",
+            &[
+                "run_id",
+                "scope",
+                "target_version",
+                "expected_attempt_count",
+                "action",
+                "confirm_resolution",
             ],
         );
         assert_required_body_fields(

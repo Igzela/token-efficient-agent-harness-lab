@@ -1,5 +1,10 @@
 use std::sync::Mutex;
 
+pub const MAX_HTTP_RESPONSE_BYTES: usize = 2 * 1024 * 1024;
+const HTTP_CONNECT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
+const HTTP_READ_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(20);
+const HTTP_OVERALL_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct HttpRequest {
     pub url: String,
@@ -47,6 +52,10 @@ impl ReqwestTransport {
     pub fn new() -> Self {
         let client = reqwest::Client::builder()
             .use_rustls_tls()
+            .redirect(reqwest::redirect::Policy::none())
+            .connect_timeout(HTTP_CONNECT_TIMEOUT)
+            .read_timeout(HTTP_READ_TIMEOUT)
+            .timeout(HTTP_OVERALL_TIMEOUT)
             .build()
             .expect("failed to build reqwest client");
         Self { client }
@@ -90,7 +99,7 @@ impl HttpTransport for ReqwestTransport {
             req_builder = req_builder.timeout(std::time::Duration::from_secs_f64(secs));
         }
 
-        let response = req_builder.send().await.map_err(|e| {
+        let mut response = req_builder.send().await.map_err(|e| {
             if e.is_timeout() {
                 HttpError::Timeout(e.to_string())
             } else {
@@ -99,11 +108,29 @@ impl HttpTransport for ReqwestTransport {
         })?;
 
         let status = response.status().as_u16();
-        let body = response
-            .bytes()
+        if (300..=399).contains(&status) {
+            return Err(HttpError::Http {
+                status,
+                reason: "redirect refused".to_string(),
+            });
+        }
+        if response
+            .content_length()
+            .is_some_and(|length| length > MAX_HTTP_RESPONSE_BYTES as u64)
+        {
+            return Err(HttpError::Parse("response body limit exceeded".to_string()));
+        }
+        let mut body = Vec::new();
+        while let Some(chunk) = response
+            .chunk()
             .await
             .map_err(|e| HttpError::Parse(format!("failed to read body: {e}")))?
-            .to_vec();
+        {
+            if body.len().saturating_add(chunk.len()) > MAX_HTTP_RESPONSE_BYTES {
+                return Err(HttpError::Parse("response body limit exceeded".to_string()));
+            }
+            body.extend_from_slice(&chunk);
+        }
 
         if status >= 400 {
             let reason = String::from_utf8_lossy(&body).to_string();
@@ -158,6 +185,34 @@ impl HttpTransport for MockTransport {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::io::{Read, Write};
+
+    const TEST_RESPONSE_LIMIT: usize = 2 * 1024 * 1024;
+
+    fn serve_once(response: Vec<u8>) -> (String, std::thread::JoinHandle<()>) {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let handle = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            stream
+                .set_read_timeout(Some(std::time::Duration::from_secs(2)))
+                .unwrap();
+            let mut request = [0_u8; 4_096];
+            let _ = stream.read(&mut request);
+            stream.write_all(&response).unwrap();
+        });
+        (format!("http://{address}"), handle)
+    }
+
+    fn request(url: String) -> HttpRequest {
+        HttpRequest {
+            url,
+            method: "GET".to_string(),
+            headers: Vec::new(),
+            body: None,
+            timeout_secs: Some(2.0),
+        }
+    }
 
     #[tokio::test]
     async fn mock_transport_pops_front() {
@@ -216,6 +271,102 @@ mod tests {
             timeout_secs: None,
         };
         assert!(transport.send(&req).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn reqwest_transport_rejects_redirect_without_following_it() {
+        let (url, server) = serve_once(
+            b"HTTP/1.1 302 Found\r\nLocation: http://127.0.0.1:1/forbidden\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+                .to_vec(),
+        );
+        let error = ReqwestTransport::new()
+            .send(&request(url))
+            .await
+            .unwrap_err();
+        server.join().unwrap();
+        assert!(matches!(error, HttpError::Http { status: 302, .. }));
+    }
+
+    #[tokio::test]
+    async fn reqwest_transport_rejects_oversized_fixed_length_body() {
+        let body = vec![b'x'; TEST_RESPONSE_LIMIT + 1];
+        let mut response = format!(
+            "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+            body.len()
+        )
+        .into_bytes();
+        response.extend_from_slice(&body);
+        let (url, server) = serve_once(response);
+        let error = ReqwestTransport::new()
+            .send(&request(url))
+            .await
+            .unwrap_err();
+        server.join().unwrap();
+        assert!(
+            matches!(error, HttpError::Parse(message) if message.contains("response body limit"))
+        );
+    }
+
+    #[tokio::test]
+    async fn reqwest_transport_rejects_oversized_chunked_body() {
+        let first = vec![b'a'; TEST_RESPONSE_LIMIT];
+        let second = *b"b";
+        let mut response =
+            b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n".to_vec();
+        response.extend_from_slice(format!("{:x}\r\n", first.len()).as_bytes());
+        response.extend_from_slice(&first);
+        response.extend_from_slice(b"\r\n1\r\n");
+        response.extend_from_slice(&second);
+        response.extend_from_slice(b"\r\n0\r\n\r\n");
+        let (url, server) = serve_once(response);
+        let error = ReqwestTransport::new()
+            .send(&request(url))
+            .await
+            .unwrap_err();
+        server.join().unwrap();
+        assert!(
+            matches!(error, HttpError::Parse(message) if message.contains("response body limit"))
+        );
+    }
+
+    #[tokio::test]
+    async fn reqwest_transport_rejects_oversized_decoded_gzip_body() {
+        let mut encoder = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::best());
+        encoder
+            .write_all(&vec![b'z'; TEST_RESPONSE_LIMIT + 1])
+            .unwrap();
+        let compressed = encoder.finish().unwrap();
+        assert!(compressed.len() < TEST_RESPONSE_LIMIT);
+        let mut response = format!(
+            "HTTP/1.1 200 OK\r\nContent-Encoding: gzip\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+            compressed.len()
+        )
+        .into_bytes();
+        response.extend_from_slice(&compressed);
+        let (url, server) = serve_once(response);
+        let error = ReqwestTransport::new()
+            .send(&request(url))
+            .await
+            .unwrap_err();
+        server.join().unwrap();
+        assert!(
+            matches!(error, HttpError::Parse(message) if message.contains("response body limit"))
+        );
+    }
+
+    #[tokio::test]
+    async fn reqwest_transport_rejects_truncated_body() {
+        let (url, server) = serve_once(
+            b"HTTP/1.1 200 OK\r\nContent-Length: 100\r\nConnection: close\r\n\r\nshort".to_vec(),
+        );
+        let error = ReqwestTransport::new()
+            .send(&request(url))
+            .await
+            .unwrap_err();
+        server.join().unwrap();
+        assert!(
+            matches!(error, HttpError::Parse(message) if message.contains("failed to read body"))
+        );
     }
 
     #[test]

@@ -100,41 +100,11 @@ export ACP_DURABLE_MEMORY_EMBEDDING_MODE=disabled
 # export ACP_ENABLE_DURABLE_MEMORY_EMBEDDINGS=1
 ```
 
-`provider` embedding mode is intentionally unavailable until the managed external-provider adapter can apply the existing credential, pricing, timeout, cost, audit, and kill-switch boundaries. `fixture` is test-only. Lexical retrieval occurs only when the request explicitly sets `allow_lexical_fallback=true`; its result remains labeled `lexical_fallback`.
+Provider embeddings remain default-off and are not yet a proven live operator procedure. The implementation and deterministic fixtures define a fail-closed contract for symbolic credentials, explicit provider authority, catalog pricing, public requested/resolved model identity, bounded transport, reservation/send/outcome/finalize receipts, provider audit, and kill-switch behavior. That fixture evidence is not live proof. Do not enable provider mode from this RUNBOOK until `DURABLE-MEMORY-PROVIDER-EMBEDDING-REPAIR-1` is merged with exact-head CI and independent review and the subsequent controlled live acceptance records a currently free embedding model. If no fully free OpenRouter embedding model can be proved from the current catalog, record `BLOCKED_NO_FREE_OPENROUTER_EMBEDDING_MODEL` and make no embedding provider call.
 
-Create and retrieve one bounded record. Replace IDs and hashes with exact app-owned values; never place raw credentials, provider transcripts, repository content, or private paths in memory:
+Known provider failures and unknown outcomes are never repaired by deleting receipts. The typed reconciliation owner permits an explicitly confirmed retry only for a proved failed-before-send/known-no-effect state and requires evidence-bound acknowledgement for unknown outcomes; `sending`, `outcome_unknown`, and `outcome_unknown_acknowledged` never authorize another POST. Until controlled live acceptance is complete, treat reconciliation and re-embedding endpoints as implementation surfaces for deterministic verification rather than live operator steps. Historical provider identity, dimension, pricing, audit, and result bindings remain authoritative and must not be rewritten to force a retry.
 
-```bash
-curl -sS -X POST "$ACP_API_URL/api/v1/memories" \
-  -H "authorization: Bearer $ACP_ADMIN_API_KEY" \
-  -H "content-type: application/json" \
-  -d '{
-    "scope":{"tenant_id":"local","workspace_id":"REPLACE_WITH_RUN_WORKSPACE","agent_id":null,"task_id":null},
-    "run_id":"REPLACE_WITH_RUN_ID",
-    "source_id":"operator-source-1",
-    "source_sha256":"REPLACE_WITH_64_HEX_SOURCE_HASH",
-    "conflict_key":"bounded-fact-1",
-    "content":{"summary":"bounded approved fact"},
-    "confidence":0.9,
-    "fresh_until":null,
-    "expires_at":null,
-    "supersedes_memory_id":null
-  }'
-
-curl -sS -X POST "$ACP_API_URL/api/v1/memories/retrieve" \
-  -H "authorization: Bearer $ACP_ADMIN_API_KEY" \
-  -H "content-type: application/json" \
-  -d '{
-    "scope":{"tenant_id":"local","workspace_id":"REPLACE_WITH_RUN_WORKSPACE","agent_id":null,"task_id":null},
-    "run_id":"REPLACE_WITH_RUN_ID",
-    "node_id":"REPLACE_WITH_NODE_ID",
-    "query":"bounded approved fact",
-    "top_k":5,
-    "max_tokens":256,
-    "max_bytes":4096,
-    "allow_lexical_fallback":true
-  }'
-```
+Provider mode is prohibited in CI, fixture embeddings remain test-only, and live artifacts must exclude raw query, memory, vector, prompt/output/transcript, and credential data. The read-only Dashboard receipt evidence exposes only bounded identities, states, audit/result bindings, error domains, and timestamps. Lexical retrieval occurs only when the request explicitly sets `allow_lexical_fallback=true`; its result remains labeled `lexical_fallback`.
 
 Revision, invalidation, forget, and supersede require the authoritative `run_id`, exact scope, and latest exact version. A conflict never silently overwrites either record. Resolve the existing two-record conflict pair before adding another incompatible fact; a third member is rejected without mutation. Forget deletes prior version content and leaves a metadata-safe tombstone; prune requires explicit confirmation and removes at most the bounded expired batch. Inspect with `GET /api/v1/memories/:memory_id?run_id=REPLACE_WITH_RUN_ID`. Scheduler injection uses the run's stored tenant/workspace and cannot be broadened by node metadata.
 
@@ -153,10 +123,10 @@ Replay production is provider-free and shadow-only. `PUT /api/v1/offline-replays
 
 PR2 rollback procedure:
 
-1. Disable local embedding generation and replay production; pause scheduler admission and drain active memory/budget jobs.
+1. Set `ACP_DURABLE_MEMORY_EMBEDDING_KILL_SWITCH=1`, disable embedding generation and replay production, pause scheduler admission, and drain active memory/budget jobs.
 2. Take a verified SQLite online backup or PostgreSQL operator backup and run integrity checks.
-3. Prefer reverting the integration merge and leaving v23 tables inert so memory, artifacts, acknowledgements, and job fencing remain auditable.
-4. Destructive local downgrade is permitted only while v23 code is installed, every v23 writer is stopped, and all six v23 tables are empty. Invoke the explicit-confirmation `rollback_v23_to_v22`; it locks the version and tables, writes the audit, drops only v23 tables, and changes the marker atomically. It refuses any authoritative row. Never manually drop memory, usage, job, replay-binding, or acknowledgement evidence.
+3. Prefer reverting the integration merge while retaining migration v25 so provider binding and operation evidence remains inspectable. A v25-to-v24 downgrade is permitted only before any provider embedding binding or operation receipt exists; `rollback_v25_to_v24` locks the version/tables and refuses non-empty v25 authority.
+4. Destructive local downgrade is permitted only while the matching migration code is installed, every writer is stopped, and the affected authority is empty. After a permitted v25 rollback, `rollback_v24_to_v23` and then `rollback_v23_to_v22` retain their existing explicit-confirmation, atomic audit, and non-empty-authority refusal. Never manually drop embedding bindings, memory, usage, job, replay-binding, or acknowledgement evidence.
 
 ## Bounded PE-6 Recovery Drills
 

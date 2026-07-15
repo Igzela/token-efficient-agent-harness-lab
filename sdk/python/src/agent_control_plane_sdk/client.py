@@ -215,6 +215,21 @@ class AgentControlPlaneClient:
             f"/api/v1/memories/{_quote_path_segment(memory_id)}/revise", request
         )
 
+    def reembed_memory(
+        self, memory_id: str, request: dict[str, Any]
+    ) -> dict[str, Any]:
+        return self._post(
+            f"/api/v1/memories/{_quote_path_segment(memory_id)}/reembed", request
+        )
+
+    def reconcile_memory_embedding(
+        self, memory_id: str, request: dict[str, Any]
+    ) -> dict[str, Any]:
+        return self._post(
+            f"/api/v1/memories/{_quote_path_segment(memory_id)}/embedding/reconcile",
+            request,
+        )
+
     def invalidate_memory(
         self, memory_id: str, request: dict[str, Any]
     ) -> dict[str, Any]:

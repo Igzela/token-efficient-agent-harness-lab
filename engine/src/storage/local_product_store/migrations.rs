@@ -1,10 +1,11 @@
-use rusqlite::{Connection, Transaction, TransactionBehavior};
+use rusqlite::{Connection, OptionalExtension, Transaction, TransactionBehavior};
 
 use super::{schema, DatabaseConnection, LocalProductStore};
 
 pub(super) const V22_SCHEMA_VERSION: i64 = 22;
 pub(super) const V23_SCHEMA_VERSION: i64 = 23;
 pub(super) const V24_SCHEMA_VERSION: i64 = 24;
+pub(super) const V25_SCHEMA_VERSION: i64 = 25;
 const V21_SCHEMA_VERSION: i64 = 21;
 pub(super) const V22_TABLES: [&str; 3] = [
     "agent_action_receipts",
@@ -35,6 +36,11 @@ impl LocalProductStore {
                 .map_err(|e| e.to_string())?;
 
             for migration in schema::SQLITE_MIGRATIONS {
+                if migration.version == V25_SCHEMA_VERSION && current_version >= V25_SCHEMA_VERSION
+                {
+                    Self::migrate_v25_add_provider_embedding_bindings(conn)?;
+                    continue;
+                }
                 if migration.version <= current_version {
                     continue;
                 }
@@ -63,6 +69,10 @@ impl LocalProductStore {
                     22 => Self::migrate_v22_add_agent_action_receipts_and_tool_profiles(conn)?,
                     23 => Self::migrate_v23_add_durable_memory_and_production_jobs(conn)?,
                     24 => Self::migrate_v24_add_external_runtime_state(conn)?,
+                    25 => {
+                        Self::migrate_v25_add_provider_embedding_bindings(conn)?;
+                        continue;
+                    }
                     _ => return Err(format!("unknown migration version: {}", migration.version)),
                 }
                 conn.execute_batch(&format!("PRAGMA user_version = {}", migration.version))
@@ -542,6 +552,73 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_policy_snapshots_active_policy_key
         }
     }
 
+    /// Roll back v25 only when no provider embedding binding has been stored.
+    /// Runtime writers must be stopped before this operation.
+    pub fn rollback_v25_to_v24(
+        &self,
+        actor: &str,
+        confirm_destructive_rollback: bool,
+    ) -> Result<(), String> {
+        if !confirm_destructive_rollback {
+            return Err(
+                "v25 rollback requires explicit destructive rollback confirmation".to_string(),
+            );
+        }
+        let actor = actor.trim();
+        if actor.is_empty() || actor.len() > 128 {
+            return Err("v25 rollback actor must be between 1 and 128 bytes".to_string());
+        }
+        let now = self.now();
+        match &self.db {
+            DatabaseConnection::Sqlite(_) => self.rollback_sqlite_v25_to_v24(actor, &now),
+            #[cfg(feature = "pg")]
+            DatabaseConnection::Pg(_) => self.rollback_pg_v25_to_v24_internal(actor, &now),
+        }
+    }
+
+    fn rollback_sqlite_v25_to_v24(&self, actor: &str, now: &str) -> Result<(), String> {
+        self.with_conn(|conn| {
+            let tx = Transaction::new_unchecked(conn, TransactionBehavior::Immediate)
+                .map_err(|error| error.to_string())?;
+            let current_version: i64 = tx
+                .query_row("PRAGMA user_version", [], |row| row.get(0))
+                .map_err(|error| error.to_string())?;
+            require_v25_rollback_source(current_version)?;
+            let occupied_bindings: bool = tx
+                .query_row(
+                    "SELECT EXISTS(SELECT 1 FROM durable_memory_versions
+                     WHERE embedding_metadata_json IS NOT NULL
+                        OR embedding_binding_sha256 IS NOT NULL LIMIT 1)",
+                    [],
+                    |row| row.get(0),
+                )
+                .map_err(|error| error.to_string())?;
+            let occupied_operations: bool = tx
+                .query_row(
+                    "SELECT EXISTS(SELECT 1 FROM provider_embedding_operations LIMIT 1)",
+                    [],
+                    |row| row.get(0),
+                )
+                .map_err(|error| error.to_string())?;
+            require_empty_v25_bindings(occupied_bindings || occupied_operations)?;
+            tx.execute_batch(
+                "DROP TABLE provider_embedding_operations;
+                 ALTER TABLE durable_memory_versions DROP COLUMN embedding_binding_sha256;
+                 ALTER TABLE durable_memory_versions DROP COLUMN embedding_metadata_json;",
+            )
+            .map_err(|error| error.to_string())?;
+            tx.execute(
+                "INSERT INTO audit_log (created_at, actor, action, resource, details_json)
+                 VALUES (?1, ?2, 'schema.rollback.v25_to_v24', 'local_product_store', ?3)",
+                rusqlite::params![now, actor, v25_rollback_audit_details()],
+            )
+            .map_err(|error| error.to_string())?;
+            tx.pragma_update(None, "user_version", V24_SCHEMA_VERSION)
+                .map_err(|error| error.to_string())?;
+            tx.commit().map_err(|error| error.to_string())
+        })
+    }
+
     /// Roll back the additive v24 schema to v23 only when no external-runtime
     /// checkpoint or invocation receipt exists. Runtime writers must be stopped.
     pub fn rollback_v24_to_v23(
@@ -914,6 +991,305 @@ CREATE INDEX IF NOT EXISTS idx_budget_evidence_artifacts_created ON budget_evide
         conn.execute_batch(schema::V24_DDL)
             .map_err(|error| error.to_string())
     }
+
+    fn migrate_v25_add_provider_embedding_bindings(conn: &Connection) -> Result<(), String> {
+        let tx = Transaction::new_unchecked(conn, TransactionBehavior::Immediate)
+            .map_err(|error| error.to_string())?;
+        for column in ["embedding_metadata_json", "embedding_binding_sha256"] {
+            let exists = tx
+                .prepare("PRAGMA table_info(durable_memory_versions)")
+                .and_then(|mut statement| {
+                    let rows = statement.query_map([], |row| row.get::<_, String>(1))?;
+                    rows.collect::<Result<Vec<_>, _>>()
+                })
+                .map_err(|error| error.to_string())?
+                .iter()
+                .any(|existing| existing == column);
+            if !exists {
+                tx.execute_batch(&format!(
+                    "ALTER TABLE durable_memory_versions ADD COLUMN {column} TEXT;"
+                ))
+                .map_err(|error| error.to_string())?;
+            }
+        }
+        let operation_ddl = "CREATE TABLE IF NOT EXISTS provider_embedding_operations (
+                operation_id TEXT PRIMARY KEY,
+                operation_kind TEXT NOT NULL CHECK (operation_kind IN ('memory_version','retrieval_query')),
+                target_memory_id TEXT NOT NULL,
+                target_version BIGINT NOT NULL,
+                tenant_id TEXT NOT NULL,
+                workspace_id TEXT NOT NULL,
+                agent_id TEXT,
+                run_id TEXT,
+                task_id TEXT,
+                source_id TEXT NOT NULL,
+                source_sha256 TEXT NOT NULL CHECK (length(source_sha256) = 64),
+                node_id TEXT,
+                query_sha256 TEXT CHECK (query_sha256 IS NULL OR length(query_sha256) = 64),
+                request_identity_sha256 TEXT NOT NULL CHECK (length(request_identity_sha256) = 64),
+                operation_binding_sha256 TEXT NOT NULL CHECK (length(operation_binding_sha256) = 64),
+                content_sha256 TEXT NOT NULL CHECK (length(content_sha256) = 64),
+                contract_json TEXT NOT NULL,
+                contract_sha256 TEXT NOT NULL CHECK (length(contract_sha256) = 64),
+                receipt_sha256 TEXT NOT NULL CHECK (length(receipt_sha256) = 64),
+                provider_id TEXT NOT NULL,
+                requested_model_id TEXT NOT NULL,
+                resolved_model_id TEXT NOT NULL,
+                dimensions BIGINT NOT NULL CHECK (dimensions > 0),
+                reservation_event_id TEXT NOT NULL,
+                send_event_id TEXT,
+                outcome_event_id TEXT,
+                result_kind TEXT CHECK (result_kind IS NULL OR result_kind IN ('memory_version','retrieval_event')),
+                result_id TEXT,
+                result_sha256 TEXT CHECK (result_sha256 IS NULL OR length(result_sha256) = 64),
+                state TEXT NOT NULL CHECK (state IN ('preflight_reserved','reserved','sending','network_succeeded','succeeded','result_erased','failed_before_send','failed_known_outcome','outcome_unknown','outcome_unknown_acknowledged','retry_authorized')),
+                attempt_count BIGINT NOT NULL DEFAULT 1 CHECK (attempt_count BETWEEN 1 AND 4),
+                vector_json TEXT,
+                metadata_json TEXT,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                UNIQUE (target_memory_id, target_version),
+                FOREIGN KEY (reservation_event_id) REFERENCES provider_audit_events(event_id),
+                FOREIGN KEY (send_event_id) REFERENCES provider_audit_events(event_id),
+                FOREIGN KEY (outcome_event_id) REFERENCES provider_audit_events(event_id),
+                CHECK ((result_kind IS NULL AND result_id IS NULL AND result_sha256 IS NULL)
+                    OR (result_kind IS NOT NULL AND result_id IS NOT NULL AND result_sha256 IS NOT NULL)),
+                CHECK ((operation_kind='memory_version' AND node_id IS NULL AND query_sha256 IS NULL)
+                    OR (operation_kind='retrieval_query' AND run_id IS NOT NULL AND node_id IS NOT NULL
+                        AND query_sha256 IS NOT NULL AND query_sha256=source_sha256))
+            );";
+        tx.execute_batch(operation_ddl)
+            .map_err(|error| error.to_string())?;
+        let required_columns = [
+            "operation_id",
+            "operation_kind",
+            "target_memory_id",
+            "target_version",
+            "tenant_id",
+            "workspace_id",
+            "agent_id",
+            "run_id",
+            "task_id",
+            "source_id",
+            "source_sha256",
+            "node_id",
+            "query_sha256",
+            "request_identity_sha256",
+            "operation_binding_sha256",
+            "content_sha256",
+            "contract_json",
+            "contract_sha256",
+            "receipt_sha256",
+            "provider_id",
+            "requested_model_id",
+            "resolved_model_id",
+            "dimensions",
+            "reservation_event_id",
+            "send_event_id",
+            "outcome_event_id",
+            "result_kind",
+            "result_id",
+            "result_sha256",
+            "state",
+            "attempt_count",
+            "vector_json",
+            "metadata_json",
+            "created_at",
+            "updated_at",
+        ];
+        let mut missing_columns = Vec::new();
+        for column in required_columns {
+            if !column_exists(&tx, "provider_embedding_operations", column)? {
+                missing_columns.push(column);
+            }
+        }
+        let invalid_schema =
+            !missing_columns.is_empty() || !sqlite_v25_operation_schema_valid(&tx)?;
+        if invalid_schema {
+            let occupied: bool = tx
+                .query_row(
+                    "SELECT EXISTS(SELECT 1 FROM provider_embedding_operations LIMIT 1)",
+                    [],
+                    |row| row.get(0),
+                )
+                .map_err(|error| error.to_string())?;
+            if occupied {
+                return Err(format!(
+                    "migration 25 cannot repair an occupied partial operation table; missing or invalid {}",
+                    if missing_columns.is_empty() { "constraints/indexes/foreign-keys".to_string() } else { missing_columns.join(",") }
+                ));
+            }
+            tx.execute_batch("DROP TABLE provider_embedding_operations;")
+                .map_err(|error| error.to_string())?;
+            tx.execute_batch(operation_ddl)
+                .map_err(|error| error.to_string())?;
+        }
+        for column in required_columns {
+            if !column_exists(&tx, "provider_embedding_operations", column)? {
+                return Err(format!(
+                    "migration 25 operation table verification failed: missing {column}"
+                ));
+            }
+        }
+        tx.execute_batch(
+            "CREATE INDEX IF NOT EXISTS idx_provider_embedding_operations_state
+             ON provider_embedding_operations(state, updated_at);
+             CREATE UNIQUE INDEX IF NOT EXISTS idx_provider_embedding_operations_retrieval_identity
+             ON provider_embedding_operations(tenant_id,workspace_id,run_id,node_id,query_sha256,provider_id,
+                 requested_model_id,resolved_model_id,dimensions,request_identity_sha256)
+             WHERE operation_kind='retrieval_query';",
+        )
+        .map_err(|error| error.to_string())?;
+        tx.execute_batch("PRAGMA user_version = 25")
+            .map_err(|error| error.to_string())?;
+        if !sqlite_v25_operation_schema_valid(&tx)? {
+            return Err("migration 25 operation schema verification failed".to_string());
+        }
+        let version: i64 = tx
+            .query_row("PRAGMA user_version", [], |row| row.get(0))
+            .map_err(|error| error.to_string())?;
+        if version != V25_SCHEMA_VERSION {
+            return Err("migration 25 schema version verification failed".to_string());
+        }
+        tx.commit().map_err(|error| error.to_string())
+    }
+}
+
+fn sqlite_v25_operation_schema_valid(tx: &Transaction<'_>) -> Result<bool, String> {
+    let ddl: Option<String> = tx
+        .query_row(
+            "SELECT sql FROM sqlite_master WHERE type='table' AND name='provider_embedding_operations'",
+            [],
+            |row| row.get(0),
+        )
+        .optional()
+        .map_err(|error| error.to_string())?;
+    let Some(ddl) = ddl else {
+        return Ok(false);
+    };
+    let normalized = ddl
+        .to_ascii_lowercase()
+        .split_whitespace()
+        .collect::<String>();
+    for fragment in [
+        "operation_idtextprimarykey",
+        "unique(target_memory_id,target_version)",
+        "check(operation_kindin('memory_version','retrieval_query'))",
+        "check(length(source_sha256)=64)",
+        "check(query_sha256isnullorlength(query_sha256)=64)",
+        "check(length(request_identity_sha256)=64)",
+        "check(length(operation_binding_sha256)=64)",
+        "check(length(content_sha256)=64)",
+        "check(length(contract_sha256)=64)",
+        "check(length(receipt_sha256)=64)",
+        "check(dimensions>0)",
+        "check(result_kindisnullorresult_kindin('memory_version','retrieval_event'))",
+        "check(result_sha256isnullorlength(result_sha256)=64)",
+        "check(statein('preflight_reserved','reserved','sending','network_succeeded','succeeded','result_erased','failed_before_send','failed_known_outcome','outcome_unknown','outcome_unknown_acknowledged','retry_authorized'))",
+        "check(attempt_countbetween1and4)",
+        "check((result_kindisnullandresult_idisnullandresult_sha256isnull)or(result_kindisnotnullandresult_idisnotnullandresult_sha256isnotnull))",
+        "check((operation_kind='memory_version'andnode_idisnullandquery_sha256isnull)or(operation_kind='retrieval_query'andrun_idisnotnullandnode_idisnotnullandquery_sha256isnotnullandquery_sha256=source_sha256))",
+        "foreignkey(reservation_event_id)referencesprovider_audit_events(event_id)",
+        "foreignkey(send_event_id)referencesprovider_audit_events(event_id)",
+        "foreignkey(outcome_event_id)referencesprovider_audit_events(event_id)",
+    ] {
+        if !normalized.contains(fragment) {
+            return Ok(false);
+        }
+    }
+    let mut not_null = std::collections::BTreeMap::new();
+    let mut statement = tx
+        .prepare("PRAGMA table_info(provider_embedding_operations)")
+        .map_err(|error| error.to_string())?;
+    for row in statement
+        .query_map([], |row| {
+            Ok((row.get::<_, String>(1)?, row.get::<_, i64>(3)?))
+        })
+        .map_err(|error| error.to_string())?
+    {
+        let (name, required) = row.map_err(|error| error.to_string())?;
+        not_null.insert(name, required == 1);
+    }
+    for column in [
+        "operation_kind",
+        "target_memory_id",
+        "target_version",
+        "tenant_id",
+        "workspace_id",
+        "source_id",
+        "source_sha256",
+        "request_identity_sha256",
+        "operation_binding_sha256",
+        "content_sha256",
+        "contract_json",
+        "contract_sha256",
+        "receipt_sha256",
+        "provider_id",
+        "requested_model_id",
+        "resolved_model_id",
+        "dimensions",
+        "reservation_event_id",
+        "state",
+        "attempt_count",
+        "created_at",
+        "updated_at",
+    ] {
+        if not_null.get(column) != Some(&true) {
+            return Ok(false);
+        }
+    }
+    let normalized_index = |name: &str| -> Result<Option<String>, String> {
+        tx.query_row(
+            "SELECT sql FROM sqlite_master WHERE type='index' AND name=?1",
+            [name],
+            |row| row.get::<_, Option<String>>(0),
+        )
+        .optional()
+        .map(|sql| {
+            sql.flatten().map(|sql| {
+                sql.to_ascii_lowercase()
+                    .split_whitespace()
+                    .collect::<String>()
+            })
+        })
+        .map_err(|error| error.to_string())
+    };
+    let state_index = normalized_index("idx_provider_embedding_operations_state")?
+        .is_some_and(|sql| {
+            matches!(
+                sql.as_str(),
+                "createindexidx_provider_embedding_operations_stateonprovider_embedding_operations(state,updated_at)"
+                    | "createindexifnotexistsidx_provider_embedding_operations_stateonprovider_embedding_operations(state,updated_at)"
+            )
+        });
+    let retrieval_index = normalized_index(
+        "idx_provider_embedding_operations_retrieval_identity",
+    )?
+    .is_some_and(|sql| {
+        sql.starts_with("createuniqueindex")
+            && sql.contains(
+                "onprovider_embedding_operations(tenant_id,workspace_id,run_id,node_id,query_sha256,provider_id,requested_model_id,resolved_model_id,dimensions,request_identity_sha256)",
+            )
+            && sql.ends_with("whereoperation_kind='retrieval_query'")
+    });
+    let target_unique: bool = tx
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM pragma_index_list('provider_embedding_operations')
+         WHERE [unique]=1 AND origin='u')",
+            [],
+            |row| row.get(0),
+        )
+        .map_err(|error| error.to_string())?;
+    let foreign_keys: i64 = tx
+        .query_row(
+            "SELECT COUNT(*) FROM pragma_foreign_key_list('provider_embedding_operations')
+         WHERE [table]='provider_audit_events' AND [to]='event_id'
+           AND [from] IN ('reservation_event_id','send_event_id','outcome_event_id')",
+            [],
+            |row| row.get(0),
+        )
+        .map_err(|error| error.to_string())?;
+    Ok(state_index && retrieval_index && target_unique && foreign_keys == 3)
 }
 
 fn occupied_sqlite_tables(tx: &Transaction<'_>, tables: &[&str]) -> Result<Vec<String>, String> {
@@ -948,6 +1324,28 @@ pub(super) fn require_v24_rollback_source(current_version: i64) -> Result<(), St
             "v24 rollback requires current schema version 24; found {current_version}"
         ))
     }
+}
+
+pub(super) fn require_v25_rollback_source(current_version: i64) -> Result<(), String> {
+    if current_version == V25_SCHEMA_VERSION {
+        Ok(())
+    } else {
+        Err(format!(
+            "v25 rollback requires current schema version 25; found {current_version}"
+        ))
+    }
+}
+
+pub(super) fn require_empty_v25_bindings(occupied: bool) -> Result<(), String> {
+    if occupied {
+        Err("v25 rollback blocked: authoritative provider embedding bindings exist".to_string())
+    } else {
+        Ok(())
+    }
+}
+
+pub(super) fn v25_rollback_audit_details() -> &'static str {
+    r#"{"from_version":25,"to_version":24,"dropped_empty_columns":["embedding_metadata_json","embedding_binding_sha256"],"dropped_empty_tables":["provider_embedding_operations"]}"#
 }
 
 pub(super) fn require_empty_v24_tables(occupied: &[String]) -> Result<(), String> {
@@ -1038,6 +1436,7 @@ mod tests {
 
     fn store_at_v22(path: impl AsRef<std::path::Path>) -> LocalProductStore {
         let store = LocalProductStore::new(path).unwrap();
+        store.rollback_v25_to_v24("migration-test", true).unwrap();
         store.rollback_v24_to_v23("migration-test", true).unwrap();
         store.rollback_v23_to_v22("migration-test", true).unwrap();
         store
@@ -1089,7 +1488,7 @@ mod tests {
 
         drop(store);
         let upgraded = LocalProductStore::new(&path).unwrap();
-        assert_eq!(upgraded.schema_version().unwrap(), V24_SCHEMA_VERSION);
+        assert_eq!(upgraded.schema_version().unwrap(), V25_SCHEMA_VERSION);
         for table in V22_TABLES {
             assert!(table_exists(&upgraded, table), "{table} should be restored");
         }
@@ -1236,6 +1635,9 @@ mod tests {
         let occupied_path = dir.path().join("v23-occupied.db");
         let occupied = LocalProductStore::new(&occupied_path).unwrap();
         occupied
+            .rollback_v25_to_v24("migration-test", true)
+            .unwrap();
+        occupied
             .rollback_v24_to_v23("migration-test", true)
             .unwrap();
         occupied
@@ -1258,6 +1660,7 @@ mod tests {
 
         let empty_path = dir.path().join("v23-empty.db");
         let empty = LocalProductStore::new(&empty_path).unwrap();
+        empty.rollback_v25_to_v24("migration-test", true).unwrap();
         empty.rollback_v24_to_v23("migration-test", true).unwrap();
         empty.rollback_v23_to_v22("migration-test", true).unwrap();
         assert_eq!(empty.schema_version().unwrap(), V22_SCHEMA_VERSION);
@@ -1266,7 +1669,7 @@ mod tests {
         }
         drop(empty);
         let upgraded = LocalProductStore::new(&empty_path).unwrap();
-        assert_eq!(upgraded.schema_version().unwrap(), V24_SCHEMA_VERSION);
+        assert_eq!(upgraded.schema_version().unwrap(), V25_SCHEMA_VERSION);
         for table in V23_TABLES {
             assert!(table_exists(&upgraded, table));
         }
@@ -1280,6 +1683,9 @@ mod tests {
         let dir = tempdir().unwrap();
         let occupied_path = dir.path().join("v24-occupied.db");
         let occupied = LocalProductStore::new(&occupied_path).unwrap();
+        occupied
+            .rollback_v25_to_v24("migration-test", true)
+            .unwrap();
         occupied
             .with_conn(|conn| {
                 conn.execute(
@@ -1302,6 +1708,7 @@ mod tests {
 
         let empty_path = dir.path().join("v24-empty.db");
         let empty = LocalProductStore::new(&empty_path).unwrap();
+        empty.rollback_v25_to_v24("migration-test", true).unwrap();
         empty.rollback_v24_to_v23("migration-test", true).unwrap();
         assert_eq!(empty.schema_version().unwrap(), V23_SCHEMA_VERSION);
         for table in V24_TABLES {
@@ -1309,9 +1716,242 @@ mod tests {
         }
         drop(empty);
         let upgraded = LocalProductStore::new(&empty_path).unwrap();
-        assert_eq!(upgraded.schema_version().unwrap(), V24_SCHEMA_VERSION);
+        assert_eq!(upgraded.schema_version().unwrap(), V25_SCHEMA_VERSION);
         for table in V24_TABLES {
             assert!(table_exists(&upgraded, table));
         }
+    }
+
+    #[test]
+    fn sqlite_v25_rollback_refuses_provider_bindings_and_reapplies_cleanly() {
+        let dir = tempdir().unwrap();
+        let occupied = LocalProductStore::new(dir.path().join("v25-occupied.db")).unwrap();
+        occupied
+            .with_conn(|conn| {
+                conn.execute(
+                    "INSERT INTO durable_memory_versions
+                     (memory_id,version,tenant_id,workspace_id,source_id,source_sha256,
+                      conflict_key,state,confidence,content_json,embedding_provenance,
+                      embedding_metadata_json,embedding_binding_sha256,record_sha256,
+                      created_at,created_by)
+                     VALUES ('memory',1,'tenant','workspace','source',?1,'fact','current',1.0,
+                             '{}','provider_reported','{}',?1,?1,'2026-07-15T00:00:00Z','test')",
+                    ["a".repeat(64)],
+                )
+                .map_err(|error| error.to_string())?;
+                Ok(())
+            })
+            .unwrap();
+        let error = occupied
+            .rollback_v25_to_v24("migration-test", true)
+            .unwrap_err();
+        assert!(error.contains("provider embedding bindings exist"));
+        assert_eq!(occupied.schema_version().unwrap(), V25_SCHEMA_VERSION);
+
+        let path = dir.path().join("v25-empty.db");
+        let empty = LocalProductStore::new(&path).unwrap();
+        empty
+            .with_conn(|conn| {
+                conn.execute(
+                    "INSERT INTO durable_memory_versions
+                     (memory_id,version,tenant_id,workspace_id,source_id,source_sha256,
+                      conflict_key,state,confidence,content_json,embedding_provenance,
+                      record_sha256,created_at,created_by)
+                     VALUES ('legacy-memory',1,'tenant','workspace','source',?1,'fact','current',
+                             1.0,'{}','unavailable',?1,'2026-07-15T00:00:00Z','test')",
+                    ["b".repeat(64)],
+                )
+                .map(|_| ())
+                .map_err(|error| error.to_string())
+            })
+            .unwrap();
+        empty.rollback_v25_to_v24("migration-test", true).unwrap();
+        assert_eq!(empty.schema_version().unwrap(), V24_SCHEMA_VERSION);
+        drop(empty);
+        let upgraded = LocalProductStore::new(&path).unwrap();
+        assert_eq!(upgraded.schema_version().unwrap(), V25_SCHEMA_VERSION);
+        assert_eq!(
+            upgraded
+                .inspect_durable_memory("legacy-memory")
+                .unwrap()
+                .len(),
+            1
+        );
+    }
+
+    #[test]
+    fn sqlite_v25_migration_is_atomic_and_concurrent_restart_safe() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("v25-atomic.db");
+        let store = LocalProductStore::new(&path).unwrap();
+        store.rollback_v25_to_v24("migration-test", true).unwrap();
+        drop(store);
+        let barrier = std::sync::Barrier::new(2);
+        let (left, right) = std::thread::scope(|scope| {
+            let left = scope.spawn(|| {
+                barrier.wait();
+                LocalProductStore::new(&path).map(|store| store.schema_version().unwrap())
+            });
+            let right = scope.spawn(|| {
+                barrier.wait();
+                LocalProductStore::new(&path).map(|store| store.schema_version().unwrap())
+            });
+            (left.join().unwrap(), right.join().unwrap())
+        });
+        assert_eq!(left.unwrap(), V25_SCHEMA_VERSION);
+        assert_eq!(right.unwrap(), V25_SCHEMA_VERSION);
+
+        let repair_path = dir.path().join("v25-empty-partial.db");
+        let repair = LocalProductStore::new(&repair_path).unwrap();
+        repair.rollback_v25_to_v24("migration-test", true).unwrap();
+        repair
+            .with_conn(|conn| {
+                conn.execute_batch(
+                    "CREATE TABLE provider_embedding_operations (
+                        operation_id TEXT PRIMARY KEY,target_memory_id TEXT NOT NULL,target_version BIGINT NOT NULL
+                     );",
+                )
+                .map_err(|error| error.to_string())
+            })
+            .unwrap();
+        repair.run_migrations().unwrap();
+        assert_eq!(repair.schema_version().unwrap(), V25_SCHEMA_VERSION);
+        repair
+            .with_conn(|conn| {
+                assert!(column_exists(
+                    conn,
+                    "provider_embedding_operations",
+                    "contract_sha256"
+                )?);
+                assert!(column_exists(
+                    conn,
+                    "provider_embedding_operations",
+                    "receipt_sha256"
+                )?);
+                Ok(())
+            })
+            .unwrap();
+
+        let constraint_path = dir.path().join("v25-empty-constraint-partial.db");
+        let constraint_repair = LocalProductStore::new(&constraint_path).unwrap();
+        constraint_repair
+            .with_conn(|conn| {
+                conn.execute_batch(
+                    "PRAGMA foreign_keys=OFF;
+                     ALTER TABLE provider_embedding_operations RENAME TO provider_embedding_operations_valid;
+                     CREATE TABLE provider_embedding_operations AS
+                         SELECT * FROM provider_embedding_operations_valid WHERE 0;
+                     DROP TABLE provider_embedding_operations_valid;
+                     PRAGMA user_version=24;
+                     PRAGMA foreign_keys=ON;",
+                )
+                .map_err(|error| error.to_string())
+            })
+            .unwrap();
+        constraint_repair.run_migrations().unwrap();
+        assert_eq!(
+            constraint_repair.schema_version().unwrap(),
+            V25_SCHEMA_VERSION
+        );
+        constraint_repair
+            .with_conn(|conn| {
+                let tx = conn
+                    .unchecked_transaction()
+                    .map_err(|error| error.to_string())?;
+                assert!(sqlite_v25_operation_schema_valid(&tx)?);
+                tx.rollback().map_err(|error| error.to_string())
+            })
+            .unwrap();
+
+        let occupied_constraint_path = dir.path().join("v25-occupied-constraint-partial.db");
+        let occupied_constraint = LocalProductStore::new(&occupied_constraint_path).unwrap();
+        occupied_constraint
+            .with_conn(|conn| {
+                conn.execute_batch(
+                    "PRAGMA foreign_keys=OFF;
+                     ALTER TABLE provider_embedding_operations RENAME TO provider_embedding_operations_valid;
+                     CREATE TABLE provider_embedding_operations AS
+                         SELECT * FROM provider_embedding_operations_valid WHERE 0;
+                     DROP TABLE provider_embedding_operations_valid;
+                     INSERT INTO provider_embedding_operations (operation_id) VALUES ('occupied-malformed');
+                     PRAGMA user_version=24;
+                     PRAGMA foreign_keys=ON;",
+                )
+                .map_err(|error| error.to_string())
+            })
+            .unwrap();
+        let occupied_error = occupied_constraint.run_migrations().unwrap_err();
+        assert!(
+            occupied_error.contains("occupied partial operation table"),
+            "unexpected occupied constraint failure: {occupied_error}"
+        );
+        assert_eq!(
+            occupied_constraint.schema_version().unwrap(),
+            V24_SCHEMA_VERSION
+        );
+
+        let partial_index_path = dir.path().join("v25-occupied-partial-index.db");
+        let partial_index = LocalProductStore::new(&partial_index_path).unwrap();
+        partial_index
+            .with_conn(|conn| {
+                conn.execute_batch(&format!(
+                    "INSERT INTO provider_audit_events
+                     (event_id,dispatch_id,provider_id,event_type,redaction_status,created_at)
+                     VALUES ('paudit-preflight-{hash}','memory-embedding-{hash}','openrouter',
+                             'contract_check_reserved','redacted','2026-07-15T00:00:00Z');
+                     INSERT INTO provider_embedding_operations
+                     (operation_id,operation_kind,target_memory_id,target_version,tenant_id,workspace_id,
+                      source_id,source_sha256,request_identity_sha256,operation_binding_sha256,
+                      content_sha256,contract_json,contract_sha256,receipt_sha256,provider_id,
+                      requested_model_id,resolved_model_id,dimensions,reservation_event_id,state,
+                      attempt_count,created_at,updated_at)
+                     VALUES ('embedding-operation-{hash}','memory_version','memory',1,'tenant','workspace',
+                             'source','{hash}','{hash}','{hash}','{hash}','{{}}','{hash}','{hash}',
+                             'openrouter','model:free','model:free',1,'paudit-preflight-{hash}',
+                             'preflight_reserved',1,'2026-07-15T00:00:00Z','2026-07-15T00:00:00Z');
+                     DROP INDEX idx_provider_embedding_operations_state;
+                     CREATE INDEX idx_provider_embedding_operations_state
+                       ON provider_embedding_operations(state,updated_at)
+                       WHERE state='succeeded';
+                     PRAGMA user_version=24;",
+                    hash = "a".repeat(64),
+                ))
+                .map_err(|error| error.to_string())
+            })
+            .unwrap();
+        let partial_index_error = partial_index.run_migrations().unwrap_err();
+        assert!(partial_index_error.contains("occupied partial operation table"));
+        assert_eq!(partial_index.schema_version().unwrap(), V24_SCHEMA_VERSION);
+
+        let failure_path = dir.path().join("v25-atomic-failure.db");
+        let failure = LocalProductStore::new(&failure_path).unwrap();
+        failure.rollback_v25_to_v24("migration-test", true).unwrap();
+        failure.with_conn(|conn|conn.execute_batch(
+            "CREATE TABLE provider_embedding_operations (
+                operation_id TEXT PRIMARY KEY,target_memory_id TEXT NOT NULL,target_version BIGINT NOT NULL
+             );
+             INSERT INTO provider_embedding_operations VALUES ('partial','memory',1);"
+        ).map_err(|error|error.to_string())).unwrap();
+        let error = failure.run_migrations().unwrap_err();
+        assert!(
+            error.contains("occupied partial operation table") || error.contains("no such column"),
+            "unexpected partial-v25 failure: {error}"
+        );
+        assert_eq!(failure.schema_version().unwrap(), V24_SCHEMA_VERSION);
+        failure
+            .with_conn(|conn| {
+                assert!(!column_exists(
+                    conn,
+                    "durable_memory_versions",
+                    "embedding_metadata_json"
+                )?);
+                assert!(!column_exists(
+                    conn,
+                    "durable_memory_versions",
+                    "embedding_binding_sha256"
+                )?);
+                Ok(())
+            })
+            .unwrap();
     }
 }

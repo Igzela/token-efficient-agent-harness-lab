@@ -512,17 +512,58 @@ export interface ProviderAuditEvent {
 }
 
 export interface LocalDashboardState {
-  schema_version: "local_dashboard.v1";
-  status: string;
-  counts: { dispatches: number; plans?: number; workflow_runs?: number; team_members: number; api_keys: number; audit_events: number };
-  dispatches: DispatchItem[];
-  team: LocalTeamSnapshot;
-  config: Record<string, unknown>;
-  costs: LocalCostSummary;
-  boundaries: Boundaries;
-  cli: LocalCliCapability;
-  adaptive_fusion?: AdaptiveFusionOperatorStatus;
+  readonly schema_version: "local_dashboard.v1";
+  readonly status: string;
+  readonly counts: Readonly<{ dispatches: number; plans?: number; workflow_runs?: number; team_members: number; api_keys: number; audit_events: number }>;
+  readonly dispatches: readonly DispatchItem[];
+  readonly team: LocalTeamSnapshot;
+  readonly config: Readonly<Record<string, unknown>>;
+  readonly costs: LocalCostSummary;
+  readonly boundaries: Boundaries;
+  readonly cli: LocalCliCapability;
+  readonly adaptive_fusion?: AdaptiveFusionOperatorStatus;
+  readonly provider_embedding_receipts: readonly ProviderEmbeddingReceiptEvidence[];
 }
+
+export interface ProviderEmbeddingReceiptEvidence {
+  readonly operation_id: string;
+  readonly operation_kind: "memory_version" | "retrieval_query";
+  readonly tenant_id: string;
+  readonly workspace_id: string;
+  readonly run_id: string | null;
+  readonly node_id: string | null;
+  readonly provider_id: string;
+  readonly requested_model_id: string;
+  readonly resolved_model_id: string;
+  readonly dimensions: number;
+  readonly state: ProviderEmbeddingReceiptState;
+  readonly attempt_count: number;
+  readonly receipt_sha256: string;
+  readonly request_identity_sha256: string;
+  readonly reservation_event_id: string;
+  readonly send_event_id: string | null;
+  readonly outcome_event_id: string | null;
+  readonly result_kind: "memory_version" | "retrieval_event" | null;
+  readonly result_id: string | null;
+  readonly result_sha256: string | null;
+  readonly error_domain: string | null;
+  readonly created_at: string;
+  readonly updated_at: string;
+  readonly redacted: true;
+}
+
+export type ProviderEmbeddingReceiptState =
+  | "preflight_reserved"
+  | "reserved"
+  | "sending"
+  | "network_succeeded"
+  | "succeeded"
+  | "result_erased"
+  | "failed_before_send"
+  | "failed_known_outcome"
+  | "outcome_unknown"
+  | "outcome_unknown_acknowledged"
+  | "retry_authorized";
 
 export interface LocalCliCapability {
   enabled: boolean;
@@ -1615,6 +1656,28 @@ export interface MemoryVersionTransitionRequest {
   expected_version: number;
   run_id: string;
   scope: MemoryScope;
+}
+export interface MemoryReembedRequest extends MemoryVersionTransitionRequest {
+  confirm_reembed: true;
+}
+export interface ProviderEmbeddingResolutionRequest {
+  target_version: number;
+  expected_attempt_count: number;
+  scope: MemoryScope;
+  run_id: string;
+  action: "retry_failed" | "acknowledge_unknown";
+  evidence_source_id?: string | null;
+  evidence_sha256?: string | null;
+  confirm_resolution: true;
+}
+export interface ProviderEmbeddingResolutionResult {
+  readonly operation_id: string;
+  readonly state: "retry_authorized" | "outcome_unknown_acknowledged";
+  readonly attempt_count: number;
+  readonly idempotent: boolean;
+}
+export interface ProviderEmbeddingResolutionResponse {
+  readonly resolution: ProviderEmbeddingResolutionResult;
 }
 export interface MemoryRetrievalRequest {
   scope: MemoryScope;

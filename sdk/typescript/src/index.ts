@@ -119,6 +119,9 @@ import type {
   DurableMemoryResponse,
   DurableMemoryRevisionRequest,
   MemoryVersionTransitionRequest,
+  MemoryReembedRequest,
+  ProviderEmbeddingResolutionRequest,
+  ProviderEmbeddingResolutionResponse,
   EvidenceChainPromotionRequest,
   MemoryRetrievalRequest,
   MemoryRetrievalResponse,
@@ -351,6 +354,21 @@ export class AgentControlPlaneClient {
     return this.postJson<DurableMemoryResponse>(
       `/api/v1/memories/${encodeURIComponent(memoryId)}/revise`,
       request,
+    );
+  }
+
+  reembedMemory(memoryId: string, request: MemoryReembedRequest): Promise<DurableMemoryResponse> {
+    return this.postJson<DurableMemoryResponse>(
+      `/api/v1/memories/${encodeURIComponent(memoryId)}/reembed`, request,
+    );
+  }
+
+  reconcileMemoryEmbedding(
+    memoryId: string,
+    request: ProviderEmbeddingResolutionRequest,
+  ): Promise<ProviderEmbeddingResolutionResponse> {
+    return this.postJson<ProviderEmbeddingResolutionResponse>(
+      `/api/v1/memories/${encodeURIComponent(memoryId)}/embedding/reconcile`, request,
     );
   }
 

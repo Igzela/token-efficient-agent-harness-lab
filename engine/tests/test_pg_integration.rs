@@ -28,11 +28,20 @@ use engine::orchestration::schemas::{
     DebatePosition, DebateRequest, DebateResolution, HandoffRequest, ReviewRequest, ReviewVerdict,
 };
 #[cfg(feature = "pg-tests")]
+use engine::provider::embedding::{
+    OPENROUTER_EMBEDDING_CANONICAL_SLUG, OPENROUTER_EMBEDDING_CONTEXT_LENGTH,
+    OPENROUTER_EMBEDDING_DIMENSIONS, OPENROUTER_EMBEDDING_MODEL_ID,
+    OPENROUTER_EMBEDDING_RESOLVED_MODEL_ID,
+};
+#[cfg(feature = "pg-tests")]
+use engine::provider::transport::{HttpError, HttpRequest, HttpResponse, HttpTransport};
+#[cfg(feature = "pg-tests")]
 use engine::storage::local_product_store::BudgetAutoPausePolicy;
 #[cfg(feature = "pg-tests")]
 use engine::storage::local_product_store::{
     DurableMemoryCreate, DurableMemoryRevision, ExternalRuntimeInvocationClaim,
     ExternalRuntimeScope, LocalProductStore, MemoryRetrievalRequest, MemoryScope,
+    ProviderEmbeddingResolutionAction, ProviderEmbeddingResolutionRequest,
 };
 #[cfg(feature = "pg-tests")]
 use engine::tool_policy_executor::ToolPolicyNodeExecutor;
@@ -48,6 +57,85 @@ use std::sync::Arc;
 #[cfg(feature = "pg-tests")]
 fn utc_now_string() -> String {
     chrono::Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string()
+}
+
+#[cfg(feature = "pg-tests")]
+struct PgCountingEmbeddingTransport {
+    posts: AtomicUsize,
+}
+
+#[cfg(feature = "pg-tests")]
+struct PgFailOnceEmbeddingTransport {
+    posts: AtomicUsize,
+}
+
+#[cfg(feature = "pg-tests")]
+#[async_trait::async_trait]
+impl HttpTransport for PgFailOnceEmbeddingTransport {
+    async fn send(&self, request: &HttpRequest) -> Result<HttpResponse, HttpError> {
+        if request.url.ends_with("/embeddings/models") {
+            return PgCountingEmbeddingTransport {
+                posts: AtomicUsize::new(0),
+            }
+            .send(request)
+            .await;
+        }
+        if request.url.ends_with("/embeddings") && request.method == "POST" {
+            if self.posts.fetch_add(1, Ordering::SeqCst) == 0 {
+                return Ok(HttpResponse {
+                    status: 401,
+                    body: br#"{"error":"fixture refusal"}"#.to_vec(),
+                });
+            }
+            return Ok(HttpResponse {
+                status: 200,
+                body: serde_json::to_vec(&json!({
+                    "model":OPENROUTER_EMBEDDING_RESOLVED_MODEL_ID,
+                    "data":[{"index":0,"embedding":vec![0.25;OPENROUTER_EMBEDDING_DIMENSIONS]}],
+                    "usage":{"prompt_tokens":4}
+                }))
+                .unwrap(),
+            });
+        }
+        Err(HttpError::Connection(
+            "unexpected fixture endpoint".to_string(),
+        ))
+    }
+}
+
+#[cfg(feature = "pg-tests")]
+#[async_trait::async_trait]
+impl HttpTransport for PgCountingEmbeddingTransport {
+    async fn send(&self, request: &HttpRequest) -> Result<HttpResponse, HttpError> {
+        if request.url.ends_with("/embeddings/models") {
+            Ok(HttpResponse {
+                status: 200,
+                body: serde_json::to_vec(&json!({"data":[{
+                    "id":OPENROUTER_EMBEDDING_MODEL_ID,
+                    "canonical_slug":OPENROUTER_EMBEDDING_CANONICAL_SLUG,
+                    "context_length":OPENROUTER_EMBEDDING_CONTEXT_LENGTH,
+                    "pricing":{"prompt":"0","completion":"0","request":"0","image":"0"},
+                    "architecture":{"input_modalities":["text"],"output_modalities":["embeddings"]}
+                }]}))
+                .unwrap(),
+            })
+        } else if request.url.ends_with("/embeddings") && request.method == "POST" {
+            self.posts.fetch_add(1, Ordering::SeqCst);
+            Ok(HttpResponse {
+                status: 200,
+                body: serde_json::to_vec(&json!({
+                    "model":OPENROUTER_EMBEDDING_RESOLVED_MODEL_ID,
+                    "data":[{"index":0,"embedding":vec![0.25;OPENROUTER_EMBEDDING_DIMENSIONS]}],
+                    "usage":{"prompt_tokens":4}
+                }))
+                .unwrap(),
+            })
+        } else {
+            Err(HttpError::Connection(
+                "unexpected fixture endpoint".to_string(),
+            ))
+        }
+    }
 }
 
 /// Returns a connected Postgres-backed LocalProductStore, or skips the test
@@ -2699,6 +2787,331 @@ fn pg_durable_memory_is_scope_bound_restart_safe_and_concurrency_safe() {
         )
         .unwrap();
     assert_eq!(resolved["winner"]["state"], "current");
+}
+
+#[test]
+#[cfg(feature = "pg-tests")]
+fn pg_provider_embedding_metadata_is_atomic_and_restart_safe() {
+    let Ok(url) = std::env::var("ACP_TEST_DATABASE_URL") else {
+        return;
+    };
+    let keys = [
+        "CI",
+        "OPENROUTER_API_KEY",
+        "ACP_DURABLE_MEMORY_EMBEDDING_MODE",
+        "ACP_ENABLE_DURABLE_MEMORY_EMBEDDINGS",
+        "ACP_DURABLE_MEMORY_EMBEDDING_DAILY_CAP_USD",
+        "ACP_ENABLE_PROVIDER_EXECUTION",
+        "ACP_REQUIRE_AUTH",
+    ];
+    let prior = keys
+        .into_iter()
+        .map(|key| (key, std::env::var(key).ok()))
+        .collect::<Vec<_>>();
+    std::env::remove_var("CI");
+    std::env::set_var("OPENROUTER_API_KEY", "fixture-credential");
+    std::env::set_var("ACP_DURABLE_MEMORY_EMBEDDING_MODE", "provider");
+    std::env::set_var("ACP_ENABLE_DURABLE_MEMORY_EMBEDDINGS", "1");
+    std::env::set_var("ACP_ENABLE_PROVIDER_EXECUTION", "1");
+    std::env::set_var("ACP_REQUIRE_AUTH", "1");
+    // Other PostgreSQL integration tests intentionally leave historical usage
+    // in this shared disposable database. Isolate this zero-price provider
+    // fixture from that unrelated aggregate while retaining production cost
+    // reservation behavior.
+    std::env::set_var("ACP_DURABLE_MEMORY_EMBEDDING_DAILY_CAP_USD", "1000000000");
+    let result = (|| -> Result<(), String> {
+        let tag = uuid_tag();
+        let transport = Arc::new(PgCountingEmbeddingTransport {
+            posts: AtomicUsize::new(0),
+        });
+        let store = LocalProductStore::new_postgres_with_embedding_transport_for_test(
+            &url,
+            utc_now_string,
+            transport.clone(),
+        )?;
+        let scope = MemoryScope {
+            tenant_id: "local".to_string(),
+            workspace_id: format!("pg-provider-memory-{tag}"),
+            agent_id: Some(format!("agent-{tag}")),
+            task_id: None,
+        };
+        let created = store.create_durable_memory(
+            &DurableMemoryCreate {
+                scope: scope.clone(),
+                run_id: Some(format!("run-{tag}")),
+                source_id: format!("source-{tag}"),
+                source_sha256: "ab".repeat(32),
+                conflict_key: format!("fact-{tag}"),
+                content: json!({"fact":"postgres provider embedding"}),
+                confidence: 1.0,
+                fresh_until: None,
+                expires_at: None,
+                supersedes_memory_id: None,
+            },
+            "pg-provider-memory-test",
+        )?;
+        let memory_id = created["memory_id"].as_str().unwrap().to_string();
+        assert_eq!(created["embedding"]["provenance"], "provider_reported");
+        assert_eq!(created["embedding"]["dimensions"], 1536);
+        assert_eq!(transport.posts.load(Ordering::SeqCst), 1);
+        let mut client =
+            postgres::Client::connect(&url, postgres::NoTls).map_err(|error| error.to_string())?;
+        client
+            .execute(
+                "DELETE FROM durable_memory_versions WHERE memory_id=$1",
+                &[&memory_id],
+            )
+            .map_err(|error| error.to_string())?;
+        drop(store);
+
+        let restarted = Arc::new(
+            LocalProductStore::new_postgres_with_embedding_transport_for_test(
+                &url,
+                utc_now_string,
+                transport.clone(),
+            )?,
+        );
+        let recovered = restarted.create_durable_memory(
+            &DurableMemoryCreate {
+                scope: scope.clone(),
+                run_id: Some(format!("run-{tag}")),
+                source_id: format!("source-{tag}"),
+                source_sha256: "ab".repeat(32),
+                conflict_key: format!("fact-{tag}"),
+                content: json!({"fact":"postgres provider embedding"}),
+                confidence: 1.0,
+                fresh_until: None,
+                expires_at: None,
+                supersedes_memory_id: None,
+            },
+            "pg-provider-memory-test",
+        )?;
+        assert_eq!(
+            recovered["embedding"]["binding_sha256"],
+            created["embedding"]["binding_sha256"]
+        );
+        assert_eq!(transport.posts.load(Ordering::SeqCst), 1);
+        let barrier = Arc::new(std::sync::Barrier::new(2));
+        let revisions = [("a", "postgres revision a"), ("b", "postgres revision b")].map(
+            |(suffix, content)| DurableMemoryRevision {
+                expected_version: 1,
+                source_id: format!("source-{tag}-{suffix}"),
+                source_sha256: format!("{:x}", Sha256::digest(content.as_bytes())),
+                content: json!({"fact":content}),
+                confidence: 0.95,
+                fresh_until: None,
+                expires_at: None,
+            },
+        );
+        let results = std::thread::scope(|scope| {
+            let handles = revisions
+                .into_iter()
+                .map(|revision| {
+                    let restarted = Arc::clone(&restarted);
+                    let barrier = Arc::clone(&barrier);
+                    let memory_id = memory_id.clone();
+                    scope.spawn(move || {
+                        barrier.wait();
+                        restarted.revise_durable_memory(
+                            &memory_id,
+                            &revision,
+                            "pg-provider-memory-test",
+                        )
+                    })
+                })
+                .collect::<Vec<_>>();
+            handles
+                .into_iter()
+                .map(|handle| handle.join().unwrap())
+                .collect::<Vec<_>>()
+        });
+        assert_eq!(
+            results.iter().filter(|result| result.is_ok()).count(),
+            1,
+            "{results:?}"
+        );
+        assert!(results
+            .iter()
+            .filter_map(|result| result.as_ref().err())
+            .all(
+                |error| error.contains("competing provider embedding mutation")
+                    || error.contains("version conflict")
+            ));
+        assert_eq!(transport.posts.load(Ordering::SeqCst), 2);
+        let history = restarted.inspect_durable_memory(&memory_id)?;
+        assert_eq!(history.len(), 2);
+        assert_eq!(
+            history[0]["embedding"]["binding_sha256"],
+            created["embedding"]["binding_sha256"]
+        );
+        let retrieval_request = MemoryRetrievalRequest {
+            scope,
+            run_id: format!("run-retrieve-{tag}"),
+            node_id: format!("node-{tag}"),
+            query: "postgres provider embedding".to_string(),
+            top_k: 5,
+            max_tokens: 100,
+            max_bytes: 1000,
+            allow_lexical_fallback: false,
+        };
+        let retrieval =
+            restarted.retrieve_durable_memories(&retrieval_request, "pg-provider-memory-test")?;
+        assert_eq!(retrieval.selected.len(), 1);
+        assert_eq!(
+            retrieval.embedding_provider.unwrap()["provider_id"],
+            "openrouter"
+        );
+        assert_eq!(transport.posts.load(Ordering::SeqCst), 3);
+        let duplicate =
+            restarted.retrieve_durable_memories(&retrieval_request, "pg-provider-memory-test")?;
+        assert_eq!(duplicate.result_sha256, retrieval.result_sha256);
+        assert_eq!(transport.posts.load(Ordering::SeqCst), 3);
+        let receipts = restarted.provider_embedding_receipt_evidence(100)?;
+        assert!(receipts.iter().any(|receipt| {
+            receipt["operation_kind"] == "retrieval_query"
+                && receipt["state"] == "succeeded"
+                && receipt["redacted"] == true
+        }));
+        assert_eq!(restarted.check_integrity()?.status, "ok");
+        let mut client =
+            postgres::Client::connect(&url, postgres::NoTls).map_err(|error| error.to_string())?;
+        client
+            .execute(
+                "UPDATE memory_retrieval_events SET result_sha256=$1 WHERE retrieval_id=$2",
+                &[&"f".repeat(64), &duplicate.retrieval_id],
+            )
+            .map_err(|error| error.to_string())?;
+        assert!(restarted
+            .check_integrity()
+            .unwrap_err()
+            .contains("retrieval result cross-owner binding is invalid"));
+        client
+            .execute(
+                "UPDATE memory_retrieval_events SET result_sha256=$1 WHERE retrieval_id=$2",
+                &[&duplicate.result_sha256, &duplicate.retrieval_id],
+            )
+            .map_err(|error| error.to_string())?;
+        assert_eq!(restarted.check_integrity()?.status, "ok");
+        Ok(())
+    })();
+    for (key, value) in prior {
+        if let Some(value) = value {
+            std::env::set_var(key, value);
+        } else {
+            std::env::remove_var(key);
+        }
+    }
+    result.unwrap();
+}
+
+#[test]
+#[cfg(feature = "pg-tests")]
+fn pg_provider_embedding_failure_audit_and_retry_authority_are_atomic() {
+    let Ok(url) = std::env::var("ACP_TEST_DATABASE_URL") else {
+        return;
+    };
+    let keys = [
+        "CI",
+        "OPENROUTER_API_KEY",
+        "ACP_DURABLE_MEMORY_EMBEDDING_MODE",
+        "ACP_ENABLE_DURABLE_MEMORY_EMBEDDINGS",
+        "ACP_DURABLE_MEMORY_EMBEDDING_DAILY_CAP_USD",
+        "ACP_ENABLE_PROVIDER_EXECUTION",
+        "ACP_REQUIRE_AUTH",
+    ];
+    let prior = keys
+        .into_iter()
+        .map(|key| (key, std::env::var(key).ok()))
+        .collect::<Vec<_>>();
+    std::env::remove_var("CI");
+    std::env::set_var("OPENROUTER_API_KEY", "fixture-credential");
+    std::env::set_var("ACP_DURABLE_MEMORY_EMBEDDING_MODE", "provider");
+    std::env::set_var("ACP_ENABLE_DURABLE_MEMORY_EMBEDDINGS", "1");
+    std::env::set_var("ACP_ENABLE_PROVIDER_EXECUTION", "1");
+    std::env::set_var("ACP_REQUIRE_AUTH", "1");
+    std::env::set_var("ACP_DURABLE_MEMORY_EMBEDDING_DAILY_CAP_USD", "1000000000");
+    let result = (|| -> Result<(), String> {
+        let tag = uuid_tag();
+        let transport = Arc::new(PgFailOnceEmbeddingTransport {
+            posts: AtomicUsize::new(0),
+        });
+        let store = LocalProductStore::new_postgres_with_embedding_transport_for_test(
+            &url,
+            utc_now_string,
+            transport.clone(),
+        )?;
+        let scope = MemoryScope {
+            tenant_id: "local".into(),
+            workspace_id: format!("pg-provider-retry-{tag}"),
+            agent_id: Some(format!("agent-{tag}")),
+            task_id: None,
+        };
+        let run_id = format!("run-{tag}");
+        let request = DurableMemoryCreate {
+            scope: scope.clone(),
+            run_id: Some(run_id.clone()),
+            source_id: format!("source-{tag}"),
+            source_sha256: "ef".repeat(32),
+            conflict_key: format!("fact-{tag}"),
+            content: json!({"fact":"postgres retry authority"}),
+            confidence: 1.0,
+            fresh_until: None,
+            expires_at: None,
+            supersedes_memory_id: None,
+        };
+        let failure = store
+            .create_durable_memory(&request, "pg-retry-test")
+            .unwrap_err();
+        assert!(
+            !failure.contains("outcome unknown"),
+            "unexpected ambiguous failure: {failure}"
+        );
+        let mut client =
+            postgres::Client::connect(&url, postgres::NoTls).map_err(|error| error.to_string())?;
+        let row = client
+            .query_one(
+                "SELECT target_memory_id,state,attempt_count
+             FROM provider_embedding_operations WHERE workspace_id=$1",
+                &[&scope.workspace_id],
+            )
+            .map_err(|error| error.to_string())?;
+        let memory_id: String = row.get(0);
+        assert_eq!(row.get::<_, String>(1), "failed_known_outcome");
+        assert_eq!(row.get::<_, i64>(2), 1);
+        let error_events:i64=client.query_one(
+            "SELECT COUNT(*) FROM provider_audit_events WHERE dispatch_id LIKE $1 AND event_type='error'",
+            &[&"memory-embedding-%".to_string()],
+        ).map_err(|error|error.to_string())?.get(0);
+        assert!(error_events >= 1);
+        let resolution = ProviderEmbeddingResolutionRequest {
+            target_version: 1,
+            expected_attempt_count: 1,
+            scope: scope.clone(),
+            run_id: Some(run_id),
+            action: ProviderEmbeddingResolutionAction::RetryFailed,
+            evidence_source_id: None,
+            evidence_sha256: None,
+            confirm_resolution: true,
+        };
+        assert_eq!(
+            store.reconcile_provider_embedding_operation(&memory_id, &resolution, "pg-operator")?
+                ["state"],
+            "retry_authorized"
+        );
+        let created = store.create_durable_memory(&request, "pg-retry-test")?;
+        assert_eq!(created["version"], 1);
+        assert_eq!(transport.posts.load(Ordering::SeqCst), 2);
+        assert_eq!(store.check_integrity()?.status, "ok");
+        Ok(())
+    })();
+    for (key, value) in prior {
+        if let Some(value) = value {
+            std::env::set_var(key, value);
+        } else {
+            std::env::remove_var(key);
+        }
+    }
+    result.unwrap();
 }
 
 #[test]
