@@ -161,6 +161,66 @@ class ClientLocalStateTest(unittest.TestCase):
         )
 
     @patch("agent_control_plane_sdk.client.urlopen")
+    def test_memory_and_production_evidence_methods_preserve_requests(self, mock_urlopen):
+        mock_urlopen.return_value = mock_response({})
+        client = AgentControlPlaneClient("http://localhost:8080")
+        scope = {"tenant_id": "local", "workspace_id": "ws", "agent_id": "agent-1"}
+        client.create_memory({"scope": scope, "run_id": "run-1", "source_id": "source-1"})
+        client.memory("memory/one", "run-1")
+        client.revise_memory("memory/one", {"run_id": "run-1", "scope": scope, "expected_version": 1})
+        client.invalidate_memory("memory/one", {"expected_version": 2, "run_id": "run-1", "scope": scope})
+        client.forget_memory("memory/one", {"expected_version": 3, "run_id": "run-1", "scope": scope})
+        client.supersede_memory(
+            "memory/one",
+            {
+                "winner_expected_version": 4,
+                "run_id": "run-1",
+                "scope": scope,
+                "loser_memory_id": "memory/two",
+                "loser_expected_version": 2,
+                "confirm_supersede": True,
+            },
+        )
+        client.prune_memories({"scope": scope, "run_id": "run-1", "confirm_prune": True})
+        client.retrieve_memories({"scope": scope, "run_id": "run-1"})
+        client.usage_observations("run/one", 20)
+        client.recompute_budget_evidence({"run_id": "run-1", "confirm_recompute": True})
+        client.generate_offline_replay({"replay": {}, "confirm_generation": True})
+        client.replay_production_profile()
+        client.configure_replay_production_profile(
+            {"profile": {"enabled": False}, "confirm_profile": True}
+        )
+        client.promote_adaptive_policy_with_evidence({"replay_artifact_id": "replay-1", "confirm_promotion": True})
+
+        requests = [call.args[0] for call in mock_urlopen.call_args_list]
+        self.assertEqual(
+            [(request.method, request.full_url) for request in requests],
+            [
+                ("POST", "http://localhost:8080/api/v1/memories"),
+                ("GET", "http://localhost:8080/api/v1/memories/memory%2Fone?run_id=run-1"),
+                ("POST", "http://localhost:8080/api/v1/memories/memory%2Fone/revise"),
+                ("POST", "http://localhost:8080/api/v1/memories/memory%2Fone/invalidate"),
+                ("POST", "http://localhost:8080/api/v1/memories/memory%2Fone/forget"),
+                ("POST", "http://localhost:8080/api/v1/memories/memory%2Fone/supersede"),
+                ("POST", "http://localhost:8080/api/v1/memories/prune"),
+                ("POST", "http://localhost:8080/api/v1/memories/retrieve"),
+                ("GET", "http://localhost:8080/api/v1/usage-observations?run_id=run%2Fone&limit=20"),
+                ("POST", "http://localhost:8080/api/v1/budget-evidence/recompute"),
+                ("POST", "http://localhost:8080/api/v1/offline-replays/generate"),
+                ("GET", "http://localhost:8080/api/v1/offline-replays/production-profile"),
+                ("PUT", "http://localhost:8080/api/v1/offline-replays/production-profile"),
+                ("POST", "http://localhost:8080/api/v1/adaptive-fusion/policies/promote-with-evidence"),
+            ],
+        )
+        self.assertEqual(json.loads(requests[3].data), {"expected_version": 2, "run_id": "run-1", "scope": scope})
+        self.assertTrue(json.loads(requests[5].data)["confirm_supersede"])
+        self.assertTrue(json.loads(requests[6].data)["confirm_prune"])
+        self.assertTrue(json.loads(requests[9].data)["confirm_recompute"])
+        self.assertTrue(json.loads(requests[10].data)["confirm_generation"])
+        self.assertTrue(json.loads(requests[12].data)["confirm_profile"])
+        self.assertTrue(json.loads(requests[13].data)["confirm_promotion"])
+
+    @patch("agent_control_plane_sdk.client.urlopen")
     def test_offline_replay_readers_send_filters_and_encode_artifact_ids(self, mock_urlopen):
         mock_urlopen.return_value = mock_response({"schema_version": "offline_replay_read.v1"})
         client = AgentControlPlaneClient("http://localhost:8080")

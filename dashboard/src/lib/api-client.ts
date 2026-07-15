@@ -2,8 +2,6 @@ import type {
   AdaptiveCompletionRequest,
   AdaptiveCompletionResponse,
   AdaptiveFusionPoliciesResponse,
-  AdaptivePolicyPromotionRequest,
-  AdaptivePolicyPromotionResponse,
   AdaptivePolicyRollbackRequest,
   AdaptivePolicyRollbackResponse,
   ApiStatus,
@@ -38,6 +36,7 @@ import type {
   OperatorDecisionQueueResponse,
   ScorecardArtifactListResponse,
   BudgetEvidenceArtifactListResponse,
+  UsageObservationListResponse,
   OfflineReplayArtifactListResponse,
   PolicySimulationResult,
   SimulationReportResponse,
@@ -436,16 +435,6 @@ export async function fetchAdaptiveFusionPolicies(): Promise<AdaptiveFusionPolic
   return fetchJson<AdaptiveFusionPoliciesResponse>(`${BASE}/api/v1/adaptive-fusion/policies`);
 }
 
-export async function promoteAdaptiveFusionPolicy(
-  request: AdaptivePolicyPromotionRequest,
-): Promise<AdaptivePolicyPromotionResponse> {
-  return fetchJson<AdaptivePolicyPromotionResponse>(`${BASE}/api/v1/adaptive-fusion/policies/promote`, {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify(request),
-  });
-}
-
 export async function rollbackAdaptiveFusionPolicy(
   adjustmentId: string,
   request: AdaptivePolicyRollbackRequest = {},
@@ -635,6 +624,16 @@ export async function fetchBudgetEvidence(params: {
   return fetchJson<BudgetEvidenceArtifactListResponse>(withQuery("/api/v1/budget-evidence", params));
 }
 
+export async function fetchUsageObservations(
+  runId: string,
+  limit = 64,
+): Promise<UsageObservationListResponse> {
+  return fetchJson<UsageObservationListResponse>(withQuery("/api/v1/usage-observations", {
+    run_id: runId,
+    limit,
+  }));
+}
+
 export async function fetchOperatorEvidence(runId: string): Promise<OperatorEvidenceResponse> {
   return fetchJson<OperatorEvidenceResponse>(
     `${BASE}/api/v1/operator/evidence/${encodeURIComponent(runId)}`,
@@ -643,6 +642,29 @@ export async function fetchOperatorEvidence(runId: string): Promise<OperatorEvid
 
 export async function fetchOperatorDecisions(params: { generated_at?: string; maximum_freshness_seconds?: number; limit?: number; offset?: number } = {}): Promise<OperatorDecisionQueueResponse> {
   return fetchJson<OperatorDecisionQueueResponse>(withQuery("/api/v1/operator/decisions", params));
+}
+
+export async function applyOperatorDecisionAction(
+  decisionId: string,
+  request: {
+    queue_sha256: string;
+    generated_at: string;
+    maximum_freshness_seconds: number;
+    limit: number;
+    offset: number;
+    action: "rollback" | "inspect" | "acknowledge";
+    confirm_action: boolean;
+    reason?: string;
+  },
+): Promise<import("./types").OperatorDecisionActionResponse> {
+  return fetchJson<import("./types").OperatorDecisionActionResponse>(
+    `${BASE}/api/v1/operator/decisions/${encodeURIComponent(decisionId)}/actions`,
+    {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(request),
+    },
+  );
 }
 
 export async function fetchWorkflowRuns(params: {
@@ -693,6 +715,7 @@ export async function createWorkflowPlan(request: {
 export async function createWorkflowRun(
   planId: string,
   confirmExecution?: boolean,
+  workspaceId?: string,
 ): Promise<WorkflowRunActionResponse> {
   return fetchJson<WorkflowRunActionResponse>(`${BASE}/api/v1/workflow-runs`, {
     method: "POST",
@@ -700,6 +723,7 @@ export async function createWorkflowRun(
     body: JSON.stringify({
       plan_id: planId,
       ...(confirmExecution === undefined ? {} : { confirm_execution: confirmExecution }),
+      ...(workspaceId === undefined ? {} : { workspace_id: workspaceId }),
     }),
   });
 }

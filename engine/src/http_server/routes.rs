@@ -141,6 +141,11 @@ fn axum_routes() -> Router<AxumApiState> {
             post(dispatch::api_promote_adaptive_fusion_policy).options(cors_preflight),
         )
         .route(
+            "/api/v1/adaptive-fusion/policies/promote-with-evidence",
+            post(dispatch::api_promote_adaptive_fusion_policy_with_evidence)
+                .options(cors_preflight),
+        )
+        .route(
             "/api/v1/adaptive-fusion/policies/:adjustment_id/rollback",
             post(dispatch::api_rollback_adaptive_fusion_policy).options(cors_preflight),
         )
@@ -191,6 +196,38 @@ fn axum_routes() -> Router<AxumApiState> {
         .route(
             "/api/v1/workflow-runs/:run_id/tick",
             post(workflow_runs::api_tick_workflow_run).options(cors_preflight),
+        )
+        .route(
+            "/api/v1/memories",
+            post(memory::api_create_memory).options(cors_preflight),
+        )
+        .route(
+            "/api/v1/memories/retrieve",
+            post(memory::api_retrieve_memory).options(cors_preflight),
+        )
+        .route(
+            "/api/v1/memories/prune",
+            post(memory::api_prune_memories).options(cors_preflight),
+        )
+        .route(
+            "/api/v1/memories/:memory_id",
+            get(memory::api_memory_detail).options(cors_preflight),
+        )
+        .route(
+            "/api/v1/memories/:memory_id/revise",
+            post(memory::api_revise_memory).options(cors_preflight),
+        )
+        .route(
+            "/api/v1/memories/:memory_id/invalidate",
+            post(memory::api_invalidate_memory).options(cors_preflight),
+        )
+        .route(
+            "/api/v1/memories/:memory_id/forget",
+            post(memory::api_forget_memory).options(cors_preflight),
+        )
+        .route(
+            "/api/v1/memories/:memory_id/supersede",
+            post(memory::api_supersede_memory).options(cors_preflight),
         )
         .route(
             "/api/v1/tool-policy/capabilities/:tool_name",
@@ -327,12 +364,30 @@ fn axum_routes() -> Router<AxumApiState> {
             get(scorecards::api_budget_evidence_artifacts).options(cors_preflight),
         )
         .route(
+            "/api/v1/usage-observations",
+            get(scorecards::api_usage_observations).options(cors_preflight),
+        )
+        .route(
+            "/api/v1/budget-evidence/recompute",
+            post(scorecards::api_recompute_budget_evidence).options(cors_preflight),
+        )
+        .route(
             "/api/v1/budget-evidence/:artifact_id",
             get(scorecards::api_budget_evidence_artifact_detail).options(cors_preflight),
         )
         .route(
             "/api/v1/offline-replays",
             get(scorecards::api_offline_replay_artifacts).options(cors_preflight),
+        )
+        .route(
+            "/api/v1/offline-replays/generate",
+            post(scorecards::api_generate_offline_replay).options(cors_preflight),
+        )
+        .route(
+            "/api/v1/offline-replays/production-profile",
+            get(scorecards::api_replay_production_profile)
+                .put(scorecards::api_configure_replay_production_profile)
+                .options(cors_preflight),
         )
         .route(
             "/api/v1/offline-replays/:artifact_id",

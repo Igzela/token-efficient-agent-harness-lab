@@ -89,6 +89,75 @@ Emergency disable and rollback:
 
 Post-execution hooks run after the external effect. A post block marks the node result failed, preserves inner usage fields, and is non-retryable because the effect may already have occurred; it cannot undo the external effect. Use pre-execution block/approval hooks when execution itself must be prevented.
 
+## Durable Memory, Budget Producer, and Replay Operations
+
+Durable memory requires exact tenant/workspace scope and `dispatch:execute` for mutation. Start with embeddings disabled or explicitly enable the local harness-derived vector mode outside CI:
+
+```bash
+export ACP_DURABLE_MEMORY_EMBEDDING_MODE=disabled
+# Optional local vector mode, never in CI:
+# export ACP_DURABLE_MEMORY_EMBEDDING_MODE=local_hash_v1
+# export ACP_ENABLE_DURABLE_MEMORY_EMBEDDINGS=1
+```
+
+`provider` embedding mode is intentionally unavailable until the managed external-provider adapter can apply the existing credential, pricing, timeout, cost, audit, and kill-switch boundaries. `fixture` is test-only. Lexical retrieval occurs only when the request explicitly sets `allow_lexical_fallback=true`; its result remains labeled `lexical_fallback`.
+
+Create and retrieve one bounded record. Replace IDs and hashes with exact app-owned values; never place raw credentials, provider transcripts, repository content, or private paths in memory:
+
+```bash
+curl -sS -X POST "$ACP_API_URL/api/v1/memories" \
+  -H "authorization: Bearer $ACP_ADMIN_API_KEY" \
+  -H "content-type: application/json" \
+  -d '{
+    "scope":{"tenant_id":"local","workspace_id":"REPLACE_WITH_RUN_WORKSPACE","agent_id":null,"task_id":null},
+    "run_id":"REPLACE_WITH_RUN_ID",
+    "source_id":"operator-source-1",
+    "source_sha256":"REPLACE_WITH_64_HEX_SOURCE_HASH",
+    "conflict_key":"bounded-fact-1",
+    "content":{"summary":"bounded approved fact"},
+    "confidence":0.9,
+    "fresh_until":null,
+    "expires_at":null,
+    "supersedes_memory_id":null
+  }'
+
+curl -sS -X POST "$ACP_API_URL/api/v1/memories/retrieve" \
+  -H "authorization: Bearer $ACP_ADMIN_API_KEY" \
+  -H "content-type: application/json" \
+  -d '{
+    "scope":{"tenant_id":"local","workspace_id":"REPLACE_WITH_RUN_WORKSPACE","agent_id":null,"task_id":null},
+    "run_id":"REPLACE_WITH_RUN_ID",
+    "node_id":"REPLACE_WITH_NODE_ID",
+    "query":"bounded approved fact",
+    "top_k":5,
+    "max_tokens":256,
+    "max_bytes":4096,
+    "allow_lexical_fallback":true
+  }'
+```
+
+Revision, invalidation, forget, and supersede require the authoritative `run_id`, exact scope, and latest exact version. A conflict never silently overwrites either record. Resolve the existing two-record conflict pair before adding another incompatible fact; a third member is rejected without mutation. Forget deletes prior version content and leaves a metadata-safe tombstone; prune requires explicit confirmation and removes at most the bounded expired batch. Inspect with `GET /api/v1/memories/:memory_id?run_id=REPLACE_WITH_RUN_ID`. Scheduler injection uses the run's stored tenant/workspace and cannot be broadened by node metadata.
+
+Terminal native scorecard persistence automatically invokes the fenced budget producer. Operators may deterministically recompute the same run through the authenticated owner:
+
+```bash
+curl -sS -X POST "$ACP_API_URL/api/v1/budget-evidence/recompute" \
+  -H "authorization: Bearer $ACP_ADMIN_API_KEY" \
+  -H "content-type: application/json" \
+  -d '{"run_id":"REPLACE_WITH_RUN_ID","confirm_recompute":true}'
+```
+
+Inspect measurement provenance in the returned normalized observations and existing scorecard/Dashboard surfaces. Missing provider, model, pricing, billed-token, or cost fields remain unavailable; do not reinterpret them as zero. Repeated producer execution or restart reuses the deterministic fenced job and immutable artifacts. The scheduler persists an ascending run cursor and bounded rotating retry set; do not delete its app config while recovery is active. Applying an anomaly still requires a fresh supported critical finding, the existing enabled pause policy, `dispatch:execute`, and an explicit operator action. Recovery remains a separate audited action.
+
+Replay production is provider-free and shadow-only. `PUT /api/v1/offline-replays/production-profile` requires configured authentication, `team:admin`, `confirm_profile=true`, a bounded disabled/enabled profile, exact hash-valid current/candidate policies, and a bounded dispatch window. A normal persisted dispatch then invokes the profile's bounded replay producer. Scheduler ticks also advance a persisted ascending dispatch-history cursor and bounded rotating retry set, recovering immediate-call failures and restart gaps without a second queue. `POST /api/v1/offline-replays/generate` provides confirmed deterministic recomputation with `dispatch:execute`. Neither path mutates active policy. Promotion requires the evidence-chain endpoint's exact replay artifact/binding, active and candidate policy identities, canary evidence, current-state rebinding, confirmation, and permission. Use the typed operator rollback only with the exact snapshot; inspect is read-only and acknowledge binds exact source kind/ID/hash without implying approval.
+
+PR2 rollback procedure:
+
+1. Disable local embedding generation and replay production; pause scheduler admission and drain active memory/budget jobs.
+2. Take a verified SQLite online backup or PostgreSQL operator backup and run integrity checks.
+3. Prefer reverting the integration merge and leaving v23 tables inert so memory, artifacts, acknowledgements, and job fencing remain auditable.
+4. Destructive local downgrade is permitted only while v23 code is installed, every v23 writer is stopped, and all six v23 tables are empty. Invoke the explicit-confirmation `rollback_v23_to_v22`; it locks the version and tables, writes the audit, drops only v23 tables, and changes the marker atomically. It refuses any authoritative row. Never manually drop memory, usage, job, replay-binding, or acknowledgement evidence.
+
 ## Bounded PE-6 Recovery Drills
 
 The drill CLI accepts only registered scenario IDs or named suites. It uses

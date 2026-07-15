@@ -43,26 +43,23 @@ impl LocalProductStore {
     pub fn set_config_value(&self, key: &str, value: Value, actor: &str) -> Result<Value, String> {
         match &self.db {
             DatabaseConnection::Sqlite(_) => self.with_conn(|conn| {
+                let tx = conn
+                    .unchecked_transaction()
+                    .map_err(|error| error.to_string())?;
                 let value_json = value.to_string();
-                conn.execute(
+                let now = self.now();
+                tx.execute(
                     "INSERT INTO local_config (key, value_json, updated_at, updated_by)
                      VALUES (?1, ?2, ?3, ?4)
                      ON CONFLICT(key) DO UPDATE SET
                         value_json = excluded.value_json,
                         updated_at = excluded.updated_at,
                         updated_by = excluded.updated_by",
-                    params![key, value_json, self.now(), actor],
+                    params![key, value_json, now, actor],
                 )
                 .map_err(|e| e.to_string())?;
-                let now = self.now();
-                append_audit_locked(
-                    conn,
-                    &now,
-                    actor,
-                    "config.update",
-                    key,
-                    &json!({"key": key}),
-                )?;
+                append_audit_locked(&tx, &now, actor, "config.update", key, &json!({"key": key}))?;
+                tx.commit().map_err(|error| error.to_string())?;
                 Ok(json!({"key": key, "value": value, "updated_at": now, "updated_by": actor}))
             }),
             #[cfg(feature = "pg")]

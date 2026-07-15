@@ -50,6 +50,12 @@ const INTEGRITY_TABLES: &[&str] = &[
     "agent_mailbox",
     "agent_proposals",
     "offline_replay_artifacts",
+    "durable_memory_versions",
+    "memory_retrieval_events",
+    "production_jobs",
+    "normalized_usage_observations",
+    "replay_producer_bindings",
+    "operator_acknowledgements",
 ];
 
 impl LocalProductStore {

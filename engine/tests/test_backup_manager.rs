@@ -1,4 +1,6 @@
 use engine::storage::backup_manager::BackupManager;
+use engine::storage::local_product_store::{DurableMemoryCreate, LocalProductStore, MemoryScope};
+use serde_json::json;
 use std::path::Path;
 use tempfile::TempDir;
 
@@ -121,4 +123,58 @@ fn test_checksum_integrity() {
         .create_backup(&db_path, "backup", "b2", "2025-01-01")
         .unwrap();
     assert_eq!(record.checksum, record2.checksum);
+}
+
+#[test]
+fn online_backup_restores_durable_memory_while_source_connection_is_open() {
+    let (tmp, mgr) = setup();
+    let db_path = tmp.path().join("control-plane.db");
+    let store = LocalProductStore::new(&db_path).unwrap();
+    let memory = store
+        .create_durable_memory(
+            &DurableMemoryCreate {
+                scope: MemoryScope {
+                    tenant_id: "local".to_string(),
+                    workspace_id: "backup-workspace".to_string(),
+                    agent_id: None,
+                    task_id: None,
+                },
+                run_id: None,
+                source_id: "backup-source".to_string(),
+                source_sha256: "77".repeat(32),
+                conflict_key: "backup-fact".to_string(),
+                content: json!({"fact":"survives online backup"}),
+                confidence: 1.0,
+                fresh_until: None,
+                expires_at: None,
+                supersedes_memory_id: None,
+            },
+            "backup-test",
+        )
+        .unwrap();
+    let memory_id = memory["memory_id"].as_str().unwrap().to_string();
+
+    let record = mgr
+        .create_backup(
+            &db_path,
+            "online durable memory",
+            "durable-memory",
+            "2026-07-14T00:00:00Z",
+        )
+        .unwrap();
+    mgr.save_metadata(&[record]).unwrap();
+    let verification = mgr.verify_backup("durable-memory").unwrap();
+    assert!(verification.success, "{:?}", verification.errors);
+    assert!(verification.records_checked > 0);
+
+    let restored_path = tmp.path().join("restored-control-plane.db");
+    let restored = mgr
+        .restore_backup_with_verify("durable-memory", &restored_path, 1.0)
+        .unwrap();
+    assert!(restored.success, "{:?}", restored.errors);
+    drop(store);
+    let reopened = LocalProductStore::new(&restored_path).unwrap();
+    let history = reopened.inspect_durable_memory(&memory_id).unwrap();
+    assert_eq!(history.len(), 1);
+    assert_eq!(history[0]["content"]["fact"], "survives online backup");
 }

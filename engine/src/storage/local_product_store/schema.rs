@@ -6,8 +6,8 @@ pub(super) enum Dialect {
     Postgres,
 }
 
-pub(super) const CURRENT_SQLITE_SCHEMA_VERSION: i64 = 22;
-pub(super) const CURRENT_POSTGRES_SCHEMA_VERSION: i64 = 22;
+pub(super) const CURRENT_SQLITE_SCHEMA_VERSION: i64 = 23;
+pub(super) const CURRENT_POSTGRES_SCHEMA_VERSION: i64 = 23;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) struct SchemaMigration {
@@ -104,6 +104,10 @@ pub(super) const SQLITE_MIGRATIONS: &[SchemaMigration] = &[
         version: 22,
         description: "add agent action receipts and authoritative tool policy state",
     },
+    SchemaMigration {
+        version: 23,
+        description: "add durable memory, retrieval evidence, and production job ownership",
+    },
 ];
 
 pub(super) const POSTGRES_MIGRATIONS: &[SchemaMigration] = SQLITE_MIGRATIONS;
@@ -114,6 +118,134 @@ pub(super) fn ddl_for(dialect: Dialect) -> &'static str {
         Dialect::Postgres => POSTGRES_DDL,
     }
 }
+
+pub(super) const V23_DDL: &str = "
+CREATE TABLE IF NOT EXISTS durable_memory_versions (
+    memory_id TEXT NOT NULL,
+    version BIGINT NOT NULL,
+    tenant_id TEXT NOT NULL,
+    workspace_id TEXT NOT NULL,
+    agent_id TEXT,
+    run_id TEXT,
+    task_id TEXT,
+    source_id TEXT NOT NULL,
+    source_sha256 TEXT NOT NULL CHECK (length(source_sha256) = 64),
+    conflict_key TEXT NOT NULL,
+    state TEXT NOT NULL CHECK (state IN ('current','superseded','conflicting','invalid','tombstoned','expired')),
+    confidence DOUBLE PRECISION NOT NULL,
+    fresh_until TEXT,
+    expires_at TEXT,
+    supersedes_memory_id TEXT,
+    content_json TEXT NOT NULL,
+    embedding_json TEXT,
+    embedding_provenance TEXT NOT NULL,
+    record_sha256 TEXT NOT NULL CHECK (length(record_sha256) = 64),
+    created_at TEXT NOT NULL,
+    created_by TEXT NOT NULL,
+    PRIMARY KEY (memory_id, version)
+);
+CREATE INDEX IF NOT EXISTS idx_durable_memory_scope
+    ON durable_memory_versions(tenant_id, workspace_id, agent_id, task_id, state);
+CREATE INDEX IF NOT EXISTS idx_durable_memory_source
+    ON durable_memory_versions(source_id, source_sha256);
+CREATE INDEX IF NOT EXISTS idx_durable_memory_conflict
+    ON durable_memory_versions(tenant_id, workspace_id, conflict_key, state);
+
+CREATE TABLE IF NOT EXISTS memory_retrieval_events (
+    retrieval_id TEXT PRIMARY KEY,
+    tenant_id TEXT NOT NULL,
+    workspace_id TEXT NOT NULL,
+    run_id TEXT NOT NULL,
+    node_id TEXT NOT NULL,
+    agent_id TEXT,
+    request_sha256 TEXT NOT NULL CHECK (length(request_sha256) = 64),
+    result_sha256 TEXT NOT NULL CHECK (length(result_sha256) = 64),
+    mode TEXT NOT NULL,
+    candidate_count BIGINT NOT NULL,
+    selected_count BIGINT NOT NULL,
+    estimated_tokens BIGINT NOT NULL,
+    read_bytes BIGINT NOT NULL,
+    truncated BIGINT NOT NULL,
+    evidence_json TEXT NOT NULL,
+    created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_memory_retrieval_run
+    ON memory_retrieval_events(run_id, node_id, created_at);
+CREATE INDEX IF NOT EXISTS idx_memory_retrieval_scope
+    ON memory_retrieval_events(tenant_id, workspace_id, created_at);
+
+CREATE TABLE IF NOT EXISTS production_jobs (
+    job_key TEXT PRIMARY KEY,
+    job_kind TEXT NOT NULL,
+    scope_sha256 TEXT NOT NULL CHECK (length(scope_sha256) = 64),
+    input_sha256 TEXT NOT NULL CHECK (length(input_sha256) = 64),
+    state TEXT NOT NULL CHECK (state IN ('running','completed','failed')),
+    lease_owner TEXT,
+    lease_token TEXT,
+    lease_expires_at TEXT,
+    result_json TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_production_jobs_kind
+    ON production_jobs(job_kind, state, updated_at);
+
+CREATE TABLE IF NOT EXISTS normalized_usage_observations (
+    observation_id TEXT PRIMARY KEY,
+    dedupe_key TEXT NOT NULL UNIQUE,
+    source_kind TEXT NOT NULL,
+    source_id TEXT NOT NULL,
+    source_sha256 TEXT NOT NULL CHECK (length(source_sha256) = 64),
+    occurred_at TEXT NOT NULL,
+    tenant_id TEXT NOT NULL,
+    workspace_id TEXT,
+    run_id TEXT,
+    dispatch_id TEXT,
+    provider_id TEXT,
+    model_id TEXT,
+    pricing_identity TEXT,
+    pricing_effective_date TEXT,
+    currency TEXT,
+    provenance_json TEXT NOT NULL,
+    usage_json TEXT NOT NULL,
+    completeness TEXT NOT NULL,
+    confidence DOUBLE PRECISION NOT NULL,
+    record_sha256 TEXT NOT NULL CHECK (length(record_sha256) = 64),
+    created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_normalized_usage_run
+    ON normalized_usage_observations(run_id, occurred_at, observation_id);
+CREATE INDEX IF NOT EXISTS idx_normalized_usage_dispatch
+    ON normalized_usage_observations(dispatch_id, occurred_at, observation_id);
+
+CREATE TABLE IF NOT EXISTS replay_producer_bindings (
+    artifact_id TEXT PRIMARY KEY,
+    input_sha256 TEXT NOT NULL CHECK (length(input_sha256) = 64),
+    dispatch_ids_json TEXT NOT NULL,
+    maximum_trace_age_seconds BIGINT NOT NULL,
+    scope_json TEXT NOT NULL,
+    current_policy_json TEXT NOT NULL,
+    candidate_policies_json TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    created_by TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_replay_producer_bindings_created
+    ON replay_producer_bindings(created_at, artifact_id);
+
+CREATE TABLE IF NOT EXISTS operator_acknowledgements (
+    acknowledgement_id TEXT PRIMARY KEY,
+    decision_id TEXT NOT NULL,
+    source_type TEXT NOT NULL,
+    source_id TEXT NOT NULL,
+    source_sha256 TEXT NOT NULL CHECK (length(source_sha256) = 64),
+    reason TEXT,
+    actor TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    UNIQUE(decision_id, source_type, source_id, source_sha256)
+);
+CREATE INDEX IF NOT EXISTS idx_operator_acknowledgements_source
+    ON operator_acknowledgements(source_type, source_id, created_at);
+";
 
 pub(super) const SQLITE_DDL: &str = "
 CREATE TABLE IF NOT EXISTS dispatch_history (
@@ -397,6 +529,127 @@ CREATE TABLE IF NOT EXISTS offline_replay_artifacts (
 );
 CREATE INDEX IF NOT EXISTS idx_offline_replay_artifacts_status ON offline_replay_artifacts(status, artifact_sequence);
 CREATE INDEX IF NOT EXISTS idx_offline_replay_artifacts_created ON offline_replay_artifacts(created_at);
+
+CREATE TABLE IF NOT EXISTS durable_memory_versions (
+    memory_id TEXT NOT NULL,
+    version BIGINT NOT NULL,
+    tenant_id TEXT NOT NULL,
+    workspace_id TEXT NOT NULL,
+    agent_id TEXT,
+    run_id TEXT,
+    task_id TEXT,
+    source_id TEXT NOT NULL,
+    source_sha256 TEXT NOT NULL CHECK (length(source_sha256) = 64),
+    conflict_key TEXT NOT NULL,
+    state TEXT NOT NULL CHECK (state IN ('current','superseded','conflicting','invalid','tombstoned','expired')),
+    confidence REAL NOT NULL,
+    fresh_until TEXT,
+    expires_at TEXT,
+    supersedes_memory_id TEXT,
+    content_json TEXT NOT NULL,
+    embedding_json TEXT,
+    embedding_provenance TEXT NOT NULL,
+    record_sha256 TEXT NOT NULL CHECK (length(record_sha256) = 64),
+    created_at TEXT NOT NULL,
+    created_by TEXT NOT NULL,
+    PRIMARY KEY (memory_id, version)
+);
+CREATE INDEX IF NOT EXISTS idx_durable_memory_scope ON durable_memory_versions(tenant_id, workspace_id, agent_id, task_id, state);
+CREATE INDEX IF NOT EXISTS idx_durable_memory_source ON durable_memory_versions(source_id, source_sha256);
+CREATE INDEX IF NOT EXISTS idx_durable_memory_conflict ON durable_memory_versions(tenant_id, workspace_id, conflict_key, state);
+
+CREATE TABLE IF NOT EXISTS memory_retrieval_events (
+    retrieval_id TEXT PRIMARY KEY,
+    tenant_id TEXT NOT NULL,
+    workspace_id TEXT NOT NULL,
+    run_id TEXT NOT NULL,
+    node_id TEXT NOT NULL,
+    agent_id TEXT,
+    request_sha256 TEXT NOT NULL CHECK (length(request_sha256) = 64),
+    result_sha256 TEXT NOT NULL CHECK (length(result_sha256) = 64),
+    mode TEXT NOT NULL,
+    candidate_count BIGINT NOT NULL,
+    selected_count BIGINT NOT NULL,
+    estimated_tokens BIGINT NOT NULL,
+    read_bytes BIGINT NOT NULL,
+    truncated BIGINT NOT NULL,
+    evidence_json TEXT NOT NULL,
+    created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_memory_retrieval_run ON memory_retrieval_events(run_id, node_id, created_at);
+CREATE INDEX IF NOT EXISTS idx_memory_retrieval_scope ON memory_retrieval_events(tenant_id, workspace_id, created_at);
+
+CREATE TABLE IF NOT EXISTS production_jobs (
+    job_key TEXT PRIMARY KEY,
+    job_kind TEXT NOT NULL,
+    scope_sha256 TEXT NOT NULL CHECK (length(scope_sha256) = 64),
+    input_sha256 TEXT NOT NULL CHECK (length(input_sha256) = 64),
+    state TEXT NOT NULL CHECK (state IN ('running','completed','failed')),
+    lease_owner TEXT,
+    lease_token TEXT,
+    lease_expires_at TEXT,
+    result_json TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_production_jobs_kind ON production_jobs(job_kind, state, updated_at);
+
+CREATE TABLE IF NOT EXISTS normalized_usage_observations (
+    observation_id TEXT PRIMARY KEY,
+    dedupe_key TEXT NOT NULL UNIQUE,
+    source_kind TEXT NOT NULL,
+    source_id TEXT NOT NULL,
+    source_sha256 TEXT NOT NULL CHECK (length(source_sha256) = 64),
+    occurred_at TEXT NOT NULL,
+    tenant_id TEXT NOT NULL,
+    workspace_id TEXT,
+    run_id TEXT,
+    dispatch_id TEXT,
+    provider_id TEXT,
+    model_id TEXT,
+    pricing_identity TEXT,
+    pricing_effective_date TEXT,
+    currency TEXT,
+    provenance_json TEXT NOT NULL,
+    usage_json TEXT NOT NULL,
+    completeness TEXT NOT NULL,
+    confidence DOUBLE PRECISION NOT NULL,
+    record_sha256 TEXT NOT NULL CHECK (length(record_sha256) = 64),
+    created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_normalized_usage_run
+    ON normalized_usage_observations(run_id, occurred_at, observation_id);
+CREATE INDEX IF NOT EXISTS idx_normalized_usage_dispatch
+    ON normalized_usage_observations(dispatch_id, occurred_at, observation_id);
+
+CREATE TABLE IF NOT EXISTS replay_producer_bindings (
+    artifact_id TEXT PRIMARY KEY,
+    input_sha256 TEXT NOT NULL CHECK (length(input_sha256) = 64),
+    dispatch_ids_json TEXT NOT NULL,
+    maximum_trace_age_seconds BIGINT NOT NULL,
+    scope_json TEXT NOT NULL,
+    current_policy_json TEXT NOT NULL,
+    candidate_policies_json TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    created_by TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_replay_producer_bindings_created
+    ON replay_producer_bindings(created_at, artifact_id);
+
+CREATE TABLE IF NOT EXISTS operator_acknowledgements (
+    acknowledgement_id TEXT PRIMARY KEY,
+    decision_id TEXT NOT NULL,
+    source_type TEXT NOT NULL,
+    source_id TEXT NOT NULL,
+    source_sha256 TEXT NOT NULL CHECK (length(source_sha256) = 64),
+    reason TEXT,
+    actor TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    UNIQUE(decision_id, source_type, source_id, source_sha256)
+);
+CREATE INDEX IF NOT EXISTS idx_operator_acknowledgements_source
+    ON operator_acknowledgements(source_type, source_id, created_at);
+
 
 CREATE TABLE IF NOT EXISTS scheduler_feedback (
     feedback_id TEXT PRIMARY KEY,
@@ -908,6 +1161,127 @@ CREATE TABLE IF NOT EXISTS offline_replay_artifacts (
 );
 CREATE INDEX IF NOT EXISTS idx_offline_replay_artifacts_status ON offline_replay_artifacts(status, artifact_sequence);
 CREATE INDEX IF NOT EXISTS idx_offline_replay_artifacts_created ON offline_replay_artifacts(created_at);
+
+CREATE TABLE IF NOT EXISTS durable_memory_versions (
+    memory_id TEXT NOT NULL,
+    version BIGINT NOT NULL,
+    tenant_id TEXT NOT NULL,
+    workspace_id TEXT NOT NULL,
+    agent_id TEXT,
+    run_id TEXT,
+    task_id TEXT,
+    source_id TEXT NOT NULL,
+    source_sha256 TEXT NOT NULL CHECK (length(source_sha256) = 64),
+    conflict_key TEXT NOT NULL,
+    state TEXT NOT NULL CHECK (state IN ('current','superseded','conflicting','invalid','tombstoned','expired')),
+    confidence DOUBLE PRECISION NOT NULL,
+    fresh_until TEXT,
+    expires_at TEXT,
+    supersedes_memory_id TEXT,
+    content_json TEXT NOT NULL,
+    embedding_json TEXT,
+    embedding_provenance TEXT NOT NULL,
+    record_sha256 TEXT NOT NULL CHECK (length(record_sha256) = 64),
+    created_at TEXT NOT NULL,
+    created_by TEXT NOT NULL,
+    PRIMARY KEY (memory_id, version)
+);
+CREATE INDEX IF NOT EXISTS idx_durable_memory_scope ON durable_memory_versions(tenant_id, workspace_id, agent_id, task_id, state);
+CREATE INDEX IF NOT EXISTS idx_durable_memory_source ON durable_memory_versions(source_id, source_sha256);
+CREATE INDEX IF NOT EXISTS idx_durable_memory_conflict ON durable_memory_versions(tenant_id, workspace_id, conflict_key, state);
+
+CREATE TABLE IF NOT EXISTS memory_retrieval_events (
+    retrieval_id TEXT PRIMARY KEY,
+    tenant_id TEXT NOT NULL,
+    workspace_id TEXT NOT NULL,
+    run_id TEXT NOT NULL,
+    node_id TEXT NOT NULL,
+    agent_id TEXT,
+    request_sha256 TEXT NOT NULL CHECK (length(request_sha256) = 64),
+    result_sha256 TEXT NOT NULL CHECK (length(result_sha256) = 64),
+    mode TEXT NOT NULL,
+    candidate_count BIGINT NOT NULL,
+    selected_count BIGINT NOT NULL,
+    estimated_tokens BIGINT NOT NULL,
+    read_bytes BIGINT NOT NULL,
+    truncated BIGINT NOT NULL,
+    evidence_json TEXT NOT NULL,
+    created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_memory_retrieval_run ON memory_retrieval_events(run_id, node_id, created_at);
+CREATE INDEX IF NOT EXISTS idx_memory_retrieval_scope ON memory_retrieval_events(tenant_id, workspace_id, created_at);
+
+CREATE TABLE IF NOT EXISTS production_jobs (
+    job_key TEXT PRIMARY KEY,
+    job_kind TEXT NOT NULL,
+    scope_sha256 TEXT NOT NULL CHECK (length(scope_sha256) = 64),
+    input_sha256 TEXT NOT NULL CHECK (length(input_sha256) = 64),
+    state TEXT NOT NULL CHECK (state IN ('running','completed','failed')),
+    lease_owner TEXT,
+    lease_token TEXT,
+    lease_expires_at TEXT,
+    result_json TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_production_jobs_kind ON production_jobs(job_kind, state, updated_at);
+
+CREATE TABLE IF NOT EXISTS normalized_usage_observations (
+    observation_id TEXT PRIMARY KEY,
+    dedupe_key TEXT NOT NULL UNIQUE,
+    source_kind TEXT NOT NULL,
+    source_id TEXT NOT NULL,
+    source_sha256 TEXT NOT NULL CHECK (length(source_sha256) = 64),
+    occurred_at TEXT NOT NULL,
+    tenant_id TEXT NOT NULL,
+    workspace_id TEXT,
+    run_id TEXT,
+    dispatch_id TEXT,
+    provider_id TEXT,
+    model_id TEXT,
+    pricing_identity TEXT,
+    pricing_effective_date TEXT,
+    currency TEXT,
+    provenance_json TEXT NOT NULL,
+    usage_json TEXT NOT NULL,
+    completeness TEXT NOT NULL,
+    confidence DOUBLE PRECISION NOT NULL,
+    record_sha256 TEXT NOT NULL CHECK (length(record_sha256) = 64),
+    created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_normalized_usage_run
+    ON normalized_usage_observations(run_id, occurred_at, observation_id);
+CREATE INDEX IF NOT EXISTS idx_normalized_usage_dispatch
+    ON normalized_usage_observations(dispatch_id, occurred_at, observation_id);
+
+CREATE TABLE IF NOT EXISTS replay_producer_bindings (
+    artifact_id TEXT PRIMARY KEY,
+    input_sha256 TEXT NOT NULL CHECK (length(input_sha256) = 64),
+    dispatch_ids_json TEXT NOT NULL,
+    maximum_trace_age_seconds BIGINT NOT NULL,
+    scope_json TEXT NOT NULL,
+    current_policy_json TEXT NOT NULL,
+    candidate_policies_json TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    created_by TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_replay_producer_bindings_created
+    ON replay_producer_bindings(created_at, artifact_id);
+
+CREATE TABLE IF NOT EXISTS operator_acknowledgements (
+    acknowledgement_id TEXT PRIMARY KEY,
+    decision_id TEXT NOT NULL,
+    source_type TEXT NOT NULL,
+    source_id TEXT NOT NULL,
+    source_sha256 TEXT NOT NULL CHECK (length(source_sha256) = 64),
+    reason TEXT,
+    actor TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    UNIQUE(decision_id, source_type, source_id, source_sha256)
+);
+CREATE INDEX IF NOT EXISTS idx_operator_acknowledgements_source
+    ON operator_acknowledgements(source_type, source_id, created_at);
+
 
 CREATE TABLE IF NOT EXISTS scheduler_feedback (
     feedback_id TEXT PRIMARY KEY,

@@ -48,13 +48,14 @@ The intended user interface remains natural language in GPT Web. The assistant, 
 | Capability | Current status |
 |---|---|
 | Dispatch kernel and V2 output authority | Complete |
-| Adaptive Fusion through AF-7 | Implemented; evidence-chain promotion entry remains disconnected as described below |
+| Adaptive Fusion through AF-7 | Implemented; trace-backed replay and explicit evidence-chain promotion now have production owners |
 | Agent Runtime through AR-6 | Production-managed through typed `agent_step` plans, the Rust scheduler/executor pool, bounded provider decisions, atomic action receipts, and operator evidence |
 | Trusted Local Autonomous Execution through IAE-3 | Complete |
 | PE-1 Token Efficiency Regression Lab | Complete and connected through scorecard persistence, read APIs, Dashboard, reports, batches, and trends |
-| PE-2 Budget Intelligence and Anomaly Auto-Pause | Contracts, persistence, read surfaces, and pause consumers exist; runtime evidence production is not connected |
-| PE-3 Operator Decision Center | Complete and connected to existing approval, workflow, retry, pause, and recovery owners |
-| PE-4 Trace-backed Policy Replay | Replay, shadow, canary, and promotion validators exist; production replay generation and safe promotion entry are not connected |
+| Durable cross-run memory | Versioned scoped memory, bounded retrieval, runtime context injection, audit, API/SDK, backup, and SQLite/PostgreSQL parity are connected |
+| PE-2 Budget Intelligence and Anomaly Auto-Pause | Normalized usage production, immutable forecast/anomaly artifacts, operator decisions, pause, and recovery are connected |
+| PE-3 Operator Decision Center | Complete and connected to typed approval, inspect, acknowledge, rollback, workflow, retry, pause, and recovery owners |
+| PE-4 Trace-backed Policy Replay | Eligible dispatch traces produce immutable replay artifacts; explicit evidence-chain promotion and exact-snapshot rollback are connected |
 | PE-5 Release Provenance | Post-seal repair merged in PR #214; exact-head CI passed; no real public release or production installation was exercised |
 | PE-6 Fault Injection and Recovery Drills | Post-seal repair merged in PR #214; owner-emitted drills are wired into existing test/CI paths; no destructive external testing is authorized |
 | GitHub/Vader repository orchestrator | Code merged and runner path reached; first live smoke #217 blocked before branch/PR creation, so production use is disabled |
@@ -69,6 +70,18 @@ An authenticated `dispatch:execute` caller can create a confirmed typed `agent_s
 Command and installed-CLI nodes now pass through the same app-owned tool-policy wrapper in scheduler, executor-pool, explicit tick, and supervised-patch verification paths. Direct `cli`, `auto`, and multi/CLI dispatch are retired; scheduler `auto`/`pool` owns hybrid provider/CLI workflow routing. A configured allowlist, including an explicitly empty one, is authoritative. Pre-hook block/error fails closed; bounded enrichment is hash- and audit-bound; approval-required tools enter the existing workflow/operator decision flow and receive only a single exact-action execution authorization; non-approval tools atomically claim an implicit consumed receipt before invocation; post hooks preserve authoritative usage fields. Failures after a claimed effect are explicit non-retryable outcome-unknown results, not automatic retries. Supervised-patch verification has one canonical exact-binding run per workspace/operation/attempt across restart and concurrent requests. Those runs are atomically marked as API-owned and excluded from both scheduler queue modes; the API-owned tick remains the only executor. When a background scheduler is mounted, the handler refuses command or CLI execution unless the durable lease exceeds the exact bound executor timeout by the scheduling margin. An absent allowlist profile preserves the previous unconfigured behavior and is not described as a configured deny policy.
 
 This Agent Runtime is an engine workflow capability. It is independent from the disabled GitHub Issues/Actions → Vader repository-maintenance orchestrator, which remains subject to its separate live-smoke restriction below.
+
+### Durable memory and bounded retrieval
+
+Migration v23 adds app-owned versioned durable memory, retrieval events, normalized usage, fenced production jobs, replay bindings, and operator acknowledgements for SQLite and PostgreSQL. Memory identity and updates bind tenant, workspace, optional agent/task, source ID/hash, version, state, freshness, expiry, confidence, conflict, supersession, tombstone, actor, and record hash. Create, revise, supersede, invalidate, forget, prune, inspect, and retrieve are authenticated production APIs with SDK coverage; every call is rebound to an authoritative run and exact stored tenant/workspace/scope before access. Conflicting, superseded, stale, expired, invalid, and tombstoned records are excluded from current truth; concurrent revisions serialize by memory identity and stale versions fail explicitly.
+
+The scheduler assembles each real node context from durable run state, bounded recent history, the run-scoped digest, and immutable retrieved references before execution. Top-K, bytes, estimated tokens, candidate evidence, selection scores, truncation, and source hashes are bounded and audited without copying raw memory into scorecards. `local_hash_v1` vector generation is default-off, prohibited in CI, explicitly gated, and labeled `harness_derived`; deterministic fixture vectors are test-only. Provider embedding mode is explicitly unavailable until the managed external-provider adapter exists. Lexical retrieval runs only when the request explicitly permits the labeled degradation. The canonical SQLite online backup includes all app tables while the source connection remains open; the older export/import snapshot does not claim durable-memory coverage.
+
+### Automatic budget evidence and trace-backed policy operations
+
+Terminal workflow production and the explicit authenticated recompute API normalize owner-backed native scorecards, provider audit, dispatch/CLI history, adaptive observations, and workflow execution evidence into deduplicated source-ID/hash-bound usage observations. A run aggregate scorecard suppresses its component workflow events so one execution is not counted twice. Provenance distinguishes provider-reported, tokenizer-exact, harness-derived, estimated, and unavailable fields; missing provider, model, pricing, token, or billed-cost dimensions remain absent rather than fabricated as zero. Fenced, restart-safe jobs derive immutable forecast/anomaly artifacts, make them visible through existing API/SDK/Dashboard surfaces, and feed the existing operator queue. Scheduler recovery uses a persisted bounded ascending run cursor plus rotating retry set, so work beyond the first page and failures before restart are revisited without creating a second queue. Only supported fresh evidence can reach the existing explicit budget pause owner; recovery remains audited and compensating.
+
+An app-owned replay production profile lets normal dispatch persistence automatically evaluate eligible traces without provider calls and record immutable offline replay artifacts; an authenticated generate endpoint provides deterministic operator recomputation. The scheduler also owns a persisted bounded dispatch-history cursor and rotating retry set, so an immediate producer failure or restart cannot strand a trace and later rows cannot be starved by a permanently bad row. Replay remains shadow-only. Evidence-chain promotion requires the exact replay binding, candidate and active-policy identity, freshness, current-state rebinding, confirmation, and permission before snapshot-backed mutation. The caller-asserted observation-summary promotion shortcut and its Dashboard mutation control are removed. Typed operator `inspect` is read-only, `acknowledge` records no approval and resolves only the exact source kind/ID/hash, and `rollback` binds the exact adaptive-policy snapshot and current state.
 
 ## Confirmed Integration Gaps
 
@@ -88,39 +101,6 @@ bounded task
 → exact-head CI
 → independent review
 ```
-
-### PE-2 runtime evidence producer
-
-`build_budget_forecast` and `detect_budget_anomaly` are implemented and tested, and `LocalProductStore` can persist/read their artifacts. Auto-pause and operator decisions can consume a persisted anomaly artifact. However, no production runtime, HTTP, CLI, or scheduler owner currently derives forecast/anomaly evidence from posted provider/workflow usage and records it.
-
-Required chain:
-
-```text
-owner-backed usage evidence
-→ deterministic forecast/anomaly derivation
-→ immutable budget evidence artifact
-→ existing read/API/Dashboard surfaces
-→ existing policy-gated pause and operator recovery owners
-```
-
-The repair must reuse existing provider audit, workflow run, budget evidence, pause, audit, and recovery owners. It must not create a second scheduler, pause authority, storage model, or synthetic success path.
-
-### PE-4 replay and promotion entry
-
-`record_offline_replay`, shadow comparison, canary binding, and `promote_adaptive_fusion_policy_with_evidence_chain` exist. Their safe evidence-chain path has no production HTTP, operator, CLI, or runtime entry. The current online observation path still calls the legacy auto-promotion method, which intentionally returns `complete_evidence_chain_required`.
-
-Required chain:
-
-```text
-owner-backed dispatch-history traces
-→ replay eligibility and offline replay artifact
-→ derived shadow comparison
-→ bounded canary evidence
-→ explicit confirmation and permission
-→ evidence-chain promotion through the existing policy/snapshot/rollback owner
-```
-
-Do not restore the old observation-only promotion shortcut.
 
 ### Tool discovery benchmark
 
@@ -148,8 +128,8 @@ The explicitly authorized bounded three-PR production-integration program consol
 
 ## Active Execution Order
 
-1. `PR1-AR-RUNTIME-INTEGRATION-1` — production Agent Runtime and tool-policy routing (this slice).
-2. `PR2-MEMORY-BUDGET-POLICY-LOOP-1` — durable memory, automatic normalized usage/budget evidence, and trace-replay/evidence-chain policy operations.
+1. `PR1-AR-RUNTIME-INTEGRATION-1` — production Agent Runtime and tool-policy routing (merged as PR #220).
+2. `PR2-MEMORY-BUDGET-POLICY-LOOP-1` — durable memory, automatic normalized usage/budget evidence, and trace-replay/evidence-chain policy operations (current slice).
 3. `PR3-EXTERNAL-RUNTIME-LIVE-SEAL-1` — managed LangGraph adapter, comparable native/LangGraph benchmark, orchestrator/target-output/recovery, and guarded live acceptance.
 
 Keep real release publication, destructive production faults, persistent signing secrets, and unguarded provider execution unauthorized. Without separate publication authority the terminal release state is `RELEASE_READY_NOT_PUBLISHED`, or `BLOCKED` when an external prerequisite cannot be verified.

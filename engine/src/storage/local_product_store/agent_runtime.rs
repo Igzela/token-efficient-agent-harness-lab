@@ -198,7 +198,7 @@ impl LocalProductStore {
                         &run_id,
                     ],
                 )
-                .map_err(|e| e.to_string())?;
+                .map_err(|error| format!("failed to update PostgreSQL agent state: {error:?}"))?;
                 pg_runtime_audit(
                     &mut tx,
                     &now,

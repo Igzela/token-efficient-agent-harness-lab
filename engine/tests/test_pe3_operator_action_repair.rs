@@ -460,7 +460,7 @@ async fn approval_execution_survives_store_restart() {
 }
 
 #[tokio::test]
-async fn unsupported_actions_are_explicitly_rejected() {
+async fn mismatched_actions_are_explicitly_rejected() {
     let (_directory, _path, app, queue, item) =
         approval_fixture("2026-07-11T00:00:00Z", "2026-07-11T00:00:10Z");
     let (status, body) = post_action(
@@ -474,5 +474,44 @@ async fn unsupported_actions_are_explicitly_rejected() {
     )
     .await;
     assert_eq!(status, StatusCode::CONFLICT);
-    assert_eq!(body["code"], "operator_decision_action_not_allowlisted");
+    assert_eq!(body["code"], "operator_decision_not_ready");
+}
+
+#[tokio::test]
+async fn scheduler_acknowledgement_http_action_is_hash_bound_and_not_approval() {
+    let directory = tempdir().unwrap();
+    let path = directory.path().join("local.db");
+    let (store, _clock) = make_store(&path, "2026-07-11T00:00:00Z");
+    store.write_heartbeat(4, 1, 10.0, "{}").unwrap();
+    let queue = store
+        .operator_decision_queue("2026-07-11T00:00:00Z", 300, 100, 0)
+        .unwrap();
+    let item = item_for_action(&queue, OperatorDecisionAction::Acknowledge);
+    let app = build_axum_router(AxumApiState::new().with_local_store(store));
+    let (status, response) = post_action(
+        app,
+        &item.decision_id,
+        action_body(
+            &queue,
+            OperatorDecisionAction::Acknowledge,
+            &queue.generated_at,
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{response}");
+    assert_eq!(response["owner_result"]["approval_granted"], false);
+    assert_eq!(
+        response["owner_result"]["mutation_authority"],
+        "acknowledgement_only"
+    );
+
+    let reopened =
+        LocalProductStore::new_with_clock(&path, || "2026-07-11T00:00:00Z".to_string()).unwrap();
+    let after = reopened
+        .operator_decision_queue("2026-07-11T00:00:00Z", 300, 100, 0)
+        .unwrap();
+    assert!(after.items.iter().all(|candidate| {
+        candidate.conflict_key != "scheduler:control"
+            || candidate.recommended_action != Some(OperatorDecisionAction::Acknowledge)
+    }));
 }

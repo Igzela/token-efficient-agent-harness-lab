@@ -225,18 +225,44 @@ pub(crate) async fn api_restore_backup(
     }
     let backup_dir = backup_dir_for_state(&state, store.db_path());
     let manager = BackupManager::new(&backup_dir).map_err(internal_error)?;
-    let result = manager
-        .restore_backup_with_verify(&backup_id, store.db_path(), state.now())
+    let verification = manager.verify_backup(&backup_id).map_err(|error| {
+        if error.starts_with("backup not found:") {
+            ApiError::with_code(
+                StatusCode::NOT_FOUND,
+                "backup_not_found",
+                "backup not found",
+            )
+        } else {
+            internal_error(error)
+        }
+    })?;
+    if !verification.success || !verification.checksum_ok || !verification.integrity_ok {
+        return Err(ApiError::with_code(
+            StatusCode::CONFLICT,
+            "backup_verification_failed",
+            "backup must pass checksum and integrity verification before restore",
+        ));
+    }
+    store
+        .restore_verified_sqlite_backup(std::path::Path::new(&verification.backup_path))
         .map_err(internal_error)?;
+    let integrity = store.check_integrity().map_err(internal_error)?;
+    let records_restored = integrity
+        .tables
+        .iter()
+        .map(|table| table.row_count)
+        .sum::<i64>();
     store
         .append_audit(
             &context.api_key_id,
             "backup.restore",
             &backup_id,
             &json!({
-                "success": result.success,
-                "records_restored": result.records_restored,
-                "errors": result.errors,
+                "success": true,
+                "records_restored": records_restored,
+                "integrity_status": integrity.status,
+                "backup_checksum_verified": true,
+                "restore_transport": "sqlite_online_backup_api",
             }),
         )
         .map_err(internal_error)?;
@@ -245,10 +271,11 @@ pub(crate) async fn api_restore_backup(
         Json(json!({
             "schema_version": AXUM_API_SCHEMA_VERSION,
             "restore": {
-                "success": result.success,
-                "records_restored": result.records_restored,
-                "errors": result.errors,
-                "duration_ms": result.duration_ms,
+                "success": true,
+                "records_restored": records_restored,
+                "errors": [],
+                "integrity_status": integrity.status,
+                "restore_transport": "sqlite_online_backup_api",
             },
         })),
     ))

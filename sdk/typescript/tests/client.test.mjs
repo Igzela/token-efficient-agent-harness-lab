@@ -178,6 +178,50 @@ test("budget evidence readers use bounded encoded read-only endpoints", async ()
   assert.equal(calls[1].url, "http://127.0.0.1:8080/api/v1/budget-evidence/budget%2Fanomaly%20one");
 });
 
+test("memory and production evidence methods preserve bounded request contracts", async () => {
+  const { calls, fetchImpl } = captureFetch({});
+  const client = new AgentControlPlaneClient({ baseUrl: "http://127.0.0.1:8080", fetchImpl });
+  const scope = { tenant_id: "local", workspace_id: "ws", agent_id: "agent-1" };
+  await client.createMemory({ scope, run_id: "run-1", source_id: "source-1", source_sha256: "a".repeat(64), conflict_key: "fact-1", content: { text: "bounded" }, confidence: 0.9 });
+  await client.memory("memory/one", "run-1");
+  await client.reviseMemory("memory/one", { run_id: "run-1", scope, expected_version: 1, source_id: "source-2", source_sha256: "b".repeat(64), content: { text: "revised" }, confidence: 1 });
+  await client.invalidateMemory("memory/one", { expected_version: 2, run_id: "run-1", scope });
+  await client.forgetMemory("memory/one", { expected_version: 3, run_id: "run-1", scope });
+  await client.supersedeMemory("memory/one", { run_id: "run-1", scope, winner_expected_version: 4, loser_memory_id: "memory/two", loser_expected_version: 2, confirm_supersede: true });
+  await client.pruneMemories({ scope, run_id: "run-1", confirm_prune: true });
+  await client.retrieveMemories({ scope, run_id: "run-1", node_id: "node-1", query: "bounded", top_k: 5, max_tokens: 100, max_bytes: 400, allow_lexical_fallback: true });
+  await client.usageObservations("run/one", 20);
+  await client.recomputeBudgetEvidence({ run_id: "run-1", confirm_recompute: true });
+  await client.generateOfflineReplay({ replay: { dispatch_ids: ["dispatch-1"] }, confirm_generation: true });
+  await client.replayProductionProfile();
+  await client.configureReplayProductionProfile({ profile: { enabled: false }, confirm_profile: true });
+  await client.promoteAdaptivePolicyWithEvidence({ replay_artifact_id: "replay-1", promotion: {}, canary: {}, rollout_scope: "local", rollback_target: "snapshot-1", confirm_promotion: true });
+
+  assert.deepEqual(calls.map((call) => [call.init.method, call.url]), [
+    ["POST", "http://127.0.0.1:8080/api/v1/memories"],
+    ["GET", "http://127.0.0.1:8080/api/v1/memories/memory%2Fone?run_id=run-1"],
+    ["POST", "http://127.0.0.1:8080/api/v1/memories/memory%2Fone/revise"],
+    ["POST", "http://127.0.0.1:8080/api/v1/memories/memory%2Fone/invalidate"],
+    ["POST", "http://127.0.0.1:8080/api/v1/memories/memory%2Fone/forget"],
+    ["POST", "http://127.0.0.1:8080/api/v1/memories/memory%2Fone/supersede"],
+    ["POST", "http://127.0.0.1:8080/api/v1/memories/prune"],
+    ["POST", "http://127.0.0.1:8080/api/v1/memories/retrieve"],
+    ["GET", "http://127.0.0.1:8080/api/v1/usage-observations?run_id=run%2Fone&limit=20"],
+    ["POST", "http://127.0.0.1:8080/api/v1/budget-evidence/recompute"],
+    ["POST", "http://127.0.0.1:8080/api/v1/offline-replays/generate"],
+    ["GET", "http://127.0.0.1:8080/api/v1/offline-replays/production-profile"],
+    ["PUT", "http://127.0.0.1:8080/api/v1/offline-replays/production-profile"],
+    ["POST", "http://127.0.0.1:8080/api/v1/adaptive-fusion/policies/promote-with-evidence"],
+  ]);
+  assert.deepEqual(JSON.parse(calls[3].init.body), { expected_version: 2, run_id: "run-1", scope });
+  assert.equal(JSON.parse(calls[5].init.body).confirm_supersede, true);
+  assert.equal(JSON.parse(calls[6].init.body).confirm_prune, true);
+  assert.equal(JSON.parse(calls[9].init.body).confirm_recompute, true);
+  assert.equal(JSON.parse(calls[10].init.body).confirm_generation, true);
+  assert.equal(JSON.parse(calls[12].init.body).confirm_profile, true);
+  assert.equal(JSON.parse(calls[13].init.body).confirm_promotion, true);
+});
+
 test("operator decision reader uses the bounded read-only endpoint", async () => {
   const { calls, fetchImpl } = captureFetch({ read_only: true });
   const client = new AgentControlPlaneClient({ baseUrl: "http://127.0.0.1:8080", fetchImpl });
@@ -557,7 +601,7 @@ test("proposal methods call controlled-loop endpoints", async () => {
   assert.deepEqual(JSON.parse(calls[6].init.body), { reason: "superseded", confirm_policy_override: true });
 });
 
-test("adaptive fusion policy methods call guarded policy endpoints", async () => {
+test("adaptive fusion policy reads and rollback use guarded policy endpoints", async () => {
   const { calls, fetchImpl } = captureFetch({
     schema_version: "axum_api.v1",
     policies: [],
@@ -568,23 +612,6 @@ test("adaptive fusion policy methods call guarded policy endpoints", async () =>
   const client = new AgentControlPlaneClient({ baseUrl: "http://127.0.0.1:8080", fetchImpl });
 
   await client.adaptiveFusionPolicies();
-  await client.promoteAdaptiveFusionPolicy({
-    actor: "operator",
-    promotion: {
-      task_class: "docs cleanup",
-      objective: "efficient",
-      candidate_id: "candidate-fast",
-      baseline_candidate_id: "candidate-safe",
-      sample_count: 25,
-      confidence: 0.91,
-      mean_quality_delta: 0.01,
-      mean_cost_reduction: 0.22,
-      failure_rate_delta: -0.02,
-      evidence_run_ids: ["dispatch-0001"],
-      risk_level: "low",
-      confirm_adaptive_policy_promotion: true,
-    },
-  });
   await client.rollbackAdaptiveFusionPolicy("adaptive-policy/0001", {
     actor: "operator",
     reason: "regression",
@@ -592,31 +619,12 @@ test("adaptive fusion policy methods call guarded policy endpoints", async () =>
 
   assert.equal(calls[0].url, "http://127.0.0.1:8080/api/v1/adaptive-fusion/policies");
   assert.equal(calls[0].init.method, "GET");
-  assert.equal(calls[1].url, "http://127.0.0.1:8080/api/v1/adaptive-fusion/policies/promote");
-  assert.equal(calls[1].init.method, "POST");
-  assert.deepEqual(JSON.parse(calls[1].init.body), {
-    actor: "operator",
-    promotion: {
-      task_class: "docs cleanup",
-      objective: "efficient",
-      candidate_id: "candidate-fast",
-      baseline_candidate_id: "candidate-safe",
-      sample_count: 25,
-      confidence: 0.91,
-      mean_quality_delta: 0.01,
-      mean_cost_reduction: 0.22,
-      failure_rate_delta: -0.02,
-      evidence_run_ids: ["dispatch-0001"],
-      risk_level: "low",
-      confirm_adaptive_policy_promotion: true,
-    },
-  });
   assert.equal(
-    calls[2].url,
+    calls[1].url,
     "http://127.0.0.1:8080/api/v1/adaptive-fusion/policies/adaptive-policy%2F0001/rollback",
   );
-  assert.equal(calls[2].init.method, "POST");
-  assert.deepEqual(JSON.parse(calls[2].init.body), {
+  assert.equal(calls[1].init.method, "POST");
+  assert.deepEqual(JSON.parse(calls[1].init.body), {
     actor: "operator",
     reason: "regression",
     confirm_adaptive_policy_rollback: true,

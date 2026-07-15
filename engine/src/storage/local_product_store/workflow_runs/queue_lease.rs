@@ -8,8 +8,8 @@ pub(super) const ACTIVE_RUN_IDS_SQL: &str = "SELECT run_id FROM workflow_runs
      ORDER BY run_sequence";
 
 pub(super) const ACTIVE_RUNS_PRIORITIZED_SQL: &str =
-    "SELECT run_id, run_sequence, workflow_id, status, priority, deadline_at,
-                                sla_ms, tenant_id, queue_position, pause_reason, degrade_mode,
+    "SELECT run_id, run_sequence, workflow_id, status, CAST(priority AS BIGINT), deadline_at,
+                                CAST(sla_ms AS BIGINT), tenant_id, CAST(queue_position AS BIGINT), pause_reason, degrade_mode,
                                 created_at, started_at
                          FROM workflow_runs
                          WHERE status IN ('running', 'created')
@@ -32,16 +32,17 @@ pub(super) const COMPLETED_COUNT_SQL: &str =
 pub(super) const FAILED_COUNT_SQL: &str =
     "SELECT COUNT(*) FROM workflow_runs WHERE status = 'failed'";
 pub(super) const AVG_PRIORITY_SQL: &str =
-    "SELECT COALESCE(AVG(priority), 5.0) FROM workflow_runs WHERE status IN ('created', 'running')";
+    "SELECT CAST(COALESCE(AVG(priority), 5.0) AS DOUBLE PRECISION) FROM workflow_runs WHERE status IN ('created', 'running')";
 pub(super) const SQLITE_OVERDUE_COUNT_SQL: &str = "SELECT COUNT(*) FROM workflow_runs
                          WHERE deadline_at IS NOT NULL AND deadline_at < datetime('now')
                            AND status IN ('created', 'running')";
 pub(super) const PG_OVERDUE_COUNT_SQL: &str = "SELECT COUNT(*) FROM workflow_runs
-                         WHERE deadline_at IS NOT NULL AND deadline_at < now()
+                         WHERE deadline_at IS NOT NULL
+                           AND CAST(deadline_at AS TIMESTAMPTZ) < now()
                            AND status IN ('created', 'running')";
 
-pub(super) const TENANTS_WITH_QUOTA_SQL: &str =
-    "SELECT tenant_id, COUNT(*) as run_count, AVG(priority) as avg_priority
+pub(super) const TENANTS_WITH_QUOTA_SQL: &str = "SELECT tenant_id, COUNT(*) as run_count,
+                                CAST(AVG(priority) AS DOUBLE PRECISION) as avg_priority
                          FROM workflow_runs
                          WHERE status IN ('created', 'running') AND tenant_id IS NOT NULL
                          GROUP BY tenant_id";

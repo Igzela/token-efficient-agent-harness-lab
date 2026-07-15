@@ -176,7 +176,7 @@ async fn decision_reordering_within_the_same_page_fails_closed() {
 }
 
 #[tokio::test]
-async fn every_unsupported_action_is_explicitly_fail_closed() {
+async fn every_action_not_bound_to_the_decision_is_explicitly_fail_closed() {
     let directory = tempdir().unwrap();
     let path = directory.path().join("local.db");
     let (store, _clock) = make_store(&path, "2026-07-11T00:00:00Z");
@@ -200,6 +200,6 @@ async fn every_unsupported_action_is_explicitly_fail_closed() {
     ] {
         let (status, response) = post_action(app.clone(), &item, action_body(&queue, action)).await;
         assert_eq!(status, StatusCode::CONFLICT, "{response}");
-        assert_eq!(response["code"], "operator_decision_action_not_allowlisted");
+        assert_eq!(response["code"], "operator_decision_not_ready");
     }
 }

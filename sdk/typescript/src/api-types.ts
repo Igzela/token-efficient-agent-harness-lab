@@ -347,6 +347,7 @@ export interface WorkflowRunApproval {
 export interface WorkflowRunCreateRequest {
   plan_id: string;
   confirm_execution?: boolean;
+  workspace_id?: string;
 }
 
 export interface WorkflowRunEventRequest {
@@ -1566,6 +1567,100 @@ export interface BudgetEvidenceArtifactListResponse {
 
 export interface BudgetEvidenceArtifactResponse extends Omit<BudgetEvidenceArtifactListResponse, "artifacts" | "kind" | "limit" | "offset"> {
   artifact: BudgetEvidenceArtifactEnvelope;
+}
+
+export interface MemoryScope {
+  tenant_id: string;
+  workspace_id: string;
+  agent_id?: string | null;
+  task_id?: string | null;
+}
+export interface DurableMemoryCreateRequest {
+  scope: MemoryScope;
+  run_id: string;
+  source_id: string;
+  source_sha256: string;
+  conflict_key: string;
+  content: unknown;
+  confidence: number;
+  fresh_until?: string | null;
+  expires_at?: string | null;
+  supersedes_memory_id?: string | null;
+}
+export interface DurableMemoryRevisionRequest {
+  run_id: string;
+  scope: MemoryScope;
+  expected_version: number;
+  source_id: string;
+  source_sha256: string;
+  content: unknown;
+  confidence: number;
+  fresh_until?: string | null;
+  expires_at?: string | null;
+}
+export interface MemorySupersedeRequest {
+  run_id: string;
+  scope: MemoryScope;
+  winner_expected_version: number;
+  loser_memory_id: string;
+  loser_expected_version: number;
+  confirm_supersede: true;
+}
+export interface MemoryPruneRequest {
+  scope: MemoryScope;
+  run_id: string;
+  confirm_prune: true;
+}
+export interface MemoryVersionTransitionRequest {
+  expected_version: number;
+  run_id: string;
+  scope: MemoryScope;
+}
+export interface MemoryRetrievalRequest {
+  scope: MemoryScope;
+  run_id: string;
+  node_id: string;
+  query: string;
+  top_k: number;
+  max_tokens: number;
+  max_bytes: number;
+  allow_lexical_fallback?: boolean;
+}
+export interface DurableMemoryResponse { memory: Record<string, unknown>; }
+export interface DurableMemoryHistoryResponse { versions: Array<Record<string, unknown>>; }
+export interface MemoryRetrievalResponse { retrieval: Record<string, unknown>; }
+export interface MemorySupersedeResponse { winner: Record<string, unknown>; superseded: Record<string, unknown>; evidence: Record<string, unknown>; }
+export interface MemoryPruneResponse { schema_version: "durable_memory_prune.v1"; pruned_count: number; pruned: Array<Record<string, unknown>>; bounded_limit: number; }
+export interface UsageObservationListResponse {
+  schema_version: "normalized_usage_read.v1";
+  run_id: string;
+  observations: Array<Record<string, unknown>>;
+  count: number;
+  limit: number;
+  read_only: true;
+  metadata_only: true;
+  raw_provider_content: "excluded";
+}
+export interface BudgetRecomputeRequest { run_id: string; confirm_recompute: boolean; }
+export interface BudgetRecomputeResponse { producer: Record<string, unknown>; usage_observations: Array<Record<string, unknown>>; }
+export interface OfflineReplayGenerateRequest { replay: Record<string, unknown>; confirm_generation: boolean; }
+export interface OfflineReplayGenerateResponse { producer: Record<string, unknown>; }
+export interface ReplayProductionProfileRequest { profile: Record<string, unknown>; confirm_profile: boolean; }
+export interface ReplayProductionProfileResponse {
+  schema_version: "offline_replay_production_profile_read.v1";
+  configured: boolean;
+  profile: Record<string, unknown> | null;
+  provider_calls: "disabled";
+  mutation_authority: "none";
+}
+export interface ReplayProductionProfileUpdateResponse { configured: Record<string, unknown>; }
+export interface EvidenceChainPromotionRequest {
+  replay_artifact_id: string;
+  promotion: Record<string, unknown>;
+  canary: Record<string, unknown>;
+  rollout_scope: string;
+  rollback_target: string;
+  confirm_promotion: boolean;
 }
 
 export type OfflineReplayStatus =

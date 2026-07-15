@@ -971,6 +971,44 @@ export interface BudgetEvidenceArtifactListResponse {
   mutation_authority: "none";
 }
 
+export interface UsageObservation {
+  schema_version: "normalized_usage_observation.v1";
+  observation_id: string;
+  source_kind: string;
+  source_id: string;
+  source_sha256: string;
+  occurred_at: string;
+  provider_id: string | null;
+  model_id: string | null;
+  pricing_identity: string | null;
+  pricing_effective_date: string | null;
+  currency: string | null;
+  input_tokens: number | null;
+  output_tokens: number | null;
+  cached_tokens: number | null;
+  cache_write_tokens: number | null;
+  reasoning_tokens: number | null;
+  context_tokens: number | null;
+  retry_count: number | null;
+  latency_ms: number | null;
+  cost: number | null;
+  metric_provenance: Record<string, string>;
+  completeness: string;
+  confidence: number;
+  record_sha256: string;
+}
+
+export interface UsageObservationListResponse {
+  schema_version: "normalized_usage_read.v1";
+  run_id: string;
+  observations: UsageObservation[];
+  count: number;
+  limit: number;
+  read_only: true;
+  metadata_only: true;
+  raw_provider_content: "excluded";
+}
+
 export interface OperatorEvidenceResponse {
   schema_version: "axum_api.v1";
   run_id: string;
@@ -982,6 +1020,8 @@ export interface OperatorEvidenceResponse {
 export type OperatorDecisionOutcome = "ready" | "conflict" | "expired" | "insufficient_evidence" | "resolved";
 export interface OperatorDecisionItem { decision_id: string; conflict_key: string; resource_id: string; outcome: OperatorDecisionOutcome; recommended_action: string | null; severity: "info" | "warning" | "critical"; confidence: number; generated_at: string; freshness_seconds: number; reason_codes: string[]; selected_source: { evidence_type: string; evidence_id: string; content_sha256: string | null } | null; evidence_references: { evidence_type: string; evidence_id: string; content_sha256: string | null }[]; }
 export interface OperatorDecisionQueueResponse { read_only: true; metadata_only: true; mutation_authority: "none"; provider_calls: "disabled"; target_repository_writes: "disabled"; queue: { schema_version: "operator_decision_queue.v1"; generated_at: string; maximum_freshness_seconds: number; total: number; limit: number; offset: number; source_counts: Record<string, number>; items: OperatorDecisionItem[]; queue_sha256: string; }; }
+export type OperatorDecisionAction = "rollback" | "inspect" | "acknowledge";
+export interface OperatorDecisionActionResponse { schema_version: "operator_decision_action_result.v1"; decision_id: string; queue_sha256: string; action: OperatorDecisionAction; owner_result: unknown; }
 
 export interface WorkflowRunNode {
   node_id: string;

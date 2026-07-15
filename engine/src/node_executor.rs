@@ -2582,7 +2582,11 @@ impl NodeExecutor for AgentStepExecutor {
             };
 
         let memory_digest = load_memory_digest_from_agent_state(&agent_state);
-        let memory_context = build_memory_context_for_node(&agent_state, 1200);
+        let memory_context = input
+            .node_metadata
+            .pointer("/context_injection/memory_context")
+            .cloned()
+            .or_else(|| build_memory_context_for_node(&agent_state, 1200));
         let memory_state_read_bytes =
             estimate_memory_state_bytes(memory_digest.as_ref(), memory_context.as_ref());
 

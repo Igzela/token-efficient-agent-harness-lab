@@ -5,7 +5,6 @@ import {
   ApiError,
   createAdaptiveCompletion,
   fetchAdaptiveFusionPolicies,
-  promoteAdaptiveFusionPolicy,
   rollbackAdaptiveFusionPolicy,
 } from "@/lib/api-client";
 import type {
@@ -13,7 +12,6 @@ import type {
   AdaptiveCompletionResponse,
   AdaptiveFusionPoliciesResponse,
   AdaptiveFusionOperatorStatus,
-  AdaptivePolicyPromotionRequest,
   AdaptivePolicySnapshot,
 } from "@/lib/types";
 import { AdaptiveFusionOperatorEvidence } from "./AdaptiveFusionOperatorEvidence";
@@ -22,7 +20,6 @@ import {
   AdaptiveFusionPolicyTable,
   AdaptiveFusionSnapshotTable,
 } from "./AdaptiveFusionPolicyTables";
-import { AdaptiveFusionPromotionForm } from "./AdaptiveFusionPromotionForm";
 import { AdaptiveFusionRollbackDialog } from "./AdaptiveFusionRollbackDialog";
 import { Metric } from "./Metric";
 import { StateBanner } from "./StateBanner";
@@ -415,20 +412,6 @@ export function AdaptiveFusion({
     [data],
   );
 
-  async function submitPromotion(request: AdaptivePolicyPromotionRequest) {
-    setBusy(true);
-    setActionMessage("");
-    try {
-      await promoteAdaptiveFusionPolicy(request);
-      setActionMessage("Adaptive policy promotion was accepted.");
-      load();
-    } catch (e) {
-      setActionMessage(e instanceof Error ? e.message : "Adaptive policy promotion failed.");
-    } finally {
-      setBusy(false);
-    }
-  }
-
   async function confirmRollback() {
     if (!rollbackTarget) return;
     setBusy(true);
@@ -512,7 +495,14 @@ export function AdaptiveFusion({
               <AdaptiveFusionPolicyTable policies={data.policies} />
             </div>
 
-            <AdaptiveFusionPromotionForm busy={busy} onSubmit={submitPromotion} />
+            <div className="subcard stack">
+              <h3>Evidence-chain promotion</h3>
+              <StateBanner title="Caller-asserted promotion retired" tone="info">
+                <p>
+                  Promotion is available only through the authenticated evidence-chain API/SDK after a source-bound replay artifact and bounded canary evidence exist. This view does not synthesize or approve missing evidence.
+                </p>
+              </StateBanner>
+            </div>
           </div>
 
           <div className="subcard stack">

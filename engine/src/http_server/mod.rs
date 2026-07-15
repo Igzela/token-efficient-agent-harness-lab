@@ -63,6 +63,7 @@ pub struct ReadOnlyPlanApiRequest {
 pub struct WorkflowRunCreateApiRequest {
     pub plan_id: String,
     pub confirm_execution: Option<bool>,
+    pub workspace_id: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Deserialize)]
@@ -1260,7 +1261,7 @@ pub fn openapi_document() -> serde_json::Value {
             "/api/v1/backups/{backup_id}/restore": {
                 "post": {
                     "summary": "Restore a backup with integrity verification",
-                    "description": "Requires backup:admin scope and confirm_restore=true. Restores from backup, runs integrity check, reports row counts.",
+                    "description": "Requires backup:admin scope and confirm_restore=true. Verifies checksum and integrity, restores through SQLite's online backup API into the currently owned connection, then rechecks integrity and reports row counts. It never replaces an open database inode.",
                     "parameters": [path_parameter("backup_id")],
                     "requestBody": json_request_body(&["confirm_restore"], json!({
                         "confirm_restore": {"type": "boolean", "const": true}
@@ -1295,6 +1296,7 @@ pub fn openapi_document() -> serde_json::Value {
     append_operator_decision_openapi_paths(&mut doc);
     append_operator_decision_action_openapi_paths(&mut doc);
     append_scorecard_openapi_paths(&mut doc);
+    append_memory_openapi_paths(&mut doc);
     append_tool_policy_openapi_paths(&mut doc);
     doc
 }
@@ -1346,13 +1348,31 @@ fn append_adaptive_fusion_openapi_paths(doc: &mut Value) {
         "/api/v1/adaptive-fusion/policies/promote".to_string(),
         json!({
             "post": {
-                "summary": "Promote one adaptive fusion policy",
-                "description": "Requires configured auth, team:admin scope, confirm_adaptive_policy_promotion=true, ACP_ENABLE_ADAPTIVE_POLICY_PROMOTION=1, ACP_ADAPTIVE_POLICY_PROMOTION_ACTIVE=1, minimum evidence, local evidence IDs, and non-regressing metrics.",
+                "summary": "Deprecated caller-asserted policy promotion",
+                "description": "Requires team:admin only to return a stable deprecation response. This route never mutates policy; callers must use promote-with-evidence.",
                 "requestBody": json_request_body(&["promotion"], json!({
                     "actor": {"type": "string"},
                     "promotion": {"type": "object"}
                 })),
-                "responses": {"200": {"description": "Adaptive fusion promotion result"}}
+                "responses": {"410": {"description": "Legacy promotion route is permanently deprecated"}}
+            }
+        }),
+    );
+    paths.insert(
+        "/api/v1/adaptive-fusion/policies/promote-with-evidence".to_string(),
+        json!({
+            "post": {
+                "summary": "Promote a replay-bound policy through the complete evidence chain",
+                "description": "Requires configured auth, team:admin, exact immutable replay binding, mutation-time trace rebinding, explicit confirmation, enabled canary/promotion gates, snapshot creation, and rollback target.",
+                "requestBody": json_request_body(&["replay_artifact_id", "promotion", "canary", "rollout_scope", "rollback_target", "confirm_promotion"], json!({
+                    "replay_artifact_id": {"type":"string"},
+                    "promotion": {"type":"object"},
+                    "canary": {"type":"object"},
+                    "rollout_scope": {"type":"string"},
+                    "rollback_target": {"type":"string"},
+                    "confirm_promotion": {"type":"boolean", "const":true}
+                })),
+                "responses": {"200":{"description":"Evidence-chain promotion and rollback snapshot"},"400":{"description":"Incomplete, stale, changed, or policy-rejected evidence"},"403":{"description":"Missing team:admin"}}
             }
         }),
     );
@@ -1540,6 +1560,28 @@ fn append_scorecard_openapi_paths(doc: &mut Value) {
         }),
     );
     paths.insert(
+        "/api/v1/usage-observations".to_string(),
+        json!({
+            "get": {
+                "summary": "List normalized usage observations for one run",
+                "description": "Requires dispatch:read and exact tenant-bound run ownership. Returns source/hash identity, completeness, confidence, pricing identity, and metric provenance without provider content.",
+                "parameters":[{"name":"run_id","in":"query","required":true,"schema":{"type":"string"}},{"name":"limit","in":"query","schema":{"type":"integer","default":64,"minimum":1,"maximum":64}}],
+                "responses":{"200":{"description":"Metadata-only normalized observations"},"404":{"description":"Run not found in authenticated tenant"}}
+            }
+        }),
+    );
+    paths.insert(
+        "/api/v1/budget-evidence/recompute".to_string(),
+        json!({
+            "post": {
+                "summary":"Recompute budget intelligence for an exact run",
+                "description":"Requires dispatch:execute, tenant-bound run ownership, and explicit confirmation. The idempotent producer deduplicates normalized sources and immutable artifacts.",
+                "requestBody":json_request_body(&["run_id","confirm_recompute"],json!({"run_id":{"type":"string"},"confirm_recompute":{"type":"boolean","const":true}})),
+                "responses":{"200":{"description":"Producer result and normalized observation provenance"},"400":{"description":"Confirmation missing"},"404":{"description":"Run not found"}}
+            }
+        }),
+    );
+    paths.insert(
         "/api/v1/offline-replays".to_string(),
         json!({
             "get": {
@@ -1566,6 +1608,36 @@ fn append_scorecard_openapi_paths(doc: &mut Value) {
         }),
     );
     paths.insert(
+        "/api/v1/offline-replays/generate".to_string(),
+        json!({
+            "post": {
+                "summary":"Generate immutable replay evidence from trusted dispatch traces",
+                "description":"Requires dispatch:execute and explicit confirmation. Provider calls remain disabled; ineligible traces produce explicit replay status and reason codes.",
+                "requestBody":json_request_body(&["replay","confirm_generation"],json!({"replay":{"type":"object"},"confirm_generation":{"type":"boolean","const":true}})),
+                "responses":{"200":{"description":"Idempotent replay producer result"},"400":{"description":"Invalid or unbound replay request"}}
+            }
+        }),
+    );
+    paths.insert(
+        "/api/v1/offline-replays/production-profile".to_string(),
+        json!({
+            "get": {
+                "summary":"Inspect the bounded automatic replay producer profile",
+                "description":"Requires dispatch:read. Returns configuration metadata only and grants no mutation authority.",
+                "responses":{"200":{"description":"Current profile or explicit unconfigured state"}}
+            },
+            "put": {
+                "summary":"Configure the bounded automatic replay producer profile",
+                "description":"Requires configured authentication, team:admin, and explicit confirmation. The profile is app-owned; dispatch completion remains the only automatic trigger and never calls providers.",
+                "requestBody":json_request_body(&["profile","confirm_profile"],json!({
+                    "profile":{"type":"object","required":["enabled","bounded_dispatch_window","maximum_trace_age_seconds","current_policy","candidate_policies"]},
+                    "confirm_profile":{"type":"boolean","const":true}
+                })),
+                "responses":{"200":{"description":"Persisted profile"},"400":{"description":"Invalid profile or confirmation missing"},"403":{"description":"Configured admin authentication required"}}
+            }
+        }),
+    );
+    paths.insert(
         "/api/v1/budget-evidence/{artifact_id}/auto-pause".to_string(),
         json!({
             "post": {
@@ -1586,6 +1658,51 @@ fn append_scorecard_openapi_paths(doc: &mut Value) {
                 "responses": {"200": {"description": "Audited recovery decision"}, "400": {"description": "Confirmation missing"}, "403": {"description": "Missing permission"}, "409": {"description": "Recovery rejected"}}
             }
         }),
+    );
+}
+
+fn append_memory_openapi_paths(doc: &mut Value) {
+    let Some(paths) = doc.get_mut("paths").and_then(Value::as_object_mut) else {
+        return;
+    };
+    paths.insert(
+        "/api/v1/memories".to_string(),
+        json!({"post":{"summary":"Create one immutable durable-memory version","description":"Requires dispatch:execute. Tenant/workspace scope is rebound to the required authoritative run_id; embeddings are separately gated and provider mode is default-off.","requestBody":json_request_body(&["scope","run_id","source_id","source_sha256","conflict_key","content","confidence"],json!({"scope":{"type":"object","required":["tenant_id","workspace_id"],"properties":{"tenant_id":{"type":"string"},"workspace_id":{"type":"string"},"agent_id":{"type":["string","null"]},"task_id":{"type":["string","null"]}}},"run_id":{"type":"string"},"source_id":{"type":"string"},"source_sha256":{"type":"string","pattern":"^[0-9a-f]{64}$"},"conflict_key":{"type":"string"},"content":{},"confidence":{"type":"number","minimum":0,"maximum":1},"fresh_until":{"type":["string","null"],"format":"date-time"},"expires_at":{"type":["string","null"],"format":"date-time"},"supersedes_memory_id":{"type":["string","null"],"description":"Must be null on create; use the atomic supersede route."}})),"responses":{"201":{"description":"Created or exact idempotent memory"},"400":{"description":"Invalid, oversized, or conflicting binding"},"403":{"description":"Tenant, workspace, agent, or task scope mismatch"}}}}),
+    );
+    paths.insert(
+        "/api/v1/memories/{memory_id}".to_string(),
+        json!({"get":{"summary":"Inspect durable-memory version history","description":"Requires dispatch:read and an authoritative run_id whose tenant/workspace matches the stored memory scope.","parameters":[path_parameter("memory_id"),{"name":"run_id","in":"query","required":true,"schema":{"type":"string"}}],"responses":{"200":{"description":"Immutable version history"},"403":{"description":"Run scope mismatch"},"404":{"description":"Not found in authenticated tenant"}}}}),
+    );
+    for (suffix, summary) in [
+        (
+            "revise",
+            "Revise durable memory with optimistic version binding",
+        ),
+        (
+            "invalidate",
+            "Invalidate durable memory with optimistic version binding",
+        ),
+        (
+            "forget",
+            "Tombstone durable memory with optimistic version binding",
+        ),
+    ] {
+        paths.insert(
+            format!("/api/v1/memories/{{memory_id}}/{suffix}"),
+            json!({"post":{"summary":summary,"description":"Requires dispatch:execute, an exact run/scope rebinding, and exact expected_version. Mutation and audit commit atomically.","parameters":[path_parameter("memory_id")],"requestBody":if suffix == "revise" { json_request_body(&["run_id","scope","expected_version","source_id","source_sha256","content","confidence"],json!({"run_id":{"type":"string"},"scope":{"type":"object","required":["tenant_id","workspace_id"]},"expected_version":{"type":"integer","minimum":1},"source_id":{"type":"string"},"source_sha256":{"type":"string","pattern":"^[0-9a-f]{64}$"},"content":{},"confidence":{"type":"number","minimum":0,"maximum":1},"fresh_until":{"type":["string","null"],"format":"date-time"},"expires_at":{"type":["string","null"],"format":"date-time"}})) } else { json_request_body(&["run_id","scope","expected_version"],json!({"run_id":{"type":"string"},"scope":{"type":"object","required":["tenant_id","workspace_id"]},"expected_version":{"type":"integer","minimum":1}})) },"responses":{"200":{"description":"New immutable memory version"},"403":{"description":"Run or memory scope mismatch"},"409":{"description":"Version conflict"}}}}),
+        );
+    }
+    paths.insert(
+        "/api/v1/memories/{memory_id}/supersede".to_string(),
+        json!({"post":{"summary":"Resolve exactly one conflicting fact pair atomically","description":"Requires dispatch:execute, exact run/scope ownership for both identities, exact versions, and explicit confirmation.","parameters":[path_parameter("memory_id")],"requestBody":json_request_body(&["run_id","scope","winner_expected_version","loser_memory_id","loser_expected_version","confirm_supersede"],json!({"run_id":{"type":"string"},"scope":{"type":"object","required":["tenant_id","workspace_id"]},"winner_expected_version":{"type":"integer","minimum":1},"loser_memory_id":{"type":"string"},"loser_expected_version":{"type":"integer","minimum":1},"confirm_supersede":{"type":"boolean","const":true}})),"responses":{"200":{"description":"Winner and superseded immutable versions"},"400":{"description":"Confirmation or conflict-pair validation failed"},"403":{"description":"Run or memory scope mismatch"},"409":{"description":"Version conflict"}}}}),
+    );
+    paths.insert(
+        "/api/v1/memories/prune".to_string(),
+        json!({"post":{"summary":"Prune a bounded exact scope of expired current memories","description":"Requires dispatch:execute, authoritative run/scope ownership, and explicit confirmation. At most 100 transitions are committed atomically.","requestBody":json_request_body(&["run_id","scope","confirm_prune"],json!({"run_id":{"type":"string"},"scope":{"type":"object","required":["tenant_id","workspace_id"],"properties":{"tenant_id":{"type":"string"},"workspace_id":{"type":"string"},"agent_id":{"type":["string","null"]},"task_id":{"type":["string","null"]}}},"confirm_prune":{"type":"boolean","const":true}})),"responses":{"200":{"description":"Bounded prune result"},"400":{"description":"Confirmation or scope invalid"},"403":{"description":"Run or scope mismatch"}}}}),
+    );
+    paths.insert(
+        "/api/v1/memories/retrieve".to_string(),
+        json!({"post":{"summary":"Retrieve bounded hash-bound durable-memory references","description":"Requires dispatch:read and exact tenant/workspace/run scope. Semantic vector mode is gated; lexical fallback is explicit and labeled.","requestBody":json_request_body(&["scope","run_id","node_id","query","top_k","max_tokens","max_bytes"],json!({"scope":{"type":"object","required":["tenant_id","workspace_id"]},"run_id":{"type":"string"},"node_id":{"type":"string"},"query":{"type":"string","maxLength":16384},"top_k":{"type":"integer","minimum":1,"maximum":20},"max_tokens":{"type":"integer","minimum":1,"maximum":32768},"max_bytes":{"type":"integer","minimum":1,"maximum":131072},"allow_lexical_fallback":{"type":"boolean","default":false}})),"responses":{"200":{"description":"Deterministic Top-K result with provenance, scores, exclusions, and budgets"},"403":{"description":"Tenant or workspace mismatch"}}}}),
     );
 }
 
@@ -1801,6 +1918,12 @@ mod tests {
             "put",
             "hook_id",
         );
+        assert_path_parameter(
+            &doc,
+            "/api/v1/memories/{memory_id}/supersede",
+            "post",
+            "memory_id",
+        );
     }
 
     #[test]
@@ -1835,6 +1958,59 @@ mod tests {
             "/api/v1/backups/{backup_id}/restore",
             "post",
             &["confirm_restore"],
+        );
+        assert_required_body_fields(
+            &doc,
+            "/api/v1/memories",
+            "post",
+            &[
+                "scope",
+                "run_id",
+                "source_id",
+                "source_sha256",
+                "conflict_key",
+                "content",
+                "confidence",
+            ],
+        );
+        assert_required_body_fields(
+            &doc,
+            "/api/v1/memories/{memory_id}/supersede",
+            "post",
+            &[
+                "run_id",
+                "scope",
+                "winner_expected_version",
+                "loser_memory_id",
+                "loser_expected_version",
+                "confirm_supersede",
+            ],
+        );
+        assert_required_body_fields(
+            &doc,
+            "/api/v1/memories/prune",
+            "post",
+            &["run_id", "scope", "confirm_prune"],
+        );
+        assert_required_body_fields(
+            &doc,
+            "/api/v1/memories/retrieve",
+            "post",
+            &[
+                "scope",
+                "run_id",
+                "node_id",
+                "query",
+                "top_k",
+                "max_tokens",
+                "max_bytes",
+            ],
+        );
+        assert_required_body_fields(
+            &doc,
+            "/api/v1/offline-replays/production-profile",
+            "put",
+            &["profile", "confirm_profile"],
         );
     }
 
